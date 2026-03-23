@@ -6,3 +6,4 @@
   {"id": "ai",        "name": "AI",        "icon": "brain",    "color": "#8b5cf6", "enabled": true},
   {"id": "other",     "name": "Другое",    "icon": "globe",    "color": "#6b7280", "enabled": true}
 ]
+

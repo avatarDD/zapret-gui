@@ -112,3 +112,4 @@ def _sse_event(data, event: str = None) -> str:
     lines.append("")
     lines.append("")
     return "\n".join(lines)
+

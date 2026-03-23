@@ -415,3 +415,4 @@ def get_strategy_manager() -> StrategyManager:
             if _strategy_manager is None:
                 _strategy_manager = StrategyManager()
     return _strategy_manager
+

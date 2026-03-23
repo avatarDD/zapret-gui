@@ -59,3 +59,4 @@ const Toast = (() => {
         info:    (msg, dur) => show('info', msg, dur),
     };
 })();
+

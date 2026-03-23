@@ -122,3 +122,4 @@ def _get_wan_ip() -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError, IndexError):
         pass
     return "—"
+

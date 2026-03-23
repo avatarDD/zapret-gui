@@ -14,6 +14,7 @@ const App = (() => {
         hostlists:  HostlistsPage,
         ipsets:     IPSetsPage,
         blobs:      BlobsPage,
+        hosts:      HostsPage,
         // Заглушки для будущих страниц:
         logs:     { render: (c) => renderPlaceholder(c, 'Логи', 'Будет реализовано в Фазе 7') },
         settings: { render: (c) => renderPlaceholder(c, 'Настройки', 'Будет реализовано в Фазе 9') },
@@ -100,3 +101,4 @@ const App = (() => {
 
     return { navigateTo };
 })();
+

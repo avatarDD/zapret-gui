@@ -43,6 +43,7 @@ const Sidebar = (() => {
                 { id: 'hostlists', label: 'Домены',      icon: 'hostlist' },
                 { id: 'ipsets',    label: 'IP-списки',    icon: 'ipset' },
                 { id: 'blobs',     label: 'Блобы',        icon: 'blob' },
+                { id: 'hosts',     label: 'Hosts',        icon: 'hosts' },
             ]
         },
         {
@@ -132,3 +133,4 @@ const Sidebar = (() => {
 
     return { render, setCurrentPage, initMobileToggle };
 })();
+
