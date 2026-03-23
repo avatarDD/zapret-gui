@@ -1,0 +1,27 @@
+{
+  "id": "tcp_default",
+  "name": "Default — базовая стратегия",
+  "description": "Стандартная стратегия из zapret2: fake + multisplit для HTTP/TLS, fake для QUIC",
+  "type": "combined",
+  "version": 1,
+  "profiles": [
+    {
+      "id": "http80",
+      "name": "HTTP (порт 80)",
+      "enabled": true,
+      "args": "--filter-tcp=80 --filter-l7=http --payload=http_req --lua-desync=fake:blob=fake_default_http --lua-desync=multisplit:pos=method+2"
+    },
+    {
+      "id": "tls443",
+      "name": "TLS (порт 443)",
+      "enabled": true,
+      "args": "--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls --lua-desync=multisplit:pos=1,midsld"
+    },
+    {
+      "id": "quic443",
+      "name": "QUIC/UDP (порт 443)",
+      "enabled": true,
+      "args": "--filter-udp=443 --filter-l7=quic --payload=quic_initial --lua-desync=fake:blob=fake_default_quic:repeats=6"
+    }
+  ]
+}

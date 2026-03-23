@@ -1,0 +1,8 @@
+[
+  {"id": "youtube",   "name": "YouTube",   "icon": "play",     "color": "#ff0000", "enabled": true},
+  {"id": "discord",   "name": "Discord",   "icon": "message",  "color": "#5865f2", "enabled": true},
+  {"id": "telegram",  "name": "Telegram",  "icon": "send",     "color": "#0088cc", "enabled": true},
+  {"id": "social",    "name": "Соцсети",   "icon": "users",    "color": "#e4405f", "enabled": true},
+  {"id": "ai",        "name": "AI",        "icon": "brain",    "color": "#8b5cf6", "enabled": true},
+  {"id": "other",     "name": "Другое",    "icon": "globe",    "color": "#6b7280", "enabled": true}
+]

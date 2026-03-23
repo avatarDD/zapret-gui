@@ -1,0 +1,21 @@
+{
+  "id": "tcp_syndata",
+  "name": "SYN+Data — syndata + multisplit",
+  "description": "Стратегия с syndata: отправка данных в SYN-пакете + window size манипуляция",
+  "type": "combined",
+  "version": 1,
+  "profiles": [
+    {
+      "id": "tls443",
+      "name": "TLS (порт 443)",
+      "enabled": true,
+      "args": "--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --lua-desync=wssize:wsize=1:scale=6 --lua-desync=syndata --lua-desync=multisplit:pos=midsld"
+    },
+    {
+      "id": "http80",
+      "name": "HTTP (порт 80)",
+      "enabled": true,
+      "args": "--filter-tcp=80 --filter-l7=http --payload=http_req --lua-desync=wssize:wsize=1:scale=6 --lua-desync=syndata --lua-desync=multisplit:pos=method+2"
+    }
+  ]
+}

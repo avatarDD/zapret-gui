@@ -1,0 +1,15 @@
+{
+  "id": "quic_only",
+  "name": "QUIC Only — UDP 443",
+  "description": "Только QUIC/UDP обработка: fake с повторами. Для YouTube и сервисов использующих QUIC",
+  "type": "quic",
+  "version": 1,
+  "profiles": [
+    {
+      "id": "quic443",
+      "name": "QUIC/UDP (порт 443)",
+      "enabled": true,
+      "args": "--filter-udp=443 --filter-l7=quic --payload=quic_initial --lua-desync=fake:blob=fake_default_quic:repeats=6"
+    }
+  ]
+}

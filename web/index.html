@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0f1117">
+    <title>Zapret GUI</title>
+    <link rel="icon" href="/img/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Sidebar -->
+        <nav id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                    </svg>
+                </div>
+                <div class="sidebar-title">
+                    <span class="sidebar-title-text">Zapret</span>
+                    <span class="sidebar-subtitle">Web GUI</span>
+                </div>
+                <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Меню">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="3" y1="12" x2="21" y2="12"/>
+                        <line x1="3" y1="6" x2="21" y2="6"/>
+                        <line x1="3" y1="18" x2="21" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="sidebar-nav" id="sidebar-nav">
+                <!-- Заполняется из JS -->
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="sidebar-version">v0.5.0</div>
+            </div>
+        </nav>
+
+        <!-- Основной контент -->
+        <main id="content" class="content">
+            <div id="page-container" class="page-container">
+                <!-- Страницы рендерятся сюда -->
+                <div class="page-loading">
+                    <div class="spinner"></div>
+                    <span>Загрузка...</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast уведомления -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Модальные окна -->
+    <div id="modal-overlay" class="modal-overlay hidden"></div>
+
+    <!-- JS модули -->
+    <script src="/js/api.js"></script>
+    <script src="/js/components/toast.js"></script>
+    <script src="/js/components/sidebar.js"></script>
+    <script src="/js/pages/dashboard.js"></script>
+    <script src="/js/pages/control.js"></script>
+    <script src="/js/pages/strategies.js"></script>
+    <script src="/js/pages/hostlists.js"></script>
+    <script src="/js/pages/ipsets.js"></script>
+    <script src="/js/pages/blobs.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "id": "tcp_oob",
+  "name": "OOB — fakedsplit + disorder",
+  "description": "Стратегия с fakedsplit и нарушением порядка пакетов, использует TTL fooling",
+  "type": "combined",
+  "version": 1,
+  "profiles": [
+    {
+      "id": "http80",
+      "name": "HTTP (порт 80)",
+      "enabled": true,
+      "args": "--filter-tcp=80 --filter-l7=http --payload=http_req --lua-desync=fakedsplit:pos=method+2:ip_ttl=4:ip6_ttl=4"
+    },
+    {
+      "id": "tls443",
+      "name": "TLS (порт 443)",
+      "enabled": true,
+      "args": "--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --lua-desync=fakedsplit:pos=1,midsld:ip_ttl=4:ip6_ttl=4"
+    }
+  ]
+}
