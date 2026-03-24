@@ -885,3 +885,4 @@ def clear_cache():
     """Очистить кэш диагностики."""
     with _cache_lock:
         _cache.clear()
+

@@ -553,4 +553,3 @@ class BlobManager:
             lines.append(f"{offset:08x}  {hex_part:<{columns * 3}}  |{ascii_part}|")
         return "\n".join(lines)
 
-

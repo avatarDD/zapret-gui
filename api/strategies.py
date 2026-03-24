@@ -476,4 +476,3 @@ def _save_categories(categories: list) -> bool:
     except (IOError, OSError):
         return False
 
-

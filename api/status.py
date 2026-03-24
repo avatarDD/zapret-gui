@@ -19,10 +19,12 @@ def register(app):
         from core.system_info import get_system_info
         from core.nfqws_manager import get_nfqws_manager
         from core.firewall import get_firewall_manager
+        from core.autostart_manager import get_autostart_manager
 
         cfg = get_config_manager()
         mgr = get_nfqws_manager()
         fw = get_firewall_manager()
+        am = get_autostart_manager()
 
         return {
             "ok": True,
@@ -32,11 +34,9 @@ def register(app):
                 "id": cfg.get("strategy", "current_id"),
                 "name": cfg.get("strategy", "current_name") or "Не выбрана",
             },
-            "autostart": {
-                "enabled": cfg.get("autostart", "enabled", default=False),
-            },
+            "autostart": am.get_status(),
             "system": get_system_info(),
-            "gui_version": "0.2.0",
+            "gui_version": "0.9.0",
             "timestamp": time.time(),
         }
 
@@ -45,5 +45,4 @@ def register(app):
         """Health check."""
         response.content_type = "application/json; charset=utf-8"
         return {"ok": True, "timestamp": time.time()}
-
 

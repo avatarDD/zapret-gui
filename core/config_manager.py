@@ -288,4 +288,3 @@ def init_config(config_dir: str = None) -> dict:
         _config_manager = ConfigManager(config_dir=config_dir)
     return _config_manager.load()
 
-
