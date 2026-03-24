@@ -20,6 +20,7 @@ def register_routes(app):
     from api.hosts import register as reg_hosts
     from api.diagnostics import register as reg_diagnostics
     from api.autostart import register as reg_autostart
+    from api.zapret_manager import register as reg_zapret_manager
 
     reg_status(app)
     reg_logs(app)
@@ -32,4 +33,4 @@ def register_routes(app):
     reg_hosts(app)
     reg_diagnostics(app)
     reg_autostart(app)
-
+    reg_zapret_manager(app)

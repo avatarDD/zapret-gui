@@ -20,11 +20,16 @@ def register(app):
         from core.nfqws_manager import get_nfqws_manager
         from core.firewall import get_firewall_manager
         from core.autostart_manager import get_autostart_manager
+        from core.zapret_installer import get_zapret_installer
 
         cfg = get_config_manager()
         mgr = get_nfqws_manager()
         fw = get_firewall_manager()
         am = get_autostart_manager()
+        inst = get_zapret_installer()
+
+        # Получаем информацию о версии zapret2
+        zapret_version = inst.get_installed_version()
 
         return {
             "ok": True,
@@ -36,7 +41,11 @@ def register(app):
             },
             "autostart": am.get_status(),
             "system": get_system_info(),
-            "gui_version": "0.9.0",
+            "zapret": {
+                "installed": zapret_version["installed"],
+                "version": zapret_version["version"],
+            },
+            "gui_version": "0.9.1",
             "timestamp": time.time(),
         }
 
@@ -45,4 +54,3 @@ def register(app):
         """Health check."""
         response.content_type = "application/json; charset=utf-8"
         return {"ok": True, "timestamp": time.time()}
-

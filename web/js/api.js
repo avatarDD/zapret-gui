@@ -45,4 +45,3 @@ const API = (() => {
         delete: (path, body) =>   request('DELETE', path, body),
     };
 })();
-

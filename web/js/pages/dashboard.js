@@ -70,6 +70,21 @@ const DashboardPage = (() => {
                     <div class="status-card-value" id="system-info">—</div>
                     <div class="status-card-detail" id="system-detail"></div>
                 </div>
+
+                <div class="status-card" id="card-zapret-ver" style="cursor: pointer;" onclick="window.location.hash='zapret'">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                        </span>
+                        <span class="status-card-label">zapret2</span>
+                    </div>
+                    <div class="status-card-value" id="zapret-ver-value" style="font-size: 14px;">—</div>
+                    <div class="status-card-detail" id="zapret-ver-detail"></div>
+                </div>
             </div>
 
             <!-- Быстрые действия -->
@@ -204,6 +219,21 @@ const DashboardPage = (() => {
             if (data.system.ram?.used_percent) parts.push(`RAM ${data.system.ram.used_percent}%`);
             if (sysDetail) sysDetail.textContent = parts.join(' · ');
         }
+
+        // zapret2 версия
+        const zapretVer = document.getElementById('zapret-ver-value');
+        const zapretDetail = document.getElementById('zapret-ver-detail');
+        if (zapretVer) {
+            if (data.zapret?.installed) {
+                zapretVer.textContent = data.zapret.version || 'установлен';
+                zapretVer.style.color = 'var(--success)';
+                if (zapretDetail) zapretDetail.textContent = 'Нажмите для управления';
+            } else {
+                zapretVer.textContent = 'Не установлен';
+                zapretVer.style.color = 'var(--error)';
+                if (zapretDetail) zapretDetail.textContent = 'Нажмите для установки';
+            }
+        }
     }
 
     async function fetchRecentLogs() {
@@ -307,4 +337,3 @@ const DashboardPage = (() => {
         quickRestart: () => quickAction('restart'),
     };
 })();
-

@@ -22,6 +22,7 @@ const Sidebar = (() => {
         hostlist:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M2 12h20"/><path d="M12 2c2.5 2.8 3.9 6.3 3.9 10s-1.4 7.2-3.9 10c-2.5-2.8-3.9-6.3-3.9-10S9.5 4.8 12 2z"/></svg>',
         ipset:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2"/><line x1="2" y1="9" x2="22" y2="9"/><line x1="2" y1="15" x2="22" y2="15"/><line x1="8" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="16" y2="21"/></svg>',
         autostart:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
+        zapret:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
     };
 
     // Группы с разделителями
@@ -50,6 +51,7 @@ const Sidebar = (() => {
         {
             label: 'Система',
             items: [
+                { id: 'zapret',    label: 'Zapret2',     icon: 'zapret' },
                 { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostic' },
                 { id: 'logs',      label: 'Логи',        icon: 'log' },
                 { id: 'autostart', label: 'Автозапуск',  icon: 'autostart' },
@@ -136,4 +138,3 @@ const Sidebar = (() => {
 
     return { render, setCurrentPage, initMobileToggle };
 })();
-

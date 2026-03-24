@@ -747,4 +747,3 @@ const BlobsPage = (() => {
         copyHex,
     };
 })();
-

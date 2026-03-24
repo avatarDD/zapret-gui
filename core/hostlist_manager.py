@@ -463,4 +463,3 @@ def get_hostlist_manager():
             if _instance is None:
                 _instance = HostlistManager()
     return _instance
-

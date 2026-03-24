@@ -296,4 +296,3 @@ def register(app):
             )
 
         return result
-

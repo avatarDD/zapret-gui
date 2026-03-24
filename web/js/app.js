@@ -18,6 +18,7 @@ const App = (() => {
         diagnostics: DiagnosticsPage,
         logs:       LogsPage,
         autostart:  AutostartPage,
+        zapret:     ZapretManagerPage,
         // Заглушки для будущих страниц:
         settings: { render: (c) => renderPlaceholder(c, 'Настройки', 'Будет реализовано в Фазе 9') },
     };
@@ -103,4 +104,3 @@ const App = (() => {
 
     return { navigateTo };
 })();
-
