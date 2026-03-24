@@ -343,6 +343,7 @@ const ZapretManagerPage = (() => {
         const running = data.nfqws_running || {};
         const op = data.operation || {};
         const disabled = op.in_progress || isOperationRunning;
+        const updateDisabled = disabled || !data.update_available;
 
         let html = '';
 
@@ -361,7 +362,7 @@ const ZapretManagerPage = (() => {
         } else {
             // Установлен — обновление и удаление
             html = `
-                <button class="btn btn-primary" onclick="ZapretManagerPage.doUpdate()" ${disabled ? 'disabled' : ''} id="zm-btn-update">
+                <button class="btn btn-primary" onclick="ZapretManagerPage.doUpdate()" ${updateDisabled ? 'disabled' : ''} id="zm-btn-update">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                         <polyline points="7 10 12 15 17 10"/>
@@ -481,8 +482,7 @@ const ZapretManagerPage = (() => {
                         <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px;
                                     background: var(--bg-input); border-radius: var(--radius-sm);
                                     margin-bottom: 4px; font-size: 12px;">
-                            <span style="color: ${item.type === 'dir' ? 'var(--warning)' : 'var(--text-secondary)'};">
-                                ${item.type === 'dir' ? '📁' : '📄'}
+                            <span style="color: ${item.type === 'dir' ? 'var(--warning)' : 'var(--text-secondary)'};">\n                                ${item.type === 'dir' ? '📁' : '📄'}
                             </span>
                             <div style="flex: 1; min-width: 0;">
                                 <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 11px;
