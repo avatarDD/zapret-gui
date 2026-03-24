@@ -18,6 +18,7 @@ def register_routes(app):
     from api.ipsets import register as reg_ipsets
     from api.blobs import register as reg_blobs
     from api.hosts import register as reg_hosts
+    from api.diagnostics import register as reg_diagnostics
 
     reg_status(app)
     reg_logs(app)
@@ -28,4 +29,6 @@ def register_routes(app):
     reg_ipsets(app)
     reg_blobs(app)
     reg_hosts(app)
+    reg_diagnostics(app)
+
 

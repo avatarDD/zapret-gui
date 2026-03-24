@@ -46,3 +46,4 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         return {"ok": True, "timestamp": time.time()}
 
+

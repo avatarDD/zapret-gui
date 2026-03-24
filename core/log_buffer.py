@@ -234,3 +234,4 @@ def get_log_buffer() -> LogBuffer:
     """Получить глобальный буфер логов."""
     return _log_buffer
 
+

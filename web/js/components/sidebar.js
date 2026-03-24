@@ -49,6 +49,7 @@ const Sidebar = (() => {
         {
             label: 'Система',
             items: [
+                { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostic' },
                 { id: 'logs',     label: 'Логи',      icon: 'log' },
                 { id: 'settings', label: 'Настройки',  icon: 'settings' },
             ]
@@ -133,4 +134,5 @@ const Sidebar = (() => {
 
     return { render, setCurrentPage, initMobileToggle };
 })();
+
 
