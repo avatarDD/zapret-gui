@@ -72,7 +72,7 @@ pip3 install bottle
 **Entware:**
 ```bash
 # Скачать последний релиз
-wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui_0.12.0_all.ipk
+wget https://github.com/avatarDD/zapret-gui/releases/download/v0.12.0/zapret-gui_0.12.0_all.ipk
 
 # Установить
 opkg install zapret-gui_0.12.0_all.ipk
@@ -83,7 +83,7 @@ opkg install zapret-gui_0.12.0_all.ipk
 
 **OpenWrt:**
 ```bash
-wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui_0.12.0_openwrt_all.ipk
+wget https://github.com/avatarDD/zapret-gui/releases/download/v0.12.0/zapret-gui_0.12.0_openwrt.ipk
 opkg install zapret-gui_0.12.0_openwrt_all.ipk
 /etc/init.d/zapret-gui start
 ```
