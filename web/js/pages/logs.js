@@ -419,7 +419,17 @@ const LogsPage = (() => {
         const time = entry.time || '';
         const date = entry.date || '';
         const source = entry.source ? `<span class="log-source">[${escapeHtml(entry.source)}]</span>` : '';
-        const message = highlightSearch(escapeHtml(entry.message || ''));
+
+        // Подсветка синтаксиса nfqws в сообщениях
+        const rawMsg = entry.message || '';
+        const nfqHighlighted = NfqwsSyntax.highlightInLog(rawMsg);
+        let message;
+        if (nfqHighlighted) {
+            // Если есть nfqws-аргументы — используем подсветку синтаксиса
+            message = highlightSearch(nfqHighlighted, true);
+        } else {
+            message = highlightSearch(escapeHtml(rawMsg));
+        }
 
         row.innerHTML = `
             <span class="log-time" title="${date} ${time}">${time}</span>
@@ -431,8 +441,18 @@ const LogsPage = (() => {
         return row;
     }
 
-    function highlightSearch(text) {
+    function highlightSearch(text, isHtml) {
         if (!currentSearch) return text;
+
+        if (isHtml) {
+            // Для уже HTML-подсвеченного текста — ищем только в текстовых нодах
+            // Простой подход: подсвечиваем вне тегов
+            const escaped = currentSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp('(' + escaped + ')', 'gi');
+            return text.replace(/>([^<]*)</g, (match, content) => {
+                return '>' + content.replace(regex, '<mark class="log-highlight">$1</mark>') + '<';
+            });
+        }
 
         const escaped = currentSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const regex = new RegExp('(' + escaped + ')', 'gi');

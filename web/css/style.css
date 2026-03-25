@@ -3341,3 +3341,181 @@ input:focus, textarea:focus, select:focus {
         width: 100%;
     }
 }
+
+
+/* ===== nfqws Syntax Highlighting ===== */
+
+/* Подсветка синтаксиса стратегий nfqws/nfqws2 */
+
+.nfq-syntax {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.7;
+}
+
+/* Путь к бинарнику */
+.nfq-binary {
+    color: #c9d1d9;
+    font-weight: 600;
+}
+
+/* Флаг: --filter-tcp, --dpi-desync, --lua-desync, … */
+.nfq-flag {
+    color: #79c0ff;
+}
+
+/* Знак = */
+.nfq-eq {
+    color: #6e7681;
+}
+
+/* Общее значение */
+.nfq-value {
+    color: #d2a8ff;
+}
+
+/* Desync-метод: fake, multisplit, fakedsplit, … */
+.nfq-method {
+    color: #ff7b72;
+    font-weight: 600;
+}
+
+/* Разделитель : в lua-цепочках */
+.nfq-sub-sep {
+    color: #6e7681;
+}
+
+/* Субпараметр-ключ: blob, pos, repeats, … */
+.nfq-subkey {
+    color: #7ee787;
+}
+
+/* Субпараметр-значение */
+.nfq-subval {
+    color: #ffa657;
+}
+
+/* Субпараметр-флаг без значения: tcp_md5, nofake1, … */
+.nfq-subflag {
+    color: #ffa657;
+    font-style: italic;
+}
+
+/* --new — разделитель профилей */
+.nfq-new {
+    color: #f0883e;
+    font-weight: 700;
+    background: rgba(240, 136, 62, 0.08);
+    padding: 0 4px;
+    border-radius: 3px;
+}
+
+/* Имя файла: *.txt, *.bin, пути */
+.nfq-file {
+    color: #a5d6ff;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+    text-decoration-color: rgba(165, 214, 255, 0.35);
+}
+
+/* Числовые значения */
+.nfq-num {
+    color: #79c0ff;
+}
+
+/* L7-протокол: http, tls, quic, … */
+.nfq-proto {
+    color: #d2a8ff;
+    font-weight: 500;
+}
+
+/* Fooling-метод: md5sig, badseq, badsum, … */
+.nfq-fooling {
+    color: #ffa657;
+    font-weight: 500;
+}
+
+/* Позиция разбиения: 1, midsld, method+2, … */
+.nfq-pos {
+    color: #7ee787;
+    font-weight: 500;
+}
+
+/* Запятая-разделитель */
+.nfq-comma {
+    color: #6e7681;
+}
+
+/* Продолжение строки: ^, \ */
+.nfq-cont {
+    color: #484f58;
+}
+
+/* Контейнер с подсветкой внутри лог-вьювера */
+.log-message .nfq-flag,
+.log-viewer .nfq-flag {
+    color: #79c0ff;
+}
+
+.log-message .nfq-method,
+.log-viewer .nfq-method {
+    color: #ff7b72;
+    font-weight: 600;
+}
+
+.log-message .nfq-subkey,
+.log-viewer .nfq-subkey {
+    color: #7ee787;
+}
+
+.log-message .nfq-subval,
+.log-viewer .nfq-subval,
+.log-message .nfq-subflag,
+.log-viewer .nfq-subflag {
+    color: #ffa657;
+}
+
+/* Стратегии — превью в карточках */
+.strategy-preview-syntax {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.6;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* Profile args preview — в карточке стратегии */
+.strategy-card-args-wrap {
+    margin-bottom: 10px;
+}
+
+.strategy-args-preview {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    padding: 6px 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 4px;
+    margin-top: 4px;
+    overflow-x: auto;
+    white-space: nowrap;
+    max-width: 100%;
+}
+
+.strategy-args-preview::-webkit-scrollbar {
+    height: 3px;
+}
+
+.strategy-args-preview::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+}

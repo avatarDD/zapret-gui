@@ -254,13 +254,18 @@ const DashboardPage = (() => {
             return;
         }
 
-        el.innerHTML = entries.map(e => `
+        el.innerHTML = entries.map(e => {
+            const rawMsg = e.message || '';
+            const msgHtml = NfqwsSyntax.hasNfqwsArgs(rawMsg)
+                ? NfqwsSyntax.highlight(rawMsg)
+                : escapeHtml(rawMsg);
+            return `
             <div class="log-entry">
                 <span class="log-time">${e.time || ''}</span>
                 <span class="log-level" style="color:${e.color || '#9ca3af'}">${e.level || ''}</span>
-                <span class="log-message">${escapeHtml(e.message || '')}</span>
+                <span class="log-message">${msgHtml}</span>
             </div>
-        `).join('');
+        `;}).join('');
 
         // Scroll to bottom
         el.scrollTop = el.scrollHeight;

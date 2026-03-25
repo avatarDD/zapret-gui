@@ -225,6 +225,13 @@ const StrategiesPage = (() => {
                     </button>
                 </div>
                 <div class="strategy-card-profiles">${profileBadges}</div>
+                <div class="strategy-card-args-wrap">
+                    ${(s.profiles || []).filter(p => p.enabled !== false).map(p => {
+                        const args = p.args || '';
+                        if (!args) return '';
+                        return '<div class="strategy-args-preview">' + NfqwsSyntax.highlight(args) + '</div>';
+                    }).join('')}
+                </div>
                 <div class="strategy-card-actions">
                     <button class="btn btn-primary btn-sm" onclick="StrategiesPage.applyStrategy('${s.id}')"${isActive ? ' disabled' : ''}>
                         ${isActive ? '✓ Активна' : 'Применить'}
@@ -342,12 +349,15 @@ const StrategiesPage = (() => {
         try {
             const result = await API.post('/api/strategies/preview', { strategy_id: sid });
             if (result.ok) {
-                cmdEl.textContent = result.command;
+                cmdEl.innerHTML = NfqwsSyntax.highlightCommand(result.command);
+                cmdEl._rawText = result.command;
             } else {
                 cmdEl.textContent = 'Ошибка: ' + (result.error || '?');
+                cmdEl._rawText = cmdEl.textContent;
             }
         } catch (err) {
             cmdEl.textContent = 'Ошибка: ' + err.message;
+            cmdEl._rawText = cmdEl.textContent;
         }
     }
 
@@ -359,7 +369,8 @@ const StrategiesPage = (() => {
     function copyPreview() {
         const cmdEl = document.getElementById('preview-command');
         if (!cmdEl) return;
-        navigator.clipboard.writeText(cmdEl.textContent).then(() => {
+        const text = cmdEl._rawText || cmdEl.textContent;
+        navigator.clipboard.writeText(text).then(() => {
             Toast.success('Команда скопирована');
         }).catch(() => {
             // Fallback
@@ -532,7 +543,7 @@ const StrategiesPage = (() => {
         try {
             const result = await API.post('/api/strategies/preview', { strategy_data: editorData });
             if (result.ok) {
-                output.textContent = result.command;
+                output.innerHTML = NfqwsSyntax.highlightCommand(result.command);
             } else {
                 output.textContent = 'Ошибка: ' + (result.error || '?');
             }

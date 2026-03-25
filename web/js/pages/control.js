@@ -289,13 +289,18 @@ const ControlPage = (() => {
             el.innerHTML = '<div class="text-muted" style="padding:16px;text-align:center;">Нет записей</div>';
             return;
         }
-        el.innerHTML = entries.map(e => `
+        el.innerHTML = entries.map(e => {
+            const rawMsg = e.message || '';
+            const msgHtml = NfqwsSyntax.hasNfqwsArgs(rawMsg)
+                ? NfqwsSyntax.highlight(rawMsg)
+                : escapeHtml(rawMsg);
+            return `
             <div class="log-entry">
                 <span class="log-time">${e.time || ''}</span>
                 <span class="log-level" style="color:${e.color || '#9ca3af'}">${(e.level || '').padEnd(7)}</span>
-                <span class="log-message">${escapeHtml(e.message || '')}</span>
+                <span class="log-message">${msgHtml}</span>
             </div>
-        `).join('');
+        `;}).join('');
         el.scrollTop = el.scrollHeight;
     }
 
