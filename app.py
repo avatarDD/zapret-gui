@@ -96,6 +96,11 @@ def create_app(config_dir: str = None) -> Bottle:
             "GET, POST, PUT, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = \
             "Origin, Content-Type, Accept"
+        # Запрещаем кеширование API-ответов — без этого браузер
+        # может вернуть устаревшие данные после POST/PUT/DELETE
+        if request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
 
     @app.route("/api/<path:path>", method="OPTIONS")
     def options_handler(path):

@@ -1,0 +1,231 @@
+#!/bin/sh
+# S99zapret-gui — init-скрипт веб-сервера Zapret Web-GUI (Entware)
+#
+# Этот скрипт управляет ТОЛЬКО веб-интерфейсом (Python + Bottle).
+# Для управления nfqws2 используется S99zapret (генерируется через GUI).
+#
+# Использование:
+#   /opt/etc/init.d/S99zapret-gui {start|stop|restart|status|check}
+#
+
+ENABLED=yes
+PROCS="zapret-gui"
+DESC="Zapret Web-GUI"
+
+APP_DIR="/opt/share/zapret-gui"
+APP_PY="$APP_DIR/app.py"
+CONFIG_DIR="/opt/etc/zapret-gui"
+PID_FILE="/opt/var/run/zapret-gui.pid"
+LOG_FILE="/tmp/zapret-gui-server.log"
+
+# Параметры сервера (можно переопределить в /opt/etc/zapret-gui/server.conf)
+GUI_HOST="0.0.0.0"
+GUI_PORT="8080"
+
+# Загружаем переопределения если есть
+if [ -f "$CONFIG_DIR/server.conf" ]; then
+    . "$CONFIG_DIR/server.conf"
+fi
+
+# Проверка: включён ли скрипт
+if [ "$ENABLED" != "yes" ]; then
+    echo "$DESC отключён. Установите ENABLED=yes в скрипте."
+    exit 0
+fi
+
+start() {
+    # Проверяем что не запущен
+    if [ -f "$PID_FILE" ]; then
+        OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+            echo "$DESC уже запущен (PID $OLD_PID)"
+            return 0
+        fi
+        # Stale PID file
+        rm -f "$PID_FILE"
+    fi
+
+    # Проверяем наличие python3
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "ОШИБКА: python3 не найден. Установите: opkg install python3-light"
+        return 1
+    fi
+
+    # Проверяем наличие bottle
+    if ! python3 -c "import bottle" 2>/dev/null; then
+        echo "ОШИБКА: python3-bottle не найден. Установите: opkg install python3-bottle"
+        return 1
+    fi
+
+    # Проверяем наличие app.py
+    if [ ! -f "$APP_PY" ]; then
+        echo "ОШИБКА: $APP_PY не найден"
+        return 1
+    fi
+
+    # Создаём директории
+    mkdir -p "$(dirname $PID_FILE)" 2>/dev/null || true
+    mkdir -p /tmp/zapret-gui 2>/dev/null || true
+
+    echo "Запуск $DESC на $GUI_HOST:$GUI_PORT..."
+
+    # Запускаем в фоне
+    cd "$APP_DIR"
+    python3 "$APP_PY" \
+        --host "$GUI_HOST" \
+        --port "$GUI_PORT" \
+        --config "$CONFIG_DIR" \
+        >> "$LOG_FILE" 2>&1 &
+
+    PID=$!
+    echo "$PID" > "$PID_FILE"
+
+    # Ждём немного и проверяем что процесс жив
+    sleep 2
+    if kill -0 "$PID" 2>/dev/null; then
+        echo "$DESC запущен (PID $PID)"
+        echo "  Веб-интерфейс: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):$GUI_PORT"
+        return 0
+    else
+        echo "ОШИБКА: $DESC не удалось запустить. Смотрите $LOG_FILE"
+        rm -f "$PID_FILE"
+        return 1
+    fi
+}
+
+stop() {
+    if [ ! -f "$PID_FILE" ]; then
+        echo "$DESC не запущен"
+        return 0
+    fi
+
+    PID=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -z "$PID" ]; then
+        rm -f "$PID_FILE"
+        echo "$DESC не запущен"
+        return 0
+    fi
+
+    echo "Остановка $DESC (PID $PID)..."
+
+    # SIGTERM с таймаутом
+    kill "$PID" 2>/dev/null
+    TIMEOUT=5
+    while [ $TIMEOUT -gt 0 ]; do
+        if ! kill -0 "$PID" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+        TIMEOUT=$((TIMEOUT - 1))
+    done
+
+    # Если ещё жив — SIGKILL
+    if kill -0 "$PID" 2>/dev/null; then
+        echo "  Принудительная остановка (SIGKILL)..."
+        kill -9 "$PID" 2>/dev/null
+        sleep 1
+    fi
+
+    rm -f "$PID_FILE"
+    echo "$DESC остановлен"
+    return 0
+}
+
+status() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            echo "$DESC запущен (PID $PID)"
+            echo "  Адрес: http://$GUI_HOST:$GUI_PORT"
+            # Показываем использование памяти
+            if [ -f "/proc/$PID/status" ]; then
+                RSS=$(grep VmRSS "/proc/$PID/status" 2>/dev/null | awk '{print $2}')
+                if [ -n "$RSS" ]; then
+                    echo "  Память: ${RSS} kB"
+                fi
+            fi
+            return 0
+        fi
+    fi
+    echo "$DESC не запущен"
+    return 1
+}
+
+check() {
+    # Проверка зависимостей и конфигурации
+    echo "── Проверка $DESC ──"
+    OK=true
+
+    # Python3
+    if command -v python3 >/dev/null 2>&1; then
+        PY_VER=$(python3 --version 2>&1)
+        echo "  ✓ $PY_VER"
+    else
+        echo "  ✗ python3 не найден"
+        OK=false
+    fi
+
+    # Bottle
+    if python3 -c "import bottle; print('  ✓ bottle', bottle.__version__)" 2>/dev/null; then
+        true
+    else
+        echo "  ✗ python3-bottle не установлен"
+        OK=false
+    fi
+
+    # App files
+    if [ -f "$APP_PY" ]; then
+        echo "  ✓ $APP_PY"
+    else
+        echo "  ✗ $APP_PY не найден"
+        OK=false
+    fi
+
+    # Config dir
+    if [ -d "$CONFIG_DIR" ]; then
+        echo "  ✓ $CONFIG_DIR"
+    else
+        echo "  ⚠ $CONFIG_DIR не существует (будет создана при запуске)"
+    fi
+
+    # Port availability
+    if command -v netstat >/dev/null 2>&1; then
+        if netstat -tlnp 2>/dev/null | grep -q ":$GUI_PORT "; then
+            echo "  ⚠ Порт $GUI_PORT уже занят"
+        else
+            echo "  ✓ Порт $GUI_PORT свободен"
+        fi
+    fi
+
+    if $OK; then
+        echo "── Всё в порядке ──"
+    else
+        echo "── Есть проблемы ──"
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 1
+        start
+        ;;
+    status)
+        status
+        ;;
+    check)
+        check
+        ;;
+    *)
+        echo "Использование: $0 {start|stop|restart|status|check}"
+        exit 1
+        ;;
+esac
+
+exit $?

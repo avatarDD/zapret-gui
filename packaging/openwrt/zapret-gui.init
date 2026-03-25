@@ -1,0 +1,63 @@
+#!/bin/sh /etc/rc.common
+# zapret-gui — procd init-скрипт для OpenWrt
+#
+# Управляет веб-интерфейсом Zapret Web-GUI.
+# Для управления nfqws2 используется отдельный init-скрипт.
+#
+# Использование:
+#   /etc/init.d/zapret-gui {start|stop|restart|enable|disable|status}
+#
+
+START=99
+STOP=10
+USE_PROCD=1
+
+APP_DIR="/usr/share/zapret-gui"
+CONFIG_DIR="/etc/zapret-gui"
+PID_FILE="/var/run/zapret-gui.pid"
+
+# Параметры по умолчанию
+GUI_HOST="0.0.0.0"
+GUI_PORT="8080"
+
+# Загружаем переопределения если есть
+[ -f "$CONFIG_DIR/server.conf" ] && . "$CONFIG_DIR/server.conf"
+
+start_service() {
+    # Проверяем наличие python3
+    if ! command -v python3 >/dev/null 2>&1; then
+        logger -t zapret-gui "ERROR: python3 not found"
+        return 1
+    fi
+
+    # Проверяем наличие app.py
+    if [ ! -f "$APP_DIR/app.py" ]; then
+        logger -t zapret-gui "ERROR: $APP_DIR/app.py not found"
+        return 1
+    fi
+
+    # Создаём директории
+    mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+    mkdir -p /tmp/zapret-gui 2>/dev/null || true
+
+    procd_open_instance
+    procd_set_param command python3 "$APP_DIR/app.py" \
+        --host "$GUI_HOST" \
+        --port "$GUI_PORT" \
+        --config "$CONFIG_DIR"
+    procd_set_param respawn 3600 5 5
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param pidfile "$PID_FILE"
+    procd_close_instance
+
+    logger -t zapret-gui "Started on $GUI_HOST:$GUI_PORT"
+}
+
+stop_service() {
+    logger -t zapret-gui "Stopping"
+}
+
+service_triggers() {
+    procd_add_reload_trigger "zapret-gui"
+}

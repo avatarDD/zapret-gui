@@ -1,0 +1,40 @@
+#!/bin/sh
+# postinst — post-install для zapret-gui (OpenWrt)
+
+set -e
+
+APP_DIR="/usr/share/zapret-gui"
+CONFIG_DIR="/etc/zapret-gui"
+
+echo "Zapret Web-GUI — установка (OpenWrt)"
+
+# Создаём директории
+mkdir -p "$CONFIG_DIR" 2>/dev/null || true
+mkdir -p "$APP_DIR/config/strategies/user" 2>/dev/null || true
+mkdir -p "$APP_DIR/init.d" 2>/dev/null || true
+mkdir -p "$APP_DIR/lists" 2>/dev/null || true
+mkdir -p /tmp/zapret-gui 2>/dev/null || true
+
+# Права
+chmod 755 "$APP_DIR/app.py" 2>/dev/null || true
+
+# Включаем автозапуск
+/etc/init.d/zapret-gui enable 2>/dev/null || true
+
+# Проверяем зависимости
+MISSING=""
+command -v python3 >/dev/null 2>&1 || MISSING="$MISSING python3-light"
+python3 -c "import bottle" 2>/dev/null || MISSING="$MISSING python3-bottle"
+
+if [ -n "$MISSING" ]; then
+    echo "  ⚠ Отсутствуют:$MISSING"
+    echo "  Установите: opkg install$MISSING"
+fi
+
+echo ""
+echo "  ✓ Установлено в $APP_DIR"
+echo "  Запуск: /etc/init.d/zapret-gui start"
+echo "  Веб-интерфейс: http://<IP роутера>:8080"
+echo ""
+
+exit 0

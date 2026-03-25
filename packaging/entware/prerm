@@ -1,0 +1,25 @@
+#!/bin/sh
+# prerm — pre-remove скрипт для zapret-gui (Entware)
+
+INITD_SCRIPT="/opt/etc/init.d/S99zapret-gui"
+PID_FILE="/opt/var/run/zapret-gui.pid"
+
+echo "Zapret Web-GUI — удаление..."
+
+# 1. Остановить веб-сервер
+if [ -x "$INITD_SCRIPT" ]; then
+    "$INITD_SCRIPT" stop 2>/dev/null || true
+    echo "  ✓ Веб-сервер остановлен"
+fi
+
+# 2. Очистить PID-файл
+rm -f "$PID_FILE" 2>/dev/null || true
+
+# 3. Очистить кеш Python
+find /opt/share/zapret-gui -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+
+# Примечание: конфигурация в /opt/etc/zapret-gui/ сохраняется
+echo "  ✓ Конфигурация сохранена в /opt/etc/zapret-gui/"
+echo "  ✓ Удаление завершено"
+
+exit 0

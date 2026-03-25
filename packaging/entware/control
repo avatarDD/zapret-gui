@@ -1,0 +1,13 @@
+Package: zapret-gui
+Version: @VERSION@
+Architecture: all
+Maintainer: avatarDD <https://github.com/avatarDD/zapret-gui>
+Description: Web GUI for managing zapret2/nfqws2 DPI bypass tool on Entware routers.
+ Features: strategy management, hostlists, IP lists, blobs,
+ diagnostics, logs (real-time SSE), autostart, /etc/hosts management.
+ Dark theme, mobile-friendly SPA interface.
+Section: net
+Priority: optional
+Depends: python3-light, python3-bottle
+Installed-Size: @SIZE@
+Source: https://github.com/avatarDD/zapret-gui

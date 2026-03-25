@@ -13,6 +13,7 @@ const API = (() => {
         const opts = {
             method,
             headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
         };
 
         if (body !== null && method !== 'GET') {

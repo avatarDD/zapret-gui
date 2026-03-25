@@ -272,10 +272,10 @@ class AutostartManager:
         Скрипт использует текущую стратегию и настройки из конфига.
         """
         from core.config_manager import get_config_manager
-        from core.strategy_builder import get_strategy_builder
+        from core.strategy_builder import get_strategy_manager
 
         cfg = get_config_manager()
-        sb = get_strategy_builder()
+        sb = get_strategy_manager()
 
         strategy_id = cfg.get("strategy", "current_id")
         strategy_name = cfg.get("strategy", "current_name") or "unknown"

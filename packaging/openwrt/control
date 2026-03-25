@@ -1,0 +1,12 @@
+Package: zapret-gui
+Version: @VERSION@
+Architecture: all
+Maintainer: avatarDD <https://github.com/avatarDD/zapret-gui>
+Description: Web GUI for managing zapret2/nfqws2 DPI bypass tool.
+ Dark theme SPA with strategy management, hostlists, diagnostics,
+ real-time logs, autostart and /etc/hosts management.
+Section: net
+Priority: optional
+Depends: python3-light, python3-bottle
+Installed-Size: @SIZE@
+Source: https://github.com/avatarDD/zapret-gui

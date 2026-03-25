@@ -19,7 +19,7 @@ const SettingsPage = (() => {
     let activeSection = 'zapret';
     let systemInfo = null;
 
-    const GUI_VERSION = 'v0.9.2';
+    const GUI_VERSION = 'v0.10.0';
 
     // Определения секций конфигурации
     const SECTIONS = [

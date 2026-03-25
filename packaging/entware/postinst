@@ -1,0 +1,65 @@
+#!/bin/sh
+# postinst — post-install скрипт для zapret-gui (Entware)
+
+set -e
+
+APP_DIR="/opt/share/zapret-gui"
+CONFIG_DIR="/opt/etc/zapret-gui"
+LOG_DIR="/tmp/zapret-gui"
+INITD_SCRIPT="/opt/etc/init.d/S99zapret-gui"
+
+echo "═══════════════════════════════════════════"
+echo "  Zapret Web-GUI — установка"
+echo "═══════════════════════════════════════════"
+
+# 1. Директория конфигурации
+if [ ! -d "$CONFIG_DIR" ]; then
+    mkdir -p "$CONFIG_DIR"
+    echo "  ✓ Создана директория конфигурации: $CONFIG_DIR"
+fi
+
+# 2. Директория для логов (в RAM)
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+# 3. Рабочие директории
+mkdir -p "$APP_DIR/init.d" 2>/dev/null || true
+mkdir -p "$APP_DIR/lists" 2>/dev/null || true
+
+# 4. Директория для user-стратегий
+mkdir -p "$APP_DIR/config/strategies/user" 2>/dev/null || true
+
+# 5. Права на исполнение
+chmod 755 "$APP_DIR/app.py" 2>/dev/null || true
+chmod 755 "$INITD_SCRIPT" 2>/dev/null || true
+
+# 6. Проверяем зависимости
+MISSING=""
+if ! command -v python3 >/dev/null 2>&1; then
+    MISSING="$MISSING python3-light"
+fi
+if ! python3 -c "import bottle" 2>/dev/null; then
+    MISSING="$MISSING python3-bottle"
+fi
+
+if [ -n "$MISSING" ]; then
+    echo ""
+    echo "  ⚠ Отсутствуют зависимости:$MISSING"
+    echo "  Установите: opkg install$MISSING"
+    echo ""
+fi
+
+echo ""
+echo "  ✓ Zapret Web-GUI установлен в $APP_DIR"
+echo ""
+echo "  Управление:"
+echo "    $INITD_SCRIPT start    — запуск"
+echo "    $INITD_SCRIPT stop     — остановка"
+echo "    $INITD_SCRIPT restart  — перезапуск"
+echo ""
+echo "  Веб-интерфейс: http://<IP роутера>:8080"
+echo ""
+echo "  Для автозапуска при загрузке роутера"
+echo "  init-скрипт уже установлен в $INITD_SCRIPT"
+echo "═══════════════════════════════════════════"
+
+exit 0

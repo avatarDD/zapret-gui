@@ -1,0 +1,16 @@
+#!/bin/sh
+# prerm — pre-remove для zapret-gui (OpenWrt)
+
+echo "Zapret Web-GUI — удаление..."
+
+# Остановить и отключить
+/etc/init.d/zapret-gui stop 2>/dev/null || true
+/etc/init.d/zapret-gui disable 2>/dev/null || true
+
+# Очистить кеш Python
+find /usr/share/zapret-gui -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+
+echo "  ✓ Конфигурация сохранена в /etc/zapret-gui/"
+echo "  ✓ Удаление завершено"
+
+exit 0

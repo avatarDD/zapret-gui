@@ -63,6 +63,9 @@ class BlobManager:
         cfg = get_config_manager()
         base_path = cfg.get("zapret", "base_path", default="/opt/zapret2")
         self.blobs_dir = os.path.join(base_path, "blobs")
+        # Директория files/fake/ содержит системные .bin-файлы блобов zapret2
+        # (tls_clienthello_*.bin, quic_initial_*.bin и т.д.)
+        self.system_blobs_dir = os.path.join(base_path, "files", "fake")
         self._lock = threading.Lock()
         self._ensure_dir()
         log.info(f"BlobManager инициализирован: {self.blobs_dir}", source="blobs")
@@ -104,8 +107,15 @@ class BlobManager:
         return name.startswith(BUILTIN_PREFIX)
 
     def _blob_path(self, name):
-        """Полный путь к файлу блоба."""
-        return os.path.join(self.blobs_dir, name)
+        """Полный путь к файлу блоба (ищет в blobs/, затем в files/fake/)."""
+        path = os.path.join(self.blobs_dir, name)
+        if os.path.isfile(path):
+            return path
+        # Ищем в files/fake/ (системные .bin-файлы zapret2)
+        sys_path = os.path.join(self.system_blobs_dir, name)
+        if os.path.isfile(sys_path):
+            return sys_path
+        return path  # Возвращаем путь в blobs/ по умолчанию (для создания)
 
     def _detect_type(self, name, data=None):
         """
@@ -146,20 +156,47 @@ class BlobManager:
     def get_blobs(self):
         """
         Список всех блобов.
+        Сканирует {base_path}/blobs/ и {base_path}/nfq2/ (для .bin файлов).
         Возвращает list[dict] с полями:
             name, size, type, is_builtin, path
         """
         self._ensure_dir()
         result = []
+        seen_names = set()
+
+        # 1) Сканируем основную директорию блобов
+        self._scan_dir(self.blobs_dir, result, seen_names, force_builtin=False)
+
+        # 2) Сканируем files/fake/ — системные .bin файлы zapret2
+        #    (tls_clienthello_*.bin, quic_initial_*.bin и т.д.)
+        self._scan_dir(self.system_blobs_dir, result, seen_names,
+                       force_builtin=True, extension_filter=".bin")
+
+        return result
+
+    def _scan_dir(self, dir_path, result, seen_names,
+                  force_builtin=False, extension_filter=None):
+        """
+        Сканировать директорию и добавить найденные блобы в result.
+
+        Args:
+            dir_path: Путь к директории.
+            result: Список для добавления блобов.
+            seen_names: Множество уже добавленных имён (для дедупликации).
+            force_builtin: Принудительно помечать как builtin.
+            extension_filter: Если задан, включать только файлы с этим расширением.
+        """
+        if not os.path.isdir(dir_path):
+            return
 
         try:
-            entries = sorted(os.listdir(self.blobs_dir))
+            entries = sorted(os.listdir(dir_path))
         except OSError as e:
-            log.error(f"Ошибка чтения директории блобов: {e}", source="blobs")
-            return result
+            log.error(f"Ошибка чтения директории {dir_path}: {e}", source="blobs")
+            return
 
         for entry in entries:
-            full_path = os.path.join(self.blobs_dir, entry)
+            full_path = os.path.join(dir_path, entry)
 
             # Только файлы
             if not os.path.isfile(full_path):
@@ -168,6 +205,15 @@ class BlobManager:
             # Пропускаем скрытые и служебные
             if entry.startswith("."):
                 continue
+
+            # Фильтр по расширению (для nfq2/ — только .bin)
+            if extension_filter and not entry.lower().endswith(extension_filter):
+                continue
+
+            # Дедупликация по имени (blobs/ имеет приоритет)
+            if entry in seen_names:
+                continue
+            seen_names.add(entry)
 
             try:
                 size = os.path.getsize(full_path)
@@ -182,15 +228,15 @@ class BlobManager:
             except OSError:
                 pass
 
+            is_builtin = force_builtin or self.is_builtin(entry)
+
             result.append({
                 "name": entry,
                 "size": size,
                 "type": self._detect_type(entry, data_head),
-                "is_builtin": self.is_builtin(entry),
+                "is_builtin": is_builtin,
                 "path": full_path,
             })
-
-        return result
 
     def get_blob(self, name):
         """
@@ -212,11 +258,17 @@ class BlobManager:
         except OSError:
             return None
 
+        # Блоб считается builtin если имеет префикс fake_default_
+        # или расположен в nfq2/ (системные .bin файлы)
+        is_builtin = self.is_builtin(name)
+        if not is_builtin and self.system_blobs_dir and full_path.startswith(self.system_blobs_dir):
+            is_builtin = True
+
         return {
             "name": name,
             "size": size,
             "type": self._detect_type(name, data_head),
-            "is_builtin": self.is_builtin(name),
+            "is_builtin": is_builtin,
             "path": full_path,
         }
 
