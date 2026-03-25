@@ -420,6 +420,7 @@ const StrategiesPage = (() => {
         modal.style.display = 'flex';
 
         renderEditorForm(body);
+        attachAutocompleteToProfiles();
     }
 
     function renderEditorForm(container) {
@@ -490,7 +491,10 @@ const StrategiesPage = (() => {
                         </svg>
                     </button>
                 </div>
-                <textarea class="form-textarea profile-args" rows="3" placeholder="--filter-tcp=443 --filter-l7=tls ..." onchange="StrategiesPage.updateProfileArgs(${index}, this.value)">${escapeHtml(profile.args || '')}</textarea>
+                <div class="profile-args-wrap">
+                    <textarea class="form-textarea profile-args" rows="3" placeholder="--filter-tcp=443 --filter-l7=tls ..." onchange="StrategiesPage.updateProfileArgs(${index}, this.value)">${escapeHtml(profile.args || '')}</textarea>
+                    <span class="profile-args-hint">Ctrl+Space</span>
+                </div>
             </div>
         `;
     }
@@ -505,6 +509,7 @@ const StrategiesPage = (() => {
         });
         const el = document.getElementById('profiles-editor');
         if (el) el.innerHTML = editorData.profiles.map((p, i) => renderProfileEditor(p, i)).join('');
+        attachAutocompleteToProfiles();
     }
 
     function removeProfile(index) {
@@ -516,6 +521,7 @@ const StrategiesPage = (() => {
         editorData.profiles.splice(index, 1);
         const el = document.getElementById('profiles-editor');
         if (el) el.innerHTML = editorData.profiles.map((p, i) => renderProfileEditor(p, i)).join('');
+        attachAutocompleteToProfiles();
     }
 
     function toggleProfile(index, enabled) {
@@ -611,7 +617,20 @@ const StrategiesPage = (() => {
         }
     }
 
+    function attachAutocompleteToProfiles() {
+        // Detach old instances first
+        NfqwsAutocomplete.detachAll();
+        // Pre-load file lists for suggestions
+        NfqwsAutocomplete.loadFiles();
+        // Attach to all profile textareas (async to ensure DOM is ready)
+        setTimeout(() => {
+            const textareas = document.querySelectorAll('.profile-args');
+            textareas.forEach(ta => NfqwsAutocomplete.attach(ta));
+        }, 0);
+    }
+
     function closeModal() {
+        NfqwsAutocomplete.detachAll();
         const modal = document.getElementById('strategy-modal');
         if (modal) modal.style.display = 'none';
         editorData = null;
@@ -626,6 +645,7 @@ const StrategiesPage = (() => {
     }
 
     function destroy() {
+        NfqwsAutocomplete.detachAll();
         if (pollTimer) {
             clearInterval(pollTimer);
             pollTimer = null;
@@ -657,3 +677,5 @@ const StrategiesPage = (() => {
         saveEditor,
     };
 })();
+
+

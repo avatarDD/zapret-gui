@@ -34,3 +34,5 @@ def register_routes(app):
     reg_diagnostics(app)
     reg_autostart(app)
     reg_zapret_manager(app)
+
+

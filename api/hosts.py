@@ -340,3 +340,5 @@ def register(app):
         else:
             response.status = 400
             return {"ok": False, "error": "Ошибка восстановления из бэкапа"}
+
+

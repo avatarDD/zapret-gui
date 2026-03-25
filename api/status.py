@@ -54,3 +54,5 @@ def register(app):
         """Health check."""
         response.content_type = "application/json; charset=utf-8"
         return {"ok": True, "timestamp": time.time()}
+
+

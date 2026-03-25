@@ -538,3 +538,5 @@ def get_autostart_manager() -> AutostartManager:
             if _instance is None:
                 _instance = AutostartManager()
     return _instance
+
+
