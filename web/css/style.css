@@ -2769,3 +2769,575 @@ input:focus, textarea:focus, select:focus {
     font-weight: 600;
 }
 .btn-warning:hover { opacity: 0.9; }
+
+
+/* ═══════════════════════════════════════════
+   Settings Page — Фаза 9
+   ═══════════════════════════════════════════ */
+
+.settings-header-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.settings-layout {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 16px;
+    align-items: start;
+}
+
+/* ── Section Navigation ── */
+
+.settings-nav {
+    padding: 8px !important;
+    position: sticky;
+    top: 16px;
+}
+
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-secondary);
+    transition: all var(--transition);
+    user-select: none;
+}
+
+.settings-nav-item:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+    background: rgba(99, 102, 241, 0.1);
+    color: var(--accent);
+}
+
+.settings-nav-icon {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.settings-nav-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.settings-nav-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Section Content ── */
+
+.settings-section-card {
+    min-height: 200px;
+}
+
+.settings-section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+.settings-section-icon {
+    display: flex;
+    color: var(--accent);
+}
+
+.settings-section-icon svg {
+    width: 18px;
+    height: 18px;
+}
+
+.settings-section-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-heading);
+    margin: 0;
+}
+
+.settings-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 48px 20px;
+    color: var(--text-muted);
+}
+
+/* ── Form Fields ── */
+
+.settings-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.settings-field {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    align-items: center;
+    gap: 12px;
+}
+
+.settings-field-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.settings-field-input {
+    display: flex;
+    align-items: center;
+}
+
+.settings-field-input .form-input {
+    width: 100%;
+    max-width: 360px;
+}
+
+.settings-field-input .form-select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238b8fa3' viewBox='0 0 24 24'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+    cursor: pointer;
+}
+
+/* ── Toggle Switch ── */
+
+.settings-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.settings-toggle input[type="checkbox"] {
+    display: none;
+}
+
+.settings-toggle-slider {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    transition: all 0.25s ease;
+    flex-shrink: 0;
+}
+
+.settings-toggle-slider::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: var(--text-muted);
+    border-radius: 50%;
+    transition: all 0.25s ease;
+}
+
+.settings-toggle input:checked + .settings-toggle-slider {
+    background: rgba(99, 102, 241, 0.2);
+    border-color: var(--accent);
+}
+
+.settings-toggle input:checked + .settings-toggle-slider::after {
+    left: 20px;
+    background: var(--accent);
+}
+
+.settings-toggle-label {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* ── Save Bar ── */
+
+.settings-save-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-lg);
+    animation: settings-save-appear 0.2s ease;
+}
+
+@keyframes settings-save-appear {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.settings-save-text {
+    font-size: 13px;
+    color: var(--warning);
+    font-weight: 500;
+}
+
+.settings-save-btns {
+    display: flex;
+    gap: 8px;
+}
+
+/* ── Actions Card ── */
+
+.settings-actions-card {
+    border: 1px solid var(--border);
+}
+
+.settings-actions-row {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.settings-action-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.settings-action-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.settings-action-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.settings-action-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+/* ── About Card ── */
+
+.settings-about-card {
+    border: 1px solid var(--border);
+}
+
+.settings-about-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+.settings-about-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-heading);
+}
+
+.settings-about-version {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.settings-about-info {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.settings-info-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    font-size: 13px;
+}
+
+.settings-info-label {
+    color: var(--text-secondary);
+}
+
+.settings-info-value {
+    color: var(--text-primary);
+    font-weight: 500;
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 12px;
+}
+
+.settings-about-links {
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 16px;
+}
+
+.settings-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--accent);
+    text-decoration: none;
+    transition: opacity var(--transition);
+}
+
+.settings-link:hover { opacity: 0.8; }
+
+/* ═══════════════════════════════════════════
+   Adaptive Design Polish — Фаза 9.3
+   ═══════════════════════════════════════════ */
+
+/* ── Глобальные улучшения для touch ── */
+
+@media (pointer: coarse) {
+    /* Увеличиваем зоны нажатия для touch-устройств */
+    .btn { min-height: 40px; }
+    .btn-sm { min-height: 36px; padding: 7px 12px; }
+    .form-input { min-height: 42px; font-size: 16px; } /* 16px = нет zoom на iOS */
+    .nav-item { min-height: 44px; }
+    .settings-nav-item { min-height: 42px; padding: 10px 12px; }
+    .settings-toggle-slider { width: 46px; height: 26px; border-radius: 13px; }
+    .settings-toggle-slider::after { width: 20px; height: 20px; }
+    .settings-toggle input:checked + .settings-toggle-slider::after { left: 22px; }
+    .logs-level-btn { min-height: 36px; padding: 6px 12px; }
+}
+
+/* ── Settings: планшет ── */
+
+@media (max-width: 960px) {
+    .settings-layout {
+        grid-template-columns: 180px 1fr;
+        gap: 12px;
+    }
+
+    .settings-field {
+        grid-template-columns: 160px 1fr;
+    }
+}
+
+/* ── Общее: 768px (мобильный) ── */
+
+@media (max-width: 768px) {
+    /* Settings: навигация наверх */
+    .settings-layout {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .settings-nav {
+        position: static;
+        display: flex;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        gap: 4px;
+        padding: 6px !important;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .settings-nav::-webkit-scrollbar { display: none; }
+
+    .settings-nav-item {
+        flex-shrink: 0;
+        padding: 7px 12px;
+        font-size: 12px;
+        white-space: nowrap;
+    }
+
+    .settings-nav-label { display: inline; }
+
+    /* Settings: поля в колонку */
+    .settings-field {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .settings-field-input .form-input {
+        max-width: 100%;
+    }
+
+    .settings-save-bar {
+        flex-direction: column;
+        text-align: center;
+        gap: 10px;
+    }
+
+    .settings-action-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .settings-action-item .btn {
+        width: 100%;
+    }
+
+    /* Header: actions wrap */
+    .settings-header-actions {
+        flex-wrap: wrap;
+    }
+
+    .page-header {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    /* Стратегии: компактнее */
+    .strategy-card-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .strategy-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    /* Диагностика: компактнее */
+    .diag-card-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    /* Hosts: компактнее */
+    .hosts-entry-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+    }
+
+    /* Улучшенный скролл для таблиц */
+    .table-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    /* Desktop-only label скрытие */
+    .btn-label-desktop {
+        display: none;
+    }
+
+    /* Toast: полная ширина */
+    .toast-container {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        max-width: none;
+    }
+
+    .toast {
+        width: 100%;
+    }
+}
+
+/* ── Узкие мобильные: 480px ── */
+
+@media (max-width: 480px) {
+    .page-container {
+        padding: 12px;
+    }
+
+    .card {
+        padding: 14px;
+    }
+
+    .page-title {
+        font-size: 16px;
+    }
+
+    .page-description {
+        font-size: 12px;
+    }
+
+    /* Sidebar footer версия */
+    .sidebar-version {
+        font-size: 10px;
+    }
+
+    /* Settings about */
+    .settings-info-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+    }
+
+    /* Settings nav: иконки only */
+    .settings-nav-item {
+        padding: 8px 10px;
+    }
+
+    .settings-section-header {
+        margin-bottom: 14px;
+        padding-bottom: 10px;
+    }
+
+    .settings-save-btns {
+        width: 100%;
+        flex-direction: column;
+    }
+
+    .settings-save-btns .btn {
+        width: 100%;
+    }
+
+    /* Logs compact */
+    .logs-toolbar {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .logs-toolbar-left,
+    .logs-toolbar-right {
+        width: 100%;
+    }
+
+    .logs-toolbar-right {
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
+    /* Blobs compact */
+    .blobs-editor-card {
+        padding: 12px;
+    }
+
+    /* IPsets compact */
+    .ipsets-asn-row {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .ipsets-asn-row .form-input,
+    .ipsets-asn-row .form-select,
+    .ipsets-asn-row .btn {
+        width: 100%;
+    }
+}

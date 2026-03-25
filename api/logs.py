@@ -55,6 +55,9 @@ def register(app):
         Фронтенд подключается через EventSource:
             const es = new EventSource('/api/logs/stream');
             es.onmessage = (e) => { const entry = JSON.parse(e.data); ... };
+
+        Требует многопоточный сервер (ThreadedWSGIServer в app.py),
+        иначе блокирует все остальные запросы.
         """
         response.content_type = "text/event-stream"
         response.set_header("Cache-Control", "no-cache")
@@ -85,7 +88,8 @@ def register(app):
                 except queue.Empty:
                     # Heartbeat чтобы соединение не закрылось
                     yield ": heartbeat\n\n"
-        except GeneratorExit:
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError, OSError):
+            # Клиент отключился — нормальная ситуация для SSE
             pass
         finally:
             buf.remove_listener(on_entry)

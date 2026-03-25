@@ -8,19 +8,18 @@
 const App = (() => {
     // Реестр страниц: id → { render(container), destroy?() }
     const pages = {
-        dashboard:  DashboardPage,
-        control:    ControlPage,
-        strategies: StrategiesPage,
-        hostlists:  HostlistsPage,
-        ipsets:     IPSetsPage,
-        blobs:      BlobsPage,
-        hosts:      HostsPage,
+        dashboard:   DashboardPage,
+        control:     ControlPage,
+        strategies:  StrategiesPage,
+        hostlists:   HostlistsPage,
+        ipsets:      IPSetsPage,
+        blobs:       BlobsPage,
+        hosts:       HostsPage,
         diagnostics: DiagnosticsPage,
-        logs:       LogsPage,
-        autostart:  AutostartPage,
-        zapret:     ZapretManagerPage,
-        // Заглушки для будущих страниц:
-        settings: { render: (c) => renderPlaceholder(c, 'Настройки', 'Будет реализовано в Фазе 9') },
+        logs:        LogsPage,
+        autostart:   AutostartPage,
+        zapret:      ZapretManagerPage,
+        settings:    SettingsPage,
     };
 
     let currentPage = null;
@@ -70,29 +69,6 @@ const App = (() => {
             container.innerHTML = '';
             currentPage.render(container);
         }
-    }
-
-    function renderPlaceholder(container, title, description) {
-        container.innerHTML = `
-            <div class="page-header">
-                <h1 class="page-title">${title}</h1>
-                <p class="page-description">${description}</p>
-            </div>
-            <div class="card" style="text-align: center; padding: 48px 20px;">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
-                     width="48" height="48" style="color: var(--text-muted); margin-bottom: 16px;">
-                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-                    <path d="M2 17l10 5 10-5"/>
-                    <path d="M2 12l10 5 10-5"/>
-                </svg>
-                <div style="color: var(--text-secondary); font-size: 15px; font-weight: 500; margin-bottom: 8px;">
-                    В разработке
-                </div>
-                <div style="color: var(--text-muted); font-size: 13px;">
-                    ${description}
-                </div>
-            </div>
-        `;
     }
 
     // Запуск при загрузке DOM

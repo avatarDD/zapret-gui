@@ -19,11 +19,52 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 
 # Bottle — микрофреймворк (один файл, 0 зависимостей)
 try:
-    from bottle import Bottle, static_file, response, request, default_app
+    from bottle import Bottle, static_file, response, request, ServerAdapter
 except ImportError:
     print("ОШИБКА: Bottle не найден. Установите: pip3 install bottle")
     print("  или: opkg install python3-bottle")
     sys.exit(1)
+
+
+# ── Threaded WSGI-сервер ──────────────────────────────────────────
+#
+# Стандартный wsgiref.simple_server — ОДНОПОТОЧНЫЙ.
+# SSE-эндпоинт (/api/logs/stream) держит соединение бесконечно
+# и полностью блокирует все остальные запросы.
+#
+# Решение: ThreadingMixIn — каждое входящее соединение
+# обрабатывается в отдельном daemon-потоке.
+# Это стандартная библиотека Python, 0 зависимостей.
+
+class ThreadedWSGIServer(ServerAdapter):
+    """
+    Многопоточный WSGI-сервер на базе wsgiref (stdlib).
+    Каждое входящее соединение обрабатывается в отдельном потоке,
+    что позволяет SSE работать параллельно с API и статикой.
+    """
+
+    def run(self, handler):
+        from wsgiref.simple_server import WSGIServer, WSGIRequestHandler, make_server
+        import socketserver
+
+        # Тихий request handler (подавляем логи каждого запроса)
+        class QuietHandler(WSGIRequestHandler):
+            def log_request(self, *args, **kwargs):
+                pass  # Bottle сам логирует в debug-режиме
+
+        # Добавляем ThreadingMixIn к WSGIServer
+        class _ThreadingWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        handler_cls = QuietHandler if self.quiet else WSGIRequestHandler
+
+        srv = make_server(
+            self.host, self.port, handler,
+            server_class=_ThreadingWSGIServer,
+            handler_class=handler_cls,
+        )
+        srv.serve_forever()
 
 
 def create_app(config_dir: str = None) -> Bottle:
@@ -139,12 +180,19 @@ def main():
     debug = args.debug or cfg.get("gui", "debug", default=False)
 
     log.info(f"Сервер: http://{host}:{port}", source="app")
+    log.info("Режим: многопоточный (ThreadedWSGI)", source="app")
     if debug:
         log.warning("Режим отладки включён", source="app")
 
-    # Запуск
+    # Запуск — используем ThreadedWSGIServer для поддержки SSE
     try:
-        app.run(host=host, port=port, debug=debug, quiet=not debug)
+        app.run(
+            host=host,
+            port=port,
+            debug=debug,
+            quiet=not debug,
+            server=ThreadedWSGIServer,
+        )
     except KeyboardInterrupt:
         log.info("Сервер остановлен (Ctrl+C)", source="app")
     except Exception as e:
