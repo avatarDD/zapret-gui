@@ -20,7 +20,7 @@ const SettingsPage = (() => {
     let activeSection = 'zapret';
     let systemInfo = null;
 
-    const GUI_VERSION = 'v0.13.2';
+    const GUI_VERSION = 'v0.13.3';
 
     // Список системных интерфейсов (загружается с сервера)
     let _allInterfaces = [];

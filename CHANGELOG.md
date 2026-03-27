@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.13.3 — Привязка firewall к WAN-интерфейсам
+
+### Исправлено
+- **Firewall не привязывался к WAN-интерфейсам** — правила iptables/nftables применялись без `-o $IFACE_WAN`, перехватывая трафик на всех интерфейсах. Теперь `firewall.py` читает `interfaces.wan` и `interfaces.wan6` из конфига и создаёт правила с привязкой к конкретным интерфейсам (как в zapret2 `_fw_nfqws_post4`/`_fw_nfqws_post6`)
+
+### Добавлено
+- **Раздельные IPv4/IPv6 правила** — iptables для IPv4, ip6tables для IPv6. IPv6 отключается через `nfqws.disable_ipv6`
+- **Авто-определение WAN при старте firewall** — если `interfaces.wan` пуст, определяется по `/proc/net/route` (fallback на `ip route`)
+- **Fallback WAN6 → WAN** — если `interfaces.wan6` не задан и не определён, используется значение WAN (как `IFACE_WAN6` в zapret2)
+- **Множественные WAN-интерфейсы** — для каждого интерфейса создаётся отдельное правило в iptables (`-o eth0`, `-o eth1`); в nftables используется `oifname { "eth0", "eth1" }`
+- **Очистка ip6tables** — при снятии правил теперь удаляются и правила ip6tables
+
+### Изменено
+- `_apply_iptables()` принимает `wan4_ifaces` и `wan6_ifaces`
+- `_apply_nftables()` добавляет `oifname` фильтр
+- Логирование при старте показывает привязанные интерфейсы
+- Унифицирована версия GUI (`v0.13.3` во всех модулях)
+
+---
+
 ## v0.13.2 — Исправление интерфейсов
 
 ### Исправлено

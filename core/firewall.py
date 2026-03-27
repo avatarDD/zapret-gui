@@ -3,7 +3,10 @@
 Менеджер правил Firewall для перенаправления трафика в NFQUEUE.
 
 Поддерживает iptables (Keenetic, старые OpenWrt) и nftables (OpenWrt 22+).
-Правила адаптированы из zapret2 common/ipt.sh / common/nft.sh.
+Правила адаптированы из zapret2 common/ipt.sh / common/nft.sh:
+  - POSTROUTING -o $IFACE_WAN для исходящего трафика
+  - Раздельные правила IPv4 (iptables) и IPv6 (ip6tables)
+  - Поддержка нескольких WAN-интерфейсов через пробел
 
 Использование:
     from core.firewall import get_firewall_manager
@@ -14,6 +17,7 @@
 """
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -21,49 +25,92 @@ import threading
 from core.log_buffer import log
 
 
-# Имя цепочки/таблицы для nftables
+# Имя таблицы nftables
 NFT_TABLE = "zapret_gui"
 
-# Комментарий-маркер для iptables правил (для поиска и удаления)
+# Маркер комментария iptables для поиска и удаления
 IPT_COMMENT = "zapret-gui"
+
+
+def _detect_wan_from_routes():
+    """
+    Определить WAN-интерфейс по default route.
+    Аналог логики zapret2: sed /proc/net/route | grep dest 00000000.
+    """
+    ifaces = set()
+    try:
+        with open("/proc/net/route", "r") as f:
+            for line in f.readlines()[1:]:
+                parts = line.strip().split("\t")
+                if (len(parts) >= 8
+                        and parts[1] == "00000000"
+                        and parts[7] == "00000000"):
+                    ifaces.add(parts[0])
+    except (IOError, OSError):
+        pass
+
+    if not ifaces:
+        try:
+            r = subprocess.run(
+                ["ip", "route", "show", "default"],
+                capture_output=True, text=True, timeout=5
+            )
+            if r.returncode == 0:
+                for line in r.stdout.split("\n"):
+                    m = re.search(r"dev\s+(\S+)", line)
+                    if m:
+                        ifaces.add(m.group(1))
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+    return sorted(ifaces)
+
+
+def _detect_wan6_from_routes():
+    """Определить WAN6-интерфейс по IPv6 default route."""
+    ifaces = set()
+    try:
+        r = subprocess.run(
+            ["ip", "-6", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5
+        )
+        if r.returncode == 0:
+            for line in r.stdout.split("\n"):
+                m = re.search(r"dev\s+(\S+)", line)
+                if m:
+                    ifaces.add(m.group(1))
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return sorted(ifaces)
 
 
 class FirewallManager:
     """
     Управление правилами firewall для NFQUEUE.
 
-    Автоопределяет тип (iptables / nftables), применяет и снимает правила.
+    Автоопределяет тип (iptables/nftables), получает WAN-интерфейсы
+    из конфига (с fallback на auto-detect) и применяет/снимает правила.
     """
 
     def __init__(self):
         self._lock = threading.Lock()
         self._applied = False
         self._fw_type = None          # "iptables" | "nftables" | None
-        self._rules_info = []         # Список применённых правил (для UI)
+        self._rules_info = []         # Для UI
 
     # ─────────────────────────── public API ───────────────────────────
 
     def detect_fw_type(self) -> str:
-        """
-        Определить тип firewall.
-
-        Returns:
-            "iptables" | "nftables" | None
-        """
+        """Определить тип firewall: iptables / nftables / None."""
         if self._fw_type:
             return self._fw_type
 
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
-
         fw_cfg = cfg.get("firewall", "type", default="auto")
 
-        if fw_cfg == "iptables":
-            self._fw_type = "iptables"
-        elif fw_cfg == "nftables":
-            self._fw_type = "nftables"
-        elif fw_cfg == "auto":
-            self._fw_type = self._auto_detect()
+        if fw_cfg in ("iptables", "nftables"):
+            self._fw_type = fw_cfg
         else:
             self._fw_type = self._auto_detect()
 
@@ -71,19 +118,14 @@ class FirewallManager:
                  source="firewall")
         return self._fw_type
 
-    def apply_rules(self, queue_num: int = None, ports_tcp: str = None,
-                    ports_udp: str = None, mark: str = None) -> bool:
+    def apply_rules(self, queue_num=None, ports_tcp=None,
+                    ports_udp=None, mark=None) -> bool:
         """
-        Применить правила NFQUEUE.
+        Применить правила NFQUEUE с привязкой к WAN-интерфейсам.
 
-        Args:
-            queue_num: Номер очереди NFQUEUE (default из конфига).
-            ports_tcp:  TCP порты, через запятую (default из конфига).
-            ports_udp:  UDP порты, через запятую (default из конфига).
-            mark:       Метка fwmark для обхода зацикливания.
-
-        Returns:
-            True если правила применены.
+        Параметры берутся из аргументов или конфига.
+        WAN-интерфейсы берутся из config.interfaces.wan/wan6
+        с fallback на авто-определение по таблице маршрутов.
         """
         with self._lock:
             from core.config_manager import get_config_manager
@@ -94,40 +136,47 @@ class FirewallManager:
             udp = ports_udp or cfg.get("nfqws", "ports_udp", default="443")
             fwmark = mark or cfg.get("nfqws", "desync_mark",
                                      default="0x40000000")
-
-            # Параметры connbytes из конфига
             tcp_pkt = int(cfg.get("nfqws", "tcp_pkt_out", default=20))
             udp_pkt = int(cfg.get("nfqws", "udp_pkt_out", default=5))
+            disable_ipv6 = cfg.get("nfqws", "disable_ipv6", default=True)
 
-            # Определяем тип FW
+            # WAN-интерфейсы из конфига или auto-detect
+            wan4 = self._get_wan_interfaces(cfg, "wan")
+            wan6 = None if disable_ipv6 else self._get_wan_interfaces(cfg, "wan6")
+
+            # Fallback: wan6 = wan4 (как в zapret2: IFACE_WAN6 = IFACE_WAN)
+            if wan6 is not None and not wan6:
+                wan6 = wan4
+
             fw_type = self.detect_fw_type()
             if not fw_type:
-                log.error("Тип firewall не определён — невозможно "
-                          "применить правила", source="firewall")
+                log.error("Тип firewall не определён", source="firewall")
                 return False
 
-            # Сначала снимаем старые правила (если есть)
+            # Снимаем старые правила
             self._remove_rules_locked(fw_type)
 
-            log.info("Применяем правила firewall (%s)..." % fw_type,
+            wan_info = ", ".join(wan4) if wan4 else "все"
+            log.info("Применяем правила %s (WAN: %s)..." % (fw_type, wan_info),
                      source="firewall")
 
             try:
                 if fw_type == "iptables":
                     ok = self._apply_iptables(
-                        qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt
+                        qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,
+                        wan4, wan6
                     )
                 else:
                     ok = self._apply_nftables(
-                        qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt
+                        qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,
+                        wan4, wan6
                     )
 
                 if ok:
                     self._applied = True
                     log.success("Правила firewall применены", source="firewall")
                 else:
-                    log.error("Ошибка при применении правил firewall",
-                              source="firewall")
+                    log.error("Ошибка при применении правил", source="firewall")
                 return ok
 
             except Exception as e:
@@ -136,12 +185,7 @@ class FirewallManager:
                 return False
 
     def remove_rules(self) -> bool:
-        """
-        Снять все правила NFQUEUE, установленные GUI.
-
-        Returns:
-            True если правила сняты.
-        """
+        """Снять все правила NFQUEUE, установленные GUI."""
         with self._lock:
             fw_type = self.detect_fw_type()
             if not fw_type:
@@ -149,16 +193,10 @@ class FirewallManager:
             return self._remove_rules_locked(fw_type)
 
     def get_rules(self) -> list:
-        """
-        Получить текущие NFQUEUE-правила из системы.
-
-        Returns:
-            Список строк с правилами.
-        """
+        """Получить текущие NFQUEUE-правила из системы."""
         fw_type = self.detect_fw_type()
         if not fw_type:
             return []
-
         try:
             if fw_type == "iptables":
                 return self._get_iptables_rules()
@@ -171,7 +209,6 @@ class FirewallManager:
 
     def is_applied(self) -> bool:
         """Применены ли правила GUI."""
-        # Перепроверяем реальное состояние
         rules = self.get_rules()
         has_rules = any(IPT_COMMENT in r or NFT_TABLE in r for r in rules)
         self._applied = has_rules
@@ -190,11 +227,42 @@ class FirewallManager:
             "rules_count": len(rules),
         }
 
-    # ──────────────── auto-detect ────────────────
+    # ──────────────── WAN interfaces ────────────────
 
-    def _auto_detect(self) -> str:
+    @staticmethod
+    def _get_wan_interfaces(cfg, role):
+        """
+        Получить список WAN-интерфейсов из конфига или авто-определить.
+
+        Args:
+            cfg:  ConfigManager
+            role: "wan" или "wan6"
+
+        Returns:
+            list[str] — имена интерфейсов (пустой = все интерфейсы)
+        """
+        val = cfg.get("interfaces", role, default="")
+        if isinstance(val, str):
+            val = val.strip()
+
+        if val:
+            return val.split()
+
+        # Auto-detect
+        if role == "wan6":
+            detected = _detect_wan6_from_routes()
+            if detected:
+                return detected
+            # Fallback wan6 → wan будет в apply_rules
+            return []
+        else:
+            return _detect_wan_from_routes()
+
+    # ──────────────── auto-detect fw type ────────────────
+
+    @staticmethod
+    def _auto_detect() -> str:
         """Автоопределение: iptables vs nftables."""
-        # Проверяем наличие команд
         has_ipt = shutil.which("iptables") is not None
         has_nft = shutil.which("nft") is not None
 
@@ -202,8 +270,7 @@ class FirewallManager:
             return "iptables"
         if has_nft and not has_ipt:
             return "nftables"
-
-        # Обе есть — предпочитаем iptables (совместимость с Keenetic)
+        # Обе — предпочитаем iptables (совместимость с Keenetic/Entware)
         if has_ipt:
             return "iptables"
         if has_nft:
@@ -215,91 +282,147 @@ class FirewallManager:
     # ──────────────── iptables implementation ────────────────
 
     def _apply_iptables(self, qnum, ports_tcp, ports_udp,
-                        fwmark, tcp_pkt, udp_pkt) -> bool:
-        """Применить правила iptables."""
+                        fwmark, tcp_pkt, udp_pkt,
+                        wan4_ifaces, wan6_ifaces) -> bool:
+        """
+        Применить правила iptables с привязкой к WAN-интерфейсам.
+
+        Для каждого WAN-интерфейса создаётся отдельное правило `-o $iface`.
+        Если список пуст — правило без -o (перехват на всех интерфейсах).
+        IPv4: iptables, IPv6: ip6tables.
+        """
         rules = []
         ok = True
 
-        # 1) Правило ACCEPT для помеченных пакетов (не зацикливать)
-        cmd_mark = [
-            "iptables", "-t", "mangle", "-I", "POSTROUTING",
-            "-m", "mark", "--mark", "%s/%s" % (fwmark, fwmark),
-            "-m", "comment", "--comment", IPT_COMMENT,
-            "-j", "ACCEPT"
-        ]
-        if self._run_cmd(cmd_mark):
-            rules.append("ACCEPT mark %s" % fwmark)
-        else:
-            ok = False
+        # --- IPv4 (iptables) ---
+        ok &= self._apply_ipt_family(
+            "iptables", qnum, ports_tcp, ports_udp,
+            fwmark, tcp_pkt, udp_pkt, wan4_ifaces, rules
+        )
 
-        # 2) TCP → NFQUEUE
-        if ports_tcp:
-            cmd_tcp = [
-                "iptables", "-t", "mangle", "-I", "POSTROUTING",
-                "-p", "tcp",
-                "-m", "multiport", "--dports", ports_tcp,
-                "-m", "connbytes", "--connbytes-dir=original",
-                "--connbytes-mode=packets",
-                "--connbytes", "1:%d" % tcp_pkt,
-                "-m", "comment", "--comment", IPT_COMMENT,
-                "-j", "NFQUEUE",
-                "--queue-num", str(qnum),
-                "--queue-bypass"
-            ]
-            if self._run_cmd(cmd_tcp):
-                rules.append("TCP %s → NFQUEUE %d" % (ports_tcp, qnum))
-            else:
-                ok = False
-
-        # 3) UDP → NFQUEUE
-        if ports_udp:
-            cmd_udp = [
-                "iptables", "-t", "mangle", "-I", "POSTROUTING",
-                "-p", "udp",
-                "-m", "multiport", "--dports", ports_udp,
-                "-m", "connbytes", "--connbytes-dir=original",
-                "--connbytes-mode=packets",
-                "--connbytes", "1:%d" % udp_pkt,
-                "-m", "comment", "--comment", IPT_COMMENT,
-                "-j", "NFQUEUE",
-                "--queue-num", str(qnum),
-                "--queue-bypass"
-            ]
-            if self._run_cmd(cmd_udp):
-                rules.append("UDP %s → NFQUEUE %d" % (ports_udp, qnum))
-            else:
-                ok = False
+        # --- IPv6 (ip6tables) ---
+        if wan6_ifaces is not None:
+            ok &= self._apply_ipt_family(
+                "ip6tables", qnum, ports_tcp, ports_udp,
+                fwmark, tcp_pkt, udp_pkt, wan6_ifaces, rules
+            )
 
         self._rules_info = rules
         return ok
 
-    def _remove_iptables(self) -> bool:
-        """Удалить все правила iptables с комментарием zapret-gui."""
+    def _apply_ipt_family(self, ipt_cmd, qnum, ports_tcp, ports_udp,
+                          fwmark, tcp_pkt, udp_pkt, wan_ifaces, rules):
+        """
+        Применить правила для одного семейства (iptables / ip6tables).
+
+        Аналог zapret2 _fw_nfqws_post4 / _fw_nfqws_post6:
+          - Если wan_ifaces не пуст: для каждого -o $iface отдельное правило
+          - Если пуст: правило без -o (все интерфейсы)
+        """
         ok = True
-        # Итерируем по правилам mangle POSTROUTING и удаляем наши
-        # Делаем несколько проходов (т.к. номера строк сдвигаются)
-        for _ in range(10):
+        family_tag = "IPv4" if ipt_cmd == "iptables" else "IPv6"
+
+        # Проверяем доступность команды
+        if not shutil.which(ipt_cmd):
+            log.warning("%s не найден, пропускаем %s" % (ipt_cmd, family_tag),
+                        source="firewall")
+            return True  # Не ошибка — просто нет поддержки
+
+        # Для каждого WAN или без -o
+        oif_list = wan_ifaces if wan_ifaces else [None]
+
+        for oif in oif_list:
+            oif_args = ["-o", oif] if oif else []
+            oif_tag = " -o %s" % oif if oif else " (все)"
+
+            # 1) ACCEPT для помеченных (не зацикливать)
+            cmd = [
+                ipt_cmd, "-t", "mangle", "-I", "POSTROUTING",
+            ] + oif_args + [
+                "-m", "mark", "--mark", "%s/%s" % (fwmark, fwmark),
+                "-m", "comment", "--comment", IPT_COMMENT,
+                "-j", "ACCEPT"
+            ]
+            if self._run_cmd(cmd):
+                rules.append("%s ACCEPT mark%s" % (family_tag, oif_tag))
+            else:
+                ok = False
+
+            # 2) TCP → NFQUEUE
+            if ports_tcp:
+                cmd = [
+                    ipt_cmd, "-t", "mangle", "-A", "POSTROUTING",
+                ] + oif_args + [
+                    "-p", "tcp",
+                    "-m", "multiport", "--dports", ports_tcp,
+                    "-m", "connbytes", "--connbytes-dir=original",
+                    "--connbytes-mode=packets",
+                    "--connbytes", "1:%d" % tcp_pkt,
+                    "-m", "comment", "--comment", IPT_COMMENT,
+                    "-j", "NFQUEUE",
+                    "--queue-num", str(qnum),
+                    "--queue-bypass"
+                ]
+                if self._run_cmd(cmd):
+                    rules.append("%s TCP %s → NFQUEUE %d%s" % (
+                        family_tag, ports_tcp, qnum, oif_tag))
+                else:
+                    ok = False
+
+            # 3) UDP → NFQUEUE
+            if ports_udp:
+                cmd = [
+                    ipt_cmd, "-t", "mangle", "-A", "POSTROUTING",
+                ] + oif_args + [
+                    "-p", "udp",
+                    "-m", "multiport", "--dports", ports_udp,
+                    "-m", "connbytes", "--connbytes-dir=original",
+                    "--connbytes-mode=packets",
+                    "--connbytes", "1:%d" % udp_pkt,
+                    "-m", "comment", "--comment", IPT_COMMENT,
+                    "-j", "NFQUEUE",
+                    "--queue-num", str(qnum),
+                    "--queue-bypass"
+                ]
+                if self._run_cmd(cmd):
+                    rules.append("%s UDP %s → NFQUEUE %d%s" % (
+                        family_tag, ports_udp, qnum, oif_tag))
+                else:
+                    ok = False
+
+        return ok
+
+    def _remove_iptables(self) -> bool:
+        """Удалить все правила iptables/ip6tables с комментарием zapret-gui."""
+        ok = True
+        for ipt_cmd in ("iptables", "ip6tables"):
+            if not shutil.which(ipt_cmd):
+                continue
+            ok &= self._remove_ipt_family(ipt_cmd)
+        self._rules_info = []
+        return ok
+
+    def _remove_ipt_family(self, ipt_cmd) -> bool:
+        """Удалить правила одного семейства (несколько проходов)."""
+        for _ in range(20):
             found = False
             try:
                 result = subprocess.run(
-                    ["iptables", "-t", "mangle", "-L", "POSTROUTING",
+                    [ipt_cmd, "-t", "mangle", "-L", "POSTROUTING",
                      "--line-numbers", "-n"],
                     capture_output=True, text=True, timeout=5
                 )
                 if result.returncode != 0:
                     break
 
-                # Парсим строки, ищем наш комментарий
                 for line in reversed(result.stdout.splitlines()):
                     if IPT_COMMENT in line:
                         parts = line.split()
                         if parts and parts[0].isdigit():
-                            num = parts[0]
-                            del_cmd = [
-                                "iptables", "-t", "mangle",
-                                "-D", "POSTROUTING", num
-                            ]
-                            self._run_cmd(del_cmd)
+                            self._run_cmd([
+                                ipt_cmd, "-t", "mangle",
+                                "-D", "POSTROUTING", parts[0]
+                            ])
                             found = True
             except Exception:
                 break
@@ -307,73 +430,93 @@ class FirewallManager:
             if not found:
                 break
 
-        self._rules_info = []
-        return ok
+        return True
 
     def _get_iptables_rules(self) -> list:
-        """Получить текущие NFQUEUE-правила iptables."""
+        """Получить текущие NFQUEUE-правила iptables + ip6tables."""
         rules = []
-        try:
-            result = subprocess.run(
-                ["iptables", "-t", "mangle", "-L", "POSTROUTING",
-                 "-n", "-v", "--line-numbers"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    if "NFQUEUE" in line or IPT_COMMENT in line:
-                        rules.append(line.strip())
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        for ipt_cmd in ("iptables", "ip6tables"):
+            if not shutil.which(ipt_cmd):
+                continue
+            try:
+                result = subprocess.run(
+                    [ipt_cmd, "-t", "mangle", "-L", "POSTROUTING",
+                     "-n", "-v", "--line-numbers"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        if "NFQUEUE" in line or IPT_COMMENT in line:
+                            rules.append(line.strip())
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
         return rules
 
     # ──────────────── nftables implementation ────────────────
 
     def _apply_nftables(self, qnum, ports_tcp, ports_udp,
-                        fwmark, tcp_pkt, udp_pkt) -> bool:
-        """Применить правила nftables."""
+                        fwmark, tcp_pkt, udp_pkt,
+                        wan4_ifaces, wan6_ifaces) -> bool:
+        """
+        Применить правила nftables с привязкой к WAN-интерфейсам.
+
+        В nftables правила inet-семейства работают для обоих протоколов.
+        Фильтр интерфейса: `oifname { "eth0", "eth1" }`.
+        """
         cmds = []
 
         # Создаём таблицу и цепочку
-        cmds.append("nft add table inet %s" % NFT_TABLE)
+        cmds.append("add table inet %s" % NFT_TABLE)
         cmds.append(
-            "nft add chain inet %s postrouting "
-            "{ type filter hook postrouting priority 150 \\; }" % NFT_TABLE
+            "add chain inet %s postrouting "
+            "{ type filter hook postrouting priority 150 ; }" % NFT_TABLE
         )
+
+        # Собираем уникальные WAN-интерфейсы для oifname
+        all_wan = set(wan4_ifaces or [])
+        if wan6_ifaces:
+            all_wan.update(wan6_ifaces)
+        oif_filter = ""
+        if all_wan:
+            if len(all_wan) == 1:
+                # Один интерфейс — без фигурных скобок
+                oif_filter = "oifname %s " % list(all_wan)[0]
+            else:
+                # Несколько — множество nft
+                oif_filter = "oifname { %s } " % ", ".join(sorted(all_wan))
 
         # ACCEPT для помеченных пакетов
         cmds.append(
-            "nft add rule inet %s postrouting "
-            "meta mark and %s == %s accept" % (NFT_TABLE, fwmark, fwmark)
+            "add rule inet %s postrouting %s"
+            "meta mark and %s == %s accept" % (
+                NFT_TABLE, oif_filter, fwmark, fwmark)
         )
 
         # TCP → NFQUEUE
         if ports_tcp:
             ports_nft = "{ %s }" % ports_tcp
             cmds.append(
-                "nft add rule inet %s postrouting "
+                "add rule inet %s postrouting %s"
                 "tcp dport %s ct original packets 1-%d "
                 "queue num %d bypass" % (
-                    NFT_TABLE, ports_nft, tcp_pkt, qnum
-                )
+                    NFT_TABLE, oif_filter, ports_nft, tcp_pkt, qnum)
             )
 
         # UDP → NFQUEUE
         if ports_udp:
             ports_nft = "{ %s }" % ports_udp
             cmds.append(
-                "nft add rule inet %s postrouting "
+                "add rule inet %s postrouting %s"
                 "udp dport %s ct original packets 1-%d "
                 "queue num %d bypass" % (
-                    NFT_TABLE, ports_nft, udp_pkt, qnum
-                )
+                    NFT_TABLE, oif_filter, ports_nft, udp_pkt, qnum)
             )
 
         ok = True
         rules = []
         for cmd in cmds:
-            if self._run_cmd(cmd.split()):
-                rules.append(cmd)
+            if self._run_cmd(["nft"] + cmd.split()):
+                rules.append("nft " + cmd)
             else:
                 ok = False
 
@@ -382,8 +525,7 @@ class FirewallManager:
 
     def _remove_nftables(self) -> bool:
         """Удалить таблицу nftables."""
-        cmd = ["nft", "delete", "table", "inet", NFT_TABLE]
-        result = self._run_cmd(cmd)
+        result = self._run_cmd(["nft", "delete", "table", "inet", NFT_TABLE])
         self._rules_info = []
         return result
 
@@ -398,8 +540,7 @@ class FirewallManager:
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
                     line = line.strip()
-                    if line and not line.startswith("table") \
-                            and not line == "}":
+                    if line and not line.startswith("table") and line != "}":
                         rules.append(line)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
@@ -408,7 +549,7 @@ class FirewallManager:
     # ──────────────── dispatcher ────────────────
 
     def _remove_rules_locked(self, fw_type) -> bool:
-        """Снять правила (вызывается под lock или из apply_rules)."""
+        """Снять правила (вызывается под lock)."""
         log.info("Снимаем правила firewall (%s)..." % fw_type,
                  source="firewall")
         try:
@@ -431,7 +572,7 @@ class FirewallManager:
     # ──────────────── utils ────────────────
 
     @staticmethod
-    def _run_cmd(cmd: list) -> bool:
+    def _run_cmd(cmd) -> bool:
         """Выполнить команду. True если успешно."""
         try:
             result = subprocess.run(
@@ -439,7 +580,6 @@ class FirewallManager:
             )
             if result.returncode != 0:
                 stderr = result.stderr.strip()
-                # Не логируем "table not found" при удалении
                 if "No such file" not in stderr \
                         and "does not exist" not in stderr:
                     log.warning("Команда %s: %s" % (
@@ -448,11 +588,10 @@ class FirewallManager:
                 return False
             return True
         except subprocess.TimeoutExpired:
-            log.error("Таймаут команды: %s" % " ".join(cmd[:3]),
-                      source="firewall")
+            log.error("Таймаут: %s" % " ".join(cmd[:3]), source="firewall")
             return False
         except FileNotFoundError:
-            log.error("Команда не найдена: %s" % cmd[0], source="firewall")
+            log.error("Не найдена: %s" % cmd[0], source="firewall")
             return False
 
 

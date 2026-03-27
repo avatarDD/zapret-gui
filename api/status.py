@@ -152,7 +152,7 @@ def register(app):
                 "installed": zapret_version["installed"],
                 "version": zapret_version["version"],
             },
-            "gui_version": "0.13.2",
+            "gui_version": "0.13.3",
             "timestamp": time.time(),
         }
 
