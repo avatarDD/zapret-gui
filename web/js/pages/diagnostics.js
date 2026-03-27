@@ -714,6 +714,3 @@ const DiagnosticsPage = (() => {
         manualDns,
     };
 })();
-
-
-

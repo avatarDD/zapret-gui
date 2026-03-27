@@ -894,6 +894,3 @@ const HostsPage = (() => {
         refreshData,
     };
 })();
-
-
-

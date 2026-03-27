@@ -115,7 +115,3 @@ if ! $FULL_REMOVE; then
     echo "  Для полного удаления: $0 --full"
 fi
 echo ""
-
-
-
-

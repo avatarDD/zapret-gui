@@ -460,6 +460,3 @@ def get_nfqws_manager() -> NFQWSManager:
             if _nfqws_manager is None:
                 _nfqws_manager = NFQWSManager()
     return _nfqws_manager
-
-
-

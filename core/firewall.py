@@ -470,6 +470,3 @@ def get_firewall_manager() -> FirewallManager:
             if _fw_manager is None:
                 _fw_manager = FirewallManager()
     return _fw_manager
-
-
-

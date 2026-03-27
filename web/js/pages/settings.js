@@ -6,6 +6,7 @@
  *   - Секции: Zapret2, Web-GUI, nfqws, Firewall, Фильтрация, Логирование, Интерфейсы
  *   - Импорт/экспорт конфигурации (JSON)
  *   - Сброс к настройкам по умолчанию
+ *   - Авто-определение WAN/WAN6/LAN по маршрутам
  *   - Информация о версии и системе
  */
 
@@ -19,7 +20,7 @@ const SettingsPage = (() => {
     let activeSection = 'zapret';
     let systemInfo = null;
 
-    const GUI_VERSION = 'v0.13.0';
+    const GUI_VERSION = 'v0.13.1';
 
     // Определения секций конфигурации
     const SECTIONS = [
@@ -114,9 +115,9 @@ const SettingsPage = (() => {
             label: 'Интерфейсы',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
             fields: [
-                { key: 'interfaces.wan',   label: 'WAN интерфейс',   type: 'text', placeholder: 'Авто (пусто)' },
-                { key: 'interfaces.wan6',  label: 'WAN6 интерфейс',  type: 'text', placeholder: 'Авто (пусто)' },
-                { key: 'interfaces.lan',   label: 'LAN интерфейс',   type: 'text', placeholder: 'Авто (пусто)' },
+                { key: 'interfaces.wan',   label: 'WAN интерфейс (Linux)',   type: 'text', placeholder: 'Авто-определение' },
+                { key: 'interfaces.wan6',  label: 'WAN6 интерфейс (Linux)',  type: 'text', placeholder: 'Авто-определение' },
+                { key: 'interfaces.lan',   label: 'LAN интерфейс (Linux)',   type: 'text', placeholder: 'Авто-определение' },
             ]
         },
     ];
@@ -256,19 +257,17 @@ const SettingsPage = (() => {
         `;
 
         section.fields.forEach(field => {
-            // Проверяем условие видимости
             if (field.showIf) {
                 const depValue = getNestedValue(config, field.showIf);
                 if (!depValue) return;
             }
-
             const value = getNestedValue(config, field.key);
             html += renderField(field, value);
         });
 
         html += '</div>';
 
-        // Добавляем блок выбора интерфейсов для nfqws2
+        // Блок авто-определения и выбора интерфейсов
         if (activeSection === 'interfaces') {
             html += `
                 <div style="border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px;">
@@ -300,7 +299,6 @@ const SettingsPage = (() => {
 
         formEl.innerHTML = html;
 
-        // Загружаем интерфейсы если раздел активен
         if (activeSection === 'interfaces') {
             loadInterfaces();
         }
@@ -434,7 +432,6 @@ const SettingsPage = (() => {
     function switchSection(sectionId) {
         activeSection = sectionId;
 
-        // Обновить навигацию
         document.querySelectorAll('.settings-nav-item').forEach(el => {
             el.classList.toggle('active', el.dataset.section === sectionId);
         });
@@ -448,15 +445,12 @@ const SettingsPage = (() => {
         setNestedValue(config, key, value);
         hasUnsaved = !deepEqual(config, originalConfig);
 
-        // Обновить toggle label
-        const parts = key.split('.');
         const field = SECTIONS.flatMap(s => s.fields).find(f => f.key === key);
         if (field && field.type === 'toggle') {
             const id = 'cfg-' + key.replace(/\./g, '-');
             const labelEl = document.querySelector(`#${id} ~ .settings-toggle-label`);
             if (labelEl) labelEl.textContent = value ? 'Вкл' : 'Выкл';
 
-            // Перерисовать форму если есть зависимые поля
             const hasDependents = SECTIONS.flatMap(s => s.fields).some(f => f.showIf === key);
             if (hasDependents) {
                 renderSectionForm();
@@ -477,7 +471,6 @@ const SettingsPage = (() => {
 
     async function saveConfig() {
         try {
-            // Собираем только изменённые секции
             const changes = {};
             for (const section of SECTIONS) {
                 const sectionKey = section.id;
@@ -498,7 +491,6 @@ const SettingsPage = (() => {
                 updateSaveBar();
                 Toast.success('Настройки сохранены');
 
-                // Предупреждение если изменились параметры сервера
                 if (changes.gui && (changes.gui.host !== undefined || changes.gui.port !== undefined)) {
                     Toast.warning('Изменения порта/хоста вступят в силу после перезапуска GUI');
                 }
@@ -601,6 +593,7 @@ const SettingsPage = (() => {
 
     let _allInterfaces = [];
     let _selectedInterfaces = [];
+    let _detectedRoles = { wan: '', wan6: '', lan: '' };
 
     async function loadInterfaces() {
         const container = document.getElementById('iface-selector-container');
@@ -611,11 +604,89 @@ const SettingsPage = (() => {
             if (data.ok) {
                 _allInterfaces = data.interfaces || [];
                 _selectedInterfaces = data.selected || [];
+                _detectedRoles = data.detected || { wan: '', wan6: '', lan: '' };
+
+                // Авто-заполнение WAN/WAN6/LAN в текстовых полях, если пустые
+                _applyDetectedRoles();
+
                 renderInterfaceSelector();
             }
         } catch (err) {
             container.innerHTML = `<div style="color:var(--error); padding:12px; font-size:13px;">
                 Ошибка загрузки интерфейсов: ${err.message}</div>`;
+        }
+    }
+
+    /**
+     * Подставить авто-определённые WAN/WAN6/LAN в поля конфига,
+     * если поля пустые. Обновить placeholder с подсказкой.
+     */
+    function _applyDetectedRoles() {
+        const roleMap = {
+            'interfaces.wan':  _detectedRoles.wan,
+            'interfaces.wan6': _detectedRoles.wan6,
+            'interfaces.lan':  _detectedRoles.lan,
+        };
+
+        for (const [key, detected] of Object.entries(roleMap)) {
+            const current = getNestedValue(config, key);
+            const inputId = 'cfg-' + key.replace(/\./g, '-');
+            const inputEl = document.getElementById(inputId);
+
+            if (inputEl) {
+                // Обновляем placeholder с определённым значением
+                if (detected) {
+                    inputEl.placeholder = `Авто: ${detected}`;
+                } else {
+                    inputEl.placeholder = 'Не определён';
+                }
+
+                // Если поле пустое и есть определённое значение — подставляем
+                if (!current && detected) {
+                    inputEl.value = detected;
+                    setNestedValue(config, key, detected);
+                }
+            }
+        }
+
+        // Проверяем, изменилось ли что-то
+        hasUnsaved = !deepEqual(config, originalConfig);
+        updateSaveBar();
+    }
+
+    /**
+     * Кнопка «Определить автоматически» — заполнить WAN/WAN6/LAN
+     * значениями из авто-определения, перезаписывая текущие.
+     */
+    function autoDetectInterfaces() {
+        const roleMap = {
+            'interfaces.wan':  _detectedRoles.wan,
+            'interfaces.wan6': _detectedRoles.wan6,
+            'interfaces.lan':  _detectedRoles.lan,
+        };
+
+        let filled = 0;
+        for (const [key, detected] of Object.entries(roleMap)) {
+            if (detected) {
+                setNestedValue(config, key, detected);
+                const inputId = 'cfg-' + key.replace(/\./g, '-');
+                const inputEl = document.getElementById(inputId);
+                if (inputEl) inputEl.value = detected;
+                filled++;
+            }
+        }
+
+        hasUnsaved = !deepEqual(config, originalConfig);
+        updateSaveBar();
+
+        if (filled > 0) {
+            Toast.success(`Определено ${filled} интерфейс(ов): ` +
+                [_detectedRoles.wan && `WAN=${_detectedRoles.wan}`,
+                 _detectedRoles.wan6 && `WAN6=${_detectedRoles.wan6}`,
+                 _detectedRoles.lan && `LAN=${_detectedRoles.lan}`]
+                .filter(Boolean).join(', '));
+        } else {
+            Toast.warning('Не удалось определить интерфейсы автоматически');
         }
     }
 
@@ -630,10 +701,33 @@ const SettingsPage = (() => {
         }
 
         const isAllSelected = _selectedInterfaces.length === 0;
-
         let html = '';
 
-        // Кнопка "Все интерфейсы"
+        // Кнопка авто-определения
+        html += `
+            <div style="display:flex; gap:8px; margin-bottom: 8px;">
+                <button class="btn btn-ghost btn-sm" onclick="SettingsPage.autoDetectInterfaces()" title="Заполнить WAN/WAN6/LAN по таблице маршрутов">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                    </svg>
+                    Определить WAN/LAN автоматически
+                </button>
+            </div>
+        `;
+
+        // Инфо об определённых ролях
+        if (_detectedRoles.wan || _detectedRoles.lan) {
+            const parts = [];
+            if (_detectedRoles.wan) parts.push(`WAN: <b>${_detectedRoles.wan}</b>`);
+            if (_detectedRoles.wan6 && _detectedRoles.wan6 !== _detectedRoles.wan)
+                parts.push(`WAN6: <b>${_detectedRoles.wan6}</b>`);
+            if (_detectedRoles.lan) parts.push(`LAN: <b>${_detectedRoles.lan}</b>`);
+            html += `<div style="font-size:11px; color:var(--text-muted); margin-bottom:10px; padding:6px 10px; background:rgba(91,158,244,0.06); border-radius:var(--radius); border:1px solid rgba(91,158,244,0.15);">
+                Определено: ${parts.join(' &nbsp;·&nbsp; ')}
+            </div>`;
+        }
+
+        // Чекбокс "Все интерфейсы" — только onchange на input, без onclick на label
         html += `
             <label style="
                 display: flex; align-items: center; gap: 10px;
@@ -643,7 +737,7 @@ const SettingsPage = (() => {
                 border-radius: var(--radius);
                 cursor: pointer;
                 transition: all 0.15s;
-            " onclick="SettingsPage.toggleAllInterfaces()" title="Использовать все доступные интерфейсы">
+            " title="Использовать все доступные интерфейсы">
                 <input type="checkbox" ${isAllSelected ? 'checked' : ''}
                        style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"
                        onchange="SettingsPage.toggleAllInterfaces()">
@@ -672,13 +766,26 @@ const SettingsPage = (() => {
             const stateText = iface.state === 'up' ? 'UP' :
                               iface.state === 'down' ? 'DOWN' : '?';
 
-            // Собираем IPv4 адреса для отображения
+            // IPv4 адреса
             let addrText = '';
             if (iface.addresses && iface.addresses.length > 0) {
                 const ipv4 = iface.addresses.filter(a => a.family === 'ipv4');
                 if (ipv4.length > 0) {
                     addrText = ipv4.map(a => a.address).join(', ');
                 }
+            }
+
+            // Бейдж роли (WAN/LAN)
+            let roleBadge = '';
+            if (_detectedRoles.wan && _detectedRoles.wan.split(' ').includes(iface.name)) {
+                roleBadge = '<span style="font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(249,115,22,0.15); color:var(--warning); margin-left:4px;">WAN</span>';
+            }
+            if (_detectedRoles.wan6 && _detectedRoles.wan6.split(' ').includes(iface.name)
+                && _detectedRoles.wan6 !== _detectedRoles.wan) {
+                roleBadge += '<span style="font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(168,85,247,0.15); color:#a855f7; margin-left:4px;">WAN6</span>';
+            }
+            if (_detectedRoles.lan === iface.name) {
+                roleBadge += '<span style="font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:var(--success); margin-left:4px;">LAN</span>';
             }
 
             html += `
@@ -688,16 +795,15 @@ const SettingsPage = (() => {
                     background: ${isSelected ? 'rgba(91,158,244,0.06)' : 'transparent'};
                     border: 1px solid ${isSelected ? 'rgba(91,158,244,0.3)' : 'var(--border)'};
                     border-radius: var(--radius);
-                    cursor: pointer;
+                    cursor: ${isAllSelected ? 'default' : 'pointer'};
                     transition: all 0.15s;
                     opacity: ${isAllSelected ? '0.45' : '1'};
-                    pointer-events: ${isAllSelected ? 'none' : 'auto'};
                 " title="${iface.name}${addrText ? ' — ' + addrText : ''}">
                     <input type="checkbox" ${isSelected ? 'checked' : ''} ${isAllSelected ? 'disabled' : ''}
                            style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"
                            onchange="SettingsPage.toggleInterface('${iface.name}')">
                     <div style="flex:1; min-width:0;">
-                        <div style="display:flex; align-items:center; gap:8px;">
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                             <span style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary);">
                                 ${iface.name}
                             </span>
@@ -707,6 +813,7 @@ const SettingsPage = (() => {
                                 background: ${iface.state === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.12)'};
                                 color: ${stateColor};
                             ">${stateText}</span>
+                            ${roleBadge}
                         </div>
                         ${addrText ? `<div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top:2px;">${addrText}</div>` : ''}
                     </div>
@@ -742,9 +849,17 @@ const SettingsPage = (() => {
     }
 
     function toggleAllInterfaces() {
-        // Если были выбраны конкретные → сбрасываем (= все)
-        // Если уже "все" → ничего не делаем (пользователь должен выбрать конкретные)
-        _selectedInterfaces = [];
+        if (_selectedInterfaces.length === 0) {
+            // "Все" уже выбрано → снимаем, позволяя выбрать конкретные
+            // Ничего не выбираем — пустой список, но помечаем что "все" снят
+            // Ставим первый доступный интерфейс, чтобы выйти из режима "все"
+            if (_allInterfaces.length > 0) {
+                _selectedInterfaces = [_allInterfaces[0].name];
+            }
+        } else {
+            // Были выбраны конкретные → сбрасываем в "все"
+            _selectedInterfaces = [];
+        }
         renderInterfaceSelector();
     }
 
@@ -771,7 +886,6 @@ const SettingsPage = (() => {
 
     /**
      * Форматирует uptime в секундах в человекочитаемый вид.
-     * Fallback на случай если бэкенд вернул только raw-секунды.
      */
     function formatUptime(seconds) {
         if (!seconds || seconds <= 0) return '—';
@@ -858,8 +972,6 @@ const SettingsPage = (() => {
         toggleInterface,
         toggleAllInterfaces,
         saveInterfaces,
+        autoDetectInterfaces,
     };
 })();
-
-
-

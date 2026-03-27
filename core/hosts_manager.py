@@ -677,6 +677,3 @@ def get_hosts_manager(hosts_path=None):
             if _instance is None:
                 _instance = HostsManager(hosts_path)
     return _instance
-
-
-

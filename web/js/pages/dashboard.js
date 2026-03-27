@@ -342,6 +342,3 @@ const DashboardPage = (() => {
         quickRestart: () => quickAction('restart'),
     };
 })();
-
-
-

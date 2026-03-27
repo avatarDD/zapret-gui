@@ -161,6 +161,3 @@ def _validate_host(host):
     if re.match(r'^[a-zA-Z0-9.:_-]+$', host):
         return True
     return False
-
-
-

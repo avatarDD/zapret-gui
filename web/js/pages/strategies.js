@@ -677,6 +677,3 @@ const StrategiesPage = (() => {
         saveEditor,
     };
 })();
-
-
-

@@ -138,6 +138,3 @@ const Sidebar = (() => {
 
     return { render, setCurrentPage, initMobileToggle };
 })();
-
-
-

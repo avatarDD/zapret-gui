@@ -751,6 +751,3 @@ const LogsPage = (() => {
         clearLogs,
     };
 })();
-
-
-

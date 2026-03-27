@@ -692,6 +692,3 @@ const ZapretManagerPage = (() => {
         closeUninstallModal,
     };
 })();
-
-
-

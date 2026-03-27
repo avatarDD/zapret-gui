@@ -496,6 +496,3 @@ const AutostartPage = (() => {
         closeModal,
     };
 })();
-
-
-

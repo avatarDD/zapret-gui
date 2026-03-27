@@ -1405,6 +1405,3 @@ def get_zapret_installer() -> ZapretInstaller:
             if _zapret_installer is None:
                 _zapret_installer = ZapretInstaller()
     return _zapret_installer
-
-
-

@@ -287,6 +287,3 @@ def init_config(config_dir: str = None) -> dict:
     if config_dir:
         _config_manager = ConfigManager(config_dir=config_dir)
     return _config_manager.load()
-
-
-

@@ -100,6 +100,3 @@ def register(app):
             "ok": True,
             "script": preview,
         }
-
-
-

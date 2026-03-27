@@ -80,6 +80,3 @@ const App = (() => {
 
     return { navigateTo };
 })();
-
-
-

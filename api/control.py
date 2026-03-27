@@ -162,6 +162,3 @@ def register(app):
             "nfqws": mgr.get_status(),
             "firewall": fw.get_status(),
         }
-
-
-
