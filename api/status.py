@@ -3,7 +3,6 @@
 GET /api/status — общий статус системы, nfqws и firewall.
 GET /api/ping  — health check.
 GET /api/interfaces — список интерфейсов + авто-определение ролей.
-POST /api/interfaces/select — сохранить выбранные интерфейсы.
 """
 
 import os
@@ -153,7 +152,7 @@ def register(app):
                 "installed": zapret_version["installed"],
                 "version": zapret_version["version"],
             },
-            "gui_version": "0.13.1",
+            "gui_version": "0.13.2",
             "timestamp": time.time(),
         }
 
@@ -169,8 +168,7 @@ def register(app):
         Список сетевых интерфейсов + авто-определение WAN/WAN6/LAN.
 
         Возвращает:
-          interfaces — массив интерфейсов [{name, state, addresses}]
-          selected   — привязанные интерфейсы из конфига
+          interfaces — [{name, state, addresses}]
           detected   — авто-определённые роли {wan, wan6, lan}
         """
         response.content_type = "application/json; charset=utf-8"
@@ -240,64 +238,11 @@ def register(app):
         for iface in interfaces:
             iface["addresses"] = addr_map.get(iface["name"], [])
 
-        # Авто-определение ролей WAN/WAN6/LAN
+        # Авто-определение ролей
         detected = _detect_interface_roles(interfaces, addr_map)
-
-        # Текущие выбранные из конфига
-        from core.config_manager import get_config_manager
-        cfg = get_config_manager()
-        selected = cfg.get("interfaces", "bind_to", default=[])
-        if isinstance(selected, str):
-            selected = [s.strip() for s in selected.split(",") if s.strip()]
 
         return {
             "ok": True,
             "interfaces": interfaces,
-            "selected": selected,
             "detected": detected,
-        }
-
-    @app.route("/api/interfaces/select", method="POST")
-    def api_interfaces_select():
-        """Сохранить выбранные интерфейсы для nfqws2."""
-        response.content_type = "application/json; charset=utf-8"
-
-        from bottle import request
-        from core.config_manager import get_config_manager
-        from core.log_buffer import log
-
-        cfg = get_config_manager()
-
-        try:
-            body = request.json
-        except Exception:
-            response.status = 400
-            return {"ok": False, "error": "Невалидный JSON"}
-
-        if not body:
-            response.status = 400
-            return {"ok": False, "error": "Пустое тело запроса"}
-
-        selected = body.get("interfaces", [])
-        if not isinstance(selected, list):
-            response.status = 400
-            return {"ok": False, "error": "interfaces должен быть массивом"}
-
-        cfg.set("interfaces", "bind_to", selected)
-        cfg.save()
-
-        if selected:
-            log.info("Интерфейсы для nfqws2: %s" % ", ".join(selected),
-                     source="settings")
-        else:
-            log.info("Интерфейсы для nfqws2: все (по умолчанию)",
-                     source="settings")
-
-        return {
-            "ok": True,
-            "selected": selected,
-            "message": "Интерфейсы обновлены" + (
-                " (%s)" % ", ".join(selected) if selected
-                else " (все интерфейсы)"
-            ),
         }

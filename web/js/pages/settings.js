@@ -6,8 +6,8 @@
  *   - Секции: Zapret2, Web-GUI, nfqws, Firewall, Фильтрация, Логирование, Интерфейсы
  *   - Импорт/экспорт конфигурации (JSON)
  *   - Сброс к настройкам по умолчанию
+ *   - Назначение ролей WAN/WAN6/LAN через интерактивный список
  *   - Авто-определение WAN/WAN6/LAN по маршрутам
- *   - Информация о версии и системе
  */
 
 const SettingsPage = (() => {
@@ -20,7 +20,19 @@ const SettingsPage = (() => {
     let activeSection = 'zapret';
     let systemInfo = null;
 
-    const GUI_VERSION = 'v0.13.1';
+    const GUI_VERSION = 'v0.13.2';
+
+    // Список системных интерфейсов (загружается с сервера)
+    let _allInterfaces = [];
+    // Авто-определённые роли (от бэкенда)
+    let _detectedRoles = { wan: '', wan6: '', lan: '' };
+
+    // Роли и их визуальные стили
+    const ROLES = {
+        wan:  { label: 'WAN',  configKey: 'interfaces.wan',  color: '#f97316', bg: 'rgba(249,115,22,0.15)' },
+        wan6: { label: 'WAN6', configKey: 'interfaces.wan6', color: '#a855f7', bg: 'rgba(168,85,247,0.15)' },
+        lan:  { label: 'LAN',  configKey: 'interfaces.lan',  color: '#22c55e', bg: 'rgba(34,197,94,0.15)' },
+    };
 
     // Определения секций конфигурации
     const SECTIONS = [
@@ -54,17 +66,17 @@ const SettingsPage = (() => {
             label: 'nfqws',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
             fields: [
-                { key: 'nfqws.queue_num',          label: 'Номер очереди NFQUEUE',  type: 'number', min: 0, max: 65535 },
-                { key: 'nfqws.ports_tcp',           label: 'TCP-порты',              type: 'text', placeholder: '80,443' },
-                { key: 'nfqws.ports_udp',           label: 'UDP-порты',              type: 'text', placeholder: '443' },
-                { key: 'nfqws.tcp_pkt_out',         label: 'TCP пакетов OUT',        type: 'number', min: 1, max: 100 },
-                { key: 'nfqws.tcp_pkt_in',          label: 'TCP пакетов IN',         type: 'number', min: 0, max: 100 },
-                { key: 'nfqws.udp_pkt_out',         label: 'UDP пакетов OUT',        type: 'number', min: 1, max: 100 },
-                { key: 'nfqws.udp_pkt_in',          label: 'UDP пакетов IN',         type: 'number', min: 0, max: 100 },
-                { key: 'nfqws.desync_mark',         label: 'Desync mark',            type: 'text', placeholder: '0x40000000' },
+                { key: 'nfqws.queue_num',           label: 'Номер очереди NFQUEUE',  type: 'number', min: 0, max: 65535 },
+                { key: 'nfqws.ports_tcp',            label: 'TCP-порты',              type: 'text', placeholder: '80,443' },
+                { key: 'nfqws.ports_udp',            label: 'UDP-порты',              type: 'text', placeholder: '443' },
+                { key: 'nfqws.tcp_pkt_out',          label: 'TCP пакетов OUT',        type: 'number', min: 1, max: 100 },
+                { key: 'nfqws.tcp_pkt_in',           label: 'TCP пакетов IN',         type: 'number', min: 0, max: 100 },
+                { key: 'nfqws.udp_pkt_out',          label: 'UDP пакетов OUT',        type: 'number', min: 1, max: 100 },
+                { key: 'nfqws.udp_pkt_in',           label: 'UDP пакетов IN',         type: 'number', min: 0, max: 100 },
+                { key: 'nfqws.desync_mark',          label: 'Desync mark',            type: 'text', placeholder: '0x40000000' },
                 { key: 'nfqws.desync_mark_postnat',  label: 'Desync mark (postnat)',  type: 'text', placeholder: '0x20000000' },
-                { key: 'nfqws.user',                label: 'Пользователь',           type: 'text', placeholder: 'nobody' },
-                { key: 'nfqws.disable_ipv6',        label: 'Отключить IPv6',         type: 'toggle' },
+                { key: 'nfqws.user',                 label: 'Пользователь',           type: 'text', placeholder: 'nobody' },
+                { key: 'nfqws.disable_ipv6',         label: 'Отключить IPv6',         type: 'toggle' },
             ]
         },
         {
@@ -115,9 +127,9 @@ const SettingsPage = (() => {
             label: 'Интерфейсы',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
             fields: [
-                { key: 'interfaces.wan',   label: 'WAN интерфейс (Linux)',   type: 'text', placeholder: 'Авто-определение' },
-                { key: 'interfaces.wan6',  label: 'WAN6 интерфейс (Linux)',  type: 'text', placeholder: 'Авто-определение' },
-                { key: 'interfaces.lan',   label: 'LAN интерфейс (Linux)',   type: 'text', placeholder: 'Авто-определение' },
+                { key: 'interfaces.wan',   label: 'WAN (IFACE_WAN)',    type: 'text', placeholder: 'Авто-определение' },
+                { key: 'interfaces.wan6',  label: 'WAN6 (IFACE_WAN6)',  type: 'text', placeholder: 'Авто-определение' },
+                { key: 'interfaces.lan',   label: 'LAN (IFACE_LAN)',    type: 'text', placeholder: 'Авто-определение' },
             ]
         },
     ];
@@ -152,12 +164,10 @@ const SettingsPage = (() => {
             </div>
 
             <div class="settings-layout">
-                <!-- Навигация по секциям -->
                 <div class="settings-nav card" id="settings-nav">
                     ${renderSectionNav()}
                 </div>
 
-                <!-- Содержимое секции -->
                 <div class="settings-content" id="settings-content">
                     <div class="card settings-section-card" id="settings-form">
                         <div class="settings-loading">
@@ -223,7 +233,6 @@ const SettingsPage = (() => {
                 </div>
             </div>
 
-            <!-- Скрытый input для импорта файла -->
             <input type="file" id="settings-import-file" accept=".json" style="display:none" onchange="SettingsPage.handleImportFile(this)">
         `;
 
@@ -267,34 +276,9 @@ const SettingsPage = (() => {
 
         html += '</div>';
 
-        // Блок авто-определения и выбора интерфейсов
+        // Блок назначения ролей интерфейсам
         if (activeSection === 'interfaces') {
-            html += `
-                <div style="border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px;">
-                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px;">
-                        <div>
-                            <h3 style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0 0 4px 0;">
-                                Привязка nfqws2 к интерфейсам
-                            </h3>
-                            <div style="font-size: 12px; color: var(--text-secondary);">
-                                Выберите сетевые интерфейсы, на которых будет работать nfqws2
-                            </div>
-                        </div>
-                        <button class="btn btn-ghost btn-sm" onclick="SettingsPage.refreshInterfaces()" title="Обновить список">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                <polyline points="23 4 23 10 17 10"/>
-                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                            </svg>
-                        </button>
-                    </div>
-                    <div id="iface-selector-container">
-                        <div style="text-align:center; padding:20px; color:var(--text-muted);">
-                            <div class="spinner" style="margin:0 auto 8px; width:20px; height:20px;"></div>
-                            Загрузка интерфейсов...
-                        </div>
-                    </div>
-                </div>
-            `;
+            html += renderInterfacesBlock();
         }
 
         formEl.innerHTML = html;
@@ -304,9 +288,52 @@ const SettingsPage = (() => {
         }
     }
 
+    /** Блок с заголовком + кнопками + контейнер для списка интерфейсов. */
+    function renderInterfacesBlock() {
+        return `
+            <div style="border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 4px;">
+                    <div>
+                        <h3 style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0 0 4px 0;">
+                            Назначение ролей сетевым интерфейсам
+                        </h3>
+                        <div style="font-size: 12px; color: var(--text-secondary);">
+                            Кликните на бейджи WAN / WAN6 / LAN для назначения роли. Соответствует IFACE_WAN, IFACE_WAN6, IFACE_LAN в конфиге zapret2.
+                        </div>
+                    </div>
+                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.refreshInterfaces()" title="Обновить список">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                        </svg>
+                    </button>
+                </div>
+                <div style="display:flex; gap:8px; margin: 8px 0 10px;">
+                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.autoDetectRoles()" title="Определить WAN/WAN6/LAN по таблице маршрутов">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                        </svg>
+                        Определить автоматически
+                    </button>
+                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.clearRoles()" title="Сбросить все назначения ролей">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                        Сбросить роли
+                    </button>
+                </div>
+                <div id="iface-roles-container">
+                    <div style="text-align:center; padding:20px; color:var(--text-muted);">
+                        <div class="spinner" style="margin:0 auto 8px; width:20px; height:20px;"></div>
+                        Загрузка интерфейсов...
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
     function renderField(field, value) {
         const id = 'cfg-' + field.key.replace(/\./g, '-');
-
         let inputHtml = '';
 
         switch (field.type) {
@@ -319,7 +346,6 @@ const SettingsPage = (() => {
                            onchange="SettingsPage.onFieldChange('${field.key}', this.value)">
                 `;
                 break;
-
             case 'number':
                 inputHtml = `
                     <input type="number" class="form-input" id="${id}"
@@ -330,7 +356,6 @@ const SettingsPage = (() => {
                            onchange="SettingsPage.onFieldChange('${field.key}', this.valueAsNumber || parseInt(this.value))">
                 `;
                 break;
-
             case 'toggle':
                 inputHtml = `
                     <label class="settings-toggle" for="${id}">
@@ -341,7 +366,6 @@ const SettingsPage = (() => {
                     </label>
                 `;
                 break;
-
             case 'select':
                 inputHtml = `
                     <select class="form-input form-select" id="${id}"
@@ -387,9 +411,7 @@ const SettingsPage = (() => {
                 systemInfo = data;
                 renderSystemInfo();
             }
-        } catch (err) {
-            // Не критично
-        }
+        } catch (err) { /* не критично */ }
     }
 
     function renderSystemInfo() {
@@ -397,12 +419,10 @@ const SettingsPage = (() => {
         if (!el || !systemInfo) return;
 
         const sys = systemInfo.system || {};
-        const nfqws = systemInfo.nfqws || {};
         const fw = systemInfo.firewall || {};
         const zapret = systemInfo.zapret || {};
 
         const rows = [];
-
         if (zapret.version) rows.push(['Версия zapret2', zapret.version]);
         if (sys.arch) rows.push(['Архитектура', sys.arch]);
         if (sys.kernel) rows.push(['Ядро', sys.kernel]);
@@ -431,11 +451,9 @@ const SettingsPage = (() => {
 
     function switchSection(sectionId) {
         activeSection = sectionId;
-
         document.querySelectorAll('.settings-nav-item').forEach(el => {
             el.classList.toggle('active', el.dataset.section === sectionId);
         });
-
         renderSectionForm();
     }
 
@@ -452,9 +470,12 @@ const SettingsPage = (() => {
             if (labelEl) labelEl.textContent = value ? 'Вкл' : 'Выкл';
 
             const hasDependents = SECTIONS.flatMap(s => s.fields).some(f => f.showIf === key);
-            if (hasDependents) {
-                renderSectionForm();
-            }
+            if (hasDependents) renderSectionForm();
+        }
+
+        // Если изменили WAN/WAN6/LAN поле вручную — обновить бейджи
+        if (key.startsWith('interfaces.')) {
+            renderInterfaceRoles();
         }
 
         updateSaveBar();
@@ -462,9 +483,7 @@ const SettingsPage = (() => {
 
     function updateSaveBar() {
         const bar = document.getElementById('settings-save-bar');
-        if (bar) {
-            bar.classList.toggle('hidden', !hasUnsaved);
-        }
+        if (bar) bar.classList.toggle('hidden', !hasUnsaved);
     }
 
     // ══════════════════ Save / Discard ══════════════════
@@ -589,27 +608,22 @@ const SettingsPage = (() => {
         }
     }
 
-    // ══════════════════ Network Interfaces ══════════════════
-
-    let _allInterfaces = [];
-    let _selectedInterfaces = [];
-    let _detectedRoles = { wan: '', wan6: '', lan: '' };
+    // ══════════════════ Interface Roles ══════════════════
 
     async function loadInterfaces() {
-        const container = document.getElementById('iface-selector-container');
+        const container = document.getElementById('iface-roles-container');
         if (!container) return;
 
         try {
             const data = await API.get('/api/interfaces');
             if (data.ok) {
                 _allInterfaces = data.interfaces || [];
-                _selectedInterfaces = data.selected || [];
                 _detectedRoles = data.detected || { wan: '', wan6: '', lan: '' };
 
-                // Авто-заполнение WAN/WAN6/LAN в текстовых полях, если пустые
-                _applyDetectedRoles();
+                // Обновляем placeholder'ы текстовых полей
+                _updatePlaceholders();
 
-                renderInterfaceSelector();
+                renderInterfaceRoles();
             }
         } catch (err) {
             container.innerHTML = `<div style="color:var(--error); padding:12px; font-size:13px;">
@@ -617,81 +631,110 @@ const SettingsPage = (() => {
         }
     }
 
-    /**
-     * Подставить авто-определённые WAN/WAN6/LAN в поля конфига,
-     * если поля пустые. Обновить placeholder с подсказкой.
-     */
-    function _applyDetectedRoles() {
-        const roleMap = {
+    /** Обновить placeholder полей WAN/WAN6/LAN значениями auto-detect. */
+    function _updatePlaceholders() {
+        const map = {
             'interfaces.wan':  _detectedRoles.wan,
             'interfaces.wan6': _detectedRoles.wan6,
             'interfaces.lan':  _detectedRoles.lan,
         };
-
-        for (const [key, detected] of Object.entries(roleMap)) {
-            const current = getNestedValue(config, key);
-            const inputId = 'cfg-' + key.replace(/\./g, '-');
-            const inputEl = document.getElementById(inputId);
-
-            if (inputEl) {
-                // Обновляем placeholder с определённым значением
-                if (detected) {
-                    inputEl.placeholder = `Авто: ${detected}`;
-                } else {
-                    inputEl.placeholder = 'Не определён';
-                }
-
-                // Если поле пустое и есть определённое значение — подставляем
-                if (!current && detected) {
-                    inputEl.value = detected;
-                    setNestedValue(config, key, detected);
-                }
-            }
+        for (const [key, detected] of Object.entries(map)) {
+            const el = document.getElementById('cfg-' + key.replace(/\./g, '-'));
+            if (el) el.placeholder = detected ? `Авто: ${detected}` : 'Не определён';
         }
+    }
 
-        // Проверяем, изменилось ли что-то
+    /**
+     * Получить список имён интерфейсов, назначенных роли.
+     * Значение поля — строка через пробел: "eth0 eth1".
+     */
+    function _getRoleIfaces(role) {
+        const val = getNestedValue(config, ROLES[role].configKey) || '';
+        return val.split(/\s+/).filter(Boolean);
+    }
+
+    /** Установить список интерфейсов для роли и синхронизировать текстовое поле. */
+    function _setRoleIfaces(role, names) {
+        const value = names.join(' ');
+        setNestedValue(config, ROLES[role].configKey, value);
+
+        // Синхронизация с текстовым полем
+        const id = 'cfg-' + ROLES[role].configKey.replace(/\./g, '-');
+        const el = document.getElementById(id);
+        if (el) el.value = value;
+
         hasUnsaved = !deepEqual(config, originalConfig);
         updateSaveBar();
     }
 
     /**
-     * Кнопка «Определить автоматически» — заполнить WAN/WAN6/LAN
-     * значениями из авто-определения, перезаписывая текущие.
+     * Переключить роль у интерфейса.
+     * Вызывается по клику на бейдж WAN/WAN6/LAN.
      */
-    function autoDetectInterfaces() {
-        const roleMap = {
-            'interfaces.wan':  _detectedRoles.wan,
-            'interfaces.wan6': _detectedRoles.wan6,
-            'interfaces.lan':  _detectedRoles.lan,
-        };
+    function toggleRole(ifaceName, role) {
+        const current = _getRoleIfaces(role);
+        const idx = current.indexOf(ifaceName);
 
+        if (idx >= 0) {
+            current.splice(idx, 1);  // снять роль
+        } else {
+            current.push(ifaceName); // назначить роль
+        }
+
+        _setRoleIfaces(role, current);
+        renderInterfaceRoles();
+    }
+
+    /** Авто-определить и заполнить WAN/WAN6/LAN из detected. */
+    function autoDetectRoles() {
         let filled = 0;
-        for (const [key, detected] of Object.entries(roleMap)) {
+        for (const [role, meta] of Object.entries(ROLES)) {
+            const detected = _detectedRoles[role] || '';
             if (detected) {
-                setNestedValue(config, key, detected);
-                const inputId = 'cfg-' + key.replace(/\./g, '-');
-                const inputEl = document.getElementById(inputId);
-                if (inputEl) inputEl.value = detected;
+                setNestedValue(config, meta.configKey, detected);
+                const id = 'cfg-' + meta.configKey.replace(/\./g, '-');
+                const el = document.getElementById(id);
+                if (el) el.value = detected;
                 filled++;
             }
         }
 
         hasUnsaved = !deepEqual(config, originalConfig);
         updateSaveBar();
+        renderInterfaceRoles();
 
         if (filled > 0) {
-            Toast.success(`Определено ${filled} интерфейс(ов): ` +
-                [_detectedRoles.wan && `WAN=${_detectedRoles.wan}`,
-                 _detectedRoles.wan6 && `WAN6=${_detectedRoles.wan6}`,
-                 _detectedRoles.lan && `LAN=${_detectedRoles.lan}`]
-                .filter(Boolean).join(', '));
+            const parts = [];
+            if (_detectedRoles.wan) parts.push('WAN=' + _detectedRoles.wan);
+            if (_detectedRoles.wan6) parts.push('WAN6=' + _detectedRoles.wan6);
+            if (_detectedRoles.lan) parts.push('LAN=' + _detectedRoles.lan);
+            Toast.success('Определено: ' + parts.join(', '));
         } else {
             Toast.warning('Не удалось определить интерфейсы автоматически');
         }
     }
 
-    function renderInterfaceSelector() {
-        const container = document.getElementById('iface-selector-container');
+    /** Сбросить все роли. */
+    function clearRoles() {
+        for (const meta of Object.values(ROLES)) {
+            setNestedValue(config, meta.configKey, '');
+            const id = 'cfg-' + meta.configKey.replace(/\./g, '-');
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        }
+        hasUnsaved = !deepEqual(config, originalConfig);
+        updateSaveBar();
+        renderInterfaceRoles();
+    }
+
+    async function refreshInterfaces() {
+        await loadInterfaces();
+        Toast.info('Список интерфейсов обновлён');
+    }
+
+    /** Отрисовать список интерфейсов с кликабельными бейджами ролей. */
+    function renderInterfaceRoles() {
+        const container = document.getElementById('iface-roles-container');
         if (!container) return;
 
         if (_allInterfaces.length === 0) {
@@ -700,67 +743,15 @@ const SettingsPage = (() => {
             return;
         }
 
-        const isAllSelected = _selectedInterfaces.length === 0;
+        // Текущие назначения из config
+        const wanList  = _getRoleIfaces('wan');
+        const wan6List = _getRoleIfaces('wan6');
+        const lanList  = _getRoleIfaces('lan');
+
         let html = '';
 
-        // Кнопка авто-определения
-        html += `
-            <div style="display:flex; gap:8px; margin-bottom: 8px;">
-                <button class="btn btn-ghost btn-sm" onclick="SettingsPage.autoDetectInterfaces()" title="Заполнить WAN/WAN6/LAN по таблице маршрутов">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                        <circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                    </svg>
-                    Определить WAN/LAN автоматически
-                </button>
-            </div>
-        `;
-
-        // Инфо об определённых ролях
-        if (_detectedRoles.wan || _detectedRoles.lan) {
-            const parts = [];
-            if (_detectedRoles.wan) parts.push(`WAN: <b>${_detectedRoles.wan}</b>`);
-            if (_detectedRoles.wan6 && _detectedRoles.wan6 !== _detectedRoles.wan)
-                parts.push(`WAN6: <b>${_detectedRoles.wan6}</b>`);
-            if (_detectedRoles.lan) parts.push(`LAN: <b>${_detectedRoles.lan}</b>`);
-            html += `<div style="font-size:11px; color:var(--text-muted); margin-bottom:10px; padding:6px 10px; background:rgba(91,158,244,0.06); border-radius:var(--radius); border:1px solid rgba(91,158,244,0.15);">
-                Определено: ${parts.join(' &nbsp;·&nbsp; ')}
-            </div>`;
-        }
-
-        // Чекбокс "Все интерфейсы" — только onchange на input, без onclick на label
-        html += `
-            <label style="
-                display: flex; align-items: center; gap: 10px;
-                padding: 10px 12px; margin-bottom: 4px;
-                background: ${isAllSelected ? 'rgba(91,158,244,0.08)' : 'transparent'};
-                border: 1px solid ${isAllSelected ? 'var(--accent)' : 'var(--border)'};
-                border-radius: var(--radius);
-                cursor: pointer;
-                transition: all 0.15s;
-            " title="Использовать все доступные интерфейсы">
-                <input type="checkbox" ${isAllSelected ? 'checked' : ''}
-                       style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"
-                       onchange="SettingsPage.toggleAllInterfaces()">
-                <div style="flex:1;">
-                    <div style="font-size: 13px; font-weight: 600; color: var(--text-primary);">
-                        Все интерфейсы
-                    </div>
-                    <div style="font-size: 11px; color: var(--text-muted);">
-                        nfqws2 будет обрабатывать трафик на всех интерфейсах
-                    </div>
-                </div>
-            </label>
-        `;
-
-        // Разделитель
-        html += `<div style="
-            font-size: 11px; color: var(--text-muted);
-            padding: 8px 0 4px; text-transform: uppercase; letter-spacing: 0.5px;
-        ">или выберите конкретные:</div>`;
-
-        // Отдельные интерфейсы
         _allInterfaces.forEach(iface => {
-            const isSelected = _selectedInterfaces.includes(iface.name);
+            const name = iface.name;
             const stateColor = iface.state === 'up' ? 'var(--success)' :
                                iface.state === 'down' ? 'var(--error)' : 'var(--text-muted)';
             const stateText = iface.state === 'up' ? 'UP' :
@@ -770,42 +761,44 @@ const SettingsPage = (() => {
             let addrText = '';
             if (iface.addresses && iface.addresses.length > 0) {
                 const ipv4 = iface.addresses.filter(a => a.family === 'ipv4');
-                if (ipv4.length > 0) {
-                    addrText = ipv4.map(a => a.address).join(', ');
-                }
+                if (ipv4.length > 0) addrText = ipv4.map(a => a.address).join(', ');
             }
 
-            // Бейдж роли (WAN/LAN)
-            let roleBadge = '';
-            if (_detectedRoles.wan && _detectedRoles.wan.split(' ').includes(iface.name)) {
-                roleBadge = '<span style="font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(249,115,22,0.15); color:var(--warning); margin-left:4px;">WAN</span>';
-            }
-            if (_detectedRoles.wan6 && _detectedRoles.wan6.split(' ').includes(iface.name)
-                && _detectedRoles.wan6 !== _detectedRoles.wan) {
-                roleBadge += '<span style="font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(168,85,247,0.15); color:#a855f7; margin-left:4px;">WAN6</span>';
-            }
-            if (_detectedRoles.lan === iface.name) {
-                roleBadge += '<span style="font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; background:rgba(34,197,94,0.15); color:var(--success); margin-left:4px;">LAN</span>';
-            }
+            // Имеет ли хотя бы одну роль
+            const hasRole = wanList.includes(name) || wan6List.includes(name) || lanList.includes(name);
+
+            // Рендерим бейджи ролей
+            const badges = Object.entries(ROLES).map(([role, meta]) => {
+                let ifaces;
+                if (role === 'wan') ifaces = wanList;
+                else if (role === 'wan6') ifaces = wan6List;
+                else ifaces = lanList;
+
+                const active = ifaces.includes(name);
+                return `<span onclick="SettingsPage.toggleRole('${name}', '${role}')" style="
+                    display:inline-block; font-size:10px; font-weight:700;
+                    padding: 2px 8px; border-radius: 4px; cursor: pointer;
+                    user-select: none; transition: all 0.15s;
+                    background: ${active ? meta.bg : 'transparent'};
+                    color: ${active ? meta.color : 'var(--text-muted)'};
+                    border: 1px solid ${active ? meta.color : 'var(--border)'};
+                    opacity: ${active ? '1' : '0.6'};
+                " title="${active ? 'Снять роль ' + meta.label : 'Назначить ' + meta.label}">${meta.label}</span>`;
+            }).join(' ');
 
             html += `
-                <label style="
+                <div style="
                     display: flex; align-items: center; gap: 10px;
                     padding: 8px 12px; margin-bottom: 2px;
-                    background: ${isSelected ? 'rgba(91,158,244,0.06)' : 'transparent'};
-                    border: 1px solid ${isSelected ? 'rgba(91,158,244,0.3)' : 'var(--border)'};
+                    background: ${hasRole ? 'rgba(91,158,244,0.04)' : 'transparent'};
+                    border: 1px solid ${hasRole ? 'rgba(91,158,244,0.2)' : 'var(--border)'};
                     border-radius: var(--radius);
-                    cursor: ${isAllSelected ? 'default' : 'pointer'};
                     transition: all 0.15s;
-                    opacity: ${isAllSelected ? '0.45' : '1'};
-                " title="${iface.name}${addrText ? ' — ' + addrText : ''}">
-                    <input type="checkbox" ${isSelected ? 'checked' : ''} ${isAllSelected ? 'disabled' : ''}
-                           style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"
-                           onchange="SettingsPage.toggleInterface('${iface.name}')">
+                ">
                     <div style="flex:1; min-width:0;">
                         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                             <span style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary);">
-                                ${iface.name}
+                                ${name}
                             </span>
                             <span style="
                                 font-size: 10px; font-weight: 600;
@@ -813,80 +806,21 @@ const SettingsPage = (() => {
                                 background: ${iface.state === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.12)'};
                                 color: ${stateColor};
                             ">${stateText}</span>
-                            ${roleBadge}
+                            ${addrText ? `<span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">${addrText}</span>` : ''}
                         </div>
-                        ${addrText ? `<div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top:2px;">${addrText}</div>` : ''}
                     </div>
-                </label>
+                    <div style="display:flex; gap:4px; flex-shrink:0;">
+                        ${badges}
+                    </div>
+                </div>
             `;
         });
-
-        // Кнопка сохранения
-        html += `
-            <div style="display:flex; justify-content:flex-end; margin-top:12px;">
-                <button class="btn btn-primary btn-sm" onclick="SettingsPage.saveInterfaces()" id="iface-save-btn">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-                        <polyline points="17 21 17 13 7 13 7 21"/>
-                        <polyline points="7 3 7 8 15 8"/>
-                    </svg>
-                    Сохранить выбор
-                </button>
-            </div>
-        `;
 
         container.innerHTML = html;
     }
 
-    function toggleInterface(name) {
-        const idx = _selectedInterfaces.indexOf(name);
-        if (idx >= 0) {
-            _selectedInterfaces.splice(idx, 1);
-        } else {
-            _selectedInterfaces.push(name);
-        }
-        renderInterfaceSelector();
-    }
-
-    function toggleAllInterfaces() {
-        if (_selectedInterfaces.length === 0) {
-            // "Все" уже выбрано → снимаем, позволяя выбрать конкретные
-            // Ничего не выбираем — пустой список, но помечаем что "все" снят
-            // Ставим первый доступный интерфейс, чтобы выйти из режима "все"
-            if (_allInterfaces.length > 0) {
-                _selectedInterfaces = [_allInterfaces[0].name];
-            }
-        } else {
-            // Были выбраны конкретные → сбрасываем в "все"
-            _selectedInterfaces = [];
-        }
-        renderInterfaceSelector();
-    }
-
-    async function refreshInterfaces() {
-        await loadInterfaces();
-    }
-
-    async function saveInterfaces() {
-        try {
-            const res = await API.post('/api/interfaces/select', {
-                interfaces: _selectedInterfaces,
-            });
-            if (res.ok) {
-                Toast.success(res.message || 'Интерфейсы сохранены');
-            } else {
-                Toast.error(res.error || 'Ошибка сохранения');
-            }
-        } catch (err) {
-            Toast.error('Ошибка: ' + err.message);
-        }
-    }
-
     // ══════════════════ Utils ══════════════════
 
-    /**
-     * Форматирует uptime в секундах в человекочитаемый вид.
-     */
     function formatUptime(seconds) {
         if (!seconds || seconds <= 0) return '—';
         const s = parseInt(seconds);
@@ -967,11 +901,9 @@ const SettingsPage = (() => {
         exportConfig,
         importConfig,
         handleImportFile,
-        // Network interface selection
         refreshInterfaces,
-        toggleInterface,
-        toggleAllInterfaces,
-        saveInterfaces,
-        autoDetectInterfaces,
+        autoDetectRoles,
+        clearRoles,
+        toggleRole,
     };
 })();
