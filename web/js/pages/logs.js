@@ -224,6 +224,13 @@ const LogsPage = (() => {
             eventSource = null;
         }
 
+        // Защита от спама переподключений: если слишком много попыток
+        // подряд — останавливаемся и показываем ошибку
+        if (reconnectAttempts > 10) {
+            updateConnectionStatus('error');
+            return;
+        }
+
         try {
             eventSource = new EventSource('/api/logs/stream');
 
@@ -241,13 +248,12 @@ const LogsPage = (() => {
                     const entry = JSON.parse(e.data);
                     addEntry(entry);
                 } catch (err) {
-                    console.error('SSE parse error:', err);
+                    // Игнорируем ошибки парсинга
                 }
             });
 
             // Обработка дефолтных сообщений (connected, heartbeat etc.)
             eventSource.onmessage = (e) => {
-                // connected event или другие
                 try {
                     const data = JSON.parse(e.data);
                     if (data.type === 'connected') {
@@ -262,12 +268,16 @@ const LogsPage = (() => {
             eventSource.onerror = () => {
                 isConnected = false;
                 updateConnectionStatus('disconnected');
-                eventSource.close();
-                eventSource = null;
+
+                // Закрываем текущий EventSource
+                if (eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+
                 scheduleReconnect();
             };
         } catch (err) {
-            console.error('SSE connection error:', err);
             isConnected = false;
             updateConnectionStatus('error');
             scheduleReconnect();
@@ -741,5 +751,6 @@ const LogsPage = (() => {
         clearLogs,
     };
 })();
+
 
 

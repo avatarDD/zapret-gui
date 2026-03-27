@@ -57,18 +57,37 @@ def _get_uptime() -> int:
 
 
 def _format_uptime(seconds: int) -> str:
-    """Форматировать uptime в человекочитаемый вид."""
+    """Форматировать uptime в человекочитаемый вид: Xмес Xд Xч Xм Xс."""
     if seconds <= 0:
         return "—"
-    days = seconds // 86400
-    hours = (seconds % 86400) // 3600
-    minutes = (seconds % 3600) // 60
+
+    months = seconds // (30 * 86400)     # ~30 дней в месяце
+    remainder = seconds % (30 * 86400)
+    days = remainder // 86400
+    remainder = remainder % 86400
+    hours = remainder // 3600
+    remainder = remainder % 3600
+    minutes = remainder // 60
+    secs = remainder % 60
+
     parts = []
+    if months > 0:
+        parts.append("%dмес" % months)
     if days > 0:
-        parts.append(f"{days}д")
+        parts.append("%dд" % days)
     if hours > 0:
-        parts.append(f"{hours}ч")
-    parts.append(f"{minutes}м")
+        parts.append("%dч" % hours)
+    if minutes > 0:
+        parts.append("%dм" % minutes)
+    # Секунды показываем всегда, если нет более крупных единиц,
+    # либо если uptime менее часа (для точности)
+    if secs > 0 and (not parts or hours == 0):
+        parts.append("%dс" % secs)
+
+    # Fallback если всё нулевое (не должно случиться при seconds > 0)
+    if not parts:
+        parts.append("0с")
+
     return " ".join(parts)
 
 
@@ -122,5 +141,6 @@ def _get_wan_ip() -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError, IndexError):
         pass
     return "—"
+
 
 

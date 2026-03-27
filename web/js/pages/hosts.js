@@ -171,8 +171,15 @@ const HostsPage = (() => {
             ]);
             stats = statsRes.stats || {};
             entries = customRes.entries || [];
+
             renderStats();
-            if (activeTab === 'entries') renderEntriesTab();
+
+            // Обновляем счётчик записей в табе
+            const countEl = document.getElementById('hosts-tab-count-entries');
+            if (countEl) countEl.textContent = entries.length;
+
+            // Всегда перерисовываем содержимое текущей вкладки
+            renderTabContent();
         } catch (err) {
             Toast.show('Ошибка обновления: ' + err.message, 'error');
         }
@@ -556,8 +563,16 @@ const HostsPage = (() => {
         try {
             const res = await API.post('/api/hosts/add', { ip, domain });
             Toast.show(res.message || 'Запись добавлена', 'success');
-            domainInput.value = '';
+
+            // Перезагружаем данные с сервера — это заново отрисует форму
             await refreshData();
+
+            // После перерисовки очищаем поле домена в новом input-элементе
+            const newDomainInput = document.getElementById('hosts-add-domain');
+            if (newDomainInput) {
+                newDomainInput.value = '';
+                newDomainInput.focus();
+            }
         } catch (err) {
             Toast.show(err.message, 'error');
         }
@@ -588,8 +603,13 @@ const HostsPage = (() => {
         try {
             const res = await API.post('/api/hosts/block', { domains });
             Toast.show(res.message || `Заблокировано: ${res.count}`, 'success');
-            input.value = '';
+
+            // Перезагружаем данные — форма перерисуется
             await refreshData();
+
+            // Очищаем поле в новом DOM-элементе
+            const newInput = document.getElementById('hosts-block-input');
+            if (newInput) newInput.value = '';
         } catch (err) {
             Toast.show(err.message, 'error');
         }
@@ -874,5 +894,6 @@ const HostsPage = (() => {
         refreshData,
     };
 })();
+
 
 

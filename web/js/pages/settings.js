@@ -267,7 +267,43 @@ const SettingsPage = (() => {
         });
 
         html += '</div>';
+
+        // Добавляем блок выбора интерфейсов для nfqws2
+        if (activeSection === 'interfaces') {
+            html += `
+                <div style="border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px;">
+                        <div>
+                            <h3 style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin: 0 0 4px 0;">
+                                Привязка nfqws2 к интерфейсам
+                            </h3>
+                            <div style="font-size: 12px; color: var(--text-secondary);">
+                                Выберите сетевые интерфейсы, на которых будет работать nfqws2
+                            </div>
+                        </div>
+                        <button class="btn btn-ghost btn-sm" onclick="SettingsPage.refreshInterfaces()" title="Обновить список">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <polyline points="23 4 23 10 17 10"/>
+                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="iface-selector-container">
+                        <div style="text-align:center; padding:20px; color:var(--text-muted);">
+                            <div class="spinner" style="margin:0 auto 8px; width:20px; height:20px;"></div>
+                            Загрузка интерфейсов...
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
         formEl.innerHTML = html;
+
+        // Загружаем интерфейсы если раздел активен
+        if (activeSection === 'interfaces') {
+            loadInterfaces();
+        }
     }
 
     function renderField(field, value) {
@@ -373,8 +409,15 @@ const SettingsPage = (() => {
         if (sys.arch) rows.push(['Архитектура', sys.arch]);
         if (sys.kernel) rows.push(['Ядро', sys.kernel]);
         if (sys.platform) rows.push(['Платформа', sys.platform]);
-        if (sys.uptime) rows.push(['Uptime системы', sys.uptime]);
-        if (sys.ram_total) rows.push(['RAM', `${sys.ram_used || '?'} / ${sys.ram_total}`]);
+        if (sys.uptime_human) {
+            rows.push(['Uptime системы', sys.uptime_human]);
+        } else if (sys.uptime) {
+            rows.push(['Uptime системы', formatUptime(sys.uptime)]);
+        }
+        if (sys.ram && sys.ram.total_mb) {
+            const usedMb = sys.ram.total_mb - sys.ram.available_mb;
+            rows.push(['RAM', `${usedMb} MB / ${sys.ram.total_mb} MB (${sys.ram.used_percent || 0}%)`]);
+        }
         if (fw.type) rows.push(['Firewall', fw.type]);
         rows.push(['GUI версия', GUI_VERSION]);
 
@@ -554,7 +597,202 @@ const SettingsPage = (() => {
         }
     }
 
+    // ══════════════════ Network Interfaces ══════════════════
+
+    let _allInterfaces = [];
+    let _selectedInterfaces = [];
+
+    async function loadInterfaces() {
+        const container = document.getElementById('iface-selector-container');
+        if (!container) return;
+
+        try {
+            const data = await API.get('/api/interfaces');
+            if (data.ok) {
+                _allInterfaces = data.interfaces || [];
+                _selectedInterfaces = data.selected || [];
+                renderInterfaceSelector();
+            }
+        } catch (err) {
+            container.innerHTML = `<div style="color:var(--error); padding:12px; font-size:13px;">
+                Ошибка загрузки интерфейсов: ${err.message}</div>`;
+        }
+    }
+
+    function renderInterfaceSelector() {
+        const container = document.getElementById('iface-selector-container');
+        if (!container) return;
+
+        if (_allInterfaces.length === 0) {
+            container.innerHTML = `<div style="color:var(--text-muted); padding:12px; font-size:13px;">
+                Интерфейсы не обнаружены</div>`;
+            return;
+        }
+
+        const isAllSelected = _selectedInterfaces.length === 0;
+
+        let html = '';
+
+        // Кнопка "Все интерфейсы"
+        html += `
+            <label style="
+                display: flex; align-items: center; gap: 10px;
+                padding: 10px 12px; margin-bottom: 4px;
+                background: ${isAllSelected ? 'rgba(91,158,244,0.08)' : 'transparent'};
+                border: 1px solid ${isAllSelected ? 'var(--accent)' : 'var(--border)'};
+                border-radius: var(--radius);
+                cursor: pointer;
+                transition: all 0.15s;
+            " onclick="SettingsPage.toggleAllInterfaces()" title="Использовать все доступные интерфейсы">
+                <input type="checkbox" ${isAllSelected ? 'checked' : ''}
+                       style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"
+                       onchange="SettingsPage.toggleAllInterfaces()">
+                <div style="flex:1;">
+                    <div style="font-size: 13px; font-weight: 600; color: var(--text-primary);">
+                        Все интерфейсы
+                    </div>
+                    <div style="font-size: 11px; color: var(--text-muted);">
+                        nfqws2 будет обрабатывать трафик на всех интерфейсах
+                    </div>
+                </div>
+            </label>
+        `;
+
+        // Разделитель
+        html += `<div style="
+            font-size: 11px; color: var(--text-muted);
+            padding: 8px 0 4px; text-transform: uppercase; letter-spacing: 0.5px;
+        ">или выберите конкретные:</div>`;
+
+        // Отдельные интерфейсы
+        _allInterfaces.forEach(iface => {
+            const isSelected = _selectedInterfaces.includes(iface.name);
+            const stateColor = iface.state === 'up' ? 'var(--success)' :
+                               iface.state === 'down' ? 'var(--error)' : 'var(--text-muted)';
+            const stateText = iface.state === 'up' ? 'UP' :
+                              iface.state === 'down' ? 'DOWN' : '?';
+
+            // Собираем IPv4 адреса для отображения
+            let addrText = '';
+            if (iface.addresses && iface.addresses.length > 0) {
+                const ipv4 = iface.addresses.filter(a => a.family === 'ipv4');
+                if (ipv4.length > 0) {
+                    addrText = ipv4.map(a => a.address).join(', ');
+                }
+            }
+
+            html += `
+                <label style="
+                    display: flex; align-items: center; gap: 10px;
+                    padding: 8px 12px; margin-bottom: 2px;
+                    background: ${isSelected ? 'rgba(91,158,244,0.06)' : 'transparent'};
+                    border: 1px solid ${isSelected ? 'rgba(91,158,244,0.3)' : 'var(--border)'};
+                    border-radius: var(--radius);
+                    cursor: pointer;
+                    transition: all 0.15s;
+                    opacity: ${isAllSelected ? '0.45' : '1'};
+                    pointer-events: ${isAllSelected ? 'none' : 'auto'};
+                " title="${iface.name}${addrText ? ' — ' + addrText : ''}">
+                    <input type="checkbox" ${isSelected ? 'checked' : ''} ${isAllSelected ? 'disabled' : ''}
+                           style="accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;"
+                           onchange="SettingsPage.toggleInterface('${iface.name}')">
+                    <div style="flex:1; min-width:0;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary);">
+                                ${iface.name}
+                            </span>
+                            <span style="
+                                font-size: 10px; font-weight: 600;
+                                padding: 1px 6px; border-radius: 3px;
+                                background: ${iface.state === 'up' ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.12)'};
+                                color: ${stateColor};
+                            ">${stateText}</span>
+                        </div>
+                        ${addrText ? `<div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top:2px;">${addrText}</div>` : ''}
+                    </div>
+                </label>
+            `;
+        });
+
+        // Кнопка сохранения
+        html += `
+            <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+                <button class="btn btn-primary btn-sm" onclick="SettingsPage.saveInterfaces()" id="iface-save-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                        <polyline points="17 21 17 13 7 13 7 21"/>
+                        <polyline points="7 3 7 8 15 8"/>
+                    </svg>
+                    Сохранить выбор
+                </button>
+            </div>
+        `;
+
+        container.innerHTML = html;
+    }
+
+    function toggleInterface(name) {
+        const idx = _selectedInterfaces.indexOf(name);
+        if (idx >= 0) {
+            _selectedInterfaces.splice(idx, 1);
+        } else {
+            _selectedInterfaces.push(name);
+        }
+        renderInterfaceSelector();
+    }
+
+    function toggleAllInterfaces() {
+        // Если были выбраны конкретные → сбрасываем (= все)
+        // Если уже "все" → ничего не делаем (пользователь должен выбрать конкретные)
+        _selectedInterfaces = [];
+        renderInterfaceSelector();
+    }
+
+    async function refreshInterfaces() {
+        await loadInterfaces();
+    }
+
+    async function saveInterfaces() {
+        try {
+            const res = await API.post('/api/interfaces/select', {
+                interfaces: _selectedInterfaces,
+            });
+            if (res.ok) {
+                Toast.success(res.message || 'Интерфейсы сохранены');
+            } else {
+                Toast.error(res.error || 'Ошибка сохранения');
+            }
+        } catch (err) {
+            Toast.error('Ошибка: ' + err.message);
+        }
+    }
+
     // ══════════════════ Utils ══════════════════
+
+    /**
+     * Форматирует uptime в секундах в человекочитаемый вид.
+     * Fallback на случай если бэкенд вернул только raw-секунды.
+     */
+    function formatUptime(seconds) {
+        if (!seconds || seconds <= 0) return '—';
+        const s = parseInt(seconds);
+        const months = Math.floor(s / (30 * 86400));
+        let rem = s % (30 * 86400);
+        const days = Math.floor(rem / 86400);
+        rem = rem % 86400;
+        const hours = Math.floor(rem / 3600);
+        rem = rem % 3600;
+        const minutes = Math.floor(rem / 60);
+        const secs = rem % 60;
+
+        const parts = [];
+        if (months > 0) parts.push(months + 'мес');
+        if (days > 0) parts.push(days + 'д');
+        if (hours > 0) parts.push(hours + 'ч');
+        if (minutes > 0) parts.push(minutes + 'м');
+        if (secs > 0 && (parts.length === 0 || hours === 0)) parts.push(secs + 'с');
+        return parts.join(' ') || '0с';
+    }
 
     function getNestedValue(obj, path) {
         return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : undefined, obj);
@@ -615,7 +853,13 @@ const SettingsPage = (() => {
         exportConfig,
         importConfig,
         handleImportFile,
+        // Network interface selection
+        refreshInterfaces,
+        toggleInterface,
+        toggleAllInterfaces,
+        saveInterfaces,
     };
 })();
+
 
 

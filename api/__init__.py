@@ -36,3 +36,4 @@ def register_routes(app):
     reg_zapret_manager(app)
 
 
+

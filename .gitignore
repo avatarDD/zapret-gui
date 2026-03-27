@@ -10,5 +10,3 @@ dist/
 .env
 *.log
 /config/settings.json
-
-

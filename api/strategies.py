@@ -477,3 +477,4 @@ def _save_categories(categories: list) -> bool:
         return False
 
 
+

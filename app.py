@@ -142,6 +142,18 @@ def create_app(config_dir: str = None) -> Bottle:
         # Для остального — SPA fallback
         return static_file("index.html", root=WEB_DIR)
 
+    # --- 500 для API — JSON вместо HTML ---
+    # Без этого SSE-клиент (EventSource) получает HTML-ответ
+    # «Critical error while processing request» вместо корректного
+    # SSE-потока, что приводит к циклу переподключений и спаму ошибок.
+    @app.error(500)
+    def error500(error):
+        if request.path.startswith("/api/"):
+            response.content_type = "application/json; charset=utf-8"
+            msg = str(error.body) if hasattr(error, 'body') else "Внутренняя ошибка сервера"
+            return '{"ok": false, "error": "%s"}' % msg.replace('"', '\\"')
+        return '<h1>Внутренняя ошибка сервера</h1><p>%s</p>' % str(error)
+
     log.success("Web-GUI инициализирован", source="app")
 
     return app
@@ -207,5 +219,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
