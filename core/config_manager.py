@@ -36,7 +36,6 @@ DEFAULT_CONFIG = {
         "nfqws_binary": "/opt/zapret2/nfq2/nfqws2",
         "lua_path": "/opt/zapret2/lua",
         "lists_path": "/opt/zapret2/lists",
-        "config_path": "/opt/zapret2/config",
     },
 
     # --- Настройки Web-GUI ---

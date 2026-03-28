@@ -20,7 +20,7 @@ const SettingsPage = (() => {
     let activeSection = 'zapret';
     let systemInfo = null;
 
-    const GUI_VERSION = 'v0.13.3';
+    const GUI_VERSION = 'v0.13.5';
 
     // Список системных интерфейсов (загружается с сервера)
     let _allInterfaces = [];
@@ -41,11 +41,10 @@ const SettingsPage = (() => {
             label: 'Zapret2',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
             fields: [
-                { key: 'zapret.base_path',     label: 'Базовый путь zapret2',   type: 'text', placeholder: '/opt/zapret2' },
-                { key: 'zapret.nfqws_binary',  label: 'Путь к nfqws2',          type: 'text', placeholder: '/opt/zapret2/nfq2/nfqws2' },
-                { key: 'zapret.lua_path',      label: 'Путь к Lua-скриптам',    type: 'text', placeholder: '/opt/zapret2/lua' },
-                { key: 'zapret.lists_path',    label: 'Путь к спискам',         type: 'text', placeholder: '/opt/zapret2/lists' },
-                { key: 'zapret.config_path',   label: 'Путь к конфигурации',    type: 'text', placeholder: '/opt/zapret2/config' },
+                { key: 'zapret.base_path',     label: 'Базовый путь zapret2',         type: 'text', placeholder: '/opt/zapret2' },
+                { key: 'zapret.nfqws_binary',  label: 'Путь к nfqws2',                type: 'text', placeholder: '/opt/zapret2/nfq2/nfqws2', suffix: '/nfq2/nfqws2' },
+                { key: 'zapret.lua_path',      label: 'Путь к Lua-скриптам',          type: 'text', placeholder: '/opt/zapret2/lua', suffix: '/lua' },
+                { key: 'zapret.lists_path',    label: 'Путь к спискам',               type: 'text', placeholder: '/opt/zapret2/lists', suffix: '/lists' },
             ]
         },
         {
@@ -459,8 +458,38 @@ const SettingsPage = (() => {
 
     // ══════════════════ Field Changes ══════════════════
 
+    /**
+     * Обновить зависимые пути zapret при смене base_path.
+     * Если текущее значение поля начинается со старого base_path — заменить префикс.
+     */
+    function syncDependentPaths(newBase) {
+        const zapretSection = SECTIONS.find(s => s.id === 'zapret');
+        if (!zapretSection) return;
+
+        const oldBase = originalConfig.zapret?.base_path
+            || getNestedValue(config, 'zapret.base_path') || '/opt/zapret2';
+
+        // Только поля с суффиксами (зависимые от base_path)
+        zapretSection.fields.forEach(field => {
+            if (!field.suffix || field.key === 'zapret.base_path') return;
+            const cur = getNestedValue(config, field.key) || '';
+            if (cur === oldBase + field.suffix || cur === '') {
+                setNestedValue(config, field.key, newBase + field.suffix);
+            }
+        });
+
+        // Перерисовать форму, чтобы отобразить новые значения
+        if (activeSection === 'zapret') renderSectionForm();
+    }
+
     function onFieldChange(key, value) {
         setNestedValue(config, key, value);
+
+        // Авто-обновление зависимых путей при смене base_path
+        if (key === 'zapret.base_path') {
+            syncDependentPaths(value);
+        }
+
         hasUnsaved = !deepEqual(config, originalConfig);
 
         const field = SECTIONS.flatMap(s => s.fields).find(f => f.key === key);
