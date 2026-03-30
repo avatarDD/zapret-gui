@@ -1,25 +1,7 @@
-# api/blobs.py
-"""
-API блобов (бинарные данные для fake-пакетов nfqws2).
-
-Эндпоинты:
-  GET    /api/blobs              — список всех блобов
-  GET    /api/blobs/stats        — статистика блобов
-  GET    /api/blobs/:name        — информация + hex-содержимое
-  POST   /api/blobs              — создать блоб из hex
-  PUT    /api/blobs/:name        — обновить блоб
-  DELETE /api/blobs/:name        — удалить (только user)
-  POST   /api/blobs/generate     — сгенерировать fake TLS/HTTP
-"""
-
 from bottle import request, response
-
-
 def register(app):
-
     @app.route("/api/blobs")
     def api_blobs_list():
-        """Список всех блобов."""
         response.content_type = "application/json; charset=utf-8"
         from core.blob_manager import get_blob_manager
         bm = get_blob_manager()
@@ -36,36 +18,27 @@ def register(app):
                 for b in blobs
             ],
         }
-
     @app.route("/api/blobs/stats")
     def api_blobs_stats():
-        """Статистика блобов."""
         response.content_type = "application/json; charset=utf-8"
         from core.blob_manager import get_blob_manager
         bm = get_blob_manager()
         stats = bm.get_stats()
         return {"ok": True, "stats": stats}
-
     @app.route("/api/blobs/<name>")
     def api_blobs_get(name):
-        """Информация о блобе + hex-содержимое."""
         response.content_type = "application/json; charset=utf-8"
         from core.blob_manager import get_blob_manager
         bm = get_blob_manager()
-
         info = bm.get_blob(name)
         if not info:
             response.status = 404
             return {"ok": False, "error": "Блоб не найден: %s" % name}
-
         hex_content = bm.get_blob_hex(name)
-
-        # Генерируем hex-дамп для просмотра
         raw = bm.get_blob_content(name)
         hex_dump = ""
         if raw:
             hex_dump = bm.format_hex(raw)
-
         return {
             "ok": True,
             "blob": {
@@ -77,57 +50,42 @@ def register(app):
                 "hex_dump": hex_dump,
             },
         }
-
     @app.post("/api/blobs")
     def api_blobs_create():
-        """Создать блоб из hex-данных."""
         response.content_type = "application/json; charset=utf-8"
         from core.blob_manager import get_blob_manager
         from core.log_buffer import log
         bm = get_blob_manager()
-
         try:
             body = request.json
         except Exception:
             response.status = 400
             return {"ok": False, "error": "Невалидный JSON"}
-
         if not body:
             response.status = 400
             return {"ok": False, "error": "Пустое тело запроса"}
-
         name = body.get("name", "").strip()
         hex_data = body.get("hex", "").strip()
-
         if not name:
             response.status = 400
             return {"ok": False, "error": "Поле 'name' обязательно"}
-
         if not hex_data:
             response.status = 400
             return {"ok": False, "error": "Поле 'hex' обязательно"}
-
-        # Валидация имени
         valid, err = bm.validate_name(name)
         if not valid:
             response.status = 400
             return {"ok": False, "error": err}
-
-        # Нельзя создавать блобы с builtin-именами
         if bm.is_builtin(name):
             response.status = 400
             return {"ok": False, "error": "Нельзя использовать имя встроенного блоба"}
-
-        # Проверяем что блоб не существует
         if bm.get_blob(name):
             response.status = 409
             return {"ok": False, "error": "Блоб с таким именем уже существует: %s" % name}
-
         ok, error = bm.save_blob_hex(name, hex_data)
         if not ok:
             response.status = 400
             return {"ok": False, "error": error}
-
         log.success(f"Блоб создан через API: {name}", source="blobs")
         info = bm.get_blob(name)
         return {
@@ -139,41 +97,32 @@ def register(app):
                 "is_builtin": info["is_builtin"],
             },
         }
-
     @app.put("/api/blobs/<name>")
     def api_blobs_update(name):
-        """Обновить содержимое блоба."""
         response.content_type = "application/json; charset=utf-8"
         from core.blob_manager import get_blob_manager
         from core.log_buffer import log
         bm = get_blob_manager()
-
-        # Проверяем существование
         info = bm.get_blob(name)
         if not info:
             response.status = 404
             return {"ok": False, "error": "Блоб не найден: %s" % name}
-
         try:
             body = request.json
         except Exception:
             response.status = 400
             return {"ok": False, "error": "Невалидный JSON"}
-
         if not body:
             response.status = 400
             return {"ok": False, "error": "Пустое тело запроса"}
-
         hex_data = body.get("hex", "").strip()
         if not hex_data:
             response.status = 400
             return {"ok": False, "error": "Поле 'hex' обязательно"}
-
         ok, error = bm.save_blob_hex(name, hex_data)
         if not ok:
             response.status = 400
             return {"ok": False, "error": error}
-
         log.info(f"Блоб обновлён через API: {name}", source="blobs")
         updated = bm.get_blob(name)
         return {
@@ -185,67 +134,46 @@ def register(app):
                 "is_builtin": updated["is_builtin"],
             },
         }
-
     @app.delete("/api/blobs/<name>")
     def api_blobs_delete(name):
-        """Удалить блоб (только пользовательские)."""
         response.content_type = "application/json; charset=utf-8"
         from core.blob_manager import get_blob_manager
         from core.log_buffer import log
         bm = get_blob_manager()
-
         ok, error = bm.delete_blob(name)
         if not ok:
             response.status = 400
             return {"ok": False, "error": error}
-
         log.info(f"Блоб удалён через API: {name}", source="blobs")
         return {"ok": True}
-
     @app.post("/api/blobs/generate")
     def api_blobs_generate():
-        """
-        Сгенерировать fake-блоб.
-
-        Body: { type: "tls"|"http", domain: "example.com", name: "my_blob" }
-        Если name указан — сохраняет блоб.
-        Всегда возвращает hex-данные.
-        """
         response.content_type = "application/json; charset=utf-8"
         from core.blob_manager import get_blob_manager
         from core.log_buffer import log
         bm = get_blob_manager()
-
         try:
             body = request.json
         except Exception:
             response.status = 400
             return {"ok": False, "error": "Невалидный JSON"}
-
         if not body:
             response.status = 400
             return {"ok": False, "error": "Пустое тело запроса"}
-
         gen_type = body.get("type", "").strip().lower()
         domain = body.get("domain", "").strip()
         save_name = body.get("name", "").strip()
-
         if gen_type not in ("tls", "http"):
             response.status = 400
             return {"ok": False, "error": "Тип должен быть 'tls' или 'http'"}
-
         if not domain:
             response.status = 400
             return {"ok": False, "error": "Поле 'domain' обязательно"}
-
-        # Валидация домена (базовая)
         if len(domain) > 253 or not all(
             c.isalnum() or c in ".-_" for c in domain
         ):
             response.status = 400
             return {"ok": False, "error": "Некорректный домен"}
-
-        # Генерация
         try:
             if gen_type == "tls":
                 data = bm.generate_fake_tls(domain)
@@ -254,10 +182,8 @@ def register(app):
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": "Ошибка генерации: %s" % str(e)}
-
         hex_str = " ".join(f"{b:02x}" for b in data)
         hex_dump = bm.format_hex(data)
-
         result = {
             "ok": True,
             "generated": {
@@ -268,23 +194,18 @@ def register(app):
                 "hex_dump": hex_dump,
             },
         }
-
-        # Сохранение если указано имя
         if save_name:
             valid, err = bm.validate_name(save_name)
             if not valid:
                 response.status = 400
                 return {"ok": False, "error": err}
-
             if bm.is_builtin(save_name):
                 response.status = 400
                 return {"ok": False, "error": "Нельзя использовать имя встроенного блоба"}
-
             ok, error = bm.save_blob(save_name, data)
             if not ok:
                 response.status = 500
                 return {"ok": False, "error": error}
-
             result["saved"] = {
                 "name": save_name,
                 "size": len(data),
@@ -294,5 +215,4 @@ def register(app):
                 f"Сгенерирован и сохранён блоб: {save_name} ({gen_type}, {domain})",
                 source="blobs",
             )
-
         return result

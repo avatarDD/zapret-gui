@@ -1,22 +1,11 @@
-/**
- * diagnostics.js — Страница «Диагностика».
- *
- * Карточки сервисов (YouTube, Discord, …) с проверкой доступности,
- * системная информация, firewall, конфликты nfqws/tpws.
- * Ручная проверка каждого сервиса + «Проверить все».
- */
-
 const DiagnosticsPage = (() => {
-    /* ───────── state ───────── */
-    let services = {};          // описание сервисов от API
-    let serviceResults = {};    // результаты проверок
-    let checking = {};          // { service_name: true } — идёт проверка
+    let services = {};
+    let serviceResults = {};
+    let checking = {};
     let checkAllRunning = false;
     let systemInfo = null;
     let firewallInfo = null;
     let conflictsInfo = null;
-
-    /* ──────── service icons (SVG) ──────── */
     const SVC_ICONS = {
         youtube:   '<svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.9 31.9 0 0 0 0 12a31.9 31.9 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.9 31.9 0 0 0 24 12a31.9 31.9 0 0 0-.5-5.8zM9.6 15.6V8.4L15.8 12l-6.2 3.6z"/></svg>',
         discord:   '<svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M20.3 4.4a19.6 19.6 0 0 0-4.9-1.5 14.5 14.5 0 0 0-.6 1.3 18 18 0 0 0-5.6 0 14.5 14.5 0 0 0-.7-1.3A19.6 19.6 0 0 0 3.7 4.4 20.5 20.5 0 0 0 .1 16.5a19.7 19.7 0 0 0 6 3 14.2 14.2 0 0 0 1.2-2 12.8 12.8 0 0 1-2-.9l.5-.4a14 14 0 0 0 12.1 0l.5.4a12.8 12.8 0 0 1-2 .9 14.2 14.2 0 0 0 1.2 2 19.7 19.7 0 0 0 6-3A20.5 20.5 0 0 0 20.3 4.4zM8 13.9c-1 0-1.9-1-1.9-2.1s.8-2.1 1.9-2.1 2 1 1.9 2.1c0 1.2-.8 2.1-1.9 2.1zm8 0c-1 0-1.9-1-1.9-2.1s.8-2.1 1.9-2.1 2 1 1.9 2.1c0 1.2-.8 2.1-1.9 2.1z"/></svg>',
@@ -26,8 +15,6 @@ const DiagnosticsPage = (() => {
         chatgpt:   '<svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M22.3 10.3a6.1 6.1 0 0 0-.5-5 6.2 6.2 0 0 0-6.7-3 6.1 6.1 0 0 0-4.6-2.1 6.2 6.2 0 0 0-5.9 4.3 6.1 6.1 0 0 0-4.1 3 6.2 6.2 0 0 0 .8 7.3 6.1 6.1 0 0 0 .5 5 6.2 6.2 0 0 0 6.7 3 6.1 6.1 0 0 0 4.6 2.1 6.2 6.2 0 0 0 5.9-4.3 6.1 6.1 0 0 0 4.1-3 6.2 6.2 0 0 0-.8-7.3z"/></svg>',
         claude:    '<svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4" fill="var(--bg-card)"/></svg>',
     };
-
-    /* ──────── status helpers ──────── */
     const STATUS_LABELS = {
         ok:       'Доступен',
         partial:  'Частично',
@@ -44,15 +31,12 @@ const DiagnosticsPage = (() => {
         checking: 'var(--accent)',
         pending:  'var(--text-muted)',
     };
-
-    /* ═══════════════════ render ═══════════════════ */
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
                 <h1 class="page-title">Диагностика</h1>
                 <p class="page-description">Проверка доступности сервисов, сети и системы</p>
             </div>
-
             <!-- Верхняя панель: кнопки -->
             <div class="diag-toolbar">
                 <button class="btn btn-primary" id="diag-check-all" onclick="DiagnosticsPage.checkAll()">
@@ -65,7 +49,6 @@ const DiagnosticsPage = (() => {
                     Обновить систему
                 </button>
             </div>
-
             <!-- Прогресс -->
             <div class="diag-progress hidden" id="diag-progress">
                 <div class="diag-progress-track">
@@ -73,7 +56,6 @@ const DiagnosticsPage = (() => {
                 </div>
                 <span class="diag-progress-text" id="diag-progress-text">Проверка…</span>
             </div>
-
             <!-- Карточки сервисов -->
             <div class="card">
                 <div class="card-title">
@@ -88,7 +70,6 @@ const DiagnosticsPage = (() => {
                     <div class="diag-loading">Загрузка списка сервисов…</div>
                 </div>
             </div>
-
             <!-- Системная информация -->
             <div class="card">
                 <div class="card-title">
@@ -103,7 +84,6 @@ const DiagnosticsPage = (() => {
                     <div class="diag-loading">Загрузка…</div>
                 </div>
             </div>
-
             <!-- Firewall -->
             <div class="card">
                 <div class="card-title">
@@ -116,7 +96,6 @@ const DiagnosticsPage = (() => {
                     <div class="diag-loading">Загрузка…</div>
                 </div>
             </div>
-
             <!-- Конфликты -->
             <div class="card">
                 <div class="card-title">
@@ -131,7 +110,6 @@ const DiagnosticsPage = (() => {
                     <div class="diag-loading">Загрузка…</div>
                 </div>
             </div>
-
             <!-- Ручная проверка -->
             <div class="card">
                 <div class="card-title">
@@ -169,14 +147,11 @@ const DiagnosticsPage = (() => {
                 </div>
             </div>
         `;
-
-        // Загружаем данные
         loadServices();
         loadSystemInfo();
         loadFirewall();
         loadConflicts();
     }
-
     function destroy() {
         services = {};
         serviceResults = {};
@@ -186,9 +161,6 @@ const DiagnosticsPage = (() => {
         firewallInfo = null;
         conflictsInfo = null;
     }
-
-    /* ═══════════════════ Загрузка данных ═══════════════════ */
-
     async function loadServices() {
         try {
             const data = await API.get('/api/diagnostics/services');
@@ -201,7 +173,6 @@ const DiagnosticsPage = (() => {
                 '<div class="diag-error">Ошибка загрузки сервисов</div>';
         }
     }
-
     async function loadSystemInfo() {
         try {
             const data = await API.get('/api/diagnostics/system');
@@ -214,7 +185,6 @@ const DiagnosticsPage = (() => {
                 '<div class="diag-error">Ошибка загрузки системной информации</div>';
         }
     }
-
     async function loadFirewall() {
         try {
             const data = await API.get('/api/diagnostics/firewall');
@@ -227,7 +197,6 @@ const DiagnosticsPage = (() => {
                 '<div class="diag-error">Ошибка загрузки статуса firewall</div>';
         }
     }
-
     async function loadConflicts() {
         try {
             const data = await API.get('/api/diagnostics/conflicts');
@@ -240,19 +209,14 @@ const DiagnosticsPage = (() => {
                 '<div class="diag-error">Ошибка загрузки</div>';
         }
     }
-
-    /* ═══════════════════ Render: Сервисы ═══════════════════ */
-
     function renderServicesGrid() {
         const grid = document.getElementById('diag-services-grid');
         if (!grid) return;
-
         const names = Object.keys(services);
         if (names.length === 0) {
             grid.innerHTML = '<div class="diag-empty">Нет доступных сервисов</div>';
             return;
         }
-
         grid.innerHTML = names.map(name => {
             const svc = services[name];
             const result = serviceResults[name];
@@ -261,12 +225,10 @@ const DiagnosticsPage = (() => {
             const statusLabel = STATUS_LABELS[status] || status;
             const statusColor = STATUS_COLORS[status] || 'var(--text-muted)';
             const icon = SVC_ICONS[name] || '';
-
             let detailsHtml = '';
             if (result && !isChecking) {
                 detailsHtml = buildServiceDetails(result);
             }
-
             return `
                 <div class="diag-service-card" id="svc-card-${name}" data-status="${status}">
                     <div class="diag-service-header">
@@ -291,7 +253,6 @@ const DiagnosticsPage = (() => {
             `;
         }).join('');
     }
-
     function statusIndicator(status) {
         if (status === 'ok')       return '<span class="diag-dot diag-dot-ok"></span>';
         if (status === 'partial')  return '<span class="diag-dot diag-dot-warn"></span>';
@@ -299,11 +260,9 @@ const DiagnosticsPage = (() => {
         if (status === 'down')     return '<span class="diag-dot diag-dot-err"></span>';
         return '<span class="diag-dot diag-dot-muted"></span>';
     }
-
     function buildServiceDetails(result) {
         if (!result || result.error) return '';
         const parts = [];
-
         // Ping
         if (result.ping) {
             const p = result.ping;
@@ -317,7 +276,6 @@ const DiagnosticsPage = (() => {
                 </span>
             </div>`);
         }
-
         // DNS
         if (result.dns && result.dns.length > 0) {
             const allOk = result.dns.every(d => d.ok);
@@ -330,7 +288,6 @@ const DiagnosticsPage = (() => {
                 </span>
             </div>`);
         }
-
         // HTTP
         if (result.http && result.http.length > 0) {
             result.http.forEach(h => {
@@ -345,26 +302,20 @@ const DiagnosticsPage = (() => {
                 </div>`);
             });
         }
-
         return parts.join('');
     }
-
     /* ═══════════════════ Render: Система ═══════════════════ */
-
     function renderSystemInfo() {
         const el = document.getElementById('diag-system-info');
         if (!el || !systemInfo) return;
-
         const si = systemInfo;
         const ram = si.ram || {};
-
         let interfacesHtml = '';
         if (si.network_interfaces && si.network_interfaces.length > 0) {
             interfacesHtml = si.network_interfaces.map(iface =>
                 `<span class="diag-iface-badge">${_esc(iface.name)}: ${_esc(iface.address)}/${iface.prefix}</span>`
             ).join(' ');
         }
-
         el.innerHTML = `
             <div class="diag-info-grid">
                 <div class="diag-info-item">
@@ -436,16 +387,12 @@ const DiagnosticsPage = (() => {
             ` : ''}
         `;
     }
-
     /* ═══════════════════ Render: Firewall ═══════════════════ */
-
     function renderFirewall() {
         const el = document.getElementById('diag-firewall');
         if (!el || !firewallInfo) return;
-
         const fi = firewallInfo;
         const rulesCount = fi.rules ? fi.rules.length : 0;
-
         let rulesHtml = '';
         if (rulesCount > 0) {
             rulesHtml = `
@@ -459,7 +406,6 @@ const DiagnosticsPage = (() => {
                 </div>
             `;
         }
-
         el.innerHTML = `
             <div class="diag-info-grid">
                 <div class="diag-info-item">
@@ -483,15 +429,10 @@ const DiagnosticsPage = (() => {
             ${rulesHtml}
         `;
     }
-
-    /* ═══════════════════ Render: Конфликты ═══════════════════ */
-
     function renderConflicts() {
         const el = document.getElementById('diag-conflicts');
         if (!el || !conflictsInfo) return;
-
         const ci = conflictsInfo;
-
         if (!ci.has_conflicts) {
             el.innerHTML = `
                 <div class="diag-no-conflicts">
@@ -501,7 +442,6 @@ const DiagnosticsPage = (() => {
             `;
             return;
         }
-
         el.innerHTML = `
             <div class="diag-conflicts-warning">
                 <svg viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2" width="18" height="18">
@@ -521,14 +461,10 @@ const DiagnosticsPage = (() => {
             </div>
         `;
     }
-
-    /* ═══════════════════ Actions ═══════════════════ */
-
     async function checkService(name) {
         if (checking[name]) return;
         checking[name] = true;
         renderServicesGrid();
-
         try {
             const data = await API.post('/api/diagnostics/service', { name });
             if (data.ok) {
@@ -541,31 +477,23 @@ const DiagnosticsPage = (() => {
             renderServicesGrid();
         }
     }
-
     async function checkAll() {
         if (checkAllRunning) return;
         checkAllRunning = true;
-
         const btn = document.getElementById('diag-check-all');
         if (btn) { btn.disabled = true; btn.textContent = 'Проверка…'; }
-
         const progress = document.getElementById('diag-progress');
         const progressBar = document.getElementById('diag-progress-bar');
         const progressText = document.getElementById('diag-progress-text');
         if (progress) progress.classList.remove('hidden');
-
         const names = Object.keys(services);
         const total = names.length;
         let done = 0;
-
-        // Проверяем каждый сервис последовательно, обновляя карточки
         for (const name of names) {
             checking[name] = true;
             renderServicesGrid();
-
             if (progressText) progressText.textContent = `Проверка ${services[name].name}… (${done + 1}/${total})`;
             if (progressBar) progressBar.style.width = `${(done / total) * 100}%`;
-
             try {
                 const data = await API.post('/api/diagnostics/service', { name });
                 if (data.ok) {
@@ -574,16 +502,13 @@ const DiagnosticsPage = (() => {
             } catch (e) {
                 serviceResults[name] = { name, status: 'down', error: 'Ошибка запроса' };
             }
-
             checking[name] = false;
             done++;
             if (progressBar) progressBar.style.width = `${(done / total) * 100}%`;
             renderServicesGrid();
         }
-
         if (progressText) progressText.textContent = 'Готово!';
         checkAllRunning = false;
-
         if (btn) {
             btn.disabled = false;
             btn.innerHTML = `
@@ -593,13 +518,9 @@ const DiagnosticsPage = (() => {
                 Проверить все
             `;
         }
-
-        // Скрываем прогресс через 2 сек
         setTimeout(() => {
             if (progress) progress.classList.add('hidden');
         }, 2000);
-
-        // Подсчитываем итоги
         const ok = Object.values(serviceResults).filter(r => r.status === 'ok').length;
         const down = Object.values(serviceResults).filter(r => r.status === 'down').length;
         if (typeof Toast !== 'undefined') {
@@ -609,24 +530,18 @@ const DiagnosticsPage = (() => {
             );
         }
     }
-
     async function refreshSystem() {
-        // Перезагружаем все системные данные
         document.getElementById('diag-system-info').innerHTML = '<div class="diag-loading">Обновление…</div>';
         document.getElementById('diag-firewall').innerHTML = '<div class="diag-loading">Обновление…</div>';
         document.getElementById('diag-conflicts').innerHTML = '<div class="diag-loading">Обновление…</div>';
         await Promise.all([loadSystemInfo(), loadFirewall(), loadConflicts()]);
         if (typeof Toast !== 'undefined') Toast.show('Системная информация обновлена', 'success');
     }
-
-    /* ═══════════════════ Ручные проверки ═══════════════════ */
-
     async function manualPing() {
         const host = (document.getElementById('diag-ping-host')?.value || '').trim();
         if (!host) return;
         const out = document.getElementById('diag-manual-output');
         if (out) out.textContent = `Ping ${host}…`;
-
         try {
             const data = await API.post('/api/diagnostics/ping', { host });
             if (data.ok) {
@@ -643,13 +558,11 @@ const DiagnosticsPage = (() => {
             if (out) out.textContent = `Ошибка запроса: ${e.message}`;
         }
     }
-
     async function manualHttp() {
         const url = (document.getElementById('diag-http-url')?.value || '').trim();
         if (!url) return;
         const out = document.getElementById('diag-manual-output');
         if (out) out.textContent = `HTTP проверка ${url}…`;
-
         try {
             const data = await API.post('/api/diagnostics/http', { url });
             if (data.ok) {
@@ -668,13 +581,11 @@ const DiagnosticsPage = (() => {
             if (out) out.textContent = `Ошибка запроса: ${e.message}`;
         }
     }
-
     async function manualDns() {
         const domain = (document.getElementById('diag-dns-domain')?.value || '').trim();
         if (!domain) return;
         const out = document.getElementById('diag-manual-output');
         if (out) out.textContent = `DNS resolve ${domain}…`;
-
         try {
             const data = await API.post('/api/diagnostics/dns', { domain });
             if (data.ok) {
@@ -693,7 +604,6 @@ const DiagnosticsPage = (() => {
             if (out) out.textContent = `Ошибка запроса: ${e.message}`;
         }
     }
-
     /* ═══════════════════ utils ═══════════════════ */
     function _esc(str) {
         if (!str) return '';
@@ -701,8 +611,6 @@ const DiagnosticsPage = (() => {
         d.textContent = String(str);
         return d.innerHTML;
     }
-
-    /* ═══════════════════ public API ═══════════════════ */
     return {
         render,
         destroy,

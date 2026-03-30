@@ -1,26 +1,14 @@
-/**
- * hostlists.js — Страница управления списками доменов.
- *
- * Табы: other.txt | other2.txt | netrogat.txt
- * Функции: просмотр, редактирование, добавление, удаление,
- *          импорт из URL/текста, сброс к дефолтам.
- */
-
 const HostlistsPage = (() => {
-
     const TABS = [
         { name: 'other',    label: 'other.txt',    desc: 'Базовый список доменов' },
         { name: 'other2',   label: 'other2.txt',   desc: 'Пользовательские домены' },
         { name: 'netrogat', label: 'netrogat.txt',  desc: 'Исключения (не обрабатываются)' },
     ];
-
     let activeTab = 'other';
     let originalContent = '';
     let hasUnsaved = false;
     let loading = false;
-
     // ══════════════════ Render ══════════════════
-
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -34,12 +22,10 @@ const HostlistsPage = (() => {
                 </h1>
                 <p class="page-description">Управление hostlist-файлами для nfqws2</p>
             </div>
-
             <!-- Статистика -->
             <div class="status-grid" id="hl-stats-grid">
                 <div class="status-card"><div class="status-card-label">Загрузка...</div></div>
             </div>
-
             <!-- Табы -->
             <div class="card" style="padding: 0;">
                 <div class="lists-tabs" id="hl-tabs">
@@ -52,7 +38,6 @@ const HostlistsPage = (() => {
                         </button>
                     `).join('')}
                 </div>
-
                 <div class="lists-content" id="hl-content">
                     <div class="lists-toolbar">
                         <div class="lists-toolbar-left">
@@ -89,12 +74,10 @@ const HostlistsPage = (() => {
                             </button>
                         </div>
                     </div>
-
                     <!-- Основной textarea -->
                     <textarea class="lists-editor" id="hl-editor"
                               placeholder="Один домен на строку...&#10;example.com&#10;sub.example.com"
                               spellcheck="false"></textarea>
-
                     <!-- Добавление доменов -->
                     <div class="lists-add-section">
                         <div class="lists-add-header">
@@ -114,7 +97,6 @@ const HostlistsPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Модальное окно импорта -->
             <div class="modal-backdrop" id="hl-import-modal" style="display:none;">
                 <div class="modal-content">
@@ -151,28 +133,22 @@ const HostlistsPage = (() => {
                 </div>
             </div>
         `;
-
         // Загружаем данные
         loadStats();
         loadTab(activeTab);
-
         // Слушаем изменения в textarea
         const editor = document.getElementById('hl-editor');
         if (editor) {
             editor.addEventListener('input', onEditorInput);
         }
     }
-
     // ══════════════════ Data Loading ══════════════════
-
     async function loadStats() {
         try {
             const result = await API.get('/api/hostlists');
             if (!result.ok) return;
-
             const grid = document.getElementById('hl-stats-grid');
             if (!grid) return;
-
             grid.innerHTML = result.files.map(f => `
                 <div class="status-card" style="cursor:pointer;" onclick="HostlistsPage.switchTab('${f.name}')">
                     <div class="status-card-header">
@@ -186,7 +162,6 @@ const HostlistsPage = (() => {
                     <div class="status-card-detail">${f.description}</div>
                 </div>
             `).join('');
-
             // Обновляем счётчики в табах
             result.files.forEach(f => {
                 const cnt = document.getElementById('hl-tab-count-' + f.name);
@@ -196,25 +171,20 @@ const HostlistsPage = (() => {
             console.error('loadStats error:', err);
         }
     }
-
     async function loadTab(name) {
         loading = true;
         const editor = document.getElementById('hl-editor');
         const desc = document.getElementById('hl-tab-desc');
-
         if (editor) editor.value = 'Загрузка...';
         if (editor) editor.disabled = true;
-
         const tab = TABS.find(t => t.name === name);
         if (desc && tab) desc.textContent = tab.desc;
-
         try {
             const result = await API.get('/api/hostlists/' + name);
             if (!result.ok) {
                 if (editor) editor.value = 'Ошибка: ' + (result.error || '?');
                 return;
             }
-
             const text = result.domains.join('\n');
             if (editor) {
                 editor.value = text;
@@ -222,42 +192,29 @@ const HostlistsPage = (() => {
             }
             originalContent = text;
             setUnsaved(false);
-
         } catch (err) {
             if (editor) editor.value = 'Ошибка: ' + err.message;
         } finally {
             loading = false;
         }
     }
-
-    // ══════════════════ Tab Switching ══════════════════
-
     function switchTab(name) {
         if (name === activeTab) return;
-
         if (hasUnsaved) {
             if (!confirm('Есть несохранённые изменения. Переключить таб?')) return;
         }
-
         activeTab = name;
-
-        // Обновляем UI табов
         document.querySelectorAll('.lists-tab').forEach(el => {
             el.classList.toggle('active', el.dataset.tab === name);
         });
-
         loadTab(name);
     }
-
-    // ══════════════════ Editor ══════════════════
-
     function onEditorInput() {
         if (loading) return;
         const editor = document.getElementById('hl-editor');
         if (!editor) return;
         setUnsaved(editor.value !== originalContent);
     }
-
     function setUnsaved(val) {
         hasUnsaved = val;
         const indicator = document.getElementById('hl-unsaved');
@@ -265,16 +222,11 @@ const HostlistsPage = (() => {
         if (indicator) indicator.style.display = val ? 'inline-flex' : 'none';
         if (saveBtn) saveBtn.disabled = !val;
     }
-
-    // ══════════════════ Actions ══════════════════
-
     async function saveList() {
         const editor = document.getElementById('hl-editor');
         if (!editor) return;
-
         const text = editor.value.trim();
         const domains = text ? text.split('\n').map(d => d.trim()).filter(Boolean) : [];
-
         try {
             const result = await API.put('/api/hostlists/' + activeTab, { domains });
             if (result.ok) {
@@ -282,7 +234,6 @@ const HostlistsPage = (() => {
                 originalContent = editor.value;
                 setUnsaved(false);
                 loadStats();
-
                 if (result.invalid_count) {
                     Toast.warning('Пропущено невалидных: ' + result.invalid_count);
                 }
@@ -293,13 +244,10 @@ const HostlistsPage = (() => {
             Toast.error(err.message);
         }
     }
-
     async function resetList() {
         const tab = TABS.find(t => t.name === activeTab);
         const label = tab ? tab.label : activeTab;
-
         if (!confirm('Сбросить ' + label + ' к дефолтным значениям?')) return;
-
         try {
             const result = await API.post('/api/hostlists/' + activeTab + '/reset');
             if (result.ok) {
@@ -313,53 +261,41 @@ const HostlistsPage = (() => {
             Toast.error(err.message);
         }
     }
-
     function quickAdd() {
         const input = document.getElementById('hl-add-input');
         if (!input || !input.value.trim()) return;
-
         const editor = document.getElementById('hl-editor');
         if (!editor) return;
-
         const domain = input.value.trim();
-
-        // Добавляем в textarea
         const current = editor.value.trim();
         if (current) {
             editor.value = current + '\n' + domain;
         } else {
             editor.value = domain;
         }
-
         input.value = '';
         setUnsaved(true);
         Toast.info('Добавлено в редактор. Нажмите "Сохранить" для применения.');
     }
-
     // ══════════════════ Import Modal ══════════════════
-
     function showImportModal() {
         const modal = document.getElementById('hl-import-modal');
         if (modal) modal.style.display = 'flex';
     }
-
     function closeImportModal() {
         const modal = document.getElementById('hl-import-modal');
         if (modal) modal.style.display = 'none';
-        // Очищаем поля
         const urlInput = document.getElementById('hl-import-url');
         const textInput = document.getElementById('hl-import-text');
         if (urlInput) urlInput.value = '';
         if (textInput) textInput.value = '';
     }
-
     async function importFromUrl() {
         const urlInput = document.getElementById('hl-import-url');
         if (!urlInput || !urlInput.value.trim()) {
             Toast.warning('Введите URL');
             return;
         }
-
         try {
             Toast.info('Загрузка...');
             const result = await API.post('/api/hostlists/' + activeTab + '/import', {
@@ -377,14 +313,12 @@ const HostlistsPage = (() => {
             Toast.error(err.message);
         }
     }
-
     async function importFromText() {
         const textInput = document.getElementById('hl-import-text');
         if (!textInput || !textInput.value.trim()) {
             Toast.warning('Вставьте текст с доменами');
             return;
         }
-
         try {
             const result = await API.post('/api/hostlists/' + activeTab + '/import', {
                 text: textInput.value.trim()
@@ -401,16 +335,10 @@ const HostlistsPage = (() => {
             Toast.error(err.message);
         }
     }
-
-    // ══════════════════ Lifecycle ══════════════════
-
     function destroy() {
         hasUnsaved = false;
         loading = false;
     }
-
-    // ══════════════════ Public API ══════════════════
-
     return {
         render,
         destroy,

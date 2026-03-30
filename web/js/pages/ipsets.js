@@ -1,25 +1,13 @@
-/**
- * ipsets.js — Страница управления IP-списками.
- *
- * Табы: ipset-base.txt | my-ipset.txt
- * Функции: просмотр, редактирование, добавление IP/CIDR,
- *          загрузка по ASN через RIPE API, сброс к дефолтам.
- */
-
 const IPSetsPage = (() => {
-
     const TABS = [
         { name: 'ipset-base', label: 'ipset-base.txt', desc: 'Базовые IP-адреса и подсети' },
         { name: 'my-ipset',   label: 'my-ipset.txt',   desc: 'Пользовательские IP/подсети' },
     ];
-
     let activeTab = 'ipset-base';
     let originalContent = '';
     let hasUnsaved = false;
     let loading = false;
-
     // ══════════════════ Render ══════════════════
-
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -33,12 +21,10 @@ const IPSetsPage = (() => {
                 </h1>
                 <p class="page-description">Управление ipset-файлами для nfqws2</p>
             </div>
-
             <!-- Статистика -->
             <div class="status-grid" id="ip-stats-grid">
                 <div class="status-card"><div class="status-card-label">Загрузка...</div></div>
             </div>
-
             <!-- Табы -->
             <div class="card" style="padding: 0;">
                 <div class="lists-tabs" id="ip-tabs">
@@ -51,7 +37,6 @@ const IPSetsPage = (() => {
                         </button>
                     `).join('')}
                 </div>
-
                 <div class="lists-content" id="ip-content">
                     <div class="lists-toolbar">
                         <div class="lists-toolbar-left">
@@ -81,12 +66,10 @@ const IPSetsPage = (() => {
                             </button>
                         </div>
                     </div>
-
                     <!-- Основной textarea -->
                     <textarea class="lists-editor" id="ip-editor"
                               placeholder="Один IP или подсеть на строку...&#10;1.2.3.4&#10;10.0.0.0/8&#10;2001:db8::/32"
                               spellcheck="false"></textarea>
-
                     <!-- Добавление записей -->
                     <div class="lists-add-section">
                         <div class="lists-add-header">
@@ -104,7 +87,6 @@ const IPSetsPage = (() => {
                             </button>
                         </div>
                     </div>
-
                     <!-- Загрузка по ASN -->
                     <div class="lists-add-section" style="margin-top: 12px;">
                         <div class="lists-add-header">
@@ -140,28 +122,22 @@ const IPSetsPage = (() => {
                 </div>
             </div>
         `;
-
         // Загружаем данные
         loadStats();
         loadTab(activeTab);
-
         // Слушаем изменения
         const editor = document.getElementById('ip-editor');
         if (editor) {
             editor.addEventListener('input', onEditorInput);
         }
     }
-
     // ══════════════════ Data Loading ══════════════════
-
     async function loadStats() {
         try {
             const result = await API.get('/api/ipsets');
             if (!result.ok) return;
-
             const grid = document.getElementById('ip-stats-grid');
             if (!grid) return;
-
             grid.innerHTML = result.files.map(f => `
                 <div class="status-card" style="cursor:pointer;" onclick="IPSetsPage.switchTab('${f.name}')">
                     <div class="status-card-header">
@@ -176,7 +152,6 @@ const IPSetsPage = (() => {
                     <div class="status-card-detail">${f.description}</div>
                 </div>
             `).join('');
-
             // Обновляем счётчики
             result.files.forEach(f => {
                 const cnt = document.getElementById('ip-tab-count-' + f.name);
@@ -186,25 +161,20 @@ const IPSetsPage = (() => {
             console.error('loadStats error:', err);
         }
     }
-
     async function loadTab(name) {
         loading = true;
         const editor = document.getElementById('ip-editor');
         const desc = document.getElementById('ip-tab-desc');
-
         if (editor) editor.value = 'Загрузка...';
         if (editor) editor.disabled = true;
-
         const tab = TABS.find(t => t.name === name);
         if (desc && tab) desc.textContent = tab.desc;
-
         try {
             const result = await API.get('/api/ipsets/' + name);
             if (!result.ok) {
                 if (editor) editor.value = 'Ошибка: ' + (result.error || '?');
                 return;
             }
-
             const text = result.entries.join('\n');
             if (editor) {
                 editor.value = text;
@@ -212,41 +182,29 @@ const IPSetsPage = (() => {
             }
             originalContent = text;
             setUnsaved(false);
-
         } catch (err) {
             if (editor) editor.value = 'Ошибка: ' + err.message;
         } finally {
             loading = false;
         }
     }
-
-    // ══════════════════ Tab Switching ══════════════════
-
     function switchTab(name) {
         if (name === activeTab) return;
-
         if (hasUnsaved) {
             if (!confirm('Есть несохранённые изменения. Переключить таб?')) return;
         }
-
         activeTab = name;
-
         document.querySelectorAll('#ip-tabs .lists-tab').forEach(el => {
             el.classList.toggle('active', el.dataset.tab === name);
         });
-
         loadTab(name);
     }
-
-    // ══════════════════ Editor ══════════════════
-
     function onEditorInput() {
         if (loading) return;
         const editor = document.getElementById('ip-editor');
         if (!editor) return;
         setUnsaved(editor.value !== originalContent);
     }
-
     function setUnsaved(val) {
         hasUnsaved = val;
         const indicator = document.getElementById('ip-unsaved');
@@ -254,16 +212,11 @@ const IPSetsPage = (() => {
         if (indicator) indicator.style.display = val ? 'inline-flex' : 'none';
         if (saveBtn) saveBtn.disabled = !val;
     }
-
-    // ══════════════════ Actions ══════════════════
-
     async function saveList() {
         const editor = document.getElementById('ip-editor');
         if (!editor) return;
-
         const text = editor.value.trim();
         const entries = text ? text.split('\n').map(e => e.trim()).filter(Boolean) : [];
-
         try {
             const result = await API.put('/api/ipsets/' + activeTab, { entries });
             if (result.ok) {
@@ -271,7 +224,6 @@ const IPSetsPage = (() => {
                 originalContent = editor.value;
                 setUnsaved(false);
                 loadStats();
-
                 if (result.invalid_count) {
                     Toast.warning('Пропущено невалидных: ' + result.invalid_count);
                 }
@@ -282,13 +234,10 @@ const IPSetsPage = (() => {
             Toast.error(err.message);
         }
     }
-
     async function resetList() {
         const tab = TABS.find(t => t.name === activeTab);
         const label = tab ? tab.label : activeTab;
-
         if (!confirm('Сбросить ' + label + ' к дефолтным значениям?')) return;
-
         try {
             const result = await API.post('/api/ipsets/' + activeTab + '/reset');
             if (result.ok) {
@@ -302,62 +251,47 @@ const IPSetsPage = (() => {
             Toast.error(err.message);
         }
     }
-
     function quickAdd() {
         const input = document.getElementById('ip-add-input');
         if (!input || !input.value.trim()) return;
-
         const editor = document.getElementById('ip-editor');
         if (!editor) return;
-
         const entry = input.value.trim();
-
         const current = editor.value.trim();
         if (current) {
             editor.value = current + '\n' + entry;
         } else {
             editor.value = entry;
         }
-
         input.value = '';
         setUnsaved(true);
         Toast.info('Добавлено в редактор. Нажмите "Сохранить" для применения.');
     }
-
     // ══════════════════ ASN Loading ══════════════════
-
     function setASN(asn) {
         const input = document.getElementById('ip-asn-input');
         if (input) input.value = asn;
     }
-
     async function loadASN() {
         const input = document.getElementById('ip-asn-input');
         const targetSelect = document.getElementById('ip-asn-target');
         const btn = document.getElementById('ip-asn-btn');
-
         if (!input || !input.value.trim()) {
             Toast.warning('Введите номер ASN');
             return;
         }
-
         const asn = input.value.trim().replace(/^AS/i, '');
         const target = targetSelect ? targetSelect.value : 'my-ipset';
-
         if (btn) btn.disabled = true;
-
         try {
             Toast.info('Загрузка IP для ASN ' + asn + '...');
-
             const result = await API.post('/api/ipsets/load-asn', {
                 asn: asn,
                 target: target
             });
-
             if (result.ok) {
                 Toast.success(result.message || 'Загружено');
                 input.value = '';
-
                 // Перезагружаем если целевой таб активен
                 if (target === activeTab) {
                     loadTab(activeTab);
@@ -372,16 +306,10 @@ const IPSetsPage = (() => {
             if (btn) btn.disabled = false;
         }
     }
-
-    // ══════════════════ Lifecycle ══════════════════
-
     function destroy() {
         hasUnsaved = false;
         loading = false;
     }
-
-    // ══════════════════ Public API ══════════════════
-
     return {
         render,
         destroy,

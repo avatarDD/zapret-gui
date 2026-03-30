@@ -10,7 +10,6 @@
 </head>
 <body>
     <div id="app">
-        <!-- Sidebar -->
         <nav id="sidebar" class="sidebar">
             <div class="sidebar-header">
                 <div class="sidebar-logo">
@@ -32,20 +31,14 @@
                     </svg>
                 </button>
             </div>
-
             <div class="sidebar-nav" id="sidebar-nav">
-                <!-- Заполняется из JS -->
             </div>
-
             <div class="sidebar-footer">
                 <div class="sidebar-version">v0.13.5</div>
             </div>
         </nav>
-
-        <!-- Основной контент -->
         <main id="content" class="content">
             <div id="page-container" class="page-container">
-                <!-- Страницы рендерятся сюда -->
                 <div class="page-loading">
                     <div class="spinner"></div>
                     <span>Загрузка...</span>
@@ -53,14 +46,8 @@
             </div>
         </main>
     </div>
-
-    <!-- Toast уведомления -->
     <div id="toast-container" class="toast-container"></div>
-
-    <!-- Модальные окна -->
     <div id="modal-overlay" class="modal-overlay hidden"></div>
-
-    <!-- JS модули -->
     <script src="/js/api.js"></script>
     <script src="/js/utils/debounce.js"></script>
     <script src="/js/utils/syntax.js"></script>

@@ -1,18 +1,8 @@
-/**
- * strategies.js — Страница стратегий.
- *
- * Список стратегий (карточки), применение, редактор,
- * превью итоговой команды nfqws2, избранное.
- */
-
 const StrategiesPage = (() => {
     let strategies = [];
     let currentId = null;
     let favorites = [];
     let pollTimer = null;
-
-    // ══════════════════ Render ══════════════════
-
     function render(container) {
         container.innerHTML = `
             <div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
@@ -27,7 +17,6 @@ const StrategiesPage = (() => {
                     Создать стратегию
                 </button>
             </div>
-
             <!-- Активная стратегия -->
             <div class="card" id="active-strategy-card" style="border-left: 3px solid var(--success);">
                 <div class="card-title">
@@ -40,7 +29,6 @@ const StrategiesPage = (() => {
                     <span class="text-muted">Загрузка...</span>
                 </div>
             </div>
-
             <!-- Фильтры -->
             <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
                 <button class="btn btn-ghost btn-sm strat-filter active" data-filter="all" onclick="StrategiesPage.setFilter('all')">Все</button>
@@ -53,7 +41,6 @@ const StrategiesPage = (() => {
                 <button class="btn btn-ghost btn-sm strat-filter" data-filter="builtin" onclick="StrategiesPage.setFilter('builtin')">Встроенные</button>
                 <button class="btn btn-ghost btn-sm strat-filter" data-filter="user" onclick="StrategiesPage.setFilter('user')">Пользовательские</button>
             </div>
-
             <!-- Список стратегий -->
             <div id="strategies-list">
                 <div class="text-muted" style="text-align:center; padding:32px;">
@@ -61,7 +48,6 @@ const StrategiesPage = (() => {
                     Загрузка стратегий...
                 </div>
             </div>
-
             <!-- Модальное окно: редактор стратегии -->
             <div id="strategy-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -74,7 +60,6 @@ const StrategiesPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Модальное окно: превью команды -->
             <div id="preview-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -99,22 +84,15 @@ const StrategiesPage = (() => {
                 </div>
             </div>
         `;
-
         fetchStrategies();
     }
-
-    // ══════════════════ Data ══════════════════
-
     async function fetchStrategies() {
         try {
             const data = await API.get('/api/strategies');
             strategies = data.strategies || [];
-
-            // Определяем активную
             const active = strategies.find(s => s.is_active);
             currentId = active ? active.id : null;
             favorites = strategies.filter(s => s.is_favorite).map(s => s.id);
-
             renderActiveCard(active);
             renderList(strategies);
         } catch (err) {
@@ -122,24 +100,17 @@ const StrategiesPage = (() => {
                 '<div class="card" style="text-align:center; padding:24px; color:var(--error);">Ошибка загрузки: ' + escapeHtml(err.message) + '</div>';
         }
     }
-
-    // ══════════════════ Render List ══════════════════
-
     let currentFilter = 'all';
-
     function setFilter(filter) {
         currentFilter = filter;
-        // Обновляем кнопки
         document.querySelectorAll('.strat-filter').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.filter === filter);
         });
         renderList(strategies);
     }
-
     function renderActiveCard(active) {
         const el = document.getElementById('active-strategy-info');
         if (!el) return;
-
         if (active) {
             el.innerHTML = `
                 <span class="status-dot running"></span>
@@ -164,12 +135,9 @@ const StrategiesPage = (() => {
             `;
         }
     }
-
     function renderList(list) {
         const container = document.getElementById('strategies-list');
         if (!container) return;
-
-        // Фильтрация
         let filtered = list;
         if (currentFilter === 'favorites') {
             filtered = list.filter(s => s.is_favorite);
@@ -178,7 +146,6 @@ const StrategiesPage = (() => {
         } else if (currentFilter === 'user') {
             filtered = list.filter(s => !s.is_builtin);
         }
-
         if (filtered.length === 0) {
             const msgs = {
                 all: 'Нет стратегий',
@@ -189,10 +156,8 @@ const StrategiesPage = (() => {
             container.innerHTML = `<div class="card" style="text-align:center; padding:32px; color:var(--text-muted);">${msgs[currentFilter] || msgs.all}</div>`;
             return;
         }
-
         container.innerHTML = filtered.map(s => renderStrategyCard(s)).join('');
     }
-
     function renderStrategyCard(s) {
         const isActive = s.id === currentId;
         const isFav = s.is_favorite;
@@ -206,7 +171,6 @@ const StrategiesPage = (() => {
             if (label.toLowerCase().includes('quic') || label.toLowerCase().includes('udp')) color = 'var(--info)';
             return `<span class="profile-badge${enabled ? '' : ' disabled'}" style="--badge-color:${color};">${escapeHtml(label)}</span>`;
         }).join('');
-
         return `
             <div class="strategy-card${isActive ? ' active' : ''}" data-id="${s.id}">
                 <div class="strategy-card-header">
@@ -268,15 +232,11 @@ const StrategiesPage = (() => {
             </div>
         `;
     }
-
     // ══════════════════ Actions ══════════════════
-
     async function applyStrategy(sid) {
         const s = strategies.find(x => x.id === sid);
         if (!s) return;
-
         if (!confirm('Применить стратегию "' + s.name + '"?\n\nnfqws2 будет перезапущен.')) return;
-
         try {
             const result = await API.post('/api/strategies/' + sid + '/apply', {});
             if (result.ok) {
@@ -289,12 +249,10 @@ const StrategiesPage = (() => {
             Toast.error(err.message);
         }
     }
-
     async function toggleFavorite(sid) {
         try {
             const result = await API.post('/api/strategies/' + sid + '/favorite', {});
             if (result.ok) {
-                // Обновляем локально
                 const s = strategies.find(x => x.id === sid);
                 if (s) s.is_favorite = result.is_favorite;
                 favorites = strategies.filter(s => s.is_favorite).map(s => s.id);
@@ -304,13 +262,10 @@ const StrategiesPage = (() => {
             Toast.error(err.message);
         }
     }
-
     async function deleteStrategy(sid) {
         const s = strategies.find(x => x.id === sid);
         if (!s) return;
-
         if (!confirm('Удалить стратегию "' + s.name + '"?\n\nЭто действие нельзя отменить.')) return;
-
         try {
             const result = await API.delete('/api/strategies/' + sid);
             if (result.ok) {
@@ -323,7 +278,6 @@ const StrategiesPage = (() => {
             Toast.error(err.message);
         }
     }
-
     async function duplicateStrategy(sid) {
         const s = strategies.find(x => x.id === sid);
         if (!s) return;
@@ -335,17 +289,12 @@ const StrategiesPage = (() => {
             profiles: JSON.parse(JSON.stringify(s.profiles || [])),
         }, 'create');
     }
-
-    // ══════════════════ Preview ══════════════════
-
     async function showPreview(sid) {
         const modal = document.getElementById('preview-modal');
         const cmdEl = document.getElementById('preview-command');
         if (!modal || !cmdEl) return;
-
         modal.style.display = 'flex';
         cmdEl.textContent = 'Загрузка...';
-
         try {
             const result = await API.post('/api/strategies/preview', { strategy_id: sid });
             if (result.ok) {
@@ -360,12 +309,10 @@ const StrategiesPage = (() => {
             cmdEl._rawText = cmdEl.textContent;
         }
     }
-
     function closePreview() {
         const modal = document.getElementById('preview-modal');
         if (modal) modal.style.display = 'none';
     }
-
     function copyPreview() {
         const cmdEl = document.getElementById('preview-command');
         if (!cmdEl) return;
@@ -373,7 +320,6 @@ const StrategiesPage = (() => {
         navigator.clipboard.writeText(text).then(() => {
             Toast.success('Команда скопирована');
         }).catch(() => {
-            // Fallback
             const range = document.createRange();
             range.selectNode(cmdEl);
             window.getSelection().removeAllRanges();
@@ -383,9 +329,6 @@ const StrategiesPage = (() => {
             Toast.success('Команда скопирована');
         });
     }
-
-    // ══════════════════ Editor Modal ══════════════════
-
     function openCreate() {
         openEditor({
             id: '',
@@ -397,36 +340,28 @@ const StrategiesPage = (() => {
             ],
         }, 'create');
     }
-
     function openEdit(sid) {
         const s = strategies.find(x => x.id === sid);
         if (!s) return;
         openEditor(JSON.parse(JSON.stringify(s)), 'edit');
     }
-
     let editorData = null;
     let editorMode = 'create';
-
     function openEditor(data, mode) {
         editorData = data;
         editorMode = mode;
-
         const modal = document.getElementById('strategy-modal');
         const title = document.getElementById('modal-title');
         const body = document.getElementById('modal-body');
         if (!modal || !body) return;
-
         title.textContent = mode === 'create' ? 'Создать стратегию' : 'Редактировать стратегию';
         modal.style.display = 'flex';
-
         renderEditorForm(body);
         attachAutocompleteToProfiles();
     }
-
     function renderEditorForm(container) {
         const d = editorData;
         const isCreate = editorMode === 'create';
-
         container.innerHTML = `
             <div class="form-group">
                 <label class="form-label">ID стратегии</label>
@@ -441,7 +376,6 @@ const StrategiesPage = (() => {
                 <label class="form-label">Описание</label>
                 <input type="text" id="edit-desc" class="form-input" value="${escapeHtml(d.description || '')}" placeholder="Краткое описание стратегии">
             </div>
-
             <div class="form-group">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     <label class="form-label" style="margin-bottom:0;">Профили</label>
@@ -456,7 +390,6 @@ const StrategiesPage = (() => {
                     ${d.profiles.map((p, i) => renderProfileEditor(p, i)).join('')}
                 </div>
             </div>
-
             <div class="form-group" style="margin-top:16px;">
                 <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.editorPreview()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -466,7 +399,6 @@ const StrategiesPage = (() => {
                 </button>
                 <div id="editor-preview-output" class="log-viewer" style="max-height:120px; margin-top:8px; display:none; white-space:pre-wrap; word-break:break-all; font-size:11px; padding:12px;"></div>
             </div>
-
             <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
                 <button class="btn btn-ghost" onclick="StrategiesPage.closeModal()">Отмена</button>
                 <button class="btn btn-primary" onclick="StrategiesPage.saveEditor()">
@@ -475,7 +407,6 @@ const StrategiesPage = (() => {
             </div>
         `;
     }
-
     function renderProfileEditor(profile, index) {
         const enabled = profile.enabled !== false;
         return `
@@ -498,7 +429,6 @@ const StrategiesPage = (() => {
             </div>
         `;
     }
-
     function addProfile() {
         if (!editorData) return;
         editorData.profiles.push({
@@ -511,7 +441,6 @@ const StrategiesPage = (() => {
         if (el) el.innerHTML = editorData.profiles.map((p, i) => renderProfileEditor(p, i)).join('');
         attachAutocompleteToProfiles();
     }
-
     function removeProfile(index) {
         if (!editorData) return;
         if (editorData.profiles.length <= 1) {
@@ -523,29 +452,24 @@ const StrategiesPage = (() => {
         if (el) el.innerHTML = editorData.profiles.map((p, i) => renderProfileEditor(p, i)).join('');
         attachAutocompleteToProfiles();
     }
-
     function toggleProfile(index, enabled) {
         if (!editorData || !editorData.profiles[index]) return;
         editorData.profiles[index].enabled = enabled;
     }
-
     function updateProfileName(index, name) {
         if (!editorData || !editorData.profiles[index]) return;
         editorData.profiles[index].name = name;
     }
-
     function updateProfileArgs(index, args) {
         if (!editorData || !editorData.profiles[index]) return;
         editorData.profiles[index].args = args;
     }
-
     async function editorPreview() {
         collectEditorData();
         const output = document.getElementById('editor-preview-output');
         if (!output) return;
         output.style.display = 'block';
         output.textContent = 'Загрузка...';
-
         try {
             const result = await API.post('/api/strategies/preview', { strategy_data: editorData });
             if (result.ok) {
@@ -557,7 +481,6 @@ const StrategiesPage = (() => {
             output.textContent = 'Ошибка: ' + err.message;
         }
     }
-
     function collectEditorData() {
         if (!editorData) return;
         const id = document.getElementById('edit-id');
@@ -566,8 +489,6 @@ const StrategiesPage = (() => {
         if (id) editorData.id = id.value.trim();
         if (name) editorData.name = name.value.trim();
         if (desc) editorData.description = desc.value.trim();
-
-        // Profiles — args might have been changed via textarea
         const textareas = document.querySelectorAll('.profile-args');
         textareas.forEach((ta, i) => {
             if (editorData.profiles[i]) {
@@ -575,10 +496,8 @@ const StrategiesPage = (() => {
             }
         });
     }
-
     async function saveEditor() {
         collectEditorData();
-
         if (!editorData.id) {
             Toast.error('Укажите ID стратегии');
             return;
@@ -591,12 +510,9 @@ const StrategiesPage = (() => {
             Toast.error('Добавьте хотя бы один профиль');
             return;
         }
-
-        // Генерируем id для профилей если нет
         editorData.profiles.forEach((p, i) => {
             if (!p.id) p.id = 'profile_' + i;
         });
-
         try {
             let result;
             if (editorMode === 'create') {
@@ -604,7 +520,6 @@ const StrategiesPage = (() => {
             } else {
                 result = await API.put('/api/strategies/' + editorData.id, editorData);
             }
-
             if (result.ok) {
                 Toast.success(editorMode === 'create' ? 'Стратегия создана' : 'Стратегия обновлена');
                 closeModal();
@@ -616,34 +531,25 @@ const StrategiesPage = (() => {
             Toast.error(err.message);
         }
     }
-
     function attachAutocompleteToProfiles() {
-        // Detach old instances first
         NfqwsAutocomplete.detachAll();
-        // Pre-load file lists for suggestions
         NfqwsAutocomplete.loadFiles();
-        // Attach to all profile textareas (async to ensure DOM is ready)
         setTimeout(() => {
             const textareas = document.querySelectorAll('.profile-args');
             textareas.forEach(ta => NfqwsAutocomplete.attach(ta));
         }, 0);
     }
-
     function closeModal() {
         NfqwsAutocomplete.detachAll();
         const modal = document.getElementById('strategy-modal');
         if (modal) modal.style.display = 'none';
         editorData = null;
     }
-
-    // ══════════════════ Utils ══════════════════
-
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
-
     function destroy() {
         NfqwsAutocomplete.detachAll();
         if (pollTimer) {
@@ -651,9 +557,6 @@ const StrategiesPage = (() => {
             pollTimer = null;
         }
     }
-
-    // ══════════════════ Public API ══════════════════
-
     return {
         render,
         destroy,

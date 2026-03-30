@@ -1,18 +1,4 @@
-/**
- * debounce.js — Утилиты для оптимизации частых вызовов.
- *
- * Debounce — задержка выполнения до окончания серии вызовов.
- * Throttle — ограничение частоты выполнения.
- */
-
 const Utils = (() => {
-
-    /**
-     * Debounce: вызывает fn через delay мс после последнего вызова.
-     * @param {Function} fn
-     * @param {number} delay — задержка в мс (default: 300)
-     * @returns {Function}
-     */
     function debounce(fn, delay = 300) {
         let timer = null;
         return function (...args) {
@@ -23,13 +9,6 @@ const Utils = (() => {
             }, delay);
         };
     }
-
-    /**
-     * Throttle: вызывает fn не чаще чем раз в interval мс.
-     * @param {Function} fn
-     * @param {number} interval — минимальный интервал в мс (default: 1000)
-     * @returns {Function}
-     */
     function throttle(fn, interval = 1000) {
         let lastTime = 0;
         let timer = null;
@@ -49,16 +28,10 @@ const Utils = (() => {
             }
         };
     }
-
-    /**
-     * Lazy load: загружает JS-страницу при первом обращении.
-     * Для будущего использования с динамическим import.
-     */
     function lazyPage(loader) {
         let module = null;
         let loading = false;
         let pending = [];
-
         return {
             render(container) {
                 if (module) {
@@ -87,6 +60,5 @@ const Utils = (() => {
             }
         };
     }
-
     return { debounce, throttle, lazyPage };
 })();

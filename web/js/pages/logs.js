@@ -1,20 +1,4 @@
-/**
- * logs.js — Страница логов.
- *
- * Возможности:
- *   - Real-time обновление через SSE (Server-Sent Events)
- *   - Автоматическое переподключение при обрыве
- *   - Фильтрация по уровню (DEBUG, INFO, SUCCESS, WARNING, ERROR)
- *   - Поиск по тексту
- *   - Автопрокрутка (с возможностью отключения)
- *   - Копирование всех записей в буфер обмена
- *   - Очистка буфера логов
- *   - Счётчик записей и статус подключения
- */
-
 const LogsPage = (() => {
-    // ══════════════════ State ══════════════════
-
     let entries = [];
     let filteredEntries = [];
     let eventSource = null;
@@ -28,7 +12,6 @@ const LogsPage = (() => {
     let searchDebounceTimer = null;
     let statsTimer = null;
     let maxDisplayEntries = 500;
-
     // Цветовая карта уровней
     const LEVEL_CONFIG = {
         DEBUG:   { color: '#6b7280', bg: 'rgba(107, 114, 128, 0.1)', label: 'DEBUG',   icon: '🔍' },
@@ -37,9 +20,6 @@ const LogsPage = (() => {
         WARNING: { color: '#fbbf24', bg: 'rgba(251, 191, 36, 0.1)',  label: 'WARNING', icon: '⚠' },
         ERROR:   { color: '#f87171', bg: 'rgba(248, 113, 113, 0.1)', label: 'ERROR',   icon: '✕' },
     };
-
-    // ══════════════════ Render ══════════════════
-
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -54,7 +34,6 @@ const LogsPage = (() => {
                     </span>
                 </div>
             </div>
-
             <!-- Панель управления -->
             <div class="card logs-toolbar-card">
                 <div class="logs-toolbar">
@@ -90,7 +69,6 @@ const LogsPage = (() => {
                                 <span class="logs-level-count" id="count-DEBUG">0</span>
                             </button>
                         </div>
-
                         <!-- Поиск -->
                         <div class="logs-search-wrap">
                             <svg class="logs-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
@@ -106,7 +84,6 @@ const LogsPage = (() => {
                             </button>
                         </div>
                     </div>
-
                     <div class="logs-toolbar-right">
                         <!-- Auto-scroll toggle -->
                         <button class="btn btn-ghost btn-sm logs-btn-autoscroll active" id="btn-autoscroll"
@@ -116,7 +93,6 @@ const LogsPage = (() => {
                             </svg>
                             <span class="btn-label-desktop">Авто</span>
                         </button>
-
                         <!-- Pause/Resume SSE -->
                         <button class="btn btn-ghost btn-sm" id="btn-pause"
                                 onclick="LogsPage.togglePause()" title="Пауза/Продолжить">
@@ -125,7 +101,6 @@ const LogsPage = (() => {
                             </svg>
                             <span class="btn-label-desktop" id="pause-label">Пауза</span>
                         </button>
-
                         <!-- Copy all -->
                         <button class="btn btn-ghost btn-sm" onclick="LogsPage.copyAll()" title="Копировать все логи">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -134,7 +109,6 @@ const LogsPage = (() => {
                             </svg>
                             <span class="btn-label-desktop">Копировать</span>
                         </button>
-
                         <!-- Clear -->
                         <button class="btn btn-ghost btn-sm" onclick="LogsPage.clearLogs()" title="Очистить логи"
                                 style="color: var(--error);">
@@ -147,7 +121,6 @@ const LogsPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Лог-контейнер -->
             <div class="card logs-viewer-card">
                 <div class="logs-info-bar">
@@ -186,21 +159,14 @@ const LogsPage = (() => {
                 </button>
             </div>
         `;
-
-        // Загружаем исторические записи, затем подключаем SSE
         loadInitialLogs();
         connectSSE();
         startStatsTimer();
-
-        // Следим за скроллом
         const viewer = document.getElementById('logs-viewer');
         if (viewer) {
             viewer.addEventListener('scroll', onScroll);
         }
     }
-
-    // ══════════════════ Data Loading ══════════════════
-
     async function loadInitialLogs() {
         try {
             const data = await API.get('/api/logs?n=500');
@@ -215,44 +181,30 @@ const LogsPage = (() => {
             console.error('Failed to load logs:', err);
         }
     }
-
-    // ══════════════════ SSE Connection ══════════════════
-
     function connectSSE() {
         if (eventSource) {
             eventSource.close();
             eventSource = null;
         }
-
-        // Защита от спама переподключений: если слишком много попыток
-        // подряд — останавливаемся и показываем ошибку
         if (reconnectAttempts > 10) {
             updateConnectionStatus('error');
             return;
         }
-
         try {
             eventSource = new EventSource('/api/logs/stream');
-
             eventSource.onopen = () => {
                 isConnected = true;
                 reconnectAttempts = 0;
                 updateConnectionStatus('connected');
             };
-
-            // Обработка событий типа "log"
             eventSource.addEventListener('log', (e) => {
                 if (isPaused) return;
-
                 try {
                     const entry = JSON.parse(e.data);
                     addEntry(entry);
                 } catch (err) {
-                    // Игнорируем ошибки парсинга
                 }
             });
-
-            // Обработка дефолтных сообщений (connected, heartbeat etc.)
             eventSource.onmessage = (e) => {
                 try {
                     const data = JSON.parse(e.data);
@@ -261,20 +213,15 @@ const LogsPage = (() => {
                         updateConnectionStatus('connected');
                     }
                 } catch (err) {
-                    // Ignore parse errors for heartbeats
                 }
             };
-
             eventSource.onerror = () => {
                 isConnected = false;
                 updateConnectionStatus('disconnected');
-
-                // Закрываем текущий EventSource
                 if (eventSource) {
                     eventSource.close();
                     eventSource = null;
                 }
-
                 scheduleReconnect();
             };
         } catch (err) {
@@ -283,22 +230,16 @@ const LogsPage = (() => {
             scheduleReconnect();
         }
     }
-
     function scheduleReconnect() {
         if (reconnectTimer) return;
-
         reconnectAttempts++;
-        // Экспоненциальная задержка: 1s, 2s, 4s, 8s, max 30s
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 30000);
-
         updateConnectionStatus('reconnecting', delay);
-
         reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
             connectSSE();
         }, delay);
     }
-
     function disconnectSSE() {
         if (eventSource) {
             eventSource.close();
@@ -310,52 +251,34 @@ const LogsPage = (() => {
         }
         isConnected = false;
     }
-
-    // ══════════════════ Entry Management ══════════════════
-
     function addEntry(entry) {
         entries.push(entry);
-
-        // Ограничиваем буфер
         if (entries.length > 2000) {
             entries = entries.slice(-1500);
         }
-
-        // Проверяем фильтры
         if (matchesFilter(entry)) {
             filteredEntries.push(entry);
-
-            // Ограничиваем отображаемые
             if (filteredEntries.length > maxDisplayEntries) {
                 filteredEntries = filteredEntries.slice(-maxDisplayEntries);
-                // Полная перерисовка при обрезке
                 renderEntries();
             } else {
-                // Добавляем одну строку (инкрементально)
                 appendEntryDOM(entry);
             }
-
             if (autoScroll) {
                 scrollToBottom();
             } else {
-                // Показываем индикатор новых сообщений
                 showNewMessageIndicator();
             }
         }
-
         updateCounts();
     }
-
     function matchesFilter(entry) {
-        // Фильтр по уровню
         if (currentLevel) {
             const levelPriority = { DEBUG: 0, INFO: 1, SUCCESS: 2, WARNING: 3, ERROR: 4 };
             const minPriority = levelPriority[currentLevel] || 0;
             const entryPriority = levelPriority[entry.level] || 0;
             if (entryPriority < minPriority) return false;
         }
-
-        // Поиск по тексту
         if (currentSearch) {
             const searchLower = currentSearch.toLowerCase();
             const text = (entry.message || '').toLowerCase() +
@@ -363,28 +286,21 @@ const LogsPage = (() => {
                          (entry.level || '').toLowerCase();
             if (!text.includes(searchLower)) return false;
         }
-
         return true;
     }
-
     function applyFilters() {
         filteredEntries = entries.filter(e => matchesFilter(e));
-
         // Ограничиваем отображение
         if (filteredEntries.length > maxDisplayEntries) {
             filteredEntries = filteredEntries.slice(-maxDisplayEntries);
         }
-
         updateFilteredInfo();
     }
-
     // ══════════════════ DOM Rendering ══════════════════
-
     function renderEntries() {
         const container = document.getElementById('logs-entries');
         const emptyEl = document.getElementById('logs-empty');
         if (!container) return;
-
         if (filteredEntries.length === 0) {
             if (emptyEl) emptyEl.style.display = '';
             // Удаляем все строки кроме empty placeholder
@@ -392,44 +308,30 @@ const LogsPage = (() => {
             rows.forEach(r => r.remove());
             return;
         }
-
         if (emptyEl) emptyEl.style.display = 'none';
-
-        // Генерируем HTML
         const fragment = document.createDocumentFragment();
-
         filteredEntries.forEach(entry => {
             fragment.appendChild(createEntryElement(entry));
         });
-
-        // Очищаем и вставляем
         const rows = container.querySelectorAll('.log-row');
         rows.forEach(r => r.remove());
         container.appendChild(fragment);
-
         updateFilteredInfo();
     }
-
     function appendEntryDOM(entry) {
         const container = document.getElementById('logs-entries');
         const emptyEl = document.getElementById('logs-empty');
         if (!container) return;
-
         if (emptyEl) emptyEl.style.display = 'none';
-
         container.appendChild(createEntryElement(entry));
     }
-
     function createEntryElement(entry) {
         const config = LEVEL_CONFIG[entry.level] || LEVEL_CONFIG.INFO;
-
         const row = document.createElement('div');
         row.className = 'log-row log-level-' + (entry.level || 'info').toLowerCase();
-
         const time = entry.time || '';
         const date = entry.date || '';
         const source = entry.source ? `<span class="log-source">[${escapeHtml(entry.source)}]</span>` : '';
-
         // Подсветка синтаксиса nfqws в сообщениях
         const rawMsg = entry.message || '';
         const nfqHighlighted = NfqwsSyntax.highlightInLog(rawMsg);
@@ -440,20 +342,16 @@ const LogsPage = (() => {
         } else {
             message = highlightSearch(escapeHtml(rawMsg));
         }
-
         row.innerHTML = `
             <span class="log-time" title="${date} ${time}">${time}</span>
             <span class="log-badge" style="color:${config.color}; background:${config.bg};">${config.label}</span>
             ${source}
             <span class="log-message">${message}</span>
         `;
-
         return row;
     }
-
     function highlightSearch(text, isHtml) {
         if (!currentSearch) return text;
-
         if (isHtml) {
             // Для уже HTML-подсвеченного текста — ищем только в текстовых нодах
             // Простой подход: подсвечиваем вне тегов
@@ -463,78 +361,56 @@ const LogsPage = (() => {
                 return '>' + content.replace(regex, '<mark class="log-highlight">$1</mark>') + '<';
             });
         }
-
         const escaped = currentSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const regex = new RegExp('(' + escaped + ')', 'gi');
         return text.replace(regex, '<mark class="log-highlight">$1</mark>');
     }
-
-    // ══════════════════ UI Actions ══════════════════
-
     function setLevel(level) {
         currentLevel = level;
-
-        // Обновляем кнопки
         document.querySelectorAll('.logs-level-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.level === level);
         });
-
         applyFilters();
         renderEntries();
         if (autoScroll) scrollToBottom();
     }
-
     function onSearch(value) {
-        // Debounce 300ms
         if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-
         searchDebounceTimer = setTimeout(() => {
             currentSearch = value.trim();
-
-            // Показать/скрыть кнопку очистки поиска
             const clearBtn = document.getElementById('logs-search-clear');
             if (clearBtn) {
                 clearBtn.classList.toggle('hidden', !currentSearch);
             }
-
             applyFilters();
             renderEntries();
             if (autoScroll) scrollToBottom();
         }, 300);
     }
-
     function clearSearch() {
         currentSearch = '';
         const input = document.getElementById('logs-search');
         if (input) input.value = '';
-
         const clearBtn = document.getElementById('logs-search-clear');
         if (clearBtn) clearBtn.classList.add('hidden');
-
         applyFilters();
         renderEntries();
         if (autoScroll) scrollToBottom();
     }
-
     function toggleAutoScroll() {
         autoScroll = !autoScroll;
-
         const btn = document.getElementById('btn-autoscroll');
         if (btn) btn.classList.toggle('active', autoScroll);
-
         if (autoScroll) {
             scrollToBottom();
             hideNewMessageIndicator();
         }
     }
-
     function togglePause() {
         isPaused = !isPaused;
-
         const icon = document.getElementById('pause-icon');
         const label = document.getElementById('pause-label');
         const overlay = document.getElementById('logs-paused-overlay');
-
         if (isPaused) {
             if (icon) icon.innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
             if (label) label.textContent = 'Продолжить';
@@ -545,7 +421,6 @@ const LogsPage = (() => {
             if (overlay) overlay.classList.add('hidden');
         }
     }
-
     function scrollToBottom() {
         const viewer = document.getElementById('logs-viewer');
         if (viewer) {
@@ -553,22 +428,15 @@ const LogsPage = (() => {
         }
         hideNewMessageIndicator();
     }
-
     function onScroll() {
         const viewer = document.getElementById('logs-viewer');
         if (!viewer) return;
-
         const atBottom = (viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight) < 40;
-
         if (atBottom && !autoScroll) {
-            // Пользователь прокрутил до конца — включаем автоскролл
-            // (не включаем автоматически, чтобы не раздражать)
             hideNewMessageIndicator();
         }
     }
-
     let newMessageCount = 0;
-
     function showNewMessageIndicator() {
         newMessageCount++;
         const btn = document.getElementById('logs-scroll-bottom');
@@ -576,31 +444,24 @@ const LogsPage = (() => {
         if (btn) btn.classList.remove('hidden');
         if (count) count.textContent = newMessageCount > 99 ? '99+' : newMessageCount;
     }
-
     function hideNewMessageIndicator() {
         newMessageCount = 0;
         const btn = document.getElementById('logs-scroll-bottom');
         if (btn) btn.classList.add('hidden');
     }
-
-    // ══════════════════ Copy & Clear ══════════════════
-
     async function copyAll() {
         if (filteredEntries.length === 0) {
             Toast.show('Нет записей для копирования', 'warning');
             return;
         }
-
         const text = filteredEntries.map(e => {
             const src = e.source ? ` [${e.source}]` : '';
             return `${e.date || ''} ${e.time || ''} [${e.level}]${src} ${e.message}`;
         }).join('\n');
-
         try {
             await navigator.clipboard.writeText(text);
             Toast.show(`Скопировано ${filteredEntries.length} записей`, 'success');
         } catch (err) {
-            // Fallback: textarea
             const ta = document.createElement('textarea');
             ta.value = text;
             ta.style.position = 'fixed';
@@ -616,10 +477,8 @@ const LogsPage = (() => {
             document.body.removeChild(ta);
         }
     }
-
     async function clearLogs() {
         if (!confirm('Очистить все записи логов?')) return;
-
         try {
             await API.post('/api/logs/clear');
             entries = [];
@@ -631,18 +490,12 @@ const LogsPage = (() => {
             Toast.show('Ошибка: ' + err.message, 'error');
         }
     }
-
-    // ══════════════════ Status & Counts ══════════════════
-
     function updateConnectionStatus(status, delay) {
         const el = document.getElementById('logs-conn-status');
         if (!el) return;
-
         const dot = el.querySelector('.logs-conn-dot');
         const text = el.querySelector('.logs-conn-text');
-
         el.className = 'logs-connection-status logs-conn-' + status;
-
         switch (status) {
             case 'connected':
                 if (text) text.textContent = 'Подключено';
@@ -658,32 +511,25 @@ const LogsPage = (() => {
                 break;
         }
     }
-
     function updateCounts() {
-        // Обновляем счётчики по уровням
         const counts = { DEBUG: 0, INFO: 0, SUCCESS: 0, WARNING: 0, ERROR: 0 };
         entries.forEach(e => {
             if (counts.hasOwnProperty(e.level)) {
                 counts[e.level]++;
             }
         });
-
         Object.keys(counts).forEach(level => {
             const el = document.getElementById('count-' + level);
             if (el) el.textContent = counts[level];
         });
-
-        // Общий счётчик
         const countEl = document.getElementById('logs-entry-count');
         if (countEl) {
             countEl.textContent = entries.length + ' ' + pluralize(entries.length, 'запись', 'записи', 'записей');
         }
     }
-
     function updateFilteredInfo() {
         const el = document.getElementById('logs-filtered-info');
         if (!el) return;
-
         if (currentLevel || currentSearch) {
             el.classList.remove('hidden');
             el.textContent = '(показано: ' + filteredEntries.length + ')';
@@ -691,16 +537,11 @@ const LogsPage = (() => {
             el.classList.add('hidden');
         }
     }
-
     function startStatsTimer() {
-        // Обновляем счётчики периодически (на случай если SSE пропустил)
         statsTimer = setInterval(() => {
             updateCounts();
         }, 10000);
     }
-
-    // ══════════════════ Utils ══════════════════
-
     function pluralize(n, one, few, many) {
         const abs = Math.abs(n) % 100;
         const lastDigit = abs % 10;
@@ -709,35 +550,25 @@ const LogsPage = (() => {
         if (lastDigit === 1) return one;
         return many;
     }
-
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
-
-    // ══════════════════ Destroy ══════════════════
-
     function destroy() {
         disconnectSSE();
-
         if (searchDebounceTimer) {
             clearTimeout(searchDebounceTimer);
             searchDebounceTimer = null;
         }
-
         if (statsTimer) {
             clearInterval(statsTimer);
             statsTimer = null;
         }
-
         entries = [];
         filteredEntries = [];
         newMessageCount = 0;
     }
-
-    // ══════════════════ Public API ══════════════════
-
     return {
         render,
         destroy,

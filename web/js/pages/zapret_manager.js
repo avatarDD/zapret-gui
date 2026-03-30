@@ -1,25 +1,8 @@
-/**
- * zapret_manager.js — Управление zapret2 (nfqws2).
- *
- * Функции:
- *   - Отображение текущей и последней версий
- *   - Установка zapret2 (если не установлен)
- *   - Обновление до последней версии
- *   - Удаление zapret2 с предварительным показом плана
- *   - Автоматическая проверка обновлений при открытии страницы
- *   - Прогресс-бар для длительных операций
- */
-
 const ZapretManagerPage = (() => {
-    // ══════════════════ State ══════════════════
-
     let data = null;
     let pollTimer = null;
     let progressTimer = null;
     let isOperationRunning = false;
-
-    // ══════════════════ Render ══════════════════
-
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -35,7 +18,6 @@ const ZapretManagerPage = (() => {
                     Проверить
                 </button>
             </div>
-
             <!-- Статус версий -->
             <div class="status-grid" id="zm-version-grid">
                 <div class="status-card" id="zm-card-installed">
@@ -46,7 +28,6 @@ const ZapretManagerPage = (() => {
                     <div class="status-card-value" id="zm-installed-version" style="font-size: 18px;">—</div>
                     <div class="status-card-detail" id="zm-installed-detail">Загрузка...</div>
                 </div>
-
                 <div class="status-card" id="zm-card-latest">
                     <div class="status-card-header">
                         <span class="status-card-icon">
@@ -61,7 +42,6 @@ const ZapretManagerPage = (() => {
                     <div class="status-card-value" id="zm-latest-version" style="font-size: 18px;">—</div>
                     <div class="status-card-detail" id="zm-latest-detail">Загрузка...</div>
                 </div>
-
                 <div class="status-card" id="zm-card-process">
                     <div class="status-card-header">
                         <span class="status-dot stopped" id="zm-process-dot"></span>
@@ -70,7 +50,6 @@ const ZapretManagerPage = (() => {
                     <div class="status-card-value" id="zm-process-status">—</div>
                     <div class="status-card-detail" id="zm-process-detail"></div>
                 </div>
-
                 <div class="status-card" id="zm-card-platform">
                     <div class="status-card-header">
                         <span class="status-card-icon">
@@ -86,7 +65,6 @@ const ZapretManagerPage = (() => {
                     <div class="status-card-detail" id="zm-arch"></div>
                 </div>
             </div>
-
             <!-- Уведомление об обновлении -->
             <div class="card zm-update-banner hidden" id="zm-update-banner">
                 <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -114,7 +92,6 @@ const ZapretManagerPage = (() => {
                     </button>
                 </div>
             </div>
-
             <!-- Прогресс операции -->
             <div class="card hidden" id="zm-progress-card" style="padding: 20px;">
                 <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
@@ -126,7 +103,6 @@ const ZapretManagerPage = (() => {
                 </div>
                 <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;" id="zm-progress-text">Подготовка...</div>
             </div>
-
             <!-- Действия -->
             <div class="card" style="margin-top: 16px; padding: 16px 20px;" id="zm-actions-card">
                 <div class="card-title">
@@ -139,7 +115,6 @@ const ZapretManagerPage = (() => {
                     <!-- Кнопки формируются динамически -->
                 </div>
             </div>
-
             <!-- Информация о релизе -->
             <div class="card hidden" id="zm-release-info" style="margin-top: 16px; padding: 16px 20px;">
                 <div class="card-title">
@@ -157,7 +132,6 @@ const ZapretManagerPage = (() => {
                     </a>
                 </div>
             </div>
-
             <!-- Подсказка -->
             <div class="card" style="margin-top: 16px; padding: 16px 20px; border-left: 3px solid var(--info);">
                 <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
@@ -169,7 +143,6 @@ const ZapretManagerPage = (() => {
                        style="color: var(--accent); text-decoration: none;">github.com/bol-van/zapret2</a>
                 </div>
             </div>
-
             <!-- Модальное окно подтверждения удаления -->
             <div class="modal-backdrop hidden" id="zm-uninstall-modal" onclick="ZapretManagerPage.closeUninstallModal(event)">
                 <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 520px;">
@@ -201,14 +174,9 @@ const ZapretManagerPage = (() => {
                 </div>
             </div>
         `;
-
-        // Загружаем данные
         loadData();
         startPoll();
     }
-
-    // ══════════════════ Data Loading ══════════════════
-
     async function loadData() {
         try {
             data = await API.get('/api/zapret');
@@ -219,20 +187,15 @@ const ZapretManagerPage = (() => {
             setError('Ошибка загрузки: ' + err.message);
         }
     }
-
     function renderData() {
         if (!data) return;
-
         const inst = data.installed || {};
         const lat = data.latest || {};
         const running = data.nfqws_running || {};
         const op = data.operation || {};
-
-        // ── Установленная версия ──
         const instDot = document.getElementById('zm-installed-dot');
         const instVer = document.getElementById('zm-installed-version');
         const instDetail = document.getElementById('zm-installed-detail');
-
         if (inst.installed) {
             if (instDot) instDot.className = 'status-dot running';
             if (instVer) {
@@ -250,11 +213,8 @@ const ZapretManagerPage = (() => {
             }
             if (instDetail) instDetail.textContent = 'Требуется установка';
         }
-
-        // ── Последняя версия ──
         const latVer = document.getElementById('zm-latest-version');
         const latDetail = document.getElementById('zm-latest-detail');
-
         if (lat.ok && lat.version) {
             if (latVer) {
                 latVer.textContent = lat.version;
@@ -273,12 +233,9 @@ const ZapretManagerPage = (() => {
                 latDetail.textContent = lat.error || 'Не удалось проверить';
             }
         }
-
-        // ── Процесс nfqws2 ──
         const procDot = document.getElementById('zm-process-dot');
         const procStatus = document.getElementById('zm-process-status');
         const procDetail = document.getElementById('zm-process-detail');
-
         if (running.running) {
             if (procDot) procDot.className = 'status-dot running';
             if (procStatus) {
@@ -297,13 +254,11 @@ const ZapretManagerPage = (() => {
             }
             if (procDetail) procDetail.textContent = '';
         }
-
         // ── Платформа ──
         const platEl = document.getElementById('zm-platform');
         const archEl = document.getElementById('zm-arch');
         if (platEl) platEl.textContent = data.platform || '—';
         if (archEl) archEl.textContent = data.arch || '';
-
         // ── Баннер обновления ──
         const banner = document.getElementById('zm-update-banner');
         if (banner) {
@@ -317,8 +272,6 @@ const ZapretManagerPage = (() => {
                 banner.classList.add('hidden');
             }
         }
-
-        // ── Прогресс операции ──
         if (op.in_progress) {
             showProgress(op.status, op.progress);
             if (!progressTimer) {
@@ -327,26 +280,18 @@ const ZapretManagerPage = (() => {
         } else {
             hideProgress();
         }
-
-        // ── Кнопки действий ──
         renderActions();
-
-        // ── Информация о релизе ──
         renderReleaseInfo();
     }
-
     function renderActions() {
         const container = document.getElementById('zm-actions');
         if (!container || !data) return;
-
         const inst = data.installed || {};
         const running = data.nfqws_running || {};
         const op = data.operation || {};
         const disabled = op.in_progress || isOperationRunning;
         const updateDisabled = disabled || !data.update_available;
-
         let html = '';
-
         if (!inst.installed) {
             // Не установлен — показываем кнопку установки
             html = `
@@ -379,22 +324,17 @@ const ZapretManagerPage = (() => {
                 </button>
             `;
         }
-
         container.innerHTML = html;
     }
-
     function renderReleaseInfo() {
         const card = document.getElementById('zm-release-info');
         const body = document.getElementById('zm-release-body');
         const link = document.getElementById('zm-release-link');
         if (!card || !data) return;
-
         const lat = data.latest || {};
-
         if (lat.ok && lat.description) {
             card.classList.remove('hidden');
             if (body) {
-                // Ограничиваем описание и escapeHtml
                 const desc = escapeHtml(lat.description.substring(0, 500));
                 body.innerHTML = desc.replace(/\n/g, '<br>');
             }
@@ -405,22 +345,16 @@ const ZapretManagerPage = (() => {
             card.classList.add('hidden');
         }
     }
-
-    // ══════════════════ Actions ══════════════════
-
     async function doInstall() {
         if (isOperationRunning) return;
-
         isOperationRunning = true;
         renderActions();
         showProgress('Начало установки...', 0);
         startProgressPolling();
-
         try {
             const result = await API.post('/api/zapret/install', {});
             if (result.in_progress) {
                 Toast.info('Установка запущена. Ожидайте...');
-                // Продолжаем polling прогресса
             } else if (result.ok) {
                 Toast.success(result.message || 'zapret2 установлен');
                 hideProgress();
@@ -437,15 +371,12 @@ const ZapretManagerPage = (() => {
             renderActions();
         }
     }
-
     async function doUpdate() {
         if (isOperationRunning) return;
-
         isOperationRunning = true;
         renderActions();
         showProgress('Начало обновления...', 0);
         startProgressPolling();
-
         try {
             const result = await API.post('/api/zapret/update', {});
             if (result.in_progress) {
@@ -466,16 +397,12 @@ const ZapretManagerPage = (() => {
             renderActions();
         }
     }
-
     async function showUninstallPlan() {
         if (isOperationRunning) return;
-
         try {
             const plan = await API.get('/api/zapret/uninstall-plan');
-
             const listEl = document.getElementById('zm-uninstall-list');
             const warningsEl = document.getElementById('zm-uninstall-warnings');
-
             if (listEl) {
                 if (plan.items && plan.items.length > 0) {
                     listEl.innerHTML = plan.items.map(item => `
@@ -499,7 +426,6 @@ const ZapretManagerPage = (() => {
                     listEl.innerHTML = '<div style="color: var(--text-muted); text-align: center; padding: 16px;">Нечего удалять</div>';
                 }
             }
-
             if (warningsEl && plan.warnings && plan.warnings.length > 0) {
                 warningsEl.innerHTML = plan.warnings.map(w => `
                     <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--warning); margin-bottom: 4px;">
@@ -511,26 +437,20 @@ const ZapretManagerPage = (() => {
                     </div>
                 `).join('');
             }
-
             // Показываем модал
             const modal = document.getElementById('zm-uninstall-modal');
             if (modal) modal.classList.remove('hidden');
-
         } catch (err) {
             Toast.error('Ошибка получения плана: ' + err.message);
         }
     }
-
     async function confirmUninstall() {
         closeUninstallModal();
-
         if (isOperationRunning) return;
-
         isOperationRunning = true;
         renderActions();
         showProgress('Удаление zapret2...', 0);
         startProgressPolling();
-
         try {
             const result = await API.post('/api/zapret/uninstall', { confirm: true });
             if (result.in_progress) {
@@ -551,22 +471,18 @@ const ZapretManagerPage = (() => {
             renderActions();
         }
     }
-
     function closeUninstallModal(event) {
         if (event && event.target !== event.currentTarget) return;
         const modal = document.getElementById('zm-uninstall-modal');
         if (modal) modal.classList.add('hidden');
     }
-
     async function refresh() {
         const btn = document.getElementById('zm-btn-refresh');
         if (btn) {
             btn.disabled = true;
             const origHtml = btn.innerHTML;
             btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;"></span> Проверка...';
-
             try {
-                // Сбрасываем кэш remote-версии
                 data = await API.get('/api/zapret?force=1');
                 if (data.ok) {
                     renderData();
@@ -582,27 +498,21 @@ const ZapretManagerPage = (() => {
             await loadData();
         }
     }
-
-    // ══════════════════ Progress ══════════════════
-
     function showProgress(status, progress) {
         const card = document.getElementById('zm-progress-card');
         const bar = document.getElementById('zm-progress-bar');
         const text = document.getElementById('zm-progress-text');
         const title = document.getElementById('zm-progress-title');
-
         if (card) card.classList.remove('hidden');
         if (bar) bar.style.width = Math.max(0, Math.min(100, progress)) + '%';
         if (text) text.textContent = status || 'Обработка...';
         if (title) title.textContent = progress >= 100 ? 'Завершено' : 'Выполняется операция...';
     }
-
     function hideProgress() {
         const card = document.getElementById('zm-progress-card');
         if (card) card.classList.add('hidden');
         stopProgressPolling();
     }
-
     function startProgressPolling() {
         stopProgressPolling();
         progressTimer = setInterval(async () => {
@@ -613,27 +523,21 @@ const ZapretManagerPage = (() => {
                         showProgress(prog.status, prog.progress);
                     } else {
                         hideProgress();
-                        // Операция завершилась — обновляем все данные
                         await loadData();
                         isOperationRunning = false;
                         renderActions();
                     }
                 }
             } catch {
-                // Тихо игнорируем
             }
         }, 1500);
     }
-
     function stopProgressPolling() {
         if (progressTimer) {
             clearInterval(progressTimer);
             progressTimer = null;
         }
     }
-
-    // ══════════════════ Helpers ══════════════════
-
     function formatDate(isoStr) {
         try {
             const d = new Date(isoStr);
@@ -644,13 +548,11 @@ const ZapretManagerPage = (() => {
             return '';
         }
     }
-
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
-
     function setError(msg) {
         const instVer = document.getElementById('zm-installed-version');
         if (instVer) {
@@ -660,15 +562,9 @@ const ZapretManagerPage = (() => {
         const instDetail = document.getElementById('zm-installed-detail');
         if (instDetail) instDetail.textContent = msg;
     }
-
-    // ══════════════════ Poll ══════════════════
-
     function startPoll() {
-        pollTimer = setInterval(loadData, 30000); // Обновление каждые 30 сек
+        pollTimer = setInterval(loadData, 30000);
     }
-
-    // ══════════════════ Destroy ══════════════════
-
     function destroy() {
         if (pollTimer) {
             clearInterval(pollTimer);
@@ -678,9 +574,6 @@ const ZapretManagerPage = (() => {
         data = null;
         isOperationRunning = false;
     }
-
-    // ══════════════════ Public API ══════════════════
-
     return {
         render,
         destroy,

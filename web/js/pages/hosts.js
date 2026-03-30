@@ -1,22 +1,11 @@
-/**
- * hosts.js — Страница управления файлом /etc/hosts.
- *
- * Функции: просмотр записей (системные + GUI), добавление,
- * удаление, блокировка доменов, пресеты, raw-редактор, бэкапы.
- */
-
 const HostsPage = (() => {
-
-    // Состояние
     let entries = [];
     let stats = {};
     let presets = [];
-    let activeTab = 'entries';  // entries | presets | raw
+    let activeTab = 'entries';
     let rawOriginal = '';
     let rawHasChanges = false;
-
     // ══════════════════ Render ══════════════════
-
     function render(container) {
         container.innerHTML = `
             <div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
@@ -49,12 +38,10 @@ const HostsPage = (() => {
                     </button>
                 </div>
             </div>
-
             <!-- Статистика -->
             <div class="status-grid" id="hosts-stats-grid">
                 <div class="status-card"><div class="status-card-label">Загрузка...</div></div>
             </div>
-
             <!-- Табы -->
             <div class="card" style="padding: 0;">
                 <div class="lists-tabs" id="hosts-tabs">
@@ -72,7 +59,6 @@ const HostsPage = (() => {
                         <span class="lists-tab-name">Raw-редактор</span>
                     </button>
                 </div>
-
                 <!-- Содержимое вкладок -->
                 <div id="hosts-tab-content" class="lists-content">
                     <div class="text-muted" style="text-align:center; padding:32px;">
@@ -81,7 +67,6 @@ const HostsPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Подсказка -->
             <div class="card" style="border-left: 3px solid var(--info);">
                 <div class="card-title" style="font-size:13px;">
@@ -99,7 +84,6 @@ const HostsPage = (() => {
                     GUI управляет только записями между маркерами <code style="background:var(--bg-input); padding:2px 6px; border-radius:4px; font-family:var(--font-mono); font-size:11px;">ZAPRET-GUI BEGIN/END</code>. Системные записи не затрагиваются.
                 </div>
             </div>
-
             <!-- Модал: восстановление из бэкапа -->
             <div id="hosts-restore-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content">
@@ -112,7 +96,6 @@ const HostsPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Модал: применение пресета с редактированием -->
             <div id="hosts-preset-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -125,10 +108,8 @@ const HostsPage = (() => {
                 </div>
             </div>
         `;
-
         loadData();
     }
-
     function destroy() {
         entries = [];
         stats = {};
@@ -136,9 +117,7 @@ const HostsPage = (() => {
         rawOriginal = '';
         rawHasChanges = false;
     }
-
     // ══════════════════ Data Loading ══════════════════
-
     async function loadData() {
         try {
             const [statsRes, customRes, presetsRes] = await Promise.all([
@@ -146,11 +125,9 @@ const HostsPage = (() => {
                 API.get('/api/hosts/custom'),
                 API.get('/api/hosts/presets'),
             ]);
-
             stats = statsRes.stats || {};
             entries = customRes.entries || [];
             presets = presetsRes.presets || [];
-
             renderStats();
             renderTabContent();
         } catch (err) {
@@ -162,7 +139,6 @@ const HostsPage = (() => {
             }
         }
     }
-
     async function refreshData() {
         try {
             const [statsRes, customRes] = await Promise.all([
@@ -171,26 +147,20 @@ const HostsPage = (() => {
             ]);
             stats = statsRes.stats || {};
             entries = customRes.entries || [];
-
             renderStats();
-
             // Обновляем счётчик записей в табе
             const countEl = document.getElementById('hosts-tab-count-entries');
             if (countEl) countEl.textContent = entries.length;
-
             // Всегда перерисовываем содержимое текущей вкладки
             renderTabContent();
         } catch (err) {
             Toast.show('Ошибка обновления: ' + err.message, 'error');
         }
     }
-
     // ══════════════════ Stats ══════════════════
-
     function renderStats() {
         const grid = document.getElementById('hosts-stats-grid');
         if (!grid) return;
-
         grid.innerHTML = `
             <div class="status-card">
                 <div class="status-card-value">${stats.total || 0}</div>
@@ -214,24 +184,18 @@ const HostsPage = (() => {
             </div>
         `;
     }
-
     // ══════════════════ Tabs ══════════════════
-
     function switchTab(tab) {
         activeTab = tab;
-
         // Обновляем кнопки табов
         document.querySelectorAll('#hosts-tabs .lists-tab').forEach(el => {
             el.classList.toggle('active', el.dataset.tab === tab);
         });
-
         renderTabContent();
     }
-
     function renderTabContent() {
         const content = document.getElementById('hosts-tab-content');
         if (!content) return;
-
         switch (activeTab) {
             case 'entries':
                 renderEntriesTab();
@@ -244,16 +208,12 @@ const HostsPage = (() => {
                 break;
         }
     }
-
     // ══════════════════ Entries Tab ══════════════════
-
     function renderEntriesTab() {
         const content = document.getElementById('hosts-tab-content');
         if (!content) return;
-
         const countEl = document.getElementById('hosts-tab-count-entries');
         if (countEl) countEl.textContent = entries.length;
-
         let tableHtml = '';
         if (entries.length === 0) {
             tableHtml = `
@@ -279,13 +239,11 @@ const HostsPage = (() => {
                     <div style="flex:0.5; text-align:right;">Действия</div>
                 </div>
             `;
-
             entries.forEach(e => {
                 const isBlock = e.ip === '0.0.0.0';
                 const typeBadge = isBlock
                     ? '<span class="blob-badge" style="background:rgba(239,68,68,0.15); color:var(--error);">Блок</span>'
                     : '<span class="blob-badge" style="background:rgba(34,197,94,0.15); color:var(--success);">Redirect</span>';
-
                 tableHtml += `
                     <div class="blob-table-row">
                         <div style="flex:1.2; font-family:var(--font-mono); font-size:12px; color:${isBlock ? 'var(--error)' : 'var(--accent)'};">
@@ -309,10 +267,8 @@ const HostsPage = (() => {
                     </div>
                 `;
             });
-
             tableHtml += '</div>';
         }
-
         content.innerHTML = `
             <div class="lists-toolbar">
                 <div class="lists-toolbar-left">
@@ -338,9 +294,7 @@ const HostsPage = (() => {
                     ` : ''}
                 </div>
             </div>
-
             ${tableHtml}
-
             <!-- Добавление записи -->
             <div class="lists-add-section">
                 <div class="lists-add-header">
@@ -372,7 +326,6 @@ const HostsPage = (() => {
                     Конкретный <strong>IP</strong> — перенаправление (обход блокировок)
                 </div>
             </div>
-
             <!-- Быстрая блокировка -->
             <div class="lists-add-section" style="border-top:1px solid var(--border);">
                 <div class="lists-add-header">
@@ -398,13 +351,10 @@ const HostsPage = (() => {
             </div>
         `;
     }
-
     // ══════════════════ Presets Tab ══════════════════
-
     function renderPresetsTab() {
         const content = document.getElementById('hosts-tab-content');
         if (!content) return;
-
         if (presets.length === 0) {
             content.innerHTML = `
                 <div style="text-align:center; padding:40px; color:var(--text-muted);">
@@ -413,14 +363,11 @@ const HostsPage = (() => {
             `;
             return;
         }
-
         let html = '<div style="padding:16px; display:flex; flex-direction:column; gap:12px;">';
-
         presets.forEach(p => {
             const iconColor = p.id === 'block_ads' || p.id === 'block_telemetry'
                 ? 'var(--warning)'
                 : 'var(--accent)';
-
             html += `
                 <div style="
                     background:var(--bg-secondary);
@@ -468,17 +415,13 @@ const HostsPage = (() => {
                 </div>
             `;
         });
-
         html += '</div>';
         content.innerHTML = html;
     }
-
     // ══════════════════ Raw Tab ══════════════════
-
     async function renderRawTab() {
         const content = document.getElementById('hosts-tab-content');
         if (!content) return;
-
         content.innerHTML = `
             <div class="lists-toolbar">
                 <div class="lists-toolbar-left">
@@ -517,13 +460,11 @@ const HostsPage = (() => {
                 ⚠️ Будьте осторожны при ручном редактировании — не удаляйте системные записи (localhost и т.д.)
             </div>
         `;
-
         // Загружаем содержимое
         try {
             const res = await API.get('/api/hosts/raw');
             rawOriginal = res.text || '';
             rawHasChanges = false;
-
             const editor = document.getElementById('hosts-raw-editor');
             if (editor) {
                 editor.value = rawOriginal;
@@ -533,40 +474,29 @@ const HostsPage = (() => {
             Toast.show('Ошибка загрузки raw: ' + err.message, 'error');
         }
     }
-
     function onRawInput() {
         const editor = document.getElementById('hosts-raw-editor');
         if (!editor) return;
-
         rawHasChanges = editor.value !== rawOriginal;
-
         const unsaved = document.getElementById('hosts-raw-unsaved');
         if (unsaved) unsaved.style.display = rawHasChanges ? '' : 'none';
-
         const saveBtn = document.getElementById('hosts-raw-save-btn');
         if (saveBtn) saveBtn.disabled = !rawHasChanges;
     }
-
     // ══════════════════ Actions ══════════════════
-
     async function addEntry() {
         const ipInput = document.getElementById('hosts-add-ip');
         const domainInput = document.getElementById('hosts-add-domain');
         if (!ipInput || !domainInput) return;
-
         const ip = ipInput.value.trim();
         const domain = domainInput.value.trim();
-
         if (!ip) { Toast.show('Укажите IP-адрес', 'warning'); ipInput.focus(); return; }
         if (!domain) { Toast.show('Укажите домен', 'warning'); domainInput.focus(); return; }
-
         try {
             const res = await API.post('/api/hosts/add', { ip, domain });
             Toast.show(res.message || 'Запись добавлена', 'success');
-
             // Перезагружаем данные с сервера — это заново отрисует форму
             await refreshData();
-
             // После перерисовки очищаем поле домена в новом input-элементе
             const newDomainInput = document.getElementById('hosts-add-domain');
             if (newDomainInput) {
@@ -577,10 +507,8 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
     async function removeEntry(domain) {
         if (!confirm(`Удалить запись для ${domain}?`)) return;
-
         try {
             const res = await API.post('/api/hosts/remove', { domain });
             Toast.show(res.message || 'Запись удалена', 'success');
@@ -589,24 +517,18 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
     async function quickBlock() {
         const input = document.getElementById('hosts-block-input');
         if (!input) return;
-
         const text = input.value.trim();
         if (!text) { Toast.show('Введите домены для блокировки', 'warning'); input.focus(); return; }
-
         const domains = text.split(/[\s,;]+/).map(d => d.trim()).filter(Boolean);
         if (domains.length === 0) { Toast.show('Не удалось распознать домены', 'warning'); return; }
-
         try {
             const res = await API.post('/api/hosts/block', { domains });
             Toast.show(res.message || `Заблокировано: ${res.count}`, 'success');
-
             // Перезагружаем данные — форма перерисуется
             await refreshData();
-
             // Очищаем поле в новом DOM-элементе
             const newInput = document.getElementById('hosts-block-input');
             if (newInput) newInput.value = '';
@@ -614,10 +536,8 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
     async function clearAll() {
         if (!confirm('Удалить ВСЕ GUI-записи из /etc/hosts?\nСистемные записи не будут затронуты.')) return;
-
         try {
             const res = await API.post('/api/hosts/clear');
             Toast.show(res.message || 'Все GUI-записи удалены', 'success');
@@ -626,13 +546,10 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
     async function applyPreset(presetId) {
         const preset = presets.find(p => p.id === presetId);
         if (!preset) return;
-
         if (!confirm(`Применить пресет "${preset.name}"?\nБудет добавлено ${preset.count} записей.`)) return;
-
         try {
             const res = await API.post('/api/hosts/preset', { name: presetId });
             Toast.show(res.message || 'Пресет применён', 'success');
@@ -642,20 +559,16 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
     async function saveRaw() {
         const editor = document.getElementById('hosts-raw-editor');
         if (!editor) return;
-
         const text = editor.value;
-
         try {
             const res = await API.put('/api/hosts/raw', { text });
             Toast.show(res.message || 'Файл сохранён', 'success');
             rawOriginal = text;
             rawHasChanges = false;
             onRawInput();
-
             // Обновляем данные для других вкладок
             const [statsRes, customRes] = await Promise.all([
                 API.get('/api/hosts/stats'),
@@ -668,25 +581,19 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
     async function refreshRaw() {
         if (rawHasChanges && !confirm('Есть несохранённые изменения. Перезагрузить?')) return;
         renderRawTab();
     }
-
     // ══════════════════ Preset Modal ══════════════════
-
     function openPresetModal(presetId) {
         const preset = presets.find(p => p.id === presetId);
         if (!preset) return;
-
         const modal = document.getElementById('hosts-preset-modal');
         const title = document.getElementById('hosts-preset-modal-title');
         const body = document.getElementById('hosts-preset-modal-body');
         if (!modal || !body) return;
-
         title.textContent = preset.name;
-
         let entriesHtml = '';
         preset.entries.forEach((e, i) => {
             entriesHtml += `
@@ -701,7 +608,6 @@ const HostsPage = (() => {
                 </div>
             `;
         });
-
         body.innerHTML = `
             <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px;">
                 ${escapeHtml(preset.description)}<br>
@@ -717,15 +623,12 @@ const HostsPage = (() => {
                 </button>
             </div>
         `;
-
         modal.style.display = 'flex';
     }
-
     function closePresetModal() {
         const modal = document.getElementById('hosts-preset-modal');
         if (modal) modal.style.display = 'none';
     }
-
     async function applyPresetFromModal(presetId, count) {
         // Собираем отредактированные записи
         const customEntries = [];
@@ -739,7 +642,6 @@ const HostsPage = (() => {
                 });
             }
         }
-
         try {
             const res = await API.post('/api/hosts/preset', {
                 name: presetId,
@@ -753,9 +655,7 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
     // ══════════════════ Backup / Restore ══════════════════
-
     async function doBackup() {
         try {
             const res = await API.post('/api/hosts/backup');
@@ -764,19 +664,15 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
     async function showRestoreModal() {
         const modal = document.getElementById('hosts-restore-modal');
         const body = document.getElementById('hosts-restore-body');
         if (!modal || !body) return;
-
         modal.style.display = 'flex';
         body.innerHTML = '<div style="text-align:center; padding:24px; color:var(--text-muted);">Загрузка списка бэкапов...</div>';
-
         try {
             const res = await API.get('/api/hosts/backups');
             const backups = res.backups || [];
-
             if (backups.length === 0) {
                 body.innerHTML = `
                     <div style="text-align:center; padding:24px; color:var(--text-muted);">
@@ -788,12 +684,10 @@ const HostsPage = (() => {
                 `;
                 return;
             }
-
             let html = '<div style="max-height:300px; overflow-y:auto;">';
             backups.forEach(b => {
                 const date = b.timestamp ? new Date(b.timestamp * 1000).toLocaleString('ru-RU') : 'Неизвестно';
                 const size = b.size ? formatSize(b.size) : '—';
-
                 html += `
                     <div style="
                         display:flex; justify-content:space-between; align-items:center;
@@ -815,13 +709,11 @@ const HostsPage = (() => {
                 `;
             });
             html += '</div>';
-
             html += `
                 <div style="display:flex; justify-content:flex-end; margin-top:12px;">
                     <button class="btn btn-ghost" onclick="HostsPage.closeRestoreModal()">Закрыть</button>
                 </div>
             `;
-
             body.innerHTML = html;
         } catch (err) {
             body.innerHTML = `
@@ -834,15 +726,12 @@ const HostsPage = (() => {
             `;
         }
     }
-
     function closeRestoreModal() {
         const modal = document.getElementById('hosts-restore-modal');
         if (modal) modal.style.display = 'none';
     }
-
     async function doRestore(path) {
         if (!confirm('Восстановить /etc/hosts из этого бэкапа?\nТекущий файл будет заменён.')) return;
-
         try {
             const res = await API.post('/api/hosts/restore', { path });
             Toast.show(res.message || 'Восстановлено из бэкапа', 'success');
@@ -852,27 +741,19 @@ const HostsPage = (() => {
             Toast.show(err.message, 'error');
         }
     }
-
-    // ══════════════════ Утилиты ══════════════════
-
     function escapeHtml(str) {
         if (!str) return '';
         return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
-
     function escapeAttr(str) {
         if (!str) return '';
         return str.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\\/g, '\\\\');
     }
-
     function formatSize(bytes) {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
-
-    // ══════════════════ Public API ══════════════════
-
     return {
         render,
         destroy,

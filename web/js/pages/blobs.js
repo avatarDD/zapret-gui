@@ -1,20 +1,6 @@
-/**
- * blobs.js — Страница управления блобами.
- *
- * Блобы — бинарные данные для fake-пакетов nfqws2.
- * Хранятся в /opt/zapret2/blobs/.
- *
- * Функции: просмотр (hex), создание, удаление,
- * генерация fake TLS ClientHello / HTTP GET.
- */
-
 const BlobsPage = (() => {
-
     let blobs = [];
     let stats = {};
-
-    // ══════════════════ Render ══════════════════
-
     function render(container) {
         container.innerHTML = `
             <div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
@@ -42,12 +28,10 @@ const BlobsPage = (() => {
                     </button>
                 </div>
             </div>
-
             <!-- Статистика -->
             <div class="status-grid" id="blob-stats-grid">
                 <div class="status-card"><div class="status-card-label">Загрузка...</div></div>
             </div>
-
             <!-- Таблица блобов -->
             <div class="card" id="blobs-list-card">
                 <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
@@ -71,7 +55,6 @@ const BlobsPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Подсказка -->
             <div class="card" style="border-left: 3px solid var(--info);">
                 <div class="card-title" style="font-size:13px;">
@@ -90,7 +73,6 @@ const BlobsPage = (() => {
                     Генератор создаёт fake TLS ClientHello или HTTP GET для указанного домена.
                 </div>
             </div>
-
             <!-- Модал: просмотр блоба -->
             <div id="blob-view-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -103,7 +85,6 @@ const BlobsPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Модал: создать блоб -->
             <div id="blob-create-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -136,7 +117,6 @@ const BlobsPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Модал: генератор -->
             <div id="blob-gen-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -184,7 +164,6 @@ const BlobsPage = (() => {
                                 Сгенерировать
                             </button>
                         </div>
-
                         <!-- Результат генерации -->
                         <div id="blob-gen-result" style="display:none; margin-top:16px;">
                             <div class="form-label" style="margin-bottom:6px;">Результат</div>
@@ -196,7 +175,6 @@ const BlobsPage = (() => {
                     </div>
                 </div>
             </div>
-
             <!-- Модал: редактирование hex -->
             <div id="blob-edit-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -222,16 +200,11 @@ const BlobsPage = (() => {
                 </div>
             </div>
         `;
-
         loadData();
     }
-
-    // ══════════════════ Data Loading ══════════════════
-
     async function loadData() {
         await Promise.all([loadBlobs(), loadStats()]);
     }
-
     async function loadBlobs() {
         try {
             const data = await API.get('/api/blobs');
@@ -242,23 +215,17 @@ const BlobsPage = (() => {
                 '<div style="text-align:center; padding:24px; color:var(--error);">Ошибка загрузки: ' + escapeHtml(err.message) + '</div>';
         }
     }
-
     async function loadStats() {
         try {
             const data = await API.get('/api/blobs/stats');
             stats = data.stats || {};
             renderStats(stats);
         } catch (err) {
-            // не критично
         }
     }
-
-    // ══════════════════ Render Stats ══════════════════
-
     function renderStats(s) {
         const grid = document.getElementById('blob-stats-grid');
         if (!grid) return;
-
         grid.innerHTML = `
             <div class="status-card">
                 <div class="status-card-header">
@@ -314,13 +281,9 @@ const BlobsPage = (() => {
             </div>
         `;
     }
-
-    // ══════════════════ Render Table ══════════════════
-
     function renderTable(list) {
         const wrap = document.getElementById('blobs-table-wrap');
         if (!wrap) return;
-
         if (list.length === 0) {
             wrap.innerHTML = `
                 <div style="text-align:center; padding:40px 20px; color:var(--text-muted);">
@@ -334,7 +297,6 @@ const BlobsPage = (() => {
             `;
             return;
         }
-
         let html = '<div class="blob-table">';
         html += `
             <div class="blob-table-header">
@@ -345,13 +307,11 @@ const BlobsPage = (() => {
                 <div class="blob-col-actions">Действия</div>
             </div>
         `;
-
         for (const b of list) {
             const typeIcon = getTypeIcon(b.type);
             const typeLabel = getTypeLabel(b.type);
             const badgeClass = b.is_builtin ? 'blob-badge-builtin' : 'blob-badge-user';
             const badgeText = b.is_builtin ? 'builtin' : 'user';
-
             html += `
                 <div class="blob-table-row">
                     <div class="blob-col-name" title="${escapeHtml(b.name)}">
@@ -397,27 +357,20 @@ const BlobsPage = (() => {
                 </div>
             `;
         }
-
         html += '</div>';
         wrap.innerHTML = html;
     }
-
-    // ══════════════════ View Blob ══════════════════
-
     async function viewBlob(name) {
         const modal = document.getElementById('blob-view-modal');
         const title = document.getElementById('blob-view-title');
         const body = document.getElementById('blob-view-body');
         if (!modal || !body) return;
-
         title.textContent = 'Блоб: ' + name;
         body.innerHTML = '<div class="text-muted" style="text-align:center; padding:24px;"><div class="spinner" style="margin:0 auto 12px;"></div>Загрузка...</div>';
         modal.style.display = 'flex';
-
         try {
             const data = await API.get('/api/blobs/' + encodeURIComponent(name));
             const blob = data.blob;
-
             body.innerHTML = `
                 <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px;">
                     <div style="flex:1; min-width:120px;">
@@ -457,14 +410,10 @@ const BlobsPage = (() => {
             body.innerHTML = '<div style="text-align:center; padding:24px; color:var(--error);">Ошибка: ' + escapeHtml(err.message) + '</div>';
         }
     }
-
     function closeView() {
         const modal = document.getElementById('blob-view-modal');
         if (modal) modal.style.display = 'none';
     }
-
-    // ══════════════════ Create Blob ══════════════════
-
     function openCreate() {
         const modal = document.getElementById('blob-create-modal');
         if (modal) {
@@ -474,17 +423,14 @@ const BlobsPage = (() => {
             document.getElementById('blob-create-name').focus();
         }
     }
-
     function closeCreate() {
         const modal = document.getElementById('blob-create-modal');
         if (modal) modal.style.display = 'none';
     }
-
     async function doCreate() {
         const name = document.getElementById('blob-create-name').value.trim();
         const hex = document.getElementById('blob-create-hex').value.trim();
         const btn = document.getElementById('blob-create-btn');
-
         if (!name) {
             Toast.warning('Укажите имя блоба');
             return;
@@ -493,10 +439,8 @@ const BlobsPage = (() => {
             Toast.warning('Введите hex-данные');
             return;
         }
-
         btn.disabled = true;
         btn.textContent = 'Создание...';
-
         try {
             await API.post('/api/blobs', { name, hex });
             Toast.success('Блоб создан: ' + name);
@@ -509,23 +453,17 @@ const BlobsPage = (() => {
             btn.textContent = 'Создать';
         }
     }
-
-    // ══════════════════ Edit Blob ══════════════════
-
     let editingBlobName = '';
-
     async function editBlob(name) {
         editingBlobName = name;
         const modal = document.getElementById('blob-edit-modal');
         const title = document.getElementById('blob-edit-title');
         const textarea = document.getElementById('blob-edit-hex');
         if (!modal || !textarea) return;
-
         title.textContent = 'Редактировать: ' + name;
         textarea.value = 'Загрузка...';
         textarea.disabled = true;
         modal.style.display = 'flex';
-
         try {
             const data = await API.get('/api/blobs/' + encodeURIComponent(name));
             textarea.value = data.blob.hex || '';
@@ -536,27 +474,21 @@ const BlobsPage = (() => {
             textarea.disabled = false;
         }
     }
-
     function closeEdit() {
         const modal = document.getElementById('blob-edit-modal');
         if (modal) modal.style.display = 'none';
         editingBlobName = '';
     }
-
     async function doEdit() {
         if (!editingBlobName) return;
-
         const hex = document.getElementById('blob-edit-hex').value.trim();
         const btn = document.getElementById('blob-edit-btn');
-
         if (!hex) {
             Toast.warning('Hex-данные не могут быть пустыми');
             return;
         }
-
         btn.disabled = true;
         btn.textContent = 'Сохранение...';
-
         try {
             await API.put('/api/blobs/' + encodeURIComponent(editingBlobName), { hex });
             Toast.success('Блоб обновлён: ' + editingBlobName);
@@ -569,12 +501,8 @@ const BlobsPage = (() => {
             btn.textContent = 'Сохранить';
         }
     }
-
-    // ══════════════════ Delete Blob ══════════════════
-
     async function deleteBlob(name) {
         if (!confirm('Удалить блоб "' + name + '"?')) return;
-
         try {
             await API.delete('/api/blobs/' + encodeURIComponent(name));
             Toast.success('Блоб удалён: ' + name);
@@ -583,9 +511,6 @@ const BlobsPage = (() => {
             Toast.error(err.message);
         }
     }
-
-    // ══════════════════ Generate ══════════════════
-
     function openGenerate() {
         const modal = document.getElementById('blob-gen-modal');
         if (modal) {
@@ -597,17 +522,13 @@ const BlobsPage = (() => {
             document.getElementById('blob-gen-domain').focus();
         }
     }
-
     function closeGenerate() {
         const modal = document.getElementById('blob-gen-modal');
         if (modal) modal.style.display = 'none';
     }
-
     function setGenDomain(domain) {
         const input = document.getElementById('blob-gen-domain');
         if (input) input.value = domain;
-
-        // Автогенерация имени
         const nameInput = document.getElementById('blob-gen-name');
         const typeSelect = document.getElementById('blob-gen-type');
         if (nameInput && typeSelect) {
@@ -615,38 +536,29 @@ const BlobsPage = (() => {
             nameInput.value = 'fake_' + typeSelect.value + '_' + safeDomain;
         }
     }
-
     async function doGenerate() {
         const type = document.getElementById('blob-gen-type').value;
         const domain = document.getElementById('blob-gen-domain').value.trim();
         const name = document.getElementById('blob-gen-name').value.trim();
         const btn = document.getElementById('blob-gen-btn');
         const resultDiv = document.getElementById('blob-gen-result');
-
         if (!domain) {
             Toast.warning('Укажите домен');
             return;
         }
-
         btn.disabled = true;
-
         try {
             const body = { type, domain };
             if (name) body.name = name;
-
             const data = await API.post('/api/blobs/generate', body);
             const gen = data.generated;
-
-            // Показываем результат
             document.getElementById('blob-gen-result-info').innerHTML =
                 `Тип: <strong>${escapeHtml(gen.type.toUpperCase())}</strong> | ` +
                 `Домен: <strong>${escapeHtml(gen.domain)}</strong> | ` +
                 `Размер: <strong>${gen.size} байт</strong>` +
                 (data.saved ? ` | Сохранён как: <strong>${escapeHtml(data.saved.name)}</strong>` : '');
-
             document.getElementById('blob-gen-hex-dump').textContent = gen.hex_dump || gen.hex;
             resultDiv.style.display = 'block';
-
             if (data.saved) {
                 Toast.success('Блоб сгенерирован и сохранён: ' + data.saved.name);
                 loadData();
@@ -659,16 +571,12 @@ const BlobsPage = (() => {
             btn.disabled = false;
         }
     }
-
-    // ══════════════════ Copy Hex ══════════════════
-
     function copyHex(source) {
         let text = '';
         if (source === 'view') {
             const el = document.getElementById('blob-view-hex');
             text = el ? el.value : '';
         }
-
         if (text) {
             navigator.clipboard.writeText(text).then(() => {
                 Toast.success('Hex скопирован в буфер обмена');
@@ -677,22 +585,17 @@ const BlobsPage = (() => {
             });
         }
     }
-
     // ══════════════════ Refresh ══════════════════
-
     function refresh() {
         loadData();
         Toast.info('Обновлено');
     }
-
     // ══════════════════ Utilities ══════════════════
-
     function formatSize(bytes) {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
-
     function getTypeIcon(type) {
         switch (type) {
             case 'tls':
@@ -705,7 +608,6 @@ const BlobsPage = (() => {
                 return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="color:var(--text-muted);"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
         }
     }
-
     function getTypeLabel(type) {
         switch (type) {
             case 'tls':  return 'TLS';
@@ -714,19 +616,13 @@ const BlobsPage = (() => {
             default:     return 'unknown';
         }
     }
-
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
-
     function destroy() {
-        // Cleanup — нет таймеров для этой страницы
     }
-
-    // ══════════════════ Public API ══════════════════
-
     return {
         render,
         destroy,

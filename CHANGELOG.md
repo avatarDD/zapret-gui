@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.14.0 — Модели данных и конфигурация blockcheck (Фаза 13.0)
+
+### Добавлено
+- **Модуль `core/blockcheck/`** — фундамент для автоподбора стратегий
+- **`core/blockcheck/models.py`** — Enum-ы (`TestStatus`, `DPIClassification`, `TestType`, `PreflightVerdict`) и модели данных (`SingleTestResult`, `TargetResult`, `DNSIntegrityResult`, `PreflightResult`, `BlockcheckReport`) с JSON-сериализацией через `to_dict()`
+- **`core/blockcheck/scan_models.py`** — модели результатов сканирования (`StrategyProbeResult`, `StrategyScanReport`)
+- **`core/blockcheck/config.py`** — конфигурация blockcheck: таймауты (увеличены для роутеров), Linux errno-коды (замена Windows WSAE*), DNS/DoH-серверы, ISP-маркеры, `KNOWN_BLOCK_IPS`, пути (`NFQWS2_BIN`, `DATA_DIR`), `PROBE_QUEUE_NUM=200`
+- Fallback для `enum` модуля (совместимость с `python3-light` Entware)
+- `__slots__` на всех моделях для экономии памяти
+
+### Исправлено
+- **Рассинхрон версий** — `api/status.py` (было `0.13.3`), `Makefile` (было `0.10.0`), `README.md` (было `0.13.0`) приведены к единой версии `0.14.0`
+
+---
+
 ## v0.13.5 — Удалено мёртвое поле config_path
 
 ### Удалено
