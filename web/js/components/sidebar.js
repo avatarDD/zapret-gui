@@ -1,4 +1,13 @@
+/**
+ * sidebar.js — Боковая навигация.
+ *
+ * Определяет все страницы и рендерит меню.
+ * Иконки — inline SVG (без внешних зависимостей).
+ */
+
 const Sidebar = (() => {
+
+    // Иконки (Lucide-совместимые SVG paths)
     const ICONS = {
         dashboard:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>',
         play:        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
@@ -15,6 +24,8 @@ const Sidebar = (() => {
         autostart:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
         zapret:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
     };
+
+    // Группы с разделителями
     const NAV_GROUPS = [
         {
             items: [
@@ -48,26 +59,35 @@ const Sidebar = (() => {
             ]
         },
     ];
+
     let currentPage = 'dashboard';
+
     function render() {
         const nav = document.getElementById('sidebar-nav');
         if (!nav) return;
+
         nav.innerHTML = '';
+
         NAV_GROUPS.forEach((group, gi) => {
             // Пропускаем пустые группы
             if (group.items.length === 0) return;
+
             // Разделитель между группами (кроме первой)
             if (gi > 0) {
                 const sep = document.createElement('div');
                 sep.className = 'nav-separator';
                 nav.appendChild(sep);
             }
+
+            // Метка секции
             if (group.label) {
                 const label = document.createElement('div');
                 label.className = 'nav-section-label';
                 label.textContent = group.label;
                 nav.appendChild(label);
             }
+
+            // Элементы
             group.items.forEach(item => {
                 const el = document.createElement('div');
                 el.className = `nav-item${item.id === currentPage ? ' active' : ''}`;
@@ -78,6 +98,7 @@ const Sidebar = (() => {
                 `;
                 el.addEventListener('click', () => {
                     window.location.hash = item.id;
+                    // На мобильных — закрываем sidebar
                     if (window.innerWidth <= 768) {
                         document.getElementById('sidebar')?.classList.remove('open');
                     }
@@ -86,20 +107,26 @@ const Sidebar = (() => {
             });
         });
     }
+
     function setCurrentPage(pageId) {
         currentPage = pageId;
+        // Обновляем active-класс
         document.querySelectorAll('.nav-item').forEach(el => {
             el.classList.toggle('active', el.dataset.page === pageId);
         });
     }
+
     function initMobileToggle() {
         const toggle = document.getElementById('sidebar-toggle');
         const sidebar = document.getElementById('sidebar');
         if (!toggle || !sidebar) return;
+
         toggle.addEventListener('click', (e) => {
             e.stopPropagation();
             sidebar.classList.toggle('open');
         });
+
+        // Закрытие при клике вне sidebar на мобильных
         document.addEventListener('click', (e) => {
             if (window.innerWidth <= 768 &&
                 sidebar.classList.contains('open') &&
@@ -108,5 +135,6 @@ const Sidebar = (() => {
             }
         });
     }
+
     return { render, setCurrentPage, initMobileToggle };
 })();

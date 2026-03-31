@@ -1,7 +1,17 @@
+# core/system_info.py
+"""
+Сбор информации о системе роутера.
+
+Версия ядра, архитектура, RAM, uptime, IP-адреса.
+"""
+
 import os
 import platform
 import subprocess
+
+
 def get_system_info() -> dict:
+    """Собрать основную информацию о системе."""
     info = {
         "hostname": _read_file("/etc/hostname", platform.node()),
         "kernel": platform.release(),
@@ -14,6 +24,8 @@ def get_system_info() -> dict:
         "wan_ip": _get_wan_ip(),
     }
     return info
+
+
 def _read_file(path: str, default: str = "") -> str:
     """Прочитать файл, вернуть default при ошибке."""
     try:
@@ -21,7 +33,10 @@ def _read_file(path: str, default: str = "") -> str:
             return f.read().strip()
     except (IOError, OSError):
         return default
+
+
 def _get_platform() -> str:
+    """Определить платформу (Keenetic, OpenWrt, generic Linux)."""
     if os.path.exists("/tmp/ndnproxy_acl"):
         return "Keenetic (NDMS)"
     if os.path.exists("/etc/openwrt_release"):
@@ -30,16 +45,23 @@ def _get_platform() -> str:
         release = _read_file("/opt/etc/entware_release")
         return f"Entware ({release.split(chr(10))[0]})" if release else "Entware"
     return "Linux"
+
+
 def _get_uptime() -> int:
+    """Получить uptime в секундах."""
     try:
         data = _read_file("/proc/uptime")
         return int(float(data.split()[0]))
     except (ValueError, IndexError):
         return 0
+
+
 def _format_uptime(seconds: int) -> str:
+    """Форматировать uptime в человекочитаемый вид: Xмес Xд Xч Xм Xс."""
     if seconds <= 0:
         return "—"
-    months = seconds // (30 * 86400)
+
+    months = seconds // (30 * 86400)     # ~30 дней в месяце
     remainder = seconds % (30 * 86400)
     days = remainder // 86400
     remainder = remainder % 86400
@@ -47,6 +69,7 @@ def _format_uptime(seconds: int) -> str:
     remainder = remainder % 3600
     minutes = remainder // 60
     secs = remainder % 60
+
     parts = []
     if months > 0:
         parts.append("%dмес" % months)
@@ -56,12 +79,20 @@ def _format_uptime(seconds: int) -> str:
         parts.append("%dч" % hours)
     if minutes > 0:
         parts.append("%dм" % minutes)
+    # Секунды показываем всегда, если нет более крупных единиц,
+    # либо если uptime менее часа (для точности)
     if secs > 0 and (not parts or hours == 0):
         parts.append("%dс" % secs)
+
+    # Fallback если всё нулевое (не должно случиться при seconds > 0)
     if not parts:
         parts.append("0с")
+
     return " ".join(parts)
+
+
 def _get_ram_info() -> dict:
+    """Получить информацию о RAM из /proc/meminfo."""
     info = {"total_mb": 0, "free_mb": 0, "available_mb": 0, "used_percent": 0}
     try:
         meminfo = _read_file("/proc/meminfo")
@@ -69,9 +100,12 @@ def _get_ram_info() -> dict:
         for line in meminfo.split("\n"):
             if ":" in line:
                 key, val = line.split(":", 1)
+                # Значение в kB
                 data[key.strip()] = int(val.strip().split()[0])
+
         total = data.get("MemTotal", 0)
         available = data.get("MemAvailable", data.get("MemFree", 0))
+
         info["total_mb"] = round(total / 1024)
         info["available_mb"] = round(available / 1024)
         info["free_mb"] = round(data.get("MemFree", 0) / 1024)
@@ -80,13 +114,18 @@ def _get_ram_info() -> dict:
     except (ValueError, KeyError):
         pass
     return info
+
+
 def _get_load_average() -> str:
+    """Получить load average."""
     try:
         data = _read_file("/proc/loadavg")
         parts = data.split()
         return f"{parts[0]} {parts[1]} {parts[2]}"
     except (IndexError, IOError):
         return "—"
+
+
 def _get_wan_ip() -> str:
     """Попробовать определить WAN IP."""
     try:

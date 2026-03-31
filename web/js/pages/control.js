@@ -1,12 +1,21 @@
+/**
+ * control.js — Страница "Управление".
+ *
+ * Большой индикатор статуса, кнопки управления,
+ * текущая стратегия, статус firewall, лог nfqws.
+ */
+
 const ControlPage = (() => {
     let pollTimer = null;
     let isActionPending = false;
+
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
                 <h1 class="page-title">Управление</h1>
                 <p class="page-description">Запуск, остановка и мониторинг nfqws2</p>
             </div>
+
             <!-- Большой индикатор статуса -->
             <div class="control-status-hero" id="control-hero">
                 <div class="control-status-indicator stopped" id="control-indicator">
@@ -22,6 +31,7 @@ const ControlPage = (() => {
                     <div class="control-status-detail" id="control-status-detail">nfqws2 не запущен</div>
                 </div>
             </div>
+
             <!-- Кнопки управления -->
             <div class="card">
                 <div class="card-title">
@@ -51,6 +61,7 @@ const ControlPage = (() => {
                     </button>
                 </div>
             </div>
+
             <!-- Информационные карточки -->
             <div class="status-grid">
                 <!-- Стратегия -->
@@ -68,6 +79,7 @@ const ControlPage = (() => {
                         <a href="#strategies" style="color:var(--accent); font-size:12px;">Выбрать стратегию →</a>
                     </div>
                 </div>
+
                 <!-- PID / Uptime -->
                 <div class="status-card">
                     <div class="status-card-header">
@@ -81,6 +93,7 @@ const ControlPage = (() => {
                     <div class="status-card-value" id="ctrl-process-info">—</div>
                     <div class="status-card-detail" id="ctrl-process-detail"></div>
                 </div>
+
                 <!-- Firewall -->
                 <div class="status-card">
                     <div class="status-card-header">
@@ -95,6 +108,7 @@ const ControlPage = (() => {
                     <div class="status-card-detail" id="ctrl-fw-detail"></div>
                 </div>
             </div>
+
             <!-- Firewall правила -->
             <div class="card" id="fw-rules-card" style="display:none;">
                 <div class="card-title">
@@ -106,6 +120,7 @@ const ControlPage = (() => {
                 <div class="log-viewer" id="fw-rules-viewer" style="max-height:160px; font-size:11px;">
                 </div>
             </div>
+
             <!-- Лог вывода nfqws -->
             <div class="card">
                 <div class="card-title" style="justify-content: space-between;">
@@ -125,10 +140,15 @@ const ControlPage = (() => {
                 </div>
             </div>
         `;
+
+        // Начальная загрузка
         fetchStatus();
         fetchLogs();
         startPolling();
     }
+
+    // ── Status fetching ──
+
     async function fetchStatus() {
         try {
             const data = await API.get('/api/status');
@@ -137,12 +157,15 @@ const ControlPage = (() => {
             updateUIError(err.message);
         }
     }
+
     function updateUI(data) {
         const running = data.nfqws?.running;
         const indicator = document.getElementById('control-indicator');
         const icon = document.getElementById('control-icon');
         const label = document.getElementById('control-status-label');
         const detail = document.getElementById('control-status-detail');
+
+        // Hero indicator
         if (indicator) {
             indicator.className = 'control-status-indicator ' + (running ? 'running' : 'stopped');
         }
@@ -168,6 +191,8 @@ const ControlPage = (() => {
                     : 'nfqws2 не запущен';
             }
         }
+
+        // Кнопки
         const btnStart = document.getElementById('btn-start');
         const btnStop = document.getElementById('btn-stop');
         const btnRestart = document.getElementById('btn-restart');
@@ -176,6 +201,8 @@ const ControlPage = (() => {
             if (btnStop) btnStop.disabled = !running;
             if (btnRestart) btnRestart.disabled = !running;
         }
+
+        // Стратегия
         const stratName = document.getElementById('ctrl-strategy-name');
         const stratDetail = document.getElementById('ctrl-strategy-detail');
         if (stratName) {
@@ -189,6 +216,8 @@ const ControlPage = (() => {
                 stratDetail.innerHTML = '<a href="#strategies" style="color:var(--accent); font-size:12px;">Выбрать стратегию →</a>';
             }
         }
+
+        // Процесс
         const procInfo = document.getElementById('ctrl-process-info');
         const procDetail = document.getElementById('ctrl-process-detail');
         if (procInfo) {
@@ -200,6 +229,7 @@ const ControlPage = (() => {
                 ? 'Uptime: ' + data.nfqws.uptime_human
                 : '';
         }
+
         // Firewall
         const fwStatus = document.getElementById('ctrl-fw-status');
         const fwDetail = document.getElementById('ctrl-fw-detail');
@@ -214,6 +244,7 @@ const ControlPage = (() => {
             if (data.firewall?.rules_count) parts.push(data.firewall.rules_count + ' правил');
             fwDetail.textContent = parts.join(' · ');
         }
+
         // Firewall rules card
         const fwCard = document.getElementById('fw-rules-card');
         const fwViewer = document.getElementById('fw-rules-viewer');
@@ -226,6 +257,7 @@ const ControlPage = (() => {
             fwCard.style.display = 'none';
         }
     }
+
     function updateUIError(msg) {
         const label = document.getElementById('control-status-label');
         if (label) {
@@ -235,6 +267,9 @@ const ControlPage = (() => {
         const detail = document.getElementById('control-status-detail');
         if (detail) detail.textContent = msg;
     }
+
+    // ── Logs ──
+
     async function fetchLogs() {
         try {
             const data = await API.get('/api/logs?n=30&level=DEBUG');
@@ -243,8 +278,10 @@ const ControlPage = (() => {
             );
             renderLogs(entries.length > 0 ? entries : (data.entries || []).slice(-20));
         } catch {
+            // тихо
         }
     }
+
     function renderLogs(entries) {
         const el = document.getElementById('control-logs');
         if (!el) return;
@@ -266,7 +303,9 @@ const ControlPage = (() => {
         `;}).join('');
         el.scrollTop = el.scrollHeight;
     }
+
     // ── Actions ──
+
     async function doStart() {
         if (isActionPending) return;
         setActionPending(true, 'start');
@@ -285,6 +324,7 @@ const ControlPage = (() => {
             fetchLogs();
         }
     }
+
     async function doStop() {
         if (isActionPending) return;
         setActionPending(true, 'stop');
@@ -303,6 +343,7 @@ const ControlPage = (() => {
             fetchLogs();
         }
     }
+
     async function doRestart() {
         if (isActionPending) return;
         setActionPending(true, 'restart');
@@ -321,21 +362,26 @@ const ControlPage = (() => {
             fetchLogs();
         }
     }
+
     function setActionPending(pending, action) {
         isActionPending = pending;
         const btnStart = document.getElementById('btn-start');
         const btnStop = document.getElementById('btn-stop');
         const btnRestart = document.getElementById('btn-restart');
+
         if (pending) {
             if (btnStart) btnStart.disabled = true;
             if (btnStop) btnStop.disabled = true;
             if (btnRestart) btnRestart.disabled = true;
+
+            // Показываем спиннер в активной кнопке
             const activeBtn = {start: btnStart, stop: btnStop, restart: btnRestart}[action];
             if (activeBtn) {
                 activeBtn._origHtml = activeBtn.innerHTML;
                 activeBtn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px;"></span> Подождите...';
             }
         } else {
+            // Восстанавливаем текст кнопок
             [btnStart, btnStop, btnRestart].forEach(btn => {
                 if (btn && btn._origHtml) {
                     btn.innerHTML = btn._origHtml;
@@ -344,6 +390,9 @@ const ControlPage = (() => {
             });
         }
     }
+
+    // ── Polling ──
+
     function startPolling() {
         stopPolling();
         pollTimer = setInterval(() => {
@@ -351,19 +400,25 @@ const ControlPage = (() => {
             fetchLogs();
         }, 3000);
     }
+
     function stopPolling() {
         if (pollTimer) {
             clearInterval(pollTimer);
             pollTimer = null;
         }
     }
+
+    // ── Utils ──
+
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
+
     function destroy() {
         stopPolling();
     }
+
     return { render, destroy, doStart, doStop, doRestart };
 })();

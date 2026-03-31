@@ -1,18 +1,36 @@
+# api/logs.py
+"""
+API для логов.
+
+GET  /api/logs          — последние записи (JSON)
+GET  /api/logs/stream   — SSE поток в реальном времени
+POST /api/logs/clear    — очистить буфер
+"""
+
 import json
 import time
 import queue
 import traceback
 from bottle import request, response
+
+
 def register(app):
+
     @app.route("/api/logs")
     def api_logs():
+        """Получить записи логов с фильтрацией."""
         response.content_type = "application/json; charset=utf-8"
+
         from core.log_buffer import get_log_buffer
+
         buf = get_log_buffer()
+
+        # Параметры
         n = min(int(request.params.get("n", 200)), 2000)
         level = request.params.get("level", None)
         search = request.params.get("search", None)
         since = request.params.get("since", None)
+
         if since:
             try:
                 entries = buf.get_since(float(since))
@@ -22,49 +40,88 @@ def register(app):
             entries = buf.get_filtered(level=level, search=search, n=n)
         else:
             entries = buf.get_last(n)
+
         return {
             "ok": True,
             "entries": entries,
             "total": buf.get_count(),
             "counter": buf.get_counter(),
         }
+
     @app.route("/api/logs/stream")
     def api_logs_stream():
+        """
+        SSE (Server-Sent Events) — поток логов в реальном времени.
+
+        Фронтенд подключается через EventSource:
+            const es = new EventSource('/api/logs/stream');
+            es.onmessage = (e) => { const entry = JSON.parse(e.data); ... };
+
+        Требует многопоточный сервер (ThreadedWSGIServer в app.py),
+        иначе блокирует все остальные запросы.
+        """
+        # Устанавливаем заголовки SSE ДО входа в генератор
         response.content_type = "text/event-stream"
         response.set_header("Cache-Control", "no-cache")
         response.set_header("Connection", "keep-alive")
         response.set_header("X-Accel-Buffering", "no")
+
+        # Возвращаем генератор — Bottle обработает как chunked response
         return _sse_generator()
+
     @app.post("/api/logs/clear")
     def api_logs_clear():
+        """Очистить буфер логов."""
         response.content_type = "application/json; charset=utf-8"
+
         from core.log_buffer import get_log_buffer, log
+
         get_log_buffer().clear()
         log.info("Буфер логов очищен", source="api")
+
         return {"ok": True}
+
+
 def _sse_generator():
+    """
+    Генератор SSE-событий.
+
+    Выделен в отдельную функцию для надёжной обработки ошибок.
+    При любой ошибке генератор корректно завершается.
+    """
     from core.log_buffer import get_log_buffer
+
     buf = get_log_buffer()
     q = queue.Queue(maxsize=100)
+
     def on_entry(entry):
         try:
             q.put_nowait(entry)
         except queue.Full:
-            pass
+            pass  # Пропускаем если клиент не успевает
+
     buf.add_listener(on_entry)
+
     try:
+        # Начальное событие
         yield _sse_event({"type": "connected", "timestamp": time.time()})
+
         while True:
             try:
                 entry = q.get(timeout=15)
                 yield _sse_event(entry.to_dict(), event="log")
             except queue.Empty:
+                # Heartbeat чтобы соединение не закрылось
                 yield ": heartbeat\n\n"
             except Exception:
+                # Ошибка при обработке записи — пропускаем
                 continue
+
     except (GeneratorExit, BrokenPipeError, ConnectionResetError, OSError):
+        # Клиент отключился — нормальная ситуация для SSE
         pass
     except Exception:
+        # Непредвиденная ошибка — логируем и молча завершаем
         try:
             from core.log_buffer import log as _log
             _log.error("SSE stream error: %s" % traceback.format_exc(), source="api.logs")
@@ -72,7 +129,10 @@ def _sse_generator():
             pass
     finally:
         buf.remove_listener(on_entry)
+
+
 def _sse_event(data, event=None):
+    """Форматировать SSE-событие."""
     lines = []
     if event:
         lines.append("event: %s" % event)

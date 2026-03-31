@@ -1,7 +1,22 @@
+/**
+ * autostart.js — Страница автозапуска.
+ *
+ * Возможности:
+ *   - Включение/выключение автозапуска (toggle)
+ *   - Просмотр текущего статуса
+ *   - Превью и просмотр init.d-скрипта
+ *   - Пересоздание скрипта при изменении стратегии
+ */
+
 const AutostartPage = (() => {
+    // ══════════════════ State ══════════════════
+
     let status = null;
     let pollTimer = null;
     let isLoading = false;
+
+    // ══════════════════ Render ══════════════════
+
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -10,6 +25,7 @@ const AutostartPage = (() => {
                     <p class="page-description">Автоматический запуск nfqws2 при загрузке роутера</p>
                 </div>
             </div>
+
             <!-- Основная карточка -->
             <div class="card" id="autostart-main-card" style="padding: 20px;">
                 <div class="autostart-card">
@@ -33,6 +49,7 @@ const AutostartPage = (() => {
                     </div>
                 </div>
             </div>
+
             <!-- Информационные карточки -->
             <div class="status-grid" style="margin-top: 16px;" id="autostart-info-grid">
                 <div class="status-card">
@@ -52,6 +69,7 @@ const AutostartPage = (() => {
                     <div class="status-card-value" id="autostart-initd-status" style="font-size: 14px;">—</div>
                 </div>
             </div>
+
             <!-- Действия -->
             <div class="card" style="margin-top: 16px; padding: 16px 20px;">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
@@ -83,6 +101,7 @@ const AutostartPage = (() => {
                     </div>
                 </div>
             </div>
+
             <!-- Подсказка -->
             <div class="card" style="margin-top: 16px; padding: 16px 20px; border-left: 3px solid var(--info);">
                 <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
@@ -93,6 +112,7 @@ const AutostartPage = (() => {
                     При смене стратегии нужно <strong>пересоздать скрипт</strong>, чтобы обновить параметры.
                 </div>
             </div>
+
             <!-- Модальное окно просмотра скрипта -->
             <div class="modal-backdrop hidden" id="script-modal" onclick="AutostartPage.closeModal(event)">
                 <div class="modal-content modal-lg" onclick="event.stopPropagation()">
@@ -132,9 +152,13 @@ const AutostartPage = (() => {
                 </div>
             </div>
         `;
+
         loadStatus();
         startPoll();
     }
+
+    // ══════════════════ Data Loading ══════════════════
+
     async function loadStatus() {
         try {
             const data = await API.get('/api/autostart');
@@ -146,22 +170,32 @@ const AutostartPage = (() => {
             console.error('Failed to load autostart status:', err);
         }
     }
+
     function renderStatus() {
         if (!status) return;
+
         const enabled = status.enabled;
         const scriptExists = status.script_exists;
         const initDirExists = status.init_dir_exists;
+
+        // Toggle
         const checkbox = document.getElementById('autostart-checkbox');
         if (checkbox) checkbox.checked = enabled;
+
+        // Icon
         const icon = document.getElementById('autostart-icon');
         if (icon) {
             icon.className = 'autostart-icon ' + (enabled ? 'enabled' : 'disabled');
         }
+
+        // Title
         const title = document.getElementById('autostart-title');
         if (title) {
             title.textContent = enabled ? 'Автозапуск включён' : 'Автозапуск отключён';
             title.style.color = enabled ? 'var(--success)' : 'var(--text-primary)';
         }
+
+        // Description
         const desc = document.getElementById('autostart-desc');
         if (desc) {
             if (enabled) {
@@ -170,12 +204,16 @@ const AutostartPage = (() => {
                 desc.textContent = 'Включите для автоматического запуска при загрузке';
             }
         }
+
+        // Strategy
         const strategyEl = document.getElementById('autostart-strategy');
         if (strategyEl) {
             const name = status.strategy_name || 'Не выбрана';
             strategyEl.textContent = name;
             strategyEl.style.color = status.strategy_id ? 'var(--accent)' : 'var(--text-muted)';
         }
+
+        // Script status
         const scriptEl = document.getElementById('autostart-script-status');
         if (scriptEl) {
             if (scriptExists) {
@@ -184,6 +222,8 @@ const AutostartPage = (() => {
                 scriptEl.innerHTML = '<span style="color: var(--text-muted);">Не установлен</span>';
             }
         }
+
+        // Init.d status
         const initdEl = document.getElementById('autostart-initd-status');
         if (initdEl) {
             if (initDirExists) {
@@ -192,19 +232,28 @@ const AutostartPage = (() => {
                 initdEl.innerHTML = '<span style="color: var(--error);">Не найдена</span>';
             }
         }
+
+        // Path
         const pathEl = document.getElementById('autostart-path');
         if (pathEl) {
             pathEl.textContent = status.script_path || '/opt/etc/init.d/S99zapret';
         }
+
+        // Regenerate button
         const regenBtn = document.getElementById('btn-regenerate');
         if (regenBtn) {
             regenBtn.disabled = !enabled;
         }
     }
+
+    // ══════════════════ Actions ══════════════════
+
     async function toggleAutostart(checked) {
         if (isLoading) return;
         isLoading = true;
+
         const checkbox = document.getElementById('autostart-checkbox');
+
         try {
             let result;
             if (checked) {
@@ -212,11 +261,13 @@ const AutostartPage = (() => {
             } else {
                 result = await API.post('/api/autostart/disable');
             }
+
             if (result.ok) {
                 Toast.show(result.message, 'success');
                 await loadStatus();
             } else {
                 Toast.show(result.message || 'Ошибка', 'error');
+                // Откатываем checkbox
                 if (checkbox) checkbox.checked = !checked;
             }
         } catch (err) {
@@ -226,11 +277,14 @@ const AutostartPage = (() => {
             isLoading = false;
         }
     }
+
     async function regenerate() {
         if (isLoading) return;
         isLoading = true;
+
         try {
             const result = await API.post('/api/autostart/regenerate');
+
             if (result.ok) {
                 Toast.show(result.message, 'success');
                 await loadStatus();
@@ -243,46 +297,67 @@ const AutostartPage = (() => {
             isLoading = false;
         }
     }
+
+    // ══════════════════ Shell Syntax Highlighting ══════════════════
+
+    // Хранит raw-текст скрипта для копирования
     let _rawScriptText = '';
+
     /**
      * Подсветка синтаксиса shell-скрипта.
      * Цвета подобраны для тёмной темы, визуально разделяют элементы.
      */
     function highlightShell(code) {
         if (!code) return '';
+
         const lines = code.split('\n');
         return lines.map(line => _highlightShellLine(line)).join('\n');
     }
+
     function _escHtml(text) {
         return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
+
     function _highlightShellLine(raw) {
+        // Пустая строка
         if (!raw.trim()) return '';
+
         // Shebang
         if (raw.trimStart().startsWith('#!')) {
             return '<span style="color:#c792ea;font-weight:600;">' + _escHtml(raw) + '</span>';
         }
+
         // Комментарий (вся строка)
         const stripped = raw.trimStart();
         if (stripped.startsWith('#')) {
             return '<span style="color:#637777;font-style:italic;">' + _escHtml(raw) + '</span>';
         }
+
         let result = _escHtml(raw);
+
         // Строки в двойных кавычках (с содержимым)
         result = result.replace(/"([^"]*?)"/g, '<span style="color:#c3e88d;">"$1"</span>');
+
         // Строки в одинарных кавычках
         result = result.replace(/'([^']*?)'/g, '<span style="color:#c3e88d;">\'$1\'</span>');
+
+        // Переменные $VAR, ${VAR}, $1, $?, $$, $@
         result = result.replace(/(\$\{[^}]+\})/g, '<span style="color:#f78c6c;">$1</span>');
         result = result.replace(/(\$[A-Za-z_]\w*)/g, '<span style="color:#f78c6c;">$1</span>');
         result = result.replace(/(\$[0-9?@#$!*])/g, '<span style="color:#f78c6c;">$1</span>');
+
+        // Ключевые слова (начало строки или после ; / пробела)
         const keywords = ['if', 'then', 'else', 'elif', 'fi', 'for', 'do', 'done',
                           'while', 'until', 'case', 'esac', 'in', 'function',
                           'return', 'exit', 'local', 'export', 'readonly',
                           'shift', 'break', 'continue', 'source', 'eval'];
         keywords.forEach(kw => {
+            // Только целые слова
             const re = new RegExp('(^|(?<=\\s|;|\\())\\b(' + kw + ')\\b', 'gm');
             result = result.replace(re, '$1<span style="color:#c792ea;font-weight:600;">$2</span>');
         });
+
+        // Команды/утилиты в начале строки (после пробелов)
         const cmds = ['echo', 'printf', 'cat', 'grep', 'awk', 'sed', 'rm', 'cp', 'mv',
                       'mkdir', 'chmod', 'chown', 'kill', 'sleep', 'wait', 'test',
                       'nfqws2', 'nfqws', 'iptables', 'ip6tables', 'nft', 'ip',
@@ -292,25 +367,40 @@ const AutostartPage = (() => {
             const re = new RegExp('(^|(?<=\\s|;|\\||\\/))\\b(' + _escHtml(cmd) + ')\\b', 'gm');
             result = result.replace(re, '$1<span style="color:#82aaff;">$2</span>');
         });
+
+        // Числа (не внутри слов с буквами, но допускаем nfqws2 и пр.)
         result = result.replace(/\b(\d+)\b(?![A-Za-z])/g, '<span style="color:#f78c6c;">$1</span>');
+
+        // Операторы перенаправления: >>, 2>&1, >, <, |, &&, ||
         result = result.replace(/(2&gt;&amp;1|&gt;&gt;|&gt;|&lt;)/g,
             '<span style="color:#89ddff;">$1</span>');
         result = result.replace(/(\|{1,2}|&amp;&amp;)/g,
             '<span style="color:#89ddff;">$1</span>');
+
+        // Пути к файлам /opt/... /etc/... /tmp/... /var/... /proc/...
         result = result.replace(/(\/(?:opt|etc|tmp|var|proc|usr|bin|sbin|lib|dev|home|mnt)\/[\w.\/\-]*)/g,
             '<span style="color:#ffcb6b;">$1</span>');
+
+        // Флаги --param и -p
         result = result.replace(/(--[\w-]+=?)/g, '<span style="color:#82aaff;">$1</span>');
         result = result.replace(/(\s)(-\w)\b/g, '$1<span style="color:#82aaff;">$2</span>');
+
+        // Backslash в конце строки (продолжение)
         result = result.replace(/(\s)(\\)$/, '$1<span style="color:#89ddff;font-weight:700;">$2</span>');
+
         return result;
     }
+
     async function showScript() {
         try {
             const data = await API.get('/api/autostart/script');
+
             const modal = document.getElementById('script-modal');
             const title = document.getElementById('script-modal-title');
             const content = document.getElementById('script-modal-content');
+
             if (title) title.textContent = 'Установленный скрипт';
+
             if (data.exists && data.script) {
                 _rawScriptText = data.script;
                 if (content) content.innerHTML = highlightShell(data.script);
@@ -318,32 +408,42 @@ const AutostartPage = (() => {
                 _rawScriptText = '# Скрипт не установлен';
                 if (content) content.innerHTML = '<span style="color:#637777;font-style:italic;"># Скрипт не установлен</span>';
             }
+
             if (modal) modal.classList.remove('hidden');
         } catch (err) {
             Toast.show('Ошибка загрузки: ' + err.message, 'error');
         }
     }
+
     async function showPreview() {
         try {
             const data = await API.get('/api/autostart/preview');
+
             const modal = document.getElementById('script-modal');
             const title = document.getElementById('script-modal-title');
             const content = document.getElementById('script-modal-content');
+
             const scriptText = data.script || '# Ошибка генерации';
             _rawScriptText = scriptText;
+
             if (title) title.textContent = 'Превью скрипта (будет сгенерирован)';
             if (content) content.innerHTML = highlightShell(scriptText);
+
             if (modal) modal.classList.remove('hidden');
         } catch (err) {
             Toast.show('Ошибка: ' + err.message, 'error');
         }
     }
+
     async function copyScript() {
+        // Используем сохранённый raw-текст, а не innerHTML
         if (!_rawScriptText) return;
+
         try {
             await navigator.clipboard.writeText(_rawScriptText);
             Toast.show('Скрипт скопирован', 'success');
         } catch (err) {
+            // Fallback
             const ta = document.createElement('textarea');
             ta.value = _rawScriptText;
             ta.style.position = 'fixed';
@@ -359,14 +459,21 @@ const AutostartPage = (() => {
             document.body.removeChild(ta);
         }
     }
+
     function closeModal(event) {
         if (event && event.target !== event.currentTarget) return;
         const modal = document.getElementById('script-modal');
         if (modal) modal.classList.add('hidden');
     }
+
+    // ══════════════════ Poll ══════════════════
+
     function startPoll() {
         pollTimer = setInterval(loadStatus, 15000);
     }
+
+    // ══════════════════ Destroy ══════════════════
+
     function destroy() {
         if (pollTimer) {
             clearInterval(pollTimer);
@@ -375,6 +482,9 @@ const AutostartPage = (() => {
         status = null;
         isLoading = false;
     }
+
+    // ══════════════════ Public API ══════════════════
+
     return {
         render,
         destroy,

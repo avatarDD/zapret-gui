@@ -1,9 +1,35 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════
+# install.sh — Установка Zapret Web-GUI без пакетного менеджера
+# ═══════════════════════════════════════════════════════════════
+#
+# Поддержка: Entware (Keenetic, ASUS, etc.), OpenWrt
+#
+# Использование:
+#   chmod +x install.sh && ./install.sh
+#   ./install.sh --port 8080 --host 0.0.0.0
+#   ./install.sh --uninstall
+#   ./install.sh --update
+#
+# Переменные окружения:
+#   ZAPRET_GUI_PORT=8080     — порт веб-интерфейса
+#   ZAPRET_GUI_HOST=0.0.0.0  — адрес привязки
+#   ZAPRET_GUI_BRANCH=main   — ветка GitHub
+#
+# ═══════════════════════════════════════════════════════════════
+
 set -e
+
+# ── Настройки по умолчанию ────────────────────────────────────
+
 REPO_URL="https://github.com/avatarDD/zapret-gui"
 BRANCH="${ZAPRET_GUI_BRANCH:-main}"
-VERSION="0.14.0"
+VERSION="0.13.5"
+
 GUI_PORT="${ZAPRET_GUI_PORT:-8080}"
 GUI_HOST="${ZAPRET_GUI_HOST:-0.0.0.0}"
+
+# Автоопределение окружения
 detect_env() {
     if [ -d "/opt/etc/init.d" ] && [ -d "/opt/lib" ]; then
         ENV_TYPE="entware"
@@ -31,16 +57,23 @@ detect_env() {
         PKG_CMD=""
     fi
 }
+
 # ── Цвета ─────────────────────────────────────────────────────
+
 RED="\033[0;31m"
 GREEN="\033[0;32m"
 YELLOW="\033[0;33m"
 CYAN="\033[0;36m"
 NC="\033[0m"
+
 info()    { printf "${CYAN}[INFO]${NC} %s\n" "$1"; }
 ok()      { printf "${GREEN}[OK]${NC}   %s\n" "$1"; }
 warn()    { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
 error()   { printf "${RED}[ERR]${NC}  %s\n" "$1"; }
+
+# ── Утилиты загрузки ──────────────────────────────────────────
+
+# Определяем доступный загрузчик
 detect_downloader() {
     if command -v curl >/dev/null 2>&1; then
         DOWNLOAD_CMD="curl"
@@ -52,18 +85,25 @@ detect_downloader() {
         exit 1
     fi
 }
+
+# Скачать файл: download URL DEST
 download() {
     local url="$1"
     local dest="$2"
+
     if [ "$DOWNLOAD_CMD" = "curl" ]; then
         curl -fsSL --connect-timeout 15 --max-time 120 -o "$dest" "$url"
     else
         wget -q --timeout=15 -O "$dest" "$url"
     fi
 }
+
+# ── Проверка зависимостей ─────────────────────────────────────
+
 check_deps() {
     info "Проверка зависимостей..."
     local missing=""
+
     # Python3
     if command -v python3 >/dev/null 2>&1; then
         PY_VER=$(python3 --version 2>&1)
@@ -72,6 +112,8 @@ check_deps() {
         missing="$missing python3-light"
         warn "python3 не найден"
     fi
+
+    # Bottle
     if python3 -c "import bottle" 2>/dev/null; then
         BOTTLE_VER=$(python3 -c "import bottle; print(bottle.__version__)" 2>/dev/null)
         ok "bottle: $BOTTLE_VER"
@@ -79,6 +121,8 @@ check_deps() {
         missing="$missing python3-bottle"
         warn "python3-bottle не найден"
     fi
+
+    # Устанавливаем недостающее
     if [ -n "$missing" ]; then
         info "Установка:$missing"
         if [ -n "$PKG_CMD" ]; then
@@ -98,14 +142,22 @@ check_deps() {
         fi
     fi
 }
+
+# ── Установка из GitHub ───────────────────────────────────────
+
 install_from_github() {
     info "Загрузка zapret-gui из GitHub ($BRANCH)..."
+
     local TMP_DIR="/tmp/zapret-gui-install-$$"
     local ARCHIVE="$TMP_DIR/zapret-gui.tar.gz"
+
     mkdir -p "$TMP_DIR"
     trap "rm -rf '$TMP_DIR'" EXIT
+
+    # Скачиваем архив
     local archive_url="$REPO_URL/archive/refs/heads/$BRANCH.tar.gz"
     download "$archive_url" "$ARCHIVE" || {
+        # Пробуем альтернативный URL (для тега)
         archive_url="$REPO_URL/archive/refs/tags/v$VERSION.tar.gz"
         info "Пробуем тег v$VERSION..."
         download "$archive_url" "$ARCHIVE" || {
@@ -113,19 +165,27 @@ install_from_github() {
             exit 1
         }
     }
+
     ok "Архив загружен"
+
+    # Распаковываем
     info "Распаковка..."
     cd "$TMP_DIR"
     tar xzf "$ARCHIVE" || {
         error "Не удалось распаковать архив"
         exit 1
     }
+
+    # Находим распакованную директорию
     local src_dir=$(find "$TMP_DIR" -maxdepth 1 -type d -name 'zapret-gui*' | head -1)
     if [ -z "$src_dir" ]; then
         error "Не найдена директория проекта в архиве"
         exit 1
     fi
+
     ok "Распакован: $(basename $src_dir)"
+
+    # Бэкап конфигурации
     if [ -d "$APP_DIR" ]; then
         info "Обновление — бэкап конфигурации..."
         if [ -f "$CONFIG_DIR/settings.json" ]; then
@@ -137,13 +197,19 @@ install_from_github() {
             ok "Бэкап пользовательских стратегий"
         fi
     fi
+
+    # Останавливаем если запущен
     if [ -f "$INITD_SCRIPT" ] && [ -x "$INITD_SCRIPT" ]; then
         info "Остановка текущего сервера..."
         "$INITD_SCRIPT" stop 2>/dev/null || true
     fi
+
+    # Копируем файлы
     info "Установка в $APP_DIR..."
     mkdir -p "$APP_DIR"
     mkdir -p "$CONFIG_DIR"
+
+    # Копируем основные файлы
     cp "$src_dir/app.py" "$APP_DIR/"
     for dir in api core config web; do
         if [ -d "$src_dir/$dir" ]; then
@@ -151,9 +217,13 @@ install_from_github() {
             cp -r "$src_dir/$dir" "$APP_DIR/"
         fi
     done
+
+    # Создаём рабочие директории
     mkdir -p "$APP_DIR/init.d"
     mkdir -p "$APP_DIR/lists"
     mkdir -p "$APP_DIR/config/strategies/user"
+
+    # Восстанавливаем конфигурацию из бэкапа
     if [ -f "$TMP_DIR/settings.json.bak" ]; then
         cp "$TMP_DIR/settings.json.bak" "$CONFIG_DIR/settings.json"
         ok "Конфигурация восстановлена"
@@ -162,27 +232,42 @@ install_from_github() {
         cp -r "$TMP_DIR/user_strategies_bak/"* "$APP_DIR/config/strategies/user/" 2>/dev/null || true
         ok "Пользовательские стратегии восстановлены"
     fi
+
+    # Чистим __pycache__
     find "$APP_DIR" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+
+    # Права
     chmod 755 "$APP_DIR/app.py"
+
     ok "Файлы установлены"
 }
+
+# ── Init-скрипт ───────────────────────────────────────────────
+
 install_initd() {
     info "Установка init-скрипта..."
     mkdir -p "$INITD_DIR"
+
     if [ "$ENV_TYPE" = "openwrt" ]; then
+        # OpenWrt — procd
         cat > "$INITD_SCRIPT" << 'INITEOF'
+#!/bin/sh /etc/rc.common
 START=99
 STOP=10
 USE_PROCD=1
+
 start_service() {
     local APP_DIR="/usr/share/zapret-gui"
     local CONFIG_DIR="/etc/zapret-gui"
     local HOST="0.0.0.0"
     local PORT="8080"
+
     [ -f "$CONFIG_DIR/server.conf" ] && . "$CONFIG_DIR/server.conf"
     HOST="${GUI_HOST:-$HOST}"
     PORT="${GUI_PORT:-$PORT}"
+
     mkdir -p "$CONFIG_DIR" /tmp/zapret-gui 2>/dev/null
+
     procd_open_instance
     procd_set_param command python3 "$APP_DIR/app.py" --host "$HOST" --port "$PORT" --config "$CONFIG_DIR"
     procd_set_param respawn 3600 5 5
@@ -192,14 +277,20 @@ start_service() {
 }
 INITEOF
     else
+        # Entware — классический init.d
         cat > "$INITD_SCRIPT" << 'INITEOF'
+#!/bin/sh
+# S99zapret-gui — Zapret Web-GUI
+
 APP_DIR="/opt/share/zapret-gui"
 CONFIG_DIR="/opt/etc/zapret-gui"
 PID_FILE="/opt/var/run/zapret-gui.pid"
 LOG_FILE="/tmp/zapret-gui-server.log"
 GUI_HOST="0.0.0.0"
 GUI_PORT="8080"
+
 [ -f "$CONFIG_DIR/server.conf" ] && . "$CONFIG_DIR/server.conf"
+
 start() {
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
@@ -209,6 +300,7 @@ start() {
         fi
         rm -f "$PID_FILE"
     fi
+
     mkdir -p "$(dirname $PID_FILE)" /tmp/zapret-gui 2>/dev/null
     echo "Starting zapret-gui on $GUI_HOST:$GUI_PORT..."
     cd "$APP_DIR"
@@ -223,6 +315,7 @@ start() {
         return 1
     fi
 }
+
 stop() {
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
@@ -236,6 +329,7 @@ stop() {
         echo "zapret-gui not running"
     fi
 }
+
 case "$1" in
     start)   start ;;
     stop)    stop ;;
@@ -251,16 +345,27 @@ case "$1" in
 esac
 INITEOF
     fi
+
     chmod 755 "$INITD_SCRIPT"
     ok "Init-скрипт: $INITD_SCRIPT"
+
+    # Файл переопределения настроек
     if [ ! -f "$CONFIG_DIR/server.conf" ]; then
         cat > "$CONFIG_DIR/server.conf" << CONFEOF
+# Настройки веб-сервера Zapret Web-GUI
+# Раскомментируйте и измените при необходимости:
+#GUI_HOST=0.0.0.0
+#GUI_PORT=8080
 CONFEOF
         ok "Конфиг: $CONFIG_DIR/server.conf"
     fi
 }
+
+# ── Удаление ──────────────────────────────────────────────────
+
 do_uninstall() {
     detect_env
+
     printf "${YELLOW}Удалить Zapret Web-GUI?${NC}\n"
     printf "  Приложение: $APP_DIR\n"
     printf "  Конфиг:     $CONFIG_DIR\n"
@@ -270,7 +375,9 @@ do_uninstall() {
     printf "Продолжить? [y/N] "
     read -r answer
     [ "$answer" = "y" ] || [ "$answer" = "Y" ] || { echo "Отменено"; exit 0; }
+
     echo ""
+
     # Остановить
     if [ -x "$INITD_SCRIPT" ]; then
         info "Остановка..."
@@ -279,36 +386,50 @@ do_uninstall() {
             "$INITD_SCRIPT" disable 2>/dev/null || true
         fi
     fi
+
+    # Удалить init-скрипт
     rm -f "$INITD_SCRIPT"
     ok "Init-скрипт удалён"
+
+    # Удалить приложение
     if [ -d "$APP_DIR" ]; then
         rm -rf "$APP_DIR"
         ok "Приложение удалено: $APP_DIR"
     fi
+
+    # PID файл
     rm -f "$PID_FILE" 2>/dev/null || true
+
     echo ""
     ok "Zapret Web-GUI удалён"
     info "Конфигурация сохранена: $CONFIG_DIR"
     info "Для полного удаления: rm -rf $CONFIG_DIR"
     echo ""
 }
+
 # ── Главная ───────────────────────────────────────────────────
+
 main() {
     echo ""
     echo "═══════════════════════════════════════════════════"
     echo "  Zapret Web-GUI — Установщик v$VERSION"
     echo "═══════════════════════════════════════════════════"
     echo ""
+
     detect_env
     info "Окружение: $ENV_TYPE"
     info "Установка в: $APP_DIR"
     echo ""
+
     detect_downloader
     check_deps
+
     echo ""
     install_from_github
+
     echo ""
     install_initd
+
     echo ""
     echo "═══════════════════════════════════════════════════"
     ok "Zapret Web-GUI v$VERSION установлен!"
@@ -319,6 +440,7 @@ main() {
     echo ""
     echo "  Веб-интерфейс: http://<IP роутера>:$GUI_PORT"
     echo ""
+
     # Предлагаем запустить
     printf "  Запустить сейчас? [Y/n] "
     read -r answer
@@ -327,7 +449,9 @@ main() {
     fi
     echo ""
 }
+
 # ── Парсинг аргументов ────────────────────────────────────────
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --uninstall|uninstall)
@@ -335,6 +459,7 @@ while [ $# -gt 0 ]; do
             exit 0
             ;;
         --update|update)
+            # Update = reinstall с бэкапом конфигурации
             main
             exit 0
             ;;
@@ -367,4 +492,5 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
 main

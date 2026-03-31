@@ -1,13 +1,23 @@
+/**
+ * dashboard.js — Главная страница (Dashboard).
+ *
+ * Показывает карточки статуса: nfqws, стратегия, автозапуск, система.
+ * Polling каждые 3 секунды для обновления.
+ * Кнопки быстрых действий управляют nfqws через API.
+ */
+
 const DashboardPage = (() => {
     let pollTimer = null;
     let lastData = null;
     let isActionPending = false;
+
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
                 <h1 class="page-title">Главная</h1>
                 <p class="page-description">Обзор состояния системы</p>
             </div>
+
             <!-- Статус nfqws -->
             <div class="status-grid" id="status-grid">
                 <div class="status-card" id="card-nfqws">
@@ -18,6 +28,7 @@ const DashboardPage = (() => {
                     <div class="status-card-value stopped" id="nfqws-status">—</div>
                     <div class="status-card-detail" id="nfqws-detail"></div>
                 </div>
+
                 <div class="status-card" id="card-strategy">
                     <div class="status-card-header">
                         <span class="status-card-icon">
@@ -30,6 +41,7 @@ const DashboardPage = (() => {
                     <div class="status-card-value" id="strategy-name">—</div>
                     <div class="status-card-detail" id="strategy-detail"></div>
                 </div>
+
                 <div class="status-card" id="card-autostart">
                     <div class="status-card-header">
                         <span class="status-card-icon">
@@ -43,6 +55,7 @@ const DashboardPage = (() => {
                     <div class="status-card-value" id="autostart-status">—</div>
                     <div class="status-card-detail" id="autostart-detail"></div>
                 </div>
+
                 <div class="status-card" id="card-system">
                     <div class="status-card-header">
                         <span class="status-card-icon">
@@ -57,6 +70,7 @@ const DashboardPage = (() => {
                     <div class="status-card-value" id="system-info">—</div>
                     <div class="status-card-detail" id="system-detail"></div>
                 </div>
+
                 <div class="status-card" id="card-zapret-ver" style="cursor: pointer;" onclick="window.location.hash='zapret'">
                     <div class="status-card-header">
                         <span class="status-card-icon">
@@ -72,6 +86,7 @@ const DashboardPage = (() => {
                     <div class="status-card-detail" id="zapret-ver-detail"></div>
                 </div>
             </div>
+
             <!-- Быстрые действия -->
             <div class="card">
                 <div class="card-title">
@@ -102,6 +117,7 @@ const DashboardPage = (() => {
                     </button>
                 </div>
             </div>
+
             <!-- Последние логи -->
             <div class="card">
                 <div class="card-title" style="justify-content: space-between;">
@@ -122,10 +138,15 @@ const DashboardPage = (() => {
                 </div>
             </div>
         `;
+
+        // Первая загрузка
         fetchStatus();
         fetchRecentLogs();
+
+        // Polling
         startPolling();
     }
+
     async function fetchStatus() {
         try {
             const data = await API.get('/api/status');
@@ -137,11 +158,14 @@ const DashboardPage = (() => {
             document.getElementById('nfqws-detail').textContent = err.message;
         }
     }
+
     function updateCards(data) {
+        // nfqws
         const running = data.nfqws?.running;
         const dot = document.getElementById('nfqws-dot');
         const status = document.getElementById('nfqws-status');
         const detail = document.getElementById('nfqws-detail');
+
         if (dot) {
             dot.className = `status-dot ${running ? 'running' : 'stopped'}`;
         }
@@ -159,6 +183,7 @@ const DashboardPage = (() => {
                 detail.textContent = '';
             }
         }
+
         // Кнопки быстрых действий
         if (!isActionPending) {
             const btnStart = document.getElementById('dash-btn-start');
@@ -168,16 +193,22 @@ const DashboardPage = (() => {
             if (btnStop) btnStop.disabled = !running;
             if (btnRestart) btnRestart.disabled = !running;
         }
+
+        // Стратегия
         const stratName = document.getElementById('strategy-name');
         if (stratName) {
             stratName.textContent = data.strategy?.name || 'Не выбрана';
         }
+
+        // Автозапуск
         const autoStatus = document.getElementById('autostart-status');
         if (autoStatus) {
             const enabled = data.autostart?.enabled;
             autoStatus.textContent = enabled ? 'Включён' : 'Выключен';
             autoStatus.className = `status-card-value ${enabled ? 'running' : ''}`;
         }
+
+        // Система
         const sysInfo = document.getElementById('system-info');
         const sysDetail = document.getElementById('system-detail');
         if (sysInfo && data.system) {
@@ -188,6 +219,8 @@ const DashboardPage = (() => {
             if (data.system.ram?.used_percent) parts.push(`RAM ${data.system.ram.used_percent}%`);
             if (sysDetail) sysDetail.textContent = parts.join(' · ');
         }
+
+        // zapret2 версия
         const zapretVer = document.getElementById('zapret-ver-value');
         const zapretDetail = document.getElementById('zapret-ver-detail');
         if (zapretVer) {
@@ -202,20 +235,25 @@ const DashboardPage = (() => {
             }
         }
     }
+
     async function fetchRecentLogs() {
         try {
             const data = await API.get('/api/logs?n=15');
             renderLogs(data.entries || []);
         } catch {
+            // Тихо игнорируем
         }
     }
+
     function renderLogs(entries) {
         const el = document.getElementById('dashboard-logs');
         if (!el) return;
+
         if (entries.length === 0) {
             el.innerHTML = '<div class="text-muted" style="padding:16px; text-align:center;">Нет записей</div>';
             return;
         }
+
         el.innerHTML = entries.map(e => {
             const rawMsg = e.message || '';
             const msgHtml = NfqwsSyntax.hasNfqwsArgs(rawMsg)
@@ -228,15 +266,21 @@ const DashboardPage = (() => {
                 <span class="log-message">${msgHtml}</span>
             </div>
         `;}).join('');
+
         // Scroll to bottom
         el.scrollTop = el.scrollHeight;
     }
+
     // ── Quick actions ──
+
     async function quickAction(action) {
         if (isActionPending) return;
         isActionPending = true;
+
         const btnMap = {start: 'dash-btn-start', stop: 'dash-btn-stop', restart: 'dash-btn-restart'};
         const btn = document.getElementById(btnMap[action]);
+
+        // Disable all buttons, show spinner
         ['dash-btn-start', 'dash-btn-stop', 'dash-btn-restart'].forEach(id => {
             const b = document.getElementById(id);
             if (b) b.disabled = true;
@@ -246,6 +290,7 @@ const DashboardPage = (() => {
             origHtml = btn.innerHTML;
             btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;"></span>';
         }
+
         try {
             const result = await API.post('/api/' + action, {});
             if (result.ok) {
@@ -263,11 +308,13 @@ const DashboardPage = (() => {
             fetchRecentLogs();
         }
     }
+
     function escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
     }
+
     function startPolling() {
         stopPolling();
         pollTimer = setInterval(() => {
@@ -275,15 +322,18 @@ const DashboardPage = (() => {
             fetchRecentLogs();
         }, 3000);
     }
+
     function stopPolling() {
         if (pollTimer) {
             clearInterval(pollTimer);
             pollTimer = null;
         }
     }
+
     function destroy() {
         stopPolling();
     }
+
     return {
         render,
         destroy,

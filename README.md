@@ -2,7 +2,7 @@
 
 Web-интерфейс для управления **nfqws2** (zapret2) на роутерах с **Entware** и **OpenWrt**.
 
-![Version](https://img.shields.io/badge/version-0.14.0-blue)
+![Version](https://img.shields.io/badge/version-0.13.0-blue)
 ![Python](https://img.shields.io/badge/python-3.7+-green)
 ![License](https://img.shields.io/badge/license-MIT-brightgreen)
 ![Arch](https://img.shields.io/badge/arch-mipsel%20%7C%20arm64%20%7C%20armv7%20%7C%20x86__64-orange)
@@ -325,3 +325,6 @@ MIT License. См. файл LICENSE.
 
 - [zapret2/nfqws2](https://github.com/bol-van/zapret) — основной инструмент
 - [Bottle](https://bottlepy.org/) — микро-фреймворк для Python
+
+
+

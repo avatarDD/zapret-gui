@@ -1,19 +1,40 @@
+/**
+ * settings.js — Страница настроек.
+ *
+ * Возможности:
+ *   - Просмотр и редактирование конфигурации (пути, порты, интерфейсы)
+ *   - Секции: Zapret2, Web-GUI, nfqws, Firewall, Фильтрация, Логирование, Интерфейсы
+ *   - Импорт/экспорт конфигурации (JSON)
+ *   - Сброс к настройкам по умолчанию
+ *   - Назначение ролей WAN/WAN6/LAN через интерактивный список
+ *   - Авто-определение WAN/WAN6/LAN по маршрутам
+ */
+
 const SettingsPage = (() => {
+    // ══════════════════ State ══════════════════
+
     let config = {};
     let originalConfig = {};
     let hasUnsaved = false;
     let loading = false;
     let activeSection = 'zapret';
     let systemInfo = null;
-    const GUI_VERSION = 'v0.14.0';
+
+    const GUI_VERSION = 'v0.13.5';
+
+    // Список системных интерфейсов (загружается с сервера)
     let _allInterfaces = [];
+    // Авто-определённые роли (от бэкенда)
     let _detectedRoles = { wan: '', wan6: '', lan: '' };
+
     // Роли и их визуальные стили
     const ROLES = {
         wan:  { label: 'WAN',  configKey: 'interfaces.wan',  color: '#f97316', bg: 'rgba(249,115,22,0.15)' },
         wan6: { label: 'WAN6', configKey: 'interfaces.wan6', color: '#a855f7', bg: 'rgba(168,85,247,0.15)' },
         lan:  { label: 'LAN',  configKey: 'interfaces.lan',  color: '#22c55e', bg: 'rgba(34,197,94,0.15)' },
     };
+
+    // Определения секций конфигурации
     const SECTIONS = [
         {
             id: 'zapret',
@@ -111,6 +132,9 @@ const SettingsPage = (() => {
             ]
         },
     ];
+
+    // ══════════════════ Render ══════════════════
+
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -137,10 +161,12 @@ const SettingsPage = (() => {
                     </button>
                 </div>
             </div>
+
             <div class="settings-layout">
                 <div class="settings-nav card" id="settings-nav">
                     ${renderSectionNav()}
                 </div>
+
                 <div class="settings-content" id="settings-content">
                     <div class="card settings-section-card" id="settings-form">
                         <div class="settings-loading">
@@ -148,6 +174,7 @@ const SettingsPage = (() => {
                             <span>Загрузка...</span>
                         </div>
                     </div>
+
                     <!-- Unsaved changes bar -->
                     <div class="settings-save-bar hidden" id="settings-save-bar">
                         <span class="settings-save-text">Есть несохранённые изменения</span>
@@ -163,6 +190,7 @@ const SettingsPage = (() => {
                             </button>
                         </div>
                     </div>
+
                     <!-- Действия -->
                     <div class="card settings-actions-card">
                         <div class="settings-actions-row">
@@ -175,6 +203,7 @@ const SettingsPage = (() => {
                             </div>
                         </div>
                     </div>
+
                     <!-- Информация о системе -->
                     <div class="card settings-about-card">
                         <div class="settings-about-header">
@@ -202,11 +231,14 @@ const SettingsPage = (() => {
                     </div>
                 </div>
             </div>
+
             <input type="file" id="settings-import-file" accept=".json" style="display:none" onchange="SettingsPage.handleImportFile(this)">
         `;
+
         loadConfig();
         loadSystemInfo();
     }
+
     function renderSectionNav() {
         return SECTIONS.map(s => `
             <div class="settings-nav-item ${s.id === activeSection ? 'active' : ''}"
@@ -216,11 +248,14 @@ const SettingsPage = (() => {
             </div>
         `).join('');
     }
+
     function renderSectionForm() {
         const section = SECTIONS.find(s => s.id === activeSection);
         if (!section) return;
+
         const formEl = document.getElementById('settings-form');
         if (!formEl) return;
+
         let html = `
             <div class="settings-section-header">
                 <span class="settings-section-icon">${section.icon}</span>
@@ -228,6 +263,7 @@ const SettingsPage = (() => {
             </div>
             <div class="settings-fields">
         `;
+
         section.fields.forEach(field => {
             if (field.showIf) {
                 const depValue = getNestedValue(config, field.showIf);
@@ -236,15 +272,22 @@ const SettingsPage = (() => {
             const value = getNestedValue(config, field.key);
             html += renderField(field, value);
         });
+
         html += '</div>';
+
+        // Блок назначения ролей интерфейсам
         if (activeSection === 'interfaces') {
             html += renderInterfacesBlock();
         }
+
         formEl.innerHTML = html;
+
         if (activeSection === 'interfaces') {
             loadInterfaces();
         }
     }
+
+    /** Блок с заголовком + кнопками + контейнер для списка интерфейсов. */
     function renderInterfacesBlock() {
         return `
             <div style="border-top: 1px solid var(--border); margin-top: 16px; padding-top: 16px;">
@@ -287,9 +330,11 @@ const SettingsPage = (() => {
             </div>
         `;
     }
+
     function renderField(field, value) {
         const id = 'cfg-' + field.key.replace(/\./g, '-');
         let inputHtml = '';
+
         switch (field.type) {
             case 'text':
             case 'password':
@@ -331,6 +376,7 @@ const SettingsPage = (() => {
                 `;
                 break;
         }
+
         return `
             <div class="settings-field">
                 <label class="settings-field-label" for="${id}">${field.label}</label>
@@ -338,7 +384,9 @@ const SettingsPage = (() => {
             </div>
         `;
     }
+
     // ══════════════════ Data ══════════════════
+
     async function loadConfig() {
         loading = true;
         try {
@@ -354,6 +402,7 @@ const SettingsPage = (() => {
             loading = false;
         }
     }
+
     async function loadSystemInfo() {
         try {
             const data = await API.get('/api/status');
@@ -361,14 +410,17 @@ const SettingsPage = (() => {
                 systemInfo = data;
                 renderSystemInfo();
             }
-        } catch (err) {  }
+        } catch (err) { /* не критично */ }
     }
+
     function renderSystemInfo() {
         const el = document.getElementById('settings-system-info');
         if (!el || !systemInfo) return;
+
         const sys = systemInfo.system || {};
         const fw = systemInfo.firewall || {};
         const zapret = systemInfo.zapret || {};
+
         const rows = [];
         if (zapret.version) rows.push(['Версия zapret2', zapret.version]);
         if (sys.arch) rows.push(['Архитектура', sys.arch]);
@@ -385,6 +437,7 @@ const SettingsPage = (() => {
         }
         if (fw.type) rows.push(['Firewall', fw.type]);
         rows.push(['GUI версия', GUI_VERSION]);
+
         el.innerHTML = rows.map(([label, val]) => `
             <div class="settings-info-row">
                 <span class="settings-info-label">${label}</span>
@@ -392,7 +445,9 @@ const SettingsPage = (() => {
             </div>
         `).join('');
     }
+
     // ══════════════════ Section Navigation ══════════════════
+
     function switchSection(sectionId) {
         activeSection = sectionId;
         document.querySelectorAll('.settings-nav-item').forEach(el => {
@@ -400,11 +455,21 @@ const SettingsPage = (() => {
         });
         renderSectionForm();
     }
+
+    // ══════════════════ Field Changes ══════════════════
+
+    /**
+     * Обновить зависимые пути zapret при смене base_path.
+     * Если текущее значение поля начинается со старого base_path — заменить префикс.
+     */
     function syncDependentPaths(newBase) {
         const zapretSection = SECTIONS.find(s => s.id === 'zapret');
         if (!zapretSection) return;
+
         const oldBase = originalConfig.zapret?.base_path
             || getNestedValue(config, 'zapret.base_path') || '/opt/zapret2';
+
+        // Только поля с суффиксами (зависимые от base_path)
         zapretSection.fields.forEach(field => {
             if (!field.suffix || field.key === 'zapret.base_path') return;
             const cur = getNestedValue(config, field.key) || '';
@@ -412,32 +477,46 @@ const SettingsPage = (() => {
                 setNestedValue(config, field.key, newBase + field.suffix);
             }
         });
+
         // Перерисовать форму, чтобы отобразить новые значения
         if (activeSection === 'zapret') renderSectionForm();
     }
+
     function onFieldChange(key, value) {
         setNestedValue(config, key, value);
+
+        // Авто-обновление зависимых путей при смене base_path
         if (key === 'zapret.base_path') {
             syncDependentPaths(value);
         }
+
         hasUnsaved = !deepEqual(config, originalConfig);
+
         const field = SECTIONS.flatMap(s => s.fields).find(f => f.key === key);
         if (field && field.type === 'toggle') {
             const id = 'cfg-' + key.replace(/\./g, '-');
             const labelEl = document.querySelector(`#${id} ~ .settings-toggle-label`);
             if (labelEl) labelEl.textContent = value ? 'Вкл' : 'Выкл';
+
             const hasDependents = SECTIONS.flatMap(s => s.fields).some(f => f.showIf === key);
             if (hasDependents) renderSectionForm();
         }
+
+        // Если изменили WAN/WAN6/LAN поле вручную — обновить бейджи
         if (key.startsWith('interfaces.')) {
             renderInterfaceRoles();
         }
+
         updateSaveBar();
     }
+
     function updateSaveBar() {
         const bar = document.getElementById('settings-save-bar');
         if (bar) bar.classList.toggle('hidden', !hasUnsaved);
     }
+
+    // ══════════════════ Save / Discard ══════════════════
+
     async function saveConfig() {
         try {
             const changes = {};
@@ -447,16 +526,19 @@ const SettingsPage = (() => {
                     changes[sectionKey] = config[sectionKey];
                 }
             }
+
             if (Object.keys(changes).length === 0) {
                 Toast.info('Нет изменений для сохранения');
                 return;
             }
+
             const result = await API.put('/api/config', changes);
             if (result.ok) {
                 originalConfig = JSON.parse(JSON.stringify(config));
                 hasUnsaved = false;
                 updateSaveBar();
                 Toast.success('Настройки сохранены');
+
                 if (changes.gui && (changes.gui.host !== undefined || changes.gui.port !== undefined)) {
                     Toast.warning('Изменения порта/хоста вступят в силу после перезапуска GUI');
                 }
@@ -467,6 +549,7 @@ const SettingsPage = (() => {
             Toast.error('Ошибка: ' + err.message);
         }
     }
+
     function discardChanges() {
         config = JSON.parse(JSON.stringify(originalConfig));
         hasUnsaved = false;
@@ -474,8 +557,12 @@ const SettingsPage = (() => {
         renderSectionForm();
         Toast.info('Изменения отменены');
     }
+
+    // ══════════════════ Reset ══════════════════
+
     async function resetConfig() {
         if (!confirm('Вы уверены, что хотите сбросить ВСЕ настройки к значениям по умолчанию?\n\nЭто действие нельзя отменить.')) return;
+
         try {
             const result = await API.post('/api/config/reset');
             if (result.ok) {
@@ -492,6 +579,9 @@ const SettingsPage = (() => {
             Toast.error('Ошибка: ' + err.message);
         }
     }
+
+    // ══════════════════ Import / Export ══════════════════
+
     async function exportConfig() {
         try {
             const result = await API.post('/api/config/export');
@@ -512,20 +602,25 @@ const SettingsPage = (() => {
             Toast.error('Ошибка экспорта: ' + err.message);
         }
     }
+
     function importConfig() {
         const fileInput = document.getElementById('settings-import-file');
         if (fileInput) fileInput.click();
     }
+
     async function handleImportFile(input) {
         const file = input.files[0];
         if (!file) return;
+
         try {
             const text = await file.text();
             const json = JSON.parse(text);
+
             if (!confirm('Импортировать конфигурацию из файла?\n\nТекущие настройки будут заменены.')) {
                 input.value = '';
                 return;
             }
+
             const result = await API.post('/api/config/import', { json: json });
             if (result.ok) {
                 await loadConfig();
@@ -541,17 +636,22 @@ const SettingsPage = (() => {
             input.value = '';
         }
     }
+
     // ══════════════════ Interface Roles ══════════════════
+
     async function loadInterfaces() {
         const container = document.getElementById('iface-roles-container');
         if (!container) return;
+
         try {
             const data = await API.get('/api/interfaces');
             if (data.ok) {
                 _allInterfaces = data.interfaces || [];
                 _detectedRoles = data.detected || { wan: '', wan6: '', lan: '' };
+
                 // Обновляем placeholder'ы текстовых полей
                 _updatePlaceholders();
+
                 renderInterfaceRoles();
             }
         } catch (err) {
@@ -559,6 +659,8 @@ const SettingsPage = (() => {
                 Ошибка загрузки интерфейсов: ${err.message}</div>`;
         }
     }
+
+    /** Обновить placeholder полей WAN/WAN6/LAN значениями auto-detect. */
     function _updatePlaceholders() {
         const map = {
             'interfaces.wan':  _detectedRoles.wan,
@@ -570,21 +672,30 @@ const SettingsPage = (() => {
             if (el) el.placeholder = detected ? `Авто: ${detected}` : 'Не определён';
         }
     }
+
+    /**
+     * Получить список имён интерфейсов, назначенных роли.
+     * Значение поля — строка через пробел: "eth0 eth1".
+     */
     function _getRoleIfaces(role) {
         const val = getNestedValue(config, ROLES[role].configKey) || '';
         return val.split(/\s+/).filter(Boolean);
     }
+
     /** Установить список интерфейсов для роли и синхронизировать текстовое поле. */
     function _setRoleIfaces(role, names) {
         const value = names.join(' ');
         setNestedValue(config, ROLES[role].configKey, value);
+
         // Синхронизация с текстовым полем
         const id = 'cfg-' + ROLES[role].configKey.replace(/\./g, '-');
         const el = document.getElementById(id);
         if (el) el.value = value;
+
         hasUnsaved = !deepEqual(config, originalConfig);
         updateSaveBar();
     }
+
     /**
      * Переключить роль у интерфейса.
      * Вызывается по клику на бейдж WAN/WAN6/LAN.
@@ -592,14 +703,17 @@ const SettingsPage = (() => {
     function toggleRole(ifaceName, role) {
         const current = _getRoleIfaces(role);
         const idx = current.indexOf(ifaceName);
+
         if (idx >= 0) {
             current.splice(idx, 1);  // снять роль
         } else {
             current.push(ifaceName); // назначить роль
         }
+
         _setRoleIfaces(role, current);
         renderInterfaceRoles();
     }
+
     /** Авто-определить и заполнить WAN/WAN6/LAN из detected. */
     function autoDetectRoles() {
         let filled = 0;
@@ -613,9 +727,11 @@ const SettingsPage = (() => {
                 filled++;
             }
         }
+
         hasUnsaved = !deepEqual(config, originalConfig);
         updateSaveBar();
         renderInterfaceRoles();
+
         if (filled > 0) {
             const parts = [];
             if (_detectedRoles.wan) parts.push('WAN=' + _detectedRoles.wan);
@@ -626,6 +742,7 @@ const SettingsPage = (() => {
             Toast.warning('Не удалось определить интерфейсы автоматически');
         }
     }
+
     /** Сбросить все роли. */
     function clearRoles() {
         for (const meta of Object.values(ROLES)) {
@@ -638,40 +755,54 @@ const SettingsPage = (() => {
         updateSaveBar();
         renderInterfaceRoles();
     }
+
     async function refreshInterfaces() {
         await loadInterfaces();
         Toast.info('Список интерфейсов обновлён');
     }
+
     /** Отрисовать список интерфейсов с кликабельными бейджами ролей. */
     function renderInterfaceRoles() {
         const container = document.getElementById('iface-roles-container');
         if (!container) return;
+
         if (_allInterfaces.length === 0) {
             container.innerHTML = `<div style="color:var(--text-muted); padding:12px; font-size:13px;">
                 Интерфейсы не обнаружены</div>`;
             return;
         }
+
+        // Текущие назначения из config
         const wanList  = _getRoleIfaces('wan');
         const wan6List = _getRoleIfaces('wan6');
         const lanList  = _getRoleIfaces('lan');
+
         let html = '';
+
         _allInterfaces.forEach(iface => {
             const name = iface.name;
             const stateColor = iface.state === 'up' ? 'var(--success)' :
                                iface.state === 'down' ? 'var(--error)' : 'var(--text-muted)';
             const stateText = iface.state === 'up' ? 'UP' :
                               iface.state === 'down' ? 'DOWN' : '?';
+
+            // IPv4 адреса
             let addrText = '';
             if (iface.addresses && iface.addresses.length > 0) {
                 const ipv4 = iface.addresses.filter(a => a.family === 'ipv4');
                 if (ipv4.length > 0) addrText = ipv4.map(a => a.address).join(', ');
             }
+
+            // Имеет ли хотя бы одну роль
             const hasRole = wanList.includes(name) || wan6List.includes(name) || lanList.includes(name);
+
+            // Рендерим бейджи ролей
             const badges = Object.entries(ROLES).map(([role, meta]) => {
                 let ifaces;
                 if (role === 'wan') ifaces = wanList;
                 else if (role === 'wan6') ifaces = wan6List;
                 else ifaces = lanList;
+
                 const active = ifaces.includes(name);
                 return `<span onclick="SettingsPage.toggleRole('${name}', '${role}')" style="
                     display:inline-block; font-size:10px; font-weight:700;
@@ -683,6 +814,7 @@ const SettingsPage = (() => {
                     opacity: ${active ? '1' : '0.6'};
                 " title="${active ? 'Снять роль ' + meta.label : 'Назначить ' + meta.label}">${meta.label}</span>`;
             }).join(' ');
+
             html += `
                 <div style="
                     display: flex; align-items: center; gap: 10px;
@@ -712,8 +844,12 @@ const SettingsPage = (() => {
                 </div>
             `;
         });
+
         container.innerHTML = html;
     }
+
+    // ══════════════════ Utils ══════════════════
+
     function formatUptime(seconds) {
         if (!seconds || seconds <= 0) return '—';
         const s = parseInt(seconds);
@@ -725,6 +861,7 @@ const SettingsPage = (() => {
         rem = rem % 3600;
         const minutes = Math.floor(rem / 60);
         const secs = rem % 60;
+
         const parts = [];
         if (months > 0) parts.push(months + 'мес');
         if (days > 0) parts.push(days + 'д');
@@ -733,9 +870,11 @@ const SettingsPage = (() => {
         if (secs > 0 && (parts.length === 0 || hours === 0)) parts.push(secs + 'с');
         return parts.join(' ') || '0с';
     }
+
     function getNestedValue(obj, path) {
         return path.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : undefined, obj);
     }
+
     function setNestedValue(obj, path, value) {
         const keys = path.split('.');
         let current = obj;
@@ -747,6 +886,7 @@ const SettingsPage = (() => {
         }
         current[keys[keys.length - 1]] = value;
     }
+
     function deepEqual(a, b) {
         if (a === b) return true;
         if (!a || !b) return false;
@@ -757,6 +897,7 @@ const SettingsPage = (() => {
         if (keysA.length !== keysB.length) return false;
         return keysA.every(k => deepEqual(a[k], b[k]));
     }
+
     function escapeAttr(str) {
         return String(str)
             .replace(/&/g, '&amp;')
@@ -765,6 +906,9 @@ const SettingsPage = (() => {
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
     }
+
+    // ══════════════════ Destroy ══════════════════
+
     function destroy() {
         hasUnsaved = false;
         loading = false;
@@ -772,6 +916,9 @@ const SettingsPage = (() => {
         originalConfig = {};
         systemInfo = null;
     }
+
+    // ══════════════════ Public API ══════════════════
+
     return {
         render,
         destroy,
