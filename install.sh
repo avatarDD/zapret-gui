@@ -177,7 +177,7 @@ install_from_github() {
     }
 
     # Находим распакованную директорию
-    local src_dir=$(find "$TMP_DIR" -maxdepth 1 -type d -name 'zapret-gui*' | head -1)
+    local src_dir=$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
     if [ -z "$src_dir" ]; then
         error "Не найдена директория проекта в архиве"
         exit 1
