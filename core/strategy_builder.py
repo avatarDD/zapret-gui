@@ -1,16 +1,22 @@
 # core/strategy_builder.py
 """
-Модель стратегий + загрузчик + сборщик аргументов nfqws2.
+Менеджер стратегий (Вариант В — единый источник).
 
-Стратегия — JSON-файл с профилями (HTTP, TLS, QUIC).
-Профили объединяются через --new при передаче в nfqws2.
+Архитектура:
+    catalogs/*.txt  — ЕДИНСТВЕННЫЙ источник всех builtin-стратегий (INI, read-only)
+    config/strategies/user/*.json  — только пользовательские стратегии (CRUD)
+
+Builtin-стратегии загружаются из CatalogManager и конвертируются
+в формат strategy-dict с profiles[]. User-стратегии хранятся в JSON.
+
+При совпадении id — user-стратегия перезаписывает builtin.
 
 Использование:
     from core.strategy_builder import get_strategy_manager
 
     sm = get_strategy_manager()
-    strategies = sm.load_strategies()
-    strategy = sm.get_strategy("tcp_alt2")
+    strategies = sm.get_strategies()
+    strategy = sm.get_strategy("tcp_default")
     args = sm.build_nfqws_args(strategy, hostlist_path="/opt/zapret2/lists/other.txt")
     sm.save_user_strategy(strategy_data)
     sm.delete_user_strategy("my_custom")
@@ -29,11 +35,8 @@ class StrategyManager:
     """
     Загрузка, хранение и сборка стратегий.
 
-    Стратегии хранятся в JSON-файлах:
-      - config/strategies/builtin/ — встроенные (нередактируемые)
-      - config/strategies/user/    — пользовательские (CRUD)
-
-    При загрузке user-стратегии перезаписывают builtin по id.
+    Единый источник builtin-стратегий — INI-каталоги (CatalogManager).
+    User-стратегии хранятся в config/strategies/user/*.json.
     """
 
     def __init__(self, base_dir: str = None):
@@ -41,7 +44,6 @@ class StrategyManager:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "config", "strategies"
         )
-        self._builtin_dir = os.path.join(self._base_dir, "builtin")
         self._user_dir = os.path.join(self._base_dir, "user")
         self._lock = threading.Lock()
         self._cache = {}       # id → strategy dict
@@ -51,7 +53,7 @@ class StrategyManager:
 
     def load_strategies(self) -> list:
         """
-        Загрузить все стратегии из builtin/ и user/.
+        Загрузить все стратегии: builtin из каталогов + user из JSON.
 
         User-стратегии перезаписывают builtin по id.
 
@@ -61,22 +63,19 @@ class StrategyManager:
         with self._lock:
             self._cache.clear()
 
-            # 1) Builtin
-            builtin_count = 0
-            for s in self._load_dir(self._builtin_dir, is_builtin=True):
-                self._cache[s["id"]] = s
-                builtin_count += 1
+            # 1) Builtin — из CatalogManager (INI-каталоги)
+            builtin_count = self._load_from_catalogs()
 
-            # 2) User (перезаписывает builtin по id)
+            # 2) User (JSON, перезаписывает builtin по id)
             user_count = 0
-            for s in self._load_dir(self._user_dir, is_builtin=False):
+            for s in self._load_json_dir(self._user_dir, is_builtin=False):
                 self._cache[s["id"]] = s
                 user_count += 1
 
             self._loaded = True
 
             log.info(
-                "Стратегии загружены: %d builtin, %d user, %d всего" % (
+                "Стратегии загружены: %d из каталогов, %d user, %d всего" % (
                     builtin_count, user_count, len(self._cache)
                 ),
                 source="strategies"
@@ -84,8 +83,41 @@ class StrategyManager:
 
             return self._get_sorted_list()
 
-    def _load_dir(self, dir_path: str, is_builtin: bool) -> list:
-        """Загрузить стратегии из директории."""
+    def _load_from_catalogs(self) -> int:
+        """
+        Загрузить builtin-стратегии из CatalogManager.
+
+        Каждая CatalogEntry конвертируется в strategy-dict с profiles[].
+
+        Returns:
+            Количество загруженных стратегий.
+        """
+        try:
+            from core.catalog_loader import get_catalog_manager
+            cm = get_catalog_manager()
+        except ImportError:
+            log.warning(
+                "CatalogManager недоступен, builtin-стратегии не загружены",
+                source="strategies",
+            )
+            return 0
+
+        count = 0
+        # Загружаем все каталоги
+        for key in cm.get_catalog_keys():
+            for entry in cm.get_catalog_entries(
+                protocol=key.split("/")[-1],
+                level=key.split("/")[0],
+            ):
+                strategy = _catalog_entry_to_strategy(entry)
+                if strategy and strategy["id"] not in self._cache:
+                    self._cache[strategy["id"]] = strategy
+                    count += 1
+
+        return count
+
+    def _load_json_dir(self, dir_path: str, is_builtin: bool) -> list:
+        """Загрузить стратегии из директории JSON-файлов."""
         strategies = []
         if not os.path.isdir(dir_path):
             return strategies
@@ -150,7 +182,10 @@ class StrategyManager:
         """Отсортированный список стратегий (builtin первыми)."""
         items = list(self._cache.values())
         # Сортировка: builtin первыми, затем по имени
-        items.sort(key=lambda s: (0 if s.get("is_builtin") else 1, s.get("name", "")))
+        items.sort(key=lambda s: (
+            0 if s.get("is_builtin") else 1,
+            s.get("name", ""),
+        ))
         return [self._clean_for_api(s) for s in items]
 
     def _clean_for_api(self, strategy: dict) -> dict:
@@ -399,6 +434,94 @@ class StrategyManager:
         parts.extend(strategy_args)
 
         return " \\\n  ".join(parts)
+
+
+# ═══════════════════════════════════════════════════════════
+#  Конвертер: CatalogEntry → strategy dict
+# ═══════════════════════════════════════════════════════════
+
+def _catalog_entry_to_strategy(entry) -> dict:
+    """
+    Конвертировать CatalogEntry из INI-каталога в strategy dict.
+
+    Стратегия из каталога может содержать:
+    - Простые args (только --lua-desync=...)
+    - Полные args (--filter-tcp=... --lua-desync=... --new --filter-udp=...)
+
+    Args с --new разбиваются на отдельные profiles.
+    Args без --filter-* оборачиваются в один profile.
+    """
+    args_list = entry.get_args_list()
+    if not args_list:
+        return None
+
+    # Разбиваем по --new на секции (profiles)
+    sections = []
+    current = []
+    for arg in args_list:
+        if arg == "--new":
+            if current:
+                sections.append(current)
+                current = []
+        else:
+            current.append(arg)
+    if current:
+        sections.append(current)
+
+    # Строим profiles
+    profiles = []
+    for idx, section_args in enumerate(sections):
+        prof_id, prof_name = _detect_profile_info(section_args, idx)
+        profiles.append({
+            "id": prof_id,
+            "name": prof_name,
+            "enabled": True,
+            "args": " ".join(section_args),
+        })
+
+    if not profiles:
+        return None
+
+    strategy = {
+        "id": entry.section_id,
+        "name": entry.name,
+        "description": entry.description,
+        "type": "combined" if len(profiles) > 1 else "single",
+        "version": 1,
+        "is_builtin": True,
+        "source": "catalog",
+        "level": entry.level,
+        "label": entry.label,
+        "author": entry.author,
+        "protocol": entry.protocol,
+        "profiles": profiles,
+    }
+
+    return strategy
+
+
+def _detect_profile_info(args: list, idx: int) -> tuple:
+    """
+    Определить id и имя профиля из его аргументов.
+
+    Returns:
+        (profile_id, profile_name)
+    """
+    for arg in args:
+        if arg.startswith("--filter-tcp="):
+            port = arg.split("=", 1)[1]
+            if port == "80":
+                return ("http%d" % (idx + 1), "HTTP (порт 80)")
+            return ("tcp%d" % (idx + 1), "TCP (порты %s)" % port)
+        elif arg.startswith("--filter-udp="):
+            port = arg.split("=", 1)[1]
+            return ("udp%d" % (idx + 1), "UDP (порты %s)" % port)
+        elif arg.startswith("--filter-l3="):
+            ver = arg.split("=", 1)[1]
+            return ("%s_%d" % (ver, idx + 1), ver.upper())
+
+    # Нет фильтра — одиночная стратегия desync
+    return ("profile%d" % (idx + 1), "Profile %d" % (idx + 1))
 
 
 # ═══════════════════ Singleton ═══════════════════

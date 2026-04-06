@@ -1,0 +1,163 @@
+# ─────────────────────────────────────────────────────────────
+#  zapret-gui — встроенные стратегии (defaults)
+#
+#  Эти стратегии — готовые конфигурации nfqws2 с фильтрами.
+#  Содержат полную командную строку: --filter-* + --lua-desync=*
+#  Секции внутри одной стратегии разделены --new.
+#
+#  Протокол определяется автоматически из --filter-tcp / --filter-udp.
+# ─────────────────────────────────────────────────────────────
+
+[tcp_default]
+name = Default — базовая стратегия
+author = zapret-gui
+label = recommended
+description = Стандартная стратегия: fake + multisplit для HTTP/TLS, fake для QUIC
+--filter-tcp=80
+--filter-l7=http
+--payload=http_req
+--lua-desync=fake:blob=fake_default_http
+--lua-desync=multisplit:pos=method+2
+--new
+--filter-tcp=443
+--filter-l7=tls
+--payload=tls_client_hello
+--lua-desync=fake:blob=fake_default_tls
+--lua-desync=multisplit:pos=1,midsld
+--new
+--filter-udp=443
+--filter-l7=quic
+--payload=quic_initial
+--lua-desync=fake:blob=fake_default_quic:repeats=6
+
+[tcp_alt1]
+name = Alt 1 — fake + tcp_md5
+author = zapret-gui
+label = recommended
+description = Альтернативная: fake с TCP MD5 опцией для обхода DPI
+--filter-tcp=80
+--filter-l7=http
+--payload=http_req
+--lua-desync=fake:blob=fake_default_http:tcp_md5
+--lua-desync=multisplit:pos=method+2
+--new
+--filter-tcp=443
+--filter-l7=tls
+--payload=tls_client_hello
+--lua-desync=fake:blob=fake_default_tls:tcp_md5
+--lua-desync=multisplit:pos=1,midsld
+--new
+--filter-udp=443
+--filter-l7=quic
+--payload=quic_initial
+--lua-desync=fake:blob=fake_default_quic:repeats=6
+
+[tcp_alt2]
+name = Alt 2 — multidisorder + tcp_seq offset
+author = zapret-gui
+label = recommended
+description = fake с tcp_md5 и смещением sequence number, multidisorder вместо multisplit
+--filter-tcp=80
+--filter-l7=http
+--payload=http_req
+--lua-desync=fake:blob=fake_default_http:tcp_md5
+--lua-desync=multidisorder:pos=method+2
+--new
+--filter-tcp=443
+--filter-l7=tls
+--payload=tls_client_hello
+--lua-desync=fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000
+--lua-desync=multidisorder:pos=1,midsld
+--new
+--filter-udp=443
+--filter-l7=quic
+--payload=quic_initial
+--lua-desync=fake:blob=fake_default_quic:repeats=6
+
+[full_combo]
+name = Full Combo — HTTP + TLS + QUIC
+author = zapret-gui
+label = recommended
+description = Максимальное покрытие: все протоколы с агрессивными параметрами desync
+--filter-tcp=80
+--filter-l7=http
+--payload=http_req
+--lua-desync=fake:blob=fake_default_http:tcp_md5
+--lua-desync=multidisorder:pos=method+2
+--new
+--filter-tcp=443
+--filter-l7=tls
+--payload=tls_client_hello
+--lua-desync=fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000
+--lua-desync=multidisorder:pos=1,midsld
+--new
+--filter-udp=443
+--filter-l7=quic
+--payload=quic_initial
+--lua-desync=fake:blob=fake_default_quic:repeats=6
+
+[quic_only]
+name = QUIC Only — UDP 443
+author = zapret-gui
+label = stable
+description = Только QUIC/UDP: fake с повторами. Для YouTube и сервисов с QUIC
+--filter-udp=443
+--filter-l7=quic
+--payload=quic_initial
+--lua-desync=fake:blob=fake_default_quic:repeats=6
+
+[tcp_hostfake]
+name = HostFake — подмена SNI в fake-пакетах
+author = zapret-gui
+label = stable
+description = Использует hostfakesplit: подменяет домен в fake-пакете, обходит SNI-based DPI
+--filter-tcp=80
+--filter-l7=http
+--payload=http_req
+--lua-desync=fake:blob=fake_default_http:tcp_md5:repeats=3
+--lua-desync=hostfakesplit:nofake1:midhost=midsld:tcp_md5
+--new
+--filter-tcp=443
+--filter-l7=tls
+--payload=tls_client_hello
+--lua-desync=fake:blob=fake_default_tls:tcp_md5:repeats=3
+--lua-desync=hostfakesplit:nofake1:midhost=midsld:tcp_md5
+--new
+--filter-udp=443
+--filter-l7=quic
+--payload=quic_initial
+--lua-desync=fake:blob=fake_default_quic:repeats=6
+
+[tcp_oob]
+name = OOB — fakedsplit + disorder
+author = zapret-gui
+label = stable
+description = Стратегия с fakedsplit и нарушением порядка пакетов, использует TTL fooling
+--filter-tcp=80
+--filter-l7=http
+--payload=http_req
+--lua-desync=fakedsplit:pos=method+2:ip_ttl=4:ip6_ttl=4
+--new
+--filter-tcp=443
+--filter-l7=tls
+--payload=tls_client_hello
+--lua-desync=fakedsplit:pos=1,midsld:ip_ttl=4:ip6_ttl=4
+
+[tcp_syndata]
+name = SYN+Data — syndata + multisplit
+author = zapret-gui
+label = stable
+description = Стратегия с syndata: отправка данных в SYN-пакете + window size манипуляция
+--filter-tcp=443
+--filter-l7=tls
+--payload=tls_client_hello
+--lua-desync=wssize:wsize=1:scale=6
+--lua-desync=syndata
+--lua-desync=multisplit:pos=midsld
+--new
+--filter-tcp=80
+--filter-l7=http
+--payload=http_req
+--lua-desync=wssize:wsize=1:scale=6
+--lua-desync=syndata
+--lua-desync=multisplit:pos=method+2
