@@ -110,22 +110,25 @@ jobs:
         run: make openwrt-ipk
 
       # Собираем tar.gz архив исходников (без build/dist/.git)
-      - name: Create source archive
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          ARCHIVE="${PKG_NAME}-${VERSION}.tar.gz"
-          tar czf "$ARCHIVE" \
-            --exclude='.git' \
-            --exclude='build' \
-            --exclude='dist' \
-            --exclude='__pycache__' \
-            --exclude='*.pyc' \
-            --exclude='*.7z' \
-            --exclude='.github' \
-            .
-          echo "✓ Архив: $ARCHIVE"
-          ls -lh "$ARCHIVE"
+    - name: Create source archive
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        ARCHIVE="/tmp/${PKG_NAME}-${VERSION}.tar.gz"
 
+        tar czf "$ARCHIVE" \
+          --exclude='.git' \
+          --exclude='build' \
+          --exclude='dist' \
+          --exclude='__pycache__' \
+          --exclude='*.pyc' \
+          --exclude='*.7z' \
+          --exclude='.github' \
+          .
+
+        mv "$ARCHIVE" .
+        echo "✓ Архив: $(basename $ARCHIVE)"
+        ls -lh "$(basename $ARCHIVE)"
+        
       # Загружаем артефакты
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
