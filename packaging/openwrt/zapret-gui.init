@@ -61,4 +61,3 @@ stop_service() {
 service_triggers() {
     procd_add_reload_trigger "zapret-gui"
 }
-

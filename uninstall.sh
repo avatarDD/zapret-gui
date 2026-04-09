@@ -101,10 +101,11 @@ if $FULL_REMOVE; then
         rm -rf "$CONFIG_DIR"
         printf "${GREEN}[OK]${NC}  Конфигурация удалена: $CONFIG_DIR\n"
     fi
-    # Логи
+    # Логи и временные файлы
     rm -rf /tmp/zapret-gui 2>/dev/null || true
     rm -f /tmp/zapret-gui-server.log 2>/dev/null || true
-    printf "${GREEN}[OK]${NC}  Логи очищены\n"
+    rm -f /tmp/zapret-gui-scan-resume.json 2>/dev/null || true
+    printf "${GREEN}[OK]${NC}  Логи и временные файлы очищены\n"
 else
     printf "${GREEN}[OK]${NC}  Конфигурация сохранена: $CONFIG_DIR\n"
 fi

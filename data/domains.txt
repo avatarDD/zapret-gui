@@ -1,7 +1,6 @@
-# BlockCheck domain list — commonly blocked sites in Russia
-# One domain per line, # for comments
+# BlockCheck domain list
+# One domain per line
 
-# Social / Messaging
 discord.com
 gateway.discord.gg
 cdn.discordapp.com
@@ -9,8 +8,6 @@ discordapp.net
 discord.media
 telegram.org
 web.telegram.org
-
-# Video
 www.youtube.com
 youtu.be
 i.ytimg.com
@@ -19,8 +16,6 @@ r2---sn-jvhnu5g-c35k.googlevideo.com
 rr5---sn-c0q7lnz7.googlevideo.com
 rr2---sn-axq7sn7z.googlevideo.com
 rr4---sn-q4flrnsd.googlevideo.com
-
-# Search / Cloud
 www.google.com
 www.cloudflare.com
 x.com
@@ -29,10 +24,9 @@ www.facebook.com
 www.speedtest.net
 soundcloud.com
 github.com
-
-# Torrent / Other
 rutracker.org
 rutor.info
 roblox.com
 meduza.io
+btdig.com
 linkedin.com

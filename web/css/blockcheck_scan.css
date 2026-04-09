@@ -1,0 +1,183 @@
+/* ===== BlockCheck & Scan Pages ===== */
+
+/* Form layout */
+.bc-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.bc-form-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.bc-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* Progress info */
+.bc-progress-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+}
+
+.bc-phase {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.bc-elapsed {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: var(--font-mono);
+}
+
+/* Results table */
+.bc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.bc-table thead th {
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.bc-table tbody td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+
+.bc-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.bc-cell-domain {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    word-break: break-all;
+    max-width: 200px;
+}
+
+/* Status badges */
+.bc-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.bc-badge-ok {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+.bc-badge-fail {
+    background: var(--error-bg);
+    color: var(--error);
+}
+
+.bc-badge-warn {
+    background: var(--warning-bg);
+    color: var(--warning);
+}
+
+.bc-badge-skip {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-muted);
+}
+
+/* Scan results */
+.scan-result-item {
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+    transition: border-color var(--transition);
+}
+
+.scan-result-item:hover {
+    border-color: var(--border-hover);
+}
+
+.scan-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.scan-result-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.scan-result-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.scan-result-args {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: var(--bg-input);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    word-break: break-all;
+    line-height: 1.6;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .bc-form-row {
+        flex-direction: column;
+    }
+
+    .bc-table {
+        font-size: 11px;
+    }
+
+    .bc-table thead th,
+    .bc-table tbody td {
+        padding: 6px 6px;
+    }
+
+    .bc-cell-domain {
+        max-width: 120px;
+    }
+
+    .scan-result-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}

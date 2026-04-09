@@ -24,7 +24,7 @@ set -e
 
 REPO_URL="https://github.com/avatarDD/zapret-gui"
 BRANCH="${ZAPRET_GUI_BRANCH:-main}"
-VERSION="0.13.5"
+VERSION="0.14.0"
 
 GUI_PORT="${ZAPRET_GUI_PORT:-8080}"
 GUI_HOST="${ZAPRET_GUI_HOST:-0.0.0.0}"
@@ -54,7 +54,20 @@ detect_env() {
         INITD_DIR="/opt/etc/init.d"
         INITD_SCRIPT="$INITD_DIR/S99zapret-gui"
         PID_FILE="/var/run/zapret-gui.pid"
-        PKG_CMD=""
+        # Определяем пакетный менеджер для generic Linux
+        if command -v apt-get >/dev/null 2>&1; then
+            PKG_CMD="apt-get"
+        elif command -v apt >/dev/null 2>&1; then
+            PKG_CMD="apt"
+        elif command -v dnf >/dev/null 2>&1; then
+            PKG_CMD="dnf"
+        elif command -v yum >/dev/null 2>&1; then
+            PKG_CMD="yum"
+        elif command -v pacman >/dev/null 2>&1; then
+            PKG_CMD="pacman"
+        else
+            PKG_CMD=""
+        fi
     fi
 }
 
@@ -71,9 +84,22 @@ ok()      { printf "${GREEN}[OK]${NC}   %s\n" "$1"; }
 warn()    { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
 error()   { printf "${RED}[ERR]${NC}  %s\n" "$1"; }
 
+# ── Определение sudo ─────────────────────────────────────────
+
+# Если не root — используем sudo для системных команд
+if [ "$(id -u)" = "0" ]; then
+    SUDO=""
+else
+    if command -v sudo >/dev/null 2>&1; then
+        SUDO="sudo"
+    else
+        SUDO=""
+        warn "Запуск не от root и sudo не найден — установка системных пакетов может не работать"
+    fi
+fi
+
 # ── Утилиты загрузки ──────────────────────────────────────────
 
-# Определяем доступный загрузчик
 detect_downloader() {
     if command -v curl >/dev/null 2>&1; then
         DOWNLOAD_CMD="curl"
@@ -86,7 +112,6 @@ detect_downloader() {
     fi
 }
 
-# Скачать файл: download URL DEST
 download() {
     local url="$1"
     local dest="$2"
@@ -98,18 +123,78 @@ download() {
     fi
 }
 
+# ── Прямая установка bottle (fallback) ────────────────────────
+
+_install_bottle_direct() {
+    # Bottle — один файл. Скачиваем напрямую если pip не работает.
+    info "  Прямая загрузка bottle.py..."
+
+    local BOTTLE_URL="https://raw.githubusercontent.com/bottlepy/bottle/master/bottle.py"
+
+    # Предпочитаем user site-packages (не требует root)
+    local SITE_PACKAGES=""
+    SITE_PACKAGES=$(python3 -c "import site; print(site.getusersitepackages())" 2>/dev/null)
+
+    # Fallback на системный
+    if [ -z "$SITE_PACKAGES" ]; then
+        SITE_PACKAGES=$(python3 -c "import site; ps=site.getsitepackages(); print(ps[0] if ps else '')" 2>/dev/null)
+    fi
+
+    if [ -z "$SITE_PACKAGES" ]; then
+        error "Не удалось определить site-packages"
+        return 1
+    fi
+
+    mkdir -p "$SITE_PACKAGES" 2>/dev/null
+    if [ ! -w "$SITE_PACKAGES" ]; then
+        # Нет прав — пробуем через sudo
+        if command -v sudo >/dev/null 2>&1; then
+            sudo mkdir -p "$SITE_PACKAGES" 2>/dev/null
+        else
+            error "Нет прав на запись в $SITE_PACKAGES"
+            return 1
+        fi
+    fi
+
+    local DEST="$SITE_PACKAGES/bottle.py"
+    if download "$BOTTLE_URL" "$DEST" 2>/dev/null; then
+        :
+    elif command -v sudo >/dev/null 2>&1; then
+        # Скачиваем во /tmp, потом копируем через sudo
+        local TMP_BOTTLE="/tmp/bottle_$$.py"
+        if download "$BOTTLE_URL" "$TMP_BOTTLE"; then
+            sudo cp "$TMP_BOTTLE" "$DEST"
+            rm -f "$TMP_BOTTLE"
+        else
+            return 1
+        fi
+    else
+        return 1
+    fi
+
+    # Проверяем
+    if python3 -c "import bottle" 2>/dev/null; then
+        ok "bottle.py установлен в $SITE_PACKAGES"
+        return 0
+    fi
+
+    rm -f "$DEST" 2>/dev/null
+    return 1
+}
+
 # ── Проверка зависимостей ─────────────────────────────────────
 
 check_deps() {
     info "Проверка зависимостей..."
-    local missing=""
+    local need_python=false
+    local need_bottle=false
 
     # Python3
     if command -v python3 >/dev/null 2>&1; then
         PY_VER=$(python3 --version 2>&1)
         ok "python3: $PY_VER"
     else
-        missing="$missing python3-light"
+        need_python=true
         warn "python3 не найден"
     fi
 
@@ -118,29 +203,119 @@ check_deps() {
         BOTTLE_VER=$(python3 -c "import bottle; print(bottle.__version__)" 2>/dev/null)
         ok "bottle: $BOTTLE_VER"
     else
-        missing="$missing python3-bottle"
+        need_bottle=true
         warn "python3-bottle не найден"
     fi
 
-    # Устанавливаем недостающее
-    if [ -n "$missing" ]; then
-        info "Установка:$missing"
-        if [ -n "$PKG_CMD" ]; then
-            $PKG_CMD update 2>/dev/null || true
-            for pkg in $missing; do
-                info "  Устанавливаем $pkg..."
-                $PKG_CMD install "$pkg" || {
-                    error "Не удалось установить $pkg"
-                    error "Установите вручную: $PKG_CMD install $pkg"
-                    exit 1
-                }
-            done
-            ok "Зависимости установлены"
-        else
-            error "Пакетный менеджер не найден. Установите вручную:$missing"
-            exit 1
-        fi
+    # Если всё есть — выходим
+    if ! $need_python && ! $need_bottle; then
+        return 0
     fi
+
+    # Устанавливаем недостающее
+    case "$PKG_CMD" in
+        opkg)
+            # Entware / OpenWrt
+            $PKG_CMD update 2>/dev/null || true
+            if $need_python; then
+                info "  Устанавливаем python3-light..."
+                $PKG_CMD install python3-light || { error "Не удалось установить python3-light"; exit 1; }
+            fi
+            if $need_bottle; then
+                info "  Устанавливаем python3-bottle..."
+                $PKG_CMD install python3-bottle || { error "Не удалось установить python3-bottle"; exit 1; }
+            fi
+            ok "Зависимости установлены"
+            ;;
+        apt-get|apt)
+            # Debian / Ubuntu
+            $SUDO $PKG_CMD update -qq 2>/dev/null || true
+            if $need_python; then
+                info "  Устанавливаем python3..."
+                $SUDO $PKG_CMD install -y python3 || { error "Не удалось установить python3"; exit 1; }
+            fi
+            if $need_bottle; then
+                info "  Устанавливаем bottle..."
+                # Способ 1: системный пакет
+                if $SUDO $PKG_CMD install -y python3-bottle 2>/dev/null; then
+                    ok "bottle установлен через $PKG_CMD"
+                else
+                    # Способ 2: pip --user (не требует root)
+                    info "  Системный пакет не найден, устанавливаем через pip..."
+                    if ! python3 -m pip --version >/dev/null 2>&1; then
+                        info "  Устанавливаем python3-pip..."
+                        $SUDO $PKG_CMD install -y python3-pip 2>/dev/null || true
+                    fi
+                    if python3 -m pip install --user bottle 2>/dev/null; then
+                        ok "bottle установлен через pip (--user)"
+                    elif python3 -m pip install bottle --break-system-packages 2>/dev/null; then
+                        ok "bottle установлен через pip"
+                    elif python3 -m pip install bottle 2>/dev/null; then
+                        ok "bottle установлен через pip"
+                    else
+                        info "  pip не сработал, скачиваем bottle.py напрямую..."
+                        _install_bottle_direct || {
+                            error "Не удалось установить bottle"
+                            error "Установите вручную: pip3 install bottle  или  sudo apt install python3-bottle"
+                            exit 1
+                        }
+                    fi
+                fi
+            fi
+            ok "Зависимости установлены"
+            ;;
+        dnf|yum)
+            # Fedora / RHEL / CentOS
+            if $need_python; then
+                $PKG_CMD install -y python3 || { error "Не удалось установить python3"; exit 1; }
+            fi
+            if $need_bottle; then
+                python3 -m pip install bottle 2>/dev/null || {
+                    $PKG_CMD install -y python3-pip 2>/dev/null || true
+                    python3 -m pip install bottle || _install_bottle_direct || {
+                        error "Установите вручную: python3 -m pip install bottle"; exit 1;
+                    }
+                }
+            fi
+            ok "Зависимости установлены"
+            ;;
+        pacman)
+            # Arch Linux
+            if $need_python; then
+                $PKG_CMD -S --noconfirm python || { error "Не удалось установить python"; exit 1; }
+            fi
+            if $need_bottle; then
+                python3 -m pip install bottle 2>/dev/null || {
+                    $PKG_CMD -S --noconfirm python-pip 2>/dev/null || true
+                    python3 -m pip install bottle || _install_bottle_direct || {
+                        error "Установите вручную: python3 -m pip install bottle"; exit 1;
+                    }
+                }
+            fi
+            ok "Зависимости установлены"
+            ;;
+        *)
+            # Нет пакетного менеджера — пробуем pip
+            if $need_python; then
+                error "python3 не найден. Установите вручную."
+                exit 1
+            fi
+            if $need_bottle; then
+                info "  Устанавливаем bottle..."
+                if python3 -m pip install bottle --break-system-packages 2>/dev/null; then
+                    ok "bottle установлен через pip"
+                elif python3 -m pip install bottle 2>/dev/null; then
+                    ok "bottle установлен через pip"
+                else
+                    _install_bottle_direct || {
+                        error "Не удалось установить bottle"
+                        error "Установите вручную: python3 -m pip install bottle"
+                        exit 1
+                    }
+                fi
+            fi
+            ;;
+    esac
 }
 
 # ── Установка из GitHub ───────────────────────────────────────
@@ -201,43 +376,43 @@ install_from_github() {
     # Останавливаем если запущен
     if [ -f "$INITD_SCRIPT" ] && [ -x "$INITD_SCRIPT" ]; then
         info "Остановка текущего сервера..."
-        "$INITD_SCRIPT" stop 2>/dev/null || true
+        $SUDO "$INITD_SCRIPT" stop 2>/dev/null || true
     fi
 
     # Копируем файлы
     info "Установка в $APP_DIR..."
-    mkdir -p "$APP_DIR"
-    mkdir -p "$CONFIG_DIR"
+    $SUDO mkdir -p "$APP_DIR"
+    $SUDO mkdir -p "$CONFIG_DIR"
 
     # Копируем основные файлы
-    cp "$src_dir/app.py" "$APP_DIR/"
-    for dir in api core config web; do
+    $SUDO cp "$src_dir/app.py" "$APP_DIR/"
+    for dir in api core config web catalogs data; do
         if [ -d "$src_dir/$dir" ]; then
-            rm -rf "$APP_DIR/$dir"
-            cp -r "$src_dir/$dir" "$APP_DIR/"
+            $SUDO rm -rf "$APP_DIR/$dir"
+            $SUDO cp -r "$src_dir/$dir" "$APP_DIR/"
         fi
     done
 
     # Создаём рабочие директории
-    mkdir -p "$APP_DIR/init.d"
-    mkdir -p "$APP_DIR/lists"
-    mkdir -p "$APP_DIR/config/strategies/user"
+    $SUDO mkdir -p "$APP_DIR/init.d"
+    $SUDO mkdir -p "$APP_DIR/lists"
+    $SUDO mkdir -p "$APP_DIR/config/strategies/user"
 
     # Восстанавливаем конфигурацию из бэкапа
     if [ -f "$TMP_DIR/settings.json.bak" ]; then
-        cp "$TMP_DIR/settings.json.bak" "$CONFIG_DIR/settings.json"
+        $SUDO cp "$TMP_DIR/settings.json.bak" "$CONFIG_DIR/settings.json"
         ok "Конфигурация восстановлена"
     fi
     if [ -d "$TMP_DIR/user_strategies_bak" ]; then
-        cp -r "$TMP_DIR/user_strategies_bak/"* "$APP_DIR/config/strategies/user/" 2>/dev/null || true
+        $SUDO cp -r "$TMP_DIR/user_strategies_bak/"* "$APP_DIR/config/strategies/user/" 2>/dev/null || true
         ok "Пользовательские стратегии восстановлены"
     fi
 
     # Чистим __pycache__
-    find "$APP_DIR" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+    $SUDO find "$APP_DIR" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 
     # Права
-    chmod 755 "$APP_DIR/app.py"
+    $SUDO chmod 755 "$APP_DIR/app.py"
 
     ok "Файлы установлены"
 }
@@ -246,11 +421,13 @@ install_from_github() {
 
 install_initd() {
     info "Установка init-скрипта..."
-    mkdir -p "$INITD_DIR"
+    $SUDO mkdir -p "$INITD_DIR"
+
+    local TMP_INIT="/tmp/zapret-gui-init-$$"
 
     if [ "$ENV_TYPE" = "openwrt" ]; then
         # OpenWrt — procd
-        cat > "$INITD_SCRIPT" << 'INITEOF'
+        cat > "$TMP_INIT" << 'INITEOF'
 #!/bin/sh /etc/rc.common
 START=99
 STOP=10
@@ -278,7 +455,7 @@ start_service() {
 INITEOF
     else
         # Entware — классический init.d
-        cat > "$INITD_SCRIPT" << 'INITEOF'
+        cat > "$TMP_INIT" << 'INITEOF'
 #!/bin/sh
 # S99zapret-gui — Zapret Web-GUI
 
@@ -346,17 +523,22 @@ esac
 INITEOF
     fi
 
-    chmod 755 "$INITD_SCRIPT"
+    $SUDO cp "$TMP_INIT" "$INITD_SCRIPT"
+    $SUDO chmod 755 "$INITD_SCRIPT"
+    rm -f "$TMP_INIT"
     ok "Init-скрипт: $INITD_SCRIPT"
 
     # Файл переопределения настроек
     if [ ! -f "$CONFIG_DIR/server.conf" ]; then
-        cat > "$CONFIG_DIR/server.conf" << CONFEOF
+        local TMP_CONF="/tmp/zapret-gui-conf-$$"
+        cat > "$TMP_CONF" << CONFEOF
 # Настройки веб-сервера Zapret Web-GUI
 # Раскомментируйте и измените при необходимости:
 #GUI_HOST=0.0.0.0
 #GUI_PORT=8080
 CONFEOF
+        $SUDO cp "$TMP_CONF" "$CONFIG_DIR/server.conf"
+        rm -f "$TMP_CONF"
         ok "Конфиг: $CONFIG_DIR/server.conf"
     fi
 }
@@ -381,7 +563,7 @@ do_uninstall() {
     # Остановить
     if [ -x "$INITD_SCRIPT" ]; then
         info "Остановка..."
-        "$INITD_SCRIPT" stop 2>/dev/null || true
+        $SUDO "$INITD_SCRIPT" stop 2>/dev/null || true
         if [ "$ENV_TYPE" = "openwrt" ]; then
             "$INITD_SCRIPT" disable 2>/dev/null || true
         fi
@@ -445,7 +627,7 @@ main() {
     printf "  Запустить сейчас? [Y/n] "
     read -r answer
     if [ "$answer" != "n" ] && [ "$answer" != "N" ]; then
-        "$INITD_SCRIPT" start
+        $SUDO "$INITD_SCRIPT" start
     fi
     echo ""
 }
@@ -459,7 +641,6 @@ while [ $# -gt 0 ]; do
             exit 0
             ;;
         --update|update)
-            # Update = reinstall с бэкапом конфигурации
             main
             exit 0
             ;;

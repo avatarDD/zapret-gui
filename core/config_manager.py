@@ -103,6 +103,21 @@ DEFAULT_CONFIG = {
         "wan6": "",
         "lan": "",
     },
+
+    # --- BlockCheck ---
+    "blockcheck": {
+        "default_mode": "quick",
+        "max_workers": 2,
+        "probe_timeout": 10,
+    },
+
+    # --- Strategy Scanner ---
+    "scan": {
+        "default_mode": "quick",
+        "default_protocol": "tcp",
+        "stabilization_delay": 2,
+        "probe_timeout": 10,
+    },
 }
 
 

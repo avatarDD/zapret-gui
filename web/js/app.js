@@ -16,6 +16,8 @@ const App = (() => {
         blobs:       BlobsPage,
         hosts:       HostsPage,
         diagnostics: DiagnosticsPage,
+        blockcheck:  BlockcheckPage,
+        scan:        ScanPage,
         logs:        LogsPage,
         autostart:   AutostartPage,
         zapret:      ZapretManagerPage,

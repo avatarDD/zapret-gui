@@ -36,6 +36,23 @@ const ZapretManagerPage = (() => {
                 </button>
             </div>
 
+            <!-- Баннер обновления GUI -->
+            <div class="card hidden" id="gui-update-banner"
+                 style="background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(139,92,246,0.1));
+                        border: 1px solid rgba(99,102,241,0.3); margin-bottom: 16px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                    <div>
+                        <span style="font-weight:600; color:var(--primary);">Доступна новая версия zapret-gui</span>
+                        <span style="color:var(--text-secondary); font-size:13px; margin-left:8px;">
+                            v<span id="gui-update-version">?</span>
+                        </span>
+                    </div>
+                    <button class="btn btn-primary btn-sm" onclick="ZapretManagerPage.updateGui()">
+                        Обновить GUI
+                    </button>
+                </div>
+            </div>
+
             <!-- Статус версий -->
             <div class="status-grid" id="zm-version-grid">
                 <div class="status-card" id="zm-card-installed">
@@ -217,6 +234,16 @@ const ZapretManagerPage = (() => {
             }
         } catch (err) {
             setError('Ошибка загрузки: ' + err.message);
+        }
+
+        // Проверка обновлений GUI (не блокирует основную загрузку)
+        try {
+            const guiCheck = await API.get('/api/gui/check');
+            if (guiCheck.update_available) {
+                showGuiUpdateBanner(guiCheck);
+            }
+        } catch (e) {
+            // Не критично — молча пропускаем
         }
     }
 
@@ -667,6 +694,35 @@ const ZapretManagerPage = (() => {
         pollTimer = setInterval(loadData, 30000); // Обновление каждые 30 сек
     }
 
+    // ══════════════════ GUI Update ══════════════════
+
+    function showGuiUpdateBanner(info) {
+        const banner = document.getElementById('gui-update-banner');
+        if (!banner) return;
+        banner.classList.remove('hidden');
+        const ver = document.getElementById('gui-update-version');
+        if (ver) ver.textContent = info.latest_version || '?';
+    }
+
+    async function doGuiUpdate() {
+        if (isOperationRunning) return;
+        isOperationRunning = true;
+        renderActions();
+        try {
+            const result = await API.post('/api/gui/update', {});
+            if (result.ok) {
+                Toast.success(result.message || 'GUI обновлён! Обновите страницу (F5).');
+            } else {
+                Toast.error(result.message || 'Ошибка обновления GUI');
+            }
+        } catch (err) {
+            Toast.error('Ошибка: ' + err.message);
+        } finally {
+            isOperationRunning = false;
+            renderActions();
+        }
+    }
+
     // ══════════════════ Destroy ══════════════════
 
     function destroy() {
@@ -690,5 +746,6 @@ const ZapretManagerPage = (() => {
         showUninstallPlan,
         confirmUninstall,
         closeUninstallModal,
+        updateGui: doGuiUpdate,
     };
 })();

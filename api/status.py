@@ -129,6 +129,7 @@ def register(app):
         from core.firewall import get_firewall_manager
         from core.autostart_manager import get_autostart_manager
         from core.zapret_installer import get_zapret_installer
+        from core.version import GUI_VERSION
 
         cfg = get_config_manager()
         mgr = get_nfqws_manager()
@@ -152,7 +153,7 @@ def register(app):
                 "installed": zapret_version["installed"],
                 "version": zapret_version["version"],
             },
-            "gui_version": "0.13.3",
+            "gui_version": GUI_VERSION,
             "timestamp": time.time(),
         }
 

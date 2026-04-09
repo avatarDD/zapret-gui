@@ -131,13 +131,23 @@ def test_tls(
 
     last_exception: Exception | None = None
 
+    # Общий deadline — не больше timeout*2 секунд на все адреса суммарно
+    deadline = start + timeout * 2
+
     # --- Пробуем каждый адрес ---
     for addr_family, sockaddr in connect_addrs:
+        remaining = deadline - time.time()
+        if remaining <= 1:
+            # Время вышло — не пробуем оставшиеся адреса
+            if last_exception is None:
+                last_exception = socket.timeout("total deadline exceeded")
+            break
+
         sock = None
         ssock = None
         try:
             sock = socket.socket(addr_family, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
+            sock.settimeout(min(timeout, remaining))
 
             # Создаём SSL-контекст
             context = ssl.create_default_context()

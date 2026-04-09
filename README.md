@@ -1,68 +1,33 @@
 # Zapret Web-GUI
 
-Web-интерфейс для управления **nfqws2** (zapret2) на роутерах с **Entware** и **OpenWrt**.
+[![Release](https://img.shields.io/github/v/release/avatarDD/zapret-gui?style=flat-square)](https://github.com/avatarDD/zapret-gui/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/avatarDD/zapret-gui/release.yml?style=flat-square&label=build)](https://github.com/avatarDD/zapret-gui/actions)
+[![License](https://img.shields.io/github/license/avatarDD/zapret-gui?style=flat-square)](LICENSE)
 
-![Version](https://img.shields.io/badge/version-0.13.0-blue)
-![Python](https://img.shields.io/badge/python-3.7+-green)
-![License](https://img.shields.io/badge/license-MIT-brightgreen)
-![Arch](https://img.shields.io/badge/arch-mipsel%20%7C%20arm64%20%7C%20armv7%20%7C%20x86__64-orange)
+Веб-интерфейс для управления **nfqws2** (zapret2) на роутерах с Entware (Keenetic) и OpenWrt.
 
-## Поддерживаемые платформы
-
-GUI написан на Python и работает на **любой архитектуре**, где доступны `python3` и `python3-bottle`.
-Автоопределение архитектуры для скачивания бинарника nfqws2 встроено в Zapret Manager.
-
-| Архитектура | Примеры устройств | Статус |
-|-------------|-------------------|--------|
-| **mipsel** | Keenetic Giga, Viva, Ultra (MT7621) | ✅ Протестировано |
-| **aarch64 / arm64** | Keenetic Peak (KN-2710), Asus RT-AX серия, RPi 3/4/5 | ✅ Поддерживается |
-| **armv7l** | Keenetic старые модели, многие OpenWrt-роутеры | ✅ Поддерживается |
-| **x86_64** | Soft-роутеры, ПК с OpenWrt/Linux, Docker | ✅ Поддерживается |
-| **mips (big-endian)** | Некоторые TP-Link, старые роутеры | ✅ Поддерживается |
-| **riscv64** | VisionFive, LicheePi и другие RISC-V платы | ⚠️ Экспериментально |
-
-**Поддерживаемые ОС:**
-- **Entware** — Keenetic (NDMS), Asus (Merlin), Synology и др.
-- **OpenWrt** — любые роутеры с OpenWrt/LEDE
-- **Linux** — любой дистрибутив с Python 3.7+ (для x86-серверов, RPi и т.д.)
+Тёмная тема, мобильная адаптация, SPA на vanilla JS + Python/Bottle бэкенд.
 
 ## Возможности
 
-- **Управление nfqws2** — запуск, остановка, перезапуск с мониторингом статуса
-- **Стратегии desync** — встроенные и пользовательские, с подсветкой синтаксиса
-- **Списки доменов** — hostlists с нормализацией, импортом из URL, дефолтными списками
-- **IP-списки** — ipsets с поддержкой ASN-загрузки (stat.ripe.net)
+- **Управление nfqws2** — запуск/остановка/рестарт с мониторингом процесса
+- **Стратегии** — builtin + пользовательские JSON-стратегии, превью команды
+- **BlockCheck** — тестирование доступности сервисов, классификация типа DPI
+- **Подбор стратегий** — автоматический перебор стратегий из INI-каталогов
+- **Домены и IP-списки** — hostlists с нормализацией, ipsets с загрузкой по ASN
 - **Блобы** — hex-редактор, генерация fake TLS/HTTP ClientHello
-- **Hosts-файл** — управление /etc/hosts, пресеты, бэкапы
-- **Диагностика** — ping, HTTP/DNS проверки, конфликты, системная информация
-- **Логи в реальном времени** — SSE, фильтрация по уровню, поиск, автопрокрутка
-- **Автозапуск** — генерация init-скрипта S99zapret
-- **Firewall** — автоопределение iptables/nftables, управление NFQUEUE правилами
-- **Zapret Manager** — установка/обновление/удаление zapret2 с GitHub
-- **Адаптивный дизайн** — тёмная тема, мобильный интерфейс
+- **Hosts** — управление /etc/hosts с пресетами
+- **Диагностика** — ping, HTTP/HTTPS, DNS, проверка конфликтов
+- **Логи** — real-time SSE поток
+- **Автозапуск** — генерация init-скриптов
+- **Обновление GUI** — проверка и обновление из веб-интерфейса
+- **Zapret2 installer** — установка/обновление nfqws2 с GitHub
 
 ## Требования
 
-### Entware (Keenetic, Asus Merlin и другие)
-```
-opkg install python3-light python3-bottle
-```
-
-### OpenWrt
-```
-opkg install python3-light python3-bottle
-```
-
-### Linux (x86_64, RPi, etc.)
-```
-pip3 install bottle
-# или через пакетный менеджер дистрибутива
-```
-
-### Минимальные требования
-- RAM: ~20–25 MB
-- Flash: ~500 KB (+ python3-light ~5 MB)
-- Python 3.7+
+- Python 3.11+ (`python3-light` в Entware)
+- Bottle (`python3-bottle` или `pip3 install bottle`)
+- RAM: ~20–25 MB, Flash: ~500 KB (+ python3-light ~5 MB)
 - Архитектура: любая (mipsel, arm64, armv7, x86_64, mips, riscv64)
 
 ## Установка
@@ -71,64 +36,47 @@ pip3 install bottle
 
 **Entware:**
 ```bash
-# Скачать последний релиз
-wget https://github.com/avatarDD/zapret-gui/releases/download/v0.12.0/zapret-gui_0.12.0_all.ipk
-
-# Установить
-opkg install zapret-gui_0.12.0_all.ipk
-
-# Запустить
+wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui_0.14.0-1_all.ipk
+opkg install zapret-gui_0.14.0-1_all.ipk
 /opt/etc/init.d/S99zapret-gui start
 ```
 
 **OpenWrt:**
 ```bash
-wget https://github.com/avatarDD/zapret-gui/releases/download/v0.12.0/zapret-gui_0.12.0_openwrt.ipk
-opkg install zapret-gui_0.12.0_openwrt_all.ipk
+wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui_0.14.0-1_openwrt.ipk
+opkg install zapret-gui_0.14.0-1_openwrt.ipk
 /etc/init.d/zapret-gui start
 ```
 
 ### Вариант 2: Автоустановка скриптом
 
 ```bash
-wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/master/install.sh | sh
+wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/main/install.sh | sh
 ```
 
-Скрипт автоматически:
-- Определит платформу (Entware/OpenWrt)
-- Установит зависимости (python3-light, python3-bottle)
-- Скачает и распакует проект
-- Создаст init-скрипт
-- Запустит Web-GUI
+Скрипт автоматически определит платформу, установит зависимости и запустит GUI.
 
 ### Вариант 3: Ручная установка
 
 ```bash
-# Клонировать
 cd /opt
 git clone https://github.com/avatarDD/zapret-gui.git
 cd zapret-gui
-
-# Установить зависимости
 opkg install python3-light python3-bottle
-
-# Запустить
 python3 app.py --host 0.0.0.0 --port 8080
 ```
 
 ## Использование
 
-После установки Web-GUI доступен по адресу:
-```
-http://<IP-роутера>:8080
-```
+Веб-интерфейс: `http://<IP-роутера>:8080`
 
 ### Быстрый старт
 
-1. Перейдите в раздел **Zapret2** → установите nfqws2
-2. Перейдите в **Стратегии** → выберите и примените подходящую стратегию
-3. Включите **Автозапуск** для работы после перезагрузки
-4. Проверьте в **Диагностике** доступность сервисов
+1. **Zapret2** → установите nfqws2
+2. **Стратегии** → выберите и примените стратегию
+3. Или **Подбор стратегий** → автоматический поиск рабочей стратегии
+4. **Автозапуск** → включите для работы после перезагрузки
+5. **BlockCheck** или **Диагностика** → проверьте доступность
 
 ### Страницы
 
@@ -136,63 +84,27 @@ http://<IP-роутера>:8080
 |----------|----------|
 | Главная | Статус nfqws, текущая стратегия, быстрые действия |
 | Управление | Старт/стоп/рестарт, мониторинг процесса |
-| Стратегии | Список стратегий, применение, редактор, превью команды |
-| Домены | Списки хостов для фильтрации (hostlists) |
+| Стратегии | Список стратегий, редактор, превью команды |
+| Домены | Списки хостов для фильтрации |
 | IP-списки | IP-адреса и подсети, загрузка по ASN |
 | Блобы | Бинарные данные для fake-пакетов |
 | Hosts | Управление /etc/hosts |
-| Zapret2 | Установка/обновление/удаление nfqws2 |
+| BlockCheck | Тестирование доступности, классификация DPI |
+| Подбор стратегий | Автоматический перебор стратегий |
+| Zapret2 | Установка/обновление nfqws2 |
 | Диагностика | Проверка сервисов, конфликтов, системы |
 | Логи | Журнал событий в реальном времени |
 | Автозапуск | Управление init-скриптом |
 | Настройки | Конфигурация GUI, nfqws, firewall |
 
-## Конфигурация
+### INI-каталоги стратегий
 
-Конфигурация хранится в `/opt/etc/zapret-gui/settings.json`.
+Дополнительно доступны стратегии из INI-каталогов (из проекта [youtubediscord/zapret](https://github.com/youtubediscord/zapret) (оттуда же можно тащить обновления стратегий)):
+- `catalogs/basic/` — базовые стратегии TCP/UDP
+- `catalogs/advanced/` — продвинутые комбинации
+- `catalogs/direct/` — прямые стратегии
 
-### Основные параметры
-
-```json
-{
-  "gui": {
-    "host": "0.0.0.0",
-    "port": 8080,
-    "auth_enabled": false,
-    "auth_user": "admin",
-    "auth_password": ""
-  },
-  "nfqws": {
-    "queue_num": 300,
-    "ports_tcp": "80,443",
-    "ports_udp": "443"
-  }
-}
-```
-
-### Безопасность
-
-По умолчанию GUI доступен на всех интерфейсах (0.0.0.0:8080).
-Для ограничения доступа:
-
-- **Привязка к localhost:** `"host": "127.0.0.1"` (доступ только через SSH-туннель)
-- **Авторизация:** Включите в настройках Basic Auth
-- **Firewall:** Ограничьте доступ правилами iptables
-
-## Стратегии
-
-### Встроенные стратегии
-
-| ID | Описание |
-|----|----------|
-| tcp_default | Базовая: fake + multisplit для HTTP/TLS, fake для QUIC |
-| tcp_alt1 | fake с TCP MD5 опцией |
-| tcp_alt2 | multidisorder + tcp_seq offset |
-| tcp_hostfake | Подмена SNI в fake-пакетах |
-| tcp_oob | fakedsplit + disorder + TTL fooling |
-| tcp_syndata | SYN data + fake |
-| quic_only | Только QUIC/UDP |
-| full_combo | Все протоколы с агрессивными параметрами |
+Используются в **Подборе стратегий** для автоматического тестирования.
 
 ### Создание пользовательской стратегии
 
@@ -202,57 +114,72 @@ http://<IP-роутера>:8080
 4. Используйте «Превью» для проверки финальной команды
 5. Сохраните и примените
 
-### Синтаксис аргументов (nfqws2)
+## Обновление
 
-```
---filter-tcp=443 --filter-l7=tls --payload=tls_client_hello
---lua-desync=fake:blob=fake_default_tls:tcp_md5:repeats=3
---lua-desync=multisplit:pos=1,midsld
-```
-
-### Синтаксис аргументов (classic nfqws)
-
-```
---filter-tcp=443 --dpi-desync=fake,multisplit
---dpi-desync-split-pos=1,midsld --dpi-desync-fooling=badseq
---dpi-desync-fake-tls=tls_clienthello.bin --new
-```
-
-## Сборка пакетов
-
-### Entware ipk
-
-```bash
-make clean
-make ipk
-# Результат: build/zapret-gui_0.12.0_all.ipk
-```
-
-### OpenWrt ipk
-
-```bash
-make openwrt-ipk
-# Результат: build/zapret-gui_0.12.0_openwrt_all.ipk
-```
-
-## Удаление
+### Из веб-интерфейса
+На странице **Zapret2** отображается уведомление о новой версии. Нажмите **Обновить GUI** и обновите страницу.
 
 ### Через пакетный менеджер
 ```bash
-opkg remove zapret-gui
+opkg upgrade zapret-gui
 ```
 
 ### Скриптом
 ```bash
-./uninstall.sh           # с сохранением конфига
-./uninstall.sh --purge   # полное удаление
+./install.sh --update
+```
+
+## Сборка пакетов
+
+```bash
+# Entware ipk
+make ipk
+# → dist/zapret-gui_0.14.0-1_all.ipk
+
+# OpenWrt ipk
+make openwrt-ipk
+# → dist/zapret-gui_0.14.0-1_openwrt.ipk
+
+# Проверка синтаксиса
+make lint
+```
+
+## Релиз
+
+Релизы создаются автоматически через GitHub Actions при пуше тега.
+
+```bash
+# Быстрый способ (проверяет версии, создаёт тег, пушит):
+make release
+
+# Или вручную:
+git tag -a v0.15.0 -m "Release v0.15.0"
+git push origin v0.15.0
+```
+
+**Перед релизом** обновите версию в трёх местах:
+1. `core/version.py` — `GUI_VERSION = "0.15.0"`
+2. `Makefile` — `PKG_VERSION := 0.15.0`
+3. `CHANGELOG.md` — добавьте секцию `## v0.15.0`
+
+`make release` проверит согласованность версий автоматически.
+
+## Удаление
+
+```bash
+# Через пакетный менеджер
+opkg remove zapret-gui
+
+# Скриптом (конфиг сохраняется)
+./uninstall.sh
+
+# Полное удаление
+./uninstall.sh --full
 ```
 
 ## API
 
-REST API доступно по адресу `http://<host>:8080/api/`.
-
-### Основные эндпоинты
+REST API: `http://<host>:8080/api/` — 80+ эндпоинтов.
 
 | Метод | Путь | Описание |
 |-------|------|----------|
@@ -261,70 +188,54 @@ REST API доступно по адресу `http://<host>:8080/api/`.
 | POST | /api/stop | Остановить nfqws2 |
 | GET | /api/strategies | Список стратегий |
 | POST | /api/strategies/:id/apply | Применить стратегию |
-| GET | /api/logs | Последние записи логов |
-| GET | /api/logs/stream | SSE-поток логов (real-time) |
+| GET | /api/logs/stream | SSE-поток логов |
+| GET | /api/gui/check | Проверить обновления |
+| POST | /api/gui/update | Обновить GUI |
+| POST | /api/blockcheck/start | Запустить BlockCheck |
+| POST | /api/scan/start | Запустить подбор стратегий |
 
-Полный список — 76 эндпоинтов (см. `api/` директорию).
+Полный список — см. `api/` директорию.
 
-## Архитектура
+## Структура проекта
 
 ```
 zapret-gui/
-├── app.py                 — Bottle сервер (ThreadedWSGI)
-├── api/                   — REST API модули (13 файлов)
-├── core/                  — Бизнес-логика (14 файлов)
-├── web/
-│   ├── index.html         — SPA точка входа
-│   ├── css/style.css      — Тёмная тема (~3500 строк)
-│   └── js/
-│       ├── api.js         — HTTP-клиент
-│       ├── app.js         — Hash-роутер
-│       ├── utils/         — Утилиты (syntax, debounce)
-│       ├── components/    — Sidebar, Toast
-│       └── pages/         — 12 страниц (IIFE модули)
-├── config/                — Стратегии и категории
-├── packaging/             — ipk-пакеты (Entware/OpenWrt)
-├── install.sh             — Автоустановка
-└── uninstall.sh           — Удаление
+├── api/              # REST API (Bottle routes)
+├── catalogs/         # INI-каталоги стратегий (basic/advanced/direct/builtin)
+├── config/           # Стратегии (builtin JSON + user)
+├── core/             # Бизнес-логика
+│   └── testers/      # Сетевые тестеры (TLS, STUN, TCP, DPI)
+├── data/             # Данные (домены, TCP-цели)
+├── packaging/        # Скрипты сборки ipk (Entware/OpenWrt)
+├── web/              # Фронтенд (SPA)
+│   ├── css/
+│   ├── js/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   └── utils/
+│   └── index.html
+├── .github/workflows/release.yml  # CI/CD
+├── app.py            # Точка входа
+├── Makefile          # Сборка пакетов
+├── install.sh        # Автоустановка
+└── uninstall.sh      # Удаление
 ```
 
 ### Ключевые решения
 
-- **Кроссплатформенность** — весь код на Python/JS, архитектурно-зависим только бинарник nfqws2 (автоопределение через `platform.machine()`)
+- **Кроссплатформенность** — весь код на Python/JS, архитектурно-зависим только бинарник nfqws2
 - **ThreadedWSGIServer** — многопоточный WSGI для параллельной обработки SSE и API
 - **Логи в RAM** — `collections.deque(maxlen=2000)`, без записи на flash
 - **Singleton-менеджеры** — thread-safe, lazy initialization
 - **Cache-Control: no-store** — предотвращение кеширования API-ответов
 - **SPA с hash-роутингом** — каждая страница — IIFE-модуль с `render()/destroy()`
 
-## FAQ
-
-**Q: На каких роутерах это работает?**
-A: На любых, где есть Entware или OpenWrt с Python 3.7+. Архитектура не имеет значения — GUI написан на Python (интерпретируемый), а бинарник nfqws2 скачивается автоматически под нужную архитектуру (mipsel, arm64, armv7, x86_64 и др.) через Zapret Manager.
-
-**Q: Сколько RAM потребляет GUI?**
-A: ~20–25 MB (Python3 + Bottle). Для роутеров с 128+ MB RAM это приемлемо.
-
-**Q: Не теряются ли логи при перезагрузке?**
-A: Да, логи хранятся в RAM (/tmp/). Это нормально для роутера — flash не изнашивается.
-
-**Q: Как обновить GUI?**
-A: `opkg install zapret-gui_NEW.ipk` или через раздел «Zapret2» в GUI.
-
-**Q: Можно ли использовать одновременно с существующим zapret2?**
-A: GUI является надстройкой и использует те же файлы zapret2. Не запускайте nfqws2 одновременно из GUI и из скрипта.
-
-**Q: Поддерживается ли IPv6?**
-A: Да. Можно отключить в настройках (`nfqws.disable_ipv6`).
-
 ## Лицензия
 
-MIT License. См. файл LICENSE.
+MIT
 
 ## Благодарности
 
-- [zapret2/nfqws2](https://github.com/bol-van/zapret) — основной инструмент
+- [bol-van/zapret2](https://github.com/bol-van/zapret) — основной инструмент
+- [youtubediscord/zapret](https://github.com/youtubediscord/zapret) — вдохновлялся
 - [Bottle](https://bottlepy.org/) — микро-фреймворк для Python
-
-
-

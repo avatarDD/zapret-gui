@@ -10,5 +10,3 @@ Priority: optional
 Depends: python3-light, python3-bottle
 Installed-Size: @SIZE@
 Source: https://github.com/avatarDD/zapret-gui
-
-

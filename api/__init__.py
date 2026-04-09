@@ -1,9 +1,6 @@
 # api/__init__.py
 """
-REST API модули.
-
-Каждый файл в этом пакете — отдельный набор маршрутов Bottle.
-Регистрация происходит через register_routes(app).
+Регистрация всех API-маршрутов Bottle-приложения.
 """
 
 
@@ -21,6 +18,9 @@ def register_routes(app):
     from api.diagnostics import register as reg_diagnostics
     from api.autostart import register as reg_autostart
     from api.zapret_manager import register as reg_zapret_manager
+    from api.blockcheck import register as reg_blockcheck
+    from api.scan import register as reg_scan
+    from api.gui_update import register as reg_gui_update
 
     reg_status(app)
     reg_logs(app)
@@ -34,3 +34,6 @@ def register_routes(app):
     reg_diagnostics(app)
     reg_autostart(app)
     reg_zapret_manager(app)
+    reg_blockcheck(app)
+    reg_scan(app)
+    reg_gui_update(app)

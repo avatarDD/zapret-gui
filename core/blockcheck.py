@@ -152,21 +152,62 @@ def _normalize_domain(raw: str) -> str:
 
 def _build_domain_list(
     extra_domains: list[str] | None = None,
+    domains_override: list[str] | None = None,
 ) -> list[str]:
-    """Построить полный список доменов для тестирования."""
-    domains, source = load_domains()
-    log.debug(f"Domains source: {source} ({len(domains)} шт.)",
-              source="blockcheck")
+    """Построить полный список доменов для тестирования.
 
-    # Добавляем пользовательские домены
-    seen = set(d.lower() for d in domains)
-    if extra_domains:
-        for raw in extra_domains:
+    Args:
+        extra_domains: Дополнительные домены (добавляются к базовому списку).
+        domains_override: Полная замена базового списка (если указан).
+    """
+    if domains_override:
+        # Полная замена — используем переданный список
+        domains = []
+        seen: set[str] = set()
+        for raw in domains_override:
             d = _normalize_domain(raw)
             if d and d not in seen:
                 domains.append(d)
                 seen.add(d)
+        log.info(
+            f"Domains override: {len(domains)} шт.",
+            source="blockcheck",
+        )
+    else:
+        domains, source = load_domains()
+        log.debug(f"Domains source: {source} ({len(domains)} шт.)",
+                  source="blockcheck")
 
+    # Добавляем пользовательские домены
+    seen = set(d.lower() for d in domains)
+    if extra_domains:
+        added = []
+        skipped = []
+        for raw in extra_domains:
+            d = _normalize_domain(raw)
+            if not d:
+                continue
+            if d in seen:
+                skipped.append(d)
+            else:
+                domains.append(d)
+                seen.add(d)
+                added.append(d)
+        if added:
+            log.info(
+                f"Добавлены доп. домены ({len(added)}): {', '.join(added)}",
+                source="blockcheck",
+            )
+        if skipped:
+            log.info(
+                f"Доп. домены уже в списке ({len(skipped)}): {', '.join(skipped)}",
+                source="blockcheck",
+            )
+
+    log.debug(
+        f"Итого доменов для тестирования: {len(domains)}",
+        source="blockcheck",
+    )
     return domains
 
 
@@ -204,6 +245,7 @@ class BlockcheckRunner:
         self,
         mode: str = RunMode.QUICK,
         extra_domains: list[str] | None = None,
+        domains_override: list[str] | None = None,
         callback: Callable | None = None,
         timeout: int | None = None,
     ) -> bool:
@@ -212,6 +254,7 @@ class BlockcheckRunner:
         Args:
             mode: RunMode.QUICK / FULL / DPI_ONLY
             extra_domains: Дополнительные домены для тестирования.
+            domains_override: Полная замена базового списка доменов.
             callback: Callable(event_type: str, data: dict) для уведомлений.
             timeout: Таймаут для тестов (в секундах), None = из конфига.
 
@@ -240,7 +283,7 @@ class BlockcheckRunner:
 
         thread = threading.Thread(
             target=self._run,
-            args=(mode, extra_domains, timeout, max_workers),
+            args=(mode, extra_domains, domains_override, timeout, max_workers),
             daemon=True,
             name="blockcheck-runner",
         )
@@ -327,6 +370,14 @@ class BlockcheckRunner:
     def _is_cancelled(self) -> bool:
         return self._cancelled.is_set()
 
+    def _shutdown_pool(self, pool: ThreadPoolExecutor) -> None:
+        """Shutdown pool without waiting, cancel pending futures (Python 3.9+)."""
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Python < 3.9 fallback
+            pool.shutdown(wait=False)
+
     # ------------------------------------------------------------------
     # Internal: main run
     # ------------------------------------------------------------------
@@ -335,6 +386,7 @@ class BlockcheckRunner:
         self,
         mode: str,
         extra_domains: list[str] | None,
+        domains_override: list[str] | None,
         timeout: int,
         max_workers: int,
     ) -> None:
@@ -345,7 +397,7 @@ class BlockcheckRunner:
         )
 
         try:
-            domains = _build_domain_list(extra_domains)
+            domains = _build_domain_list(extra_domains, domains_override)
             phase_count = self._count_phases(mode)
             current_phase = 0
 
@@ -546,7 +598,8 @@ class BlockcheckRunner:
                 tls_version=tls_version,
             )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {}
             for domain, tls_ver, test_type in jobs:
                 if self._is_cancelled:
@@ -585,6 +638,8 @@ class BlockcheckRunner:
                     source="blockcheck",
                 )
                 self._emit("test_result", {"result": result.to_dict()})
+        finally:
+            self._shutdown_pool(pool)
 
     # ------------------------------------------------------------------
     # Phase: ISP detection
@@ -598,63 +653,43 @@ class BlockcheckRunner:
         """ISP-заглушки и HTTP injection для каждого домена."""
         from core.testers.isp_detector import detect_isp_page, check_http_injection
 
-        # Работаем только с уже добавленными доменами
-        targets = list(report.targets)
-        if not targets:
+        # Тестируем только домены (не IP, не служебные)
+        domain_targets = [
+            tr for tr in report.targets
+            if not tr.domain.startswith("Ping ") and tr.domain != "TCP 16-20KB"
+        ]
+
+        if not domain_targets:
             return
 
-        total = len(targets)
+        total = len(domain_targets) * 2  # ISP + HTTP inject для каждого
         completed = 0
 
-        def _isp_one(domain: str) -> list[SingleTestResult]:
-            results = []
-
-            # HTTP injection (порт 80)
-            try:
-                http_r = check_http_injection(domain)
-                results.append(http_r)
-            except Exception as e:
-                results.append(SingleTestResult(
-                    target=domain,
-                    test_type=TestType.HTTP_INJECT.value,
-                    status=TestStatus.ERROR.value,
-                    error="EXCEPTION",
-                    details=str(e)[:100],
-                ))
-
-            # ISP page via HTTPS
-            try:
-                isp_r = detect_isp_page(domain)
-                results.append(isp_r)
-            except Exception as e:
-                results.append(SingleTestResult(
-                    target=domain,
-                    test_type=TestType.ISP_DETECT.value,
-                    status=TestStatus.ERROR.value,
-                    error="EXCEPTION",
-                    details=str(e)[:100],
-                ))
-
-            return results
-
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {}
-            for tr in targets:
+            for tr in domain_targets:
                 if self._is_cancelled:
                     break
-                future = pool.submit(_isp_one, tr.domain)
-                futures[future] = tr
+                f1 = pool.submit(detect_isp_page, tr.domain)
+                f2 = pool.submit(check_http_injection, tr.domain)
+                futures[f1] = (tr, "isp")
+                futures[f2] = (tr, "inject")
 
             for future in as_completed(futures):
                 if self._is_cancelled:
                     break
 
-                tr = futures[future]
+                tr, check_type = futures[future]
                 completed += 1
-                self._set_progress(completed, total, f"ISP: {tr.domain}")
+                self._set_progress(
+                    completed, total, f"ISP: {tr.domain}",
+                )
 
                 try:
                     results = future.result()
+                    if not isinstance(results, list):
+                        results = [results]
                 except Exception as e:
                     results = [SingleTestResult(
                         target=tr.domain,
@@ -673,6 +708,8 @@ class BlockcheckRunner:
                     + ", ".join(f"{r.test_type}={r.status}" for r in results),
                     source="blockcheck",
                 )
+        finally:
+            self._shutdown_pool(pool)
 
     # ------------------------------------------------------------------
     # Phase: TCP 16-20KB
@@ -703,8 +740,19 @@ class BlockcheckRunner:
             check_health=True,
         )
         if not selected:
+            # Fallback: попробовать без health-check
             log.warning(
-                "Нет доступных TCP-целей после health-check",
+                "Нет доступных TCP-целей после health-check, пробуем без проверки",
+                source="blockcheck",
+            )
+            selected = select_tcp_targets(
+                targets=all_targets,
+                check_health=False,
+            )
+
+        if not selected:
+            log.warning(
+                "Нет TCP-целей для тестирования",
                 source="blockcheck",
             )
             return
@@ -725,7 +773,8 @@ class BlockcheckRunner:
             r.raw_data.setdefault("provider", tcp_target.get("provider", ""))
             return r
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {}
             for t in selected:
                 if self._is_cancelled:
@@ -759,6 +808,8 @@ class BlockcheckRunner:
                     f"TCP {name}: {result.status} — {result.details}",
                     source="blockcheck",
                 )
+        finally:
+            self._shutdown_pool(pool)
 
         # Агрегируем TCP-результаты в один TargetResult
         if tcp_results:
@@ -790,7 +841,8 @@ class BlockcheckRunner:
                 timeout=STUN_TIMEOUT,
             )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {}
             for t in stun_targets:
                 if self._is_cancelled:
@@ -829,6 +881,8 @@ class BlockcheckRunner:
                     f"STUN {t['name']}: {result.status} — {result.details}",
                     source="blockcheck",
                 )
+        finally:
+            self._shutdown_pool(pool)
 
     # ------------------------------------------------------------------
     # Phase: Ping

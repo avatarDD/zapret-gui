@@ -118,6 +118,9 @@ class StrategyScanner:
         # Error message
         self._error = ""
 
+        # Timing
+        self._started_at: float = 0.0
+
     # ─────────────────── Public API ───────────────────
 
     def start(
@@ -159,6 +162,7 @@ class StrategyScanner:
             self._results = []
             self._report = None
             self._error = ""
+            self._started_at = time.time()
 
             self._target = target.strip() or "youtube.com"
             self._protocol = protocol.strip().lower() or "tcp"
@@ -202,11 +206,27 @@ class StrategyScanner:
         Returns:
             dict с полями: status, progress, total, phase,
             current_strategy, target, protocol, mode, error,
-            working_count, failed_count.
+            working_count, failed_count, success_rate, elapsed_seconds.
         """
         with self._lock:
             working = [r for r in self._results if r.success]
             failed = [r for r in self._results if not r.success]
+            total_done = len(self._results)
+
+            # Процент успешности
+            success_rate = round(
+                len(working) / total_done * 100, 1
+            ) if total_done > 0 else 0.0
+
+            # Elapsed
+            elapsed = 0.0
+            if self._started_at > 0:
+                if self._status == STATUS_RUNNING:
+                    elapsed = round(time.time() - self._started_at, 1)
+                elif self._report:
+                    elapsed = round(
+                        self._report.finished_at - self._report.started_at, 1
+                    )
 
             return {
                 "status": self._status,
@@ -220,6 +240,8 @@ class StrategyScanner:
                 "error": self._error,
                 "working_count": len(working),
                 "failed_count": len(failed),
+                "success_rate": success_rate,
+                "elapsed_seconds": elapsed,
             }
 
     def get_results(self) -> Optional[StrategyScanReport]:
@@ -338,28 +360,63 @@ class StrategyScanner:
                     },
                 )
 
+                # --- Подробный лог параметров стратегии ---
+                args_list = entry.get_args_list()
+                args_display = " ".join(args_list)
                 log.info(
-                    "[%d/%d] Тестирование: %s"
-                    % (idx + 1, self._total, entry.name),
+                    "[%d/%d] Тестирование: %s (каталог: %s, уровень: %s)"
+                    % (idx + 1, self._total, entry.name,
+                       entry.source_file, entry.level),
                     source="scanner",
                 )
+                log.debug(
+                    "  Параметры стратегии: %s" % args_display,
+                    source="scanner",
+                )
+                if entry.blobs:
+                    log.debug(
+                        "  Блобы: %s" % ", ".join(entry.blobs),
+                        source="scanner",
+                    )
 
                 # Пробуем одну стратегию
+                probe_start = time.time()
                 result = self._probe_one_strategy(entry, actual_idx)
+                probe_elapsed = time.time() - probe_start
 
                 with self._lock:
                     self._results.append(result)
 
                 self._emit_callback("strategy_result", result.to_dict())
 
+                # --- Подробный лог результата ---
+                working_count = len(
+                    [r for r in self._results if r.success]
+                )
+                failed_count = len(
+                    [r for r in self._results if not r.success]
+                )
+                total_done = working_count + failed_count
+                success_rate = round(
+                    working_count / total_done * 100, 1
+                ) if total_done > 0 else 0.0
+
                 if result.success:
                     log.success(
-                        "  УСПЕХ: %s (%.0f ms)" % (entry.name, result.latency_ms),
+                        "  ✓ УСПЕХ: %s — %.0f ms (latency), "
+                        "проба %.1f с | Итого: %d/%d рабочих (%.1f%%)"
+                        % (entry.name, result.latency_ms, probe_elapsed,
+                           working_count, total_done, success_rate),
                         source="scanner",
                     )
                 else:
-                    log.debug(
-                        "  НЕУДАЧА: %s — %s" % (entry.name, result.error),
+                    log.info(
+                        "  ✗ НЕУДАЧА: %s — %s (%.1f с) | "
+                        "Итого: %d/%d рабочих (%.1f%%)"
+                        % (entry.name,
+                           result.error or "unknown",
+                           probe_elapsed,
+                           working_count, total_done, success_rate),
                         source="scanner",
                     )
 
@@ -387,19 +444,34 @@ class StrategyScanner:
             working_count = len([r for r in self._results if r.success])
             total_tested = len(self._results)
             elapsed = finished_at - started_at
+            final_rate = round(
+                working_count / total_tested * 100, 1
+            ) if total_tested > 0 else 0.0
 
             if self._cancelled:
                 log.warning(
                     "Сканирование отменено. Протестировано: %d/%d, "
-                    "рабочих: %d (%.1f сек)"
-                    % (total_tested, self._total, working_count, elapsed),
+                    "рабочих: %d (%.1f%%), время: %.1f сек"
+                    % (total_tested, self._total, working_count,
+                       final_rate, elapsed),
                     source="scanner",
                 )
             else:
                 log.success(
-                    "Сканирование завершено. Протестировано: %d/%d, "
-                    "рабочих: %d (%.1f сек)"
-                    % (total_tested, self._total, working_count, elapsed),
+                    "═══ Сканирование завершено ═══\n"
+                    "  Протестировано: %d/%d стратегий\n"
+                    "  Рабочих: %d (%.1f%%)\n"
+                    "  Лучшая: %s (%.0f ms)\n"
+                    "  Время: %.1f сек"
+                    % (total_tested, self._total, working_count,
+                       final_rate,
+                       (self._report.best_strategy.strategy_name
+                        if self._report and self._report.best_strategy
+                        else "—"),
+                       (self._report.best_strategy.latency_ms
+                        if self._report and self._report.best_strategy
+                        else 0),
+                       elapsed),
                     source="scanner",
                 )
 
@@ -499,10 +571,18 @@ class StrategyScanner:
                     latency_ms=0.0,
                     error="NO_ARGS",
                     protocol=self._protocol,
+                    raw_data={
+                        "detail": "Нет аргументов после сборки",
+                        "source_file": entry.source_file,
+                        "level": entry.level,
+                    },
                 )
 
+            # Полная строка аргументов для лога и UI
+            args_full = " ".join(args)
+
             log.debug(
-                "  args: %s" % " ".join(args[:5]),
+                "  Аргументы nfqws2: %s" % args_full,
                 source="scanner",
             )
 
@@ -516,7 +596,12 @@ class StrategyScanner:
                     latency_ms=0.0,
                     error="FW_FAIL",
                     protocol=self._protocol,
-                    raw_data={"detail": "Не удалось применить firewall"},
+                    raw_data={
+                        "detail": "Не удалось применить firewall",
+                        "args_preview": args_full,
+                        "source_file": entry.source_file,
+                        "level": entry.level,
+                    },
                 )
 
             fw_applied = True
@@ -531,7 +616,12 @@ class StrategyScanner:
                     latency_ms=0.0,
                     error="NFQWS_FAIL",
                     protocol=self._protocol,
-                    raw_data={"detail": "Не удалось запустить nfqws2"},
+                    raw_data={
+                        "detail": "Не удалось запустить nfqws2",
+                        "args_preview": args_full,
+                        "source_file": entry.source_file,
+                        "level": entry.level,
+                    },
                 )
 
             nfqws_started = True
@@ -554,6 +644,9 @@ class StrategyScanner:
                     raw_data={
                         "detail": "nfqws2 завершился (exit=%s)"
                         % str(exit_code),
+                        "args_preview": args_full,
+                        "source_file": entry.source_file,
+                        "level": entry.level,
                     },
                 )
 
@@ -581,8 +674,11 @@ class StrategyScanner:
                 raw_data={
                     "test_type": probe_result.test_type,
                     "details": probe_result.details,
-                    "args_preview": " ".join(args[:3]) + "..."
-                        if len(args) > 3 else " ".join(args),
+                    "args_preview": args_full,
+                    "source_file": entry.source_file,
+                    "level": entry.level,
+                    "label": entry.label,
+                    "probe_elapsed_ms": round(elapsed_ms, 1),
                 },
             )
 
@@ -600,7 +696,11 @@ class StrategyScanner:
                 latency_ms=round(elapsed_ms, 2),
                 error="EXCEPTION",
                 protocol=self._protocol,
-                raw_data={"detail": str(e)[:200]},
+                raw_data={
+                    "detail": str(e)[:200],
+                    "source_file": entry.source_file,
+                    "level": entry.level,
+                },
             )
 
         finally:

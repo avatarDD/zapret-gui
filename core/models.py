@@ -124,13 +124,75 @@ class TargetResult:
     summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        # Собираем tests как dict по test_type для удобства фронтенда
+        tests: dict[str, dict[str, Any]] = {}
+        for r in self.results:
+            tt = r.test_type
+            # Если уже есть результат этого типа — не перезаписываем
+            if tt not in tests:
+                tests[tt] = r.to_dict()
+
+        # Вычисляем overall_status
+        overall = self._compute_overall_status()
+
         return {
             "domain": self.domain,
+            "target": self.domain,
             "results": [r.to_dict() for r in self.results],
+            "tests": tests,
+            "overall_status": overall,
             "dpi_classification": self.dpi_classification,
             "dpi_detail": self.dpi_detail,
             "summary": self.summary,
         }
+
+    def _compute_overall_status(self) -> str:
+        """Вычислить общий статус цели на основе результатов тестов.
+
+        FIX: timeout и error теперь считаются как failures,
+        а не игнорируются (ранее только "failed" считался неуспехом,
+        из-за чего домен с DNS=OK + TLS=Timeout показывался как "Доступен").
+        """
+        if not self.results:
+            return "unknown"
+
+        # Исключаем skipped и pending из анализа
+        meaningful = [
+            r for r in self.results
+            if r.status not in (TestStatus.SKIPPED.value, TestStatus.PENDING.value)
+        ]
+        if not meaningful:
+            return "unknown"
+
+        success_count = sum(
+            1 for r in meaningful if r.status == TestStatus.SUCCESS.value
+        )
+        # FIX: timeout, error и failed — все считаются как неуспех
+        fail_count = sum(
+            1 for r in meaningful if r.status in (
+                TestStatus.FAILED.value,
+                TestStatus.TIMEOUT.value,
+                TestStatus.ERROR.value,
+            )
+        )
+
+        # Проверяем DNS отдельно
+        dns_results = [
+            r for r in meaningful if r.test_type == TestType.DNS.value
+        ]
+        if dns_results and all(
+            r.status in (TestStatus.FAILED.value, TestStatus.ERROR.value)
+            for r in dns_results
+        ):
+            return "dns_blocked"
+
+        if fail_count == 0 and success_count > 0:
+            return "accessible"
+        if success_count == 0 and fail_count > 0:
+            return "blocked"
+        if success_count > 0 and fail_count > 0:
+            return "partial"
+        return "unknown"
 
 
 @dataclass
@@ -146,6 +208,22 @@ class BlockcheckReport:
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        # Подсчёт статистики
+        total_tests = 0
+        passed_tests = 0
+        failed_tests = 0
+        for t in self.targets:
+            for r in t.results:
+                total_tests += 1
+                if r.status == TestStatus.SUCCESS.value:
+                    passed_tests += 1
+                elif r.status in (TestStatus.FAILED.value, TestStatus.ERROR.value,
+                                  TestStatus.TIMEOUT.value):
+                    failed_tests += 1
+
+        # Генерируем рекомендации
+        recommendations = self._build_recommendations()
+
         return {
             "targets": [t.to_dict() for t in self.targets],
             "mode": self.mode,
@@ -156,7 +234,43 @@ class BlockcheckReport:
             "dpi_classification": self.dpi_classification,
             "dpi_detail": self.dpi_detail,
             "error": self.error,
+            "total_tests": total_tests,
+            "passed_tests": passed_tests,
+            "failed_tests": failed_tests,
+            "recommendations": recommendations,
         }
+
+    def _build_recommendations(self) -> list[str]:
+        """Построить список рекомендаций на основе результатов."""
+        recs: list[str] = []
+        dpi = self.dpi_classification
+
+        if dpi == DPIClassification.TLS_DPI.value:
+            recs.append("Обнаружена DPI-блокировка TLS (SNI/ClientHello). Используйте стратегии с фрагментацией ClientHello.")
+            recs.append("Попробуйте подбор стратегий в разделе «Подбор стратегий».")
+        elif dpi == DPIClassification.DNS_FAKE.value:
+            recs.append("DNS-подмена. Настройте DoH/DoT или пропишите IP в /etc/hosts.")
+        elif dpi == DPIClassification.HTTP_INJECT.value:
+            recs.append("HTTP injection. Используйте HTTPS и стратегии обхода DPI.")
+        elif dpi == DPIClassification.ISP_PAGE.value:
+            recs.append("ISP-заглушка. Используйте стратегии обхода DPI для HTTPS.")
+        elif dpi == DPIClassification.TCP_RESET.value:
+            recs.append("TCP RST блокировка. Попробуйте стратегии с desync=fake.")
+        elif dpi == DPIClassification.TCP_16_20.value:
+            recs.append("TCP-блокировка на 16-20KB. Попробуйте стратегии с split/disorder.")
+        elif dpi == DPIClassification.STUN_BLOCK.value:
+            recs.append("STUN/UDP заблокирован. Голосовые звонки могут не работать. Попробуйте UDP-стратегии.")
+        elif dpi == DPIClassification.FULL_BLOCK.value:
+            recs.append("Полная блокировка всех протоколов. Возможно требуется VPN/прокси.")
+        elif dpi == DPIClassification.TIMEOUT_DROP.value:
+            recs.append("Пакеты дропаются (timeout). Попробуйте стратегии с desync=fake.")
+        elif dpi == DPIClassification.NONE.value:
+            if self.error:
+                pass  # ошибка запуска, не даём рекомендации
+            else:
+                recs.append("DPI не обнаружен. Ресурсы доступны без обхода.")
+
+        return recs
 
 
 # ═══════════════════════════════════════════════════════════
@@ -193,6 +307,8 @@ class StrategyProbeResult:
             "http_code": self.http_code,
             "timestamp": self.timestamp,
             "protocol": self.protocol,
+            # FIX: включаем raw_data — содержит args_preview, details и др.
+            "raw_data": self.raw_data,
         }
 
 
@@ -216,6 +332,11 @@ class StrategyScanReport:
     def to_dict(self) -> dict[str, Any]:
         working = [r for r in self.results if r.success]
         failed = [r for r in self.results if not r.success]
+
+        # Считаем процент успешности
+        total = len(self.results)
+        success_rate = round(len(working) / total * 100, 1) if total > 0 else 0.0
+
         return {
             "target": self.target,
             "protocol": self.protocol,
@@ -224,6 +345,7 @@ class StrategyScanReport:
             "total_available": self.total_available,
             "working_count": len(working),
             "failed_count": len(failed),
+            "success_rate": success_rate,
             "working_strategies": [r.to_dict() for r in working],
             "failed_strategies": [r.to_dict() for r in failed],
             "best_strategy": self.best_strategy.to_dict()
@@ -247,52 +369,57 @@ class CatalogEntry:
     """
     Одна стратегия из INI-каталога.
 
-    INI-формат:
-        [section_id]
-        name = Display Name
-        author = Author
-        label = recommended
-        description = Описание
-        blobs = blob1,blob2
-        --lua-desync=fake:blob=...
+    Поля:
+        section_id:  ID секции в INI-файле (e.g. "s01_fake_sni")
+        name:        Человекочитаемое имя стратегии
+        description: Описание стратегии (опционально)
+        author:      Автор
+        label:       Метка ("recommended", "experimental", "")
+        blobs:       Список имён блобов, нужных стратегии
+        args:        Строка аргументов nfqws2 (разделены \\n)
+        protocol:    "tcp" или "udp"
+        level:       "basic", "advanced", "direct", "builtin"
+        source_file: Путь к файлу-источнику
     """
 
     section_id: str
-    name: str
-    args: str               # многострочная строка аргументов (--lua-desync=...)
-    author: str = ""
-    label: str = ""         # recommended, experimental, game, stable, caution
+    name: str = ""
     description: str = ""
+    author: str = ""
+    label: str = ""
     blobs: list[str] = field(default_factory=list)
-    protocol: str = ""      # tcp / udp — определяется из имени файла
-    level: str = ""         # basic / advanced / direct
-    source_file: str = ""   # имя файла-источника
+    args: str = ""
+    protocol: str = "tcp"
+    level: str = "basic"
+    source_file: str = ""
+
+    def get_args_list(self) -> list[str]:
+        """
+        Разбить строку аргументов на список.
+
+        args хранится как '\\n'-joined строка (каждая строка — один аргумент
+        nfqws2, например '--lua-desync=fake:blob=sni').
+        Возвращает список непустых строк.
+        """
+        if not self.args:
+            return []
+        return [line.strip() for line in self.args.split("\n") if line.strip()]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "section_id": self.section_id,
             "name": self.name,
-            "args": self.args,
+            "description": self.description,
             "author": self.author,
             "label": self.label,
-            "description": self.description,
-            "blobs": self.blobs,
+            "blobs": list(self.blobs),
+            "args": self.args,
             "protocol": self.protocol,
             "level": self.level,
             "source_file": self.source_file,
         }
 
-    def get_args_list(self) -> list[str]:
-        """
-        Разбить args на список строк-аргументов.
-
-        Каждая строка в args начинается с '--' и представляет
-        один аргумент nfqws2.
-
-        Returns:
-            ['--lua-desync=fake:blob=...', '--lua-desync=multisplit:...']
-        """
-        if not self.args:
-            return []
-        return [line.strip() for line in self.args.splitlines()
-                if line.strip().startswith("--")]
+    @property
+    def display_name(self) -> str:
+        """Имя для отображения."""
+        return self.name or self.section_id

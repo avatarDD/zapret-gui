@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.14.0 — Интеграция BlockCheck, Strategy Scanner и автообновление GUI
+
+### Добавлено
+- **BlockCheck** — тестирование доступности сервисов через TLS/STUN/DNS/TCP/Ping с классификацией типа DPI
+- **Strategy Scanner** — автоматический подбор рабочих стратегий nfqws2 перебором из INI-каталогов
+- **INI-каталоги стратегий** — загрузка стратегий из `catalogs/basic/`, `catalogs/advanced/`, `catalogs/direct/`
+- **Продвинутые сетевые тестеры** — TLS (socket+ssl), STUN/UDP, TCP 16-20KB, ISP-детектор, DPI-классификатор (`core/testers/`)
+- **Проверка обновлений GUI** — проверка новой версии zapret-gui на GitHub и обновление одной кнопкой прямо из веб-интерфейса (`core/gui_updater.py`)
+- **API обновления GUI** — `GET /api/gui/version`, `GET /api/gui/check`, `POST /api/gui/update`, `GET /api/gui/progress`
+- **Единый источник версии** — `core/version.py` (GUI_VERSION), все модули импортируют версию отсюда
+- **Новые страницы Web-UI** — «BlockCheck» и «Подбор стратегий» в боковой панели
+- **Секции конфига** — `blockcheck` и `scan` в `DEFAULT_CONFIG` (`core/config_manager.py`)
+- **Директории данных** — `data/domains.txt`, `data/tcp_targets.json` для тестирования
+
+### Изменено
+- `api/__init__.py` — регистрация `api/gui_update.py`, `api/blockcheck.py`, `api/scan.py`
+- `api/status.py` — `gui_version` берётся из `core.version.GUI_VERSION` вместо хардкода
+- `install.sh` — копирование `catalogs/`, `data/`, `core/testers/` при установке; версия 0.14.0
+- `uninstall.sh` — очистка `catalogs/`, `data/` при полном удалении
+- `Makefile` — версия 0.14.0, включение `catalogs/` и `data/` в сборку
+- `README.md` — документация новых возможностей
+- Унифицирована версия GUI (v0.14.0 во всех модулях)
+
+### Архитектура
+- `core/models.py` — модели данных BlockCheck/Scan (dataclass, `.to_dict()`)
+- `core/catalog_loader.py` — парсер INI-каталогов, `CatalogManager` singleton
+- `core/blockcheck.py` — `BlockcheckRunner` singleton, 3 режима, 6 фаз, REST polling
+- `core/strategy_scanner.py` — `StrategyScanner` singleton, try/finally cleanup, resume state
+- `core/gui_updater.py` — `GuiUpdater` singleton, GitHub API, in-place update
+- `core/version.py` — единый источник `GUI_VERSION`
+
+---
+
 ## v0.13.5 — Удалено мёртвое поле config_path
 
 ### Удалено

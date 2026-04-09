@@ -65,4 +65,3 @@ quick = cm.get_quick_set(protocol="tcp")    # ~30 recommended
 sm = get_strategy_manager()
 all_strats = sm.get_strategies()            # каталоги + user JSON
 args = sm.build_nfqws_args(sm.get_strategy("tcp_default"))
-```

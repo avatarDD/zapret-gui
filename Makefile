@@ -5,6 +5,7 @@
 # Использование:
 #   make ipk          — собрать ipk-пакет для Entware
 #   make openwrt-ipk  — собрать ipk-пакет для OpenWrt
+#   make release      — создать git-тег и запустить релиз
 #   make clean        — очистить артефакты сборки
 #   make lint         — проверка синтаксиса Python
 #   make info         — информация о пакете
@@ -15,7 +16,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 PKG_NAME     := zapret-gui
-PKG_VERSION  := 0.10.0
+PKG_VERSION  := 0.14.0
 PKG_RELEASE  := 1
 PKG_ARCH     := all
 PKG_FULLNAME := $(PKG_NAME)_$(PKG_VERSION)-$(PKG_RELEASE)_$(PKG_ARCH)
@@ -35,7 +36,7 @@ DIST_DIR     := dist
 
 # ── Исходные файлы ───────────────────────────────────────────
 APP_FILES    := app.py
-APP_DIRS     := api core config web
+APP_DIRS     := api core config web catalogs data
 EXCLUDE      := --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
                 --exclude='.DS_Store' --exclude='.git' --exclude='build' \
                 --exclude='dist' --exclude='packaging' --exclude='Makefile' \
@@ -46,7 +47,7 @@ EXCLUDE      := --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
 # Цели
 # ═══════════════════════════════════════════════════════════════
 
-.PHONY: all ipk openwrt-ipk clean lint info help
+.PHONY: all ipk openwrt-ipk clean lint info help release tag
 
 all: ipk
 
@@ -56,6 +57,7 @@ help:
 	@echo "  ─────────────────────────"
 	@echo "  make ipk          — собрать ipk для Entware"
 	@echo "  make openwrt-ipk  — собрать ipk для OpenWrt"
+	@echo "  make release      — создать тег v$(PKG_VERSION) и запустить релиз"
 	@echo "  make clean        — очистить build/ и dist/"
 	@echo "  make lint         — проверка синтаксиса Python"
 	@echo "  make info         — информация о пакете"
@@ -68,6 +70,31 @@ info:
 	@echo "Архитектура: $(PKG_ARCH)"
 	@echo "Установка: $(DEST_APP)"
 	@echo "Конфигурация: $(DEST_CONFIG)"
+
+# ── Релиз через GitHub Actions ───────────────────────────────
+# Создаёт git-тег и пушит — GitHub Actions соберёт и опубликует
+release: lint
+	@echo ""
+	@echo "── Создание релиза v$(PKG_VERSION) ──"
+	@if git rev-parse "v$(PKG_VERSION)" >/dev/null 2>&1; then \
+		echo "ОШИБКА: тег v$(PKG_VERSION) уже существует!"; \
+		echo "  Обновите PKG_VERSION в Makefile и core/version.py"; \
+		exit 1; \
+	fi
+	@echo "Проверка версии в core/version.py..."
+	@CODE_VER=$$(grep -oP 'GUI_VERSION\s*=\s*["\x27]\K[^"\x27]+' core/version.py 2>/dev/null || echo ""); \
+	 if [ "$$CODE_VER" != "$(PKG_VERSION)" ]; then \
+		echo "ОШИБКА: core/version.py ($$CODE_VER) ≠ Makefile ($(PKG_VERSION))"; \
+		echo "  Синхронизируйте версии перед релизом!"; \
+		exit 1; \
+	 fi
+	git tag -a "v$(PKG_VERSION)" -m "Release v$(PKG_VERSION)"
+	git push origin "v$(PKG_VERSION)"
+	@echo ""
+	@echo "✓ Тег v$(PKG_VERSION) создан и отправлен"
+	@echo "  GitHub Actions соберёт и опубликует релиз автоматически"
+	@echo "  https://github.com/avatarDD/zapret-gui/actions"
+	@echo ""
 
 # ── Сборка ipk для Entware ───────────────────────────────────
 ipk: clean _prepare_data _prepare_control _build_ipk
@@ -86,7 +113,9 @@ _prepare_data:
 	# Копируем файлы приложения
 	@cp $(APP_FILES) $(DATA_DIR)$(DEST_APP)/
 	@for dir in $(APP_DIRS); do \
-		cp -r $$dir $(DATA_DIR)$(DEST_APP)/ ; \
+		if [ -d "$$dir" ]; then \
+			cp -r $$dir $(DATA_DIR)$(DEST_APP)/ ; \
+		fi \
 	done
 
 	# Удаляем __pycache__ и прочий мусор
@@ -102,7 +131,6 @@ _prepare_data:
 	@mkdir -p $(DATA_DIR)$(DEST_APP)/lists
 	@mkdir -p $(DATA_DIR)$(DEST_CONFIG)
 
-	# Лог-директория (symlink в /tmp при первом запуске)
 	@echo "Подготовка data: OK"
 
 _prepare_control:
@@ -158,7 +186,9 @@ _prepare_data_openwrt:
 
 	@cp $(APP_FILES) $(DATA_DIR)/usr/share/$(PKG_NAME)/
 	@for dir in $(APP_DIRS); do \
-		cp -r $$dir $(DATA_DIR)/usr/share/$(PKG_NAME)/ ; \
+		if [ -d "$$dir" ]; then \
+			cp -r $$dir $(DATA_DIR)/usr/share/$(PKG_NAME)/ ; \
+		fi \
 	done
 
 	@find $(DATA_DIR) -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
@@ -180,6 +210,7 @@ _prepare_control_openwrt:
 	@cp packaging/openwrt/conffiles $(CONTROL_DIR)/conffiles
 
 	@sed -i 's/@VERSION@/$(PKG_VERSION)-$(PKG_RELEASE)/g' $(CONTROL_DIR)/control
+
 	@SIZE=$$(du -sk $(DATA_DIR) | cut -f1); \
 	 sed -i "s/@SIZE@/$$SIZE/g" $(CONTROL_DIR)/control
 
@@ -188,29 +219,37 @@ _prepare_control_openwrt:
 	@echo "Подготовка control (OpenWrt): OK"
 
 _build_ipk_openwrt:
-	@echo "── Сборка OpenWrt ipk ──"
+	@echo "── Сборка ipk (OpenWrt) ──"
 	@mkdir -p $(IPK_DIR) $(DIST_DIR)
+
 	@echo "2.0" > $(IPK_DIR)/debian-binary
 	@cd $(CONTROL_DIR) && tar czf ../../$(IPK_DIR)/control.tar.gz ./*
 	@cd $(DATA_DIR) && tar czf ../../$(IPK_DIR)/data.tar.gz ./*
 	@cd $(IPK_DIR) && tar czf ../../$(DIST_DIR)/$(PKG_NAME)_$(PKG_VERSION)-$(PKG_RELEASE)_openwrt.ipk \
 		./debian-binary ./control.tar.gz ./data.tar.gz
-	@echo "Сборка OpenWrt ipk: OK"
 
-# ── Очистка ──────────────────────────────────────────────────
+	@echo "Сборка ipk (OpenWrt): OK"
+
+# ── Очистка ───────────────────────────────────────────────────
 clean:
-	@rm -rf $(BUILD_DIR)
-	@echo "Очистка build/: OK"
+	@echo "── Очистка ──"
+	@rm -rf $(BUILD_DIR) $(DIST_DIR)
+	@find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+	@find . -name '*.pyc' -delete 2>/dev/null || true
+	@echo "Очистка: OK"
 
-distclean: clean
-	@rm -rf $(DIST_DIR)
-	@echo "Очистка dist/: OK"
-
-# ── Линтер ───────────────────────────────────────────────────
+# ── Lint ──────────────────────────────────────────────────────
 lint:
 	@echo "── Проверка синтаксиса Python ──"
-	@python3 -m py_compile app.py && echo "  app.py: OK"
-	@for f in api/*.py core/*.py; do \
-		python3 -m py_compile "$$f" && echo "  $$f: OK" || echo "  $$f: FAIL"; \
-	done
-	@echo "Lint завершён"
+	@errors=0; \
+	for f in $$(find . -name '*.py' -not -path './build/*' -not -path './dist/*' -not -path './.git/*'); do \
+		if ! python3 -c "import ast; ast.parse(open('$$f').read())" 2>/dev/null; then \
+			echo "  ОШИБКА: $$f"; \
+			errors=$$((errors + 1)); \
+		fi \
+	done; \
+	if [ "$$errors" -gt 0 ]; then \
+		echo "Найдено ошибок: $$errors"; \
+		exit 1; \
+	fi
+	@echo "✓ Все Python файлы корректны"
