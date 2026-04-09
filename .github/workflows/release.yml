@@ -1,19 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
 # release.yml — Автоматическая сборка и публикация релиза
 # ═══════════════════════════════════════════════════════════════
-#
-# Триггер: push тега вида v*  (например v0.14.0, v0.15.0-beta1)
-#
-# Что делает:
-#   1. Lint — проверка синтаксиса Python
-#   2. Build — сборка ipk (Entware + OpenWrt) и tar.gz архива
-#   3. Release — создание GitHub Release с артефактами
-#
-# Использование:
-#   git tag v0.15.0
-#   git push origin v0.15.0
-#
-# ═══════════════════════════════════════════════════════════════
 
 name: Build & Release
 
@@ -22,7 +9,6 @@ on:
     tags:
       - 'v*'
 
-# Разрешения для создания релизов
 permissions:
   contents: write
 
@@ -34,6 +20,7 @@ jobs:
   lint:
     name: Lint Python
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,11 +52,17 @@ jobs:
     name: Build packages
     runs-on: ubuntu-latest
     needs: lint
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Извлекаем версию из тега (v0.14.0 → 0.14.0)
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential make tar
+
+      # Извлекаем версию из тега
       - name: Extract version from tag
         id: version
         run: |
@@ -79,57 +72,55 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Тег: $TAG, Версия: $VERSION"
 
-      # Проверяем соответствие версии в коде и теге
+      # Проверка версии
       - name: Verify version consistency
         run: |
           TAG_VER="${{ steps.version.outputs.version }}"
 
-          # Проверяем core/version.py
           if [ -f core/version.py ]; then
             CODE_VER=$(grep -oP 'GUI_VERSION\s*=\s*["\x27]\K[^"\x27]+' core/version.py || true)
             if [ -n "$CODE_VER" ] && [ "$CODE_VER" != "$TAG_VER" ]; then
-              echo "⚠ ПРЕДУПРЕЖДЕНИЕ: core/version.py ($CODE_VER) ≠ тег ($TAG_VER)"
-              echo "  Обновите GUI_VERSION перед релизом!"
+              echo "⚠ core/version.py ($CODE_VER) ≠ тег ($TAG_VER)"
             fi
           fi
 
-          # Проверяем Makefile
           if [ -f Makefile ]; then
             MK_VER=$(grep -oP '^PKG_VERSION\s*:=\s*\K\S+' Makefile || true)
             if [ -n "$MK_VER" ] && [ "$MK_VER" != "$TAG_VER" ]; then
-              echo "⚠ ПРЕДУПРЕЖДЕНИЕ: Makefile ($MK_VER) ≠ тег ($TAG_VER)"
+              echo "⚠ Makefile ($MK_VER) ≠ тег ($TAG_VER)"
             fi
           fi
 
-      # Сборка Entware ipk
+      # Сборка пакетов
       - name: Build Entware ipk
         run: make ipk
 
-      # Сборка OpenWrt ipk
       - name: Build OpenWrt ipk
         run: make openwrt-ipk
 
-      # Собираем tar.gz архив исходников (без build/dist/.git)
-    - name: Create source archive
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        ARCHIVE="/tmp/${PKG_NAME}-${VERSION}.tar.gz"
+      # ✅ ИСПРАВЛЕНО: архив создаётся вне проекта
+      - name: Create source archive
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ARCHIVE="/tmp/${PKG_NAME}-${VERSION}.tar.gz"
 
-        tar czf "$ARCHIVE" \
-          --exclude='.git' \
-          --exclude='build' \
-          --exclude='dist' \
-          --exclude='__pycache__' \
-          --exclude='*.pyc' \
-          --exclude='*.7z' \
-          --exclude='.github' \
-          .
+          tar czf "$ARCHIVE" \
+            --exclude='.git' \
+            --exclude='build' \
+            --exclude='dist' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='*.7z' \
+            --exclude='.github' \
+            .
 
-        mv "$ARCHIVE" .
-        echo "✓ Архив: $(basename $ARCHIVE)"
-        ls -lh "$(basename $ARCHIVE)"
-        
-      # Загружаем артефакты
+          mv "$ARCHIVE" .
+          FINAL_ARCHIVE="${PKG_NAME}-${VERSION}.tar.gz"
+
+          echo "✓ Архив: $FINAL_ARCHIVE"
+          ls -lh "$FINAL_ARCHIVE"
+
+      # Артефакты
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -144,8 +135,9 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: build
+
     steps:
-      - name: Checkout (для CHANGELOG)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Extract version
@@ -156,19 +148,16 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      # Скачиваем собранные пакеты
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: release-packages
           path: ./artifacts
 
-      # Извлекаем changelog для текущей версии
+      # Changelog
       - name: Extract changelog
-        id: changelog
         run: |
           if [ -f CHANGELOG.md ]; then
-            # Извлекаем секцию текущей версии
             TAG="${{ steps.version.outputs.tag }}"
             VERSION="${{ steps.version.outputs.version }}"
             NOTES=$(awk "/^## $TAG|^## v?$VERSION/{found=1; next} /^## /{if(found) exit} found{print}" CHANGELOG.md)
@@ -179,37 +168,9 @@ jobs:
             NOTES="Релиз ${{ steps.version.outputs.tag }}"
           fi
 
-          # Записываем в файл (multiline safe)
           echo "$NOTES" > /tmp/release_notes.md
 
-          # Добавляем инструкции по установке
-          {
-            echo ""
-            echo "---"
-            echo ""
-            echo "### Установка"
-            echo ""
-            echo "**Entware (Keenetic):**"
-            echo '```bash'
-            echo "wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui_${VERSION}-1_all.ipk"
-            echo "opkg install zapret-gui_${VERSION}-1_all.ipk"
-            echo "/opt/etc/init.d/S99zapret-gui start"
-            echo '```'
-            echo ""
-            echo "**OpenWrt:**"
-            echo '```bash'
-            echo "wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui_${VERSION}-1_openwrt.ipk"
-            echo "opkg install zapret-gui_${VERSION}-1_openwrt.ipk"
-            echo "/etc/init.d/zapret-gui start"
-            echo '```'
-            echo ""
-            echo "**Скриптом:**"
-            echo '```bash'
-            echo "wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/main/install.sh | sh"
-            echo '```'
-          } >> /tmp/release_notes.md
-
-      # Создаём релиз
+      # Релиз
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
