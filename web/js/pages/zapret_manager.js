@@ -16,7 +16,9 @@ const ZapretManagerPage = (() => {
     let data = null;
     let pollTimer = null;
     let progressTimer = null;
+    let guiProgressTimer = null;
     let isOperationRunning = false;
+    let guiUpdateRunning = false;
 
     // ══════════════════ Render ══════════════════
 
@@ -612,7 +614,7 @@ const ZapretManagerPage = (() => {
 
     // ══════════════════ Progress ══════════════════
 
-    function showProgress(status, progress) {
+    function showProgress(status, progress, titleText) {
         const card = document.getElementById('zm-progress-card');
         const bar = document.getElementById('zm-progress-bar');
         const text = document.getElementById('zm-progress-text');
@@ -621,7 +623,13 @@ const ZapretManagerPage = (() => {
         if (card) card.classList.remove('hidden');
         if (bar) bar.style.width = Math.max(0, Math.min(100, progress)) + '%';
         if (text) text.textContent = status || 'Обработка...';
-        if (title) title.textContent = progress >= 100 ? 'Завершено' : 'Выполняется операция...';
+        if (title) {
+            if (progress >= 100) {
+                title.textContent = 'Завершено';
+            } else {
+                title.textContent = titleText || 'Выполняется операция...';
+            }
+        }
     }
 
     function hideProgress() {
@@ -640,7 +648,6 @@ const ZapretManagerPage = (() => {
                         showProgress(prog.status, prog.progress);
                     } else {
                         hideProgress();
-                        // Операция завершилась — обновляем все данные
                         await loadData();
                         isOperationRunning = false;
                         renderActions();
@@ -656,6 +663,39 @@ const ZapretManagerPage = (() => {
         if (progressTimer) {
             clearInterval(progressTimer);
             progressTimer = null;
+        }
+    }
+
+    function startGuiProgressPolling() {
+        stopGuiProgressPolling();
+        guiProgressTimer = setInterval(async () => {
+            try {
+                const prog = await API.get('/api/gui/progress');
+                if (prog.ok) {
+                    if (prog.in_progress) {
+                        showProgress(prog.status, prog.progress, 'Обновление zapret-gui...');
+                    } else {
+                        stopGuiProgressPolling();
+                        if (guiUpdateRunning) {
+                            guiUpdateRunning = false;
+                            showProgress('Обновление завершено!', 100, 'Обновление zapret-gui...');
+                            setTimeout(() => {
+                                hideProgress();
+                                showGuiReloadPrompt();
+                            }, 1200);
+                        }
+                    }
+                }
+            } catch {
+                // Тихо игнорируем
+            }
+        }, 1500);
+    }
+
+    function stopGuiProgressPolling() {
+        if (guiProgressTimer) {
+            clearInterval(guiProgressTimer);
+            guiProgressTimer = null;
         }
     }
 
@@ -704,22 +744,59 @@ const ZapretManagerPage = (() => {
         if (ver) ver.textContent = info.latest_version || '?';
     }
 
+    function showGuiReloadPrompt() {
+        const banner = document.getElementById('gui-update-banner');
+        if (banner) {
+            banner.classList.remove('hidden');
+            banner.innerHTML = `
+                <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                    <div>
+                        <span style="font-weight:600; color:var(--success);">zapret-gui обновлён!</span>
+                        <span style="color:var(--text-secondary); font-size:13px; margin-left:8px;">
+                            Перезагрузите страницу для применения изменений
+                        </span>
+                    </div>
+                    <button class="btn btn-success btn-sm" onclick="location.reload()">
+                        Перезагрузить страницу
+                    </button>
+                </div>
+            `;
+        }
+        Toast.success('GUI обновлён! Нажмите F5 или кнопку "Перезагрузить страницу".');
+    }
+
     async function doGuiUpdate() {
-        if (isOperationRunning) return;
-        isOperationRunning = true;
-        renderActions();
+        if (isOperationRunning || guiUpdateRunning) return;
+
+        guiUpdateRunning = true;
+        showProgress('Запуск обновления GUI...', 0, 'Обновление zapret-gui...');
+        startGuiProgressPolling();
+
         try {
             const result = await API.post('/api/gui/update', {});
-            if (result.ok) {
-                Toast.success(result.message || 'GUI обновлён! Обновите страницу (F5).');
+
+            if (result.in_progress) {
+                Toast.info('Обновление GUI запущено. Следите за прогрессом...');
+                // Продолжаем polling — он сам завершит процесс
+            } else if (result.ok) {
+                stopGuiProgressPolling();
+                guiUpdateRunning = false;
+                showProgress('Обновление завершено!', 100, 'Обновление zapret-gui...');
+                setTimeout(() => {
+                    hideProgress();
+                    showGuiReloadPrompt();
+                }, 1200);
             } else {
+                stopGuiProgressPolling();
+                guiUpdateRunning = false;
+                hideProgress();
                 Toast.error(result.message || 'Ошибка обновления GUI');
             }
         } catch (err) {
+            stopGuiProgressPolling();
+            guiUpdateRunning = false;
+            hideProgress();
             Toast.error('Ошибка: ' + err.message);
-        } finally {
-            isOperationRunning = false;
-            renderActions();
         }
     }
 
@@ -731,8 +808,10 @@ const ZapretManagerPage = (() => {
             pollTimer = null;
         }
         stopProgressPolling();
+        stopGuiProgressPolling();
         data = null;
         isOperationRunning = false;
+        guiUpdateRunning = false;
     }
 
     // ══════════════════ Public API ══════════════════
