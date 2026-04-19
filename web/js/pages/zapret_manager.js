@@ -595,12 +595,28 @@ const ZapretManagerPage = (() => {
             btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;"></span> Проверка...';
 
             try {
-                // Сбрасываем кэш remote-версии
-                data = await API.get('/api/zapret?force=1');
-                if (data.ok) {
+                // Параллельно: сбрасываем кэш zapret2 и проверяем GUI
+                const [zapretData, guiCheck] = await Promise.all([
+                    API.get('/api/zapret?force=1'),
+                    API.get('/api/gui/check?force=1'),
+                ]);
+
+                if (zapretData.ok) {
+                    data = zapretData;
                     renderData();
-                    Toast.success('Данные обновлены');
                 }
+
+                if (guiCheck && guiCheck.update_available) {
+                    showGuiUpdateBanner(guiCheck);
+                } else if (guiCheck && !guiCheck.update_available && guiCheck.ok) {
+                    // Скрываем баннер если он был показан ранее
+                    const banner = document.getElementById('gui-update-banner');
+                    if (banner && banner.querySelector('#gui-update-version')) {
+                        banner.classList.add('hidden');
+                    }
+                }
+
+                Toast.success('Данные обновлены');
             } catch (err) {
                 Toast.error('Ошибка: ' + err.message);
             } finally {
