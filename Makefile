@@ -47,7 +47,7 @@ EXCLUDE      := --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
 # Цели
 # ═══════════════════════════════════════════════════════════════
 
-.PHONY: all ipk openwrt-ipk clean lint info help release tag
+.PHONY: all ipk openwrt-ipk clean _clean_build lint info help release tag
 
 all: ipk
 
@@ -97,7 +97,10 @@ release: lint
 	@echo ""
 
 # ── Сборка ipk для Entware ───────────────────────────────────
-ipk: clean _prepare_data _prepare_control _build_ipk
+_clean_build:
+	@rm -rf $(BUILD_DIR)
+
+ipk: _clean_build _prepare_data _prepare_control _build_ipk
 	@echo ""
 	@echo "✓ Пакет собран: $(DIST_DIR)/$(PKG_FULLNAME).ipk"
 	@ls -lh $(DIST_DIR)/$(PKG_FULLNAME).ipk
@@ -172,7 +175,7 @@ _build_ipk:
 	@echo "Сборка ipk: OK"
 
 # ── Сборка ipk для OpenWrt ───────────────────────────────────
-openwrt-ipk: clean _prepare_data_openwrt _prepare_control_openwrt _build_ipk_openwrt
+openwrt-ipk: _clean_build _prepare_data_openwrt _prepare_control_openwrt _build_ipk_openwrt
 	@echo ""
 	@echo "✓ OpenWrt пакет собран: $(DIST_DIR)/$(PKG_NAME)_$(PKG_VERSION)-$(PKG_RELEASE)_openwrt.ipk"
 	@ls -lh $(DIST_DIR)/$(PKG_NAME)_$(PKG_VERSION)-$(PKG_RELEASE)_openwrt.ipk
