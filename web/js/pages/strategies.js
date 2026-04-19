@@ -10,6 +10,7 @@ const StrategiesPage = (() => {
     let currentId = null;
     let favorites = [];
     let pollTimer = null;
+    let hostlists = [];
 
     // ══════════════════ Render ══════════════════
 
@@ -386,8 +387,8 @@ const StrategiesPage = (() => {
 
     // ══════════════════ Editor Modal ══════════════════
 
-    function openCreate() {
-        openEditor({
+    async function openCreate() {
+        await openEditor({
             id: '',
             name: '',
             description: '',
@@ -398,18 +399,19 @@ const StrategiesPage = (() => {
         }, 'create');
     }
 
-    function openEdit(sid) {
+    async function openEdit(sid) {
         const s = strategies.find(x => x.id === sid);
         if (!s) return;
-        openEditor(JSON.parse(JSON.stringify(s)), 'edit');
+        await openEditor(JSON.parse(JSON.stringify(s)), 'edit');
     }
 
     let editorData = null;
     let editorMode = 'create';
 
-    function openEditor(data, mode) {
+    async function openEditor(data, mode) {
         editorData = data;
         editorMode = mode;
+        await ensureHostlists();
 
         const modal = document.getElementById('strategy-modal');
         const title = document.getElementById('modal-title');
@@ -478,6 +480,11 @@ const StrategiesPage = (() => {
 
     function renderProfileEditor(profile, index) {
         const enabled = profile.enabled !== false;
+        const selectedHostlist = profile.hostlist || '';
+        const hostlistOptions = [
+            '<option value="">По умолчанию (other.txt)</option>',
+            ...hostlists.map(h => `<option value="${escapeHtml(h.name)}" ${h.name === selectedHostlist ? 'selected' : ''}>${escapeHtml(h.filename || (h.name + '.txt'))}</option>`)
+        ].join('');
         return `
             <div class="profile-editor-item" data-index="${index}">
                 <div class="profile-editor-header">
@@ -494,6 +501,12 @@ const StrategiesPage = (() => {
                 <div class="profile-args-wrap">
                     <textarea class="form-textarea profile-args" rows="3" placeholder="--filter-tcp=443 --filter-l7=tls ..." onchange="StrategiesPage.updateProfileArgs(${index}, this.value)">${escapeHtml(profile.args || '')}</textarea>
                     <span class="profile-args-hint">Ctrl+Space</span>
+                </div>
+                <div style="margin-top:8px;">
+                    <label class="form-label" style="display:block; margin-bottom:6px;">Hostlist</label>
+                    <select class="form-input form-select" onchange="StrategiesPage.updateProfileHostlist(${index}, this.value)">
+                        ${hostlistOptions}
+                    </select>
                 </div>
             </div>
         `;
@@ -537,6 +550,11 @@ const StrategiesPage = (() => {
     function updateProfileArgs(index, args) {
         if (!editorData || !editorData.profiles[index]) return;
         editorData.profiles[index].args = args;
+    }
+
+    function updateProfileHostlist(index, hostlist) {
+        if (!editorData || !editorData.profiles[index]) return;
+        editorData.profiles[index].hostlist = hostlist || '';
     }
 
     async function editorPreview() {
@@ -629,6 +647,15 @@ const StrategiesPage = (() => {
         }, 0);
     }
 
+    async function ensureHostlists() {
+        try {
+            const result = await API.get('/api/hostlists');
+            hostlists = result.files || [];
+        } catch (err) {
+            hostlists = [];
+        }
+    }
+
     function closeModal() {
         NfqwsAutocomplete.detachAll();
         const modal = document.getElementById('strategy-modal');
@@ -673,6 +700,7 @@ const StrategiesPage = (() => {
         toggleProfile,
         updateProfileName,
         updateProfileArgs,
+        updateProfileHostlist,
         editorPreview,
         saveEditor,
     };
