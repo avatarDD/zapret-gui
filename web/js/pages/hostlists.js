@@ -1,15 +1,25 @@
 /**
  * hostlists.js — Страница управления списками доменов.
  *
- * Поддерживает встроенные и пользовательские hostlist-файлы.
+ * Табы: other.txt | other2.txt | netrogat.txt
+ * Функции: просмотр, редактирование, добавление, удаление,
+ *          импорт из URL/текста, сброс к дефолтам.
  */
 
 const HostlistsPage = (() => {
-    let tabs = [];
+
+    const TABS = [
+        { name: 'other',    label: 'other.txt',    desc: 'Базовый список доменов' },
+        { name: 'other2',   label: 'other2.txt',   desc: 'Пользовательские домены' },
+        { name: 'netrogat', label: 'netrogat.txt',  desc: 'Исключения (не обрабатываются)' },
+    ];
+
     let activeTab = 'other';
     let originalContent = '';
     let hasUnsaved = false;
     let loading = false;
+
+    // ══════════════════ Render ══════════════════
 
     function render(container) {
         container.innerHTML = `
@@ -25,12 +35,23 @@ const HostlistsPage = (() => {
                 <p class="page-description">Управление hostlist-файлами для nfqws2</p>
             </div>
 
+            <!-- Статистика -->
             <div class="status-grid" id="hl-stats-grid">
                 <div class="status-card"><div class="status-card-label">Загрузка...</div></div>
             </div>
 
+            <!-- Табы -->
             <div class="card" style="padding: 0;">
-                <div class="lists-tabs" id="hl-tabs"></div>
+                <div class="lists-tabs" id="hl-tabs">
+                    ${TABS.map(t => `
+                        <button class="lists-tab ${t.name === activeTab ? 'active' : ''}"
+                                data-tab="${t.name}"
+                                onclick="HostlistsPage.switchTab('${t.name}')">
+                            <span class="lists-tab-name">${t.label}</span>
+                            <span class="lists-tab-count" id="hl-tab-count-${t.name}">—</span>
+                        </button>
+                    `).join('')}
+                </div>
 
                 <div class="lists-content" id="hl-content">
                     <div class="lists-toolbar">
@@ -45,12 +66,6 @@ const HostlistsPage = (() => {
                             </span>
                         </div>
                         <div class="lists-toolbar-right">
-                            <button class="btn btn-ghost btn-sm" onclick="HostlistsPage.showCreateModal()" title="Создать список">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-                                </svg>
-                                Создать список
-                            </button>
                             <button class="btn btn-ghost btn-sm" onclick="HostlistsPage.showImportModal()" title="Импорт">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -58,15 +73,10 @@ const HostlistsPage = (() => {
                                 </svg>
                                 Импорт
                             </button>
-                            <button class="btn btn-ghost btn-sm" id="hl-delete-btn" onclick="HostlistsPage.deleteList()" title="Удалить список" style="display:none; color:var(--error);">
+                            <button class="btn btn-ghost btn-sm" onclick="HostlistsPage.resetList()" title="Сбросить к дефолтам">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                                </svg>
-                                Удалить
-                            </button>
-                            <button class="btn btn-ghost btn-sm" id="hl-reset-btn" onclick="HostlistsPage.resetList()" title="Сбросить к дефолтам">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                    <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                                    <polyline points="1 4 1 10 7 10"/>
+                                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
                                 </svg>
                                 Сбросить
                             </button>
@@ -80,10 +90,12 @@ const HostlistsPage = (() => {
                         </div>
                     </div>
 
+                    <!-- Основной textarea -->
                     <textarea class="lists-editor" id="hl-editor"
                               placeholder="Один домен на строку...&#10;example.com&#10;sub.example.com"
                               spellcheck="false"></textarea>
 
+                    <!-- Добавление доменов -->
                     <div class="lists-add-section">
                         <div class="lists-add-header">
                             <span class="form-label" style="margin:0;">Быстрое добавление</span>
@@ -103,132 +115,83 @@ const HostlistsPage = (() => {
                 </div>
             </div>
 
+            <!-- Модальное окно импорта -->
             <div class="modal-backdrop" id="hl-import-modal" style="display:none;">
                 <div class="modal-content">
                     <div class="modal-header">
                         <h3 class="modal-title">Импорт доменов</h3>
-                        <button class="modal-close" onclick="HostlistsPage.closeImportModal()">&times;</button>
+                        <button class="modal-close" onclick="HostlistsPage.closeImportModal()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
                     </div>
                     <div class="modal-body">
                         <div class="form-group">
                             <label class="form-label">Импорт из URL</label>
                             <div class="lists-add-row">
-                                <input type="text" class="form-input" id="hl-import-url" placeholder="https://example.com/domains.txt">
-                                <button class="btn btn-primary btn-sm" onclick="HostlistsPage.importFromUrl()">Загрузить</button>
+                                <input type="text" class="form-input" id="hl-import-url"
+                                       placeholder="https://example.com/domains.txt">
+                                <button class="btn btn-primary btn-sm" onclick="HostlistsPage.importFromUrl()">
+                                    Загрузить
+                                </button>
                             </div>
                             <div class="form-hint">Текстовый файл — один домен на строку</div>
                         </div>
                         <div class="form-group" style="margin-top:16px;">
                             <label class="form-label">Или вставьте текст</label>
-                            <textarea class="form-textarea" id="hl-import-text" rows="8" placeholder="youtube.com&#10;discord.com&#10;telegram.org"></textarea>
-                            <button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="HostlistsPage.importFromText()">Импортировать</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="modal-backdrop" id="hl-create-modal" style="display:none;">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h3 class="modal-title">Создать список</h3>
-                        <button class="modal-close" onclick="HostlistsPage.closeCreateModal()">&times;</button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="form-group">
-                            <label class="form-label">Имя файла без .txt</label>
-                            <input type="text" class="form-input" id="hl-create-name" placeholder="custom_udp_fake"
-                                   onkeydown="if(event.key==='Enter') HostlistsPage.createList()">
-                            <div class="form-hint">Разрешены латиница, цифры, _ и -</div>
-                        </div>
-                        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
-                            <button class="btn btn-ghost" onclick="HostlistsPage.closeCreateModal()">Отмена</button>
-                            <button class="btn btn-primary" onclick="HostlistsPage.createList()">Создать</button>
+                            <textarea class="form-textarea" id="hl-import-text" rows="8"
+                                      placeholder="youtube.com&#10;discord.com&#10;telegram.org"></textarea>
+                            <button class="btn btn-primary btn-sm" style="margin-top:8px;"
+                                    onclick="HostlistsPage.importFromText()">
+                                Импортировать
+                            </button>
                         </div>
                     </div>
                 </div>
             </div>
         `;
 
+        // Загружаем данные
+        loadStats();
+        loadTab(activeTab);
+
+        // Слушаем изменения в textarea
         const editor = document.getElementById('hl-editor');
         if (editor) {
             editor.addEventListener('input', onEditorInput);
         }
-
-        loadStats();
     }
 
-    function getTabMeta(name) {
-        return tabs.find(t => t.name === name) || null;
-    }
+    // ══════════════════ Data Loading ══════════════════
 
-    function renderTabs() {
-        const tabsEl = document.getElementById('hl-tabs');
-        if (!tabsEl) return;
-
-        tabsEl.innerHTML = tabs.map(t => `
-            <button class="lists-tab ${t.name === activeTab ? 'active' : ''}"
-                    data-tab="${t.name}"
-                    onclick="HostlistsPage.switchTab('${t.name}')">
-                <span class="lists-tab-name">${t.filename || (t.name + '.txt')}</span>
-                <span class="lists-tab-count" id="hl-tab-count-${t.name}">${typeof t.count === 'number' ? t.count : '—'}</span>
-            </button>
-        `).join('');
-    }
-
-    function updateTabToolbar() {
-        const tab = getTabMeta(activeTab);
-        const desc = document.getElementById('hl-tab-desc');
-        const resetBtn = document.getElementById('hl-reset-btn');
-        const deleteBtn = document.getElementById('hl-delete-btn');
-
-        if (desc) {
-            desc.textContent = tab && tab.description ? tab.description : (tab && tab.is_default ? 'Встроенный список доменов' : 'Пользовательский список доменов');
-        }
-        if (resetBtn) {
-            resetBtn.style.display = tab && tab.has_defaults ? 'inline-flex' : 'none';
-        }
-        if (deleteBtn) {
-            deleteBtn.style.display = tab && !tab.is_default ? 'inline-flex' : 'none';
-        }
-    }
-
-    async function loadStats(reloadActive = true) {
+    async function loadStats() {
         try {
             const result = await API.get('/api/hostlists');
             if (!result.ok) return;
 
-            tabs = result.files || [];
-            if (!tabs.length) {
-                tabs = [{ name: 'other', filename: 'other.txt', count: 0, is_default: true, has_defaults: true }];
-            }
-
-            if (!getTabMeta(activeTab)) {
-                activeTab = tabs[0].name;
-            }
-
             const grid = document.getElementById('hl-stats-grid');
-            if (grid) {
-                grid.innerHTML = tabs.map(f => `
-                    <div class="status-card" style="cursor:pointer;" onclick="HostlistsPage.switchTab('${f.name}')">
-                        <div class="status-card-header">
-                            <svg class="status-card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                                <polyline points="14 2 14 8 20 8"/>
-                            </svg>
-                            <span class="status-card-label">${f.filename}</span>
-                        </div>
-                        <div class="status-card-value">${f.count}</div>
-                        <div class="status-card-detail">${f.description || (f.is_default ? 'Встроенный список' : 'Пользовательский список')}</div>
+            if (!grid) return;
+
+            grid.innerHTML = result.files.map(f => `
+                <div class="status-card" style="cursor:pointer;" onclick="HostlistsPage.switchTab('${f.name}')">
+                    <div class="status-card-header">
+                        <svg class="status-card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                        </svg>
+                        <span class="status-card-label">${f.filename}</span>
                     </div>
-                `).join('');
-            }
+                    <div class="status-card-value">${f.count}</div>
+                    <div class="status-card-detail">${f.description}</div>
+                </div>
+            `).join('');
 
-            renderTabs();
-            updateTabToolbar();
-
-            if (reloadActive) {
-                loadTab(activeTab);
-            }
+            // Обновляем счётчики в табах
+            result.files.forEach(f => {
+                const cnt = document.getElementById('hl-tab-count-' + f.name);
+                if (cnt) cnt.textContent = f.count;
+            });
         } catch (err) {
             console.error('loadStats error:', err);
         }
@@ -237,13 +200,13 @@ const HostlistsPage = (() => {
     async function loadTab(name) {
         loading = true;
         const editor = document.getElementById('hl-editor');
+        const desc = document.getElementById('hl-tab-desc');
 
-        if (editor) {
-            editor.value = 'Загрузка...';
-            editor.disabled = true;
-        }
+        if (editor) editor.value = 'Загрузка...';
+        if (editor) editor.disabled = true;
 
-        updateTabToolbar();
+        const tab = TABS.find(t => t.name === name);
+        if (desc && tab) desc.textContent = tab.desc;
 
         try {
             const result = await API.get('/api/hostlists/' + name);
@@ -252,13 +215,14 @@ const HostlistsPage = (() => {
                 return;
             }
 
-            const text = (result.domains || []).join('\n');
+            const text = result.domains.join('\n');
             if (editor) {
                 editor.value = text;
                 editor.disabled = false;
             }
             originalContent = text;
             setUnsaved(false);
+
         } catch (err) {
             if (editor) editor.value = 'Ошибка: ' + err.message;
         } finally {
@@ -266,15 +230,26 @@ const HostlistsPage = (() => {
         }
     }
 
+    // ══════════════════ Tab Switching ══════════════════
+
     function switchTab(name) {
         if (name === activeTab) return;
-        if (hasUnsaved && !confirm('Есть несохранённые изменения. Переключить таб?')) return;
+
+        if (hasUnsaved) {
+            if (!confirm('Есть несохранённые изменения. Переключить таб?')) return;
+        }
 
         activeTab = name;
-        renderTabs();
-        updateTabToolbar();
+
+        // Обновляем UI табов
+        document.querySelectorAll('.lists-tab').forEach(el => {
+            el.classList.toggle('active', el.dataset.tab === name);
+        });
+
         loadTab(name);
     }
+
+    // ══════════════════ Editor ══════════════════
 
     function onEditorInput() {
         if (loading) return;
@@ -291,6 +266,8 @@ const HostlistsPage = (() => {
         if (saveBtn) saveBtn.disabled = !val;
     }
 
+    // ══════════════════ Actions ══════════════════
+
     async function saveList() {
         const editor = document.getElementById('hl-editor');
         if (!editor) return;
@@ -300,19 +277,17 @@ const HostlistsPage = (() => {
 
         try {
             const result = await API.put('/api/hostlists/' + activeTab, { domains });
-            if (!result.ok) {
+            if (result.ok) {
+                Toast.success(result.message || 'Сохранено');
+                originalContent = editor.value;
+                setUnsaved(false);
+                loadStats();
+
+                if (result.invalid_count) {
+                    Toast.warning('Пропущено невалидных: ' + result.invalid_count);
+                }
+            } else {
                 Toast.error(result.error || 'Ошибка сохранения');
-                return;
-            }
-
-            Toast.success(result.message || 'Сохранено');
-            originalContent = editor.value;
-            setUnsaved(false);
-            await loadStats(false);
-            renderTabs();
-
-            if (result.invalid_count) {
-                Toast.warning('Пропущено невалидных: ' + result.invalid_count);
             }
         } catch (err) {
             Toast.error(err.message);
@@ -320,8 +295,8 @@ const HostlistsPage = (() => {
     }
 
     async function resetList() {
-        const tab = getTabMeta(activeTab);
-        const label = tab ? tab.filename : (activeTab + '.txt');
+        const tab = TABS.find(t => t.name === activeTab);
+        const label = tab ? tab.label : activeTab;
 
         if (!confirm('Сбросить ' + label + ' к дефолтным значениям?')) return;
 
@@ -329,8 +304,8 @@ const HostlistsPage = (() => {
             const result = await API.post('/api/hostlists/' + activeTab + '/reset');
             if (result.ok) {
                 Toast.success(result.message || 'Сброшено');
-                await loadStats(false);
                 loadTab(activeTab);
+                loadStats();
             } else {
                 Toast.error(result.error || 'Ошибка сброса');
             }
@@ -339,41 +314,29 @@ const HostlistsPage = (() => {
         }
     }
 
-    async function deleteList() {
-        const tab = getTabMeta(activeTab);
-        if (!tab || tab.is_default) return;
-
-        if (!confirm('Удалить список ' + tab.filename + '?\n\nЭто действие нельзя отменить.')) return;
-
-        try {
-            const result = await API.delete('/api/hostlists/' + activeTab);
-            if (!result.ok) {
-                Toast.error(result.error || 'Ошибка удаления');
-                return;
-            }
-
-            Toast.success(result.message || 'Список удалён');
-            activeTab = 'other';
-            setUnsaved(false);
-            await loadStats(true);
-        } catch (err) {
-            Toast.error(err.message);
-        }
-    }
-
     function quickAdd() {
         const input = document.getElementById('hl-add-input');
+        if (!input || !input.value.trim()) return;
+
         const editor = document.getElementById('hl-editor');
-        if (!input || !editor || !input.value.trim()) return;
+        if (!editor) return;
 
         const domain = input.value.trim();
+
+        // Добавляем в textarea
         const current = editor.value.trim();
-        editor.value = current ? current + '\n' + domain : domain;
+        if (current) {
+            editor.value = current + '\n' + domain;
+        } else {
+            editor.value = domain;
+        }
 
         input.value = '';
         setUnsaved(true);
         Toast.info('Добавлено в редактор. Нажмите "Сохранить" для применения.');
     }
+
+    // ══════════════════ Import Modal ══════════════════
 
     function showImportModal() {
         const modal = document.getElementById('hl-import-modal');
@@ -383,53 +346,11 @@ const HostlistsPage = (() => {
     function closeImportModal() {
         const modal = document.getElementById('hl-import-modal');
         if (modal) modal.style.display = 'none';
-
+        // Очищаем поля
         const urlInput = document.getElementById('hl-import-url');
         const textInput = document.getElementById('hl-import-text');
         if (urlInput) urlInput.value = '';
         if (textInput) textInput.value = '';
-    }
-
-    function showCreateModal() {
-        const modal = document.getElementById('hl-create-modal');
-        const input = document.getElementById('hl-create-name');
-        if (modal) modal.style.display = 'flex';
-        if (input) {
-            input.value = '';
-            setTimeout(() => input.focus(), 0);
-        }
-    }
-
-    function closeCreateModal() {
-        const modal = document.getElementById('hl-create-modal');
-        const input = document.getElementById('hl-create-name');
-        if (modal) modal.style.display = 'none';
-        if (input) input.value = '';
-    }
-
-    async function createList() {
-        const input = document.getElementById('hl-create-name');
-        if (!input || !input.value.trim()) {
-            Toast.warning('Введите имя списка');
-            return;
-        }
-
-        try {
-            const result = await API.post('/api/hostlists/create', {
-                name: input.value.trim()
-            });
-            if (!result.ok) {
-                Toast.error(result.error || 'Ошибка создания');
-                return;
-            }
-
-            closeCreateModal();
-            Toast.success(result.message || 'Список создан');
-            activeTab = result.name;
-            await loadStats(true);
-        } catch (err) {
-            Toast.error(err.message);
-        }
     }
 
     async function importFromUrl() {
@@ -447,8 +368,8 @@ const HostlistsPage = (() => {
             if (result.ok) {
                 Toast.success(result.message || 'Импортировано');
                 closeImportModal();
-                await loadStats(false);
                 loadTab(activeTab);
+                loadStats();
             } else {
                 Toast.error(result.error || 'Ошибка импорта');
             }
@@ -471,8 +392,8 @@ const HostlistsPage = (() => {
             if (result.ok) {
                 Toast.success(result.message || 'Импортировано');
                 closeImportModal();
-                await loadStats(false);
                 loadTab(activeTab);
+                loadStats();
             } else {
                 Toast.error(result.error || 'Ошибка импорта');
             }
@@ -481,11 +402,14 @@ const HostlistsPage = (() => {
         }
     }
 
+    // ══════════════════ Lifecycle ══════════════════
+
     function destroy() {
         hasUnsaved = false;
         loading = false;
-        tabs = [];
     }
+
+    // ══════════════════ Public API ══════════════════
 
     return {
         render,
@@ -493,13 +417,9 @@ const HostlistsPage = (() => {
         switchTab,
         saveList,
         resetList,
-        deleteList,
         quickAdd,
         showImportModal,
         closeImportModal,
-        showCreateModal,
-        closeCreateModal,
-        createList,
         importFromUrl,
         importFromText,
     };

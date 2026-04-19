@@ -331,15 +331,11 @@ class StrategyManager:
             # Парсим args из профиля
             profile_args = self._parse_profile_args(profile["args"])
 
-            profile_hostlist_path = self._resolve_profile_hostlist_path(
-                profile, hostlist_path
-            )
-
             # Вставляем --hostlist= перед --payload (если есть hostlist и
             # профиль содержит filter)
-            if profile_hostlist_path and os.path.isfile(profile_hostlist_path):
+            if hostlist_path and os.path.isfile(hostlist_path):
                 profile_args = self._inject_hostlist(
-                    profile_args, profile_hostlist_path
+                    profile_args, hostlist_path
                 )
 
             all_args.extend(profile_args)
@@ -403,28 +399,6 @@ class StrategyManager:
         result = list(args)
         result.insert(insert_pos, "--hostlist=%s" % hostlist_path)
         return result
-
-    def _resolve_profile_hostlist_path(self, profile: dict,
-                                       default_hostlist_path: str) -> str:
-        """
-        Определить hostlist для конкретного профиля.
-
-        Если у профиля явно выбран hostlist, используем его.
-        Иначе остаётся дефолтный путь (обычно other.txt).
-        """
-        selected_name = profile.get("hostlist")
-        if not selected_name:
-            return default_hostlist_path
-
-        try:
-            from core.hostlist_manager import get_hostlist_manager
-            hm = get_hostlist_manager()
-            if hm.is_valid_name(selected_name):
-                return hm._file_path(selected_name)
-        except Exception:
-            pass
-
-        return default_hostlist_path
 
     def build_preview_command(self, strategy: dict,
                               hostlist_path: str = None) -> str:

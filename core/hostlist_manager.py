@@ -83,8 +83,7 @@ DEFAULT_NETROGAT = [
 DEFAULT_OTHER2 = []
 
 # Допустимые имена файлов
-DEFAULT_NAMES = ("other", "other2", "netrogat")
-HOSTLIST_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+VALID_NAMES = {"other", "other2", "netrogat"}
 
 # Маппинг имя → дефолтный список
 DEFAULTS_MAP = {
@@ -137,75 +136,7 @@ class HostlistManager:
 
     def _validate_name(self, name):
         """Проверить что имя файла допустимо."""
-        return bool(name and isinstance(name, str) and HOSTLIST_NAME_RE.match(name))
-
-    def is_valid_name(self, name):
-        """Публичная валидация имени списка."""
-        return self._validate_name(name)
-
-    def is_default_name(self, name):
-        """Проверить, является ли список встроенным."""
-        return name in DEFAULTS_MAP
-
-    def list_names(self):
-        """Получить имена всех hostlist-файлов."""
-        self._ensure_dir()
-        found = set(DEFAULT_NAMES)
-
-        try:
-            for entry in os.listdir(self.lists_path):
-                if not entry.endswith(".txt"):
-                    continue
-                name = entry[:-4]
-                if self._validate_name(name):
-                    found.add(name)
-        except OSError:
-            pass
-
-        custom = sorted(name for name in found if name not in DEFAULTS_MAP)
-        return list(DEFAULT_NAMES) + custom
-
-    def create_hostlist(self, name):
-        """Создать пустой custom hostlist."""
-        if not self._validate_name(name):
-            return False, "invalid_name"
-        if self.is_default_name(name):
-            return False, "reserved_name"
-
-        self._ensure_dir()
-        filepath = self._file_path(name)
-        if os.path.exists(filepath):
-            return False, "already_exists"
-
-        try:
-            with self._lock:
-                with open(filepath, "w", encoding="utf-8"):
-                    pass
-            log.info(f"Создан hostlist {name}.txt", source="hostlists")
-            return True, "created"
-        except Exception as e:
-            log.error(f"Ошибка создания {name}.txt: {e}", source="hostlists")
-            return False, "write_error"
-
-    def delete_hostlist(self, name):
-        """Удалить custom hostlist."""
-        if not self._validate_name(name):
-            return False, "invalid_name"
-        if self.is_default_name(name):
-            return False, "protected_name"
-
-        filepath = self._file_path(name)
-        if not os.path.exists(filepath):
-            return False, "not_found"
-
-        try:
-            with self._lock:
-                os.remove(filepath)
-            log.info(f"Удалён hostlist {name}.txt", source="hostlists")
-            return True, "deleted"
-        except Exception as e:
-            log.error(f"Ошибка удаления {name}.txt: {e}", source="hostlists")
-            return False, "delete_error"
+        return name in VALID_NAMES
 
     def get_hostlist(self, name):
         """
@@ -394,7 +325,7 @@ class HostlistManager:
             dict: {name: {count, path, exists, writable, description}}
         """
         stats = {}
-        for name in self.list_names():
+        for name in VALID_NAMES:
             filepath = self._file_path(name)
             exists = os.path.exists(filepath)
 
@@ -420,7 +351,6 @@ class HostlistManager:
                 "writable": writable,
                 "description": DESCRIPTIONS.get(name, ""),
                 "has_defaults": name in DEFAULTS_MAP and len(DEFAULTS_MAP[name]) > 0,
-                "is_default": name in DEFAULTS_MAP,
             }
 
         return stats
