@@ -16,7 +16,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 PKG_NAME     := zapret-gui
-PKG_VERSION  := 0.14.0
+PKG_VERSION  := 0.14.2
 PKG_RELEASE  := 1
 PKG_ARCH     := all
 PKG_FULLNAME := $(PKG_NAME)_$(PKG_VERSION)-$(PKG_RELEASE)_$(PKG_ARCH)
