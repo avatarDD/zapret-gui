@@ -8,13 +8,6 @@ on:
   push:
     tags:
       - 'v*'
-  # Ручной запуск: позволяет пересобрать релиз без пересоздания тега
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Тег для релиза (например: v0.14.4)'
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -31,8 +24,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -65,56 +56,57 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y build-essential make tar
 
-      # Извлекаем версию из тега или из входного параметра
-      - name: Extract version
+      # Извлекаем версию из тега
+      - name: Extract version from tag
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
+          TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Тег: $TAG, Версия: $VERSION"
 
-      # Патчим версионные файлы из тега — workflow не зависит от ручного бампа
-      - name: Patch version files
+      # Проверка версии (core/version.py должна совпадать с тегом)
+      - name: Verify version consistency
         run: |
           TAG_VER="${{ steps.version.outputs.version }}"
+          FAIL=0
 
           if [ -f core/version.py ]; then
-            sed -i "s/GUI_VERSION = .*/GUI_VERSION = \"$TAG_VER\"/" core/version.py
-            echo "✓ core/version.py → $TAG_VER"
+            CODE_VER=$(grep -oP 'GUI_VERSION\s*=\s*["\x27]\K[^"\x27]+' core/version.py || true)
+            if [ -n "$CODE_VER" ] && [ "$CODE_VER" != "$TAG_VER" ]; then
+              echo "❌ core/version.py ($CODE_VER) ≠ тег ($TAG_VER)"
+              FAIL=1
+            else
+              echo "✓ core/version.py: $CODE_VER"
+            fi
           fi
 
           if [ -f Makefile ]; then
-            sed -i "s/^PKG_VERSION\s*:=.*/PKG_VERSION  := $TAG_VER/" Makefile
-            echo "✓ Makefile → $TAG_VER"
+            MK_VER=$(grep -oP '^PKG_VERSION\s*:=\s*\K\S+' Makefile || true)
+            if [ -n "$MK_VER" ] && [ "$MK_VER" != "$TAG_VER" ]; then
+              echo "⚠ Makefile ($MK_VER) ≠ тег ($TAG_VER) — сборка использует версию тега"
+            else
+              echo "✓ Makefile: $MK_VER"
+            fi
           fi
 
-          if [ -f install.sh ]; then
-            sed -i "s/^VERSION=.*/VERSION=\"$TAG_VER\"/" install.sh
-            echo "✓ install.sh → $TAG_VER"
-          fi
+          [ "$FAIL" -eq 0 ] || exit 1
 
-      # Сборка пакетов
+      # Сборка пакетов (версия берётся из тега, не из Makefile)
       - name: Build Entware ipk
         run: make ipk PKG_VERSION=${{ steps.version.outputs.version }}
 
       - name: Build OpenWrt ipk
         run: make openwrt-ipk PKG_VERSION=${{ steps.version.outputs.version }}
 
-      # Исходный архив создаётся вне директории проекта во избежание рекурсии
+      # ✅ ИСПРАВЛЕНО: архив создаётся вне проекта
       - name: Create source archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -131,8 +123,10 @@ jobs:
             .
 
           mv "$ARCHIVE" .
-          echo "✓ Архив: ${PKG_NAME}-${VERSION}.tar.gz"
-          ls -lh "${PKG_NAME}-${VERSION}.tar.gz"
+          FINAL_ARCHIVE="${PKG_NAME}-${VERSION}.tar.gz"
+
+          echo "✓ Архив: $FINAL_ARCHIVE"
+          ls -lh "$FINAL_ARCHIVE"
 
       # Стабильно-именованные копии для README-ссылок
       - name: Create stable-named artifacts
@@ -161,17 +155,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Extract version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
+          TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -195,13 +183,13 @@ jobs:
           else
             NOTES="Релиз ${{ steps.version.outputs.tag }}"
           fi
+
           echo "$NOTES" > /tmp/release_notes.md
 
-      # Релиз — tag_name задаётся явно для поддержки workflow_dispatch
+      # Релиз
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
           name: "Zapret Web-GUI ${{ steps.version.outputs.tag }}"
           body_path: /tmp/release_notes.md
           draft: false
