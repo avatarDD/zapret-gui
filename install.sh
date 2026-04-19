@@ -215,15 +215,24 @@ check_deps() {
     # Устанавливаем недостающее
     case "$PKG_CMD" in
         opkg)
-            # Entware / OpenWrt
+            # Entware / OpenWrt — python3-bottle отсутствует в стандартных репозиториях
             $PKG_CMD update 2>/dev/null || true
             if $need_python; then
                 info "  Устанавливаем python3-light..."
                 $PKG_CMD install python3-light || { error "Не удалось установить python3-light"; exit 1; }
             fi
             if $need_bottle; then
-                info "  Устанавливаем python3-bottle..."
-                $PKG_CMD install python3-bottle || { error "Не удалось установить python3-bottle"; exit 1; }
+                info "  Устанавливаем bottle через pip..."
+                if python3 -m pip install bottle 2>/dev/null; then
+                    ok "bottle установлен через pip"
+                else
+                    info "  pip не сработал, скачиваем bottle.py напрямую..."
+                    _install_bottle_direct || {
+                        error "Не удалось установить bottle"
+                        error "Установите вручную: python3 -m pip install bottle"
+                        exit 1
+                    }
+                fi
             fi
             ok "Зависимости установлены"
             ;;
@@ -453,6 +462,47 @@ start_service() {
     procd_close_instance
 }
 INITEOF
+
+    elif [ "$ENV_TYPE" = "generic" ] && command -v systemctl >/dev/null 2>&1; then
+        # Generic Linux с systemd
+        info "Обнаружен systemd — создаём unit-файл..."
+        local UNIT_FILE="/etc/systemd/system/zapret-gui.service"
+        cat > "$TMP_INIT" << UNITEOF
+[Unit]
+Description=Zapret Web-GUI
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$(command -v python3) $APP_DIR/app.py --host $GUI_HOST --port $GUI_PORT --config $CONFIG_DIR
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+        $SUDO cp "$TMP_INIT" "$UNIT_FILE"
+        $SUDO chmod 644 "$UNIT_FILE"
+        rm -f "$TMP_INIT"
+        $SUDO systemctl daemon-reload
+        $SUDO systemctl enable zapret-gui 2>/dev/null || true
+        ok "Systemd unit: $UNIT_FILE"
+
+        # Файл конфига
+        if [ ! -f "$CONFIG_DIR/server.conf" ]; then
+            local TMP_CONF="/tmp/zapret-gui-conf-$$"
+            cat > "$TMP_CONF" << CONFEOF
+# Настройки веб-сервера Zapret Web-GUI
+# Раскомментируйте и измените при необходимости:
+#GUI_HOST=0.0.0.0
+#GUI_PORT=8080
+CONFEOF
+            $SUDO cp "$TMP_CONF" "$CONFIG_DIR/server.conf"
+            rm -f "$TMP_CONF"
+            ok "Конфиг: $CONFIG_DIR/server.conf"
+        fi
+        return 0
+
     else
         # Entware — классический init.d
         cat > "$TMP_INIT" << 'INITEOF'
@@ -616,9 +666,15 @@ main() {
     echo "═══════════════════════════════════════════════════"
     ok "Zapret Web-GUI v$VERSION установлен!"
     echo ""
-    echo "  Запуск:    $INITD_SCRIPT start"
-    echo "  Остановка: $INITD_SCRIPT stop"
-    echo "  Статус:    $INITD_SCRIPT status"
+    if [ "$ENV_TYPE" = "generic" ] && command -v systemctl >/dev/null 2>&1; then
+        echo "  Запуск:    systemctl start zapret-gui"
+        echo "  Остановка: systemctl stop zapret-gui"
+        echo "  Статус:    systemctl status zapret-gui"
+    else
+        echo "  Запуск:    $INITD_SCRIPT start"
+        echo "  Остановка: $INITD_SCRIPT stop"
+        echo "  Статус:    $INITD_SCRIPT status"
+    fi
     echo ""
     echo "  Веб-интерфейс: http://<IP роутера>:$GUI_PORT"
     echo ""
@@ -627,7 +683,11 @@ main() {
     printf "  Запустить сейчас? [Y/n] "
     read -r answer
     if [ "$answer" != "n" ] && [ "$answer" != "N" ]; then
-        $SUDO "$INITD_SCRIPT" start
+        if [ "$ENV_TYPE" = "generic" ] && command -v systemctl >/dev/null 2>&1; then
+            $SUDO systemctl start zapret-gui
+        else
+            $SUDO "$INITD_SCRIPT" start
+        fi
     fi
     echo ""
 }

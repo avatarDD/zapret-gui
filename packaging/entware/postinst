@@ -32,20 +32,27 @@ mkdir -p "$APP_DIR/config/strategies/user" 2>/dev/null || true
 chmod 755 "$APP_DIR/app.py" 2>/dev/null || true
 chmod 755 "$INITD_SCRIPT" 2>/dev/null || true
 
-# 6. Проверяем зависимости
-MISSING=""
-if ! command -v python3 >/dev/null 2>&1; then
-    MISSING="$MISSING python3-light"
-fi
+# 6. Проверяем и устанавливаем bottle
 if ! python3 -c "import bottle" 2>/dev/null; then
-    MISSING="$MISSING python3-bottle"
-fi
-
-if [ -n "$MISSING" ]; then
-    echo ""
-    echo "  ⚠ Отсутствуют зависимости:$MISSING"
-    echo "  Установите: opkg install$MISSING"
-    echo ""
+    echo "  Установка bottle (python3-bottle недоступен в opkg)..."
+    if python3 -m pip install bottle --quiet 2>/dev/null; then
+        echo "  ✓ bottle установлен через pip"
+    else
+        SITE=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null) || true
+        if [ -z "$SITE" ]; then
+            SITE=$(python3 -c "import site; print(site.getusersitepackages())" 2>/dev/null) || true
+        fi
+        if [ -n "$SITE" ] && mkdir -p "$SITE" 2>/dev/null && \
+           wget -q -O "$SITE/bottle.py" \
+               "https://raw.githubusercontent.com/bottlepy/bottle/master/bottle.py" 2>/dev/null; then
+            echo "  ✓ bottle.py загружен в $SITE"
+        else
+            echo ""
+            echo "  ⚠ Не удалось установить bottle автоматически"
+            echo "  Установите вручную: python3 -m pip install bottle"
+            echo ""
+        fi
+    fi
 fi
 
 echo ""

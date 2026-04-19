@@ -26,7 +26,7 @@
 ## Требования
 
 - Python 3.11+ (`python3-light` в Entware)
-- Bottle (`python3-bottle` или `pip3 install bottle`)
+- Bottle (`pip3 install bottle` — `python3-bottle` недоступен в opkg)
 - RAM: ~20–25 MB, Flash: ~500 KB (+ python3-light ~5 MB)
 - Архитектура: любая (mipsel, arm64, armv7, x86_64, mips, riscv64)
 
@@ -34,17 +34,24 @@
 
 ### Вариант 1: ipk-пакет (рекомендуется)
 
-**Entware:**
+**Keenetic (Entware):**
 ```bash
-wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui_0.14.0-1_all.ipk
-opkg install zapret-gui_0.14.0-1_all.ipk
+wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-keenetic.ipk
+opkg install zapret-gui-keenetic.ipk
+/opt/etc/init.d/S99zapret-gui start
+```
+
+**Другие роутеры с Entware (ASUS, Xiaomi, etc.):**
+```bash
+wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-entware.ipk
+opkg install zapret-gui-entware.ipk
 /opt/etc/init.d/S99zapret-gui start
 ```
 
 **OpenWrt:**
 ```bash
-wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui_0.14.0-1_openwrt.ipk
-opkg install zapret-gui_0.14.0-1_openwrt.ipk
+wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.ipk
+opkg install zapret-gui-openwrt.ipk
 /etc/init.d/zapret-gui start
 ```
 
@@ -62,7 +69,8 @@ wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/main/install.sh 
 cd /opt
 git clone https://github.com/avatarDD/zapret-gui.git
 cd zapret-gui
-opkg install python3-light python3-bottle
+opkg install python3-light
+python3 -m pip install bottle
 python3 app.py --host 0.0.0.0 --port 8080
 ```
 
@@ -134,11 +142,11 @@ opkg upgrade zapret-gui
 ```bash
 # Entware ipk
 make ipk
-# → dist/zapret-gui_0.14.0-1_all.ipk
+# → dist/zapret-gui_<version>-1_all.ipk
 
 # OpenWrt ipk
 make openwrt-ipk
-# → dist/zapret-gui_0.14.0-1_openwrt.ipk
+# → dist/zapret-gui_<version>-1_openwrt.ipk
 
 # Проверка синтаксиса
 make lint

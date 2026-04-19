@@ -120,6 +120,14 @@ jobs:
           echo "✓ Архив: $FINAL_ARCHIVE"
           ls -lh "$FINAL_ARCHIVE"
 
+      # Стабильно-именованные копии для README-ссылок
+      - name: Create stable-named artifacts
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cp "dist/zapret-gui_${VERSION}-1_all.ipk"     dist/zapret-gui-entware.ipk
+          cp "dist/zapret-gui_${VERSION}-1_all.ipk"     dist/zapret-gui-keenetic.ipk
+          cp "dist/zapret-gui_${VERSION}-1_openwrt.ipk" dist/zapret-gui-openwrt.ipk
+
       # Артефакты
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

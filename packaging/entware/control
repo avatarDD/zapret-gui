@@ -8,6 +8,6 @@ Description: Web GUI for managing zapret2/nfqws2 DPI bypass tool on Entware rout
  Dark theme, mobile-friendly SPA interface.
 Section: net
 Priority: optional
-Depends: python3-light, python3-bottle
+Depends: python3-light
 Installed-Size: @SIZE@
 Source: https://github.com/avatarDD/zapret-gui
