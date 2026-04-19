@@ -72,31 +72,39 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Тег: $TAG, Версия: $VERSION"
 
-      # Проверка версии
+      # Проверка версии (core/version.py должна совпадать с тегом)
       - name: Verify version consistency
         run: |
           TAG_VER="${{ steps.version.outputs.version }}"
+          FAIL=0
 
           if [ -f core/version.py ]; then
             CODE_VER=$(grep -oP 'GUI_VERSION\s*=\s*["\x27]\K[^"\x27]+' core/version.py || true)
             if [ -n "$CODE_VER" ] && [ "$CODE_VER" != "$TAG_VER" ]; then
-              echo "⚠ core/version.py ($CODE_VER) ≠ тег ($TAG_VER)"
+              echo "❌ core/version.py ($CODE_VER) ≠ тег ($TAG_VER)"
+              FAIL=1
+            else
+              echo "✓ core/version.py: $CODE_VER"
             fi
           fi
 
           if [ -f Makefile ]; then
             MK_VER=$(grep -oP '^PKG_VERSION\s*:=\s*\K\S+' Makefile || true)
             if [ -n "$MK_VER" ] && [ "$MK_VER" != "$TAG_VER" ]; then
-              echo "⚠ Makefile ($MK_VER) ≠ тег ($TAG_VER)"
+              echo "⚠ Makefile ($MK_VER) ≠ тег ($TAG_VER) — сборка использует версию тега"
+            else
+              echo "✓ Makefile: $MK_VER"
             fi
           fi
 
-      # Сборка пакетов
+          [ "$FAIL" -eq 0 ] || exit 1
+
+      # Сборка пакетов (версия берётся из тега, не из Makefile)
       - name: Build Entware ipk
-        run: make ipk
+        run: make ipk PKG_VERSION=${{ steps.version.outputs.version }}
 
       - name: Build OpenWrt ipk
-        run: make openwrt-ipk
+        run: make openwrt-ipk PKG_VERSION=${{ steps.version.outputs.version }}
 
       # ✅ ИСПРАВЛЕНО: архив создаётся вне проекта
       - name: Create source archive
