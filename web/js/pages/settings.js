@@ -20,7 +20,7 @@ const SettingsPage = (() => {
     let activeSection = 'zapret';
     let systemInfo = null;
 
-    const GUI_VERSION = 'v0.13.5';
+    let guiVersion = '...';
 
     // Список системных интерфейсов (загружается с сервера)
     let _allInterfaces = [];
@@ -212,7 +212,7 @@ const SettingsPage = (() => {
                             </svg>
                             <div>
                                 <div class="settings-about-title">Zapret Web-GUI</div>
-                                <div class="settings-about-version">${GUI_VERSION}</div>
+                                <div class="settings-about-version" id="settings-gui-version">${guiVersion}</div>
                             </div>
                         </div>
                         <div class="settings-about-info" id="settings-system-info">
@@ -405,11 +405,21 @@ const SettingsPage = (() => {
 
     async function loadSystemInfo() {
         try {
-            const data = await API.get('/api/status');
-            if (data.ok) {
-                systemInfo = data;
-                renderSystemInfo();
+            const [statusData, versionData] = await Promise.all([
+                API.get('/api/status'),
+                API.get('/api/gui/version'),
+            ]);
+            if (statusData.ok) {
+                systemInfo = statusData;
             }
+            if (versionData && versionData.version) {
+                guiVersion = 'v' + versionData.version;
+                const verEl = document.getElementById('settings-gui-version');
+                if (verEl) verEl.textContent = guiVersion;
+                const sidebarVer = document.getElementById('sidebar-version');
+                if (sidebarVer) sidebarVer.textContent = guiVersion;
+            }
+            renderSystemInfo();
         } catch (err) { /* не критично */ }
     }
 
@@ -436,7 +446,7 @@ const SettingsPage = (() => {
             rows.push(['RAM', `${usedMb} MB / ${sys.ram.total_mb} MB (${sys.ram.used_percent || 0}%)`]);
         }
         if (fw.type) rows.push(['Firewall', fw.type]);
-        rows.push(['GUI версия', GUI_VERSION]);
+        rows.push(['GUI версия', guiVersion]);
 
         el.innerHTML = rows.map(([label, val]) => `
             <div class="settings-info-row">

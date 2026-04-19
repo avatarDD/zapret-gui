@@ -13,8 +13,8 @@ import threading
 from bottle import request, response
 
 
-# Таймаут ожидания фонового потока обновления
-_UPDATE_THREAD_TIMEOUT = 120
+# Краткий таймаут: ловим быстрые ошибки, затем возвращаем in_progress
+_UPDATE_THREAD_TIMEOUT = 5
 
 
 def register(app):
@@ -38,8 +38,7 @@ def register(app):
 
         force = request.params.get("force", "").lower() in ("1", "true")
         if force:
-            # Сбросить кэш для принудительной проверки
-            comparison = updater.get_latest_version(force_refresh=True)
+            updater.get_latest_version(force_refresh=True)
 
         comparison = updater.get_version_comparison()
         return {"ok": True, **comparison}

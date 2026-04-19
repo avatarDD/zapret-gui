@@ -30,6 +30,10 @@ def register(app):
         from core.zapret_installer import get_zapret_installer
         inst = get_zapret_installer()
 
+        force = request.params.get("force", "").lower() in ("1", "true")
+        if force:
+            inst.get_latest_version(force_refresh=True)
+
         comparison = inst.get_version_comparison()
         running = inst.is_nfqws_running()
         op_status = inst.get_operation_status()
