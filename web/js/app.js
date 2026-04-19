@@ -1,12 +1,12 @@
 /**
- * app.js - SPA entry point.
+ * app.js — Точка входа SPA.
  *
- * Hash-based routing (#dashboard, #control, #strategies, #blobs, #logs, #settings).
- * Initializes the sidebar and loads the initial page.
+ * Hash-based роутинг (#dashboard, #control, #strategies, #blobs, #logs, #settings).
+ * Инициализация sidebar, загрузка начальной страницы.
  */
 
 const App = (() => {
-    // Page registry: id -> { render(container), destroy?() }
+    // Реестр страниц: id → { render(container), destroy?() }
     const pages = {
         dashboard:   DashboardPage,
         control:     ControlPage,
@@ -28,11 +28,14 @@ const App = (() => {
     let currentPageId = null;
 
     function init() {
+        // Рендерим sidebar
         Sidebar.render();
         Sidebar.initMobileToggle();
-        loadGuiVersion();
 
+        // Слушаем изменение hash
         window.addEventListener('hashchange', onHashChange);
+
+        // Начальная навигация
         onHashChange();
     }
 
@@ -42,13 +45,16 @@ const App = (() => {
     }
 
     function navigateTo(pageId) {
+        // Если такой страницы нет — на dashboard
         if (!pages[pageId]) {
             pageId = 'dashboard';
             window.location.hash = pageId;
         }
 
+        // Не перерисовываем если уже на этой странице
         if (pageId === currentPageId) return;
 
+        // Уничтожаем текущую страницу
         if (currentPage && currentPage.destroy) {
             currentPage.destroy();
         }
@@ -56,8 +62,10 @@ const App = (() => {
         currentPageId = pageId;
         currentPage = pages[pageId];
 
+        // Обновляем sidebar
         Sidebar.setCurrentPage(pageId);
 
+        // Рендерим страницу
         const container = document.getElementById('page-container');
         if (container && currentPage) {
             container.innerHTML = '';
@@ -65,20 +73,7 @@ const App = (() => {
         }
     }
 
-    async function loadGuiVersion() {
-        const sidebarVersion = document.getElementById('sidebar-version');
-        if (!sidebarVersion) return;
-
-        try {
-            const versionData = await API.get('/api/gui/version');
-            if (versionData && versionData.version) {
-                sidebarVersion.textContent = `v${versionData.version}`;
-            }
-        } catch (_) {
-            sidebarVersion.textContent = '-';
-        }
-    }
-
+    // Запуск при загрузке DOM
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
