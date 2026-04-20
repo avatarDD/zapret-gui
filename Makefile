@@ -16,7 +16,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 PKG_NAME     := zapret-gui
-PKG_VERSION  := 0.14.3
+PKG_VERSION  := $(shell python3 -c "exec(open('core/version.py').read()); print(GUI_VERSION)" 2>/dev/null || echo "0.0.0")
 PKG_RELEASE  := 1
 PKG_ARCH     := all
 PKG_FULLNAME := $(PKG_NAME)_$(PKG_VERSION)-$(PKG_RELEASE)_$(PKG_ARCH)
@@ -57,7 +57,7 @@ help:
 	@echo "  ─────────────────────────"
 	@echo "  make ipk          — собрать ipk для Entware"
 	@echo "  make openwrt-ipk  — собрать ipk для OpenWrt"
-	@echo "  make release      — создать тег v$(PKG_VERSION) и запустить релиз"
+	@echo "  make release VERSION=X.Y.Z — обновить версию, создать тег и запустить релиз"
 	@echo "  make clean        — очистить build/ и dist/"
 	@echo "  make lint         — проверка синтаксиса Python"
 	@echo "  make info         — информация о пакете"
@@ -72,29 +72,29 @@ info:
 	@echo "Конфигурация: $(DEST_CONFIG)"
 
 # ── Релиз через GitHub Actions ───────────────────────────────
-# Создаёт git-тег и пушит — GitHub Actions соберёт и опубликует
-release: lint
-	@echo ""
-	@echo "── Создание релиза v$(PKG_VERSION) ──"
-	@if git rev-parse "v$(PKG_VERSION)" >/dev/null 2>&1; then \
-		echo "ОШИБКА: тег v$(PKG_VERSION) уже существует!"; \
-		echo "  Обновите PKG_VERSION в Makefile и core/version.py"; \
+# Использование: make release VERSION=0.14.6
+# Обновляет core/version.py, коммитит, создаёт тег → GitHub Actions собирает релиз
+release:
+	@if [ -z "$(VERSION)" ]; then \
+		printf "\n  Использование: make release VERSION=X.Y.Z\n  Пример:        make release VERSION=0.14.6\n\n"; \
 		exit 1; \
 	fi
-	@echo "Проверка версии в core/version.py..."
-	@CODE_VER=$$(grep -oP 'GUI_VERSION\s*=\s*["\x27]\K[^"\x27]+' core/version.py 2>/dev/null || echo ""); \
-	 if [ "$$CODE_VER" != "$(PKG_VERSION)" ]; then \
-		echo "ОШИБКА: core/version.py ($$CODE_VER) ≠ Makefile ($(PKG_VERSION))"; \
-		echo "  Синхронизируйте версии перед релизом!"; \
+	@if git rev-parse "v$(VERSION)" >/dev/null 2>&1; then \
+		echo "ОШИБКА: тег v$(VERSION) уже существует!"; \
 		exit 1; \
-	 fi
-	git tag -a "v$(PKG_VERSION)" -m "Release v$(PKG_VERSION)"
-	git push origin "v$(PKG_VERSION)"
+	fi
+	@echo "── Обновление версии до $(VERSION) ──"
+	@sed -i 's/GUI_VERSION = .*/GUI_VERSION = "$(VERSION)"/' core/version.py
+	@git add core/version.py
+	@git diff --cached --quiet \
+		&& echo "Версия уже актуальна, коммит не нужен" \
+		|| git commit -m "chore: bump version to v$(VERSION)"
+	@git push origin HEAD
+	@echo "── Создание тега v$(VERSION) ──"
+	@git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	@git push origin "v$(VERSION)"
 	@echo ""
-	@echo "✓ Тег v$(PKG_VERSION) создан и отправлен"
-	@echo "  GitHub Actions соберёт и опубликует релиз автоматически"
-	@echo "  https://github.com/avatarDD/zapret-gui/actions"
-	@echo ""
+	@printf "✓ Готово! GitHub Actions запустит сборку и опубликует релиз.\n  https://github.com/avatarDD/zapret-gui/actions\n\n"
 
 # ── Сборка ipk для Entware ───────────────────────────────────
 _clean_build:
