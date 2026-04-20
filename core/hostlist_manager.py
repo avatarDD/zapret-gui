@@ -2,16 +2,21 @@
 """
 Менеджер списков доменов (hostlists).
 
-Управляет файлами:
+Управляет файлами в директории lists_path (обычно /opt/zapret2/lists):
   - other.txt     — базовый список доменов для обработки nfqws
   - other2.txt    — пользовательские домены
   - netrogat.txt  — исключения (домены, которые НЕ обрабатываются)
+  - *.txt         — произвольные пользовательские списки
+
+Имя списка должно соответствовать паттерну [a-zA-Z0-9_-]+ (1..64 символов).
 
 Использование:
     from core.hostlist_manager import get_hostlist_manager
     hm = get_hostlist_manager()
     domains = hm.get_hostlist("other")
     hm.add_domains("other2", ["example.com", "test.org"])
+    hm.create_hostlist("myvpn")   # создать новый список myvpn.txt
+    hm.delete_hostlist("myvpn")   # удалить пользовательский список
 """
 
 import os
@@ -82,8 +87,8 @@ DEFAULT_NETROGAT = [
 
 DEFAULT_OTHER2 = []
 
-# Допустимые имена файлов
-VALID_NAMES = {"other", "other2", "netrogat"}
+# Встроенные (защищённые от удаления) имена списков
+BUILTIN_NAMES = ("other", "other2", "netrogat")
 
 # Маппинг имя → дефолтный список
 DEFAULTS_MAP = {
@@ -92,12 +97,15 @@ DEFAULTS_MAP = {
     "netrogat": DEFAULT_NETROGAT,
 }
 
-# Описания файлов
+# Описания встроенных файлов
 DESCRIPTIONS = {
     "other": "Базовый список доменов",
     "other2": "Пользовательские домены",
     "netrogat": "Исключения (не обрабатываются)",
 }
+
+# Regex для валидации имени списка — разрешены латиница, цифры, "_" и "-"
+NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 # Regex для валидации домена
 # Допускает: example.com, sub.example.com, *.example.com
@@ -135,18 +143,47 @@ class HostlistManager:
                 log.error(f"Не удалось создать директорию: {e}", source="hostlists")
 
     def _validate_name(self, name):
-        """Проверить что имя файла допустимо."""
-        return name in VALID_NAMES
+        """Проверить что имя файла допустимо (латиница/цифры/_/-)."""
+        return isinstance(name, str) and bool(NAME_RE.match(name))
+
+    def _is_builtin(self, name):
+        """Встроенное (защищённое от удаления) имя."""
+        return name in BUILTIN_NAMES
+
+    def list_names(self):
+        """
+        Список имён всех hostlist-файлов в директории.
+
+        Возвращает встроенные имена (other/other2/netrogat) даже если файлы
+        ещё не созданы, плюс любые *.txt файлы с валидным именем.
+        """
+        names = set(BUILTIN_NAMES)
+        path = self.lists_path
+        try:
+            if os.path.isdir(path):
+                for entry in os.listdir(path):
+                    if not entry.endswith(".txt"):
+                        continue
+                    stem = entry[:-4]
+                    if self._validate_name(stem):
+                        names.add(stem)
+        except OSError as e:
+            log.error(f"Не удалось прочитать {path}: {e}", source="hostlists")
+
+        # Сначала встроенные в каноническом порядке, затем кастомные по алфавиту
+        builtin_order = [n for n in BUILTIN_NAMES if n in names]
+        custom = sorted(n for n in names if n not in BUILTIN_NAMES)
+        return builtin_order + custom
 
     def get_hostlist(self, name):
         """
         Прочитать файл списка доменов.
 
         Args:
-            name: Имя списка (other, other2, netrogat)
+            name: Имя списка (other, other2, netrogat, либо пользовательское)
 
         Returns:
-            list[str]: Список доменов (отсортированный, без дубликатов)
+            list[str]: Список доменов
         """
         if not self._validate_name(name):
             log.warning(f"Недопустимое имя списка: {name}", source="hostlists")
@@ -155,10 +192,9 @@ class HostlistManager:
         filepath = self._file_path(name)
 
         if not os.path.exists(filepath):
-            # Если файл не существует — вернуть дефолтный список
+            # Если файл не существует — для встроенных имён возвращаем дефолт
             defaults = DEFAULTS_MAP.get(name, [])
             if defaults:
-                # Создаём файл с дефолтами
                 self.save_hostlist(name, defaults)
             return list(defaults)
 
@@ -214,6 +250,66 @@ class HostlistManager:
         except Exception as e:
             log.error(f"Ошибка записи {name}.txt: {e}", source="hostlists")
             return False
+
+    def create_hostlist(self, name):
+        """
+        Создать новый пустой hostlist-файл.
+
+        Args:
+            name: Имя списка
+
+        Returns:
+            tuple[bool, str]: (успех, сообщение об ошибке или "")
+        """
+        if not self._validate_name(name):
+            return False, "Недопустимое имя списка"
+
+        self._ensure_dir()
+        filepath = self._file_path(name)
+
+        if os.path.exists(filepath):
+            return False, "Список с таким именем уже существует"
+
+        try:
+            with self._lock:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write("")
+            log.info(f"Создан список {name}.txt", source="hostlists")
+            return True, ""
+        except Exception as e:
+            log.error(f"Ошибка создания {name}.txt: {e}", source="hostlists")
+            return False, str(e)
+
+    def delete_hostlist(self, name):
+        """
+        Удалить пользовательский hostlist-файл.
+
+        Встроенные списки (other/other2/netrogat) удалить нельзя.
+
+        Args:
+            name: Имя списка
+
+        Returns:
+            tuple[bool, str]: (успех, сообщение об ошибке или "")
+        """
+        if not self._validate_name(name):
+            return False, "Недопустимое имя списка"
+
+        if self._is_builtin(name):
+            return False, "Нельзя удалить встроенный список"
+
+        filepath = self._file_path(name)
+        if not os.path.exists(filepath):
+            return False, "Список не существует"
+
+        try:
+            with self._lock:
+                os.remove(filepath)
+            log.info(f"Удалён список {name}.txt", source="hostlists")
+            return True, ""
+        except Exception as e:
+            log.error(f"Ошибка удаления {name}.txt: {e}", source="hostlists")
+            return False, str(e)
 
     def add_domains(self, name, domains):
         """
@@ -322,10 +418,10 @@ class HostlistManager:
         Статистика по всем файлам списков.
 
         Returns:
-            dict: {name: {count, path, exists, writable, description}}
+            dict: {name: {count, path, exists, writable, description, is_builtin}}
         """
         stats = {}
-        for name in VALID_NAMES:
+        for name in self.list_names():
             filepath = self._file_path(name)
             exists = os.path.exists(filepath)
 
@@ -340,7 +436,7 @@ class HostlistManager:
                 except Exception:
                     pass
 
-            writable = os.access(os.path.dirname(filepath), os.W_OK) if exists else True
+            writable = os.access(os.path.dirname(filepath), os.W_OK) if os.path.isdir(os.path.dirname(filepath)) else True
 
             stats[name] = {
                 "name": name,
@@ -349,8 +445,9 @@ class HostlistManager:
                 "count": count,
                 "exists": exists,
                 "writable": writable,
-                "description": DESCRIPTIONS.get(name, ""),
+                "description": DESCRIPTIONS.get(name, "Пользовательский список"),
                 "has_defaults": name in DEFAULTS_MAP and len(DEFAULTS_MAP[name]) > 0,
+                "is_builtin": self._is_builtin(name),
             }
 
         return stats
@@ -358,6 +455,8 @@ class HostlistManager:
     def reset_to_defaults(self, name):
         """
         Сбросить список к дефолтным значениям.
+
+        Для пользовательских списков без дефолтов — очищает файл.
 
         Args:
             name: Имя списка
