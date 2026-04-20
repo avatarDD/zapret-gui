@@ -41,7 +41,7 @@ opkg install zapret-gui-keenetic.ipk
 /opt/etc/init.d/S99zapret-gui start
 ```
 
-**Другие роутеры с Entware (ASUS, Xiaomi, etc.):**
+**Другие роутеры с Entware (ASUS, Xiaomi, GL.iNet, etc.):**
 ```bash
 wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-entware.ipk
 opkg install zapret-gui-entware.ipk
@@ -53,6 +53,15 @@ opkg install zapret-gui-entware.ipk
 wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.ipk
 opkg install zapret-gui-openwrt.ipk
 /etc/init.d/zapret-gui start
+```
+
+**Linux (tar.gz):**
+```bash
+wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-linux.tar.gz
+tar xzf zapret-gui-linux.tar.gz
+cd zapret-gui
+pip3 install bottle
+python3 app.py --host 0.0.0.0 --port 8080
 ```
 
 ### Вариант 2: Автоустановка скриптом
@@ -140,7 +149,7 @@ opkg upgrade zapret-gui
 ## Сборка пакетов
 
 ```bash
-# Entware ipk
+# Entware / Keenetic ipk
 make ipk
 # → dist/zapret-gui_<version>-1_all.ipk
 
@@ -150,6 +159,9 @@ make openwrt-ipk
 
 # Проверка синтаксиса
 make lint
+
+# Выпустить релиз (обновляет версию, создаёт тег → GitHub Actions публикует)
+make release VERSION=X.Y.Z
 ```
 
 ## Удаление
