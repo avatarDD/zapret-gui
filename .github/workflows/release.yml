@@ -100,7 +100,8 @@ jobs:
       - name: Create Linux archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          tar czf "${PKG_NAME}-${VERSION}-linux.tar.gz" \
+          ARCHIVE="/tmp/${PKG_NAME}-${VERSION}-linux.tar.gz"
+          tar czf "$ARCHIVE" \
             --exclude='.git' \
             --exclude='build' \
             --exclude='dist' \
@@ -109,8 +110,7 @@ jobs:
             --exclude='*.7z' \
             --exclude='.github' \
             .
-          echo "✓ Архив: ${PKG_NAME}-${VERSION}-linux.tar.gz"
-          ls -lh "${PKG_NAME}-${VERSION}-linux.tar.gz"
+          echo "✓ Архив: $(ls -lh $ARCHIVE)"
 
       # ── Именование артефактов ────────────────────────────────
 
@@ -125,7 +125,7 @@ jobs:
           cp "dist/${PKG_NAME}_${VERSION}-1_openwrt.ipk" \
              "release-artifacts/${PKG_NAME}-${VERSION}-openwrt.ipk"
 
-          cp "${PKG_NAME}-${VERSION}-linux.tar.gz" \
+          cp "/tmp/${PKG_NAME}-${VERSION}-linux.tar.gz" \
              "release-artifacts/"
 
           echo "── Артефакты релиза ──"
