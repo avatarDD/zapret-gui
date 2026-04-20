@@ -184,6 +184,18 @@ _install_bottle_direct() {
 
 # ── Проверка зависимостей ─────────────────────────────────────
 
+OPKG_INSTALLED_LIST=""
+
+_opkg_install_pkg() {
+    local pkg="$1"
+    $PKG_CMD install "$pkg" || { error "Не удалось установить $pkg"; exit 1; }
+    # Записываем пакет в список для последующего удаления
+    if [ -n "$CONFIG_DIR" ]; then
+        mkdir -p "$CONFIG_DIR" 2>/dev/null
+        echo "$pkg" >> "$CONFIG_DIR/opkg_installed.list"
+    fi
+}
+
 check_deps() {
     info "Проверка зависимостей..."
     local need_python=false
@@ -219,7 +231,7 @@ check_deps() {
             $PKG_CMD update 2>/dev/null || true
             if $need_python; then
                 info "  Устанавливаем python3-light..."
-                $PKG_CMD install python3-light || { error "Не удалось установить python3-light"; exit 1; }
+                _opkg_install_pkg python3-light
             fi
             if $need_bottle; then
                 info "  Устанавливаем bottle через pip..."
@@ -622,6 +634,18 @@ do_uninstall() {
     # Удалить init-скрипт
     rm -f "$INITD_SCRIPT"
     ok "Init-скрипт удалён"
+
+    # Удалить пакеты, установленные через opkg
+    local opkg_list="$CONFIG_DIR/opkg_installed.list"
+    if [ "$PKG_CMD" = "opkg" ] && [ -f "$opkg_list" ]; then
+        info "Удаление пакетов, установленных через opkg..."
+        while IFS= read -r pkg; do
+            [ -z "$pkg" ] && continue
+            info "  opkg remove $pkg"
+            $PKG_CMD remove "$pkg" 2>/dev/null && ok "  Удалён: $pkg" || warn "  Не удалось удалить: $pkg"
+        done < "$opkg_list"
+        rm -f "$opkg_list"
+    fi
 
     # Удалить приложение
     if [ -d "$APP_DIR" ]; then
