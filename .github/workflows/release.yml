@@ -1,5 +1,13 @@
 # ═══════════════════════════════════════════════════════════════
 # release.yml — Автоматическая сборка и публикация релиза
+#
+# Запускается при пуше тега v* (например: git push origin v0.14.6)
+# Версия берётся из тега — core/version.py синхронизируется автоматически.
+#
+# Артефакты релиза:
+#   zapret-gui-X.Y.Z-keenetic.ipk  — для Keenetic / Entware
+#   zapret-gui-X.Y.Z-openwrt.ipk   — для OpenWrt
+#   zapret-gui-X.Y.Z-linux.tar.gz  — универсальный архив для Linux
 # ═══════════════════════════════════════════════════════════════
 
 name: Build & Release
@@ -57,12 +65,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y build-essential make tar
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      # Извлекаем версию из тега
+      - name: Install build tools
+        run: sudo apt-get install -y build-essential make tar
+
       - name: Extract version from tag
         id: version
         run: |
@@ -70,49 +80,27 @@ jobs:
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Тег: $TAG, Версия: $VERSION"
+          echo "Тег: $TAG → Версия: $VERSION"
 
-      # Проверка версии (core/version.py должна совпадать с тегом)
-      - name: Verify version consistency
-        run: |
-          TAG_VER="${{ steps.version.outputs.version }}"
-          FAIL=0
-
-          if [ -f core/version.py ]; then
-            CODE_VER=$(grep -oP 'GUI_VERSION\s*=\s*["\x27]\K[^"\x27]+' core/version.py || true)
-            if [ -n "$CODE_VER" ] && [ "$CODE_VER" != "$TAG_VER" ]; then
-              echo "❌ core/version.py ($CODE_VER) ≠ тег ($TAG_VER)"
-              FAIL=1
-            else
-              echo "✓ core/version.py: $CODE_VER"
-            fi
-          fi
-
-          if [ -f Makefile ]; then
-            MK_VER=$(grep -oP '^PKG_VERSION\s*:=\s*\K\S+' Makefile || true)
-            if [ -n "$MK_VER" ] && [ "$MK_VER" != "$TAG_VER" ]; then
-              echo "⚠ Makefile ($MK_VER) ≠ тег ($TAG_VER) — сборка использует версию тега"
-            else
-              echo "✓ Makefile: $MK_VER"
-            fi
-          fi
-
-          [ "$FAIL" -eq 0 ] || exit 1
-
-      # Сборка пакетов (версия берётся из тега, не из Makefile)
-      - name: Build Entware ipk
-        run: make ipk PKG_VERSION=${{ steps.version.outputs.version }}
-
-      - name: Build OpenWrt ipk
-        run: make openwrt-ipk PKG_VERSION=${{ steps.version.outputs.version }}
-
-      # ✅ ИСПРАВЛЕНО: архив создаётся вне проекта
-      - name: Create source archive
+      # Версия берётся из тега — синхронизируем core/version.py автоматически
+      - name: Sync core/version.py from tag
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          ARCHIVE="/tmp/${PKG_NAME}-${VERSION}.tar.gz"
+          sed -i "s/GUI_VERSION = .*/GUI_VERSION = \"$VERSION\"/" core/version.py
+          echo "✓ core/version.py → $VERSION"
 
-          tar czf "$ARCHIVE" \
+      # ── Сборка пакетов ──────────────────────────────────────
+
+      - name: Build Keenetic / Entware ipk
+        run: make ipk
+
+      - name: Build OpenWrt ipk
+        run: make openwrt-ipk
+
+      - name: Create Linux archive
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          tar czf "${PKG_NAME}-${VERSION}-linux.tar.gz" \
             --exclude='.git' \
             --exclude='build' \
             --exclude='dist' \
@@ -121,30 +109,34 @@ jobs:
             --exclude='*.7z' \
             --exclude='.github' \
             .
+          echo "✓ Архив: ${PKG_NAME}-${VERSION}-linux.tar.gz"
+          ls -lh "${PKG_NAME}-${VERSION}-linux.tar.gz"
 
-          mv "$ARCHIVE" .
-          FINAL_ARCHIVE="${PKG_NAME}-${VERSION}.tar.gz"
+      # ── Именование артефактов ────────────────────────────────
 
-          echo "✓ Архив: $FINAL_ARCHIVE"
-          ls -lh "$FINAL_ARCHIVE"
-
-      # Стабильно-именованные копии для README-ссылок
-      - name: Create stable-named artifacts
+      - name: Stage release artifacts
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          cp "dist/zapret-gui_${VERSION}-1_all.ipk"     dist/zapret-gui-entware.ipk
-          cp "dist/zapret-gui_${VERSION}-1_all.ipk"     dist/zapret-gui-keenetic.ipk
-          cp "dist/zapret-gui_${VERSION}-1_openwrt.ipk" dist/zapret-gui-openwrt.ipk
+          mkdir -p release-artifacts
 
-      # Артефакты
-      - name: Upload build artifacts
+          cp "dist/${PKG_NAME}_${VERSION}-1_all.ipk" \
+             "release-artifacts/${PKG_NAME}-${VERSION}-keenetic.ipk"
+
+          cp "dist/${PKG_NAME}_${VERSION}-1_openwrt.ipk" \
+             "release-artifacts/${PKG_NAME}-${VERSION}-openwrt.ipk"
+
+          cp "${PKG_NAME}-${VERSION}-linux.tar.gz" \
+             "release-artifacts/"
+
+          echo "── Артефакты релиза ──"
+          ls -lh release-artifacts/
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-packages
           retention-days: 5
-          path: |
-            dist/*.ipk
-            ${{ env.PKG_NAME }}-${{ steps.version.outputs.version }}.tar.gz
+          path: release-artifacts/
 
   # ── 3. Публикация релиза ────────────────────────────────────
   release:
@@ -170,23 +162,19 @@ jobs:
           name: release-packages
           path: ./artifacts
 
-      # Changelog
       - name: Extract changelog
         run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTES=""
           if [ -f CHANGELOG.md ]; then
-            TAG="${{ steps.version.outputs.tag }}"
-            VERSION="${{ steps.version.outputs.version }}"
             NOTES=$(awk "/^## $TAG|^## v?$VERSION/{found=1; next} /^## /{if(found) exit} found{print}" CHANGELOG.md)
-            if [ -z "$NOTES" ]; then
-              NOTES="Релиз $TAG"
-            fi
-          else
-            NOTES="Релиз ${{ steps.version.outputs.tag }}"
           fi
-
+          if [ -z "$NOTES" ]; then
+            NOTES="Релиз $TAG"
+          fi
           echo "$NOTES" > /tmp/release_notes.md
 
-      # Релиз
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -194,8 +182,6 @@ jobs:
           body_path: /tmp/release_notes.md
           draft: false
           prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
-          files: |
-            artifacts/dist/*.ipk
-            artifacts/${{ env.PKG_NAME }}-${{ steps.version.outputs.version }}.tar.gz
+          files: artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
