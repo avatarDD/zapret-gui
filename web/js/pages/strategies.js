@@ -10,6 +10,7 @@ const StrategiesPage = (() => {
     let currentId = null;
     let favorites = [];
     let pollTimer = null;
+    let hostlistFiles = [];  // [{name, filename, path, is_builtin}] — для дропдауна в редакторе
 
     // ══════════════════ Render ══════════════════
 
@@ -419,8 +420,19 @@ const StrategiesPage = (() => {
         title.textContent = mode === 'create' ? 'Создать стратегию' : 'Редактировать стратегию';
         modal.style.display = 'flex';
 
+        // Грузим список hostlist-файлов и перерисовываем форму, чтобы дропдаун был актуален
         renderEditorForm(body);
         attachAutocompleteToProfiles();
+        loadHostlistFiles().then(() => {
+            // Перерисовываем только список профилей, не трогая остальные поля
+            const el = document.getElementById('profiles-editor');
+            if (el && editorData && editorData.profiles) {
+                // Сохраняем текущие значения args/name из DOM (могли быть отредактированы)
+                collectEditorData();
+                el.innerHTML = editorData.profiles.map((p, i) => renderProfileEditor(p, i)).join('');
+                attachAutocompleteToProfiles();
+            }
+        });
     }
 
     function renderEditorForm(container) {
@@ -478,6 +490,10 @@ const StrategiesPage = (() => {
 
     function renderProfileEditor(profile, index) {
         const enabled = profile.enabled !== false;
+        const hostlistOptions = hostlistFiles.map(f => {
+            const badge = f.is_builtin ? '' : ' [user]';
+            return `<option value="${escapeHtml(f.path)}">${escapeHtml(f.filename || f.name)}${badge}</option>`;
+        }).join('');
         return `
             <div class="profile-editor-item" data-index="${index}">
                 <div class="profile-editor-header">
@@ -485,11 +501,20 @@ const StrategiesPage = (() => {
                         <input type="checkbox" class="profile-toggle" ${enabled ? 'checked' : ''} onchange="StrategiesPage.toggleProfile(${index}, this.checked)">
                         <input type="text" class="form-input form-input-sm" value="${escapeHtml(profile.name || profile.id)}" placeholder="Имя профиля" onchange="StrategiesPage.updateProfileName(${index}, this.value)" style="flex:1; max-width:260px;">
                     </label>
-                    <button class="btn-icon-only" onclick="StrategiesPage.removeProfile(${index})" title="Удалить профиль" style="color:var(--error); opacity:0.7;">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                    </button>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                        <select class="form-input form-input-sm profile-hostlist-picker" data-index="${index}"
+                                onchange="StrategiesPage.insertHostlist(${index}, this)"
+                                title="Вставить --hostlist=<файл> в аргументы профиля"
+                                style="max-width:200px;">
+                            <option value="">+ hostlist…</option>
+                            ${hostlistOptions}
+                        </select>
+                        <button class="btn-icon-only" onclick="StrategiesPage.removeProfile(${index})" title="Удалить профиль" style="color:var(--error); opacity:0.7;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
                 <div class="profile-args-wrap">
                     <textarea class="form-textarea profile-args" rows="3" placeholder="--filter-tcp=443 --filter-l7=tls ..." onchange="StrategiesPage.updateProfileArgs(${index}, this.value)">${escapeHtml(profile.args || '')}</textarea>
@@ -497,6 +522,49 @@ const StrategiesPage = (() => {
                 </div>
             </div>
         `;
+    }
+
+    function insertHostlist(index, selectEl) {
+        if (!selectEl) return;
+        const path = selectEl.value;
+        // Сбрасываем выбор независимо от результата
+        selectEl.value = '';
+        if (!path) return;
+
+        const item = document.querySelector('.profile-editor-item[data-index="' + index + '"]');
+        if (!item) return;
+        const textarea = item.querySelector('.profile-args');
+        if (!textarea) return;
+
+        const snippet = '--hostlist=' + path;
+
+        // Вставка в позицию курсора; если курсор в середине строки и слева не пробел — добавляем пробел
+        const start = textarea.selectionStart || 0;
+        const end = textarea.selectionEnd || 0;
+        const val = textarea.value;
+        const before = val.slice(0, start);
+        const after = val.slice(end);
+        const leftSep = (before.length && !/\s$/.test(before)) ? ' ' : '';
+        const rightSep = (after.length && !/^\s/.test(after)) ? ' ' : '';
+        const insertion = leftSep + snippet + rightSep;
+
+        textarea.value = before + insertion + after;
+        const newPos = before.length + insertion.length;
+        textarea.focus();
+        textarea.setSelectionRange(newPos, newPos);
+
+        updateProfileArgs(index, textarea.value);
+    }
+
+    async function loadHostlistFiles() {
+        try {
+            const result = await API.get('/api/hostlists');
+            if (result && result.ok) {
+                hostlistFiles = result.files || [];
+            }
+        } catch (err) {
+            hostlistFiles = [];
+        }
     }
 
     function addProfile() {
@@ -673,6 +741,7 @@ const StrategiesPage = (() => {
         toggleProfile,
         updateProfileName,
         updateProfileArgs,
+        insertHostlist,
         editorPreview,
         saveEditor,
     };

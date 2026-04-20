@@ -4,19 +4,26 @@ API списков доменов (hostlists).
 
 Эндпоинты:
   GET    /api/hostlists              — список всех файлов со статистикой
+  POST   /api/hostlists/create       — создать новый пользовательский список
   GET    /api/hostlists/:name        — содержимое файла (список доменов)
   PUT    /api/hostlists/:name        — заменить весь список
+  DELETE /api/hostlists/:name        — удалить пользовательский список
   POST   /api/hostlists/:name/add    — добавить домены
   POST   /api/hostlists/:name/remove — удалить домены
   POST   /api/hostlists/:name/reset  — сброс к дефолтам
   POST   /api/hostlists/:name/import — импорт из URL или текста
 
-name: "other", "other2", "netrogat"
+Имя списка:
+  — встроенные: other, other2, netrogat (нельзя удалить)
+  — пользовательские: любое имя, удовлетворяющее ^[a-zA-Z0-9_-]{1,64}$
 """
 
 from bottle import request, response
 
-ALLOWED_NAMES = ("other", "other2", "netrogat")
+
+def _validate_name(hm, name):
+    """Проверить имя через менеджер (единый источник правды)."""
+    return hm._validate_name(name)
 
 
 def register(app):
@@ -28,11 +35,51 @@ def register(app):
         from core.hostlist_manager import get_hostlist_manager
         hm = get_hostlist_manager()
         stats = hm.get_stats()
-        files = []
-        for nm in ALLOWED_NAMES:
-            if nm in stats:
-                files.append(stats[nm])
+        # Сохраняем порядок: встроенные сначала, затем кастомные по алфавиту
+        files = [stats[nm] for nm in hm.list_names() if nm in stats]
         return {"ok": True, "files": files}
+
+    @app.post("/api/hostlists/create")
+    def api_hostlists_create():
+        """Создать новый пустой пользовательский список."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.hostlist_manager import get_hostlist_manager
+        hm = get_hostlist_manager()
+
+        try:
+            body = request.json
+        except Exception:
+            response.status = 400
+            return {"ok": False, "error": "Невалидный JSON"}
+
+        if not body:
+            response.status = 400
+            return {"ok": False, "error": "Пустое тело запроса"}
+
+        name = (body.get("name") or "").strip()
+        if not name:
+            response.status = 400
+            return {"ok": False, "error": "Поле 'name' обязательно"}
+
+        if not _validate_name(hm, name):
+            response.status = 400
+            return {
+                "ok": False,
+                "error": "Недопустимое имя. Разрешены латиница, цифры, '_' и '-' (1..64 символов)",
+            }
+
+        ok, err = hm.create_hostlist(name)
+        if not ok:
+            response.status = 400 if "существует" in err else 500
+            return {"ok": False, "error": err or "Ошибка создания"}
+
+        stats = hm.get_stats().get(name, {})
+        return {
+            "ok": True,
+            "name": name,
+            "file": stats,
+            "message": "Создан список %s.txt" % name,
+        }
 
     @app.route("/api/hostlists/<name>")
     def api_hostlists_get(name):
@@ -41,7 +88,7 @@ def register(app):
         from core.hostlist_manager import get_hostlist_manager
         hm = get_hostlist_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(hm, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -53,6 +100,7 @@ def register(app):
             "domains": domains,
             "count": len(domains),
             "description": stats.get("description", ""),
+            "is_builtin": stats.get("is_builtin", False),
         }
 
     @app.put("/api/hostlists/<name>")
@@ -62,7 +110,7 @@ def register(app):
         from core.hostlist_manager import get_hostlist_manager
         hm = get_hostlist_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(hm, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -113,6 +161,29 @@ def register(app):
             result["invalid_count"] = len(invalid)
         return result
 
+    @app.delete("/api/hostlists/<name>")
+    def api_hostlists_delete(name):
+        """Удалить пользовательский список."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.hostlist_manager import get_hostlist_manager
+        hm = get_hostlist_manager()
+
+        if not _validate_name(hm, name):
+            response.status = 400
+            return {"ok": False, "error": "Недопустимое имя: %s" % name}
+
+        ok, err = hm.delete_hostlist(name)
+        if not ok:
+            if "встроенный" in err:
+                response.status = 400
+            elif "не существует" in err:
+                response.status = 404
+            else:
+                response.status = 500
+            return {"ok": False, "error": err or "Ошибка удаления"}
+
+        return {"ok": True, "message": "Удалён список %s.txt" % name}
+
     @app.post("/api/hostlists/<name>/add")
     def api_hostlists_add(name):
         """Добавить домены в список."""
@@ -120,7 +191,7 @@ def register(app):
         from core.hostlist_manager import get_hostlist_manager
         hm = get_hostlist_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(hm, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -156,7 +227,7 @@ def register(app):
         from core.hostlist_manager import get_hostlist_manager
         hm = get_hostlist_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(hm, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -192,7 +263,7 @@ def register(app):
         from core.hostlist_manager import get_hostlist_manager
         hm = get_hostlist_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(hm, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -215,7 +286,7 @@ def register(app):
         from core.hostlist_manager import get_hostlist_manager
         hm = get_hostlist_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(hm, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
