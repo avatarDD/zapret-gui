@@ -119,14 +119,12 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p release-artifacts
 
-          cp "dist/${PKG_NAME}_${VERSION}-1_all.ipk" \
-             "release-artifacts/${PKG_NAME}-${VERSION}-keenetic.ipk"
-
-          cp "dist/${PKG_NAME}_${VERSION}-1_openwrt.ipk" \
-             "release-artifacts/${PKG_NAME}-${VERSION}-openwrt.ipk"
-
-          cp "/tmp/${PKG_NAME}-${VERSION}-linux.tar.gz" \
-             "release-artifacts/"
+          # Стабильные имена — не меняются между релизами.
+          # README и /releases/latest/download/ всегда ссылаются на них.
+          cp "dist/${PKG_NAME}_${VERSION}-1_all.ipk"     "release-artifacts/${PKG_NAME}-keenetic.ipk"
+          cp "dist/${PKG_NAME}_${VERSION}-1_all.ipk"     "release-artifacts/${PKG_NAME}-entware.ipk"
+          cp "dist/${PKG_NAME}_${VERSION}-1_openwrt.ipk" "release-artifacts/${PKG_NAME}-openwrt.ipk"
+          cp "/tmp/${PKG_NAME}-${VERSION}-linux.tar.gz"  "release-artifacts/${PKG_NAME}-linux.tar.gz"
 
           echo "── Артефакты релиза ──"
           ls -lh release-artifacts/
