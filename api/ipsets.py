@@ -4,19 +4,29 @@ API IP-списков (ipsets).
 
 Эндпоинты:
   GET    /api/ipsets              — список файлов со статистикой
+  POST   /api/ipsets/create       — создать новый пользовательский IP-список
   GET    /api/ipsets/:name        — содержимое файла
   PUT    /api/ipsets/:name        — заменить весь список
+  DELETE /api/ipsets/:name        — удалить пользовательский список
+  POST   /api/ipsets/:name/rename — переименовать пользовательский список
   POST   /api/ipsets/:name/add    — добавить IP/подсети
   POST   /api/ipsets/:name/remove — удалить IP/подсети
   POST   /api/ipsets/:name/reset  — сброс к дефолтам
   POST   /api/ipsets/load-asn     — загрузить IP по ASN
 
-name: "ipset-base", "my-ipset"
+Имя списка:
+  — встроенные: ipset-base, my-ipset (нельзя удалить/переименовать)
+  — пользовательские: имена, начинающиеся с "ipset-", "ipset_",
+    "my-ipset-" или "my-ipset_", длиной до 64 символов
+    (разрешены латиница, цифры, "_" и "-")
 """
 
 from bottle import request, response
 
-ALLOWED_NAMES = ("ipset-base", "my-ipset")
+
+def _validate_name(im, name):
+    """Проверить имя через менеджер (единый источник правды)."""
+    return im._validate_name(name)
 
 
 def register(app):
@@ -31,12 +41,45 @@ def register(app):
         im = get_ipset_manager()
         stats = im.get_stats()
 
-        files = []
-        for name in ALLOWED_NAMES:
-            if name in stats:
-                files.append(stats[name])
-
+        # Встроенные сначала, затем кастомные по алфавиту
+        files = [stats[nm] for nm in im.list_names() if nm in stats]
         return {"ok": True, "files": files}
+
+    @app.post("/api/ipsets/create")
+    def api_ipsets_create():
+        """Создать новый пустой пользовательский IP-список."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.ipset_manager import get_ipset_manager
+        im = get_ipset_manager()
+
+        try:
+            body = request.json
+        except Exception:
+            response.status = 400
+            return {"ok": False, "error": "Невалидный JSON"}
+
+        if not body:
+            response.status = 400
+            return {"ok": False, "error": "Пустое тело запроса"}
+
+        name = (body.get("name") or "").strip()
+        if not name:
+            response.status = 400
+            return {"ok": False, "error": "Поле 'name' обязательно"}
+
+        ok, err = im.create_ipset(name)
+        if not ok:
+            response.status = 400 if ("существует" in err or "Недопустимое" in err
+                                      or "должно начинаться" in err) else 500
+            return {"ok": False, "error": err or "Ошибка создания"}
+
+        stats = im.get_stats().get(name, {})
+        return {
+            "ok": True,
+            "name": name,
+            "file": stats,
+            "message": "Создан IP-список %s.txt" % name,
+        }
 
     @app.route("/api/ipsets/<name>")
     def api_ipsets_get(name):
@@ -47,7 +90,7 @@ def register(app):
 
         im = get_ipset_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(im, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -60,6 +103,7 @@ def register(app):
             "entries": entries,
             "count": len(entries),
             "description": stats.get("description", ""),
+            "is_builtin": stats.get("is_builtin", False),
         }
 
     @app.put("/api/ipsets/<name>")
@@ -71,7 +115,7 @@ def register(app):
 
         im = get_ipset_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(im, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -124,6 +168,76 @@ def register(app):
 
         return result
 
+    @app.delete("/api/ipsets/<name>")
+    def api_ipsets_delete(name):
+        """Удалить пользовательский IP-список."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.ipset_manager import get_ipset_manager
+        im = get_ipset_manager()
+
+        if not _validate_name(im, name):
+            response.status = 400
+            return {"ok": False, "error": "Недопустимое имя: %s" % name}
+
+        ok, err = im.delete_ipset(name)
+        if not ok:
+            if "встроенный" in err:
+                response.status = 400
+            elif "не существует" in err:
+                response.status = 404
+            else:
+                response.status = 500
+            return {"ok": False, "error": err or "Ошибка удаления"}
+
+        return {"ok": True, "message": "Удалён IP-список %s.txt" % name}
+
+    @app.post("/api/ipsets/<name>/rename")
+    def api_ipsets_rename(name):
+        """Переименовать пользовательский IP-список."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.ipset_manager import get_ipset_manager
+        im = get_ipset_manager()
+
+        if not _validate_name(im, name):
+            response.status = 400
+            return {"ok": False, "error": "Недопустимое имя: %s" % name}
+
+        try:
+            body = request.json
+        except Exception:
+            response.status = 400
+            return {"ok": False, "error": "Невалидный JSON"}
+
+        if not body:
+            response.status = 400
+            return {"ok": False, "error": "Пустое тело запроса"}
+
+        new_name = (body.get("new_name") or "").strip()
+        if not new_name:
+            response.status = 400
+            return {"ok": False, "error": "Поле 'new_name' обязательно"}
+
+        ok, err = im.rename_ipset(name, new_name)
+        if not ok:
+            if "встроенный" in err or "встроенного" in err:
+                response.status = 400
+            elif "не существует" in err:
+                response.status = 404
+            elif ("уже существует" in err or "совпадает" in err
+                  or "Недопустимое" in err or "должно начинаться" in err):
+                response.status = 400
+            else:
+                response.status = 500
+            return {"ok": False, "error": err or "Ошибка переименования"}
+
+        stats = im.get_stats().get(new_name, {})
+        return {
+            "ok": True,
+            "name": new_name,
+            "file": stats,
+            "message": "IP-список %s.txt переименован в %s.txt" % (name, new_name),
+        }
+
     @app.post("/api/ipsets/<name>/add")
     def api_ipsets_add(name):
         """Добавить IP/подсети в список."""
@@ -133,7 +247,7 @@ def register(app):
 
         im = get_ipset_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(im, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -172,7 +286,7 @@ def register(app):
 
         im = get_ipset_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(im, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -211,7 +325,7 @@ def register(app):
 
         im = get_ipset_manager()
 
-        if name not in ALLOWED_NAMES:
+        if not _validate_name(im, name):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя: %s" % name}
 
@@ -254,7 +368,7 @@ def register(app):
             response.status = 400
             return {"ok": False, "error": "Поле 'asn' обязательно"}
 
-        if target not in ALLOWED_NAMES:
+        if not _validate_name(im, target):
             response.status = 400
             return {"ok": False, "error": "Недопустимое имя файла: %s" % target}
 

@@ -83,6 +83,13 @@ const HostlistsPage = (() => {
                                 </svg>
                                 Сбросить
                             </button>
+                            <button class="btn btn-ghost btn-sm" id="hl-rename-btn" onclick="HostlistsPage.showRenameModal()" title="Переименовать список" style="display:none;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                </svg>
+                                Переименовать
+                            </button>
                             <button class="btn btn-ghost btn-sm" id="hl-delete-btn" onclick="HostlistsPage.deleteList()" title="Удалить список" style="display:none; color:var(--error);">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <polyline points="3 6 5 6 21 6"/>
@@ -161,6 +168,40 @@ const HostlistsPage = (() => {
                 </div>
             </div>
 
+            <!-- Модальное окно переименования списка -->
+            <div class="modal-backdrop" id="hl-rename-modal" style="display:none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Переименовать список</h3>
+                        <button class="modal-close" onclick="HostlistsPage.closeRenameModal()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label">Текущее имя</label>
+                            <input type="text" class="form-input" id="hl-rename-old" readonly style="opacity:0.6;">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Новое имя</label>
+                            <input type="text" class="form-input" id="hl-rename-new"
+                                   placeholder="new_name" autocomplete="off"
+                                   onkeydown="if(event.key==='Enter') HostlistsPage.renameList()">
+                            <div class="form-hint">
+                                Разрешены латиница, цифры, <code>_</code> и <code>-</code> (1..64 символов).
+                                Имена, начинающиеся с <code>ipset</code>, зарезервированы для IP-списков.
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
+                            <button class="btn btn-ghost" onclick="HostlistsPage.closeRenameModal()">Отмена</button>
+                            <button class="btn btn-primary" onclick="HostlistsPage.renameList()">Переименовать</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Модальное окно создания списка -->
             <div class="modal-backdrop" id="hl-create-modal" style="display:none;">
                 <div class="modal-content">
@@ -181,6 +222,7 @@ const HostlistsPage = (() => {
                             <div class="form-hint">
                                 Будет создан файл <code>&lt;имя&gt;.txt</code>.
                                 Разрешены латиница, цифры, <code>_</code> и <code>-</code> (1..64 символов).
+                                Имена с префиксом <code>ipset</code> зарезервированы для IP-списков.
                             </div>
                         </div>
                         <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
@@ -287,9 +329,13 @@ const HostlistsPage = (() => {
         const tab = tabs.find(t => t.name === name);
         if (desc && tab) desc.textContent = tab.desc;
 
-        // Кнопка "Удалить" видна только для пользовательских списков
+        // Кнопки "Переименовать"/"Удалить" видны только для пользовательских списков
+        const renameBtn = document.getElementById('hl-rename-btn');
         if (deleteBtn) {
             deleteBtn.style.display = (tab && !tab.is_builtin) ? '' : 'none';
+        }
+        if (renameBtn) {
+            renameBtn.style.display = (tab && !tab.is_builtin) ? '' : 'none';
         }
 
         try {
@@ -447,6 +493,75 @@ const HostlistsPage = (() => {
         Toast.info('Добавлено в редактор. Нажмите "Сохранить" для применения.');
     }
 
+    // ══════════════════ Rename Modal ══════════════════
+
+    function showRenameModal() {
+        const tab = tabs.find(t => t.name === activeTab);
+        if (!tab || tab.is_builtin) {
+            Toast.warning('Нельзя переименовать встроенный список');
+            return;
+        }
+        if (hasUnsaved) {
+            if (!confirm('Есть несохранённые изменения. Переименовать список? Изменения будут потеряны.')) return;
+        }
+
+        const modal = document.getElementById('hl-rename-modal');
+        const oldInput = document.getElementById('hl-rename-old');
+        const newInput = document.getElementById('hl-rename-new');
+        if (oldInput) oldInput.value = activeTab;
+        if (newInput) {
+            newInput.value = activeTab;
+            setTimeout(() => {
+                newInput.focus();
+                newInput.select();
+            }, 50);
+        }
+        if (modal) modal.style.display = 'flex';
+    }
+
+    function closeRenameModal() {
+        const modal = document.getElementById('hl-rename-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    async function renameList() {
+        const newInput = document.getElementById('hl-rename-new');
+        if (!newInput) return;
+
+        const newName = newInput.value.trim();
+        if (!newName) {
+            Toast.warning('Введите новое имя');
+            return;
+        }
+        if (newName === activeTab) {
+            closeRenameModal();
+            return;
+        }
+        if (!/^[a-zA-Z0-9_-]{1,64}$/.test(newName)) {
+            Toast.error('Недопустимое имя. Разрешены латиница, цифры, "_" и "-" (1..64 символов)');
+            return;
+        }
+        if (/^(ipset[-_]|my-ipset$|my-ipset[-_])/.test(newName)) {
+            Toast.error('Имена с префиксом "ipset" зарезервированы для IP-списков');
+            return;
+        }
+
+        try {
+            const result = await API.post('/api/hostlists/' + encodeURIComponent(activeTab) + '/rename', { new_name: newName });
+            if (result.ok) {
+                Toast.success(result.message || 'Список переименован');
+                closeRenameModal();
+                activeTab = newName;
+                hasUnsaved = false;
+                loadStats();
+            } else {
+                Toast.error(result.error || 'Ошибка переименования');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
+    }
+
     // ══════════════════ Create Modal ══════════════════
 
     function showCreateModal() {
@@ -476,6 +591,10 @@ const HostlistsPage = (() => {
 
         if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
             Toast.error('Недопустимое имя. Разрешены латиница, цифры, "_" и "-" (1..64 символов)');
+            return;
+        }
+        if (/^(ipset[-_]|my-ipset$|my-ipset[-_])/.test(name)) {
+            Toast.error('Имена с префиксом "ipset" зарезервированы для IP-списков (создайте их во вкладке IP-списки)');
             return;
         }
 
@@ -593,6 +712,9 @@ const HostlistsPage = (() => {
         showCreateModal,
         closeCreateModal,
         createList,
+        showRenameModal,
+        closeRenameModal,
+        renameList,
         showImportModal,
         closeImportModal,
         importFromUrl,

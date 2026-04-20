@@ -1,18 +1,17 @@
 /**
  * ipsets.js — Страница управления IP-списками.
  *
- * Табы: ipset-base.txt | my-ipset.txt
+ * Табы: встроенные (ipset-base.txt, my-ipset.txt) + любые пользовательские
+ *       IP-списки (файлы ipset-*.txt / my-ipset-*.txt в директории списков).
  * Функции: просмотр, редактирование, добавление IP/CIDR,
- *          загрузка по ASN через RIPE API, сброс к дефолтам.
+ *          загрузка по ASN через RIPE API, сброс к дефолтам,
+ *          создание/переименование/удаление пользовательских IP-списков.
  */
 
 const IPSetsPage = (() => {
 
-    const TABS = [
-        { name: 'ipset-base', label: 'ipset-base.txt', desc: 'Базовые IP-адреса и подсети' },
-        { name: 'my-ipset',   label: 'my-ipset.txt',   desc: 'Пользовательские IP/подсети' },
-    ];
-
+    // Табы заполняются динамически из /api/ipsets
+    let tabs = [];          // [{name, label, desc, is_builtin}]
     let activeTab = 'ipset-base';
     let originalContent = '';
     let hasUnsaved = false;
@@ -22,16 +21,24 @@ const IPSetsPage = (() => {
 
     function render(container) {
         container.innerHTML = `
-            <div class="page-header">
-                <h1 class="page-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="2" y1="12" x2="22" y2="12"/>
-                        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            <div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
+                <div>
+                    <h1 class="page-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+                            <circle cx="12" cy="12" r="10"/>
+                            <line x1="2" y1="12" x2="22" y2="12"/>
+                            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                        </svg>
+                        IP-списки
+                    </h1>
+                    <p class="page-description">Управление ipset-файлами для nfqws2</p>
+                </div>
+                <button class="btn btn-primary" onclick="IPSetsPage.showCreateModal()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                     </svg>
-                    IP-списки
-                </h1>
-                <p class="page-description">Управление ipset-файлами для nfqws2</p>
+                    Создать список
+                </button>
             </div>
 
             <!-- Статистика -->
@@ -41,16 +48,7 @@ const IPSetsPage = (() => {
 
             <!-- Табы -->
             <div class="card" style="padding: 0;">
-                <div class="lists-tabs" id="ip-tabs">
-                    ${TABS.map(t => `
-                        <button class="lists-tab ${t.name === activeTab ? 'active' : ''}"
-                                data-tab="${t.name}"
-                                onclick="IPSetsPage.switchTab('${t.name}')">
-                            <span class="lists-tab-name">${t.label}</span>
-                            <span class="lists-tab-count" id="ip-tab-count-${t.name}">—</span>
-                        </button>
-                    `).join('')}
-                </div>
+                <div class="lists-tabs" id="ip-tabs"></div>
 
                 <div class="lists-content" id="ip-content">
                     <div class="lists-toolbar">
@@ -71,6 +69,20 @@ const IPSetsPage = (() => {
                                     <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
                                 </svg>
                                 Сбросить
+                            </button>
+                            <button class="btn btn-ghost btn-sm" id="ip-rename-btn" onclick="IPSetsPage.showRenameModal()" title="Переименовать список" style="display:none;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                </svg>
+                                Переименовать
+                            </button>
+                            <button class="btn btn-ghost btn-sm" id="ip-delete-btn" onclick="IPSetsPage.deleteList()" title="Удалить список" style="display:none; color:var(--error);">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <polyline points="3 6 5 6 21 6"/>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                </svg>
+                                Удалить
                             </button>
                             <button class="btn btn-primary btn-sm" id="ip-save-btn" onclick="IPSetsPage.saveList()" disabled>
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -115,9 +127,8 @@ const IPSetsPage = (() => {
                             <input type="text" class="form-input" id="ip-asn-input"
                                    placeholder="Номер ASN (напр. 13335 для Cloudflare)"
                                    onkeydown="if(event.key==='Enter') IPSetsPage.loadASN()">
-                            <select class="form-input" id="ip-asn-target" style="max-width:160px;">
-                                <option value="ipset-base">ipset-base.txt</option>
-                                <option value="my-ipset" selected>my-ipset.txt</option>
+                            <select class="form-input" id="ip-asn-target" style="max-width:200px;">
+                                <!-- опции подставляются динамически -->
                             </select>
                             <button class="btn btn-primary btn-sm" id="ip-asn-btn" onclick="IPSetsPage.loadASN()">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -139,17 +150,128 @@ const IPSetsPage = (() => {
                     </div>
                 </div>
             </div>
+
+            <!-- Модальное окно создания списка -->
+            <div class="modal-backdrop" id="ip-create-modal" style="display:none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Создать новый IP-список</h3>
+                        <button class="modal-close" onclick="IPSetsPage.closeCreateModal()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label">Имя списка</label>
+                            <input type="text" class="form-input" id="ip-create-name"
+                                   placeholder="ipset-myvpn" autocomplete="off"
+                                   onkeydown="if(event.key==='Enter') IPSetsPage.createList()">
+                            <div class="form-hint">
+                                Имя должно начинаться с <code>ipset-</code>, <code>ipset_</code>,
+                                <code>my-ipset-</code> или <code>my-ipset_</code>.
+                                Будет создан файл <code>&lt;имя&gt;.txt</code>.
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
+                            <button class="btn btn-ghost" onclick="IPSetsPage.closeCreateModal()">Отмена</button>
+                            <button class="btn btn-primary" onclick="IPSetsPage.createList()">Создать</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Модальное окно переименования списка -->
+            <div class="modal-backdrop" id="ip-rename-modal" style="display:none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Переименовать IP-список</h3>
+                        <button class="modal-close" onclick="IPSetsPage.closeRenameModal()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label class="form-label">Текущее имя</label>
+                            <input type="text" class="form-input" id="ip-rename-old" readonly style="opacity:0.6;">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Новое имя</label>
+                            <input type="text" class="form-input" id="ip-rename-new"
+                                   placeholder="ipset-new-name" autocomplete="off"
+                                   onkeydown="if(event.key==='Enter') IPSetsPage.renameList()">
+                            <div class="form-hint">
+                                Имя должно начинаться с <code>ipset-</code>, <code>ipset_</code>,
+                                <code>my-ipset-</code> или <code>my-ipset_</code>.
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
+                            <button class="btn btn-ghost" onclick="IPSetsPage.closeRenameModal()">Отмена</button>
+                            <button class="btn btn-primary" onclick="IPSetsPage.renameList()">Переименовать</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         `;
 
         // Загружаем данные
         loadStats();
-        loadTab(activeTab);
 
         // Слушаем изменения
         const editor = document.getElementById('ip-editor');
         if (editor) {
             editor.addEventListener('input', onEditorInput);
         }
+    }
+
+    // ══════════════════ Tabs ══════════════════
+
+    function renderTabs() {
+        const tabsEl = document.getElementById('ip-tabs');
+        if (!tabsEl) return;
+
+        if (!tabs.find(t => t.name === activeTab) && tabs.length > 0) {
+            activeTab = tabs[0].name;
+        }
+
+        tabsEl.innerHTML = tabs.map(t => `
+            <button class="lists-tab ${t.name === activeTab ? 'active' : ''}"
+                    data-tab="${escapeAttr(t.name)}"
+                    onclick="IPSetsPage.switchTab('${escapeAttr(t.name)}')"
+                    title="${escapeAttr(t.desc)}">
+                <span class="lists-tab-name">${escapeHtml(t.label)}</span>
+                <span class="lists-tab-count" id="ip-tab-count-${escapeAttr(t.name)}">—</span>
+            </button>
+        `).join('');
+    }
+
+    function renderAsnTargetOptions() {
+        const select = document.getElementById('ip-asn-target');
+        if (!select) return;
+        const prev = select.value;
+        select.innerHTML = tabs.map(t =>
+            `<option value="${escapeAttr(t.name)}">${escapeHtml(t.label)}</option>`
+        ).join('');
+        // Восстановить выбор: предыдущий → active → my-ipset → первый
+        const candidates = [prev, activeTab, 'my-ipset'];
+        for (const c of candidates) {
+            if (c && tabs.find(t => t.name === c)) {
+                select.value = c;
+                return;
+            }
+        }
+    }
+
+    function tabsFromFiles(files) {
+        return files.map(f => ({
+            name: f.name,
+            label: f.filename || (f.name + '.txt'),
+            desc: f.description || '',
+            is_builtin: !!f.is_builtin,
+        }));
     }
 
     // ══════════════════ Data Loading ══════════════════
@@ -159,29 +281,37 @@ const IPSetsPage = (() => {
             const result = await API.get('/api/ipsets');
             if (!result.ok) return;
 
-            const grid = document.getElementById('ip-stats-grid');
-            if (!grid) return;
+            tabs = tabsFromFiles(result.files || []);
+            renderTabs();
+            renderAsnTargetOptions();
 
-            grid.innerHTML = result.files.map(f => `
-                <div class="status-card" style="cursor:pointer;" onclick="IPSetsPage.switchTab('${f.name}')">
-                    <div class="status-card-header">
-                        <svg class="status-card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10"/>
-                            <line x1="2" y1="12" x2="22" y2="12"/>
-                            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                        </svg>
-                        <span class="status-card-label">${f.filename}</span>
+            const grid = document.getElementById('ip-stats-grid');
+            if (grid) {
+                grid.innerHTML = (result.files || []).map(f => `
+                    <div class="status-card" style="cursor:pointer;" onclick="IPSetsPage.switchTab('${escapeAttr(f.name)}')">
+                        <div class="status-card-header">
+                            <svg class="status-card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <line x1="2" y1="12" x2="22" y2="12"/>
+                                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                            </svg>
+                            <span class="status-card-label">${escapeHtml(f.filename)}</span>
+                            ${f.is_builtin ? '<span class="badge badge-muted" style="margin-left:auto;">builtin</span>'
+                                           : '<span class="badge badge-accent" style="margin-left:auto;">user</span>'}
+                        </div>
+                        <div class="status-card-value">${f.count}</div>
+                        <div class="status-card-detail">${escapeHtml(f.description || '')}</div>
                     </div>
-                    <div class="status-card-value">${f.count}</div>
-                    <div class="status-card-detail">${f.description}</div>
-                </div>
-            `).join('');
+                `).join('');
+            }
 
             // Обновляем счётчики
-            result.files.forEach(f => {
+            (result.files || []).forEach(f => {
                 const cnt = document.getElementById('ip-tab-count-' + f.name);
                 if (cnt) cnt.textContent = f.count;
             });
+
+            loadTab(activeTab);
         } catch (err) {
             console.error('loadStats error:', err);
         }
@@ -191,21 +321,26 @@ const IPSetsPage = (() => {
         loading = true;
         const editor = document.getElementById('ip-editor');
         const desc = document.getElementById('ip-tab-desc');
+        const deleteBtn = document.getElementById('ip-delete-btn');
+        const renameBtn = document.getElementById('ip-rename-btn');
 
         if (editor) editor.value = 'Загрузка...';
         if (editor) editor.disabled = true;
 
-        const tab = TABS.find(t => t.name === name);
+        const tab = tabs.find(t => t.name === name);
         if (desc && tab) desc.textContent = tab.desc;
 
+        if (deleteBtn) deleteBtn.style.display = (tab && !tab.is_builtin) ? '' : 'none';
+        if (renameBtn) renameBtn.style.display = (tab && !tab.is_builtin) ? '' : 'none';
+
         try {
-            const result = await API.get('/api/ipsets/' + name);
+            const result = await API.get('/api/ipsets/' + encodeURIComponent(name));
             if (!result.ok) {
                 if (editor) editor.value = 'Ошибка: ' + (result.error || '?');
                 return;
             }
 
-            const text = result.entries.join('\n');
+            const text = (result.entries || []).join('\n');
             if (editor) {
                 editor.value = text;
                 editor.disabled = false;
@@ -265,7 +400,7 @@ const IPSetsPage = (() => {
         const entries = text ? text.split('\n').map(e => e.trim()).filter(Boolean) : [];
 
         try {
-            const result = await API.put('/api/ipsets/' + activeTab, { entries });
+            const result = await API.put('/api/ipsets/' + encodeURIComponent(activeTab), { entries });
             if (result.ok) {
                 Toast.success(result.message || 'Сохранено');
                 originalContent = editor.value;
@@ -284,19 +419,45 @@ const IPSetsPage = (() => {
     }
 
     async function resetList() {
-        const tab = TABS.find(t => t.name === activeTab);
+        const tab = tabs.find(t => t.name === activeTab);
         const label = tab ? tab.label : activeTab;
 
-        if (!confirm('Сбросить ' + label + ' к дефолтным значениям?')) return;
+        const msg = tab && tab.is_builtin
+            ? 'Сбросить ' + label + ' к дефолтным значениям?'
+            : 'Очистить ' + label + '? (у пользовательских списков нет дефолтов)';
+        if (!confirm(msg)) return;
 
         try {
-            const result = await API.post('/api/ipsets/' + activeTab + '/reset');
+            const result = await API.post('/api/ipsets/' + encodeURIComponent(activeTab) + '/reset');
             if (result.ok) {
                 Toast.success(result.message || 'Сброшено');
                 loadTab(activeTab);
                 loadStats();
             } else {
                 Toast.error(result.error || 'Ошибка сброса');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
+    }
+
+    async function deleteList() {
+        const tab = tabs.find(t => t.name === activeTab);
+        if (!tab || tab.is_builtin) {
+            Toast.warning('Нельзя удалить встроенный список');
+            return;
+        }
+        if (!confirm('Удалить IP-список ' + tab.label + '?\n\nЭто действие нельзя отменить.')) return;
+
+        try {
+            const result = await API.delete('/api/ipsets/' + encodeURIComponent(activeTab));
+            if (result.ok) {
+                Toast.success(result.message || 'Список удалён');
+                activeTab = 'ipset-base';
+                hasUnsaved = false;
+                loadStats();
+            } else {
+                Toast.error(result.error || 'Ошибка удаления');
             }
         } catch (err) {
             Toast.error(err.message);
@@ -322,6 +483,131 @@ const IPSetsPage = (() => {
         input.value = '';
         setUnsaved(true);
         Toast.info('Добавлено в редактор. Нажмите "Сохранить" для применения.');
+    }
+
+    // ══════════════════ Create Modal ══════════════════
+
+    const IPSET_NAME_RE = /^(?:ipset-base|my-ipset|ipset[-_][a-zA-Z0-9_-]+|my-ipset[-_][a-zA-Z0-9_-]+)$/;
+
+    function showCreateModal() {
+        const modal = document.getElementById('ip-create-modal');
+        const input = document.getElementById('ip-create-name');
+        if (modal) modal.style.display = 'flex';
+        if (input) {
+            input.value = 'ipset-';
+            setTimeout(() => {
+                input.focus();
+                input.setSelectionRange(input.value.length, input.value.length);
+            }, 50);
+        }
+    }
+
+    function closeCreateModal() {
+        const modal = document.getElementById('ip-create-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    async function createList() {
+        const input = document.getElementById('ip-create-name');
+        if (!input) return;
+
+        const name = input.value.trim();
+        if (!name) {
+            Toast.warning('Введите имя списка');
+            return;
+        }
+        if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+            Toast.error('Недопустимое имя. Разрешены латиница, цифры, "_" и "-" (1..64 символов)');
+            return;
+        }
+        if (!IPSET_NAME_RE.test(name)) {
+            Toast.error('Имя должно начинаться с "ipset-", "ipset_", "my-ipset-" или "my-ipset_"');
+            return;
+        }
+
+        try {
+            const result = await API.post('/api/ipsets/create', { name });
+            if (result.ok) {
+                Toast.success(result.message || 'Список создан');
+                closeCreateModal();
+                activeTab = name;
+                hasUnsaved = false;
+                loadStats();
+            } else {
+                Toast.error(result.error || 'Ошибка создания');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
+    }
+
+    // ══════════════════ Rename Modal ══════════════════
+
+    function showRenameModal() {
+        const tab = tabs.find(t => t.name === activeTab);
+        if (!tab || tab.is_builtin) {
+            Toast.warning('Нельзя переименовать встроенный список');
+            return;
+        }
+        if (hasUnsaved) {
+            if (!confirm('Есть несохранённые изменения. Переименовать список? Изменения будут потеряны.')) return;
+        }
+
+        const modal = document.getElementById('ip-rename-modal');
+        const oldInput = document.getElementById('ip-rename-old');
+        const newInput = document.getElementById('ip-rename-new');
+        if (oldInput) oldInput.value = activeTab;
+        if (newInput) {
+            newInput.value = activeTab;
+            setTimeout(() => {
+                newInput.focus();
+                newInput.select();
+            }, 50);
+        }
+        if (modal) modal.style.display = 'flex';
+    }
+
+    function closeRenameModal() {
+        const modal = document.getElementById('ip-rename-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    async function renameList() {
+        const newInput = document.getElementById('ip-rename-new');
+        if (!newInput) return;
+
+        const newName = newInput.value.trim();
+        if (!newName) {
+            Toast.warning('Введите новое имя');
+            return;
+        }
+        if (newName === activeTab) {
+            closeRenameModal();
+            return;
+        }
+        if (!/^[a-zA-Z0-9_-]{1,64}$/.test(newName)) {
+            Toast.error('Недопустимое имя. Разрешены латиница, цифры, "_" и "-" (1..64 символов)');
+            return;
+        }
+        if (!IPSET_NAME_RE.test(newName)) {
+            Toast.error('Имя должно начинаться с "ipset-", "ipset_", "my-ipset-" или "my-ipset_"');
+            return;
+        }
+
+        try {
+            const result = await API.post('/api/ipsets/' + encodeURIComponent(activeTab) + '/rename', { new_name: newName });
+            if (result.ok) {
+                Toast.success(result.message || 'Список переименован');
+                closeRenameModal();
+                activeTab = newName;
+                hasUnsaved = false;
+                loadStats();
+            } else {
+                Toast.error(result.error || 'Ошибка переименования');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
     }
 
     // ══════════════════ ASN Loading ══════════════════
@@ -358,7 +644,6 @@ const IPSetsPage = (() => {
                 Toast.success(result.message || 'Загружено');
                 input.value = '';
 
-                // Перезагружаем если целевой таб активен
                 if (target === activeTab) {
                     loadTab(activeTab);
                 }
@@ -371,6 +656,18 @@ const IPSetsPage = (() => {
         } finally {
             if (btn) btn.disabled = false;
         }
+    }
+
+    // ══════════════════ Utils ══════════════════
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text == null ? '' : String(text);
+        return div.innerHTML;
+    }
+
+    function escapeAttr(text) {
+        return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     // ══════════════════ Lifecycle ══════════════════
@@ -388,8 +685,15 @@ const IPSetsPage = (() => {
         switchTab,
         saveList,
         resetList,
+        deleteList,
         quickAdd,
         setASN,
         loadASN,
+        showCreateModal,
+        closeCreateModal,
+        createList,
+        showRenameModal,
+        closeRenameModal,
+        renameList,
     };
 })();
