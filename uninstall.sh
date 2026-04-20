@@ -60,6 +60,13 @@ read -r answer
 [ "$answer" = "y" ] || [ "$answer" = "Y" ] || { echo "Отменено"; exit 0; }
 echo ""
 
+# Определяем пакетный менеджер
+if [ "$ENV_TYPE" = "entware" ] || [ "$ENV_TYPE" = "openwrt" ]; then
+    PKG_CMD="opkg"
+else
+    PKG_CMD=""
+fi
+
 # 1. Остановить
 if [ -x "$INITD_SCRIPT" ]; then
     printf "${YELLOW}[...]${NC} Остановка...\n"
@@ -70,6 +77,19 @@ fi
 # 2. Init-скрипт
 rm -f "$INITD_SCRIPT"
 printf "${GREEN}[OK]${NC}  Init-скрипт удалён\n"
+
+# 2a. Удалить пакеты, установленные через opkg
+opkg_list="$CONFIG_DIR/opkg_installed.list"
+if [ -n "$PKG_CMD" ] && [ -f "$opkg_list" ]; then
+    printf "${YELLOW}[...]${NC} Удаление пакетов opkg...\n"
+    while IFS= read -r pkg; do
+        [ -z "$pkg" ] && continue
+        $PKG_CMD remove "$pkg" 2>/dev/null \
+            && printf "${GREEN}[OK]${NC}  opkg remove %s\n" "$pkg" \
+            || printf "${YELLOW}[--]${NC}  Не удалось удалить: %s\n" "$pkg"
+    done < "$opkg_list"
+    rm -f "$opkg_list"
+fi
 
 # 3. Приложение
 if [ -d "$APP_DIR" ]; then
