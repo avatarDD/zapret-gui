@@ -27,10 +27,23 @@ const App = (() => {
     let currentPage = null;
     let currentPageId = null;
 
+    async function loadSidebarVersion() {
+        try {
+            const data = await API.get('/api/gui/version');
+            const el = document.getElementById('sidebar-version');
+            if (el && data && data.version) {
+                el.textContent = 'v' + data.version;
+            }
+        } catch (_) {}
+    }
+
     function init() {
         // Рендерим sidebar
         Sidebar.render();
         Sidebar.initMobileToggle();
+
+        // Загружаем версию GUI в sidebar
+        loadSidebarVersion();
 
         // Слушаем изменение hash
         window.addEventListener('hashchange', onHashChange);
