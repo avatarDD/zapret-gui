@@ -107,6 +107,17 @@ DESCRIPTIONS = {
 # Regex для валидации имени списка — разрешены латиница, цифры, "_" и "-"
 NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
+# Имена, принадлежащие namespace'у IP-списков (ipset_manager): такие файлы
+# не должны показываться в hostlists и не могут быть созданы как hostlist.
+# Условие: "ipset-base", "my-ipset", либо любой префикс "ipset-" / "ipset_"
+# (например "ipset-cloudflare").
+IPSET_NAME_RE = re.compile(r"^(?:ipset[-_][a-zA-Z0-9_-]*|my-ipset)$")
+
+
+def _is_ipset_name(name):
+    """True, если имя принадлежит namespace'у IP-списков."""
+    return isinstance(name, str) and bool(IPSET_NAME_RE.match(name))
+
 # Regex для валидации домена
 # Допускает: example.com, sub.example.com, *.example.com
 DOMAIN_RE = re.compile(
@@ -143,8 +154,20 @@ class HostlistManager:
                 log.error(f"Не удалось создать директорию: {e}", source="hostlists")
 
     def _validate_name(self, name):
-        """Проверить что имя файла допустимо (латиница/цифры/_/-)."""
-        return isinstance(name, str) and bool(NAME_RE.match(name))
+        """
+        Проверить что имя файла допустимо как hostlist.
+
+        Имя должно:
+          - соответствовать [a-zA-Z0-9_-]{1,64};
+          - НЕ принадлежать namespace'у IP-списков (ipset-*, my-ipset).
+        """
+        if not isinstance(name, str):
+            return False
+        if not NAME_RE.match(name):
+            return False
+        if _is_ipset_name(name):
+            return False
+        return True
 
     def _is_builtin(self, name):
         """Встроенное (защищённое от удаления) имя."""
@@ -155,7 +178,8 @@ class HostlistManager:
         Список имён всех hostlist-файлов в директории.
 
         Возвращает встроенные имена (other/other2/netrogat) даже если файлы
-        ещё не созданы, плюс любые *.txt файлы с валидным именем.
+        ещё не созданы, плюс любые *.txt файлы с валидным именем. Файлы
+        namespace'а IP-списков (ipset-*, my-ipset) исключаются.
         """
         names = set(BUILTIN_NAMES)
         path = self.lists_path
@@ -165,6 +189,7 @@ class HostlistManager:
                     if not entry.endswith(".txt"):
                         continue
                     stem = entry[:-4]
+                    # _validate_name уже отсекает ipset-* и my-ipset
                     if self._validate_name(stem):
                         names.add(stem)
         except OSError as e:
@@ -278,6 +303,49 @@ class HostlistManager:
             return True, ""
         except Exception as e:
             log.error(f"Ошибка создания {name}.txt: {e}", source="hostlists")
+            return False, str(e)
+
+    def rename_hostlist(self, old_name, new_name):
+        """
+        Переименовать пользовательский hostlist-файл.
+
+        Встроенные списки переименовывать нельзя.
+
+        Args:
+            old_name: Текущее имя
+            new_name: Новое имя
+
+        Returns:
+            tuple[bool, str]: (успех, сообщение об ошибке или "")
+        """
+        if not self._validate_name(old_name):
+            return False, "Недопустимое имя исходного списка"
+        if not self._validate_name(new_name):
+            return False, "Недопустимое новое имя"
+        if old_name == new_name:
+            return False, "Новое имя совпадает со старым"
+        if self._is_builtin(old_name):
+            return False, "Нельзя переименовать встроенный список"
+        if self._is_builtin(new_name):
+            return False, "Нельзя использовать имя встроенного списка"
+
+        src = self._file_path(old_name)
+        dst = self._file_path(new_name)
+
+        if not os.path.exists(src):
+            return False, "Исходный список не существует"
+        if os.path.exists(dst):
+            return False, "Список с новым именем уже существует"
+
+        try:
+            with self._lock:
+                os.rename(src, dst)
+            log.info(f"Список {old_name}.txt переименован в {new_name}.txt",
+                     source="hostlists")
+            return True, ""
+        except Exception as e:
+            log.error(f"Ошибка переименования {old_name}.txt → {new_name}.txt: {e}",
+                      source="hostlists")
             return False, str(e)
 
     def delete_hostlist(self, name):

@@ -2,9 +2,20 @@
 """
 Менеджер IP-списков (ipsets).
 
-Управляет файлами:
+Управляет файлами в директории lists_path:
   - ipset-base.txt — базовые IP-адреса (Cloudflare DNS и др.)
   - my-ipset.txt   — пользовательские IP/подсети
+  - ipset-*.txt    — произвольные пользовательские IP-списки
+  - my-ipset-*.txt — пользовательские IP-списки (альтернативный префикс)
+
+Имя файла должно удовлетворять одному из условий:
+  - встроенное имя ("ipset-base", "my-ipset");
+  - начинается с "ipset-", "ipset_", "my-ipset-" или "my-ipset_";
+  - длина 1..64 символа, допустимые символы — [a-zA-Z0-9_-].
+
+Таким образом IP-списки и hostlists живут в одной директории, но имеют
+разделённые namespaces: файлы IP-списков ВСЕГДА начинаются с "ipset" либо
+равны "my-ipset".
 
 Поддерживает загрузку IP-диапазонов по ASN через RIPE API.
 
@@ -13,6 +24,9 @@
     im = get_ipset_manager()
     entries = im.get_ipset("my-ipset")
     im.add_entries("my-ipset", ["1.2.3.4", "10.0.0.0/8"])
+    im.create_ipset("ipset-myvpn")
+    im.delete_ipset("ipset-myvpn")
+    im.rename_ipset("ipset-old", "ipset-new")
     prefixes = im.load_by_asn(13335)  # Cloudflare
 """
 
@@ -45,8 +59,8 @@ DEFAULT_IPSET_BASE = [
 
 DEFAULT_MY_IPSET = []
 
-# Допустимые имена файлов
-VALID_NAMES = {"ipset-base", "my-ipset"}
+# Встроенные имена (защищены от удаления/переименования)
+BUILTIN_NAMES = ("ipset-base", "my-ipset")
 
 # Маппинг имя → дефолтный список
 DEFAULTS_MAP = {
@@ -59,6 +73,16 @@ DESCRIPTIONS = {
     "ipset-base": "Базовые IP-адреса и подсети",
     "my-ipset": "Пользовательские IP/подсети",
 }
+
+# Общий паттерн валидации символов имени
+_NAME_CHARS_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# Паттерн namespace'а IP-списков: имя либо встроенное, либо начинается с
+# одного из префиксов ipset- / ipset_ / my-ipset- / my-ipset_ (для
+# произвольных кастомных IP-списков).
+IPSET_NAMESPACE_RE = re.compile(
+    r"^(?:ipset-base|my-ipset|ipset[-_][a-zA-Z0-9_-]+|my-ipset[-_][a-zA-Z0-9_-]+)$"
+)
 
 # ═══════════════════ Валидация IP ═══════════════════
 
@@ -115,7 +139,6 @@ def validate_ip_entry(text):
         return text
 
     # IPv6 или IPv6 CIDR
-    # Сначала проверяем CIDR
     if "/" in text:
         ip_part, prefix_part = text.rsplit("/", 1)
         try:
@@ -135,10 +158,8 @@ def _is_valid_ipv6(text):
     """Проверить является ли строка валидным IPv6-адресом."""
     if not text:
         return False
-    # Простая проверка через regex
     if IPV6_RE.match(text):
         return True
-    # Дополнительная проверка: разрешаем :: в середине
     if "::" in text:
         parts = text.split("::")
         if len(parts) != 2:
@@ -187,15 +208,47 @@ class IPSetManager:
                 log.error(f"Не удалось создать директорию: {e}", source="ipsets")
 
     def _validate_name(self, name):
-        """Проверить что имя файла допустимо."""
-        return name in VALID_NAMES
+        """Проверить что имя допустимо для ipset-файла."""
+        if not isinstance(name, str):
+            return False
+        if not _NAME_CHARS_RE.match(name):
+            return False
+        return bool(IPSET_NAMESPACE_RE.match(name))
+
+    def _is_builtin(self, name):
+        """Встроенное (защищённое от удаления/переименования) имя."""
+        return name in BUILTIN_NAMES
+
+    def list_names(self):
+        """
+        Список имён всех ipset-файлов в директории.
+
+        Всегда включает встроенные имена, плюс любые *.txt файлы,
+        удовлетворяющие namespace'у IP-списков.
+        """
+        names = set(BUILTIN_NAMES)
+        path = self.lists_path
+        try:
+            if os.path.isdir(path):
+                for entry in os.listdir(path):
+                    if not entry.endswith(".txt"):
+                        continue
+                    stem = entry[:-4]
+                    if self._validate_name(stem):
+                        names.add(stem)
+        except OSError as e:
+            log.error(f"Не удалось прочитать {path}: {e}", source="ipsets")
+
+        builtin_order = [n for n in BUILTIN_NAMES if n in names]
+        custom = sorted(n for n in names if n not in BUILTIN_NAMES)
+        return builtin_order + custom
 
     def get_ipset(self, name):
         """
         Прочитать файл IP-списка.
 
         Args:
-            name: Имя списка (ipset-base, my-ipset)
+            name: Имя списка (ipset-base, my-ipset, ipset-*, my-ipset-*)
 
         Returns:
             list[str]: Список IP/подсетей
@@ -263,6 +316,119 @@ class IPSetManager:
         except Exception as e:
             log.error(f"Ошибка записи {name}.txt: {e}", source="ipsets")
             return False
+
+    def create_ipset(self, name):
+        """
+        Создать новый пустой ipset-файл.
+
+        Args:
+            name: Имя списка (должно начинаться с ipset- или my-ipset-)
+
+        Returns:
+            tuple[bool, str]: (успех, сообщение об ошибке или "")
+        """
+        if not isinstance(name, str) or not _NAME_CHARS_RE.match(name):
+            return False, "Недопустимое имя списка"
+        if not IPSET_NAMESPACE_RE.match(name):
+            return False, (
+                "Имя IP-списка должно начинаться с 'ipset-', 'ipset_', "
+                "'my-ipset-' или 'my-ipset_'"
+            )
+
+        self._ensure_dir()
+        filepath = self._file_path(name)
+
+        if os.path.exists(filepath):
+            return False, "Список с таким именем уже существует"
+
+        try:
+            with self._lock:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write("")
+            log.info(f"Создан IP-список {name}.txt", source="ipsets")
+            return True, ""
+        except Exception as e:
+            log.error(f"Ошибка создания {name}.txt: {e}", source="ipsets")
+            return False, str(e)
+
+    def delete_ipset(self, name):
+        """
+        Удалить пользовательский ipset-файл.
+
+        Встроенные списки (ipset-base/my-ipset) удалить нельзя.
+
+        Args:
+            name: Имя списка
+
+        Returns:
+            tuple[bool, str]: (успех, сообщение об ошибке или "")
+        """
+        if not self._validate_name(name):
+            return False, "Недопустимое имя списка"
+
+        if self._is_builtin(name):
+            return False, "Нельзя удалить встроенный список"
+
+        filepath = self._file_path(name)
+        if not os.path.exists(filepath):
+            return False, "Список не существует"
+
+        try:
+            with self._lock:
+                os.remove(filepath)
+            log.info(f"Удалён IP-список {name}.txt", source="ipsets")
+            return True, ""
+        except Exception as e:
+            log.error(f"Ошибка удаления {name}.txt: {e}", source="ipsets")
+            return False, str(e)
+
+    def rename_ipset(self, old_name, new_name):
+        """
+        Переименовать пользовательский ipset-файл.
+
+        Встроенные списки переименовывать нельзя.
+
+        Args:
+            old_name: Текущее имя
+            new_name: Новое имя (должно соответствовать namespace'у ipset)
+
+        Returns:
+            tuple[bool, str]: (успех, сообщение об ошибке или "")
+        """
+        if not self._validate_name(old_name):
+            return False, "Недопустимое имя исходного списка"
+        if not isinstance(new_name, str) or not _NAME_CHARS_RE.match(new_name):
+            return False, "Недопустимое новое имя"
+        if not IPSET_NAMESPACE_RE.match(new_name):
+            return False, (
+                "Имя IP-списка должно начинаться с 'ipset-', 'ipset_', "
+                "'my-ipset-' или 'my-ipset_'"
+            )
+        if old_name == new_name:
+            return False, "Новое имя совпадает со старым"
+        if self._is_builtin(old_name):
+            return False, "Нельзя переименовать встроенный список"
+        if self._is_builtin(new_name):
+            return False, "Нельзя использовать имя встроенного списка"
+
+        src = self._file_path(old_name)
+        dst = self._file_path(new_name)
+
+        if not os.path.exists(src):
+            return False, "Исходный список не существует"
+        if os.path.exists(dst):
+            return False, "Список с новым именем уже существует"
+
+        try:
+            with self._lock:
+                os.rename(src, dst)
+            log.info(f"IP-список {old_name}.txt переименован в {new_name}.txt",
+                     source="ipsets")
+            return True, ""
+        except Exception as e:
+            log.error(f"Ошибка переименования {old_name}.txt → {new_name}.txt: {e}",
+                      source="ipsets")
+            return False, str(e)
 
     def add_entries(self, name, entries):
         """
@@ -338,10 +504,10 @@ class IPSetManager:
         Статистика по всем файлам IP-списков.
 
         Returns:
-            dict: {name: {count, path, exists, writable, description}}
+            dict: {name: {count, path, exists, writable, description, is_builtin}}
         """
         stats = {}
-        for name in VALID_NAMES:
+        for name in self.list_names():
             filepath = self._file_path(name)
             exists = os.path.exists(filepath)
 
@@ -356,7 +522,7 @@ class IPSetManager:
                 except Exception:
                     pass
 
-            writable = os.access(os.path.dirname(filepath), os.W_OK) if exists else True
+            writable = os.access(os.path.dirname(filepath), os.W_OK) if os.path.isdir(os.path.dirname(filepath)) else True
 
             stats[name] = {
                 "name": name,
@@ -365,8 +531,9 @@ class IPSetManager:
                 "count": count,
                 "exists": exists,
                 "writable": writable,
-                "description": DESCRIPTIONS.get(name, ""),
+                "description": DESCRIPTIONS.get(name, "Пользовательский IP-список"),
                 "has_defaults": name in DEFAULTS_MAP and len(DEFAULTS_MAP[name]) > 0,
+                "is_builtin": self._is_builtin(name),
             }
 
         return stats
@@ -374,6 +541,8 @@ class IPSetManager:
     def reset_to_defaults(self, name):
         """
         Сбросить список к дефолтным значениям.
+
+        Для пользовательских списков без дефолтов — очищает файл.
 
         Args:
             name: Имя списка

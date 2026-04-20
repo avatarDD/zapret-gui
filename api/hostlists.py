@@ -8,14 +8,16 @@ API списков доменов (hostlists).
   GET    /api/hostlists/:name        — содержимое файла (список доменов)
   PUT    /api/hostlists/:name        — заменить весь список
   DELETE /api/hostlists/:name        — удалить пользовательский список
+  POST   /api/hostlists/:name/rename — переименовать пользовательский список
   POST   /api/hostlists/:name/add    — добавить домены
   POST   /api/hostlists/:name/remove — удалить домены
   POST   /api/hostlists/:name/reset  — сброс к дефолтам
   POST   /api/hostlists/:name/import — импорт из URL или текста
 
 Имя списка:
-  — встроенные: other, other2, netrogat (нельзя удалить)
+  — встроенные: other, other2, netrogat (нельзя удалить/переименовать)
   — пользовательские: любое имя, удовлетворяющее ^[a-zA-Z0-9_-]{1,64}$
+    и НЕ принадлежащее namespace'у IP-списков (ipset-*, my-ipset)
 """
 
 from bottle import request, response
@@ -160,6 +162,52 @@ def register(app):
             result["invalid"] = invalid[:50]
             result["invalid_count"] = len(invalid)
         return result
+
+    @app.post("/api/hostlists/<name>/rename")
+    def api_hostlists_rename(name):
+        """Переименовать пользовательский список."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.hostlist_manager import get_hostlist_manager
+        hm = get_hostlist_manager()
+
+        if not _validate_name(hm, name):
+            response.status = 400
+            return {"ok": False, "error": "Недопустимое имя: %s" % name}
+
+        try:
+            body = request.json
+        except Exception:
+            response.status = 400
+            return {"ok": False, "error": "Невалидный JSON"}
+
+        if not body:
+            response.status = 400
+            return {"ok": False, "error": "Пустое тело запроса"}
+
+        new_name = (body.get("new_name") or "").strip()
+        if not new_name:
+            response.status = 400
+            return {"ok": False, "error": "Поле 'new_name' обязательно"}
+
+        ok, err = hm.rename_hostlist(name, new_name)
+        if not ok:
+            if "встроенный" in err or "встроенного" in err:
+                response.status = 400
+            elif "не существует" in err:
+                response.status = 404
+            elif "уже существует" in err or "совпадает" in err or "Недопустимое" in err:
+                response.status = 400
+            else:
+                response.status = 500
+            return {"ok": False, "error": err or "Ошибка переименования"}
+
+        stats = hm.get_stats().get(new_name, {})
+        return {
+            "ok": True,
+            "name": new_name,
+            "file": stats,
+            "message": "Список %s.txt переименован в %s.txt" % (name, new_name),
+        }
 
     @app.delete("/api/hostlists/<name>")
     def api_hostlists_delete(name):
