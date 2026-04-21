@@ -245,14 +245,6 @@ class GuiUpdater:
 
             self._set_progress("Бэкап конфигурации...", 45)
 
-            # 3. Бэкап пользовательских данных
-            backup_items = {}
-            user_strats = os.path.join(
-                app_dir, "config", "strategies", "user"
-            )
-            if os.path.isdir(user_strats):
-                backup_items["user_strategies"] = user_strats
-
             self._set_progress("Обновление файлов...", 55)
 
             # 4. Копировать новые файлы поверх старых
@@ -282,23 +274,6 @@ class GuiUpdater:
                 if os.path.isfile(src):
                     shutil.copy2(src, dst)
 
-            self._set_progress("Восстановление данных...", 80)
-
-            # 5. Восстановить пользовательские стратегии
-            if "user_strategies" in backup_items:
-                dest = os.path.join(
-                    app_dir, "config", "strategies", "user"
-                )
-                os.makedirs(dest, exist_ok=True)
-                src_backup = backup_items["user_strategies"]
-                if os.path.isdir(src_backup):
-                    for item in os.listdir(src_backup):
-                        s = os.path.join(src_backup, item)
-                        d = os.path.join(dest, item)
-                        if os.path.isfile(s):
-                            shutil.copy2(s, d)
-
-            # 6. Очистка __pycache__
             self._set_progress("Очистка кэша...", 90)
             for root, dirs, _files in os.walk(app_dir):
                 for d in dirs:
