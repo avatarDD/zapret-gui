@@ -1,0 +1,8 @@
+  (outbound and
+   udp.DstPort == 443 and
+   udp.PayloadLength>=20 and
+   udp.Payload[0]>=0xC0)
+  or
+  (inbound and
+   udp.SrcPort == 443 and
+   udp.PayloadLength>=20)

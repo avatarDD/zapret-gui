@@ -1,0 +1,73 @@
+# Unknown UDP strategies for circular orchestrator
+# For unrecognized UDP protocols (not QUIC, Discord, STUN, WireGuard, etc.)
+# DO NOT add :strategy=N - it will be added automatically by Python
+# IMPORTANT: payload=all is required for unknown protocols
+
+# Universal UDP strategies (same as regular UDP, payload=all works for unknown)
+--lua-desync=fake:blob=quic_google:repeats=6:payload=all:out_range=-n2
+--lua-desync=fake:blob=quic_google:repeats=6:payload=all
+--lua-desync=fake:blob=quic_google:repeats=3:payload=all
+--lua-desync=fake:blob=quic_google:repeats=2:payload=all:out_range=-n2
+--lua-desync=fake:blob=quic_google:repeats=4:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_google:repeats=6:payload=all:out_range=-d3
+--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=2:payload=all:out_range=-d10
+--lua-desync=fake:blob=0x00:payload=all:out_range=-d10
+--lua-desync=fake:blob=fake_default_udp:payload=all:out_range=-d10
+--lua-desync=fake:blob=fake_default_udp:repeats=6:payload=all:out_range=-d10
+--lua-desync=fake:blob=fake_default_udp:repeats=6:payload=all:out_range=-d3
+--lua-desync=fake:blob=fake_default_udp:repeats=8:payload=all:out_range=-d3
+--lua-desync=fake:blob=fake_default_udp:repeats=8:payload=all:out_range=-d4
+--lua-desync=fake:blob=fake_default_udp:repeats=6:payload=all:out_range=-n4
+--lua-desync=fake:blob=fake_default_udp:payload=all:out_range=-n3
+--lua-desync=fake:blob=0x00:repeats=4:payload=all:out_range=-d10
+--lua-desync=fake:blob=0x00:repeats=6:payload=all:out_range=-d10
+--lua-desync=fake:blob=0x00:repeats=4:ip_autottl=0,3-20:ip6_autottl=0,3-20:payload=all:out_range=-d10
+--lua-desync=fake:blob=0x00:repeats=6:payload=all:out_range=-n2
+--lua-desync=fake:blob=fake_default_udp:repeats=11:payload=all:out_range=-d5
+--lua-desync=send:repeats=2:ip_autottl=0,3-20:payload=all --lua-desync=fake:blob=fake_default_udp:ip_autottl=0,3-20:payload=all:out_range=-d10
+--lua-desync=send:repeats=2:ip6_autottl=0,3-20:payload=all --lua-desync=fake:blob=fake_default_udp:ip6_autottl=0,3-20:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_google:repeats=10:payload=all:out_range=-n5
+--lua-desync=fake:blob=quic_google:payload=all:out_range=-n4
+--lua-desync=fake:blob=quic_google:payload=all:out_range=-n2
+--lua-desync=fake:blob=quic1:payload=all:out_range=-d2
+--lua-desync=fake:blob=quic_test:payload=all:out_range=-d2
+--lua-desync=fake:repeats=6:payload=all:out_range=-n2
+--lua-desync=fake:blob=quic_google:repeats=6:payload=all:out_range=-d3
+--lua-desync=fake:blob=quic_google:repeats=9:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all:out_range=-n2
+--lua-desync=fake:blob=quic_google:repeats=12:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all:out_range=-n2
+--lua-desync=fake:blob=quic_google:repeats=12:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all:out_range=-n3
+--lua-desync=fake:blob=quic_google:repeats=10:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all:out_range=-n2
+--lua-desync=fake:blob=quic_google:repeats=14:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all:out_range=-n3
+--lua-desync=fake:blob=quic6:repeats=2:ip_ttl=7:ip6_ttl=7:payload=all:out_range=-n4
+--lua-desync=fake:blob=quic_google:repeats=6:payload=all:out_range=-n15
+--lua-desync=fake:blob=quic1:repeats=4:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_test:repeats=2:payload=all:out_range=-n2
+--lua-desync=fake:blob=fake_default_quic:repeats=11:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_google:repeats=15:ip_ttl=0:ip6_ttl=0:payload=all:out_range=-d4
+--lua-desync=fake:blob=quic_google:repeats=6:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic5:repeats=3:payload=all:out_range=-n3 --lua-desync=send:ipfrag:ipfrag_pos_udp=8 --lua-desync=drop
+--lua-desync=fake:blob=quic3:repeats=2:payload=all:out_range=-n3 --lua-desync=send:ipfrag:ipfrag_pos_udp=8 --lua-desync=drop
+--lua-desync=fake:blob=quic7:repeats=3:payload=all:out_range=-n3 --lua-desync=send:ipfrag:ipfrag_pos_udp=8 --lua-desync=drop
+--lua-desync=fake:blob=quic3:repeats=2:payload=all:out_range=-n3 --lua-desync=udplen:increment=2
+--lua-desync=fake:blob=quic3:repeats=2:payload=all:out_range=-n3 --lua-desync=udplen:increment=4
+--lua-desync=fake:blob=quic4:repeats=2:payload=all:out_range=-n3 --lua-desync=udplen:increment=4
+--lua-desync=fake:blob=quic6:repeats=2:payload=all:out_range=-n3 --lua-desync=udplen:increment=8:pattern=0x0F0F0E0F
+--lua-desync=fake:blob=quic6:repeats=2:ip_autottl=-1,3-20:ip6_autottl=-1,3-20:payload=all:out_range=-n3 --lua-desync=udplen:increment=8:pattern=0x0F0F0E0F
+--lua-desync=fake:blob=quic7:repeats=2:payload=all:out_range=-n3 --lua-desync=udplen:increment=8:pattern=0x0E0F0E0F
+--lua-desync=fake:blob=quic4:repeats=2:payload=all:out_range=-n4 --lua-desync=udplen:increment=8:pattern=0xFEA82025
+--lua-desync=fake:blob=quic5:repeats=2:payload=all:out_range=-n3 --lua-desync=udplen:increment=25
+--lua-desync=fake:blob=quic_google:repeats=10:payload=all:out_range=-d10 --lua-desync=udplen:increment=25
+--lua-desync=fake:blob=quic_google:repeats=11:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_google:repeats=2:payload=all:out_range=-n2
+--lua-desync=fake:blob=fake_quic:repeats=2:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_google:repeats=4:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic1:repeats=6:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_vk:repeats=6:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_google:repeats=8:payload=all:out_range=-d10
+--lua-desync=fake:blob=quic_google:repeats=6:payload=all:out_range=-d10 --lua-desync=udplen:increment=10:pattern=0xDEADBEEF
+--lua-desync=fake:blob=quic2:repeats=7:payload=all:out_range=-n2 --lua-desync=udplen:increment=5:pattern=0xDEADBEEF
+--lua-desync=fake:blob=quic_test:repeats=7:payload=all:out_range=-n2 --lua-desync=udplen:increment=10:pattern=0xDEADBEEF
+--lua-desync=fake:blob=quic_google:repeats=7:payload=all:out_range=-d10 --lua-desync=udplen:increment=10:pattern=0xDEADBEEF
+--lua-desync=fake:blob=quic2:repeats=8:payload=all:out_range=-n2 --lua-desync=udplen:increment=10:pattern=0xDEADBEEF
+--lua-desync=fake:blob=quic_google:repeats=6:payload=all:out_range=-d10 --lua-desync=udplen:increment=10:pattern=0xDEADBEEF
+--lua-desync=fake:blob=quic_google:repeats=11:payload=all:out_range=-d10 --lua-desync=udplen:increment=15

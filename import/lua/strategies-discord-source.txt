@@ -1,0 +1,27 @@
+# Discord Voice / STUN strategies for circular orchestrator
+# Auto-extracted from discord_voice.json
+# DO NOT add :strategy=N - it will be added automatically by Python
+# NOTE: No pass strategy - Discord Voice requires active bypass
+
+--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=2:out_range=-d10
+--lua-desync=fake:blob=0x00:out_range=-d10
+--lua-desync=fake:blob=quic_google:repeats=6:out_range=-d3
+--lua-desync=fake:blob=quic_google:repeats=10:out_range=-n5
+--lua-desync=fake:blob=quic_google:out_range=-n4
+--lua-desync=fake:blob=quic1:out_range=-d2
+--lua-desync=fake:blob=0x00:repeats=4:out_range=-d10
+--lua-desync=fake:blob=0x00:repeats=6:out_range=-d10
+--lua-desync=fake:blob=fake_default_udp:out_range=-d10
+--lua-desync=fake:blob=fake_default_udp:repeats=6:out_range=-d10
+--lua-desync=fake:blob=fake_default_udp:repeats=6:out_range=-d3
+--lua-desync=fake:blob=fake_default_udp:repeats=8:out_range=-d3
+--lua-desync=fake:blob=fake_default_udp:repeats=8:out_range=-d4
+--lua-desync=fake:blob=fake_default_udp:repeats=6:out_range=-n4
+--lua-desync=fake:blob=fake_default_udp:out_range=-n3
+--lua-desync=fake:blob=0x00:repeats=4:ip_autottl=0,3-20:ip6_autottl=0,3-20:out_range=-d10
+--lua-desync=fake:blob=0x00:repeats=6:out_range=-n2
+--lua-desync=fake:blob=quic_google:out_range=-n2
+--lua-desync=fake:blob=quic_test:out_range=-d2
+--lua-desync=send:repeats=2:ip_autottl=0,3-20 --lua-desync=fake:blob=fake_default_udp:ip_autottl=0,3-20:out_range=-d10
+--lua-desync=send:repeats=2:ip6_autottl=0,3-20 --lua-desync=fake:blob=fake_default_udp:ip6_autottl=0,3-20:out_range=-d10
+--lua-desync=fake:blob=fake_default_udp:repeats=11:out_range=-d5

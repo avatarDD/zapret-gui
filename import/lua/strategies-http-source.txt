@@ -1,0 +1,344 @@
+# HTTP 80 strategies for circular orchestrator
+# Auto-extracted from http80.json
+# DO NOT add :strategy=N - it will be added automatically by Python
+
+--lua-desync=pass
+--lua-desync=http_methodeol
+--lua-desync=http_methodeol --lua-desync=multisplit:pos=host+1
+--lua-desync=http_methodeol --lua-desync=multisplit:pos=host+5
+--lua-desync=fake:blob=fake_default_http:repeats=10:ip_ttl=1:ip6_ttl=1:badsum:tcp_md5 --lua-desync=http_methodeol --lua-desync=multisplit:pos=1,host+1,midsld:oob
+--lua-desync=fake:blob=fake_default_http:repeats=10:ip_ttl=1:ip6_ttl=1:badsum --lua-desync=http_methodeol --lua-desync=multisplit:pos=1,host+1,midsld
+--lua-desync=hostfakesplit:host=google.com:midhost=midsld
+--lua-desync=hostfakesplit:host=yandex.ru:midhost=midsld
+--lua-desync=http_garbage_prefix:mode=crlf:amount=50
+--lua-desync=http_garbage_prefix:mode=mixed:amount=100
+--lua-desync=http_garbage_prefix:mode=spaces:amount=50
+--lua-desync=http_pipeline_fake:fake_host=www.google.com
+--lua-desync=http_pipeline_fake:fake_host=www.yandex.ru
+--lua-desync=http_pipeline_fake_v2:fake_host=www.google.com:badsum
+--lua-desync=http_header_shuffle:fake_host=www.google.com
+--lua-desync=http_host_bytesplit:max_parts=5
+--lua-desync=http_host_bytesplit:max_parts=10
+--lua-desync=http_methodeol_safe
+--lua-desync=http_multi_crlf:count=5
+--lua-desync=http_multi_crlf:count=10
+--lua-desync=http_mixed_prefix
+--lua-desync=http_xpadding
+--lua-desync=http_simple_bypass:prefix=\r\n:hostcase=HoSt
+--lua-desync=http_simple_bypass:hostcase=HoSt
+--lua-desync=http_garbage_prefix:mode=crlf:amount=50 --lua-desync=http_hostcase:spell=HoSt --lua-desync=multisplit:pos=1,host+1,midsld
+--lua-desync=fake:blob=fake_default_http:repeats=20:ip_ttl=2:ip6_ttl=2:badsum --lua-desync=http_simple_bypass:prefix=\r\n:hostcase=HoSt
+--lua-desync=fake:blob=fake_default_http:repeats=15:ip_ttl=2:ip6_ttl=2:badsum --lua-desync=http_methodeol_safe
+--lua-desync=fake:blob=fake_default_http:repeats=15:ip_ttl=2:ip6_ttl=2:badsum --lua-desync=http_xpadding --lua-desync=multisplit:pos=1,host+1,midsld
+--lua-desync=fake:blob=fake_default_http:repeats=30:ip_ttl=1:ip6_ttl=1:badsum:tcp_md5 --lua-desync=http_methodeol_safe --lua-desync=multidisorder:pos=1,host+1,midsld
+--lua-desync=http_pipeline_fake_v2:fake_host=www.google.com:badsum --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=20:ip_ttl=1:ip6_ttl=1:badsum --lua-desync=http_garbage_prefix:mode=crlf:amount=30 --lua-desync=http_header_shuffle:fake_host=www.google.com --lua-desync=multidisorder:pos=1,host+1
+--lua-desync=fake:blob=fake_default_http:repeats=50:ip_ttl=1:ip6_ttl=1:badsum:tcp_md5 --lua-desync=http_garbage_prefix:mode=mixed:amount=50 --lua-desync=http_simple_bypass:prefix=\r\n:hostcase=HoSt --lua-desync=multidisorder:pos=1,host+1,midsld:seqovl=2
+--lua-desync=http_method_obfuscate
+--lua-desync=http_version_downgrade
+--lua-desync=http_fake_continuation
+--lua-desync=syndata
+--lua-desync=syndata --lua-desync=multisplit:pos=host+1
+--lua-desync=syndata --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:ip_ttl=1:ip6_ttl=1
+--lua-desync=fake:blob=fake_default_http:ip_ttl=1:ip6_ttl=1 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=5:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=multidisorder:pos=host+1
+--lua-desync=multidisorder:pos=method+2,host+1
+--lua-desync=fakedsplit:pos=host+1:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=fakedsplit:pos=method+2:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=fake:blob=fake_default_http:tcp_seq=-10000:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=fake:blob=fake_default_http:tcp_ack=-66000:tcp_ts_up:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=fake:blob=fake_default_http:tcp_seq=-10000:ip_autottl=0,3-20:ip6_autottl=0,3-20 --lua-desync=multidisorder:pos=host+1
+--lua-desync=multisplit:pos=host+1
+--lua-desync=multisplit:pos=1,method+2,host+1,sld+1
+--lua-desync=fake:blob=fake_default_http:ip_ttl=3:ip6_ttl=3 --lua-desync=multisplit:pos=host+1
+--lua-desync=fake:blob=fake_default_http:tcp_md5:ip_autottl=0,3-20:ip6_autottl=0,3-20 --lua-desync=multidisorder:pos=host+1
+--lua-desync=send:repeats=2:tcp_md5 --lua-desync=fake:blob=0x0F0F0F0F:tcp_md5 --lua-desync=multisplit:pos=sld+1:seqovl=2:tcp_md5
+--lua-desync=fake:blob=0x0E0E0F0E:tcp_md5 --lua-desync=multisplit:pos=host+1:seqovl=2
+--lua-desync=fake:blob=0x0F0F0F0F:tcp_md5 --lua-desync=multisplit:pos=host+1:seqovl=2
+--lua-desync=fake:blob=fake_default_http:tcp_md5:ip_autottl=0,3-20:ip6_autottl=0,3-20 --lua-desync=multisplit:pos=sld+1
+--lua-desync=fake:blob=fake_default_http:tcp_md5 --lua-desync=multisplit
+--lua-desync=send:repeats=2:tcp_md5:ip_autottl=0,3-20:ip6_autottl=0,3-20 --lua-desync=fake:blob=fake_default_http:tcp_md5:ip_autottl=0,3-20:ip6_autottl=0,3-20 --lua-desync=multisplit:pos=2,midsld
+--lua-desync=fake:blob=fake_default_http:tcp_md5:ip_autottl=2,3-20:ip6_autottl=2,3-20 --lua-desync=multisplit
+--lua-desync=fake:blob=fake_default_http:tcp_ack=-2:tcp_ts_up:ip_autottl=2,3-20:ip6_autottl=2,3-20 --lua-desync=multisplit
+--lua-desync=multisplit:pos=1,3,5,7
+--lua-desync=multisplit:pos=1,3,5,7:seqovl=2
+--lua-desync=http_aggressive:fakes=5:ttl_start=1:ttl_step=1:split_host:disorder
+--lua-desync=http_aggressive:fakes=3:ttl_start=1
+--lua-desync=http_aggressive:fakes=10:ttl_start=1:ttl_step=2:split_host:disorder
+--lua-desync=http_multidisorder
+--lua-desync=fake:blob=fake_default_http:repeats=5:ip_ttl=1:ip6_ttl=1 --lua-desync=http_multidisorder
+--lua-desync=syndata --lua-desync=http_aggressive:fakes=3:disorder
+--lua-desync=fake:blob=fake_default_http:repeats=6:ip_autottl=2,3-20:ip6_autottl=2,3-20:tcp_md5 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=6:tcp_ack=-66000:tcp_ts_up:ip_autottl=2,3-20:ip6_autottl=2,3-20 --lua-desync=multidisorder:pos=host+1,method+2
+--lua-desync=syndata:ip_autottl=2,3-20:ip6_autottl=2,3-20 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=6:ip_ttl=1:ip6_ttl=1 --lua-desync=multidisorder:pos=host+1,method+2
+--lua-desync=fake:blob=fake_default_http:repeats=11:ip_ttl=1:ip6_ttl=1:tcp_md5 --lua-desync=multidisorder:pos=1,host+1,method+2
+--lua-desync=fakedsplit:pos=host+1:ip_autottl=2,3-20:ip6_autottl=2,3-20:tcp_md5
+--lua-desync=fakeddisorder:pos=host+1:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=fakeddisorder:pos=host+1:ip_autottl=0,3-20:ip6_autottl=0,3-20:tcp_md5
+--lua-desync=fakeddisorder:pos=host+1:ip_ttl=1:ip6_ttl=1
+--lua-desync=fakeddisorder:pos=host+1:ip_ttl=2:ip6_ttl=2:tcp_md5
+--lua-desync=fakeddisorder:pos=host+1:tcp_seq=-10000:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=fakeddisorder:pos=host+1:seqovl=2:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=fakeddisorder:pos=method+2,host+1:ip_autottl=0,3-20:ip6_autottl=0,3-20:tcp_md5
+--lua-desync=fakeddisorder:pos=1,method+2,host+1:seqovl=2:ip_ttl=2:ip6_ttl=2:tcp_md5
+--lua-desync=fake:blob=fake_default_http:repeats=4:ip_ttl=1:ip6_ttl=1 --lua-desync=fakeddisorder:pos=host+1:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=syndata --lua-desync=fakeddisorder:pos=host+1:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=syndata --lua-desync=fake:blob=fake_default_http:repeats=4:ip_autottl=2,3-20:ip6_autottl=2,3-20:tcp_md5 --lua-desync=multidisorder:pos=host+1
+--lua-desync=send:repeats=2:tcp_md5 --lua-desync=fake:blob=fake_default_http:repeats=4:ip_ttl=2:ip6_ttl=2:tcp_md5 --lua-desync=multidisorder:pos=host+1
+--lua-desync=multisplit:pos=host+1:seqovl=2
+--lua-desync=multisplit:pos=host+1,method+2:seqovl=5
+--lua-desync=fake:blob=fake_default_http:tcp_flags_unset=ack --lua-desync=multidisorder:pos=host+1:tcp_flags_unset=ack
+--lua-desync=fake:blob=fake_default_http:repeats=8:badsum:ip_ttl=1:ip6_ttl=1 --lua-desync=multidisorder:pos=host+1
+--lua-desync=send:repeats=2:tcp_md5:ip_autottl=2,3-20:ip6_autottl=2,3-20 --lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=1:ip6_ttl=1:tcp_md5 --lua-desync=multidisorder:pos=1,method+2,host+1
+--lua-desync=syndata
+--lua-desync=syndata --lua-desync=multisplit:pos=1,method+2,host+1,sld+1
+--lua-desync=syndata --lua-desync=multidisorder:pos=1,method+2,host+1,sld+1
+--lua-desync=fake:blob=fake_default_http:repeats=10:ip_ttl=1:ip6_ttl=1:tcp_md5 --lua-desync=syndata
+--lua-desync=multidisorder:pos=1,method+2,host+1,sld+1:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=multidisorder:pos=host+1:seqovl=4:ip_autottl=0,3-20:ip6_autottl=0,3-20
+--lua-desync=fake:blob=fake_default_http:repeats=6:ip_ttl=1:ip6_ttl=1 --lua-desync=multidisorder:pos=host+1:seqovl=4
+--lua-desync=multisplit:pos=method+2 --lua-desync=multidisorder:pos=host+1,sld+1
+--lua-desync=syndata --lua-desync=fake:blob=fake_default_http:repeats=4:ip_ttl=1:ip6_ttl=1 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=3:ip_ttl=1:ip6_ttl=1 --lua-desync=fake:blob=fake_default_http:repeats=3:ip_ttl=2:ip6_ttl=2 --lua-desync=fake:blob=fake_default_http:repeats=3:ip_ttl=3:ip6_ttl=3 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=6:ip_ttl=1:ip6_ttl=1:tcp_md5 --lua-desync=multidisorder:pos=1,3,method+2,host+1,sld+1:seqovl=2
+--lua-desync=send:repeats=3:tcp_md5 --lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=1:ip6_ttl=1:tcp_md5 --lua-desync=multidisorder:pos=1,method+2,host+1,sld+1:seqovl=3
+--lua-desync=fake:blob=fake_default_http:repeats=6:badsum --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=6:badsum:tcp_seq=-50000 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=8:tcp_seq=-100000:ip_ttl=3:ip6_ttl=3 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=6:tcp_ack=-100000:tcp_ts_up --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=4:badsum --lua-desync=fake:blob=fake_default_http:repeats=4:tcp_seq=-50000 --lua-desync=fake:blob=fake_default_http:repeats=4:ip_ttl=1:ip6_ttl=1 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=20:ip_ttl=1:ip6_ttl=1:tcp_md5 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=10:badsum:ip_ttl=2:ip6_ttl=2 --lua-desync=multidisorder:pos=1,host+1:seqovl=3
+--lua-desync=fake:blob=fake_default_http:repeats=5:tcp_seq=-100000:ip_ttl=1:ip6_ttl=1 --lua-desync=fake:blob=fake_default_http:repeats=5:tcp_seq=-50000:ip_ttl=2:ip6_ttl=2 --lua-desync=multidisorder:pos=host+1,method+2:seqovl=2
+--lua-desync=fake:blob=fake_default_http:repeats=5:badsum --lua-desync=fake:blob=fake_default_http:repeats=5:tcp_seq=-100000 --lua-desync=fake:blob=fake_default_http:repeats=5:tcp_ack=-100000:tcp_ts_up --lua-desync=multidisorder:pos=1,host+1,sld+1:seqovl=3
+--lua-desync=send:repeats=3 --lua-desync=multidisorder:pos=host+1
+--lua-desync=multidisorder:pos=1,method+2,host+1,sld+1:seqovl=4
+--lua-desync=http_seqovl_host:fake_host=www.google.com
+--lua-desync=http_seqovl_host:fake_host=www.yandex.ru
+--lua-desync=http_triple_seqovl:fake_host=www.google.com
+--lua-desync=http_mgts_combo
+--lua-desync=http_mgts_combo:fake_host=www.google.com
+--lua-desync=http_mgts_combo:fake_host=ya.ru
+--lua-desync=http_ipfrag:frag_size=24
+--lua-desync=http_ipfrag:frag_size=8
+--lua-desync=http_hostmod:case=lower
+--lua-desync=http_hostmod:case=upper
+--lua-desync=http_hostmod:case=mixed
+--lua-desync=http_absolute_url:fake_host=www.google.com
+--lua-desync=http_seqovl_host:fake_host=www.google.com --lua-desync=multidisorder:pos=method+2,host+1
+--lua-desync=http_ipfrag:frag_size=24 --lua-desync=http_seqovl_host:fake_host=google.com
+--lua-desync=http_hostcase:spell=HoSt
+
+# ============================================================================
+# NEW: Combo bypass strategies (агрессивные комбинации)
+# ============================================================================
+--lua-desync=http_combo_bypass:fake_host=www.google.com:repeats=10
+--lua-desync=http_combo_bypass:fake_host=www.yandex.ru:repeats=15
+--lua-desync=http_combo_bypass:fake_host=ya.ru:repeats=20
+--lua-desync=http_combo_bypass:fake_host=www.iana.org:repeats=25
+
+# Fake X-Host headers
+--lua-desync=http_fake_xhost:fake_host=www.google.com
+--lua-desync=http_fake_xhost:fake_host=www.yandex.ru
+--lua-desync=http_fake_xhost:fake_host=ya.ru
+
+# OOB and prefix variants
+--lua-desync=http_oob_prefix
+--lua-desync=http_space_prefix
+--lua-desync=http_lf_prefix
+--lua-desync=http_tab_prefix
+
+# Inject safe header
+--lua-desync=http_inject_safe_header
+--lua-desync=fake:blob=fake_default_http:repeats=10:ip_ttl=1:ip6_ttl=1 --lua-desync=http_inject_safe_header
+
+# ============================================================================
+# NEW: More aggressive http_aggressive variants
+# ============================================================================
+--lua-desync=http_aggressive:fakes=15:ttl_start=1:ttl_step=1:split_host:disorder
+--lua-desync=http_aggressive:fakes=20:ttl_start=2:ttl_step=2:split_host:disorder
+--lua-desync=http_aggressive:fakes=8:ttl_start=1:split_host
+--lua-desync=http_aggressive:fakes=12:ttl_start=1:disorder
+--lua-desync=syndata --lua-desync=http_aggressive:fakes=8:ttl_start=1:split_host:disorder
+
+# ============================================================================
+# NEW: More MGTS combo variants (эффективны против MGTS DPI)
+# ============================================================================
+--lua-desync=http_mgts_combo:fake_host=www.iana.org
+--lua-desync=http_mgts_combo:fake_host=example.com
+--lua-desync=fake:blob=fake_default_http:repeats=10:ip_ttl=1:ip6_ttl=1 --lua-desync=http_mgts_combo:fake_host=www.google.com
+--lua-desync=syndata --lua-desync=http_mgts_combo:fake_host=ya.ru
+
+# ============================================================================
+# NEW: Triple seqovl variants
+# ============================================================================
+--lua-desync=http_triple_seqovl:fake_host=www.yandex.ru
+--lua-desync=http_triple_seqovl:fake_host=ya.ru
+--lua-desync=http_triple_seqovl:fake_host=example.com
+--lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=2:ip6_ttl=2 --lua-desync=http_triple_seqovl:fake_host=www.google.com
+
+# ============================================================================
+# NEW: More seqovl_host variants with different hosts
+# ============================================================================
+--lua-desync=http_seqovl_host:fake_host=example.com
+--lua-desync=http_seqovl_host:fake_host=www.iana.org
+--lua-desync=http_seqovl_host:fake_host=ya.ru
+--lua-desync=http_seqovl_host:fake_host=vk.com
+--lua-desync=fake:blob=fake_default_http:repeats=6:ip_ttl=1:ip6_ttl=1 --lua-desync=http_seqovl_host:fake_host=www.google.com
+--lua-desync=syndata --lua-desync=http_seqovl_host:fake_host=www.yandex.ru
+
+# ============================================================================
+# NEW: IP fragmentation variants
+# ============================================================================
+--lua-desync=http_ipfrag:frag_size=16
+--lua-desync=http_ipfrag:frag_size=32
+--lua-desync=http_ipfrag:frag_size=48
+--lua-desync=http_ipfrag:frag_size=64
+--lua-desync=fake:blob=fake_default_http:repeats=5:ip_ttl=1:ip6_ttl=1 --lua-desync=http_ipfrag:frag_size=24
+
+# ============================================================================
+# NEW: More hostmod variants
+# ============================================================================
+--lua-desync=http_hostmod:case=random
+--lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=1:ip6_ttl=1 --lua-desync=http_hostmod:case=upper
+--lua-desync=syndata --lua-desync=http_hostmod:case=mixed
+
+# ============================================================================
+# NEW: Absolute URL variants
+# ============================================================================
+--lua-desync=http_absolute_url:fake_host=www.yandex.ru
+--lua-desync=http_absolute_url:fake_host=ya.ru
+--lua-desync=http_absolute_url:fake_host=example.com
+--lua-desync=fake:blob=fake_default_http:repeats=6:ip_ttl=2:ip6_ttl=2 --lua-desync=http_absolute_url:fake_host=www.google.com
+
+# ============================================================================
+# NEW: More garbage prefix variants
+# ============================================================================
+--lua-desync=http_garbage_prefix:mode=crlf:amount=100
+--lua-desync=http_garbage_prefix:mode=crlf:amount=200
+--lua-desync=http_garbage_prefix:mode=spaces:amount=100
+--lua-desync=http_garbage_prefix:mode=spaces:amount=200
+--lua-desync=http_garbage_prefix:mode=mixed:amount=200
+--lua-desync=http_garbage_prefix:mode=mixed:amount=300
+
+# ============================================================================
+# NEW: More pipeline fake variants
+# ============================================================================
+--lua-desync=http_pipeline_fake:fake_host=example.com
+--lua-desync=http_pipeline_fake:fake_host=ya.ru
+--lua-desync=http_pipeline_fake_v2:fake_host=www.yandex.ru:badsum
+--lua-desync=http_pipeline_fake_v2:fake_host=ya.ru:badsum
+--lua-desync=fake:blob=fake_default_http:repeats=10:ip_ttl=1:ip6_ttl=1 --lua-desync=http_pipeline_fake:fake_host=www.google.com
+
+# ============================================================================
+# NEW: More header shuffle variants
+# ============================================================================
+--lua-desync=http_header_shuffle:fake_host=www.yandex.ru
+--lua-desync=http_header_shuffle:fake_host=ya.ru
+--lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=2:ip6_ttl=2 --lua-desync=http_header_shuffle:fake_host=www.google.com
+
+# ============================================================================
+# NEW: More host bytesplit variants
+# ============================================================================
+--lua-desync=http_host_bytesplit:max_parts=3
+--lua-desync=http_host_bytesplit:max_parts=7
+--lua-desync=http_host_bytesplit:max_parts=15
+--lua-desync=fake:blob=fake_default_http:repeats=6:ip_ttl=1:ip6_ttl=1 --lua-desync=http_host_bytesplit:max_parts=5
+
+# ============================================================================
+# NEW: More multi CRLF variants
+# ============================================================================
+--lua-desync=http_multi_crlf:count=3
+--lua-desync=http_multi_crlf:count=7
+--lua-desync=http_multi_crlf:count=15
+--lua-desync=http_multi_crlf:count=20
+--lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=1:ip6_ttl=1 --lua-desync=http_multi_crlf:count=10
+
+# ============================================================================
+# NEW: More simple bypass variants with different hostcase
+# ============================================================================
+--lua-desync=http_simple_bypass:hostcase=hOsT
+--lua-desync=http_simple_bypass:hostcase=HOST
+--lua-desync=http_simple_bypass:prefix=\n:hostcase=HoSt
+--lua-desync=http_simple_bypass:prefix=\r\n\r\n:hostcase=HoSt
+--lua-desync=fake:blob=fake_default_http:repeats=12:ip_ttl=1:ip6_ttl=1 --lua-desync=http_simple_bypass:prefix=\r\n:hostcase=HoSt
+
+# ============================================================================
+# NEW: hostfakesplit with more hosts
+# ============================================================================
+--lua-desync=hostfakesplit:host=example.com:midhost=midsld
+--lua-desync=hostfakesplit:host=ya.ru:midhost=midsld
+--lua-desync=hostfakesplit:host=vk.com:midhost=midsld
+--lua-desync=fake:blob=fake_default_http:repeats=6:ip_ttl=1:ip6_ttl=1 --lua-desync=hostfakesplit:host=google.com:midhost=midsld
+
+# ============================================================================
+# NEW: Aggressive combo strategies (fake + custom + split/disorder)
+# ============================================================================
+--lua-desync=fake:blob=fake_default_http:repeats=20:ip_ttl=1:ip6_ttl=1:badsum --lua-desync=http_methodeol --lua-desync=http_multidisorder
+--lua-desync=fake:blob=fake_default_http:repeats=15:ip_ttl=2:ip6_ttl=2:tcp_md5 --lua-desync=http_xpadding --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=25:ip_ttl=1:ip6_ttl=1:badsum --lua-desync=http_garbage_prefix:mode=crlf:amount=100 --lua-desync=multidisorder:pos=1,host+1,midsld
+--lua-desync=syndata --lua-desync=http_methodeol_safe --lua-desync=multisplit:pos=host+1
+--lua-desync=syndata --lua-desync=http_xpadding --lua-desync=multidisorder:pos=host+1,method+2
+
+# ============================================================================
+# NEW: Methodeol + hostcase combos
+# ============================================================================
+--lua-desync=http_methodeol_hostcase
+--lua-desync=fake:blob=fake_default_http:repeats=10:ip_ttl=1:ip6_ttl=1 --lua-desync=http_methodeol_hostcase
+--lua-desync=syndata --lua-desync=http_methodeol_hostcase
+
+# ============================================================================
+# NEW: Methodeol v2 variants
+# ============================================================================
+--lua-desync=http_methodeol_v2
+--lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=1:ip6_ttl=1 --lua-desync=http_methodeol_v2
+--lua-desync=syndata --lua-desync=http_methodeol_v2 --lua-desync=multisplit:pos=host+1
+
+# ============================================================================
+# NEW: Very aggressive multi-fake strategies
+# ============================================================================
+--lua-desync=fake:blob=fake_default_http:repeats=30:ip_ttl=1:ip6_ttl=1 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=40:ip_ttl=1:ip6_ttl=1:badsum --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=50:ip_ttl=1:ip6_ttl=1:tcp_md5 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=30:ip_ttl=2:ip6_ttl=2 --lua-desync=multisplit:pos=host+1:seqovl=3
+--lua-desync=fake:blob=fake_default_http:repeats=40:ip_ttl=3:ip6_ttl=3:badsum --lua-desync=multisplit:pos=1,host+1,midsld:seqovl=4
+
+# ============================================================================
+# NEW: TCP options tricks
+# ============================================================================
+--lua-desync=fake:blob=fake_default_http:repeats=10:tcp_ack=-200000:tcp_ts_up --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=10:tcp_seq=-200000 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=15:tcp_ack=-100000:tcp_seq=-100000:tcp_ts_up --lua-desync=multidisorder:pos=host+1,method+2
+
+# ============================================================================
+# NEW: Combined TTL tricks
+# ============================================================================
+--lua-desync=fake:blob=fake_default_http:repeats=5:ip_ttl=1:ip6_ttl=1 --lua-desync=fake:blob=fake_default_http:repeats=5:ip_ttl=2:ip6_ttl=2 --lua-desync=fake:blob=fake_default_http:repeats=5:ip_ttl=3:ip6_ttl=3 --lua-desync=fake:blob=fake_default_http:repeats=5:ip_ttl=4:ip6_ttl=4 --lua-desync=multidisorder:pos=host+1
+--lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=1:ip6_ttl=1 --lua-desync=fake:blob=fake_default_http:repeats=8:ip_ttl=3:ip6_ttl=3 --lua-desync=multisplit:pos=host+1:seqovl=2
+
+# ============================================================================
+# NEW: Extreme seqovl values
+# ============================================================================
+--lua-desync=multisplit:pos=host+1:seqovl=10
+--lua-desync=multisplit:pos=host+1:seqovl=20
+--lua-desync=multidisorder:pos=host+1:seqovl=10
+--lua-desync=multidisorder:pos=host+1:seqovl=15
+--lua-desync=multidisorder:pos=1,host+1,method+2,sld+1:seqovl=8
+
+# ============================================================================
+# NEW: Mixed position splits
+# ============================================================================
+--lua-desync=multisplit:pos=1,2,3,host+1
+--lua-desync=multisplit:pos=1,host,host+1,host+2
+--lua-desync=multidisorder:pos=1,2,3,host+1,midsld
+--lua-desync=multidisorder:pos=method,method+1,method+2,host+1
+
+# ============================================================================
+# NEW: Pass-through with modifications
+# ============================================================================
+--lua-desync=pass
+--lua-desync=http_hostcase:spell=HoSt --lua-desync=pass
+--lua-desync=http_methodeol_safe --lua-desync=pass

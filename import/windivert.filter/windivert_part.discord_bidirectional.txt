@@ -1,0 +1,5 @@
+  (outbound and
+   udp.DstPort>=50000 and udp.DstPort<=65535)
+  or
+  (inbound and
+   udp.SrcPort>=50000 and udp.SrcPort<=65535)

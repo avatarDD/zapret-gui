@@ -1,0 +1,8 @@
+github.com
+github.io
+githubassets.com
+githubusercontent.com 
+ghcr.io
+githubstatus.com
+githubapp.com
+scoop.sh

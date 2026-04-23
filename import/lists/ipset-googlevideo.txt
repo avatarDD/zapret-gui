@@ -1,0 +1,52 @@
+# r2---sn-4g5ednkd.googlevideo.com
+74.125.152.0/21
+142.250.0.0/16
+142.251.0.0/16
+172.217.0.0/16
+172.253.0.0/16
+# rr3---sn-q4fl6nds.googlevideo.com
+# rr1---sn-q4fl6ndl.googlevideo.com
+173.194.141.0/24
+173.194.160.0/21
+# rr18---sn-n8v7znsy.googlevideo.com
+173.194.176.0/20
+173.194.201.0/24
+178.66.0.0/16
+209.85.0.0/16
+212.19.0.0/16
+# r2---sn-jvhnu5g-c35k.googlevideo.com
+# rr1---sn-jvhnu5g-c35e.googlevideo.com
+# rr3---sn-jvhnu5g-n8vr.googlevideo.com
+# rr2---sn-jvhnu5g-c35k.googlevideo.com
+# rr5---sn-jvhnu5g-c35d.googlevideo.com
+# rr3---sn-jvhnu5g-c35k.googlevideo.com
+# rr6---sn-jvhnu5g-c35e.googlevideo.com
+# rr4---sn-jvhnu5g-c35z.googlevideo.com
+# rr4---sn-jvhnu5g-n8ve7.googlevideo.com
+212.188.0.0/17
+213.59.0.0/16
+216.58.0.0/16
+216.239.0.0/16
+217.23.0.0/16
+87.245.0.0/16
+108.177.0.0/16
+91.204.0.0/16
+109.195.0.0/16
+145.255.0.0/16
+5.187.0.0/16
+178.210.0.0/16
+31.210.0.0/16
+79.133.0.0/16
+188.43.0.0/16
+85.113.0.0/16
+92.126.0.0/16
+# rr4---sn-q4flrnsd.googlevideo.com
+# rr2---sn-q4fl6nlz.googlevideo.com
+# rr4---sn-5hne6n6l.googlevideo.com
+# rr5---sn-c0q7lnz7.googlevideo.com
+74.125.0.0/20
+# rr2---sn-po4vapo3g0-jnte.googlevideo.com
+85.234.4.0/22
+# rr13---sn-gvnuxaxjvh-bvwz.googlevideo.com
+213.59.192.0/18
+2a02:28:1::/48

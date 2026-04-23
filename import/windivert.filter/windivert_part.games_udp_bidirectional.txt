@@ -1,0 +1,9 @@
+  (outbound and
+   udp.DstPort >= 20000 and udp.DstPort <= 65535 and
+   udp.PayloadLength>=20 and
+   udp.Payload[0] != 0x64)
+  or
+  (inbound and
+   udp.SrcPort >= 20000 and udp.SrcPort <= 65535 and
+   udp.PayloadLength>=20 and
+   udp.Payload[0] != 0x64)

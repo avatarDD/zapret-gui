@@ -1,0 +1,9 @@
+# NOT 149.154.167.41
+# NOT 91.105.192.100
+# http://resources.txrevive.com/News/beta_withoutDate_small.png
+172.67.170.56
+92.123.0.0/16
+# http://main.txrevive.com/TXServer/StateServer/state/tankixprod_state.yml?rnd=0.79950330024562
+51.75.0.0/16
+51.75.65.187
+188.114.97.0/24
