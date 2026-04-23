@@ -21,12 +21,38 @@ const StrategiesPage = (() => {
                     <h1 class="page-title">Стратегии</h1>
                     <p class="page-description">Управление стратегиями desync для nfqws2</p>
                 </div>
-                <button class="btn btn-primary" onclick="StrategiesPage.openCreate()">
-                    <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button class="btn btn-ghost" id="strat-update-btn" onclick="StrategiesPage.updateCatalog()" title="Обновить каталог стратегий из youtubediscord/zapret">
+                        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <polyline points="1 20 1 14 7 14"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/>
+                            <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>
+                        </svg>
+                        <span id="strat-update-btn-label">Обновить стратегии</span>
+                    </button>
+                    <button class="btn btn-primary" onclick="StrategiesPage.openCreate()">
+                        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                        Создать стратегию
+                    </button>
+                </div>
+            </div>
+
+            <!-- Статус каталога стратегий -->
+            <div class="card" id="catalog-status-card" style="display:none;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
                     </svg>
-                    Создать стратегию
-                </button>
+                    Каталог стратегий
+                </div>
+                <div id="catalog-status-body" style="font-size:13px; color:var(--text-muted);">
+                    Загрузка...
+                </div>
             </div>
 
             <!-- Активная стратегия -->
@@ -102,6 +128,133 @@ const StrategiesPage = (() => {
         `;
 
         fetchStrategies();
+        refreshCatalogStatus();
+    }
+
+    // ══════════════════ Catalog updater ══════════════════
+
+    let catalogPollTimer = null;
+
+    async function refreshCatalogStatus(force = false) {
+        try {
+            const data = await API.get(
+                '/api/catalog/check' + (force ? '?force=1' : '')
+            );
+            renderCatalogStatus(data);
+        } catch (err) {
+            const body = document.getElementById('catalog-status-body');
+            const card = document.getElementById('catalog-status-card');
+            if (body && card) {
+                card.style.display = '';
+                body.innerHTML = '<span style="color:var(--error);">Не удалось получить статус каталога: '
+                    + escapeHtml(err.message) + '</span>';
+            }
+        }
+    }
+
+    function renderCatalogStatus(info) {
+        const card = document.getElementById('catalog-status-card');
+        const body = document.getElementById('catalog-status-body');
+        const btnLabel = document.getElementById('strat-update-btn-label');
+        if (!card || !body) return;
+
+        card.style.display = '';
+
+        const files = (info.local && info.local.files) || [];
+        const totalStrats = files.reduce(
+            (n, f) => n + (f.strategies || 0), 0
+        );
+        const last = info.local && info.local.last_update;
+        const remote = info.remote || {};
+
+        const rows = [];
+        rows.push(
+            'Файлов: <b>' + files.length + '</b>' +
+            ', стратегий: <b>' + totalStrats + '</b>'
+        );
+        if (last && last.short_sha) {
+            rows.push(
+                'Установленная версия: <code>' + escapeHtml(last.short_sha) +
+                '</code>' +
+                (last.updated_at ? ' (обновлено ' +
+                    escapeHtml(last.updated_at) + ')' : '')
+            );
+        } else {
+            rows.push('Установленная версия: <i>не отмечалась</i>');
+        }
+        if (remote.ok && remote.short_sha) {
+            rows.push(
+                'Последняя версия: <code>' +
+                escapeHtml(remote.short_sha) + '</code>' +
+                (remote.committed_at ? ' от ' +
+                    escapeHtml(remote.committed_at) : '')
+            );
+        } else if (remote.error) {
+            rows.push('<span style="color:var(--error);">Ошибка проверки: '
+                + escapeHtml(remote.error) + '</span>');
+        }
+
+        if (info.update_available) {
+            rows.push(
+                '<span style="color:var(--warning);">Доступно обновление.</span>'
+            );
+            if (btnLabel) btnLabel.textContent = 'Обновить стратегии (новое)';
+        } else if (remote.ok) {
+            rows.push(
+                '<span style="color:var(--success);">Каталог актуален.</span>'
+            );
+            if (btnLabel) btnLabel.textContent = 'Обновить стратегии';
+        }
+
+        body.innerHTML = rows.join('<br>');
+    }
+
+    async function updateCatalog() {
+        const btn = document.getElementById('strat-update-btn');
+        if (btn) btn.disabled = true;
+        Toast.info('Обновление каталога стратегий...');
+
+        try {
+            const resp = await API.post('/api/catalog/update', {});
+            if (resp.in_progress) {
+                startCatalogPolling();
+                return;
+            }
+            if (resp.ok) {
+                Toast.success(resp.message || 'Каталог обновлён');
+                await refreshCatalogStatus(true);
+                await fetchStrategies();
+            } else {
+                Toast.error(resp.message || 'Ошибка обновления');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    function startCatalogPolling() {
+        if (catalogPollTimer) return;
+        const btn = document.getElementById('strat-update-btn');
+        catalogPollTimer = setInterval(async () => {
+            try {
+                const p = await API.get('/api/catalog/progress');
+                if (!p.in_progress) {
+                    clearInterval(catalogPollTimer);
+                    catalogPollTimer = null;
+                    if (btn) btn.disabled = false;
+                    Toast.success('Обновление каталога завершено');
+                    await refreshCatalogStatus(true);
+                    await fetchStrategies();
+                }
+            } catch (err) {
+                clearInterval(catalogPollTimer);
+                catalogPollTimer = null;
+                if (btn) btn.disabled = false;
+                Toast.error('Ошибка опроса прогресса: ' + err.message);
+            }
+        }, 1500);
     }
 
     // ══════════════════ Data ══════════════════
@@ -718,6 +871,10 @@ const StrategiesPage = (() => {
             clearInterval(pollTimer);
             pollTimer = null;
         }
+        if (catalogPollTimer) {
+            clearInterval(catalogPollTimer);
+            catalogPollTimer = null;
+        }
     }
 
     // ══════════════════ Public API ══════════════════
@@ -744,5 +901,6 @@ const StrategiesPage = (() => {
         insertHostlist,
         editorPreview,
         saveEditor,
+        updateCatalog,
     };
 })();
