@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.15.0 — Обновление каталогов стратегий nfqws2 из youtubediscord/zapret
+
+### Добавлено
+- **Обновление каталогов стратегий** — кнопка «Обновить» в разделе «Стратегии» Web-UI (`core/catalog_updater.py`, `api/strategies.py`)
+  - Источник: `https://github.com/youtubediscord/zapret` (main)
+  - Извлекаются ДВА набора:
+    - `src/direct_preset/catalogs/winws2/{tcp,udp,http80,voice}.txt` → `catalogs/direct/*.txt` (одиночные приёмы desync для scanner)
+    - `src/core/presets/builtin/winws2/*.txt` → `catalogs/builtin/winws2_presets.txt` (полные конфигурации с `--filter-*`, `--new`, глобалами)
+- **Конвертер winws2 full-presets** — один upstream-файл становится одной INI-секцией; section_id получает префикс `winws2_` (защита от коллизий)
+- **Вырезание Windows-only флагов** — `--wf-*` (WinDivert) удаляются при конвертации; `--lua-init=@lua/...`, `--blob=alias:@bin/...`, `--ctrack-*`, `--ipcache-*`, `--filter-*`, `--lua-desync=*` сохраняются
+- **API обновления** — `GET /api/catalog-update/info`, `POST /api/catalog-update/run`, `GET /api/catalog-update/progress`
+- **Бэкап** — текущие файлы копируются в `catalogs/.direct.backup.<timestamp>/` перед обновлением
+
+### Изменено
+- **Merge-семантика обновления** — при обновлении локальные стратегии не удаляются; секции мерджатся по `section_id`:
+  - remote побеждает на коллизии (актуальный апстрим)
+  - локальные секции, которых нет в upstream, сохраняются в конце файла под комментарием «Сохранённые локальные секции»
+  - **дубликаты section_id невозможны** в результирующем файле (ни внутри файла, ни кросс-файлово между direct- и winws2-пресетами)
+- **CatalogLoader** — скрытые директории (`.*`) пропускаются при сканировании (игнорирует `.direct.backup.*`)
+- **Версия** — 0.15.0 (`core/version.py`, `install.sh`, `Makefile`)
+
+### Исправлено
+- Backup-директории перестали загружаться как дополнительные уровни каталогов
+
 ## v0.14.0 — Интеграция BlockCheck, Strategy Scanner и автообновление GUI
 
 ### Добавлено
