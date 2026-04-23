@@ -74,15 +74,6 @@ blobs = quic_google
 --payload=all
 --lua-desync=fake:blob=quic_google:repeats=9:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all
 
-[ipset_fake_12_n2_apex]
-name = Apex legends & Rockstar v2
-author = community
-label = game
-description = UDP 443+ с ipset-all, 12 повторов, cutoff n2
-blobs = quic_google
---payload=all
---lua-desync=fake:blob=quic_google:repeats=12:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all
-
 [ipset_fake_12_n3]
 name = IPSET Fake x12 N3 (Apex legends & Battlefield 6)
 author = community
@@ -332,14 +323,6 @@ blobs = fake_quic
 --payload=all
 --lua-desync=fake:blob=fake_quic:repeats=2
 
-[fake_4_google_quic]
-name = fake 4 повтора (Google QUIC)
-author = hz
-description = 4 повтора с fake QUIC пакетом Google
-blobs = quic_google
---payload=all
---lua-desync=fake:blob=quic_google:repeats=4
-
 [fake_6_google_quic]
 name = general (alt v2) 1.6.1
 author = Flowseal
@@ -523,3 +506,90 @@ blobs = quic6
 --payload=all
 --lua-desync=fake:blob=quic6:repeats=2:ip_autottl=-1,3-20:ip6_autottl=-1,3-20:payload=all
 --lua-desync=udplen:increment=8:pattern=0x0F0F0E0F
+
+# --- builtin stock basic coverage (generated) ---
+
+[stock_preset_x_v3_game_filter_01]
+name = fake quic_google x10
+author = builtin
+label = stock
+description = Автодобавлено для распознавания встроенного пресета Preset X v3 (game filter).txt (amazon_udp) в basic-режиме.
+--lua-desync=fake:blob=quic_google:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:payload=all:repeats=10
+
+# --- end builtin stock basic coverage ---
+
+# --- imported advanced additions ---
+
+[fake_tls_max_udp]
+name = Fake TLS Max (UDP)
+author = community
+blobs = tls_max
+--lua-desync=fake:blob=tls_max
+
+[fake_quic_google_10_all]
+name = Fake QUIC Google x10 payload=all
+author = community
+blobs = quic_google
+--payload=all
+--lua-desync=fake:blob=quic_google:repeats=10
+
+[fake_quic_google_12_all]
+name = Fake QUIC Google x12 payload=all
+author = community
+blobs = quic_google
+--payload=all
+--lua-desync=fake:blob=quic_google:repeats=12
+
+[fake_quic_google_10_autottl_payload]
+name = Fake QUIC Google x10 AutoTTL payload=all in args
+author = community
+blobs = quic_google
+--payload=all
+--lua-desync=fake:blob=quic_google:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:repeats=10:payload=all
+
+[fake_quic_google_12_autottl_payload]
+name = Fake QUIC Google x12 AutoTTL payload=all in args
+author = community
+blobs = quic_google
+--payload=all
+--lua-desync=fake:blob=quic_google:repeats=12:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all
+
+[fake_quic_google_2_udp]
+name = Fake QUIC Google x2 UDP no payload
+author = community
+blobs = quic_google
+--lua-desync=fake:blob=quic_google:repeats=2
+
+[fake_quic_google_2_all_payload]
+name = Fake QUIC Google x2 payload=all
+author = community
+blobs = quic_google
+--payload=all
+--lua-desync=fake:blob=quic_google:repeats=2
+
+[fake_quic2_udplen_deadbeef]
+name = Fake quic2 x7 + UDPLen deadbeef
+author = community
+blobs = quic2
+--payload=all
+--lua-desync=fake:blob=quic2:repeats=7
+--lua-desync=udplen:increment=5:pattern=0xDEADBEEF
+
+# ─── Сохранённые локальные секции (отсутствуют в upstream) ───
+
+[ipset_fake_12_n2_apex]
+name = Apex legends & Rockstar v2
+author = community
+label = game
+description = UDP 443+ с ipset-all, 12 повторов, cutoff n2
+blobs = quic_google
+--payload=all
+--lua-desync=fake:blob=quic_google:repeats=12:ip_autottl=2,3-20:ip6_autottl=2,3-20:payload=all
+
+[fake_4_google_quic]
+name = fake 4 повтора (Google QUIC)
+author = hz
+description = 4 повтора с fake QUIC пакетом Google
+blobs = quic_google
+--payload=all
+--lua-desync=fake:blob=quic_google:repeats=4

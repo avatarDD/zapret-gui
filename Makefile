@@ -72,11 +72,11 @@ info:
 	@echo "Конфигурация: $(DEST_CONFIG)"
 
 # ── Релиз через GitHub Actions ───────────────────────────────
-# Использование: make release VERSION=0.14.6
+# Использование: make release VERSION=0.15.0
 # Обновляет core/version.py, коммитит, создаёт тег → GitHub Actions собирает релиз
 release:
 	@if [ -z "$(VERSION)" ]; then \
-		printf "\n  Использование: make release VERSION=X.Y.Z\n  Пример:        make release VERSION=0.14.6\n\n"; \
+		printf "\n  Использование: make release VERSION=X.Y.Z\n  Пример:        make release VERSION=0.15.0\n\n"; \
 		exit 1; \
 	fi
 	@if git rev-parse "v$(VERSION)" >/dev/null 2>&1; then \
