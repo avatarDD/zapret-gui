@@ -362,8 +362,9 @@ class CatalogManager:
             total = 0
 
             for level in sorted(os.listdir(self._catalogs_dir)):
-                # Пропускаем исключённые директории и файлы
-                if level in _EXCLUDED_DIRS:
+                # Пропускаем исключённые и скрытые директории
+                # (скрытые: .direct.backup.*, .git, .cache и т.п.)
+                if level in _EXCLUDED_DIRS or level.startswith("."):
                     continue
 
                 level_dir = os.path.join(self._catalogs_dir, level)
