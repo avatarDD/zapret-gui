@@ -1390,6 +1390,7 @@ blobs = tls_google
 name = TLS MultiSplit SNI seqovl=652 stun_pat
 author = community
 --lua-desync=tls_multisplit_sni:seqovl=652:seqovl_pattern=stun_pat
+
 [fake_6_tls_4pda_tcp_ts]
 name = Fake TLS 4pda x6 TCP_TS
 author = community
@@ -1443,7 +1444,6 @@ author = community
 --lua-desync=fake:blob=0x00000000:repeats=11:tcp_ack=-66000:tcp_ts_up
 --lua-desync=fake:blob=fake_default_tls:tls_mod=rnd,dupsid,sni=www.google.com:repeats=11:tcp_ack=-66000:tcp_ts_up
 --lua-desync=multidisorder_legacy:pos=1,midsld:repeats=11
-
 
 [multisplit_stun_740]
 name = Multisplit seqovl=740 stun_pat

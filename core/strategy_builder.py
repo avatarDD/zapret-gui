@@ -340,6 +340,20 @@ class StrategyManager:
 
             all_args.extend(profile_args)
 
+        # Резолвим @lua/, @bin/, lists/ → абсолютные пути zapret2
+        from core.catalog_loader import CatalogManager
+        from core.config_manager import get_config_manager
+        _cfg = get_config_manager()
+        all_args = CatalogManager.resolve_paths_in_args(
+            all_args,
+            lua_path=_cfg.get("zapret", "lua_path",
+                              default="/opt/zapret2/lua"),
+            lists_path=_cfg.get("zapret", "lists_path",
+                                default="/opt/zapret2/lists"),
+            bin_path=_cfg.get("zapret", "bin_path",
+                              default="/opt/zapret2/bin"),
+        )
+
         return all_args
 
     def _parse_profile_args(self, args_str: str) -> list:

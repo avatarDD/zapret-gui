@@ -678,29 +678,40 @@ class CatalogManager:
         args: list[str],
         lua_path: str = "/opt/zapret2/lua",
         lists_path: str = "/opt/zapret2/lists",
+        bin_path: str = "/opt/zapret2/bin",
     ) -> list[str]:
         """
         Резолвить специальные пути в аргументах.
 
         Маппинг:
-            @lua/  → lua_path
-            lists/ → lists_path (в начале значения аргумента)
+            @lua/  → lua_path   (скрипты Lua)
+            @bin/  → bin_path   (blob-файлы: tls_*, quic_*, fake_http_* и т.д.)
+            =lists/ → =lists_path/ (hostlist'ы и ipset'ы)
 
         Args:
             args:       Список аргументов.
-            lua_path:   Путь к Lua-скриптам.
-            lists_path: Путь к спискам.
+            lua_path:   Путь к Lua-скриптам (по умолчанию /opt/zapret2/lua).
+            lists_path: Путь к спискам     (по умолчанию /opt/zapret2/lists).
+            bin_path:   Путь к blob-файлам (по умолчанию /opt/zapret2/bin).
 
         Returns:
             Список аргументов с резолвленными путями.
         """
+        # Префикс сохраняет `@` — это sigil nfqws2 "читать из файла"
+        # (для --blob=name:@path он обязателен; для --lua-init тоже
+        # используется штатно, см. core/nfqws_manager.py).
+        lua_prefix = "@" + lua_path.rstrip("/") + "/"
+        bin_prefix = "@" + bin_path.rstrip("/") + "/"
+        lists_prefix = lists_path.rstrip("/") + "/"
         resolved = []
         for arg in args:
             a = arg
             if "@lua/" in a:
-                a = a.replace("@lua/", lua_path.rstrip("/") + "/")
+                a = a.replace("@lua/", lua_prefix)
+            if "@bin/" in a:
+                a = a.replace("@bin/", bin_prefix)
             if "=lists/" in a:
-                a = a.replace("=lists/", "=" + lists_path.rstrip("/") + "/")
+                a = a.replace("=lists/", "=" + lists_prefix)
             resolved.append(a)
         return resolved
 

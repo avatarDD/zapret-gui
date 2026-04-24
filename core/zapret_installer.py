@@ -818,6 +818,25 @@ class ZapretInstaller:
                 self._update_op("Восстановление конфигурации...", 85)
                 self._restore_config(base_path, backup_files)
 
+            # ── Шаг 9b: Импорт bundled-ассетов (blobs/lua/lists) ──
+            # Базовый zapret2 идёт только с бинарником; blobs/lua/lists,
+            # на которые ссылаются наши стратегии, выкладывает GUI.
+            self._update_op("Импорт blobs/lua/lists...", 88)
+            try:
+                from core.asset_importer import import_runtime_assets
+                _imp = import_runtime_assets(base_path=base_path)
+                if _imp.get("copied", 0) > 0:
+                    log.info(
+                        "Импортировано %d файл(ов) в %s "
+                        "(blobs/lua/lists)" % (_imp["copied"], base_path),
+                        source="installer",
+                    )
+            except Exception as e:
+                log.warning(
+                    "Не удалось импортировать bundled-ассеты: %s" % e,
+                    source="installer",
+                )
+
             # ── Шаг 10: Выставляем права ──
             self._update_op("Настройка прав...", 90)
             self._set_permissions(base_path)
