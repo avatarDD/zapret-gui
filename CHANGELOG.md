@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.16.0 — Импорт bundled-ассетов (blobs/lua/lists) и дополнительных каталогов стратегий
+
+### Добавлено
+- **Автоматический импорт bundled-ассетов** — `core/asset_importer.py`
+  Базовая установка zapret2 (bol-van/zapret2) даёт только бинарник nfqws2.
+  Стратегии же ссылаются на blob-файлы, Lua-скрипты и hostlist'ы/ipset'ы,
+  которые теперь поставляются вместе с GUI в директории `import/` и
+  автоматически раскладываются в ожидаемые места `/opt/zapret2/`:
+    - `import/bin/*.bin` (83 файла) → `/opt/zapret2/bin/` (blob'ы для `--blob=…:@bin/*.bin`)
+    - `import/lua/*.lua` + `*.txt` (27 файлов) → `/opt/zapret2/lua/` (скрипты для `--lua-init=@lua/*.lua`)
+    - `import/lists/*.txt` (86 файлов) → `/opt/zapret2/lists/` (hostlist'ы/ipset'ы для `--hostlist=lists/*.txt`, `--ipset=…`)
+  Импорт идемпотентен (sha1-дедуп), запускается при:
+    - первой установке / обновлении GUI (`install.sh` → `python3 -m core.asset_importer`)
+    - установке / обновлении zapret2 (`core/zapret_installer.py`)
+    - нажатии «Обновить стратегии» в UI (`core/catalog_updater.py` → `import_all()`)
+- **Импорт дополнительных каталогов стратегий** из bundled `import/_internal/preset_zapret2/`
+  с той же merge-by-section-id семантикой, что и GitHub-обновление:
+    - `basic_strategies/*.txt` → `catalogs/basic/` (497 стратегий в 4 файлах)
+    - `advanced_strategies/*.txt` → `catalogs/advanced/` (550 стратегий в 5 файлах)
+    - `builtin_presets/*.txt` (79 файлов) → `catalogs/builtin/winws2_presets.txt`
+      (конвертация: вырезание `--wf-*` + префикс `winws2_`)
+- **Резолвинг `@bin/`** — `core/catalog_loader.py:resolve_paths_in_args()`
+  теперь понимает alias `@bin/` → `/opt/zapret2/bin/` (настраивается
+  в `config["zapret"]["bin_path"]`). Параллельно починен резолвинг
+  `@lua/` — сохраняем nfqws2-sigil `@` ("читать из файла"), который
+  ранее инадвертентно срезался.
+- **CLI-хук importer'а** — `python3 -m core.asset_importer --only {all|runtime|strategies}`
+  для вызова из install.sh.
+- **Версия** — 0.16.0 (`core/version.py`, `install.sh`, `Makefile`)
+
+### Изменено
+- `core/config_manager.py` — добавлен `zapret.bin_path = /opt/zapret2/bin`
+- `core/strategy_scanner.py`, `core/strategy_builder.py` — прокидывают
+  `bin_path` в резолвер путей; `strategy_builder.build_nfqws_args()`
+  теперь явно резолвит все три alias'а перед передачей в nfqws2.
+- `install.sh` — директория `import/` включена в копируемые подкаталоги;
+  после установки запускается `core.asset_importer --only all`.
+- `core/zapret_installer.py` — после install/update zapret2 автоматически
+  докладывает bundled-ассеты в `/opt/zapret2/{bin,lua,lists}`.
+
+### Зачем
+Раньше при чистой установке zapret2 пользователь получал бинарник
+без единого blob/lua/hostlist — любая нетривиальная стратегия из наших
+каталогов падала на отсутствующем файле. Теперь развёртывание "из
+коробки" даёт полный рабочий комплект.
+
 ## v0.15.0 — Обновление каталогов стратегий nfqws2 из youtubediscord/zapret
 
 ### Добавлено

@@ -353,6 +353,21 @@ class CatalogUpdater:
             }
             _save_state(state)
 
+            # 8b. Досливаем bundled-ассеты (import/).
+            # Это гарантирует что после обновления:
+            #   * blobs/lua/lists на месте в /opt/zapret2/{bin,lua,lists}
+            #   * basic/advanced/builtin каталоги включают локальные
+            #     bundled-дополнения (если есть).
+            self._set_progress("Импорт bundled-ассетов...", 88)
+            try:
+                from core.asset_importer import import_all as _import_all
+                _import_all()
+            except Exception as e:
+                log.warning(
+                    "Не удалось импортировать bundled-ассеты: %s" % e,
+                    source="catalog-updater",
+                )
+
             # 9. Перечитываем каталоги.
             self._set_progress("Перечитывание каталогов...", 95)
             try:

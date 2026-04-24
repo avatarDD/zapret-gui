@@ -747,6 +747,8 @@ class StrategyScanner:
         lua_path = cfg.get("zapret", "lua_path", default="/opt/zapret2/lua")
         lists_path = cfg.get("zapret", "lists_path",
                              default="/opt/zapret2/lists")
+        bin_path = cfg.get("zapret", "bin_path",
+                           default="/opt/zapret2/bin")
 
         # Получаем аргументы из записи каталога
         raw_args = CatalogManager.build_nfqws_args_from_entry(entry)
@@ -754,11 +756,13 @@ class StrategyScanner:
         if not raw_args:
             return []
 
-        # Резолвим пути (@lua/ → /opt/zapret2/lua/, lists/ → ...)
+        # Резолвим пути (@lua/ → /opt/zapret2/lua/, @bin/ → /opt/zapret2/bin/,
+        #               lists/ → ...)
         resolved = CatalogManager.resolve_paths_in_args(
             raw_args,
             lua_path=lua_path,
             lists_path=lists_path,
+            bin_path=bin_path,
         )
 
         # Добавляем фильтры протокола если их нет в аргументах стратегии

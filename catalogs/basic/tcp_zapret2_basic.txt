@@ -1591,6 +1591,7 @@ author = community
 --lua-desync=send:repeats=2
 --lua-desync=syndata:blob=stun_pat
 --lua-desync=tls_multisplit_sni:seqovl=652:seqovl_pattern=stun_pat
+
 [fake_6_tls_4pda_tcp_ts]
 name = Fake TLS 4pda x6 TCP_TS
 author = community
