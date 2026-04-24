@@ -21,6 +21,23 @@ chmod 755 "$APP_DIR/app.py" 2>/dev/null || true
 # Включаем автозапуск
 /etc/init.d/zapret-gui enable 2>/dev/null || true
 
+# Импортируем bundled-ассеты (blobs/lua/lists → /opt/zapret2/{bin,lua,lists},
+# дополнительные стратегии → catalogs/basic|advanced|builtin).
+# Базовый zapret2 содержит только бинарник nfqws2 — всё остальное
+# приезжает вместе с GUI в $APP_DIR/import/ и раскладывается
+# asset_importer'ом в места, на которые ссылаются стратегии.
+if [ -f "$APP_DIR/core/asset_importer.py" ] && [ -d "$APP_DIR/import" ]; then
+    echo "  Импорт blobs/lua/lists/стратегий..."
+    if env PYTHONPATH="$APP_DIR" python3 \
+            -m core.asset_importer --only all >/tmp/zapret-gui-import.log 2>&1; then
+        echo "  ✓ Ассеты импортированы"
+    else
+        echo "  ⚠ Ошибка импорта ассетов (см. /tmp/zapret-gui-import.log)"
+    fi
+elif [ ! -d "$APP_DIR/import" ]; then
+    echo "  ⚠ $APP_DIR/import отсутствует — bundled-ассеты не импортированы"
+fi
+
 # Проверяем и устанавливаем bottle
 if ! python3 -c "import bottle" 2>/dev/null; then
     echo "  Установка bottle (python3-bottle недоступен в opkg)..."
