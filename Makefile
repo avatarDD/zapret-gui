@@ -36,7 +36,7 @@ DIST_DIR     := dist
 
 # ── Исходные файлы ───────────────────────────────────────────
 APP_FILES    := app.py
-APP_DIRS     := api core config web catalogs data
+APP_DIRS     := api core config web catalogs data import
 EXCLUDE      := --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
                 --exclude='.DS_Store' --exclude='.git' --exclude='build' \
                 --exclude='dist' --exclude='packaging' --exclude='Makefile' \
