@@ -24,7 +24,7 @@ set -e
 
 REPO_URL="https://github.com/avatarDD/zapret-gui"
 BRANCH="${ZAPRET_GUI_BRANCH:-main}"
-VERSION="0.15.0"
+VERSION="0.16.0"
 
 GUI_PORT="${ZAPRET_GUI_PORT:-8080}"
 GUI_HOST="${ZAPRET_GUI_HOST:-0.0.0.0}"
@@ -407,7 +407,7 @@ install_from_github() {
 
     # Копируем основные файлы
     $SUDO cp "$src_dir/app.py" "$APP_DIR/"
-    for dir in api core config web catalogs data; do
+    for dir in api core config web catalogs data import; do
         if [ -d "$src_dir/$dir" ]; then
             $SUDO rm -rf "$APP_DIR/$dir"
             $SUDO cp -r "$src_dir/$dir" "$APP_DIR/"
@@ -434,6 +434,20 @@ install_from_github() {
 
     # Права
     $SUDO chmod 755 "$APP_DIR/app.py"
+
+    # Импорт bundled-ассетов (blobs/lua/lists → /opt/zapret2/) и
+    # bundled-стратегий (merge в catalogs/). Базовая установка
+    # zapret2 даёт только бинарник — всё остальное доставляет GUI.
+    if [ -d "$APP_DIR/import" ]; then
+        info "Импорт blobs/lua/lists/стратегий..."
+        if $SUDO env PYTHONPATH="$APP_DIR" python3 \
+                -m core.asset_importer --only all \
+                >/dev/null 2>"/tmp/zapret-gui-import-$$.err"; then
+            ok "Ассеты импортированы"
+        else
+            warn "Ошибка импорта ассетов (см. /tmp/zapret-gui-import-$$.err)"
+        fi
+    fi
 
     ok "Файлы установлены"
 }

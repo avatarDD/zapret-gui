@@ -18,13 +18,6 @@ label = experimental
 description = Потом опишу подробнее
 --lua-desync=multisplit:pos=midsld
 
-[multisplit_midsld]
-name = multisplit midsld
-author = loop-uh
-label = experimental
-description = Потом опишу подробнее
---lua-desync=multisplit:pos=midsld
-
 [split]
 name = Split
 author = Community
@@ -924,6 +917,7 @@ name = 📤 Fake Continuation
 author = Custom
 description = Отправляет фейковый chunked continuation
 --lua-desync=http_fake_continuation
+
 [multidisorder_legacy_1]
 name = MultiDisorder legacy pos=1,midsld
 author = community
