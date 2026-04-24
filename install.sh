@@ -341,45 +341,71 @@ check_deps() {
 
 # ── Установка из GitHub ───────────────────────────────────────
 
+# Если install.sh запущен из клона репо — используем локальный
+# источник вместо скачивания архива из GitHub. Это важно для
+# разработки и тестирования веток, которые ещё не слиты в main.
+detect_local_source() {
+    local script_dir
+    script_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+    [ -z "$script_dir" ] && return 1
+    # Обязательные маркеры репо zapret-gui
+    if [ -f "$script_dir/app.py" ] \
+       && [ -d "$script_dir/core" ] \
+       && [ -d "$script_dir/web" ]; then
+        LOCAL_SRC_DIR="$script_dir"
+        return 0
+    fi
+    return 1
+}
+
 install_from_github() {
-    info "Загрузка zapret-gui из GitHub ($BRANCH)..."
-
     local TMP_DIR="/tmp/zapret-gui-install-$$"
-    local ARCHIVE="$TMP_DIR/zapret-gui.tar.gz"
-
     mkdir -p "$TMP_DIR"
     trap "rm -rf '$TMP_DIR'" EXIT
 
-    # Скачиваем архив
-    local archive_url="$REPO_URL/archive/refs/heads/$BRANCH.tar.gz"
-    download "$archive_url" "$ARCHIVE" || {
-        # Пробуем альтернативный URL (для тега)
-        archive_url="$REPO_URL/archive/refs/tags/v$VERSION.tar.gz"
-        info "Пробуем тег v$VERSION..."
-        download "$archive_url" "$ARCHIVE" || {
-            error "Не удалось скачать архив"
-            exit 1
-        }
-    }
-
-    ok "Архив загружен"
-
-    # Распаковываем
-    info "Распаковка..."
-    cd "$TMP_DIR"
-    tar xzf "$ARCHIVE" || {
-        error "Не удалось распаковать архив"
-        exit 1
-    }
-
-    # Находим распакованную директорию
-    local src_dir=$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
-    if [ -z "$src_dir" ]; then
-        error "Не найдена директория проекта в архиве"
-        exit 1
+    local src_dir=""
+    if [ -n "$FORCE_GITHUB" ]; then
+        :  # пользователь явно просил скачивать из GitHub
+    elif detect_local_source; then
+        info "Локальный источник: $LOCAL_SRC_DIR"
+        src_dir="$LOCAL_SRC_DIR"
     fi
 
-    ok "Распакован: $(basename $src_dir)"
+    if [ -z "$src_dir" ]; then
+        info "Загрузка zapret-gui из GitHub ($BRANCH)..."
+        local ARCHIVE="$TMP_DIR/zapret-gui.tar.gz"
+
+        # Скачиваем архив
+        local archive_url="$REPO_URL/archive/refs/heads/$BRANCH.tar.gz"
+        download "$archive_url" "$ARCHIVE" || {
+            # Пробуем альтернативный URL (для тега)
+            archive_url="$REPO_URL/archive/refs/tags/v$VERSION.tar.gz"
+            info "Пробуем тег v$VERSION..."
+            download "$archive_url" "$ARCHIVE" || {
+                error "Не удалось скачать архив"
+                exit 1
+            }
+        }
+
+        ok "Архив загружен"
+
+        # Распаковываем
+        info "Распаковка..."
+        cd "$TMP_DIR"
+        tar xzf "$ARCHIVE" || {
+            error "Не удалось распаковать архив"
+            exit 1
+        }
+
+        # Находим распакованную директорию
+        src_dir=$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
+        if [ -z "$src_dir" ]; then
+            error "Не найдена директория проекта в архиве"
+            exit 1
+        fi
+
+        ok "Распакован: $(basename $src_dir)"
+    fi
 
     # Бэкап конфигурации
     if [ -d "$APP_DIR" ]; then
@@ -438,14 +464,31 @@ install_from_github() {
     # Импорт bundled-ассетов (blobs/lua/lists → /opt/zapret2/) и
     # bundled-стратегий (merge в catalogs/). Базовая установка
     # zapret2 даёт только бинарник — всё остальное доставляет GUI.
-    if [ -d "$APP_DIR/import" ]; then
+    if [ ! -d "$APP_DIR/import" ]; then
+        warn "Директория import/ отсутствует в $APP_DIR — пропускаем импорт"
+        warn "  (возможно, сборка из устаревшей ветки без bundled-ассетов)"
+    elif [ ! -f "$APP_DIR/core/asset_importer.py" ]; then
+        warn "core/asset_importer.py отсутствует — пропускаем импорт"
+        warn "  (возможно, сборка из устаревшей ветки без asset_importer)"
+    else
         info "Импорт blobs/lua/lists/стратегий..."
+        local IMP_LOG="/tmp/zapret-gui-import-$$.log"
         if $SUDO env PYTHONPATH="$APP_DIR" python3 \
                 -m core.asset_importer --only all \
-                >/dev/null 2>"/tmp/zapret-gui-import-$$.err"; then
+                >"$IMP_LOG" 2>&1; then
             ok "Ассеты импортированы"
+            # Показать краткую сводку, если asset_importer что-то написал
+            if [ -s "$IMP_LOG" ]; then
+                grep -E "(asset-importer|скопирован|импорт)" "$IMP_LOG" \
+                    2>/dev/null | head -3 | while read -r line; do
+                        info "  $line"
+                    done
+            fi
         else
-            warn "Ошибка импорта ассетов (см. /tmp/zapret-gui-import-$$.err)"
+            warn "Ошибка импорта ассетов (см. $IMP_LOG):"
+            tail -5 "$IMP_LOG" 2>/dev/null | while read -r line; do
+                warn "  $line"
+            done
         fi
     fi
 
@@ -751,15 +794,22 @@ while [ $# -gt 0 ]; do
         --branch)
             shift; BRANCH="$1"
             ;;
+        --force-github)
+            FORCE_GITHUB=1
+            ;;
         --help|-h)
             echo "Использование: $0 [опции]"
             echo ""
-            echo "  --port PORT     Порт веб-интерфейса (по умолчанию: 8080)"
-            echo "  --host HOST     Адрес привязки (по умолчанию: 0.0.0.0)"
-            echo "  --branch NAME   Ветка GitHub (по умолчанию: main)"
-            echo "  --update        Обновить до последней версии"
-            echo "  --uninstall     Удалить"
-            echo "  --help          Эта справка"
+            echo "  --port PORT       Порт веб-интерфейса (по умолчанию: 8080)"
+            echo "  --host HOST       Адрес привязки (по умолчанию: 0.0.0.0)"
+            echo "  --branch NAME     Ветка GitHub (по умолчанию: main)"
+            echo "  --force-github    Скачать с GitHub, даже если запуск из клона"
+            echo "  --update          Обновить до последней версии"
+            echo "  --uninstall       Удалить"
+            echo "  --help            Эта справка"
+            echo ""
+            echo "Если install.sh запущен из клона репо (с app.py+core+web),"
+            echo "по умолчанию используется локальный источник, а не GitHub."
             echo ""
             exit 0
             ;;
