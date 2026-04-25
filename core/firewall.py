@@ -573,7 +573,17 @@ class FirewallManager:
 
     @staticmethod
     def _run_cmd(cmd) -> bool:
-        """Выполнить команду. True если успешно."""
+        """Выполнить команду. True если успешно.
+
+        Для iptables/ip6tables подмешиваем `-w 5` сразу после имени бинарника:
+        иначе сканер, быстро снимающий и применяющий правила, упирается в
+        xtables-lock и получает «Another app is currently holding the xtables
+        lock».
+        """
+        if cmd and os.path.basename(cmd[0]) in ("iptables", "ip6tables"):
+            if "-w" not in cmd:
+                cmd = [cmd[0], "-w", "5"] + cmd[1:]
+
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=10
