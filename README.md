@@ -26,7 +26,7 @@
 ## Требования
 
 - Python 3.11+ (`python3-light` в Entware)
-- Bottle (`pip3 install bottle` — `python3-bottle` недоступен в opkg)
+- Bottle (`opkg install python3-bottle` или `pip3 install bottle`)
 - RAM: ~20–25 MB, Flash: ~500 KB (+ python3-light ~5 MB)
 - Архитектура: любая (mipsel, arm64, armv7, x86_64, mips, riscv64)
 
@@ -78,10 +78,13 @@ wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/main/install.sh 
 cd /opt
 git clone https://github.com/avatarDD/zapret-gui.git
 cd zapret-gui
-opkg install python3-light
-python3 -m pip install bottle
+opkg install python3-light python3-bottle
 python3 app.py --host 0.0.0.0 --port 8080
 ```
+
+> Если `python3-bottle` не нашёлся в репозитории, поставьте его через pip:
+> `opkg install python3-pip && python3 -m pip install bottle`.
+> `python3-light` сам по себе не содержит pip.
 
 ## Использование
 
