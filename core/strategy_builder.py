@@ -351,7 +351,9 @@ class StrategyManager:
             lists_path=_cfg.get("zapret", "lists_path",
                                 default="/opt/zapret2/lists"),
             bin_path=_cfg.get("zapret", "bin_path",
-                              default="/opt/zapret2/bin"),
+                              default="/opt/zapret2/files/fake"),
+            ipset_path=_cfg.get("zapret", "ipset_path",
+                                default="/opt/zapret2/ipset"),
         )
 
         return all_args

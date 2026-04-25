@@ -32,13 +32,21 @@ mkdir -p "$APP_DIR/config/strategies/user" 2>/dev/null || true
 chmod 755 "$APP_DIR/app.py" 2>/dev/null || true
 chmod 755 "$INITD_SCRIPT" 2>/dev/null || true
 
-# 6. Импортируем bundled-ассеты (blobs/lua/lists → /opt/zapret2/{bin,lua,lists},
-#    дополнительные стратегии → catalogs/basic|advanced|builtin).
-#    Базовый zapret2 содержит только бинарник nfqws2 — blob'ы, lua-скрипты
-#    и hostlist/ipset'ы приезжают вместе с GUI в $APP_DIR/import/ и
-#    раскладываются asset_importer'ом в места, на которые ссылаются стратегии.
+# 6. Очистка stale __pycache__ от предыдущей установки.
+#    Это критично: после обновления .py файлов python может загрузить
+#    устаревший .pyc, если mtime не обновлены — и тогда GUI продолжит
+#    показывать старую GUI_VERSION и старые пути.
+find "$APP_DIR" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+find "$APP_DIR" -name '*.pyc' -delete 2>/dev/null || true
+
+# 7. Импортируем bundled-ассеты:
+#    blobs  → $base/files/fake/   (--blob=...:@bin/*.bin)
+#    lua    → $base/lua/          (--lua-init=@lua/*.lua)
+#    lists  → $base/lists/        (--hostlist=lists/*.txt)
+#    ipset  → $base/ipset/        (--ipset[-exclude]=lists/ipset-*.txt)
+#    плюс bundled-стратегии → catalogs/basic|advanced|builtin.
 if [ -f "$APP_DIR/core/asset_importer.py" ] && [ -d "$APP_DIR/import" ]; then
-    echo "  Импорт blobs/lua/lists/стратегий..."
+    echo "  Импорт blobs/lua/lists/ipset/стратегий..."
     if env PYTHONPATH="$APP_DIR" python3 \
             -m core.asset_importer --only all >/tmp/zapret-gui-import.log 2>&1; then
         echo "  ✓ Ассеты импортированы"
@@ -76,6 +84,22 @@ fi
 
 echo ""
 echo "  ✓ Zapret Web-GUI установлен в $APP_DIR"
+echo ""
+
+# 8. Перезапуск сервиса, если он был запущен.
+#    Без рестарта старый python-процесс продолжит работать со
+#    старым кодом и GUI_VERSION в памяти — пользователь увидит
+#    предыдущую версию даже после успешной установки нового IPK.
+if [ -x "$INITD_SCRIPT" ]; then
+    PID_FILE="/opt/var/run/zapret-gui.pid"
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
+        echo "  Перезапуск Zapret Web-GUI..."
+        "$INITD_SCRIPT" restart >/dev/null 2>&1 \
+            && echo "  ✓ Сервис перезапущен" \
+            || echo "  ⚠ Не удалось перезапустить ($INITD_SCRIPT restart)"
+    fi
+fi
+
 echo ""
 echo "  Управление:"
 echo "    $INITD_SCRIPT start    — запуск"
