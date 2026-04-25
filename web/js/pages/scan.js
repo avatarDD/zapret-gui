@@ -312,8 +312,11 @@ const ScanPage = (() => {
             if (rate) parts.push('Успешность: ' + rate);
             if (elapsed) parts.push('Время: ' + elapsed);
             if (report.best_strategy) {
-                parts.push('Лучшая: ' + escapeHtml(report.best_strategy.strategy_name)
-                    + ' (' + Math.round(report.best_strategy.latency_ms) + ' ms)');
+                const b = report.best_strategy;
+                const bk = b.throughput_kbps ? `, ${b.throughput_kbps.toFixed(1)} KB/s` : '';
+                const bs = b.score != null ? `, score ${Math.round(b.score)}` : '';
+                parts.push('Лучшая: ' + escapeHtml(b.strategy_name)
+                    + ' (' + Math.round(b.latency_ms) + ' ms' + bk + bs + ')');
             }
             summaryEl.innerHTML = parts.join(' · ');
         }
@@ -330,6 +333,9 @@ const ScanPage = (() => {
             return;
         }
 
+        // Бэкенд сортирует results по score (см. strategy_scanner._build_report).
+        // НЕ пересортировываем здесь — иначе indexes для apply_strategy(idx)
+        // разъедутся с порядком в массиве working на стороне сервера.
         el.innerHTML = working.map((w, i) => {
             const latency = w.latency_ms ? Math.round(w.latency_ms) + ' ms' : '';
             const name = escapeHtml(w.strategy_name || w.strategy_id || 'Стратегия #' + (i + 1));
@@ -340,15 +346,39 @@ const ScanPage = (() => {
             const sourceFile = (w.raw_data && w.raw_data.source_file) || '';
             const level = (w.raw_data && w.raw_data.level) || '';
             const label = (w.raw_data && w.raw_data.label) || '';
+            const isFullPreset = !!(w.raw_data && w.raw_data.is_full_preset);
+
+            // Метрики глубокой пробы
+            const score = w.score != null ? Math.round(w.score) : 0;
+            const kbps = w.throughput_kbps || 0;
+            const bodyPassed = !!w.body_passed;
+            const successRate = w.success_rate != null
+                ? Math.round((w.success_rate || 0) * 100) + '%'
+                : '';
+
+            // Бейдж "16-20 KB" если стратегия пускает только пол-страницы
+            const perHost = (w.raw_data && w.raw_data.probe_per_host) || [];
+            const has16_20 = perHost.some(h => h && h.dpi_marker === 'tcp_16_20');
 
             // Мета-информация
             const metaParts = [];
+            if (isFullPreset) metaParts.push('full preset');
             if (level) metaParts.push(level);
             if (sourceFile) metaParts.push(sourceFile);
             if (label) metaParts.push(label);
             const metaStr = metaParts.length > 0
                 ? '<span style="color:var(--text-muted); font-size:11px;">' + escapeHtml(metaParts.join(' · ')) + '</span>'
                 : '';
+
+            // Метрики строкой
+            const metricsParts = [];
+            metricsParts.push(`<span style="color:var(--accent); font-weight:600;">score ${score}</span>`);
+            if (kbps > 0) metricsParts.push(`<span style="color:var(--text-secondary);">${kbps.toFixed(1)} KB/s</span>`);
+            if (latency) metricsParts.push(`<span style="color:var(--text-muted);">${latency}</span>`);
+            if (successRate) metricsParts.push(`<span style="color:var(--text-muted);">${successRate} проб</span>`);
+            if (bodyPassed) metricsParts.push('<span class="bc-badge bc-badge-ok" style="font-size:10px;">body OK</span>');
+            else if (has16_20) metricsParts.push('<span class="bc-badge" style="background:rgba(239,68,68,0.15); color:var(--error); font-size:10px; padding:1px 6px;">16-20 KB block</span>');
+            const metricsStr = metricsParts.join(' · ');
 
             return `
                 <div class="scan-result-item">
@@ -357,15 +387,16 @@ const ScanPage = (() => {
                             <span class="bc-badge bc-badge-ok">#${i + 1}</span>
                             ${name}
                             ${label === 'recommended' ? '<span class="bc-badge" style="background:rgba(34,197,94,0.15); color:var(--success); font-size:10px; padding:1px 6px;">recommended</span>' : ''}
+                            ${isFullPreset ? '<span class="bc-badge" style="background:rgba(59,130,246,0.15); color:var(--accent); font-size:10px; padding:1px 6px;">full preset</span>' : ''}
                         </div>
                         <div class="scan-result-meta">
-                            ${latency ? `<span style="color:var(--text-muted); font-size:12px;">${latency}</span>` : ''}
                             <button class="btn btn-primary btn-sm" onclick="ScanPage.applyStrategy(${i})">
                                 Применить
                             </button>
                         </div>
                     </div>
-                    ${metaStr ? '<div style="margin:4px 0 2px 28px;">' + metaStr + '</div>' : ''}
+                    <div style="margin:4px 0 2px 28px; font-size:12px;">${metricsStr}</div>
+                    ${metaStr ? '<div style="margin:2px 0 2px 28px;">' + metaStr + '</div>' : ''}
                     ${argsPreview ? `<div class="scan-result-args">${argsPreview}</div>` : ''}
                 </div>
             `;

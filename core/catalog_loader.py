@@ -75,9 +75,11 @@ _VALID_LABELS = frozenset({
 _QUICK_SET_SIZE = 30
 _STANDARD_SET_SIZE = 80
 
-# Уровни, которые НЕ используются scanner-ом
-# (builtin — полные конфигурации с --filter-*, не отдельные приёмы desync)
-_SCANNER_EXCLUDED_LEVELS = frozenset({"builtin"})
+# Уровни, которые НЕ используются scanner-ом.
+# Раньше сюда попадал "builtin", но сейчас полные пресеты как раз
+# нужны — у них есть собственные --filter-*/--hostlist=, и они часто
+# самые рабочие. Сканер их использует как-есть, не модифицируя args.
+_SCANNER_EXCLUDED_LEVELS: frozenset = frozenset()
 
 # Директории, которые НЕ содержат INI-каталоги
 # (presets/ содержит raw-файлы пресетов, конвертированных в JSON)

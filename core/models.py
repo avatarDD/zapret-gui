@@ -279,7 +279,12 @@ class BlockcheckReport:
 
 @dataclass
 class StrategyProbeResult:
-    """Результат проверки одной стратегии на одной цели."""
+    """Результат проверки одной стратегии на одной цели.
+
+    Поля throughput/body_passed/success_rate/score добавлены для глубокой
+    пробы: одной TLS-успехи мало, DPI часто пускает первые 16-20 КБ и
+    обрывает соединение. score используется для ранжирования.
+    """
 
     strategy_id: str
     strategy_name: str
@@ -290,6 +295,14 @@ class StrategyProbeResult:
     http_code: int = 0
     timestamp: float = 0.0
     protocol: str = "tcp"
+    # Пропускная способность тела (KB/s), 0 если body-проба не делалась
+    throughput_kbps: float = 0.0
+    # True, если удалось скачать > 21 КБ хотя бы на одном из test_hosts
+    body_passed: bool = False
+    # Доля успешных под-проб 0..1 (TLS+body на нескольких хостах)
+    success_rate: float = 0.0
+    # Композитный балл, по которому сортируется UI
+    score: float = 0.0
     raw_data: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -307,6 +320,10 @@ class StrategyProbeResult:
             "http_code": self.http_code,
             "timestamp": self.timestamp,
             "protocol": self.protocol,
+            "throughput_kbps": round(self.throughput_kbps, 1),
+            "body_passed": self.body_passed,
+            "success_rate": round(self.success_rate, 3),
+            "score": round(self.score, 2),
             # FIX: включаем raw_data — содержит args_preview, details и др.
             "raw_data": self.raw_data,
         }

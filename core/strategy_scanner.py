@@ -49,12 +49,21 @@ from core.models import (
 #  Constants
 # ═══════════════════════════════════════════════════════════
 
-# Таймауты (увеличены для роутера)
-STABILIZATION_DELAY = 2.0       # Ожидание после запуска nfqws2
-PROBE_TIMEOUT = 10              # Таймаут проверки TLS/STUN
-STUN_PROBE_TIMEOUT = 5          # Таймаут STUN-пробы
+# Таймауты (значения по умолчанию; могут быть переопределены в конфиге).
+# Раньше PROBE_TIMEOUT был 10с — это и было главной причиной «медленно»:
+# каждая неудачная стратегия съедала весь TLS-таймаут.
+STABILIZATION_DELAY = 1.0       # Ожидание после запуска nfqws2
+PROBE_TIMEOUT = 6               # Таймаут TLS handshake
+BODY_PROBE_TIMEOUT = 8          # Таймаут body-загрузки (>=64 KB)
+STUN_PROBE_TIMEOUT = 4          # Таймаут STUN-пробы (UDP)
 KILL_TIMEOUT = 4                # Ожидание остановки nfqws2
-INTER_STRATEGY_DELAY = 0.5     # Пауза между стратегиями
+INTER_STRATEGY_DELAY = 0.3      # Пауза между стратегиями
+BODY_PROBE_MIN_BYTES = 65_536   # Минимум для прохождения 16-20 KB барьера
+
+# Tmp hostlist для приёмов (basic/advanced/direct), обогащённый доменами
+# цели. nfqws2 матчит SNI/Host строго по записям; без них десинк
+# не применяется к трафику цели и проба всегда падает.
+TMP_HOSTLIST_PATH = "/tmp/zapret-gui-scan-target.txt"
 
 # Resume state
 RESUME_FILE = "/tmp/zapret-gui-scan-resume.json"
@@ -106,6 +115,10 @@ class StrategyScanner:
         self._protocol = "tcp"
         self._mode = "quick"
         self._start_index = 0
+        # Профиль цели (см. core/scan_targets.py)
+        self._scan_profile = None  # type: ignore[var-annotated]
+        # Путь временного hostlist'а для приёмов (создаётся в _run_scan)
+        self._tmp_hostlist: Optional[str] = None
 
         # Saved state (for restoring nfqws after scan)
         self._saved_nfqws_running = False
@@ -310,6 +323,18 @@ class StrategyScanner:
             # 1. Сохраняем текущее состояние nfqws/firewall
             self._save_current_state()
 
+            # 1a. Готовим профиль цели + tmp hostlist для приёмов
+            from core.scan_targets import detect_target
+            self._scan_profile = detect_target(self._target)
+            self._ensure_tmp_hostlist()
+            log.info(
+                "Профиль цели: %s, тестовых хостов: %d, hostlist в %s"
+                % (self._scan_profile.key,
+                   len(self._scan_profile.test_hosts) + 1,
+                   self._tmp_hostlist or "—"),
+                source="scanner",
+            )
+
             # 2. Загружаем стратегии из каталога
             strategies = self._select_strategies()
             if not strategies:
@@ -491,6 +516,9 @@ class StrategyScanner:
             # КРИТИЧЕСКИ ВАЖНО: гарантируем cleanup
             self._ensure_cleanup()
 
+            # Удаляем временный hostlist
+            self._remove_tmp_hostlist()
+
             # Восстанавливаем предыдущее состояние nfqws
             self._restore_previous_state()
 
@@ -504,6 +532,10 @@ class StrategyScanner:
         """
         Выбрать стратегии из каталога по режиму и протоколу.
 
+        Порядок: сначала full-presets (level=builtin) — у них собственные
+        --filter-*/--hostlist=, шанс успеха высокий; затем «приёмы»
+        (basic/advanced/direct), которые сканер обогащает шаблоном цели.
+
         Returns:
             Список CatalogEntry для тестирования.
         """
@@ -512,12 +544,54 @@ class StrategyScanner:
         cm = get_catalog_manager()
         protocol = self._protocol
 
+        # quick/standard/full — отбираем кандидатов из каталога
         if self._mode == "quick":
             entries = cm.get_quick_set(protocol=protocol)
         elif self._mode == "standard":
             entries = cm.get_standard_set(protocol=protocol)
         else:  # full
             entries = cm.get_full_set(protocol=protocol)
+
+        # quick может оказаться без builtin (label=recommended нет у
+        # пресетов). Подставляем топ-N builtin в начало, общий размер
+        # quick остаётся ~30.
+        if self._mode == "quick":
+            builtin_full = [
+                e for e in cm.get_catalog_entries(
+                    protocol=protocol, level="builtin")
+                if _is_full_preset_entry(e)
+            ]
+            top_builtin = builtin_full[:10]
+            existing_ids = {e.section_id for e in top_builtin}
+            tail = [e for e in entries if e.section_id not in existing_ids]
+            # Суммарно ~30: до 10 builtin + добор приёмами
+            entries = top_builtin + tail[: max(20, 30 - len(top_builtin))]
+
+        # standard — добавим побольше builtin (до 20 шт.)
+        elif self._mode == "standard":
+            builtin_full = [
+                e for e in cm.get_catalog_entries(
+                    protocol=protocol, level="builtin")
+                if _is_full_preset_entry(e)
+            ]
+            top_builtin = builtin_full[:20]
+            existing_ids = {e.section_id for e in top_builtin}
+            tail = [e for e in entries if e.section_id not in existing_ids]
+            entries = top_builtin + tail
+
+        # Сортировка: full presets вперёд, recommended вторыми
+        def _sort_key(e: CatalogEntry) -> tuple:
+            full = _is_full_preset_entry(e)
+            recommended = (e.label == "recommended")
+            # 0 — самый приоритетный
+            return (
+                0 if full else (1 if recommended else 2),
+                # внутри группы — стабильный порядок
+                e.source_file,
+                e.section_id,
+            )
+
+        entries.sort(key=_sort_key)
 
         # Применяем start_index для resume
         if self._start_index > 0 and self._start_index < len(entries):
@@ -650,35 +724,37 @@ class StrategyScanner:
                     },
                 )
 
-            # 6. Проба доступности
-            if self._protocol == "udp":
-                probe_result = self._probe_stun()
-            else:
-                probe_result = self._probe_tls()
+            # 6. Проба доступности — глубокая, с детектом 16-20 KB
+            probe = self._deep_probe()
 
             elapsed_ms = (time.time() - start_time) * 1000
 
             # 7. Формируем результат
-            success = probe_result.status == TestStatus.SUCCESS.value
-
             return StrategyProbeResult(
                 strategy_id=entry.section_id,
                 strategy_name=entry.name,
                 target=self._target,
-                success=success,
-                latency_ms=round(probe_result.latency_ms, 2),
-                error="" if success else (probe_result.error or probe_result.details),
-                http_code=probe_result.raw_data.get("status_code", 0)
-                    if success else 0,
+                success=probe["success"],
+                latency_ms=round(probe["latency_ms"], 2),
+                error=probe["error"],
+                http_code=probe["http_code"],
                 protocol=self._protocol,
+                throughput_kbps=probe["kbps"],
+                body_passed=probe["body_passed"],
+                success_rate=probe["success_rate"],
+                score=probe["score"],
                 raw_data={
-                    "test_type": probe_result.test_type,
-                    "details": probe_result.details,
+                    "test_type": probe["test_type"],
+                    "details": probe["details"],
                     "args_preview": args_full,
                     "source_file": entry.source_file,
                     "level": entry.level,
                     "label": entry.label,
                     "probe_elapsed_ms": round(elapsed_ms, 1),
+                    "probe_per_host": probe["per_host"],
+                    "is_full_preset": _is_full_preset_args(
+                        entry.get_args_list()
+                    ),
                 },
             )
 
@@ -729,16 +805,19 @@ class StrategyScanner:
         """
         Собрать аргументы nfqws2 из записи каталога.
 
-        Включает:
-        - Аргументы стратегии из CatalogEntry.args
-        - Резолвинг путей (@lua/, lists/)
-        - Фильтры по протоколу (--filter-tcp/--filter-udp)
+        Различает два типа стратегий:
 
-        Базовые аргументы (--user, --fwmark, --qnum, --lua-init)
-        добавляются автоматически NFQWSManager._build_base_args().
+        ▸ Full preset (catalogs/builtin/* и подобные с собственными
+          --filter-*/--hostlist=/--new): берём args как-есть, только
+          резолвим пути @lua/, @bin/, lists/.
 
-        Returns:
-            list[str] аргументов для NFQWSManager.start().
+        ▸ Trick (catalogs/basic|advanced|direct: один-два
+          --lua-desync=...): оборачиваем в шаблон цели — добавляем
+          --filter-tcp/udp + порт, --filter-l7=, --payload= и --hostlist=
+          с временным файлом, в котором перечислены домены цели.
+
+        Базовые аргументы (--user, --fwmark, --qnum, --lua-init) добавляет
+        NFQWSManager._build_base_args().
         """
         from core.catalog_loader import CatalogManager
         from core.config_manager import get_config_manager
@@ -749,53 +828,270 @@ class StrategyScanner:
                              default="/opt/zapret2/lists")
         bin_path = cfg.get("zapret", "bin_path",
                            default="/opt/zapret2/bin")
+        ipset_path = cfg.get("zapret", "ipset_path",
+                             default="/opt/zapret2/ipset")
 
-        # Получаем аргументы из записи каталога
         raw_args = CatalogManager.build_nfqws_args_from_entry(entry)
-
         if not raw_args:
             return []
 
-        # Резолвим пути (@lua/ → /opt/zapret2/lua/, @bin/ → /opt/zapret2/bin/,
-        #               lists/ → ...)
-        resolved = CatalogManager.resolve_paths_in_args(
+        is_full = _is_full_preset_args(raw_args)
+
+        if is_full:
+            # Полный пресет — ничего не дописываем, только резолвим пути.
+            return CatalogManager.resolve_paths_in_args(
+                raw_args,
+                lua_path=lua_path,
+                lists_path=lists_path,
+                bin_path=bin_path,
+                ipset_path=ipset_path,
+            )
+
+        # Trick: разворачиваем под цель
+        return self._wrap_trick_args(
             raw_args,
             lua_path=lua_path,
             lists_path=lists_path,
             bin_path=bin_path,
+            ipset_path=ipset_path,
         )
 
-        # Добавляем фильтры протокола если их нет в аргументах стратегии
-        has_filter = any(
-            a.startswith("--filter-tcp") or a.startswith("--filter-udp")
-            for a in resolved
+    def _wrap_trick_args(
+        self,
+        raw_args: list[str],
+        *,
+        lua_path: str,
+        lists_path: str,
+        bin_path: str,
+        ipset_path: str,
+    ) -> list[str]:
+        """Обернуть «приём» в шаблон под self._scan_profile."""
+        from core.catalog_loader import CatalogManager
+        from core.scan_targets import detect_target
+
+        profile = self._scan_profile or detect_target(self._target)
+
+        # --filter-* + порты + l7 + payload
+        if self._protocol == "udp":
+            filter_arg = "--filter-udp=%s" % profile.udp_ports
+            l7_arg = ("--filter-l7=%s" % profile.udp_l7) if profile.udp_l7 else ""
+            payload_arg = (
+                "--payload=%s" % profile.udp_payload
+            ) if profile.udp_payload else ""
+        else:
+            filter_arg = "--filter-tcp=%s" % profile.tcp_ports
+            l7_arg = ("--filter-l7=%s" % profile.tcp_l7) if profile.tcp_l7 else ""
+            payload_arg = (
+                "--payload=%s" % profile.tcp_payload
+            ) if profile.tcp_payload else ""
+
+        # Hostlist: tmp-файл (создан в _ensure_tmp_hostlist) с доменами цели.
+        # Если по какой-то причине файла нет — пропускаем --hostlist и
+        # nfqws2 будет десинхронизировать весь трафик по фильтру.
+        hostlist_arg = ""
+        if self._tmp_hostlist and os.path.isfile(self._tmp_hostlist):
+            hostlist_arg = "--hostlist=%s" % self._tmp_hostlist
+
+        wrapped: list[str] = []
+        if filter_arg:
+            wrapped.append(filter_arg)
+        if l7_arg:
+            wrapped.append(l7_arg)
+        if hostlist_arg:
+            wrapped.append(hostlist_arg)
+        if payload_arg:
+            wrapped.append(payload_arg)
+        wrapped.extend(raw_args)
+
+        # Резолвим пути в самих raw_args (могут содержать @lua/, @bin/, lists/)
+        return CatalogManager.resolve_paths_in_args(
+            wrapped,
+            lua_path=lua_path,
+            lists_path=lists_path,
+            bin_path=bin_path,
+            ipset_path=ipset_path,
         )
-
-        if not has_filter:
-            if self._protocol == "udp":
-                resolved = ["--filter-udp=443"] + resolved
-            else:
-                resolved = ["--filter-tcp=443"] + resolved
-
-        # Добавляем hostlist если его нет
-        has_hostlist = any(
-            a.startswith("--hostlist=") or a.startswith("--hostlist-exclude=")
-            for a in resolved
-        )
-
-        if not has_hostlist:
-            hostlist_path = os.path.join(lists_path, "other.txt")
-            if os.path.isfile(hostlist_path):
-                # Вставляем после --filter-*
-                insert_pos = 0
-                for i, a in enumerate(resolved):
-                    if a.startswith("--filter-"):
-                        insert_pos = i + 1
-                resolved.insert(insert_pos, "--hostlist=%s" % hostlist_path)
-
-        return resolved
 
     # ─────────────────── Probe tests ───────────────────
+
+    def _deep_probe(self) -> dict[str, Any]:
+        """Глубокая проба: TLS gate + body-загрузка по нескольким хостам.
+
+        Возвращает словарь с ключами:
+            success, latency_ms, error, http_code,
+            kbps, body_passed, success_rate, score,
+            test_type, details, per_host (list[dict]).
+
+        Алгоритм:
+          1) Для каждого test_host (1 в quick, 2 в standard, все в full):
+             a) TLS handshake (быстрый gate; если падает — суб-неудача).
+             b) Body-загрузка ≥64 КБ — отсеиваем «псевдо-успехи»,
+                когда DPI пускает первые 16-20 КБ и обрывает.
+          2) Композитный score = success_rate × min(kbps, 2048) /
+             max(latency_ms, 50).
+        """
+        from core.testers.tls_tester import test_tls
+        from core.testers.body_tester import probe_body
+        from core.scan_targets import detect_target
+
+        profile = self._scan_profile or detect_target(self._target)
+
+        # UDP: ничего лучше STUN сейчас не умеем.
+        if self._protocol == "udp":
+            stun = self._probe_stun()
+            ok = stun.status == TestStatus.SUCCESS.value
+            kbps = 0.0
+            return {
+                "success": ok,
+                "latency_ms": stun.latency_ms,
+                "error": "" if ok else (stun.error or stun.details),
+                "http_code": 0,
+                "kbps": kbps,
+                "body_passed": False,
+                "success_rate": 1.0 if ok else 0.0,
+                "score": (1.0 / max(stun.latency_ms, 50.0)) * 1000.0
+                         if ok else 0.0,
+                "test_type": stun.test_type,
+                "details": stun.details,
+                "per_host": [{
+                    "host": self._target,
+                    "tls_ok": ok,
+                    "body_ok": False,
+                    "kbps": kbps,
+                    "latency_ms": stun.latency_ms,
+                    "details": stun.details,
+                }],
+            }
+
+        # TCP: TLS + body
+        hosts = self._select_test_hosts(profile)
+
+        per_host: list[dict[str, Any]] = []
+        sum_latency = 0.0
+        sum_kbps = 0.0
+        kbps_count = 0
+        body_ok_count = 0
+        tls_ok_count = 0
+        any_http_code = 0
+
+        for host in hosts:
+            # Шаг 1: TLS handshake — быстрый gate
+            tls_res = test_tls(
+                host=host, port=443, timeout=PROBE_TIMEOUT,
+            )
+            tls_ok = tls_res.status == TestStatus.SUCCESS.value
+            if tls_ok:
+                tls_ok_count += 1
+                any_http_code = tls_res.raw_data.get("status_code", 0) or any_http_code
+
+            host_entry: dict[str, Any] = {
+                "host": host,
+                "tls_ok": tls_ok,
+                "body_ok": False,
+                "kbps": 0.0,
+                "latency_ms": tls_res.latency_ms,
+                "details": tls_res.details,
+            }
+
+            if not tls_ok:
+                per_host.append(host_entry)
+                continue
+
+            # Шаг 2: body-загрузка
+            url = (profile.get_probe_url()
+                   if host == profile.primary_host
+                   else "https://%s/" % host)
+            body = probe_body(
+                url=url,
+                min_bytes=BODY_PROBE_MIN_BYTES,
+                timeout=BODY_PROBE_TIMEOUT,
+            )
+            body_ok = body.status == TestStatus.SUCCESS.value
+            host_entry["body_ok"] = body_ok
+            host_entry["details"] = body.details
+            host_entry["kbps"] = body.raw_data.get("kbps", 0.0)
+            host_entry["bytes"] = body.raw_data.get("bytes_received", 0)
+            host_entry["dpi_marker"] = body.raw_data.get("dpi_marker", "")
+            host_entry["status_code"] = body.raw_data.get("status_code", 0)
+            host_entry["latency_ms"] = body.latency_ms
+
+            sum_latency += body.latency_ms
+            kbps = body.raw_data.get("kbps", 0.0) or 0.0
+            if body_ok:
+                body_ok_count += 1
+                sum_kbps += kbps
+                kbps_count += 1
+                any_http_code = body.raw_data.get("status_code", 0) or any_http_code
+
+            per_host.append(host_entry)
+
+        total_subprobes = max(len(hosts), 1)
+        # success_rate: 0.5 за TLS-only, 1.0 за TLS+body
+        weighted = (tls_ok_count * 0.4 + body_ok_count * 0.6) / total_subprobes
+        success_rate = round(weighted, 3)
+
+        # Стратегия "успешна" если хотя бы на одном хосте прошла body-проба.
+        # TLS-only без body — это «псевдо-успех» (классический 16-20 КБ).
+        success = body_ok_count > 0
+
+        avg_kbps = (sum_kbps / kbps_count) if kbps_count > 0 else 0.0
+        avg_latency = (sum_latency / total_subprobes) if per_host else 0.0
+
+        # Композитный score: чем выше скорость и ниже задержка, тем лучше;
+        # отсутствие body-успеха обнуляет.
+        if success:
+            score = success_rate * (min(avg_kbps, 2048.0) /
+                                    max(avg_latency, 50.0)) * 1000.0
+        else:
+            # Половинный score за частичный TLS-успех, чтобы они шли ниже
+            # «настоящих» удач, но всё же видимы в списке.
+            score = success_rate * 1.0
+
+        # Сообщение об ошибке для UI
+        if success:
+            err = ""
+        elif tls_ok_count == 0:
+            err = "TLS_FAIL"
+        else:
+            # TLS ok, но body не прошёл — почти наверняка 16-20 KB block
+            markers = {h.get("dpi_marker", "") for h in per_host}
+            if "tcp_16_20" in markers:
+                err = "TCP_16_20"
+            elif "short_body" in markers:
+                err = "SHORT_BODY"
+            else:
+                err = "BODY_FAIL"
+
+        details = "TLS %d/%d, body %d/%d, %.1f KB/s" % (
+            tls_ok_count, total_subprobes,
+            body_ok_count, total_subprobes,
+            avg_kbps,
+        )
+
+        return {
+            "success": success,
+            "latency_ms": avg_latency,
+            "error": err,
+            "http_code": any_http_code,
+            "kbps": round(avg_kbps, 1),
+            "body_passed": body_ok_count > 0,
+            "success_rate": success_rate,
+            "score": round(score, 2),
+            "test_type": "tls+body",
+            "details": details,
+            "per_host": per_host,
+        }
+
+    def _select_test_hosts(self, profile) -> list[str]:
+        """Сколько хостов проверять: 1 (quick) / 2 (standard) / все (full)."""
+        all_hosts = [profile.primary_host] + [
+            h for h in profile.test_hosts if h != profile.primary_host
+        ]
+        if self._mode == "quick":
+            return all_hosts[:1]
+        if self._mode == "standard":
+            return all_hosts[:2]
+        return all_hosts[:4]
 
     def _probe_tls(self) -> SingleTestResult:
         """Проверить доступность по TLS/HTTPS."""
@@ -1034,10 +1330,15 @@ class StrategyScanner:
         """Сформировать итоговый отчёт."""
         working = [r for r in self._results if r.success]
 
-        # Лучшая стратегия = минимальная latency
+        # Лучшая = максимальный score (success_rate × kbps/latency).
+        # Это надёжнее, чем просто latency: latency низкий бывает у
+        # «псевдо-успехов», у которых body обрывается на 16-20 KB.
         best: Optional[StrategyProbeResult] = None
         if working:
-            best = min(working, key=lambda r: r.latency_ms)
+            best = max(working, key=lambda r: r.score)
+
+        # Сортируем self._results по score (для UI)
+        self._results.sort(key=lambda r: r.score, reverse=True)
 
         self._report = StrategyScanReport(
             target=self._target,
@@ -1096,6 +1397,11 @@ class StrategyScanner:
                 source="scanner",
             )
             return False
+
+        # Если в args есть ссылка на TMP_HOSTLIST_PATH (это означает,
+        # что стратегия была trick-обёрткой), переписываем её в постоянный
+        # hostlist в lists_path — иначе после удаления tmp файл пропадёт.
+        args = self._materialize_tmp_hostlist(args, probe_result)
 
         # Создаём user-стратегию в JSON-формате
         sm = get_strategy_manager()
@@ -1165,6 +1471,51 @@ class StrategyScanner:
             )
             return False
 
+    def _materialize_tmp_hostlist(
+        self,
+        args: list[str],
+        probe_result: StrategyProbeResult,
+    ) -> list[str]:
+        """Заменить ссылку на TMP_HOSTLIST_PATH на постоянный файл.
+
+        При сканировании trick'ам подсовывается /tmp/...target.txt, который
+        удаляется в finally. Чтобы применённая стратегия пережила перезапуск
+        nfqws2, копируем содержимое в lists_path/zapret-gui-target-<key>.txt
+        и переписываем --hostlist=… на этот путь.
+        """
+        if not any(a.endswith(TMP_HOSTLIST_PATH) for a in args):
+            return args
+
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        lists_path = cfg.get("zapret", "lists_path",
+                             default="/opt/zapret2/lists")
+
+        from core.scan_targets import detect_target
+        profile = self._scan_profile or detect_target(probe_result.target)
+        permanent = os.path.join(
+            lists_path, "zapret-gui-target-%s.txt" % profile.key,
+        )
+
+        try:
+            os.makedirs(lists_path, exist_ok=True)
+            with open(permanent, "w", encoding="utf-8") as f:
+                for d in profile.all_hostlist_domains():
+                    f.write(d.strip() + "\n")
+        except OSError as e:
+            log.warning(
+                "Не удалось записать постоянный hostlist (%s): %s"
+                % (permanent, e),
+                source="scanner",
+            )
+            return args
+
+        return [
+            ("--hostlist=%s" % permanent) if a == ("--hostlist=%s" % TMP_HOSTLIST_PATH)
+            else a
+            for a in args
+        ]
+
     # ─────────────────── Helpers ───────────────────
 
     def _set_phase(self, phase: str) -> None:
@@ -1200,6 +1551,76 @@ class StrategyScanner:
         except (ValueError, TypeError):
             pass
         return STABILIZATION_DELAY
+
+    # ─────────────────── tmp hostlist ───────────────────
+
+    def _ensure_tmp_hostlist(self) -> None:
+        """
+        Создать временный hostlist для приёмов basic/advanced/direct.
+
+        nfqws2 матчит SNI/Host строго по записям файла; чтобы trick'и
+        реально применялись к трафику цели, нужны корректные домены.
+        """
+        if self._scan_profile is None:
+            self._tmp_hostlist = None
+            return
+
+        domains = self._scan_profile.all_hostlist_domains()
+        if not domains:
+            self._tmp_hostlist = None
+            return
+
+        try:
+            with open(TMP_HOSTLIST_PATH, "w", encoding="utf-8") as f:
+                for d in domains:
+                    f.write(d.strip() + "\n")
+            self._tmp_hostlist = TMP_HOSTLIST_PATH
+        except OSError as e:
+            log.warning(
+                "Не удалось создать временный hostlist: %s" % e,
+                source="scanner",
+            )
+            self._tmp_hostlist = None
+
+    def _remove_tmp_hostlist(self) -> None:
+        """Удалить временный hostlist."""
+        if self._tmp_hostlist:
+            try:
+                if os.path.exists(self._tmp_hostlist):
+                    os.remove(self._tmp_hostlist)
+            except OSError:
+                pass
+        self._tmp_hostlist = None
+
+
+# ═══════════════════════════════════════════════════════════
+#  Helpers (module-level)
+# ═══════════════════════════════════════════════════════════
+
+def _is_full_preset_args(args: list[str]) -> bool:
+    """Эвристика: «полный пресет» — содержит --filter-* или --new или
+    собственные --hostlist/--blob/--ipset. У «приёма» в args обычно один
+    или два --lua-desync= и больше ничего.
+    """
+    if not args:
+        return False
+    for a in args:
+        if a == "--new":
+            return True
+        if a.startswith("--filter-tcp") or a.startswith("--filter-udp"):
+            return True
+        if a.startswith("--hostlist=") or a.startswith("--hostlist-domains="):
+            return True
+        if a.startswith("--ipset=") or a.startswith("--ipset-exclude="):
+            return True
+        if a.startswith("--blob="):
+            return True
+    return False
+
+
+def _is_full_preset_entry(entry: CatalogEntry) -> bool:
+    """То же, но для CatalogEntry."""
+    return _is_full_preset_args(entry.get_args_list())
 
 
 # ═══════════════════════════════════════════════════════════
