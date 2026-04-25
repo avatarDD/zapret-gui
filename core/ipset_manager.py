@@ -2,20 +2,24 @@
 """
 Менеджер IP-списков (ipsets).
 
-Управляет файлами в директории lists_path:
+Управляет файлами в директории ipset_path (обычно /opt/zapret2/ipset/):
   - ipset-base.txt — базовые IP-адреса (Cloudflare DNS и др.)
   - my-ipset.txt   — пользовательские IP/подсети
   - ipset-*.txt    — произвольные пользовательские IP-списки
   - my-ipset-*.txt — пользовательские IP-списки (альтернативный префикс)
+  - *-ipset.txt    — импортируемые из upstream'а (cloudflare-ipset.txt,
+                     russia-discord-ipset.txt, ...). asset_importer
+                     раскладывает такие файлы в ipset_path.
 
 Имя файла должно удовлетворять одному из условий:
   - встроенное имя ("ipset-base", "my-ipset");
   - начинается с "ipset-", "ipset_", "my-ipset-" или "my-ipset_";
+  - заканчивается на "-ipset" либо содержит "-ipset_" / "-ipset.";
   - длина 1..64 символа, допустимые символы — [a-zA-Z0-9_-].
 
-Таким образом IP-списки и hostlists живут в одной директории, но имеют
-разделённые namespaces: файлы IP-списков ВСЕГДА начинаются с "ipset" либо
-равны "my-ipset".
+ВАЖНО: ipset_path и lists_path — это РАЗНЫЕ директории zapret2.
+hostlist_manager работает с lists_path (хостлисты), ipset_manager —
+с ipset_path. asset_importer разделяет их при импорте.
 
 Поддерживает загрузку IP-диапазонов по ASN через RIPE API.
 
@@ -78,10 +82,17 @@ DESCRIPTIONS = {
 _NAME_CHARS_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 # Паттерн namespace'а IP-списков: имя либо встроенное, либо начинается с
-# одного из префиксов ipset- / ipset_ / my-ipset- / my-ipset_ (для
-# произвольных кастомных IP-списков).
+# префикса ipset- / ipset_ / my-ipset- / my-ipset_, ЛИБО заканчивается
+# на -ipset / -ipset_<suffix> (для импортированных upstream-файлов вроде
+# "cloudflare-ipset", "cloudflare-ipset_v6", "russia-discord-ipset").
+# Список вариантов синхронизирован с core/asset_importer._is_ipset_filename.
 IPSET_NAMESPACE_RE = re.compile(
-    r"^(?:ipset-base|my-ipset|ipset[-_][a-zA-Z0-9_-]+|my-ipset[-_][a-zA-Z0-9_-]+)$"
+    r"^(?:"
+    r"ipset-base|my-ipset|"
+    r"ipset[-_][a-zA-Z0-9_-]+|"
+    r"my-ipset[-_][a-zA-Z0-9_-]+|"
+    r"[a-zA-Z0-9][a-zA-Z0-9_-]*-ipset(?:[-_][a-zA-Z0-9_-]+)?"
+    r")$"
 )
 
 # ═══════════════════ Валидация IP ═══════════════════
@@ -186,24 +197,31 @@ class IPSetManager:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._migrated = False  # ленивая миграция из lists_path
+
+    @property
+    def ipset_path(self):
+        """Путь к директории IP-списков (отдельно от hostlists)."""
+        cfg = get_config_manager()
+        return cfg.get("zapret", "ipset_path", default="/opt/zapret2/ipset")
 
     @property
     def lists_path(self):
-        """Путь к директории списков."""
+        """Путь к hostlists (для миграции старых ipset-файлов)."""
         cfg = get_config_manager()
         return cfg.get("zapret", "lists_path", default="/opt/zapret2/lists")
 
     def _file_path(self, name):
         """Полный путь к файлу списка."""
-        return os.path.join(self.lists_path, name + ".txt")
+        return os.path.join(self.ipset_path, name + ".txt")
 
     def _ensure_dir(self):
-        """Создать директорию списков если не существует."""
-        path = self.lists_path
+        """Создать директорию ipset'ов если не существует."""
+        path = self.ipset_path
         if not os.path.isdir(path):
             try:
                 os.makedirs(path, exist_ok=True)
-                log.info(f"Создана директория списков: {path}", source="ipsets")
+                log.info(f"Создана директория ipset: {path}", source="ipsets")
             except OSError as e:
                 log.error(f"Не удалось создать директорию: {e}", source="ipsets")
 
@@ -221,13 +239,17 @@ class IPSetManager:
 
     def list_names(self):
         """
-        Список имён всех ipset-файлов в директории.
+        Список имён всех ipset-файлов в директории ipset_path.
 
         Всегда включает встроенные имена, плюс любые *.txt файлы,
         удовлетворяющие namespace'у IP-списков.
         """
+        # Однократная миграция: до v0.16 ipset-файлы лежали в lists_path,
+        # а теперь должны быть в ipset_path.
+        self._migrate_from_lists_if_needed()
+
         names = set(BUILTIN_NAMES)
-        path = self.lists_path
+        path = self.ipset_path
         try:
             if os.path.isdir(path):
                 for entry in os.listdir(path):
@@ -242,6 +264,60 @@ class IPSetManager:
         builtin_order = [n for n in BUILTIN_NAMES if n in names]
         custom = sorted(n for n in names if n not in BUILTIN_NAMES)
         return builtin_order + custom
+
+    def _migrate_from_lists_if_needed(self):
+        """
+        Однократно скопировать ipset-файлы из lists_path в ipset_path.
+
+        До v0.16 IPSetManager писал в lists_path; начиная с v0.16
+        asset_importer и catalog_loader ожидают ipset-файлы в ipset_path.
+        Чтобы пользователь не потерял свои IP-списки и чтобы импортированные
+        upstream-файлы стали видны в UI, переносим их.
+
+        Не перезаписываем уже существующие в ipset_path файлы.
+        """
+        with self._lock:
+            if self._migrated:
+                return
+            self._migrated = True
+
+        old_dir = self.lists_path
+        new_dir = self.ipset_path
+
+        if not os.path.isdir(old_dir) or os.path.realpath(old_dir) == \
+                os.path.realpath(new_dir):
+            return
+
+        try:
+            os.makedirs(new_dir, exist_ok=True)
+        except OSError:
+            return
+
+        copied = 0
+        for entry in os.listdir(old_dir):
+            if not entry.endswith(".txt"):
+                continue
+            stem = entry[:-4]
+            if not self._validate_name(stem):
+                continue
+            src = os.path.join(old_dir, entry)
+            dst = os.path.join(new_dir, entry)
+            if os.path.exists(dst):
+                continue  # не перезаписываем
+            try:
+                with open(src, "rb") as r, open(dst, "wb") as w:
+                    w.write(r.read())
+                copied += 1
+            except OSError as e:
+                log.debug(
+                    f"ipset migrate {entry}: {e}", source="ipsets",
+                )
+
+        if copied > 0:
+            log.info(
+                f"ipset: перенесено {copied} файлов из {old_dir} в {new_dir}",
+                source="ipsets",
+            )
 
     def get_ipset(self, name):
         """
