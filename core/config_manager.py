@@ -31,12 +31,18 @@ DEFAULT_CONFIG = {
     "version": 1,
 
     # --- Пути к zapret2 ---
+    # Стандартный layout zapret2:
+    #   base_path/files/fake/   — blob-файлы (--blob=...:@bin/*.bin)
+    #   base_path/lua/          — Lua-скрипты (--lua-init=@lua/*.lua)
+    #   base_path/lists/        — hostlist'ы (--hostlist=lists/*.txt)
+    #   base_path/ipset/        — IP-списки (--ipset[-exclude]=lists/ipset-*.txt)
     "zapret": {
         "base_path": "/opt/zapret2",
         "nfqws_binary": "/opt/zapret2/nfq2/nfqws2",
         "lua_path": "/opt/zapret2/lua",
         "lists_path": "/opt/zapret2/lists",
-        "bin_path": "/opt/zapret2/bin",
+        "ipset_path": "/opt/zapret2/ipset",
+        "bin_path": "/opt/zapret2/files/fake",
     },
 
     # --- Настройки Web-GUI ---
@@ -157,6 +163,9 @@ class ConfigManager:
                         saved = json.load(f)
                     # Мержим: saved перезаписывает дефолты
                     self._deep_merge(self._config, saved)
+                    # Миграция legacy путей под фактический layout zapret2
+                    if self._migrate_legacy_paths():
+                        self._save_locked()
                     log.info(f"Конфигурация загружена: {self._config_path}",
                              source="config")
                 except (json.JSONDecodeError, IOError) as e:
@@ -170,6 +179,25 @@ class ConfigManager:
 
             self._loaded = True
             return self._config
+
+    def _migrate_legacy_paths(self) -> bool:
+        """
+        Привести zapret-пути к актуальному layout'у zapret2.
+
+        До 0.16.3 дефолт bin_path = /opt/zapret2/bin был неверным:
+        блоб-файлы лежат в /opt/zapret2/files/fake/. Также раньше
+        отсутствовал ipset_path — ipset'ы и hostlist'ы лежали в
+        одной директории.
+        """
+        z = self._config.get("zapret", {})
+        changed = False
+        if z.get("bin_path") in ("/opt/zapret2/bin", "/opt/zapret2/bin/"):
+            z["bin_path"] = "/opt/zapret2/files/fake"
+            changed = True
+        if "ipset_path" not in z:
+            z["ipset_path"] = "/opt/zapret2/ipset"
+            changed = True
+        return changed
 
     def save(self) -> bool:
         """Сохранить текущую конфигурацию в файл."""

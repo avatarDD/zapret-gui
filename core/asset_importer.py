@@ -5,14 +5,21 @@
 Зачем он нужен:
     Базовая установка zapret2 (bol-van/zapret2) даёт только бинарник nfqws2.
     Стратегии же ссылаются на:
-      - blob-файлы    (--blob=name:@bin/*.bin)            → /opt/zapret2/bin/
+      - blob-файлы    (--blob=name:@bin/*.bin)            → /opt/zapret2/files/fake/
       - Lua-скрипты   (--lua-init=@lua/*.lua)             → /opt/zapret2/lua/
       - Hostlist'ы    (--hostlist=lists/*.txt)            → /opt/zapret2/lists/
-      - Ipset'ы       (--ipset=lists/ipset-*.txt)         → /opt/zapret2/lists/
+      - Ipset'ы       (--ipset[-exclude]=lists/ipset-*.txt) → /opt/zapret2/ipset/
 
     Эти файлы поставляются вместе с нашим GUI в директории `import/`
     и должны быть выложены в нужные места /opt/zapret2/ при установке
     или обновлении GUI — иначе стратегии не работают.
+
+    Layout import/ → runtime:
+      import/bin/*.bin             → /opt/zapret2/files/fake/
+      import/lua/*.lua             → /opt/zapret2/lua/
+      import/lists/ipset-*.txt     → /opt/zapret2/ipset/
+      import/lists/*ipset*.txt     → /opt/zapret2/ipset/
+      import/lists/*.txt (hostlists) → /opt/zapret2/lists/
 
 Также этот модуль импортирует дополнительные INI-каталоги стратегий:
       - import/_internal/preset_zapret2/basic_strategies/*.txt
@@ -106,7 +113,14 @@ def import_all(base_path: Optional[str] = None) -> dict:
 
 def import_runtime_assets(base_path: Optional[str] = None) -> dict:
     """
-    Скопировать blobs/lua/lists из `import/` в /opt/zapret2/{bin,lua,lists}.
+    Скопировать blobs/lua/lists из `import/` в стандартные runtime-каталоги
+    zapret2:
+
+        bin/*.bin                → <base>/files/fake/
+        lua/*.lua                → <base>/lua/
+        lists/ipset-*.txt и
+        lists/*ipset*.txt        → <base>/ipset/
+        lists/*.txt (hostlists)  → <base>/lists/
 
     Идемпотентно (checksum-based). Пропускает identical-файлы.
 
@@ -122,36 +136,38 @@ def import_runtime_assets(base_path: Optional[str] = None) -> dict:
             "asset-importer: директория import/ отсутствует, пропускаем",
             source="asset-importer",
         )
-        return {"ok": True, "skipped": True, "bin": {}, "lua": {}, "lists": {}}
+        return {
+            "ok": True, "skipped": True,
+            "fake": {}, "lua": {}, "lists": {}, "ipset": {},
+        }
 
-    bin_stats = _sync_dir(
+    fake_stats = _sync_dir(
         IMPORT_BIN_DIR,
-        os.path.join(base_path, "bin"),
-        ext_whitelist=None,
+        os.path.join(base_path, "files", "fake"),
     )
     lua_stats = _sync_dir(
         IMPORT_LUA_DIR,
         os.path.join(base_path, "lua"),
-        ext_whitelist=None,
     )
-    lists_stats = _sync_dir(
+    # lists/ → split: ipset-файлы в ipset/, остальные в lists/
+    lists_stats, ipset_stats = _sync_lists_split(
         IMPORT_LISTS_DIR,
-        os.path.join(base_path, "lists"),
-        ext_whitelist=None,
+        lists_dst=os.path.join(base_path, "lists"),
+        ipset_dst=os.path.join(base_path, "ipset"),
     )
 
-    total_copied = (bin_stats["copied"] + lua_stats["copied"]
-                    + lists_stats["copied"])
-    total_skipped = (bin_stats["skipped"] + lua_stats["skipped"]
-                     + lists_stats["skipped"])
+    total_copied = (fake_stats["copied"] + lua_stats["copied"]
+                    + lists_stats["copied"] + ipset_stats["copied"])
+    total_skipped = (fake_stats["skipped"] + lua_stats["skipped"]
+                     + lists_stats["skipped"] + ipset_stats["skipped"])
 
     if total_copied > 0:
         log.success(
             "asset-importer: скопировано %d файл(ов) в %s "
-            "(bin=%d, lua=%d, lists=%d)" % (
+            "(fake=%d, lua=%d, lists=%d, ipset=%d)" % (
                 total_copied, base_path,
-                bin_stats["copied"], lua_stats["copied"],
-                lists_stats["copied"],
+                fake_stats["copied"], lua_stats["copied"],
+                lists_stats["copied"], ipset_stats["copied"],
             ),
             source="asset-importer",
         )
@@ -165,12 +181,79 @@ def import_runtime_assets(base_path: Optional[str] = None) -> dict:
     return {
         "ok": True,
         "base_path": base_path,
-        "bin": bin_stats,
+        "fake": fake_stats,
         "lua": lua_stats,
         "lists": lists_stats,
+        "ipset": ipset_stats,
         "copied": total_copied,
         "skipped": total_skipped,
     }
+
+
+def _is_ipset_filename(name: str) -> bool:
+    """
+    True для файлов, содержащих IP-адреса (а не доменные имена).
+
+    Эвристика по имени:
+      * `ipset-*.txt`               (стандартный префикс zapret2)
+      * `*-ipset.txt`, `*-ipset_*`  (cloudflare-ipset.txt и пр.)
+    """
+    low = name.lower()
+    if not low.endswith(".txt"):
+        return False
+    if low.startswith("ipset-"):
+        return True
+    # cloudflare-ipset.txt, cloudflare-ipset_v6.txt, russia-discord-ipset.txt
+    base = low[:-4]  # strip .txt
+    if base.endswith("-ipset") or "-ipset_" in base or "-ipset." in low:
+        return True
+    return False
+
+
+def _sync_lists_split(src_dir: str, lists_dst: str, ipset_dst: str):
+    """
+    Разнести содержимое import/lists/ по двум целевым директориям:
+      * ipset-* и *-ipset → ipset_dst
+      * остальные         → lists_dst
+
+    Возвращает (lists_stats, ipset_stats).
+    """
+    lists_stats = {"copied": 0, "skipped": 0, "errors": []}
+    ipset_stats = {"copied": 0, "skipped": 0, "errors": []}
+
+    if not os.path.isdir(src_dir):
+        return lists_stats, ipset_stats
+
+    for dst in (lists_dst, ipset_dst):
+        try:
+            os.makedirs(dst, exist_ok=True)
+        except OSError as e:
+            msg = "Не удалось создать %s: %s" % (dst, e)
+            log.warning(msg, source="asset-importer")
+
+    for name in sorted(os.listdir(src_dir)):
+        if name.startswith(_SKIP_PREFIXES):
+            continue
+        src = os.path.join(src_dir, name)
+        if not os.path.isfile(src):
+            continue
+        if _is_ipset_filename(name):
+            stats, dst_dir = ipset_stats, ipset_dst
+        else:
+            stats, dst_dir = lists_stats, lists_dst
+        dst = os.path.join(dst_dir, name)
+        try:
+            if _files_identical(src, dst):
+                stats["skipped"] += 1
+                continue
+            shutil.copy2(src, dst)
+            stats["copied"] += 1
+        except (OSError, shutil.Error) as e:
+            msg = "Ошибка копирования %s → %s: %s" % (src, dst, e)
+            log.warning(msg, source="asset-importer")
+            stats["errors"].append(msg)
+
+    return lists_stats, ipset_stats
 
 
 def import_bundled_strategies() -> dict:

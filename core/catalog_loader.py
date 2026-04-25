@@ -678,21 +678,27 @@ class CatalogManager:
         args: list[str],
         lua_path: str = "/opt/zapret2/lua",
         lists_path: str = "/opt/zapret2/lists",
-        bin_path: str = "/opt/zapret2/bin",
+        bin_path: str = "/opt/zapret2/files/fake",
+        ipset_path: str = "/opt/zapret2/ipset",
     ) -> list[str]:
         """
         Резолвить специальные пути в аргументах.
 
         Маппинг:
-            @lua/  → lua_path   (скрипты Lua)
-            @bin/  → bin_path   (blob-файлы: tls_*, quic_*, fake_http_* и т.д.)
-            =lists/ → =lists_path/ (hostlist'ы и ipset'ы)
+            @lua/      → lua_path     (скрипты Lua)
+            @bin/      → bin_path     (blob-файлы: tls_*, quic_*, ...)
+            =lists/    → =lists_path/  (по умолчанию)
+                        НО для --ipset[-exclude]= → =ipset_path/
+                        (zapret2 хранит hostlist'ы и ipset'ы в РАЗНЫХ
+                         директориях, хотя в исходных каталогах оба
+                         префиксованы как `lists/`).
 
         Args:
             args:       Список аргументов.
-            lua_path:   Путь к Lua-скриптам (по умолчанию /opt/zapret2/lua).
-            lists_path: Путь к спискам     (по умолчанию /opt/zapret2/lists).
-            bin_path:   Путь к blob-файлам (по умолчанию /opt/zapret2/bin).
+            lua_path:   Lua-скрипты      (default /opt/zapret2/lua).
+            lists_path: hostlist'ы       (default /opt/zapret2/lists).
+            bin_path:   blob-файлы       (default /opt/zapret2/files/fake).
+            ipset_path: ipset'ы          (default /opt/zapret2/ipset).
 
         Returns:
             Список аргументов с резолвленными путями.
@@ -703,6 +709,7 @@ class CatalogManager:
         lua_prefix = "@" + lua_path.rstrip("/") + "/"
         bin_prefix = "@" + bin_path.rstrip("/") + "/"
         lists_prefix = lists_path.rstrip("/") + "/"
+        ipset_prefix = ipset_path.rstrip("/") + "/"
         resolved = []
         for arg in args:
             a = arg
@@ -711,7 +718,13 @@ class CatalogManager:
             if "@bin/" in a:
                 a = a.replace("@bin/", bin_prefix)
             if "=lists/" in a:
-                a = a.replace("=lists/", "=" + lists_prefix)
+                # Для --ipset / --ipset-exclude цель — ipset_path,
+                # для --hostlist и прочих — lists_path.
+                opt = a.split("=", 1)[0]
+                if opt in ("--ipset", "--ipset-exclude"):
+                    a = a.replace("=lists/", "=" + ipset_prefix, 1)
+                else:
+                    a = a.replace("=lists/", "=" + lists_prefix, 1)
             resolved.append(a)
         return resolved
 
