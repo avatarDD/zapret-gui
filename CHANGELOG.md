@@ -1,5 +1,70 @@
 # Changelog
 
+## v0.17.0 — Подбор стратегий: глубокая проба и ранжирование по КПД
+
+### Исправлено
+- **Сканер находил «псевдо-успехи» или ничего не находил для youtube.com**
+  Раньше каждой стратегии без своего `--hostlist=` принудительно
+  подставлялся `lists/other.txt`, в котором не было youtube-доменов
+  (только `rtmps.youtube.com`). nfqws2 при наличии `--hostlist`
+  десинхронизирует только пакеты с SNI/Host из файла — youtube-трафик
+  уходил «как есть», DPI его резал, проба TLS падала по 10-секундному
+  таймауту. Отсюда же «очень медленно»: 30 стратегий × ~17 с холостого
+  хода. Теперь под цель генерится временный hostlist
+  `/tmp/zapret-gui-scan-target.txt` со всеми её доменами; при применении
+  стратегии этот hostlist материализуется в
+  `<lists_path>/zapret-gui-target-<key>.txt`.
+- **`catalogs/builtin/winws2_presets.txt` (85 готовых пресетов) был
+  исключён из сканирования** через `_SCANNER_EXCLUDED_LEVELS`, хотя
+  именно у них уже готовые `--filter-*/--hostlist=/--blob=/--ipset=/
+  --new`. Теперь они идут первыми — у них шанс попадания максимальный.
+- **Импортированные `ipset-*.txt` не отображались в GUI.**
+  asset_importer (v0.16) кладёт ipset'ы в `<base>/ipset/`, а
+  IPSetManager читал из `<base>/lists/`. IPSetManager переключён на
+  `ipset_path`; добавлена однократная миграция файлов из `lists_path`
+  → `ipset_path` (без перезаписи). Расширен namespace ipset-имён
+  (теперь видны `cloudflare-ipset`, `russia-discord-ipset`, ...);
+  hostlist_manager синхронно их исключает из своего списка.
+
+### Добавлено
+- **Профили целей** `core/scan_targets.py` — youtube, discord, telegram,
+  instagram, twitter, facebook, google. Каждой цели — свои `test_hosts`,
+  `hostlist_domains`, порты TCP/UDP, `--filter-l7=` и `--payload=`.
+  Незнакомая цель → generic-профиль с её доменом.
+- **Глубокая body-проба** `core/testers/body_tester.py` — GET ≥64 КБ
+  через TLS с детектом обрыва в диапазоне 15 000…21 000 байт
+  (DPI часто пускает первые 16-20 КБ и режет; обычные автоподборщики
+  на это попадаются).
+- **Композитный score** `success_rate × min(kbps, 2048) / latency`.
+  Лучшая стратегия выбирается по score (а не по latency); список в UI
+  отсортирован по score. В карточке стратегии видны `score`, `KB/s`,
+  `latency`, `success_rate` и бейджи `body OK` / `16-20 KB block` /
+  `full preset`.
+- **TLS+body на нескольких хостах**: 1 хост в quick, 2 в standard,
+  до 4 в full. Без body-успеха стратегия не считается рабочей.
+
+### Изменено
+- `core/strategy_scanner.py` — переписаны `_select_strategies()`,
+  `_build_strategy_args()` (две ветки: full preset как-есть vs trick →
+  оборачивание в шаблон цели), `_probe_one_strategy()` (новый
+  `_deep_probe()`).
+- `core/models.py` — `StrategyProbeResult` расширен полями
+  `throughput_kbps`, `body_passed`, `success_rate`, `score`.
+- `core/catalog_loader.py` — снят `_SCANNER_EXCLUDED_LEVELS = {builtin}`.
+- `core/ipset_manager.py` — `lists_path` → `ipset_path`, миграция,
+  расширенный namespace.
+- `core/hostlist_manager.py` — расширен `IPSET_NAME_RE` для исключения
+  импортированных ipset-файлов.
+- `web/js/pages/scan.js` — новые колонки и бейджи.
+- **Таймауты**: STABILIZATION 2.0 → 1.0, PROBE 10 → 6,
+  INTER_STRATEGY 0.5 → 0.3, добавлен BODY_PROBE = 8 с.
+
+### Зачем
+Главный приоритет: «найти из имеющегося набора стратегий, скриптов,
+блобов и хостлистов **реально рабочие** для youtube/discord и
+ранжировать по КПД». До v0.17 сканер этого не делал из-за двух багов
+выше — теперь делает.
+
 ## v0.16.0 — Импорт bundled-ассетов (blobs/lua/lists) и дополнительных каталогов стратегий
 
 ### Добавлено

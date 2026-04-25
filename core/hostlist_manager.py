@@ -109,9 +109,18 @@ NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 # Имена, принадлежащие namespace'у IP-списков (ipset_manager): такие файлы
 # не должны показываться в hostlists и не могут быть созданы как hostlist.
-# Условие: "ipset-base", "my-ipset", либо любой префикс "ipset-" / "ipset_"
-# (например "ipset-cloudflare").
-IPSET_NAME_RE = re.compile(r"^(?:ipset[-_][a-zA-Z0-9_-]*|my-ipset)$")
+# Покрываем все формы: "ipset-base", "my-ipset", префиксы "ipset-/ipset_/
+# my-ipset-/my-ipset_*" и суффиксы "*-ipset/*-ipset_*" (для импортируемых
+# upstream-файлов вроде "cloudflare-ipset", "russia-discord-ipset").
+# Список синхронизирован с core/ipset_manager.IPSET_NAMESPACE_RE.
+IPSET_NAME_RE = re.compile(
+    r"^(?:"
+    r"ipset-base|my-ipset|"
+    r"ipset[-_][a-zA-Z0-9_-]*|"
+    r"my-ipset[-_][a-zA-Z0-9_-]*|"
+    r"[a-zA-Z0-9][a-zA-Z0-9_-]*-ipset(?:[-_][a-zA-Z0-9_-]+)?"
+    r")$"
+)
 
 
 def _is_ipset_name(name):
