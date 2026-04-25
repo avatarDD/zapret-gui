@@ -7,51 +7,90 @@ APP_DIR="/opt/share/zapret-gui"
 CONFIG_DIR="/opt/etc/zapret-gui"
 LOG_DIR="/tmp/zapret-gui"
 INITD_SCRIPT="/opt/etc/init.d/S99zapret-gui"
+PID_FILE="/opt/var/run/zapret-gui.pid"
 
 echo "═══════════════════════════════════════════"
 echo "  Zapret Web-GUI — установка"
 echo "═══════════════════════════════════════════"
 
-# 1. Директория конфигурации
+# 1. Снимаем все осиротевшие python-процессы zapret-gui.
+#    Без этого старый процесс продолжит держать порт 8080 и работать со
+#    старым кодом в памяти, а S99zapret-gui увидит живой PID и не
+#    перезапустит сервис, поэтому пользователь продолжит видеть
+#    предыдущую версию (см. отчёт пользователя по 0.16.2/0.16.3).
+WAS_RUNNING=""
+if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        WAS_RUNNING=1
+    fi
+fi
+if [ -x "$INITD_SCRIPT" ]; then
+    "$INITD_SCRIPT" stop >/dev/null 2>&1 || true
+fi
+# Подстраховка: убиваем по cmdline всё, что выглядит как наш app.py
+if command -v pgrep >/dev/null 2>&1; then
+    for pid in $(pgrep -f "python.* $APP_DIR/app.py" 2>/dev/null); do
+        kill "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    for pid in $(pgrep -f "python.* $APP_DIR/app.py" 2>/dev/null); do
+        kill -9 "$pid" 2>/dev/null || true
+    done
+fi
+rm -f "$PID_FILE" 2>/dev/null || true
+
+# 2. Директория конфигурации
 if [ ! -d "$CONFIG_DIR" ]; then
     mkdir -p "$CONFIG_DIR"
     echo "  ✓ Создана директория конфигурации: $CONFIG_DIR"
 fi
 
-# 2. Директория для логов (в RAM)
+# 3. Директории
 mkdir -p "$LOG_DIR" 2>/dev/null || true
-
-# 3. Рабочие директории
 mkdir -p "$APP_DIR/init.d" 2>/dev/null || true
 mkdir -p "$APP_DIR/lists" 2>/dev/null || true
-
-# 4. Директория для user-стратегий
 mkdir -p "$APP_DIR/config/strategies/user" 2>/dev/null || true
 
-# 5. Права на исполнение
+# 4. Права
 chmod 755 "$APP_DIR/app.py" 2>/dev/null || true
 chmod 755 "$INITD_SCRIPT" 2>/dev/null || true
 
-# 6. Очистка stale __pycache__ от предыдущей установки.
-#    Это критично: после обновления .py файлов python может загрузить
-#    устаревший .pyc, если mtime не обновлены — и тогда GUI продолжит
-#    показывать старую GUI_VERSION и старые пути.
+# 5. Очистка stale __pycache__/*.pyc от предыдущей установки.
+#    Это критично: иначе python может загрузить старый .pyc и GUI продолжит
+#    показывать предыдущую GUI_VERSION и старые пути.
 find "$APP_DIR" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "$APP_DIR" -name '*.pyc' -delete 2>/dev/null || true
 
-# 7. Импортируем bundled-ассеты:
+# 6. Сообщаем установленную версию (помогает диагностировать "GUI показывает старую версию")
+VERSION_PY="$APP_DIR/core/version.py"
+if [ -f "$VERSION_PY" ]; then
+    INSTALLED_VER=$(grep '^GUI_VERSION' "$VERSION_PY" 2>/dev/null \
+        | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+    [ -n "$INSTALLED_VER" ] && echo "  ✓ Установлен: zapret-gui v$INSTALLED_VER"
+fi
+
+# 7. Импорт bundled-ассетов:
 #    blobs  → $base/files/fake/   (--blob=...:@bin/*.bin)
 #    lua    → $base/lua/          (--lua-init=@lua/*.lua)
 #    lists  → $base/lists/        (--hostlist=lists/*.txt)
 #    ipset  → $base/ipset/        (--ipset[-exclude]=lists/ipset-*.txt)
 #    плюс bundled-стратегии → catalogs/basic|advanced|builtin.
+IMP_LOG="/tmp/zapret-gui-import.log"
 if [ -f "$APP_DIR/core/asset_importer.py" ] && [ -d "$APP_DIR/import" ]; then
     echo "  Импорт blobs/lua/lists/ipset/стратегий..."
     if env PYTHONPATH="$APP_DIR" python3 \
-            -m core.asset_importer --only all >/tmp/zapret-gui-import.log 2>&1; then
-        echo "  ✓ Ассеты импортированы"
+            -m core.asset_importer --only all >"$IMP_LOG" 2>&1; then
+        # Краткая статистика по реально лежащим в zapret2 файлам
+        BASE="/opt/zapret2"
+        FAKE_N=$(find "$BASE/files/fake" -maxdepth 1 -type f 2>/dev/null | wc -l)
+        LUA_N=$(find "$BASE/lua"        -maxdepth 1 -type f 2>/dev/null | wc -l)
+        LIST_N=$(find "$BASE/lists"     -maxdepth 1 -type f 2>/dev/null | wc -l)
+        IPSET_N=$(find "$BASE/ipset"    -maxdepth 1 -type f 2>/dev/null | wc -l)
+        echo "  ✓ Ассеты импортированы (files/fake=$FAKE_N, lua=$LUA_N, lists=$LIST_N, ipset=$IPSET_N)"
     else
-        echo "  ⚠ Ошибка импорта ассетов (см. /tmp/zapret-gui-import.log)"
+        echo "  ⚠ Ошибка импорта ассетов (см. $IMP_LOG)"
+        tail -5 "$IMP_LOG" 2>/dev/null | sed 's/^/    /' || true
     fi
 else
     if [ ! -d "$APP_DIR/import" ]; then
@@ -59,7 +98,7 @@ else
     fi
 fi
 
-# 7. Проверяем и устанавливаем bottle
+# 8. Проверяем и устанавливаем bottle
 if ! python3 -c "import bottle" 2>/dev/null; then
     echo "  Установка bottle (python3-bottle недоступен в opkg)..."
     if python3 -m pip install bottle --quiet 2>/dev/null; then
@@ -84,20 +123,16 @@ fi
 
 echo ""
 echo "  ✓ Zapret Web-GUI установлен в $APP_DIR"
-echo ""
 
-# 8. Перезапуск сервиса, если он был запущен.
-#    Без рестарта старый python-процесс продолжит работать со
-#    старым кодом и GUI_VERSION в памяти — пользователь увидит
-#    предыдущую версию даже после успешной установки нового IPK.
-if [ -x "$INITD_SCRIPT" ]; then
-    PID_FILE="/opt/var/run/zapret-gui.pid"
-    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
-        echo "  Перезапуск Zapret Web-GUI..."
-        "$INITD_SCRIPT" restart >/dev/null 2>&1 \
-            && echo "  ✓ Сервис перезапущен" \
-            || echo "  ⚠ Не удалось перезапустить ($INITD_SCRIPT restart)"
-    fi
+# 9. Запускаем сервис, если он работал до установки.
+#    Старый процесс мы уже убили выше, поэтому если был запущен — стартуем
+#    свежий с обновлённым кодом и версией.
+if [ -n "$WAS_RUNNING" ] && [ -x "$INITD_SCRIPT" ]; then
+    echo ""
+    echo "  Запуск Zapret Web-GUI..."
+    "$INITD_SCRIPT" start >/dev/null 2>&1 \
+        && echo "  ✓ Сервис запущен" \
+        || echo "  ⚠ Не удалось запустить ($INITD_SCRIPT start)"
 fi
 
 echo ""

@@ -8,6 +8,25 @@ CONFIG_DIR="/etc/zapret-gui"
 
 echo "Zapret Web-GUI — установка (OpenWrt)"
 
+# Запоминаем, был ли запущен сервис, и аккуратно глушим его + любые
+# осиротевшие python-процессы. Иначе старый код продолжит крутиться в памяти,
+# держать порт 8080 и пользователь будет видеть предыдущую GUI_VERSION
+# даже после успешной установки нового IPK.
+WAS_RUNNING=""
+if /etc/init.d/zapret-gui running 2>/dev/null; then
+    WAS_RUNNING=1
+fi
+/etc/init.d/zapret-gui stop >/dev/null 2>&1 || true
+if command -v pgrep >/dev/null 2>&1; then
+    for pid in $(pgrep -f "python.* $APP_DIR/app.py" 2>/dev/null); do
+        kill "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    for pid in $(pgrep -f "python.* $APP_DIR/app.py" 2>/dev/null); do
+        kill -9 "$pid" 2>/dev/null || true
+    done
+fi
+
 # Создаём директории
 mkdir -p "$CONFIG_DIR" 2>/dev/null || true
 mkdir -p "$APP_DIR/config/strategies/user" 2>/dev/null || true
@@ -21,33 +40,49 @@ chmod 755 "$APP_DIR/app.py" 2>/dev/null || true
 # Включаем автозапуск
 /etc/init.d/zapret-gui enable 2>/dev/null || true
 
-# Очистка stale __pycache__ от предыдущей установки (см. entware/postinst).
+# Очистка stale __pycache__/*.pyc — иначе python загрузит старый .pyc
+# и GUI продолжит показывать предыдущую версию.
 find "$APP_DIR" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 find "$APP_DIR" -name '*.pyc' -delete 2>/dev/null || true
 
-# Импортируем bundled-ассеты:
-#   blobs  → /opt/zapret2/files/fake/  (--blob=...:@bin/*.bin)
-#   lua    → /opt/zapret2/lua/         (--lua-init=@lua/*.lua)
-#   lists  → /opt/zapret2/lists/       (--hostlist=lists/*.txt)
-#   ipset  → /opt/zapret2/ipset/       (--ipset[-exclude]=lists/ipset-*.txt)
+# Сообщаем установленную версию
+VERSION_PY="$APP_DIR/core/version.py"
+if [ -f "$VERSION_PY" ]; then
+    INSTALLED_VER=$(grep '^GUI_VERSION' "$VERSION_PY" 2>/dev/null \
+        | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+    [ -n "$INSTALLED_VER" ] && echo "  ✓ Установлен: zapret-gui v$INSTALLED_VER"
+fi
+
+# Импорт bundled-ассетов:
+#   blobs  → /opt/zapret2/files/fake/
+#   lua    → /opt/zapret2/lua/
+#   lists  → /opt/zapret2/lists/       (hostlist'ы)
+#   ipset  → /opt/zapret2/ipset/       (ipset-*.txt и *-ipset.txt)
+IMP_LOG="/tmp/zapret-gui-import.log"
 if [ -f "$APP_DIR/core/asset_importer.py" ] && [ -d "$APP_DIR/import" ]; then
     echo "  Импорт blobs/lua/lists/ipset/стратегий..."
     if env PYTHONPATH="$APP_DIR" python3 \
-            -m core.asset_importer --only all >/tmp/zapret-gui-import.log 2>&1; then
-        echo "  ✓ Ассеты импортированы"
+            -m core.asset_importer --only all >"$IMP_LOG" 2>&1; then
+        BASE="/opt/zapret2"
+        FAKE_N=$(find "$BASE/files/fake" -maxdepth 1 -type f 2>/dev/null | wc -l)
+        LUA_N=$(find "$BASE/lua"        -maxdepth 1 -type f 2>/dev/null | wc -l)
+        LIST_N=$(find "$BASE/lists"     -maxdepth 1 -type f 2>/dev/null | wc -l)
+        IPSET_N=$(find "$BASE/ipset"    -maxdepth 1 -type f 2>/dev/null | wc -l)
+        echo "  ✓ Ассеты импортированы (files/fake=$FAKE_N, lua=$LUA_N, lists=$LIST_N, ipset=$IPSET_N)"
     else
-        echo "  ⚠ Ошибка импорта ассетов (см. /tmp/zapret-gui-import.log)"
+        echo "  ⚠ Ошибка импорта ассетов (см. $IMP_LOG)"
+        tail -5 "$IMP_LOG" 2>/dev/null | sed 's/^/    /' || true
     fi
 elif [ ! -d "$APP_DIR/import" ]; then
     echo "  ⚠ $APP_DIR/import отсутствует — bundled-ассеты не импортированы"
 fi
 
-# Перезапуск, если сервис уже был запущен.
-if /etc/init.d/zapret-gui running 2>/dev/null; then
-    echo "  Перезапуск Zapret Web-GUI..."
-    /etc/init.d/zapret-gui restart >/dev/null 2>&1 \
-        && echo "  ✓ Сервис перезапущен" \
-        || echo "  ⚠ Не удалось перезапустить"
+# Стартуем сервис, если он работал до установки.
+if [ -n "$WAS_RUNNING" ]; then
+    echo "  Запуск Zapret Web-GUI..."
+    /etc/init.d/zapret-gui start >/dev/null 2>&1 \
+        && echo "  ✓ Сервис запущен" \
+        || echo "  ⚠ Не удалось запустить"
 fi
 
 # Проверяем и устанавливаем bottle
