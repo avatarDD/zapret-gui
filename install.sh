@@ -129,7 +129,12 @@ _install_bottle_direct() {
     # Bottle — один файл. Скачиваем напрямую если pip не работает.
     info "  Прямая загрузка bottle.py..."
 
-    local BOTTLE_URL="https://raw.githubusercontent.com/bottlepy/bottle/master/bottle.py"
+    # Зеркала на случай блокировок DPI: raw.githubusercontent.com часто
+    # режется у российских провайдеров, а jsdelivr CDN обычно доступен.
+    local BOTTLE_URLS="
+https://cdn.jsdelivr.net/gh/bottlepy/bottle@master/bottle.py
+https://raw.githubusercontent.com/bottlepy/bottle/master/bottle.py
+"
 
     # Предпочитаем user site-packages (не требует root)
     local SITE_PACKAGES=""
@@ -157,18 +162,30 @@ _install_bottle_direct() {
     fi
 
     local DEST="$SITE_PACKAGES/bottle.py"
-    if download "$BOTTLE_URL" "$DEST" 2>/dev/null; then
-        :
-    elif command -v sudo >/dev/null 2>&1; then
-        # Скачиваем во /tmp, потом копируем через sudo
-        local TMP_BOTTLE="/tmp/bottle_$$.py"
-        if download "$BOTTLE_URL" "$TMP_BOTTLE"; then
-            sudo cp "$TMP_BOTTLE" "$DEST"
-            rm -f "$TMP_BOTTLE"
-        else
-            return 1
+    local TMP_BOTTLE="/tmp/bottle_$$.py"
+    local fetched=false
+    local url
+    for url in $BOTTLE_URLS; do
+        info "    -> $url"
+        if download "$url" "$TMP_BOTTLE" 2>/dev/null && [ -s "$TMP_BOTTLE" ]; then
+            fetched=true
+            break
         fi
+        rm -f "$TMP_BOTTLE" 2>/dev/null
+    done
+
+    if ! $fetched; then
+        rm -f "$TMP_BOTTLE" 2>/dev/null
+        return 1
+    fi
+
+    # Перемещаем в site-packages (через sudo если нет прав)
+    if mv "$TMP_BOTTLE" "$DEST" 2>/dev/null; then
+        :
+    elif command -v sudo >/dev/null 2>&1 && sudo cp "$TMP_BOTTLE" "$DEST"; then
+        rm -f "$TMP_BOTTLE"
     else
+        rm -f "$TMP_BOTTLE"
         return 1
     fi
 
@@ -227,23 +244,40 @@ check_deps() {
     # Устанавливаем недостающее
     case "$PKG_CMD" in
         opkg)
-            # Entware / OpenWrt — python3-bottle отсутствует в стандартных репозиториях
+            # Entware / OpenWrt
             $PKG_CMD update 2>/dev/null || true
             if $need_python; then
                 info "  Устанавливаем python3-light..."
                 _opkg_install_pkg python3-light
             fi
             if $need_bottle; then
-                info "  Устанавливаем bottle через pip..."
-                if python3 -m pip install bottle 2>/dev/null; then
-                    ok "bottle установлен через pip"
+                # Способ 1: системный пакет python3-bottle (есть в Entware и OpenWrt).
+                # python3-light не содержит pip, поэтому это основной путь.
+                info "  Устанавливаем python3-bottle через $PKG_CMD..."
+                if $PKG_CMD install python3-bottle 2>/dev/null \
+                   && python3 -c "import bottle" 2>/dev/null; then
+                    if [ -n "$CONFIG_DIR" ]; then
+                        mkdir -p "$CONFIG_DIR" 2>/dev/null
+                        echo "python3-bottle" >> "$CONFIG_DIR/opkg_installed.list"
+                    fi
+                    ok "bottle установлен через $PKG_CMD"
                 else
-                    info "  pip не сработал, скачиваем bottle.py напрямую..."
-                    _install_bottle_direct || {
-                        error "Не удалось установить bottle"
-                        error "Установите вручную: python3 -m pip install bottle"
-                        exit 1
-                    }
+                    # Способ 2: python3-pip + pip install bottle
+                    info "  python3-bottle недоступен, пробуем pip..."
+                    if ! python3 -m pip --version >/dev/null 2>&1; then
+                        info "  Устанавливаем python3-pip..."
+                        $PKG_CMD install python3-pip 2>/dev/null || true
+                    fi
+                    if python3 -m pip install bottle 2>/dev/null; then
+                        ok "bottle установлен через pip"
+                    else
+                        info "  pip не сработал, скачиваем bottle.py напрямую..."
+                        _install_bottle_direct || {
+                            error "Не удалось установить bottle"
+                            error "Установите вручную: opkg install python3-bottle"
+                            exit 1
+                        }
+                    fi
                 fi
             fi
             ok "Зависимости установлены"
