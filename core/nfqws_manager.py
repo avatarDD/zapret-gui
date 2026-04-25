@@ -15,6 +15,7 @@ Stderr перенаправляется в лог-буфер.
 """
 
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -24,6 +25,36 @@ from core.log_buffer import log
 
 # PID-файл, управляемый GUI
 PID_FILE = "/var/run/zapret-gui-nfqws.pid"
+
+# ─────────────────────── Lua scripts injection ──────────────────────
+# Конвенции взяты из youtubediscord/zapret (winws_runtime/runners/zapret2_runner.py).
+#
+# Core-скрипты загружаются всегда, когда в стратегии есть --lua-desync;
+# zapret-lib.lua обязан идти первым (определяет базовые примитивы).
+_CORE_LUA_FILES = (
+    "zapret-lib.lua",
+    "zapret-antidpi.lua",
+    "zapret-auto.lua",
+    "custom_funcs.lua",
+    "custom_diag.lua",
+)
+
+# Extension-скрипты подключаются только если соответствующая desync-функция
+# реально используется (имя слева от ':' в --lua-desync=...).
+_EXTENSION_LUA_FILES = {
+    "zapret-multishake.lua": {
+        "hostfakesplit_stealth",
+        "hostfakesplit_chaos",
+        "hostfakesplit_multi",
+        "hostfakesplit_gradual",
+        "hostfakesplit_decoy",
+    },
+    "fakemultisplit.lua": {"fakemultisplit"},
+    "fakemultidisorder.lua": {"fakemultidisorder"},
+}
+
+_LUA_DESYNC_FUNC_RE = re.compile(r"--lua-desync=([a-zA-Z0-9_]+)")
+_LUA_INIT_PATH_RE = re.compile(r"^--lua-init=@(.+)$")
 
 
 class NFQWSManager:
@@ -80,13 +111,21 @@ class NFQWSManager:
                           source="nfqws")
                 return False
 
-            # Собираем базовые аргументы
+            # Стратегические аргументы
+            strategy_args = list(args) if args else []
+
+            # Собираем базовые аргументы (--user/--fwmark/--qnum)
             base_args = self._build_base_args(cfg)
 
-            # Стратегические аргументы
-            strategy_args = args if args else []
+            # Лua-скрипты: core + нужные extensions, в правильном порядке.
+            lua_path = cfg.get("zapret", "lua_path") or "/opt/zapret2/lua"
+            lua_args = self._build_lua_init_args(strategy_args, lua_path)
 
-            full_args = [binary] + base_args + strategy_args
+            # Дедуп --lua-init=@... между нашими и теми, что уже в стратегии:
+            # сохраняем порядок, выкидываем повторы.
+            full_args = self._dedup_lua_init(
+                [binary] + base_args + lua_args + strategy_args
+            )
             self._last_args = strategy_args
 
             log.info("Запуск nfqws2...", source="nfqws")
@@ -273,7 +312,11 @@ class NFQWSManager:
     # ─────────────────────── internal helpers ───────────────────────
 
     def _build_base_args(self, cfg) -> list:
-        """Собрать базовые аргументы из конфигурации."""
+        """Собрать базовые аргументы из конфигурации (--user/--fwmark/--qnum).
+
+        Lua-скрипты добавляются отдельно через _build_lua_init_args(), так как
+        выбор зависит от используемых в стратегии --lua-desync функций.
+        """
         args = []
 
         # --user
@@ -288,19 +331,51 @@ class NFQWSManager:
         queue_num = cfg.get("nfqws", "queue_num", default=300)
         args.append("--qnum=%d" % int(queue_num))
 
-        # Lua-скрипты
-        lua_path = cfg.get("zapret", "lua_path") or "/opt/zapret2/lua"
-        lua_files = [
-            "zapret-lib.lua",
-            "zapret-antidpi.lua",
-            "zapret-auto.lua",
-        ]
-        for lf in lua_files:
+        return args
+
+    @staticmethod
+    def _build_lua_init_args(strategy_args: list, lua_path: str) -> list:
+        """Сформировать список --lua-init для core+extension скриптов.
+
+        Логика по аналогии с youtubediscord/zapret:
+          - если в стратегии нет --lua-desync — lua-скрипты не нужны;
+          - core-список (zapret-lib первым) подключается всегда при наличии
+            хотя бы одной desync-функции;
+          - extension-скрипты добавляются только если в стратегии используются
+            функции, объявленные ими.
+        """
+        used_funcs = set(_LUA_DESYNC_FUNC_RE.findall(" ".join(strategy_args)))
+        if not used_funcs:
+            return []
+
+        out = []
+        for lf in _CORE_LUA_FILES:
             full = os.path.join(lua_path, lf)
             if os.path.isfile(full):
-                args.append("--lua-init=@%s" % full)
+                out.append("--lua-init=@%s" % full)
 
-        return args
+        for lf, funcs in _EXTENSION_LUA_FILES.items():
+            if used_funcs & funcs:
+                full = os.path.join(lua_path, lf)
+                if os.path.isfile(full):
+                    out.append("--lua-init=@%s" % full)
+
+        return out
+
+    @staticmethod
+    def _dedup_lua_init(args: list) -> list:
+        """Убрать повторы --lua-init=@<path> с сохранением порядка."""
+        seen = set()
+        out = []
+        for a in args:
+            m = _LUA_INIT_PATH_RE.match(a)
+            if m:
+                path = m.group(1)
+                if path in seen:
+                    continue
+                seen.add(path)
+            out.append(a)
+        return out
 
     def _is_running_locked(self) -> bool:
         """Проверить запущен ли процесс (вызывается под lock)."""
