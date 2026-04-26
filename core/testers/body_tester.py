@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 from core.models import SingleTestResult, TestStatus, TestType
 from core.testers.config import (
+    ISP_BODY_MARKERS,
     TCP_BLOCK_RANGE_MAX,
     TCP_BLOCK_RANGE_MIN,
 )
@@ -34,6 +35,27 @@ from core.testers.config import (
 
 _DEFAULT_MIN_BYTES = 65_536   # 64 KB — заметно больше 16-20 KB порога
 _READ_CHUNK = 4096
+# Сколько первых байт тела сканируем на ISP-маркеры. Заглушки провайдера —
+# обычно <8 КБ, нет смысла читать больше.
+_ISP_SCAN_BYTES = 8192
+# Для ускорения матча перевели маркеры в нижний регистр один раз на модуль.
+_ISP_MARKERS_LOWER: tuple[bytes, ...] = tuple(
+    m.lower().encode("utf-8", errors="ignore") for m in ISP_BODY_MARKERS
+)
+
+
+def _detect_isp_marker(body: bytes) -> str:
+    """Найти ISP-маркер в первых ~8 КБ тела. Возвращает совпавшую строку или ''."""
+    if not body:
+        return ""
+    head = body[:_ISP_SCAN_BYTES].lower()
+    for marker in _ISP_MARKERS_LOWER:
+        if marker and marker in head:
+            try:
+                return marker.decode("utf-8", errors="ignore")
+            except Exception:
+                return ""
+    return ""
 
 
 def probe_body(
@@ -106,6 +128,7 @@ def probe_body(
         # 204/205/304/404/403 без тела — это всё ещё «трафик прошёл DPI».
         # Если код не пятиста и handshake состоялся, можно считать,
         # что десинк работает. Дочитываем сколько есть.
+        head_buf = bytearray()
         deadline = time.time() + timeout
         while True:
             if time.time() > deadline:
@@ -114,11 +137,34 @@ def probe_body(
             if not chunk:
                 break
             bytes_received += len(chunk)
+            if len(head_buf) < _ISP_SCAN_BYTES:
+                head_buf.extend(chunk[: _ISP_SCAN_BYTES - len(head_buf)])
             if bytes_received >= min_bytes:
                 break
 
         elapsed = time.time() - start
         kbps = (bytes_received / 1024.0) / max(elapsed, 0.001)
+
+        # ISP-заглушка маскируется под 200 OK с нормальным размером тела —
+        # чисто по байтам её не отличить. Сканируем первые ~8 КБ на маркеры.
+        isp_marker = _detect_isp_marker(bytes(head_buf))
+        if isp_marker:
+            return SingleTestResult(
+                target=url,
+                test_type=TestType.ISP_DETECT.value,
+                status=TestStatus.FAILED.value,
+                error="ISP_PAGE",
+                latency_ms=round(elapsed * 1000, 2),
+                details="ISP-заглушка: %s (HTTP %d, %d B)"
+                        % (isp_marker, status_code, bytes_received),
+                raw_data={
+                    "bytes_received": bytes_received,
+                    "kbps": round(kbps, 1),
+                    "status_code": status_code,
+                    "dpi_marker": "isp_page",
+                    "isp_marker": isp_marker,
+                },
+            )
 
         # Классификация
         if (TCP_BLOCK_RANGE_MIN <= bytes_received <= TCP_BLOCK_RANGE_MAX
