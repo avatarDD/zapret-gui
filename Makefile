@@ -85,7 +85,8 @@ release:
 	fi
 	@echo "── Обновление версии до $(VERSION) ──"
 	@sed -i 's/GUI_VERSION = .*/GUI_VERSION = "$(VERSION)"/' core/version.py
-	@git add core/version.py
+	@sed -i 's/^VERSION="[^"]*"/VERSION="$(VERSION)"/' install.sh
+	@git add core/version.py install.sh
 	@git diff --cached --quiet \
 		&& echo "Версия уже актуальна, коммит не нужен" \
 		|| git commit -m "chore: bump version to v$(VERSION)"
