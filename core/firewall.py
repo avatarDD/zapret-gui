@@ -92,6 +92,10 @@ class FirewallManager:
     из конфига (с fallback на auto-detect) и применяет/снимает правила.
     """
 
+    # Кэш формы -w флага по бинарнику. iptables ≥1.6 принимает «-w SECONDS»,
+    # iptables ≤1.4.x (Entware/Keenetic) — только «-w» без значения.
+    _wait_flag_cache: dict = {}
+
     def __init__(self):
         self._lock = threading.Lock()
         self._applied = False
@@ -571,18 +575,67 @@ class FirewallManager:
 
     # ──────────────── utils ────────────────
 
+    @classmethod
+    def _iptables_wait_flag(cls, ipt_path: str) -> list:
+        """Подобрать форму -w для конкретного бинарника iptables/ip6tables.
+
+        Возвращает один из вариантов:
+          ["-w", "5"]  — современный iptables (≥1.6), таймаут 5 секунд
+          ["-w"]       — старый iptables (Entware/Keenetic 1.4.x), boolean
+          []           — `-w` совсем не поддерживается; шансов меньше, но
+                         продолжаем без него (есть риск xtables-lock).
+
+        Результат кэшируется по абсолютному пути бинарника.
+        """
+        cached = cls._wait_flag_cache.get(ipt_path)
+        if cached is not None:
+            return list(cached)
+
+        flag: list = []
+        try:
+            res = subprocess.run(
+                [ipt_path, "--help"],
+                capture_output=True, text=True, timeout=3,
+            )
+            help_text = (res.stdout or "") + (res.stderr or "")
+            # iptables ≥1.6: "  --wait -w [seconds]" / "-w[SECONDS]" / похожее
+            if re.search(r"-w\s*\[\s*seconds?\s*\]", help_text, re.IGNORECASE):
+                flag = ["-w", "5"]
+            # iptables 1.4.x: "--wait -w  wait for the xtables lock"
+            elif re.search(r"--wait\b|\b-w\b", help_text):
+                flag = ["-w"]
+            else:
+                flag = []
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            flag = []
+
+        cls._wait_flag_cache[ipt_path] = list(flag)
+        log.debug(
+            "iptables wait flag для %s: %s" % (
+                ipt_path, " ".join(flag) or "(не поддерживается)"
+            ),
+            source="firewall",
+        )
+        return list(flag)
+
     @staticmethod
     def _run_cmd(cmd) -> bool:
         """Выполнить команду. True если успешно.
 
-        Для iptables/ip6tables подмешиваем `-w 5` сразу после имени бинарника:
+        Для iptables/ip6tables подмешиваем `-w` сразу после имени бинарника:
         иначе сканер, быстро снимающий и применяющий правила, упирается в
         xtables-lock и получает «Another app is currently holding the xtables
-        lock».
+        lock». Старые сборки iptables (Entware/Keenetic, 1.4.x) принимают
+        `-w` как **boolean без аргумента** — `-w 5` для них означает «ждать
+        + первая позиционная опция = 5», что отдаёт «Bad argument `5'».
+        Поэтому форму выбираем по детекции (см. _iptables_wait_flag).
         """
-        if cmd and os.path.basename(cmd[0]) in ("iptables", "ip6tables"):
-            if "-w" not in cmd:
-                cmd = [cmd[0], "-w", "5"] + cmd[1:]
+        is_iptables = (
+            cmd and os.path.basename(cmd[0]) in ("iptables", "ip6tables")
+        )
+        if is_iptables and "-w" not in cmd:
+            wait_flag = FirewallManager._iptables_wait_flag(cmd[0])
+            cmd = [cmd[0]] + wait_flag + cmd[1:]
 
         try:
             result = subprocess.run(
@@ -590,6 +643,31 @@ class FirewallManager:
             )
             if result.returncode != 0:
                 stderr = result.stderr.strip()
+
+                # Runtime-fallback: старые iptables (Entware/Keenetic 1.4.x)
+                # принимают «-w» только как boolean. Если сейчас передали
+                # `-w 5` и получили «Bad argument `5'» — понижаем форму до
+                # «-w» и пробуем ещё раз. Кэш снижается до конца жизни
+                # процесса.
+                if (is_iptables and "Bad argument" in stderr
+                        and "-w" in cmd and "5" in cmd):
+                    log.info(
+                        "iptables не принимает «-w 5», переходим на «-w»",
+                        source="firewall",
+                    )
+                    FirewallManager._wait_flag_cache[cmd[0]] = ["-w"]
+                    fixed = [a for a in cmd if a != "5"]
+                    try:
+                        result = subprocess.run(
+                            fixed, capture_output=True, text=True, timeout=10,
+                        )
+                        if result.returncode == 0:
+                            return True
+                        stderr = result.stderr.strip()
+                        cmd = fixed
+                    except (subprocess.TimeoutExpired, FileNotFoundError):
+                        pass
+
                 if "No such file" not in stderr \
                         and "does not exist" not in stderr:
                     log.warning("Команда %s: %s" % (

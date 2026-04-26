@@ -697,7 +697,10 @@ const ZapretManagerPage = (() => {
                             showProgress('Обновление завершено!', 100, 'Обновление zapret-gui...');
                             setTimeout(() => {
                                 hideProgress();
-                                showGuiReloadPrompt();
+                                // Polling-фолбэк не знает финальный result —
+                                // показываем оптимистичный сценарий с авто-
+                                // поллингом и резервным ручным рестартом.
+                                showGuiReloadPrompt({ ok: true, restart_scheduled: true });
                             }, 1200);
                         }
                     }
@@ -760,25 +763,99 @@ const ZapretManagerPage = (() => {
         if (ver) ver.textContent = info.latest_version || '?';
     }
 
-    function showGuiReloadPrompt() {
+    function showGuiReloadPrompt(updateResult) {
+        // Сервер планирует рестарт сервиса в фоне. Ждём пока он перезапустится
+        // и сам подхватит новый код, потом перезагружаем страницу.
+        // Без рестарта старый Python-процесс продолжит держать прежний
+        // GUI_VERSION в памяти, и `location.reload()` ничего не изменит.
+        const restartScheduled = !!(updateResult && updateResult.restart_scheduled);
+        const newVersion = (updateResult && updateResult.version) || '';
         const banner = document.getElementById('gui-update-banner');
+
+        if (!restartScheduled) {
+            // Авто-рестарт не запланирован — пользователь должен сам.
+            if (banner) {
+                banner.classList.remove('hidden');
+                banner.innerHTML = `
+                    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                        <div>
+                            <span style="font-weight:600; color:var(--warning);">GUI обновлён, требуется ручной рестарт сервиса</span>
+                            <div style="color:var(--text-secondary); font-size:13px; margin-top:4px;">
+                                Выполните на роутере: <code>S99zapret-gui restart</code>
+                                (или <code>/etc/init.d/zapret-gui restart</code>),<br>
+                                затем перезагрузите страницу.
+                            </div>
+                        </div>
+                        <button class="btn btn-ghost btn-sm" onclick="location.reload()">Обновить страницу</button>
+                    </div>
+                `;
+            }
+            Toast.warning('Перезапустите сервис вручную, иначе обновление не применится.');
+            return;
+        }
+
         if (banner) {
             banner.classList.remove('hidden');
             banner.innerHTML = `
                 <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
                     <div>
-                        <span style="font-weight:600; color:var(--success);">zapret-gui обновлён!</span>
-                        <span style="color:var(--text-secondary); font-size:13px; margin-left:8px;">
-                            Перезагрузите страницу для применения изменений
-                        </span>
+                        <span style="font-weight:600; color:var(--success);">zapret-gui обновлён${newVersion ? ' до v' + newVersion : ''}!</span>
+                        <div style="color:var(--text-secondary); font-size:13px; margin-top:4px;">
+                            <span id="gui-update-restart-status">Сервис перезапускается...</span>
+                        </div>
                     </div>
-                    <button class="btn btn-success btn-sm" onclick="location.reload()">
-                        Перезагрузить страницу
-                    </button>
+                    <button class="btn btn-ghost btn-sm" onclick="location.reload()">Перезагрузить вручную</button>
                 </div>
             `;
         }
-        Toast.success('GUI обновлён! Нажмите F5 или кнопку "Перезагрузить страницу".');
+        Toast.success('GUI обновлён, сервис перезапускается. Страница обновится автоматически.');
+
+        // Поллим /api/version (или /api/status) пока сервис не вернётся.
+        // Сервер уходит в перезапуск через ~3 сек, поднимается обычно
+        // за 1-3 сек после kill. Делаем первую попытку через 4 сек.
+        let attempts = 0;
+        const MAX_ATTEMPTS = 30;  // ~60 секунд при 2-сек интервале
+        const POLL_INTERVAL = 2000;
+        const FIRST_DELAY = 4000;
+
+        const statusEl = document.getElementById('gui-update-restart-status');
+
+        function pollServer() {
+            attempts++;
+            if (statusEl) {
+                statusEl.textContent = `Ожидание сервиса (${attempts}/${MAX_ATTEMPTS})...`;
+            }
+
+            fetch('/api/gui/version', { cache: 'no-store' })
+                .then(r => r.ok ? r.json() : Promise.reject(new Error('http ' + r.status)))
+                .then(data => {
+                    // Сервис ответил — если версия совпала с ожидаемой
+                    // или просто отвечает после рестарта, перезагружаем.
+                    const liveVer = data && (data.version || data.gui_version || '');
+                    const upgraded = !newVersion || liveVer === newVersion;
+                    if (upgraded) {
+                        if (statusEl) statusEl.textContent = 'Готово, перезагружаем...';
+                        setTimeout(() => location.reload(), 500);
+                    } else {
+                        // Сервис ещё со старым кодом — ждём дальше
+                        if (attempts < MAX_ATTEMPTS) {
+                            setTimeout(pollServer, POLL_INTERVAL);
+                        } else if (statusEl) {
+                            statusEl.textContent = 'Сервис не обновился — перезагрузите страницу вручную.';
+                        }
+                    }
+                })
+                .catch(() => {
+                    // Ошибка сети = сервис как раз перезапускается, продолжаем
+                    if (attempts < MAX_ATTEMPTS) {
+                        setTimeout(pollServer, POLL_INTERVAL);
+                    } else if (statusEl) {
+                        statusEl.textContent = 'Сервис не отвечает — проверьте состояние на роутере.';
+                    }
+                });
+        }
+
+        setTimeout(pollServer, FIRST_DELAY);
     }
 
     async function doGuiUpdate() {
@@ -800,7 +877,7 @@ const ZapretManagerPage = (() => {
                 showProgress('Обновление завершено!', 100, 'Обновление zapret-gui...');
                 setTimeout(() => {
                     hideProgress();
-                    showGuiReloadPrompt();
+                    showGuiReloadPrompt(result);
                 }, 1200);
             } else {
                 stopGuiProgressPolling();

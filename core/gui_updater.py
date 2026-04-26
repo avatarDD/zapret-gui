@@ -10,6 +10,8 @@
 Singleton: get_gui_updater()
 """
 
+from __future__ import annotations
+
 import json
 import os
 import shutil
@@ -35,6 +37,13 @@ REMOTE_VERSION_CACHE_TTL = 300  # 5 минут
 
 # Автоопределение пути установки GUI
 _APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Кандидаты init-скриптов сервиса. Первый существующий и исполняемый —
+# побеждает (Entware → S99zapret-gui, OpenWrt → /etc/init.d/zapret-gui).
+_SERVICE_INIT_SCRIPTS = [
+    "/opt/etc/init.d/S99zapret-gui",
+    "/etc/init.d/zapret-gui",
+]
 
 
 class GuiUpdater:
@@ -295,15 +304,39 @@ class GuiUpdater:
                 source="gui-updater",
             )
 
+            # Скопированные файлы лежат на диске, но текущий Python-процесс
+            # продолжает работать со старым кодом в памяти. Без перезапуска
+            # сервиса GUI продолжит показывать прежнюю версию даже после
+            # F5 в браузере. Планируем рестарт через init-скрипт в
+            # detached-режиме — HTTP-ответ успеет уйти клиенту до того,
+            # как сервис убьёт сам себя.
+            restart_scheduled = self._schedule_service_restart()
+
+            if restart_scheduled:
+                msg = (
+                    "GUI обновлён до версии %s. Сервис автоматически "
+                    "перезапустится через несколько секунд — обновите "
+                    "страницу (F5) после этого."
+                    % (new_version or "?")
+                )
+            else:
+                # Не нашли init-скрипт — пользователь должен рестартануть
+                # сервис вручную, иначе обновление не применится.
+                msg = (
+                    "GUI обновлён до версии %s, файлы на диске, но "
+                    "init-скрипт не найден — перезапустите сервис "
+                    "вручную (S99zapret-gui restart / "
+                    "/etc/init.d/zapret-gui restart). Без рестарта "
+                    "продолжит работать старый код."
+                    % (new_version or "?")
+                )
+
             return {
                 "ok": True,
-                "message": (
-                    "GUI обновлён до версии %s. "
-                    "Перезагрузите страницу (F5) для применения."
-                    % (new_version or "?")
-                ),
+                "message": msg,
                 "version": new_version,
                 "restart_required": True,
+                "restart_scheduled": restart_scheduled,
             }
 
         except Exception as e:
@@ -316,6 +349,61 @@ class GuiUpdater:
         finally:
             # Очистка tmp
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _find_init_script() -> str | None:
+        """Найти исполняемый init-скрипт сервиса GUI."""
+        for path in _SERVICE_INIT_SCRIPTS:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        return None
+
+    def _schedule_service_restart(self, delay_seconds: int = 3) -> bool:
+        """Запланировать рестарт сервиса в detached-shell.
+
+        Запускает `(sleep N && <init> restart) &` через nohup так, чтобы:
+          1) текущий HTTP-ответ успел уйти клиенту;
+          2) при kill старого Python-процесса детачед-shell не умер вместе
+             с ним (start_new_session + nohup);
+          3) после паузы init-скрипт сделал stop + start (PID-файл,
+             pgrep, очистка stale __pycache__ — всё его).
+        """
+        init_script = self._find_init_script()
+        if not init_script:
+            log.warning(
+                "init-скрипт сервиса не найден, авто-рестарт пропущен. "
+                "Перезапустите вручную: S99zapret-gui restart",
+                source="gui-updater",
+            )
+            return False
+
+        # Каскад «sleep + restart» в новой сессии. Перенаправляем потоки
+        # в /dev/null — иначе шелл унаследует трубы Python и умрёт при
+        # первой попытке записи после нашего exit.
+        cmd_str = "sleep %d && %s restart" % (
+            int(delay_seconds), init_script,
+        )
+        try:
+            subprocess.Popen(
+                ["sh", "-c", cmd_str],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+            log.info(
+                "Запланирован рестарт сервиса через %d сек: %s restart"
+                % (delay_seconds, init_script),
+                source="gui-updater",
+            )
+            return True
+        except OSError as e:
+            log.error(
+                "Не удалось запланировать рестарт: %s" % e,
+                source="gui-updater",
+            )
+            return False
 
     def _safe_update_config_dir(self, src: str, dst: str) -> None:
         """
