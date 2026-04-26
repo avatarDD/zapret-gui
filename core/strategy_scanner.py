@@ -1336,6 +1336,12 @@ class StrategyScanner:
         # TCP: пробуем IPv4 и IPv6 раздельно
         from core.testers.tls_tester import test_tls
 
+        # Системные ошибки сети (нет маршрута/DNS) — стратегия DPI это не лечит,
+        # такой AF исключаем из карты, как и SKIPPED.
+        UNAVAILABLE_ERRS = {
+            "NET_UNREACH", "HOST_UNREACH", "DNS_ERR", "RESOLVE_ERR",
+        }
+
         per_af: dict[str, bool] = {}
         for af in ("ipv4", "ipv6"):
             try:
@@ -1351,6 +1357,18 @@ class StrategyScanner:
                 continue
             # SKIPPED = нет адресов этого семейства, пропускаем (не кладём в map)
             if res.status == TestStatus.SKIPPED.value:
+                continue
+            # Сетевая недоступность (нет IPv6-маршрута и т.п.) — не DPI,
+            # стратегия не сможет это починить. Исключаем AF из карты,
+            # чтобы пробы стратегий не гонялись по неработающему семейству.
+            if res.error in UNAVAILABLE_ERRS:
+                log.info(
+                    "Baseline %s: недоступно (%s, %.0f ms) — "
+                    "AF исключён из сканирования стратегий" % (
+                        af, res.error, res.latency_ms,
+                    ),
+                    source="scanner",
+                )
                 continue
             per_af[af] = (res.status == TestStatus.SUCCESS.value)
             log.info(
