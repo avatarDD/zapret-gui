@@ -60,6 +60,11 @@ KILL_TIMEOUT = 4                # Ожидание остановки nfqws2
 INTER_STRATEGY_DELAY = 0.3      # Пауза между стратегиями
 BODY_PROBE_MIN_BYTES = 65_536   # Минимум для прохождения 16-20 KB барьера
 
+# Сколько раз повторить запуск nfqws2, если он мгновенно упал/крашнулся
+# (гонка с conntrack/NFQUEUE bind или флапающий fwmark).
+NFQWS_CRASH_RETRIES = 2
+NFQWS_CRASH_BACKOFF = 1.0       # пауза между попытками
+
 # Tmp hostlist для приёмов (basic/advanced/direct), обогащённый доменами
 # цели. nfqws2 матчит SNI/Host строго по записям; без них десинк
 # не применяется к трафику цели и проба всегда падает.
@@ -124,6 +129,12 @@ class StrategyScanner:
         self._saved_nfqws_running = False
         self._saved_nfqws_args: list[str] = []
         self._saved_firewall_applied = False
+
+        # Baseline-aware фильтрация: { "ipv4": True/False, "ipv6": True/False }.
+        # True = ресурс уже доступен без обхода → стратегии «успехи» по этому AF
+        # не зачитываются как фикс блока (см. _deep_probe).
+        self._baseline_by_af: dict[str, bool] = {}
+        self._baseline_open: bool = False
 
         # Callback
         self._callback: Optional[Callable] = None
@@ -680,44 +691,56 @@ class StrategyScanner:
 
             fw_applied = True
 
-            # 3. Запускаем nfqws2
-            if not nfqws.start(args):
-                return StrategyProbeResult(
-                    strategy_id=entry.section_id,
-                    strategy_name=entry.name,
-                    target=self._target,
-                    success=False,
-                    latency_ms=0.0,
-                    error="NFQWS_FAIL",
-                    protocol=self._protocol,
-                    raw_data={
-                        "detail": "Не удалось запустить nfqws2",
-                        "args_preview": args_full,
-                        "source_file": entry.source_file,
-                        "level": entry.level,
-                    },
-                )
-
-            nfqws_started = True
-
-            # 4. Ждём стабилизации
+            # 3. Запускаем nfqws2 с crash-retry (гонка с conntrack/NFQUEUE bind
+            #    бывает на холодном старте; ретрай через короткую паузу решает).
             stabilization = self._get_stabilization_delay()
-            time.sleep(stabilization)
+            launch_attempts = 0
+            launch_error: str | None = None
+            launch_detail: str = ""
 
-            # 5. Проверяем что nfqws2 ещё жив
-            if not nfqws.is_running():
-                exit_code = nfqws.get_exit_code()
+            for attempt in range(1 + NFQWS_CRASH_RETRIES):
+                launch_attempts += 1
+
+                if not nfqws.start(args):
+                    launch_error = "NFQWS_FAIL"
+                    launch_detail = "Не удалось запустить nfqws2"
+                    nfqws_started = False
+                else:
+                    nfqws_started = True
+                    # Ждём стабилизации и проверяем что не упал.
+                    time.sleep(stabilization)
+                    if nfqws.is_running():
+                        launch_error = None
+                        launch_detail = ""
+                        break
+                    exit_code = nfqws.get_exit_code()
+                    launch_error = "NFQWS_CRASHED"
+                    launch_detail = "nfqws2 завершился (exit=%s)" % str(exit_code)
+                    nfqws_started = False
+
+                # Не последняя попытка — короткая пауза перед ретраем
+                if attempt < NFQWS_CRASH_RETRIES:
+                    log.warning(
+                        "nfqws2 упал на старте (%s, попытка %d/%d), повтор..."
+                        % (launch_error, launch_attempts,
+                           1 + NFQWS_CRASH_RETRIES),
+                        source="scanner",
+                    )
+                    time.sleep(NFQWS_CRASH_BACKOFF)
+
+            if launch_error is not None:
                 return StrategyProbeResult(
                     strategy_id=entry.section_id,
                     strategy_name=entry.name,
                     target=self._target,
                     success=False,
                     latency_ms=0.0,
-                    error="NFQWS_CRASHED",
+                    error=launch_error,
                     protocol=self._protocol,
                     raw_data={
-                        "detail": "nfqws2 завершился (exit=%s)"
-                        % str(exit_code),
+                        "detail": "%s после %d попыток"
+                        % (launch_detail, launch_attempts),
+                        "launch_attempts": launch_attempts,
                         "args_preview": args_full,
                         "source_file": entry.source_file,
                         "level": entry.level,
@@ -966,6 +989,23 @@ class StrategyScanner:
         # TCP: TLS + body
         hosts = self._select_test_hosts(profile)
 
+        # Какие AF имеет смысл проверять у стратегии:
+        #  - если baseline дал per-AF map — пробуем те, что были заблокированы
+        #    (на доступных нет смысла — стратегия их «не починит»);
+        #  - если карта пустая (нет резолва или UDP) — только ipv4 как и раньше.
+        if self._baseline_by_af:
+            blocked_afs = [af for af, ok in self._baseline_by_af.items()
+                           if not ok]
+            if not blocked_afs:
+                # Все AF уже открыты на baseline — стратегия не может «починить»,
+                # но всё равно прогоним один проход (чтобы не пустые результаты).
+                probe_afs = ["ipv4"] if "ipv4" in self._baseline_by_af else \
+                            list(self._baseline_by_af.keys())[:1]
+            else:
+                probe_afs = blocked_afs
+        else:
+            probe_afs = ["ipv4"]
+
         per_host: list[dict[str, Any]] = []
         sum_latency = 0.0
         sum_kbps = 0.0
@@ -973,96 +1013,162 @@ class StrategyScanner:
         body_ok_count = 0
         tls_ok_count = 0
         any_http_code = 0
+        # Собираем гранулярные коды ошибок — для верхнеуровневой агрегации
+        sub_errors: list[str] = []
 
         for host in hosts:
-            # Шаг 1: TLS handshake — быстрый gate
-            tls_res = test_tls(
-                host=host, port=443, timeout=PROBE_TIMEOUT,
-            )
-            tls_ok = tls_res.status == TestStatus.SUCCESS.value
-            if tls_ok:
-                tls_ok_count += 1
-                any_http_code = tls_res.raw_data.get("status_code", 0) or any_http_code
-
+            # Один host_entry — но с per-AF подсекциями
             host_entry: dict[str, Any] = {
                 "host": host,
-                "tls_ok": tls_ok,
+                "tls_ok": False,
                 "body_ok": False,
                 "kbps": 0.0,
-                "latency_ms": tls_res.latency_ms,
-                "details": tls_res.details,
+                "latency_ms": 0.0,
+                "details": "",
+                "af_results": {},  # per-AF: {ipv4: {...}, ipv6: {...}}
             }
 
-            if not tls_ok:
-                per_host.append(host_entry)
-                continue
+            best_body_kbps = 0.0
+            best_body_latency = 0.0
+            host_tls_ok_any = False
+            host_body_ok_any = False
 
-            # Шаг 2: body-загрузка
-            url = (profile.get_probe_url()
-                   if host == profile.primary_host
-                   else "https://%s/" % host)
-            body = probe_body(
-                url=url,
-                min_bytes=BODY_PROBE_MIN_BYTES,
-                timeout=BODY_PROBE_TIMEOUT,
+            for af in probe_afs:
+                tls_res = test_tls(
+                    host=host, port=443, timeout=PROBE_TIMEOUT,
+                    ip_family=af,
+                )
+                # SKIPPED — этот AF не резолвится; не считаем за ошибку
+                if tls_res.status == TestStatus.SKIPPED.value:
+                    continue
+
+                tls_ok = tls_res.status == TestStatus.SUCCESS.value
+                af_entry: dict[str, Any] = {
+                    "tls_ok": tls_ok,
+                    "tls_error": tls_res.error or "",
+                    "tls_details": tls_res.details,
+                    "tls_latency_ms": tls_res.latency_ms,
+                    "connected_ip": tls_res.raw_data.get("connected_ip", ""),
+                    "body_ok": False,
+                    "body_error": "",
+                    "body_details": "",
+                    "kbps": 0.0,
+                    "bytes": 0,
+                    "status_code": 0,
+                    "dpi_marker": "",
+                }
+
+                if not tls_ok:
+                    if tls_res.error:
+                        sub_errors.append(tls_res.error)
+                    host_entry["af_results"][af] = af_entry
+                    continue
+
+                host_tls_ok_any = True
+
+                # Шаг 2: body-загрузка
+                url = (profile.get_probe_url()
+                       if host == profile.primary_host
+                       else "https://%s/" % host)
+                body = probe_body(
+                    url=url,
+                    min_bytes=BODY_PROBE_MIN_BYTES,
+                    timeout=BODY_PROBE_TIMEOUT,
+                )
+                body_ok = body.status == TestStatus.SUCCESS.value
+                af_entry["body_ok"] = body_ok
+                af_entry["body_error"] = body.error or ""
+                af_entry["body_details"] = body.details
+                af_entry["kbps"] = body.raw_data.get("kbps", 0.0) or 0.0
+                af_entry["bytes"] = body.raw_data.get("bytes_received", 0)
+                af_entry["status_code"] = body.raw_data.get("status_code", 0)
+                af_entry["dpi_marker"] = body.raw_data.get("dpi_marker", "")
+
+                if body_ok:
+                    host_body_ok_any = True
+                    body_ok_count += 1
+                    sum_kbps += af_entry["kbps"]
+                    kbps_count += 1
+                    sum_latency += body.latency_ms
+                    any_http_code = af_entry["status_code"] or any_http_code
+                    if af_entry["kbps"] > best_body_kbps:
+                        best_body_kbps = af_entry["kbps"]
+                        best_body_latency = body.latency_ms
+                else:
+                    if body.error:
+                        sub_errors.append(body.error)
+
+                host_entry["af_results"][af] = af_entry
+
+            # Сворачиваем host-уровень из per-AF
+            host_entry["tls_ok"] = host_tls_ok_any
+            host_entry["body_ok"] = host_body_ok_any
+            if host_tls_ok_any:
+                tls_ok_count += 1
+            host_entry["kbps"] = best_body_kbps
+            host_entry["latency_ms"] = best_body_latency or (
+                next(
+                    (a["tls_latency_ms"] for a in host_entry["af_results"].values()
+                     if a.get("tls_ok")),
+                    0.0,
+                )
             )
-            body_ok = body.status == TestStatus.SUCCESS.value
-            host_entry["body_ok"] = body_ok
-            host_entry["details"] = body.details
-            host_entry["kbps"] = body.raw_data.get("kbps", 0.0)
-            host_entry["bytes"] = body.raw_data.get("bytes_received", 0)
-            host_entry["dpi_marker"] = body.raw_data.get("dpi_marker", "")
-            host_entry["status_code"] = body.raw_data.get("status_code", 0)
-            host_entry["latency_ms"] = body.latency_ms
-
-            sum_latency += body.latency_ms
-            kbps = body.raw_data.get("kbps", 0.0) or 0.0
-            if body_ok:
-                body_ok_count += 1
-                sum_kbps += kbps
-                kbps_count += 1
-                any_http_code = body.raw_data.get("status_code", 0) or any_http_code
-
+            # Краткая сводка для совместимости со старыми потребителями
+            first_af = next(iter(host_entry["af_results"].values()), {})
+            host_entry["details"] = (
+                first_af.get("body_details") or first_af.get("tls_details") or ""
+            )
+            host_entry["dpi_marker"] = next(
+                (a.get("dpi_marker", "") for a in host_entry["af_results"].values()
+                 if a.get("dpi_marker")),
+                "",
+            )
+            host_entry["status_code"] = next(
+                (a.get("status_code", 0) for a in host_entry["af_results"].values()
+                 if a.get("status_code")),
+                0,
+            )
             per_host.append(host_entry)
 
         total_subprobes = max(len(hosts), 1)
-        # success_rate: 0.5 за TLS-only, 1.0 за TLS+body
+        # success_rate: 0.4 за TLS-only, 0.6 добавка за body
         weighted = (tls_ok_count * 0.4 + body_ok_count * 0.6) / total_subprobes
         success_rate = round(weighted, 3)
 
-        # Стратегия "успешна" если хотя бы на одном хосте прошла body-проба.
-        # TLS-only без body — это «псевдо-успех» (классический 16-20 КБ).
+        # Стратегия "успешна" если хотя бы на одном хосте прошла body-проба
+        # на ранее заблокированном AF. TLS-only без body — псевдо-успех.
         success = body_ok_count > 0
+
+        # Baseline-aware: если все AF и так открыты — обнуляем кредит,
+        # стратегия ничего не починила.
+        baseline_open_all = bool(self._baseline_by_af) and \
+            all(self._baseline_by_af.values())
+        if success and baseline_open_all:
+            success = False
 
         avg_kbps = (sum_kbps / kbps_count) if kbps_count > 0 else 0.0
         avg_latency = (sum_latency / total_subprobes) if per_host else 0.0
 
-        # Композитный score: чем выше скорость и ниже задержка, тем лучше;
-        # отсутствие body-успеха обнуляет.
         if success:
             score = success_rate * (min(avg_kbps, 2048.0) /
                                     max(avg_latency, 50.0)) * 1000.0
         else:
-            # Половинный score за частичный TLS-успех, чтобы они шли ниже
-            # «настоящих» удач, но всё же видимы в списке.
             score = success_rate * 1.0
 
-        # Сообщение об ошибке для UI
+        # Гранулярная агрегация ошибки. Приоритет (от наиболее информативного):
+        #  ISP_PAGE > TCP_16_20 > TLS_RESET/TCP_RESET > TLS_EOF_EARLY >
+        #  TLS_TIMEOUT/TIMEOUT > TLS_HANDSHAKE/TLS_ALERT > SHORT_BODY >
+        #  TLS_FAIL/BODY_FAIL (generic).
         if success:
             err = ""
-        elif tls_ok_count == 0:
-            err = "TLS_FAIL"
+        elif baseline_open_all:
+            err = "BASELINE_OPEN"
         else:
-            # TLS ok, но body не прошёл — почти наверняка 16-20 KB block
-            markers = {h.get("dpi_marker", "") for h in per_host}
-            if "tcp_16_20" in markers:
-                err = "TCP_16_20"
-            elif "short_body" in markers:
-                err = "SHORT_BODY"
-            else:
-                err = "BODY_FAIL"
+            err = self._pick_best_error(sub_errors, tls_ok_count, body_ok_count)
 
-        details = "TLS %d/%d, body %d/%d, %.1f KB/s" % (
+        af_summary = ",".join(probe_afs) if probe_afs else "auto"
+        details = "AF=%s, TLS %d/%d, body %d/%d, %.1f KB/s" % (
+            af_summary,
             tls_ok_count, total_subprobes,
             body_ok_count, total_subprobes,
             avg_kbps,
@@ -1080,7 +1186,68 @@ class StrategyScanner:
             "test_type": "tls+body",
             "details": details,
             "per_host": per_host,
+            "probe_afs": probe_afs,
+            "baseline_by_af": dict(self._baseline_by_af),
         }
+
+    @staticmethod
+    def _pick_best_error(
+        errors: list[str],
+        tls_ok_count: int,
+        body_ok_count: int,
+    ) -> str:
+        """Выбрать наиболее информативный код ошибки из подпроб.
+
+        Приоритеты подобраны так, чтобы пользователь видел ПЕРВОПРИЧИНУ:
+        ISP-заглушка > 16-20KB block > классический DPI (RST/EOF) >
+        timeout > generic.
+        """
+        if not errors:
+            # Нет конкретных ошибок, но успех нулевой — fallback
+            return "TLS_FAIL" if tls_ok_count == 0 else "BODY_FAIL"
+
+        # Список приоритетов: чем выше — тем информативнее
+        priority = [
+            "ISP_PAGE",          # body — провайдерская заглушка
+            "HTTP_INJECT",       # HTTP инъекция
+            "TLS_MITM_SELF",     # MITM с самоподписанным
+            "TLS_MITM_UNKNOWN_CA",
+            "TCP_16_20",         # классический российский DPI
+            "TLS_RESET",         # TCP RST в handshake
+            "TCP_RESET",
+            "TLS_EOF_EARLY",     # EOF до данных
+            "TLS_EOF_DATA",
+            "READ_RESET",        # RST в потоке
+            "READ_BROKEN",
+            "TLS_SNI_REJECT",
+            "TLS_HANDSHAKE",
+            "TLS_ALERT_INTERNAL",
+            "TLS_ALERT",
+            "TLS_CERT_ERR",
+            "TLS_VERSION",
+            "TCP_REFUSED",
+            "HOST_UNREACH",
+            "NET_UNREACH",
+            "TLS_TIMEOUT",
+            "TCP_TIMEOUT",
+            "READ_TIMEOUT",
+            "TIMEOUT",
+            "SHORT_BODY",
+            "RST",
+            "TCP_ABORT",
+            "CONNECT_ERR",
+            "TLS_ERR",
+            "READ_ERR",
+            "BAD_URL",
+            "DNS_ERR",
+            "RESOLVE_ERR",
+        ]
+        present = set(errors)
+        for code in priority:
+            if code in present:
+                return code
+        # Не из списка — отдадим первое уникальное (возможно, кастомный код)
+        return errors[0]
 
     def _select_test_hosts(self, profile) -> list[str]:
         """Сколько хостов проверять: 1 (quick) / 2 (standard) / все (full)."""
@@ -1130,10 +1297,14 @@ class StrategyScanner:
 
     def _run_baseline_test(self) -> bool:
         """
-        Baseline-тест: проверить ресурс БЕЗ обхода.
+        Baseline-тест: проверить ресурс БЕЗ обхода (per-AF для TCP).
+
+        Заполняет self._baseline_by_af: {"ipv4": bool, "ipv6": bool}
+        — True означает «ресурс уже доступен без обхода» для этого AF.
+        Если AF не резолвится / отсутствует, ключ просто не появится.
 
         Returns:
-            True если ресурс уже доступен (не заблокирован).
+            True если ресурс уже доступен хотя бы по одному AF.
         """
         log.info(
             "Baseline-тест: %s (%s)" % (self._target, self._protocol),
@@ -1142,23 +1313,83 @@ class StrategyScanner:
 
         self._emit_callback("phase", {"phase": "Baseline-тест"})
 
+        # UDP: per-AF не делаем (STUN сам резолвит как умеет)
         if self._protocol == "udp":
             result = self._probe_stun()
-        else:
-            result = self._probe_tls()
+            is_accessible = result.status == TestStatus.SUCCESS.value
+            self._baseline_by_af = {"ipv4": is_accessible}
+            self._baseline_open = is_accessible
+            if is_accessible:
+                log.warning(
+                    "Baseline: %s доступен без обхода (%.0f ms)"
+                    % (self._target, result.latency_ms),
+                    source="scanner",
+                )
+            else:
+                log.info(
+                    "Baseline: %s заблокирован — %s"
+                    % (self._target, result.error or result.details),
+                    source="scanner",
+                )
+            return is_accessible
 
-        is_accessible = result.status == TestStatus.SUCCESS.value
+        # TCP: пробуем IPv4 и IPv6 раздельно
+        from core.testers.tls_tester import test_tls
 
-        if is_accessible:
-            log.warning(
-                "Baseline: %s доступен без обхода (%.0f ms)"
-                % (self._target, result.latency_ms),
+        per_af: dict[str, bool] = {}
+        for af in ("ipv4", "ipv6"):
+            try:
+                res = test_tls(
+                    host=self._target, port=443,
+                    timeout=PROBE_TIMEOUT, ip_family=af,
+                )
+            except Exception as e:
+                log.debug(
+                    "Baseline %s: исключение %s" % (af, e),
+                    source="scanner",
+                )
+                continue
+            # SKIPPED = нет адресов этого семейства, пропускаем (не кладём в map)
+            if res.status == TestStatus.SKIPPED.value:
+                continue
+            per_af[af] = (res.status == TestStatus.SUCCESS.value)
+            log.info(
+                "Baseline %s: %s (%s, %.0f ms)" % (
+                    af,
+                    "доступен" if per_af[af] else "заблокирован",
+                    res.error or res.details or "ok",
+                    res.latency_ms,
+                ),
                 source="scanner",
             )
-        else:
+
+        # Если ни одного AF не резолвилось — fallback на старое поведение
+        if not per_af:
+            log.warning(
+                "Baseline: ни IPv4, ни IPv6 не резолвятся для %s"
+                % self._target,
+                source="scanner",
+            )
+            self._baseline_by_af = {}
+            self._baseline_open = False
+            return False
+
+        self._baseline_by_af = per_af
+        is_accessible = any(per_af.values())
+        self._baseline_open = is_accessible
+
+        if all(per_af.values()):
+            log.warning(
+                "Baseline: %s доступен без обхода по всем AF — "
+                "результаты сканирования будут ложноположительными"
+                % self._target,
+                source="scanner",
+            )
+        elif is_accessible:
+            blocked = [af for af, ok in per_af.items() if not ok]
             log.info(
-                "Baseline: %s заблокирован — %s"
-                % (self._target, result.error or result.details),
+                "Baseline: %s частично заблокирован (только: %s)"
+                % (self._target, ", ".join(blocked) or "—"),
                 source="scanner",
             )
 
