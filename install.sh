@@ -29,6 +29,12 @@ VERSION="0.18.2"
 GUI_PORT="${ZAPRET_GUI_PORT:-8080}"
 GUI_HOST="${ZAPRET_GUI_HOST:-0.0.0.0}"
 
+# Пользователь явно задал host/port? (через окружение или флаги)
+GUI_PORT_EXPLICIT=0
+GUI_HOST_EXPLICIT=0
+[ -n "$ZAPRET_GUI_PORT" ] && GUI_PORT_EXPLICIT=1
+[ -n "$ZAPRET_GUI_HOST" ] && GUI_HOST_EXPLICIT=1
+
 # Автоопределение окружения
 detect_env() {
     if [ -d "/opt/etc/init.d" ] && [ -d "/opt/lib" ]; then
@@ -570,6 +576,9 @@ INITEOF
         # Generic Linux с systemd
         info "Обнаружен systemd — создаём unit-файл..."
         local UNIT_FILE="/etc/systemd/system/zapret-gui.service"
+        # ВАЖНО: НЕ инлайним --host/--port в ExecStart. App.py читает
+        # их из settings.json. Иначе изменение порта/хоста через UI
+        # игнорируется — systemd-юнит подсовывает старые значения.
         cat > "$TMP_INIT" << UNITEOF
 [Unit]
 Description=Zapret Web-GUI
@@ -577,7 +586,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=$(command -v python3) $APP_DIR/app.py --host $GUI_HOST --port $GUI_PORT --config $CONFIG_DIR
+ExecStart=$(command -v python3) $APP_DIR/app.py --config $CONFIG_DIR
 Restart=on-failure
 RestartSec=5
 
@@ -587,16 +596,58 @@ UNITEOF
         $SUDO cp "$TMP_INIT" "$UNIT_FILE"
         $SUDO chmod 644 "$UNIT_FILE"
         rm -f "$TMP_INIT"
+
+        # Записываем host/port в settings.json. Если файла ещё нет —
+        # создаём с переданными (или дефолтными) значениями. Если файл
+        # существует и пользователь НЕ передавал --port/--host явно —
+        # не трогаем сохранённые значения (могли быть изменены через UI).
+        $SUDO mkdir -p "$CONFIG_DIR"
+        $SUDO env GUI_HOST="$GUI_HOST" GUI_PORT="$GUI_PORT" \
+                  GUI_HOST_EXPLICIT="$GUI_HOST_EXPLICIT" \
+                  GUI_PORT_EXPLICIT="$GUI_PORT_EXPLICIT" \
+                  python3 - "$CONFIG_DIR/settings.json" <<'PYEOF' || warn "Не удалось записать host/port в settings.json"
+import json, os, sys
+path = sys.argv[1]
+host = os.environ.get("GUI_HOST", "0.0.0.0")
+port = int(os.environ.get("GUI_PORT", "8080"))
+host_explicit = os.environ.get("GUI_HOST_EXPLICIT") == "1"
+port_explicit = os.environ.get("GUI_PORT_EXPLICIT") == "1"
+
+existed = os.path.isfile(path)
+data = {}
+if existed:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}
+
+gui = data.get("gui") if isinstance(data.get("gui"), dict) else {}
+if not existed:
+    gui.setdefault("host", host)
+    gui.setdefault("port", port)
+if host_explicit:
+    gui["host"] = host
+if port_explicit:
+    gui["port"] = port
+data["gui"] = gui
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+PYEOF
+
         $SUDO systemctl daemon-reload
         $SUDO systemctl enable zapret-gui 2>/dev/null || true
         ok "Systemd unit: $UNIT_FILE"
 
-        # Файл конфига
+        # Файл конфига (для совместимости со скриптами/init.d)
         if [ ! -f "$CONFIG_DIR/server.conf" ]; then
             local TMP_CONF="/tmp/zapret-gui-conf-$$"
             cat > "$TMP_CONF" << CONFEOF
 # Настройки веб-сервера Zapret Web-GUI
-# Раскомментируйте и измените при необходимости:
+# Эти значения НЕ используются systemd-юнитом —
+# host/port читаются из settings.json (управляется через UI).
 #GUI_HOST=0.0.0.0
 #GUI_PORT=8080
 CONFEOF
@@ -820,10 +871,10 @@ while [ $# -gt 0 ]; do
             exit 0
             ;;
         --port)
-            shift; GUI_PORT="$1"
+            shift; GUI_PORT="$1"; GUI_PORT_EXPLICIT=1
             ;;
         --host)
-            shift; GUI_HOST="$1"
+            shift; GUI_HOST="$1"; GUI_HOST_EXPLICIT=1
             ;;
         --branch)
             shift; BRANCH="$1"

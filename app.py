@@ -67,6 +67,122 @@ class ThreadedWSGIServer(ServerAdapter):
         srv.serve_forever()
 
 
+def _apply_saved_strategy_on_boot():
+    """
+    Автоприменение сохранённой стратегии при старте GUI.
+
+    На платформах без отдельного init.d-скрипта nfqws2 (например, Ubuntu
+    с systemd) сам GUI-сервис должен запустить nfqws2 с сохранённой
+    стратегией после перезагрузки системы. На Entware это делает
+    отдельный init.d/S99zapret — в этом случае пропускаем, чтобы
+    не запустить второй экземпляр nfqws2.
+
+    Вызывается в фоновом потоке, чтобы не блокировать подъём web-сервера.
+    """
+    import threading
+    import time
+
+    def _do_apply():
+        try:
+            # Даём web-серверу подняться, чтобы статус был доступен
+            time.sleep(1.0)
+
+            from core.config_manager import get_config_manager
+            from core.log_buffer import log
+
+            cfg = get_config_manager()
+            if not cfg.get("autostart", "enabled", default=False):
+                return
+
+            # На Entware есть отдельный init.d/S99zapret — он сам
+            # запускает nfqws2. GUI не должен дублировать.
+            if os.path.isfile("/opt/etc/init.d/S99zapret"):
+                log.info(
+                    "init.d/S99zapret установлен — автозапуск nfqws2 "
+                    "выполняется им, GUI пропускает",
+                    source="autostart",
+                )
+                return
+
+            strategy_id = cfg.get("strategy", "current_id")
+            if not strategy_id:
+                log.info(
+                    "Автозапуск включён, но активная стратегия не выбрана",
+                    source="autostart",
+                )
+                return
+
+            from core.nfqws_manager import get_nfqws_manager
+            mgr = get_nfqws_manager()
+
+            # Если nfqws2 уже запущен (например, после restart GUI без
+            # перезагрузки системы) — ничего не делаем.
+            if mgr.is_running():
+                log.info(
+                    "nfqws2 уже запущен — пропуск автоприменения стратегии",
+                    source="autostart",
+                )
+                return
+
+            from core.strategy_builder import get_strategy_manager
+            sm = get_strategy_manager()
+            strategy = sm.get_strategy(strategy_id)
+            if not strategy:
+                log.warning(
+                    "Сохранённая стратегия не найдена: %s" % strategy_id,
+                    source="autostart",
+                )
+                return
+
+            args = sm.build_nfqws_args(strategy)
+            if not args:
+                log.warning(
+                    "Стратегия %s не содержит включённых профилей"
+                    % strategy_id,
+                    source="autostart",
+                )
+                return
+
+            log.info(
+                "Автоприменение сохранённой стратегии: %s"
+                % strategy.get("name", strategy_id),
+                source="autostart",
+            )
+
+            # Применяем правила firewall
+            try:
+                from core.firewall import get_firewall_manager
+                fw = get_firewall_manager()
+                if cfg.get("firewall", "apply_on_start", default=True):
+                    fw.remove_rules()
+                    fw.apply_rules()
+            except Exception as e:
+                log.warning(
+                    "Не удалось применить правила firewall: %s" % e,
+                    source="autostart",
+                )
+
+            if mgr.start(args):
+                log.success(
+                    "Стратегия применена при автозапуске",
+                    source="autostart",
+                )
+            else:
+                log.error(
+                    "Не удалось применить стратегию при автозапуске",
+                    source="autostart",
+                )
+        except Exception as e:
+            try:
+                from core.log_buffer import log
+                log.error("Ошибка автозапуска: %s" % e, source="autostart")
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_do_apply, daemon=True, name="autostart-boot")
+    t.start()
+
+
 def create_app(config_dir: str = None) -> Bottle:
     """
     Создать и настроить Bottle-приложение.
@@ -155,6 +271,10 @@ def create_app(config_dir: str = None) -> Bottle:
         return '<h1>Внутренняя ошибка сервера</h1><p>%s</p>' % str(error)
 
     log.success("Web-GUI инициализирован", source="app")
+
+    # Автоприменение сохранённой стратегии при старте
+    # (для платформ без отдельного nfqws2-init: Ubuntu/systemd и пр.)
+    _apply_saved_strategy_on_boot()
 
     return app
 

@@ -64,7 +64,34 @@ def register(app):
             log.info(f"Конфигурация обновлена: {', '.join(updated)}",
                      source="config")
 
-        return {"ok": True, "updated": updated}
+        # Если поменяли host/port в gui — переписываем systemd unit,
+        # чтобы он не подсовывал свои --host/--port из времени установки.
+        # Без этого изменение порта в UI не применяется к реальному
+        # сервису (старый порт сохранён в ExecStart unit-файла).
+        info = {}
+        gui_section = body.get("gui") if isinstance(body, dict) else None
+        if isinstance(gui_section, dict) and (
+            "host" in gui_section or "port" in gui_section
+        ):
+            try:
+                from core.autostart_manager import (
+                    regenerate_systemd_unit_if_needed,
+                )
+                result = regenerate_systemd_unit_if_needed()
+                if result.get("changed"):
+                    info["systemd_unit_updated"] = True
+                    info["restart_required"] = True
+                    info["restart_hint"] = (
+                        "Для применения нового порта/хоста перезапустите "
+                        "сервис: systemctl restart zapret-gui"
+                    )
+            except Exception as e:
+                log.warning(
+                    f"Не удалось обновить systemd unit: {e}",
+                    source="config",
+                )
+
+        return {"ok": True, "updated": updated, **info}
 
     @app.post("/api/config/reset")
     def api_config_reset():

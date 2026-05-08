@@ -615,23 +615,40 @@ class ZapretInstaller:
             return installed.lstrip("v") != latest.lstrip("v")
 
     def _find_nfqws_process(self) -> int:
-        """Найти PID работающего nfqws2 процесса в системе."""
+        """
+        Найти PID работающего nfqws2 процесса в системе.
+
+        Сравниваем по basename argv[0]: подстрочная проверка
+        ('nfqws2' in cmdline) ловит чужие процессы — ``tail -f
+        /var/log/zapret-nfqws.log``, ``grep nfqws2``, и пр., из-за чего
+        GUI выдавал ложные предупреждения о «уже запущенном» демоне.
+        """
         try:
             for pid_dir in os.listdir("/proc"):
                 if not pid_dir.isdigit():
                     continue
                 try:
-                    cmdline_path = "/proc/%s/cmdline" % pid_dir
-                    with open(cmdline_path, "r") as f:
-                        cmdline = f.read()
-                    if "nfqws2" in cmdline:
-                        return int(pid_dir)
-                except (IOError, OSError, ValueError):
+                    with open("/proc/%s/cmdline" % pid_dir, "rb") as f:
+                        raw = f.read()
+                except (IOError, OSError):
                     continue
+                if not raw:
+                    continue  # kthread / зомби
+                argv0 = raw.split(b"\x00", 1)[0].decode(
+                    "utf-8", errors="replace"
+                )
+                if not argv0:
+                    continue
+                name = os.path.basename(argv0)
+                if name in ("nfqws", "nfqws2"):
+                    try:
+                        return int(pid_dir)
+                    except ValueError:
+                        continue
         except (IOError, OSError):
             pass
 
-        # Fallback через pidof/pgrep
+        # Fallback через pidof/pgrep — оба требуют точного имени
         for cmd in [["pidof", "nfqws2"], ["pgrep", "-x", "nfqws2"]]:
             try:
                 result = subprocess.run(
