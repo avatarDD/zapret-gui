@@ -3657,3 +3657,218 @@ input:focus, textarea:focus, select:focus {
         display: none;
     }
 }
+
+/* ============================================================
+   Lua Scripts Page — code editor с подсветкой синтаксиса
+   ============================================================ */
+
+.lua-editor-wrap {
+    position: relative;
+    display: flex;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    min-height: 380px;
+    max-height: 70vh;
+    transition: border-color var(--transition);
+}
+
+.lua-editor-wrap:focus-within {
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.lua-gutter {
+    flex: 0 0 auto;
+    width: 48px;
+    padding: 12px 8px 12px 12px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.2);
+    border-right: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    text-align: right;
+    user-select: none;
+    white-space: pre;
+}
+
+.lua-gutter-line {
+    display: block;
+}
+
+.lua-gutter-line.lua-gutter-err {
+    color: var(--error);
+    font-weight: 700;
+}
+
+.lua-highlight,
+.lua-editor {
+    margin: 0;
+    padding: 12px 14px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    tab-size: 4;
+    -moz-tab-size: 4;
+    white-space: pre;
+    word-wrap: normal;
+    overflow-wrap: normal;
+    border: none;
+    outline: none;
+}
+
+.lua-highlight {
+    position: absolute;
+    top: 0;
+    left: 48px;          /* ширина gutter */
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    pointer-events: none;
+    color: var(--text-primary);
+    background: transparent;
+}
+
+.lua-highlight code {
+    display: block;
+    font: inherit;
+    white-space: pre;
+}
+
+.lua-editor {
+    position: relative;
+    flex: 1 1 auto;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    min-height: 380px;
+    overflow: auto;
+    color: transparent;
+    caret-color: var(--text-primary);
+    background: transparent;
+    resize: none;
+    -webkit-text-fill-color: transparent;
+}
+
+.lua-editor::selection {
+    background: var(--accent-glow);
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+}
+
+.lua-editor:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Lua syntax tokens */
+.lua-kw       { color: #c586c0; font-weight: 600; }   /* function, end, if, … */
+.lua-builtin  { color: #4ec9b0; }                     /* print, ipairs, table, … */
+.lua-string   { color: #ce9178; }
+.lua-comment  { color: #6a9955; font-style: italic; }
+.lua-num      { color: #b5cea8; }
+.lua-op       { color: #d4d4d4; }
+.lua-func     { color: #dcdcaa; }
+
+.lua-line-error {
+    background: rgba(248, 113, 113, 0.15);
+    border-bottom: 1px wavy var(--error);
+    text-decoration: underline wavy var(--error);
+    text-decoration-skip-ink: none;
+}
+
+/* Errors panel */
+.lua-errors {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    font-size: 12.5px;
+}
+
+.lua-errors-ok {
+    background: var(--success-bg);
+    border-color: rgba(52, 211, 153, 0.3);
+    color: var(--success);
+}
+
+.lua-errors-bad {
+    background: var(--error-bg);
+    border-color: rgba(248, 113, 113, 0.3);
+    color: var(--error);
+}
+
+.lua-errors-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.lua-errors-head strong {
+    font-weight: 600;
+}
+
+.lua-errors-checker {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.lua-errors-list {
+    margin: 8px 0 0 0;
+    padding-left: 22px;
+    color: var(--text-primary);
+}
+
+.lua-errors-list li {
+    margin: 4px 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+
+.lua-errors-list .lua-warning {
+    color: var(--warning);
+}
+
+.lua-err-line {
+    display: inline-block;
+    margin-right: 8px;
+    padding: 1px 6px;
+    background: rgba(248, 113, 113, 0.15);
+    border-radius: 3px;
+    color: var(--error) !important;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.lua-err-line:hover {
+    background: rgba(248, 113, 113, 0.25);
+}
+
+.lua-err-msg {
+    color: var(--text-primary);
+}
+
+@media (max-width: 768px) {
+    .lua-gutter {
+        width: 36px;
+        padding-left: 6px;
+        font-size: 11px;
+    }
+    .lua-highlight {
+        left: 36px;
+    }
+    .lua-editor-wrap {
+        min-height: 300px;
+    }
+    .lua-highlight,
+    .lua-editor {
+        font-size: 12px;
+    }
+}
+
