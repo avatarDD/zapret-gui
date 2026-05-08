@@ -13,6 +13,7 @@ def register_routes(app):
     from api.strategies import register as reg_strategies
     from api.hostlists import register as reg_hostlists
     from api.ipsets import register as reg_ipsets
+    from api.lua_scripts import register as reg_lua
     from api.blobs import register as reg_blobs
     from api.hosts import register as reg_hosts
     from api.diagnostics import register as reg_diagnostics
@@ -30,6 +31,7 @@ def register_routes(app):
     reg_strategies(app)
     reg_hostlists(app)
     reg_ipsets(app)
+    reg_lua(app)
     reg_blobs(app)
     reg_hosts(app)
     reg_diagnostics(app)

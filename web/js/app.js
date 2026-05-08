@@ -13,6 +13,7 @@ const App = (() => {
         strategies:  StrategiesPage,
         hostlists:   HostlistsPage,
         ipsets:      IPSetsPage,
+        lua:         LuaScriptsPage,
         blobs:       BlobsPage,
         hosts:       HostsPage,
         diagnostics: DiagnosticsPage,
