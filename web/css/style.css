@@ -3727,8 +3727,8 @@ input:focus, textarea:focus, select:focus {
     position: absolute;
     top: 0;
     left: 48px;
-    right: 0;
-    bottom: 0;
+    width: calc(100% - 48px);
+    height: 100%;
     overflow: hidden;
     pointer-events: none;
     color: var(--text-primary);
@@ -3745,10 +3745,8 @@ input:focus, textarea:focus, select:focus {
     position: absolute;
     top: 0;
     left: 48px;
-    right: 0;
-    bottom: 0;
-    width: auto;
-    height: auto;
+    width: calc(100% - 48px);
+    height: 100%;
     z-index: 1;
     overflow: auto;
     color: transparent;
@@ -3868,6 +3866,7 @@ input:focus, textarea:focus, select:focus {
     .lua-highlight,
     .lua-editor {
         left: 36px;
+        width: calc(100% - 36px);
     }
     .lua-editor-wrap {
         height: 55vh;
