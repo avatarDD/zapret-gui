@@ -404,14 +404,30 @@ class NFQWSManager:
 
     @staticmethod
     def _check_pid_alive(pid: int) -> bool:
-        """Проверить что процесс с данным PID жив и это nfqws."""
+        """
+        Проверить что процесс с данным PID жив и это действительно nfqws.
+
+        Substring-проверка ('nfqws' in cmdline) даёт ложноположительные
+        срабатывания на чужих процессах (например, ``tail -f
+        /var/log/zapret-nfqws.log`` или ``grep nfqws``), особенно при
+        recycle PID. Сравниваем по basename исполняемого файла argv[0].
+        """
         try:
-            cmdline_path = "/proc/%d/cmdline" % pid
-            with open(cmdline_path, "r") as f:
-                cmdline = f.read()
-            return "nfqws" in cmdline
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                raw = f.read()
         except (IOError, OSError):
             return False
+
+        if not raw:
+            # пустой cmdline — kthread или зомби
+            return False
+
+        # argv[0] до первого NUL, затем basename
+        argv0 = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+        if not argv0:
+            return False
+        name = os.path.basename(argv0)
+        return name in ("nfqws", "nfqws2")
 
     def _recover_pid(self):
         """Восстановить PID из PID-файла при инициализации."""

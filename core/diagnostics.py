@@ -500,51 +500,108 @@ def check_all_services():
 
 # ─────────────────────── Конфликты nfqws/tpws ───────────────────────
 
+# Известные PID-файлы nfqws2, которые GUI считает «своими»:
+#  - PID-файл нашего nfqws_manager (GUI запускает напрямую)
+#  - PID-файл init.d/S99zapret из Entware (создаётся autostart_manager'ом)
+_KNOWN_NFQWS_PID_FILES = (
+    "/var/run/zapret-gui-nfqws.pid",
+    "/var/run/zapret-nfqws.pid",
+)
+
+
+def _read_pid_file(path: str):
+    """Прочитать PID из файла; вернуть int или None."""
+    try:
+        with open(path, "r") as f:
+            return int(f.read().strip())
+    except (IOError, OSError, ValueError):
+        return None
+
+
+def _is_zombie(pid: int) -> bool:
+    """Зомби-процесс — /proc/<pid>/status начинается со State: Z."""
+    try:
+        with open("/proc/%d/status" % pid, "r") as f:
+            for line in f:
+                if line.startswith("State:"):
+                    return "Z" in line
+    except (IOError, OSError):
+        pass
+    return False
+
+
 def check_nfqws_conflicts():
     """
     Проверка конфликтующих процессов nfqws/tpws.
 
+    «Свой» процесс — это процесс, чей PID совпадает с:
+      - PID, который держит наш nfqws_manager;
+      - PID из любого известного PID-файла (см. _KNOWN_NFQWS_PID_FILES),
+        чтобы nfqws2, запущенный init.d/S99zapret на Entware, не
+        выглядел как «сторонний демон».
+
+    Кэширование убрано: проверка лёгкая (один обход /proc), а кэш
+    на 30 секунд приводил к тому, что GUI ещё долго после остановки
+    показывал предупреждение «уже запущенный демон».
+
     Returns:
         dict: { conflicts: [{pid, name, cmdline}...], has_conflicts }
     """
-    cache_key = "conflicts"
-    cached = _cache_get(cache_key)
-    if cached:
-        return cached
-
     conflicts = []
+
+    # Собираем «свои» PID
+    from core.nfqws_manager import get_nfqws_manager
+    mgr = get_nfqws_manager()
+    our_pids = set()
+    mgr_pid = mgr.get_pid()
+    if mgr_pid:
+        our_pids.add(int(mgr_pid))
+    for pf in _KNOWN_NFQWS_PID_FILES:
+        p = _read_pid_file(pf)
+        if p:
+            our_pids.add(p)
 
     # Ищем процессы nfqws/tpws через /proc
     try:
         for pid_dir in os.listdir("/proc"):
             if not pid_dir.isdigit():
                 continue
-            pid = int(pid_dir)
             try:
-                cmdline_path = f"/proc/{pid}/cmdline"
-                with open(cmdline_path, "r") as f:
-                    cmdline = f.read().replace("\x00", " ").strip()
-
-                if not cmdline:
-                    continue
-
-                # Проверяем имя процесса
-                exe_name = os.path.basename(cmdline.split()[0]) if cmdline.split() else ""
-
-                if exe_name in ("nfqws", "nfqws2", "tpws", "tpws2"):
-                    # Проверяем — не наш ли это процесс (от нашего GUI)
-                    from core.nfqws_manager import get_nfqws_manager
-                    mgr = get_nfqws_manager()
-                    our_pid = mgr.get_status().get("pid")
-
-                    if pid != our_pid:
-                        conflicts.append({
-                            "pid": pid,
-                            "name": exe_name,
-                            "cmdline": cmdline[:500],
-                        })
+                pid = int(pid_dir)
+            except ValueError:
+                continue
+            try:
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    raw = f.read()
             except (IOError, OSError, PermissionError):
                 continue
+
+            if not raw:
+                # Пустой cmdline — kthread или зомби, не учитываем
+                continue
+
+            argv = raw.split(b"\x00")
+            argv0 = argv[0].decode("utf-8", errors="replace")
+            if not argv0:
+                continue
+            exe_name = os.path.basename(argv0)
+            if exe_name not in ("nfqws", "nfqws2", "tpws", "tpws2"):
+                continue
+
+            if pid in our_pids:
+                continue
+
+            if _is_zombie(pid):
+                continue
+
+            cmdline = b" ".join(a for a in argv if a).decode(
+                "utf-8", errors="replace"
+            )
+            conflicts.append({
+                "pid": pid,
+                "name": exe_name,
+                "cmdline": cmdline[:500],
+            })
     except (IOError, OSError):
         pass
 
@@ -554,10 +611,6 @@ def check_nfqws_conflicts():
         if ps_bin:
             rc, stdout, _ = _run([ps_bin, "w"], timeout=5)
             if rc == 0 and stdout:
-                from core.nfqws_manager import get_nfqws_manager
-                mgr = get_nfqws_manager()
-                our_pid = mgr.get_status().get("pid")
-
                 for line in stdout.strip().split("\n")[1:]:
                     parts = line.split(None, 4)
                     if len(parts) < 5:
@@ -567,22 +620,26 @@ def check_nfqws_conflicts():
                     except ValueError:
                         continue
                     cmdline = parts[4] if len(parts) > 4 else ""
-                    exe_name = os.path.basename(cmdline.split()[0]) if cmdline.split() else ""
+                    parts_cmd = cmdline.split()
+                    exe_name = os.path.basename(parts_cmd[0]) if parts_cmd else ""
 
-                    if exe_name in ("nfqws", "nfqws2", "tpws", "tpws2") and pid != our_pid:
-                        conflicts.append({
-                            "pid": pid,
-                            "name": exe_name,
-                            "cmdline": cmdline[:500],
-                        })
+                    if exe_name not in ("nfqws", "nfqws2", "tpws", "tpws2"):
+                        continue
+                    if pid in our_pids:
+                        continue
+                    if _is_zombie(pid):
+                        continue
 
-    result = {
+                    conflicts.append({
+                        "pid": pid,
+                        "name": exe_name,
+                        "cmdline": cmdline[:500],
+                    })
+
+    return {
         "conflicts": conflicts,
         "has_conflicts": len(conflicts) > 0,
     }
-
-    _cache_set(cache_key, result)
-    return result
 
 
 # ─────────────────────── Статус Firewall ───────────────────────
