@@ -2,8 +2,16 @@
 """
 Менеджер автозапуска.
 
-Генерирует init.d-скрипт (S99zapret) для Entware,
-устанавливает/удаляет его из /opt/etc/init.d/.
+Поддерживает две модели автозапуска:
+
+  1) Entware: генерирует отдельный init.d/S99zapret, который запускает
+     nfqws2 независимо от GUI. Это исторический путь.
+
+  2) systemd (Ubuntu, Debian и пр.): отдельный init для nfqws2 не
+     создаётся. Автозапуск реализован тем, что systemd автоматически
+     стартует zapret-gui.service, а GUI при старте применяет
+     сохранённую стратегию (см. app._apply_saved_strategy_on_boot).
+     В этом случае enable/disable только обновляют флаг в конфиге.
 
 Использование:
     from core.autostart_manager import get_autostart_manager
@@ -16,8 +24,10 @@
 """
 
 import os
+import re
 import stat
 import shutil
+import subprocess
 import threading
 
 from core.log_buffer import log
@@ -28,9 +38,24 @@ INIT_DIR = "/opt/etc/init.d"
 SCRIPT_NAME = "S99zapret"
 SCRIPT_PATH = os.path.join(INIT_DIR, SCRIPT_NAME)
 
+# systemd unit-файл GUI-сервиса (создаётся install.sh)
+SYSTEMD_UNIT_PATH = "/etc/systemd/system/zapret-gui.service"
+
 # Путь к локальной копии скрипта (в директории проекта)
 LOCAL_INIT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "init.d")
 LOCAL_SCRIPT_PATH = os.path.join(LOCAL_INIT_DIR, SCRIPT_NAME)
+
+
+def _is_entware() -> bool:
+    """Запущены ли мы на Entware (есть /opt/etc/init.d)."""
+    return os.path.isdir(INIT_DIR)
+
+
+def _is_systemd() -> bool:
+    """Доступен ли systemd."""
+    return shutil.which("systemctl") is not None and os.path.isdir(
+        "/etc/systemd/system"
+    )
 
 # Singleton
 _instance = None
@@ -50,25 +75,41 @@ class AutostartManager:
         Получить полный статус автозапуска.
 
         Returns:
-            dict с полями: enabled, script_exists, script_path, strategy_name, strategy_id
+            dict с полями: enabled, script_exists, script_path, strategy_name, strategy_id, method
         """
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
 
-        installed = self._is_installed()
         enabled = cfg.get("autostart", "enabled", default=False)
+        installed = self._is_installed()
 
-        # Если конфиг говорит enabled, но скрипта нет — рассинхронизация
-        if enabled and not installed:
-            log.warning("Автозапуск включён в конфиге, но скрипт не установлен",
-                        source="autostart")
+        if _is_entware():
+            method = "initd"
+            effective_enabled = enabled and installed
+            # Рассинхронизация — флаг есть, скрипта нет
+            if enabled and not installed:
+                log.warning(
+                    "Автозапуск включён в конфиге, но init.d-скрипт "
+                    "не установлен",
+                    source="autostart",
+                )
+        elif _is_systemd():
+            # На systemd скрипт init.d не нужен — стратегию применяет
+            # сам GUI при старте.
+            method = "systemd"
+            effective_enabled = enabled and os.path.isfile(SYSTEMD_UNIT_PATH)
+        else:
+            method = "unsupported"
+            effective_enabled = False
 
         return {
-            "enabled": enabled and installed,
+            "enabled": effective_enabled,
             "config_enabled": enabled,
             "script_exists": installed,
             "script_path": SCRIPT_PATH,
             "init_dir_exists": os.path.isdir(INIT_DIR),
+            "method": method,
+            "systemd_unit_exists": os.path.isfile(SYSTEMD_UNIT_PATH),
             "strategy_id": cfg.get("strategy", "current_id"),
             "strategy_name": cfg.get("strategy", "current_name") or "Не выбрана",
         }
@@ -136,17 +177,58 @@ class AutostartManager:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
 
-        # Проверяем директорию init.d
-        if not os.path.isdir(INIT_DIR):
-            msg = "Директория %s не найдена. Entware установлен?" % INIT_DIR
-            log.error(msg, source="autostart")
-            return {"ok": False, "message": msg}
-
         # Проверяем что есть активная стратегия
         strategy_id = cfg.get("strategy", "current_id")
         if not strategy_id:
             msg = "Нет активной стратегии. Сначала примените стратегию."
             log.warning(msg, source="autostart")
+            return {"ok": False, "message": msg}
+
+        # На systemd-системах отдельный init для nfqws2 не создаётся:
+        # стратегию применяет сам GUI при старте (см. app.py).
+        # Достаточно убедиться, что unit-файл GUI существует и enabled.
+        if not _is_entware() and _is_systemd():
+            if not os.path.isfile(SYSTEMD_UNIT_PATH):
+                msg = (
+                    "Systemd unit %s не найден. Установите zapret-gui "
+                    "через install.sh." % SYSTEMD_UNIT_PATH
+                )
+                log.error(msg, source="autostart")
+                return {"ok": False, "message": msg}
+
+            # На всякий случай enable unit (idempotent)
+            try:
+                subprocess.run(
+                    ["systemctl", "enable", "zapret-gui"],
+                    check=False, timeout=10,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+
+            cfg.set("autostart", "enabled", True)
+            cfg.set("autostart", "method", "systemd")
+            cfg.save()
+
+            strategy_name = cfg.get("strategy", "current_name") or strategy_id
+            log.success(
+                "Автозапуск включён через systemd "
+                "(стратегия: %s применится при загрузке)" % strategy_name,
+                source="autostart",
+            )
+            return {
+                "ok": True,
+                "message": "Автозапуск включён. Сохранённая стратегия "
+                           "будет применена при загрузке системы.",
+            }
+
+        # Дальше — путь Entware с init.d-скриптом
+        if not os.path.isdir(INIT_DIR):
+            msg = (
+                "Не удалось включить автозапуск: ни init.d (%s), "
+                "ни systemd не доступны." % INIT_DIR
+            )
+            log.error(msg, source="autostart")
             return {"ok": False, "message": msg}
 
         # Генерируем скрипт
@@ -186,20 +268,20 @@ class AutostartManager:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
 
-        # Удаляем скрипт
+        # Удаляем init.d-скрипт если он есть (Entware-режим)
         removed = self._remove_script()
 
-        # Обновляем конфиг в любом случае
+        # Обновляем конфиг в любом случае. На systemd этого достаточно:
+        # GUI при старте проверит флаг и не будет применять стратегию.
         cfg.set("autostart", "enabled", False)
         cfg.save()
 
         if removed:
-            log.success("Автозапуск выключен, скрипт удалён", source="autostart")
-            return {"ok": True, "message": "Автозапуск выключен"}
+            log.success("Автозапуск выключен, init.d-скрипт удалён",
+                        source="autostart")
         else:
-            log.info("Автозапуск выключен (скрипт не был установлен)",
-                     source="autostart")
-            return {"ok": True, "message": "Автозапуск выключен"}
+            log.info("Автозапуск выключен", source="autostart")
+        return {"ok": True, "message": "Автозапуск выключен"}
 
     def _regenerate_locked(self) -> dict:
         """Пересоздать скрипт (под lock)."""
@@ -212,6 +294,15 @@ class AutostartManager:
         strategy_id = cfg.get("strategy", "current_id")
         if not strategy_id:
             return {"ok": False, "message": "Нет активной стратегии"}
+
+        # На systemd init.d-скрипт не нужен — стратегия применяется
+        # самим GUI при старте, а сохранённый id уже в конфиге.
+        if not _is_entware() and _is_systemd():
+            return {
+                "ok": True,
+                "message": "Systemd-режим: отдельный скрипт не требуется, "
+                           "сохранённая стратегия применится при загрузке.",
+            }
 
         # Генерируем заново
         script = self._generate_script()
@@ -528,6 +619,90 @@ exit 0
         )
 
         return script
+
+
+def regenerate_systemd_unit_if_needed() -> dict:
+    """
+    Если установлен systemd unit /etc/systemd/system/zapret-gui.service
+    с захардкоженными --port/--host — переписать ExecStart без этих
+    аргументов, чтобы app.py читал host/port из settings.json.
+
+    Это нужно потому, что прежняя версия install.sh инлайнила значения
+    GUI_PORT/GUI_HOST в ExecStart на момент установки. После смены порта
+    в UI настройка попадает в settings.json, но юнит остаётся со старым
+    портом — и сервис стартует на старом порту.
+
+    Возвращает dict { ok, changed, message }.
+    """
+    if not os.path.isfile(SYSTEMD_UNIT_PATH):
+        return {"ok": False, "changed": False,
+                "message": "Unit-файл не найден"}
+
+    try:
+        with open(SYSTEMD_UNIT_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+    except (OSError, IOError) as e:
+        return {"ok": False, "changed": False,
+                "message": "Не удалось прочитать unit: %s" % e}
+
+    if "--port" not in content and "--host" not in content:
+        return {"ok": True, "changed": False, "message": "Unit актуален"}
+
+    m = re.search(r"^ExecStart=(.+)$", content, re.MULTILINE)
+    if not m:
+        return {"ok": False, "changed": False,
+                "message": "Не найдена строка ExecStart"}
+
+    parts = m.group(1).split()
+    # Убираем --host/--port вместе с их значениями
+    cleaned = []
+    skip = False
+    for p in parts:
+        if skip:
+            skip = False
+            continue
+        if p in ("--host", "--port"):
+            skip = True
+            continue
+        if p.startswith("--host=") or p.startswith("--port="):
+            continue
+        cleaned.append(p)
+
+    new_exec = "ExecStart=" + " ".join(cleaned)
+    new_content = re.sub(
+        r"^ExecStart=.+$", new_exec, content, count=1, flags=re.MULTILINE
+    )
+
+    try:
+        with open(SYSTEMD_UNIT_PATH, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    except (OSError, IOError) as e:
+        return {"ok": False, "changed": False,
+                "message": "Не удалось записать unit (нужны root-права?): %s"
+                           % e}
+
+    # daemon-reload, чтобы systemd увидел изменения
+    try:
+        subprocess.run(
+            ["systemctl", "daemon-reload"],
+            check=False, timeout=10,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+    log.info(
+        "Systemd unit обновлён (убраны жёстко прописанные --port/--host). "
+        "Для применения нового порта/хоста перезапустите zapret-gui: "
+        "systemctl restart zapret-gui",
+        source="autostart",
+    )
+    return {
+        "ok": True,
+        "changed": True,
+        "message": "Systemd unit обновлён. Для применения нового порта "
+                   "выполните: systemctl restart zapret-gui",
+    }
 
 
 def get_autostart_manager() -> AutostartManager:

@@ -273,6 +273,22 @@ def register(app):
         cfg.set("strategy", "current_name", strategy["name"])
         cfg.save()
 
+        # Если автозапуск включён — пересобираем скрипт автозапуска,
+        # чтобы после перезагрузки системы стартовала именно эта
+        # стратегия, а не та, что была активной на момент включения
+        # автозапуска. На systemd regenerate() — no-op (стратегия
+        # подхватывается из конфига при старте GUI).
+        if cfg.get("autostart", "enabled", default=False):
+            try:
+                from core.autostart_manager import get_autostart_manager
+                am = get_autostart_manager()
+                am.regenerate()
+            except Exception as e:
+                log.warning(
+                    "Не удалось обновить автозапуск: %s" % e,
+                    source="strategies",
+                )
+
         log.success(
             "Стратегия применена: %s" % strategy["name"],
             source="strategies"
