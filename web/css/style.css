@@ -3664,12 +3664,12 @@ input:focus, textarea:focus, select:focus {
 
 .lua-editor-wrap {
     position: relative;
-    display: flex;
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow: hidden;
-    min-height: 380px;
+    height: 60vh;
+    min-height: 320px;
     max-height: 70vh;
     transition: border-color var(--transition);
 }
@@ -3680,8 +3680,11 @@ input:focus, textarea:focus, select:focus {
 }
 
 .lua-gutter {
-    flex: 0 0 auto;
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 48px;
+    height: 100%;
     padding: 12px 8px 12px 12px;
     overflow: hidden;
     background: rgba(0, 0, 0, 0.2);
@@ -3723,7 +3726,7 @@ input:focus, textarea:focus, select:focus {
 .lua-highlight {
     position: absolute;
     top: 0;
-    left: 48px;          /* ширина gutter */
+    left: 48px;
     right: 0;
     bottom: 0;
     overflow: hidden;
@@ -3739,12 +3742,14 @@ input:focus, textarea:focus, select:focus {
 }
 
 .lua-editor {
-    position: relative;
-    flex: 1 1 auto;
+    position: absolute;
+    top: 0;
+    left: 48px;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: auto;
     z-index: 1;
-    width: 100%;
-    height: 100%;
-    min-height: 380px;
     overflow: auto;
     color: transparent;
     caret-color: var(--text-primary);
@@ -3860,11 +3865,13 @@ input:focus, textarea:focus, select:focus {
         padding-left: 6px;
         font-size: 11px;
     }
-    .lua-highlight {
+    .lua-highlight,
+    .lua-editor {
         left: 36px;
     }
     .lua-editor-wrap {
-        min-height: 300px;
+        height: 55vh;
+        min-height: 260px;
     }
     .lua-highlight,
     .lua-editor {
