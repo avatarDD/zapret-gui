@@ -88,7 +88,7 @@ class AwgDetector:
             try:
                 self._cache = self._build_report()
             except Exception as e:
-                log(f"[awg_detector] ошибка при сборе отчёта: {e}", level="error")
+                log.error(f"Ошибка при сборе отчёта: {e}", source="awg_detector")
                 self._cache = {"ok": False, "error": str(e)}
             return self._cache
 

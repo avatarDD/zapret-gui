@@ -22,6 +22,7 @@ const App = (() => {
         logs:        LogsPage,
         autostart:   AutostartPage,
         zapret:      ZapretManagerPage,
+        awg:         AwgSetupPage,
         settings:    SettingsPage,
     };
 

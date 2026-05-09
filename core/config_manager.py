@@ -111,6 +111,17 @@ DEFAULT_CONFIG = {
         "lan": "",
     },
 
+    # --- AmneziaWG ---
+    "awg": {
+        "release_repo":       "avatardd/zapret-gui",
+        "release_tag_prefix": "awg-bin-",
+        "installed_tag":      "",
+        "installed_go":       "",
+        "installed_tools":    "",
+        "installed_arch":     "",
+        "installed_at":       0,
+    },
+
     # --- BlockCheck ---
     "blockcheck": {
         "default_mode": "quick",
