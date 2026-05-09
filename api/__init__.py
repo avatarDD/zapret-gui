@@ -23,6 +23,7 @@ def register_routes(app):
     from api.scan import register as reg_scan
     from api.gui_update import register as reg_gui_update
     from api.catalog_update import register as reg_catalog_update
+    from api.awg import register as reg_awg
 
     reg_status(app)
     reg_logs(app)
@@ -41,3 +42,4 @@ def register_routes(app):
     reg_scan(app)
     reg_gui_update(app)
     reg_catalog_update(app)
+    reg_awg(app)
