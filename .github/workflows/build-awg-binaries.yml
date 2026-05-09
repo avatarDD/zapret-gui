@@ -390,11 +390,25 @@ jobs:
           export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig"
 
           ls -la
+          # Цели "awg" нет — форк использует дефолтный target (wg).
+          # Explicit targets пробуем по убыванию: wg, all.
           make WITH_BASHCOMPLETION=no \
                WITH_WGQUICK=no \
                WITH_SYSTEMDUNITS=no \
-               -j"$(nproc)" awg V=1
+               -j"$(nproc)" wg V=1 \
+          || make WITH_BASHCOMPLETION=no \
+                  WITH_WGQUICK=no \
+                  WITH_SYSTEMDUNITS=no \
+                  -j"$(nproc)" V=1
 
+          # Бинарь может называться wg или awg — ищем и нормализуем в awg
+          BIN=$(find . -maxdepth 1 -type f \( -name 'awg' -o -name 'wg' \) | head -1)
+          if [ -z "$BIN" ]; then
+            echo "Бинарь wg/awg не найден в src/" >&2
+            ls -la
+            exit 1
+          fi
+          cp "$BIN" awg
           ls -lh awg
           file awg || true
 
