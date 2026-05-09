@@ -26,6 +26,7 @@ const Sidebar = (() => {
         diagnostic:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
         blockcheck:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>',
         scan:        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>',
+        awg:         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M8 11l3 3 5-6"/></svg>',
     };
 
     // Группы с разделителями
@@ -57,6 +58,12 @@ const Sidebar = (() => {
             items: [
                 { id: 'blockcheck', label: 'BlockCheck',       icon: 'blockcheck' },
                 { id: 'scan',       label: 'Подбор стратегий', icon: 'scan' },
+            ]
+        },
+        {
+            label: 'VPN',
+            items: [
+                { id: 'awg', label: 'AmneziaWG', icon: 'awg' },
             ]
         },
         {
