@@ -266,33 +266,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Bootlin slug → tarball arch directory.
+          # tc_arch          — каталог архитектуры на toolchains.bootlin.com
+          # Подкаталог bin/ внутри тулчейна содержит правильный triplet,
+          # который мы определяем динамически (см. шаг "Detect triplet").
           - arch_name: mipsel-softfloat
-            zig_target: mipsel-linux-musl
-            host_triplet: mipsel-linux-musl
-            mcpu: generic+soft_float
+            tc_arch: mips32el
           - arch_name: mips-softfloat
-            zig_target: mips-linux-musl
-            host_triplet: mips-linux-musl
-            mcpu: generic+soft_float
+            tc_arch: mips32
           - arch_name: aarch64
-            zig_target: aarch64-linux-musl
-            host_triplet: aarch64-linux-musl
-            mcpu: ''
+            tc_arch: aarch64
           - arch_name: armv7
-            zig_target: arm-linux-musleabihf
-            host_triplet: arm-linux-musleabihf
-            mcpu: generic+v7a
+            tc_arch: armv7-eabihf
           - arch_name: x86_64
-            zig_target: x86_64-linux-musl
-            host_triplet: x86_64-linux-musl
-            mcpu: ''
+            tc_arch: x86-64
+
+    env:
+      BOOTLIN_VERSION: '2024.05-1'
 
     steps:
-      - name: Install Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.13.0
-
       - name: Checkout amneziawg-tools
         uses: actions/checkout@v4
         with:
@@ -300,88 +292,104 @@ jobs:
           ref: ${{ needs.resolve-versions.outputs.awg_tools_ref }}
           path: tools-src
 
-      - name: Create cross-compiler wrappers
+      - name: Download Bootlin musl toolchain (${{ matrix.tc_arch }})
         env:
-          ZIG_TARGET: ${{ matrix.zig_target }}
-          ZIG_MCPU: ${{ matrix.mcpu }}
-          HOST_TRIPLET: ${{ matrix.host_triplet }}
+          TC_ARCH: ${{ matrix.tc_arch }}
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/wrappers"
-          MCPU_OPT=""
-          if [ -n "$ZIG_MCPU" ]; then MCPU_OPT="-mcpu=$ZIG_MCPU"; fi
+          BASE="https://toolchains.bootlin.com/downloads/releases/toolchains/${TC_ARCH}/tarballs"
+          # Список кандидатов — пробуем последовательно, пока один не скачается.
+          # Если апстрим обновит версии — поменяем сверху BOOTLIN_VERSION.
+          CANDIDATES=(
+            "${TC_ARCH}--musl--stable-${BOOTLIN_VERSION}.tar.xz"
+            "${TC_ARCH}--musl--stable-2024.02-1.tar.xz"
+            "${TC_ARCH}--musl--stable-2023.11-1.tar.xz"
+          )
+          mkdir -p "$HOME/tc"
+          cd "$HOME/tc"
+          ok=0
+          for c in "${CANDIDATES[@]}"; do
+            echo "── try $BASE/$c"
+            if curl -fsSL --retry 3 --retry-delay 5 -o "$c" "$BASE/$c"; then
+              echo "✓ скачано: $c"
+              tar xf "$c"
+              ok=1
+              break
+            fi
+          done
+          if [ "$ok" = "0" ]; then
+            echo "Не удалось скачать toolchain для $TC_ARCH из Bootlin" >&2
+            exit 1
+          fi
 
-          cat > "$HOME/wrappers/${HOST_TRIPLET}-cc" <<EOF
-          #!/bin/sh
-          exec zig cc -target $ZIG_TARGET $MCPU_OPT "\$@"
-          EOF
+          # Каталог тулчейна: <arch>--musl--stable-<ver>/
+          TC_DIR=$(ls -d "$HOME/tc/${TC_ARCH}--musl--stable-"*/ | head -1)
+          TC_DIR="${TC_DIR%/}"
+          echo "TC_DIR=$TC_DIR" >> "$GITHUB_ENV"
+          echo "── содержимое bin/"
+          ls "$TC_DIR/bin/"
+          echo "$TC_DIR/bin" >> "$GITHUB_PATH"
 
-          cat > "$HOME/wrappers/${HOST_TRIPLET}-ar" <<'EOF'
-          #!/bin/sh
-          exec zig ar "$@"
-          EOF
-
-          cat > "$HOME/wrappers/${HOST_TRIPLET}-ranlib" <<'EOF'
-          #!/bin/sh
-          exec zig ranlib "$@"
-          EOF
-
-          # Дублируем под "cc", "ar", "ranlib" без префикса — autotools иногда зовёт без него
-          cp "$HOME/wrappers/${HOST_TRIPLET}-cc"     "$HOME/wrappers/cc"
-          cp "$HOME/wrappers/${HOST_TRIPLET}-ar"     "$HOME/wrappers/ar"
-          cp "$HOME/wrappers/${HOST_TRIPLET}-ranlib" "$HOME/wrappers/ranlib"
-
-          chmod +x "$HOME/wrappers/"*
-          ls -lh "$HOME/wrappers/"
-          echo "$HOME/wrappers" >> "$GITHUB_PATH"
-
-      - name: Build libmnl (static, musl)
-        env:
-          HOST_TRIPLET: ${{ matrix.host_triplet }}
+      - name: Detect triplet
         run: |
           set -euo pipefail
-          curl -fsSL -o libmnl.tar.bz2 \
+          # Имена в bin/ вида <triplet>-gcc — отсюда вытягиваем триплет
+          GCC=$(ls "$TC_DIR/bin/" | grep -E -- '-gcc$' | head -1)
+          TRIPLET="${GCC%-gcc}"
+          echo "TRIPLET=$TRIPLET"
+          echo "TRIPLET=$TRIPLET" >> "$GITHUB_ENV"
+          # Sysroot — стандартный путь в Bootlin тулчейне
+          SYSROOT="$TC_DIR/$TRIPLET/sysroot"
+          if [ ! -d "$SYSROOT" ]; then
+            # Альтернативное расположение
+            SYSROOT=$(find "$TC_DIR" -maxdepth 4 -type d -name 'sysroot' | head -1)
+          fi
+          echo "SYSROOT=$SYSROOT"
+          echo "SYSROOT=$SYSROOT" >> "$GITHUB_ENV"
+          "$TC_DIR/bin/$TRIPLET-gcc" --version
+
+      - name: Build libmnl (static)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o libmnl.tar.bz2 \
             https://www.netfilter.org/projects/libmnl/files/libmnl-1.0.5.tar.bz2
           tar xjf libmnl.tar.bz2
           cd libmnl-1.0.5
 
-          export CC="${HOST_TRIPLET}-cc"
-          export AR="${HOST_TRIPLET}-ar"
-          export RANLIB="${HOST_TRIPLET}-ranlib"
+          export CC="${TRIPLET}-gcc"
+          export AR="${TRIPLET}-ar"
+          export RANLIB="${TRIPLET}-ranlib"
+          export STRIP="${TRIPLET}-strip"
 
-          # Strip "-musl*" в hostspec — autotools ожидает GNU triplet
-          AUTOCONF_HOST="${HOST_TRIPLET%musl*}musl"
-
-          ./configure --host="$AUTOCONF_HOST" \
-                      --prefix="$GITHUB_WORKSPACE/libmnl-prefix" \
-                      --enable-static --disable-shared \
-                      CC="$CC" AR="$AR" RANLIB="$RANLIB"
+          if ! ./configure --host="$TRIPLET" \
+                           --prefix="$GITHUB_WORKSPACE/libmnl-prefix" \
+                           --enable-static --disable-shared; then
+            echo "── config.log (последние 200 строк) ──"
+            tail -n 200 config.log || true
+            exit 1
+          fi
           make -j"$(nproc)"
           make install
           echo "── libmnl-prefix ──"
-          ls -lh "$GITHUB_WORKSPACE/libmnl-prefix/lib/"
-          ls -lh "$GITHUB_WORKSPACE/libmnl-prefix/include/"
+          ls -lh "$GITHUB_WORKSPACE/libmnl-prefix/lib/" || true
+          ls -lh "$GITHUB_WORKSPACE/libmnl-prefix/include/" || true
 
       - name: Build amneziawg-tools (awg)
         working-directory: tools-src/src
-        env:
-          HOST_TRIPLET: ${{ matrix.host_triplet }}
         run: |
           set -euo pipefail
           PREFIX="$GITHUB_WORKSPACE/libmnl-prefix"
 
-          export CC="${HOST_TRIPLET}-cc"
-          export AR="${HOST_TRIPLET}-ar"
-          export RANLIB="${HOST_TRIPLET}-ranlib"
-          export CFLAGS="-static -O2 -I${PREFIX}/include"
+          export CC="${TRIPLET}-gcc"
+          export AR="${TRIPLET}-ar"
+          export RANLIB="${TRIPLET}-ranlib"
+          export STRIP="${TRIPLET}-strip"
+          export CFLAGS="-O2 -I${PREFIX}/include"
           export LDFLAGS="-static -L${PREFIX}/lib"
           export LDLIBS="-lmnl"
-          # Подсунем pkg-config-данные на случай если make их использует
           export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig"
 
-          # Что есть в Makefile?
           ls -la
-          # Билдим только awg, без сопутствующих компонентов
           make WITH_BASHCOMPLETION=no \
                WITH_WGQUICK=no \
                WITH_SYSTEMDUNITS=no \
