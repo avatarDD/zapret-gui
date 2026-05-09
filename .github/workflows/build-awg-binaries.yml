@@ -28,7 +28,7 @@ on:
       publish_release:
         description: 'Опубликовать GitHub Release (true/false)'
         required: false
-        default: 'false'
+        default: 'true'
   push:
     tags:
       - 'awg-bin-*'
