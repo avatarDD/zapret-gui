@@ -1,0 +1,400 @@
+# ═══════════════════════════════════════════════════════════════
+# build-awg-binaries.yml — Кросс-компиляция amneziawg-go и
+# amneziawg-tools под архитектуры роутеров.
+#
+# Запуск:
+#   - workflow_dispatch (вручную, опционально с тегом версии amneziawg-go)
+#   - push tag awg-bin-v* — публикует релиз с артефактами
+#   - расписание: раз в неделю, чтобы ловить обновления upstream
+#
+# Артефакты:
+#   amneziawg-go-<ver>-<arch>.tar.gz
+#   amneziawg-tools-<ver>-<arch>.tar.gz
+#   manifest.json — версии, sha256, ссылки
+# ═══════════════════════════════════════════════════════════════
+
+name: Build AWG binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      awg_go_ref:
+        description: 'amneziawg-go git ref (tag/branch/sha). Пусто = последний релиз.'
+        required: false
+        default: ''
+      awg_tools_ref:
+        description: 'amneziawg-tools git ref. Пусто = последний релиз.'
+        required: false
+        default: ''
+      publish_release:
+        description: 'Опубликовать GitHub Release (true/false)'
+        required: false
+        default: 'false'
+  push:
+    tags:
+      - 'awg-bin-v*'
+  schedule:
+    # Понедельник 06:00 UTC — еженедельный rebuild
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: write
+
+env:
+  AWG_GO_REPO: amnezia-vpn/amneziawg-go
+  AWG_TOOLS_REPO: amnezia-vpn/amneziawg-tools
+
+jobs:
+  # ── 1. Определить версии ────────────────────────────────────
+  resolve-versions:
+    name: Resolve upstream versions
+    runs-on: ubuntu-latest
+    outputs:
+      awg_go_ref: ${{ steps.resolve.outputs.awg_go_ref }}
+      awg_tools_ref: ${{ steps.resolve.outputs.awg_tools_ref }}
+      awg_go_version: ${{ steps.resolve.outputs.awg_go_version }}
+      awg_tools_version: ${{ steps.resolve.outputs.awg_tools_version }}
+    steps:
+      - name: Resolve refs
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          GO_REF="${{ inputs.awg_go_ref }}"
+          TOOLS_REF="${{ inputs.awg_tools_ref }}"
+
+          resolve_latest() {
+            local repo="$1"
+            # Пробуем последний релиз; если их нет — берём последний тег;
+            # если и тегов нет — main HEAD.
+            local rel
+            rel=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+            if [ -n "$rel" ] && [ "$rel" != "null" ]; then
+              echo "$rel"; return
+            fi
+            local tag
+            tag=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null || true)
+            if [ -n "$tag" ] && [ "$tag" != "null" ]; then
+              echo "$tag"; return
+            fi
+            echo "main"
+          }
+
+          if [ -z "$GO_REF" ]; then
+            GO_REF=$(resolve_latest "$AWG_GO_REPO")
+          fi
+          if [ -z "$TOOLS_REF" ]; then
+            TOOLS_REF=$(resolve_latest "$AWG_TOOLS_REPO")
+          fi
+
+          # version = ref без префикса v
+          GO_VER="${GO_REF#v}"
+          TOOLS_VER="${TOOLS_REF#v}"
+
+          echo "awg_go_ref=$GO_REF"        >> "$GITHUB_OUTPUT"
+          echo "awg_tools_ref=$TOOLS_REF"  >> "$GITHUB_OUTPUT"
+          echo "awg_go_version=$GO_VER"    >> "$GITHUB_OUTPUT"
+          echo "awg_tools_version=$TOOLS_VER" >> "$GITHUB_OUTPUT"
+
+          echo "── Resolved ──"
+          echo "amneziawg-go    : $GO_REF (version $GO_VER)"
+          echo "amneziawg-tools : $TOOLS_REF (version $TOOLS_VER)"
+
+  # ── 2. Сборка amneziawg-go ──────────────────────────────────
+  build-awg-go:
+    name: Build amneziawg-go (${{ matrix.arch_name }})
+    runs-on: ubuntu-latest
+    needs: resolve-versions
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_name: mipsel-softfloat
+            goos: linux
+            goarch: mipsle
+            gomips: softfloat
+          - arch_name: mips-softfloat
+            goos: linux
+            goarch: mips
+            gomips: softfloat
+          - arch_name: aarch64
+            goos: linux
+            goarch: arm64
+          - arch_name: armv7
+            goos: linux
+            goarch: arm
+            goarm: '7'
+          - arch_name: x86_64
+            goos: linux
+            goarch: amd64
+
+    steps:
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Checkout amneziawg-go
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.AWG_GO_REPO }}
+          ref: ${{ needs.resolve-versions.outputs.awg_go_ref }}
+          path: src
+
+      - name: Build
+        working-directory: src
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          # Бинарь обычно собирается через make; fallback — go build
+          if [ -f Makefile ]; then
+            make || go build -ldflags="-s -w" -trimpath -o amneziawg-go .
+          else
+            go build -ldflags="-s -w" -trimpath -o amneziawg-go .
+          fi
+          ls -lh amneziawg-go
+          file amneziawg-go || true
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VER="${{ needs.resolve-versions.outputs.awg_go_version }}"
+          ARCH="${{ matrix.arch_name }}"
+          OUTDIR="package"
+          mkdir -p "$OUTDIR"
+          cp src/amneziawg-go "$OUTDIR/"
+          cd "$OUTDIR"
+          tar czf "../amneziawg-go-${VER}-${ARCH}.tar.gz" amneziawg-go
+          cd ..
+          sha256sum "amneziawg-go-${VER}-${ARCH}.tar.gz" \
+            > "amneziawg-go-${VER}-${ARCH}.tar.gz.sha256"
+          ls -lh amneziawg-go-*.tar.gz*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: awg-go-${{ matrix.arch_name }}
+          path: |
+            amneziawg-go-*.tar.gz
+            amneziawg-go-*.tar.gz.sha256
+          retention-days: 14
+
+  # ── 3. Сборка amneziawg-tools ───────────────────────────────
+  build-awg-tools:
+    name: Build amneziawg-tools (${{ matrix.arch_name }})
+    runs-on: ubuntu-latest
+    needs: resolve-versions
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_name: mipsel-softfloat
+            zig_target: mipsel-linux-musl
+            mcpu: generic+soft_float
+          - arch_name: mips-softfloat
+            zig_target: mips-linux-musl
+            mcpu: generic+soft_float
+          - arch_name: aarch64
+            zig_target: aarch64-linux-musl
+            mcpu: ''
+          - arch_name: armv7
+            zig_target: arm-linux-musleabihf
+            mcpu: generic+v7a
+          - arch_name: x86_64
+            zig_target: x86_64-linux-musl
+            mcpu: ''
+
+    steps:
+      - name: Install Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Checkout amneziawg-tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.AWG_TOOLS_REPO }}
+          ref: ${{ needs.resolve-versions.outputs.awg_tools_ref }}
+          path: tools-src
+
+      - name: Build libmnl (static, musl)
+        env:
+          ZIG_TARGET: ${{ matrix.zig_target }}
+          ZIG_MCPU: ${{ matrix.mcpu }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o libmnl.tar.bz2 \
+            https://www.netfilter.org/projects/libmnl/files/libmnl-1.0.5.tar.bz2
+          tar xjf libmnl.tar.bz2
+          cd libmnl-1.0.5
+
+          MCPU_FLAG=""
+          if [ -n "$ZIG_MCPU" ]; then MCPU_FLAG="-mcpu=$ZIG_MCPU"; fi
+
+          export CC="zig cc -target $ZIG_TARGET $MCPU_FLAG"
+          export AR="zig ar"
+          export RANLIB="zig ranlib"
+
+          ./configure --host="${ZIG_TARGET%-musl*}" \
+                      --prefix="$GITHUB_WORKSPACE/libmnl-prefix" \
+                      --enable-static --disable-shared
+          make -j"$(nproc)"
+          make install
+          ls -lh "$GITHUB_WORKSPACE/libmnl-prefix/lib/"
+
+      - name: Build amneziawg-tools (awg)
+        working-directory: tools-src/src
+        env:
+          ZIG_TARGET: ${{ matrix.zig_target }}
+          ZIG_MCPU: ${{ matrix.mcpu }}
+        run: |
+          set -euo pipefail
+          MCPU_FLAG=""
+          if [ -n "$ZIG_MCPU" ]; then MCPU_FLAG="-mcpu=$ZIG_MCPU"; fi
+
+          PREFIX="$GITHUB_WORKSPACE/libmnl-prefix"
+
+          export CC="zig cc -target $ZIG_TARGET $MCPU_FLAG -static \
+                     -I${PREFIX}/include -L${PREFIX}/lib"
+          export LD="zig cc -target $ZIG_TARGET $MCPU_FLAG -static \
+                     -L${PREFIX}/lib"
+          export AR="zig ar"
+          export RANLIB="zig ranlib"
+
+          # Билдим только tool, без bash-completion и без wg-quick
+          make WITH_BASHCOMPLETION=no \
+               WITH_WGQUICK=no \
+               WITH_SYSTEMDUNITS=no \
+               -j"$(nproc)" awg
+
+          ls -lh awg
+          file awg || true
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VER="${{ needs.resolve-versions.outputs.awg_tools_version }}"
+          ARCH="${{ matrix.arch_name }}"
+          OUTDIR="package"
+          mkdir -p "$OUTDIR"
+          cp tools-src/src/awg "$OUTDIR/"
+          cd "$OUTDIR"
+          tar czf "../amneziawg-tools-${VER}-${ARCH}.tar.gz" awg
+          cd ..
+          sha256sum "amneziawg-tools-${VER}-${ARCH}.tar.gz" \
+            > "amneziawg-tools-${VER}-${ARCH}.tar.gz.sha256"
+          ls -lh amneziawg-tools-*.tar.gz*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: awg-tools-${{ matrix.arch_name }}
+          path: |
+            amneziawg-tools-*.tar.gz
+            amneziawg-tools-*.tar.gz.sha256
+          retention-days: 14
+
+  # ── 4. Публикация (только при tag awg-bin-v* или явном запросе) ─
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [resolve-versions, build-awg-go, build-awg-tools]
+    if: |
+      startsWith(github.ref, 'refs/tags/awg-bin-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Stage release files
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \) \
+            -exec cp {} release/ \;
+          ls -lh release/
+
+          # manifest.json — структурированный список со всеми архивами
+          GO_VER="${{ needs.resolve-versions.outputs.awg_go_version }}"
+          TOOLS_VER="${{ needs.resolve-versions.outputs.awg_tools_version }}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          [ "$TAG" = "$GITHUB_REF" ] && TAG="manual-$(date -u +%Y%m%d%H%M%S)"
+
+          REPO="${{ github.repository }}"
+          BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+
+          python3 - <<EOF > release/manifest.json
+          import json, os, hashlib, glob
+
+          go_ver = "$GO_VER"
+          tools_ver = "$TOOLS_VER"
+          base = "$BASE_URL"
+
+          def sha(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(8192), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          archs = ["mipsel-softfloat", "mips-softfloat", "aarch64", "armv7", "x86_64"]
+          manifest = {
+              "schema": 1,
+              "tag": "$TAG",
+              "amneziawg_go": {"version": go_ver, "binaries": {}},
+              "amneziawg_tools": {"version": tools_ver, "binaries": {}},
+          }
+          for arch in archs:
+              go_file = f"amneziawg-go-{go_ver}-{arch}.tar.gz"
+              tools_file = f"amneziawg-tools-{tools_ver}-{arch}.tar.gz"
+              go_path = os.path.join("release", go_file)
+              tools_path = os.path.join("release", tools_file)
+              if os.path.exists(go_path):
+                  manifest["amneziawg_go"]["binaries"][arch] = {
+                      "filename": go_file,
+                      "url": f"{base}/{go_file}",
+                      "sha256": sha(go_path),
+                      "size": os.path.getsize(go_path),
+                  }
+              if os.path.exists(tools_path):
+                  manifest["amneziawg_tools"]["binaries"][arch] = {
+                      "filename": tools_file,
+                      "url": f"{base}/{tools_file}",
+                      "sha256": sha(tools_path),
+                      "size": os.path.getsize(tools_path),
+                  }
+          print(json.dumps(manifest, indent=2))
+          EOF
+
+          echo "── manifest.json ──"
+          cat release/manifest.json
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.stage.outputs.tag }}
+          name: "AWG binaries ${{ steps.stage.outputs.tag }}"
+          body: |
+            Кросс-скомпилированные бинарники amneziawg-go и amneziawg-tools.
+
+            - amneziawg-go: `${{ needs.resolve-versions.outputs.awg_go_version }}`
+            - amneziawg-tools: `${{ needs.resolve-versions.outputs.awg_tools_version }}`
+
+            Список архитектур и sha256 — в `manifest.json`.
+          draft: false
+          prerelease: false
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
