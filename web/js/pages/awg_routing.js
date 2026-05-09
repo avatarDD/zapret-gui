@@ -13,13 +13,19 @@ const AwgRoutingPage = (() => {
     let rules        = [];
     let configs      = [];     // список AWG-конфигов
     let environment  = null;   // отчёт детектора (для подсказок)
+    let dnsmasqInfo  = null;   // /api/routing/dnsmasq/status
     let busy         = false;
 
-    // Форма создания
+    // Форма создания (CIDR)
     let formIface    = '';
     let formCidrs    = '';
     let formIpVer    = 'auto';
     let formDesc     = '';
+
+    // Форма создания (Domain)
+    let formDomIface = '';
+    let formDomList  = '';
+    let formDomDesc  = '';
 
     // Фильтр списка
     let filterIface  = '';
@@ -77,16 +83,21 @@ const AwgRoutingPage = (() => {
 
     async function loadAll() {
         try {
-            const [rulesResp, cfgsResp, envResp] = await Promise.all([
+            const [rulesResp, cfgsResp, envResp, dnResp] = await Promise.all([
                 API.get('/api/routing/rules'),
                 API.get('/api/awg/configs'),
                 API.get('/api/awg/environment').catch(() => null),
+                API.get('/api/routing/dnsmasq/status').catch(() => null),
             ]);
             rules       = (rulesResp && rulesResp.rules)   || [];
             configs     = (cfgsResp  && cfgsResp.configs)  || [];
             environment = envResp || null;
+            dnsmasqInfo = dnResp   || null;
             if (!formIface && configs.length > 0) {
                 formIface = configs[0].name;
+            }
+            if (!formDomIface && configs.length > 0) {
+                formDomIface = configs[0].name;
             }
         } catch (err) {
             const box = document.getElementById('awg-routing-tab-content');
@@ -121,8 +132,7 @@ const AwgRoutingPage = (() => {
         const box = document.getElementById('awg-routing-tab-content');
         if (!box) return;
         if (activeTab === 'cidr')   return renderCidrTab(box);
-        if (activeTab === 'domain') return renderPlaceholder(box, 'Домены',
-            'Маршрутизация по доменам через dnsmasq + ipset/nftset появится в следующей итерации.');
+        if (activeTab === 'domain') return renderDomainTab(box);
         if (activeTab === 'device') return renderPlaceholder(box, 'Устройства',
             'Per-device routing (по IP/MAC устройств LAN) появится в следующей итерации.');
     }
@@ -261,6 +271,195 @@ const AwgRoutingPage = (() => {
         `;
     }
 
+    // ══════════════ tab: Domains ══════════════
+
+    function renderDomainTab(box) {
+        const dnRules = rules.filter(r => r.type === 'domain');
+        const visibleRules = filterIface
+            ? dnRules.filter(r => r.target_iface === filterIface)
+            : dnRules;
+
+        const ifacesInRules = Array.from(new Set(dnRules.map(r => r.target_iface)));
+        const dn = (dnsmasqInfo && dnsmasqInfo.dnsmasq) || {};
+        const backends = (dnsmasqInfo && dnsmasqInfo.backends) || {};
+        const preferred = (dnsmasqInfo && dnsmasqInfo.preferred_backend) || '';
+
+        const dnAvailable = !!dn.available && !!preferred;
+        const banner = dnAvailable
+            ? `<div class="text-muted" style="font-size:12px; margin-bottom:8px;">
+                    dnsmasq <strong>${escapeHtml(dn.version || '?')}</strong>${dn.running ? ' (запущен)' : ' (не запущен)'},
+                    main config: <code>${escapeHtml(dn.main_config || 'не найден')}</code>,
+                    бэкенд: <strong>${escapeHtml(preferred)}</strong>
+                    ${dn.include_present ? '' : ' — include будет добавлен автоматически'}
+               </div>`
+            : `<div class="card" style="background:#fbeaea; margin-bottom:12px;">
+                    <strong>dnsmasq недоступен</strong><br>
+                    <span class="text-muted" style="font-size:13px;">
+                    ${dn.available ? 'Бэкенд (ipset или nftables) не найден.' : 'dnsmasq не установлен или не виден.'}
+                    Без него domain-routing работать не будет —
+                    установите/активируйте dnsmasq, ipset или nftables на платформе.
+                    Текущий статус:
+                    dnsmasq=${dn.available ? 'есть' : 'нет'},
+                    ipset=${backends.ipset ? 'есть' : 'нет'},
+                    nft=${backends.nftset ? 'есть' : 'нет'}.
+                    </span>
+               </div>`;
+
+        const cfgOptions = configs.map(c =>
+            `<option value="${escapeAttr(c.name)}" ${c.name === formDomIface ? 'selected' : ''}>
+                ${escapeHtml(c.name)}${c.active ? ' (активен)' : ''}
+             </option>`
+        ).join('');
+
+        const filterOptions = ['<option value="">Все интерфейсы</option>'].concat(
+            ifacesInRules.map(i =>
+                `<option value="${escapeAttr(i)}" ${i === filterIface ? 'selected' : ''}>
+                    ${escapeHtml(i)}
+                 </option>`
+            )
+        ).join('');
+
+        box.innerHTML = `
+            ${banner}
+
+            <div class="card" style="margin-bottom: 12px;">
+                <div class="card-title">Добавить правило по доменам</div>
+                ${configs.length === 0 ? `
+                    <p class="text-muted" style="margin-top: 8px;">
+                        Нет ни одного AWG-конфига. Сначала создайте туннель в разделе
+                        <a href="#awg-configs">Конфиги</a>.
+                    </p>
+                ` : `
+                    <p class="text-muted" style="margin-top: 6px; font-size: 13px;">
+                        dnsmasq будет резолвить эти домены и добавлять полученные IP
+                        в ${escapeHtml(preferred || 'set')}. Маркированные пакеты уйдут
+                        через выбранный интерфейс. Поддерживаются поддомены: например,
+                        <code>example.com</code> покрывает <code>www.example.com</code>.
+                    </p>
+                    <div style="display: grid; grid-template-columns: 200px 1fr; gap: 8px 12px; margin-top: 8px; align-items: start;">
+                        <label class="text-muted" style="padding-top: 6px;">Интерфейс</label>
+                        <select id="rt-dom-iface" onchange="AwgRoutingPage.setFormDomIface(this.value)"
+                                class="form-control" style="max-width: 280px;">
+                            ${cfgOptions}
+                        </select>
+
+                        <label class="text-muted" style="padding-top: 6px;">Домены</label>
+                        <textarea id="rt-dom-list"
+                                  oninput="AwgRoutingPage.setFormDomList(this.value)"
+                                  placeholder="По одному в строке: example.com, telegram.org, googlevideo.com"
+                                  rows="6"
+                                  style="font-family: monospace; width: 100%;">${escapeHtml(formDomList)}</textarea>
+
+                        <label class="text-muted" style="padding-top: 6px;">Описание</label>
+                        <input type="text" id="rt-dom-desc"
+                               oninput="AwgRoutingPage.setFormDomDesc(this.value)"
+                               value="${escapeAttr(formDomDesc)}"
+                               placeholder="например: соцсети через WARP"
+                               class="form-control" style="max-width: 480px;">
+                    </div>
+                    <div style="margin-top: 12px;">
+                        <button class="btn btn-primary btn-sm" ${(busy || !dnAvailable) ? 'disabled' : ''}
+                                onclick="AwgRoutingPage.submitDomain()">
+                            Добавить правило
+                        </button>
+                        ${dnAvailable ? '' : '<span class="text-muted" style="margin-left:10px; font-size:12px;">недоступно: см. сообщение выше</span>'}
+                    </div>
+                `}
+            </div>
+
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="card-title">Domain-правила (${dnRules.length})</div>
+                    <select onchange="AwgRoutingPage.setFilterIface(this.value)"
+                            class="form-control" style="max-width: 220px;">
+                        ${filterOptions}
+                    </select>
+                </div>
+
+                ${visibleRules.length === 0
+                    ? `<p class="text-muted" style="margin-top: 12px;">Правил пока нет.</p>`
+                    : `
+                <table class="table" style="margin-top: 8px;">
+                    <thead>
+                        <tr>
+                            <th style="width: 14%;">Интерфейс</th>
+                            <th>Домены</th>
+                            <th>Описание</th>
+                            <th style="width: 6%;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${visibleRules.map(r => `
+                            <tr>
+                                <td><strong>${escapeHtml(r.target_iface)}</strong></td>
+                                <td style="font-family: monospace; font-size: 12px;">
+                                    ${(r.domains || []).slice(0, 8).map(d => escapeHtml(d)).join(', ')}
+                                    ${(r.domains || []).length > 8 ? ` <span class="text-muted">… +${r.domains.length - 8}</span>` : ''}
+                                </td>
+                                <td>${escapeHtml(r.description || '')}</td>
+                                <td style="text-align: right;">
+                                    <button class="btn btn-ghost btn-sm"
+                                            title="Удалить"
+                                            onclick="AwgRoutingPage.deleteRule('${escapeAttr(r.id)}')">
+                                        ✕
+                                    </button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>`
+                }
+            </div>
+        `;
+    }
+
+    function parseDomains(text) {
+        return String(text || '')
+            .split(/[\s,;]+/)
+            .map(s => s.trim().toLowerCase())
+            .filter(s => s && /^[a-z0-9.\-_*]+$/i.test(s));
+    }
+
+    async function submitDomain() {
+        if (busy) return;
+        const domains = parseDomains(formDomList);
+        if (!formDomIface) {
+            Toast.error('Выберите интерфейс');
+            return;
+        }
+        if (domains.length === 0) {
+            Toast.error('Укажите хотя бы один домен');
+            return;
+        }
+        busy = true;
+        try {
+            const resp = await API.post('/api/routing/rules', {
+                type:         'domain',
+                target_iface: formDomIface,
+                domains:      domains,
+                description:  formDomDesc,
+                enabled:      true,
+            });
+            if (resp.ok) {
+                Toast.success('Правило добавлено');
+                if (resp.applied && resp.applied.deferred) {
+                    Toast.info('Интерфейс не поднят — dnsmasq уже собирает IP, fwmark подключится при старте');
+                } else if (resp.applied && resp.applied.errors && resp.applied.errors.length) {
+                    Toast.error('Ошибки применения: ' + resp.applied.errors.join('; '));
+                }
+                formDomList = '';
+                formDomDesc = '';
+                await refresh();
+            } else {
+                Toast.error(resp.error || 'Ошибка добавления');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
+            busy = false;
+        }
+    }
+
     // ══════════════ form actions ══════════════
 
     function setFormIface(v)  { formIface = v; }
@@ -268,6 +467,10 @@ const AwgRoutingPage = (() => {
     function setFormIpVer(v)  { formIpVer = v; }
     function setFormDesc(v)   { formDesc  = v; }
     function setFilterIface(v) { filterIface = v; renderTab(); }
+
+    function setFormDomIface(v) { formDomIface = v; }
+    function setFormDomList(v)  { formDomList  = v; }
+    function setFormDomDesc(v)  { formDomDesc  = v; }
 
     function parseCidrs(text) {
         return String(text || '')
@@ -366,5 +569,6 @@ const AwgRoutingPage = (() => {
         setFormIface, setFormCidrs, setFormIpVer, setFormDesc,
         setFilterIface,
         submitCidr, deleteRule, reapplyAll,
+        setFormDomIface, setFormDomList, setFormDomDesc, submitDomain,
     };
 })();
