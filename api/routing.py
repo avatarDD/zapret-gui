@@ -10,12 +10,37 @@ REST API для selective routing.
   PUT    /api/routing/rules/<id>          — обновить правило
   DELETE /api/routing/rules/<id>          — удалить правило
   POST   /api/routing/apply               — переприменить все правила
+
+  GET    /api/routing/dnsmasq/status      — есть ли dnsmasq, версия,
+                                              путь к конфигу, поддержка
+                                              nftset, и т.п.
 """
 
 from bottle import request, response
 
 
 def register(app):
+
+    @app.route("/api/routing/dnsmasq/status")
+    def routing_dnsmasq_status():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing.dnsmasq_integration import DnsmasqIntegration
+            from core.routing import ipset_backend, nftset_backend
+            dn = DnsmasqIntegration().status()
+            backends = {
+                "ipset":  ipset_backend.available(),
+                "nftset": nftset_backend.available(),
+            }
+            preferred = ("nftset" if (dn.get("supports_nftset") and
+                                      backends["nftset"])
+                         else ("ipset" if backends["ipset"] else ""))
+            return {"ok": True, "dnsmasq": dn,
+                    "backends": backends,
+                    "preferred_backend": preferred}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/routing/rules")
     def routing_list():

@@ -161,8 +161,8 @@ class RoutingManager:
         if isinstance(rule, CidrRoutingRule):
             return self._apply_cidr(rule)
         if isinstance(rule, DomainRoutingRule):
-            return {"ok": False, "skipped": True,
-                    "message": "Domain-правила появятся в следующем промте"}
+            from core.routing.domain_rule import apply_domain_rule
+            return apply_domain_rule(rule)
         if isinstance(rule, DeviceRoutingRule):
             return {"ok": False, "skipped": True,
                     "message": "Device-правила появятся в следующем промте"}
@@ -171,6 +171,9 @@ class RoutingManager:
     def _remove(self, rule: RoutingRule) -> dict:
         if isinstance(rule, CidrRoutingRule):
             return self._remove_cidr(rule)
+        if isinstance(rule, DomainRoutingRule):
+            from core.routing.domain_rule import remove_domain_rule
+            return remove_domain_rule(rule)
         return {"ok": True, "skipped": True}
 
     # ─────────── apply ALL on iface up/down ───────────
