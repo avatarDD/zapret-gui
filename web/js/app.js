@@ -24,6 +24,7 @@ const App = (() => {
         zapret:      ZapretManagerPage,
         awg:           AwgDashboardPage,
         'awg-configs': AwgConfigsPage,
+        'awg-warp':    AwgWarpPage,
         'awg-setup':   AwgSetupPage,
         settings:    SettingsPage,
     };
