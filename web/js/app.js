@@ -25,6 +25,7 @@ const App = (() => {
         awg:           AwgDashboardPage,
         'awg-configs': AwgConfigsPage,
         'awg-warp':    AwgWarpPage,
+        'awg-routing': AwgRoutingPage,
         'awg-setup':   AwgSetupPage,
         settings:    SettingsPage,
     };
