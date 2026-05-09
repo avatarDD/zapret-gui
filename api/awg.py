@@ -30,6 +30,10 @@ REST API для интеграции amneziawg-go.
 
   POST   /api/awg/warp/import           — импорт готового WARP .conf
   POST   /api/awg/warp/generate         — нативная генерация AWG-WARP
+
+  GET    /api/awg/warp-in-warp          — статус WARP-in-WARP
+  POST   /api/awg/warp-in-warp          — поднять (body: outer, inner)
+  DELETE /api/awg/warp-in-warp          — отключить
 """
 
 import threading
@@ -403,6 +407,53 @@ def register(app):
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": "Внутренняя ошибка: %s" % e}
+
+    # ─────────── WARP-in-WARP ─────────────────────────────────
+
+    @app.route("/api/awg/warp-in-warp")
+    def awg_wiw_status():
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_warp_in_warp import status as wiw_status
+        try:
+            return wiw_status()
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/awg/warp-in-warp", method="POST")
+    def awg_wiw_setup():
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_warp_in_warp import setup as wiw_setup
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        outer = (body.get("outer") or "").strip()
+        inner = (body.get("inner") or "").strip()
+        if not outer or not inner:
+            response.status = 400
+            return {"ok": False, "error": "outer и inner обязательны"}
+        try:
+            result = wiw_setup(outer, inner)
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+        if not result.get("ok"):
+            response.status = 400
+        return result
+
+    @app.route("/api/awg/warp-in-warp", method="DELETE")
+    def awg_wiw_teardown():
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_warp_in_warp import teardown as wiw_teardown
+        try:
+            result = wiw_teardown()
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+        if not result.get("ok"):
+            response.status = 500
+        return result
 
     @app.route("/api/awg/keypair", method="POST")
     def awg_keypair():
