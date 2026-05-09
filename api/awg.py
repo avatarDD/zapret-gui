@@ -29,6 +29,7 @@ REST API для интеграции amneziawg-go.
   GET    /api/awg/interfaces            — все активные AWG/WG интерфейсы
 
   POST   /api/awg/warp/import           — импорт готового WARP .conf
+  POST   /api/awg/warp/generate         — нативная генерация AWG-WARP
 """
 
 import threading
@@ -349,6 +350,59 @@ def register(app):
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}
+
+    @app.route("/api/awg/warp/generate", method="POST")
+    def awg_warp_generate():
+        """
+        Нативная генерация AWG-WARP конфига.
+
+        Тело JSON (всё опционально):
+          {
+            "license_key": "XXXX-XXXX-XXXX",  # WARP+ ключ
+            "save":        true,              # сохранить через AwgManager
+            "name":        "warp-gen-...",    # желаемое имя
+            "dns":         ["1.1.1.1", ...],
+            "mtu":         1280
+          }
+
+        В случае preview (save=false) — конфиг возвращается, но не
+        сохраняется; UI может показать его и дать кнопку «Сохранить».
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.warp_generator import generate_warp_config, WarpApiError
+
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+
+        license_key = (body.get("license_key") or "").strip() or None
+        save        = bool(body.get("save"))
+        name        = (body.get("name") or "").strip() or None
+        dns         = body.get("dns") or None
+        mtu         = body.get("mtu") or 1280
+
+        if dns is not None and not isinstance(dns, list):
+            response.status = 400
+            return {"ok": False, "error": "dns должен быть массивом"}
+
+        try:
+            return generate_warp_config(
+                license_key=license_key, save=save, name=name,
+                dns=dns, mtu=int(mtu) if mtu else 1280,
+            )
+        except WarpApiError as e:
+            response.status = 502
+            return {"ok": False, "error": str(e)}
+        except (ValueError, FileExistsError) as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        except RuntimeError as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": "Внутренняя ошибка: %s" % e}
 
     @app.route("/api/awg/keypair", method="POST")
     def awg_keypair():
