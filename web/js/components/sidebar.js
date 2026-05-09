@@ -66,6 +66,7 @@ const Sidebar = (() => {
                 { id: 'awg',         label: 'AmneziaWG',  icon: 'awg' },
                 { id: 'awg-configs', label: 'Конфиги',    icon: 'lua' },
                 { id: 'awg-warp',    label: 'WARP',       icon: 'awg' },
+                { id: 'awg-routing', label: 'Routing',    icon: 'globe' },
                 { id: 'awg-setup',   label: 'Установка',  icon: 'settings' },
             ]
         },

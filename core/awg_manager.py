@@ -435,6 +435,14 @@ class AwgManager:
         for cmd in _as_list(iface.get("PostUp")):
             self._run_hook(cmd, ifname, "PostUp")
 
+        # Применить routing-правила, привязанные к этому интерфейсу
+        try:
+            from core.routing.applier import apply_all_on_interface_up
+            apply_all_on_interface_up(ifname)
+        except Exception as e:
+            log.warning("routing apply on up %s: %s" % (ifname, e),
+                        source="awg_manager")
+
         log.success("Интерфейс %s поднят" % ifname, source="awg_manager")
         return {
             "ok":      True,
@@ -504,6 +512,14 @@ class AwgManager:
         if cfg:
             for cmd in _as_list(cfg["interface"].get("PreDown")):
                 self._run_hook(cmd, ifname, "PreDown")
+
+        # Снять routing-правила, привязанные к этому интерфейсу
+        try:
+            from core.routing.applier import remove_all_on_interface_down
+            remove_all_on_interface_down(ifname)
+        except Exception as e:
+            log.warning("routing remove on down %s: %s" % (ifname, e),
+                        source="awg_manager")
 
         # Удалить добавленные нами маршруты/правила
         self._remove_added_routes(ifname)
