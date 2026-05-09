@@ -63,7 +63,9 @@ const Sidebar = (() => {
         {
             label: 'VPN',
             items: [
-                { id: 'awg', label: 'AmneziaWG', icon: 'awg' },
+                { id: 'awg',         label: 'AmneziaWG',  icon: 'awg' },
+                { id: 'awg-configs', label: 'Конфиги',    icon: 'lua' },
+                { id: 'awg-setup',   label: 'Установка',  icon: 'settings' },
             ]
         },
         {
