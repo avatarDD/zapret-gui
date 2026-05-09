@@ -27,6 +27,8 @@ REST API для интеграции amneziawg-go.
   POST   /api/awg/configs/validate      — валидация без сохранения
   POST   /api/awg/keypair               — сгенерировать пару ключей
   GET    /api/awg/interfaces            — все активные AWG/WG интерфейсы
+
+  POST   /api/awg/warp/import           — импорт готового WARP .conf
 """
 
 import threading
@@ -282,6 +284,71 @@ def register(app):
         return {"ok": True, "interfaces": get_awg_manager().list_interfaces()}
 
     # ─────────── Keypair ───────────────────────────────────────
+
+    # ─────────── WARP import ──────────────────────────────────
+
+    @app.route("/api/awg/warp/import", method="POST")
+    def awg_warp_import():
+        """
+        Импорт готового AWG-WARP конфига.
+
+        Принимает:
+          - JSON: {"text": "<.conf content>", "name": "warp-1" (опц.)}
+          - multipart/form-data с полем "file" (.conf) и опц. "name"
+          - text/plain — тело запроса как сам .conf
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.warp_importer import import_from_text
+
+        text = ""
+        name = None
+
+        # multipart upload
+        upload = request.files.get("file") if hasattr(request, "files") else None
+        if upload is not None and getattr(upload, "file", None):
+            try:
+                raw = upload.file.read()
+                if isinstance(raw, bytes):
+                    text = raw.decode("utf-8", errors="replace")
+                else:
+                    text = str(raw)
+            except Exception as e:
+                response.status = 400
+                return {"ok": False, "error": f"Не удалось прочитать файл: {e}"}
+            name = (request.forms.get("name") or "").strip() or None
+        else:
+            ctype = (request.content_type or "").lower()
+            if "application/json" in ctype:
+                body = request.json or {}
+                text = body.get("text") or ""
+                name = (body.get("name") or "").strip() or None
+            else:
+                # text/plain или что-то ещё — берём raw body
+                try:
+                    raw = request.body.read() if request.body else b""
+                    if isinstance(raw, bytes):
+                        text = raw.decode("utf-8", errors="replace")
+                    else:
+                        text = str(raw)
+                except Exception:
+                    text = ""
+                name = (request.params.get("name") or "").strip() or None
+
+        if not text.strip():
+            response.status = 400
+            return {"ok": False, "error": "Пустой конфиг"}
+
+        try:
+            return import_from_text(text, name=name)
+        except FileExistsError:
+            response.status = 409
+            return {"ok": False, "error": "Конфиг с таким именем уже существует"}
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/awg/keypair", method="POST")
     def awg_keypair():
