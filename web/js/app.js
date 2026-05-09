@@ -22,7 +22,9 @@ const App = (() => {
         logs:        LogsPage,
         autostart:   AutostartPage,
         zapret:      ZapretManagerPage,
-        awg:         AwgSetupPage,
+        awg:           AwgDashboardPage,
+        'awg-configs': AwgConfigsPage,
+        'awg-setup':   AwgSetupPage,
         settings:    SettingsPage,
     };
 
@@ -55,7 +57,10 @@ const App = (() => {
     }
 
     function onHashChange() {
-        const hash = window.location.hash.slice(1) || 'dashboard';
+        let hash = window.location.hash.slice(1) || 'dashboard';
+        // Поддержка query-части после '?', напр. #awg-configs?edit=awg0
+        const q = hash.indexOf('?');
+        if (q >= 0) hash = hash.slice(0, q);
         navigateTo(hash);
     }
 
