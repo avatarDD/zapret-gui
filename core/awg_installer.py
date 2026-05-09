@@ -88,9 +88,11 @@ class AwgInstaller:
             "installed_tag":    section.get("installed_tag")       or "",
             "installed_go":     section.get("installed_go")        or "",
             "installed_tools":  section.get("installed_tools")     or "",
+            "installed_dir":    section.get("installed_dir")       or "",
         }
 
-    def _save_installed(self, tag: str, go_version: str, tools_version: str, arch: str):
+    def _save_installed(self, tag: str, go_version: str,
+                        tools_version: str, arch: str, installed_dir: str):
         cfg = get_config_manager()
         existing = cfg.get("awg") or {}
         existing.update({
@@ -98,6 +100,7 @@ class AwgInstaller:
             "installed_go":    go_version,
             "installed_tools": tools_version,
             "installed_arch":  arch,
+            "installed_dir":   installed_dir,
             "installed_at":    int(time.time()),
         })
         cfg.set("awg", existing)
@@ -107,10 +110,87 @@ class AwgInstaller:
         cfg = get_config_manager()
         existing = cfg.get("awg") or {}
         for k in ("installed_tag", "installed_go", "installed_tools",
-                  "installed_arch", "installed_at"):
+                  "installed_arch", "installed_dir", "installed_at"):
             existing.pop(k, None)
         cfg.set("awg", existing)
         cfg.save()
+
+    # ─────────────────── target dir resolution ────────────────────
+
+    def _resolve_target_dir(self, platform, prefer: str = "") -> dict:
+        """
+        Решить, куда ставить бинарники.
+
+        Приоритет:
+          1) явное значение `prefer` (передаётся из API/UI)
+          2) installed_dir из settings (наша прошлая установка)
+          3) каталог уже найденного внешнего amneziawg-go или awg
+          4) дефолт платформы (platform.binary_dir)
+
+        Возвращает {dir, source, external_paths: [...]}.
+        """
+        det = get_awg_detector()
+        existing = det.detect_existing_awg()
+
+        external_paths = []
+        for key in ("binary_awg_go", "binary_awg"):
+            p = existing.get(key) or ""
+            if not p or not os.path.isfile(p):
+                continue
+            # binary_awg может быть и обычным wireguard `wg` — это не AWG.
+            if key == "binary_awg" and os.path.basename(p) != "awg":
+                continue
+            external_paths.append(p)
+
+        if prefer:
+            return {"dir": prefer, "source": "explicit",
+                    "external_paths": external_paths}
+
+        s = self._settings()
+        if s["installed_dir"] and os.path.isdir(s["installed_dir"]):
+            return {"dir": s["installed_dir"], "source": "settings",
+                    "external_paths": external_paths}
+
+        # Каталог из найденной внешней установки. Только настоящий
+        # AWG (amneziawg-go или awg), не обычный `wg` из wireguard-tools.
+        for p in external_paths:
+            d = os.path.dirname(p)
+            if os.path.isdir(d):
+                return {"dir": d, "source": "external",
+                        "external_paths": external_paths}
+
+        return {"dir": platform.binary_dir, "source": "platform_default",
+                "external_paths": external_paths}
+
+    def get_target_info(self, prefer: str = "") -> dict:
+        """
+        Публичный helper для UI: показать куда пойдёт установка
+        и предупредить про конфликты с внешней установкой.
+        """
+        det = get_awg_detector()
+        platform = det.detect_platform()
+        target = self._resolve_target_dir(platform, prefer=prefer)
+
+        existing = det.detect_existing_awg()
+        active_ifaces = [i.get("name", "") for i in existing.get("active_interfaces", [])]
+
+        # Конфликт: target_dir отличается от каталога, где уже что-то лежит.
+        existing_dirs = sorted({os.path.dirname(p) for p in target["external_paths"]})
+        will_overwrite = [p for p in target["external_paths"]
+                          if os.path.dirname(p) == target["dir"]]
+        out_of_dir = [p for p in target["external_paths"]
+                      if os.path.dirname(p) != target["dir"]]
+
+        return {
+            "target_dir":       target["dir"],
+            "target_source":    target["source"],     # explicit|settings|external|platform_default
+            "platform_default": platform.binary_dir,
+            "external_paths":   target["external_paths"],
+            "external_dirs":    existing_dirs,
+            "will_overwrite":   will_overwrite,
+            "out_of_target":    out_of_dir,           # бинари в других каталогах — конфликт PATH
+            "active_interfaces": active_ifaces,
+        }
 
     # ─────────────────── manifest fetch ───────────────────────────
 
@@ -179,24 +259,66 @@ class AwgInstaller:
 
     def get_installed_version(self) -> dict:
         """
-        Что сейчас установлено (по данным settings + проверка существования бинарей).
+        Что сейчас установлено. Учитывает:
+          - запись в settings (наша установка),
+          - бинари в installed_dir,
+          - бинари в platform.binary_dir,
+          - найденные detector'ом внешние бинари.
         """
         det = get_awg_detector()
         platform = det.detect_platform()
         s = self._settings()
 
-        bin_go = platform.binary_path("amneziawg-go")
-        bin_awg = platform.awg_path()
+        # Каталоги, в которых ищем бинари: settings.installed_dir,
+        # каталог по платформе, плюс пути из detector'а.
+        search_dirs = []
+        if s["installed_dir"]:
+            search_dirs.append(s["installed_dir"])
+        if platform.binary_dir not in search_dirs:
+            search_dirs.append(platform.binary_dir)
+
+        existing = det.detect_existing_awg()
+        for key in ("binary_awg_go", "binary_awg"):
+            p = existing.get(key) or ""
+            if p:
+                d = os.path.dirname(p)
+                if d and d not in search_dirs:
+                    search_dirs.append(d)
+
+        def _find(name):
+            for d in search_dirs:
+                p = os.path.join(d, name)
+                if os.path.isfile(p):
+                    return p
+            return ""
+
+        bin_go = _find("amneziawg-go")
+        bin_awg = _find("awg")
+
+        # external = бинари есть, но settings_tag пуст → не наша установка
+        is_external = bool(bin_go or bin_awg) and not s["installed_tag"]
+        installed = bool(s["installed_tag"]) or bool(bin_go and bin_awg)
+
+        # Какой каталог считать «текущим» для install_dir UI:
+        if s["installed_dir"]:
+            current_dir = s["installed_dir"]
+        elif bin_go:
+            current_dir = os.path.dirname(bin_go)
+        elif bin_awg:
+            current_dir = os.path.dirname(bin_awg)
+        else:
+            current_dir = platform.binary_dir
 
         return {
-            "installed":      bool(s["installed_tag"]) or
-                              (os.path.isfile(bin_go) and os.path.isfile(bin_awg)),
+            "installed":      installed,
+            "external":       is_external,
             "tag":            s["installed_tag"],
             "go_version":     s["installed_go"],
             "tools_version":  s["installed_tools"],
-            "binary_dir":     platform.binary_dir,
-            "amneziawg_go":   bin_go if os.path.isfile(bin_go) else "",
-            "awg":            bin_awg if os.path.isfile(bin_awg) else "",
+            "binary_dir":     current_dir,
+            "platform_default_dir": platform.binary_dir,
+            "amneziawg_go":   bin_go,
+            "awg":            bin_awg,
         }
 
     def check_for_updates(self) -> dict:
@@ -245,14 +367,17 @@ class AwgInstaller:
 
     # ─────────────────── install / uninstall ──────────────────────
 
-    def install_binaries(self, arch: str = None, tag: str = None) -> dict:
+    def install_binaries(self, arch: str = None, tag: str = None,
+                         target_dir: str = None) -> dict:
         """
         Скачать и установить amneziawg-go и amneziawg-tools (awg).
 
-        arch — имя архитектуры из manifest'а (mipsel-softfloat, aarch64, ...).
-               Если не задано — берём из awg_detector.
-        tag  — конкретный тэг релиза (без префикса logic).
-               Если не задано — последний awg-bin-* релиз.
+        arch        — имя арх. из manifest'а (mipsel-softfloat, aarch64, ...).
+                      Если не задано — берём из awg_detector.
+        tag         — конкретный тэг релиза. Если не задано — последний awg-bin-*.
+        target_dir  — куда поставить бинари. Если не задано — _resolve_target_dir():
+                      сначала уважаем settings.installed_dir, потом каталог
+                      найденной внешней установки, потом дефолт платформы.
         """
         with self._lock:
             if self._op_in_progress:
@@ -261,7 +386,7 @@ class AwgInstaller:
             self._op_status = "Подготовка..."
             self._op_progress = 0
         try:
-            return self._do_install(arch=arch, tag=tag)
+            return self._do_install(arch=arch, tag=tag, target_dir=target_dir)
         except Exception as e:
             log.error("Установка AWG провалилась: %s" % e, source="awg_installer")
             return {"ok": False, "message": "Ошибка установки: %s" % e}
@@ -271,8 +396,11 @@ class AwgInstaller:
 
     def uninstall_binaries(self) -> dict:
         """
-        Удалить установленные AWG-бинарники.
-        Конфиги в config_dir не трогаем — они могут быть нужны пользователю.
+        Удалить установленные AWG-бинарники из всех известных мест:
+        installed_dir (наша установка), platform.binary_dir, а также
+        внешние пути, найденные detector'ом — чтобы пользователю не
+        пришлось чистить вручную.
+        Конфиги в config_dir не трогаем.
         """
         with self._lock:
             if self._op_in_progress:
@@ -283,10 +411,29 @@ class AwgInstaller:
         try:
             det = get_awg_detector()
             platform = det.detect_platform()
+            s = self._settings()
+
+            candidates = []
+            if s["installed_dir"]:
+                candidates.append(os.path.join(s["installed_dir"], "amneziawg-go"))
+                candidates.append(os.path.join(s["installed_dir"], "awg"))
+
+            candidates.append(platform.binary_path("amneziawg-go"))
+            candidates.append(platform.awg_path())
+
+            existing = det.detect_existing_awg()
+            for key in ("binary_awg_go", "binary_awg"):
+                p = existing.get(key) or ""
+                # Никогда не трогаем `wg` — это обычный wireguard-tools
+                if p and os.path.basename(p) in ("amneziawg-go", "awg"):
+                    candidates.append(p)
 
             removed = []
-            for name in ("amneziawg-go", "awg"):
-                path = platform.binary_path(name)
+            seen = set()
+            for path in candidates:
+                if path in seen:
+                    continue
+                seen.add(path)
                 if os.path.isfile(path):
                     try:
                         os.remove(path)
@@ -306,7 +453,7 @@ class AwgInstaller:
 
     # ─────────────────── internals ────────────────────────────────
 
-    def _do_install(self, arch: str, tag: str) -> dict:
+    def _do_install(self, arch: str, tag: str, target_dir: str = None) -> dict:
         det = get_awg_detector()
         platform = det.detect_platform()
 
@@ -317,6 +464,10 @@ class AwgInstaller:
         if not arch:
             return {"ok": False, "message":
                     "Не удалось определить архитектуру"}
+
+        # Target directory — если есть внешний AWG, ставим туда же
+        target = self._resolve_target_dir(platform, prefer=target_dir or "")
+        install_dir = target["dir"]
 
         self._set_progress("Получение manifest.json...", 5)
         manifest = self.get_manifest(tag=tag, force=True)
@@ -336,12 +487,12 @@ class AwgInstaller:
                     "В релизе %s нет бинарников для %s. Доступные: %s" %
                     (actual_tag, arch, ", ".join(available) or "(пусто)")}
 
-        # Создаём binary_dir
+        # Создаём install_dir
         try:
-            os.makedirs(platform.binary_dir, exist_ok=True)
+            os.makedirs(install_dir, exist_ok=True)
         except OSError as e:
             return {"ok": False, "message":
-                    "Не удалось создать %s: %s" % (platform.binary_dir, e)}
+                    "Не удалось создать %s: %s" % (install_dir, e)}
 
         with tempfile.TemporaryDirectory(prefix="awg-install-") as tmp:
             # 1) amneziawg-go
@@ -362,15 +513,15 @@ class AwgInstaller:
 
             # 3) Распаковка
             self._set_progress("Распаковка amneziawg-go...", 80)
-            self._extract_to(go_archive, platform.binary_dir, expect="amneziawg-go")
+            self._extract_to(go_archive, install_dir, expect="amneziawg-go")
 
             self._set_progress("Распаковка amneziawg-tools...", 90)
-            self._extract_to(tools_archive, platform.binary_dir, expect="awg")
+            self._extract_to(tools_archive, install_dir, expect="awg")
 
         # 4) +x на бинари
         self._set_progress("Установка прав...", 95)
         for name in ("amneziawg-go", "awg"):
-            path = platform.binary_path(name)
+            path = os.path.join(install_dir, name)
             if os.path.isfile(path):
                 try:
                     st = os.stat(path)
@@ -384,21 +535,24 @@ class AwgInstaller:
             go_version=go_section.get("version", ""),
             tools_version=tools_section.get("version", ""),
             arch=arch,
+            installed_dir=install_dir,
         )
 
         self._set_progress("Готово", 100)
-        log.success("AWG-бинарники установлены: %s (%s)" %
-                    (actual_tag, arch), source="awg_installer")
+        log.success("AWG-бинарники установлены: %s (%s) → %s" %
+                    (actual_tag, arch, install_dir), source="awg_installer")
         return {
             "ok": True,
-            "message": "Установлено: amneziawg-go %s, amneziawg-tools %s" %
+            "message": "Установлено: amneziawg-go %s, amneziawg-tools %s в %s" %
                        (go_section.get("version", "?"),
-                        tools_section.get("version", "?")),
+                        tools_section.get("version", "?"),
+                        install_dir),
             "tag":            actual_tag,
             "arch":           arch,
             "go_version":     go_section.get("version", ""),
             "tools_version":  tools_section.get("version", ""),
-            "binary_dir":     platform.binary_dir,
+            "binary_dir":     install_dir,
+            "target_source":  target["source"],
         }
 
     def _download(self, url: str, dest: str,

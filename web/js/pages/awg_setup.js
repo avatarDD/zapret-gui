@@ -334,6 +334,7 @@ const AwgSetupPage = (() => {
 
         const op = (installState && installState.operation) || {};
         const installed = (installState && installState.installed) || {};
+        const target = (installState && installState.target) || {};
         const ready = env && env.ready;
         const arch = (env && env.architecture && env.architecture.artifact_arch) || '';
 
@@ -365,10 +366,55 @@ const AwgSetupPage = (() => {
         let installedHtml = '';
         if (installed.installed) {
             installedHtml = rowHtml(
-                'ok', 'Уже установлено',
-                `Релиз: <span class="awg-mono">${escapeHtml(installed.tag || '?')}</span>, ` +
-                `amneziawg-go ${escapeHtml(installed.go_version || '?')}, ` +
-                `amneziawg-tools ${escapeHtml(installed.tools_version || '?')}`
+                installed.external ? 'info' : 'ok',
+                installed.external ? 'Установка вне нашего GUI' : 'Уже установлено',
+                installed.external
+                    ? `Найден amneziawg-go: <span class="awg-mono">${escapeHtml(installed.amneziawg_go || '')}</span><br>` +
+                      `Найден awg: <span class="awg-mono">${escapeHtml(installed.awg || '')}</span><br>` +
+                      `GUI ещё не управляет этой установкой — после переустановки она перейдёт под управление.`
+                    : `Релиз: <span class="awg-mono">${escapeHtml(installed.tag || '?')}</span>, ` +
+                      `amneziawg-go ${escapeHtml(installed.go_version || '?')}, ` +
+                      `amneziawg-tools ${escapeHtml(installed.tools_version || '?')}<br>` +
+                      `Каталог: <span class="awg-mono">${escapeHtml(installed.binary_dir || '')}</span>`
+            );
+        }
+
+        // Куда поставим + warning'и
+        let targetHtml = '';
+        if (target.target_dir) {
+            const platformDefault = target.platform_default || '';
+            const usingExternal = target.target_source === 'external';
+            const willOverwrite = target.will_overwrite || [];
+            const outOfTarget = target.out_of_target || [];
+            const dirNote = usingExternal
+                ? ` <span style="color: var(--warning);">(подстраиваемся под существующую установку)</span>`
+                : (target.target_dir !== platformDefault
+                    ? ` <span style="color: var(--text-muted);">(из настроек)</span>`
+                    : '');
+            const overwriteNote = willOverwrite.length
+                ? `<br><span style="color: var(--warning);">Будут перезаписаны:</span> ${willOverwrite.map(p => `<span class="awg-mono">${escapeHtml(p)}</span>`).join(', ')}`
+                : '';
+            const outNote = outOfTarget.length
+                ? `<br><span style="color: var(--warning);">Останутся вне target — возможен конфликт PATH:</span> ${outOfTarget.map(p => `<span class="awg-mono">${escapeHtml(p)}</span>`).join(', ')}`
+                : '';
+            targetHtml = rowHtml(
+                outOfTarget.length ? 'bad' : (usingExternal || willOverwrite.length ? 'info' : 'info'),
+                'Каталог установки',
+                `<span class="awg-mono">${escapeHtml(target.target_dir)}</span>${dirNote}` +
+                overwriteNote + outNote
+            );
+        }
+
+        // Активные интерфейсы — предупреждение
+        let activeHtml = '';
+        const active = (target.active_interfaces || []).filter(Boolean);
+        if (active.length) {
+            activeHtml = rowHtml(
+                'bad',
+                'Запущенные AWG/WG интерфейсы',
+                `${active.map(n => `<span class="awg-mono">${escapeHtml(n)}</span>`).join(', ')}<br>` +
+                `Запущенный процесс продолжит работу со старым кодом — после установки перезапустите интерфейс ` +
+                `командой <span class="awg-mono">awg-quick down &lt;name&gt; && awg-quick up &lt;name&gt;</span>.`
             );
         }
 
@@ -423,7 +469,8 @@ const AwgSetupPage = (() => {
             </div>
         `;
 
-        body.innerHTML = installedHtml + manifestHtml + archHtml + progressHtml + buttonsHtml;
+        body.innerHTML = installedHtml + manifestHtml + targetHtml + activeHtml +
+                          archHtml + progressHtml + buttonsHtml;
     }
 
     // ══════════════ Stepper state ══════════════
@@ -469,6 +516,28 @@ const AwgSetupPage = (() => {
 
     async function doInstall() {
         if (installRunning) return;
+
+        // Подтверждение если есть внешняя установка / активные интерфейсы
+        const target = (installState && installState.target) || {};
+        const willOverwrite = target.will_overwrite || [];
+        const outOfTarget = target.out_of_target || [];
+        const active = (target.active_interfaces || []).filter(Boolean);
+        const lines = [];
+        if (willOverwrite.length) {
+            lines.push('Будут перезаписаны существующие бинари:\n  ' + willOverwrite.join('\n  '));
+        }
+        if (outOfTarget.length) {
+            lines.push('Останутся в других каталогах (потенциальный конфликт PATH):\n  ' + outOfTarget.join('\n  '));
+        }
+        if (active.length) {
+            lines.push('Запущенные интерфейсы — после установки перезапустите вручную:\n  ' + active.join(', '));
+        }
+        if (lines.length) {
+            const ok = confirm('Внимание:\n\n' + lines.join('\n\n') +
+                               '\n\nПродолжить установку?');
+            if (!ok) return;
+        }
+
         installRunning = true;
         renderInstall();
         startPoll();

@@ -63,18 +63,21 @@ def register(app):
     @app.route("/api/awg/install/status")
     def awg_install_status():
         """
-        Текущий статус установки/удаления + установленная версия.
-        Используется фронтом для polling-а прогресса.
+        Текущий статус установки/удаления + установленная версия +
+        информация о target_dir и потенциальных конфликтах с внешней
+        установкой.
         """
         response.content_type = "application/json; charset=utf-8"
         from core.awg_installer import get_awg_installer
         inst = get_awg_installer()
         op = inst.get_operation_status()
         installed = inst.get_installed_version()
+        target = inst.get_target_info()
         return {
             "ok":         True,
             "operation":  op,
             "installed":  installed,
+            "target":     target,
         }
 
     @app.route("/api/awg/install", method="POST")
