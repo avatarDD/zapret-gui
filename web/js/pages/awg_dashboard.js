@@ -11,6 +11,7 @@ const AwgDashboardPage = (() => {
     let pollTimer = null;
     let configs = [];
     let interfaces = [];
+    let autostart = { interfaces: {}, script_installed: false, script_path: '' };
     let busy = {};
 
     // ══════════════ render ══════════════
@@ -91,12 +92,15 @@ const AwgDashboardPage = (() => {
 
     async function refresh() {
         try {
-            const [cfgsResp, ifsResp] = await Promise.all([
+            const [cfgsResp, ifsResp, autoResp] = await Promise.all([
                 API.get('/api/awg/configs'),
                 API.get('/api/awg/interfaces'),
+                API.get('/api/awg/autostart').catch(() => ({ status: {} })),
             ]);
             configs = cfgsResp.configs || [];
             interfaces = ifsResp.interfaces || [];
+            autostart = (autoResp && autoResp.status) || { interfaces: {} };
+            if (!autostart.interfaces) autostart.interfaces = {};
             renderBody();
         } catch (err) {
             const body = document.getElementById('awg-summary-body');
@@ -112,16 +116,30 @@ const AwgDashboardPage = (() => {
         const totalCfg = configs.length;
         const activeCount = configs.filter(c => c.active).length;
         const peerCount = interfaces.reduce((s, i) => s + (i.peers || []).length, 0);
+        const autoCount = Object.values(autostart.interfaces || {}).filter(Boolean).length;
+        const scriptInstalled = !!autostart.script_installed;
         const summary = document.getElementById('awg-summary-body');
         if (summary) {
+            const scriptInfo = scriptInstalled
+                ? `<span class="text-running">установлен</span>${autostart.script_path ? ` <span class="text-muted" style="font-size:11px;">(${escapeHtml(autostart.script_path)})</span>` : ''}`
+                : `<span class="text-muted">не установлен</span>`;
             summary.innerHTML = `
-                <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+                <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-end;">
                     <div><div class="text-muted" style="font-size:12px;">Конфигов</div>
                          <div style="font-size: 20px; font-weight: 600;">${totalCfg}</div></div>
                     <div><div class="text-muted" style="font-size:12px;">Активных туннелей</div>
                          <div style="font-size: 20px; font-weight: 600;">${activeCount}</div></div>
                     <div><div class="text-muted" style="font-size:12px;">Peers всего</div>
                          <div style="font-size: 20px; font-weight: 600;">${peerCount}</div></div>
+                    <div><div class="text-muted" style="font-size:12px;">Автозапуск</div>
+                         <div style="font-size: 14px;">${autoCount} интерф., скрипт: ${scriptInfo}</div></div>
+                    <div style="margin-left:auto; display:flex; gap:6px;">
+                        ${scriptInstalled
+                            ? `<button class="btn btn-ghost btn-sm" onclick="AwgDashboardPage.regenerateScript()">Пересоздать скрипт</button>
+                               <button class="btn btn-ghost btn-sm" onclick="AwgDashboardPage.removeScript()">Удалить скрипт</button>`
+                            : `<button class="btn btn-ghost btn-sm" ${autoCount===0?'disabled title="Включите autostart хотя бы у одного интерфейса"':''}
+                                       onclick="AwgDashboardPage.installScript()">Установить init-скрипт</button>`}
+                    </div>
                 </div>
             `;
         }
@@ -200,6 +218,16 @@ const AwgDashboardPage = (() => {
             ? `<span class="badge badge-warning" style="margin-left: 8px;">без конфига</span>`
             : '';
 
+        const autoOn = !!(autostart.interfaces || {})[cfg.name];
+        const autoToggle = cfg.orphan
+            ? ''
+            : `<label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;"
+                       title="Поднимать этот интерфейс при загрузке системы">
+                   <input type="checkbox" ${autoOn?'checked':''} ${inUse?'disabled':''}
+                          onchange="AwgDashboardPage.toggleAutostart('${escapeAttr(cfg.name)}', this.checked)">
+                   автозапуск
+               </label>`;
+
         return `
             <div class="card" style="margin-bottom: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -209,24 +237,27 @@ const AwgDashboardPage = (() => {
                             ${statusBadge}
                         </span>
                     </div>
-                    <div style="display:flex; gap: 6px;">
-                        ${active
-                            ? `<button class="btn btn-ghost btn-sm" ${inUse?'disabled':''}
-                                       onclick="AwgDashboardPage.restart('${escapeAttr(cfg.name)}')">Restart</button>
-                               <button class="btn btn-ghost btn-sm" ${inUse?'disabled':''}
-                                       onclick="AwgDashboardPage.down('${escapeAttr(cfg.name)}')">Stop</button>`
-                            : (cfg.orphan
+                    <div style="display:flex; gap: 12px; align-items: center;">
+                        ${autoToggle}
+                        <div style="display:flex; gap: 6px;">
+                            ${active
+                                ? `<button class="btn btn-ghost btn-sm" ${inUse?'disabled':''}
+                                           onclick="AwgDashboardPage.restart('${escapeAttr(cfg.name)}')">Restart</button>
+                                   <button class="btn btn-ghost btn-sm" ${inUse?'disabled':''}
+                                           onclick="AwgDashboardPage.down('${escapeAttr(cfg.name)}')">Stop</button>`
+                                : (cfg.orphan
+                                    ? ''
+                                    : `<button class="btn btn-primary btn-sm" ${inUse?'disabled':''}
+                                               onclick="AwgDashboardPage.up('${escapeAttr(cfg.name)}')">Start</button>`)
+                            }
+                            ${cfg.orphan
                                 ? ''
-                                : `<button class="btn btn-primary btn-sm" ${inUse?'disabled':''}
-                                           onclick="AwgDashboardPage.up('${escapeAttr(cfg.name)}')">Start</button>`)
-                        }
-                        ${cfg.orphan
-                            ? ''
-                            : `<button class="btn btn-ghost btn-sm"
-                                       onclick="window.location.hash='awg-configs?edit=${encodeURIComponent(cfg.name)}'">
-                                   Редактировать
-                               </button>`
-                        }
+                                : `<button class="btn btn-ghost btn-sm"
+                                           onclick="window.location.hash='awg-configs?edit=${encodeURIComponent(cfg.name)}'">
+                                       Редактировать
+                                   </button>`
+                            }
+                        </div>
                     </div>
                 </div>
                 ${peersHtml}
@@ -261,6 +292,66 @@ const AwgDashboardPage = (() => {
             Toast.error(err.message);
         } finally {
             busy[name] = false;
+            await refresh();
+        }
+    }
+
+    async function toggleAutostart(name, enabled) {
+        if (busy[name]) return;
+        busy[name] = true;
+        try {
+            const data = await API.post(
+                `/api/awg/autostart/${encodeURIComponent(name)}`,
+                { enabled: !!enabled }
+            );
+            if (data && data.ok) {
+                Toast.success(enabled
+                    ? `${name}: автозапуск включён`
+                    : `${name}: автозапуск выключен`);
+            } else {
+                Toast.error((data && data.error) || 'Не удалось изменить флаг');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
+            busy[name] = false;
+            await refresh();
+        }
+    }
+
+    async function installScript() {
+        try {
+            const data = await API.post('/api/awg/autostart/install');
+            if (data.ok) Toast.success(data.message || 'Скрипт установлен');
+            else Toast.error(data.error || 'Ошибка установки');
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
+            await refresh();
+        }
+    }
+
+    async function removeScript() {
+        if (!confirm('Удалить init-скрипт автозапуска AWG?')) return;
+        try {
+            const data = await API.post('/api/awg/autostart/remove');
+            if (data.ok) Toast.success(data.message || 'Скрипт удалён');
+            else Toast.error(data.error || 'Ошибка удаления');
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
+            await refresh();
+        }
+    }
+
+    async function regenerateScript() {
+        try {
+            const data = await API.post('/api/awg/autostart/regenerate');
+            if (data.ok) Toast.success(data.message || 'Скрипт пересоздан');
+            else Toast.error(data.error || 'Ошибка');
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
             await refresh();
         }
     }
@@ -301,5 +392,8 @@ const AwgDashboardPage = (() => {
         return String(s || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
     }
 
-    return { render, destroy, refresh, up, down, restart };
+    return {
+        render, destroy, refresh, up, down, restart,
+        toggleAutostart, installScript, removeScript, regenerateScript,
+    };
 })();

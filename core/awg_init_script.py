@@ -2,81 +2,74 @@
 """
 Генерация init-скриптов для автозапуска AmneziaWG-интерфейсов.
 
-В этом промте мы только формируем содержимое скриптов и сохраняем их
-через AwgPlatform.install_init_script(); полноценная интеграция с
-autostart-менеджером — следующий этап (промт 11).
+Скрипты вызывают app.py в CLI-режиме (`--apply-awg-autostart`),
+который поднимает все интерфейсы с per-config флагом autostart=true,
+применяет к ним routing-правила (это делает AwgManager.up через
+core.routing.applier) и восстанавливает WARP-in-WARP, если он был
+активен.
 
-Каждый скрипт по умолчанию обрабатывает интерфейсы, имена которых
-переданы аргументом или прочитаны из переменной окружения AWG_IFACES.
-Если ничего не задано — поднимаются все .conf из config_dir.
+Каждый платформенный рендерер возвращает текст; реальная установка
+делается через AwgPlatform.install_init_script(). См.
+core.awg_autostart_manager.
 """
 
 from core.awg_platform import (
     AwgPlatform,
-    KeeneticPlatform,
     OpenWrtPlatform,
     GenericLinuxPlatform,
 )
 
 
-def render_init_script(platform: AwgPlatform, ifaces=None,
-                       gui_url: str = "http://127.0.0.1:8080") -> str:
-    """
-    Сгенерировать содержимое init-скрипта для платформы.
+DEFAULT_PYTHON = "/usr/bin/python3"
+DEFAULT_APP_PY = "/opt/zapret-gui/app.py"
 
-    Скрипт дёргает API zapret-gui, чтобы поднять/опустить интерфейсы.
-    Это делает скрипт максимально простым и переносимым: вся логика
-    остаётся в Python-коде GUI.
-    """
-    iface_arg = ""
-    if ifaces:
-        iface_arg = ",".join(ifaces)
 
+def render_init_script(platform: AwgPlatform,
+                       python_bin: str = DEFAULT_PYTHON,
+                       app_py: str = DEFAULT_APP_PY) -> str:
+    """Сгенерировать содержимое init-скрипта для платформы."""
     if isinstance(platform, OpenWrtPlatform):
-        return _openwrt_procd(gui_url, iface_arg)
+        return _openwrt_procd(python_bin, app_py)
     if isinstance(platform, GenericLinuxPlatform):
-        return _systemd_unit(gui_url, iface_arg)
+        return _systemd_unit(python_bin, app_py)
     # Keenetic / Entware (default)
-    return _entware_init(gui_url, iface_arg)
+    return _entware_init(python_bin, app_py)
 
 
-def install_init_script(platform: AwgPlatform, ifaces=None,
-                        gui_url: str = "http://127.0.0.1:8080") -> str:
+def install_init_script(platform: AwgPlatform,
+                        python_bin: str = DEFAULT_PYTHON,
+                        app_py: str = DEFAULT_APP_PY) -> str:
     """
     Записать init-скрипт через platform.install_init_script.
     Возвращает путь к установленному скрипту.
     """
-    content = render_init_script(platform, ifaces=ifaces, gui_url=gui_url)
+    content = render_init_script(platform, python_bin=python_bin, app_py=app_py)
     return platform.install_init_script(content)
 
 
 # ───────────────────────── Entware (Keenetic) ────────────────────────
 
-def _entware_init(gui_url: str, iface_arg: str) -> str:
+def _entware_init(python_bin: str, app_py: str) -> str:
     return f"""#!/bin/sh
 # zapret-gui: AmneziaWG autostart (Entware/Keenetic)
-# Поднимает интерфейсы через REST API локально работающего GUI.
+# Поднимает enabled-AWG-интерфейсы и применяет routing-правила.
+# Сгенерировано автоматически. Не редактируйте вручную.
 
-GUI_URL="{gui_url}"
-IFACES="${{AWG_IFACES:-{iface_arg}}}"
+PYTHON="{python_bin}"
+APP_PY="{app_py}"
+LOG="/opt/var/log/awg-gui-autostart.log"
 
 start() {{
-    if [ -n "$IFACES" ]; then
-        for i in $(echo "$IFACES" | tr ',' ' '); do
-            curl -s -X POST "$GUI_URL/api/awg/configs/$i/up" >/dev/null 2>&1
-        done
-    else
-        curl -s -X POST "$GUI_URL/api/awg/autostart/up" >/dev/null 2>&1
+    if [ ! -f "$APP_PY" ]; then
+        echo "awg-gui-autostart: $APP_PY не найден" >&2
+        return 1
     fi
+    "$PYTHON" "$APP_PY" --apply-awg-autostart >>"$LOG" 2>&1
 }}
 
 stop() {{
-    if [ -n "$IFACES" ]; then
-        for i in $(echo "$IFACES" | tr ',' ' '); do
-            curl -s -X POST "$GUI_URL/api/awg/configs/$i/down" >/dev/null 2>&1
-        done
-    else
-        curl -s -X POST "$GUI_URL/api/awg/autostart/down" >/dev/null 2>&1
+    if [ -f "$APP_PY" ]; then
+        "$PYTHON" "$APP_PY" --stop-awg-autostart >>"$LOG" 2>&1
     fi
 }}
 
@@ -91,41 +84,40 @@ esac
 
 # ───────────────────────── OpenWrt (procd) ───────────────────────────
 
-def _openwrt_procd(gui_url: str, iface_arg: str) -> str:
+def _openwrt_procd(python_bin: str, app_py: str) -> str:
     return f"""#!/bin/sh /etc/rc.common
 # zapret-gui: AmneziaWG autostart (OpenWrt procd)
+# Сгенерировано автоматически. Не редактируйте вручную.
 START=95
 STOP=10
+USE_PROCD=1
 
-GUI_URL="{gui_url}"
-IFACES="{iface_arg}"
+PYTHON="{python_bin}"
+APP_PY="{app_py}"
+LOG="/var/log/awg-gui-autostart.log"
 
 start_service() {{
-    if [ -n "$IFACES" ]; then
-        for i in $(echo "$IFACES" | tr ',' ' '); do
-            curl -s -X POST "$GUI_URL/api/awg/configs/$i/up" >/dev/null 2>&1
-        done
-    else
-        curl -s -X POST "$GUI_URL/api/awg/autostart/up" >/dev/null 2>&1
-    fi
+    [ -f "$APP_PY" ] || {{
+        logger -t awg-gui-autostart "app.py не найден: $APP_PY"
+        return 1
+    }}
+    procd_open_instance
+    procd_set_param command /bin/sh -c "$PYTHON $APP_PY --apply-awg-autostart >>$LOG 2>&1"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
 }}
 
 stop_service() {{
-    if [ -n "$IFACES" ]; then
-        for i in $(echo "$IFACES" | tr ',' ' '); do
-            curl -s -X POST "$GUI_URL/api/awg/configs/$i/down" >/dev/null 2>&1
-        done
-    else
-        curl -s -X POST "$GUI_URL/api/awg/autostart/down" >/dev/null 2>&1
-    fi
+    [ -f "$APP_PY" ] || return 0
+    "$PYTHON" "$APP_PY" --stop-awg-autostart >>"$LOG" 2>&1
 }}
 """
 
 
 # ───────────────────────── systemd ───────────────────────────────────
 
-def _systemd_unit(gui_url: str, iface_arg: str) -> str:
-    iface_env = f'Environment="AWG_IFACES={iface_arg}"' if iface_arg else ""
+def _systemd_unit(python_bin: str, app_py: str) -> str:
     return f"""[Unit]
 Description=zapret-gui AmneziaWG autostart
 After=network-online.target zapret-gui.service
@@ -134,10 +126,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-{iface_env}
-Environment="GUI_URL={gui_url}"
-ExecStart=/bin/sh -c 'if [ -n "$AWG_IFACES" ]; then for i in $(echo "$AWG_IFACES" | tr "," " "); do curl -s -X POST "$GUI_URL/api/awg/configs/$i/up" >/dev/null; done; else curl -s -X POST "$GUI_URL/api/awg/autostart/up" >/dev/null; fi'
-ExecStop=/bin/sh -c 'if [ -n "$AWG_IFACES" ]; then for i in $(echo "$AWG_IFACES" | tr "," " "); do curl -s -X POST "$GUI_URL/api/awg/configs/$i/down" >/dev/null; done; else curl -s -X POST "$GUI_URL/api/awg/autostart/down" >/dev/null; fi'
+ExecStart={python_bin} {app_py} --apply-awg-autostart
+ExecStop={python_bin} {app_py} --stop-awg-autostart
 
 [Install]
 WantedBy=multi-user.target
