@@ -378,9 +378,13 @@ const AwgSetupPage = (() => {
         const latestGo    = (manifest && manifest.amneziawg_go    && manifest.amneziawg_go.version)    || '';
         const latestTools = (manifest && manifest.amneziawg_tools && manifest.amneziawg_tools.version) || '';
         const latestTag   = (manifest && manifest.tag) || '';
-        const goOutdated    = !!(latestGo    && installed.go_version    && installed.go_version    !== latestGo);
-        const toolsOutdated = !!(latestTools && installed.tools_version && installed.tools_version !== latestTools);
-        const tagOutdated   = !!(latestTag   && installed.tag           && installed.tag           !== latestTag);
+        // opkg возвращает версии вроде `v0.2.16-1`, manifest — `0.2.18`.
+        // Нормализуем перед сравнением, чтобы не считать `v0.2.18` !== `0.2.18`.
+        const normalizeVer = v => String(v || '').trim().replace(/^v/i, '').replace(/-\d+$/, '');
+        const verEqual = (a, b) => !a || !b || normalizeVer(a) === normalizeVer(b);
+        const goOutdated    = !!(latestGo    && installed.go_version    && !verEqual(installed.go_version,    latestGo));
+        const toolsOutdated = !!(latestTools && installed.tools_version && !verEqual(installed.tools_version, latestTools));
+        const tagOutdated   = !!(latestTag   && installed.tag           && installed.tag !== latestTag);
         const updateAvailable = installed.installed && (goOutdated || toolsOutdated || tagOutdated);
 
         // Если для external-установки версии так и не определились (бинарь
@@ -389,16 +393,19 @@ const AwgSetupPage = (() => {
         const versionsUnknown = installed.installed && installed.external &&
                                 !installed.go_version && !installed.tools_version;
 
-        function verCell(installedVer, latestVer, outdated) {
+        function verCell(installedVer, latestVer, outdated, source) {
             const cur = installedVer || '?';
+            const srcHint = source
+                ? ` <span class="text-muted" style="font-size: 11px;">[${escapeHtml(source)}]</span>`
+                : '';
             if (!latestVer) {
-                return `<span class="awg-mono">${escapeHtml(cur)}</span>`;
+                return `<span class="awg-mono">${escapeHtml(cur)}</span>${srcHint}`;
             }
             if (outdated) {
-                return `<span class="awg-mono">${escapeHtml(cur)}</span> ` +
+                return `<span class="awg-mono">${escapeHtml(cur)}</span>${srcHint} ` +
                        `<span style="color: var(--warning);">→ ${escapeHtml(latestVer)}</span>`;
             }
-            return `<span class="awg-mono">${escapeHtml(cur)}</span> ` +
+            return `<span class="awg-mono">${escapeHtml(cur)}</span>${srcHint} ` +
                    `<span style="color: var(--success); font-size: 11px;">(актуально)</span>`;
         }
 
@@ -417,8 +424,8 @@ const AwgSetupPage = (() => {
             }
 
             const verLines =
-                `amneziawg-go: ${verCell(installed.go_version, latestGo, goOutdated)}<br>` +
-                `amneziawg-tools: ${verCell(installed.tools_version, latestTools, toolsOutdated)}`;
+                `amneziawg-go: ${verCell(installed.go_version, latestGo, goOutdated, installed.go_version_source)}<br>` +
+                `amneziawg-tools: ${verCell(installed.tools_version, latestTools, toolsOutdated, installed.tools_version_source)}`;
 
             const tagLine = installed.tag
                 ? `<br>Релиз: <span class="awg-mono">${escapeHtml(installed.tag)}</span>` +
