@@ -3,29 +3,33 @@
 Обнаружение устройств в локальной сети для per-device routing.
 
 Источники данных (в порядке приоритета):
-  1. DHCP-leases dnsmasq:
+  1. Keenetic NDM: `ndmc -c "show ip hotspot"` / `ndmq -p ...` — даёт
+     самые полные имена хостов (name из веб-админки, hostname от клиента)
+  2. DHCP-leases dnsmasq:
        /tmp/dhcp.leases           — Keenetic / OpenWrt / Entware
        /var/lib/misc/dnsmasq.leases
        /tmp/dnsmasq.leases
        /opt/var/lib/misc/dnsmasq.leases
-  2. ARP-таблица: /proc/net/arp как fallback / дополнение
+  3. ARP-таблица: /proc/net/arp как fallback / дополнение
 
 Возвращает дедуплицированный список устройств:
     {
         "ip":         "192.168.1.42",
         "mac":        "aa:bb:cc:dd:ee:ff",   # lowercase
         "hostname":   "Galaxy-S21",
-        "source":     "leases" | "arp" | "leases+arp",
+        "source":     "leases" | "arp" | "ndm" | комбинации через '+',
         "expires_at": 1731234567 | 0,        # 0 если бессрочный/из ARP
         "iface":      "br0" | ""             # только из ARP, опционально
     }
 
-Никаких внешних команд, кроме чтения /proc и текстовых файлов —
-функция должна быть быстрой и устойчивой на любой платформе.
+ndmc/ndmq вызываются только если бинарники найдены — на не-Keenetic
+системах функция работает как раньше (быстрая, без внешних команд).
 """
 
+import json
 import os
 import re
+import subprocess
 
 
 # Кандидатные пути для dnsmasq leases.
@@ -126,6 +130,158 @@ def _read_leases() -> list:
     return out
 
 
+# ───────────────────────── Keenetic NDM ─────────────────────────────
+
+def _cmd_out(args, timeout=4):
+    try:
+        r = subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout
+        )
+        return r.stdout if r.returncode == 0 else ""
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _parse_ndm_hosts_json(text: str) -> list:
+    """
+    Парсер JSON-вывода `ndmq -p "show ip hotspot"`.
+
+    Ожидается структура { "host": [ {mac, ip, name, hostname, ...}, ... ] }
+    или сразу массив, или одиночный объект под ключом "host".
+    Toleranт к шумным заголовкам ndmq.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    # Иногда ndmq добавляет шапку до JSON
+    start = text.find("{")
+    if start < 0:
+        start = text.find("[")
+    if start < 0:
+        return []
+    try:
+        data = json.loads(text[start:])
+    except (ValueError, TypeError):
+        return []
+
+    if isinstance(data, dict):
+        hosts = data.get("host")
+        if hosts is None:
+            return []
+        if isinstance(hosts, dict):
+            hosts = [hosts]
+    elif isinstance(data, list):
+        hosts = data
+    else:
+        return []
+
+    out = []
+    for h in hosts:
+        if not isinstance(h, dict):
+            continue
+        mac = _normalize_mac(h.get("mac") or "")
+        ip  = (h.get("ip") or "").strip()
+        if not mac and not _is_valid_ip(ip):
+            continue
+        # Предпочитаем "name" (заданное в админке), затем "hostname".
+        name = (h.get("name") or h.get("hostname") or "").strip()
+        out.append({
+            "ip":         ip if _is_valid_ip(ip) else "",
+            "mac":        mac,
+            "hostname":   name,
+            "source":     "ndm",
+            "expires_at": 0,
+            "iface":      "",
+        })
+    return out
+
+
+def _parse_ndm_hosts_yaml(text: str) -> list:
+    """
+    Парсер текстового YAML-подобного вывода `ndmc -c "show ip hotspot"`.
+
+    Записи разделены строками вида `host:` или `host, name = ...`.
+    Внутри блока ищем `mac:`, `ip:`, `name:`, `hostname:` независимо
+    от отступов — поскольку ndmc форматирует столбцом разной ширины.
+    """
+    if not text:
+        return []
+    out = []
+    cur = None
+
+    def _flush():
+        if not cur:
+            return
+        mac = _normalize_mac(cur.get("mac", ""))
+        ip  = (cur.get("ip") or "").strip()
+        if not mac and not _is_valid_ip(ip):
+            return
+        name = (cur.get("name") or cur.get("hostname") or "").strip()
+        out.append({
+            "ip":         ip if _is_valid_ip(ip) else "",
+            "mac":        mac,
+            "hostname":   name,
+            "source":     "ndm",
+            "expires_at": 0,
+            "iface":      "",
+        })
+
+    key_re = re.compile(r"^\s*([A-Za-z][\w\-]*)\s*:\s*(.*?)\s*$")
+    host_marker_re = re.compile(r"^\s*host\s*(?::|,)", re.IGNORECASE)
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if host_marker_re.match(line):
+            _flush()
+            cur = {}
+            # Иногда поля идут на той же строке: "host, name = \"X\", mac = ..."
+            inline = re.findall(r"(\w+)\s*=\s*\"?([^,\"]+)\"?", line)
+            for k, v in inline:
+                cur[k.lower()] = v.strip()
+            continue
+        if cur is None:
+            continue
+        m = key_re.match(line)
+        if not m:
+            continue
+        k = m.group(1).lower()
+        v = m.group(2).strip()
+        # Поля могут встретиться несколько раз — берём первое непустое.
+        if k in ("mac", "ip", "name", "hostname") and v and k not in cur:
+            cur[k] = v
+    _flush()
+    return out
+
+
+def _read_ndm_hosts() -> list:
+    """
+    Лучшие усилия по чтению списка хостов через NDM.
+    Возвращает [] на не-Keenetic системах (когда ndmc/ndmq нет).
+    """
+    # Сначала пробуем JSON (легче и однозначнее парсится).
+    for cmd in (
+        ["ndmq", "-p", "show ip hotspot"],
+        ["ndmq", "-p", "show ip dhcp bindings"],
+    ):
+        out = _cmd_out(cmd)
+        hosts = _parse_ndm_hosts_json(out) if out else []
+        if hosts:
+            return hosts
+
+    # Затем YAML-подобный вывод ndmc.
+    for cmd in (
+        ["ndmc", "-c", "show ip hotspot"],
+        ["ndmc", "-c", "show ip dhcp bindings"],
+    ):
+        out = _cmd_out(cmd)
+        hosts = _parse_ndm_hosts_yaml(out) if out else []
+        if hosts:
+            return hosts
+    return []
+
+
 # ───────────────────────── ARP ──────────────────────────────────────
 
 def _read_arp() -> list:
@@ -173,30 +329,55 @@ def _read_arp() -> list:
 def list_devices() -> list:
     """
     Вернуть список всех видимых устройств LAN, сгруппированных по IP.
-    Записи из leases приоритетнее (hostname, expiry); из ARP добавляем
-    те, которых нет в leases.
+
+    Приоритет hostname: NDM (Keenetic) → DHCP-leases → ARP.
+    NDM-данные мерджатся как по IP, так и по MAC, поскольку в JSON-выводе
+    ndmq IP может быть пустым (хост зарегистрирован, но не в сети сейчас).
     """
+    ndm    = _read_ndm_hosts()
     leases = _read_leases()
     arp    = _read_arp()
 
     by_ip = {}
+    # 1) leases — основа: IP + hostname + expiry.
     for d in leases:
         by_ip[d["ip"]] = dict(d)
 
+    # 2) ARP — добавляет онлайн-статус и недостающие IP.
     for d in arp:
         if d["ip"] in by_ip:
             cur = by_ip[d["ip"]]
-            # Дополним iface, если из leases он был пуст.
             if not cur.get("iface"):
                 cur["iface"] = d.get("iface", "")
-            # Запомним, что устройство в данный момент онлайн (ARP видел).
             cur["source"] = "leases+arp"
-            # MAC из leases считаем авторитетнее, но если был пуст —
-            # подменим из ARP.
             if not cur.get("mac"):
                 cur["mac"] = d["mac"]
         else:
             by_ip[d["ip"]] = dict(d)
+
+    # 3) NDM — обогащаем hostname. Сверка идёт по IP, при пустом IP —
+    #    по MAC (бывает у Keenetic для статических резерваций).
+    by_mac = {rec.get("mac"): rec for rec in by_ip.values() if rec.get("mac")}
+    for d in ndm:
+        target = None
+        if d["ip"] and d["ip"] in by_ip:
+            target = by_ip[d["ip"]]
+        elif d["mac"] and d["mac"] in by_mac:
+            target = by_mac[d["mac"]]
+        if target is not None:
+            # NDM считаем авторитетным источником имени.
+            if d["hostname"]:
+                target["hostname"] = d["hostname"]
+            cur_src = target.get("source", "")
+            if "ndm" not in cur_src:
+                target["source"] = (cur_src + "+ndm").lstrip("+")
+        else:
+            # Новый хост, не виден ни в leases, ни в ARP. Добавим, если
+            # у него есть IP — иначе строка без IP мало полезна для UI.
+            if d["ip"]:
+                by_ip[d["ip"]] = dict(d)
+                if d["mac"]:
+                    by_mac[d["mac"]] = by_ip[d["ip"]]
 
     out = list(by_ip.values())
     # Стабильная сортировка по IPv4 (числовая).
@@ -223,7 +404,9 @@ def sources_status() -> dict:
     """Диагностика доступности источников (для UI)."""
     leases_paths = [p for p in _LEASE_PATHS if os.path.exists(p)]
     arp_ok = os.path.exists("/proc/net/arp")
+    ndm_ok = bool(_read_ndm_hosts())
     return {
         "leases_paths": leases_paths,
         "arp_available": arp_ok,
+        "ndm_available": ndm_ok,
     }
