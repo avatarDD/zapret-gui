@@ -14,6 +14,8 @@ const AwgRoutingPage = (() => {
     let configs      = [];     // список AWG-конфигов
     let environment  = null;   // отчёт детектора (для подсказок)
     let dnsmasqInfo  = null;   // /api/routing/dnsmasq/status
+    let devices      = [];     // /api/devices (DHCP+ARP)
+    let devicesSrc   = null;   // sources status
     let busy         = false;
 
     // Форма создания (CIDR)
@@ -26,6 +28,13 @@ const AwgRoutingPage = (() => {
     let formDomIface = '';
     let formDomList  = '';
     let formDomDesc  = '';
+
+    // Форма создания (Device)
+    let formDevIface  = '';
+    let formDevManual = '';     // ручной ввод IP, если нет в списке
+    let formDevDesc   = '';
+    let devicesAutoRefresh = false;
+    let devicesAutoTimer   = null;
 
     // Фильтр списка
     let filterIface  = '';
@@ -77,7 +86,9 @@ const AwgRoutingPage = (() => {
         loadAll().then(renderTab);
     }
 
-    function destroy() {}
+    function destroy() {
+        stopDevicesAutoRefresh();
+    }
 
     // ══════════════ data ══════════════
 
@@ -98,6 +109,9 @@ const AwgRoutingPage = (() => {
             }
             if (!formDomIface && configs.length > 0) {
                 formDomIface = configs[0].name;
+            }
+            if (!formDevIface && configs.length > 0) {
+                formDevIface = configs[0].name;
             }
         } catch (err) {
             const box = document.getElementById('awg-routing-tab-content');
@@ -131,17 +145,11 @@ const AwgRoutingPage = (() => {
     function renderTab() {
         const box = document.getElementById('awg-routing-tab-content');
         if (!box) return;
+        // Останавливаем авто-обновление устройств при уходе со страницы.
+        if (activeTab !== 'device') stopDevicesAutoRefresh();
         if (activeTab === 'cidr')   return renderCidrTab(box);
         if (activeTab === 'domain') return renderDomainTab(box);
-        if (activeTab === 'device') return renderPlaceholder(box, 'Устройства',
-            'Per-device routing (по IP/MAC устройств LAN) появится в следующей итерации.');
-    }
-
-    function renderPlaceholder(box, title, desc) {
-        box.innerHTML = `
-            <h3 style="margin: 4px 0 12px 0;">${escapeHtml(title)}</h3>
-            <p class="text-muted">${escapeHtml(desc)}</p>
-        `;
+        if (activeTab === 'device') return renderDeviceTab(box);
     }
 
     // ══════════════ tab: CIDR ══════════════
@@ -413,6 +421,324 @@ const AwgRoutingPage = (() => {
         `;
     }
 
+    // ══════════════ tab: Devices ══════════════
+
+    async function loadDevices() {
+        try {
+            const r = await API.get('/api/devices');
+            if (r && r.ok) {
+                devices    = r.devices || [];
+                devicesSrc = r.sources || null;
+            } else {
+                devices    = [];
+                devicesSrc = null;
+            }
+        } catch (e) {
+            devices    = [];
+            devicesSrc = null;
+        }
+    }
+
+    function renderDeviceTab(box) {
+        const devRules = rules.filter(r => r.type === 'device');
+        const visibleRules = filterIface
+            ? devRules.filter(r => r.target_iface === filterIface)
+            : devRules;
+        const ifacesInRules = Array.from(new Set(devRules.map(r => r.target_iface)));
+
+        const cfgOptions = configs.map(c =>
+            `<option value="${escapeAttr(c.name)}" ${c.name === formDevIface ? 'selected' : ''}>
+                ${escapeHtml(c.name)}${c.active ? ' (активен)' : ''}
+             </option>`
+        ).join('');
+
+        const filterOptions = ['<option value="">Все интерфейсы</option>'].concat(
+            ifacesInRules.map(i =>
+                `<option value="${escapeAttr(i)}" ${i === filterIface ? 'selected' : ''}>
+                    ${escapeHtml(i)}
+                 </option>`
+            )
+        ).join('');
+
+        // Уже привязанные source IP → быстрый поиск.
+        const boundByIp = {};
+        devRules.forEach(r => {
+            const ip = (r.source_ip || '').split('/')[0];
+            if (ip) boundByIp[ip] = r;
+        });
+
+        const srcSummary = devicesSrc
+            ? `<div class="text-muted" style="font-size:12px; margin-bottom:8px;">
+                    Источники: leases — <strong>${(devicesSrc.leases_paths || []).length}</strong>,
+                    ARP — <strong>${devicesSrc.arp_available ? 'да' : 'нет'}</strong>
+               </div>`
+            : '';
+
+        // Запускаем первичную загрузку устройств, если ещё не делали.
+        if (devices.length === 0 && devicesSrc === null) {
+            loadDevices().then(() => renderTab());
+        }
+
+        box.innerHTML = `
+            ${srcSummary}
+
+            <div class="card" style="margin-bottom: 12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div class="card-title">Привязать устройство к интерфейсу</div>
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <label class="text-muted" style="font-size:12px;">
+                            <input type="checkbox"
+                                   ${devicesAutoRefresh ? 'checked' : ''}
+                                   onchange="AwgRoutingPage.toggleDevicesAutoRefresh()">
+                            автообновление
+                        </label>
+                        <button class="btn btn-ghost btn-sm" onclick="AwgRoutingPage.refreshDevices()">
+                            Обновить список
+                        </button>
+                    </div>
+                </div>
+
+                ${configs.length === 0 ? `
+                    <p class="text-muted" style="margin-top: 8px;">
+                        Нет ни одного AWG-конфига. Сначала создайте туннель в разделе
+                        <a href="#awg-configs">Конфиги</a>.
+                    </p>
+                ` : `
+                    <p class="text-muted" style="margin-top: 6px; font-size: 13px;">
+                        Весь трафик с выбранного устройства уйдёт через интерфейс
+                        ниже. Используется
+                        <code>ip rule from &lt;ip&gt; lookup &lt;table&gt;</code>,
+                        работает на Keenetic/OpenWrt/Linux.
+                    </p>
+
+                    <div style="display: grid; grid-template-columns: 200px 1fr; gap: 8px 12px; margin-top: 8px; align-items: start;">
+                        <label class="text-muted" style="padding-top: 6px;">Интерфейс</label>
+                        <select id="rt-dev-iface" onchange="AwgRoutingPage.setFormDevIface(this.value)"
+                                class="form-control" style="max-width: 280px;">
+                            ${cfgOptions}
+                        </select>
+
+                        <label class="text-muted" style="padding-top: 6px;">Описание</label>
+                        <input type="text" id="rt-dev-desc"
+                               oninput="AwgRoutingPage.setFormDevDesc(this.value)"
+                               value="${escapeAttr(formDevDesc)}"
+                               placeholder="например: телефон жены через WARP"
+                               class="form-control" style="max-width: 480px;">
+                    </div>
+
+                    <div style="margin-top: 14px;">
+                        <div class="text-muted" style="font-size: 12px; margin-bottom: 6px;">
+                            Устройства из DHCP/ARP (${devices.length}):
+                        </div>
+                        ${devices.length === 0
+                            ? `<p class="text-muted" style="font-size: 13px;">
+                                Список пуст. Убедитесь, что сервис запущен на роутере,
+                                либо введите IP вручную ниже.
+                               </p>`
+                            : `
+                            <table class="table" style="margin-top: 4px;">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 14%;">IP</th>
+                                        <th style="width: 18%;">MAC</th>
+                                        <th>Имя</th>
+                                        <th style="width: 12%;">Источник</th>
+                                        <th style="width: 22%; text-align: right;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${devices.map(d => {
+                                        const bound = boundByIp[d.ip];
+                                        return `
+                                        <tr>
+                                            <td style="font-family: monospace; font-size: 12px;">${escapeHtml(d.ip)}</td>
+                                            <td style="font-family: monospace; font-size: 12px;">${escapeHtml(d.mac || '—')}</td>
+                                            <td>${escapeHtml(d.hostname || '')}</td>
+                                            <td><span class="text-muted" style="font-size: 11px;">${escapeHtml(d.source || '')}</span></td>
+                                            <td style="text-align: right;">
+                                                ${bound
+                                                    ? `<span class="text-muted" style="font-size: 12px; margin-right: 6px;">
+                                                            → <strong>${escapeHtml(bound.target_iface)}</strong>
+                                                       </span>
+                                                       <button class="btn btn-ghost btn-sm"
+                                                               onclick="AwgRoutingPage.deleteRule('${escapeAttr(bound.id)}')">
+                                                           Отвязать
+                                                       </button>`
+                                                    : `<button class="btn btn-primary btn-sm" ${busy ? 'disabled' : ''}
+                                                               onclick="AwgRoutingPage.bindDeviceFromList('${escapeAttr(d.ip)}', '${escapeAttr(d.mac || '')}', '${escapeAttr(d.hostname || '')}')">
+                                                           Через ${escapeHtml(formDevIface || '?')}
+                                                       </button>`
+                                                }
+                                            </td>
+                                        </tr>`;
+                                    }).join('')}
+                                </tbody>
+                            </table>`
+                        }
+                    </div>
+
+                    <div style="margin-top: 16px;">
+                        <div class="text-muted" style="font-size: 12px; margin-bottom: 6px;">
+                            Или вручную (если устройства нет в списке выше):
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                            <input type="text" id="rt-dev-manual"
+                                   oninput="AwgRoutingPage.setFormDevManual(this.value)"
+                                   value="${escapeAttr(formDevManual)}"
+                                   placeholder="например: 192.168.1.50"
+                                   class="form-control" style="max-width: 240px;">
+                            <button class="btn btn-primary btn-sm" ${busy ? 'disabled' : ''}
+                                    onclick="AwgRoutingPage.submitDeviceManual()">
+                                Добавить
+                            </button>
+                        </div>
+                    </div>
+                `}
+            </div>
+
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="card-title">Device-правила (${devRules.length})</div>
+                    <select onchange="AwgRoutingPage.setFilterIface(this.value)"
+                            class="form-control" style="max-width: 220px;">
+                        ${filterOptions}
+                    </select>
+                </div>
+
+                ${visibleRules.length === 0
+                    ? `<p class="text-muted" style="margin-top: 12px;">Правил пока нет.</p>`
+                    : `
+                <table class="table" style="margin-top: 8px;">
+                    <thead>
+                        <tr>
+                            <th style="width: 14%;">Интерфейс</th>
+                            <th style="width: 18%;">IP</th>
+                            <th style="width: 18%;">MAC</th>
+                            <th>Hostname / описание</th>
+                            <th style="width: 6%;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${visibleRules.map(r => `
+                            <tr>
+                                <td><strong>${escapeHtml(r.target_iface)}</strong></td>
+                                <td style="font-family: monospace; font-size: 12px;">${escapeHtml(r.source_ip || '')}</td>
+                                <td style="font-family: monospace; font-size: 12px;">${escapeHtml(r.mac || '—')}</td>
+                                <td>
+                                    ${r.hostname ? `<strong>${escapeHtml(r.hostname)}</strong>` : ''}
+                                    ${r.description ? `<div class="text-muted" style="font-size: 12px;">${escapeHtml(r.description)}</div>` : ''}
+                                </td>
+                                <td style="text-align: right;">
+                                    <button class="btn btn-ghost btn-sm"
+                                            title="Удалить"
+                                            onclick="AwgRoutingPage.deleteRule('${escapeAttr(r.id)}')">
+                                        ✕
+                                    </button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>`
+                }
+            </div>
+        `;
+    }
+
+    async function refreshDevices() {
+        await loadDevices();
+        renderTab();
+    }
+
+    function toggleDevicesAutoRefresh() {
+        devicesAutoRefresh = !devicesAutoRefresh;
+        if (devicesAutoRefresh) {
+            startDevicesAutoRefresh();
+        } else {
+            stopDevicesAutoRefresh();
+        }
+        renderTab();
+    }
+
+    function startDevicesAutoRefresh() {
+        stopDevicesAutoRefresh();
+        devicesAutoTimer = setInterval(async () => {
+            if (activeTab !== 'device') {
+                stopDevicesAutoRefresh();
+                return;
+            }
+            await loadDevices();
+            // Также подтянем правила, на случай если их меняли.
+            try {
+                const r = await API.get('/api/routing/rules');
+                rules = r.rules || [];
+            } catch (e) { /* ignore */ }
+            renderTab();
+        }, 10000);
+    }
+
+    function stopDevicesAutoRefresh() {
+        if (devicesAutoTimer) {
+            clearInterval(devicesAutoTimer);
+            devicesAutoTimer = null;
+        }
+    }
+
+    async function bindDeviceFromList(ip, mac, hostname) {
+        if (busy) return;
+        if (!formDevIface) {
+            Toast.error('Выберите интерфейс');
+            return;
+        }
+        await submitDevice({ source_ip: ip, mac: mac, hostname: hostname });
+    }
+
+    async function submitDeviceManual() {
+        if (busy) return;
+        const ip = (formDevManual || '').trim();
+        if (!ip) {
+            Toast.error('Введите IP устройства');
+            return;
+        }
+        await submitDevice({ source_ip: ip });
+    }
+
+    async function submitDevice({ source_ip, mac = '', hostname = '' }) {
+        if (busy) return;
+        if (!formDevIface) {
+            Toast.error('Выберите интерфейс');
+            return;
+        }
+        busy = true;
+        try {
+            const resp = await API.post('/api/routing/rules', {
+                type:         'device',
+                target_iface: formDevIface,
+                source_ip:    source_ip,
+                mac:          mac,
+                hostname:     hostname,
+                description:  formDevDesc,
+                enabled:      true,
+            });
+            if (resp.ok) {
+                Toast.success('Устройство привязано');
+                if (resp.applied && resp.applied.deferred) {
+                    Toast.info('Интерфейс не поднят — правило применится при старте');
+                } else if (resp.applied && resp.applied.error) {
+                    Toast.error('Ошибка применения: ' + resp.applied.error);
+                }
+                formDevManual = '';
+                formDevDesc   = '';
+                await refresh();
+            } else {
+                Toast.error(resp.error || 'Ошибка добавления');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
+            busy = false;
+        }
+    }
+
     function parseDomains(text) {
         return String(text || '')
             .split(/[\s,;]+/)
@@ -471,6 +797,10 @@ const AwgRoutingPage = (() => {
     function setFormDomIface(v) { formDomIface = v; }
     function setFormDomList(v)  { formDomList  = v; }
     function setFormDomDesc(v)  { formDomDesc  = v; }
+
+    function setFormDevIface(v)  { formDevIface  = v; renderTab(); }
+    function setFormDevManual(v) { formDevManual = v; }
+    function setFormDevDesc(v)   { formDevDesc   = v; }
 
     function parseCidrs(text) {
         return String(text || '')
@@ -570,5 +900,8 @@ const AwgRoutingPage = (() => {
         setFilterIface,
         submitCidr, deleteRule, reapplyAll,
         setFormDomIface, setFormDomList, setFormDomDesc, submitDomain,
+        setFormDevIface, setFormDevManual, setFormDevDesc,
+        bindDeviceFromList, submitDeviceManual,
+        refreshDevices, toggleDevicesAutoRefresh,
     };
 })();

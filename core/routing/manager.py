@@ -164,8 +164,8 @@ class RoutingManager:
             from core.routing.domain_rule import apply_domain_rule
             return apply_domain_rule(rule)
         if isinstance(rule, DeviceRoutingRule):
-            return {"ok": False, "skipped": True,
-                    "message": "Device-правила появятся в следующем промте"}
+            from core.routing.device_rule import apply_device_rule
+            return apply_device_rule(rule)
         return {"ok": False, "error": "Неизвестный тип правила"}
 
     def _remove(self, rule: RoutingRule) -> dict:
@@ -174,6 +174,9 @@ class RoutingManager:
         if isinstance(rule, DomainRoutingRule):
             from core.routing.domain_rule import remove_domain_rule
             return remove_domain_rule(rule)
+        if isinstance(rule, DeviceRoutingRule):
+            from core.routing.device_rule import remove_device_rule
+            return remove_device_rule(rule)
         return {"ok": True, "skipped": True}
 
     # ─────────── apply ALL on iface up/down ───────────
