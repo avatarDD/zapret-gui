@@ -22,6 +22,9 @@
 - **Автозапуск** — генерация init-скриптов
 - **Обновление GUI** — проверка и обновление из веб-интерфейса
 - **Zapret2 installer** — установка/обновление nfqws2 с GitHub
+- **AmneziaWG** — туннели (AWG/WG), Cloudflare WARP (импорт/нативная
+  генерация/WARP-in-WARP), selective routing по CIDR / доменам /
+  устройствам
 
 ## Требования
 
@@ -116,6 +119,11 @@ python3 app.py --host 0.0.0.0 --port 8080
 | Логи | Журнал событий в реальном времени |
 | Автозапуск | Управление init-скриптом |
 | Настройки | Конфигурация GUI, nfqws, firewall |
+| AmneziaWG → Setup | Wizard: детект окружения, prerequisites, установка бинарников |
+| AmneziaWG → Dashboard | Статус интерфейсов и peer'ов, up/down, autostart |
+| AmneziaWG → Configs | Редактор `.conf`, импорт/экспорт, валидация |
+| AmneziaWG → WARP | Импорт WARP, нативная генерация, WARP-in-WARP |
+| AmneziaWG → Routing | Selective routing: CIDR / домены / устройства |
 
 ### INI-каталоги стратегий
 
@@ -133,6 +141,69 @@ python3 app.py --host 0.0.0.0 --port 8080
 3. Добавьте профили (каждый профиль = набор аргументов nfqws2)
 4. Используйте «Превью» для проверки финальной команды
 5. Сохраните и примените
+
+## AmneziaWG integration
+
+Раздел **AmneziaWG** в сайдбаре управляет WireGuard / AmneziaWG туннелями
+поверх роутера, в том числе Cloudflare WARP, и точечной маршрутизацией
+выбранного трафика в эти туннели.
+
+### Что поддерживается
+
+- **Бинарники `amneziawg-go` / `amneziawg-tools`** — собираются нашим
+  workflow'ом под `mipsel-softfloat`, `mips-softfloat`, `aarch64`,
+  `armv7`, `x86_64` и публикуются в GitHub Releases с тегом
+  `awg-bin-vX`. Setup wizard скачивает подходящий архив, проверяет
+  sha256 и раскладывает по `binary_dir` платформы.
+- **Платформы** — Keenetic (KeenOS 4.x/5.x с Entware + OpkgTun),
+  OpenWrt 22+ (procd + nftables), generic Linux (systemd +
+  iptables/nftables). Init-скрипты под каждую генерируются
+  автоматически.
+- **Конфиги** — парсер/генератор `.conf` со всеми AmneziaWG-полями
+  (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`, `H1`…`H4`, `I`). В UI —
+  моноширинный редактор, валидация, импорт текстом или файлом,
+  экспорт `.conf`.
+- **Cloudflare WARP** — три сценария:
+  - **Импорт** уже сгенерированного на стороннем сайте конфига
+    (эвристика по диапазонам Cloudflare WARP);
+  - **Нативная генерация** через `api.cloudflareclient.com` —
+    регистрация аккаунта, опционально апгрейд WARP+ по ключу,
+    автоподбор AmneziaWG обфускации;
+  - **WARP-in-WARP** — два WARP-туннеля поверх друг друга
+    (static route для inner endpoint через outer интерфейс).
+- **Selective routing** — таблица `awg<N>` → `table 100+N`,
+  правила трёх типов:
+  - **CIDR** — IPv4/IPv6 сети напрямую через `ip rule from`/`ip route`;
+  - **Домены** — управляемый блок `dnsmasq.d/zapret-gui-awg-routing.conf`
+    с include-once в основной `dnsmasq.conf`, ipset (Entware) или
+    nftables set (OpenWrt 22+);
+  - **Устройства** — список из `dhcp.leases`/ARP, per-device правила
+    через source-IP либо fwmark, если платформа поддерживает.
+- **Autostart** — per-config флаг `autostart` в `settings.json`.
+  Init-скрипт под платформу вызывает `python3 app.py --apply-awg-autostart`,
+  который поднимает интерфейсы и применяет routing rules в правильном
+  порядке.
+
+### С чего начать
+
+1. **AmneziaWG → Setup** — мастер проведёт через детект окружения,
+   подскажет недостающие пакеты (например, OpkgTun на Keenetic) и
+   установит бинарники.
+2. **AmneziaWG → WARP** — самый простой путь получить рабочий
+   туннель: вкладка «Генерация» → «Сгенерировать» → «Сохранить».
+3. **AmneziaWG → Dashboard** — поднять интерфейс, проверить
+   handshake и трафик.
+4. **AmneziaWG → Routing** — добавить правило, например
+   `youtube.com,googlevideo.com → awg-warp-1`. Применяется
+   автоматически при up интерфейса.
+
+### Известные ограничения
+
+- На Keenetic 4.x mark-based routing ограничен — per-device правила
+  работают через source IP, не fwmark.
+- Сборка `amneziawg-tools` под `mips-softfloat` использует Bootlin
+  musl toolchain; на роутерах с очень старыми ядрами возможны
+  проблемы с syscall ABI — открывайте issue с `uname -a`.
 
 ## Обновление
 
@@ -196,6 +267,17 @@ REST API: `http://<host>:8080/api/` — 80+ эндпоинтов.
 | POST | /api/gui/update | Обновить GUI |
 | POST | /api/blockcheck/start | Запустить BlockCheck |
 | POST | /api/scan/start | Запустить подбор стратегий |
+| GET | /api/awg/environment | Отчёт детектора окружения AWG |
+| POST | /api/awg/install | Установить бинарники AWG |
+| GET | /api/awg/configs | Список AWG-конфигов |
+| POST | /api/awg/configs/:name/up | Поднять AWG-интерфейс |
+| POST | /api/awg/configs/:name/down | Снять AWG-интерфейс |
+| POST | /api/awg/warp/import | Импорт WARP-конфига |
+| POST | /api/awg/warp/generate | Нативная генерация WARP |
+| POST | /api/awg/warp-in-warp | Включить двойной WARP |
+| GET | /api/routing/rules | Список selective-routing правил |
+| POST | /api/routing/rules | Добавить правило (CIDR/domain/device) |
+| GET | /api/devices | Список устройств из DHCP/ARP |
 
 Полный список — см. `api/` директорию.
 
@@ -207,7 +289,10 @@ zapret-gui/
 ├── catalogs/         # INI-каталоги стратегий (basic/advanced/direct/builtin)
 ├── config/           # Стратегии (builtin JSON + user)
 ├── core/             # Бизнес-логика
-│   └── testers/      # Сетевые тестеры (TLS, STUN, TCP, DPI)
+│   ├── testers/      # Сетевые тестеры (TLS, STUN, TCP, DPI)
+│   ├── routing/      # Selective routing engine (CIDR/domain/device)
+│   ├── awg_*.py      # AmneziaWG: platform, detector, installer, manager, config
+│   └── warp_*.py     # Cloudflare WARP: импорт, нативная генерация
 ├── data/             # Данные (домены, TCP-цели)
 ├── packaging/        # Скрипты сборки ipk (Entware/OpenWrt)
 ├── web/              # Фронтенд (SPA)
@@ -217,7 +302,9 @@ zapret-gui/
 │   │   ├── pages/
 │   │   └── utils/
 │   └── index.html
-├── .github/workflows/release.yml  # CI/CD
+├── .github/workflows/
+│   ├── release.yml                # CI/CD основного пакета
+│   └── build-awg-binaries.yml     # Кросс-сборка amneziawg-go/-tools
 ├── app.py            # Точка входа
 ├── Makefile          # Сборка пакетов
 ├── install.sh        # Автоустановка

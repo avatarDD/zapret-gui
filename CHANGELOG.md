@@ -1,5 +1,107 @@
 # Changelog
 
+## v0.19.0 — Интеграция AmneziaWG: туннели, WARP, selective routing
+
+### Добавлено
+- **Кросс-компиляция бинарников `amneziawg-go` / `amneziawg-tools`** —
+  `.github/workflows/build-awg-binaries.yml`. Сборка под архитектуры
+  роутеров (`mipsel-softfloat`, `mips-softfloat`, `aarch64`, `armv7`,
+  `x86_64`), публикация артефактов и `manifest.json` (версии, sha256,
+  ссылки) в GitHub Releases по тегу `awg-bin-vX`. Go-бинарь —
+  напрямую `go build` с матрицей `GOARCH`/`GOMIPS`/`GOARM`, C-tools —
+  через Bootlin musl toolchains.
+- **Платформенная абстракция** — `core/awg_platform.py`:
+  `KeeneticPlatform` (KeenOS 4.x/5.x), `OpenWrtPlatform` (procd),
+  `GenericLinuxPlatform` (systemd). У каждой — пути установки,
+  init-инфраструктура, firewall-бэкенд (iptables/nftables),
+  признаки `has_opkg_tun()` / `supports_iptables_user_chain()`.
+- **Детект окружения** — `core/awg_detector.py`:
+  версия KeenOS, архитектура (`uname -m` + `opkg print-architecture`),
+  доступность `/dev/net/tun`, наличие OpkgTun, существующие
+  установки AWG/WG (бинари, конфиги в `/opt/etc/amneziawg/`,
+  `/etc/amnezia/awg/`, `/etc/wireguard/`, активные интерфейсы).
+  Единый отчёт через `GET /api/awg/environment` — без exception'ов
+  при частичном детекте.
+- **Установщик бинарников** — `core/awg_installer.py`. Скачивание
+  `manifest.json` из релизов, выбор подходящего архива по архитектуре,
+  проверка sha256, распаковка в `platform.binary_dir`, простановка
+  +x. Без новых зависимостей (`urllib.request` + `hashlib`).
+- **Setup wizard** — `web/js/pages/awg_setup.js`. Четыре шага: детект,
+  проверка prerequisites (TUN/OpkgTun + инструкции для Keenetic),
+  установка с прогрессом, готово. Helper для Keenetic —
+  `core/awg_keenetic_setup.py` (детект OpkgTun + пошаговая инструкция).
+- **Парсер/генератор `.conf`** — `core/awg_config.py`. Поддержка всех
+  AmneziaWG-расширений (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`, `H1`…`H4`,
+  `I`), валидация, генерация пары ключей X25519 через бинарь
+  `awg genkey | awg pubkey` (без cryptography depency).
+- **Менеджер интерфейсов** — `core/awg_manager.py`: `list_configs`,
+  CRUD, `up`/`down`/`restart`, `status` (parsed `wg show`),
+  `list_interfaces`. PID-файлы и логирование в стиле
+  `core/nfqws_manager.py`. Генерация init-скриптов под платформу —
+  `core/awg_init_script.py`.
+- **Dashboard и редактор конфигов** — `web/js/pages/awg_dashboard.js`
+  (auto-refresh, статус peer'ов, last handshake, RX/TX, кнопки
+  up/down/toggle autostart) и `web/js/pages/awg_configs.js`
+  (моноширинный редактор, импорт paste/upload, экспорт,
+  валидация перед сохранением).
+- **WARP импорт** — `core/warp_importer.py`. Эвристика
+  `is_warp_config()` (peer endpoint в диапазонах Cloudflare WARP,
+  `AllowedIPs = 0.0.0.0/0, ::/0`), автоимя `warp-N`.
+- **WARP нативная генерация** — `core/warp_generator.py`. Регистрация
+  через неофициальный API `api.cloudflareclient.com/v0a2483/reg`,
+  опциональный апгрейд WARP+ по ключу, генерация AmneziaWG
+  обфускации (`Jc`, `Jmin/Jmax`, `S1/S2`, четыре уникальных
+  `H1`…`H4`). Версии API и заголовки вынесены в константы.
+- **WARP-in-WARP** — `core/awg_warp_in_warp.py`. Static route
+  `<inner_endpoint>/32 dev <outer_iface>`, корректный порядок
+  поднятия, state в `settings.json`, UI-таб с wizard'ом.
+- **Selective routing engine** — `core/routing/`:
+  `manager.py` (правила, таблицы маршрутизации `awg<N>` → `table
+  100+N`, ip rule/route, mark через iptables), `rules.py`
+  (`CidrRoutingRule`, `DomainRoutingRule`, `DeviceRoutingRule`),
+  `storage.py` (персистенция в `settings.json`),
+  `applier.py` (хуки `apply_all_on_interface_up` /
+  `remove_all_on_interface_down` в `awg_manager.up/down`).
+- **Routing по доменам** — `core/routing/dnsmasq_integration.py` +
+  `core/routing/ipset_backend.py` / `nftset_backend.py`. Управляемый
+  блок через `conf-file=/opt/etc/dnsmasq.d/zapret-gui-awg-routing.conf`
+  и append-once `include` — основной dnsmasq.conf не переписывается.
+  Reload через `killall -HUP dnsmasq`.
+- **Routing по устройствам** — `core/devices_discovery.py`.
+  Источники: `/tmp/dhcp.leases`, `/var/lib/misc/dnsmasq.leases`,
+  `/proc/net/arp` (fallback). Per-device правила через
+  `ip rule from <ip>/32 lookup <table>` либо fwmark, если платформа
+  поддерживает.
+- **AWG autostart** — `core/awg_autostart_manager.py` +
+  `python3 app.py --apply-awg-autostart`. Per-config `autostart`
+  флаг в `settings.json`, init-скрипты под Entware (`S51amneziawg-gui`),
+  OpenWrt (procd `awg-gui-tunnels`), systemd (`awg-gui-tunnels.service`,
+  `Type=oneshot`). Корректный порядок: сначала interface up,
+  потом routing rules.
+- **API** — `api/awg.py`, `api/routing.py`, `api/devices.py`:
+  CRUD конфигов, `/up`, `/down`, `/restart`, `/status`,
+  `/interfaces`, `/install`, `/uninstall`, `/warp/import`,
+  `/warp/generate`, `/warp-in-warp`, `/routing/rules`,
+  `/routing/apply`, `/routing/dnsmasq/status`, `/devices`.
+- **Меню `AmneziaWG`** — sidebar расширен подразделами Dashboard,
+  Configs, WARP, Routing, Setup.
+
+### Зачем
+Раньше zapret-gui управлял только nfqws2 (обход DPI на сетевом
+уровне). Для пользователей, которым нужен VPN-оверлей (WARP,
+сторонние AWG-серверы) и точечная маршрутизация (по CIDR /
+доменам / устройствам) — приходилось собирать стек руками. Теперь
+весь цикл — от установки бинарников до selective routing —
+покрыт UI и работает out-of-the-box на Keenetic 5.x, OpenWrt 22+
+и generic Linux.
+
+### Архитектурно
+Routing engine (`core/routing/*`) намеренно отделён от AWG: правила
+оперируют целевым интерфейсом и таблицей, без привязки к
+WireGuard/AmneziaWG. Это задел под будущую интеграцию Sing-box /
+Karing replacement — там тот же движок переиспользуется без
+доработок (см. `TODO.md`).
+
 ## v0.17.0 — Подбор стратегий: глубокая проба и ранжирование по КПД
 
 ### Исправлено
