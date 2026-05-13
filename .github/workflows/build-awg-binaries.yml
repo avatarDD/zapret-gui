@@ -33,8 +33,10 @@ on:
     tags:
       - 'awg-bin-*'
   schedule:
-    # Ежедневно 06:00 UTC — авто-детект новых апстрим-версий
-    - cron: '0 6 * * *'
+    # Каждые 6 часов — авто-детект новых апстрим-версий.
+    # Раньше было раз в сутки; если апстрим тэг проставлен сразу после
+    # запуска, ждать почти 24 часа неудобно.
+    - cron: '0 */6 * * *'
 
 permissions:
   contents: write
@@ -64,13 +66,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Берём самый свежий git-тэг (а не релиз): амнезия часто
+          # проставляет тэг раньше, чем создаёт Release-объект, поэтому
+          # releases/latest может «отставать» от tags на несколько дней.
           resolve_latest() {
             local repo="$1"
             local out
-            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null); then
+            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
               echo "$out"; return
             fi
-            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null); then
+            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
               echo "$out"; return
             fi
             echo "main"
@@ -132,13 +139,17 @@ jobs:
             fi
           fi
 
+          # Берём самый свежий git-тэг (а не релиз): амнезия часто
+          # проставляет тэг раньше, чем создаёт Release-объект.
           resolve_latest() {
             local repo="$1"
             local out
-            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null); then
+            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
               echo "$out"; return
             fi
-            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null); then
+            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
               echo "$out"; return
             fi
             echo "main"

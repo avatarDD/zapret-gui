@@ -196,7 +196,16 @@ class AwgInstaller:
 
     def _resolve_release_tag(self, repo: str, tag_prefix: str) -> str:
         """
-        Найти последний релиз с тэгом, начинающимся на tag_prefix.
+        Найти последний релиз, в котором есть manifest.json.
+
+        Логика поиска:
+          1. Если есть релиз с tag_name, начинающимся на tag_prefix,
+             и в его assets есть manifest.json — берём его (новые сверху).
+          2. Иначе берём первый релиз с manifest.json в assets независимо
+             от префикса — это работает для ручных релизов (например
+             `manual-YYYYMMDDHHMMSS`).
+          3. Если ни в одном релизе нет manifest.json — кидаем понятную
+             ошибку с найденными тэгами.
 
         GitHub API releases возвращает их в порядке создания (новые сверху).
         """
@@ -209,20 +218,42 @@ class AwgInstaller:
                 "Не удалось получить список релизов %s: %s" % (url, e)
             )
 
+        def _has_manifest(rel):
+            for a in rel.get("assets") or []:
+                if (a.get("name") or "").lower() == "manifest.json":
+                    return True
+            return False
+
+        # 1) Предпочтительно — последний релиз с нужным префиксом.
         for rel in data:
             tag = rel.get("tag_name") or ""
-            if tag.startswith(tag_prefix) and not rel.get("draft"):
+            if rel.get("draft"):
+                continue
+            if tag.startswith(tag_prefix) and _has_manifest(rel):
                 return tag
 
-        # Покажем какие тэги вообще есть — это самая частая причина
-        # «нет релизов с префиксом»: репозиторий публикует другие
-        # релизы, без awg-bin-*.
+        # 2) Любой релиз с manifest.json (для ручных загрузок).
+        for rel in data:
+            tag = rel.get("tag_name") or ""
+            if rel.get("draft"):
+                continue
+            if _has_manifest(rel):
+                log.info(
+                    "Используем релиз %s (нет тэга с префиксом '%s', "
+                    "но есть manifest.json)" % (tag, tag_prefix),
+                    source="awg_installer",
+                )
+                return tag
+
+        # 3) Ничего не нашли — расскажем что есть.
         seen = [r.get("tag_name") or "" for r in data][:10]
         raise RuntimeError(
-            "В репозитории %s нет релизов с префиксом '%s'. "
-            "Найдены тэги: %s. Проверьте release_tag_prefix в настройках "
-            "или соберите бинарники через workflow build-awg-binaries.yml." %
-            (repo, tag_prefix, (", ".join(t for t in seen if t) or "(нет релизов)"))
+            "Не найден релиз с manifest.json в репозитории %s. "
+            "Проверены тэги (искали префикс '%s' или релиз с asset'ом "
+            "manifest.json): %s. Соберите бинарники через workflow "
+            "build-awg-binaries.yml или загрузите manifest.json в существующий релиз." %
+            (repo, tag_prefix,
+             (", ".join(t for t in seen if t) or "(нет релизов)"))
         )
 
     def get_manifest(self, tag: str = None, force: bool = False) -> dict:
