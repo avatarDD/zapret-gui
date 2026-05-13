@@ -12,6 +12,7 @@ const AwgDashboardPage = (() => {
     let configs = [];
     let interfaces = [];
     let autostart = { interfaces: {}, script_installed: false, script_path: '' };
+    let keeneticRouting = null;
     let busy = {};
 
     // ══════════════ render ══════════════
@@ -66,6 +67,7 @@ const AwgDashboardPage = (() => {
             </div>
 
             <div id="awg-tunnels"></div>
+            <div id="awg-keenetic-routing"></div>
         `;
 
         refresh();
@@ -92,15 +94,17 @@ const AwgDashboardPage = (() => {
 
     async function refresh() {
         try {
-            const [cfgsResp, ifsResp, autoResp] = await Promise.all([
+            const [cfgsResp, ifsResp, autoResp, envResp] = await Promise.all([
                 API.get('/api/awg/configs'),
                 API.get('/api/awg/interfaces'),
                 API.get('/api/awg/autostart').catch(() => ({ status: {} })),
+                API.get('/api/awg/environment').catch(() => null),
             ]);
             configs = cfgsResp.configs || [];
             interfaces = ifsResp.interfaces || [];
             autostart = (autoResp && autoResp.status) || { interfaces: {} };
             if (!autostart.interfaces) autostart.interfaces = {};
+            keeneticRouting = (envResp && envResp.keenetic_routing) || null;
             renderBody();
         } catch (err) {
             const body = document.getElementById('awg-summary-body');
@@ -160,17 +164,65 @@ const AwgDashboardPage = (() => {
         }
 
         // Объединяем: конфиги + active-only интерфейсы (которые не имеют конфига)
-        const cfgNames = new Set(configs.map(c => c.name));
-        const orphanIfaces = interfaces.filter(i => !cfgNames.has(i.name));
+        // Сопоставление по реальному имени интерфейса (cfg.iface), а не
+        // только по имени файла — конфиги вида `awg0-opkgtun0.conf` для
+        // интерфейса `opkgtun0` должны находить свой активный туннель.
+        const claimedIfaces = new Set();
+        configs.forEach(c => {
+            if (c.iface) claimedIfaces.add(c.iface);
+            claimedIfaces.add(c.name);
+        });
+        const orphanIfaces = interfaces.filter(i => !claimedIfaces.has(i.name));
 
         const cards = [];
         configs.forEach(c => {
-            cards.push(renderTunnelCard(c, ifaceByName[c.name]));
+            // Берём статус по фактическому имени интерфейса, если оно
+            // отличается от имени конфига.
+            const ifaceData = ifaceByName[c.iface] || ifaceByName[c.name];
+            cards.push(renderTunnelCard(c, ifaceData));
         });
         orphanIfaces.forEach(i => {
             cards.push(renderTunnelCard({ name: i.name, active: i.active, orphan: true }, i));
         });
         wrap.innerHTML = cards.join('');
+
+        renderKeeneticRouting();
+    }
+
+    function renderKeeneticRouting() {
+        const wrap = document.getElementById('awg-keenetic-routing');
+        if (!wrap) return;
+        const k = keeneticRouting;
+        if (!k || !k.available) {
+            wrap.innerHTML = '';
+            return;
+        }
+        const block = (title, body) => body
+            ? `<details style="margin-top: 8px;">
+                   <summary style="cursor:pointer; color: var(--text-secondary); font-size: 13px;">${escapeHtml(title)}</summary>
+                   <pre style="margin-top: 6px; padding: 8px; background: var(--bg-input);
+                                border-radius: var(--radius-sm); font-size: 11px;
+                                max-height: 240px; overflow: auto;">${escapeHtml(body)}</pre>
+               </details>`
+            : '';
+        wrap.innerHTML = `
+            <div class="card" style="margin-top: 16px;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M6 3v12"/><circle cx="6" cy="18" r="3"/>
+                        <circle cx="18" cy="6" r="3"/><path d="M18 9v12"/>
+                    </svg>
+                    Маршрутизация Keenetic (NDM)
+                </div>
+                <div style="margin-top: 4px; font-size: 12px; color: var(--text-muted);">
+                    Снимок текущих настроек штатного GUI Keenetic. AWG может конфликтовать
+                    с этими политиками и маршрутами — проверьте, если что-то работает не так.
+                </div>
+                ${block('Политики (show ip policy)', k.policy)}
+                ${block('Маршруты (show ip route)', k.routes)}
+                ${block('Интерфейсы (show interface)', k.interfaces)}
+            </div>
+        `;
     }
 
     function renderTunnelCard(cfg, iface) {
@@ -217,6 +269,9 @@ const AwgDashboardPage = (() => {
         const orphan = cfg.orphan
             ? `<span class="badge badge-warning" style="margin-left: 8px;">без конфига</span>`
             : '';
+        const ifaceLabel = (cfg.iface && cfg.iface !== cfg.name)
+            ? `<span class="text-muted" style="margin-left: 8px; font-size: 12px;">→ iface <span style="font-family:monospace;">${escapeHtml(cfg.iface)}</span></span>`
+            : '';
 
         const autoOn = !!(autostart.interfaces || {})[cfg.name];
         const autoToggle = cfg.orphan
@@ -232,7 +287,7 @@ const AwgDashboardPage = (() => {
             <div class="card" style="margin-bottom: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="display:flex; align-items: center; gap: 8px;">
-                        <strong>${escapeHtml(cfg.name)}</strong> ${orphan}
+                        <strong>${escapeHtml(cfg.name)}</strong> ${orphan} ${ifaceLabel}
                         <span style="display:flex; gap: 6px; align-items: center; margin-left: 8px;">
                             ${statusBadge}
                         </span>

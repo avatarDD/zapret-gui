@@ -128,8 +128,34 @@ class AwgManager:
         os.makedirs(d, exist_ok=True)
         return d
 
+    def _scan_dirs(self) -> list:
+        """
+        Все каталоги, в которых ищем конфиги: основной platform.config_dir
+        плюс дополнительные кандидаты (на Keenetic пользователи иногда
+        держат конфиги в /opt/etc/amnezia/amneziawg/ и т.п.).
+        """
+        from core.awg_detector import AwgDetector
+        primary = self._platform().config_dir
+        seen = set()
+        dirs = []
+        for d in [primary] + list(AwgDetector.CONFIG_DIR_CANDIDATES):
+            if d and d not in seen and os.path.isdir(d):
+                seen.add(d)
+                dirs.append(d)
+        return dirs
+
     def _config_path(self, name: str) -> str:
-        return os.path.join(self._config_dir(), "%s.conf" % name)
+        """
+        Найти .conf для имени конфига во всех известных каталогах.
+        Если нигде нет — возвращаем путь в platform.config_dir
+        (туда будем сохранять новый файл при save).
+        """
+        fname = "%s.conf" % name
+        for d in self._scan_dirs():
+            p = os.path.join(d, fname)
+            if os.path.isfile(p):
+                return p
+        return os.path.join(self._config_dir(), fname)
 
     def _pid_path(self, iface: str) -> str:
         return os.path.join(self._run_dir(), "awg-%s.pid" % iface)
@@ -140,32 +166,104 @@ class AwgManager:
     # ─────────── CRUD ───────────
 
     def list_configs(self) -> list:
-        """Список конфигов в config_dir с краткой инфой."""
-        d = self._config_dir()
+        """
+        Список конфигов из всех известных каталогов.
+
+        Каждая запись возвращает не только имя файла, но и `iface` —
+        фактическое имя сетевого интерфейса. Это нужно для случаев,
+        когда конфиг назван по схеме `<label>-<iface>.conf` (например
+        `awg0-opkgtun0.conf` для интерфейса `opkgtun0`) — типично
+        для скриптов, оборачивающих awg-quick.
+        """
+        seen = set()  # по имени файла (без .conf)
+        active_ifaces = self._wg_interfaces()
         result = []
-        if not os.path.isdir(d):
-            return result
-        for f in sorted(os.listdir(d)):
-            if not f.endswith(".conf"):
-                continue
-            name = f[:-5]
-            path = os.path.join(d, f)
+        for d in self._scan_dirs():
             try:
-                stat = os.stat(path)
-                size = stat.st_size
-                mtime = int(stat.st_mtime)
+                files = sorted(os.listdir(d))
             except OSError:
-                size = 0
-                mtime = 0
-            active = self.is_running(name)
-            result.append({
-                "name":   name,
-                "path":   path,
-                "size":   size,
-                "mtime":  mtime,
-                "active": active,
-            })
+                continue
+            for f in files:
+                if not f.endswith(".conf"):
+                    continue
+                name = f[:-5]
+                if name in seen:
+                    continue
+                seen.add(name)
+                path = os.path.join(d, f)
+                if not os.path.isfile(path):
+                    continue
+                try:
+                    stat = os.stat(path)
+                    size = stat.st_size
+                    mtime = int(stat.st_mtime)
+                except OSError:
+                    size = 0
+                    mtime = 0
+                iface = self._resolve_iface_name(name, path, active_ifaces)
+                active = self.is_running(iface) or self.is_running(name)
+                result.append({
+                    "name":   name,
+                    "iface":  iface,
+                    "path":   path,
+                    "size":   size,
+                    "mtime":  mtime,
+                    "active": active,
+                })
         return result
+
+    def _resolve_iface_name(self, config_name: str, config_path: str,
+                            active_ifaces: list) -> str:
+        """
+        Определяет имя сетевого интерфейса, которому принадлежит конфиг.
+
+        Эвристика:
+          1. Если имя конфига совпадает с активным интерфейсом — оно и есть.
+          2. Если конфиг назван `<label>-<iface>.conf` и `<iface>` есть в
+             списке активных — возвращаем `<iface>`.
+          3. Сверка по PublicKey пира: если в конфиге есть [Peer]/PublicKey,
+             совпадающий с PublicKey пира одного из активных интерфейсов,
+             возвращаем имя этого интерфейса.
+          4. Иначе — возвращаем сам name (классический wg-quick case).
+        """
+        active = set(active_ifaces or [])
+        if config_name in active:
+            return config_name
+
+        if "-" in config_name:
+            suffix = config_name.rsplit("-", 1)[-1]
+            if suffix and suffix in active:
+                return suffix
+
+        # Сверка по PublicKey пира — медленнее, но надёжно.
+        try:
+            with open(config_path, "r") as f:
+                cfg = parse_conf(f.read())
+        except (IOError, OSError, ValueError):
+            return config_name
+
+        peer_keys = set()
+        for peer in cfg.get("peers", []) or []:
+            pk = (peer.get("PublicKey") or "").strip()
+            if pk:
+                peer_keys.add(pk)
+
+        if peer_keys:
+            for iface in active:
+                rc, out, _ = _run([self._awg_bin(), "show", iface, "dump"], timeout=5)
+                if rc != 0 or not out.strip():
+                    continue
+                lines = [l for l in out.splitlines() if l.strip()]
+                # Первая строка — [Interface], дальше — пиры (поле[0] = pubkey).
+                for line in lines[1:]:
+                    parts = line.split("\t")
+                    if not parts:
+                        continue
+                    iface_pk = parts[0].strip()
+                    if iface_pk and iface_pk in peer_keys:
+                        return iface
+
+        return config_name
 
     def get_config(self, name: str) -> dict:
         """
@@ -246,6 +344,25 @@ class AwgManager:
         # Fallback — есть в `wg show interfaces`
         return iface in self._wg_interfaces()
 
+    def _iface_for_name(self, name: str) -> str:
+        """
+        Найти имя реально работающего интерфейса для конфига `name`.
+        Используется при down/restart: если конфиг назван
+        `awg0-opkgtun0`, а активный интерфейс — `opkgtun0`, операции
+        должны идти по `opkgtun0`.
+        """
+        active = self._wg_interfaces()
+        if name in active:
+            return name
+        path = self._config_path(name)
+        if os.path.isfile(path):
+            return self._resolve_iface_name(name, path, active)
+        if "-" in name:
+            suffix = name.rsplit("-", 1)[-1]
+            if suffix in active:
+                return suffix
+        return name
+
     def _wg_interfaces(self) -> list:
         rc, out, _ = _run([self._awg_bin(), "show", "interfaces"], timeout=5)
         if rc == 0 and out.strip():
@@ -273,7 +390,14 @@ class AwgManager:
         return result
 
     def status(self, iface: str) -> dict:
-        """Статус интерфейса: peers, last handshake, RX/TX и пр."""
+        """Статус интерфейса: peers, last handshake, RX/TX и пр.
+
+        Принимает либо имя реального интерфейса (`opkgtun0`), либо имя
+        конфига (`awg0-opkgtun0`) — во втором случае резолвим в реальный.
+        """
+        resolved = self._iface_for_name(iface)
+        if resolved and resolved != iface and resolved in self._wg_interfaces():
+            iface = resolved
         info = {
             "name":     iface,
             "active":   False,
@@ -497,7 +621,10 @@ class AwgManager:
     def _do_down(self, name: str) -> dict:
         if not _valid_iface_name(name):
             return {"ok": False, "message": "Недопустимое имя"}
-        ifname = name
+        # Если конфиг назван `awg0-opkgtun0`, а реальный интерфейс —
+        # `opkgtun0` (поднят внешним скриптом), down должен идти по
+        # реальному имени, иначе `ip link delete` ничего не найдёт.
+        ifname = self._iface_for_name(name)
 
         # PreDown / PostDown
         path = self._config_path(name)

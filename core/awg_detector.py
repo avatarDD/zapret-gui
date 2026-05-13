@@ -104,28 +104,142 @@ class AwgDetector:
     def detect_keenos_version(self):
         """
         Пытается определить версию KeenOS.
-        Возвращает строку вида '5.4.1' или '' если не Keenetic.
+        Возвращает строку вида '5.0.3' или '' если не Keenetic.
+
+        Источники в порядке приоритета:
+          1) `ndmc -c "show version"` — текстовый YAML-подобный вывод,
+             поле `title:` (например `5.0.3`). На современных прошивках
+             даёт самую корректную "пользовательскую" версию.
+          2) `ndmq -p "show version"` — JSON-формат (старые прошивки),
+             поле `"title"` или `"version"`.
+          3) /proc/version — строка с "Keenetic X.Y.Z".
+          4) /etc/openwrt_release — у Keenetic с OpenWrt-основой.
         """
-        # Ndm-команда (доступна на новых прошивках)
-        ndm = _cmd_out(["ndmq", "-p", "show version"], timeout=3)
-        if ndm:
-            m = re.search(r'"version"\s*:\s*"([\d.]+)"', ndm)
+        # 1) ndmc -c "show version" — текстовый YAML-формат:
+        #      title: 5.0.3
+        #      ndw4:
+        #        version: 5.0.C.3.1
+        for cmd in (["ndmc", "-c", "show version"],
+                    ["ndmc", "show", "version"]):
+            ndm = _cmd_out(cmd, timeout=3)
+            if not ndm:
+                continue
+            ver = self._parse_ndmc_version(ndm)
+            if ver:
+                return ver
+
+        # 2) ndmq -p "show version" — может быть как JSON, так и YAML
+        for cmd in (["ndmq", "-p", "show version"],
+                    ["ndmq", "show", "version"]):
+            ndm = _cmd_out(cmd, timeout=3)
+            if not ndm:
+                continue
+            # JSON: {"title":"5.0.3", ...} или {"version":"5.4.1"}
+            m = re.search(r'"title"\s*:\s*"([\d][\w.\-]*)"', ndm)
             if m:
                 return m.group(1)
+            m = re.search(r'"version"\s*:\s*"([\d][\w.\-]*)"', ndm)
+            if m:
+                return m.group(1)
+            # YAML
+            ver = self._parse_ndmc_version(ndm)
+            if ver:
+                return ver
 
-        # /proc/version — содержит строку вида "Keenetic X.Y.Z"
+        # 3) /proc/version — строка вида "Keenetic X.Y.Z"
         proc_ver = _read_file("/proc/version")
         m = re.search(r"Keenetic[^\d]*([\d]+\.[\d]+\.[\d]+)", proc_ver, re.I)
         if m:
             return m.group(1)
 
-        # /etc/openwrt_release на Keenetic с OpenWrt основой
+        # 4) /etc/openwrt_release на Keenetic с OpenWrt основой
         rel = _read_file("/etc/openwrt_release")
         m = re.search(r'DISTRIB_DESCRIPTION="[^"]*Keenetic[^"]*?([\d]+\.[\d]+\.[\d]+)', rel, re.I)
         if m:
             return m.group(1)
 
         return ""
+
+    def _parse_ndmc_version(self, text: str) -> str:
+        """
+        Парсер YAML-подобного вывода `ndmc -c "show version"`.
+
+        Предпочтения:
+          - title (например '5.0.3') — короткая пользовательская версия
+          - ndw4.version (например '5.0.C.3.1')
+          - release (например '5.00.C.3.0-2')
+        """
+        # title: 5.0.3  (на верхнем уровне отступа, может быть с пробелами)
+        for line in text.splitlines():
+            m = re.match(r"\s*title\s*:\s*([\d][\w.\-]*)\s*$", line)
+            if m:
+                return m.group(1).strip()
+
+        # ndw4: \n  version: 5.0.C.3.1
+        in_ndw4 = False
+        ndw4_indent = -1
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+            if re.match(r"ndw4\s*:\s*$", stripped):
+                in_ndw4 = True
+                ndw4_indent = indent
+                continue
+            if in_ndw4:
+                if stripped and indent <= ndw4_indent and not stripped.startswith("version"):
+                    in_ndw4 = False
+                    continue
+                m = re.match(r"version\s*:\s*([\d][\w.\-]*)\s*$", stripped)
+                if m:
+                    return m.group(1).strip()
+
+        # release: 5.00.C.3.0-2
+        for line in text.splitlines():
+            m = re.match(r"\s*release\s*:\s*([\d][\w.\-]*)\s*$", line)
+            if m:
+                return m.group(1).strip()
+
+        return ""
+
+    def detect_keenetic_routing(self) -> dict:
+        """
+        Best-effort снимок текущих настроек маршрутизации Keenetic через
+        ndmc/ndmq. Ничего не модифицирует — только показывает админу,
+        чтобы он понимал возможные конфликты с AWG-маршрутами.
+
+        Возвращает:
+          {
+            "available": bool,        # удалось прочитать хоть что-то
+            "policy":    str,         # сырой вывод 'show ip policy'
+            "routes":    str,         # сырой вывод 'show ip route'
+            "interfaces": str,        # сырой вывод 'show interface'
+          }
+        """
+        result = {"available": False, "policy": "", "routes": "", "interfaces": ""}
+
+        def _try(cmds):
+            for cmd in cmds:
+                out = _cmd_out(cmd, timeout=4)
+                if out:
+                    return out
+            return ""
+
+        result["policy"] = _try([
+            ["ndmc", "-c", "show ip policy"],
+            ["ndmq", "-p", "show ip policy"],
+        ])
+        result["routes"] = _try([
+            ["ndmc", "-c", "show ip route"],
+            ["ndmq", "-p", "show ip route"],
+        ])
+        result["interfaces"] = _try([
+            ["ndmc", "-c", "show interface"],
+            ["ndmq", "-p", "show interface"],
+        ])
+        result["available"] = any(
+            result[k] for k in ("policy", "routes", "interfaces")
+        )
+        return result
 
     def detect_architecture(self):
         """
@@ -189,7 +303,7 @@ class AwgDetector:
         # Проверяем что нужно для работы AWG на данной платформе
         prerequisites = self._check_prerequisites(platform, tun)
 
-        return {
+        report = {
             "ok":            True,
             "platform":      platform.as_dict(),
             "architecture":  arch,
@@ -198,6 +312,13 @@ class AwgDetector:
             "prerequisites": prerequisites,
             "ready":         prerequisites["all_met"],
         }
+
+        # На Keenetic подцепим снимок текущих NDM-маршрутов/политик,
+        # чтобы пользователь видел потенциальные конфликты с AWG.
+        if isinstance(platform, KeeneticPlatform):
+            report["keenetic_routing"] = self.detect_keenetic_routing()
+
+        return report
 
     def _check_prerequisites(self, platform: AwgPlatform, tun: dict):
         items = []
@@ -252,7 +373,9 @@ class AwgDetector:
         pv = _read_file("/proc/version").lower()
         if "keenetic" in pv:
             return True
-        if os.path.exists("/opt/etc/init.d") and _cmd_ok(["ndmq", "--help"]):
+        if os.path.exists("/opt/etc/init.d") and (
+            _cmd_ok(["ndmc", "--help"]) or _cmd_ok(["ndmq", "--help"])
+        ):
             return True
         rel = _read_file("/etc/openwrt_release").lower()
         return "keenetic" in rel
@@ -287,17 +410,24 @@ class AwgDetector:
         # Неизвестная арх — возвращаем uname как есть
         return uname_m
 
+    # Каталоги, в которых принято хранить конфиги AmneziaWG / WireGuard.
+    # Сюда смотрят и detector, и manager — чтобы пользовательский конфиг,
+    # лежащий не в platform.config_dir, всё равно был виден.
+    CONFIG_DIR_CANDIDATES = (
+        "/opt/etc/amneziawg",
+        "/opt/etc/amnezia/amneziawg",
+        "/opt/etc/amnezia/awg",
+        "/opt/etc/AmneziaWG",
+        "/opt/etc/wireguard",
+        "/etc/amneziawg",
+        "/etc/amnezia/amneziawg",
+        "/etc/amnezia/awg",
+        "/etc/wireguard",
+    )
+
     def _find_config_dirs(self):
-        candidates = [
-            "/opt/etc/amneziawg",
-            "/opt/etc/amnezia/awg",
-            "/opt/etc/wireguard",
-            "/etc/amneziawg",
-            "/etc/amnezia/awg",
-            "/etc/wireguard",
-        ]
         found = []
-        for d in candidates:
+        for d in self.CONFIG_DIR_CANDIDATES:
             if os.path.isdir(d):
                 confs = [
                     f for f in os.listdir(d)
