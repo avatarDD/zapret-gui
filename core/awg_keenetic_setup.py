@@ -63,12 +63,10 @@ def check_opkg_tun() -> dict:
 
     result["needs_opkg_tun"] = major >= 5
 
-    if result["needs_opkg_tun"]:
-        result["installed"] = _cmd_ok(["opkg", "status", "opkg-tun"])
-        result["ready"] = result["installed"] and result["tun_device"]
-    else:
-        result["installed"] = result["tun_device"]
-        result["ready"] = result["tun_device"]
+    # OpkgTun — системный компонент Keenetic, не opkg-пакет. Его наличие
+    # определяем по факту появления /dev/net/tun.
+    result["installed"] = result["tun_device"]
+    result["ready"] = result["tun_device"]
 
     if not result["ready"]:
         result["instructions"] = generate_install_instructions()

@@ -104,7 +104,13 @@ const AwgSetupPage = (() => {
                     Шаг 4. Готово
                 </div>
                 <div id="awg-done-body" style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
-                    AWG установлен и готов к настройке. Создание интерфейсов и WARP появятся в следующих обновлениях.
+                    AWG установлен и готов к работе. Дальше:
+                    <ul style="margin: 6px 0 0 18px; padding: 0;">
+                        <li><a href="#awg" style="color: var(--primary);">AmneziaWG → туннели</a> — статус интерфейсов, Start/Stop/Restart, peers и трафик.</li>
+                        <li><a href="#awg-configs" style="color: var(--primary);">Конфиги</a> — создание и редактирование .conf, импорт.</li>
+                        <li><a href="#awg-warp" style="color: var(--primary);">WARP</a> — нативная генерация и импорт Cloudflare WARP.</li>
+                        <li><a href="#awg-routing" style="color: var(--primary);">Routing</a> — selective routing по CIDR, доменам и устройствам.</li>
+                    </ul>
                 </div>
             </div>
 
@@ -478,7 +484,7 @@ const AwgSetupPage = (() => {
                 `${active.map(n => `<span class="awg-mono">${escapeHtml(n)}</span>`).join(', ')}<br>` +
                 `После установки новых бинарников эти процессы продолжат работу со старым кодом. ` +
                 `Чтобы переключить их на свежие бинарники, перейдите в ` +
-                `<a href="#awg-dashboard" style="color: var(--primary);">AmneziaWG → туннели</a> ` +
+                `<a href="#awg" style="color: var(--primary);">AmneziaWG → туннели</a> ` +
                 `и нажмите <strong>Restart</strong> на нужном туннеле.`
             );
         }

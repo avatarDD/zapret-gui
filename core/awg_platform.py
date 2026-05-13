@@ -142,9 +142,18 @@ class KeeneticPlatform(AwgPlatform):
             return 0
 
     def has_opkg_tun(self):
-        """OpkgTun нужен начиная с KeenOS 5.0."""
+        """
+        OpkgTun нужен начиная с KeenOS 5.0.
+
+        OpkgTun — это СИСТЕМНЫЙ компонент Keenetic (включается в
+        веб-админке: «Управление → Компоненты → Поддержка TUN/TAP
+        для OPKG»), а не opkg-пакет. Реальный индикатор того, что он
+        включён, — появление `/dev/net/tun`. Старая проверка
+        `opkg status opkg-tun` всегда возвращала false, потому что
+        такого opkg-пакета не существует.
+        """
         if self._version_major() >= 5:
-            return _cmd_ok(["opkg", "status", "opkg-tun"])
+            return self.tun_available()
         # На KeenOS < 5 TUN обычно доступен иначе
         return self.tun_available()
 
