@@ -205,14 +205,24 @@ class AwgInstaller:
             with _http_get(url) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except (HTTPError, URLError, ValueError, OSError) as e:
-            raise RuntimeError("Не удалось получить список релизов: %s" % e)
+            raise RuntimeError(
+                "Не удалось получить список релизов %s: %s" % (url, e)
+            )
 
         for rel in data:
             tag = rel.get("tag_name") or ""
             if tag.startswith(tag_prefix) and not rel.get("draft"):
                 return tag
+
+        # Покажем какие тэги вообще есть — это самая частая причина
+        # «нет релизов с префиксом»: репозиторий публикует другие
+        # релизы, без awg-bin-*.
+        seen = [r.get("tag_name") or "" for r in data][:10]
         raise RuntimeError(
-            "В репозитории %s нет релизов с префиксом '%s'" % (repo, tag_prefix)
+            "В репозитории %s нет релизов с префиксом '%s'. "
+            "Найдены тэги: %s. Проверьте release_tag_prefix в настройках "
+            "или соберите бинарники через workflow build-awg-binaries.yml." %
+            (repo, tag_prefix, (", ".join(t for t in seen if t) or "(нет релизов)"))
         )
 
     def get_manifest(self, tag: str = None, force: bool = False) -> dict:
@@ -244,7 +254,7 @@ class AwgInstaller:
                 manifest = json.loads(resp.read().decode("utf-8"))
         except (HTTPError, URLError, ValueError, OSError) as e:
             raise RuntimeError(
-                "Не удалось скачать manifest.json для тэга %s: %s" % (tag, e)
+                "Не удалось скачать manifest.json (%s): %s" % (url, e)
             )
 
         # Подстраховка: tag в манифесте может отличаться от запрошенного

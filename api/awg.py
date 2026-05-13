@@ -81,14 +81,27 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core.awg_installer import get_awg_installer
         inst = get_awg_installer()
+        settings = inst._settings()
+        repo = settings.get("repo", "")
+        tag_prefix = settings.get("tag_prefix", "")
         try:
             force = request.params.get("force", "").lower() in ("1", "true")
             tag = request.params.get("tag") or None
             manifest = inst.get_manifest(tag=tag, force=force)
-            return {"ok": True, "manifest": manifest}
+            return {
+                "ok":         True,
+                "manifest":   manifest,
+                "repo":       repo,
+                "tag_prefix": tag_prefix,
+            }
         except RuntimeError as e:
             response.status = 502
-            return {"ok": False, "error": str(e)}
+            return {
+                "ok":         False,
+                "error":      str(e),
+                "repo":       repo,
+                "tag_prefix": tag_prefix,
+            }
 
     @app.route("/api/awg/install/status")
     def awg_install_status():

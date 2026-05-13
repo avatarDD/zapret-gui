@@ -12,6 +12,8 @@ const AwgSetupPage = (() => {
 
     let env = null;          // отчёт /api/awg/environment
     let manifest = null;     // /api/awg/manifest
+    let manifestError = null; // диагностика ошибки manifest
+    let manifestRepo = '';
     let installState = null; // /api/awg/install/status
 
     let pollTimer = null;
@@ -210,9 +212,13 @@ const AwgSetupPage = (() => {
     async function loadManifest() {
         try {
             const r = await API.get('/api/awg/manifest');
-            manifest = r.ok ? r.manifest : null;
+            manifest = r && r.ok ? r.manifest : null;
+            manifestError = r && !r.ok ? (r.error || 'unknown') : null;
+            manifestRepo = (r && r.repo) || '';
         } catch (err) {
             manifest = null;
+            manifestError = err && err.message ? err.message : String(err);
+            manifestRepo = '';
         }
         renderInstall();
     }
@@ -356,10 +362,15 @@ const AwgSetupPage = (() => {
                 (archs.length ? `<br>Архитектуры: ${archs.map(a => `<span class="awg-mono">${a}</span>`).join(', ')}` : '')
             );
         } else {
+            const repoLine = manifestRepo
+                ? `Репозиторий: <span class="awg-mono">${escapeHtml(manifestRepo)}</span>.<br>`
+                : '';
+            const errLine = manifestError
+                ? `Подробности: <span class="awg-mono">${escapeHtml(manifestError)}</span>`
+                : 'Проверьте интернет на роутере и наличие релизов с префиксом awg-bin-* в репозитории.';
             manifestHtml = rowHtml(
                 'bad', 'Manifest не загружен',
-                'Не удалось получить manifest.json из GitHub Releases. ' +
-                'Проверьте интернет на роутере и репозиторий в настройках.'
+                repoLine + errLine
             );
         }
 
@@ -410,11 +421,13 @@ const AwgSetupPage = (() => {
         const active = (target.active_interfaces || []).filter(Boolean);
         if (active.length) {
             activeHtml = rowHtml(
-                'bad',
+                'info',
                 'Запущенные AWG/WG интерфейсы',
                 `${active.map(n => `<span class="awg-mono">${escapeHtml(n)}</span>`).join(', ')}<br>` +
-                `Запущенный процесс продолжит работу со старым кодом — после установки перезапустите интерфейс ` +
-                `командой <span class="awg-mono">awg-quick down &lt;name&gt; && awg-quick up &lt;name&gt;</span>.`
+                `После установки новых бинарников эти процессы продолжат работу со старым кодом. ` +
+                `Чтобы переключить их на свежие бинарники, перейдите в ` +
+                `<a href="#awg-dashboard" style="color: var(--primary);">AmneziaWG → туннели</a> ` +
+                `и нажмите <strong>Restart</strong> на нужном туннеле.`
             );
         }
 
