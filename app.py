@@ -183,6 +183,97 @@ def _apply_saved_strategy_on_boot():
     t.start()
 
 
+def _apply_awg_autostart_on_boot():
+    """
+    Поднять AWG-интерфейсы при старте GUI, если:
+      * есть enabled-конфиги в settings.json
+      * и отдельный init-скрипт НЕ установлен (иначе он делает это сам,
+        и нам не надо дублировать).
+
+    Запускается в фоновом потоке.
+    """
+    import threading
+    import time
+
+    def _do_apply():
+        try:
+            time.sleep(1.2)
+
+            from core.config_manager import get_config_manager
+            from core.awg_autostart_manager import get_awg_autostart_manager
+            from core.log_buffer import log
+
+            am = get_awg_autostart_manager()
+            enabled = am.get_enabled_interfaces()
+            if not enabled:
+                return
+
+            # Если init-скрипт установлен — он сам поднимает интерфейсы
+            # при старте системы. Не дублируем.
+            status = am.get_status()
+            if status.get("script_installed"):
+                log.info(
+                    "AWG init-скрипт установлен — автозапуск AWG выполняется им",
+                    source="awg_autostart",
+                )
+                return
+
+            log.info("Автоподъём AWG-интерфейсов при старте GUI: %s"
+                     % ", ".join(enabled), source="awg_autostart")
+            am.apply_autostart()
+        except Exception as e:
+            try:
+                from core.log_buffer import log
+                log.error("Ошибка автозапуска AWG: %s" % e,
+                          source="awg_autostart")
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_do_apply, daemon=True, name="awg-autostart-boot")
+    t.start()
+
+
+def _run_awg_autostart_cli(args, stop: bool = False):
+    """
+    CLI-режим автозапуска AmneziaWG: вызывается init-скриптом.
+    Инициализирует только ядро (без Bottle), выполняет apply/stop и выходит.
+    """
+    from core.config_manager import init_config
+    from core.log_buffer import log
+
+    init_config(args.config)
+
+    try:
+        from core.awg_autostart_manager import get_awg_autostart_manager
+        am = get_awg_autostart_manager()
+        if stop:
+            result = am.stop_autostart()
+        else:
+            result = am.apply_autostart()
+        ok = result.get("ok", False)
+        if ok:
+            log.success(
+                "CLI awg %s: ok" % ("stop" if stop else "apply"),
+                source="awg_autostart",
+            )
+        else:
+            log.error(
+                "CLI awg %s: %s" % (
+                    "stop" if stop else "apply",
+                    result.get("error") or "часть операций завершилась с ошибкой",
+                ),
+                source="awg_autostart",
+            )
+        sys.exit(0 if ok else 1)
+    except Exception as e:
+        try:
+            from core.log_buffer import log
+            log.error("CLI awg autostart: %s" % e, source="awg_autostart")
+        except Exception:
+            pass
+        sys.exit(2)
+
+
 def create_app(config_dir: str = None) -> Bottle:
     """
     Создать и настроить Bottle-приложение.
@@ -276,6 +367,10 @@ def create_app(config_dir: str = None) -> Bottle:
     # (для платформ без отдельного nfqws2-init: Ubuntu/systemd и пр.)
     _apply_saved_strategy_on_boot()
 
+    # Автоподъём AWG-интерфейсов при старте GUI (если init-скрипт не
+    # установлен — иначе он сам справится при загрузке системы).
+    _apply_awg_autostart_on_boot()
+
     return app
 
 
@@ -300,8 +395,22 @@ def main():
         "--debug", action="store_true",
         help="Режим отладки"
     )
+    parser.add_argument(
+        "--apply-awg-autostart", action="store_true",
+        help="CLI-режим: поднять все enabled-AWG-интерфейсы "
+             "(вызывается init-скриптом при загрузке) и выйти"
+    )
+    parser.add_argument(
+        "--stop-awg-autostart", action="store_true",
+        help="CLI-режим: опустить все поднятые AWG-интерфейсы и выйти"
+    )
 
     args = parser.parse_args()
+
+    # CLI-режимы (не запускаем web-сервер)
+    if args.apply_awg_autostart or args.stop_awg_autostart:
+        _run_awg_autostart_cli(args, stop=args.stop_awg_autostart)
+        return
 
     # Создаём приложение
     app = create_app(config_dir=args.config)

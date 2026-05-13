@@ -34,6 +34,14 @@ REST API для интеграции amneziawg-go.
   GET    /api/awg/warp-in-warp          — статус WARP-in-WARP
   POST   /api/awg/warp-in-warp          — поднять (body: outer, inner)
   DELETE /api/awg/warp-in-warp          — отключить
+
+  GET    /api/awg/autostart             — статус автозапуска
+  POST   /api/awg/autostart/install     — установить init-скрипт
+  POST   /api/awg/autostart/remove      — удалить init-скрипт
+  POST   /api/awg/autostart/regenerate  — пересоздать init-скрипт
+  POST   /api/awg/autostart/<name>      — установить флаг autostart
+                                           (body: {"enabled": true|false})
+  POST   /api/awg/autostart/apply       — применить (поднять enabled) сейчас
 """
 
 import threading
@@ -454,6 +462,71 @@ def register(app):
         if not result.get("ok"):
             response.status = 500
         return result
+
+    # ─────────── Autostart ─────────────────────────────────────
+
+    @app.route("/api/awg/autostart")
+    def awg_autostart_status():
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_autostart_manager import get_awg_autostart_manager
+        am = get_awg_autostart_manager()
+        return {"ok": True, "status": am.get_status()}
+
+    @app.route("/api/awg/autostart/install", method="POST")
+    def awg_autostart_install():
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_autostart_manager import get_awg_autostart_manager
+        result = get_awg_autostart_manager().install_script()
+        if not result.get("ok"):
+            response.status = 500
+        return result
+
+    @app.route("/api/awg/autostart/remove", method="POST")
+    def awg_autostart_remove():
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_autostart_manager import get_awg_autostart_manager
+        result = get_awg_autostart_manager().remove_script()
+        if not result.get("ok"):
+            response.status = 500
+        return result
+
+    @app.route("/api/awg/autostart/regenerate", method="POST")
+    def awg_autostart_regenerate():
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_autostart_manager import get_awg_autostart_manager
+        result = get_awg_autostart_manager().regenerate()
+        if not result.get("ok"):
+            response.status = 500
+        return result
+
+    @app.route("/api/awg/autostart/apply", method="POST")
+    def awg_autostart_apply():
+        """Поднять enabled-интерфейсы прямо сейчас."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_autostart_manager import get_awg_autostart_manager
+        result = get_awg_autostart_manager().apply_autostart()
+        if not result.get("ok"):
+            response.status = 500
+        return result
+
+    @app.route("/api/awg/autostart/<name>", method="POST")
+    def awg_autostart_set(name):
+        """Установить флаг autostart для конкретного конфига."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_autostart_manager import get_awg_autostart_manager
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled"))
+        try:
+            return get_awg_autostart_manager().set_enabled(name, enabled)
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/awg/keypair", method="POST")
     def awg_keypair():
