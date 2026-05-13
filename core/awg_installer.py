@@ -24,8 +24,10 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
+import subprocess
 import tarfile
 import tempfile
 import threading
@@ -63,6 +65,30 @@ def _sha256_of(path: str) -> str:
         for chunk in iter(lambda: f.read(64 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+_VERSION_RE = re.compile(r"v?(\d+(?:\.\d+){1,3}(?:[A-Za-z][\w.\-]*)?)")
+
+
+def _detect_binary_version(path: str) -> str:
+    """
+    Спросить у бинарника его версию через `--version` / `-v`.
+    Возвращает строку вроде '0.2.17' или '' если не удалось.
+    """
+    if not path or not os.path.isfile(path):
+        return ""
+    for flag in ("--version", "-v"):
+        try:
+            r = subprocess.run(
+                [path, flag], capture_output=True, text=True, timeout=4,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+        out = (r.stdout or "") + (r.stderr or "")
+        m = _VERSION_RE.search(out)
+        if m:
+            return m.group(1)
+    return ""
 
 
 class AwgInstaller:
@@ -350,12 +376,23 @@ class AwgInstaller:
         else:
             current_dir = platform.binary_dir
 
+        # Для внешних установок версии в settings'ах нет — спросим у самих
+        # бинарников через `--version`. Это нужно UI, чтобы сравнить с
+        # доступной версией в manifest'е и предложить обновление.
+        go_version    = s["installed_go"]
+        tools_version = s["installed_tools"]
+        if is_external:
+            if not go_version and bin_go:
+                go_version = _detect_binary_version(bin_go)
+            if not tools_version and bin_awg:
+                tools_version = _detect_binary_version(bin_awg)
+
         return {
             "installed":      installed,
             "external":       is_external,
             "tag":            s["installed_tag"],
-            "go_version":     s["installed_go"],
-            "tools_version":  s["installed_tools"],
+            "go_version":     go_version,
+            "tools_version":  tools_version,
             "binary_dir":     current_dir,
             "platform_default_dir": platform.binary_dir,
             "amneziawg_go":   bin_go,

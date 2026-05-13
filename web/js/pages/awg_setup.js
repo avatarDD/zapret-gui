@@ -374,20 +374,65 @@ const AwgSetupPage = (() => {
             );
         }
 
+        // ── Установленная версия + детект обновления ─────────────
+        const latestGo    = (manifest && manifest.amneziawg_go    && manifest.amneziawg_go.version)    || '';
+        const latestTools = (manifest && manifest.amneziawg_tools && manifest.amneziawg_tools.version) || '';
+        const latestTag   = (manifest && manifest.tag) || '';
+        const goOutdated    = !!(latestGo    && installed.go_version    && installed.go_version    !== latestGo);
+        const toolsOutdated = !!(latestTools && installed.tools_version && installed.tools_version !== latestTools);
+        const tagOutdated   = !!(latestTag   && installed.tag           && installed.tag           !== latestTag);
+        const updateAvailable = installed.installed && (goOutdated || toolsOutdated || tagOutdated);
+
+        // Если для external-установки версии так и не определились (бинарь
+        // не отвечает на --version), считаем что предложить переустановку
+        // имеет смысл всегда — но без шильда "обновление".
+        const versionsUnknown = installed.installed && installed.external &&
+                                !installed.go_version && !installed.tools_version;
+
+        function verCell(installedVer, latestVer, outdated) {
+            const cur = installedVer || '?';
+            if (!latestVer) {
+                return `<span class="awg-mono">${escapeHtml(cur)}</span>`;
+            }
+            if (outdated) {
+                return `<span class="awg-mono">${escapeHtml(cur)}</span> ` +
+                       `<span style="color: var(--warning);">→ ${escapeHtml(latestVer)}</span>`;
+            }
+            return `<span class="awg-mono">${escapeHtml(cur)}</span> ` +
+                   `<span style="color: var(--success); font-size: 11px;">(актуально)</span>`;
+        }
+
         let installedHtml = '';
         if (installed.installed) {
-            installedHtml = rowHtml(
-                installed.external ? 'info' : 'ok',
-                installed.external ? 'Установка вне нашего GUI' : 'Уже установлено',
-                installed.external
-                    ? `Найден amneziawg-go: <span class="awg-mono">${escapeHtml(installed.amneziawg_go || '')}</span><br>` +
-                      `Найден awg: <span class="awg-mono">${escapeHtml(installed.awg || '')}</span><br>` +
-                      `GUI ещё не управляет этой установкой — после переустановки она перейдёт под управление.`
-                    : `Релиз: <span class="awg-mono">${escapeHtml(installed.tag || '?')}</span>, ` +
-                      `amneziawg-go ${escapeHtml(installed.go_version || '?')}, ` +
-                      `amneziawg-tools ${escapeHtml(installed.tools_version || '?')}<br>` +
-                      `Каталог: <span class="awg-mono">${escapeHtml(installed.binary_dir || '')}</span>`
-            );
+            let kind, title, detail;
+            if (updateAvailable) {
+                kind  = 'info';
+                title = 'Доступно обновление';
+            } else if (installed.external) {
+                kind  = 'info';
+                title = versionsUnknown ? 'Установка вне нашего GUI' : 'Установка вне нашего GUI (актуально)';
+            } else {
+                kind  = 'ok';
+                title = 'Установлено и актуально';
+            }
+
+            const verLines =
+                `amneziawg-go: ${verCell(installed.go_version, latestGo, goOutdated)}<br>` +
+                `amneziawg-tools: ${verCell(installed.tools_version, latestTools, toolsOutdated)}`;
+
+            const tagLine = installed.tag
+                ? `<br>Релиз: <span class="awg-mono">${escapeHtml(installed.tag)}</span>` +
+                  (tagOutdated ? ` <span style="color: var(--warning);">→ ${escapeHtml(latestTag)}</span>` : '')
+                : (latestTag ? `<br>Свежий релиз: <span class="awg-mono">${escapeHtml(latestTag)}</span>` : '');
+
+            const pathLine = installed.external
+                ? `<br>amneziawg-go: <span class="awg-mono">${escapeHtml(installed.amneziawg_go || '')}</span>` +
+                  `<br>awg: <span class="awg-mono">${escapeHtml(installed.awg || '')}</span>` +
+                  `<br><span class="text-muted" style="font-size: 11px;">GUI ещё не управляет этой установкой — после установки она перейдёт под управление.</span>`
+                : `<br>Каталог: <span class="awg-mono">${escapeHtml(installed.binary_dir || '')}</span>`;
+
+            detail = verLines + tagLine + pathLine;
+            installedHtml = rowHtml(kind, title, detail);
         }
 
         // Куда поставим + warning'и
@@ -457,10 +502,20 @@ const AwgSetupPage = (() => {
 
         // Кнопки
         const canInstall = ready && manifest && archSupported && !op.in_progress && !installRunning;
-        const installLabel = installed.installed ? 'Переустановить' : 'Установить';
+        let installLabel;
+        if (!installed.installed) {
+            installLabel = 'Установить';
+        } else if (updateAvailable) {
+            installLabel = latestTag
+                ? `Обновить до ${latestTag}`
+                : 'Обновить';
+        } else {
+            installLabel = 'Переустановить';
+        }
+        const installBtnClass = updateAvailable ? 'btn-primary' : 'btn-success';
         const buttonsHtml = `
             <div class="actions-row" style="margin-top: 10px;">
-                <button class="btn btn-success" id="awg-btn-install"
+                <button class="btn ${installBtnClass}" id="awg-btn-install"
                         onclick="AwgSetupPage.doInstall()" ${canInstall ? '' : 'disabled'}>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
