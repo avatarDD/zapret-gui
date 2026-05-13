@@ -70,10 +70,42 @@ def _sha256_of(path: str) -> str:
 _VERSION_RE = re.compile(r"v?(\d+(?:\.\d+){1,3}(?:[A-Za-z][\w.\-]*)?)")
 
 
+def _opkg_pkg_version(pkg_name: str) -> str:
+    """
+    Версия установленного opkg-пакета (Entware/OpenWrt).
+
+    `opkg status <pkg>` пишет `Version: vX.Y.Z` для установленных
+    пакетов. Это надёжнее, чем `--version` бинарника: апстрим
+    amneziawg-go нередко собирается без ldflags, и `--version`
+    возвращает дату сборки вместо тэга релиза.
+
+    Возвращает '' если opkg не нашёл пакет или opkg недоступен.
+    """
+    if not pkg_name:
+        return ""
+    try:
+        r = subprocess.run(
+            ["opkg", "status", pkg_name],
+            capture_output=True, text=True, timeout=4,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return ""
+    if r.returncode != 0 or not r.stdout:
+        return ""
+    for line in r.stdout.splitlines():
+        m = re.match(r"\s*Version\s*:\s*(\S+)", line)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 def _detect_binary_version(path: str) -> str:
     """
     Спросить у бинарника его версию через `--version` / `-v`.
     Возвращает строку вроде '0.2.17' или '' если не удалось.
+
+    Менее надёжно opkg'a: апстрим может зашить дату сборки,
+    а не релизный тэг. Используется как fallback.
     """
     if not path or not os.path.isfile(path):
         return ""
@@ -89,6 +121,20 @@ def _detect_binary_version(path: str) -> str:
         if m:
             return m.group(1)
     return ""
+
+
+def _resolve_external_version(pkg_name: str, bin_path: str) -> tuple:
+    """
+    Вернуть (version, source) — самый достоверный источник версии
+    для внешнего бинарника. source: 'opkg' | 'binary' | ''.
+    """
+    v = _opkg_pkg_version(pkg_name)
+    if v:
+        return v, "opkg"
+    v = _detect_binary_version(bin_path)
+    if v:
+        return v, "binary"
+    return "", ""
 
 
 class AwgInstaller:
@@ -376,16 +422,23 @@ class AwgInstaller:
         else:
             current_dir = platform.binary_dir
 
-        # Для внешних установок версии в settings'ах нет — спросим у самих
-        # бинарников через `--version`. Это нужно UI, чтобы сравнить с
-        # доступной версией в manifest'е и предложить обновление.
-        go_version    = s["installed_go"]
-        tools_version = s["installed_tools"]
+        # Для внешних установок версии в settings'ах нет — спрашиваем
+        # opkg (если Entware/OpenWrt), а в крайнем случае сам бинарь
+        # через --version. opkg надёжнее: апстримный amneziawg-go может
+        # вернуть дату сборки вместо релизного тэга.
+        go_version       = s["installed_go"]
+        tools_version    = s["installed_tools"]
+        go_version_src   = "settings" if go_version else ""
+        tools_version_src = "settings" if tools_version else ""
         if is_external:
-            if not go_version and bin_go:
-                go_version = _detect_binary_version(bin_go)
-            if not tools_version and bin_awg:
-                tools_version = _detect_binary_version(bin_awg)
+            if not go_version:
+                v, src = _resolve_external_version("amneziawg-go", bin_go)
+                if v:
+                    go_version, go_version_src = v, src
+            if not tools_version:
+                v, src = _resolve_external_version("amneziawg-tools", bin_awg)
+                if v:
+                    tools_version, tools_version_src = v, src
 
         return {
             "installed":      installed,
@@ -393,6 +446,8 @@ class AwgInstaller:
             "tag":            s["installed_tag"],
             "go_version":     go_version,
             "tools_version":  tools_version,
+            "go_version_source":    go_version_src,    # opkg|binary|settings|''
+            "tools_version_source": tools_version_src,
             "binary_dir":     current_dir,
             "platform_default_dir": platform.binary_dir,
             "amneziawg_go":   bin_go,
