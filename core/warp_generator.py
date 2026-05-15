@@ -62,8 +62,15 @@ DEFAULT_WARP_ENDPOINT_HOST = "engage.cloudflareclient.com"
 DEFAULT_WARP_ENDPOINT_PORT = 2408
 DEFAULT_WARP_PEER_PUBKEY   = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
 
-# Сколько ждём сетевых ответов
-HTTP_TIMEOUT = 20
+# Сколько ждём сетевых ответов. Cloudflare API из РФ часто отвечает
+# медленно (DPI замедляет SNI=api.cloudflareclient.com), поэтому
+# таймаут выбран с запасом.
+HTTP_TIMEOUT = 30
+
+# Сколько раз пытаемся повторить запрос при «прозрачных» сетевых
+# ошибках (timeout, обрыв соединения, SSL handshake timeout).
+HTTP_RETRIES = 3
+HTTP_RETRY_BACKOFF = 2.0  # секунд между попытками (умножается на номер попытки)
 
 # AmneziaWG обфускация — диапазоны параметров
 JC_MIN, JC_MAX  = 4, 12
@@ -90,11 +97,67 @@ def _ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+def _is_transient_error(exc: BaseException) -> bool:
+    """
+    Сетевая ошибка, которую имеет смысл повторить:
+      - SSL handshake timeout (часто из-за DPI/нестабильной сети);
+      - обычный socket.timeout;
+      - ConnectionResetError / refused / aborted;
+      - DNS-сбой (gaierror) — иногда восстанавливается со второй попытки.
+    """
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return True
+    if isinstance(exc, ssl.SSLError):
+        # "_ssl.c:...: The handshake operation timed out" и подобные
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (socket.timeout, TimeoutError, ssl.SSLError)):
+            return True
+        # Иногда reason — строка вроде "_ssl.c:989: The handshake operation
+        # timed out"; ловим её эвристически.
+        if isinstance(reason, str) and "timed out" in reason.lower():
+            return True
+        if isinstance(reason, (ConnectionResetError, ConnectionRefusedError,
+                               ConnectionAbortedError, socket.gaierror)):
+            return True
+    if isinstance(exc, (ConnectionResetError, ConnectionRefusedError,
+                        ConnectionAbortedError)):
+        return True
+    return False
+
+
+def _format_network_error(exc: BaseException) -> str:
+    """
+    Сформировать сообщение, которое поможет пользователю понять, что
+    делать. SSL handshake timeout до api.cloudflareclient.com в РФ —
+    почти всегда блокировка/замедление DPI.
+    """
+    reason = exc
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", exc) or exc
+
+    text = str(reason) or exc.__class__.__name__
+    text_low = text.lower()
+    looks_like_handshake_timeout = (
+        isinstance(reason, ssl.SSLError)
+        or ("handshake" in text_low and "timed out" in text_low)
+    )
+    if looks_like_handshake_timeout:
+        return ("Не удалось установить TLS-соединение с "
+                "api.cloudflareclient.com (handshake timeout). Скорее всего, "
+                "доступ к Cloudflare API ограничен или замедлен провайдером. "
+                "Запустите zapret/DPI-обход или попробуйте через VPN и "
+                "сгенерируйте конфиг ещё раз.")
+    return "Сеть до api.cloudflareclient.com недоступна: %s" % text
+
+
 def _request_json(method: str, url: str, body: dict = None,
                   extra_headers: dict = None) -> dict:
     """
     Отправить HTTP-запрос с JSON-телом и распарсить JSON-ответ.
-    Бросает WarpApiError с понятным сообщением.
+    Бросает WarpApiError с понятным сообщением. Делает несколько
+    попыток при «прозрачных» сетевых ошибках.
     """
     headers = {
         "Content-Type":      "application/json; charset=UTF-8",
@@ -110,28 +173,42 @@ def _request_json(method: str, url: str, body: dict = None,
     if body is not None:
         data = json.dumps(body).encode("utf-8")
 
-    req = urllib.request.Request(url=url, data=data, headers=headers,
-                                 method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT,
-                                    context=_ssl_context()) as resp:
-            raw = resp.read()
-    except urllib.error.HTTPError as e:
-        body_text = ""
+    last_transient = None
+    for attempt in range(1, HTTP_RETRIES + 1):
+        req = urllib.request.Request(url=url, data=data, headers=headers,
+                                     method=method)
         try:
-            body_text = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            pass
-        raise WarpApiError(
-            "Cloudflare API ответил %d %s: %s" % (e.code, e.reason, body_text)
-        )
-    except urllib.error.URLError as e:
-        raise WarpApiError("Сеть до api.cloudflareclient.com недоступна: %s"
-                           % e.reason)
-    except (socket.timeout, TimeoutError):
-        raise WarpApiError("Таймаут при обращении к Cloudflare API")
-    except OSError as e:
-        raise WarpApiError("Сетевая ошибка: %s" % e)
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT,
+                                        context=_ssl_context()) as resp:
+                raw = resp.read()
+            break
+        except urllib.error.HTTPError as e:
+            body_text = ""
+            try:
+                body_text = e.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                pass
+            raise WarpApiError(
+                "Cloudflare API ответил %d %s: %s"
+                % (e.code, e.reason, body_text)
+            )
+        except Exception as e:
+            if _is_transient_error(e) and attempt < HTTP_RETRIES:
+                last_transient = e
+                log.warning(
+                    "WARP: попытка %d/%d не удалась (%s), повтор через %.1fс"
+                    % (attempt, HTTP_RETRIES, e,
+                       HTTP_RETRY_BACKOFF * attempt),
+                    source="warp_generator")
+                time.sleep(HTTP_RETRY_BACKOFF * attempt)
+                continue
+            if isinstance(e, (urllib.error.URLError, ssl.SSLError,
+                              socket.timeout, TimeoutError, OSError)):
+                raise WarpApiError(_format_network_error(e))
+            raise
+    else:
+        # Все попытки исчерпаны транзиентной ошибкой
+        raise WarpApiError(_format_network_error(last_transient))
 
     try:
         return json.loads(raw.decode("utf-8"))
