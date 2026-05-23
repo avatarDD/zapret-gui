@@ -483,6 +483,43 @@ class AwgManager:
         except Exception as e:
             info["errors"].append("platform: %s" % e)
 
+        # Версии бинарей — критичны для AmneziaWG-v2: если демон старый
+        # и не понимает I1/S3/S4, обфускация не применяется и сервер
+        # дропает data-пакеты (handshake при этом проходит).
+        info["binaries"] = {
+            "amneziawg_go": self._amneziawg_go(),
+            "awg":          self._awg_bin(),
+            "awg_version":  "",
+            "amneziawg_go_version": "",
+        }
+        rc, out, _ = _run([self._awg_bin(), "--version"], timeout=3)
+        if rc == 0:
+            info["binaries"]["awg_version"] = (out or "").strip()
+        # amneziawg-go обычно `--version` в stderr и фолбэк через
+        # подсчёт даты модификации бинаря, если флага нет.
+        rc, out, err = _run([self._amneziawg_go(), "--version"], timeout=3)
+        ver_out = (out or err or "").strip()
+        if ver_out and "unknown" not in ver_out.lower():
+            info["binaries"]["amneziawg_go_version"] = ver_out
+        else:
+            try:
+                import os as _os, datetime as _dt
+                st = _os.stat(self._amneziawg_go())
+                info["binaries"]["amneziawg_go_version"] = (
+                    "mtime=%s" % _dt.datetime.utcfromtimestamp(st.st_mtime)
+                    .strftime("%Y-%m-%d")
+                )
+            except OSError:
+                pass
+
+        # Link-info интерфейса (MTU/state) — для отладки fragmented UDP.
+        rc, out, _ = _run(["ip", "-d", "link", "show", "dev", ifname],
+                          timeout=3)
+        info["link"] = out if rc == 0 else ""
+        rc, out, _ = _run(["ip", "address", "show", "dev", ifname],
+                          timeout=3)
+        info["addr"] = out if rc == 0 else ""
+
         # awg show <iface> — handshake, RX/TX, fwmark
         rc, out, err = _run([self._awg_bin(), "show", ifname], timeout=5)
         if rc == 0:
@@ -833,12 +870,17 @@ class AwgManager:
              описал пользователь).
           2) `ip route add default dev <iface> table <X>` — default
              только в нашей таблице.
-          3) `ip rule add not fwmark <X> table <X>` — всё, что НЕ
-             промаркировано awg-сокетом, идёт в эту таблицу.
-          4) `ip rule add table main suppress_prefixlength 0` — но
-             сначала смотрим main для всех маршрутов с prefix>0
+          3) `ip rule add not fwmark <X> table <X> pref 32765` — всё,
+             что НЕ промаркировано awg-сокетом, идёт в эту таблицу.
+          4) `ip rule add table main suppress_prefixlength 0 pref 32764`
+             — но сначала смотрим main для всех маршрутов с prefix>0
              (локалка, link-local, маршруты до WG-endpoint'а, etc.).
              Без него LAN/гейтвей становятся недостижимы.
+
+        Приоритеты выставляем явно (32765/32764) — чтобы они всегда
+        вставали ровно перед стандартным main (32766), а не «куда iproute2
+        захотел». Это исключает ситуации, когда `ip rule add` без
+        preference попадал в priority 0 и перетирал `lookup local`.
 
         Mark === table_id: совпадение mark и table-id — стандартное
         соглашение wg-quick. На семейство IPv4/IPv6 fwmark на awg-iface
@@ -846,6 +888,8 @@ class AwgManager:
         """
         table = self._table_id_for(ifname)
         mark  = table
+        PRIO_NOT_FWMARK = 32765
+        PRIO_SUPPRESS   = 32764
 
         # (1) fwmark на awg-сокете. Делаем один раз для семейства "-4"
         #     (для "-6" тот же сокет, повторно не нужно).
@@ -866,16 +910,20 @@ class AwgManager:
         if rc != 0:
             return False
 
-        # (3) not fwmark X → table X
-        _run(["ip", family, "rule", "add", "not", "fwmark",
+        # (3) not fwmark X → table X, явный priority
+        _run(["ip", family, "rule", "del", "not", "fwmark",
               str(mark), "table", str(table)])
+        _run(["ip", family, "rule", "add", "not", "fwmark",
+              str(mark), "table", str(table),
+              "priority", str(PRIO_NOT_FWMARK)])
 
-        # (4) main первым, но без его default. Идемпотентность по
-        #     наличию проверять не будем — `ip rule add` спокойно
-        #     создаёт дубликаты, а они дают тот же эффект; вычистим
-        #     ровно столько же при `down`.
+        # (4) main первым (но без default), явный priority
+        _run(["ip", family, "rule", "del", "table", "main",
+              "suppress_prefixlength", "0",
+              "priority", str(PRIO_SUPPRESS)])
         _run(["ip", family, "rule", "add", "table", "main",
-              "suppress_prefixlength", "0"])
+              "suppress_prefixlength", "0",
+              "priority", str(PRIO_SUPPRESS)])
         return True
 
     def _table_id_for(self, ifname: str) -> int:

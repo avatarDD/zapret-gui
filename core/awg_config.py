@@ -31,11 +31,19 @@ WG_INTERFACE_FIELDS = (
     "PrivateKey",
     "ListenPort",
     "FwMark",
-    # AmneziaWG обфускация — тоже идёт в awg setconf
+    # AmneziaWG-обфускация v1
     "Jc", "Jmin", "Jmax",
     "S1", "S2",
     "H1", "H2", "H3", "H4",
     "I",
+    # AmneziaWG-обфускация v2 (новые поля из свежих релизов
+    # amneziawg-go/amneziawg-tools). Если их не передать в setconf,
+    # демон работает в режиме v1, handshake проходит, а data-пакеты
+    # сервером дропаются — ровно картина «92 B in / 20 KB out».
+    "S3", "S4",
+    "I1", "I2", "I3", "I4", "I5",
+    "J1", "J2", "J3",
+    "Itime",
 )
 
 # Поля [Interface] для wg-quick-логики (не для setconf).
@@ -57,9 +65,16 @@ WG_PEER_FIELDS = (
 # Все известные поля интерфейса.
 KNOWN_INTERFACE_FIELDS = set(WG_INTERFACE_FIELDS) | set(WGQUICK_INTERFACE_FIELDS)
 
-# AmneziaWG-обфускация
+# AmneziaWG-обфускация — числовые поля, валидируем как int.
 AWG_OBFUSCATION_FIELDS = ("Jc", "Jmin", "Jmax", "S1", "S2",
-                          "H1", "H2", "H3", "H4", "I")
+                          "H1", "H2", "H3", "H4", "I",
+                          # AmneziaWG-v2 числовые
+                          "S3", "S4", "Itime")
+
+# AmneziaWG-v2 hex-blob поля (I1..I5, J1..J3) — НЕ числа, отдельно.
+# Используются для упорядочивания и для render_setconf-логики.
+AWG_V2_BLOB_FIELDS = ("I1", "I2", "I3", "I4", "I5",
+                      "J1", "J2", "J3")
 
 
 def _is_base64_key(value: str) -> bool:
@@ -93,13 +108,32 @@ def parse_conf(text: str) -> dict:
     current = None  # None | "interface" | "peer"
     current_peer = None
 
+    # Состояние «накапливаем многострочный binary-blob» (AmneziaWG-v2)
+    pending_key = None     # имя поля, которое сейчас добиваем
+    pending_chunks = []    # hex-куски без 0x/whitespace
+    pending_target = None  # куда положим результат (iface/peer-dict)
+
+    def flush_pending():
+        nonlocal pending_key, pending_chunks, pending_target
+        if pending_key is not None and pending_target is not None:
+            joined = "".join(pending_chunks).strip()
+            pending_target[pending_key] = joined or "<b"
+        pending_key = None
+        pending_chunks = []
+        pending_target = None
+
     for raw in (text or "").splitlines():
         line = raw.strip()
+
+        # Пустая строка / комментарий → закрываем pending binary-blob
+        # (внутри `<b ...` блока пустая строка завершает значение).
         if not line or line.startswith("#") or line.startswith(";"):
+            flush_pending()
             continue
 
         m = _SECTION_RE.match(line)
         if m:
+            flush_pending()
             section = m.group(1).lower()
             if section == "interface":
                 current = "interface"
@@ -112,15 +146,64 @@ def parse_conf(text: str) -> dict:
             continue
 
         if "=" not in line:
+            # Может быть продолжением binary-blob (hex-строки без `Key=`).
+            if pending_key is not None:
+                # Закрывающий `>` завершает значение
+                if line.endswith(">"):
+                    inner = line[:-1].strip()
+                    if not inner or _is_hex_continuation(inner):
+                        pending_chunks.append(_clean_hex(inner))
+                        flush_pending()
+                        continue
+                if _is_hex_continuation(line):
+                    pending_chunks.append(_clean_hex(line))
+                    continue
+            # Иначе — мусор. Закрываем pending, чтобы не залипало.
+            flush_pending()
             continue
+
+        # Новый `Key = …` → завершаем предыдущий binary-blob, если был.
+        flush_pending()
+
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
 
+        target = None
         if current == "interface":
-            _set_field(result["interface"], key, value)
+            target = result["interface"]
         elif current == "peer" and current_peer is not None:
-            _set_field(current_peer, key, value)
+            target = current_peer
+        if target is None:
+            continue
+
+        # Маркер binary-blob (AmneziaWG-v2: I1/I2/…). Встречается в
+        # двух формах:
+        #   Single-line:  `I1 = <b 0xHEX...>`
+        #   Multi-line:   `I1 = <b\n0xHEX\nHEX\n...\n` (закрывается
+        #                 пустой строкой или новым `Key=`).
+        # Без этой обработки парсер брал только `<b`, и I1 терялся
+        # при render_setconf — handshake проходил, но data-пакеты
+        # сервер дропал (это и было «92 B in / 20 KB out»).
+        if value.startswith("<b"):
+            tail = value[2:].strip()
+            # Single-line форма закрывается `>` на этой же строке —
+            # тогда blob готов сразу и pending не нужен.
+            if tail.endswith(">"):
+                clean = _clean_hex(tail[:-1])
+                target[key] = clean
+                continue
+            pending_key = key
+            pending_target = target
+            pending_chunks = []
+            if tail:
+                pending_chunks.append(_clean_hex(tail))
+            continue
+
+        _set_field(target, key, value)
+
+    # На EOF закрываем pending.
+    flush_pending()
 
     # Нормализация: добавляем /32 и /128 голым адресам, чтобы wg/awg
     # их принял (и валидация ниже не ругалась).
@@ -136,6 +219,25 @@ def parse_conf(text: str) -> dict:
 
 _LIST_KEYS = {"Address", "DNS", "AllowedIPs",
               "PreUp", "PostUp", "PreDown", "PostDown"}
+
+
+_HEX_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]+$")
+
+
+def _is_hex_continuation(line: str) -> bool:
+    """Похожа ли строка на продолжение AmneziaWG-v2 binary-blob'a?"""
+    s = (line or "").strip().replace(" ", "")
+    if not s:
+        return False
+    return bool(_HEX_RE.match(s))
+
+
+def _clean_hex(s: str) -> str:
+    """Убрать пробелы и префикс 0x, оставив только hex-символы."""
+    s = (s or "").strip().replace(" ", "")
+    if s.startswith("0x") or s.startswith("0X"):
+        s = s[2:]
+    return s
 
 
 def _add_cidr_suffix(addr: str) -> str:
@@ -204,7 +306,8 @@ def render_conf(cfg: dict) -> str:
     iface_order = (
         ["PrivateKey", "ListenPort", "FwMark"] +
         list(WGQUICK_INTERFACE_FIELDS) +
-        list(AWG_OBFUSCATION_FIELDS)
+        list(AWG_OBFUSCATION_FIELDS) +
+        list(AWG_V2_BLOB_FIELDS)
     )
     seen = set()
     for key in iface_order:
@@ -231,6 +334,9 @@ def render_conf(cfg: dict) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+_AWG_V2_BLOB_SET = frozenset(AWG_V2_BLOB_FIELDS)
+
+
 def _emit(lines: list, key: str, value):
     """Вывести поле, разворачивая списки в несколько строк или одну с запятыми."""
     if value is None or value == "":
@@ -245,6 +351,10 @@ def _emit(lines: list, key: str, value):
             if joined:
                 lines.append("%s = %s" % (key, joined))
     else:
+        if key in _AWG_V2_BLOB_SET and isinstance(value, str):
+            v = value.strip()
+            if v and v != "<b" and not v.lower().startswith("0x"):
+                value = "0x" + v
         lines.append("%s = %s" % (key, value))
 
 
