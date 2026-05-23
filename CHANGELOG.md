@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.19.8 — AWG default route без петли + улучшения dnsmasq-preflight
+
+### Исправлено
+- **AWG up при AllowedIPs=0/0 ронял весь инет даже при пустом списке
+  selective routing** — `core/awg_manager.py:_add_default_via`. До правки
+  схема была неполная: добавлялись `ip route default dev <iface> table
+  <X>` и `ip rule add not fwmark <X> table <X>`, но fwmark на самом
+  awg-сокете не выставлялся. Из-за этого encapsulated-UDP, которые
+  amneziawg-go выплёвывает в сторону peer-endpoint'а, тоже попадали
+  под `not fwmark <X>` и заворачивались обратно в туннель —
+  получалась петля, и никакие сайты не открывались. Теперь воспроизведена
+  полная wg-quick-схема:
+  1. `awg set <iface> fwmark <X>` — encapsulated-трафик помечен;
+  2. `ip route add default dev <iface> table <X>`;
+  3. `ip rule add not fwmark <X> table <X>`;
+  4. `ip rule add table main suppress_prefixlength 0` — чтобы LAN /
+     link-local / маршрут до endpoint'а оставались через `main`.
+  Симметричный teardown добавлен в `_remove_added_routes`.
+- **Детект dnsmasq на Debian/Ubuntu** — `core/routing/dnsmasq_integration.py`.
+  Добавлены pid-файлы по новым systemd-путям (`/run/dnsmasq.pid`,
+  `/run/dnsmasq/dnsmasq.pid`), fallback `pgrep -f` и финальный
+  `systemctl show dnsmasq --property=MainPID` — раньше при отсутствии
+  `/var/run`-симлинка preflight ложно срабатывал.
+- **Текст ошибки domain-routing без dnsmasq** —
+  `core/routing/domain_rule.py`. Сообщение теперь описывает реальный
+  затык на Debian (`systemd-resolved` держит порт 53, поэтому
+  `dnsmasq.service` не стартует) и предлагает два пути: отключить
+  `DNSStubListener` или переключиться на CIDR-правило.
+
 ## v0.19.7 — Исправления GUI updater и WARP/routing
 
 ### Исправлено

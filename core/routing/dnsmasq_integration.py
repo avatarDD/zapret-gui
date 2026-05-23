@@ -109,22 +109,45 @@ class DnsmasqIntegration:
         return os.path.join(self.find_confdir(main_conf), MANAGED_FILENAME)
 
     def get_pid(self):
-        """PID dnsmasq или 0."""
+        """PID dnsmasq или 0.
+
+        На современном Debian/Ubuntu /var/run — symlink на /run, но на
+        некоторых сборках (контейнеры, snap, NixOS) symlink'а нет, либо
+        путь к pid-файлу выбран дистрибутивом иначе. Чтобы preflight
+        в domain_rule не отваливался ложным «pid не найден», смотрим
+        обе ветки и в конце даём широкий pgrep-фолбэк.
+        """
         for pidfile in ("/opt/var/run/dnsmasq.pid",
                         "/var/run/dnsmasq.pid",
-                        "/var/run/dnsmasq/dnsmasq.pid"):
+                        "/var/run/dnsmasq/dnsmasq.pid",
+                        "/run/dnsmasq.pid",
+                        "/run/dnsmasq/dnsmasq.pid"):
             txt = _read_file(pidfile).strip()
             if txt and txt.isdigit():
                 pid = int(txt)
                 if os.path.isdir("/proc/%d" % pid):
                     return pid
-        # Фолбэк через pgrep
-        rc, out, _e = _run(["pgrep", "-x", "dnsmasq"])
-        if rc == 0 and out.strip():
-            try:
-                return int(out.strip().splitlines()[0])
-            except ValueError:
-                return 0
+        # Фолбэк через pgrep. Сначала -x (exact comm), затем -f
+        # (полный command-line) — для случаев, когда dnsmasq запущен
+        # через wrapper и `comm` отличается от "dnsmasq".
+        for args in (["pgrep", "-x", "dnsmasq"],
+                     ["pgrep", "-f", "(^|/)dnsmasq( |$)"]):
+            rc, out, _e = _run(args)
+            if rc == 0 and out.strip():
+                try:
+                    return int(out.strip().splitlines()[0])
+                except ValueError:
+                    continue
+        # Финальный фолбэк через systemctl — на чисто systemd-системах,
+        # где pid-файла может не быть совсем (Type=notify без PIDFile=).
+        rc, out, _e = _run(["systemctl", "show", "dnsmasq",
+                            "--property=MainPID", "--value"], timeout=3)
+        if rc == 0:
+            txt = (out or "").strip()
+            if txt.isdigit() and txt != "0":
+                pid = int(txt)
+                if os.path.isdir("/proc/%d" % pid):
+                    return pid
         return 0
 
     def get_version(self):

@@ -577,16 +577,61 @@ class AwgManager:
 
     def _add_default_via(self, ifname: str, family: str) -> bool:
         """
-        Простая реализация default route через интерфейс. Используем
-        отдельную таблицу <table_id> + ip rule, чтобы не ломать main.
+        Default route через интерфейс по wg-quick-схеме.
+
+        Трюк wg-quick для AllowedIPs=0/0:
+          1) `awg set <iface> fwmark <X>` — encapsulated-UDP, которые
+             amneziawg-go выплёвывает в сторону peer-endpoint'а, получают
+             этот mark. Без этого шага шаг (3) ловит ВСЕ пакеты, в т.ч.
+             наши же UDP→endpoint, и заворачивает их обратно в туннель —
+             получается петля и инет «отваливается» сразу после `up`
+             даже при пустом списке selective routing (точно как
+             описал пользователь).
+          2) `ip route add default dev <iface> table <X>` — default
+             только в нашей таблице.
+          3) `ip rule add not fwmark <X> table <X>` — всё, что НЕ
+             промаркировано awg-сокетом, идёт в эту таблицу.
+          4) `ip rule add table main suppress_prefixlength 0` — но
+             сначала смотрим main для всех маршрутов с prefix>0
+             (локалка, link-local, маршруты до WG-endpoint'а, etc.).
+             Без него LAN/гейтвей становятся недостижимы.
+
+        Mark === table_id: совпадение mark и table-id — стандартное
+        соглашение wg-quick. На семейство IPv4/IPv6 fwmark на awg-iface
+        ставится один раз (это атрибут wg-сокета, не route).
         """
         table = self._table_id_for(ifname)
+        mark  = table
+
+        # (1) fwmark на awg-сокете. Делаем один раз для семейства "-4"
+        #     (для "-6" тот же сокет, повторно не нужно).
+        if family == "-4":
+            rc, _o, err = _run([self._awg_bin(), "set", ifname,
+                                "fwmark", str(mark)])
+            if rc != 0:
+                log.warning(
+                    "awg set %s fwmark %d: %s — encapsulated-трафик не"
+                    " будет промаркирован, возможна петля маршрутизации"
+                    % (ifname, mark, (err or "").strip()),
+                    source="awg_manager",
+                )
+
+        # (2) default в нашей таблице
         rc, _o, _e = _run(["ip", family, "route", "add", "default",
                            "dev", ifname, "table", str(table)])
         if rc != 0:
             return False
+
+        # (3) not fwmark X → table X
         _run(["ip", family, "rule", "add", "not", "fwmark",
-              str(table), "table", str(table)])
+              str(mark), "table", str(table)])
+
+        # (4) main первым, но без его default. Идемпотентность по
+        #     наличию проверять не будем — `ip rule add` спокойно
+        #     создаёт дубликаты, а они дают тот же эффект; вычистим
+        #     ровно столько же при `down`.
+        _run(["ip", family, "rule", "add", "table", "main",
+              "suppress_prefixlength", "0"])
         return True
 
     def _table_id_for(self, ifname: str) -> int:
@@ -711,8 +756,12 @@ class AwgManager:
             family = r.get("family", "-4")
             if r.get("default"):
                 table = self._table_id_for(ifname)
+                # Симметричный teardown wg-quick-схемы из
+                # _add_default_via (mark == table_id).
                 _run(["ip", family, "rule", "del", "not", "fwmark",
                       str(table), "table", str(table)])
+                _run(["ip", family, "rule", "del", "table", "main",
+                      "suppress_prefixlength", "0"])
                 _run(["ip", family, "route", "flush", "table", str(table)])
             elif r.get("cidr"):
                 _run(["ip", family, "route", "del", r["cidr"], "dev", ifname])
