@@ -90,6 +90,21 @@ ok()      { printf "${GREEN}[OK]${NC}   %s\n" "$1"; }
 warn()    { printf "${YELLOW}[WARN]${NC} %s\n" "$1"; }
 error()   { printf "${RED}[ERR]${NC}  %s\n" "$1"; }
 
+# Чтение ответа пользователя.
+# При запуске через `wget -O - URL | sh` stdin занят пайпом и `read`
+# мгновенно возвращает EOF, не дожидаясь ответа. Берём ввод напрямую
+# с управляющего терминала (/dev/tty), если он доступен; иначе
+# возвращаем значение по умолчанию из $2.
+prompt_read() {
+    __prompt_default="${2:-}"
+    if [ -r /dev/tty ]; then
+        # shellcheck disable=SC2229
+        read -r "$1" </dev/tty
+    else
+        eval "$1=\"\$__prompt_default\""
+    fi
+}
+
 # ── Определение sudo ─────────────────────────────────────────
 
 # Если не root — используем sudo для системных команд
@@ -759,7 +774,7 @@ do_uninstall() {
     printf "\n"
     printf "Конфигурация будет ${GREEN}сохранена${NC}.\n"
     printf "Продолжить? [y/N] "
-    read -r answer
+    prompt_read answer "n"
     [ "$answer" = "y" ] || [ "$answer" = "Y" ] || { echo "Отменено"; exit 0; }
 
     echo ""
@@ -845,9 +860,16 @@ main() {
     echo "  Веб-интерфейс: http://<IP роутера>:$GUI_PORT"
     echo ""
 
-    # Предлагаем запустить
+    # Предлагаем запустить.
+    # При запуске через `wget -O - URL | sh` stdin занят пайпом — берём
+    # ответ с /dev/tty, иначе автоматически запускаем (значение по умолчанию).
     printf "  Запустить сейчас? [Y/n] "
-    read -r answer
+    prompt_read answer "y"
+    if [ -r /dev/tty ]; then
+        echo ""
+    else
+        echo "y (нет терминала — автозапуск)"
+    fi
     if [ "$answer" != "n" ] && [ "$answer" != "N" ]; then
         if [ "$ENV_TYPE" = "generic" ] && command -v systemctl >/dev/null 2>&1; then
             $SUDO systemctl start zapret-gui

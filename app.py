@@ -47,15 +47,32 @@ class ThreadedWSGIServer(ServerAdapter):
         from wsgiref.simple_server import WSGIServer, WSGIRequestHandler, make_server
         import socketserver
 
-        # Тихий request handler (подавляем логи каждого запроса)
+        # Тихий request handler: подавляем не только логи каждого запроса,
+        # но и traceback при разрыве соединения клиентом во время SSE
+        # (BrokenPipeError/ConnectionResetError) — это нормальная ситуация,
+        # а wsgiref по умолчанию выводит полный stderr-traceback.
         class QuietHandler(WSGIRequestHandler):
             def log_request(self, *args, **kwargs):
                 pass  # Bottle сам логирует в debug-режиме
+
+            def handle_one_request(self):
+                try:
+                    super().handle_one_request()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    self.close_connection = True
 
         # Добавляем ThreadingMixIn к WSGIServer
         class _ThreadingWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
             daemon_threads = True
             allow_reuse_address = True
+
+            def handle_error(self, request, client_address):
+                import sys
+                exc_type, exc_value = sys.exc_info()[:2]
+                if exc_type in (BrokenPipeError, ConnectionResetError,
+                                ConnectionAbortedError):
+                    return  # тихо игнорируем разрыв соединения
+                super().handle_error(request, client_address)
 
         handler_cls = QuietHandler if self.quiet else WSGIRequestHandler
 

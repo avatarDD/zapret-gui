@@ -32,6 +32,23 @@ NFT_TABLE = "zapret_gui"
 IPT_COMMENT = "zapret-gui"
 
 
+# При запуске от обычного пользователя на Debian/Ubuntu (`python3 app.py`)
+# в PATH отсутствуют /sbin и /usr/sbin, где живут iptables/nft. Из-за
+# этого shutil.which() и subprocess не находят бинарники, и весь модуль
+# работает «в холостую» с ошибкой "Ни iptables, ни nft не найдены".
+# Дополняем PATH общеизвестными sbin-каталогами один раз при импорте.
+def _ensure_sbin_in_path():
+    extra = ["/usr/local/sbin", "/usr/sbin", "/sbin"]
+    cur = os.environ.get("PATH", "")
+    parts = cur.split(os.pathsep) if cur else []
+    added = [d for d in extra if d not in parts and os.path.isdir(d)]
+    if added:
+        os.environ["PATH"] = os.pathsep.join(parts + added)
+
+
+_ensure_sbin_in_path()
+
+
 def _detect_wan_from_routes():
     """
     Определить WAN-интерфейс по default route.
