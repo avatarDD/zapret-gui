@@ -551,22 +551,6 @@ class AwgManager:
             except OSError:
                 pass
 
-        # Сравнение длины I1 в setconf vs в `awg show` — если демон
-        # урезал/исказил blob, увидим именно тут. Поле AmneziaWG-v2 I1
-        # хранится как hex; считаем именно hex-байты (длина_hex/2).
-        try:
-            iface_d = (cfg_parsed or {}).get("interface") or {}
-            i1_config = (iface_d.get("I1") or "").strip()
-            i1_config_hex = i1_config[2:] if i1_config.lower().startswith("0x") \
-                            else i1_config
-            i1_config_bytes = len(i1_config_hex) // 2 if i1_config_hex else 0
-            info["i1_lengths"] = {
-                "config_bytes": i1_config_bytes,
-                "in_awg_show": "i1" in (info["awg_show"] or "").lower(),
-            }
-        except Exception as e:
-            info["errors"].append("i1_lengths: %s" % e)
-
         # Сырой текст файла-конфига с диска (с маскированным PrivateKey).
         # Часто оказывается, что на диске не то, что показано в редакторе
         # — например, после save мы пересохранили в render_conf-нормализованной
@@ -595,6 +579,19 @@ class AwgManager:
             info["active"]   = True
         else:
             info["awg_show"] = "(awg show failed) " + (err or "").strip()
+
+        # I1: сравниваем то, что мы отправили в setconf, с тем, что
+        # реально хранится в демоне (echo через `awg show`). Расхождения
+        # подсказывают, где байты теряются — в нашем рендере, тулзе или
+        # в демоне. Считать ОБЯЗАТЕЛЬНО после того, как `awg show` уже
+        # снят (раньше — у меня тут была race и in_awg_show всегда был
+        # False, даже когда демон echo'ил i1 ровно теми же байтами).
+        try:
+            info["i1_lengths"] = _compute_i1_lengths(
+                cfg_parsed, info["awg_show"]
+            )
+        except Exception as e:
+            info["errors"].append("i1_lengths: %s" % e)
 
         # структурированный статус (с уже распарсенным fwmark)
         try:
@@ -1220,6 +1217,44 @@ def _parse_endpoint_host(endpoint: str):
         host, _, port = s.rpartition(":")
         return host, port
     return s, ""
+
+
+_I1_SHOW_RE = re.compile(
+    r"^\s*i1:\s*(?:<b\s+)?0x([0-9a-fA-F]+)>?\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _compute_i1_lengths(cfg_parsed: dict, awg_show: str) -> dict:
+    """
+    Сравнить I1 на трёх уровнях:
+      * config: то, что вытащил парсер из .conf
+      * show:   то, что демон echo'ит назад через `awg show`
+      * match:  совпадают ли байты (длины + первые 32 байта)
+
+    Хранится в виде hex-string; «байты» считаем как len(hex)//2.
+    Если демон вернул другие байты — обфускация ломается ещё до
+    нашего кода до того, как пакеты пойдут.
+    """
+    iface_d = (cfg_parsed or {}).get("interface") or {}
+    i1_cfg = (iface_d.get("I1") or "").strip()
+    i1_cfg_hex = i1_cfg[2:] if i1_cfg.lower().startswith("0x") else i1_cfg
+    i1_cfg_hex = i1_cfg_hex.lower()
+
+    show_hex = ""
+    m = _I1_SHOW_RE.search(awg_show or "")
+    if m:
+        show_hex = m.group(1).lower()
+
+    out = {
+        "config_bytes": len(i1_cfg_hex) // 2,
+        "show_bytes":   len(show_hex)   // 2,
+        "config_prefix": i1_cfg_hex[:64],
+        "show_prefix":   show_hex[:64],
+        "bytes_match":   bool(i1_cfg_hex) and i1_cfg_hex == show_hex,
+        "in_awg_show":   bool(show_hex),
+    }
+    return out
 
 
 def _mask_privkey(text: str) -> str:
