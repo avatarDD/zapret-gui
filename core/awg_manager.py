@@ -437,6 +437,122 @@ class AwgManager:
             })
         return info
 
+    # ─────────── diagnostics ───────────
+
+    def diagnostics(self, name: str) -> dict:
+        """
+        Полный снимок состояния туннеля + системного routing.
+
+        Используется GUI'ем как «диагностическая кнопка», когда после
+        `awg up` пропадает инет — даёт всё, что нужно, чтобы понять,
+        куда уходят пакеты и видит ли амнеziaWG последний handshake.
+        Не дёргает `_lock`, чтобы можно было звать параллельно с
+        up/down (читаем только текущее состояние ядра).
+        """
+        ifname = self._iface_for_name(name) or name
+        table  = self._table_id_for(ifname)
+        info   = {
+            "name":     name,
+            "iface":    ifname,
+            "table_id": table,
+            "active":   False,
+            "platform": {},
+            "awg_show": "",
+            "interface_state": {},
+            "rules":  {"v4": "", "v6": ""},
+            "routes": {
+                "table_v4":  "",
+                "table_v6":  "",
+                "main_v4":   "",
+                "main_v6":   "",
+            },
+            "endpoint_routes": [],
+            "log_tail":  [],
+            "errors": [],
+        }
+
+        # platform info — куда мы вообще установлены
+        try:
+            plat = self._platform()
+            info["platform"] = {
+                "name":       getattr(plat, "name", ""),
+                "binary_dir": getattr(plat, "binary_dir", ""),
+                "config_dir": getattr(plat, "config_dir", ""),
+                "run_dir":    getattr(plat, "run_dir", ""),
+            }
+        except Exception as e:
+            info["errors"].append("platform: %s" % e)
+
+        # awg show <iface> — handshake, RX/TX, fwmark
+        rc, out, err = _run([self._awg_bin(), "show", ifname], timeout=5)
+        if rc == 0:
+            info["awg_show"] = out
+            info["active"]   = True
+        else:
+            info["awg_show"] = "(awg show failed) " + (err or "").strip()
+
+        # структурированный статус (с уже распарсенным fwmark)
+        try:
+            info["interface_state"] = self.status(ifname)
+        except Exception as e:
+            info["errors"].append("status: %s" % e)
+
+        # ip rule list — оба семейства
+        for fam_key, fam_flag in (("v4", "-4"), ("v6", "-6")):
+            rc, out, err = _run(["ip", fam_flag, "rule", "list"], timeout=5)
+            info["rules"][fam_key] = out if rc == 0 else (
+                "(rule list failed) " + (err or "").strip()
+            )
+
+        # таблица туннеля + main (с suppress_prefixlength 0)
+        for fam_key, fam_flag in (("v4", "-4"), ("v6", "-6")):
+            rc, out, _ = _run(["ip", fam_flag, "route", "show", "table",
+                               str(table)], timeout=5)
+            info["routes"]["table_" + fam_key] = out if rc == 0 else ""
+            rc, out, _ = _run(["ip", fam_flag, "route", "show", "table",
+                               "main"], timeout=5)
+            info["routes"]["main_" + fam_key] = out if rc == 0 else ""
+
+        # ip route get <peer endpoint> — самое важное для диагностики
+        # петли: видно, через что РЕАЛЬНО уходит encapsulated-UDP.
+        try:
+            cfg = self.get_config(name)
+            parsed = cfg.get("parsed") or {}
+        except Exception:
+            parsed = {}
+        for peer in parsed.get("peers", []):
+            endpoint = peer.get("Endpoint", "")
+            host, port = _parse_endpoint_host(endpoint)
+            if not host:
+                continue
+            for ip in _resolve_host(host):
+                fam_flag = "-6" if ":" in ip else "-4"
+                rc, out, _ = _run(["ip", fam_flag, "route", "get", ip],
+                                  timeout=3)
+                info["endpoint_routes"].append({
+                    "endpoint": endpoint,
+                    "ip":       ip,
+                    "family":   fam_flag,
+                    "route":    out.strip() if rc == 0 else "(get failed)",
+                })
+
+        # последние записи log_buffer'а из awg-источников
+        try:
+            from core.log_buffer import get_log_buffer
+            buf = get_log_buffer()
+            entries = buf.get_filtered(search=None, n=200) or []
+            keep_sources = {"awg_manager", "awg_installer", "awg_detector",
+                            "warp_importer", "warp_generator", "routing"}
+            info["log_tail"] = [
+                e for e in entries
+                if (e.get("source") if isinstance(e, dict) else None)
+                   in keep_sources
+            ][-80:]
+        except Exception as e:
+            info["errors"].append("log_buffer: %s" % e)
+
+        return info
+
     # ─────────── up / down ───────────
 
     def up(self, name: str) -> dict:
@@ -532,6 +648,24 @@ class AwgManager:
         # 4) маршруты из AllowedIPs (если не Table=off)
         added_routes = []
         table_off = str(iface.get("Table", "")).lower() == "off"
+
+        # 4a) ПЕРЕД default-route'ом прибиваем /32 host-маршруты до peer-
+        #     endpoint'ов через текущий физический WAN. Без этого
+        #     encapsulated-UDP, которые amneziawg-go отправляет в сторону
+        #     endpoint'а, после установки default'а в туннеле могут
+        #     зациклиться сами в себя (зависит от того, передаёт ли
+        #     userspace-демон SO_MARK во все свои сокеты — у некоторых
+        #     сборок amneziawg-go этого фикса нет). Pin endpoint'а
+        #     гарантирует корректный путь до peer'а независимо от
+        #     fwmark-механики.
+        endpoints_pinned = self._pin_peer_endpoints(ifname, cfg)
+        for p in endpoints_pinned:
+            added_routes.append({
+                "family":   p["family"],
+                "endpoint": p["dest"],
+                "preexisting": p.get("preexisting", False),
+            })
+
         if not table_off:
             for peer in cfg.get("peers", []):
                 for ip in _as_list(peer.get("AllowedIPs")):
@@ -574,6 +708,116 @@ class AwgManager:
             "message": "Интерфейс %s поднят" % ifname,
             "routes":  added_routes,
         }
+
+    def _pin_peer_endpoints(self, ifname: str, cfg: dict) -> list:
+        """
+        До установки default-route в туннеле прибиваем /32(/128) host-
+        маршруты до каждого peer.Endpoint через текущий путь main-таблицы.
+
+        Зачем: при AllowedIPs=0/0 default попадает в таблицу T. Если
+        amneziawg-go не выставляет SO_MARK на своих UDP-сокетах (бывает
+        на форках/старых билдах), encapsulated-трафик не получает
+        fwmark и попадает под `not fwmark T table T` — заворачивается
+        обратно в туннель → петля → инет умирает. Pin host-маршрута
+        гарантирует, что пакет до endpoint'а уйдёт через физический
+        WAN независимо от fwmark-механики.
+
+        Возвращает список словарей со сведениями для teardown.
+        """
+        pinned = []
+        for peer in cfg.get("peers", []):
+            endpoint = peer.get("Endpoint", "")
+            if not endpoint:
+                continue
+            host, _port = _parse_endpoint_host(endpoint)
+            if not host:
+                continue
+
+            ips = _resolve_host(host)
+            if not ips:
+                log.warning(
+                    "Не удалось зарезолвить endpoint %s — host-route не"
+                    " прибит, возможна петля маршрутизации" % host,
+                    source="awg_manager",
+                )
+                continue
+
+            for ip in ips:
+                family = "-6" if ":" in ip else "-4"
+                mask   = "/128" if family == "-6" else "/32"
+                dest   = ip + mask
+
+                # Если уже идёт через наш awg-интерфейс — значит, мы
+                # дозаписываем поверх «сломанной» прошлой сессии;
+                # сначала чистим, чтобы добавить корректный маршрут.
+                rc, out, _ = _run(["ip", family, "route", "get", ip],
+                                  timeout=3)
+                if rc != 0 or not out:
+                    continue
+                parts = out.split()
+                # `ip route get` возвращает «<dst> via <gw> dev <if> src
+                # <src> uid …» — берём первый dev/via.
+                via, dev = "", ""
+                if "via" in parts:
+                    i = parts.index("via")
+                    if i + 1 < len(parts):
+                        via = parts[i + 1]
+                if "dev" in parts:
+                    i = parts.index("dev")
+                    if i + 1 < len(parts):
+                        dev = parts[i + 1]
+
+                if dev == ifname:
+                    # Маршрут УЖЕ через наш туннель (остаток прошлой
+                    # неудачной сессии). Удалим — потом добавим корректный.
+                    _run(["ip", family, "route", "del", dest])
+                    rc, out, _ = _run(["ip", family, "route", "get", ip],
+                                      timeout=3)
+                    parts = out.split() if rc == 0 else []
+                    via, dev = "", ""
+                    if "via" in parts:
+                        i = parts.index("via")
+                        if i + 1 < len(parts):
+                            via = parts[i + 1]
+                    if "dev" in parts:
+                        i = parts.index("dev")
+                        if i + 1 < len(parts):
+                            dev = parts[i + 1]
+                    if dev == ifname or not dev:
+                        # Без default'а в main мы не сможем
+                        # восстановить путь к endpoint'у — пропускаем.
+                        log.warning(
+                            "Endpoint %s достижим только через %s — не"
+                            " могу прибить host-route" % (ip, ifname),
+                            source="awg_manager",
+                        )
+                        continue
+
+                cmd = ["ip", family, "route", "add", dest]
+                if via:
+                    cmd += ["via", via]
+                if dev:
+                    cmd += ["dev", dev]
+                rc, _o, err = _run(cmd)
+                if rc == 0:
+                    pinned.append({"family": family, "dest": dest})
+                    log.info(
+                        "AWG endpoint %s прибит через %s%s" %
+                        (dest, dev, (" via " + via) if via else ""),
+                        source="awg_manager",
+                    )
+                elif "File exists" in (err or ""):
+                    # Уже был такой маршрут (например, мы перезапускаемся).
+                    # Помечаем preexisting, чтобы не удалять чужое.
+                    pinned.append({"family": family, "dest": dest,
+                                   "preexisting": True})
+                else:
+                    log.warning(
+                        "Не удалось прибить endpoint %s: %s" %
+                        (dest, (err or "").strip()),
+                        source="awg_manager",
+                    )
+        return pinned
 
     def _add_default_via(self, ifname: str, family: str) -> bool:
         """
@@ -765,6 +1009,12 @@ class AwgManager:
                 _run(["ip", family, "route", "flush", "table", str(table)])
             elif r.get("cidr"):
                 _run(["ip", family, "route", "del", r["cidr"], "dev", ifname])
+            elif r.get("endpoint"):
+                # Pinned peer endpoint в main-таблице. Если мы его
+                # добавили (preexisting=False) — снимаем. Чужое
+                # (преexisting=True) не трогаем.
+                if not r.get("preexisting"):
+                    _run(["ip", family, "route", "del", r["endpoint"]])
 
         try:
             os.remove(path)
@@ -792,6 +1042,56 @@ class AwgManager:
 
 
 # ───────────────────────── helpers ───────────────────────────────────
+
+def _parse_endpoint_host(endpoint: str):
+    """
+    `host:port` / `[ipv6]:port` → (host, port).
+
+    Дубль `_split_endpoint` из awg_warp_in_warp, но локальный —
+    чтобы избежать циклического импорта.
+    """
+    if not endpoint:
+        return "", ""
+    s = str(endpoint).strip()
+    if s.startswith("["):
+        rb = s.find("]")
+        if rb > 0 and len(s) > rb + 1 and s[rb + 1] == ":":
+            return s[1:rb], s[rb + 2:]
+        return "", ""
+    if ":" in s:
+        host, _, port = s.rpartition(":")
+        return host, port
+    return s, ""
+
+
+def _resolve_host(host: str) -> list:
+    """Резолвить host в список уникальных IP (v4+v6). IP оставляем как есть."""
+    import socket as _s
+    if not host:
+        return []
+    # Если это уже IP — отдаём без резолва
+    try:
+        _s.inet_pton(_s.AF_INET, host)
+        return [host]
+    except (OSError, ValueError):
+        pass
+    try:
+        _s.inet_pton(_s.AF_INET6, host)
+        return [host]
+    except (OSError, ValueError):
+        pass
+    try:
+        infos = _s.getaddrinfo(host, None, type=_s.SOCK_DGRAM)
+    except (OSError, _s.gaierror):
+        return []
+    seen, out = set(), []
+    for info in infos:
+        ip = info[4][0]
+        if ip and ip not in seen:
+            seen.add(ip)
+            out.append(ip)
+    return out
+
 
 def _as_list(v):
     if v is None or v == "":
