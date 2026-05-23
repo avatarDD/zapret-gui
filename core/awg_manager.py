@@ -530,6 +530,7 @@ class AwgManager:
             "awg":          self._awg_bin(),
             "awg_version":  "",
             "amneziawg_go_version": "",
+            "warnings": [],
         }
         rc, out, _ = _run([self._awg_bin(), "--version"], timeout=3)
         if rc == 0:
@@ -550,6 +551,33 @@ class AwgManager:
                 )
             except OSError:
                 pass
+
+        # Детект устаревшего amneziawg-go. v0.2.x принимает I1 через
+        # UAPI (поэтому в `awg show` он эхом возвращается) но НЕ
+        # применяет v2-обфускацию к пакетам — handshake проходит, а
+        # data-пакеты сервер дропает. Полная поддержка v2 (I1/J1-J3/
+        # Itime/S3/S4) появилась с amneziawg-go v1.x.
+        config_has_v2 = bool(cfg_parsed and any(
+            k in (cfg_parsed.get("interface") or {})
+            for k in ("I1", "I2", "I3", "I4", "I5",
+                      "J1", "J2", "J3", "Itime")
+        ))
+        ver_major_minor = _extract_amneziawg_go_major_minor(
+            info["binaries"]["amneziawg_go_version"]
+        )
+        if config_has_v2 and ver_major_minor is not None \
+                and ver_major_minor < (1, 0):
+            info["binaries"]["warnings"].append(
+                "Конфиг содержит AmneziaWG-v2 поля (I1/J*/Itime), но"
+                " amneziawg-go v%d.%d не применяет v2-обфускацию к"
+                " пакетам — поэтому handshake проходит, а data-пакеты"
+                " сервер дропает (asymmetric in/out). Обновите бинарь"
+                " через Setup wizard или вручную: скачайте релиз"
+                " amneziawg-go ≥ v1.0 c https://github.com/amnezia-vpn"
+                "/amneziawg-go/releases и положите в %s."
+                % (ver_major_minor[0], ver_major_minor[1],
+                   info["binaries"]["amneziawg_go"])
+            )
 
         # Link-info интерфейса (MTU/state) — для отладки fragmented UDP.
         rc, out, _ = _run(["ip", "-d", "link", "show", "dev", ifname],
@@ -1191,6 +1219,24 @@ def _parse_endpoint_host(endpoint: str):
         host, _, port = s.rpartition(":")
         return host, port
     return s, ""
+
+
+def _extract_amneziawg_go_major_minor(version_string: str):
+    """
+    Достать (major, minor) из строки версии amneziawg-go. Возвращает
+    None, если не удалось распарсить — тогда предупреждение об
+    устаревшем демоне не показываем (лучше промолчать, чем пугать
+    ложно).
+    """
+    if not version_string:
+        return None
+    m = re.search(r"v?(\d+)\.(\d+)(?:\.\d+)?", version_string)
+    if not m:
+        return None
+    try:
+        return (int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
 
 
 def _mask_privkey(text: str) -> str:

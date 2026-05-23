@@ -463,6 +463,11 @@ const AwgDashboardPage = (() => {
                        '  version=' + (b.awg_version || '?'));
             lines.push('amneziawg-go: ' + (b.amneziawg_go || '?') +
                        '  version=' + (b.amneziawg_go_version || '?'));
+            if (b.warnings && b.warnings.length) {
+                lines.push('');
+                lines.push('!!! ВНИМАНИЕ !!!');
+                b.warnings.forEach(w => lines.push('  ' + w));
+            }
         }
         if (d.errors && d.errors.length) {
             lines.push('errors:   ' + d.errors.join('; '));
