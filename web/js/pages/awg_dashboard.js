@@ -464,11 +464,18 @@ const AwgDashboardPage = (() => {
             lines.push('amneziawg-go: ' + (b.amneziawg_go || '?') +
                        '  version=' + (b.amneziawg_go_version || '?'));
         }
+        if (d.i1_lengths) {
+            lines.push('I1 in config: ' + d.i1_lengths.config_bytes +
+                       ' bytes (hex/2)' +
+                       (d.i1_lengths.in_awg_show ? ', echoed by daemon' : ', NOT in awg show'));
+        }
         if (d.errors && d.errors.length) {
             lines.push('errors:   ' + d.errors.join('; '));
         }
         lines.push('');
 
+        push('config file on disk (raw .conf as read by parse_conf)',
+             d.config_file_text);
         push('rendered setconf (what we send to `awg setconf`)',
              d.setconf_text);
         push('awg show', d.awg_show);

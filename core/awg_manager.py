@@ -551,6 +551,35 @@ class AwgManager:
             except OSError:
                 pass
 
+        # Сравнение длины I1 в setconf vs в `awg show` — если демон
+        # урезал/исказил blob, увидим именно тут. Поле AmneziaWG-v2 I1
+        # хранится как hex; считаем именно hex-байты (длина_hex/2).
+        try:
+            iface_d = (cfg_parsed or {}).get("interface") or {}
+            i1_config = (iface_d.get("I1") or "").strip()
+            i1_config_hex = i1_config[2:] if i1_config.lower().startswith("0x") \
+                            else i1_config
+            i1_config_bytes = len(i1_config_hex) // 2 if i1_config_hex else 0
+            info["i1_lengths"] = {
+                "config_bytes": i1_config_bytes,
+                "in_awg_show": "i1" in (info["awg_show"] or "").lower(),
+            }
+        except Exception as e:
+            info["errors"].append("i1_lengths: %s" % e)
+
+        # Сырой текст файла-конфига с диска (с маскированным PrivateKey).
+        # Часто оказывается, что на диске не то, что показано в редакторе
+        # — например, после save мы пересохранили в render_conf-нормализованной
+        # форме и потеряли часть полей. Видеть «что реально читается»
+        # на старте `up` — критично для диагностики.
+        try:
+            cfg_path = self._config_path(name)
+            if os.path.isfile(cfg_path):
+                with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
+                    info["config_file_text"] = _mask_privkey(f.read())
+        except Exception as e:
+            info["errors"].append("config_file_text: %s" % e)
+
         # Link-info интерфейса (MTU/state) — для отладки fragmented UDP.
         rc, out, _ = _run(["ip", "-d", "link", "show", "dev", ifname],
                           timeout=3)
