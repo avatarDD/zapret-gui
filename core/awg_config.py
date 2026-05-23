@@ -18,6 +18,7 @@
 """
 
 import base64
+import ipaddress
 import os
 import re
 import subprocess
@@ -121,11 +122,46 @@ def parse_conf(text: str) -> dict:
         elif current == "peer" and current_peer is not None:
             _set_field(current_peer, key, value)
 
+    # Нормализация: добавляем /32 и /128 голым адресам, чтобы wg/awg
+    # их принял (и валидация ниже не ругалась).
+    iface = result["interface"]
+    if "Address" in iface:
+        iface["Address"] = _normalize_cidr_field(iface["Address"])
+    for peer in result["peers"]:
+        if "AllowedIPs" in peer:
+            peer["AllowedIPs"] = _normalize_cidr_field(peer["AllowedIPs"])
+
     return result
 
 
 _LIST_KEYS = {"Address", "DNS", "AllowedIPs",
               "PreUp", "PostUp", "PreDown", "PostDown"}
+
+
+def _add_cidr_suffix(addr: str) -> str:
+    """
+    Если строка — голый IPv4/IPv6 без префикса, добавить /32 или /128.
+    Иначе вернуть как есть. WireGuard/AmneziaWG требуют CIDR в Address и
+    AllowedIPs, но многие генераторы конфигов (в т. ч. Cloudflare WARP)
+    пишут адреса без префикса — нормализуем тихо при импорте.
+    """
+    if not isinstance(addr, str):
+        return addr
+    s = addr.strip()
+    if not s or "/" in s:
+        return s
+    try:
+        ip = ipaddress.ip_address(s)
+    except ValueError:
+        return s
+    return "%s/%d" % (s, 32 if ip.version == 4 else 128)
+
+
+def _normalize_cidr_field(value):
+    """Применить _add_cidr_suffix к строке или элементам списка."""
+    if isinstance(value, list):
+        return [_add_cidr_suffix(v) for v in value]
+    return _add_cidr_suffix(value)
 
 
 def _set_field(target: dict, key: str, value: str):
@@ -281,8 +317,13 @@ def validate(cfg: dict) -> list:
     addrs = iface.get("Address")
     if addrs:
         for a in (addrs if isinstance(addrs, list) else [addrs]):
-            if "/" not in a:
-                errors.append(f"[Interface] Address без префикса: {a}")
+            # Принимаем как «1.2.3.4», так и «1.2.3.4/24» — parse_conf уже
+            # дописывает /32 и /128 для голых адресов; проверяем только,
+            # что значение действительно является IP/CIDR.
+            try:
+                ipaddress.ip_interface(a)
+            except (ValueError, TypeError):
+                errors.append(f"[Interface] Address — неверный адрес: {a}")
 
     # AWG обфускация — ожидаются числа
     for k in AWG_OBFUSCATION_FIELDS:
@@ -320,8 +361,10 @@ def validate(cfg: dict) -> list:
         ips = peer.get("AllowedIPs")
         if ips:
             for a in (ips if isinstance(ips, list) else [ips]):
-                if "/" not in a:
-                    errors.append(f"{prefix} AllowedIPs без префикса: {a}")
+                try:
+                    ipaddress.ip_network(a, strict=False)
+                except (ValueError, TypeError):
+                    errors.append(f"{prefix} AllowedIPs — неверный адрес: {a}")
 
     return errors
 

@@ -86,23 +86,27 @@ def _sse_generator():
     """
     Генератор SSE-событий.
 
-    Выделен в отдельную функцию для надёжной обработки ошибок.
-    При любой ошибке генератор корректно завершается.
+    Любой Exception на любом этапе (инициализация буфера, добавление
+    слушателя, yield) подавляется, чтобы он не вылетел из WSGI-callable
+    Bottle и не вызвал в stderr сообщение «Critical error while
+    processing request: /api/logs/stream».
     """
-    from core.log_buffer import get_log_buffer
-
-    buf = get_log_buffer()
-    q = queue.Queue(maxsize=100)
-
-    def on_entry(entry):
-        try:
-            q.put_nowait(entry)
-        except queue.Full:
-            pass  # Пропускаем если клиент не успевает
-
-    buf.add_listener(on_entry)
-
+    buf = None
+    on_entry = None
     try:
+        from core.log_buffer import get_log_buffer
+
+        buf = get_log_buffer()
+        q = queue.Queue(maxsize=100)
+
+        def on_entry(entry):
+            try:
+                q.put_nowait(entry)
+            except queue.Full:
+                pass  # Пропускаем если клиент не успевает
+
+        buf.add_listener(on_entry)
+
         # Начальное событие
         yield _sse_event({"type": "connected", "timestamp": time.time()})
 
@@ -113,6 +117,9 @@ def _sse_generator():
             except queue.Empty:
                 # Heartbeat чтобы соединение не закрылось
                 yield ": heartbeat\n\n"
+            except (GeneratorExit, BrokenPipeError, ConnectionResetError, OSError):
+                # Клиент отключился — корректно выходим
+                return
             except Exception:
                 # Ошибка при обработке записи — пропускаем
                 continue
@@ -128,7 +135,11 @@ def _sse_generator():
         except Exception:
             pass
     finally:
-        buf.remove_listener(on_entry)
+        if buf is not None and on_entry is not None:
+            try:
+                buf.remove_listener(on_entry)
+            except Exception:
+                pass
 
 
 def _sse_event(data, event=None):
