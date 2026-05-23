@@ -448,6 +448,7 @@ const AwgDashboardPage = (() => {
         };
 
         lines.push('zapret-gui AWG diagnostics');
+        lines.push('gui_ver:  ' + (d.gui_version || '?'));
         lines.push('config:   ' + (d.name || ''));
         lines.push('iface:    ' + (d.iface || ''));
         lines.push('table_id: ' + (d.table_id || ''));
@@ -456,12 +457,23 @@ const AwgDashboardPage = (() => {
             lines.push('platform: ' + (d.platform.name || '?') +
                        '  run_dir=' + (d.platform.run_dir || '?'));
         }
+        if (d.binaries) {
+            const b = d.binaries;
+            lines.push('awg:      ' + (b.awg || '?') +
+                       '  version=' + (b.awg_version || '?'));
+            lines.push('amneziawg-go: ' + (b.amneziawg_go || '?') +
+                       '  version=' + (b.amneziawg_go_version || '?'));
+        }
         if (d.errors && d.errors.length) {
             lines.push('errors:   ' + d.errors.join('; '));
         }
         lines.push('');
 
+        push('rendered setconf (what we send to `awg setconf`)',
+             d.setconf_text);
         push('awg show', d.awg_show);
+        push('ip -d link show ' + (d.iface || ''), d.link);
+        push('ip addr show ' + (d.iface || ''), d.addr);
 
         if (d.interface_state) {
             const ifs = d.interface_state.interface || {};
@@ -498,6 +510,25 @@ const AwgDashboardPage = (() => {
                 lines.push('  ' + (er.route || ''));
             });
             lines.push('');
+        }
+
+        if (d.last_up) {
+            const lu = d.last_up;
+            const savedTs = lu.saved_at
+                ? new Date(lu.saved_at * 1000).toISOString()
+                : '?';
+            lines.push('════ LAST UP SNAPSHOT (saved at ' + savedTs + ') ════');
+            lines.push('Состояние, снятое сразу после последнего `up` — для');
+            lines.push('диагностики «после обвала», когда iface уже опущен.');
+            lines.push('');
+            push('  last_up: setconf actually sent', lu.setconf_text);
+            push('  last_up: awg show',    lu.awg_show);
+            push('  last_up: ip -4 rule',  lu.rules && lu.rules.v4);
+            push('  last_up: ip -6 rule',  lu.rules && lu.rules.v6);
+            push('  last_up: table ' + (lu.table_id || '?') + ' v4',
+                 lu.routes && lu.routes.table_v4);
+            push('  last_up: table ' + (lu.table_id || '?') + ' v6',
+                 lu.routes && lu.routes.table_v6);
         }
 
         if (d.log_tail && d.log_tail.length) {

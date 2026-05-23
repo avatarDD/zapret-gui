@@ -163,6 +163,10 @@ class AwgManager:
     def _routes_path(self, iface: str) -> str:
         return os.path.join(self._run_dir(), "awg-%s.routes.json" % iface)
 
+    def _last_up_path(self, iface: str) -> str:
+        """Снимок состояния, сохранённый при последнем `up`."""
+        return os.path.join(self._run_dir(), "awg-%s.last_up.json" % iface)
+
     # ─────────── CRUD ───────────
 
     def list_configs(self) -> list:
@@ -451,13 +455,21 @@ class AwgManager:
         """
         ifname = self._iface_for_name(name) or name
         table  = self._table_id_for(ifname)
+        # GUI-версия — критично, чтобы понимать, какой код выполнялся
+        # при создании снимка (мы регулярно правим setconf-рендер).
+        try:
+            from core.version import GUI_VERSION as _gv
+        except Exception:
+            _gv = "?"
         info   = {
-            "name":     name,
-            "iface":    ifname,
-            "table_id": table,
-            "active":   False,
-            "platform": {},
-            "awg_show": "",
+            "name":         name,
+            "iface":        ifname,
+            "table_id":     table,
+            "gui_version":  _gv,
+            "active":       False,
+            "platform":     {},
+            "setconf_text": "",
+            "awg_show":     "",
             "interface_state": {},
             "rules":  {"v4": "", "v6": ""},
             "routes": {
@@ -467,9 +479,36 @@ class AwgManager:
                 "main_v6":   "",
             },
             "endpoint_routes": [],
+            "last_up":   None,
             "log_tail":  [],
             "errors": [],
         }
+
+        # Конфиг (для отображения) и предварительно — что мы скармливаем
+        # `awg setconf`. Это позволяет увидеть, попадает ли I1/S3/S4 в
+        # реально применяемый setconf, даже если iface сейчас опущен.
+        cfg_parsed = None
+        try:
+            cfg_wrap = self.get_config(name)
+            cfg_parsed = cfg_wrap.get("parsed") or {}
+            from core.awg_config import render_setconf as _render_setconf
+            # Mask PrivateKey in setconf-dump — конфиг попадёт в баг-репорт
+            # как есть, дёргать оттуда приватник никому не нужно.
+            rendered = _render_setconf(cfg_parsed) or ""
+            info["setconf_text"] = _mask_privkey(rendered)
+        except Exception as e:
+            info["errors"].append("render_setconf: %s" % e)
+
+        # Last-up снапшот (если есть) — данные, снятые во время последнего
+        # успешного `up`. Помогает, если пользователь после `up` теряет инет
+        # и сам делает `down`, чтобы вернуть себе GUI.
+        try:
+            last_path = self._last_up_path(ifname)
+            if os.path.isfile(last_path):
+                with open(last_path, "r", encoding="utf-8") as f:
+                    info["last_up"] = json.load(f)
+        except Exception as e:
+            info["errors"].append("last_up read: %s" % e)
 
         # platform info — куда мы вообще установлены
         try:
@@ -552,12 +591,7 @@ class AwgManager:
 
         # ip route get <peer endpoint> — самое важное для диагностики
         # петли: видно, через что РЕАЛЬНО уходит encapsulated-UDP.
-        try:
-            cfg = self.get_config(name)
-            parsed = cfg.get("parsed") or {}
-        except Exception:
-            parsed = {}
-        for peer in parsed.get("peers", []):
+        for peer in (cfg_parsed or {}).get("peers", []) or []:
             endpoint = peer.get("Endpoint", "")
             host, port = _parse_endpoint_host(endpoint)
             if not host:
@@ -738,6 +772,18 @@ class AwgManager:
             log.warning("routing apply on up %s: %s" % (ifname, e),
                         source="awg_manager")
 
+        # Сохраняем post-up снимок состояния для диагностики «после
+        # обвала». Если у пользователя при `up` отваливается инет —
+        # ему придётся самому делать down, чтобы вернуть себе GUI;
+        # без снапшота к этому моменту мы теряем `awg show`, rules,
+        # routes и т.п. С этим файлом — он лежит и читается из
+        # diagnostics() даже когда iface уже опущен.
+        try:
+            self._save_last_up_snapshot(name, ifname, cfg, setconf_text)
+        except Exception as e:
+            log.warning("last_up snapshot не сохранён: %s" % e,
+                        source="awg_manager")
+
         log.success("Интерфейс %s поднят" % ifname, source="awg_manager")
         return {
             "ok":      True,
@@ -745,6 +791,41 @@ class AwgManager:
             "message": "Интерфейс %s поднят" % ifname,
             "routes":  added_routes,
         }
+
+    def _save_last_up_snapshot(self, cfg_name: str, ifname: str,
+                                cfg: dict, setconf_text: str) -> None:
+        """
+        Сохранить снимок состояния интерфейса сразу после `up`,
+        чтобы diagnostics() мог показать его пользователю даже после
+        вынужденного down (когда инет пропал и нужно вернуть GUI).
+        """
+        snap = {
+            "saved_at":     int(time.time()),
+            "cfg_name":     cfg_name,
+            "iface":        ifname,
+            "table_id":     self._table_id_for(ifname),
+            "setconf_text": _mask_privkey(setconf_text or ""),
+            "awg_show":     "",
+            "rules":  {"v4": "", "v6": ""},
+            "routes": {"table_v4": "", "table_v6": "",
+                       "main_v4":  "", "main_v6":  ""},
+        }
+        rc, out, _ = _run([self._awg_bin(), "show", ifname], timeout=5)
+        snap["awg_show"] = out if rc == 0 else ""
+        for fam_key, fam_flag in (("v4", "-4"), ("v6", "-6")):
+            rc, out, _ = _run(["ip", fam_flag, "rule", "list"], timeout=5)
+            snap["rules"][fam_key] = out if rc == 0 else ""
+            rc, out, _ = _run(["ip", fam_flag, "route", "show", "table",
+                               str(snap["table_id"])], timeout=5)
+            snap["routes"]["table_" + fam_key] = out if rc == 0 else ""
+            rc, out, _ = _run(["ip", fam_flag, "route", "show", "table",
+                               "main"], timeout=5)
+            snap["routes"]["main_" + fam_key] = out if rc == 0 else ""
+
+        path = self._last_up_path(ifname)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False, indent=2)
 
     def _pin_peer_endpoints(self, ifname: str, cfg: dict) -> list:
         """
@@ -1110,6 +1191,22 @@ def _parse_endpoint_host(endpoint: str):
         host, _, port = s.rpartition(":")
         return host, port
     return s, ""
+
+
+def _mask_privkey(text: str) -> str:
+    """Заменить PrivateKey-значения на «***» — в диагностическом дампе
+    приватник нам не нужен и пользователь часто кидает его в баг-репорт."""
+    if not text:
+        return text
+    lines = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s.lower().startswith("privatekey") and "=" in s:
+            key, _, _val = line.partition("=")
+            lines.append("%s= ***" % key)
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _resolve_host(host: str) -> list:
