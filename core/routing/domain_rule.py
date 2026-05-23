@@ -174,6 +174,37 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
         return {"ok": False, "error": "Список доменов пуст"}
 
     with _lock:
+        # Preflight: domain-routing работает ТОЛЬКО через dnsmasq —
+        # он отвечает за заполнение ipset/nftset при резолве. Если
+        # dnsmasq не установлен или не запущен, set останется пустым,
+        # а firewall-хуки в mangle уже создадутся «вхолостую». На
+        # Debian/Ubuntu, где штатный резолвер — systemd-resolved,
+        # это типичный сценарий: до правок мы успевали навешать
+        # nft/ipset rules и поломать пользователю DNS (SIGHUP при
+        # перегенерации managed-файла попадал в чужой dnsmasq или
+        # завершался ошибкой). Лучше упасть до любых side-effects.
+        dn = dnsmasq_integration.DnsmasqIntegration()
+        dn_status = dn.status()
+        if not dn_status.get("available"):
+            return {
+                "ok": False,
+                "error": (
+                    "dnsmasq не установлен на системе. Доменное routing"
+                    " работает только через dnsmasq (он заполняет"
+                    " ipset/nftset при резолве). Установите и запустите"
+                    " dnsmasq, либо используйте правило по CIDR."
+                ),
+            }
+        if not dn_status.get("running"):
+            return {
+                "ok": False,
+                "error": (
+                    "dnsmasq установлен, но не запущен (pid не найден)."
+                    " Запустите его (systemctl start dnsmasq /"
+                    " /etc/init.d/dnsmasq start) и повторите."
+                ),
+            }
+
         backend, kind = _detect_backend()
         if backend is None:
             return {"ok": False,

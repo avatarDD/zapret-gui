@@ -45,6 +45,9 @@ _SERVICE_INIT_SCRIPTS = [
     "/etc/init.d/zapret-gui",
 ]
 
+# Имя systemd-юнита (создаётся install.sh на generic Linux с systemctl).
+_SYSTEMD_UNIT = "zapret-gui"
+
 
 class GuiUpdater:
     """Проверка обновлений и самообновление zapret-gui."""
@@ -358,21 +361,61 @@ class GuiUpdater:
                 return path
         return None
 
+    @staticmethod
+    def _find_systemd_restart_cmd() -> str | None:
+        """
+        Вернуть команду для рестарта через systemd, если на машине есть
+        systemctl и установлен наш unit. Используется на Debian/Ubuntu
+        и других дистрибутивах с systemd — там install.sh создаёт
+        /etc/systemd/system/zapret-gui.service.
+        """
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            return None
+        # `is-enabled` отвечает быстро и не зависит от runtime-состояния:
+        # нам важен факт существования юнита, а не то, что он сейчас
+        # запущен (мы как раз внутри него).
+        try:
+            r = subprocess.run(
+                [systemctl, "cat", "--", "%s.service" % _SYSTEMD_UNIT],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if r.returncode != 0:
+            return None
+        return "%s restart %s" % (systemctl, _SYSTEMD_UNIT)
+
+    def _resolve_restart_command(self) -> str | None:
+        """
+        Подобрать команду перезапуска под текущую платформу.
+
+        Приоритет: init-скрипт (Entware/OpenWrt — он сам знает про
+        PID-файл и procd) → systemctl (generic Linux). На router-сборках
+        systemctl формально может присутствовать, но запускает нас
+        именно init-скрипт, поэтому его и предпочитаем.
+        """
+        init_script = self._find_init_script()
+        if init_script:
+            return "%s restart" % init_script
+        return self._find_systemd_restart_cmd()
+
     def _schedule_service_restart(self, delay_seconds: int = 3) -> bool:
         """Запланировать рестарт сервиса в detached-shell.
 
-        Запускает `(sleep N && <init> restart) &` через nohup так, чтобы:
+        Запускает `(sleep N && <restart-cmd>) &` через nohup так, чтобы:
           1) текущий HTTP-ответ успел уйти клиенту;
           2) при kill старого Python-процесса детачед-shell не умер вместе
              с ним (start_new_session + nohup);
-          3) после паузы init-скрипт сделал stop + start (PID-файл,
-             pgrep, очистка stale __pycache__ — всё его).
+          3) после паузы init-скрипт / systemctl сделал stop + start
+             (PID-файл, pgrep, очистка stale __pycache__ — всё его).
         """
-        init_script = self._find_init_script()
-        if not init_script:
+        restart_cmd = self._resolve_restart_command()
+        if not restart_cmd:
             log.warning(
-                "init-скрипт сервиса не найден, авто-рестарт пропущен. "
-                "Перезапустите вручную: S99zapret-gui restart",
+                "init-скрипт/systemd-юнит сервиса не найдены, авто-рестарт"
+                " пропущен. Перезапустите вручную: "
+                "S99zapret-gui restart / systemctl restart zapret-gui",
                 source="gui-updater",
             )
             return False
@@ -380,8 +423,8 @@ class GuiUpdater:
         # Каскад «sleep + restart» в новой сессии. Перенаправляем потоки
         # в /dev/null — иначе шелл унаследует трубы Python и умрёт при
         # первой попытке записи после нашего exit.
-        cmd_str = "sleep %d && %s restart" % (
-            int(delay_seconds), init_script,
+        cmd_str = "sleep %d && %s" % (
+            int(delay_seconds), restart_cmd,
         )
         try:
             subprocess.Popen(
@@ -393,8 +436,8 @@ class GuiUpdater:
                 close_fds=True,
             )
             log.info(
-                "Запланирован рестарт сервиса через %d сек: %s restart"
-                % (delay_seconds, init_script),
+                "Запланирован рестарт сервиса через %d сек: %s"
+                % (delay_seconds, restart_cmd),
                 source="gui-updater",
             )
             return True

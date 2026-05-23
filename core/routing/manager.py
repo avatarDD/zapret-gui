@@ -79,6 +79,41 @@ def _table_has_default(family: str, table: int, ifname: str) -> bool:
     return False
 
 
+def _summarize_apply_error(applied: dict) -> str:
+    """
+    Сложить читабельное сообщение об ошибке применения правила.
+
+    Backend возвращает разные формы: иногда `error: str`, иногда
+    `errors: [str, ...]`, иногда вложенный `dnsmasq.error`. UI получает
+    одну строку — её и собираем.
+    """
+    if not isinstance(applied, dict):
+        return "Ошибка применения правила"
+    parts = []
+    if applied.get("error"):
+        parts.append(str(applied["error"]))
+    errs = applied.get("errors")
+    if isinstance(errs, list) and errs:
+        parts.extend(str(e) for e in errs if e)
+    dn = applied.get("dnsmasq")
+    if isinstance(dn, dict):
+        if dn.get("error"):
+            parts.append("dnsmasq: %s" % dn["error"])
+        reload_res = dn.get("reload") if isinstance(dn, dict) else None
+        if isinstance(reload_res, dict) and reload_res.get("error"):
+            parts.append("dnsmasq reload: %s" % reload_res["error"])
+    if not parts:
+        return "Ошибка применения правила"
+    # Дедупликация при сохранении порядка
+    seen = set()
+    uniq = []
+    for p in parts:
+        if p and p not in seen:
+            seen.add(p)
+            uniq.append(p)
+    return "; ".join(uniq)
+
+
 # ───────────────────────── manager ───────────────────────────────────
 
 class RoutingManager:
@@ -107,12 +142,29 @@ class RoutingManager:
         return storage.get_rule(rule_id)
 
     def add_rule(self, rule: RoutingRule, apply_now: bool = True) -> dict:
-        """Сохранить и (опционально) применить правило."""
+        """Сохранить и (опционально) применить правило.
+
+        Если apply упал не по причине «интерфейс не поднят» (deferred),
+        откатываем: удаляем правило из storage и снимаем то, что
+        успело примениться. Иначе UI оставался с фантомной строкой,
+        а часть firewall-правил продолжала висеть.
+        """
         with self._lock:
             storage.add_rule(rule)
             if apply_now and rule.enabled:
                 applied = self._apply(rule)
-                return {"ok": applied.get("ok", True),
+                ok = bool(applied.get("ok", True))
+                if not ok and not applied.get("deferred"):
+                    # Rollback: убираем то, что успело лечь в firewall,
+                    # и выкидываем правило из storage.
+                    self._remove(rule)
+                    storage.remove_rule(rule.id)
+                    return {
+                        "ok": False,
+                        "error": _summarize_apply_error(applied),
+                        "applied": applied,
+                    }
+                return {"ok": ok,
                         "rule": rule.to_dict(),
                         "applied": applied}
             return {"ok": True, "rule": rule.to_dict()}
@@ -126,7 +178,20 @@ class RoutingManager:
             storage.update_rule(rule)
             if apply_now and rule.enabled:
                 applied = self._apply(rule)
-                return {"ok": applied.get("ok", True),
+                ok = bool(applied.get("ok", True))
+                if not ok and not applied.get("deferred"):
+                    # Откатываем новое правило целиком. Старое уже снято
+                    # выше — восстанавливать его сложно (не факт что оно
+                    # работало), поэтому просто выкидываем обновлённое
+                    # из storage, чтобы UI отражал реальное состояние.
+                    self._remove(rule)
+                    storage.remove_rule(rule.id)
+                    return {
+                        "ok": False,
+                        "error": _summarize_apply_error(applied),
+                        "applied": applied,
+                    }
+                return {"ok": ok,
                         "rule": rule.to_dict(),
                         "applied": applied}
             return {"ok": True, "rule": rule.to_dict()}
