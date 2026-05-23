@@ -465,9 +465,19 @@ const AwgDashboardPage = (() => {
                        '  version=' + (b.amneziawg_go_version || '?'));
         }
         if (d.i1_lengths) {
-            lines.push('I1 in config: ' + d.i1_lengths.config_bytes +
-                       ' bytes (hex/2)' +
-                       (d.i1_lengths.in_awg_show ? ', echoed by daemon' : ', NOT in awg show'));
+            const il = d.i1_lengths;
+            lines.push('I1 config bytes: ' + il.config_bytes +
+                       '   I1 in awg show bytes: ' + il.show_bytes +
+                       (il.bytes_match
+                           ? '   bytes MATCH ✓'
+                           : (il.in_awg_show
+                                ? '   bytes MISMATCH ✗ — daemon altered I1!'
+                                : '   I1 NOT echoed by daemon'))
+            );
+            if (il.config_prefix || il.show_prefix) {
+                lines.push('  config[0..32]: ' + (il.config_prefix || ''));
+                lines.push('  show  [0..32]: ' + (il.show_prefix   || ''));
+            }
         }
         if (d.errors && d.errors.length) {
             lines.push('errors:   ' + d.errors.join('; '));
