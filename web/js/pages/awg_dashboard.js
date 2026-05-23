@@ -305,6 +305,11 @@ const AwgDashboardPage = (() => {
                                     : `<button class="btn btn-primary btn-sm" ${inUse?'disabled':''}
                                                onclick="AwgDashboardPage.up('${escapeAttr(cfg.name)}')">Start</button>`)
                             }
+                            <button class="btn btn-ghost btn-sm"
+                                    title="Снимок awg show + ip rule/route + последние логи — для диагностики проблем с маршрутизацией"
+                                    onclick="AwgDashboardPage.diagnostics('${escapeAttr(cfg.name)}')">
+                                Диагностика
+                            </button>
                             ${cfg.orphan
                                 ? ''
                                 : `<button class="btn btn-ghost btn-sm"
@@ -349,6 +354,165 @@ const AwgDashboardPage = (() => {
             busy[name] = false;
             await refresh();
         }
+    }
+
+    async function diagnostics(name) {
+        if (busy[name]) return;
+        busy[name] = true;
+        try {
+            const data = await API.get(
+                `/api/awg/configs/${encodeURIComponent(name)}/diagnostics`
+            );
+            if (!data || !data.ok) {
+                Toast.error((data && data.error) || 'Ошибка диагностики');
+                return;
+            }
+            showDiagnosticsModal(name, data.diagnostics || {});
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
+            busy[name] = false;
+        }
+    }
+
+    function showDiagnosticsModal(name, d) {
+        const text = formatDiagnostics(d);
+
+        // Минимальный модал — оверлей + контент, без зависимостей.
+        const overlay = document.createElement('div');
+        overlay.style.cssText =
+            'position:fixed;inset:0;background:rgba(0,0,0,0.55);' +
+            'display:flex;align-items:center;justify-content:center;' +
+            'z-index:10000;padding:24px;';
+        overlay.addEventListener('click', e => {
+            if (e.target === overlay) document.body.removeChild(overlay);
+        });
+
+        const box = document.createElement('div');
+        box.style.cssText =
+            'background:var(--bg-card,#1f1f1f);color:var(--text,#eaeaea);' +
+            'max-width:1000px;width:100%;max-height:85vh;' +
+            'display:flex;flex-direction:column;border-radius:8px;' +
+            'box-shadow:0 8px 28px rgba(0,0,0,0.5);overflow:hidden;';
+
+        const header = document.createElement('div');
+        header.style.cssText =
+            'padding:12px 16px;border-bottom:1px solid var(--border,#333);' +
+            'display:flex;justify-content:space-between;align-items:center;gap:12px;';
+        header.innerHTML =
+            '<strong style="font-size:14px;">Диагностика AWG: ' +
+            escapeHtml(name) + '</strong>' +
+            '<div style="display:flex;gap:8px;">' +
+                '<button class="btn btn-ghost btn-sm" id="awgDiagCopy">Копировать</button>' +
+                '<button class="btn btn-ghost btn-sm" id="awgDiagClose">Закрыть</button>' +
+            '</div>';
+
+        const body = document.createElement('pre');
+        body.style.cssText =
+            'margin:0;padding:14px 16px;overflow:auto;flex:1;' +
+            'background:var(--bg-input,#111);font-family:ui-monospace,' +
+            'SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;' +
+            'white-space:pre-wrap;word-break:break-word;';
+        body.textContent = text;
+
+        box.appendChild(header);
+        box.appendChild(body);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        document.getElementById('awgDiagClose').onclick =
+            () => document.body.removeChild(overlay);
+        document.getElementById('awgDiagCopy').onclick = async () => {
+            try {
+                await navigator.clipboard.writeText(text);
+                Toast.success('Скопировано');
+            } catch {
+                // Фолбэк через execCommand
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); Toast.success('Скопировано'); }
+                catch { Toast.error('Не удалось скопировать'); }
+                document.body.removeChild(ta);
+            }
+        };
+    }
+
+    function formatDiagnostics(d) {
+        const lines = [];
+        const push = (label, val) => {
+            lines.push('── ' + label + ' ──');
+            lines.push(val == null || val === '' ? '(пусто)' : String(val).trimEnd());
+            lines.push('');
+        };
+
+        lines.push('zapret-gui AWG diagnostics');
+        lines.push('config:   ' + (d.name || ''));
+        lines.push('iface:    ' + (d.iface || ''));
+        lines.push('table_id: ' + (d.table_id || ''));
+        lines.push('active:   ' + (d.active ? 'yes' : 'no'));
+        if (d.platform) {
+            lines.push('platform: ' + (d.platform.name || '?') +
+                       '  run_dir=' + (d.platform.run_dir || '?'));
+        }
+        if (d.errors && d.errors.length) {
+            lines.push('errors:   ' + d.errors.join('; '));
+        }
+        lines.push('');
+
+        push('awg show', d.awg_show);
+
+        if (d.interface_state) {
+            const ifs = d.interface_state.interface || {};
+            const peers = d.interface_state.peers || [];
+            lines.push('── interface (parsed) ──');
+            lines.push('fwmark:     ' + (ifs.fwmark || '(off)'));
+            lines.push('listen_port:' + (ifs.listen_port || ''));
+            lines.push('public_key: ' + (ifs.public_key || ''));
+            peers.forEach((p, i) => {
+                lines.push('peer[' + i + ']:');
+                lines.push('  endpoint:           ' + (p.endpoint || ''));
+                lines.push('  allowed_ips:        ' + (p.allowed_ips || ''));
+                lines.push('  latest_handshake:   ' + (p.latest_handshake || ''));
+                lines.push('  rx/tx bytes:        ' +
+                           (p.rx_bytes || 0) + ' / ' + (p.tx_bytes || 0));
+            });
+            lines.push('');
+        }
+
+        push('ip -4 rule list', d.rules && d.rules.v4);
+        push('ip -6 rule list', d.rules && d.rules.v6);
+        push('ip -4 route show table ' + (d.table_id || '?'),
+             d.routes && d.routes.table_v4);
+        push('ip -6 route show table ' + (d.table_id || '?'),
+             d.routes && d.routes.table_v6);
+        push('ip -4 route show table main', d.routes && d.routes.main_v4);
+        push('ip -6 route show table main', d.routes && d.routes.main_v6);
+
+        if (d.endpoint_routes && d.endpoint_routes.length) {
+            lines.push('── ip route get <peer endpoint> ──');
+            d.endpoint_routes.forEach(er => {
+                lines.push('endpoint ' + er.endpoint + ' → ' + er.ip +
+                           ' (' + er.family + ')');
+                lines.push('  ' + (er.route || ''));
+            });
+            lines.push('');
+        }
+
+        if (d.log_tail && d.log_tail.length) {
+            lines.push('── log tail (awg/routing, последние ' +
+                       d.log_tail.length + ') ──');
+            d.log_tail.forEach(e => {
+                const ts = e.timestamp
+                    ? new Date(e.timestamp * 1000).toISOString()
+                    : '?';
+                lines.push('[' + ts + '] ' + (e.level || '') +
+                           ' [' + (e.source || '') + '] ' +
+                           (e.message || ''));
+            });
+        }
+        return lines.join('\n');
     }
 
     async function toggleAutostart(name, enabled) {
@@ -448,7 +612,7 @@ const AwgDashboardPage = (() => {
     }
 
     return {
-        render, destroy, refresh, up, down, restart,
+        render, destroy, refresh, up, down, restart, diagnostics,
         toggleAutostart, installScript, removeScript, regenerateScript,
     };
 })();

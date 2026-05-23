@@ -303,6 +303,25 @@ def register(app):
         from core.awg_manager import get_awg_manager
         return {"ok": True, "status": get_awg_manager().status(name)}
 
+    @app.route("/api/awg/configs/<name>/diagnostics")
+    def awg_iface_diagnostics(name):
+        """
+        Снимок состояния туннеля для диагностики проблем с маршрутизацией.
+
+        Возвращает сырые выводы `awg show`, `ip rule list`,
+        `ip route show table <T>`, `ip route get <peer endpoint>` —
+        всё, что нужно, чтобы понять, почему трафик не идёт. Эту
+        кнопку юзер жмёт, когда «инет пропал после awg up».
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_manager import get_awg_manager
+        try:
+            return {"ok": True,
+                    "diagnostics": get_awg_manager().diagnostics(name)}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
     @app.route("/api/awg/interfaces")
     def awg_interfaces_list():
         response.content_type = "application/json; charset=utf-8"

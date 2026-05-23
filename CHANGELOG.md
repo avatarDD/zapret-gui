@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.19.9 — Pin peer endpoint + кнопка диагностики AWG
+
+### Исправлено
+- **AWG up при AllowedIPs=0/0 продолжал ронять инет даже после
+  v0.19.8** — `core/awg_manager.py`. wg-quick-схема с `awg set fwmark`
+  работает, только если userspace-демон (amneziawg-go) реально
+  выставляет SO_MARK на свои UDP-сокеты. На части сборок этого не
+  происходит, encapsulated-трафик не маркируется и зацикливается в
+  туннеле. Теперь перед поднятием default-route'а мы **прибиваем /32
+  (или /128) host-маршрут до каждого peer.Endpoint** через текущий
+  путь main-таблицы — это гарантирует, что encapsulated-UDP пойдёт
+  через физический WAN независимо от fwmark-механики. При down
+  pinned-маршруты симметрично снимаются (но не трогаем preexisting).
+
+### Добавлено
+- **Кнопка «Диагностика» на AWG-дашборде** — собирает в одну вью
+  состояние, по которому видно, почему трафик не идёт: вывод `awg
+  show`, разбор `interface_state` (с fwmark/handshake/RX-TX), полный
+  `ip -4/-6 rule list`, `ip route show table <T>` и main для обоих
+  семейств, `ip route get <endpoint>` для каждого peer-endpoint'а и
+  хвост `log_buffer`'а по awg/routing-источникам. Открывается в
+  модальном окне с кнопкой «Копировать» — удобно вложить в баг-репорт.
+  Бэкенд: `GET /api/awg/configs/<name>/diagnostics`,
+  `AwgManager.diagnostics()`.
+
 ## v0.19.8 — AWG default route без петли + улучшения dnsmasq-preflight
 
 ### Исправлено
