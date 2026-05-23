@@ -353,8 +353,16 @@ def _emit(lines: list, key: str, value):
     else:
         if key in _AWG_V2_BLOB_SET and isinstance(value, str):
             v = value.strip()
-            if v and v != "<b" and not v.lower().startswith("0x"):
-                value = "0x" + v
+            # `amneziawg-tools` ждёт binary-blob в нативном синтаксисе
+            # `<b 0xHEX>`. Раньше я отдавал просто `0xHEX` — `awg show`
+            # после этого показывал «похожие, но не те» байты: тулза
+            # парсила их по другому правилу и в I1 уходил мусор. Теперь
+            # эмитим в оригинальной обёртке.
+            if v and v != "<b":
+                inner = v
+                if inner.lower().startswith("0x"):
+                    inner = inner[2:]
+                value = "<b 0x%s>" % inner
         lines.append("%s = %s" % (key, value))
 
 
