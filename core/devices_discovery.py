@@ -30,6 +30,21 @@ import json
 import os
 import re
 import subprocess
+import time
+
+
+def _run(args, timeout=5):
+    """Тонкая обёртка subprocess.run — глушит FileNotFoundError и т.п."""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True,
+                           timeout=timeout)
+        return r.returncode, r.stdout or "", r.stderr or ""
+    except FileNotFoundError as e:
+        return 127, "", str(e)
+    except subprocess.TimeoutExpired as e:
+        return 124, "", "timeout: %s" % e
+    except OSError as e:
+        return 1, "", str(e)
 
 
 # Кандидатные пути для dnsmasq leases.
@@ -379,6 +394,22 @@ def list_devices() -> list:
                 if d["mac"]:
                     by_mac[d["mac"]] = by_ip[d["ip"]]
 
+    # 4) Реверс-DNS / mDNS — заполняет hostname, если он всё ещё пуст.
+    #    На Debian-клиенте (без своего DHCP-сервера) leases и NDM —
+    #    пустые, и без этого шага колонка «Имя» в UI всегда оставалась
+    #    бы пустой. avahi-resolve запрашивается только если он есть в
+    #    PATH; socket.gethostbyaddr — фолбэк через стандартный резолвер
+    #    (PTR-запись или /etc/hosts).
+    for rec in by_ip.values():
+        if rec.get("hostname"):
+            continue
+        name = _reverse_lookup(rec.get("ip", ""))
+        if name:
+            rec["hostname"] = name
+            cur_src = rec.get("source", "")
+            if "rdns" not in cur_src:
+                rec["source"] = (cur_src + "+rdns").lstrip("+")
+
     out = list(by_ip.values())
     # Стабильная сортировка по IPv4 (числовая).
     def _ip_key(rec):
@@ -388,6 +419,57 @@ def list_devices() -> list:
             return (999, 999, 999, 999)
     out.sort(key=_ip_key)
     return out
+
+
+# Кэш реверс-DNS на ~30 секунд: list_devices() зовут часто, а PTR-запрос
+# из тайм-ауте может встать в секунды. Ключ — IP, значение — (hostname, ts).
+_RDNS_CACHE = {}
+_RDNS_TTL   = 30.0
+
+
+def _reverse_lookup(ip: str) -> str:
+    """
+    Попробовать узнать hostname для IP без админских прав и без сторонних
+    зависимостей. Возвращает «короткое» имя (до первой точки), потому что
+    UI ждёт что-то вроде «Galaxy-S21», а не FQDN с .local/.localdomain.
+    Пустая строка = ничего не нашли.
+    """
+    if not ip:
+        return ""
+    now = time.time()
+    cached = _RDNS_CACHE.get(ip)
+    if cached and (now - cached[1]) < _RDNS_TTL:
+        return cached[0]
+
+    name = ""
+    # 1) avahi-resolve — лучший вариант для домашнего LAN: ловим mDNS
+    #    имена вроде "telefon.local". Стоит почти на всех Debian/Ubuntu.
+    rc, out, _e = _run(["avahi-resolve", "-4", "-a", ip], timeout=2)
+    if rc == 0 and out:
+        # Формат: "<ip>\t<name>"
+        parts = out.strip().split(None, 1)
+        if len(parts) == 2 and parts[1]:
+            name = parts[1].strip()
+
+    # 2) Системный реверс-резолвер (/etc/hosts, PTR-запись).
+    if not name:
+        try:
+            import socket as _s
+            hostname, _aliases, _addrs = _s.gethostbyaddr(ip)
+            if hostname:
+                name = hostname
+        except (OSError, _s.herror, _s.gaierror):
+            pass
+
+    # Подрезаем хвост .local / .localdomain / .lan — у пользователя в UI
+    # должно остаться человекочитаемое имя устройства.
+    if name:
+        short = name.split(".", 1)[0]
+        if short:
+            name = short
+
+    _RDNS_CACHE[ip] = (name, now)
+    return name
 
 
 def get_device_by_ip(ip: str) -> dict:

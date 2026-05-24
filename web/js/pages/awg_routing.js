@@ -294,8 +294,11 @@ const AwgRoutingPage = (() => {
 
         const dnReady = !!dn.available && !!dn.running && !!preferred;
         const setupApplied = !!(dnsmasqInfo && dnsmasqInfo.auto_setup_applied);
-        const needsSetup = !dnReady && !!backends.ipset || !!backends.nftset
-                                 || !!dn.available;
+        // Кнопка нужна, если у нас не работает domain-routing и есть хоть
+        // какая-то надежда поднять его: либо dnsmasq установлен (его надо
+        // только запустить), либо есть бэкенд (можно поставить dnsmasq).
+        const needsSetup = !dnReady &&
+            (!!dn.available || !!backends.ipset || !!backends.nftset);
         const setupButton = needsSetup
             ? `<button class="btn btn-primary btn-sm"
                        onclick="AwgRoutingPage.runDnsmasqSetup()">
@@ -396,11 +399,11 @@ const AwgRoutingPage = (() => {
                                class="form-control" style="max-width: 480px;">
                     </div>
                     <div style="margin-top: 12px;">
-                        <button class="btn btn-primary btn-sm" ${(busy || !dnAvailable) ? 'disabled' : ''}
+                        <button class="btn btn-primary btn-sm" ${(busy || !dnReady) ? 'disabled' : ''}
                                 onclick="AwgRoutingPage.submitDomain()">
                             Добавить правило
                         </button>
-                        ${dnAvailable ? '' : '<span class="text-muted" style="margin-left:10px; font-size:12px;">недоступно: см. сообщение выше</span>'}
+                        ${dnReady ? '' : '<span class="text-muted" style="margin-left:10px; font-size:12px;">недоступно: см. сообщение выше</span>'}
                     </div>
                 `}
             </div>
