@@ -199,17 +199,13 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             return {
                 "ok": False,
                 "error": (
-                    "dnsmasq установлен, но не запущен. Доменное routing"
-                    " работает только через dnsmasq (он на лету"
-                    " заполняет ipset/nftset при резолве). На Debian/"
-                    "Ubuntu со штатным systemd-resolved порт 53 уже"
-                    " занят, и dnsmasq.service не стартует — нужно"
-                    " либо отключить DNSStubListener в systemd-resolved"
-                    " (`/etc/systemd/resolved.conf`: DNSStubListener=no"
-                    " + `systemctl restart systemd-resolved`), либо"
-                    " запустить dnsmasq на нестандартном порту через"
-                    " `/etc/dnsmasq.conf`. Если возиться не хочется —"
-                    " используйте правило по CIDR вместо домена."
+                    "dnsmasq установлен, но не запущен. Откройте"
+                    " «Routing» и нажмите «Настроить dnsmasq"
+                    " автоматически» — GUI отключит DNSStubListener"
+                    " в systemd-resolved, запустит dnsmasq на :53 и"
+                    " автоматически откатит всё обратно при выключении"
+                    " последнего AWG-интерфейса. Если возиться не"
+                    " хочется — используйте правило по CIDR."
                 ),
             }
 

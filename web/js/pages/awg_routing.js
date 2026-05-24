@@ -292,25 +292,55 @@ const AwgRoutingPage = (() => {
         const backends = (dnsmasqInfo && dnsmasqInfo.backends) || {};
         const preferred = (dnsmasqInfo && dnsmasqInfo.preferred_backend) || '';
 
-        const dnAvailable = !!dn.available && !!preferred;
-        const banner = dnAvailable
-            ? `<div class="text-muted" style="font-size:12px; margin-bottom:8px;">
-                    dnsmasq <strong>${escapeHtml(dn.version || '?')}</strong>${dn.running ? ' (запущен)' : ' (не запущен)'},
-                    main config: <code>${escapeHtml(dn.main_config || 'не найден')}</code>,
-                    бэкенд: <strong>${escapeHtml(preferred)}</strong>
-                    ${dn.include_present ? '' : ' — include будет добавлен автоматически'}
+        const dnReady = !!dn.available && !!dn.running && !!preferred;
+        const setupApplied = !!(dnsmasqInfo && dnsmasqInfo.auto_setup_applied);
+        const needsSetup = !dnReady && !!backends.ipset || !!backends.nftset
+                                 || !!dn.available;
+        const setupButton = needsSetup
+            ? `<button class="btn btn-primary btn-sm"
+                       onclick="AwgRoutingPage.runDnsmasqSetup()">
+                   Настроить dnsmasq автоматически
+               </button>`
+            : '';
+        const revertButton = setupApplied && dnReady
+            ? `<button class="btn btn-ghost btn-sm"
+                       onclick="AwgRoutingPage.runDnsmasqRevert()"
+                       title="Откатить изменения, возвращает systemd-resolved на :53 и останавливает dnsmasq">
+                   Откатить настройку dnsmasq
+               </button>`
+            : '';
+
+        const banner = dnReady
+            ? `<div style="font-size:12px; margin-bottom:8px;
+                            display:flex; gap:8px; align-items:center;
+                            flex-wrap:wrap;">
+                    <span class="text-muted">
+                      dnsmasq <strong>${escapeHtml(dn.version || '?')}</strong>
+                      (запущен), main config:
+                      <code>${escapeHtml(dn.main_config || 'не найден')}</code>,
+                      бэкенд: <strong>${escapeHtml(preferred)}</strong>
+                      ${dn.include_present ? '' : ' — include будет добавлен автоматически'}
+                      ${setupApplied ? ' — настройка выполнена через GUI, откатится при выключении последнего AWG' : ''}
+                    </span>
+                    ${revertButton}
                </div>`
             : `<div class="card" style="background:#fbeaea; margin-bottom:12px;">
-                    <strong>dnsmasq недоступен</strong><br>
-                    <span class="text-muted" style="font-size:13px;">
-                    ${dn.available ? 'Бэкенд (ipset или nftables) не найден.' : 'dnsmasq не установлен или не виден.'}
-                    Без него domain-routing работать не будет —
-                    установите/активируйте dnsmasq, ipset или nftables на платформе.
-                    Текущий статус:
-                    dnsmasq=${dn.available ? 'есть' : 'нет'},
-                    ipset=${backends.ipset ? 'есть' : 'нет'},
-                    nft=${backends.nftset ? 'есть' : 'нет'}.
-                    </span>
+                    <strong>Domain routing требует работающего dnsmasq</strong>
+                    <p class="text-muted" style="font-size:13px; margin:6px 0 10px;">
+                      На Debian/Ubuntu со штатным systemd-resolved порт 53
+                      обычно занят stub-listener'ом, и dnsmasq не стартует.
+                      Кнопка ниже автоматически отключит DNSStubListener в
+                      <code>/etc/systemd/resolved.conf</code>, поднимет dnsmasq
+                      на :53 и сохранит state-файл, чтобы при выключении
+                      последнего AWG-интерфейса откатить всё обратно.
+                    </p>
+                    <p class="text-muted" style="font-size:12px; margin:6px 0 10px;">
+                      Статус: dnsmasq=${dn.available ? 'есть' : 'нет'},
+                      запущен=${dn.running ? 'да' : 'нет'},
+                      ipset=${backends.ipset ? 'есть' : 'нет'},
+                      nft=${backends.nftset ? 'есть' : 'нет'}.
+                    </p>
+                    ${setupButton}
                </div>`;
 
         const cfgOptions = configs.map(c =>
@@ -893,6 +923,81 @@ const AwgRoutingPage = (() => {
         return String(s || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
     }
 
+    async function runDnsmasqSetup() {
+        // Сначала покажем план — что именно поменяется.
+        let plan;
+        try {
+            const r = await API.get('/api/routing/dnsmasq/setup/plan');
+            if (!r || !r.ok) {
+                Toast.error((r && r.error) || 'Не удалось получить план');
+                return;
+            }
+            plan = r.plan || {};
+        } catch (e) {
+            Toast.error(e.message);
+            return;
+        }
+        const steps = plan.steps || [];
+        if (steps.length === 0) {
+            Toast.info('Менять нечего — dnsmasq уже настроен корректно');
+            await refresh();
+            return;
+        }
+        const stepLines = steps.map((s, i) =>
+            `${i + 1}. ${s.what}`).join('\n');
+        const warnLines = (plan.warnings || []).join('\n');
+        const ok = window.confirm(
+            'zapret-gui сделает следующее:\n\n' + stepLines +
+            (warnLines ? '\n\nВнимание:\n' + warnLines : '') +
+            '\n\nПри выключении последнего AWG-интерфейса все изменения' +
+            ' автоматически откатятся.\n\nПродолжить?'
+        );
+        if (!ok) return;
+
+        Toast.info('Настройка dnsmasq...');
+        try {
+            const r = await API.post('/api/routing/dnsmasq/setup');
+            if (r && r.ok) {
+                Toast.success('dnsmasq настроен');
+            } else {
+                const failed = ((r && r.steps) || [])
+                    .filter(s => !s.ok)
+                    .map(s => `${s.step}: ${s.error || '?'}`)
+                    .join('; ');
+                Toast.error(failed || (r && r.error) || 'Ошибка настройки');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        }
+        await refresh();
+    }
+
+    async function runDnsmasqRevert() {
+        const ok = window.confirm(
+            'Откатить настройку dnsmasq?\n\n' +
+            'systemd-resolved будет восстановлен на порту 53,' +
+            ' dnsmasq остановлен. Доменное routing после этого' +
+            ' работать не будет до следующего setup.\n\nПродолжить?'
+        );
+        if (!ok) return;
+        Toast.info('Откат настройки dnsmasq...');
+        try {
+            const r = await API.post('/api/routing/dnsmasq/revert');
+            if (r && r.ok) {
+                Toast.success('dnsmasq откачен');
+            } else {
+                const failed = ((r && r.steps) || [])
+                    .filter(s => !s.ok)
+                    .map(s => `${s.step}: ${s.error || '?'}`)
+                    .join('; ');
+                Toast.error(failed || (r && r.error) || 'Ошибка отката');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        }
+        await refresh();
+    }
+
     return {
         render, destroy,
         switchTab,
@@ -903,5 +1008,6 @@ const AwgRoutingPage = (() => {
         setFormDevIface, setFormDevManual, setFormDevDesc,
         bindDeviceFromList, submitDeviceManual,
         refreshDevices, toggleDevicesAutoRefresh,
+        runDnsmasqSetup, runDnsmasqRevert,
     };
 })();

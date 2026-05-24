@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.19.16 — Кнопка «Настроить dnsmasq» + авто-откат при `awg down`
+
+### Добавлено
+- **One-click setup dnsmasq из GUI** — секция Routing → красный
+  баннер `Domain routing требует работающего dnsmasq` теперь содержит
+  кнопку «Настроить dnsmasq автоматически». По клику открывается
+  модал с **dry-run-планом** (что именно будет сделано) и
+  подтверждением. После согласия zapret-gui:
+  * (если нужно) ставит пакет `dnsmasq` через `apt-get install -y`;
+  * правит `/etc/systemd/resolved.conf`: `DNSStubListener=no` (бэкап
+    `…/resolved.conf.zapret-gui.bak` оставляем рядом);
+  * рестартит `systemd-resolved`, чтобы он отдал порт 53;
+  * пересоздаёт `/etc/resolv.conf` симлинком на
+    `/run/systemd/resolve/resolv.conf` — иначе система упирается в
+    выключенный stub-listener 127.0.0.53 и DNS вообще не работает;
+  * если нет `/etc/dnsmasq.conf` — создаёт минимальный с upstream
+    `1.1.1.1`, `cache-size=1000`, `listen-address=127.0.0.1`;
+  * `systemctl enable --now dnsmasq`.
+  
+  Все изменения фиксируются в marker-файле
+  `/var/lib/zapret-gui/dnsmasq-auto-setup.json` — там лежит, что МЫ
+  трогали и что было до нас.
+
+### Изменено
+- **Авто-revert при выключении последнего AWG-интерфейса**. В
+  `awg_manager._do_down` после остановки туннеля проверяем — если
+  больше нет ни одного активного wg/awg-интерфейса И marker
+  auto-setup'а на диске есть, делаем `revert()`: возвращаем
+  `resolved.conf` из бэкапа, восстанавливаем `resolv.conf`-симлинк,
+  останавливаем/disable'им dnsmasq (если МЫ его запускали), сносим
+  созданный нами `dnsmasq.conf` и рестартим `systemd-resolved`.
+  Пакет `dnsmasq` НЕ удаляем — это уже слишком инвазивно.
+- **Ручная кнопка «Откатить настройку dnsmasq»** появляется рядом с
+  плашкой статуса, когда auto-setup применён, — если кто-то хочет
+  откатить раньше, не останавливая AWG.
+- **Сообщение domain-rule preflight'а** при не-запущенном dnsmasq
+  теперь не пугает километрами консольных команд, а сразу
+  отправляет в GUI к кнопке «Настроить dnsmasq автоматически».
+
+### API
+- `GET /api/routing/dnsmasq/setup/plan` — dry-run, что бы было.
+- `POST /api/routing/dnsmasq/setup` — применить.
+- `POST /api/routing/dnsmasq/revert` — откатить.
+- `GET /api/routing/dnsmasq/status` дополнительно отдаёт
+  `auto_setup_applied: bool`.
+
 ## v0.19.15 — AWG up больше НЕ становится default-шлюзом
 
 ### Исправлено

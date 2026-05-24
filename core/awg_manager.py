@@ -934,6 +934,23 @@ class AwgManager:
             for cmd in _as_list(cfg["interface"].get("PostDown")):
                 self._run_hook(cmd, ifname, "PostDown")
 
+        # Откатываем auto-setup dnsmasq ТОЛЬКО когда уходит последний
+        # awg-интерфейс — пользователь просил, чтобы «все махинации
+        # возвращались назад». Если есть ещё активные туннели,
+        # systemd-resolved/dnsmasq оставляем как есть.
+        try:
+            if not self._wg_interfaces():
+                from core.routing.dnsmasq_integration import DnsmasqIntegration
+                rev = DnsmasqIntegration().revert_if_applied()
+                if rev.get("ok") and not rev.get("skipped"):
+                    log.info(
+                        "Auto-setup dnsmasq откачен после остановки"
+                        " последнего AWG-интерфейса",
+                        source="awg_manager",
+                    )
+        except Exception as e:
+            log.warning("revert_if_applied: %s" % e, source="awg_manager")
+
         log.info("Интерфейс %s опущен" % ifname, source="awg_manager")
         return {"ok": True, "name": ifname,
                 "message": "Интерфейс %s опущен" % ifname}

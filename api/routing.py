@@ -27,7 +27,8 @@ def register(app):
         try:
             from core.routing.dnsmasq_integration import DnsmasqIntegration
             from core.routing import ipset_backend, nftset_backend
-            dn = DnsmasqIntegration().status()
+            dn_mod = DnsmasqIntegration()
+            dn = dn_mod.status()
             backends = {
                 "ipset":  ipset_backend.available(),
                 "nftset": nftset_backend.available(),
@@ -37,7 +38,41 @@ def register(app):
                          else ("ipset" if backends["ipset"] else ""))
             return {"ok": True, "dnsmasq": dn,
                     "backends": backends,
-                    "preferred_backend": preferred}
+                    "preferred_backend": preferred,
+                    "auto_setup_applied": dn_mod.is_applied()}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/dnsmasq/setup/plan")
+    def routing_dnsmasq_setup_plan():
+        """Что СДЕЛАЕТ кнопка «Настроить dnsmasq» — без побочек."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing.dnsmasq_integration import DnsmasqIntegration
+            return {"ok": True, "plan": DnsmasqIntegration().plan_auto_setup()}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/dnsmasq/setup", method="POST")
+    def routing_dnsmasq_setup():
+        """Применить auto-setup dnsmasq (disable stub-listener и т.д.)."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing.dnsmasq_integration import DnsmasqIntegration
+            return DnsmasqIntegration().auto_setup()
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/dnsmasq/revert", method="POST")
+    def routing_dnsmasq_revert():
+        """Откатить auto-setup dnsmasq, вернуть systemd-resolved на :53."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing.dnsmasq_integration import DnsmasqIntegration
+            return DnsmasqIntegration().revert()
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}
