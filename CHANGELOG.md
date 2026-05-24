@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.19.18 — dnsmasq setup детектит юнит + OUI-vendor в Устройствах
+
+### Исправлено
+- **«Настроить dnsmasq автоматически» падал с `Unit dnsmasq.service does
+  not exist`** на машинах, где `dnsmasq` стоит из не-пакетного источника
+  (например, бинарь в `/usr/local/bin`). `plan_auto_setup` смотрел на
+  `which dnsmasq`, видел бинарь и пропускал шаг установки пакета — а
+  без пакета нет и `dnsmasq.service`, и последующий
+  `systemctl enable/start dnsmasq` падал. Теперь проверяем именно
+  существование юнита через `systemctl cat dnsmasq.service`; если его
+  нет — добавляем шаг установки `apt-get install dnsmasq`, и
+  enable/start попадают в план только когда юнит уже есть ИЛИ
+  запланирован к установке (`will_have_unit`).
+- **Колонка «Имя» в Устройствах оставалась пустой на
+  VirtualBox/Linux-клиентах** — там у LAN-IP'ов нет ни PTR-записей, ни
+  mDNS, а `avahi-resolve` без `avahi-utils` вообще не отрабатывал.
+  Добавлен 5-й, последний фолбэк: lookup производителя по первым 3
+  байтам MAC (OUI). Зашиты ~70 самых частых OUI'ов: VirtualBox, VMware,
+  QEMU, Hyper-V, Parallels, Raspberry Pi, MikroTik, TP-Link, ASUS,
+  Apple, Samsung, Xiaomi, Huawei, Dell, HP, Lenovo, и т.д. Если OUI не
+  узнали — оставляем пусто (тащить полную базу IEEE в репозиторий
+  нерационально). Источник помечается `+oui`.
+
 ## v0.19.17 — Domain-таб больше не падает + reverse-DNS для устройств
 
 ### Исправлено

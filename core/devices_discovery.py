@@ -410,6 +410,19 @@ def list_devices() -> list:
             if "rdns" not in cur_src:
                 rec["source"] = (cur_src + "+rdns").lstrip("+")
 
+    # 5) OUI-vendor — последний фолбэк, чтобы в UI хоть что-то было.
+    #    На VirtualBox-NAT, например, PTR'ов нет и avahi молчит — но
+    #    «VirtualBox NAT» или «Apple device» уже лучше пустой ячейки.
+    for rec in by_ip.values():
+        if rec.get("hostname"):
+            continue
+        vendor = _oui_vendor(rec.get("mac", ""))
+        if vendor:
+            rec["hostname"] = vendor
+            cur_src = rec.get("source", "")
+            if "oui" not in cur_src:
+                rec["source"] = (cur_src + "+oui").lstrip("+")
+
     out = list(by_ip.values())
     # Стабильная сортировка по IPv4 (числовая).
     def _ip_key(rec):
@@ -425,6 +438,109 @@ def list_devices() -> list:
 # из тайм-ауте может встать в секунды. Ключ — IP, значение — (hostname, ts).
 _RDNS_CACHE = {}
 _RDNS_TTL   = 30.0
+
+
+# OUI-vendor (первые 3 байта MAC) — мини-словарь для популярных
+# производителей. Цель — НЕ дать пользователю смотреть на пустую
+# колонку «Имя» в типичных средах (VirtualBox, VMware, Apple, и т.д.).
+# Если нужного OUI нет — пусть остаётся пусто; полная база IEEE OUI
+# занимает мегабайты, тащить её в репозиторий не стоит.
+_OUI_VENDORS = {
+    # Виртуализация / гипервизоры
+    "08:00:27": "VirtualBox",
+    "52:54:00": "QEMU/KVM",
+    "00:50:56": "VMware",
+    "00:0c:29": "VMware",
+    "00:05:69": "VMware",
+    "00:1c:14": "VMware",
+    "00:15:5d": "Hyper-V",
+    "00:03:ff": "Microsoft VPC",
+    "00:16:3e": "Xen",
+    "f4:5c:89": "Parallels",
+    "00:1c:42": "Parallels",
+    # Сетевое оборудование (роутеры/SOHO)
+    "00:1d:7e": "Cisco",
+    "00:23:04": "Cisco-Linksys",
+    "b8:27:eb": "Raspberry Pi",
+    "dc:a6:32": "Raspberry Pi",
+    "e4:5f:01": "Raspberry Pi",
+    "00:0d:b9": "PC Engines (APU)",
+    "4c:5e:0c": "Keenetic",
+    "f8:09:a4": "TP-Link",
+    "50:c7:bf": "TP-Link",
+    "ec:08:6b": "TP-Link",
+    "a4:2b:b0": "TP-Link",
+    "00:0c:43": "MikroTik / Ralink",
+    "6c:3b:6b": "MikroTik",
+    "08:55:31": "MikroTik",
+    "08:60:6e": "ASUS",
+    "20:cf:30": "ASUS",
+    "00:24:01": "D-Link",
+    "00:1e:58": "D-Link",
+    "00:1f:33": "Netgear",
+    "20:e5:2a": "Netgear",
+    "ec:1a:59": "Belkin",
+    "00:90:4c": "Epigram (Ubiquiti)",
+    "fc:ec:da": "Ubiquiti",
+    "f0:9f:c2": "Ubiquiti",
+    # Десктопы / NIC'и
+    "00:1b:21": "Intel",
+    "ac:de:48": "Apple",
+    "00:50:e4": "Apple",
+    "f0:18:98": "Apple",
+    "f0:79:60": "Apple",
+    "a4:5e:60": "Apple",
+    "00:25:00": "Apple",
+    "98:01:a7": "Apple",
+    "00:1e:c2": "Apple",
+    # Телефоны / гаджеты
+    "00:1a:11": "Google",
+    "f4:f5:e8": "Google / Nest",
+    "44:65:0d": "Amazon",
+    "fc:65:de": "Amazon",
+    "ec:1f:72": "Sony",
+    "00:24:e4": "Withings",
+    "00:90:4c": "Epigram",
+    "00:1d:0f": "TP-Link",
+    "20:df:b9": "Google",
+    "94:65:2d": "Huawei",
+    "f8:e7:1e": "Huawei",
+    "cc:46:d6": "Huawei",
+    "00:1a:7d": "Xiaomi (?)",
+    "8c:53:c3": "Xiaomi",
+    "f4:6b:8c": "Xiaomi",
+    "c4:0b:cb": "Xiaomi",
+    "78:11:dc": "Xiaomi",
+    "f8:8f:ca": "Samsung",
+    "00:23:99": "Samsung",
+    "04:18:0f": "Samsung",
+    "5c:0a:5b": "Samsung",
+    "1c:5c:f2": "Samsung",
+    "00:21:19": "Samsung",
+    "00:0e:8e": "SparkLAN / Realtek",
+    "52:74:f2": "Realtek",
+    "00:50:79": "Realtek",
+    # Производители ПК
+    "00:1e:c9": "Dell",
+    "b8:ca:3a": "Dell",
+    "f8:b1:56": "Dell",
+    "00:25:64": "Dell",
+    "94:de:80": "Lenovo",
+    "00:21:cc": "Lenovo",
+    "f8:8a:5e": "Lenovo",
+    "c4:8e:8f": "HP",
+    "3c:d9:2b": "HP",
+    "00:21:5a": "HP",
+    "9c:8e:99": "HP",
+}
+
+
+def _oui_vendor(mac: str) -> str:
+    """Достать производителя по первым 3 байтам MAC. '' если не знаем."""
+    if not mac or len(mac) < 8:
+        return ""
+    oui = mac[:8].lower()
+    return _OUI_VENDORS.get(oui, "")
 
 
 def _reverse_lookup(ip: str) -> str:
