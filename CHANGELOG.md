@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.19.22 — Device-rules: тот же MASQUERADE-фикс + диагностика routing-state + .table CSS
+
+### Исправлено
+- **Device-routing не работал по той же причине, что и domain-routing
+  до v0.19.20.** Пакеты от LAN-устройства идут через гейтвей в AWG,
+  но src остаётся LAN-IP (192.168.x.y). AWG-сервер дропает их по
+  AllowedIPs клиента (туннельный 10.x). Теперь `apply_device_rule`
+  ставит **MASQUERADE** на исходящий AWG-iface через тот же
+  `ensure_iface_masquerade`-helper, что и domain-rule. Снимается,
+  когда на этом iface не остаётся ни одного domain/device правила.
+  domain-rule при удалении теперь тоже учитывает device-rules,
+  иначе снос domain удалял masquerade, нужный для соседних device.
+- **«Поля разъезжаются» в таблицах CIDR/Domain/Device.** Класс
+  `.table` использовался в HTML, но в CSS его не было — браузер
+  применял `table-layout: auto`, при котором `<th style="width:X%">`
+  это всего лишь подсказка ширины, и контент перетирает её. Добавил
+  в `style.css` правила `.table { width: 100%; table-layout: fixed;
+  border-collapse: collapse }` + padding/border для th/td. Теперь
+  колонки сидят на месте при добавлении длинных значений.
+
+### Изменено
+- **Диагностика AWG теперь дампит routing-state.** Без этого
+  невозможно понять, почему domain/device-routing молча не
+  работает — `ip rule` и `ip route` могут быть в полном порядке,
+  но пакеты всё равно идут мимо AWG (старый `type filter` на nft
+  output, незаполненный nftset, /etc/resolv.conf указывает не на
+  127.0.0.1 и т.д.). Diagnostics-кнопка теперь даёт:
+  `nft list table inet awg_routing` целиком (видно chain types и
+  rules), наполнение всех `awgr_*` sets, наши `AWG_ROUTING_*`
+  цепочки в iptables mangle/nat (v4+v6), все `awgr_*` ipset'ы с
+  содержимым, `/etc/resolv.conf` и `/etc/systemd/resolved.conf`,
+  managed dnsmasq-файл и основной dnsmasq.conf. Если 2ip.ru
+  по-прежнему не маршрутизируется — на новом дампе сразу будет
+  видно, где конкретно сломалось.
+
 ## v0.19.21 — Domain-routing наконец работает: nft output как type=route, а не filter
 
 ### Исправлено

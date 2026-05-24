@@ -24,6 +24,7 @@ import ipaddress
 import threading
 
 from core.log_buffer import log
+from core.routing import ipset_backend, nftset_backend
 from core.routing.rules import DeviceRoutingRule
 
 
@@ -147,14 +148,35 @@ def apply_device_rule(rule: DeviceRoutingRule) -> dict:
             return {"ok": False,
                     "error": "ip rule add from %s: %s" % (src, err.strip())}
 
-        log.info("routing: device-правило %s применено (src=%s → %s table %d)"
-                 % (rule.id, src, ifname, table),
+        # MASQUERADE на AWG-iface: device-правило ловит обычно forwarded-
+        # трафик от LAN-клиента (src=192.168.x.y), которому ip rule from
+        # выкручивает руль на AWG-таблицу. Пакет уходит через AWG, но src
+        # остаётся 192.168.x.y — AWG-сервер дропает его по AllowedIPs
+        # клиента (там туннельный 10.x). Без MASQUERADE device-routing
+        # «работает на бумаге»: пакеты уходят, ответов нет. Маскарадим
+        # nft-бэкендом если доступен (он покрывает v4+v6 одной inet-
+        # цепочкой), иначе через iptables. Для CIDR-rules аналогичная
+        # проблема не стоит — там src чаще локальный, и пакет берёт
+        # src=AWG_IP на первой маршрутной выборке.
+        masq_status = "skipped"
+        if nftset_backend.available():
+            mq = nftset_backend.ensure_iface_masquerade(ifname)
+            masq_status = "nft ok" if mq.get("ok") else (
+                "nft error: %s" % mq.get("error"))
+        elif ipset_backend.available():
+            mq = ipset_backend.ensure_iface_masquerade(ifname, family=fam)
+            masq_status = "iptables ok" if mq.get("ok") else (
+                "iptables error: %s" % mq.get("error"))
+
+        log.info("routing: device-правило %s применено (src=%s → %s"
+                 " table %d, masquerade=%s)"
+                 % (rule.id, src, ifname, table, masq_status),
                  source="routing")
 
         return {
             "ok":     True,
             "added":  [{"family": fam, "source": src, "table": table,
-                        "iface": ifname}],
+                        "iface": ifname, "masquerade": masq_status}],
         }
 
 
@@ -173,6 +195,35 @@ def remove_device_rule(rule: DeviceRoutingRule) -> dict:
     with _lock:
         rc, _o, _e = _run(["ip", family, "rule", "del", "from", src,
                            "lookup", str(table)])
+
+        # MASQUERADE убираем только если на этот iface не осталось
+        # никаких других routing-rules (ни domain, ни device).
+        # Проверяем через storage: загружаем правила и смотрим,
+        # ссылается ли кто-то ещё на target_iface.
+        try:
+            from core.routing import storage
+            from core.routing.rules import DomainRoutingRule
+            others = []
+            for r in storage.load_rules():
+                if not r.enabled or r.id == rule.id:
+                    continue
+                if r.target_iface != rule.target_iface:
+                    continue
+                if isinstance(r, (DeviceRoutingRule, DomainRoutingRule)):
+                    others.append(r)
+                    break
+            if not others:
+                if nftset_backend.available():
+                    nftset_backend.remove_iface_masquerade(rule.target_iface)
+                elif ipset_backend.available():
+                    for f in ("v4", "v6"):
+                        ipset_backend.remove_iface_masquerade(
+                            rule.target_iface, family=f)
+        except Exception as e:
+            log.warning("routing: cleanup masquerade %s: %s"
+                        % (rule.target_iface, e),
+                        source="routing")
+
         log.info("routing: device-правило %s снято (src=%s)"
                  % (rule.id, src), source="routing")
         return {"ok": True, "removed": (rc == 0)}

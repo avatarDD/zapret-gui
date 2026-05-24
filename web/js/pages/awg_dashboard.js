@@ -529,6 +529,52 @@ const AwgDashboardPage = (() => {
             lines.push('');
         }
 
+        if (d.routing_state) {
+            const rs = d.routing_state;
+            lines.push('════ ROUTING STATE (firewall / dnsmasq) ════');
+            lines.push('Снимок текущего nft/iptables/ipset/dnsmasq —');
+            lines.push('по нему видно, доходит ли пакет до AWG, заполняется');
+            lines.push('ли set после резолва, и какой type у chain output.');
+            lines.push('');
+            push('nft list table inet awg_routing', rs.nft_table_listing);
+            if (rs.nft_sets && rs.nft_sets.length) {
+                lines.push('── nft list set inet awg_routing <name> ──');
+                rs.nft_sets.forEach(s => {
+                    lines.push('• ' + (s.name || '?'));
+                    lines.push(s.body || s.error || '(empty)');
+                });
+                lines.push('');
+            }
+            push('iptables -t mangle -S (только AWG_ROUTING_*)',
+                 rs.iptables_mangle);
+            push('iptables -t nat -S (только AWG_ROUTING_*)',
+                 rs.iptables_nat);
+            push('ip6tables -t mangle -S (только AWG_ROUTING_*)',
+                 rs.ip6tables_mangle);
+            push('ip6tables -t nat -S (только AWG_ROUTING_*)',
+                 rs.ip6tables_nat);
+            if (rs.ipset_sets && rs.ipset_sets.length) {
+                lines.push('── ipset list awgr_* ──');
+                rs.ipset_sets.forEach(s => {
+                    lines.push('• ' + (s.name || '?'));
+                    lines.push(s.body || '(empty)');
+                });
+                lines.push('');
+            }
+            push('/etc/resolv.conf', rs.resolv_conf);
+            push('/etc/systemd/resolved.conf', rs.resolved_conf);
+            if (rs.dnsmasq_status) {
+                lines.push('── dnsmasq status ──');
+                Object.entries(rs.dnsmasq_status).forEach(([k, v]) => {
+                    lines.push('  ' + k + ': ' + v);
+                });
+                lines.push('');
+            }
+            push('dnsmasq managed file (zapret-gui-awg-routing.conf)',
+                 rs.dnsmasq_managed);
+            push('dnsmasq main config', rs.dnsmasq_main);
+        }
+
         if (d.last_up) {
             const lu = d.last_up;
             const savedTs = lu.saved_at
