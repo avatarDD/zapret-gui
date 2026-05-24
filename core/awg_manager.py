@@ -481,6 +481,7 @@ class AwgManager:
             "endpoint_routes": [],
             "last_up":   None,
             "log_tail":  [],
+            "routing_state": {},
             "errors": [],
         }
 
@@ -632,6 +633,17 @@ class AwgManager:
                     "family":   fam_flag,
                     "route":    out.strip() if rc == 0 else "(get failed)",
                 })
+
+        # Полный routing-state: nft/iptables/ipset/dnsmasq managed file,
+        # /etc/resolv.conf. Без этого по диагностике невозможно понять,
+        # почему domain/device-rules не маршрутизируют — `ip rule` и
+        # `ip route` могут быть в полном порядке, а пакет всё равно не
+        # уходить через AWG (например, потому что цепочка output создана
+        # с неправильным типом и не триггерит реререйт после mark).
+        try:
+            info["routing_state"] = self._collect_routing_state()
+        except Exception as e:
+            info["errors"].append("routing_state: %s" % e)
 
         # последние записи log_buffer'а из awg-источников
         try:
@@ -866,6 +878,131 @@ class AwgManager:
         for ch in ifname:
             h = (h * 31 + ord(ch)) & 0xFFFFFFFF
         return 100 + (h % 900)
+
+    def _collect_routing_state(self) -> dict:
+        """
+        Снимок состояния firewall'а / dnsmasq, относящегося к нашему
+        selective-routing. Используется только для диагностики — мы тут
+        ничего не меняем.
+
+        Содержит сырые dump'ы:
+          * nft awg_routing (chain types, rules, sets с содержимым)
+          * iptables/ip6tables -t mangle/nat -S наших цепочек
+          * ipset list awgr_* с содержимым (если ipset-бэкенд)
+          * /etc/resolv.conf и /etc/systemd/resolved.conf
+          * managed dnsmasq-файл и состояние демона
+          * /etc/dnsmasq.conf (только наши include-строки)
+        """
+        out = {
+            "nft_table_listing": "",
+            "nft_sets":          [],
+            "iptables_mangle":   "",
+            "iptables_nat":      "",
+            "ip6tables_mangle":  "",
+            "ip6tables_nat":     "",
+            "ipset_sets":        [],
+            "resolv_conf":       "",
+            "resolved_conf":     "",
+            "dnsmasq_status":    {},
+            "dnsmasq_managed":   "",
+            "dnsmasq_main":      "",
+        }
+
+        # nft awg_routing — вся таблица сразу (показывает chain types
+        # и правила). Если type=filter для output — это причина почему
+        # domain-routing не работает.
+        rc, t, _e = _run(["nft", "list", "table", "inet", "awg_routing"],
+                         timeout=5)
+        if rc == 0:
+            out["nft_table_listing"] = t
+            # Списки наполнения: дёргаем list set отдельно, поскольку
+            # nft list table даёт только описание, без элементов.
+            try:
+                import re as _re
+                for m in _re.finditer(r"set\s+(awgr_\S+)\s*\{", t):
+                    sname = m.group(1)
+                    rc2, body, _e2 = _run([
+                        "nft", "list", "set", "inet", "awg_routing", sname
+                    ], timeout=3)
+                    out["nft_sets"].append({
+                        "name": sname,
+                        "body": body if rc2 == 0 else "(list failed)",
+                    })
+            except Exception as e:
+                out["nft_sets"].append({"error": str(e)})
+
+        # iptables: только наши цепочки, чтобы вывод не разрывал диагностику
+        for cmd_name, key_pref in (("iptables", ""), ("ip6tables", "ip6")):
+            for table_name in ("mangle", "nat"):
+                rc, dump, _e = _run([
+                    cmd_name, "-t", table_name, "-S"
+                ], timeout=5)
+                if rc != 0:
+                    continue
+                # Отфильтровываем строки, упоминающие наши цепочки/наборы,
+                # чтобы не тащить всю iptables-конфигурацию системы.
+                wanted = []
+                for line in (dump or "").splitlines():
+                    if ("AWG_ROUTING" in line or
+                            "awgr_" in line):
+                        wanted.append(line)
+                joined = "\n".join(wanted)
+                key = (("ip6tables" if key_pref else "iptables")
+                       + "_" + table_name)
+                out[key] = joined
+
+        # ipset: наполнение awgr_* (если ipset-бэкенд)
+        rc, names, _e = _run(["ipset", "list", "-name"], timeout=3)
+        if rc == 0:
+            for name in (names or "").split():
+                if not name.startswith("awgr_"):
+                    continue
+                rc2, body, _e2 = _run(["ipset", "list", name], timeout=3)
+                out["ipset_sets"].append({
+                    "name": name,
+                    "body": body if rc2 == 0 else "(list failed)",
+                })
+
+        # resolv.conf + resolved.conf
+        for k, p in (("resolv_conf",   "/etc/resolv.conf"),
+                     ("resolved_conf", "/etc/systemd/resolved.conf")):
+            try:
+                if os.path.islink(p):
+                    out[k] = "(symlink → %s)\n" % os.readlink(p)
+                    try:
+                        with open(p, "r") as f:
+                            out[k] += f.read()
+                    except (IOError, OSError):
+                        pass
+                elif os.path.isfile(p):
+                    with open(p, "r") as f:
+                        out[k] = f.read()
+            except (IOError, OSError) as e:
+                out[k] = "(read failed: %s)" % e
+
+        # dnsmasq status + managed файл
+        try:
+            from core.routing.dnsmasq_integration import DnsmasqIntegration
+            dn = DnsmasqIntegration()
+            out["dnsmasq_status"] = dn.status()
+            mf = out["dnsmasq_status"].get("managed_file") or ""
+            if mf and os.path.isfile(mf):
+                try:
+                    with open(mf, "r") as f:
+                        out["dnsmasq_managed"] = f.read()
+                except (IOError, OSError) as e:
+                    out["dnsmasq_managed"] = "(read failed: %s)" % e
+            main = out["dnsmasq_status"].get("main_config") or ""
+            if main and os.path.isfile(main):
+                try:
+                    with open(main, "r") as f:
+                        out["dnsmasq_main"] = f.read()
+                except (IOError, OSError) as e:
+                    out["dnsmasq_main"] = "(read failed: %s)" % e
+        except Exception as e:
+            out["dnsmasq_status"] = {"error": str(e)}
+
+        return out
 
     def _apply_setconf(self, ifname: str, setconf_text: str) -> dict:
         # пишем во временный файл (awg setconf хочет путь)

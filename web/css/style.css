@@ -1589,6 +1589,38 @@ input:focus, textarea:focus, select:focus {
     }
 }
 
+/* ===== Generic .table ===== */
+/* Используется в awg_routing/awg_dashboard. Без table-layout: fixed
+ * колонки расползаются при добавлении новой строки: <th style="width:X%">
+ * с auto-layout — это только подсказка ширины, content её перетирает,
+ * и поля «разъезжаются» относительно заголовков. */
+.table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+}
+
+.table th,
+.table td {
+    text-align: left;
+    padding: 6px 8px;
+    vertical-align: top;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    border-bottom: 1px solid var(--border);
+}
+
+.table th {
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+
+.table tr:last-child td {
+    border-bottom: none;
+}
+
 /* ===== Blobs Page ===== */
 
 .blob-table {

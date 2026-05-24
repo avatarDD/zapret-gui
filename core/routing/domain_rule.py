@@ -358,10 +358,21 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
             backend.destroy_set(set_name)
 
         # MASQUERADE снимаем только если на этот же интерфейс больше
-        # нет других ВКЛЮЧЁННЫХ domain-правил — оставшиеся domain-rules
-        # на том же AWG-iface продолжают на него полагаться.
-        others = [r for r in _all_domain_rules()
-                  if r.id != rule.id and r.target_iface == ifname]
+        # нет других ВКЛЮЧЁННЫХ правил, которым masquerade нужен —
+        # domain-rules (fwmark-routing) и device-rules (forwarded
+        # трафик с чужим src). CIDR-rules не считаем: их трафик уже
+        # выходит с src=AWG_IP естественным образом.
+        from core.routing import storage as _storage
+        from core.routing.rules import DeviceRoutingRule as _DevRule
+        others = []
+        for r in _storage.load_rules():
+            if not r.enabled or r.id == rule.id:
+                continue
+            if r.target_iface != ifname:
+                continue
+            if isinstance(r, (DomainRoutingRule, _DevRule)):
+                others.append(r)
+                break
         if not others:
             if backend is nftset_backend:
                 backend.remove_iface_masquerade(ifname)
