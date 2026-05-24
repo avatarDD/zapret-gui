@@ -259,6 +259,22 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
                               (fam, r3.get("error")))
                 continue
 
+            # MASQUERADE на исходящий AWG-iface: без него пакеты,
+            # перенаправленные через fwmark уже после первой маршрутной
+            # выборки, уходят через AWG с src=WAN_IP. AWG-сервер дропает
+            # такие пакеты по AllowedIPs клиента — и весь domain-routing
+            # «работает на бумаге», IP-list работает только потому что
+            # для CIDR-правил route lookup и так попадает в таблицу AWG
+            # сразу и src сразу выбирается с AWG. См. подробный
+            # комментарий в backend.ensure_iface_masquerade().
+            mq = (backend.ensure_iface_masquerade(ifname)
+                  if backend is nftset_backend
+                  else backend.ensure_iface_masquerade(ifname, family=fam))
+            if not mq.get("ok"):
+                errors.append("masquerade %s: %s" %
+                              (fam, mq.get("error")))
+                continue
+
             added.append({"family": fam, "set": r1["name"],
                           "mark": mark, "table": table})
 
@@ -293,13 +309,26 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
                     "dnsmasq": _rebuild_managed_dnsmasq()}
 
         mark = _mark_for(rule.id)
-        table = _table_id_for(rule.target_iface)
+        ifname = rule.target_iface
+        table = _table_id_for(ifname)
 
         for fam in ("v4", "v6"):
             set_name = _set_name_for(rule.id, kind) + ("6" if fam == "v6" else "")
             backend.del_ip_rule_fwmark(mark, table, family=fam)
             backend.teardown_mark_rule(set_name, mark, family=fam)
             backend.destroy_set(set_name)
+
+        # MASQUERADE снимаем только если на этот же интерфейс больше
+        # нет других ВКЛЮЧЁННЫХ domain-правил — оставшиеся domain-rules
+        # на том же AWG-iface продолжают на него полагаться.
+        others = [r for r in _all_domain_rules()
+                  if r.id != rule.id and r.target_iface == ifname]
+        if not others:
+            if backend is nftset_backend:
+                backend.remove_iface_masquerade(ifname)
+            else:
+                for fam in ("v4", "v6"):
+                    backend.remove_iface_masquerade(ifname, family=fam)
 
         dn_res = _rebuild_managed_dnsmasq()
         log.info("routing: domain-правило %s снято" % rule.id,

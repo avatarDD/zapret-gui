@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.19.20 — Domain-routing: MASQUERADE на AWG-iface (без него AllowedIPs дропал пакеты)
+
+### Исправлено
+- **Domain-routing не работал, IP-routing работал.** dnsmasq получал
+  запрос, заполнял nftset/ipset, OUTPUT mangle ставил fwmark, ядро
+  переректило пакет через AWG-таблицу — но **src в IP-заголовке
+  оставался от первой маршрутной выборки (WAN_IP)**. Для fwmark
+  route lookup происходит уже ПОСЛЕ того, как src выбран по
+  default-маршруту, и ядро не пересчитывает src на ререйте. В
+  результате пакет уходил по AWG-тоннелю с src=WAN_IP, а AWG-сервер
+  дропал его по `AllowedIPs` клиента (там 10.x туннельный, а не
+  публичный). IP-routing работал, потому что `ip rule to <cidr>
+  lookup <table>` срабатывает на первом lookup'е — src сразу
+  берётся с AWG-iface.
+  Починка: в nftables/iptables backend'ах при apply domain-правила
+  ставим **MASQUERADE** на исходящий AWG-интерфейс (`oifname X
+  masquerade` в nft postrouting `type nat` / `-o X -j MASQUERADE`
+  в iptables nat). Src перепишется на AWG-IP, сервер пропустит.
+  Снимаем MASQUERADE, когда удалено последнее domain-правило на
+  этом интерфейсе. На CIDR-routing MASQUERADE — no-op (src и так
+  уже корректный).
+
 ## v0.19.19 — Domain-routing наконец-то работает: resolv.conf → 127.0.0.1
 
 ### Исправлено
