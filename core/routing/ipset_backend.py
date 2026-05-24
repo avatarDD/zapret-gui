@@ -24,6 +24,10 @@ from core.log_buffer import log
 # существующие правила пользователя).
 PREROUTING_CHAIN = "AWG_ROUTING_PRE"
 OUTPUT_CHAIN     = "AWG_ROUTING_OUT"
+# Цепочка в таблице nat для MASQUERADE на исходящий AWG-iface
+# (без неё domain-routing уходит с src=WAN_IP и сервер дропает
+# по AllowedIPs — подробности в ensure_iface_masquerade).
+NAT_CHAIN        = "AWG_ROUTING_NAT"
 
 
 def _run(args, timeout=10):
@@ -158,6 +162,59 @@ def teardown_mark_rule(set_name: str, mark: int, family: str = "v4") -> dict:
                  "-j", "MARK", "--set-mark", str(mark)]
         _run([cmd, "-t", table, "-D", chain] + match)
     return {"ok": True}
+
+
+# ─────────────────────── masquerade (nat) ──────────────────────────
+
+def ensure_iface_masquerade(ifname: str, family: str = "v4") -> dict:
+    """
+    Идемпотентно повесить MASQUERADE на исходящий ifname в нашей
+    nat-цепочке.
+
+    Зачем: для fwmark-routing (domain-rules) src IP пакета выбирается
+    при ПЕРВОМ route lookup'е (mark=0 → main-таблица → src=WAN_IP).
+    После того как OUTPUT mangle поставит метку и ядро переректит
+    пакет через AWG-таблицу, src в IP-заголовке УЖЕ зафиксирован —
+    ядро его не пересчитывает. В итоге пакет уходит через AWG с
+    src=WAN_IP, и AWG-сервер дропает его по AllowedIPs клиента.
+    Поэтому маскарадим всё, что физически выходит через AWG — src
+    перепишется на интерфейсный IP. На CIDR-routing это no-op:
+    там src уже корректный.
+    """
+    cmd = "iptables" if family == "v4" else "ip6tables"
+    # Цепочка в nat
+    rc, _o, err = _run([cmd, "-t", "nat", "-N", NAT_CHAIN])
+    if rc != 0 and "already exists" not in (err or "").lower():
+        return {"ok": False, "error": err.strip()}
+    # Jump из POSTROUTING → NAT_CHAIN (один раз)
+    rc, out, _e = _run([cmd, "-t", "nat", "-S", "POSTROUTING"])
+    has_jump = False
+    if rc == 0:
+        for line in out.splitlines():
+            if line.strip() == "-A POSTROUTING -j %s" % NAT_CHAIN:
+                has_jump = True
+                break
+    if not has_jump:
+        _run([cmd, "-t", "nat", "-A", "POSTROUTING", "-j", NAT_CHAIN])
+    # Само правило: -o <ifname> -j MASQUERADE (идемпотентно)
+    rc, out, _e = _run([cmd, "-t", "nat", "-S", NAT_CHAIN])
+    if rc == 0:
+        needle = "-A %s -o %s -j MASQUERADE" % (NAT_CHAIN, ifname)
+        if needle in out:
+            return {"ok": True, "added": False, "ifname": ifname}
+    rc, _o, err = _run([cmd, "-t", "nat", "-A", NAT_CHAIN,
+                        "-o", ifname, "-j", "MASQUERADE"])
+    if rc != 0:
+        return {"ok": False, "error": err.strip(), "ifname": ifname}
+    return {"ok": True, "added": True, "ifname": ifname}
+
+
+def remove_iface_masquerade(ifname: str, family: str = "v4") -> dict:
+    """Удалить MASQUERADE-правило по oifname (если есть)."""
+    cmd = "iptables" if family == "v4" else "ip6tables"
+    _run([cmd, "-t", "nat", "-D", NAT_CHAIN,
+          "-o", ifname, "-j", "MASQUERADE"])
+    return {"ok": True, "ifname": ifname}
 
 
 # ─────────────────────── ip rule fwmark ─────────────────────────────
