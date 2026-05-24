@@ -743,25 +743,19 @@ class AwgManager:
                         source="awg_manager")
 
         # 4) маршруты из AllowedIPs (если не Table=off)
+        #
+        # Селективная модель zapret-gui: туннель просто *доступен* через
+        # свою таблицу <table_id>. Куда направлять трафик — решают только
+        # правила из «Routing» (cidr/domain/device). Main НЕ трогаем,
+        # фолбэк-маршруты из AllowedIPs кладём ТОЛЬКО в нашу таблицу.
+        # Без этого пользователь, который просто поднял туннель без
+        # selective-правил, терял весь инет: AllowedIPs=0/0 → wg-quick-
+        # схема (`ip rule not fwmark X table X` + `suppress_prefixlength
+        # 0`) принудительно загоняла весь трафик в туннель, даже когда
+        # пользователь ожидал, что без правил он будет идти напрямую.
         added_routes = []
         table_off = str(iface.get("Table", "")).lower() == "off"
-
-        # 4a) ПЕРЕД default-route'ом прибиваем /32 host-маршруты до peer-
-        #     endpoint'ов через текущий физический WAN. Без этого
-        #     encapsulated-UDP, которые amneziawg-go отправляет в сторону
-        #     endpoint'а, после установки default'а в туннеле могут
-        #     зациклиться сами в себя (зависит от того, передаёт ли
-        #     userspace-демон SO_MARK во все свои сокеты — у некоторых
-        #     сборок amneziawg-go этого фикса нет). Pin endpoint'а
-        #     гарантирует корректный путь до peer'а независимо от
-        #     fwmark-механики.
-        endpoints_pinned = self._pin_peer_endpoints(ifname, cfg)
-        for p in endpoints_pinned:
-            added_routes.append({
-                "family":   p["family"],
-                "endpoint": p["dest"],
-                "preexisting": p.get("preexisting", False),
-            })
+        table_id  = self._table_id_for(ifname)
 
         if not table_off:
             for peer in cfg.get("peers", []):
@@ -770,15 +764,27 @@ class AwgManager:
                         continue
                     family = "-6" if ":" in ip else "-4"
                     if ip in ("0.0.0.0/0", "::/0"):
-                        # default route — wg-quick делает через fwmark+rule;
-                        # упростим: пишем в main + suppress_prefixlength.
-                        if self._add_default_via(ifname, family):
-                            added_routes.append({"family": family, "default": True})
+                        rc, _o, err = _run([
+                            "ip", family, "route", "add", "default",
+                            "dev", ifname, "table", str(table_id),
+                        ])
+                        if rc == 0 or "File exists" in (err or ""):
+                            added_routes.append({
+                                "family": family,
+                                "default": True,
+                                "table": table_id,
+                            })
                     else:
-                        rc, _o, _e = _run(["ip", family, "route", "add", ip,
-                                           "dev", ifname])
-                        if rc == 0:
-                            added_routes.append({"family": family, "cidr": ip})
+                        rc, _o, err = _run([
+                            "ip", family, "route", "add", ip,
+                            "dev", ifname, "table", str(table_id),
+                        ])
+                        if rc == 0 or "File exists" in (err or ""):
+                            added_routes.append({
+                                "family": family,
+                                "cidr": ip,
+                                "table": table_id,
+                            })
 
         try:
             with open(self._routes_path(ifname), "w") as f:
@@ -853,185 +859,6 @@ class AwgManager:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(snap, f, ensure_ascii=False, indent=2)
 
-    def _pin_peer_endpoints(self, ifname: str, cfg: dict) -> list:
-        """
-        До установки default-route в туннеле прибиваем /32(/128) host-
-        маршруты до каждого peer.Endpoint через текущий путь main-таблицы.
-
-        Зачем: при AllowedIPs=0/0 default попадает в таблицу T. Если
-        amneziawg-go не выставляет SO_MARK на своих UDP-сокетах (бывает
-        на форках/старых билдах), encapsulated-трафик не получает
-        fwmark и попадает под `not fwmark T table T` — заворачивается
-        обратно в туннель → петля → инет умирает. Pin host-маршрута
-        гарантирует, что пакет до endpoint'а уйдёт через физический
-        WAN независимо от fwmark-механики.
-
-        Возвращает список словарей со сведениями для teardown.
-        """
-        pinned = []
-        for peer in cfg.get("peers", []):
-            endpoint = peer.get("Endpoint", "")
-            if not endpoint:
-                continue
-            host, _port = _parse_endpoint_host(endpoint)
-            if not host:
-                continue
-
-            ips = _resolve_host(host)
-            if not ips:
-                log.warning(
-                    "Не удалось зарезолвить endpoint %s — host-route не"
-                    " прибит, возможна петля маршрутизации" % host,
-                    source="awg_manager",
-                )
-                continue
-
-            for ip in ips:
-                family = "-6" if ":" in ip else "-4"
-                mask   = "/128" if family == "-6" else "/32"
-                dest   = ip + mask
-
-                # Если уже идёт через наш awg-интерфейс — значит, мы
-                # дозаписываем поверх «сломанной» прошлой сессии;
-                # сначала чистим, чтобы добавить корректный маршрут.
-                rc, out, _ = _run(["ip", family, "route", "get", ip],
-                                  timeout=3)
-                if rc != 0 or not out:
-                    continue
-                parts = out.split()
-                # `ip route get` возвращает «<dst> via <gw> dev <if> src
-                # <src> uid …» — берём первый dev/via.
-                via, dev = "", ""
-                if "via" in parts:
-                    i = parts.index("via")
-                    if i + 1 < len(parts):
-                        via = parts[i + 1]
-                if "dev" in parts:
-                    i = parts.index("dev")
-                    if i + 1 < len(parts):
-                        dev = parts[i + 1]
-
-                if dev == ifname:
-                    # Маршрут УЖЕ через наш туннель (остаток прошлой
-                    # неудачной сессии). Удалим — потом добавим корректный.
-                    _run(["ip", family, "route", "del", dest])
-                    rc, out, _ = _run(["ip", family, "route", "get", ip],
-                                      timeout=3)
-                    parts = out.split() if rc == 0 else []
-                    via, dev = "", ""
-                    if "via" in parts:
-                        i = parts.index("via")
-                        if i + 1 < len(parts):
-                            via = parts[i + 1]
-                    if "dev" in parts:
-                        i = parts.index("dev")
-                        if i + 1 < len(parts):
-                            dev = parts[i + 1]
-                    if dev == ifname or not dev:
-                        # Без default'а в main мы не сможем
-                        # восстановить путь к endpoint'у — пропускаем.
-                        log.warning(
-                            "Endpoint %s достижим только через %s — не"
-                            " могу прибить host-route" % (ip, ifname),
-                            source="awg_manager",
-                        )
-                        continue
-
-                cmd = ["ip", family, "route", "add", dest]
-                if via:
-                    cmd += ["via", via]
-                if dev:
-                    cmd += ["dev", dev]
-                rc, _o, err = _run(cmd)
-                if rc == 0:
-                    pinned.append({"family": family, "dest": dest})
-                    log.info(
-                        "AWG endpoint %s прибит через %s%s" %
-                        (dest, dev, (" via " + via) if via else ""),
-                        source="awg_manager",
-                    )
-                elif "File exists" in (err or ""):
-                    # Уже был такой маршрут (например, мы перезапускаемся).
-                    # Помечаем preexisting, чтобы не удалять чужое.
-                    pinned.append({"family": family, "dest": dest,
-                                   "preexisting": True})
-                else:
-                    log.warning(
-                        "Не удалось прибить endpoint %s: %s" %
-                        (dest, (err or "").strip()),
-                        source="awg_manager",
-                    )
-        return pinned
-
-    def _add_default_via(self, ifname: str, family: str) -> bool:
-        """
-        Default route через интерфейс по wg-quick-схеме.
-
-        Трюк wg-quick для AllowedIPs=0/0:
-          1) `awg set <iface> fwmark <X>` — encapsulated-UDP, которые
-             amneziawg-go выплёвывает в сторону peer-endpoint'а, получают
-             этот mark. Без этого шага шаг (3) ловит ВСЕ пакеты, в т.ч.
-             наши же UDP→endpoint, и заворачивает их обратно в туннель —
-             получается петля и инет «отваливается» сразу после `up`
-             даже при пустом списке selective routing (точно как
-             описал пользователь).
-          2) `ip route add default dev <iface> table <X>` — default
-             только в нашей таблице.
-          3) `ip rule add not fwmark <X> table <X> pref 32765` — всё,
-             что НЕ промаркировано awg-сокетом, идёт в эту таблицу.
-          4) `ip rule add table main suppress_prefixlength 0 pref 32764`
-             — но сначала смотрим main для всех маршрутов с prefix>0
-             (локалка, link-local, маршруты до WG-endpoint'а, etc.).
-             Без него LAN/гейтвей становятся недостижимы.
-
-        Приоритеты выставляем явно (32765/32764) — чтобы они всегда
-        вставали ровно перед стандартным main (32766), а не «куда iproute2
-        захотел». Это исключает ситуации, когда `ip rule add` без
-        preference попадал в priority 0 и перетирал `lookup local`.
-
-        Mark === table_id: совпадение mark и table-id — стандартное
-        соглашение wg-quick. На семейство IPv4/IPv6 fwmark на awg-iface
-        ставится один раз (это атрибут wg-сокета, не route).
-        """
-        table = self._table_id_for(ifname)
-        mark  = table
-        PRIO_NOT_FWMARK = 32765
-        PRIO_SUPPRESS   = 32764
-
-        # (1) fwmark на awg-сокете. Делаем один раз для семейства "-4"
-        #     (для "-6" тот же сокет, повторно не нужно).
-        if family == "-4":
-            rc, _o, err = _run([self._awg_bin(), "set", ifname,
-                                "fwmark", str(mark)])
-            if rc != 0:
-                log.warning(
-                    "awg set %s fwmark %d: %s — encapsulated-трафик не"
-                    " будет промаркирован, возможна петля маршрутизации"
-                    % (ifname, mark, (err or "").strip()),
-                    source="awg_manager",
-                )
-
-        # (2) default в нашей таблице
-        rc, _o, _e = _run(["ip", family, "route", "add", "default",
-                           "dev", ifname, "table", str(table)])
-        if rc != 0:
-            return False
-
-        # (3) not fwmark X → table X, явный priority
-        _run(["ip", family, "rule", "del", "not", "fwmark",
-              str(mark), "table", str(table)])
-        _run(["ip", family, "rule", "add", "not", "fwmark",
-              str(mark), "table", str(table),
-              "priority", str(PRIO_NOT_FWMARK)])
-
-        # (4) main первым (но без default), явный priority
-        _run(["ip", family, "rule", "del", "table", "main",
-              "suppress_prefixlength", "0",
-              "priority", str(PRIO_SUPPRESS)])
-        _run(["ip", family, "rule", "add", "table", "main",
-              "suppress_prefixlength", "0",
-              "priority", str(PRIO_SUPPRESS)])
-        return True
 
     def _table_id_for(self, ifname: str) -> int:
         """Стабильный id таблицы из имени интерфейса (100..999)."""
@@ -1142,6 +969,14 @@ class AwgManager:
                 pass
 
     def _remove_added_routes(self, ifname: str):
+        """
+        Teardown маршрутов, добавленных в _do_up.
+
+        Всё что мы клали — лежит в таблице <table_id_for(ifname)>;
+        просто флашим её для обеих семей. Старые записи с
+        `endpoint`/`cidr` без table (от версий ≤ 0.19.14) — снимаем
+        точечно для обратной совместимости со старым routes.json.
+        """
         path = self._routes_path(ifname)
         if not os.path.isfile(path):
             return
@@ -1151,23 +986,30 @@ class AwgManager:
         except (IOError, OSError, ValueError):
             routes = []
 
+        table_id = self._table_id_for(ifname)
+        # Современная схема: всё в нашей таблице — флашим оба семейства
+        # один раз, независимо от того, что лежит в routes.json.
+        for fam in ("-4", "-6"):
+            _run(["ip", fam, "route", "flush", "table", str(table_id)])
+
+        # Старые записи из routes.json (≤ 0.19.14) могли быть в main —
+        # подчищаем точечно, чтобы апгрейд с уже поднятого интерфейса
+        # не оставил мусора.
         for r in routes:
             family = r.get("family", "-4")
-            if r.get("default"):
+            if r.get("default") and not r.get("table"):
+                # Это было wg-quick-схема с правилами в main.
                 table = self._table_id_for(ifname)
-                # Симметричный teardown wg-quick-схемы из
-                # _add_default_via (mark == table_id).
                 _run(["ip", family, "rule", "del", "not", "fwmark",
                       str(table), "table", str(table)])
                 _run(["ip", family, "rule", "del", "table", "main",
                       "suppress_prefixlength", "0"])
-                _run(["ip", family, "route", "flush", "table", str(table)])
-            elif r.get("cidr"):
+            elif r.get("cidr") and not r.get("table"):
+                # cidr-маршрут лежал в main
                 _run(["ip", family, "route", "del", r["cidr"], "dev", ifname])
             elif r.get("endpoint"):
-                # Pinned peer endpoint в main-таблице. Если мы его
-                # добавили (preexisting=False) — снимаем. Чужое
-                # (преexisting=True) не трогаем.
+                # Pinned peer endpoint в main-таблице (старая схема).
+                # Если мы добавили (preexisting=False) — снимаем.
                 if not r.get("preexisting"):
                     _run(["ip", family, "route", "del", r["endpoint"]])
 
