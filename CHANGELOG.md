@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.19.19 — Domain-routing наконец-то работает: resolv.conf → 127.0.0.1
+
+### Исправлено
+- **Domain-routing не маршрутизировал, хотя dnsmasq был запущен.**
+  v0.19.16's auto-setup перелинковывал `/etc/resolv.conf` на
+  `/run/systemd/resolve/resolv.conf` — а этот файл указывает на
+  upstream-DNS (DHCP / Cloudflare), а **не на наш dnsmasq на
+  127.0.0.1**. То есть приложение → resolv.conf → upstream →
+  получает IP `2ip.ru` напрямую, **минуя dnsmasq**. dnsmasq никогда
+  не видит запрос, ipset/nftset не наполняется, пакеты не
+  маркируются — трафик идёт мимо туннеля, хотя в банере «всё ок».
+  Цепочка должна быть: `app → /etc/resolv.conf → 127.0.0.1 →
+  dnsmasq → upstream`. Заменил шаг `relink_resolv_conf` на
+  `point_resolv_to_dnsmasq` — пишет обычный файл с `nameserver
+  127.0.0.1`, оригинал бэкапим в `…/resolv.conf.zapret-gui.bak`
+  (или сохраняем target прошлого симлинка) для revert'а.
+- **План auto-setup пропускал починку resolv.conf**, если
+  `DNSStubListener` уже выставлен в `no` (после предыдущего setup'а).
+  Вытащил проверку resolv.conf из-под общего гейта про stub-listener
+  и сделал по содержимому файла: ищем строку `nameserver 127.0.0.1`
+  — если её нет, добавляем шаг в план. Так пользователю после
+  обновления достаточно нажать «Настроить dnsmasq автоматически»
+  ещё раз, не делая ручной revert.
+
+### Изменено
+- **Дефолтный `/etc/dnsmasq.conf` слушает и IPv6** —
+  `listen-address=127.0.0.1,::1`, плюс upstream'ы
+  `2606:4700:4700::1111` / `…::1001`. Раньше был только v4-listen,
+  IPv6-запросы из системы летели мимо dnsmasq.
+
 ## v0.19.18 — dnsmasq setup детектит юнит + OUI-vendor в Устройствах
 
 ### Исправлено

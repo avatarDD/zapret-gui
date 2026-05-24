@@ -384,30 +384,34 @@ class DnsmasqIntegration:
                     " дистрибутива.")
 
         resolved_running = self._systemctl_is_active("systemd-resolved")
-        if resolved_running:
-            stub = self._read_stub_listener()
-            if stub != "no":
-                steps.append({
-                    "id":   "disable_stub_listener",
-                    "what": "В /etc/systemd/resolved.conf выставить"
-                            " DNSStubListener=no (порт 53 освободится"
-                            " для dnsmasq)",
-                    "cmd":  "edit /etc/systemd/resolved.conf",
-                })
-                steps.append({
-                    "id":   "restart_resolved",
-                    "what": "systemctl restart systemd-resolved",
-                    "cmd":  "systemctl restart systemd-resolved",
-                })
-                steps.append({
-                    "id":   "relink_resolv_conf",
-                    "what": "Перелинковать /etc/resolv.conf на"
-                            " /run/systemd/resolve/resolv.conf"
-                            " (чтобы система не упёрлась в выключенный"
-                            " stub-listener 127.0.0.53)",
-                    "cmd":  "ln -sf /run/systemd/resolve/resolv.conf"
-                            " /etc/resolv.conf",
-                })
+        if resolved_running and self._read_stub_listener() != "no":
+            steps.append({
+                "id":   "disable_stub_listener",
+                "what": "В /etc/systemd/resolved.conf выставить"
+                        " DNSStubListener=no (порт 53 освободится"
+                        " для dnsmasq)",
+                "cmd":  "edit /etc/systemd/resolved.conf",
+            })
+            steps.append({
+                "id":   "restart_resolved",
+                "what": "systemctl restart systemd-resolved",
+                "cmd":  "systemctl restart systemd-resolved",
+            })
+
+        # /etc/resolv.conf нужно направить на 127.0.0.1 НЕЗАВИСИМО от того,
+        # отключён ли уже stub-listener (он мог быть отключён в прошлый
+        # setup, но resolv.conf тогда мы криво подсовывали на upstream).
+        # Проверяем по содержимому файла, а не по флагу stub.
+        if not self._resolv_conf_points_at_dnsmasq():
+            steps.append({
+                "id":   "point_resolv_to_dnsmasq",
+                "what": "Заменить /etc/resolv.conf на"
+                        " «nameserver 127.0.0.1» — иначе системные"
+                        " запросы пойдут мимо dnsmasq (на upstream"
+                        " через resolved), и ipset/nftset просто"
+                        " не наполнятся при резолве 2ip.ru и т.п.",
+                "cmd":  "write /etc/resolv.conf",
+            })
 
         # dnsmasq.conf: если файла нет — создадим минимальный.
         main_conf = self.find_main_config()
@@ -492,8 +496,8 @@ class DnsmasqIntegration:
                     state["resolved_conf_backup"] = res["backup"]
             elif sid == "restart_resolved":
                 res = self._step_restart_unit("systemd-resolved")
-            elif sid == "relink_resolv_conf":
-                res = self._step_relink_resolv_conf()
+            elif sid == "point_resolv_to_dnsmasq":
+                res = self._step_point_resolv_to_dnsmasq()
                 if res.get("ok") and not res.get("skipped"):
                     state["resolv_conf_was_link"] = res.get("was_link", False)
                     state["resolv_conf_link_target"] = res.get(
@@ -697,6 +701,31 @@ class DnsmasqIntegration:
         v = (out or "").strip()
         return v in ("enabled", "alias", "static", "enabled-runtime")
 
+    def _resolv_conf_points_at_dnsmasq(self) -> bool:
+        """
+        Достоверно ли /etc/resolv.conf направляет запросы на dnsmasq
+        (т.е. 127.0.0.1)? Симлинк resolv.conf на stub-resolv.conf
+        (127.0.0.53) и на /run/systemd/resolve/resolv.conf (upstream)
+        оба считаются «не на dnsmasq».
+        """
+        path = "/etc/resolv.conf"
+        try:
+            with open(path, "r") as f:
+                text = f.read()
+        except (IOError, OSError):
+            return False
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s.lower().startswith("nameserver"):
+                _, _, ns = s.partition(" ")
+                ns = ns.strip()
+                if ns == "127.0.0.1" or ns == "::1":
+                    return True
+                return False
+        return False
+
     def _read_stub_listener(self) -> str:
         """
         Прочитать текущее значение DNSStubListener из resolved.conf.
@@ -770,25 +799,42 @@ class DnsmasqIntegration:
         return {"step": "disable_stub_listener", "ok": True,
                 "backup": backup}
 
-    def _step_relink_resolv_conf(self) -> dict:
+    def _step_point_resolv_to_dnsmasq(self) -> dict:
+        """
+        Записать в /etc/resolv.conf «nameserver 127.0.0.1».
+
+        Это критично для domain-routing: чтобы dnsmasq мог наполнить
+        ipset/nftset при резолве 2ip.ru и т.п., системные DNS-запросы
+        должны прилетать ИМЕННО к нему. Если /etc/resolv.conf указывает
+        на upstream (DHCP-DNS или resolved-stub'у), приложения резолвят
+        домены минуя dnsmasq — и весь domain-routing работает только
+        «на бумаге».
+
+        Сохраняем оригинал в …/resolv.conf.zapret-gui.bak для revert.
+        Если оригинал был симлинком — запоминаем target, чтобы пересоздать.
+        """
         path = "/etc/resolv.conf"
-        target = "/run/systemd/resolve/resolv.conf"
-        if not os.path.exists(target):
-            return {"step": "relink_resolv_conf", "ok": True,
-                    "skipped": True,
-                    "reason": "%s ещё не создан — systemd-resolved"
-                              " подложит его сам после рестарта" % target}
         was_link = False
         prev_target = ""
         backup_path = ""
+
+        # Если уже правильно — ничего не трогаем
+        try:
+            if os.path.isfile(path) and not os.path.islink(path):
+                with open(path, "r") as f:
+                    cur = f.read()
+                if "nameserver 127.0.0.1" in cur \
+                        and "zapret-gui" in cur:
+                    return {"step": "point_resolv_to_dnsmasq", "ok": True,
+                            "skipped": True,
+                            "reason": "/etc/resolv.conf уже указывает на 127.0.0.1"}
+        except (IOError, OSError):
+            pass
+
         try:
             if os.path.islink(path):
                 was_link = True
                 prev_target = os.readlink(path)
-                if prev_target == target or prev_target.endswith("/resolv.conf"):
-                    return {"step": "relink_resolv_conf", "ok": True,
-                            "skipped": True,
-                            "reason": "уже симлинк → %s" % prev_target}
                 os.remove(path)
             elif os.path.isfile(path):
                 bak = path + ".zapret-gui.bak"
@@ -797,14 +843,21 @@ class DnsmasqIntegration:
                     backup_path = bak
                 else:
                     os.remove(path)
-            os.symlink(target, path)
-            return {"step": "relink_resolv_conf", "ok": True,
-                    "target": target,
+            content = (
+                "# Generated by zapret-gui (dnsmasq auto-setup)\n"
+                "# Revert: остановите последний AWG-интерфейс или нажмите\n"
+                "# «Откатить настройку dnsmasq» в Routing.\n"
+                "nameserver 127.0.0.1\n"
+                "options edns0 trust-ad\n"
+            )
+            with open(path, "w") as f:
+                f.write(content)
+            return {"step": "point_resolv_to_dnsmasq", "ok": True,
                     "was_link": was_link,
                     "previous_target": prev_target,
                     "backup": backup_path}
         except OSError as e:
-            return {"step": "relink_resolv_conf", "ok": False,
+            return {"step": "point_resolv_to_dnsmasq", "ok": False,
                     "error": str(e)}
 
     def _step_create_default_dnsmasq_conf(self) -> dict:
@@ -815,13 +868,15 @@ class DnsmasqIntegration:
                     "reason": "файл уже есть, не перезаписываем"}
         content = (
             "# Создан zapret-gui при auto-setup dnsmasq.\n"
-            "# Минимальная конфигурация: слушаем :53, пересылаем апстрим.\n"
+            "# Минимальная конфигурация: слушаем 127.0.0.1+::1, пересылаем апстрим.\n"
             "port=53\n"
             "bind-interfaces\n"
-            "listen-address=127.0.0.1\n"
+            "listen-address=127.0.0.1,::1\n"
             "no-resolv\n"
             "server=1.1.1.1\n"
             "server=1.0.0.1\n"
+            "server=2606:4700:4700::1111\n"
+            "server=2606:4700:4700::1001\n"
             "cache-size=1000\n"
         )
         try:
