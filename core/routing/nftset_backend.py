@@ -49,34 +49,64 @@ def set_name_for(rule_id: str) -> str:
 
 # ────────────────────── table / chains ──────────────────────────────
 
+def _output_chain_type_wrong(table_listing: str) -> bool:
+    """
+    True, если в выводе `nft list table inet awg_routing` цепочка output
+    имеет старый тип `filter` вместо нужного `route`.
+
+    type=filter в output НЕ триггерит реререйтинг пакета после изменения
+    mark — ядро тихо отправляет пакет по уже выбранному (WAN) маршруту.
+    Нужен type=route. До v0.19.21 цепочка создавалась как filter, поэтому
+    у уже установленных пользователей таблицу надо мигрировать.
+    """
+    if "type filter hook output" in table_listing:
+        return True
+    return False
+
+
 def _ensure_table_and_chains():
     """
     Гарантировать, что наша таблица и цепочки существуют.
 
-    Цепочки prerouting/output типа filter с hook=mangle:
-    в nft mark меняется именно через type filter hook prerouting/output
-    с приоритетом mangle.
+    Цепочки:
+      * prerouting — type filter hook prerouting priority mangle.
+        Для forwarded-трафика mark выставляется ДО routing decision,
+        так что type filter ok.
+      * output — **type route** hook output priority mangle.
+        Для локально-генерируемых пакетов routing decision уже
+        принят к моменту OUTPUT mangle. Нужно `type route`, чтобы
+        ядро пере-рутило пакет после изменения mark. Без этого
+        пакет уходит через первый выбранный (WAN) маршрут с уже
+        стоящим mark — fwmark-rule не успевает.
+      * postrouting — type nat hook postrouting priority srcnat.
+        Туда вешаем masquerade на исходящий AWG-iface, чтобы src
+        не остался от WAN после переректа (см. ensure_iface_masquerade).
 
-    Дополнительно создаём postrouting type=nat — туда повесим
-    masquerade на исходящий AWG-интерфейс. Без MASQUERADE для
-    fwmark-маршрутизации src IP пакета остаётся от первой маршрутной
-    выборки (через WAN), и AWG-сервер дропает пакеты по AllowedIPs.
-    Подробности — в комментарии к ensure_iface_masquerade().
+    Если таблица уже есть, но output создан со старым type=filter,
+    мы её сносим целиком и пересоздаём с правильными типами. Часть
+    rules при этом теряется — caller (apply_domain_rule) повторно
+    разложит их через reapply-логику.
     """
     rc, out, _e = _run(["nft", "list", "table", "inet", TABLE_NAME])
     if rc == 0:
-        chains_ok = ("chain prerouting" in out and
-                     "chain output" in out and
-                     "chain postrouting" in out)
-        if chains_ok:
-            return True
+        if _output_chain_type_wrong(out):
+            log.info("nft migration: пересоздаю awg_routing с"
+                     " type=route hook output (was type=filter)",
+                     source="routing")
+            _run(["nft", "delete", "table", "inet", TABLE_NAME])
+        else:
+            chains_ok = ("chain prerouting" in out and
+                         "chain output" in out and
+                         "chain postrouting" in out)
+            if chains_ok:
+                return True
 
     cmds = [
         ["nft", "add", "table", "inet", TABLE_NAME],
         ["nft", "add", "chain", "inet", TABLE_NAME, "prerouting",
          "{ type filter hook prerouting priority mangle; policy accept; }"],
         ["nft", "add", "chain", "inet", TABLE_NAME, "output",
-         "{ type filter hook output priority mangle; policy accept; }"],
+         "{ type route hook output priority mangle; policy accept; }"],
         ["nft", "add", "chain", "inet", TABLE_NAME, "postrouting",
          "{ type nat hook postrouting priority srcnat; policy accept; }"],
     ]
@@ -86,6 +116,17 @@ def _ensure_table_and_chains():
             log.warning("nft init: %s: %s" % (" ".join(c), err.strip()),
                         source="routing")
     return True
+
+
+def needs_migration() -> bool:
+    """Публичная проверка: нужна ли миграция nft-таблицы (старый type=filter
+    в output). Caller (domain_rule.apply_domain_rule) использует, чтобы
+    после миграции переразложить ВСЕ enabled-правила, иначе пострадают
+    соседние rules в той же таблице."""
+    rc, out, _e = _run(["nft", "list", "table", "inet", TABLE_NAME])
+    if rc != 0:
+        return False
+    return _output_chain_type_wrong(out)
 
 
 # ────────────────────── set ops ─────────────────────────────────────
