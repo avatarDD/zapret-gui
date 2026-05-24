@@ -358,19 +358,30 @@ class DnsmasqIntegration:
         steps = []
         warnings = []
 
-        binary = _which("dnsmasq")
-        if not binary:
+        # systemctl-based авто-setup имеет смысл только если у нас есть
+        # юнит dnsmasq.service. Один лишь бинарь /usr/local/bin/dnsmasq
+        # ничего не даст — `systemctl enable dnsmasq` упадёт с «Unit
+        # dnsmasq.service does not exist». Поэтому проверяем именно
+        # существование юнита, а не PATH.
+        has_unit   = self._has_dnsmasq_service()
+        has_binary = bool(_which("dnsmasq"))
+        if not has_unit:
             apt = _which("apt-get") or _which("apt")
             if apt:
                 steps.append({
                     "id":   "install_dnsmasq",
-                    "what": "Установить dnsmasq через apt-get",
+                    "what": ("Установить пакет dnsmasq через apt-get"
+                             " (бинарь %s уже есть, но systemd-юнит"
+                             " отсутствует)" % "найден"
+                             if has_binary else
+                             "Установить пакет dnsmasq через apt-get"),
                     "cmd":  "%s install -y dnsmasq" % apt,
                 })
             else:
                 warnings.append(
-                    "dnsmasq не установлен и apt-get не найден — нужно"
-                    " поставить пакет вручную для вашего дистрибутива.")
+                    "Нет ни systemd-юнита dnsmasq.service, ни apt-get/apt"
+                    " — нужно поставить пакет dnsmasq вручную для вашего"
+                    " дистрибутива.")
 
         resolved_running = self._systemctl_is_active("systemd-resolved")
         if resolved_running:
@@ -409,18 +420,26 @@ class DnsmasqIntegration:
             })
 
         # Включить и стартануть dnsmasq.
-        if not self._systemctl_is_enabled("dnsmasq"):
-            steps.append({
-                "id":   "enable_dnsmasq",
-                "what": "systemctl enable dnsmasq",
-                "cmd":  "systemctl enable dnsmasq",
-            })
-        if not self._systemctl_is_active("dnsmasq"):
-            steps.append({
-                "id":   "start_dnsmasq",
-                "what": "systemctl start dnsmasq",
-                "cmd":  "systemctl start dnsmasq",
-            })
+        # ВАЖНО: enable/start добавляем только если юнит уже есть ИЛИ
+        # запланирована его установка через apt — иначе на выполнении
+        # получим «Unit dnsmasq.service does not exist» и весь setup
+        # пойдёт красным.
+        will_have_unit = has_unit or any(
+            s["id"] == "install_dnsmasq" for s in steps
+        )
+        if will_have_unit:
+            if not has_unit or not self._systemctl_is_enabled("dnsmasq"):
+                steps.append({
+                    "id":   "enable_dnsmasq",
+                    "what": "systemctl enable dnsmasq",
+                    "cmd":  "systemctl enable dnsmasq",
+                })
+            if not has_unit or not self._systemctl_is_active("dnsmasq"):
+                steps.append({
+                    "id":   "start_dnsmasq",
+                    "what": "systemctl start dnsmasq",
+                    "cmd":  "systemctl start dnsmasq",
+                })
 
         return {
             "ok":        True,
@@ -647,6 +666,18 @@ class DnsmasqIntegration:
                         source="routing")
 
     # ─────── shaped low-level steps ───────
+
+    def _has_dnsmasq_service(self) -> bool:
+        """
+        Есть ли в системе юнит dnsmasq.service? `systemctl cat` отвечает
+        быстро и НЕ требует, чтобы сервис был запущен — нам важен сам
+        факт наличия .service-файла, чтобы потом мочь его enable/start.
+        """
+        sctl = _which("systemctl")
+        if not sctl:
+            return False
+        rc, _o, _e = _run([sctl, "cat", "--", "dnsmasq.service"], timeout=3)
+        return rc == 0
 
     def _systemctl_is_active(self, unit: str) -> bool:
         sctl = _which("systemctl")
