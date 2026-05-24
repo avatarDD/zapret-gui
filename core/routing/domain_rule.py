@@ -214,6 +214,17 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             return {"ok": False,
                     "error": "Нет доступного бэкенда (ipset/nftables)"}
 
+        # Миграция nft: до v0.19.21 цепочка output создавалась как
+        # type=filter — она НЕ триггерит реререйт после изменения mark,
+        # поэтому пакеты уходили через WAN, не попадая на AWG. Если
+        # обнаружили старый тип — _ensure_table_and_chains внутри
+        # backend'а удалит таблицу и пересоздаст. Но это снимет nft
+        # state и соседних domain-правил, которые лежат в storage.
+        # Поэтому переразложим их вручную после миграции.
+        need_repave_neighbors = (
+            backend is nftset_backend and nftset_backend.needs_migration()
+        )
+
         ifname = rule.target_iface
         if not _iface_exists(ifname):
             # Регистрируем правило в managed-файле, чтобы dnsmasq
@@ -277,6 +288,34 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
 
             added.append({"family": fam, "set": r1["name"],
                           "mark": mark, "table": table})
+
+        # Если выше дёрнули миграцию nft-таблицы — соседние domain-rules,
+        # лежавшие в той же таблице, потеряли свой nft-state. Восстановим:
+        # пере-создадим set + mark-правила + masquerade для каждого. Сам
+        # ip rule fwmark и default-route в table N — на уровне kernel-
+        # routing, не nft, миграция их не трогает.
+        if need_repave_neighbors:
+            for other in _all_domain_rules():
+                if other.id == rule.id:
+                    continue
+                if not _iface_exists(other.target_iface):
+                    continue
+                o_mark  = _mark_for(other.id)
+                o_table = _table_id_for(other.target_iface)
+                o_setbase = _set_name_for(other.id, kind)
+                for fam in ("v4", "v6"):
+                    o_set = o_setbase + ("6" if fam == "v6" else "")
+                    backend.create_set(o_set, family=fam)
+                    backend.setup_mark_rule(o_set, o_mark, family=fam)
+                    ip_fam = "-6" if fam == "v6" else "-4"
+                    _ensure_table_default(other.target_iface, o_table, ip_fam)
+                    backend.add_ip_rule_fwmark(
+                        o_mark, o_table, family=fam,
+                        priority=FWMARK_PRIORITY)
+                backend.ensure_iface_masquerade(other.target_iface)
+            log.info("nft migration: переразложено %d соседних domain-правил"
+                     % max(0, len(_all_domain_rules()) - 1),
+                     source="routing")
 
         dn_res = _rebuild_managed_dnsmasq()
 

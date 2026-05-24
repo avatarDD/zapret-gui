@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.19.21 — Domain-routing наконец работает: nft output как type=route, а не filter
+
+### Исправлено
+- **Domain-routing продолжал не работать после v0.19.20.** Диагностика
+  показала: `ip rule fwmark 0x… lookup 141` стоит, default-маршрут в
+  таблице 141 ведёт на AWG, dnsmasq заполняет nftset, OUTPUT mangle
+  ставит метку — а пакет всё равно уходит через WAN. handshake AWG
+  идёт (peer показывает свежий handshake), но **реального трафика
+  нет** — только keepalive.
+  Корень: цепочка `output` в `inet awg_routing` создавалась как
+  `type filter hook output priority mangle`. **`type filter` не
+  триггерит ререйт** после изменения mark — ядро отправляет пакет по
+  УЖЕ выбранному маршруту, mark ставится «вдогонку» и `ip rule
+  fwmark` не успевает. Нужен `type route hook output` — это
+  единственный nft-тип, который сигнализирует kernel'у пере-выбрать
+  маршрут, если mark поменялся в хуке (документация nftables:
+  «type route: re-route the packet if any field affecting routing
+  is modified»). prerouting может остаться `type filter` — там
+  routing decision происходит ПОСЛЕ хука.
+  Починка: создаём output с `type route`. На uplevel обнаруживаем
+  таблицу со старым `type filter` и пересоздаём её. Соседние
+  domain-правила, которые там жили, переразлагаем автоматически.
+  Без этого фикса MASQUERADE из 0.19.20 не помогал — пакет до AWG
+  вообще не доходил.
+
 ## v0.19.20 — Domain-routing: MASQUERADE на AWG-iface (без него AllowedIPs дропал пакеты)
 
 ### Исправлено
