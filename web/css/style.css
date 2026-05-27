@@ -392,6 +392,50 @@ input:focus, textarea:focus, select:focus {
     margin-top: 4px;
 }
 
+/* ===== Alerts / callouts ===== */
+.alert {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-muted);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+}
+.alert .alert-title {
+    color: var(--text-heading);
+    font-weight: 600;
+    font-size: 14px;
+    margin: 0 0 6px;
+}
+.alert p { margin: 6px 0; }
+.alert p:last-child { margin-bottom: 0; }
+.alert code {
+    background: rgba(255, 255, 255, 0.06);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+.alert-warning {
+    border-left-color: var(--warning);
+    background: var(--warning-bg);
+}
+.alert-warning .alert-title { color: var(--warning); }
+.alert-danger {
+    border-left-color: var(--error);
+    background: var(--error-bg);
+}
+.alert-danger .alert-title { color: var(--error); }
+.alert-info {
+    border-left-color: var(--info);
+    background: var(--info-bg);
+}
+.alert-info .alert-title { color: var(--info); }
+.alert-success {
+    border-left-color: var(--success);
+    background: var(--success-bg);
+}
+.alert-success .alert-title { color: var(--success); }
+
 /* ===== Buttons ===== */
 .btn {
     display: inline-flex;

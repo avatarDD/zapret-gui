@@ -458,11 +458,17 @@ const AwgDashboardPage = (() => {
                        '  run_dir=' + (d.platform.run_dir || '?'));
         }
         if (d.binaries) {
-            const b = d.binaries;
-            lines.push('awg:      ' + (b.awg || '?') +
-                       '  version=' + (b.awg_version || '?'));
-            lines.push('amneziawg-go: ' + (b.amneziawg_go || '?') +
-                       '  version=' + (b.amneziawg_go_version || '?'));
+            const fmtBin = (label, info) => {
+                if (!info) { lines.push(label + ': ?'); return; }
+                let state;
+                if (info.broken)      state = 'НЕ ЗАПУСКАЕТСЯ ✗ (несовместим/битый)';
+                else if (!info.exists) state = 'не найден ✗';
+                else                   state = 'ok ✓';
+                lines.push(label + ': ' + (info.path || '?') + '  [' + state + ']');
+                if (info.detail) lines.push('  → ' + info.detail);
+            };
+            fmtBin('awg', d.binaries.awg);
+            fmtBin('amneziawg-go', d.binaries.amneziawg_go);
         }
         if (d.i1_lengths) {
             const il = d.i1_lengths;

@@ -175,7 +175,7 @@ const AwgRoutingPage = (() => {
              </option>`
         ).join('');
 
-        const filterOptions = ['<option value="">Все интерфейсы</option>'].concat(
+        const filterOptions = ['<option value="">Все (без фильтра)</option>'].concat(
             ifacesInRules.map(i =>
                 `<option value="${escapeAttr(i)}" ${i === filterIface ? 'selected' : ''}>
                     ${escapeHtml(i)}
@@ -194,8 +194,17 @@ const AwgRoutingPage = (() => {
                         <a href="#awg-configs">Конфиги</a>.
                     </p>
                 ` : `
+                    <p class="text-muted" style="margin-top: 6px; font-size: 13px;">
+                        Трафик к указанным IP/подсетям пойдёт через выбранный
+                        туннель (через его таблицу маршрутизации). Удобно, когда
+                        вы заранее знаете адреса сервиса. Пример:
+                        <code>2.16.0.0/13</code> — диапазон CDN.
+                    </p>
                     <div style="display: grid; grid-template-columns: 200px 1fr; gap: 8px 12px; margin-top: 8px; align-items: start;">
-                        <label class="text-muted" style="padding-top: 6px;">Интерфейс</label>
+                        <label class="text-muted" style="padding-top: 6px;"
+                               title="AWG-туннель, в который пойдёт выбранный трафик. В списке — ваши конфиги; пометка «(активен)» означает, что туннель сейчас поднят.">
+                            Туннель назначения
+                        </label>
                         <select id="rt-form-iface" onchange="AwgRoutingPage.setFormIface(this.value)"
                                 class="form-control" style="max-width: 280px;">
                             ${cfgOptions}
@@ -235,10 +244,14 @@ const AwgRoutingPage = (() => {
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div class="card-title">CIDR-правила (${cidrRules.length})</div>
-                    <select onchange="AwgRoutingPage.setFilterIface(this.value)"
-                            class="form-control" style="max-width: 220px;">
-                        ${filterOptions}
-                    </select>
+                    <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
+                           title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
+                        Фильтр по интерфейсу:
+                        <select onchange="AwgRoutingPage.setFilterIface(this.value)"
+                                class="form-control" style="max-width: 220px;">
+                            ${filterOptions}
+                        </select>
+                    </label>
                 </div>
 
                 ${visibleRules.length === 0
@@ -277,6 +290,46 @@ const AwgRoutingPage = (() => {
                 }
             </div>
         `;
+    }
+
+    // Платформо-зависимое пояснение: для чего нужен dnsmasq и почему он
+    // может не работать. На Keenetic/OpenWrt dnsmasq — это штатный
+    // DNS-сервер роутера, поэтому отдельная «настройка под :53» обычно
+    // не нужна — нужно лишь убедиться, что он запущен. Проблема со
+    // stub-listener'ом systemd-resolved актуальна именно для десктопного
+    // Linux (Debian/Ubuntu).
+    function dnsmasqExplanation(platformName) {
+        const common =
+            `<p style="font-size:13px;">
+                Доменное routing работает так: dnsmasq резолвит указанные
+                домены и складывает их IP в ipset/nftset, а трафик к этим
+                IP заворачивается в выбранный туннель. Без запущенного
+                dnsmasq собирать IP по доменам нечем.
+             </p>`;
+
+        if (platformName === 'keenetic' || platformName === 'openwrt') {
+            return common +
+                `<p style="font-size:13px;">
+                    На <strong>${escapeHtml(platformName === 'keenetic' ? 'Keenetic' : 'OpenWrt')}</strong>
+                    dnsmasq — это штатный DNS-сервер роутера, и он, как правило,
+                    уже слушает :53. Отдельно отключать systemd-resolved здесь
+                    не требуется. Кнопка ниже просто убедится, что dnsmasq
+                    запущен, и при необходимости добавит include с нашими
+                    правилами в его конфиг. Если статус ниже показывает
+                    «запущен=да», скорее всего делать ничего не нужно.
+                 </p>`;
+        }
+
+        // Generic Linux / Debian / Ubuntu и неизвестные платформы.
+        return common +
+            `<p style="font-size:13px;">
+                На десктопном Linux (Debian/Ubuntu) со штатным
+                systemd-resolved порт 53 обычно занят stub-listener'ом, и
+                dnsmasq не стартует. Кнопка ниже автоматически отключит
+                DNSStubListener в <code>/etc/systemd/resolved.conf</code>,
+                поднимет dnsmasq на :53 и сохранит state-файл, чтобы при
+                выключении последнего AWG-интерфейса откатить всё обратно.
+             </p>`;
     }
 
     // ══════════════ tab: Domains ══════════════
@@ -320,6 +373,15 @@ const AwgRoutingPage = (() => {
                </button>`
             : '';
 
+        const platformName = (environment && environment.platform && environment.platform.name) || '';
+        const statusLine = `
+            <p style="font-size:12px; margin:6px 0 10px;">
+              Статус на этом устройстве: dnsmasq=<strong>${dn.available ? 'установлен' : 'не найден'}</strong>,
+              запущен=<strong>${dn.running ? 'да' : 'нет'}</strong>,
+              ipset=<strong>${backends.ipset ? 'есть' : 'нет'}</strong>,
+              nft=<strong>${backends.nftset ? 'есть' : 'нет'}</strong>.
+            </p>`;
+
         const banner = dnReady
             ? `<div style="font-size:12px; margin-bottom:8px;
                             display:flex; gap:8px; align-items:center;
@@ -334,22 +396,10 @@ const AwgRoutingPage = (() => {
                     </span>
                     ${revertButton}
                </div>`
-            : `<div class="card" style="background:#fbeaea; margin-bottom:12px;">
-                    <strong>Domain routing требует работающего dnsmasq</strong>
-                    <p class="text-muted" style="font-size:13px; margin:6px 0 10px;">
-                      На Debian/Ubuntu со штатным systemd-resolved порт 53
-                      обычно занят stub-listener'ом, и dnsmasq не стартует.
-                      Кнопка ниже автоматически отключит DNSStubListener в
-                      <code>/etc/systemd/resolved.conf</code>, поднимет dnsmasq
-                      на :53 и сохранит state-файл, чтобы при выключении
-                      последнего AWG-интерфейса откатить всё обратно.
-                    </p>
-                    <p class="text-muted" style="font-size:12px; margin:6px 0 10px;">
-                      Статус: dnsmasq=${dn.available ? 'есть' : 'нет'},
-                      запущен=${dn.running ? 'да' : 'нет'},
-                      ipset=${backends.ipset ? 'есть' : 'нет'},
-                      nft=${backends.nftset ? 'есть' : 'нет'}.
-                    </p>
+            : `<div class="alert alert-warning" style="margin-bottom:12px;">
+                    <div class="alert-title">Domain routing требует работающего dnsmasq</div>
+                    ${dnsmasqExplanation(platformName)}
+                    ${statusLine}
                     ${setupButton}
                </div>`;
 
@@ -359,7 +409,7 @@ const AwgRoutingPage = (() => {
              </option>`
         ).join('');
 
-        const filterOptions = ['<option value="">Все интерфейсы</option>'].concat(
+        const filterOptions = ['<option value="">Все (без фильтра)</option>'].concat(
             ifacesInRules.map(i =>
                 `<option value="${escapeAttr(i)}" ${i === filterIface ? 'selected' : ''}>
                     ${escapeHtml(i)}
@@ -385,7 +435,10 @@ const AwgRoutingPage = (() => {
                         <code>example.com</code> покрывает <code>www.example.com</code>.
                     </p>
                     <div style="display: grid; grid-template-columns: 200px 1fr; gap: 8px 12px; margin-top: 8px; align-items: start;">
-                        <label class="text-muted" style="padding-top: 6px;">Интерфейс</label>
+                        <label class="text-muted" style="padding-top: 6px;"
+                               title="AWG-туннель, в который пойдёт выбранный трафик. В списке — ваши конфиги; пометка «(активен)» означает, что туннель сейчас поднят.">
+                            Туннель назначения
+                        </label>
                         <select id="rt-dom-iface" onchange="AwgRoutingPage.setFormDomIface(this.value)"
                                 class="form-control" style="max-width: 280px;">
                             ${cfgOptions}
@@ -418,10 +471,14 @@ const AwgRoutingPage = (() => {
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div class="card-title">Domain-правила (${dnRules.length})</div>
-                    <select onchange="AwgRoutingPage.setFilterIface(this.value)"
-                            class="form-control" style="max-width: 220px;">
-                        ${filterOptions}
-                    </select>
+                    <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
+                           title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
+                        Фильтр по интерфейсу:
+                        <select onchange="AwgRoutingPage.setFilterIface(this.value)"
+                                class="form-control" style="max-width: 220px;">
+                            ${filterOptions}
+                        </select>
+                    </label>
                 </div>
 
                 ${visibleRules.length === 0
@@ -492,7 +549,7 @@ const AwgRoutingPage = (() => {
              </option>`
         ).join('');
 
-        const filterOptions = ['<option value="">Все интерфейсы</option>'].concat(
+        const filterOptions = ['<option value="">Все (без фильтра)</option>'].concat(
             ifacesInRules.map(i =>
                 `<option value="${escapeAttr(i)}" ${i === filterIface ? 'selected' : ''}>
                     ${escapeHtml(i)}
@@ -509,8 +566,15 @@ const AwgRoutingPage = (() => {
 
         const srcSummary = devicesSrc
             ? `<div class="text-muted" style="font-size:12px; margin-bottom:8px;">
-                    Источники: leases — <strong>${(devicesSrc.leases_paths || []).length}</strong>,
-                    ARP — <strong>${devicesSrc.arp_available ? 'да' : 'нет'}</strong>
+                    Откуда берётся список:
+                    DHCP-leases — <strong>${(devicesSrc.leases_paths || []).length}</strong> файл(а),
+                    ARP — <strong>${devicesSrc.arp_available ? 'да' : 'нет'}</strong>${
+                        typeof devicesSrc.ndm_available !== 'undefined'
+                            ? `, Keenetic NDM — <strong>${devicesSrc.ndm_available ? 'да' : 'нет'}</strong>`
+                            : ''
+                    }.
+                    Колонка «Имя» — это hostname из DHCP/роутера; она пустует,
+                    если устройство не отдало имя (тогда ориентируйтесь на IP и MAC).
                </div>`
             : '';
 
@@ -552,7 +616,10 @@ const AwgRoutingPage = (() => {
                     </p>
 
                     <div style="display: grid; grid-template-columns: 200px 1fr; gap: 8px 12px; margin-top: 8px; align-items: start;">
-                        <label class="text-muted" style="padding-top: 6px;">Интерфейс</label>
+                        <label class="text-muted" style="padding-top: 6px;"
+                               title="AWG-туннель, в который пойдёт выбранный трафик. В списке — ваши конфиги; пометка «(активен)» означает, что туннель сейчас поднят.">
+                            Туннель назначения
+                        </label>
                         <select id="rt-dev-iface" onchange="AwgRoutingPage.setFormDevIface(this.value)"
                                 class="form-control" style="max-width: 280px;">
                             ${cfgOptions}
@@ -568,7 +635,9 @@ const AwgRoutingPage = (() => {
 
                     <div style="margin-top: 14px;">
                         <div class="text-muted" style="font-size: 12px; margin-bottom: 6px;">
-                            Устройства из DHCP/ARP (${devices.length}):
+                            Устройства в локальной сети (${devices.length}) — нажмите
+                            «Через ${escapeHtml(formDevIface || '…')}» в строке, чтобы
+                            направить весь трафик устройства в выбранный туннель:
                         </div>
                         ${devices.length === 0
                             ? `<p class="text-muted" style="font-size: 13px;">
@@ -581,8 +650,8 @@ const AwgRoutingPage = (() => {
                                     <tr>
                                         <th style="width: 14%;">IP</th>
                                         <th style="width: 18%;">MAC</th>
-                                        <th>Имя</th>
-                                        <th style="width: 12%;">Источник</th>
+                                        <th title="Hostname из DHCP/роутера. Пусто, если устройство не сообщило имя.">Имя</th>
+                                        <th style="width: 12%;" title="Откуда узнали об устройстве: leases (DHCP), arp, ndm (Keenetic), rdns, oui (по MAC).">Источник</th>
                                         <th style="width: 22%; text-align: right;"></th>
                                     </tr>
                                 </thead>
@@ -639,10 +708,14 @@ const AwgRoutingPage = (() => {
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div class="card-title">Device-правила (${devRules.length})</div>
-                    <select onchange="AwgRoutingPage.setFilterIface(this.value)"
-                            class="form-control" style="max-width: 220px;">
-                        ${filterOptions}
-                    </select>
+                    <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
+                           title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
+                        Фильтр по интерфейсу:
+                        <select onchange="AwgRoutingPage.setFilterIface(this.value)"
+                                class="form-control" style="max-width: 220px;">
+                            ${filterOptions}
+                        </select>
+                    </label>
                 </div>
 
                 ${visibleRules.length === 0

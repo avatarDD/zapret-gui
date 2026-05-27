@@ -118,6 +118,58 @@ class AwgManager:
         # Может звать `awg` через PATH, если в installed_dir не нашли
         return os.path.join(self._binary_dir(), "awg")
 
+    # ─────────── binary health ───────────
+
+    # Маркеры в stderr/исключении, означающие, что бинарник в принципе
+    # не запускается (несовместимая архитектура/битый файл). На Entware
+    # с busybox несовместимый ELF часто приводит к тому, что шелл пытается
+    # интерпретировать его как скрипт → `syntax error: unexpected "("`.
+    _BROKEN_BIN_MARKERS = (
+        "exec format error",
+        "syntax error",
+        "cannot execute binary",
+        "not executable",
+    )
+
+    def _probe_binary(self, path: str) -> dict:
+        """
+        Проверить, что бинарник вообще исполняется (лёгкий `--version`).
+
+        Возвращает {"ok": bool, "exists": bool, "broken": bool,
+        "detail": str}. broken=True означает «файл есть, но запустить
+        нельзя» — типично после внешнего обновления awg бинарником под
+        чужую архитектуру.
+        """
+        res = {"ok": False, "exists": False, "broken": False, "detail": ""}
+        if not path or not os.path.isfile(path):
+            res["detail"] = "файл не найден: %s" % (path or "—")
+            return res
+        res["exists"] = True
+        rc, out, err = _run([path, "--version"], timeout=5)
+        blob = ((err or "") + " " + (out or "")).strip()
+        res["detail"] = blob
+        low = blob.lower()
+        if any(m in low for m in self._BROKEN_BIN_MARKERS):
+            res["broken"] = True
+            return res
+        # rc может быть != 0 у некоторых сборок при --version, но если
+        # маркеров «битости» нет — считаем, что бинарник запускается.
+        res["ok"] = True
+        return res
+
+    def _binary_help_suffix(self) -> str:
+        """Actionable-подсказка, куда идти чинить битые/внешние бинарники."""
+        try:
+            info = get_awg_installer().get_installed_version()
+        except Exception:
+            info = {}
+        if info.get("external"):
+            return (" Бинарники AmneziaWG установлены не через zapret-gui"
+                    " (external) и, похоже, несовместимы с этим устройством"
+                    " после внешнего обновления. Переустановите их во вкладке"
+                    " «AmneziaWG → Setup».")
+        return " Переустановите бинарники во вкладке «AmneziaWG → Setup»."
+
     def _config_dir(self):
         d = self._platform().config_dir
         os.makedirs(d, exist_ok=True)
@@ -468,6 +520,7 @@ class AwgManager:
             "gui_version":  _gv,
             "active":       False,
             "platform":     {},
+            "binaries":     {},
             "setconf_text": "",
             "awg_show":     "",
             "interface_state": {},
@@ -484,6 +537,27 @@ class AwgManager:
             "routing_state": {},
             "errors": [],
         }
+
+        # Здоровье бинарников: после внешнего обновления awg частая
+        # причина «demon не стартует / setconf падает с syntax error» —
+        # несовместимая архитектура бинарника. Показываем это явно.
+        try:
+            go_path  = self._amneziawg_go()
+            awg_path = self._awg_bin()
+            # amneziawg-go НЕ пробуем `--version` (см. _do_up) — только
+            # сообщаем путь и существование. `awg` пробиваем полноценно.
+            info["binaries"] = {
+                "amneziawg_go": {
+                    "path": go_path,
+                    "exists": bool(go_path and os.path.isfile(go_path)),
+                    "broken": False,
+                    "ok": bool(go_path and os.path.isfile(go_path)),
+                    "detail": "",
+                },
+                "awg": {"path": awg_path, **self._probe_binary(awg_path)},
+            }
+        except Exception as e:
+            info["errors"].append("binary probe: %s" % e)
 
         # Конфиг (для отображения) и предварительно — что мы скармливаем
         # `awg setconf`. Это позволяет увидеть, попадает ли I1/S3/S4 в
@@ -715,10 +789,28 @@ class AwgManager:
             return {"ok": False, "message":
                     "amneziawg-go не найден: %s. Установите бинарники в Setup." % bin_go}
 
+        # Превентивно проверяем, что бинарник awg вообще исполняется. После
+        # внешнего обновления awg (например через GUI роутера) бинарник
+        # может оказаться под другую архитектуру — тогда `awg setconf`
+        # падает с `syntax error: unexpected "("`, а demon молча не
+        # поднимается. Лучше вернуть понятную ошибку, чем «ничего не
+        # происходит». amneziawg-go тут НЕ пробуем `--version`: форк
+        # wireguard-go может принять `--version` за имя интерфейса и
+        # попытаться поднять TUN — его «битость» ловим ниже по факту запуска.
+        awg_health = self._probe_binary(self._awg_bin())
+        if awg_health["broken"]:
+            return {"ok": False, "message":
+                    "Бинарник awg не запускается (%s).%s"
+                    % (awg_health["detail"] or "exec error",
+                       self._binary_help_suffix())}
+
         rc, _out, err = _run([bin_go, ifname], timeout=15)
         if rc != 0:
-            return {"ok": False, "message":
-                    "Не удалось запустить amneziawg-go: %s" % err.strip()}
+            msg = "Не удалось запустить amneziawg-go: %s" % err.strip()
+            low = (err or "").lower()
+            if any(m in low for m in self._BROKEN_BIN_MARKERS):
+                msg += "." + self._binary_help_suffix()
+            return {"ok": False, "message": msg}
 
         # PID amneziawg-go попробуем найти через pgrep
         pid = _pgrep_first([bin_go, ifname]) or _pgrep_first(["amneziawg-go", ifname])
