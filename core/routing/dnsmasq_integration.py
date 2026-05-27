@@ -871,9 +871,13 @@ class DnsmasqIntegration:
 
         final = self.status()
         ok = all(r.get("ok") for r in results) and final.get("running")
+        fail_detail = "; ".join(
+            "%s: %s" % (r.get("step"), r.get("error") or r.get("stderr") or "?")
+            for r in results if not r.get("ok"))
         log.info(
-            "dnsmasq init-setup: %d шагов, %s, dnsmasq.pid=%s" % (
-                len(results), "ok" if ok else "ошибки", final.get("pid")),
+            "dnsmasq init-setup: %d шагов, %s, dnsmasq.pid=%s%s" % (
+                len(results), "ok" if ok else "ошибки", final.get("pid"),
+                (" — " + fail_detail) if fail_detail else ""),
             source="routing",
         )
         return {"ok": bool(ok), "steps": results, "status": final,

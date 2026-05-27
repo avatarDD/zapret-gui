@@ -559,6 +559,16 @@ const AwgDashboardPage = (() => {
                  rs.ip6tables_mangle);
             push('ip6tables -t nat -S (только AWG_ROUTING_*)',
                  rs.ip6tables_nat);
+            push('iptables -t nat -S POSTROUTING (полностью — порядок правил)',
+                 rs.nat_postrouting_full);
+            push('iptables -t filter -S FORWARD (полностью)',
+                 rs.filter_forward_full);
+            push('ndmc/ndmq raw (для колонки «Имя»)', rs.ndm_raw);
+            if (rs.dnsmasq_init) {
+                lines.push('── dnsmasq init-скрипт ──');
+                lines.push('  ' + rs.dnsmasq_init);
+                lines.push('');
+            }
             if (rs.ipset_sets && rs.ipset_sets.length) {
                 lines.push('── ipset list awgr_* ──');
                 rs.ipset_sets.forEach(s => {
