@@ -427,28 +427,12 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
             backend.teardown_mark_rule(set_name, mark, family=fam)
             backend.destroy_set(set_name)
 
-        # MASQUERADE снимаем только если на этот же интерфейс больше
-        # нет других ВКЛЮЧЁННЫХ правил, которым masquerade нужен —
-        # domain-rules (fwmark-routing) и device-rules (forwarded
-        # трафик с чужим src). CIDR-rules не считаем: их трафик уже
-        # выходит с src=AWG_IP естественным образом.
-        from core.routing import storage as _storage
-        from core.routing.rules import DeviceRoutingRule as _DevRule
-        others = []
-        for r in _storage.load_rules():
-            if not r.enabled or r.id == rule.id:
-                continue
-            if r.target_iface != ifname:
-                continue
-            if isinstance(r, (DomainRoutingRule, _DevRule)):
-                others.append(r)
-                break
-        if not others:
-            if backend is nftset_backend:
-                backend.remove_iface_masquerade(ifname)
-            else:
-                for fam in ("v4", "v6"):
-                    backend.remove_iface_masquerade(ifname, family=fam)
+        # MASQUERADE снимаем только если на этот же интерфейс больше нет
+        # других ВКЛЮЧЁННЫХ правил, которым masquerade нужен — теперь это
+        # и domain-, и device-, и cidr-rules (CIDR с появлением masquerade
+        # тоже завязан на него для forwarded-трафика).
+        from core.routing import masquerade
+        masquerade.remove_if_unused(ifname, excluding_id=rule.id)
 
         dn_res = _rebuild_managed_dnsmasq()
         log.info("routing: domain-правило %s снято" % rule.id,

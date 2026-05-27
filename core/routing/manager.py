@@ -346,6 +346,27 @@ class RoutingManager:
                 continue
             added.append({"family": family, "cidr": cidr, "table": table})
 
+        # MASQUERADE на исходящий AWG-iface. Без него forwarded-трафик
+        # от LAN-клиента уходит в туннель с исходным src (192.168.x.y) —
+        # AWG/WARP-сервер дропает такие пакеты, и сайт из «по CIDR» не
+        # открывается с устройств за роутером (с самого роутера работает,
+        # т.к. локальный трафик берёт src=AWG_IP при первой выборке).
+        # Неудача masquerade НЕ откатывает правило: маршрут всё равно
+        # полезен для трафика самого роутера, а forwarded-часть просто
+        # деградирует — об этом пишем в лог.
+        masq = None
+        if added:
+            from core.routing import masquerade
+            fams = sorted({"v6" if a["family"] == "-6" else "v4"
+                           for a in added})
+            masq = masquerade.ensure_for_iface(ifname, families=fams)
+            if not masq.get("ok"):
+                log.warning("routing: masquerade для %s не повешен: %s"
+                            " — трафик с LAN-устройств через этот CIDR"
+                            " может не работать"
+                            % (ifname, masq.get("error")),
+                            source="routing")
+
         ok = bool(added) and not errors
         log_msg = "routing: применено %d/%d CIDR для %s" % (
             len(added), len(rule.cidrs), ifname)
@@ -359,6 +380,7 @@ class RoutingManager:
             "ok":     ok or (not added and not errors),
             "added":  added,
             "errors": errors,
+            "masquerade": masq,
         }
 
     def _remove_cidr(self, rule: CidrRoutingRule) -> dict:
@@ -374,6 +396,11 @@ class RoutingManager:
                                "lookup", str(table)])
             if rc == 0:
                 removed.append({"family": family, "cidr": cidr})
+
+        # Снимаем masquerade только если на этот iface не осталось других
+        # включённых правил (cidr/device/domain), которым он нужен.
+        from core.routing import masquerade
+        masquerade.remove_if_unused(ifname, excluding_id=rule.id)
 
         log.info("routing: снят CIDR-rule %s (%d записей)" %
                  (rule.id, len(removed)), source="routing")
