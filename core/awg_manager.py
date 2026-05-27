@@ -221,6 +221,18 @@ class AwgManager:
 
     # ─────────── CRUD ───────────
 
+    def _all_config_names(self) -> set:
+        """Имена всех .conf во всех каталогах (без расширения)."""
+        names = set()
+        for d in self._scan_dirs():
+            try:
+                for f in os.listdir(d):
+                    if f.endswith(".conf"):
+                        names.add(f[:-5])
+            except OSError:
+                continue
+        return names
+
     def list_configs(self) -> list:
         """
         Список конфигов из всех известных каталогов.
@@ -233,6 +245,7 @@ class AwgManager:
         """
         seen = set()  # по имени файла (без .conf)
         active_ifaces = self._wg_interfaces()
+        known_names = self._all_config_names()
         result = []
         for d in self._scan_dirs():
             try:
@@ -256,7 +269,8 @@ class AwgManager:
                 except OSError:
                     size = 0
                     mtime = 0
-                iface = self._resolve_iface_name(name, path, active_ifaces)
+                iface = self._resolve_iface_name(name, path, active_ifaces,
+                                                 known_names=known_names)
                 active = self.is_running(iface) or self.is_running(name)
                 result.append({
                     "name":   name,
@@ -269,7 +283,7 @@ class AwgManager:
         return result
 
     def _resolve_iface_name(self, config_name: str, config_path: str,
-                            active_ifaces: list) -> str:
+                            active_ifaces: list, known_names=None) -> str:
         """
         Определяет имя сетевого интерфейса, которому принадлежит конфиг.
 
@@ -281,6 +295,13 @@ class AwgManager:
              совпадающий с PublicKey пира одного из активных интерфейсов,
              возвращаем имя этого интерфейса.
           4. Иначе — возвращаем сам name (классический wg-quick case).
+
+        `known_names` — множество имён всех известных конфигов. Нужно,
+        чтобы шаг 3 не «присваивал» чужой интерфейс: несколько WARP-конфигов
+        имеют ОДИН и тот же PublicKey пира (общий публичный ключ сервера
+        Cloudflare), поэтому без этой проверки поднятый `WARP_a` помечал бы
+        активным и неподнятый `WARP_b`. Интерфейс, чьё имя совпадает с
+        именем другого конфига, считаем принадлежащим тому конфигу.
         """
         active = set(active_ifaces or [])
         if config_name in active:
@@ -304,8 +325,13 @@ class AwgManager:
             if pk:
                 peer_keys.add(pk)
 
+        known = set(known_names or ())
         if peer_keys:
             for iface in active:
+                # Интерфейс с именем другого конфига — его и оставляем
+                # тому конфигу, не воруем по совпадению pubkey (WARP).
+                if iface != config_name and iface in known:
+                    continue
                 rc, out, _ = _run([self._awg_bin(), "show", iface, "dump"], timeout=5)
                 if rc != 0 or not out.strip():
                     continue
@@ -412,7 +438,11 @@ class AwgManager:
             return name
         path = self._config_path(name)
         if os.path.isfile(path):
-            return self._resolve_iface_name(name, path, active)
+            # known_names — чтобы down/restart неподнятого WARP-конфига не
+            # резолвился по общему pubkey в чужой активный интерфейс и не
+            # ронял его (см. _resolve_iface_name).
+            return self._resolve_iface_name(name, path, active,
+                                            known_names=self._all_config_names())
         if "-" in name:
             suffix = name.rsplit("-", 1)[-1]
             if suffix in active:
