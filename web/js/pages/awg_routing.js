@@ -1029,11 +1029,17 @@ const AwgRoutingPage = (() => {
         const stepLines = steps.map((s, i) =>
             `${i + 1}. ${s.what}`).join('\n');
         const warnLines = (plan.warnings || []).join('\n');
+        // Авто-revert при выключении последнего AWG есть только на
+        // systemd-системах (там мы сохраняем state-файл). На
+        // Keenetic/Entware dnsmasq — штатный резолвер, мы его не глушим.
+        const revertNote = plan.have_systemctl
+            ? '\n\nПри выключении последнего AWG-интерфейса все изменения' +
+              ' автоматически откатятся.'
+            : '';
         const ok = window.confirm(
             'zapret-gui сделает следующее:\n\n' + stepLines +
             (warnLines ? '\n\nВнимание:\n' + warnLines : '') +
-            '\n\nПри выключении последнего AWG-интерфейса все изменения' +
-            ' автоматически откатятся.\n\nПродолжить?'
+            revertNote + '\n\nПродолжить?'
         );
         if (!ok) return;
 

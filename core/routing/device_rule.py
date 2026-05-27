@@ -197,28 +197,12 @@ def remove_device_rule(rule: DeviceRoutingRule) -> dict:
                            "lookup", str(table)])
 
         # MASQUERADE убираем только если на этот iface не осталось
-        # никаких других routing-rules (ни domain, ни device).
-        # Проверяем через storage: загружаем правила и смотрим,
-        # ссылается ли кто-то ещё на target_iface.
+        # никаких других включённых routing-rules (cidr/device/domain),
+        # которым он нужен.
         try:
-            from core.routing import storage
-            from core.routing.rules import DomainRoutingRule
-            others = []
-            for r in storage.load_rules():
-                if not r.enabled or r.id == rule.id:
-                    continue
-                if r.target_iface != rule.target_iface:
-                    continue
-                if isinstance(r, (DeviceRoutingRule, DomainRoutingRule)):
-                    others.append(r)
-                    break
-            if not others:
-                if nftset_backend.available():
-                    nftset_backend.remove_iface_masquerade(rule.target_iface)
-                elif ipset_backend.available():
-                    for f in ("v4", "v6"):
-                        ipset_backend.remove_iface_masquerade(
-                            rule.target_iface, family=f)
+            from core.routing import masquerade
+            masquerade.remove_if_unused(rule.target_iface,
+                                        excluding_id=rule.id)
         except Exception as e:
             log.warning("routing: cleanup masquerade %s: %s"
                         % (rule.target_iface, e),
