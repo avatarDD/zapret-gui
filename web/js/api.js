@@ -25,7 +25,10 @@ const API = (() => {
             const data = await resp.json();
 
             if (!resp.ok) {
-                const msg = data.error || `HTTP ${resp.status}`;
+                // Бэкенд кладёт человекочитаемый текст то в `error`
+                // (REST-ошибки), то в `message` (например awg up/down/
+                // restart). Берём что есть, иначе — код статуса.
+                const msg = data.error || data.message || `HTTP ${resp.status}`;
                 throw new Error(msg);
             }
 
