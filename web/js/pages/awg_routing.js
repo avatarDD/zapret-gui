@@ -299,10 +299,17 @@ const AwgRoutingPage = (() => {
         // только запустить), либо есть бэкенд (можно поставить dnsmasq).
         const needsSetup = !dnReady &&
             (!!dn.available || !!backends.ipset || !!backends.nftset);
-        const setupButton = needsSetup
+        // Также показываем кнопку, если auto_setup имеет применимые шаги
+        // (например, при апгрейде версии: новая версия требует user=root
+        // в dnsmasq.conf, и нашу запись надо добавить ретроактивно).
+        const setupPlanHasSteps = !!(dnsmasqInfo &&
+            dnsmasqInfo.auto_setup_plan &&
+            dnsmasqInfo.auto_setup_plan.applicable);
+        const setupButton = (needsSetup || setupPlanHasSteps)
             ? `<button class="btn btn-primary btn-sm"
                        onclick="AwgRoutingPage.runDnsmasqSetup()">
-                   Настроить dnsmasq автоматически
+                   ${needsSetup ? 'Настроить dnsmasq автоматически'
+                                 : 'Применить обновления dnsmasq-конфига'}
                </button>`
             : '';
         const revertButton = setupApplied && dnReady

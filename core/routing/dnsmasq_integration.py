@@ -308,9 +308,17 @@ class DnsmasqIntegration:
                 fam   = blk.get("nft_family") or "inet"
                 table = blk.get("nft_table") or "awg_routing"
                 name  = blk.get("set_name") or ""
-                # dnsmasq directive: nftset=/dom1/dom2/<family>#<table>#<set>
+                # dnsmasq directive: nftset=/dom1/dom2/<spec>/<spec>...
+                # Каждый <spec> = family#table#set. У нас два set'а: v4 и v6
+                # (имя v6 = v4 + "6"). Если перечислять только v4-set, dnsmasq
+                # NIKAGDA не запишет AAAA-IP в v6-set (и весь IPv6-трафик
+                # пользователя через AWG не пойдёт — браузеры предпочитают v6).
+                # Поэтому всегда эмитим оба set'а в одной директиве.
                 joined = "/".join(doms)
-                lines.append("nftset=/%s/%s#%s#%s" % (joined, fam, table, name))
+                spec_v4 = "%s#%s#%s" % (fam, table, name)
+                spec_v6 = "%s#%s#%s6" % (fam, table, name)
+                lines.append("nftset=/%s/%s/%s" %
+                             (joined, spec_v4, spec_v6))
             else:  # ipset
                 name = blk.get("set_name") or ""
                 # dnsmasq directive: ipset=/dom1/dom2/<set>
@@ -414,13 +422,44 @@ class DnsmasqIntegration:
             })
 
         # dnsmasq.conf: если файла нет — создадим минимальный.
+        # Если есть и это НАШ файл без user=root — допишем директиву,
+        # чтобы dnsmasq не дропал CAP_NET_ADMIN на Debian (без него
+        # запись в nftset тихо проваливается).
         main_conf = self.find_main_config()
+        config_will_change = False
         if not main_conf:
             steps.append({
                 "id":   "create_dnsmasq_conf",
                 "what": "Создать /etc/dnsmasq.conf с минимальной"
                         " конфигурацией (port=53, upstream=1.1.1.1)",
                 "cmd":  "write /etc/dnsmasq.conf",
+            })
+            config_will_change = True
+        else:
+            try:
+                with open(main_conf, "r") as f:
+                    cur_text = f.read()
+                if ("Создан zapret-gui" in cur_text
+                        and "user=root" not in cur_text):
+                    steps.append({
+                        "id":   "create_dnsmasq_conf",
+                        "what": "Добавить user=root в %s (без него dnsmasq"
+                                " на Debian теряет CAP_NET_ADMIN и не"
+                                " пишет в nftset)" % main_conf,
+                        "cmd":  "append /etc/dnsmasq.conf",
+                    })
+                    config_will_change = True
+            except (IOError, OSError):
+                pass
+
+        # Если поменяли конфиг и dnsmasq уже запущен — нужен полный
+        # restart (SIGHUP не применяет смену user=).
+        if config_will_change and self._systemctl_is_active("dnsmasq"):
+            steps.append({
+                "id":   "restart_dnsmasq",
+                "what": "systemctl restart dnsmasq (применить новый"
+                        " user=root и подцепить CAP_NET_ADMIN)",
+                "cmd":  "systemctl restart dnsmasq",
             })
 
         # Включить и стартануть dnsmasq.
@@ -512,6 +551,8 @@ class DnsmasqIntegration:
                 res = self._step_enable_unit("dnsmasq")
             elif sid == "start_dnsmasq":
                 res = self._step_start_unit("dnsmasq")
+            elif sid == "restart_dnsmasq":
+                res = self._step_restart_unit("dnsmasq")
             if res is not None:
                 results.append(res)
 
@@ -863,6 +904,27 @@ class DnsmasqIntegration:
     def _step_create_default_dnsmasq_conf(self) -> dict:
         path = "/etc/dnsmasq.conf"
         if os.path.isfile(path):
+            # Если это НАШ файл (с маркером «Создан zapret-gui») — можем
+            # дописать недостающие директивы при апгрейде версии (например
+            # user=root, которая нужна для CAP_NET_ADMIN на Debian).
+            # Чужой файл не трогаем.
+            try:
+                with open(path, "r") as f:
+                    cur = f.read()
+                if "Создан zapret-gui" in cur and "user=root" not in cur:
+                    with open(path, "a") as f:
+                        f.write(
+                            "\n# Добавлено zapret-gui ретроактивно:\n"
+                            "# без user=root на Debian dnsmasq дропает\n"
+                            "# CAP_NET_ADMIN и не пишет в nftset.\n"
+                            "user=root\n"
+                            "group=root\n"
+                        )
+                    return {"step": "create_dnsmasq_conf", "ok": True,
+                            "updated": True, "path": path}
+            except (IOError, OSError) as e:
+                return {"step": "create_dnsmasq_conf", "ok": False,
+                        "error": "update %s: %s" % (path, e)}
             return {"step": "create_dnsmasq_conf", "ok": True,
                     "skipped": True,
                     "reason": "файл уже есть, не перезаписываем"}
@@ -878,6 +940,12 @@ class DnsmasqIntegration:
             "server=2606:4700:4700::1111\n"
             "server=2606:4700:4700::1001\n"
             "cache-size=1000\n"
+            "# user=root: без drop-privs у dnsmasq остаётся CAP_NET_ADMIN,\n"
+            "# и nftset=/.../inet#awg_routing#... не отваливается тихо.\n"
+            "# На Debian default-пакет ставит user=dnsmasq, и без явного\n"
+            "# CAP_NET_ADMIN в systemd-юните запись в nftset проваливается.\n"
+            "user=root\n"
+            "group=root\n"
         )
         try:
             with open(path, "w") as f:

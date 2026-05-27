@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.19.23 — Domain-routing: set был пуст — pre-population + v6-set в директиве + user=root
+
+### Исправлено
+- **nft/ipset set оставался пустым → трафик не маркировался.**
+  Диагностика v0.19.22 показала: chain output `type route` ✓,
+  MASQUERADE ✓, `ip rule fwmark` ✓, resolv.conf → 127.0.0.1 ✓,
+  dnsmasq запущен с managed-директивой ✓ — но
+  `set awgr_domain_… { type ipv4_addr }` **пустой**. Причины три,
+  и пофикшены все:
+  1. **В директиве `nftset=` был только v4-set.** 2ip.ru (как и
+     большинство сайтов) отдаёт AAAA, браузеры ходят по IPv6 первым.
+     v6-set `awgr_…6` нигде не упоминался — dnsmasq в него не писал.
+     Теперь эмитим оба set'а одной директивой:
+     `nftset=/dom/inet#awg_routing#set/inet#awg_routing#set6`.
+  2. **Браузеры с DoH (Firefox/Chrome) идут мимо dnsmasq.** dnsmasq
+     заполняет set ТОЛЬКО когда видит DNS-query, а DoH резолвит
+     через Cloudflare напрямую — query до dnsmasq не доходит, set
+     пуст. Добавил **pre-population**: при apply domain-правила сами
+     резолвим домены (v4+v6) и кладём IP в set через `nft add
+     element` / `ipset add`. Работает «на сейчас» независимо от того,
+     каким резолвером пользуется приложение.
+  3. **dnsmasq на Debian дропает CAP_NET_ADMIN.** Без него запись в
+     nftset тихо проваливается. Дефолтный `/etc/dnsmasq.conf` теперь
+     создаётся с `user=root`/`group=root`; для уже настроенных систем
+     auto-setup ретроактивно дописывает `user=root` и рестартует
+     dnsmasq (SIGHUP не применяет смену user). В UI появляется кнопка
+     «Применить обновления dnsmasq-конфига», когда есть отложенные
+     шаги.
+
 ## v0.19.22 — Device-rules: тот же MASQUERADE-фикс + диагностика routing-state + .table CSS
 
 ### Исправлено
