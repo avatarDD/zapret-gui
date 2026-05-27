@@ -221,6 +221,46 @@ def remove_iface_masquerade(ifname: str, family: str = "v4") -> dict:
     return {"ok": True, "ifname": ifname}
 
 
+# ─────────────────────── forward accept (filter) ───────────────────
+
+def ensure_iface_forward(ifname: str, family: str = "v4") -> dict:
+    """
+    Идемпотентно разрешить форвардинг в обе стороны через ifname.
+
+    Зачем: на роутерах FORWARD-политика обычно DROP, а штатный firewall
+    (Keenetic ndm, OpenWrt fw4) НЕ знает наш AWG-интерфейс — значит
+    форвард LAN→AWG проваливается в DROP, и трафик с устройств за
+    роутером в туннель не идёт (с самого роутера работает, т.к. это
+    OUTPUT, а не FORWARD). Поэтому вставляем ACCEPT для нашего iface
+    В НАЧАЛО FORWARD (до политики DROP и до ndm-цепочек).
+
+    `-i ifname` пропускает обратный трафик из туннеля в LAN, `-o ifname`
+    — исходящий в туннель.
+    """
+    cmd = "iptables" if family == "v4" else "ip6tables"
+    for spec in (["-o", ifname], ["-i", ifname]):
+        # Чистим возможные дубликаты, затем ставим в позицию 1.
+        for _ in range(4):
+            rc, _o, _e = _run([cmd, "-t", "filter", "-D", "FORWARD"]
+                              + spec + ["-j", "ACCEPT"])
+            if rc != 0:
+                break
+        _run([cmd, "-t", "filter", "-I", "FORWARD", "1"]
+             + spec + ["-j", "ACCEPT"])
+    return {"ok": True, "ifname": ifname}
+
+
+def remove_iface_forward(ifname: str, family: str = "v4") -> dict:
+    cmd = "iptables" if family == "v4" else "ip6tables"
+    for spec in (["-o", ifname], ["-i", ifname]):
+        for _ in range(4):
+            rc, _o, _e = _run([cmd, "-t", "filter", "-D", "FORWARD"]
+                              + spec + ["-j", "ACCEPT"])
+            if rc != 0:
+                break
+    return {"ok": True, "ifname": ifname}
+
+
 # ─────────────────────── ip rule fwmark ─────────────────────────────
 
 def add_ip_rule_fwmark(mark: int, table: int, family: str = "v4",

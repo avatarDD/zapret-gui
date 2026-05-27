@@ -329,9 +329,8 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             # для CIDR-правил route lookup и так попадает в таблицу AWG
             # сразу и src сразу выбирается с AWG. См. подробный
             # комментарий в backend.ensure_iface_masquerade().
-            mq = (backend.ensure_iface_masquerade(ifname)
-                  if backend is nftset_backend
-                  else backend.ensure_iface_masquerade(ifname, family=fam))
+            from core.routing import masquerade
+            mq = masquerade.ensure_for_iface(ifname, families=(fam,))
             if not mq.get("ok"):
                 errors.append("masquerade %s: %s" %
                               (fam, mq.get("error")))
@@ -363,7 +362,8 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
                     backend.add_ip_rule_fwmark(
                         o_mark, o_table, family=fam,
                         priority=FWMARK_PRIORITY)
-                backend.ensure_iface_masquerade(other.target_iface)
+                from core.routing import masquerade as _masq
+                _masq.ensure_for_iface(other.target_iface)
             log.info("nft migration: переразложено %d соседних domain-правил"
                      % max(0, len(_all_domain_rules()) - 1),
                      source="routing")
