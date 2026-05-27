@@ -140,6 +140,57 @@ def _iface_exists(ifname: str) -> bool:
         return False
 
 
+def _prepopulate_set(set_name: str, domain: str, family: str,
+                     backend) -> dict:
+    """
+    Резолвим домен и кладём IP'шники в set СРАЗУ — без ожидания того,
+    что какой-то софт сделает DNS-запрос через dnsmasq.
+
+    Зачем: dnsmasq заполняет set ТОЛЬКО когда видит query, а браузеры
+    с DoH (Firefox/Chrome) уходят мимо системного резолвера прямиком
+    в Cloudflare DoH. dnsmasq никогда не видит query → set пуст →
+    трафик не маркируется → не маршрутизируется через AWG. У curl и
+    `dig` такой проблемы нет (они идут через libc → /etc/resolv.conf →
+    dnsmasq), но проверяет пользователь обычно браузером.
+
+    Pre-population работает «на сейчас»: на момент apply мы резолвим
+    домен и заносим IP. Если IP позже сменится (CDN, rotation) — про
+    это узнает либо dnsmasq при следующем libc-запросе, либо новый
+    apply правила. Это компромисс: 100% покрытие гарантируется только
+    если приложение реально ходит через dnsmasq.
+    """
+    import socket
+    af = socket.AF_INET6 if family == "v6" else socket.AF_INET
+    try:
+        addrinfos = socket.getaddrinfo(domain, None, af, socket.SOCK_STREAM)
+    except (socket.gaierror, OSError):
+        return {"ok": False, "added": 0, "domain": domain,
+                "family": family, "error": "resolve failed"}
+    ips = sorted({a[4][0] for a in addrinfos if a and a[4]})
+    if not ips:
+        return {"ok": True, "added": 0, "domain": domain,
+                "family": family}
+
+    import subprocess
+    added = 0
+    for ip in ips:
+        if backend is nftset_backend:
+            cmd = ["nft", "add", "element", "inet",
+                   nftset_backend.TABLE_NAME, set_name,
+                   "{ %s }" % ip]
+        else:
+            cmd = ["ipset", "add", set_name, ip, "-exist"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=3)
+            if r.returncode == 0 or "exist" in (r.stderr or "").lower():
+                added += 1
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+    return {"ok": True, "added": added, "domain": domain,
+            "family": family, "ips": ips}
+
+
 def _ensure_table_default(ifname: str, table: int, family: str) -> bool:
     """Гарантировать default-route в таблице (то же, что в manager._ensure_table_default)."""
     import subprocess
@@ -319,10 +370,27 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
 
         dn_res = _rebuild_managed_dnsmasq()
 
+        # Pre-population: набиваем set'ы IP'шниками доменов прямо сейчас.
+        # Без этого браузер с DoH идёт мимо dnsmasq, set остаётся пустым,
+        # трафик не маркируется. Делаем после _rebuild_managed_dnsmasq —
+        # чтобы dnsmasq уже знал директиву (на случай гонки), а ТЕПЕРЬ
+        # ещё и кладём IP сами через nft/ipset, не дожидаясь, пока кто-то
+        # сделает резолв через libc.
+        prepop_results = []
+        set_base_v4 = _set_name_for(rule.id, kind)
+        set_base_v6 = set_base_v4 + "6"
+        for domain in (rule.domains or []):
+            prepop_results.append(
+                _prepopulate_set(set_base_v4, domain, "v4", backend))
+            prepop_results.append(
+                _prepopulate_set(set_base_v6, domain, "v6", backend))
+        prepop_added = sum(r.get("added", 0) for r in prepop_results)
+
         ok = bool(added) and not errors and dn_res.get("ok", True)
         log.info(
-            "routing: domain-правило %s применено (iface=%s, %d записей, %d ошибок)"
-            % (rule.id, ifname, len(added), len(errors)),
+            "routing: domain-правило %s применено (iface=%s, %d записей,"
+            " %d ошибок, prepop=%d IP)"
+            % (rule.id, ifname, len(added), len(errors), prepop_added),
             source="routing",
         )
         return {
@@ -331,6 +399,8 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             "errors":  errors,
             "backend": kind,
             "dnsmasq": dn_res,
+            "prepop":  {"total_ips_added": prepop_added,
+                        "per_domain": prepop_results},
         }
 
 

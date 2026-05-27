@@ -36,10 +36,19 @@ def register(app):
             preferred = ("nftset" if (dn.get("supports_nftset") and
                                       backends["nftset"])
                          else ("ipset" if backends["ipset"] else ""))
+            # Прицепляем plan, чтобы UI мог показать кнопку «применить
+            # обновления конфига», если у нас есть отложенные шаги
+            # (например ретроактивное добавление user=root после
+            # апгрейда версии).
+            try:
+                plan = dn_mod.plan_auto_setup()
+            except Exception:
+                plan = {"applicable": False, "steps": []}
             return {"ok": True, "dnsmasq": dn,
                     "backends": backends,
                     "preferred_backend": preferred,
-                    "auto_setup_applied": dn_mod.is_applied()}
+                    "auto_setup_applied": dn_mod.is_applied(),
+                    "auto_setup_plan": plan}
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}
