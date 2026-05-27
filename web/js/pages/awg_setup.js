@@ -18,6 +18,7 @@ const AwgSetupPage = (() => {
 
     let pollTimer = null;
     let installRunning = false;
+    let archOverride = '';   // ручной выбор архитектуры (пусто = авто)
     let currentStep = 1;
 
     // ══════════════ Render ══════════════
@@ -497,6 +498,37 @@ const AwgSetupPage = (() => {
             );
         }
 
+        // Ручной выбор архитектуры. На MIPS-роутерах `uname -m` не
+        // различает endianness, и автоопределение иногда ошибается
+        // (ставит mips на mipsel → «Exec format error»). Если после
+        // установки бинарники не запускаются — выберите другую арку
+        // (обычно mipsel-softfloat ↔ mips-softfloat) и переустановите.
+        let archSelectHtml = '';
+        if (archs.length) {
+            const opts = ['<option value="">Авто' +
+                (arch ? ` (определено: ${escapeHtml(arch)})` : '') +
+                '</option>']
+                .concat(archs.map(a =>
+                    `<option value="${escapeHtml(a)}" ${a === archOverride ? 'selected' : ''}>${escapeHtml(a)}</option>`
+                )).join('');
+            archSelectHtml = `
+                <div class="awg-row">
+                    <div class="awg-row-icon info">⚙</div>
+                    <div class="awg-row-body">
+                        <div class="awg-row-title">Архитектура для установки</div>
+                        <div class="awg-row-detail" style="margin-bottom:6px;">
+                            Оставьте «Авто», если не уверены. Если бинарники
+                            не запускаются (Exec format error) — попробуйте
+                            mipsel вместо mips (или наоборот) и переустановите.
+                        </div>
+                        <select class="form-control" style="max-width:280px;"
+                                onchange="AwgSetupPage.setArchOverride(this.value)">
+                            ${opts}
+                        </select>
+                    </div>
+                </div>`;
+        }
+
         // Прогресс
         let progressHtml = '';
         if (op.in_progress || installRunning) {
@@ -514,7 +546,8 @@ const AwgSetupPage = (() => {
         }
 
         // Кнопки
-        const canInstall = ready && manifest && archSupported && !op.in_progress && !installRunning;
+        const archOk = archSupported || (archOverride && archs.includes(archOverride));
+        const canInstall = ready && manifest && archOk && !op.in_progress && !installRunning;
         let installLabel;
         if (!installed.installed) {
             installLabel = 'Установить';
@@ -551,7 +584,7 @@ const AwgSetupPage = (() => {
         `;
 
         body.innerHTML = installedHtml + manifestHtml + targetHtml + activeHtml +
-                          archHtml + progressHtml + buttonsHtml;
+                          archHtml + archSelectHtml + progressHtml + buttonsHtml;
     }
 
     // ══════════════ Stepper state ══════════════
@@ -623,7 +656,8 @@ const AwgSetupPage = (() => {
         renderInstall();
         startPoll();
         try {
-            const r = await API.post('/api/awg/install', {});
+            const r = await API.post('/api/awg/install',
+                                     archOverride ? { arch: archOverride } : {});
             if (r.in_progress) {
                 Toast.info('Установка запущена');
             } else if (r.ok) {
@@ -710,11 +744,17 @@ const AwgSetupPage = (() => {
         installState = null;
     }
 
+    function setArchOverride(v) {
+        archOverride = v || '';
+        renderInstall();
+    }
+
     return {
         render,
         destroy,
         refresh,
         doInstall,
         doUninstall,
+        setArchOverride,
     };
 })();

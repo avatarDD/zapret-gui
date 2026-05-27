@@ -14,6 +14,7 @@
 import os
 import re
 import subprocess
+import sys
 import threading
 
 from core.awg_platform import (
@@ -248,16 +249,34 @@ class AwgDetector:
         """
         uname_m = _cmd_out(["uname", "-m"]) or _read_file("/proc/sys/kernel/arch").strip()
 
-        # Опkg print-architecture — более точно на Entware
+        # opkg print-architecture — самый надёжный сигнал на Entware.
+        # Вывод обычно содержит несколько строк, например:
+        #     arch all 1
+        #     arch noarch 1
+        #     arch mipsel-3.4 160
+        # Раньше мы брали ПЕРВУЮ строку (`arch all 1`) → opkg_arch="all",
+        # из-за чего endianness определялась по `uname -m`, а он на MIPS
+        # отдаёт просто "mips" и для big-, и для little-endian. Итог —
+        # ставился mips-софт на mipsel-роутер (Exec format error).
+        # Теперь пропускаем generic-арки и берём самую приоритетную
+        # (с максимальным числом в 3-м поле).
         opkg_arch = ""
         opkg_out = _cmd_out(["opkg", "print-architecture"])
         if opkg_out:
-            # Первая непустая строка вида "arch mipsel-3.4 10"
+            best_arch, best_prio = "", -1
             for line in opkg_out.splitlines():
                 parts = line.strip().split()
                 if len(parts) >= 2 and parts[0] == "arch":
-                    opkg_arch = parts[1]
-                    break
+                    name = parts[1]
+                    if name in ("all", "noarch", ""):
+                        continue
+                    try:
+                        prio = int(parts[2]) if len(parts) >= 3 else 0
+                    except ValueError:
+                        prio = 0
+                    if prio > best_prio:
+                        best_arch, best_prio = name, prio
+            opkg_arch = best_arch
 
         artifact_arch = self._map_to_artifact_arch(uname_m, opkg_arch)
         return {
@@ -393,10 +412,18 @@ class AwgDetector:
         oa = opkg_arch.lower()
 
         if "mips" in ua or "mips" in oa:
-            # softfloat → почти все Entware-роутеры
-            if "el" in ua or "mips32el" in oa or "mipsel" in oa:
+            # softfloat → почти все Entware-роутеры. Главная сложность —
+            # endianness: `uname -m` на MIPS отдаёт "mips" и для big-, и
+            # для little-endian, поэтому полагаться на него нельзя.
+            if "mipsel" in oa or "mips32el" in oa or "el" in ua:
                 return "mipsel-softfloat"
-            return "mips-softfloat"
+            if oa:
+                # opkg явно назвал арку (big-endian mips) — доверяем ему.
+                return "mips-softfloat"
+            # opkg недоступен, uname неоднозначен — берём порядок байт
+            # самого процесса: мы исполняемся на этом же CPU, так что
+            # sys.byteorder == 'little' ⇔ mipsel.
+            return "mipsel-softfloat" if sys.byteorder == "little" else "mips-softfloat"
 
         if ua in ("aarch64", "arm64") or "aarch64" in oa:
             return "aarch64"
