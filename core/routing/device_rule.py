@@ -24,7 +24,6 @@ import ipaddress
 import threading
 
 from core.log_buffer import log
-from core.routing import ipset_backend, nftset_backend
 from core.routing.rules import DeviceRoutingRule
 
 
@@ -148,25 +147,16 @@ def apply_device_rule(rule: DeviceRoutingRule) -> dict:
             return {"ok": False,
                     "error": "ip rule add from %s: %s" % (src, err.strip())}
 
-        # MASQUERADE на AWG-iface: device-правило ловит обычно forwarded-
-        # трафик от LAN-клиента (src=192.168.x.y), которому ip rule from
-        # выкручивает руль на AWG-таблицу. Пакет уходит через AWG, но src
-        # остаётся 192.168.x.y — AWG-сервер дропает его по AllowedIPs
-        # клиента (там туннельный 10.x). Без MASQUERADE device-routing
-        # «работает на бумаге»: пакеты уходят, ответов нет. Маскарадим
-        # nft-бэкендом если доступен (он покрывает v4+v6 одной inet-
-        # цепочкой), иначе через iptables. Для CIDR-rules аналогичная
-        # проблема не стоит — там src чаще локальный, и пакет берёт
-        # src=AWG_IP на первой маршрутной выборке.
-        masq_status = "skipped"
-        if nftset_backend.available():
-            mq = nftset_backend.ensure_iface_masquerade(ifname)
-            masq_status = "nft ok" if mq.get("ok") else (
-                "nft error: %s" % mq.get("error"))
-        elif ipset_backend.available():
-            mq = ipset_backend.ensure_iface_masquerade(ifname, family=fam)
-            masq_status = "iptables ok" if mq.get("ok") else (
-                "iptables error: %s" % mq.get("error"))
+        # MASQUERADE + FORWARD-accept на AWG-iface (общий helper):
+        # device-правило ловит forwarded-трафик LAN-клиента, которому
+        # ip rule from перекидывает руль на AWG-таблицу. Без MASQUERADE
+        # пакет уходит с чужим src и сервер его дропает; без FORWARD-accept
+        # роутер с FORWARD-policy DROP режет форвард к нашему туннелю
+        # (штатный firewall не знает AWG-iface).
+        from core.routing import masquerade
+        mq = masquerade.ensure_for_iface(ifname, families=(fam,))
+        masq_status = "ok" if mq.get("ok") else (
+            "error: %s" % mq.get("error"))
 
         log.info("routing: device-правило %s применено (src=%s → %s"
                  " table %d, masquerade=%s)"

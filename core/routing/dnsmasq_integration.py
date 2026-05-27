@@ -894,14 +894,79 @@ class DnsmasqIntegration:
         time.sleep(0.7)
         pid = self.get_pid()
         ok = pid > 0
+        error = ""
+        if not ok:
+            # Самая частая причина на Keenetic — :53 уже занят штатным DNS
+            # роутера (ndnsmasq/ndm). Проверим и дадим внятный текст.
+            occ = self._port53_listener()
+            cfg_err = self._dnsmasq_config_error()
+            parts = []
+            if (err or "").strip():
+                parts.append((err or "").strip())
+            if cfg_err:
+                parts.append(cfg_err)
+            if occ:
+                parts.append(
+                    "порт 53 уже слушает другой процесс (%s) — на Keenetic"
+                    " это штатный DNS роутера, и Entware-dnsmasq не может"
+                    " занять :53. Нужно либо освободить :53, либо запускать"
+                    " dnsmasq на другом порту (ручная настройка)." % occ)
+            error = "; ".join(parts) or "dnsmasq не поднялся (pid=0)"
         return {
             "step":    "start_dnsmasq_init",
             "ok":      ok,
             "command": "%s start" % script,
             "stdout":  (out or "")[-1000:],
             "stderr":  (err or "")[-1000:] if not ok else "",
+            "error":   error,
             "pid":     pid,
         }
+
+    def _port53_listener(self) -> str:
+        """
+        Кто слушает :53. Возвращает краткое описание ('udp 127.0.0.1:53'
+        и т.п.) или '' если порт свободен / не удалось определить.
+        Без сторонних зависимостей: парсим /proc/net/{udp,tcp}.
+        """
+        found = []
+        for proto, path in (("udp", "/proc/net/udp"),
+                            ("tcp", "/proc/net/tcp")):
+            txt = _read_file(path)
+            for line in txt.splitlines()[1:]:
+                cols = line.split()
+                if len(cols) < 4:
+                    continue
+                local = cols[1]  # HEX_IP:HEX_PORT
+                st = cols[3]
+                if ":" not in local:
+                    continue
+                port_hex = local.rsplit(":", 1)[1]
+                try:
+                    port = int(port_hex, 16)
+                except ValueError:
+                    continue
+                if port != 53:
+                    continue
+                # для tcp интересен только LISTEN (st == 0A)
+                if proto == "tcp" and st.upper() != "0A":
+                    continue
+                found.append(proto)
+                break
+        return "/".join(sorted(set(found))) + " :53" if found else ""
+
+    def _dnsmasq_config_error(self) -> str:
+        """Прогнать `dnsmasq --test`, вернуть текст ошибки конфига или ''."""
+        main = self.find_main_config()
+        args = ["dnsmasq", "--test"]
+        if main:
+            args += ["-C", main]
+        rc, out, err = _run(args, timeout=5)
+        if rc == 127:  # бинарь dnsmasq не найден — это не ошибка конфига
+            return ""
+        blob = (err or "") + (out or "")
+        if rc != 0 and blob.strip():
+            return "конфиг: %s" % blob.strip()[:300]
+        return ""
 
     def _step_install_dnsmasq(self) -> dict:
         apt = _which("apt-get") or _which("apt")

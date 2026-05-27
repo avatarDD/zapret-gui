@@ -48,7 +48,13 @@ def ensure_for_iface(ifname: str, families=("v4", "v6")) -> dict:
         return {"ok": False, "error": "нет backend (nft/iptables) для masquerade"}
 
     if backend is nftset_backend:
-        return backend.ensure_iface_masquerade(ifname)
+        mq = backend.ensure_iface_masquerade(ifname)
+        # FORWARD-accept (best-effort на nft — см. примечание в backend).
+        try:
+            backend.ensure_iface_forward(ifname)
+        except Exception:
+            pass
+        return mq
 
     errors = []
     added = False
@@ -58,6 +64,10 @@ def ensure_for_iface(ifname: str, families=("v4", "v6")) -> dict:
             added = added or bool(mq.get("added"))
         else:
             errors.append("%s: %s" % (fam, mq.get("error")))
+        # ACCEPT форвардинга LAN↔ifname: без него роутер с FORWARD-policy
+        # DROP режет форвард-трафик к нашему туннелю (штатный firewall не
+        # знает AWG-iface). На iptables ACCEPT в FORWARD терминирующий.
+        backend.ensure_iface_forward(ifname, family=fam)
     if errors:
         return {"ok": False, "error": "; ".join(errors), "ifname": ifname}
     return {"ok": True, "added": added, "ifname": ifname}
@@ -91,9 +101,14 @@ def remove_if_unused(ifname: str, excluding_id: str = "") -> dict:
     # доступность бэкендов между apply и remove поменялась.
     if nftset_backend.available():
         nftset_backend.remove_iface_masquerade(ifname)
+        try:
+            nftset_backend.remove_iface_forward(ifname)
+        except Exception:
+            pass
     if ipset_backend.available():
         for fam in ("v4", "v6"):
             ipset_backend.remove_iface_masquerade(ifname, family=fam)
-    log.info("routing: masquerade снят с %s (больше не используется)" % ifname,
-             source="routing")
+            ipset_backend.remove_iface_forward(ifname, family=fam)
+    log.info("routing: masquerade+forward снят с %s (больше не используется)"
+             % ifname, source="routing")
     return {"ok": True, "removed": True, "ifname": ifname}

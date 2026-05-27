@@ -97,7 +97,8 @@ def _ensure_table_and_chains():
         else:
             chains_ok = ("chain prerouting" in out and
                          "chain output" in out and
-                         "chain postrouting" in out)
+                         "chain postrouting" in out and
+                         "chain forward" in out)
             if chains_ok:
                 return True
 
@@ -109,6 +110,11 @@ def _ensure_table_and_chains():
          "{ type route hook output priority mangle; policy accept; }"],
         ["nft", "add", "chain", "inet", TABLE_NAME, "postrouting",
          "{ type nat hook postrouting priority srcnat; policy accept; }"],
+        # forward — чтобы разрешить форвардинг LAN↔AWG, если основной
+        # firewall дропает форвард для незнакомого ему iface. priority
+        # filter-1, чтобы наш accept отрабатывал раньше дефолтных правил.
+        ["nft", "add", "chain", "inet", TABLE_NAME, "forward",
+         "{ type filter hook forward priority -1; policy accept; }"],
     ]
     for c in cmds:
         rc, _o, err = _run(c)
@@ -238,6 +244,57 @@ def remove_iface_masquerade(ifname: str) -> dict:
                 if h.isdigit():
                     rc2, _o, _e2 = _run(["nft", "delete", "rule", "inet",
                                           TABLE_NAME, "postrouting",
+                                          "handle", h])
+                    if rc2 == 0:
+                        removed += 1
+    return {"ok": True, "removed": removed, "ifname": ifname}
+
+
+def ensure_iface_forward(ifname: str) -> dict:
+    """
+    Разрешить форвардинг LAN↔ifname в нашей forward-цепочке (best-effort).
+
+    Примечание: accept в нашей отдельной таблице не отменяет drop в чужой
+    nft-таблице на том же hook (на OpenWrt форвардинг рулится зонами fw4).
+    Для iptables-роутеров используется ipset_backend.ensure_iface_forward,
+    где ACCEPT в FORWARD терминирующий.
+    """
+    _ensure_table_and_chains()
+    rc, out, _e = _run(["nft", "list", "chain", "inet",
+                        TABLE_NAME, "forward"])
+    have = {}
+    if rc == 0:
+        for direction in ("oifname", "iifname"):
+            needle = '%s "%s" accept' % (direction, ifname)
+            have[direction] = (needle in out or
+                               ("%s %s accept" % (direction, ifname)) in out)
+    for direction in ("oifname", "iifname"):
+        if have.get(direction):
+            continue
+        _run(["nft", "add", "rule", "inet", TABLE_NAME, "forward",
+              direction, ifname, "accept"])
+    return {"ok": True, "ifname": ifname}
+
+
+def remove_iface_forward(ifname: str) -> dict:
+    """Удалить наши forward-accept правила по ifname (по handle)."""
+    rc, out, _e = _run(["nft", "-a", "list", "chain", "inet",
+                        TABLE_NAME, "forward"])
+    if rc != 0:
+        return {"ok": True, "removed": 0}
+    removed = 0
+    needles = (
+        'oifname "%s" accept' % ifname, "oifname %s accept" % ifname,
+        'iifname "%s" accept' % ifname, "iifname %s accept" % ifname,
+    )
+    for line in out.splitlines():
+        if any(n in line for n in needles) and "handle" in line:
+            parts = line.rsplit("handle", 1)
+            if len(parts) == 2:
+                h = parts[1].strip().split()[0]
+                if h.isdigit():
+                    rc2, _o, _e2 = _run(["nft", "delete", "rule", "inet",
+                                          TABLE_NAME, "forward",
                                           "handle", h])
                     if rc2 == 0:
                         removed += 1
