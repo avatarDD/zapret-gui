@@ -186,16 +186,20 @@ def ensure_iface_masquerade(ifname: str, family: str = "v4") -> dict:
     rc, _o, err = _run([cmd, "-t", "nat", "-N", NAT_CHAIN])
     if rc != 0 and "already exists" not in (err or "").lower():
         return {"ok": False, "error": err.strip()}
-    # Jump из POSTROUTING → NAT_CHAIN (один раз)
-    rc, out, _e = _run([cmd, "-t", "nat", "-S", "POSTROUTING"])
-    has_jump = False
-    if rc == 0:
-        for line in out.splitlines():
-            if line.strip() == "-A POSTROUTING -j %s" % NAT_CHAIN:
-                has_jump = True
-                break
-    if not has_jump:
-        _run([cmd, "-t", "nat", "-A", "POSTROUTING", "-j", NAT_CHAIN])
+    # Прыжок POSTROUTING → NAT_CHAIN ОБЯЗАН стоять в начале цепочки.
+    # На роутерах (Keenetic/ndm) есть собственные SNAT/MASQUERADE-правила
+    # в POSTROUTING. Если наш прыжок добавлен в конец (как было раньше,
+    # через -A), ndm успевает переписать src на WAN-адрес РАНЬШЕ нас —
+    # пакет уходит в AWG с WAN-src, и сервер дропает его по AllowedIPs
+    # (туннель ждёт src=AWG_IP). Поэтому удаляем все наши прыжки (на
+    # случай дубликатов/старого -A) и вставляем один в позицию 1. Для
+    # всех не-AWG интерфейсов наша цепочка пустая → это no-op.
+    for _ in range(8):
+        rc_d, _o, _e = _run([cmd, "-t", "nat", "-D", "POSTROUTING",
+                             "-j", NAT_CHAIN])
+        if rc_d != 0:
+            break
+    _run([cmd, "-t", "nat", "-I", "POSTROUTING", "1", "-j", NAT_CHAIN])
     # Само правило: -o <ifname> -j MASQUERADE (идемпотентно)
     rc, out, _e = _run([cmd, "-t", "nat", "-S", NAT_CHAIN])
     if rc == 0:

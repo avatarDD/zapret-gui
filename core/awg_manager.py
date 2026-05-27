@@ -1022,12 +1022,16 @@ class AwgManager:
             "iptables_nat":      "",
             "ip6tables_mangle":  "",
             "ip6tables_nat":     "",
+            "nat_postrouting_full": "",
+            "filter_forward_full":  "",
             "ipset_sets":        [],
             "resolv_conf":       "",
             "resolved_conf":     "",
             "dnsmasq_status":    {},
             "dnsmasq_managed":   "",
             "dnsmasq_main":      "",
+            "dnsmasq_init":      "",
+            "ndm_raw":           "",
         }
 
         # nft awg_routing — вся таблица сразу (показывает chain types
@@ -1072,6 +1076,43 @@ class AwgManager:
                 key = (("ip6tables" if key_pref else "iptables")
                        + "_" + table_name)
                 out[key] = joined
+
+        # Полный POSTROUTING (nat) — чтобы видеть ПОРЯДОК наших правил
+        # относительно ndm-овых SNAT/MASQUERADE. Если прыжок в
+        # AWG_ROUTING_NAT стоит позже WAN-маскарада ndm, forwarded-трафик
+        # уходит в туннель с WAN-src и сервер его дропает.
+        rc, dump, _e = _run(["iptables", "-t", "nat", "-S", "POSTROUTING"],
+                            timeout=5)
+        if rc == 0:
+            out["nat_postrouting_full"] = "\n".join(
+                (dump or "").splitlines()[:120])
+
+        # FORWARD (filter) — чтобы видеть, не дропает ли роутер форвард в
+        # сторону AWG-интерфейса (обрезаем, чтобы не раздувать вывод).
+        rc, dump, _e = _run(["iptables", "-t", "filter", "-S", "FORWARD"],
+                            timeout=5)
+        if rc == 0:
+            lines = (dump or "").splitlines()
+            out["filter_forward_full"] = "\n".join(lines[:120])
+            if len(lines) > 120:
+                out["filter_forward_full"] += "\n… (+%d строк)" % (len(lines) - 120)
+
+        # Сырой вывод ndmc/ndmq — для отладки пустой колонки «Имя» в
+        # списке устройств (парсер зависит от формата конкретной KeenOS).
+        for cmd in (["ndmq", "-p", "show ip hotspot"],
+                    ["ndmc", "-c", "show ip hotspot"]):
+            rc, dump, _e = _run(cmd, timeout=5)
+            if rc == 0 and (dump or "").strip():
+                head = "\n".join((dump or "").splitlines()[:40])
+                out["ndm_raw"] = "$ %s\n%s" % (" ".join(cmd), head)
+                break
+
+        # dnsmasq init-скрипт (на Keenetic/Entware): нашёлся ли он.
+        try:
+            from core.routing.dnsmasq_integration import DnsmasqIntegration
+            out["dnsmasq_init"] = DnsmasqIntegration()._find_init_script() or "(не найден)"
+        except Exception as e:
+            out["dnsmasq_init"] = "(error: %s)" % e
 
         # ipset: наполнение awgr_* (если ipset-бэкенд)
         rc, names, _e = _run(["ipset", "list", "-name"], timeout=3)

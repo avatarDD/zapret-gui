@@ -153,8 +153,14 @@ class RoutingManager:
             storage.add_rule(rule)
             if apply_now and rule.enabled:
                 applied = self._apply(rule)
-                ok = bool(applied.get("ok", True))
-                if not ok and not applied.get("deferred"):
+                # deferred (интерфейс ещё не поднят) — это УСПЕХ: правило
+                # сохранено и применится при старте туннеля. Раньше мы
+                # возвращали ok=False, и UI показывал «Ошибка добавления»,
+                # хотя устройство/CIDR реально добавлялись (видно после
+                # обновления страницы).
+                deferred = bool(applied.get("deferred"))
+                ok = bool(applied.get("ok", True)) or deferred
+                if not ok:
                     # Rollback: убираем то, что успело лечь в firewall,
                     # и выкидываем правило из storage.
                     self._remove(rule)
@@ -178,8 +184,9 @@ class RoutingManager:
             storage.update_rule(rule)
             if apply_now and rule.enabled:
                 applied = self._apply(rule)
-                ok = bool(applied.get("ok", True))
-                if not ok and not applied.get("deferred"):
+                deferred = bool(applied.get("deferred"))
+                ok = bool(applied.get("ok", True)) or deferred
+                if not ok:
                     # Откатываем новое правило целиком. Старое уже снято
                     # выше — восстанавливать его сложно (не факт что оно
                     # работало), поэтому просто выкидываем обновлённое
