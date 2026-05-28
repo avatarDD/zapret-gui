@@ -16,6 +16,9 @@ REST API для матрицы связности.
                                               bps для интерфейса
   GET    /api/connectivity/traffic        — список интерфейсов,
                                               по которым есть сэмплы
+
+  GET    /api/connectivity/peers/<iface>  — 5-минутный sparkline
+                                              RX/TX по каждому peer'у
 """
 
 from bottle import request, response
@@ -100,6 +103,24 @@ def register(app):
                 "series":  sampler.get_series(iface),
                 "current": sampler.get_current(iface),
             }
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/connectivity/peers/<iface>")
+    def connectivity_peers_iface(iface):
+        """
+        Per-peer sparkline RX/TX для интерфейса (последние 5 минут).
+
+        Для нативных Keenetic-WG туннелей peers будет пустым — `awg
+        show` их не видит, а RCI per-peer-метрику отдаёт в другом
+        формате (отдельная задача).
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.connectivity import get_traffic_sampler
+            sampler = get_traffic_sampler()
+            return {"ok": True, "peers": sampler.get_peer_series(iface)}
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}

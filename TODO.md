@@ -146,23 +146,39 @@ integration). Не план релиза — скорее заметки и ид
       встроенный awg, если он умеет).
 - [ ] **Импорт `.conf` через QR с камеры** в браузере
       (`navigator.mediaDevices` + jsQR через CDN — опционально).
-- [ ] **Per-peer статистика** на Dashboard в виде графика
-      (sparkline RX/TX за последние 5 минут) — частично перекрывается
-      пунктом «Traffic graphs» из awg-manager-заимствований.
-- [ ] **DoH/DoT для роутинга по доменам** — сейчас домены
-      резолвятся dnsmasq'ом обычным апстримом, что может
-      обходиться DPI. Опционально стоит давать на платформах с
-      stubby/cloudflared отдельный апстрим.
-      ВАЖНО: на Keenetic с NDMS-backend этот пункт неактуален —
-      резолв делает встроенный ndnsproxy через настроенные upstream'ы.
-- [ ] **Тесты selective routing на OpenWrt nftables** — на момент
-      релиза проверено на Keenetic 5.x + Entware ipset. nftables
-      ветка нуждается в полевом прогоне.
-- [ ] **Уменьшить размер `amneziawg-go`** через `-ldflags="-s -w"`
-      и `upx --best --lzma` — для mipsel/mips это критично.
-      Сейчас бинарь весит ~5-7 МБ. У awg-manager в
-      `.github/workflows/build-awg-binaries.yml` это уже сделано —
-      посмотреть как референс.
+- [x] **Per-peer статистика (backend) — sparkline RX/TX** за
+      последние 5 минут. `core/connectivity/traffic.py` теперь
+      ведёт два уровня буферов: `_buffers` (24ч per-iface) и
+      `_peer_buffers` (5 минут per-iface-per-peer, дискретность 30с).
+      Источник peer-метрик: `awg show <iface> dump`. API:
+      `GET /api/connectivity/peers/<iface>`. Для нативных
+      Keenetic-WG peers пуст (RCI per-peer формат — отдельная задача).
+      UI-sparkline — подзадача фронтенда.
+- [x] **DoH/DoT для роутинга по доменам** —
+      `core/routing/doh_resolver.py`: опциональный DoH-резолвер для
+      pre-population ipset/nftset. Использует JSON-формат (RFC 8484),
+      без сторонних DNS-библиотек. По умолчанию выключен — поведение
+      dnsmasq-пути не меняется. Включается через settings.json
+      (`routing.doh.enabled`) или API: `GET|POST /api/routing/doh`,
+      `POST /api/routing/doh/test`. Известные провайдеры: Cloudflare,
+      Google, Quad9. На Keenetic с NDMS-backend неактуален —
+      ndnsproxy сам резолвит через настроенные upstream'ы.
+- [x] **Тесты selective routing на OpenWrt nftables (unit)** —
+      `tests/test_nftset_backend.py`: 16 unit-тестов с моком `_run`
+      покрывают `set_name_for`, `_output_chain_type_wrong`,
+      `available`, `create_set`, `_rule_exists`,
+      `ensure_iface_masquerade`. Запуск:
+      `python3 -m unittest discover -s tests -v`.
+      ПОЛЕВОЕ тестирование на реальном OpenWrt-устройстве —
+      открытая задача (нужен железный роутер с OpenWrt 22.03+).
+- [x] **Уменьшить размер `amneziawg-go`** — в
+      `.github/workflows/build-awg-binaries.yml` добавлен UPX-step
+      для mipsel/mips/armv7 (на aarch64/x86_64 не применяем —
+      экономия не оправдывает риски). На armv7 — `upx --best --lzma`,
+      на mips/mipsel — `upx --best` без LZMA (Go-runtime на MIPS
+      имеет проблемы с LZMA in-place decompression).
+      `-ldflags="-s -w" -trimpath` уже стоял ранее.
+      Ожидаемый выигрыш на mipsel: 5-7МБ → ~2МБ.
 - [ ] **Поддержка KeenOS 4.x** — детект есть, но тестирование на
       реальном устройстве не проводилось. KeenOS 4.x иначе работает
       с пользовательскими iptables-цепочками.

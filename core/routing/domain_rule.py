@@ -202,17 +202,37 @@ def _prepopulate_set(set_name: str, domain: str, family: str,
     Pre-population работает «на сейчас»: на момент apply мы резолвим
     домен и заносим IP. Если IP позже сменится (CDN, rotation) — про
     это узнает либо dnsmasq при следующем libc-запросе, либо новый
-    apply правила. Это компромисс: 100% покрытие гарантируется только
-    если приложение реально ходит через dnsmasq.
+    apply правила.
+
+    Источник резолва:
+      - если в settings включён `routing.doh` — берём IP через
+        DoH-провайдер (обходит ISP-подмену и DPI на :53);
+      - иначе — fallback на системный `socket.getaddrinfo()`.
     """
-    import socket
-    af = socket.AF_INET6 if family == "v6" else socket.AF_INET
+    ips = []
+    src = "getaddrinfo"
     try:
-        addrinfos = socket.getaddrinfo(domain, None, af, socket.SOCK_STREAM)
-    except (socket.gaierror, OSError):
-        return {"ok": False, "added": 0, "domain": domain,
-                "family": family, "error": "resolve failed"}
-    ips = sorted({a[4][0] for a in addrinfos if a and a[4]})
+        from core.routing import doh_resolver
+        if doh_resolver.is_enabled():
+            r = doh_resolver.resolve(domain, family=family)
+            if r.get("ok"):
+                ips = sorted(set(r.get("ips") or []))
+                src = "doh:%s" % (r.get("provider") or "?")
+    except Exception as e:
+        log.warning("doh prepopulate %s: %s" % (domain, e),
+                    source="routing")
+
+    if not ips:
+        # Либо DoH выключен, либо он не ответил — фолбэк на libc.
+        import socket
+        af = socket.AF_INET6 if family == "v6" else socket.AF_INET
+        try:
+            addrinfos = socket.getaddrinfo(
+                domain, None, af, socket.SOCK_STREAM)
+        except (socket.gaierror, OSError):
+            return {"ok": False, "added": 0, "domain": domain,
+                    "family": family, "error": "resolve failed"}
+        ips = sorted({a[4][0] for a in addrinfos if a and a[4]})
     if not ips:
         return {"ok": True, "added": 0, "domain": domain,
                 "family": family}
@@ -234,7 +254,7 @@ def _prepopulate_set(set_name: str, domain: str, family: str,
         except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             continue
     return {"ok": True, "added": added, "domain": domain,
-            "family": family, "ips": ips}
+            "family": family, "ips": ips, "resolver": src}
 
 
 def _ensure_table_default(ifname: str, table: int, family: str) -> bool:
