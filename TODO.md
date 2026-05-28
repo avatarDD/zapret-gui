@@ -80,20 +80,31 @@ integration). Не план релиза — скорее заметки и ид
 
 ## Дальнейшие заимствования из awg-manager
 
-- [ ] **Connectivity matrix** — строки = таргеты (`8.8.8.8`,
-      `1.1.1.1`, ...), столбцы = туннели, ячейки = latency с
-      цветовой шкалой (зелёный <100ms / оранжевый <250ms / красный).
-      Виджет на Dashboard страницы AWG. У нас уже есть
-      `core/testers/` и `core/diagnostics.py` — нужно собрать
-      матрицу и нарисовать.
-- [ ] **Traffic graphs по туннелям 1h/3h/24h** — sparkline и
-      развёрнутый график RX/TX per-iface. Источник — `wg show
-      <iface> transfer` раз в N секунд, хранилище — кольцевой
-      буфер в RAM (на Keenetic не плодим запись на flash).
-- [ ] **Импорт подписок Karing/Hiddify/VLESS** — base64 /
-      clash-yaml / sing-box JSON / VLESS URI. Уже есть отдельный
-      пункт в Sing-box секции — здесь дублируем как кросс-ссылку,
-      т.к. в awg-manager это центральный feature.
+- [x] **Connectivity matrix (backend)** — `core/connectivity/matrix.py`:
+      параллельный `ping -I <iface>` по списку таргетов и туннелей,
+      результат кэшируется в RAM (без записи на flash), TTL=30с.
+      Защита от двойного запуска, фолбэк на default route при отказе
+      `-I`. API: `GET /api/connectivity/matrix`,
+      `POST /api/connectivity/probe`,
+      `GET|POST /api/connectivity/targets`. UI-виджет — отдельной
+      подзадачей (нужен grid с цветовой шкалой good/ok/slow/failed).
+- [x] **Traffic graphs (backend) по туннелям 1h/3h/24h** —
+      `core/connectivity/traffic.py`: фоновой sampler раз в 30с
+      пишет в кольцевой буфер per-iface (RAM, ~35КБ на интерфейс
+      за 24ч), серии 1h/3h/24h ресемплятся в bps по 60 точек.
+      Источники: NDMS (`rx_bytes`/`tx_bytes` из RCI),
+      `awg show <iface> transfer`, `/proc/net/dev` как фолбэк.
+      API: `GET /api/connectivity/traffic`,
+      `GET /api/connectivity/traffic/<iface>`. UI-sparkline —
+      отдельной подзадачей.
+- [x] **Импорт подписок (WG-flavor)** — `core/subscription_importer.py`:
+      fetch URL → base64-detect → парс URI/`.conf` блоков.
+      WireGuard-URI и сырые `.conf` импортируются в `AwgManager`.
+      VLESS/Trojan/SS/Hysteria2/TUIC URI распознаются, но
+      пропускаются с пометкой `needs sing-box` (включится, когда
+      будет готова Sing-box секция). API:
+      `POST /api/awg/subscription/import`,
+      `POST /api/awg/subscription/preview`.
 
 ## Sing-box / Karing replacement integration
 
