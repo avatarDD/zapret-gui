@@ -46,7 +46,9 @@ const SingboxConfigsPage = (() => {
                 <button class="tab-btn ${activeTab==='editor' ? 'active':''}"
                         onclick="SingboxConfigsPage.switchTab('editor')">Редактор</button>
                 <button class="tab-btn ${activeTab==='import' ? 'active':''}"
-                        onclick="SingboxConfigsPage.switchTab('import')">Подписка</button>
+                        onclick="SingboxConfigsPage.switchTab('import')">Импорт</button>
+                <button class="tab-btn ${activeTab==='subs' ? 'active':''}"
+                        onclick="SingboxConfigsPage.switchTab('subs')">Подписки</button>
             </div>
 
             <div id="sb-cfg-tab"></div>
@@ -62,9 +64,10 @@ const SingboxConfigsPage = (() => {
     function switchTab(tab) {
         activeTab = tab;
         document.querySelectorAll('.tabs-bar .tab-btn').forEach(b => b.classList.remove('active'));
-        const map = { list:0, editor:1, import:2 };
+        const map = { list:0, editor:1, import:2, subs:3 };
         const btns = document.querySelectorAll('.tabs-bar .tab-btn');
         if (btns[map[tab]]) btns[map[tab]].classList.add('active');
+        if (tab === 'subs') loadSubs();
         renderTab();
     }
 
@@ -104,6 +107,7 @@ const SingboxConfigsPage = (() => {
         if (activeTab === 'list')   return renderListTab(box);
         if (activeTab === 'editor') return renderEditorTab(box);
         if (activeTab === 'import') return renderImportTab(box);
+        if (activeTab === 'subs')   return renderSubsTab(box);
     }
 
     function renderListTab(box) {
@@ -486,6 +490,202 @@ const SingboxConfigsPage = (() => {
         }
     }
 
+    // ══════════════ tab: subs (saved subscriptions + autorefresh) ══════════════
+
+    let subs = [];
+    let subForm = { name: '', url: '', format: 'auto', interval_hours: 6 };
+    let subBusy = false;
+
+    async function loadSubs() {
+        try {
+            const r = await API.get('/api/singbox/subscriptions');
+            subs = (r && r.subscriptions) || [];
+        } catch (e) {
+            Toast.error(e.message);
+        }
+        renderTab();
+    }
+
+    function renderSubsTab(box) {
+        const formatOptions = ['auto', 'uri', 'clash', 'singbox-json']
+            .map(f => `<option value="${f}" ${f===subForm.format?'selected':''}>${f}</option>`)
+            .join('');
+
+        const rows = subs.length ? subs.map(s => {
+            const lastRel = s.last_refresh
+                ? new Date(s.last_refresh * 1000).toLocaleString()
+                : 'никогда';
+            const statusBadge = s.last_status === 'ok'
+                ? '<span style="color:#39c45e;">OK</span>'
+                : (s.last_status === 'error'
+                   ? `<span style="color:#e58;">ERR</span>`
+                   : '<span class="text-muted">—</span>');
+            return `
+                <div class="card" style="margin-bottom:10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+                        <div style="min-width:0; flex:1;">
+                            <div style="font-size:14px; font-weight:600;">${escapeHtml(s.name)}
+                                ${statusBadge}
+                            </div>
+                            <div class="text-muted" style="font-size:11px; word-break:break-all;">
+                                ${escapeHtml(s.url)}
+                            </div>
+                            <div class="text-muted" style="font-size:11px;">
+                                format: ${escapeHtml(s.format || 'auto')} ·
+                                каждые ${s.interval_hours || 6}ч ·
+                                outbound'ов: ${s.last_outbounds || 0} ·
+                                обновлено: ${lastRel}
+                                ${s.last_error ? ' · <span style="color:#e58;">' + escapeHtml(s.last_error) + '</span>' : ''}
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            <button class="btn btn-primary btn-sm" ${subBusy?'disabled':''}
+                                    onclick="SingboxConfigsPage.subsRefresh('${escapeAttr(s.id)}')">
+                                Обновить
+                            </button>
+                            <button class="btn btn-ghost btn-sm"
+                                    onclick="SingboxConfigsPage.subsRemove('${escapeAttr(s.id)}')">
+                                Удалить
+                            </button>
+                        </div>
+                    </div>
+                </div>`;
+        }).join('') : '<div class="text-muted">Сохранённых подписок нет.</div>';
+
+        box.innerHTML = `
+            <div class="card" style="margin-bottom:12px;">
+                <h3 style="margin-top:0;">Новая подписка с автообновлением</h3>
+                <p class="text-muted" style="font-size:12px;">
+                    Подписка скачивается раз в N часов; outbound'ы сохраняются
+                    в конфиг <code>imported-subscription-&lt;id&gt;</code>.
+                    Поддерживаются форматы: <strong>uri</strong> (base64/plain
+                    text-URI), <strong>clash</strong> (YAML с секцией proxies),
+                    <strong>singbox-json</strong> (готовый sing-box config).
+                    <strong>auto</strong> — определит сам по содержимому.
+                </p>
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                    <div>
+                        <label class="form-label">Имя:</label>
+                        <input type="text" class="form-input"
+                               value="${escapeAttr(subForm.name)}"
+                               oninput="SingboxConfigsPage.subFormSet('name', this.value)">
+                    </div>
+                    <div>
+                        <label class="form-label">Интервал (часы):</label>
+                        <input type="number" class="form-input" min="1" step="1"
+                               value="${subForm.interval_hours}"
+                               oninput="SingboxConfigsPage.subFormSet('interval_hours', this.value)">
+                    </div>
+                </div>
+                <label class="form-label" style="margin-top:6px;">URL:</label>
+                <input type="text" class="form-input"
+                       placeholder="https://provider.example/subscribe?token=..."
+                       value="${escapeAttr(subForm.url)}"
+                       oninput="SingboxConfigsPage.subFormSet('url', this.value)">
+                <label class="form-label" style="margin-top:6px;">Формат:</label>
+                <select class="form-input"
+                        onchange="SingboxConfigsPage.subFormSet('format', this.value)">
+                    ${formatOptions}
+                </select>
+                <div style="margin-top:10px;">
+                    <button class="btn btn-primary btn-sm" ${subBusy?'disabled':''}
+                            onclick="SingboxConfigsPage.subsAdd()">
+                        Добавить и обновить
+                    </button>
+                    <button class="btn btn-ghost btn-sm" ${subBusy?'disabled':''}
+                            onclick="SingboxConfigsPage.subsRefreshAll()">
+                        Обновить все
+                    </button>
+                </div>
+            </div>
+
+            <h3 style="margin:0 0 6px;">Сохранённые подписки</h3>
+            ${rows}`;
+    }
+
+    function subFormSet(field, value) {
+        if (field === 'interval_hours') {
+            const n = parseInt(value, 10);
+            subForm.interval_hours = (isNaN(n) || n < 1) ? 6 : n;
+        } else {
+            subForm[field] = value;
+        }
+    }
+
+    async function subsAdd() {
+        if (!subForm.name || !subForm.url) {
+            Toast.error('Нужны имя и URL'); return;
+        }
+        subBusy = true; renderTab();
+        try {
+            const add = await API.post('/api/singbox/subscriptions', subForm);
+            if (!add || !add.ok) {
+                Toast.error((add && add.error) || 'add failed');
+                return;
+            }
+            Toast.success('Подписка добавлена, начинаем загрузку...');
+            // Сразу force-refresh
+            const refresh = await API.post(
+                `/api/singbox/subscriptions/${encodeURIComponent(add.id)}/refresh`);
+            if (refresh && refresh.ok) {
+                Toast.success(`Загружено ${refresh.outbounds || 0} outbound'ов`);
+                subForm = { name:'', url:'', format:'auto', interval_hours:6 };
+            } else {
+                Toast.error((refresh && refresh.error) || 'refresh failed');
+            }
+            await loadSubs();
+            await loadAll();
+        } catch (e) {
+            Toast.error(e.message);
+        } finally {
+            subBusy = false; renderTab();
+        }
+    }
+
+    async function subsRefresh(sid) {
+        subBusy = true; renderTab();
+        try {
+            const r = await API.post(`/api/singbox/subscriptions/${encodeURIComponent(sid)}/refresh`);
+            if (r && r.ok) {
+                Toast.success(`Обновлено: ${r.outbounds || 0} outbound'ов (${r.format})`);
+            } else {
+                Toast.error((r && r.error) || 'refresh failed');
+            }
+            await loadSubs();
+            await loadAll();
+        } catch (e) {
+            Toast.error(e.message);
+        } finally {
+            subBusy = false; renderTab();
+        }
+    }
+
+    async function subsRefreshAll() {
+        subBusy = true; renderTab();
+        try {
+            await API.post('/api/singbox/subscriptions/refresh-all');
+            Toast.success('Обновление всех подписок запущено');
+            await loadSubs();
+            await loadAll();
+        } catch (e) {
+            Toast.error(e.message);
+        } finally {
+            subBusy = false; renderTab();
+        }
+    }
+
+    async function subsRemove(sid) {
+        if (!confirm('Удалить подписку и связанный конфиг?')) return;
+        try {
+            await API.delete(`/api/singbox/subscriptions/${encodeURIComponent(sid)}`);
+            Toast.success('Удалено');
+            await loadSubs();
+            await loadAll();
+        } catch (e) {
+            Toast.error(e.message);
+        }
+    }
+
     // ══════════════ helpers ══════════════
 
     function escapeHtml(s) {
@@ -503,5 +703,7 @@ const SingboxConfigsPage = (() => {
         onTextChange, currentName,
         importPreview, importApply,
         onImportUrlChange, onImportTextChange,
+        // Subscriptions
+        subFormSet, subsAdd, subsRefresh, subsRefreshAll, subsRemove,
     };
 })();

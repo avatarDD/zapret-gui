@@ -155,10 +155,21 @@ integration). Не план релиза — скорее заметки и ид
       enabled-конфигов, флаги хранятся в settings.json
       (`singbox.autostart`). API: `GET/POST /api/singbox/autostart`,
       `regenerate`, `remove`, `apply`.
-- [ ] **Karing-совместимый импорт подписок** —
-      base64/clash-yaml/sing-box JSON, авторефреш по таймеру.
-      base64 уже работает; clash-yaml + sing-box JSON + автообновление
-      по cron-таймеру — отдельной задачей.
+- [x] **Karing-совместимый импорт подписок** —
+      `core/clash_yaml.py`: парсер clash/mihomo YAML → sing-box
+      outbound'ы (vless с Reality+uTLS+ws+grpc, vmess, trojan, ss,
+      hysteria2, tuic). Использует pyyaml если доступен, иначе
+      fallback на минимальный самописный парсер.
+      `core/subscription_manager.py`: CRUD сохранённых подписок в
+      settings.json, фоновой `SubscriptionRefresher` раз в минуту
+      проверяет таймер каждой подписки и автоматически обновляет
+      выходной конфиг `imported-subscription-<id>`. Формат подписки:
+      auto / uri / clash / singbox-json.
+      API: `GET|POST /api/singbox/subscriptions`,
+      `PUT|DELETE /api/singbox/subscriptions/<id>`,
+      `POST .../<id>/refresh`, `POST .../refresh-all`.
+      UI: 4-й таб «Подписки» на странице sing-box: конфиги —
+      добавить, обновить, удалить, статус последнего refresh.
 - [x] **UI для sing-box** — три страницы:
       `singbox.js` (Dashboard: список инстансов, start/stop/restart),
       `singbox_configs.js` (CRUD + JSON-редактор + 3-таб «Список /

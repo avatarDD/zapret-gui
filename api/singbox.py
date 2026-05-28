@@ -29,6 +29,14 @@ REST API для sing-box.
   POST   /api/singbox/autostart/regenerate
   POST   /api/singbox/autostart/remove
   POST   /api/singbox/autostart/apply
+
+  GET    /api/singbox/subscriptions         — список сохранённых подписок
+  POST   /api/singbox/subscriptions         — добавить подписку
+                                                (name, url, format, interval_hours)
+  PUT    /api/singbox/subscriptions/<id>    — обновить настройки подписки
+  DELETE /api/singbox/subscriptions/<id>    — удалить подписку
+  POST   /api/singbox/subscriptions/<id>/refresh — force-refresh одной
+  POST   /api/singbox/subscriptions/refresh-all  — force-refresh всех
 """
 
 import threading
@@ -262,3 +270,74 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core.singbox_autostart import apply_now
         return apply_now()
+
+    # ─────── subscriptions ────────────────────────────────────────
+
+    @app.route("/api/singbox/subscriptions")
+    def singbox_subscriptions_list():
+        response.content_type = "application/json; charset=utf-8"
+        from core.subscription_manager import list_subscriptions, get_refresher
+        return {
+            "ok": True,
+            "subscriptions": list_subscriptions(),
+            "refresher": get_refresher().get_status(),
+        }
+
+    @app.route("/api/singbox/subscriptions", method="POST")
+    def singbox_subscriptions_add():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        name = (body.get("name") or "").strip()
+        url  = (body.get("url")  or "").strip()
+        fmt  = (body.get("format") or "auto").strip()
+        try:
+            interval = int(body.get("interval_hours") or 6)
+        except (TypeError, ValueError):
+            interval = 6
+        if not name or not url:
+            response.status = 400
+            return {"ok": False, "error": "Нужны поля name и url"}
+        from core.subscription_manager import add_subscription
+        return add_subscription(name=name, url=url, fmt=fmt,
+                                interval_hours=interval)
+
+    @app.route("/api/singbox/subscriptions/<sid>", method="PUT")
+    def singbox_subscriptions_update(sid):
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        # Передаём через **kwargs — функция возьмёт только известные поля.
+        from core.subscription_manager import update_subscription
+        kw = {}
+        for k in ("name", "url", "format", "interval_hours"):
+            if k in body:
+                kw[k] = body[k]
+        if "interval_hours" in kw:
+            try:
+                kw["interval_hours"] = max(1, int(kw["interval_hours"]))
+            except (TypeError, ValueError):
+                kw.pop("interval_hours")
+        return update_subscription(sid, **kw)
+
+    @app.route("/api/singbox/subscriptions/<sid>", method="DELETE")
+    def singbox_subscriptions_remove(sid):
+        response.content_type = "application/json; charset=utf-8"
+        from core.subscription_manager import remove_subscription
+        return remove_subscription(sid)
+
+    @app.route("/api/singbox/subscriptions/<sid>/refresh", method="POST")
+    def singbox_subscriptions_refresh_one(sid):
+        response.content_type = "application/json; charset=utf-8"
+        from core.subscription_manager import refresh_one
+        return refresh_one(sid)
+
+    @app.route("/api/singbox/subscriptions/refresh-all", method="POST")
+    def singbox_subscriptions_refresh_all():
+        response.content_type = "application/json; charset=utf-8"
+        from core.subscription_manager import refresh_all
+        return refresh_all()
