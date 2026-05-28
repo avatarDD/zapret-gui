@@ -465,7 +465,13 @@ class AwgManager:
         return []
 
     def list_interfaces(self) -> list:
-        """Все активные AWG/WG интерфейсы со статусом."""
+        """Все активные AWG/WG интерфейсы со статусом.
+
+        На Keenetic'е дополнительно подцепляем нативные WG-туннели,
+        поднимаемые самим роутером (Wireguard0..N). Они видны только
+        через NDMS RCI — `wg show` их не возвращает, потому что они
+        существуют в ядре Keenetic'а, а не в userspace.
+        """
         seen = set()
         result = []
         for name in self._wg_interfaces():
@@ -473,6 +479,39 @@ class AwgManager:
                 continue
             seen.add(name)
             result.append(self.status(name))
+
+        # Нативные Keenetic-WG-интерфейсы — только если мы реально на
+        # Keenetic'е с доступным RCI. На любой другой платформе
+        # list_native_wg_interfaces() вернёт [] без сетевого probe.
+        try:
+            from core.ndms import list_native_wg_interfaces, get_native_wg_status
+            for native in list_native_wg_interfaces():
+                nm = native.get("name", "")
+                if not nm or nm in seen:
+                    continue
+                seen.add(nm)
+                # Состояние тащим через NDMS, не через awg show (его
+                # для нативных интерфейсов нет вообще).
+                st = get_native_wg_status(nm)
+                result.append({
+                    "name":       nm,
+                    "active":     bool(st.get("active")),
+                    "pid":        None,
+                    "peers":      [],
+                    "interface":  {},
+                    "source":     "ndms",   # маркер, чтобы UI знал
+                    "native":     True,
+                    "description": native.get("description", ""),
+                    "address":    native.get("address", ""),
+                    "state":      st.get("state", ""),
+                    "rx_bytes":   st.get("rx_bytes", 0),
+                    "tx_bytes":   st.get("tx_bytes", 0),
+                    "endpoint":   st.get("endpoint", ""),
+                    "last_handshake": st.get("last_handshake", 0),
+                })
+        except Exception as e:
+            log.warning("list_interfaces: ndms-часть не подцепилась: %s" % e,
+                        source="awg")
         return result
 
     def status(self, iface: str) -> dict:
@@ -491,6 +530,29 @@ class AwgManager:
             "peers":    [],
             "interface": {},
         }
+
+        # Нативный Keenetic-WG (Wireguard0/1...): `awg show` его не
+        # видит вообще — он в ядре роутера, а не в userspace. Идём
+        # за состоянием в NDMS RCI.
+        try:
+            from core.ndms.ping_check import (
+                should_delegate_monitoring, get_native_wg_status)
+            if should_delegate_monitoring(iface):
+                st = get_native_wg_status(iface)
+                if st.get("available"):
+                    info["active"] = bool(st.get("active"))
+                    info["source"] = "ndms"
+                    info["native"] = True
+                    info["state"]  = st.get("state", "")
+                    info["rx_bytes"] = st.get("rx_bytes", 0)
+                    info["tx_bytes"] = st.get("tx_bytes", 0)
+                    info["endpoint"] = st.get("endpoint", "")
+                    info["last_handshake"] = st.get("last_handshake", 0)
+                return info
+        except Exception as e:
+            log.warning("status(%s) ndms delegation: %s" % (iface, e),
+                        source="awg")
+
         rc, out, _ = _run([self._awg_bin(), "show", iface, "dump"], timeout=5)
         if rc != 0 or not out.strip():
             return info

@@ -2,7 +2,13 @@
 """
 Логика применения и снятия domain-based routing-правил.
 
-Поток для одного DomainRoutingRule:
+На Keenetic'е с доступным RCI мы используем штатный NDMS-механизм
+(`object-group fqdn` + `dns-proxy route`) — он работает с системным
+ndnsproxy на 53-м порту и не требует ни dnsmasq, ни ipset/nftset, ни
+fwmark. См. `core/routing/ndms_backend.py`.
+
+На остальных платформах работаем по старой схеме через dnsmasq+
+ipset/nftset+fwmark:
 
   apply:
     1. Выбрать backend (nftset, если dnsmasq поддерживает и nft есть;
@@ -28,6 +34,25 @@ from core.routing import dnsmasq_integration
 from core.routing import ipset_backend
 from core.routing import nftset_backend
 from core.routing.rules import DomainRoutingRule
+
+
+def _ndms_available() -> bool:
+    """
+    Можно ли применить правило через Keenetic NDMS-backend.
+
+    Гейтит ВЕСЬ NDMS-путь: эта функция должна вернуть False на
+    OpenWrt / generic Linux / Entware-не-Keenetic — там в наличие RCI
+    мы даже не лезем. На Keenetic'е без RCI (например, если порт
+    закрыт фаерволлом или версия прошивки старая) — тоже False, и мы
+    откатываемся на стандартный dnsmasq-путь, который, впрочем, на
+    Keenetic'е тоже толком не работает (53 порт занят) — но это всё
+    лучше тихого выпадения.
+    """
+    try:
+        from core.ndms import is_ndms_available
+        return bool(is_ndms_available())
+    except Exception:
+        return False
 
 
 # Базовый приоритет ip rule fwmark — выше CIDR, чтобы маркированный
@@ -224,6 +249,24 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
     if not rule.domains:
         return {"ok": False, "error": "Список доменов пуст"}
 
+    # ── Keenetic NDMS-fast-path ─────────────────────────────────
+    # Если детект сказал «это Keenetic + RCI отвечает» — идём
+    # через нативный dns-proxy route. Никаких dnsmasq/ipset/fwmark
+    # для этого пути не требуется. На любых других платформах
+    # _ndms_available() == False и эта ветка пропускается.
+    if _ndms_available():
+        try:
+            from core.routing import ndms_backend
+            return ndms_backend.apply_domain_rule(rule)
+        except Exception as e:
+            # Если NDMS-путь упал на ровном месте — логируем и
+            # пробуем fallback на dnsmasq. На Keenetic'е dnsmasq,
+            # скорее всего, тоже не поднимется, но это уже не наша
+            # вина и пользователь увидит понятную ошибку про
+            # dnsmasq, а не невнятный traceback.
+            log.warning("routing(ndms): apply упал, fallback на dnsmasq: %s"
+                        % e, source="routing")
+
     with _lock:
         # Preflight: domain-routing работает ТОЛЬКО через dnsmasq —
         # он отвечает за заполнение ipset/nftset при резолве. Если
@@ -408,6 +451,17 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
     """Снять одно domain-правило (без удаления из storage)."""
     if not isinstance(rule, DomainRoutingRule):
         return {"ok": False, "error": "Не DomainRoutingRule"}
+
+    # ── Keenetic NDMS-fast-path ─────────────────────────────────
+    # Симметрично apply_domain_rule — на Keenetic'е снимаем через
+    # NDMS. На остальных платформах идём дальше по dnsmasq-пути.
+    if _ndms_available():
+        try:
+            from core.routing import ndms_backend
+            return ndms_backend.remove_domain_rule(rule)
+        except Exception as e:
+            log.warning("routing(ndms): remove упал, fallback на dnsmasq: %s"
+                        % e, source="routing")
 
     with _lock:
         backend, kind = _detect_backend()
