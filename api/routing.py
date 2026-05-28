@@ -19,6 +19,14 @@ REST API для selective routing.
                                               версия прошивки, активный backend
   GET    /api/routing/interfaces          — все доступные target-интерфейсы
                                               (наши AWG + нативные NDMS WG)
+
+  GET    /api/routing/aliases             — что есть в кэше geosite:/geoip:
+                                              + список рекомендованных алиасов
+  POST   /api/routing/aliases/refresh     — обновить ВСЕ закэшированные
+                                              алиасы (force-fetch с источника)
+  POST   /api/routing/aliases/preview     — развернуть массив строк
+                                              (body: {"items": [...]}) —
+                                              для UI-предпросмотра
 """
 
 from bottle import request, response
@@ -108,6 +116,61 @@ def register(app):
                 result.append(entry)
 
             return {"ok": True, "interfaces": result}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    # ─────── geosite:/geoip: aliases (HydraRoute Neo compat) ──────
+
+    @app.route("/api/routing/aliases")
+    def routing_aliases_list():
+        """
+        Состояние кэша алиасов + список рекомендованных имён.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing import alias_resolver
+            return {
+                "ok":          True,
+                "cached":      alias_resolver.list_cached(),
+                "suggestions": alias_resolver.list_suggestions(),
+                "ttl_hours":   alias_resolver.TTL_HOURS,
+            }
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/aliases/refresh", method="POST")
+    def routing_aliases_refresh():
+        """Force-refetch всех закэшированных алиасов."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing import alias_resolver
+            return {"ok": True, "result": alias_resolver.refresh_all_cached()}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/aliases/preview", method="POST")
+    def routing_aliases_preview():
+        """
+        Разрешить массив строк (`{"items": ["youtube.com",
+        "geosite:netflix", "geoip:ru"]}`) в реальный список — для
+        UI-предпросмотра перед сохранением правила.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        items = body.get("items")
+        if not isinstance(items, list):
+            response.status = 400
+            return {"ok": False, "error": "items должен быть массивом"}
+        try:
+            from core.routing import alias_resolver
+            return {"ok": True,
+                    "result": alias_resolver.expand_domains(items)}
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}

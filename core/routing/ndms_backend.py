@@ -28,7 +28,11 @@ import re
 
 from core.log_buffer import log
 from core.ndms.commands import get_ndms_commands, make_owned_name
-from core.routing.rules import DomainRoutingRule, CidrRoutingRule
+from core.routing.rules import (
+    DomainRoutingRule,
+    CidrRoutingRule,
+    DeviceRoutingRule,
+)
 
 
 # ════════════════════════════════════════════════════════════
@@ -40,15 +44,18 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
     Применить domain-правило через NDMS.
 
     Шаги:
-      1. `object-group fqdn <ZGUI_id>` — создать/заменить FQDN-группу
-         с нашими доменами.
-      2. `dns-proxy route group <ZGUI_id> interface <target_iface>` —
+      1. Развернуть `geosite:NAME` / `geoip:NAME` алиасы, если они
+         встречаются в списке (см. `alias_resolver.expand_domains`).
+         Чистые домены идут в FQDN-группу, чистые CIDR — в `ip route`.
+      2. `object-group fqdn <ZGUI_id>` — создать/заменить FQDN-группу.
+      3. `dns-proxy route group <ZGUI_id> interface <target_iface>` —
          сказать ndnsproxy'у маршрутизировать трафик к этим доменам
          через указанный интерфейс.
-      3. `system configuration save` — сохранить в startup.
+      4. `system configuration save` — сохранить в startup.
 
     Возвращает dict в том же формате, что и остальные `apply_*` —
-    {"ok": bool, "error"?: str, "backend": "ndms", ...}.
+    {"ok": bool, "error"?: str, "backend": "ndms", ...,
+     "aliases_resolved": [...], "aliases_failed": [...]}.
     """
     if not isinstance(rule, DomainRoutingRule):
         return {"ok": False, "error": "Не DomainRoutingRule"}
@@ -57,57 +64,99 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
     if not rule.target_iface:
         return {"ok": False, "error": "Не указан target_iface"}
 
-    domains = _sanitize_domains(rule.domains)
-    if not domains:
-        return {"ok": False, "error": "Все домены отфильтрованы"}
+    # HydraRoute Neo: разворачиваем geosite:/geoip:, если есть.
+    from core.routing.alias_resolver import expand_domains
+    expanded = expand_domains(rule.domains)
+    raw_inputs = list(expanded.get("domains") or [])
+
+    # Расширенные CIDR (через geoip:) применим отдельной NDMS-командой
+    # после основной FQDN-группы. Если их много — это будет много
+    # `ip route`-записей, поэтому ограничимся 5000 (Keenetic столько
+    # переварит, но reload-config начнёт тормозить).
+    expanded_cidrs = list(expanded.get("cidrs") or [])[:5000]
+
+    domains = _sanitize_domains(raw_inputs)
+    if not domains and not expanded_cidrs:
+        return {"ok": False, "error": "Все домены/алиасы отфильтрованы",
+                "aliases_failed": expanded.get("aliases_failed") or []}
 
     cmd = get_ndms_commands()
     group_name = make_owned_name(rule.id)
     description = (rule.description or "")[:200]
 
-    # 1) Полная замена группы — пользователь мог убрать домены из
-    # списка в UI; инкрементальный upsert их не вычистил бы.
-    g_res = cmd.replace_fqdn_group(
-        group_name,
-        include=domains,
-        description=description or ("zapret-gui rule %s" % rule.id),
-    )
-    if not g_res.get("ok"):
-        return {
-            "ok": False,
-            "backend": "ndms",
-            "error": "object-group fqdn: %s" % g_res.get("error", "?"),
-            "group": group_name,
-        }
+    # 1) FQDN-группа (если есть домены после развёртки).
+    if domains:
+        g_res = cmd.replace_fqdn_group(
+            group_name,
+            include=domains,
+            description=description or ("zapret-gui rule %s" % rule.id),
+        )
+        if not g_res.get("ok"):
+            return {
+                "ok": False,
+                "backend": "ndms",
+                "error": "object-group fqdn: %s" % g_res.get("error", "?"),
+                "group": group_name,
+            }
 
-    # 2) dns-proxy route: привязка группы к интерфейсу.
-    # На случай если правило уже было применено с другим интерфейсом —
-    # NDMS перепишет route без ошибки.
-    r_res = cmd.set_dns_proxy_route(group_name, rule.target_iface)
-    if not r_res.get("ok"):
-        # Откат: убираем созданную группу, чтобы не плодить мусор.
-        cmd.delete_fqdn_group(group_name)
-        return {
-            "ok": False,
-            "backend": "ndms",
-            "error": "dns-proxy route: %s" % r_res.get("error", "?"),
-            "group": group_name,
-        }
+        # 2) dns-proxy route: привязка группы к интерфейсу.
+        r_res = cmd.set_dns_proxy_route(group_name, rule.target_iface)
+        if not r_res.get("ok"):
+            cmd.delete_fqdn_group(group_name)
+            return {
+                "ok": False,
+                "backend": "ndms",
+                "error": "dns-proxy route: %s" % r_res.get("error", "?"),
+                "group": group_name,
+            }
 
-    # 3) save: иначе перезагрузка роутера всё потеряет.
+    # 3) CIDR-записи (если развернулся geoip:). Идут отдельными
+    # `ip route` командами; не падаем правило целиком, если часть
+    # не легла — просто отчитаемся об ошибках.
+    cidr_added = 0
+    cidr_errors = []
+    for cidr in expanded_cidrs:
+        net, mask = _split_cidr(cidr)
+        if not net or ":" in net:
+            # IPv6 пока не поддерживаем для NDMS-static-route
+            continue
+        r = cmd.add_static_route(
+            network=net, mask=str(mask),
+            interface=rule.target_iface,
+            comment=("zapret-gui %s" % rule.id)[:64],
+        )
+        if r.get("ok"):
+            cidr_added += 1
+        else:
+            cidr_errors.append("%s/%s: %s" % (net, mask, r.get("error", "?")))
+            if len(cidr_errors) >= 10:
+                # Не флудим лог одной и той же ошибкой
+                cidr_errors.append("... (ещё %d ошибок усечено)"
+                                   % max(0, len(expanded_cidrs) - cidr_added
+                                         - len(cidr_errors)))
+                break
+
+    # 4) save: иначе перезагрузка роутера всё потеряет.
     save_res = cmd.save_running_config()
 
     log.info(
-        "routing(ndms): domain-правило %s применено через %s (%d доменов)"
-        % (rule.id, rule.target_iface, len(domains)),
+        "routing(ndms): domain-правило %s применено через %s "
+        "(%d доменов, %d CIDR, алиасы: %d разверн., %d не удалось)"
+        % (rule.id, rule.target_iface, len(domains), cidr_added,
+           len(expanded.get("aliases_resolved") or []),
+           len(expanded.get("aliases_failed") or [])),
         source="routing")
 
     return {
         "ok":        True,
         "backend":   "ndms",
-        "group":     group_name,
+        "group":     group_name if domains else "",
         "interface": rule.target_iface,
         "domains":   len(domains),
+        "cidr_added":  cidr_added,
+        "cidr_errors": cidr_errors,
+        "aliases_resolved": expanded.get("aliases_resolved") or [],
+        "aliases_failed":   expanded.get("aliases_failed") or [],
         "saved":     bool(save_res.get("ok")),
     }
 
@@ -139,6 +188,27 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
     g_res = cmd.delete_fqdn_group(group_name)
     if not g_res.get("ok"):
         errors.append("object-group fqdn: %s" % g_res.get("error", "?"))
+
+    # 3) Подчистить CIDR-маршруты, которые мы могли добавить через
+    # развёрнутый geoip:. Перегенерим список из текущего правила —
+    # это best-effort: если состав geoip-списка с момента apply
+    # изменился, часть записей останется висеть. Для надёжной
+    # очистки пользователь может сделать /api/routing/apply, который
+    # переразложит все правила с нуля.
+    if rule.target_iface and rule.domains:
+        try:
+            from core.routing.alias_resolver import expand_domains
+            expanded = expand_domains(rule.domains)
+            for cidr in (expanded.get("cidrs") or [])[:5000]:
+                net, mask = _split_cidr(cidr)
+                if not net or ":" in net:
+                    continue
+                cmd.delete_static_route(
+                    network=net, mask=str(mask),
+                    interface=rule.target_iface)
+        except Exception as e:
+            log.warning("routing(ndms): чистка geoip-маршрутов %s: %s"
+                        % (rule.id, e), source="routing")
 
     save_res = cmd.save_running_config()
 
@@ -241,6 +311,128 @@ def remove_cidr_rule(rule: CidrRoutingRule) -> dict:
         "ok":      not errors,
         "backend": "ndms",
         "removed": removed,
+        "errors":  errors,
+        "saved":   bool(save_res.get("ok")),
+    }
+
+
+# ════════════════════════════════════════════════════════════
+# device rules (per-MAC через ip policy + ip hotspot host policy)
+# ════════════════════════════════════════════════════════════
+#
+# В отличие от domain/CIDR-правил, device-rule через NDMS работает
+# только если у пользователя указан MAC устройства. Без MAC мы не
+# можем зацепиться за хост в `ip hotspot host` — NDMS не умеет
+# привязывать политику к чистому source-IP. В таком случае мы
+# отдаём False из can_handle_device_rule() и manager идёт на
+# стандартный путь через `ip rule from <ip>`.
+
+def can_handle_device_rule(rule: DeviceRoutingRule) -> bool:
+    """
+    Может ли NDMS-backend обработать это device-правило.
+
+    True, когда:
+      - правильный тип
+      - указан MAC (NDMS привязывает политику по MAC)
+      - target_iface — нативный NDMS-объект (Wireguard0/1, OpenVPN0,
+        ISP*); userspace-AWG в NDMS-конфиге не существует.
+    """
+    if not isinstance(rule, DeviceRoutingRule):
+        return False
+    if not rule.mac:
+        return False
+    from core.routing.manager import _is_ndms_native_iface
+    return _is_ndms_native_iface(rule.target_iface)
+
+
+def apply_device_rule(rule: DeviceRoutingRule) -> dict:
+    """
+    Применить device-правило через NDMS:
+      1. `ip policy <ZGUI_id> permit <target_iface>` — создать
+         персональную политику с единственным разрешённым иntерфейсом.
+      2. `ip hotspot host <mac> policy <ZGUI_id>` — привязать хост.
+      3. `system configuration save`.
+
+    Пользователь сохраняет fallback на основной маршрут, если туннель
+    не доступен (standalone=False). Это сознательный выбор:
+    «kill-switch» поведение лучше делать опционально на уровне самого
+    туннеля, а не нашими политиками.
+    """
+    if not isinstance(rule, DeviceRoutingRule):
+        return {"ok": False, "error": "Не DeviceRoutingRule"}
+    if not rule.mac:
+        return {"ok": False, "error": "Для NDMS-device-rule нужен MAC"}
+    if not rule.target_iface:
+        return {"ok": False, "error": "Не указан target_iface"}
+
+    cmd = get_ndms_commands()
+    policy_name = make_owned_name(rule.id)
+    description = (rule.description or rule.hostname or "")[:200]
+
+    p_res = cmd.upsert_ip_policy(
+        policy_name,
+        permit_iface=rule.target_iface,
+        description=description or ("zapret-gui rule %s" % rule.id),
+        standalone=False,
+    )
+    if not p_res.get("ok"):
+        return {
+            "ok":      False,
+            "backend": "ndms",
+            "error":   "ip policy: %s" % p_res.get("error", "?"),
+            "policy":  policy_name,
+        }
+
+    h_res = cmd.assign_host_policy(rule.mac, policy_name)
+    if not h_res.get("ok"):
+        # Откат — снимаем политику, чтобы не оставлять мусор.
+        cmd.delete_ip_policy(policy_name)
+        return {
+            "ok":      False,
+            "backend": "ndms",
+            "error":   "ip hotspot host policy: %s" % h_res.get("error", "?"),
+            "policy":  policy_name,
+        }
+
+    save_res = cmd.save_running_config()
+    log.info(
+        "routing(ndms): device-правило %s применено (mac=%s → %s)"
+        % (rule.id, rule.mac, rule.target_iface),
+        source="routing")
+    return {
+        "ok":      True,
+        "backend": "ndms",
+        "policy":  policy_name,
+        "mac":     rule.mac,
+        "iface":   rule.target_iface,
+        "saved":   bool(save_res.get("ok")),
+    }
+
+
+def remove_device_rule(rule: DeviceRoutingRule) -> dict:
+    """Снять device-правило через NDMS — симметрично apply."""
+    if not isinstance(rule, DeviceRoutingRule):
+        return {"ok": False, "error": "Не DeviceRoutingRule"}
+
+    cmd = get_ndms_commands()
+    policy_name = make_owned_name(rule.id)
+    errors = []
+
+    if rule.mac:
+        u_res = cmd.unassign_host_policy(rule.mac)
+        if not u_res.get("ok"):
+            errors.append("ip hotspot host policy: %s" % u_res.get("error", "?"))
+
+    p_res = cmd.delete_ip_policy(policy_name)
+    if not p_res.get("ok"):
+        errors.append("ip policy: %s" % p_res.get("error", "?"))
+
+    save_res = cmd.save_running_config()
+    log.info("routing(ndms): device-правило %s снято" % rule.id,
+             source="routing")
+    return {
+        "ok":      not errors,
+        "backend": "ndms",
         "errors":  errors,
         "saved":   bool(save_res.get("ok")),
     }

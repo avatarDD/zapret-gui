@@ -250,6 +250,107 @@ class NdmsCommands:
         return res
 
     # ════════════════════════════════════════════════════════════
+    # ip policy + ip hotspot host policy — per-device маршрутизация
+    # ════════════════════════════════════════════════════════════
+    #
+    # Модель Keenetic'а: «политика» — это упорядоченный список
+    # разрешённых интерфейсов. Хосты привязываются к политике через
+    # `ip hotspot host <mac> policy <name>`. Для нашего use-case
+    # (отправить устройство через Wireguard0) создаём политику с
+    # единственным permit'ом — нашим target_iface — и навешиваем на
+    # MAC устройства.
+
+    def upsert_ip_policy(self, policy_name: str, permit_iface: str,
+                         description: str = "",
+                         standalone: bool = False) -> dict:
+        """
+        `ip policy <name>
+           permit <permit_iface>
+           [description <...>]
+           [standalone]`
+
+        standalone=True — kill-switch-режим: пакеты этого устройства,
+        не попавшие на permit_iface, никуда не уйдут. Используем
+        опционально (по умолчанию выключено — fallback на основной
+        маршрут разрешён).
+        """
+        if not policy_name or not permit_iface:
+            return {"ok": False,
+                    "error": "пустые policy_name/permit_iface"}
+
+        policy_body = {
+            "permit": [{"interface": permit_iface}],
+        }
+        if description:
+            policy_body["description"] = description
+        if standalone:
+            policy_body["standalone"] = True
+
+        payload = {"ip": {"policy": {policy_name: policy_body}}}
+        res = self.client.post(payload)
+        if not res.get("ok"):
+            log.warning("NDMS upsert_ip_policy(%s) failed: %s"
+                        % (policy_name, res.get("error")),
+                        source="ndms")
+        return res
+
+    def delete_ip_policy(self, policy_name: str) -> dict:
+        """`no ip policy <name>`."""
+        if not policy_name:
+            return {"ok": False, "error": "policy_name пустой"}
+        payload = {"ip": {"policy": {policy_name: {"no": True}}}}
+        res = self.client.post(payload)
+        if not res.get("ok") and _is_not_found_error(res.get("error", "")):
+            return {"ok": True, "data": res.get("data"), "noop": True}
+        return res
+
+    def assign_host_policy(self, mac: str, policy_name: str) -> dict:
+        """
+        `ip hotspot host <mac> policy <policy_name>`.
+
+        MAC регистрозависимый, ожидается формат XX:XX:XX:XX:XX:XX.
+        """
+        if not mac or not policy_name:
+            return {"ok": False, "error": "пустые mac/policy_name"}
+        normalized = _normalize_mac(mac)
+        if not normalized:
+            return {"ok": False, "error": "Некорректный MAC: %s" % mac}
+        payload = {
+            "ip": {
+                "hotspot": {
+                    "host": {
+                        "mac": normalized,
+                        "policy": policy_name,
+                    }
+                }
+            }
+        }
+        return self.client.post(payload)
+
+    def unassign_host_policy(self, mac: str) -> dict:
+        """`no ip hotspot host <mac> policy` — снять политику с хоста."""
+        if not mac:
+            return {"ok": False, "error": "mac пустой"}
+        normalized = _normalize_mac(mac)
+        if not normalized:
+            return {"ok": False, "error": "Некорректный MAC: %s" % mac}
+        # NDMS: чтобы убрать привязку, удаляем поле policy с no=True
+        payload = {
+            "ip": {
+                "hotspot": {
+                    "host": {
+                        "mac": normalized,
+                        "policy": {"no": True},
+                    }
+                }
+            }
+        }
+        res = self.client.post(payload)
+        if not res.get("ok") and _is_not_found_error(res.get("error", "")):
+            return {"ok": True, "data": res.get("data"), "noop": True}
+        return res
+
+    # ════════════════════════════════════════════════════════════
     # read-only — обнаружение интерфейсов и текущих правил
     # ════════════════════════════════════════════════════════════
 
@@ -327,10 +428,25 @@ class NdmsCommands:
 # ─────── helpers ───────
 
 _WG_NAME_RE = re.compile(r"^Wireguard\d+$", re.IGNORECASE)
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$")
 
 
 def _is_wg_iface_name(name: str) -> bool:
     return bool(name) and bool(_WG_NAME_RE.match(name))
+
+
+def _normalize_mac(mac: str) -> str:
+    """
+    Привести MAC к формату AA:BB:CC:DD:EE:FF (NDMS любит colon-separated
+    и uppercase). Возвращает '' если входная строка не похожа на MAC.
+    """
+    if not mac:
+        return ""
+    s = str(mac).strip()
+    if not _MAC_RE.match(s):
+        return ""
+    # Дефисы → двоеточия, lowercase → upper
+    return s.replace("-", ":").upper()
 
 
 def _extract_iface_address(info: dict) -> str:

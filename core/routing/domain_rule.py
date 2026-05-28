@@ -118,6 +118,26 @@ def _all_domain_rules():
             if isinstance(r, DomainRoutingRule) and r.enabled]
 
 
+def _expand_rule_domains(rule):
+    """
+    Развернуть geosite:/geoip: алиасы в чистые домены/CIDR.
+
+    Для dnsmasq-пути нас интересуют только домены (CIDR не работают
+    через dnsmasq-ipset-хук). Если в правиле встречается geoip: —
+    он логируется как «не поддержано», но правило не падает.
+    """
+    from core.routing.alias_resolver import expand_domains as _ex
+    expanded = _ex(rule.domains or [])
+    domains = expanded.get("domains") or []
+    if expanded.get("cidrs"):
+        log.warning(
+            "dnsmasq-backend: geoip: в правиле %s даёт %d CIDR — "
+            "dnsmasq их не поддерживает, см. NDMS-режим или CIDR-rule"
+            % (rule.id, len(expanded["cidrs"])),
+            source="routing")
+    return domains
+
+
 def _rebuild_managed_dnsmasq():
     """Перегенерить managed-файл по всем активным domain-правилам."""
     dn = dnsmasq_integration.DnsmasqIntegration()
@@ -126,7 +146,8 @@ def _rebuild_managed_dnsmasq():
 
     blocks = []
     for r in _all_domain_rules():
-        if not r.domains:
+        domains = _expand_rule_domains(r)
+        if not domains:
             continue
         blocks.append({
             "rule_id":    r.id,
@@ -134,7 +155,7 @@ def _rebuild_managed_dnsmasq():
             "set_name":   _set_name_for(r.id, set_kind),
             "nft_table":  nftset_backend.TABLE_NAME,
             "nft_family": "inet",
-            "domains":    r.domains,
+            "domains":    domains,
         })
 
     dn.ensure_include()
@@ -422,7 +443,10 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
         prepop_results = []
         set_base_v4 = _set_name_for(rule.id, kind)
         set_base_v6 = set_base_v4 + "6"
-        for domain in (rule.domains or []):
+        # Разворачиваем алиасы (geosite:) — без этого браузер с DoH
+        # никогда не запросит youtube.com у dnsmasq, и pre-populate
+        # этих доменов критичен для работы пути на не-Keenetic.
+        for domain in _expand_rule_domains(rule):
             prepop_results.append(
                 _prepopulate_set(set_base_v4, domain, "v4", backend))
             prepop_results.append(
