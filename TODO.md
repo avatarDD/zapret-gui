@@ -138,11 +138,19 @@ integration). Не план релиза — скорее заметки и ид
       `{"name":"tun0", "source":"singbox", "type":"singbox-tun"}`.
       `RoutingRule.target_iface` уже умеет работать с любым iface —
       sing-box подцепляется автоматически.
-- [ ] **Selectors из sing-box** (`outbound_selector` / `urltest`) —
-      ортогональны нашему routing engine: они выбирают аутбаунд
-      внутри sing-box, мы выбираем интерфейс снаружи. Реализация:
-      UI-конструктор «политики переключения» для sing-box-конфига
-      (отдельная страница).
+- [x] **Selectors из sing-box** (`selector` / `urltest`) —
+      `core/singbox_config.py`: `make_selector_outbound`,
+      `make_urltest_outbound`, `list_user_outbound_tags`,
+      `wrap_in_group(cfg, tag, type)`. Последний берёт все «реальные»
+      outbound'ы конфига (не direct/block/dns), оборачивает их в
+      selector или urltest, переписывает route.rules чтобы трафик
+      шёл через group. API: `POST /api/singbox/configs/<name>/wrap`
+      body `{group_type, group_tag, default, url, interval}`.
+      UI: на странице sing-box: конфиги / Редактор две кнопки
+      «Обернуть в urltest» и «Обернуть в selector».
+      urltest нужен 99% юзерам (автоматически быстрейший сервер);
+      selector — когда есть clash-api dashboard для ручного
+      переключения.
 - [x] **Импорт подписок (sing-box-часть)** —
       `core/singbox_subscription.py`: парсер VLESS / Trojan / SS /
       Hysteria2 / TUIC URI в outbound-dict. Интегрирован в
@@ -155,13 +163,31 @@ integration). Не план релиза — скорее заметки и ид
       enabled-конфигов, флаги хранятся в settings.json
       (`singbox.autostart`). API: `GET/POST /api/singbox/autostart`,
       `regenerate`, `remove`, `apply`.
-- [ ] **Karing-совместимый импорт подписок** —
-      base64/clash-yaml/sing-box JSON, авторефреш по таймеру.
-      base64 уже работает; clash-yaml + sing-box JSON + автообновление
-      по cron-таймеру — отдельной задачей.
-- [ ] **UI для sing-box** — отдельные страницы Dashboard /
-      Configs / Outbounds Builder / Routing. Сейчас доступны
-      только API; UI — отдельная задача (по объёму ~как AWG-UI).
+- [x] **Karing-совместимый импорт подписок** —
+      `core/clash_yaml.py`: парсер clash/mihomo YAML → sing-box
+      outbound'ы (vless с Reality+uTLS+ws+grpc, vmess, trojan, ss,
+      hysteria2, tuic). Использует pyyaml если доступен, иначе
+      fallback на минимальный самописный парсер.
+      `core/subscription_manager.py`: CRUD сохранённых подписок в
+      settings.json, фоновой `SubscriptionRefresher` раз в минуту
+      проверяет таймер каждой подписки и автоматически обновляет
+      выходной конфиг `imported-subscription-<id>`. Формат подписки:
+      auto / uri / clash / singbox-json.
+      API: `GET|POST /api/singbox/subscriptions`,
+      `PUT|DELETE /api/singbox/subscriptions/<id>`,
+      `POST .../<id>/refresh`, `POST .../refresh-all`.
+      UI: 4-й таб «Подписки» на странице sing-box: конфиги —
+      добавить, обновить, удалить, статус последнего refresh.
+- [x] **UI для sing-box** — три страницы:
+      `singbox.js` (Dashboard: список инстансов, start/stop/restart),
+      `singbox_configs.js` (CRUD + JSON-редактор + 3-таб «Список /
+      Редактор / Подписка», встроенный preview/import VLESS/Trojan/
+      SS/Hy2/TUIC URI),
+      `singbox_setup.js` (детект окружения, manifest, install/
+      uninstall с прогрессом + arch override).
+      Зарегистрированы в `web/js/app.js`, в сайдбаре под VPN-блоком,
+      в `web/index.html` как script-теги. Outbounds Builder
+      (визуальный редактор отдельных outbound'ов) — отдельная задача.
 
 ## AWG: то, что не успели в v0.19.0
 

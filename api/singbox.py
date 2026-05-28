@@ -29,6 +29,14 @@ REST API для sing-box.
   POST   /api/singbox/autostart/regenerate
   POST   /api/singbox/autostart/remove
   POST   /api/singbox/autostart/apply
+
+  GET    /api/singbox/subscriptions         — список сохранённых подписок
+  POST   /api/singbox/subscriptions         — добавить подписку
+                                                (name, url, format, interval_hours)
+  PUT    /api/singbox/subscriptions/<id>    — обновить настройки подписки
+  DELETE /api/singbox/subscriptions/<id>    — удалить подписку
+  POST   /api/singbox/subscriptions/<id>/refresh — force-refresh одной
+  POST   /api/singbox/subscriptions/refresh-all  — force-refresh всех
 """
 
 import threading
@@ -222,6 +230,56 @@ def register(app):
         from core.singbox_manager import get_singbox_manager
         return get_singbox_manager().validate_via_binary(name)
 
+    @app.route("/api/singbox/configs/<name>/wrap", method="POST")
+    def singbox_configs_wrap(name):
+        """
+        Обернуть все outbound'ы конфига в selector или urltest.
+
+        body: {"group_type": "selector"|"urltest",
+               "group_tag":  "auto" (default),
+               "default":    "<tag>"   (для selector),
+               "url":        "..."     (для urltest),
+               "interval":   "3m"      (для urltest)}
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core.singbox_manager import get_singbox_manager
+        from core.singbox_config import wrap_in_group, render_conf
+
+        mgr = get_singbox_manager()
+        cfg_resp = mgr.get_config(name)
+        if not cfg_resp.get("ok"):
+            response.status = 404
+            return cfg_resp
+        cfg = cfg_resp.get("parsed") or {}
+        group_type = (body.get("group_type") or "selector").lower()
+        group_tag  = (body.get("group_tag")  or "auto").strip()
+        try:
+            wrap_in_group(
+                cfg,
+                group_tag=group_tag,
+                group_type=group_type,
+                default=(body.get("default") or "").strip(),
+                url=(body.get("url") or
+                     "https://www.gstatic.com/generate_204"),
+                interval=(body.get("interval") or "3m"),
+            )
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        # Сохраняем обновлённый конфиг
+        save_res = mgr.save_config(name, text=render_conf(cfg))
+        if not save_res.get("ok"):
+            response.status = 500
+            return save_res
+        return {"ok": True, "name": name, "group_tag": group_tag,
+                "group_type": group_type,
+                "outbounds_count": len([o for o in cfg.get("outbounds", [])
+                                         if isinstance(o, dict)])}
+
     # ─────── autostart ────────────────────────────────────────────
 
     @app.route("/api/singbox/autostart")
@@ -262,3 +320,74 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core.singbox_autostart import apply_now
         return apply_now()
+
+    # ─────── subscriptions ────────────────────────────────────────
+
+    @app.route("/api/singbox/subscriptions")
+    def singbox_subscriptions_list():
+        response.content_type = "application/json; charset=utf-8"
+        from core.subscription_manager import list_subscriptions, get_refresher
+        return {
+            "ok": True,
+            "subscriptions": list_subscriptions(),
+            "refresher": get_refresher().get_status(),
+        }
+
+    @app.route("/api/singbox/subscriptions", method="POST")
+    def singbox_subscriptions_add():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        name = (body.get("name") or "").strip()
+        url  = (body.get("url")  or "").strip()
+        fmt  = (body.get("format") or "auto").strip()
+        try:
+            interval = int(body.get("interval_hours") or 6)
+        except (TypeError, ValueError):
+            interval = 6
+        if not name or not url:
+            response.status = 400
+            return {"ok": False, "error": "Нужны поля name и url"}
+        from core.subscription_manager import add_subscription
+        return add_subscription(name=name, url=url, fmt=fmt,
+                                interval_hours=interval)
+
+    @app.route("/api/singbox/subscriptions/<sid>", method="PUT")
+    def singbox_subscriptions_update(sid):
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        # Передаём через **kwargs — функция возьмёт только известные поля.
+        from core.subscription_manager import update_subscription
+        kw = {}
+        for k in ("name", "url", "format", "interval_hours"):
+            if k in body:
+                kw[k] = body[k]
+        if "interval_hours" in kw:
+            try:
+                kw["interval_hours"] = max(1, int(kw["interval_hours"]))
+            except (TypeError, ValueError):
+                kw.pop("interval_hours")
+        return update_subscription(sid, **kw)
+
+    @app.route("/api/singbox/subscriptions/<sid>", method="DELETE")
+    def singbox_subscriptions_remove(sid):
+        response.content_type = "application/json; charset=utf-8"
+        from core.subscription_manager import remove_subscription
+        return remove_subscription(sid)
+
+    @app.route("/api/singbox/subscriptions/<sid>/refresh", method="POST")
+    def singbox_subscriptions_refresh_one(sid):
+        response.content_type = "application/json; charset=utf-8"
+        from core.subscription_manager import refresh_one
+        return refresh_one(sid)
+
+    @app.route("/api/singbox/subscriptions/refresh-all", method="POST")
+    def singbox_subscriptions_refresh_all():
+        response.content_type = "application/json; charset=utf-8"
+        from core.subscription_manager import refresh_all
+        return refresh_all()
