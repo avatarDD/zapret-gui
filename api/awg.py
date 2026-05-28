@@ -31,6 +31,12 @@ REST API для интеграции amneziawg-go.
   POST   /api/awg/warp/import           — импорт готового WARP .conf
   POST   /api/awg/warp/generate         — нативная генерация AWG-WARP
 
+  POST   /api/awg/subscription/import   — импорт подписки
+                                           (body: {"url": "..."} или
+                                                  {"text": "..."} или оба)
+  POST   /api/awg/subscription/preview  — посмотреть, что бы импортировалось,
+                                           без сохранения
+
   GET    /api/awg/warp-in-warp          — статус WARP-in-WARP
   POST   /api/awg/warp-in-warp          — поднять (body: outer, inner)
   DELETE /api/awg/warp-in-warp          — отключить
@@ -481,6 +487,57 @@ def register(app):
         if not result.get("ok"):
             response.status = 400
         return result
+
+    @app.route("/api/awg/subscription/import", method="POST")
+    def awg_subscription_import():
+        """
+        Импорт подписки. Body:
+          {"url": "https://..."} либо {"text": "..."} (любое из двух).
+
+        Возвращает summary с количеством импортированных/пропущенных
+        и list of items с их статусом. См. core.subscription_importer.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        url  = (body.get("url")  or "").strip()
+        text = (body.get("text") or "").strip()
+        if not url and not text:
+            response.status = 400
+            return {"ok": False,
+                    "error": "Нужен url или text в JSON-body"}
+        try:
+            from core.subscription_importer import import_subscription
+            return import_subscription(url=url, text=text, save=True)
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/awg/subscription/preview", method="POST")
+    def awg_subscription_preview():
+        """
+        Предпросмотр подписки без сохранения. Полезно показать
+        пользователю, что будет импортировано, до подтверждения.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        url  = (body.get("url")  or "").strip()
+        text = (body.get("text") or "").strip()
+        if not url and not text:
+            response.status = 400
+            return {"ok": False,
+                    "error": "Нужен url или text в JSON-body"}
+        try:
+            from core.subscription_importer import import_subscription
+            return import_subscription(url=url, text=text, save=False)
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/awg/warp-in-warp", method="DELETE")
     def awg_wiw_teardown():

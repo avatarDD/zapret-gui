@@ -14,6 +14,7 @@ const AwgRoutingPage = (() => {
     let configs      = [];     // список AWG-конфигов
     let environment  = null;   // отчёт детектора (для подсказок)
     let dnsmasqInfo  = null;   // /api/routing/dnsmasq/status
+    let ndmsInfo     = null;   // /api/routing/ndms/status (Keenetic-native)
     let devices      = [];     // /api/devices (DHCP+ARP)
     let devicesSrc   = null;   // sources status
     let busy         = false;
@@ -94,16 +95,19 @@ const AwgRoutingPage = (() => {
 
     async function loadAll() {
         try {
-            const [rulesResp, cfgsResp, envResp, dnResp] = await Promise.all([
-                API.get('/api/routing/rules'),
-                API.get('/api/awg/configs'),
-                API.get('/api/awg/environment').catch(() => null),
-                API.get('/api/routing/dnsmasq/status').catch(() => null),
-            ]);
+            const [rulesResp, cfgsResp, envResp, dnResp, ndmsResp] =
+                await Promise.all([
+                    API.get('/api/routing/rules'),
+                    API.get('/api/awg/configs'),
+                    API.get('/api/awg/environment').catch(() => null),
+                    API.get('/api/routing/dnsmasq/status').catch(() => null),
+                    API.get('/api/routing/ndms/status').catch(() => null),
+                ]);
             rules       = (rulesResp && rulesResp.rules)   || [];
             configs     = (cfgsResp  && cfgsResp.configs)  || [];
             environment = envResp || null;
             dnsmasqInfo = dnResp   || null;
+            ndmsInfo    = ndmsResp || null;
             if (!formIface && configs.length > 0) {
                 formIface = configs[0].name;
             }
@@ -345,6 +349,12 @@ const AwgRoutingPage = (() => {
         const backends = (dnsmasqInfo && dnsmasqInfo.backends) || {};
         const preferred = (dnsmasqInfo && dnsmasqInfo.preferred_backend) || '';
 
+        // Keenetic NDMS-backend: если он доступен, dnsmasq нам не нужен
+        // вообще — резолв и маршрутизация идут через встроенный
+        // ndnsproxy роутера. В этом случае показываем зелёный баннер
+        // вместо предупреждения про dnsmasq.
+        const ndmsActive = !!(ndmsInfo && ndmsInfo.available);
+
         const dnReady = !!dn.available && !!dn.running && !!preferred;
         const setupApplied = !!(dnsmasqInfo && dnsmasqInfo.auto_setup_applied);
         // Кнопка нужна, если у нас не работает domain-routing и есть хоть
@@ -382,8 +392,25 @@ const AwgRoutingPage = (() => {
               nft=<strong>${backends.nftset ? 'есть' : 'нет'}</strong>.
             </p>`;
 
-        const banner = dnReady
-            ? `<div style="font-size:12px; margin-bottom:8px;
+        // Баннер: NDMS-режим → зелёный, dnsmasq-готов → нейтральный
+        // info, dnsmasq-не-готов → жёлтый warning.
+        let banner;
+        if (ndmsActive) {
+            banner = `<div class="alert alert-success" style="margin-bottom:12px;">
+                <div class="alert-title">
+                  Активен Keenetic-native режим (NDMS)
+                </div>
+                <p style="font-size:12px; margin:6px 0 0;">
+                  Domain-маршрутизация идёт через встроенный
+                  <code>dns-proxy route</code> Keenetic'а
+                  (версия <strong>${escapeHtml(ndmsInfo.version || '?')}</strong>).
+                  Никакой dnsmasq на этой платформе не нужен —
+                  резолв и привязка к интерфейсу выполняются
+                  системным ndnsproxy на 53-м порту.
+                </p>
+              </div>`;
+        } else if (dnReady) {
+            banner = `<div style="font-size:12px; margin-bottom:8px;
                             display:flex; gap:8px; align-items:center;
                             flex-wrap:wrap;">
                     <span class="text-muted">
@@ -395,13 +422,15 @@ const AwgRoutingPage = (() => {
                       ${setupApplied ? ' — настройка выполнена через GUI, откатится при выключении последнего AWG' : ''}
                     </span>
                     ${revertButton}
-               </div>`
-            : `<div class="alert alert-warning" style="margin-bottom:12px;">
+               </div>`;
+        } else {
+            banner = `<div class="alert alert-warning" style="margin-bottom:12px;">
                     <div class="alert-title">Domain routing требует работающего dnsmasq</div>
                     ${dnsmasqExplanation(platformName)}
                     ${statusLine}
                     ${setupButton}
                </div>`;
+        }
 
         const cfgOptions = configs.map(c =>
             `<option value="${escapeAttr(c.name)}" ${c.name === formDomIface ? 'selected' : ''}>

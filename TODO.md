@@ -17,74 +17,94 @@ integration). Не план релиза — скорее заметки и ид
 не-Keenetic — продолжаем работать через dnsmasq+ipset/nftset, как
 сейчас.
 
-- [ ] **RCI-клиент** — `core/ndms/rci_client.py`: тонкий HTTP-клиент
+- [x] **RCI-клиент** — `core/ndms/rci_client.py`: тонкий HTTP-клиент
       к `localhost:79/rci`, методы `get(path)` и `post(payload)`,
       детектор доступности (`is_available()`), кэш версии прошивки.
-- [ ] **NDMS commands** — `core/ndms/commands.py`: высокоуровневые
+- [x] **NDMS commands** — `core/ndms/commands.py`: высокоуровневые
       обёртки `upsert_fqdn_group()`, `set_dns_proxy_route()`,
       `add_static_route()`, `set_ip_policy()`, `save_config()`.
       Все payload'ы строятся как JSON-дерево NDMS-CLI.
-- [ ] **NDMS backend для domain-rules** —
+- [x] **NDMS backend для domain-rules** —
       `core/routing/ndms_backend.py`: реализация `apply/remove` через
       `object-group fqdn <id>` + `dns-proxy route group <id> interface <iface>`.
       Никакого ipset/nftset/fwmark/ip rule — всё делает Keenetic сам.
-- [ ] **Выбор backend'а в `domain_rule._detect_backend()`** —
+- [x] **Выбор backend'а в `domain_rule._detect_backend()`** —
       приоритет: NDMS (если Keenetic + RCI) → nftset (dnsmasq + nft) →
-      ipset (dnsmasq + ipset). При Keenetic-режиме dnsmasq-проверки
-      должны быть отключены (сейчас они валят `apply_domain_rule()`
-      с сообщением «dnsmasq не установлен»).
-- [ ] **NDMS backend для CIDR-rules** — через `ip route <net> <mask>
-      interface <iface>`. Сейчас CIDR-маршрутизация на Keenetic
-      работает только через `ip rule add to <cidr>`, а это не самый
-      устойчивый путь (NDMS периодически перетирает kernel routes
-      при reload-running-config). NDMS-static-route переживает reload.
-- [ ] **NDMS backend для device-rules** — через `ip policy <name>` +
-      `ip hotspot host <mac> policy <name>`. Опционально и
-      менее приоритетно: текущая реализация через iptables MARK
-      работает на Keenetic с OpkgTun.
-- [ ] **Native Keenetic WG-интерфейсы как target** — `core/ndms/
-      wg_discovery.py`: запрашивать `show interface` и отдавать
-      список интерфейсов вида `Wireguard0..N` плюс наши
-      amneziawg-go-туннели одним списком в `/api/routing/interfaces`.
-      В UI на странице Routing — выпадающий список включает оба
-      типа, и пользователь выбирает любой как `target_iface`.
-- [ ] **NDMS ping-check delegation** — для нативных Keenetic-WG
-      туннелей мониторинг здоровья нужно делегировать NDMS'у
-      (`interface <name> ping-check profile <name>` +
-      `show interface <name>` → live state). Наш собственный
-      check-loop в `core/awg_detector.py` /диагностике должен
-      детектить «это нативный WG» и брать состояние из RCI.
-- [ ] **HydraRoute Neo support** — теги `geosite:youtube` / `geoip:ru`
-      в правилах. На бэке — резолвер таких алиасов в полные
-      списки доменов/IP с автообновлением. На фронте — autocomplete
-      по популярным алиасам.
-- [ ] **«Доступен Keenetic NDMS-режим» индикатор** на странице
-      Routing — баннер сверху, что мы переключились (или можем
-      переключиться) на нативный backend. Toggle: auto / force-NDMS /
-      force-dnsmasq для тех, кто хочет старый путь.
-- [ ] **Дезактивация dnsmasq-кода на Keenetic** — при детекте
-      Keenetic+RCI скрывать в UI кнопку «Настроить dnsmasq
-      автоматически» и не падать в `apply_domain_rule()` с
-      проверкой `dn_status.get("running")`. Сам файл
-      `dnsmasq_integration.py` (1213 строк) на Keenetic'е
-      становится dead-code — оставляем для остальных платформ.
+      ipset (dnsmasq + ipset). NDMS-fast-path добавлен в начало
+      `apply_domain_rule()`/`remove_domain_rule()` — при недоступности
+      RCI падаем на dnsmasq-fallback. Дезактивация dnsmasq-проверок
+      на Keenetic — отдельный пункт ниже.
+- [x] **NDMS backend для CIDR-rules** — через `ip route <net> <mask>
+      interface <iface>`. Включается в `manager._apply()`, когда
+      target_iface — нативный NDMS-объект (Wireguard0/1, OpenVPN0,
+      ISP*). Для AWG-userspace-туннелей остаёмся на стандартном
+      `ip rule add to <cidr>`.
+- [x] **NDMS backend для device-rules** — через `ip policy <ZGUI_id>
+      permit <iface>` + `ip hotspot host <mac> policy <ZGUI_id>`.
+      Активируется в `manager._apply()` через
+      `ndms_backend.can_handle_device_rule()` — требует MAC и
+      нативный NDMS-iface. Без MAC и на не-NDMS-интерфейсах
+      остаёмся на стандартном `ip rule from <source_ip>`.
+- [x] **Native Keenetic WG-интерфейсы как target** —
+      `core/ndms/wg_discovery.py` запрашивает `show interface` и
+      отдаёт список `Wireguard0..N`. `AwgManager.list_interfaces()`
+      и эндпоинт `GET /api/routing/interfaces` отдают единый список
+      (наши amneziawg-go + нативные NDMS-WG). В UI на странице
+      Routing — выпадающий список включает оба типа.
+- [x] **NDMS ping-check delegation** — для нативных Keenetic-WG
+      туннелей мониторинг делегирован NDMS'у через `show interface`.
+      `AwgManager.status()` для нативных WG идёт за состоянием
+      в RCI вместо `wg show` (который их не видит).
+- [x] **HydraRoute Neo support** — теги `geosite:youtube` / `geoip:ru`
+      разворачиваются в полные списки в `core/routing/alias_resolver.py`.
+      Источники: v2fly/domain-list-community и v2fly/geoip. Кэш в
+      `data/aliases/`, TTL=24ч, при сетевой ошибке используется stale
+      кэш. API: `GET /api/routing/aliases`,
+      `POST /api/routing/aliases/refresh`,
+      `POST /api/routing/aliases/preview`. Работает и через NDMS, и
+      через dnsmasq-fallback. Frontend-autocomplete по `SUGGESTED_*` —
+      отдельной задачей.
+- [x] **«Доступен Keenetic NDMS-режим» индикатор** — на странице
+      Routing вкладка «Домены» рендерит зелёный `alert-success`
+      баннер «Активен Keenetic-native режим (NDMS)» с версией
+      прошивки, когда `/api/routing/ndms/status` вернул
+      `available: true`. Toggle auto/force-NDMS/force-dnsmasq —
+      пока не реализован, по умолчанию auto (NDMS → fallback dnsmasq).
+- [x] **Дезактивация dnsmasq-кода на Keenetic** — `apply_domain_rule()`
+      первым делом пробует NDMS-fast-path; до dnsmasq-проверок
+      `dn_status.get("running")` дело не доходит, когда RCI отвечает.
+      В UI кнопка «Настроить dnsmasq автоматически» рендерится
+      только в warning-баннере, который теперь скрыт при ndmsActive.
+      Сам `dnsmasq_integration.py` (1213 строк) остаётся для
+      OpenWrt/Linux/Entware-не-Keenetic.
 
 ## Дальнейшие заимствования из awg-manager
 
-- [ ] **Connectivity matrix** — строки = таргеты (`8.8.8.8`,
-      `1.1.1.1`, ...), столбцы = туннели, ячейки = latency с
-      цветовой шкалой (зелёный <100ms / оранжевый <250ms / красный).
-      Виджет на Dashboard страницы AWG. У нас уже есть
-      `core/testers/` и `core/diagnostics.py` — нужно собрать
-      матрицу и нарисовать.
-- [ ] **Traffic graphs по туннелям 1h/3h/24h** — sparkline и
-      развёрнутый график RX/TX per-iface. Источник — `wg show
-      <iface> transfer` раз в N секунд, хранилище — кольцевой
-      буфер в RAM (на Keenetic не плодим запись на flash).
-- [ ] **Импорт подписок Karing/Hiddify/VLESS** — base64 /
-      clash-yaml / sing-box JSON / VLESS URI. Уже есть отдельный
-      пункт в Sing-box секции — здесь дублируем как кросс-ссылку,
-      т.к. в awg-manager это центральный feature.
+- [x] **Connectivity matrix (backend)** — `core/connectivity/matrix.py`:
+      параллельный `ping -I <iface>` по списку таргетов и туннелей,
+      результат кэшируется в RAM (без записи на flash), TTL=30с.
+      Защита от двойного запуска, фолбэк на default route при отказе
+      `-I`. API: `GET /api/connectivity/matrix`,
+      `POST /api/connectivity/probe`,
+      `GET|POST /api/connectivity/targets`. UI-виджет — отдельной
+      подзадачей (нужен grid с цветовой шкалой good/ok/slow/failed).
+- [x] **Traffic graphs (backend) по туннелям 1h/3h/24h** —
+      `core/connectivity/traffic.py`: фоновой sampler раз в 30с
+      пишет в кольцевой буфер per-iface (RAM, ~35КБ на интерфейс
+      за 24ч), серии 1h/3h/24h ресемплятся в bps по 60 точек.
+      Источники: NDMS (`rx_bytes`/`tx_bytes` из RCI),
+      `awg show <iface> transfer`, `/proc/net/dev` как фолбэк.
+      API: `GET /api/connectivity/traffic`,
+      `GET /api/connectivity/traffic/<iface>`. UI-sparkline —
+      отдельной подзадачей.
+- [x] **Импорт подписок (WG-flavor)** — `core/subscription_importer.py`:
+      fetch URL → base64-detect → парс URI/`.conf` блоков.
+      WireGuard-URI и сырые `.conf` импортируются в `AwgManager`.
+      VLESS/Trojan/SS/Hysteria2/TUIC URI распознаются, но
+      пропускаются с пометкой `needs sing-box` (включится, когда
+      будет готова Sing-box секция). API:
+      `POST /api/awg/subscription/import`,
+      `POST /api/awg/subscription/preview`.
 
 ## Sing-box / Karing replacement integration
 

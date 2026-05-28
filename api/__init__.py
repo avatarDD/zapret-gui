@@ -26,6 +26,7 @@ def register_routes(app):
     from api.awg import register as reg_awg
     from api.routing import register as reg_routing
     from api.devices import register as reg_devices
+    from api.connectivity import register as reg_connectivity
 
     reg_status(app)
     reg_logs(app)
@@ -47,3 +48,4 @@ def register_routes(app):
     reg_awg(app)
     reg_routing(app)
     reg_devices(app)
+    reg_connectivity(app)

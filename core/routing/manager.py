@@ -280,6 +280,17 @@ class RoutingManager:
             from core.routing.domain_rule import apply_domain_rule
             return apply_domain_rule(rule)
         if isinstance(rule, DeviceRoutingRule):
+            # NDMS device-routing работает только если есть MAC И
+            # target_iface — нативный NDMS-объект. Проверка инкап-
+            # сулирована в can_handle_device_rule().
+            try:
+                from core.routing import ndms_backend
+                if ndms_backend.can_handle_device_rule(rule):
+                    return ndms_backend.apply_device_rule(rule)
+            except Exception as e:
+                log.warning("routing(ndms): device apply упал,"
+                            " fallback на ip rule: %s" % e,
+                            source="routing")
             from core.routing.device_rule import apply_device_rule
             return apply_device_rule(rule)
         return {"ok": False, "error": "Неизвестный тип правила"}
@@ -299,6 +310,14 @@ class RoutingManager:
             from core.routing.domain_rule import remove_domain_rule
             return remove_domain_rule(rule)
         if isinstance(rule, DeviceRoutingRule):
+            try:
+                from core.routing import ndms_backend
+                if ndms_backend.can_handle_device_rule(rule):
+                    return ndms_backend.remove_device_rule(rule)
+            except Exception as e:
+                log.warning("routing(ndms): device remove упал,"
+                            " fallback на ip rule: %s" % e,
+                            source="routing")
             from core.routing.device_rule import remove_device_rule
             return remove_device_rule(rule)
         return {"ok": True, "skipped": True}
