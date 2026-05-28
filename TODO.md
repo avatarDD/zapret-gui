@@ -138,11 +138,19 @@ integration). Не план релиза — скорее заметки и ид
       `{"name":"tun0", "source":"singbox", "type":"singbox-tun"}`.
       `RoutingRule.target_iface` уже умеет работать с любым iface —
       sing-box подцепляется автоматически.
-- [ ] **Selectors из sing-box** (`outbound_selector` / `urltest`) —
-      ортогональны нашему routing engine: они выбирают аутбаунд
-      внутри sing-box, мы выбираем интерфейс снаружи. Реализация:
-      UI-конструктор «политики переключения» для sing-box-конфига
-      (отдельная страница).
+- [x] **Selectors из sing-box** (`selector` / `urltest`) —
+      `core/singbox_config.py`: `make_selector_outbound`,
+      `make_urltest_outbound`, `list_user_outbound_tags`,
+      `wrap_in_group(cfg, tag, type)`. Последний берёт все «реальные»
+      outbound'ы конфига (не direct/block/dns), оборачивает их в
+      selector или urltest, переписывает route.rules чтобы трафик
+      шёл через group. API: `POST /api/singbox/configs/<name>/wrap`
+      body `{group_type, group_tag, default, url, interval}`.
+      UI: на странице sing-box: конфиги / Редактор две кнопки
+      «Обернуть в urltest» и «Обернуть в selector».
+      urltest нужен 99% юзерам (автоматически быстрейший сервер);
+      selector — когда есть clash-api dashboard для ручного
+      переключения.
 - [x] **Импорт подписок (sing-box-часть)** —
       `core/singbox_subscription.py`: парсер VLESS / Trojan / SS /
       Hysteria2 / TUIC URI в outbound-dict. Интегрирован в

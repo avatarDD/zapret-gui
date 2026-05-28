@@ -249,6 +249,16 @@ const SingboxConfigsPage = (() => {
                     <button class="btn btn-ghost btn-sm"
                             onclick="SingboxConfigsPage.validate(SingboxConfigsPage.currentName())">
                         sing-box check
+                    </button>
+                    <button class="btn btn-ghost btn-sm"
+                            onclick="SingboxConfigsPage.wrapIn('urltest')"
+                            title="Обернуть все outbound'ы в urltest — sing-box будет автоматически выбирать самый быстрый">
+                        Обернуть в urltest
+                    </button>
+                    <button class="btn btn-ghost btn-sm"
+                            onclick="SingboxConfigsPage.wrapIn('selector')"
+                            title="Обернуть все outbound'ы в selector — переключение вручную через clash-api">
+                        Обернуть в selector
                     </button>` : ''}
                 </div>
                 <textarea id="sb-editor-text"
@@ -311,6 +321,28 @@ const SingboxConfigsPage = (() => {
                 await loadAll();
             } else {
                 Toast.error((r && r.error) || 'save failed');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        }
+    }
+
+    async function wrapIn(groupType) {
+        const name = currentName();
+        if (!name) { Toast.error('Нет имени конфига'); return; }
+        const tag = prompt(
+            `Имя группы (tag нового ${groupType}-outbound'а):`,
+            groupType === 'urltest' ? 'auto' : 'selector');
+        if (!tag) return;
+        try {
+            const r = await API.post(
+                `/api/singbox/configs/${encodeURIComponent(name)}/wrap`,
+                { group_type: groupType, group_tag: tag });
+            if (r && r.ok) {
+                Toast.success(`${name}: обёрнут в ${groupType} '${tag}'`);
+                await openEditor(name);   // перезагрузить редактор
+            } else {
+                Toast.error((r && r.error) || 'failed');
             }
         } catch (e) {
             Toast.error(e.message);
@@ -699,7 +731,7 @@ const SingboxConfigsPage = (() => {
     return {
         render, destroy, switchTab,
         openEditor, newConfig, removeConfig,
-        save, validate, toggle,
+        save, validate, toggle, wrapIn,
         onTextChange, currentName,
         importPreview, importApply,
         onImportUrlChange, onImportTextChange,

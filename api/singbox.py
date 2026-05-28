@@ -230,6 +230,56 @@ def register(app):
         from core.singbox_manager import get_singbox_manager
         return get_singbox_manager().validate_via_binary(name)
 
+    @app.route("/api/singbox/configs/<name>/wrap", method="POST")
+    def singbox_configs_wrap(name):
+        """
+        Обернуть все outbound'ы конфига в selector или urltest.
+
+        body: {"group_type": "selector"|"urltest",
+               "group_tag":  "auto" (default),
+               "default":    "<tag>"   (для selector),
+               "url":        "..."     (для urltest),
+               "interval":   "3m"      (для urltest)}
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core.singbox_manager import get_singbox_manager
+        from core.singbox_config import wrap_in_group, render_conf
+
+        mgr = get_singbox_manager()
+        cfg_resp = mgr.get_config(name)
+        if not cfg_resp.get("ok"):
+            response.status = 404
+            return cfg_resp
+        cfg = cfg_resp.get("parsed") or {}
+        group_type = (body.get("group_type") or "selector").lower()
+        group_tag  = (body.get("group_tag")  or "auto").strip()
+        try:
+            wrap_in_group(
+                cfg,
+                group_tag=group_tag,
+                group_type=group_type,
+                default=(body.get("default") or "").strip(),
+                url=(body.get("url") or
+                     "https://www.gstatic.com/generate_204"),
+                interval=(body.get("interval") or "3m"),
+            )
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        # Сохраняем обновлённый конфиг
+        save_res = mgr.save_config(name, text=render_conf(cfg))
+        if not save_res.get("ok"):
+            response.status = 500
+            return save_res
+        return {"ok": True, "name": name, "group_tag": group_tag,
+                "group_type": group_type,
+                "outbounds_count": len([o for o in cfg.get("outbounds", [])
+                                         if isinstance(o, dict)])}
+
     # ─────── autostart ────────────────────────────────────────────
 
     @app.route("/api/singbox/autostart")

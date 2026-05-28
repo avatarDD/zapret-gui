@@ -273,3 +273,125 @@ def make_tuic_outbound(tag: str, server: str, port: int,
     if sni:
         out["tls"]["server_name"] = sni
     return out
+
+
+def make_selector_outbound(tag: str, outbounds: list,
+                           default: str = "") -> dict:
+    """
+    `selector` — переключатель между outbound'ами «вручную».
+
+    Используется когда у пользователя несколько серверов и он хочет
+    переключаться между ними через UI/clash-api. Sing-box на старте
+    выбирает `default` (или первый, если не указано).
+    """
+    if not tag or not outbounds:
+        raise ValueError("selector: нужен tag и непустой outbounds")
+    out = {
+        "type": "selector",
+        "tag":  tag,
+        "outbounds": list(outbounds),
+    }
+    if default and default in outbounds:
+        out["default"] = default
+    else:
+        out["default"] = outbounds[0]
+    return out
+
+
+def make_urltest_outbound(tag: str, outbounds: list,
+                          *, url: str = "https://www.gstatic.com/generate_204",
+                          interval: str = "3m",
+                          tolerance: int = 50) -> dict:
+    """
+    `urltest` — автоматический выбор самого быстрого outbound'а
+    по latency-пробе.
+
+      url       — HTTP-пробник (должен отдать 204/200; default Google).
+      interval  — как часто перепробовать (sing-box-формат: '30s', '3m').
+      tolerance — миллисекунды; не переключаемся, если разница меньше.
+    """
+    if not tag or not outbounds:
+        raise ValueError("urltest: нужен tag и непустой outbounds")
+    return {
+        "type":      "urltest",
+        "tag":       tag,
+        "outbounds": list(outbounds),
+        "url":       url,
+        "interval":  interval,
+        "tolerance": int(tolerance),
+    }
+
+
+def list_user_outbound_tags(cfg: dict) -> list:
+    """
+    Достать tag'и всех «реальных» outbound'ов конфига — то есть
+    тех, через которые ходит трафик, исключая служебные direct/block/
+    dns и сами selector/urltest.
+
+    Используется UI «обернуть в selector»: показывает пользователю
+    набор для выбора.
+    """
+    if not isinstance(cfg, dict):
+        return []
+    out = []
+    for ob in (cfg.get("outbounds") or []):
+        if not isinstance(ob, dict):
+            continue
+        t = ob.get("type")
+        tag = ob.get("tag")
+        if not tag or not t:
+            continue
+        if t in ("direct", "block", "dns", "selector", "urltest"):
+            continue
+        out.append(tag)
+    return out
+
+
+def wrap_in_group(cfg: dict, group_tag: str, group_type: str,
+                  *, route_through: bool = True,
+                  default: str = "",
+                  url: str = "https://www.gstatic.com/generate_204",
+                  interval: str = "3m") -> dict:
+    """
+    Обернуть все «реальные» outbound'ы конфига в group-outbound
+    (selector или urltest) и перенаправить через него route.
+
+    cfg          — sing-box-конфиг (модифицируется и возвращается)
+    group_tag    — tag нового group-outbound'а
+    group_type   — 'selector' | 'urltest'
+    route_through=True → меняем route.rules[*].outbound на group_tag,
+                         если они ссылались на старый default.
+
+    Возвращает изменённый cfg.
+    """
+    if group_type not in ("selector", "urltest"):
+        raise ValueError("group_type должен быть selector или urltest")
+    tags = list_user_outbound_tags(cfg)
+    if not tags:
+        raise ValueError("В конфиге нет outbound'ов для обёртки")
+    if group_tag in tags:
+        raise ValueError("Tag '%s' уже занят реальным outbound'ом"
+                         % group_tag)
+
+    if group_type == "selector":
+        group = make_selector_outbound(group_tag, tags, default=default)
+    else:
+        group = make_urltest_outbound(group_tag, tags,
+                                       url=url, interval=interval)
+
+    # Положим новый group первым, чтобы он был «более заметен» в JSON.
+    # Сохраняем существующие direct/block/etc.
+    obs = cfg.setdefault("outbounds", [])
+    obs.insert(0, group)
+
+    if route_through:
+        route = cfg.setdefault("route", {})
+        rules = route.setdefault("rules", [])
+        old_targets = set(tags)
+        for r in rules:
+            if isinstance(r, dict) and r.get("outbound") in old_targets:
+                r["outbound"] = group_tag
+        # final тоже перенаправим, если он указывал на один из обёрнутых
+        if route.get("final") in old_targets:
+            route["final"] = group_tag
+    return cfg
