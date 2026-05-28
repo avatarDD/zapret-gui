@@ -1,0 +1,394 @@
+# ═══════════════════════════════════════════════════════════════
+# build-singbox-binaries.yml — кросс-компиляция sing-box под
+# архитектуры роутеров.
+#
+# Способы запустить релиз (полностью аналогично awg-binaries):
+#   1. Автоматически: cron раз в сутки проверяет апстрим
+#      SagerNet/sing-box и создаёт наш тэг singbox-bin-<X>,
+#      если в апстриме появилась новая версия.
+#   2. Через веб-интерфейс GitHub: Releases → Draft new release →
+#      Choose a tag → ввести имя вида singbox-bin-vN → Publish.
+#   3. Вручную: workflow_dispatch с явным publish_release=true.
+#
+# Билд: go build с набором tags из release/DEFAULT_BUILD_TAGS
+# (плюс наши минимум-нужные для роутера: with_quic, with_grpc,
+# with_wireguard, with_utls). Уменьшение размера:
+#   - `-ldflags="-s -w" -trimpath`
+#   - UPX --best на mipsel/mips/armv7 (на aarch64/x86_64 без UPX).
+# ═══════════════════════════════════════════════════════════════
+
+name: Build sing-box binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      singbox_ref:
+        description: 'sing-box git ref (tag/branch/sha). Пусто = последний релиз.'
+        required: false
+        default: ''
+      publish_release:
+        description: 'Опубликовать GitHub Release (true/false)'
+        required: false
+        default: 'true'
+  push:
+    tags:
+      - 'singbox-bin-*'
+  schedule:
+    # Раз в сутки в 4:00 (на час позже AWG, чтобы не пересекаться
+    # по runner'ам в один и тот же момент).
+    - cron: '0 4 * * *'
+
+permissions:
+  contents: write
+
+env:
+  SINGBOX_REPO: SagerNet/sing-box
+  # Набор tags для роутерного билда. Меньше дефолтного апстрима —
+  # выкидываем with_clash_api, with_v2ray_api (мы не выставляем
+  # API наружу), with_acme (нам незачем Let's Encrypt на роутере),
+  # with_gvisor (большой) и with_dhcp.
+  # Оставляем то, что критично:
+  #   with_quic     — Hysteria, Hysteria2, TUIC
+  #   with_grpc     — VLESS+gRPC transport
+  #   with_wireguard — WireGuard outbound (комплементарен AWG)
+  #   with_utls     — uTLS / Reality (для VLESS)
+  #   with_ech      — Encrypted ClientHello (часто требуется для
+  #                   обхода SNI-фильтров)
+  SINGBOX_TAGS: 'with_quic with_grpc with_wireguard with_utls with_ech'
+
+jobs:
+  # ── 0. Авто-детект новых версий апстрима (только cron) ─────
+  auto-tag:
+    name: Auto-tag on upstream release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect & maybe tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Берём самый свежий git-тэг
+          resolve_latest() {
+            local repo="$1"
+            local out
+            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            echo "main"
+          }
+
+          SB_REF=$(resolve_latest "$SINGBOX_REPO")
+          SB_VER="${SB_REF#v}"
+
+          sanitize() { echo "$1" | tr -c 'A-Za-z0-9._-' '-'; }
+          SB_S=$(sanitize "$SB_VER")
+
+          NEW_TAG="singbox-bin-v${SB_S}"
+          echo "Upstream sing-box=$SB_VER → tag=$NEW_TAG"
+
+          if git rev-parse "refs/tags/$NEW_TAG" >/dev/null 2>&1 \
+             || gh api "repos/${{ github.repository }}/git/refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG уже существует — пропускаем"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEW_TAG" -m "Auto: sing-box=$SB_VER"
+          git push origin "$NEW_TAG"
+          echo "Создан и запушен тэг $NEW_TAG — он триггернёт релизный run"
+
+  # ── 1. Определить версию апстрима ──────────────────────────
+  resolve-version:
+    name: Resolve upstream version
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    outputs:
+      singbox_ref: ${{ steps.resolve.outputs.singbox_ref }}
+      singbox_version: ${{ steps.resolve.outputs.singbox_version }}
+    steps:
+      - name: Resolve ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          SB_REF="${{ inputs.singbox_ref }}"
+
+          # Если запущено по тэгу singbox-bin-v<X>, парсим версию из тэга
+          if [ -z "$SB_REF" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [[ "$TAG" =~ ^singbox-bin-v(.+)$ ]]; then
+              SB_REF="v${BASH_REMATCH[1]}"
+              echo "Version parsed from tag $TAG: $SB_REF"
+            fi
+          fi
+
+          resolve_latest() {
+            local repo="$1"
+            local out
+            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            echo "main"
+          }
+
+          [ -z "$SB_REF" ] && SB_REF=$(resolve_latest "$SINGBOX_REPO")
+
+          # Если в тэге была "1.2.3" а в репо тэг "v1.2.3" — корректируем
+          fix_ref() {
+            local repo="$1" ref="$2"
+            if gh api "repos/$repo/git/refs/tags/$ref" >/dev/null 2>&1; then
+              echo "$ref"; return
+            fi
+            if [[ "$ref" != v* ]] \
+               && gh api "repos/$repo/git/refs/tags/v$ref" >/dev/null 2>&1; then
+              echo "v$ref"; return
+            fi
+            echo "$ref"
+          }
+          SB_REF=$(fix_ref "$SINGBOX_REPO" "$SB_REF")
+
+          SB_VER="${SB_REF#v}"
+
+          echo "singbox_ref=$SB_REF"        >> "$GITHUB_OUTPUT"
+          echo "singbox_version=$SB_VER"    >> "$GITHUB_OUTPUT"
+
+          echo "── Resolved ──"
+          echo "sing-box : $SB_REF (version $SB_VER)"
+
+  # ── 2. Сборка sing-box ──────────────────────────────────────
+  build-singbox:
+    name: Build sing-box (${{ matrix.arch_name }})
+    runs-on: ubuntu-latest
+    needs: resolve-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_name: mipsel-softfloat
+            goos: linux
+            goarch: mipsle
+            gomips: softfloat
+          - arch_name: mips-softfloat
+            goos: linux
+            goarch: mips
+            gomips: softfloat
+          - arch_name: aarch64
+            goos: linux
+            goarch: arm64
+          - arch_name: armv7
+            goos: linux
+            goarch: arm
+            goarm: '7'
+          - arch_name: x86_64
+            goos: linux
+            goarch: amd64
+
+    steps:
+      - name: Checkout sing-box
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SINGBOX_REPO }}
+          ref: ${{ needs.resolve-version.outputs.singbox_ref }}
+          path: src
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # sing-box традиционно требует свежий Go; берём с запасом.
+          go-version: '1.23'
+          cache: false
+
+      - name: Install UPX (mipsel/mips/armv7 only)
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+          upx --version | head -1
+
+      - name: Build
+        working-directory: src
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+          # Версия как у апстрима — это поможет `sing-box version` отдать
+          # правильную строку. Без этого она будет "unknown".
+          SB_VER: ${{ needs.resolve-version.outputs.singbox_version }}
+        run: |
+          set -euo pipefail
+          go env GOOS GOARCH GOMIPS GOARM
+
+          # sing-box main находится в cmd/sing-box (или ./cmd/sing-box).
+          MAIN_PKG="./cmd/sing-box"
+          if [ ! -d "cmd/sing-box" ]; then
+            # Защита от смены структуры: пробуем альтернативный путь
+            MAIN_PKG="."
+          fi
+
+          # ldflags: -s -w выкидывают symbol table + debug info.
+          # -X github.com/sagernet/sing-box/constant.Version=$SB_VER —
+          # стандартный способ инжекта версии в sing-box.
+          LDFLAGS="-s -w -X github.com/sagernet/sing-box/constant.Version=${SB_VER}"
+
+          go build \
+            -trimpath \
+            -tags "${SINGBOX_TAGS}" \
+            -ldflags "${LDFLAGS}" \
+            -o sing-box \
+            "${MAIN_PKG}"
+
+          ls -lh sing-box
+          file sing-box || true
+
+      - name: UPX compress
+        # Только для архитектур со строгим лимитом flash.
+        # На aarch64/x86_64 экономия не оправдывает риски (антивирусы
+        # ругаются, +stuff).
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          echo "── before UPX ──"
+          ls -lh sing-box
+          # mips/mipsle с LZMA иногда падают в runtime (Go-runtime
+          # in-place decompression), поэтому LZMA только на armv7.
+          if [ "${{ matrix.goarch }}" = "arm" ]; then
+            upx --best --lzma sing-box || upx --best sing-box
+          else
+            upx --best sing-box
+          fi
+          echo "── after UPX ──"
+          ls -lh sing-box
+          file sing-box || true
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VER="${{ needs.resolve-version.outputs.singbox_version }}"
+          ARCH="${{ matrix.arch_name }}"
+          mkdir -p package
+          cp src/sing-box package/
+          (cd package && tar czf "../sing-box-${VER}-${ARCH}.tar.gz" sing-box)
+          sha256sum "sing-box-${VER}-${ARCH}.tar.gz" \
+            > "sing-box-${VER}-${ARCH}.tar.gz.sha256"
+          ls -lh sing-box-*.tar.gz*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: singbox-${{ matrix.arch_name }}
+          path: |
+            sing-box-*.tar.gz
+            sing-box-*.tar.gz.sha256
+          retention-days: 14
+
+  # ── 3. Публикация релиза ───────────────────────────────────
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [resolve-version, build-singbox]
+    if: |
+      startsWith(github.ref, 'refs/tags/singbox-bin-') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Stage release files & build manifest
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \) \
+            -exec cp {} release/ \;
+          ls -lh release/
+
+          SB_VER="${{ needs.resolve-version.outputs.singbox_version }}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          [ "$TAG" = "$GITHUB_REF" ] && TAG="manual-$(date -u +%Y%m%d%H%M%S)"
+
+          REPO="${{ github.repository }}"
+          BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+
+          python3 - "$SB_VER" "$TAG" "$BASE_URL" <<'EOF' > release/manifest.json
+          import json, os, sys, hashlib
+
+          sb_ver, tag, base = sys.argv[1:4]
+
+          def sha(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(8192), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          archs = ["mipsel-softfloat", "mips-softfloat", "aarch64", "armv7", "x86_64"]
+          manifest = {
+              "schema": 1,
+              "tag": tag,
+              "sing_box": {"version": sb_ver, "binaries": {}},
+          }
+          for arch in archs:
+              fname = f"sing-box-{sb_ver}-{arch}.tar.gz"
+              fpath = os.path.join("release", fname)
+              if os.path.exists(fpath):
+                  manifest["sing_box"]["binaries"][arch] = {
+                      "filename": fname,
+                      "url": f"{base}/{fname}",
+                      "sha256": sha(fpath),
+                      "size": os.path.getsize(fpath),
+                  }
+          print(json.dumps(manifest, indent=2))
+          EOF
+
+          echo "── manifest.json ──"
+          cat release/manifest.json
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.stage.outputs.tag }}
+          name: "sing-box binaries ${{ steps.stage.outputs.tag }}"
+          body: |
+            Кросс-скомпилированные бинарники sing-box для роутеров и Linux.
+
+            - sing-box: `${{ needs.resolve-version.outputs.singbox_version }}`
+
+            Build tags: `${{ env.SINGBOX_TAGS }}`
+
+            Архитектуры, размеры, sha256 и URL — в `manifest.json`.
+          draft: false
+          prerelease: false
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -85,14 +85,16 @@ def register(app):
         Все доступные target-интерфейсы для routing-правил:
           - наши amneziawg-go (`awg0`, `opkgtun0`, ...)
           - нативные Keenetic WG (`Wireguard0..N`) — только если
-            мы на Keenetic'е и RCI доступен.
+            мы на Keenetic'е и RCI доступен;
+          - sing-box TUN-инbound'ы (`tun0`, `singbox-tun`, ...) —
+            читаем из активных sing-box-конфигов.
 
         Формат:
           {"ok": true,
            "interfaces": [
              {"name": "awg0", "source": "awg",  "type": "amneziawg-go", ...},
-             {"name": "Wireguard0", "source": "ndms", "type": "wireguard",
-              "description": "...", "state": "up", "address": "10.0.0.2/24"},
+             {"name": "Wireguard0", "source": "ndms", "type": "wireguard"},
+             {"name": "tun0", "source": "singbox", "type": "singbox-tun"},
              ...]}
         """
         response.content_type = "application/json; charset=utf-8"
@@ -120,6 +122,45 @@ def register(app):
                     entry["state"]   = iface.get("state", "")
                     entry["address"] = iface.get("address", "")
                 result.append(entry)
+
+            # sing-box: для каждого активного конфига с tun-inbound'ом
+            # отдаём interface_name из его секции interface (default
+            # `tun0`). На уровне ядра он реально есть → ip rule на него
+            # сработает.
+            try:
+                from core.singbox_manager import get_singbox_manager
+                from core.singbox_config import parse_conf as _sb_parse
+                sb_mgr = get_singbox_manager()
+                for cfg in sb_mgr.list_configs():
+                    name = cfg.get("name", "")
+                    if not cfg.get("running") or not name:
+                        continue
+                    full = sb_mgr.get_config(name)
+                    if not full.get("ok") or not full.get("parsed"):
+                        continue
+                    for ib in (full["parsed"].get("inbounds") or []):
+                        if not isinstance(ib, dict):
+                            continue
+                        if ib.get("type") != "tun":
+                            continue
+                        ifname = (ib.get("interface_name")
+                                  or "tun0")
+                        if ifname in seen:
+                            continue
+                        seen.add(ifname)
+                        result.append({
+                            "name":        ifname,
+                            "active":      True,
+                            "source":      "singbox",
+                            "type":        "singbox-tun",
+                            "description": "sing-box (%s)" % name,
+                        })
+            except Exception as e:
+                # sing-box ещё не интегрирован / упал — это норма
+                # для большинства установок. Не валим весь endpoint.
+                from core.log_buffer import log
+                log.warning("routing/interfaces: sing-box не добавлен: %s"
+                            % e, source="routing")
 
             return {"ok": True, "interfaces": result}
         except Exception as e:

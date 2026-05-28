@@ -112,32 +112,56 @@ integration). Не план релиза — скорее заметки и ид
 сделан независимым от AWG. Следующая интеграция должна
 переиспользовать тот же движок, не плодя параллельные правила.
 
-- [ ] **Бинарь sing-box** под наши целевые архитектуры
-      (`mipsel-softfloat`, `mips-softfloat`, `aarch64`, `armv7`,
-      `x86_64`). По возможности — отдельный workflow по аналогии с
-      `.github/workflows/build-awg-binaries.yml`, со своим тегом
-      релизов и `manifest.json`.
-- [ ] **Платформенная абстракция** — переиспользовать
-      `core/awg_platform.py` или вынести общие части в
-      `core/platform.py`. Sing-box тоже использует TUN, поэтому
-      OpkgTun-предчек уже готов.
-- [ ] **Installer** — повторить паттерн `core/awg_installer.py`
-      (скачать → sha256 → распаковать → +x). Стоит сразу обобщить
-      в `core/binary_installer.py`, чтобы оба установщика жили
-      поверх общей утилиты.
-- [ ] **Менеджер конфигов** — sing-box принимает JSON, не `.conf`.
-      Нужен отдельный менеджер по аналогии с `core/awg_manager.py`
-      с импортом подписок Karing/Hiddify, шейпингом аутбаундов.
-- [ ] **Routing** — `RoutingRule.target_iface` уже абстрактный;
-      достаточно добавить sing-box-интерфейсы (`tun0` / `tun1`) в
-      выпадающие списки на странице Routing. Правила CIDR/domain/
-      device применяются как есть.
+- [x] **Бинарь sing-box** — `.github/workflows/build-singbox-binaries.yml`.
+      Кросс-компилируется под mipsel/mips/aarch64/armv7/x86_64.
+      Auto-tag через cron раз в сутки, manifest.json в релизе.
+      Build tags: `with_quic with_grpc with_wireguard with_utls with_ech`.
+      UPX-сжатие на mipsel/mips/armv7 (как для AWG).
+- [x] **Платформенная абстракция** — `core/singbox_platform.py`:
+      KeeneticSingbox / OpenWrtSingbox / GenericLinuxSingbox,
+      все используют общий PlatformKind enum из awg_platform.
+      `detect_singbox_platform()` опирается на awg_detector
+      (единый источник истины про окружение).
+- [x] **Installer** — `core/singbox_installer.py` на базе
+      `core/binary_installer.py` (общая утилита). Skipped tests +
+      manifest GitHub-fetch + atomic install. API:
+      `GET /api/singbox/manifest`, `POST /api/singbox/install`,
+      `GET /api/singbox/version`.
+- [x] **Менеджер конфигов** — `core/singbox_manager.py`:
+      CRUD JSON в `platform.config_dir`, lifecycle через
+      `sing-box run -c`, валидация через `sing-box check -c`,
+      tail-логов на падении при старте.
+      `core/singbox_config.py`: parse/validate/render +
+      builders для VLESS/Trojan/SS/Hysteria2/TUIC outbound'ов.
+- [x] **Routing-интеграция** — `/api/routing/interfaces` теперь
+      возвращает sing-box tun-инboundов (если они запущены):
+      `{"name":"tun0", "source":"singbox", "type":"singbox-tun"}`.
+      `RoutingRule.target_iface` уже умеет работать с любым iface —
+      sing-box подцепляется автоматически.
 - [ ] **Selectors из sing-box** (`outbound_selector` / `urltest`) —
       ортогональны нашему routing engine: они выбирают аутбаунд
-      внутри sing-box, мы выбираем интерфейс снаружи. Стоит
-      решить, где какая ответственность.
+      внутри sing-box, мы выбираем интерфейс снаружи. Реализация:
+      UI-конструктор «политики переключения» для sing-box-конфига
+      (отдельная страница).
+- [x] **Импорт подписок (sing-box-часть)** —
+      `core/singbox_subscription.py`: парсер VLESS / Trojan / SS /
+      Hysteria2 / TUIC URI в outbound-dict. Интегрирован в
+      `core/subscription_importer.py`: при импорте подписки
+      sing-box-семейство автоматически собирается в общий конфиг
+      `imported-subscription`. Реальные WG-URI продолжают идти в
+      AWG-менеджер.
+- [x] **Sing-box autostart** — `core/singbox_autostart.py`:
+      генерация init-скрипта (Entware/systemd варианты) для
+      enabled-конфигов, флаги хранятся в settings.json
+      (`singbox.autostart`). API: `GET/POST /api/singbox/autostart`,
+      `regenerate`, `remove`, `apply`.
 - [ ] **Karing-совместимый импорт подписок** —
       base64/clash-yaml/sing-box JSON, авторефреш по таймеру.
+      base64 уже работает; clash-yaml + sing-box JSON + автообновление
+      по cron-таймеру — отдельной задачей.
+- [ ] **UI для sing-box** — отдельные страницы Dashboard /
+      Configs / Outbounds Builder / Routing. Сейчас доступны
+      только API; UI — отдельная задача (по объёму ~как AWG-UI).
 
 ## AWG: то, что не успели в v0.19.0
 
