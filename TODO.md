@@ -179,12 +179,25 @@ integration). Не план релиза — скорее заметки и ид
       имеет проблемы с LZMA in-place decompression).
       `-ldflags="-s -w" -trimpath` уже стоял ранее.
       Ожидаемый выигрыш на mipsel: 5-7МБ → ~2МБ.
-- [ ] **Поддержка KeenOS 4.x** — детект есть, но тестирование на
-      реальном устройстве не проводилось. KeenOS 4.x иначе работает
-      с пользовательскими iptables-цепочками.
-- [ ] **Watchdog для AWG** — рестарт `amneziawg-go` при отсутствии
-      handshake'а более N минут (по аналогии с тем, как
-      `nfqws_manager.py` следит за nfqws2).
+- [x] **Поддержка KeenOS 4.x (детектор + инструкции)** —
+      `KeeneticPlatform.tun_instructions()` ветвится по
+      `_version_major()`: 5.x → OpkgTun-компонент, 4.x → kmod-tun
+      или системный «Прокси OpenVPN», `0` → универсальная подсказка.
+      `supports_iptables_marks()` теперь учитывает, что на 4.x
+      iptables работает, но Keenetic может перетирать
+      пользовательские цепочки — для надёжного PBR рекомендуется
+      NDMS-backend (если RCI доступен). `as_dict()` отдаёт
+      `keenos_major` отдельным полем для UI-развилки.
+      ПОЛЕВОЕ тестирование на 4.x-устройстве — открытая задача.
+- [x] **Watchdog для AWG** — `core/awg_watchdog.py`: фоновой поток
+      раз в N секунд проверяет `latest_handshake` по каждому peer'у
+      всех активных AWG-туннелей; если самый свежий handshake
+      старше `handshake_timeout_sec` (default 180с), делает
+      `AwgManager.restart()`. Защита от петли:
+      `max_restarts_per_hour=6` + `cooldown_sec=300`. Нативные
+      Keenetic-WG туннели пропускаются (их рестартит сам Keenetic).
+      По умолчанию ВЫКЛЮЧЕН — настраивается через settings.json
+      `awg.watchdog.*` или API: `GET|POST /api/awg/watchdog`.
 
 ## Тех. долг
 

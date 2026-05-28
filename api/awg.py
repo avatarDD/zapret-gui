@@ -37,6 +37,13 @@ REST API для интеграции amneziawg-go.
   POST   /api/awg/subscription/preview  — посмотреть, что бы импортировалось,
                                            без сохранения
 
+  GET    /api/awg/watchdog              — статус AWG-watchdog'а
+                                           (handshake-age monitor)
+  POST   /api/awg/watchdog              — изменить настройки watchdog'а
+                                           (body: {enabled, handshake_timeout_sec,
+                                                   check_interval_sec, cooldown_sec,
+                                                   max_restarts_per_hour})
+
   GET    /api/awg/warp-in-warp          — статус WARP-in-WARP
   POST   /api/awg/warp-in-warp          — поднять (body: outer, inner)
   DELETE /api/awg/warp-in-warp          — отключить
@@ -487,6 +494,41 @@ def register(app):
         if not result.get("ok"):
             response.status = 400
         return result
+
+    @app.route("/api/awg/watchdog")
+    def awg_watchdog_get():
+        """Текущее состояние watchdog'а + настройки."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.awg_watchdog import get_watchdog
+            return {"ok": True, "status": get_watchdog().get_status()}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/awg/watchdog", method="POST")
+    def awg_watchdog_set():
+        """
+        Изменить настройки. Передавать любое подмножество полей:
+          enabled, handshake_timeout_sec, check_interval_sec,
+          cooldown_sec, max_restarts_per_hour.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        try:
+            from core.awg_watchdog import set_settings, get_watchdog
+            new = set_settings(**{k: body.get(k) for k in (
+                "enabled", "handshake_timeout_sec",
+                "check_interval_sec", "cooldown_sec",
+                "max_restarts_per_hour") if k in body})
+            return {"ok": True, "status": get_watchdog().get_status(),
+                    "settings": new}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/awg/subscription/import", method="POST")
     def awg_subscription_import():

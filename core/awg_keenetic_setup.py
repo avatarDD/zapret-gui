@@ -1,11 +1,15 @@
 # core/awg_keenetic_setup.py
 """
-Helpers для установки AWG на Keenetic (KeenOS 5.x).
+Helpers для установки AWG на Keenetic (KeenOS 4.x и 5.x).
 
-KeenOS 5.x по умолчанию не предоставляет /dev/net/tun — для запуска
-amneziawg-go нужен компонент 'opkg-tun'. Этот модуль умеет:
-  - детектить наличие opkg-tun
-  - возвращать пошаговую инструкцию для пользователя
+Способ подъёма TUN-устройства различается по поколениям:
+  - KeenOS 5.x: системный компонент «Поддержка TUN/TAP для OPKG»
+    (он же OpkgTun).
+  - KeenOS 4.x: opkg-пакет `kmod-tun` либо системный компонент
+    «Прокси-сервер OpenVPN», который подтягивает TUN-модуль.
+Универсальный индикатор результата в обоих случаях — наличие
+`/dev/net/tun`. Платформенная развилка вынесена в
+`KeeneticPlatform.tun_instructions()`.
 """
 
 import os
@@ -61,32 +65,34 @@ def check_opkg_tun() -> dict:
     except (ValueError, IndexError):
         major = 0
 
+    result["keenos_major"]   = major
+    # На 5.x нужен OpkgTun-компонент; на 4.x достаточно kmod-tun
+    # либо системного компонента OpenVPN.
     result["needs_opkg_tun"] = major >= 5
 
-    # OpkgTun — системный компонент Keenetic, не opkg-пакет. Его наличие
-    # определяем по факту появления /dev/net/tun.
+    # Универсальный индикатор для всех поколений: реально появилось ли
+    # /dev/net/tun.
     result["installed"] = result["tun_device"]
-    result["ready"] = result["tun_device"]
+    result["ready"]     = result["tun_device"]
 
     if not result["ready"]:
-        result["instructions"] = generate_install_instructions()
+        # Делегируем платформе — она знает версионную развилку.
+        result["instructions"] = platform.tun_instructions()
 
     return result
 
 
 def generate_install_instructions() -> str:
-    """Пошаговая инструкция по установке OpkgTun через веб-админку Keenetic."""
+    """
+    Универсальная (версионно-агностичная) подсказка по подъёму TUN
+    на Keenetic. Для версионно-специфичной — используйте
+    `KeeneticPlatform.tun_instructions()`.
+    """
     return (
-        "Чтобы amneziawg-go мог поднять TUN-интерфейс на KeenOS 5.x,\n"
-        "необходимо установить системный компонент OpkgTun.\n"
-        "\n"
-        "Шаги:\n"
-        "  1. Откройте веб-интерфейс Keenetic (обычно http://192.168.1.1)\n"
-        "  2. Перейдите в раздел «Управление → Общие настройки»\n"
-        "     → «Изменить набор компонентов».\n"
-        "  3. Включите фильтр по слову «opkg».\n"
-        "  4. Найдите компонент «Поддержка TUN/TAP для OPKG» (opkg-tun)\n"
-        "     и поставьте галочку.\n"
-        "  5. Нажмите «Установить обновление». Роутер перезагрузится.\n"
-        "  6. После перезагрузки вернитесь сюда и нажмите «Проверить снова»."
+        "Чтобы amneziawg-go мог поднять TUN-интерфейс, нужен TUN-модуль:\n"
+        "  - KeenOS 5.x: установите системный компонент OpkgTun\n"
+        "    (Управление → Компоненты → «Поддержка TUN/TAP для OPKG»).\n"
+        "  - KeenOS 4.x: opkg install kmod-tun (или включите системный\n"
+        "    компонент «Прокси-сервер OpenVPN», который подтянет TUN).\n"
+        "После — перезагрузите роутер и повторите установку."
     )
