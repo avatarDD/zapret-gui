@@ -52,9 +52,10 @@ env:
   #   with_grpc     — VLESS+gRPC transport
   #   with_wireguard — WireGuard outbound (комплементарен AWG)
   #   with_utls     — uTLS / Reality (для VLESS)
-  #   with_ech      — Encrypted ClientHello (часто требуется для
-  #                   обхода SNI-фильтров)
-  SINGBOX_TAGS: 'with_quic with_grpc with_wireguard with_utls with_ech'
+  # ВАЖНО: НЕ включаем with_ech — начиная с sing-box 1.10 ECH
+  # реализован в stdlib, отдельный тэг deprecated и при попытке
+  # сборки даёт ошибку «cannot use string constant as int».
+  SINGBOX_TAGS: 'with_quic with_grpc with_wireguard with_utls'
 
 jobs:
   # ── 0. Авто-детект новых версий апстрима (только cron) ─────
