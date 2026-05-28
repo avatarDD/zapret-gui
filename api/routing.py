@@ -14,12 +14,103 @@ REST API для selective routing.
   GET    /api/routing/dnsmasq/status      — есть ли dnsmasq, версия,
                                               путь к конфигу, поддержка
                                               nftset, и т.п.
+
+  GET    /api/routing/ndms/status         — доступен ли Keenetic RCI,
+                                              версия прошивки, активный backend
+  GET    /api/routing/interfaces          — все доступные target-интерфейсы
+                                              (наши AWG + нативные NDMS WG)
 """
 
 from bottle import request, response
 
 
 def register(app):
+
+    @app.route("/api/routing/ndms/status")
+    def routing_ndms_status():
+        """
+        Доступен ли Keenetic NDMS-backend.
+
+        Если ok=True и available=True — на странице Routing можно
+        показывать «активен нативный Keenetic-backend, dnsmasq не
+        требуется». На не-Keenetic-платформах всегда available=False
+        без сетевого probe.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.ndms import is_ndms_available, get_rci_client
+            avail = is_ndms_available()
+            client = get_rci_client()
+            return {
+                "ok":        True,
+                "available": avail,
+                "version":   client.version() if avail else "",
+                "backend":   "ndms" if avail else "",
+            }
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/ndms/refresh", method="POST")
+    def routing_ndms_refresh():
+        """Принудительный re-probe RCI (сбрасывает кэш доступности)."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.ndms import is_ndms_available
+            from core.ndms.wg_discovery import invalidate_cache
+            invalidate_cache()
+            avail = is_ndms_available(force=True)
+            return {"ok": True, "available": avail}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/interfaces")
+    def routing_interfaces():
+        """
+        Все доступные target-интерфейсы для routing-правил:
+          - наши amneziawg-go (`awg0`, `opkgtun0`, ...)
+          - нативные Keenetic WG (`Wireguard0..N`) — только если
+            мы на Keenetic'е и RCI доступен.
+
+        Формат:
+          {"ok": true,
+           "interfaces": [
+             {"name": "awg0", "source": "awg",  "type": "amneziawg-go", ...},
+             {"name": "Wireguard0", "source": "ndms", "type": "wireguard",
+              "description": "...", "state": "up", "address": "10.0.0.2/24"},
+             ...]}
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.awg_manager import AwgManager
+            mgr = AwgManager()
+            result = []
+            seen = set()
+
+            for iface in mgr.list_interfaces():
+                nm = iface.get("name", "")
+                if not nm or nm in seen:
+                    continue
+                seen.add(nm)
+                entry = {
+                    "name":   nm,
+                    "active": iface.get("active", False),
+                    "source": iface.get("source", "awg"),
+                    "type":   "amneziawg-go",
+                }
+                if iface.get("native"):
+                    entry["type"]   = "wireguard"
+                    entry["source"] = "ndms"
+                    entry["description"] = iface.get("description", "")
+                    entry["state"]   = iface.get("state", "")
+                    entry["address"] = iface.get("address", "")
+                result.append(entry)
+
+            return {"ok": True, "interfaces": result}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/routing/dnsmasq/status")
     def routing_dnsmasq_status():

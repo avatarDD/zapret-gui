@@ -114,6 +114,37 @@ def _summarize_apply_error(applied: dict) -> str:
     return "; ".join(uniq)
 
 
+def _is_ndms_native_iface(ifname: str) -> bool:
+    """
+    Считается ли интерфейс нативным NDMS-объектом (Wireguard0/1,
+    OpenVPN0, провайдерскими ISP-интерфейсами и т.п.).
+
+    Если да и при этом мы на Keenetic'е с доступным RCI — CIDR/static-
+    route правила лучше класть через `ip route` в NDMS-конфиг (они
+    переживают reload-running-config). Для AWG-userspace-туннелей
+    (`awg0`, `wg0`, `opkgtun0` и пр.) RCI не подходит, и мы остаёмся
+    на голом `ip rule`.
+
+    ОБЯЗАТЕЛЬНОЕ условие — NDMS доступен (см. core.ndms.is_ndms_available);
+    без этого даже на Keenetic'е НЕ переключаемся.
+    """
+    if not ifname:
+        return False
+    try:
+        from core.ndms import is_ndms_available
+        if not is_ndms_available():
+            return False
+    except Exception:
+        return False
+    # Известные NDMS-префиксы. Список заведомо неполный, но покрывает
+    # популярные случаи. Расширяется по мере появления других сценариев.
+    low = ifname.lower()
+    return any(low.startswith(p) for p in (
+        "wireguard", "openvpn", "ipsec", "l2tp", "pptp",
+        "isp", "gigabitethernet", "ethernet",
+    ))
+
+
 # ───────────────────────── manager ───────────────────────────────────
 
 class RoutingManager:
@@ -231,6 +262,19 @@ class RoutingManager:
 
     def _apply(self, rule: RoutingRule) -> dict:
         if isinstance(rule, CidrRoutingRule):
+            # CIDR через NDMS работает только когда target_iface —
+            # нативный Keenetic-интерфейс (Wireguard0/1, OpenVPN0,
+            # ProviderX и т.п.). Для AWG-userspace-туннелей NDMS
+            # такой iface не видит, поэтому остаёмся на стандартном
+            # ip rule + ip route. См. _is_ndms_native_iface().
+            if _is_ndms_native_iface(rule.target_iface):
+                try:
+                    from core.routing import ndms_backend
+                    return ndms_backend.apply_cidr_rule(rule)
+                except Exception as e:
+                    log.warning("routing(ndms): CIDR apply упал,"
+                                " fallback на ip rule: %s" % e,
+                                source="routing")
             return self._apply_cidr(rule)
         if isinstance(rule, DomainRoutingRule):
             from core.routing.domain_rule import apply_domain_rule
@@ -242,6 +286,14 @@ class RoutingManager:
 
     def _remove(self, rule: RoutingRule) -> dict:
         if isinstance(rule, CidrRoutingRule):
+            if _is_ndms_native_iface(rule.target_iface):
+                try:
+                    from core.routing import ndms_backend
+                    return ndms_backend.remove_cidr_rule(rule)
+                except Exception as e:
+                    log.warning("routing(ndms): CIDR remove упал,"
+                                " fallback на ip rule: %s" % e,
+                                source="routing")
             return self._remove_cidr(rule)
         if isinstance(rule, DomainRoutingRule):
             from core.routing.domain_rule import remove_domain_rule
