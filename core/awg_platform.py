@@ -7,8 +7,14 @@
   - как называются init-скрипты и где они лежат
   - какой firewall-бэкенд доступен
   - специфику запуска AWG на данной платформе
+
+Платформа возвращает `kind: PlatformKind` — единый enum, по которому
+можно ветвить логику без `isinstance`-цепочек по всему коду.
+Helper-функции `is_keenetic()`, `is_openwrt()` инкапсулируют
+проверки и принимают как `AwgPlatform`, так и `PlatformKind`.
 """
 
+import enum
 import os
 import subprocess
 
@@ -29,10 +35,64 @@ def _cmd_out(args, timeout=5):
         return ""
 
 
+# ───────────────────────── Platform kind enum ───────────────────────
+
+class PlatformKind(enum.Enum):
+    """
+    Единый перечень целевых платформ.
+
+    Используется вместо isinstance-проверок:
+
+        if platform.kind is PlatformKind.KEENETIC:
+            ...
+
+    или через helper:
+
+        from core.awg_platform import is_keenetic
+        if is_keenetic(platform):
+            ...
+
+    Добавление новой платформы (например, ASUS Merlin) — это
+    одна новая запись здесь + один subclass `AwgPlatform`.
+    """
+    KEENETIC = "keenetic"
+    OPENWRT  = "openwrt"
+    LINUX    = "linux"
+    UNKNOWN  = "unknown"
+
+
+def is_keenetic(p) -> bool:
+    """True, если платформа — Keenetic (по kind или isinstance)."""
+    return _kind_of(p) is PlatformKind.KEENETIC
+
+
+def is_openwrt(p) -> bool:
+    return _kind_of(p) is PlatformKind.OPENWRT
+
+
+def is_linux_generic(p) -> bool:
+    return _kind_of(p) is PlatformKind.LINUX
+
+
+def _kind_of(p):
+    """Достать PlatformKind из AwgPlatform / PlatformKind / строки."""
+    if isinstance(p, PlatformKind):
+        return p
+    kind = getattr(p, "kind", None)
+    if isinstance(kind, PlatformKind):
+        return kind
+    name = getattr(p, "name", None) or (p if isinstance(p, str) else "")
+    try:
+        return PlatformKind(str(name).lower())
+    except ValueError:
+        return PlatformKind.UNKNOWN
+
+
 # ───────────────────────── Base ──────────────────────────────────────
 
 class AwgPlatform:
     name = "unknown"
+    kind = PlatformKind.UNKNOWN
 
     # Пути
     binary_dir = "/usr/local/bin"
@@ -106,6 +166,8 @@ class AwgPlatform:
     def as_dict(self):
         return {
             "name":                   self.name,
+            "kind":                   self.kind.value if isinstance(
+                self.kind, PlatformKind) else str(self.kind),
             "binary_dir":             self.binary_dir,
             "config_dir":             self.config_dir,
             "run_dir":                self.run_dir,
@@ -123,6 +185,7 @@ class AwgPlatform:
 
 class KeeneticPlatform(AwgPlatform):
     name = "keenetic"
+    kind = PlatformKind.KEENETIC
 
     binary_dir = "/opt/usr/sbin"
     config_dir = "/opt/etc/amneziawg"
@@ -143,43 +206,105 @@ class KeeneticPlatform(AwgPlatform):
 
     def has_opkg_tun(self):
         """
-        OpkgTun нужен начиная с KeenOS 5.0.
+        OpkgTun-компонент нужен только на KeenOS 5.x.
 
         OpkgTun — это СИСТЕМНЫЙ компонент Keenetic (включается в
         веб-админке: «Управление → Компоненты → Поддержка TUN/TAP
-        для OPKG»), а не opkg-пакет. Реальный индикатор того, что он
-        включён, — появление `/dev/net/tun`. Старая проверка
-        `opkg status opkg-tun` всегда возвращала false, потому что
-        такого opkg-пакета не существует.
+        для OPKG»). Реальный индикатор того, что он включён, —
+        появление `/dev/net/tun`.
+
+        На KeenOS 4.x этот компонент отсутствует: там TUN обычно
+        приходит через opkg-пакет `kmod-tun` либо через
+        системный компонент с другим именем («VPN-сервер»).
+        Мы тоже смотрим на /dev/net/tun — это универсальный
+        индикатор, не зависящий от способа подъёма.
+
+        На неизвестной (нулевой) версии — тоже смотрим на /dev/net/tun.
         """
-        if self._version_major() >= 5:
-            return self.tun_available()
-        # На KeenOS < 5 TUN обычно доступен иначе
         return self.tun_available()
 
     def supports_iptables_marks(self):
-        # На Keenetic с OpkgTun iptables работает в Entware-цепочках
-        if not self.has_opkg_tun() and self._version_major() >= 5:
+        """
+        iptables-MARK через mangle на разных KeenOS-поколениях:
+
+        - KeenOS 5.x БЕЗ OpkgTun: пользовательские mangle-цепочки
+          вообще не работают (нет user-space netfilter).
+        - KeenOS 5.x С OpkgTun: работает через Entware-цепочки.
+        - KeenOS 4.x: iptables работает, но есть нюанс — основной
+          firewall Keenetic'а может перетирать пользовательские
+          цепочки при reload-running-config. Для надёжной работы
+          лучше использовать NDMS-backend (ip policy).
+        """
+        major = self._version_major()
+        if major >= 5 and not self.has_opkg_tun():
             return False
+        # На 4.x и 5.x-with-OpkgTun возвращаем результат стандартной
+        # проверки iptables -t mangle (можно поднять пакет).
         return super().supports_iptables_marks()
 
-    def opkg_tun_instructions(self):
-        """Пошаговая инструкция по установке OpkgTun."""
+    def tun_instructions(self) -> str:
+        """
+        Пошаговая инструкция по подъёму TUN — зависит от поколения
+        KeenOS.
+
+        KeenOS 5.x → системный компонент «Поддержка TUN/TAP для OPKG».
+        KeenOS 4.x → opkg-пакет `kmod-tun` (или системный компонент
+                     «Прокси-сервер OpenVPN», который тянет TUN).
+        Неизвестная (старый Keenetic, который не отвечает на ndmc) —
+        выводим обе.
+        """
+        major = self._version_major()
+        if major >= 5:
+            return (
+                "KeenOS 5.x: для работы AmneziaWG нужен системный\n"
+                "компонент OpkgTun:\n"
+                "  1. Откройте веб-интерфейс Keenetic (http://192.168.1.1)\n"
+                "  2. Управление → Общие настройки → Изменить набор компонентов\n"
+                "  3. Включите фильтр «opkg», найдите «Поддержка TUN/TAP для OPKG»\n"
+                "  4. Установите и перезагрузите роутер\n"
+                "  5. После перезагрузки вернитесь и повторите установку"
+            )
+        if major == 4:
+            return (
+                "KeenOS 4.x: для работы AmneziaWG нужен TUN-модуль.\n"
+                "  Способ 1 (рекомендуется): opkg install kmod-tun\n"
+                "  Способ 2: установите системный компонент «Прокси-сервер\n"
+                "    OpenVPN» через веб-интерфейс — он автоматически\n"
+                "    подтянет TUN.\n"
+                "  После — перезагрузите роутер и повторите установку.\n"
+                "  ВНИМАНИЕ: на KeenOS 4.x пользовательские iptables-цепочки\n"
+                "  могут перетираться при reload-running-config — если\n"
+                "  включён RCI (NDMS), рекомендуется использовать\n"
+                "  NDMS-backend для selective routing."
+            )
+        # Неизвестная или unparsable версия — даём подсказку без
+        # привязки к поколению.
         return (
-            "Для работы AmneziaWG на KeenOS 5.x необходим компонент OpkgTun:\n"
-            "1. Откройте веб-интерфейс Keenetic (http://192.168.1.1)\n"
-            "2. Перейдите в Управление → Компоненты\n"
-            "3. В разделе OPKG найдите 'Поддержка TUN/TAP' (opkg-tun)\n"
-            "4. Установите компонент и перезагрузите роутер\n"
-            "5. После перезагрузки вернитесь сюда и повторите установку"
+            "Не удалось определить версию KeenOS.\n"
+            "Для TUN попробуйте одно из:\n"
+            "  - opkg install kmod-tun (старые прошивки 4.x)\n"
+            "  - системный компонент «Поддержка TUN/TAP для OPKG» (5.x)\n"
+            "  - системный компонент «Прокси-сервер OpenVPN» (тянет TUN)\n"
+            "После — перезагрузите роутер."
         )
+
+    # Алиас сохранён для обратной совместимости с местами, где
+    # «opkg_tun_instructions» используется напрямую (api/awg.py UI).
+    def opkg_tun_instructions(self) -> str:
+        return self.tun_instructions()
 
     def as_dict(self):
         d = super().as_dict()
-        d["keenos_version"] = self._keenos_version
+        d["keenos_version"]   = self._keenos_version
+        d["keenos_major"]     = self._version_major()
         d["opkg_tun_installed"] = self.has_opkg_tun()
-        if self._version_major() >= 5 and not self.has_opkg_tun():
-            d["opkg_tun_instructions"] = self.opkg_tun_instructions()
+        # Инструкции отдаём всегда, если TUN не виден — UI сам решит,
+        # показывать или нет. В as_dict нет смысла фильтровать по
+        # версии — keenos_major уже доступен, фронт сам разветвится.
+        if not self.tun_available():
+            d["tun_instructions"] = self.tun_instructions()
+            # Старое поле, оставляем для совместимости с фронтом.
+            d["opkg_tun_instructions"] = d["tun_instructions"]
         return d
 
 
@@ -187,6 +312,7 @@ class KeeneticPlatform(AwgPlatform):
 
 class OpenWrtPlatform(AwgPlatform):
     name = "openwrt"
+    kind = PlatformKind.OPENWRT
 
     binary_dir = "/usr/sbin"
     config_dir = "/etc/amneziawg"
@@ -208,6 +334,7 @@ class OpenWrtPlatform(AwgPlatform):
 
 class GenericLinuxPlatform(AwgPlatform):
     name = "linux"
+    kind = PlatformKind.LINUX
 
     binary_dir = "/usr/local/bin"
     config_dir = "/etc/amneziawg"

@@ -146,49 +146,97 @@ integration). Не план релиза — скорее заметки и ид
       встроенный awg, если он умеет).
 - [ ] **Импорт `.conf` через QR с камеры** в браузере
       (`navigator.mediaDevices` + jsQR через CDN — опционально).
-- [ ] **Per-peer статистика** на Dashboard в виде графика
-      (sparkline RX/TX за последние 5 минут) — частично перекрывается
-      пунктом «Traffic graphs» из awg-manager-заимствований.
-- [ ] **DoH/DoT для роутинга по доменам** — сейчас домены
-      резолвятся dnsmasq'ом обычным апстримом, что может
-      обходиться DPI. Опционально стоит давать на платформах с
-      stubby/cloudflared отдельный апстрим.
-      ВАЖНО: на Keenetic с NDMS-backend этот пункт неактуален —
-      резолв делает встроенный ndnsproxy через настроенные upstream'ы.
-- [ ] **Тесты selective routing на OpenWrt nftables** — на момент
-      релиза проверено на Keenetic 5.x + Entware ipset. nftables
-      ветка нуждается в полевом прогоне.
-- [ ] **Уменьшить размер `amneziawg-go`** через `-ldflags="-s -w"`
-      и `upx --best --lzma` — для mipsel/mips это критично.
-      Сейчас бинарь весит ~5-7 МБ. У awg-manager в
-      `.github/workflows/build-awg-binaries.yml` это уже сделано —
-      посмотреть как референс.
-- [ ] **Поддержка KeenOS 4.x** — детект есть, но тестирование на
-      реальном устройстве не проводилось. KeenOS 4.x иначе работает
-      с пользовательскими iptables-цепочками.
-- [ ] **Watchdog для AWG** — рестарт `amneziawg-go` при отсутствии
-      handshake'а более N минут (по аналогии с тем, как
-      `nfqws_manager.py` следит за nfqws2).
+- [x] **Per-peer статистика (backend) — sparkline RX/TX** за
+      последние 5 минут. `core/connectivity/traffic.py` теперь
+      ведёт два уровня буферов: `_buffers` (24ч per-iface) и
+      `_peer_buffers` (5 минут per-iface-per-peer, дискретность 30с).
+      Источник peer-метрик: `awg show <iface> dump`. API:
+      `GET /api/connectivity/peers/<iface>`. Для нативных
+      Keenetic-WG peers пуст (RCI per-peer формат — отдельная задача).
+      UI-sparkline — подзадача фронтенда.
+- [x] **DoH/DoT для роутинга по доменам** —
+      `core/routing/doh_resolver.py`: опциональный DoH-резолвер для
+      pre-population ipset/nftset. Использует JSON-формат (RFC 8484),
+      без сторонних DNS-библиотек. По умолчанию выключен — поведение
+      dnsmasq-пути не меняется. Включается через settings.json
+      (`routing.doh.enabled`) или API: `GET|POST /api/routing/doh`,
+      `POST /api/routing/doh/test`. Известные провайдеры: Cloudflare,
+      Google, Quad9. На Keenetic с NDMS-backend неактуален —
+      ndnsproxy сам резолвит через настроенные upstream'ы.
+- [x] **Тесты selective routing на OpenWrt nftables (unit)** —
+      `tests/test_nftset_backend.py`: 16 unit-тестов с моком `_run`
+      покрывают `set_name_for`, `_output_chain_type_wrong`,
+      `available`, `create_set`, `_rule_exists`,
+      `ensure_iface_masquerade`. Запуск:
+      `python3 -m unittest discover -s tests -v`.
+      ПОЛЕВОЕ тестирование на реальном OpenWrt-устройстве —
+      открытая задача (нужен железный роутер с OpenWrt 22.03+).
+- [x] **Уменьшить размер `amneziawg-go`** — в
+      `.github/workflows/build-awg-binaries.yml` добавлен UPX-step
+      для mipsel/mips/armv7 (на aarch64/x86_64 не применяем —
+      экономия не оправдывает риски). На armv7 — `upx --best --lzma`,
+      на mips/mipsel — `upx --best` без LZMA (Go-runtime на MIPS
+      имеет проблемы с LZMA in-place decompression).
+      `-ldflags="-s -w" -trimpath` уже стоял ранее.
+      Ожидаемый выигрыш на mipsel: 5-7МБ → ~2МБ.
+- [x] **Поддержка KeenOS 4.x (детектор + инструкции)** —
+      `KeeneticPlatform.tun_instructions()` ветвится по
+      `_version_major()`: 5.x → OpkgTun-компонент, 4.x → kmod-tun
+      или системный «Прокси OpenVPN», `0` → универсальная подсказка.
+      `supports_iptables_marks()` теперь учитывает, что на 4.x
+      iptables работает, но Keenetic может перетирать
+      пользовательские цепочки — для надёжного PBR рекомендуется
+      NDMS-backend (если RCI доступен). `as_dict()` отдаёт
+      `keenos_major` отдельным полем для UI-развилки.
+      ПОЛЕВОЕ тестирование на 4.x-устройстве — открытая задача.
+- [x] **Watchdog для AWG** — `core/awg_watchdog.py`: фоновой поток
+      раз в N секунд проверяет `latest_handshake` по каждому peer'у
+      всех активных AWG-туннелей; если самый свежий handshake
+      старше `handshake_timeout_sec` (default 180с), делает
+      `AwgManager.restart()`. Защита от петли:
+      `max_restarts_per_hour=6` + `cooldown_sec=300`. Нативные
+      Keenetic-WG туннели пропускаются (их рестартит сам Keenetic).
+      По умолчанию ВЫКЛЮЧЕН — настраивается через settings.json
+      `awg.watchdog.*` или API: `GET|POST /api/awg/watchdog`.
 
 ## Тех. долг
 
-- [ ] **Единый installer-фреймворк** для бинарных депенденси
-      (nfqws2, amneziawg-go/tools, в будущем sing-box). Сейчас три
-      разных установщика дублируют логику скачивания/sha256/
-      распаковки.
-- [ ] **Тесты** — пока полагаемся на ручную проверку. Минимально
-      нужны unit-тесты на парсер `.conf` (`core/awg_config.py`) и
-      на эвристики `is_warp_config()` / манифест-парсер
-      `awg_installer.py`. Они проще всего поддаются изоляции.
-      Сюда же — unit-тесты на новые `core/ndms/*` (моки RCI).
+- [x] **Единый installer-фреймворк (фундамент)** —
+      `core/binary_installer.py`: общие функции `download_file`
+      (с retry+backoff), `sha256_of`, `verify_sha256`,
+      `extract_tarball` (с защитой от path-traversal),
+      `chmod_executable`, `install_binary` (атомарная замена +
+      `.bak`), и one-shot `fetch_verify_extract_install`.
+      Sing-box installer стартует прямо на этой утилите.
+      Полный рефакторинг `awg_installer.py` и `zapret_installer.py`
+      на новую утилиту — поэтапно, чтобы не сломать рабочие
+      пути (отдельная задача).
+- [x] **Unit-тесты** — `tests/` (100 тестов, все проходят):
+      `test_awg_config.py` (parse_conf, validate, render),
+      `test_alias_resolver.py` (parse_geosite_body, parse_geoip_body,
+      expand_domains, resolve_alias с мок-fetch),
+      `test_subscription_importer.py` (extract_items,
+      wireguard_uri_to_conf, base64-detection, redact),
+      `test_ndms_commands.py` (make_owned_name, normalize_mac,
+      extract_iface_address, extract_dns_proxy_routes),
+      `test_nftset_backend.py` (16 тестов с моком _run),
+      `test_binary_installer.py` (sha256, extract, install,
+      безопасность path-traversal). Запуск:
+      `python3 -m unittest discover -s tests -v`.
+      Не покрыты: WARP-импортер, manifest-парсер `awg_installer.py`
+      (требует мокать GitHub API) — для следующей итерации.
 - [ ] **i18n** — UI русскоязычный. На будущее — выделить строки в
       словарь (`web/js/i18n/{ru,en}.js`).
-- [ ] **Явный enum платформы** — `Platform.{KEENETIC_NDMS,
-      OPENWRT_NFT, ENTWARE_GENERIC, LINUX}` вместо разрозненных
-      isinstance-проверок. Сейчас Keenetic-специфика разбросана
-      по `awg_detector`, `awg_platform`, `awg_keenetic_setup`,
-      `system_info`. С приходом NDMS-backend'а это станет ещё
-      больше — стоит вынести в один источник истины.
+- [x] **Явный enum платформы** — `core/awg_platform.PlatformKind`
+      ({KEENETIC, OPENWRT, LINUX, UNKNOWN}) + helper'ы
+      `is_keenetic()`, `is_openwrt()`, `is_linux_generic()`,
+      принимающие как `AwgPlatform`, так и `PlatformKind`, так и
+      строку. На каждом subclass проставлен `kind`, `as_dict()`
+      возвращает `kind` отдельным полем — UI может ветвиться по
+      нему без isinstance. Применено в `core/ndms/rci_client.py`
+      и `core/awg_keenetic_setup.py`. Постепенная миграция
+      остальных `isinstance(platform, KeeneticPlatform)` — по
+      мере касания соответствующих модулей.
 
 ## Идеи
 

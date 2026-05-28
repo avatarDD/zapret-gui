@@ -225,6 +225,19 @@ jobs:
           go-version: '1.22'
           cache: false
 
+      - name: Install UPX
+        # UPX используем только для архитектур со строгим лимитом flash
+        # (роутеры mipsel/mips/armv7 — обычно 16-32 МБ полезной памяти).
+        # На aarch64/x86_64 экономия не оправдывает потенциальные
+        # проблемы с antivirus / в плохих namespace'ах.
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+          upx --version | head -1
+
       - name: Build
         working-directory: src
         env:
@@ -236,6 +249,9 @@ jobs:
         run: |
           set -euo pipefail
           go env GOOS GOARCH GOMIPS GOARM
+          # -s -w        — выкинуть symbol table и debug info
+          # -trimpath    — убрать абсолютные пути билд-системы
+          # CGO_ENABLED=0 — статическая линковка, никакой libc-зависимости.
           # Бинарь обычно собирается через make; fallback — go build
           if [ -f Makefile ] && grep -qE '^(build|amneziawg-go):' Makefile; then
             make || go build -ldflags="-s -w" -trimpath -o amneziawg-go .
@@ -243,6 +259,35 @@ jobs:
             go build -ldflags="-s -w" -trimpath -o amneziawg-go .
           fi
           ls -lh amneziawg-go
+          file amneziawg-go || true
+
+      - name: UPX compress
+        # Применяем УЖЕ ПОСЛЕ -s -w линка — это даёт максимальный
+        # выигрыш (~50-70% от размера). --best — самый агрессивный
+        # пресет, --lzma — LZMA-компрессор. Mipsel-binary падает с
+        # 5-7МБ до ~2МБ — это критично для роутеров с 16-32МБ flash.
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          echo "── before UPX ──"
+          ls -lh amneziawg-go
+          # На mips Go-runtime использует sigaltstack + dynamic
+          # allocations, которые UPX может ломать; --no-lzma безопаснее
+          # на mips, но для armv7 LZMA работает стабильно.
+          if [ "${{ matrix.goarch }}" = "arm" ]; then
+            upx --best --lzma amneziawg-go || upx --best amneziawg-go
+          else
+            # mips/mipsle: LZMA встречает проблемы с in-place
+            # decompression в GoRuntime — берём дефолтный --best.
+            upx --best amneziawg-go
+          fi
+          echo "── after UPX ──"
+          ls -lh amneziawg-go
+          # Smoke-test: UPX-распакованный бинарь должен хотя бы запускаться
+          # с `--help` (на host-arch — но мы не можем выполнить cross-arch).
           file amneziawg-go || true
 
       - name: Package

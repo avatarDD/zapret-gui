@@ -27,6 +27,12 @@ REST API для selective routing.
   POST   /api/routing/aliases/preview     — развернуть массив строк
                                               (body: {"items": [...]}) —
                                               для UI-предпросмотра
+
+  GET    /api/routing/doh                 — настройки DoH-резолвера
+  POST   /api/routing/doh                 — обновить настройки
+                                              (body: {enabled, providers, timeout})
+  POST   /api/routing/doh/test            — пинговать DoH-провайдер
+                                              (body: {provider, domain})
 """
 
 from bottle import request, response
@@ -174,6 +180,72 @@ def register(app):
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}
+
+    # ─────── DoH-резолвер (для pre-population на не-Keenetic) ──────
+
+    @app.route("/api/routing/doh")
+    def routing_doh_get():
+        """Текущие настройки DoH + известные провайдеры."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing import doh_resolver
+            return {
+                "ok":       True,
+                "settings": doh_resolver._get_settings(),
+                "known":    dict(doh_resolver.KNOWN_PROVIDERS),
+            }
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/doh", method="POST")
+    def routing_doh_set():
+        """
+        body: {"enabled": bool, "providers": [URL,...], "timeout": float}.
+        Любое поле опционально (None оставляет существующее).
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        try:
+            from core.routing import doh_resolver
+            new_settings = doh_resolver.set_settings(
+                enabled=body.get("enabled"),
+                providers=body.get("providers"),
+                timeout=body.get("timeout"),
+            )
+            return {"ok": True, "settings": new_settings}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/doh/test", method="POST")
+    def routing_doh_test():
+        """
+        Прозвонить конкретный DoH-провайдер. Body:
+          {"provider": "https://...", "domain": "example.com"}.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        provider = (body.get("provider") or "").strip()
+        domain   = (body.get("domain")   or "example.com").strip()
+        if not provider:
+            response.status = 400
+            return {"ok": False, "error": "provider обязателен"}
+        try:
+            from core.routing import doh_resolver
+            ips = doh_resolver._query_json(
+                provider, domain, "A", doh_resolver.DEFAULT_TIMEOUT)
+            return {"ok": True, "ips": ips, "provider": provider,
+                    "domain": domain}
+        except Exception as e:
+            return {"ok": False, "error": str(e),
+                    "provider": provider, "domain": domain}
 
     @app.route("/api/routing/dnsmasq/status")
     def routing_dnsmasq_status():
