@@ -232,9 +232,8 @@ def is_ndms_available(force: bool = False) -> bool:
     # вызова.
     try:
         from core.awg_detector import get_awg_detector
-        from core.awg_platform import KeeneticPlatform
-        platform = get_awg_detector().detect_platform()
-        if not isinstance(platform, KeeneticPlatform):
+        from core.awg_platform import is_keenetic
+        if not is_keenetic(get_awg_detector().detect_platform()):
             return False
     except Exception:
         return False

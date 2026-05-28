@@ -16,7 +16,7 @@ import os
 import subprocess
 
 from core.awg_detector import get_awg_detector
-from core.awg_platform import KeeneticPlatform
+from core.awg_platform import KeeneticPlatform, is_keenetic
 
 
 def _cmd_ok(args, timeout=5):
@@ -45,7 +45,7 @@ def check_opkg_tun() -> dict:
     platform = det.detect_platform()
 
     result = {
-        "is_keenetic":    isinstance(platform, KeeneticPlatform),
+        "is_keenetic":    is_keenetic(platform),
         "keenos_version": "",
         "needs_opkg_tun": False,
         "installed":      False,
@@ -54,7 +54,7 @@ def check_opkg_tun() -> dict:
         "instructions":   "",
     }
 
-    if not isinstance(platform, KeeneticPlatform):
+    if not is_keenetic(platform):
         # Не Keenetic — просто отдаём состояние TUN
         result["ready"] = result["tun_device"]
         return result

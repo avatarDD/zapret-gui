@@ -201,23 +201,42 @@ integration). Не план релиза — скорее заметки и ид
 
 ## Тех. долг
 
-- [ ] **Единый installer-фреймворк** для бинарных депенденси
-      (nfqws2, amneziawg-go/tools, в будущем sing-box). Сейчас три
-      разных установщика дублируют логику скачивания/sha256/
-      распаковки.
-- [ ] **Тесты** — пока полагаемся на ручную проверку. Минимально
-      нужны unit-тесты на парсер `.conf` (`core/awg_config.py`) и
-      на эвристики `is_warp_config()` / манифест-парсер
-      `awg_installer.py`. Они проще всего поддаются изоляции.
-      Сюда же — unit-тесты на новые `core/ndms/*` (моки RCI).
+- [x] **Единый installer-фреймворк (фундамент)** —
+      `core/binary_installer.py`: общие функции `download_file`
+      (с retry+backoff), `sha256_of`, `verify_sha256`,
+      `extract_tarball` (с защитой от path-traversal),
+      `chmod_executable`, `install_binary` (атомарная замена +
+      `.bak`), и one-shot `fetch_verify_extract_install`.
+      Sing-box installer стартует прямо на этой утилите.
+      Полный рефакторинг `awg_installer.py` и `zapret_installer.py`
+      на новую утилиту — поэтапно, чтобы не сломать рабочие
+      пути (отдельная задача).
+- [x] **Unit-тесты** — `tests/` (100 тестов, все проходят):
+      `test_awg_config.py` (parse_conf, validate, render),
+      `test_alias_resolver.py` (parse_geosite_body, parse_geoip_body,
+      expand_domains, resolve_alias с мок-fetch),
+      `test_subscription_importer.py` (extract_items,
+      wireguard_uri_to_conf, base64-detection, redact),
+      `test_ndms_commands.py` (make_owned_name, normalize_mac,
+      extract_iface_address, extract_dns_proxy_routes),
+      `test_nftset_backend.py` (16 тестов с моком _run),
+      `test_binary_installer.py` (sha256, extract, install,
+      безопасность path-traversal). Запуск:
+      `python3 -m unittest discover -s tests -v`.
+      Не покрыты: WARP-импортер, manifest-парсер `awg_installer.py`
+      (требует мокать GitHub API) — для следующей итерации.
 - [ ] **i18n** — UI русскоязычный. На будущее — выделить строки в
       словарь (`web/js/i18n/{ru,en}.js`).
-- [ ] **Явный enum платформы** — `Platform.{KEENETIC_NDMS,
-      OPENWRT_NFT, ENTWARE_GENERIC, LINUX}` вместо разрозненных
-      isinstance-проверок. Сейчас Keenetic-специфика разбросана
-      по `awg_detector`, `awg_platform`, `awg_keenetic_setup`,
-      `system_info`. С приходом NDMS-backend'а это станет ещё
-      больше — стоит вынести в один источник истины.
+- [x] **Явный enum платформы** — `core/awg_platform.PlatformKind`
+      ({KEENETIC, OPENWRT, LINUX, UNKNOWN}) + helper'ы
+      `is_keenetic()`, `is_openwrt()`, `is_linux_generic()`,
+      принимающие как `AwgPlatform`, так и `PlatformKind`, так и
+      строку. На каждом subclass проставлен `kind`, `as_dict()`
+      возвращает `kind` отдельным полем — UI может ветвиться по
+      нему без isinstance. Применено в `core/ndms/rci_client.py`
+      и `core/awg_keenetic_setup.py`. Постепенная миграция
+      остальных `isinstance(platform, KeeneticPlatform)` — по
+      мере касания соответствующих модулей.
 
 ## Идеи
 

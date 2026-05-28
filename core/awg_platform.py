@@ -7,8 +7,14 @@
   - как называются init-скрипты и где они лежат
   - какой firewall-бэкенд доступен
   - специфику запуска AWG на данной платформе
+
+Платформа возвращает `kind: PlatformKind` — единый enum, по которому
+можно ветвить логику без `isinstance`-цепочек по всему коду.
+Helper-функции `is_keenetic()`, `is_openwrt()` инкапсулируют
+проверки и принимают как `AwgPlatform`, так и `PlatformKind`.
 """
 
+import enum
 import os
 import subprocess
 
@@ -29,10 +35,64 @@ def _cmd_out(args, timeout=5):
         return ""
 
 
+# ───────────────────────── Platform kind enum ───────────────────────
+
+class PlatformKind(enum.Enum):
+    """
+    Единый перечень целевых платформ.
+
+    Используется вместо isinstance-проверок:
+
+        if platform.kind is PlatformKind.KEENETIC:
+            ...
+
+    или через helper:
+
+        from core.awg_platform import is_keenetic
+        if is_keenetic(platform):
+            ...
+
+    Добавление новой платформы (например, ASUS Merlin) — это
+    одна новая запись здесь + один subclass `AwgPlatform`.
+    """
+    KEENETIC = "keenetic"
+    OPENWRT  = "openwrt"
+    LINUX    = "linux"
+    UNKNOWN  = "unknown"
+
+
+def is_keenetic(p) -> bool:
+    """True, если платформа — Keenetic (по kind или isinstance)."""
+    return _kind_of(p) is PlatformKind.KEENETIC
+
+
+def is_openwrt(p) -> bool:
+    return _kind_of(p) is PlatformKind.OPENWRT
+
+
+def is_linux_generic(p) -> bool:
+    return _kind_of(p) is PlatformKind.LINUX
+
+
+def _kind_of(p):
+    """Достать PlatformKind из AwgPlatform / PlatformKind / строки."""
+    if isinstance(p, PlatformKind):
+        return p
+    kind = getattr(p, "kind", None)
+    if isinstance(kind, PlatformKind):
+        return kind
+    name = getattr(p, "name", None) or (p if isinstance(p, str) else "")
+    try:
+        return PlatformKind(str(name).lower())
+    except ValueError:
+        return PlatformKind.UNKNOWN
+
+
 # ───────────────────────── Base ──────────────────────────────────────
 
 class AwgPlatform:
     name = "unknown"
+    kind = PlatformKind.UNKNOWN
 
     # Пути
     binary_dir = "/usr/local/bin"
@@ -106,6 +166,8 @@ class AwgPlatform:
     def as_dict(self):
         return {
             "name":                   self.name,
+            "kind":                   self.kind.value if isinstance(
+                self.kind, PlatformKind) else str(self.kind),
             "binary_dir":             self.binary_dir,
             "config_dir":             self.config_dir,
             "run_dir":                self.run_dir,
@@ -123,6 +185,7 @@ class AwgPlatform:
 
 class KeeneticPlatform(AwgPlatform):
     name = "keenetic"
+    kind = PlatformKind.KEENETIC
 
     binary_dir = "/opt/usr/sbin"
     config_dir = "/opt/etc/amneziawg"
@@ -249,6 +312,7 @@ class KeeneticPlatform(AwgPlatform):
 
 class OpenWrtPlatform(AwgPlatform):
     name = "openwrt"
+    kind = PlatformKind.OPENWRT
 
     binary_dir = "/usr/sbin"
     config_dir = "/etc/amneziawg"
@@ -270,6 +334,7 @@ class OpenWrtPlatform(AwgPlatform):
 
 class GenericLinuxPlatform(AwgPlatform):
     name = "linux"
+    kind = PlatformKind.LINUX
 
     binary_dir = "/usr/local/bin"
     config_dir = "/etc/amneziawg"
