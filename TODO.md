@@ -272,22 +272,43 @@ integration). Не план релиза — скорее заметки и ид
       Полный рефакторинг `awg_installer.py` и `zapret_installer.py`
       на новую утилиту — поэтапно, чтобы не сломать рабочие
       пути (отдельная задача).
-- [x] **Unit-тесты** — `tests/` (380 тестов, все проходят).
-      21 тест-файл покрывает ~25 модулей core/api:
-      AWG/sing-box парсеры конфигов, builders, URI-схемы,
-      clash-yaml, routing-rules, storage, ipset/nftset backends
-      (с мок-`_run`), DoH-резолвер, ndms-подсистема (rci_client +
-      ping_check + wg_discovery), connectivity (matrix + traffic),
-      awg-watchdog, awg-init-script, warp-importer, sing-box
-      subsystem (platform + detector + autostart + installer).
+- [x] **Unit + integration тесты** — `tests/` (**528 тестов**,
+      все проходят). 29 тест-файлов покрывают:
+      * Pure-парсеры: awg_config, singbox_config, clash_yaml,
+        URI-схемы (vless/trojan/ss/hy2/tuic + wireguard),
+        alias_resolver (geosite:/geoip:), warp_importer.
+      * Routing engine: rules, storage (с моком ConfigManager),
+        ipset_backend, nftset_backend (мок `_run`), doh_resolver
+        (мок urlopen), domain/cidr/device правила.
+      * NDMS subsystem: rci_client (HTTP error handling), ndms
+        commands (object-group, dns-proxy route), ping_check,
+        wg_discovery.
+      * AWG: platform/kind enum, init_script (Entware/procd/
+        systemd), watchdog (handshake-age logic), awg_manager
+        lifecycle (CRUD + is_running + iface-resolution).
+      * Sing-box: platform/detector/autostart/installer,
+        builders + selectors/urltest + wrap_in_group,
+        singbox_manager lifecycle (CRUD + up/down + validate),
+        subscription_importer + clash_yaml.
+      * Connectivity: matrix (classify, parse_first_latency),
+        traffic (_RingBuffer, _series_from_samples, _read_peers).
+      * Binary installer: sha256, extract (path-traversal),
+        install (backup, atomic).
+      * **Integration API** (WSGI test-client без webtest):
+        все 21 модуль api/* покрыты smoke + happy-path + edge:
+        routing (14), singbox (14, full CRUD lifecycle),
+        connectivity (7), awg (13), misc (21 — status, logs,
+        autostart, control, diagnostics, hosts, lists, ipsets,
+        lua, blobs, devices, strategies, zapret, catalog).
+      * **DPI testers**: dpi_classifier (TLS/TCP/Read errors с
+        11+ ошибочными сигнатурами), STUN-парсер (XOR-MAPPED-
+        ADDRESS), body_tester (ISP-markers).
       Запуск: `python3 -m unittest discover -s tests -v`.
-      Не покрыто (~70% модулей): крупные lifecycle-модули
-      (awg_manager, zapret_installer, blockcheck, strategy_scanner,
-      diagnostics, catalog_*), API endpoints (bottle integration
-      tests), DPI testers, и менеджеры файловых ресурсов
-      (lua/hosts/hostlist/blob/ipset). Эти требуют heavy моков
-      subprocess/файлов или integration-тестов с временным
-      окружением — открыто как отдельная задача.
+      Не покрыто (~30 модулей, не критично):
+      strategy_scanner, blockcheck, diagnostics (heavy I/O),
+      catalog_*, file-resource менеджеры (lua/hosts/hostlist/
+      blob/ipset_manager), warp_generator, awg_warp_in_warp,
+      awg_installer/zapret_installer (требуют моки GitHub API).
 - [ ] **i18n** — UI русскоязычный. На будущее — выделить строки в
       словарь (`web/js/i18n/{ru,en}.js`).
 - [x] **Явный enum платформы** — `core/awg_platform.PlatformKind`
