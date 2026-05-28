@@ -180,14 +180,25 @@ integration). Не план релиза — скорее заметки и ид
       добавить, обновить, удалить, статус последнего refresh.
 - [x] **UI для sing-box** — три страницы:
       `singbox.js` (Dashboard: список инстансов, start/stop/restart),
-      `singbox_configs.js` (CRUD + JSON-редактор + 3-таб «Список /
-      Редактор / Подписка», встроенный preview/import VLESS/Trojan/
-      SS/Hy2/TUIC URI),
+      `singbox_configs.js` (CRUD + JSON-редактор + 5 табов:
+      «Список / Конструктор / Редактор / Импорт / Подписки»),
       `singbox_setup.js` (детект окружения, manifest, install/
       uninstall с прогрессом + arch override).
-      Зарегистрированы в `web/js/app.js`, в сайдбаре под VPN-блоком,
-      в `web/index.html` как script-теги. Outbounds Builder
-      (визуальный редактор отдельных outbound'ов) — отдельная задача.
+      Зарегистрированы в `web/js/app.js`, в сайдбаре под VPN-блоком.
+- [x] **Outbounds Builder** — таб «Конструктор» в `singbox_configs.js`.
+      Бэк: новые эндпоинты
+      `GET|POST /api/singbox/configs/<name>/outbounds`,
+      `PUT|DELETE /api/singbox/configs/<name>/outbounds/<tag>`,
+      `_build_outbound_from_body()` принимает плоскую form-схему
+      `{_form: "vless|trojan|ss|hy2|tuic", tag, server, port, ...}`
+      и строит готовый sing-box outbound через builders из
+      `core/singbox_config.py`. Защита от дубликатов tag (409).
+      UI: выбор конфига → список outbound'ов карточками → 5 кнопок
+      «+ <protocol>», форма с динамическими полями по типу
+      (uuid/password/method/flow/transport ws+grpc/TLS+Reality+
+      uTLS/sni/insecure). Редактирование/удаление по tag'у.
+      28 unit-тестов на helper'ы (TestBuildOutboundFromBody,
+      TestBuildTls, TestBuildTransport, TestDoAdd/Replace/Delete).
 
 ## AWG: то, что не успели в v0.19.0
 

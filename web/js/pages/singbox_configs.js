@@ -43,6 +43,8 @@ const SingboxConfigsPage = (() => {
             <div class="tabs-bar" style="margin-bottom:12px;">
                 <button class="tab-btn ${activeTab==='list' ? 'active':''}"
                         onclick="SingboxConfigsPage.switchTab('list')">Список</button>
+                <button class="tab-btn ${activeTab==='builder' ? 'active':''}"
+                        onclick="SingboxConfigsPage.switchTab('builder')">Конструктор</button>
                 <button class="tab-btn ${activeTab==='editor' ? 'active':''}"
                         onclick="SingboxConfigsPage.switchTab('editor')">Редактор</button>
                 <button class="tab-btn ${activeTab==='import' ? 'active':''}"
@@ -64,10 +66,11 @@ const SingboxConfigsPage = (() => {
     function switchTab(tab) {
         activeTab = tab;
         document.querySelectorAll('.tabs-bar .tab-btn').forEach(b => b.classList.remove('active'));
-        const map = { list:0, editor:1, import:2, subs:3 };
+        const map = { list:0, builder:1, editor:2, import:3, subs:4 };
         const btns = document.querySelectorAll('.tabs-bar .tab-btn');
         if (btns[map[tab]]) btns[map[tab]].classList.add('active');
-        if (tab === 'subs') loadSubs();
+        if (tab === 'subs')    loadSubs();
+        if (tab === 'builder') loadBuilder();
         renderTab();
     }
 
@@ -104,10 +107,11 @@ const SingboxConfigsPage = (() => {
     function renderTab() {
         const box = document.getElementById('sb-cfg-tab');
         if (!box) return;
-        if (activeTab === 'list')   return renderListTab(box);
-        if (activeTab === 'editor') return renderEditorTab(box);
-        if (activeTab === 'import') return renderImportTab(box);
-        if (activeTab === 'subs')   return renderSubsTab(box);
+        if (activeTab === 'list')    return renderListTab(box);
+        if (activeTab === 'builder') return renderBuilderTab(box);
+        if (activeTab === 'editor')  return renderEditorTab(box);
+        if (activeTab === 'import')  return renderImportTab(box);
+        if (activeTab === 'subs')    return renderSubsTab(box);
     }
 
     function renderListTab(box) {
@@ -522,6 +526,494 @@ const SingboxConfigsPage = (() => {
         }
     }
 
+    // ══════════════ tab: builder (визуальный CRUD outbound'ов) ══════════════
+
+    let builderTarget    = '';     // имя выбранного конфига
+    let builderOutbounds = [];
+    let builderForm      = null;   // null = не редактируем, иначе объект формы
+    let builderBusy      = false;
+    let builderAddNewName = '';    // имя нового конфига если создаём
+
+    async function loadBuilder() {
+        if (!builderTarget && configs.length) {
+            // По умолчанию выбираем первый, который НЕ
+            // imported-subscription-* (это автогенерёные подписочные).
+            const own = configs.find(c => !c.name.startsWith('imported-subscription-'));
+            builderTarget = (own || configs[0]).name;
+        }
+        if (builderTarget) {
+            await loadBuilderOutbounds();
+        } else {
+            builderOutbounds = [];
+            renderTab();
+        }
+    }
+
+    async function loadBuilderOutbounds() {
+        try {
+            const r = await API.get(
+                `/api/singbox/configs/${encodeURIComponent(builderTarget)}/outbounds`);
+            builderOutbounds = (r && r.outbounds) || [];
+        } catch (e) {
+            builderOutbounds = [];
+            Toast.error(e.message);
+        }
+        renderTab();
+    }
+
+    function renderBuilderTab(box) {
+        // Список конфигов в выпадушке + кнопка «Новый конфиг».
+        const cfgOpts = configs.map(c =>
+            `<option value="${escapeAttr(c.name)}" ${c.name === builderTarget ? 'selected':''}>
+                ${escapeHtml(c.name)}${c.name.startsWith('imported-subscription-') ? ' (подписка)' : ''}
+            </option>`
+        ).join('');
+
+        if (!configs.length) {
+            box.innerHTML = `
+                <div class="card">
+                    <h3 style="margin-top:0;">Конструктор outbound'ов</h3>
+                    <p class="text-muted">
+                        Сначала создайте конфиг — это можно сделать на вкладке
+                        «Список» или «Редактор».
+                    </p>
+                    <button class="btn btn-primary btn-sm"
+                            onclick="SingboxConfigsPage.builderQuickCreate()">
+                        Создать пустой конфиг
+                    </button>
+                </div>`;
+            return;
+        }
+
+        const formBlock = builderForm
+            ? renderBuilderForm(builderForm)
+            : '';
+
+        box.innerHTML = `
+            <div class="card" style="margin-bottom:12px;">
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <label class="form-label" style="margin:0;">Конфиг:</label>
+                    <select class="form-input" style="flex:0 0 auto; width:auto;"
+                            onchange="SingboxConfigsPage.builderSwitchTarget(this.value)">
+                        ${cfgOpts}
+                    </select>
+                    <button class="btn btn-primary btn-sm"
+                            onclick="SingboxConfigsPage.builderAdd('vless')">+ VLESS</button>
+                    <button class="btn btn-primary btn-sm"
+                            onclick="SingboxConfigsPage.builderAdd('trojan')">+ Trojan</button>
+                    <button class="btn btn-primary btn-sm"
+                            onclick="SingboxConfigsPage.builderAdd('shadowsocks')">+ Shadowsocks</button>
+                    <button class="btn btn-primary btn-sm"
+                            onclick="SingboxConfigsPage.builderAdd('hysteria2')">+ Hysteria2</button>
+                    <button class="btn btn-primary btn-sm"
+                            onclick="SingboxConfigsPage.builderAdd('tuic')">+ TUIC</button>
+                </div>
+            </div>
+
+            ${formBlock}
+
+            ${renderBuilderOutboundsList()}
+        `;
+    }
+
+    function renderBuilderOutboundsList() {
+        if (!builderOutbounds.length) {
+            return `<div class="card"><div class="text-muted">
+                В конфиге нет outbound'ов. Используйте кнопки выше, чтобы добавить.
+            </div></div>`;
+        }
+        const rows = builderOutbounds.map((o, idx) => {
+            const t   = o.type || '?';
+            const tag = o.tag || '(без tag)';
+            const isService = t === 'direct' || t === 'block' || t === 'dns';
+            const isGroup   = t === 'selector' || t === 'urltest';
+
+            // Краткое описание
+            let desc = '';
+            if (isGroup) {
+                desc = `tag'и: ${(o.outbounds || []).join(', ')}`;
+            } else if (!isService) {
+                const where = o.server && o.server_port
+                    ? `${o.server}:${o.server_port}` : '';
+                desc = where;
+            } else {
+                desc = '<span class="text-muted">служебный</span>';
+            }
+
+            const isEditable = !isService && !isGroup;
+            return `
+                <div class="card" style="margin-bottom:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                        <div style="min-width:0; flex:1;">
+                            <span style="font-weight:600;">${escapeHtml(tag)}</span>
+                            <span class="text-muted" style="font-size:11px; margin-left:6px;">
+                                ${escapeHtml(t)}
+                            </span>
+                            <div class="text-muted" style="font-size:12px;">${desc}</div>
+                        </div>
+                        <div style="display:flex; gap:6px;">
+                            ${isEditable ? `
+                            <button class="btn btn-ghost btn-sm"
+                                    onclick="SingboxConfigsPage.builderEdit(${idx})">
+                                Редактировать
+                            </button>` : ''}
+                            ${!isService ? `
+                            <button class="btn btn-ghost btn-sm"
+                                    onclick="SingboxConfigsPage.builderDelete('${escapeAttr(tag)}')">
+                                Удалить
+                            </button>` : ''}
+                        </div>
+                    </div>
+                </div>`;
+        }).join('');
+        return rows;
+    }
+
+    function renderBuilderForm(form) {
+        const editing = !!form._editing_tag;
+        const isVless = form._form === 'vless';
+        const isTrojan = form._form === 'trojan';
+        const isSS = form._form === 'shadowsocks';
+        const isHy2 = form._form === 'hysteria2';
+        const isTuic = form._form === 'tuic';
+
+        // Общие поля
+        const commonFields = `
+            <div style="display:grid; grid-template-columns:1fr 2fr 1fr; gap:8px;">
+                <div>
+                    <label class="form-label">Tag</label>
+                    <input type="text" class="form-input"
+                           value="${escapeAttr(form.tag || '')}"
+                           ${editing ? 'readonly' : ''}
+                           oninput="SingboxConfigsPage.builderFormSet('tag', this.value)">
+                </div>
+                <div>
+                    <label class="form-label">Server</label>
+                    <input type="text" class="form-input"
+                           value="${escapeAttr(form.server || '')}"
+                           oninput="SingboxConfigsPage.builderFormSet('server', this.value)">
+                </div>
+                <div>
+                    <label class="form-label">Port</label>
+                    <input type="number" class="form-input"
+                           value="${form.port || ''}"
+                           oninput="SingboxConfigsPage.builderFormSet('port', this.value)">
+                </div>
+            </div>`;
+
+        // Auth-поля
+        let authFields = '';
+        if (isVless || isTuic) {
+            authFields += `
+                <label class="form-label" style="margin-top:6px;">UUID</label>
+                <input type="text" class="form-input"
+                       value="${escapeAttr(form.uuid || '')}"
+                       oninput="SingboxConfigsPage.builderFormSet('uuid', this.value)">`;
+        }
+        if (isTrojan || isSS || isHy2 || isTuic) {
+            const label = isTuic ? 'Password (опц.)' : 'Password';
+            authFields += `
+                <label class="form-label" style="margin-top:6px;">${label}</label>
+                <input type="text" class="form-input"
+                       value="${escapeAttr(form.password || '')}"
+                       oninput="SingboxConfigsPage.builderFormSet('password', this.value)">`;
+        }
+        if (isSS) {
+            authFields += `
+                <label class="form-label" style="margin-top:6px;">Method (cipher)</label>
+                <select class="form-input"
+                        onchange="SingboxConfigsPage.builderFormSet('method', this.value)">
+                    ${['aes-128-gcm','aes-256-gcm','chacha20-ietf-poly1305',
+                       '2022-blake3-aes-128-gcm','2022-blake3-aes-256-gcm',
+                       'none']
+                       .map(m => `<option value="${m}" ${m===(form.method||'aes-128-gcm') ? 'selected':''}>${m}</option>`).join('')}
+                </select>`;
+        }
+        if (isVless) {
+            authFields += `
+                <label class="form-label" style="margin-top:6px;">Flow (опц., обычно xtls-rprx-vision для Reality)</label>
+                <input type="text" class="form-input"
+                       placeholder="xtls-rprx-vision"
+                       value="${escapeAttr(form.flow || '')}"
+                       oninput="SingboxConfigsPage.builderFormSet('flow', this.value)">`;
+        }
+
+        // Transport (для vless / trojan)
+        let transportFields = '';
+        if (isVless || isTrojan) {
+            const tr = form.transport || 'tcp';
+            transportFields = `
+                <label class="form-label" style="margin-top:10px;">Transport</label>
+                <select class="form-input"
+                        onchange="SingboxConfigsPage.builderFormSet('transport', this.value)">
+                    ${['tcp','ws','grpc'].map(t => `<option value="${t}" ${t===tr?'selected':''}>${t}</option>`).join('')}
+                </select>`;
+            if (tr === 'ws') {
+                transportFields += `
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <div>
+                            <label class="form-label">WS path</label>
+                            <input type="text" class="form-input"
+                                   placeholder="/"
+                                   value="${escapeAttr(form.ws_path || '')}"
+                                   oninput="SingboxConfigsPage.builderFormSet('ws_path', this.value)">
+                        </div>
+                        <div>
+                            <label class="form-label">WS Host header (опц.)</label>
+                            <input type="text" class="form-input"
+                                   value="${escapeAttr(form.ws_host || '')}"
+                                   oninput="SingboxConfigsPage.builderFormSet('ws_host', this.value)">
+                        </div>
+                    </div>`;
+            } else if (tr === 'grpc') {
+                transportFields += `
+                    <label class="form-label">gRPC service name</label>
+                    <input type="text" class="form-input"
+                           value="${escapeAttr(form.grpc_service || '')}"
+                           oninput="SingboxConfigsPage.builderFormSet('grpc_service', this.value)">`;
+            }
+        }
+
+        // TLS / Reality (для vless / trojan / hy2 / tuic)
+        let tlsFields = '';
+        if (isVless || isTrojan) {
+            const sec = form.security || (isTrojan ? 'tls' : '');
+            tlsFields = `
+                <label class="form-label" style="margin-top:10px;">Security</label>
+                <select class="form-input"
+                        onchange="SingboxConfigsPage.builderFormSet('security', this.value)">
+                    ${['','tls','reality'].map(s => `<option value="${s}" ${s===sec?'selected':''}>${s || '(нет)'}</option>`).join('')}
+                </select>`;
+            if (sec === 'tls' || sec === 'reality') {
+                tlsFields += `
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <div>
+                            <label class="form-label">SNI / server_name</label>
+                            <input type="text" class="form-input"
+                                   value="${escapeAttr(form.sni || '')}"
+                                   oninput="SingboxConfigsPage.builderFormSet('sni', this.value)">
+                        </div>
+                        <div>
+                            <label class="form-label">uTLS fingerprint</label>
+                            <select class="form-input"
+                                    onchange="SingboxConfigsPage.builderFormSet('fingerprint', this.value)">
+                                ${['','chrome','firefox','safari','ios','android','edge','random']
+                                    .map(f => `<option value="${f}" ${f===(form.fingerprint||'')?'selected':''}>${f || '(не задано)'}</option>`).join('')}
+                            </select>
+                        </div>
+                    </div>`;
+            }
+            if (sec === 'reality') {
+                tlsFields += `
+                    <div style="display:grid; grid-template-columns:2fr 1fr; gap:8px;">
+                        <div>
+                            <label class="form-label">Reality public key</label>
+                            <input type="text" class="form-input"
+                                   value="${escapeAttr(form.reality_pbk || '')}"
+                                   oninput="SingboxConfigsPage.builderFormSet('reality_pbk', this.value)">
+                        </div>
+                        <div>
+                            <label class="form-label">Short ID</label>
+                            <input type="text" class="form-input"
+                                   value="${escapeAttr(form.reality_sid || '')}"
+                                   oninput="SingboxConfigsPage.builderFormSet('reality_sid', this.value)">
+                        </div>
+                    </div>`;
+            }
+        } else if (isHy2 || isTuic) {
+            tlsFields = `
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                    <div>
+                        <label class="form-label">SNI</label>
+                        <input type="text" class="form-input"
+                               value="${escapeAttr(form.sni || '')}"
+                               oninput="SingboxConfigsPage.builderFormSet('sni', this.value)">
+                    </div>
+                    <div style="display:flex; align-items:flex-end;">
+                        <label style="display:flex; gap:6px; align-items:center;">
+                            <input type="checkbox"
+                                   ${form.insecure ? 'checked' : ''}
+                                   onchange="SingboxConfigsPage.builderFormSet('insecure', this.checked)">
+                            insecure (пропустить проверку TLS)
+                        </label>
+                    </div>
+                </div>`;
+        }
+
+        return `
+            <div class="card" style="margin-bottom:12px; border:1px solid var(--accent);">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h3 style="margin:0;">
+                        ${editing ? 'Редактирование' : 'Новый outbound'}:
+                        <span class="text-muted">${form._form}</span>
+                    </h3>
+                    <button class="btn btn-ghost btn-sm"
+                            onclick="SingboxConfigsPage.builderCancel()">
+                        Отмена
+                    </button>
+                </div>
+                ${commonFields}
+                ${authFields}
+                ${transportFields}
+                ${tlsFields}
+                <div style="margin-top:12px; display:flex; gap:8px;">
+                    <button class="btn btn-primary btn-sm" ${builderBusy?'disabled':''}
+                            onclick="SingboxConfigsPage.builderSave()">
+                        Сохранить
+                    </button>
+                </div>
+            </div>`;
+    }
+
+    function builderSwitchTarget(name) {
+        builderTarget = name;
+        builderForm = null;
+        loadBuilderOutbounds();
+    }
+
+    function builderAdd(type) {
+        builderForm = {
+            _form: type,
+            tag: type + '-' + Math.random().toString(36).slice(2, 6),
+            server: '', port: 443,
+            transport: 'tcp',
+            security: (type === 'vless' || type === 'trojan') ? 'tls' : '',
+        };
+        renderTab();
+    }
+
+    function builderEdit(idx) {
+        const ob = builderOutbounds[idx];
+        if (!ob) return;
+        // Восстанавливаем «плоскую» форму из готового outbound'а.
+        const form = {
+            _form: ob.type, _editing_tag: ob.tag,
+            tag: ob.tag, server: ob.server || '',
+            port: ob.server_port || 443,
+        };
+        if (ob.type === 'vless' || ob.type === 'tuic') form.uuid = ob.uuid || '';
+        if (ob.type === 'trojan' || ob.type === 'shadowsocks'
+                || ob.type === 'hysteria2' || ob.type === 'tuic') {
+            form.password = ob.password || '';
+        }
+        if (ob.type === 'shadowsocks') form.method = ob.method || 'aes-128-gcm';
+        if (ob.type === 'vless') form.flow = ob.flow || '';
+
+        // Transport
+        const tr = ob.transport;
+        if (tr && tr.type) {
+            form.transport = tr.type;
+            if (tr.type === 'ws') {
+                form.ws_path = tr.path || '';
+                form.ws_host = (tr.headers && tr.headers.Host) || '';
+            } else if (tr.type === 'grpc') {
+                form.grpc_service = tr.service_name || '';
+            }
+        } else {
+            form.transport = 'tcp';
+        }
+
+        // TLS
+        const tls = ob.tls;
+        if (tls && tls.enabled) {
+            form.security = tls.reality && tls.reality.enabled ? 'reality' : 'tls';
+            form.sni = tls.server_name || '';
+            form.fingerprint = (tls.utls && tls.utls.fingerprint) || '';
+            if (tls.reality) {
+                form.reality_pbk = tls.reality.public_key || '';
+                form.reality_sid = tls.reality.short_id || '';
+            }
+            if (tls.insecure) form.insecure = true;
+        } else {
+            form.security = '';
+        }
+
+        builderForm = form;
+        renderTab();
+    }
+
+    function builderCancel() {
+        builderForm = null;
+        renderTab();
+    }
+
+    function builderFormSet(field, value) {
+        if (!builderForm) return;
+        if (field === 'port') {
+            const n = parseInt(value, 10);
+            builderForm.port = isNaN(n) ? 0 : n;
+        } else {
+            builderForm[field] = value;
+        }
+        // Не делаем перерисовку на каждый input — только на смену transport/security
+        if (field === 'transport' || field === 'security') {
+            renderTab();
+        }
+    }
+
+    async function builderSave() {
+        if (!builderForm || !builderTarget) return;
+        builderBusy = true; renderTab();
+        try {
+            const editing = !!builderForm._editing_tag;
+            const url = editing
+                ? `/api/singbox/configs/${encodeURIComponent(builderTarget)}/outbounds/${encodeURIComponent(builderForm._editing_tag)}`
+                : `/api/singbox/configs/${encodeURIComponent(builderTarget)}/outbounds`;
+            const method = editing ? 'put' : 'post';
+            const r = await API[method](url, builderForm);
+            if (r && r.ok) {
+                Toast.success(`Outbound сохранён (${r.outbounds_count} всего)`);
+                builderForm = null;
+                await loadBuilderOutbounds();
+            } else {
+                Toast.error((r && r.error) || 'failed');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        } finally {
+            builderBusy = false; renderTab();
+        }
+    }
+
+    async function builderDelete(tag) {
+        if (!confirm(`Удалить outbound "${tag}"?`)) return;
+        try {
+            const r = await API.delete(
+                `/api/singbox/configs/${encodeURIComponent(builderTarget)}/outbounds/${encodeURIComponent(tag)}`);
+            if (r && r.ok) {
+                Toast.success(`Удалён: ${tag}`);
+                await loadBuilderOutbounds();
+            } else {
+                Toast.error((r && r.error) || 'failed');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        }
+    }
+
+    async function builderQuickCreate() {
+        const name = prompt('Имя нового конфига:', 'my-vpn');
+        if (!name) return;
+        const text = JSON.stringify({
+            "outbounds": [
+                { "type": "direct", "tag": "direct" }
+            ]
+        });
+        try {
+            const r = await API.post('/api/singbox/configs', { name, text });
+            if (r && r.ok) {
+                Toast.success('Конфиг создан');
+                builderTarget = name;
+                await loadAll();
+                await loadBuilderOutbounds();
+            } else {
+                Toast.error((r && r.error) || 'failed');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        }
+    }
+
     // ══════════════ tab: subs (saved subscriptions + autorefresh) ══════════════
 
     let subs = [];
@@ -737,5 +1229,8 @@ const SingboxConfigsPage = (() => {
         onImportUrlChange, onImportTextChange,
         // Subscriptions
         subFormSet, subsAdd, subsRefresh, subsRefreshAll, subsRemove,
+        // Builder
+        builderSwitchTarget, builderAdd, builderEdit, builderCancel,
+        builderFormSet, builderSave, builderDelete, builderQuickCreate,
     };
 })();

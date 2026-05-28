@@ -23,6 +23,14 @@ REST API для sing-box.
   POST   /api/singbox/configs/<name>/restart
   GET    /api/singbox/configs/<name>/status
   POST   /api/singbox/configs/<name>/validate  — sing-box check -c <file>
+  POST   /api/singbox/configs/<name>/wrap      — обернуть outbound'ы в
+                                                  selector/urltest
+
+  GET    /api/singbox/configs/<name>/outbounds       — список outbound'ов
+  POST   /api/singbox/configs/<name>/outbounds       — добавить
+                                                       (body: {_form, ...} или raw)
+  PUT    /api/singbox/configs/<name>/outbounds/<tag> — обновить
+  DELETE /api/singbox/configs/<name>/outbounds/<tag> — удалить
 
   GET    /api/singbox/autostart             — статус автозапуска
   POST   /api/singbox/autostart/<name>      — body: {"enabled": bool}
@@ -45,6 +53,220 @@ from bottle import request, response
 
 # Сколько ждать в HTTP-запросе install перед тем как вернуть in_progress
 INSTALL_API_WAIT = 8
+
+
+# ════════════════════════════════════════════════════════════
+# helpers для outbounds CRUD
+# ════════════════════════════════════════════════════════════
+
+def _modify_outbounds(name: str, mutate):
+    """
+    Обёртка над «прочитать конфиг → mutate(outbounds) → сохранить».
+
+    mutate(outbounds: list) → может вернуть dict с error/result либо
+    None (тогда считаем успешным).
+    """
+    from bottle import response
+    from core.singbox_manager import get_singbox_manager
+    from core.singbox_config import render_conf
+
+    mgr = get_singbox_manager()
+    cfg_resp = mgr.get_config(name)
+    if not cfg_resp.get("ok"):
+        response.status = 404
+        return cfg_resp
+    cfg = cfg_resp.get("parsed") or {}
+    obs = cfg.get("outbounds") or []
+    if not isinstance(obs, list):
+        response.status = 400
+        return {"ok": False, "error": "outbounds — не массив"}
+
+    try:
+        res = mutate(obs)
+    except ValueError as e:
+        response.status = 400
+        return {"ok": False, "error": str(e)}
+    if isinstance(res, dict) and res.get("error"):
+        # Если конкретная mutate-функция знает какой статус нужен —
+        # она может вернуть {"_status": 404, "error": "..."}.
+        status = res.pop("_status", 400)
+        response.status = status
+        res.setdefault("ok", False)
+        return res
+
+    cfg["outbounds"] = obs
+    save = mgr.save_config(name, text=render_conf(cfg))
+    if not save.get("ok"):
+        response.status = 500
+        return save
+    return {"ok": True, "outbounds_count": len(obs)}
+
+
+def _do_add(obs: list, outbound: dict):
+    """Добавить outbound в список — проверяем уникальность tag'а."""
+    tag = outbound.get("tag")
+    if not tag:
+        return {"_status": 400, "error": "tag обязателен"}
+    if any(isinstance(o, dict) and o.get("tag") == tag for o in obs):
+        return {"_status": 409, "error":
+                "outbound с tag '%s' уже существует" % tag}
+    obs.append(outbound)
+    return None
+
+
+def _do_replace(obs: list, old_tag: str, outbound: dict):
+    new_tag = outbound.get("tag")
+    idx = next((i for i, o in enumerate(obs)
+                if isinstance(o, dict) and o.get("tag") == old_tag), -1)
+    if idx < 0:
+        return {"_status": 404,
+                "error": "outbound '%s' не найден" % old_tag}
+    # Если tag меняется — проверяем чтобы не было коллизии с другим.
+    if new_tag and new_tag != old_tag:
+        for j, o in enumerate(obs):
+            if j != idx and isinstance(o, dict) and o.get("tag") == new_tag:
+                return {"_status": 409,
+                        "error": "outbound с tag '%s' уже существует"
+                                  % new_tag}
+    obs[idx] = outbound
+    return None
+
+
+def _do_delete(obs: list, tag: str):
+    idx = next((i for i, o in enumerate(obs)
+                if isinstance(o, dict) and o.get("tag") == tag), -1)
+    if idx < 0:
+        return {"_status": 404, "error": "outbound '%s' не найден" % tag}
+    # Защита: если этот tag используется в route.rules — не даём
+    # удалить, иначе sing-box упадёт при старте. Эту проверку
+    # делаем в caller (где есть cfg целиком), но здесь просто
+    # удаляем; caller увидит ошибку sing-box-check при save.
+    obs.pop(idx)
+    return None
+
+
+# Маппинг _form-имя → builder. Все builders определены в
+# core/singbox_config.py.
+def _build_outbound_from_body(body: dict) -> dict:
+    """
+    Если в body есть `_form: vless|trojan|...` — собрать outbound
+    через builder. Иначе считаем, что body — уже готовый sing-box
+    outbound dict (с минимальной валидацией).
+    """
+    form = (body.get("_form") or "").lower().strip()
+    if not form:
+        # Сырой outbound. Минимальная валидация — должны быть type+tag.
+        if not body.get("type") or not body.get("tag"):
+            raise ValueError("type и tag обязательны")
+        return _strip_form_keys(body)
+
+    from core.singbox_config import (
+        make_vless_outbound, make_trojan_outbound,
+        make_shadowsocks_outbound, make_hysteria2_outbound,
+        make_tuic_outbound,
+    )
+
+    tag    = (body.get("tag") or "").strip()
+    server = (body.get("server") or "").strip()
+    try:
+        port = int(body.get("port") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("port — не число")
+    if not tag or not server or not port:
+        raise ValueError("tag, server и port обязательны")
+
+    if form == "vless":
+        uuid_ = (body.get("uuid") or "").strip()
+        if not uuid_:
+            raise ValueError("vless: нужен uuid")
+        tls = _build_tls_from_form(body)
+        return make_vless_outbound(
+            tag=tag, server=server, port=port, uuid=uuid_,
+            flow=(body.get("flow") or "").strip(),
+            transport=_build_transport_from_form(body),
+            tls=tls)
+
+    if form == "trojan":
+        password = (body.get("password") or "").strip()
+        if not password:
+            raise ValueError("trojan: нужен password")
+        return make_trojan_outbound(
+            tag=tag, server=server, port=port, password=password,
+            sni=(body.get("sni") or "").strip(),
+            transport=_build_transport_from_form(body))
+
+    if form == "shadowsocks":
+        method   = (body.get("method") or "aes-128-gcm").strip()
+        password = (body.get("password") or "").strip()
+        if not password:
+            raise ValueError("shadowsocks: нужен password")
+        return make_shadowsocks_outbound(
+            tag=tag, server=server, port=port,
+            method=method, password=password)
+
+    if form == "hysteria2":
+        password = (body.get("password") or "").strip()
+        if not password:
+            raise ValueError("hysteria2: нужен password")
+        return make_hysteria2_outbound(
+            tag=tag, server=server, port=port, password=password,
+            sni=(body.get("sni") or "").strip(),
+            insecure=bool(body.get("insecure")))
+
+    if form == "tuic":
+        uuid_ = (body.get("uuid") or "").strip()
+        if not uuid_:
+            raise ValueError("tuic: нужен uuid")
+        return make_tuic_outbound(
+            tag=tag, server=server, port=port,
+            uuid=uuid_,
+            password=(body.get("password") or "").strip(),
+            sni=(body.get("sni") or "").strip())
+
+    raise ValueError("неизвестный _form: %s" % form)
+
+
+def _strip_form_keys(body: dict) -> dict:
+    """Убрать вспомогательные _form*-поля из готового outbound."""
+    return {k: v for k, v in body.items() if not k.startswith("_")}
+
+
+def _build_transport_from_form(body: dict):
+    """ws / grpc transport из плоских form-полей."""
+    t_type = (body.get("transport") or "tcp").lower().strip()
+    if t_type == "ws":
+        tr = {"type": "ws", "path": body.get("ws_path") or "/"}
+        host = body.get("ws_host")
+        if host:
+            tr["headers"] = {"Host": host}
+        return tr
+    if t_type == "grpc":
+        return {"type": "grpc",
+                "service_name": (body.get("grpc_service") or "").strip()}
+    return None
+
+
+def _build_tls_from_form(body: dict):
+    """TLS / Reality из плоских form-полей."""
+    sec = (body.get("security") or "").lower().strip()
+    if sec not in ("tls", "reality"):
+        return None
+    tls = {"enabled": True}
+    sni = (body.get("sni") or "").strip()
+    if sni:
+        tls["server_name"] = sni
+    fp = (body.get("fingerprint") or "").strip()
+    if fp:
+        tls["utls"] = {"enabled": True, "fingerprint": fp}
+    if sec == "reality":
+        tls["reality"] = {
+            "enabled":    True,
+            "public_key": (body.get("reality_pbk") or "").strip(),
+            "short_id":   (body.get("reality_sid") or "").strip(),
+        }
+    if body.get("insecure"):
+        tls["insecure"] = True
+    return tls
 
 
 def register(app):
@@ -229,6 +451,67 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core.singbox_manager import get_singbox_manager
         return get_singbox_manager().validate_via_binary(name)
+
+    # ─────── outbounds CRUD (для Outbounds Builder UI) ────────────
+
+    @app.route("/api/singbox/configs/<name>/outbounds")
+    def singbox_outbounds_list(name):
+        """Список outbound'ов конфига как они есть в JSON."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.singbox_manager import get_singbox_manager
+        r = get_singbox_manager().get_config(name)
+        if not r.get("ok"):
+            response.status = 404
+            return r
+        cfg = r.get("parsed") or {}
+        return {"ok": True, "outbounds": cfg.get("outbounds") or []}
+
+    @app.route("/api/singbox/configs/<name>/outbounds", method="POST")
+    def singbox_outbounds_add(name):
+        """
+        Добавить один outbound. Body — готовый sing-box outbound JSON
+        (с обязательным `type` и `tag`) или удобная «упрощённая» форма:
+            {"_form": "vless", "tag":"...", "server":"...", ...}
+        Во втором случае построим через make_*_outbound из
+        singbox_config.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            response.status = 400
+            return {"ok": False, "error": "body должен быть объектом"}
+
+        try:
+            outbound = _build_outbound_from_body(body)
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+
+        return _modify_outbounds(name, lambda obs: _do_add(obs, outbound))
+
+    @app.route("/api/singbox/configs/<name>/outbounds/<tag>", method="PUT")
+    def singbox_outbounds_update(name, tag):
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        try:
+            outbound = _build_outbound_from_body(body)
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        return _modify_outbounds(
+            name, lambda obs: _do_replace(obs, tag, outbound))
+
+    @app.route("/api/singbox/configs/<name>/outbounds/<tag>", method="DELETE")
+    def singbox_outbounds_delete(name, tag):
+        response.content_type = "application/json; charset=utf-8"
+        return _modify_outbounds(
+            name, lambda obs: _do_delete(obs, tag))
 
     @app.route("/api/singbox/configs/<name>/wrap", method="POST")
     def singbox_configs_wrap(name):
