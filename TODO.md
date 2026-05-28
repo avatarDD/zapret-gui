@@ -272,20 +272,22 @@ integration). Не план релиза — скорее заметки и ид
       Полный рефакторинг `awg_installer.py` и `zapret_installer.py`
       на новую утилиту — поэтапно, чтобы не сломать рабочие
       пути (отдельная задача).
-- [x] **Unit-тесты** — `tests/` (100 тестов, все проходят):
-      `test_awg_config.py` (parse_conf, validate, render),
-      `test_alias_resolver.py` (parse_geosite_body, parse_geoip_body,
-      expand_domains, resolve_alias с мок-fetch),
-      `test_subscription_importer.py` (extract_items,
-      wireguard_uri_to_conf, base64-detection, redact),
-      `test_ndms_commands.py` (make_owned_name, normalize_mac,
-      extract_iface_address, extract_dns_proxy_routes),
-      `test_nftset_backend.py` (16 тестов с моком _run),
-      `test_binary_installer.py` (sha256, extract, install,
-      безопасность path-traversal). Запуск:
-      `python3 -m unittest discover -s tests -v`.
-      Не покрыты: WARP-импортер, manifest-парсер `awg_installer.py`
-      (требует мокать GitHub API) — для следующей итерации.
+- [x] **Unit-тесты** — `tests/` (380 тестов, все проходят).
+      21 тест-файл покрывает ~25 модулей core/api:
+      AWG/sing-box парсеры конфигов, builders, URI-схемы,
+      clash-yaml, routing-rules, storage, ipset/nftset backends
+      (с мок-`_run`), DoH-резолвер, ndms-подсистема (rci_client +
+      ping_check + wg_discovery), connectivity (matrix + traffic),
+      awg-watchdog, awg-init-script, warp-importer, sing-box
+      subsystem (platform + detector + autostart + installer).
+      Запуск: `python3 -m unittest discover -s tests -v`.
+      Не покрыто (~70% модулей): крупные lifecycle-модули
+      (awg_manager, zapret_installer, blockcheck, strategy_scanner,
+      diagnostics, catalog_*), API endpoints (bottle integration
+      tests), DPI testers, и менеджеры файловых ресурсов
+      (lua/hosts/hostlist/blob/ipset). Эти требуют heavy моков
+      subprocess/файлов или integration-тестов с временным
+      окружением — открыто как отдельная задача.
 - [ ] **i18n** — UI русскоязычный. На будущее — выделить строки в
       словарь (`web/js/i18n/{ru,en}.js`).
 - [x] **Явный enum платформы** — `core/awg_platform.PlatformKind`
