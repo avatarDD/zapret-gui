@@ -159,9 +159,16 @@ integration). Не план релиза — скорее заметки и ид
       base64/clash-yaml/sing-box JSON, авторефреш по таймеру.
       base64 уже работает; clash-yaml + sing-box JSON + автообновление
       по cron-таймеру — отдельной задачей.
-- [ ] **UI для sing-box** — отдельные страницы Dashboard /
-      Configs / Outbounds Builder / Routing. Сейчас доступны
-      только API; UI — отдельная задача (по объёму ~как AWG-UI).
+- [x] **UI для sing-box** — три страницы:
+      `singbox.js` (Dashboard: список инстансов, start/stop/restart),
+      `singbox_configs.js` (CRUD + JSON-редактор + 3-таб «Список /
+      Редактор / Подписка», встроенный preview/import VLESS/Trojan/
+      SS/Hy2/TUIC URI),
+      `singbox_setup.js` (детект окружения, manifest, install/
+      uninstall с прогрессом + arch override).
+      Зарегистрированы в `web/js/app.js`, в сайдбаре под VPN-блоком,
+      в `web/index.html` как script-теги. Outbounds Builder
+      (визуальный редактор отдельных outbound'ов) — отдельная задача.
 
 ## AWG: то, что не успели в v0.19.0
 

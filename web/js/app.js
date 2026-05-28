@@ -27,6 +27,9 @@ const App = (() => {
         'awg-warp':    AwgWarpPage,
         'awg-routing': AwgRoutingPage,
         'awg-setup':   AwgSetupPage,
+        singbox:           SingboxDashboardPage,
+        'singbox-configs': SingboxConfigsPage,
+        'singbox-setup':   SingboxSetupPage,
         settings:    SettingsPage,
     };
 

@@ -68,6 +68,9 @@ const Sidebar = (() => {
                 { id: 'awg-warp',    label: 'WARP',       icon: 'awg' },
                 { id: 'awg-routing', label: 'Routing',    icon: 'globe' },
                 { id: 'awg-setup',   label: 'Установка',  icon: 'settings' },
+                { id: 'singbox',         label: 'sing-box',     icon: 'awg' },
+                { id: 'singbox-configs', label: 'sing-box: конфиги', icon: 'lua' },
+                { id: 'singbox-setup',   label: 'sing-box: установка', icon: 'settings' },
             ]
         },
         {
