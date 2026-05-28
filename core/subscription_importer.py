@@ -346,11 +346,22 @@ def import_subscription(url: str = "", text: str = "",
                 "name": parsed["name"], "saved": saved,
             })
         else:
+            # Sing-box-семейство схем: vless / trojan / ss /
+            # hysteria2 / hy2 / tuic. Конвертируем в outbound и
+            # добавляем в общий sing-box-конфиг 'imported-subscription'.
+            sb_res = _try_import_singbox_uri(it["value"], save=save)
+            if sb_res["handled"]:
+                result_items.append(sb_res["item"])
+                if sb_res["item"].get("ok"):
+                    imported += 1
+                else:
+                    errors += 1
+                continue
+
             skipped += 1
             result_items.append({
                 "type": scheme, "ok": False,
-                "error": ("Sing-box ещё не интегрирован — "
-                          "%s URI пропущен" % scheme),
+                "error": "scheme %s не поддержан" % scheme,
                 "uri": _redact(it["value"]),
             })
 
@@ -361,6 +372,106 @@ def import_subscription(url: str = "", text: str = "",
                     "errors": errors,
                     "total": len(result_items)},
     }
+
+
+# Имя sing-box-конфига, в который мы агрегируем outbound'ы из всех
+# успешно импортированных не-WG URI. Один файл — много outbound'ов.
+SINGBOX_IMPORT_CONFIG = "imported-subscription"
+
+
+def _try_import_singbox_uri(uri: str, save: bool = True) -> dict:
+    """
+    Попытка преобразовать URI в sing-box outbound и подмёрджить в
+    конфиг 'imported-subscription'. Возвращает:
+      {"handled": bool,             # пробовали ли мы вообще
+       "item":    {...}}            # entry для result_items
+
+    Если sing-box ещё не установлен / SingboxManager падает —
+    handled=True, item с ошибкой (чтобы пользователь видел причину,
+    а не «scheme не поддержан»).
+    """
+    try:
+        from core.singbox_subscription import uri_to_outbound
+    except Exception:
+        return {"handled": False, "item": None}
+
+    parsed = uri_to_outbound(uri)
+    if not parsed.get("ok"):
+        # uri_to_outbound возвращает 'не <scheme>-URI' для чужих схем —
+        # это сигнал, что мы не отвечаем за этот URI.
+        err = parsed.get("error", "")
+        if err.startswith("не ") or "scheme" in err:
+            return {"handled": False, "item": None}
+        return {
+            "handled": True,
+            "item": {
+                "type": uri.split("://", 1)[0].lower(),
+                "ok": False, "error": err,
+                "uri": _redact(uri),
+            },
+        }
+
+    outbound = parsed["outbound"]
+    tag      = parsed["tag"]
+    scheme   = uri.split("://", 1)[0].lower()
+
+    if not save:
+        return {
+            "handled": True,
+            "item": {
+                "type": scheme, "ok": True,
+                "name": SINGBOX_IMPORT_CONFIG, "tag": tag,
+                "outbound_type": outbound.get("type"),
+                "saved": False,
+            },
+        }
+
+    # Сейв через SingboxManager: подмёрджим outbound в существующий
+    # 'imported-subscription' (или создадим новый).
+    try:
+        from core.singbox_manager import get_singbox_manager
+        from core.singbox_config import (
+            parse_conf, render_conf, make_minimal_config,
+        )
+        mgr = get_singbox_manager()
+    except Exception as e:
+        return {
+            "handled": True,
+            "item": {
+                "type": scheme, "ok": False,
+                "error": "singbox-manager недоступен: %s" % e,
+                "uri": _redact(uri),
+            },
+        }
+
+    existing = mgr.get_config(SINGBOX_IMPORT_CONFIG)
+    if existing.get("ok"):
+        cfg = existing.get("parsed") or {}
+    else:
+        cfg = make_minimal_config(outbound_tag=tag)
+        # Удаляем placeholder direct-outbound с тем же tag, что мы
+        # хотим использовать — заменим на реальный.
+        cfg["outbounds"] = [o for o in cfg.get("outbounds", [])
+                            if not (o.get("type") == "direct"
+                                    and o.get("tag") == tag)]
+
+    obs = cfg.setdefault("outbounds", [])
+    # Если outbound с таким же tag уже есть — заменяем, не дублируем.
+    obs[:] = [o for o in obs if o.get("tag") != tag]
+    obs.append(outbound)
+
+    save_res = mgr.save_config(SINGBOX_IMPORT_CONFIG,
+                               text=render_conf(cfg))
+    saved = bool(save_res.get("ok"))
+    item = {
+        "type": scheme, "ok": saved,
+        "name": SINGBOX_IMPORT_CONFIG, "tag": tag,
+        "outbound_type": outbound.get("type"),
+        "saved": saved,
+    }
+    if not saved:
+        item["error"] = save_res.get("error", "save failed")
+    return {"handled": True, "item": item}
 
 
 def _import_conf_block(awg_mgr, conf_text: str, save: bool = True) -> dict:
