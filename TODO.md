@@ -88,6 +88,39 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
       широкое (`dpi_marker=tcp_16_20_wide`). Тот же тип блока, но с
       другим размером DPI-буфера. Узкое окно по-прежнему приоритетно.
 
+### Заимствования из XKeen (jameszeroX/XKeen)
+
+- [x] **Прозрачное проксирование sing-box (TProxy/Redirect/Hybrid)** —
+      `core/singbox_transparent.py`: firewall-обвязка (свои цепочки,
+      идемпотентно) + `make_transparent_inbounds()` генерит inbound'ы.
+      Включает заворот трафика самого роутера (`proxy_self`/OUTPUT),
+      DNS-hijack и IPv6 anti-leak (drop форвард-v6, когда прокси v4-only).
+- [x] **Движок mihomo (Clash.Meta)** — `core/mihomo_{platform,detector,
+      manager,autostart}.py`, конфиги в clash-YAML (парсятся готовым
+      `core/clash_yaml.py`). Альтернатива sing-box.
+- [x] **fd-лимиты** — `RLIMIT_NOFILE=65536` при старте sing-box/mihomo
+      (preexec_fn) + `ulimit`/`LimitNOFILE` в init-скриптах.
+- [x] **CLI** — `core/cli.py`: `zapret-gui status|nfqws|strategy|
+      singbox|mihomo`. Диспетчеризуется из `app.py`.
+- [x] **DSCP/QoS-маршрутизация** — тип правила `dscp`
+      (`core/routing/dscp_rule.py`): `-m dscp --dscp N -j MARK` +
+      `ip rule fwmark`. Маршрутизируем уже промаркированный QoS-трафик.
+- [x] **Зеркало/оффлайн-установка** — `binary_installer.resolve_url()`
+      (env `ZAPRET_GUI_MIRROR` / `install.mirror`) + `file://`/локальные
+      пути в `download_file()`.
+- [x] **Совместимость с политиками Keenetic** — `commands.get_host_policy()`
+      + сохранение/восстановление прежней политики хоста в
+      `ndms_backend` (родительский контроль не затирается).
+- [ ] **UI для нового бэкенда** — выбор режима прозрачного проксирования
+      sing-box, управление mihomo-конфигами, DSCP-правило в форме
+      routing, поле «зеркало» в Настройках. Бэкенд готов, фронт — дальше.
+- [ ] **Установщик mihomo** (`core/mihomo_installer.py` поверх
+      `binary_installer`) + API/детектор-отчёт для UI Setup.
+- [ ] **nftables-вариант** прозрачного проксирования и DSCP (сейчас
+      iptables; на OpenWrt 22+ нужен nft-бэкенд, как у ipset/nftset).
+- [ ] **Полевое тестирование** firewall-правил TProxy/Redirect/DSCP на
+      железе (Keenetic/OpenWrt) — код не проверялся на устройствах.
+
 ## AWG / прочее (открытые)
 
 - [ ] **QR-код** для конфигов на странице Configs (генерация

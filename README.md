@@ -24,7 +24,15 @@
 - **Zapret2 installer** — установка/обновление nfqws2 с GitHub
 - **AmneziaWG** — туннели (AWG/WG), Cloudflare WARP (импорт/нативная
   генерация/WARP-in-WARP), selective routing по CIDR / доменам /
-  устройствам
+  устройствам / **DSCP-меткам (QoS)**
+- **sing-box / mihomo** — два взаимозаменяемых прокси-движка; для
+  sing-box — прозрачное проксирование в режимах **TProxy / Redirect /
+  Hybrid** (заворот трафика LAN и самого роутера, DNS-hijack, anti-leak
+  IPv6), поднятие fd-лимитов под нагрузкой
+- **CLI** — управление из консоли: `zapret-gui status | nfqws … |
+  strategy … | singbox … | mihomo …`
+- **Зеркало/оффлайн-установка** бинарников (env `ZAPRET_GUI_MIRROR`
+  или `install.mirror` / `file://`) — когда GitHub заблокирован
 
 ## Требования
 
@@ -331,4 +339,7 @@ MIT
 - [Shiperoid/YT-DPI](https://github.com/Shiperoid/YT-DPI) — идеи диагностики
   (троттлинг, реальные CDN-шарды googlevideo, Deep Trace, QUIC, большой
   ClientHello)
+- [jameszeroX/XKeen](https://github.com/jameszeroX/XKeen) — идеи
+  (прозрачные режимы TProxy/Redirect/Hybrid, движок mihomo, DSCP-роутинг,
+  CLI, оффлайн-зеркало, совместимость с политиками Keenetic)
 - [Bottle](https://bottlepy.org/) — микро-фреймворк для Python
