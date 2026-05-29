@@ -214,6 +214,94 @@ class TestDetectIspMarker(unittest.TestCase):
         self.assertEqual(result, "")
 
 
+# ─────── off-domain redirect (заимствовано из blockcheckw) ───────
+
+
+class TestOffDomainRedirect(unittest.TestCase):
+    """Мягкий сигнал ISP-заглушки: редирект на чужой регистрируемый домен."""
+
+    def test_same_domain_not_off(self):
+        from core.testers.isp_detector import is_off_domain_redirect
+        # m.youtube.com → youtube.com — норма, не off-domain
+        self.assertFalse(is_off_domain_redirect(
+            "m.youtube.com", "https://youtube.com/"))
+        # Тот же хост
+        self.assertFalse(is_off_domain_redirect(
+            "example.com", "https://example.com/login"))
+
+    def test_relative_not_off(self):
+        from core.testers.isp_detector import is_off_domain_redirect
+        self.assertFalse(is_off_domain_redirect("example.com", "/login"))
+        self.assertFalse(is_off_domain_redirect("example.com", "#frag"))
+        self.assertFalse(is_off_domain_redirect("example.com", ""))
+
+    def test_different_etld_is_off(self):
+        from core.testers.isp_detector import is_off_domain_redirect
+        # youtube.com → rkn.gov.ru — сильно отличающиеся регистрируемые домены
+        self.assertTrue(is_off_domain_redirect(
+            "youtube.com", "https://warning.rt.ru/?id=1"))
+        self.assertTrue(is_off_domain_redirect(
+            "discord.com", "http://blackhole.example.net/blocked"))
+
+    def test_subdomain_of_different_etld_is_off(self):
+        from core.testers.isp_detector import is_off_domain_redirect
+        self.assertTrue(is_off_domain_redirect(
+            "discord.com", "https://login.facebook.com/oauth"))
+
+
+# ─────── FAKE_LEAK: HTTP 400 = десинк не сработал (blockcheckw) ───────
+
+
+class TestFakeLeakDetection(unittest.TestCase):
+    """body_tester должен помечать HTTP 400 как FAKE_LEAK."""
+
+    def test_priority_includes_fake_leak(self):
+        # FAKE_LEAK имеет более высокий приоритет, чем TCP_16_20
+        from core.strategy_scanner import StrategyScanner
+        s = StrategyScanner()
+        # Симулируем выбор лучшей ошибки: FAKE_LEAK выигрывает у TCP_16_20
+        # (важно для корректной отметки «стратегия точно не помогает»)
+        err = s._pick_best_error({"FAKE_LEAK", "TCP_16_20"}, 0, 0)
+        self.assertEqual(err, "FAKE_LEAK")
+
+    def test_status_400_classified_as_fake_leak(self):
+        # Прямо: status_code=400 в body_tester ветке после успешного чтения
+        # классифицируется как FAILED + FAKE_LEAK.
+        # Используем mock для http.client, чтобы не лезть в сеть.
+        from core.testers import body_tester
+        with mock.patch("core.testers.body_tester.http.client.HTTPSConnection") \
+                as M:
+            resp = mock.Mock()
+            resp.status = 400
+            resp.read = mock.Mock(side_effect=[b"bad", b""])
+            conn = mock.Mock()
+            conn.getresponse.return_value = resp
+            M.return_value = conn
+
+            r = body_tester.probe_body("https://example.com/", min_bytes=100,
+                                       timeout=2.0)
+            self.assertEqual(r.error, "FAKE_LEAK")
+            self.assertEqual(r.raw_data.get("status_code"), 400)
+
+
+# ─────── Widened TCP block range (10..25 KB, blockcheckw) ───────
+
+
+class TestWideTcpBlockRange(unittest.TestCase):
+    """Расширенное окно DPI data-limit ловит вариации 16-20KB-блока."""
+
+    def test_wide_range_constants(self):
+        from core.testers.config import (
+            TCP_BLOCK_RANGE_MAX, TCP_BLOCK_RANGE_MIN,
+            TCP_BLOCK_RANGE_WIDE_MAX, TCP_BLOCK_RANGE_WIDE_MIN,
+        )
+        self.assertLess(TCP_BLOCK_RANGE_WIDE_MIN, TCP_BLOCK_RANGE_MIN)
+        self.assertGreater(TCP_BLOCK_RANGE_WIDE_MAX, TCP_BLOCK_RANGE_MAX)
+        # Окно из blockcheckw
+        self.assertEqual(TCP_BLOCK_RANGE_WIDE_MIN, 10_240)
+        self.assertEqual(TCP_BLOCK_RANGE_WIDE_MAX, 25_600)
+
+
 # ─────── IP-block vs DPI-block (заимствовано из blockcheckw) ───────
 
 class TestIpVsDpiClassification(unittest.TestCase):
