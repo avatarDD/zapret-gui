@@ -984,12 +984,15 @@ class BlockcheckRunner:
         if not classifications:
             return DPIClassification.NONE.value
 
-        # Приоритет: TLS_DPI > ISP_PAGE > FULL_BLOCK > остальные
+        # Приоритет: TLS_DPI > ISP_PAGE > IP_BLOCK > FULL_BLOCK > остальные.
+        # IP_BLOCK и FULL_BLOCK — «обход не поможет, нужен туннель»; ставим
+        # их после явных DPI-сигнатур, но как значимый итог.
         priority = [
             DPIClassification.TLS_DPI.value,
             DPIClassification.TLS_MITM.value,
             DPIClassification.ISP_PAGE.value,
             DPIClassification.HTTP_INJECT.value,
+            DPIClassification.IP_BLOCK.value,
             DPIClassification.FULL_BLOCK.value,
             DPIClassification.TCP_RESET.value,
             DPIClassification.TCP_16_20.value,

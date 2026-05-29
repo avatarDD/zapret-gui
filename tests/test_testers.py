@@ -214,5 +214,72 @@ class TestDetectIspMarker(unittest.TestCase):
         self.assertEqual(result, "")
 
 
+# ─────── IP-block vs DPI-block (заимствовано из blockcheckw) ───────
+
+class TestIpVsDpiClassification(unittest.TestCase):
+    """Разделение IP-блока (нужен туннель) и DPI-блока (поможет zapret)."""
+
+    def _target(self, *results):
+        from core.models import TargetResult, SingleTestResult
+        tr = TargetResult(domain="example.com")
+        tr.results = list(results)
+        return tr
+
+    def _r(self, test_type, status, error=""):
+        from core.models import SingleTestResult, TestType, TestStatus
+        tt = getattr(TestType, test_type).value
+        st = getattr(TestStatus, status).value
+        return SingleTestResult(target="example.com", test_type=tt,
+                                status=st, error=error)
+
+    def test_ip_block_on_connect_refused(self):
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("DNS", "SUCCESS"),
+            self._r("TLS_13", "FAILED", "TCP_REFUSED"),
+            self._r("TLS_12", "FAILED", "HOST_UNREACH"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertEqual(c, DPIClassification.IP_BLOCK)
+
+    def test_rst_during_handshake_is_dpi_not_ip(self):
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("DNS", "SUCCESS"),
+            self._r("TLS_13", "FAILED", "TLS_RESET"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertEqual(c, DPIClassification.TLS_DPI)
+
+    def test_dns_failed_not_ip_block(self):
+        # Если DNS не резолвится — это не IP-блок (другая причина).
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("DNS", "FAILED", "DNS_ERR"),
+            self._r("TLS_13", "FAILED", "HOST_UNREACH"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertNotEqual(c, DPIClassification.IP_BLOCK)
+
+
+class TestRemediation(unittest.TestCase):
+    """Машиночитаемая рекомендация по типу блокировки."""
+
+    def test_map(self):
+        from core.models import remediation_for
+        self.assertEqual(remediation_for("tls_dpi"), "zapret")
+        self.assertEqual(remediation_for("tcp_16_20"), "zapret")
+        self.assertEqual(remediation_for("ip_block"), "tunnel")
+        self.assertEqual(remediation_for("full_block"), "tunnel")
+        self.assertEqual(remediation_for("dns_fake"), "dns")
+        self.assertEqual(remediation_for("none"), "none")
+
+    def test_target_dict_includes_remediation(self):
+        from core.models import TargetResult, DPIClassification
+        tr = TargetResult(domain="x.com")
+        tr.dpi_classification = DPIClassification.IP_BLOCK.value
+        self.assertEqual(tr.to_dict()["remediation"], "tunnel")
+
+
 if __name__ == "__main__":
     unittest.main()
