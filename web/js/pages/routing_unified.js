@@ -45,6 +45,13 @@ const RoutingUnifiedPage = (() => {
             <div id="ru-body">
                 <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
             </div>
+            <div class="text-muted" style="margin-top:14px; font-size:12px;">
+                Классические инструменты (расширенный режим):
+                <a href="#strategies" style="text-decoration:underline;">Стратегии</a> ·
+                <a href="#awg-routing" style="text-decoration:underline;">Routing (AWG)</a> ·
+                <a href="#scan" style="text-decoration:underline;">Подбор стратегий</a> ·
+                <a href="#lists" style="text-decoration:underline;">Списки</a>
+            </div>
         `;
         loadAux().then(refresh);
         pollTimer = setInterval(refreshStatus, 7000);

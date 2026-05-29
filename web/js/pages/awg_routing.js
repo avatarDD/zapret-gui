@@ -52,9 +52,12 @@ const AwgRoutingPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Selective routing</h1>
+                    <h1 class="page-title">Selective routing (AWG, расширенный)</h1>
                     <p class="page-description">
-                        Какой трафик в какой туннель направлять.
+                        Низкоуровневые правила для AWG-туннелей (CIDR / домены /
+                        устройства / DSCP, dnsmasq, NDMS). Для обычного выбора
+                        «куда → через что» используйте
+                        <a href="#routing" style="text-decoration:underline;">Маршрутизацию</a>.
                     </p>
                 </div>
                 <div style="display:flex; gap:8px;">
