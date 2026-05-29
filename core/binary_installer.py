@@ -24,6 +24,7 @@
 прогресс отдаётся через callback (`progress_cb(stage, pct, label)`).
 """
 
+import gzip
 import hashlib
 import os
 import shutil
@@ -292,6 +293,25 @@ def extract_tarball(archive_path: str, dest_dir: str,
         return {"ok": True, "names": names, "dest_dir": dest_dir}
     except (tarfile.TarError, OSError) as e:
         return {"ok": False, "error": "распаковка: %s" % e}
+
+
+def extract_gz(archive_path: str, dest_path: str) -> dict:
+    """
+    Распаковать одиночный .gz (gzipped binary) в dest_path.
+
+    Mihomo и многие апстрим-проекты публикуют бинарь как один
+    gzip-файл (`mihomo-linux-arm64-v1.X.gz`), а не tar.gz. Здесь —
+    потоковая декомпрессия в файл.
+    """
+    if not os.path.isfile(archive_path):
+        return {"ok": False, "error": "архив не существует: %s" % archive_path}
+    try:
+        os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+        with gzip.open(archive_path, "rb") as src, open(dest_path, "wb") as dst:
+            shutil.copyfileobj(src, dst, length=DEFAULT_CHUNK_SIZE)
+        return {"ok": True, "dest": dest_path}
+    except (OSError, EOFError, gzip.BadGzipFile) as e:
+        return {"ok": False, "error": "gunzip: %s" % e}
 
 
 def _is_safe_path(name: str) -> bool:
