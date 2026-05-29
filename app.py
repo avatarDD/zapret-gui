@@ -393,6 +393,13 @@ def create_app(config_dir: str = None) -> Bottle:
 
 def main():
     """Точка входа: парсинг аргументов и запуск сервера."""
+    # CLI-подкоманды (status / nfqws / strategy / singbox) — если первый
+    # аргумент один из них, работаем как консольная утилита, а не web.
+    from core.cli import COMMANDS as _CLI_COMMANDS
+    if len(sys.argv) > 1 and sys.argv[1] in _CLI_COMMANDS:
+        from core.cli import run as _cli_run
+        sys.exit(_cli_run(sys.argv[1:]))
+
     parser = argparse.ArgumentParser(
         description="Zapret Web-GUI для роутеров"
     )
