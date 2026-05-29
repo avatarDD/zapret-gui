@@ -1,336 +1,84 @@
 # TODO
 
-Свободный реестр того, что хочется сделать после v0.19.0 (AmneziaWG
-integration). Не план релиза — скорее заметки и идеи, чтобы было
-с чего начинать в следующих чатах.
+Свободный реестр того, что хочется сделать. Не план релиза — заметки и
+идеи, чтобы было с чего начинать в следующих чатах.
 
-## Keenetic NDMS integration (заимствовано из awg-manager)
+> Сделанные крупные вехи (NDMS-интеграция, sing-box, AWG, паритет с
+> nfqws2-keenetic, оптимизация UI списков) перенесены в CHANGELOG.md.
+> Здесь оставляем только открытые задачи и план на будущее.
 
-Главный приоритет. На Keenetic'е роутер уже занимает 53 порт своим
-`ndnsproxy`, поэтому наш dnsmasq+ipset стек на нём не работает —
-а у Keenetic'а ровно для этой задачи есть штатный механизм
-`dns-proxy route` + `object-group fqdn`, который доступен через
-встроенный Router Control Interface (RCI) на `http://localhost:79/rci/`.
+## ★ Главный план: единый слой маршрутизации (nfqws2 + AWG + sing-box)
 
-Все пункты ниже **гейтятся явной проверкой**: «это Keenetic + RCI
-отвечает» → используем NDMS. На OpenWrt, generic Linux и Entware-
-не-Keenetic — продолжаем работать через dnsmasq+ipset/nftset, как
-сейчас.
+Большая стратегическая цель. Сейчас три подсистемы живут параллельно:
+nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели), у каждой —
+свои списки доменов/IP и своя логика. Хотим **единый слой**, где для
+каждого «назначения» (домен / ipset / geosite / geoip) можно гибко
+выбрать, **через что** пустить трафик, и чтобы система **сама следила**
+за успешностью и переключала метод при проблемах.
 
-- [x] **RCI-клиент** — `core/ndms/rci_client.py`: тонкий HTTP-клиент
-      к `localhost:79/rci`, методы `get(path)` и `post(payload)`,
-      детектор доступности (`is_available()`), кэш версии прошивки.
-- [x] **NDMS commands** — `core/ndms/commands.py`: высокоуровневые
-      обёртки `upsert_fqdn_group()`, `set_dns_proxy_route()`,
-      `add_static_route()`, `set_ip_policy()`, `save_config()`.
-      Все payload'ы строятся как JSON-дерево NDMS-CLI.
-- [x] **NDMS backend для domain-rules** —
-      `core/routing/ndms_backend.py`: реализация `apply/remove` через
-      `object-group fqdn <id>` + `dns-proxy route group <id> interface <iface>`.
-      Никакого ipset/nftset/fwmark/ip rule — всё делает Keenetic сам.
-- [x] **Выбор backend'а в `domain_rule._detect_backend()`** —
-      приоритет: NDMS (если Keenetic + RCI) → nftset (dnsmasq + nft) →
-      ipset (dnsmasq + ipset). NDMS-fast-path добавлен в начало
-      `apply_domain_rule()`/`remove_domain_rule()` — при недоступности
-      RCI падаем на dnsmasq-fallback. Дезактивация dnsmasq-проверок
-      на Keenetic — отдельный пункт ниже.
-- [x] **NDMS backend для CIDR-rules** — через `ip route <net> <mask>
-      interface <iface>`. Включается в `manager._apply()`, когда
-      target_iface — нативный NDMS-объект (Wireguard0/1, OpenVPN0,
-      ISP*). Для AWG-userspace-туннелей остаёмся на стандартном
-      `ip rule add to <cidr>`.
-- [x] **NDMS backend для device-rules** — через `ip policy <ZGUI_id>
-      permit <iface>` + `ip hotspot host <mac> policy <ZGUI_id>`.
-      Активируется в `manager._apply()` через
-      `ndms_backend.can_handle_device_rule()` — требует MAC и
-      нативный NDMS-iface. Без MAC и на не-NDMS-интерфейсах
-      остаёмся на стандартном `ip rule from <source_ip>`.
-- [x] **Native Keenetic WG-интерфейсы как target** —
-      `core/ndms/wg_discovery.py` запрашивает `show interface` и
-      отдаёт список `Wireguard0..N`. `AwgManager.list_interfaces()`
-      и эндпоинт `GET /api/routing/interfaces` отдают единый список
-      (наши amneziawg-go + нативные NDMS-WG). В UI на странице
-      Routing — выпадающий список включает оба типа.
-- [x] **NDMS ping-check delegation** — для нативных Keenetic-WG
-      туннелей мониторинг делегирован NDMS'у через `show interface`.
-      `AwgManager.status()` для нативных WG идёт за состоянием
-      в RCI вместо `wg show` (который их не видит).
-- [x] **HydraRoute Neo support** — теги `geosite:youtube` / `geoip:ru`
-      разворачиваются в полные списки в `core/routing/alias_resolver.py`.
-      Источники: v2fly/domain-list-community и v2fly/geoip. Кэш в
-      `data/aliases/`, TTL=24ч, при сетевой ошибке используется stale
-      кэш. API: `GET /api/routing/aliases`,
-      `POST /api/routing/aliases/refresh`,
-      `POST /api/routing/aliases/preview`. Работает и через NDMS, и
-      через dnsmasq-fallback. Frontend-autocomplete по `SUGGESTED_*` —
-      отдельной задачей.
-- [x] **«Доступен Keenetic NDMS-режим» индикатор** — на странице
-      Routing вкладка «Домены» рендерит зелёный `alert-success`
-      баннер «Активен Keenetic-native режим (NDMS)» с версией
-      прошивки, когда `/api/routing/ndms/status` вернул
-      `available: true`. Toggle auto/force-NDMS/force-dnsmasq —
-      пока не реализован, по умолчанию auto (NDMS → fallback dnsmasq).
-- [x] **Дезактивация dnsmasq-кода на Keenetic** — `apply_domain_rule()`
-      первым делом пробует NDMS-fast-path; до dnsmasq-проверок
-      `dn_status.get("running")` дело не доходит, когда RCI отвечает.
-      В UI кнопка «Настроить dnsmasq автоматически» рендерится
-      только в warning-баннере, который теперь скрыт при ndmsActive.
-      Сам `dnsmasq_integration.py` (1213 строк) остаётся для
-      OpenWrt/Linux/Entware-не-Keenetic.
+Этапы (примерный порядок, каждый — отдельная веха):
 
-## Дальнейшие заимствования из awg-manager
+- [ ] **Объединение списков** (предусловие, обсуждалось отдельно).
+      Единое место для доменных и IP-списков, общее для nfqws2 и
+      routing-движка. Рекомендованный путь — «GUI + импорт»:
+      одна страница «Списки», routing-правило может импортировать
+      записи из именованного списка. Глубже (live-ссылки / общий
+      store с рефакторингом routing) — по мере надобности.
+- [ ] **Модель «назначение → метод»**. Ввести сущность Destination
+      (домены/ipset/geosite/geoip) и Method (`direct`, `nfqws2`,
+      `awg:<iface>`, `singbox:<tag>`). Один UI: «куда» + «через что».
+      Под капотом раскладывается в существующие движки
+      (`core/routing/*` для туннелей, hostlist/ipset для nfqws2).
+- [ ] **Автомониторинг успешности per-destination**. Расширить
+      `core/connectivity` + DPI-тестеры: периодически проверять
+      доступность ключевых доменов каждого назначения через текущий
+      метод (TLS-handshake / body-probe / STUN). Хранить историю
+      успешности в RAM (как traffic-буферы), без записи на flash.
+- [ ] **Адаптивное переключение метода (failover)**. Если назначение
+      деградирует через текущий метод — автоматически пробовать
+      следующий по приоритету (например, `nfqws2 → awg → singbox`),
+      с гистерезисом и cooldown (как у awg_watchdog), без флаппинга.
+      Приоритеты и пороги — настраиваемые, по умолчанию выключено
+      (сначала ручной выбор + индикатор «рекомендуется переключить»).
+- [ ] **Единая страница «Маршрутизация»** вместо раздельных
+      Стратегии / Routing: таблица «назначение | метод | статус |
+      успешность | действия», с поиском/группировкой (ListUI уже есть).
+- [ ] **Интеграция со strategy-scanner**: если выбран метод `nfqws2`,
+      но текущая стратегия не тянет конкретный домен — предложить
+      (или авто-применить) рабочую стратегию из подбора.
 
-- [x] **Connectivity matrix (backend)** — `core/connectivity/matrix.py`:
-      параллельный `ping -I <iface>` по списку таргетов и туннелей,
-      результат кэшируется в RAM (без записи на flash), TTL=30с.
-      Защита от двойного запуска, фолбэк на default route при отказе
-      `-I`. API: `GET /api/connectivity/matrix`,
-      `POST /api/connectivity/probe`,
-      `GET|POST /api/connectivity/targets`. UI-виджет — отдельной
-      подзадачей (нужен grid с цветовой шкалой good/ok/slow/failed).
-- [x] **Traffic graphs (backend) по туннелям 1h/3h/24h** —
-      `core/connectivity/traffic.py`: фоновой sampler раз в 30с
-      пишет в кольцевой буфер per-iface (RAM, ~35КБ на интерфейс
-      за 24ч), серии 1h/3h/24h ресемплятся в bps по 60 точек.
-      Источники: NDMS (`rx_bytes`/`tx_bytes` из RCI),
-      `awg show <iface> transfer`, `/proc/net/dev` как фолбэк.
-      API: `GET /api/connectivity/traffic`,
-      `GET /api/connectivity/traffic/<iface>`. UI-sparkline —
-      отдельной подзадачей.
-- [x] **Импорт подписок (WG-flavor)** — `core/subscription_importer.py`:
-      fetch URL → base64-detect → парс URI/`.conf` блоков.
-      WireGuard-URI и сырые `.conf` импортируются в `AwgManager`.
-      VLESS/Trojan/SS/Hysteria2/TUIC URI распознаются, но
-      пропускаются с пометкой `needs sing-box` (включится, когда
-      будет готова Sing-box секция). API:
-      `POST /api/awg/subscription/import`,
-      `POST /api/awg/subscription/preview`.
-
-## Sing-box / Karing replacement integration
-
-Главный задел v0.19.0 — selective routing engine (`core/routing/*`) —
-сделан независимым от AWG. Следующая интеграция должна
-переиспользовать тот же движок, не плодя параллельные правила.
-
-- [x] **Бинарь sing-box** — `.github/workflows/build-singbox-binaries.yml`.
-      Кросс-компилируется под mipsel/mips/aarch64/armv7/x86_64.
-      Auto-tag через cron раз в сутки, manifest.json в релизе.
-      Build tags: `with_quic with_grpc with_wireguard with_utls with_ech`.
-      UPX-сжатие на mipsel/mips/armv7 (как для AWG).
-- [x] **Платформенная абстракция** — `core/singbox_platform.py`:
-      KeeneticSingbox / OpenWrtSingbox / GenericLinuxSingbox,
-      все используют общий PlatformKind enum из awg_platform.
-      `detect_singbox_platform()` опирается на awg_detector
-      (единый источник истины про окружение).
-- [x] **Installer** — `core/singbox_installer.py` на базе
-      `core/binary_installer.py` (общая утилита). Skipped tests +
-      manifest GitHub-fetch + atomic install. API:
-      `GET /api/singbox/manifest`, `POST /api/singbox/install`,
-      `GET /api/singbox/version`.
-- [x] **Менеджер конфигов** — `core/singbox_manager.py`:
-      CRUD JSON в `platform.config_dir`, lifecycle через
-      `sing-box run -c`, валидация через `sing-box check -c`,
-      tail-логов на падении при старте.
-      `core/singbox_config.py`: parse/validate/render +
-      builders для VLESS/Trojan/SS/Hysteria2/TUIC outbound'ов.
-- [x] **Routing-интеграция** — `/api/routing/interfaces` теперь
-      возвращает sing-box tun-инboundов (если они запущены):
-      `{"name":"tun0", "source":"singbox", "type":"singbox-tun"}`.
-      `RoutingRule.target_iface` уже умеет работать с любым iface —
-      sing-box подцепляется автоматически.
-- [x] **Selectors из sing-box** (`selector` / `urltest`) —
-      `core/singbox_config.py`: `make_selector_outbound`,
-      `make_urltest_outbound`, `list_user_outbound_tags`,
-      `wrap_in_group(cfg, tag, type)`. Последний берёт все «реальные»
-      outbound'ы конфига (не direct/block/dns), оборачивает их в
-      selector или urltest, переписывает route.rules чтобы трафик
-      шёл через group. API: `POST /api/singbox/configs/<name>/wrap`
-      body `{group_type, group_tag, default, url, interval}`.
-      UI: на странице sing-box: конфиги / Редактор две кнопки
-      «Обернуть в urltest» и «Обернуть в selector».
-      urltest нужен 99% юзерам (автоматически быстрейший сервер);
-      selector — когда есть clash-api dashboard для ручного
-      переключения.
-- [x] **Импорт подписок (sing-box-часть)** —
-      `core/singbox_subscription.py`: парсер VLESS / Trojan / SS /
-      Hysteria2 / TUIC URI в outbound-dict. Интегрирован в
-      `core/subscription_importer.py`: при импорте подписки
-      sing-box-семейство автоматически собирается в общий конфиг
-      `imported-subscription`. Реальные WG-URI продолжают идти в
-      AWG-менеджер.
-- [x] **Sing-box autostart** — `core/singbox_autostart.py`:
-      генерация init-скрипта (Entware/systemd варианты) для
-      enabled-конфигов, флаги хранятся в settings.json
-      (`singbox.autostart`). API: `GET/POST /api/singbox/autostart`,
-      `regenerate`, `remove`, `apply`.
-- [x] **Karing-совместимый импорт подписок** —
-      `core/clash_yaml.py`: парсер clash/mihomo YAML → sing-box
-      outbound'ы (vless с Reality+uTLS+ws+grpc, vmess, trojan, ss,
-      hysteria2, tuic). Использует pyyaml если доступен, иначе
-      fallback на минимальный самописный парсер.
-      `core/subscription_manager.py`: CRUD сохранённых подписок в
-      settings.json, фоновой `SubscriptionRefresher` раз в минуту
-      проверяет таймер каждой подписки и автоматически обновляет
-      выходной конфиг `imported-subscription-<id>`. Формат подписки:
-      auto / uri / clash / singbox-json.
-      API: `GET|POST /api/singbox/subscriptions`,
-      `PUT|DELETE /api/singbox/subscriptions/<id>`,
-      `POST .../<id>/refresh`, `POST .../refresh-all`.
-      UI: 4-й таб «Подписки» на странице sing-box: конфиги —
-      добавить, обновить, удалить, статус последнего refresh.
-- [x] **UI для sing-box** — три страницы:
-      `singbox.js` (Dashboard: список инстансов, start/stop/restart),
-      `singbox_configs.js` (CRUD + JSON-редактор + 5 табов:
-      «Список / Конструктор / Редактор / Импорт / Подписки»),
-      `singbox_setup.js` (детект окружения, manifest, install/
-      uninstall с прогрессом + arch override).
-      Зарегистрированы в `web/js/app.js`, в сайдбаре под VPN-блоком.
-- [x] **Outbounds Builder** — таб «Конструктор» в `singbox_configs.js`.
-      Бэк: новые эндпоинты
-      `GET|POST /api/singbox/configs/<name>/outbounds`,
-      `PUT|DELETE /api/singbox/configs/<name>/outbounds/<tag>`,
-      `_build_outbound_from_body()` принимает плоскую form-схему
-      `{_form: "vless|trojan|ss|hy2|tuic", tag, server, port, ...}`
-      и строит готовый sing-box outbound через builders из
-      `core/singbox_config.py`. Защита от дубликатов tag (409).
-      UI: выбор конфига → список outbound'ов карточками → 5 кнопок
-      «+ <protocol>», форма с динамическими полями по типу
-      (uuid/password/method/flow/transport ws+grpc/TLS+Reality+
-      uTLS/sni/insecure). Редактирование/удаление по tag'у.
-      28 unit-тестов на helper'ы (TestBuildOutboundFromBody,
-      TestBuildTls, TestBuildTransport, TestDoAdd/Replace/Delete).
-
-## AWG: то, что не успели в v0.19.0
+## AWG / прочее (открытые)
 
 - [ ] **QR-код** для конфигов на странице Configs (генерация
       без depency — нарисовать PNG/SVG руками или использовать
       встроенный awg, если он умеет).
 - [ ] **Импорт `.conf` через QR с камеры** в браузере
       (`navigator.mediaDevices` + jsQR через CDN — опционально).
-- [x] **Per-peer статистика (backend) — sparkline RX/TX** за
-      последние 5 минут. `core/connectivity/traffic.py` теперь
-      ведёт два уровня буферов: `_buffers` (24ч per-iface) и
-      `_peer_buffers` (5 минут per-iface-per-peer, дискретность 30с).
-      Источник peer-метрик: `awg show <iface> dump`. API:
-      `GET /api/connectivity/peers/<iface>`. Для нативных
-      Keenetic-WG peers пуст (RCI per-peer формат — отдельная задача).
-      UI-sparkline — подзадача фронтенда.
-- [x] **DoH/DoT для роутинга по доменам** —
-      `core/routing/doh_resolver.py`: опциональный DoH-резолвер для
-      pre-population ipset/nftset. Использует JSON-формат (RFC 8484),
-      без сторонних DNS-библиотек. По умолчанию выключен — поведение
-      dnsmasq-пути не меняется. Включается через settings.json
-      (`routing.doh.enabled`) или API: `GET|POST /api/routing/doh`,
-      `POST /api/routing/doh/test`. Известные провайдеры: Cloudflare,
-      Google, Quad9. На Keenetic с NDMS-backend неактуален —
-      ndnsproxy сам резолвит через настроенные upstream'ы.
-- [x] **Тесты selective routing на OpenWrt nftables (unit)** —
-      `tests/test_nftset_backend.py`: 16 unit-тестов с моком `_run`
-      покрывают `set_name_for`, `_output_chain_type_wrong`,
-      `available`, `create_set`, `_rule_exists`,
-      `ensure_iface_masquerade`. Запуск:
-      `python3 -m unittest discover -s tests -v`.
-      ПОЛЕВОЕ тестирование на реальном OpenWrt-устройстве —
-      открытая задача (нужен железный роутер с OpenWrt 22.03+).
-- [x] **Уменьшить размер `amneziawg-go`** — в
-      `.github/workflows/build-awg-binaries.yml` добавлен UPX-step
-      для mipsel/mips/armv7 (на aarch64/x86_64 не применяем —
-      экономия не оправдывает риски). На armv7 — `upx --best --lzma`,
-      на mips/mipsel — `upx --best` без LZMA (Go-runtime на MIPS
-      имеет проблемы с LZMA in-place decompression).
-      `-ldflags="-s -w" -trimpath` уже стоял ранее.
-      Ожидаемый выигрыш на mipsel: 5-7МБ → ~2МБ.
-- [x] **Поддержка KeenOS 4.x (детектор + инструкции)** —
-      `KeeneticPlatform.tun_instructions()` ветвится по
-      `_version_major()`: 5.x → OpkgTun-компонент, 4.x → kmod-tun
-      или системный «Прокси OpenVPN», `0` → универсальная подсказка.
-      `supports_iptables_marks()` теперь учитывает, что на 4.x
-      iptables работает, но Keenetic может перетирать
-      пользовательские цепочки — для надёжного PBR рекомендуется
-      NDMS-backend (если RCI доступен). `as_dict()` отдаёт
-      `keenos_major` отдельным полем для UI-развилки.
-      ПОЛЕВОЕ тестирование на 4.x-устройстве — открытая задача.
-- [x] **Watchdog для AWG** — `core/awg_watchdog.py`: фоновой поток
-      раз в N секунд проверяет `latest_handshake` по каждому peer'у
-      всех активных AWG-туннелей; если самый свежий handshake
-      старше `handshake_timeout_sec` (default 180с), делает
-      `AwgManager.restart()`. Защита от петли:
-      `max_restarts_per_hour=6` + `cooldown_sec=300`. Нативные
-      Keenetic-WG туннели пропускаются (их рестартит сам Keenetic).
-      По умолчанию ВЫКЛЮЧЕН — настраивается через settings.json
-      `awg.watchdog.*` или API: `GET|POST /api/awg/watchdog`.
+- [ ] **UI-sparkline** для per-peer и per-iface статистики —
+      backend (`core/connectivity/traffic.py`) уже отдаёт серии,
+      осталась отрисовка на фронте.
+- [ ] **Полевое тестирование** на железе: OpenWrt 22.03+ (nftset
+      backend) и KeenOS 4.x (детектор/инструкции) — код есть,
+      не проверено на устройствах.
 
 ## Тех. долг
 
-- [x] **Единый installer-фреймворк (фундамент)** —
-      `core/binary_installer.py`: общие функции `download_file`
-      (с retry+backoff), `sha256_of`, `verify_sha256`,
-      `extract_tarball` (с защитой от path-traversal),
-      `chmod_executable`, `install_binary` (атомарная замена +
-      `.bak`), и one-shot `fetch_verify_extract_install`.
-      Sing-box installer стартует прямо на этой утилите.
-      Полный рефакторинг `awg_installer.py` и `zapret_installer.py`
-      на новую утилиту — поэтапно, чтобы не сломать рабочие
-      пути (отдельная задача).
-- [x] **Unit + integration тесты** — `tests/` (**528 тестов**,
-      все проходят). 29 тест-файлов покрывают:
-      * Pure-парсеры: awg_config, singbox_config, clash_yaml,
-        URI-схемы (vless/trojan/ss/hy2/tuic + wireguard),
-        alias_resolver (geosite:/geoip:), warp_importer.
-      * Routing engine: rules, storage (с моком ConfigManager),
-        ipset_backend, nftset_backend (мок `_run`), doh_resolver
-        (мок urlopen), domain/cidr/device правила.
-      * NDMS subsystem: rci_client (HTTP error handling), ndms
-        commands (object-group, dns-proxy route), ping_check,
-        wg_discovery.
-      * AWG: platform/kind enum, init_script (Entware/procd/
-        systemd), watchdog (handshake-age logic), awg_manager
-        lifecycle (CRUD + is_running + iface-resolution).
-      * Sing-box: platform/detector/autostart/installer,
-        builders + selectors/urltest + wrap_in_group,
-        singbox_manager lifecycle (CRUD + up/down + validate),
-        subscription_importer + clash_yaml.
-      * Connectivity: matrix (classify, parse_first_latency),
-        traffic (_RingBuffer, _series_from_samples, _read_peers).
-      * Binary installer: sha256, extract (path-traversal),
-        install (backup, atomic).
-      * **Integration API** (WSGI test-client без webtest):
-        все 21 модуль api/* покрыты smoke + happy-path + edge:
-        routing (14), singbox (14, full CRUD lifecycle),
-        connectivity (7), awg (13), misc (21 — status, logs,
-        autostart, control, diagnostics, hosts, lists, ipsets,
-        lua, blobs, devices, strategies, zapret, catalog).
-      * **DPI testers**: dpi_classifier (TLS/TCP/Read errors с
-        11+ ошибочными сигнатурами), STUN-парсер (XOR-MAPPED-
-        ADDRESS), body_tester (ISP-markers).
-      Запуск: `python3 -m unittest discover -s tests -v`.
-      Не покрыто (~30 модулей, не критично):
-      strategy_scanner, blockcheck, diagnostics (heavy I/O),
-      catalog_*, file-resource менеджеры (lua/hosts/hostlist/
-      blob/ipset_manager), warp_generator, awg_warp_in_warp,
-      awg_installer/zapret_installer (требуют моки GitHub API).
 - [ ] **i18n** — UI русскоязычный. На будущее — выделить строки в
       словарь (`web/js/i18n/{ru,en}.js`).
-- [x] **Явный enum платформы** — `core/awg_platform.PlatformKind`
-      ({KEENETIC, OPENWRT, LINUX, UNKNOWN}) + helper'ы
-      `is_keenetic()`, `is_openwrt()`, `is_linux_generic()`,
-      принимающие как `AwgPlatform`, так и `PlatformKind`, так и
-      строку. На каждом subclass проставлен `kind`, `as_dict()`
-      возвращает `kind` отдельным полем — UI может ветвиться по
-      нему без isinstance. Применено в `core/ndms/rci_client.py`
-      и `core/awg_keenetic_setup.py`. Постепенная миграция
-      остальных `isinstance(platform, KeeneticPlatform)` — по
-      мере касания соответствующих модулей.
+- [ ] **Рефакторинг `awg_installer.py` / `zapret_installer.py`** на
+      общий `core/binary_installer.py` (фундамент готов; миграция
+      поэтапная, чтобы не сломать рабочие пути).
+- [ ] **Расширить покрытие тестами** ещё не покрытых модулей:
+      strategy_scanner, blockcheck, diagnostics (heavy I/O),
+      catalog_*, file-resource менеджеры, warp_generator,
+      awg_installer/zapret_installer (нужны моки GitHub API).
 
 ## Идеи
 
 - [ ] **Профили "режимов"** на главной — один клик переключает
       набор активных туннелей и routing-правил (например,
-      "Дом" / "В дороге" / "Стриминг").
+      "Дом" / "В дороге" / "Стриминг"). Пересекается с «единым слоем
+      маршрутизации» выше — возможно, реализовать как пресеты поверх него.
 - [ ] **Метрики** в Prometheus-формате на `/metrics` —
       AWG handshake age, нормированный RX/TX, число активных
       routing rules. Полезно тем, у кого Grafana.
-- [ ] **Auto-pick рабочей стратегии для конкретного домена**
-      (объединить selective routing + strategy scanner): если
-      `youtube.com` плохо работает через WARP, а напрямую через
-      nfqws2 тянет — переключать автоматически.
