@@ -12,6 +12,17 @@ if [ -x "$INITD_SCRIPT" ]; then
     echo "  ✓ Веб-сервер остановлен"
 fi
 
+# 1a. Снять runtime-артефакты: nfqws2, firewall-правила, ndm/hotplug-хуки,
+#     автозапуск S99zapret — ДО удаления файлов приложения.
+APP_DIR="/opt/share/zapret-gui"
+if [ -f "$APP_DIR/app.py" ] && command -v python3 >/dev/null 2>&1; then
+    PYTHONPATH="$APP_DIR" python3 -m core.teardown 2>/dev/null || true
+fi
+# Fallback на случай недоступности python: снять хуки напрямую.
+rm -f /opt/etc/ndm/netfilter.d/100-zapret-gui.sh 2>/dev/null || true
+rm -f /etc/hotplug.d/firewall/90-zapret-gui 2>/dev/null || true
+echo "  ✓ Firewall-правила и хуки сняты"
+
 # 2. Очистить PID-файл
 rm -f "$PID_FILE" 2>/dev/null || true
 

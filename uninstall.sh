@@ -74,6 +74,36 @@ if [ -x "$INITD_SCRIPT" ]; then
     [ "$ENV_TYPE" = "openwrt" ] && "$INITD_SCRIPT" disable 2>/dev/null || true
 fi
 
+# 1a. Корректно снять runtime-артефакты (nfqws2, firewall-правила,
+#     ndm/hotplug-хуки персистентности) ДО удаления файлов приложения.
+if [ -f "$APP_DIR/app.py" ] && command -v python3 >/dev/null 2>&1; then
+    printf "${YELLOW}[...]${NC} Снятие firewall-правил и хуков...\n"
+    PYTHONPATH="$APP_DIR" python3 -m core.teardown 2>/dev/null || true
+fi
+# Shell-fallback на случай, если python недоступен/сломан: снимаем хуки
+# и наши firewall-цепочки напрямую.
+cleanup_firewall_shell() {
+    rm -f /opt/etc/ndm/netfilter.d/100-zapret-gui.sh 2>/dev/null || true
+    rm -f /etc/hotplug.d/firewall/90-zapret-gui 2>/dev/null || true
+    for CMD in iptables ip6tables; do
+        command -v "$CMD" >/dev/null 2>&1 || continue
+        for CHAIN in nfqws_post nfqws_pre; do
+            while $CMD -w -t mangle -D POSTROUTING -j "$CHAIN" 2>/dev/null; do :; done
+            while $CMD -w -t mangle -D PREROUTING -j "$CHAIN" 2>/dev/null; do :; done
+            $CMD -w -t mangle -F "$CHAIN" 2>/dev/null || true
+            $CMD -w -t mangle -X "$CHAIN" 2>/dev/null || true
+        done
+    done
+    if command -v iptables >/dev/null 2>&1; then
+        while iptables -w -t nat -D POSTROUTING -j nfqws_nat 2>/dev/null; do :; done
+        iptables -w -t nat -F nfqws_nat 2>/dev/null || true
+        iptables -w -t nat -X nfqws_nat 2>/dev/null || true
+    fi
+    command -v nft >/dev/null 2>&1 && nft delete table inet zapret_gui 2>/dev/null || true
+}
+cleanup_firewall_shell
+printf "${GREEN}[OK]${NC}  Firewall-правила и хуки сняты\n"
+
 # 2. Init-скрипт
 rm -f "$INITD_SCRIPT"
 printf "${GREEN}[OK]${NC}  Init-скрипт удалён\n"
@@ -103,8 +133,9 @@ fi
 rm -f "$PID_FILE" 2>/dev/null || true
 
 # 5. Init-скрипт nfqws (сгенерированный GUI)
+#    Маркер 'zapret-gui:nfqws-autostart' зашит в шаблон S99zapret.
 for f in /opt/etc/init.d/S99zapret /etc/init.d/zapret; do
-    if [ -f "$f" ] && grep -q "ZAPRET-GUI" "$f" 2>/dev/null; then
+    if [ -f "$f" ] && grep -qiE "zapret-gui:nfqws-autostart|ZAPRET-GUI" "$f" 2>/dev/null; then
         printf "${YELLOW}[WARN]${NC} Найден init-скрипт nfqws от GUI: $f\n"
         printf "  Удалить? [y/N] "
         read -r del_answer

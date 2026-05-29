@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.20.2 — Корректная очистка runtime-артефактов при удалении
+
+При удалении не снимались артефакты, появившиеся в v0.20.0: ndm/hotplug-хуки
+персистентности, firewall-цепочки nfqws_post/pre/nat и nft-таблица, reapply-
+скрипт. Они оставались «осиротевшими» после деинсталляции.
+
+### Исправлено
+- `core/teardown.py` — единый best-effort teardown (останов nfqws2, снятие
+  firewall-правил, удаление ndm/hotplug-хуков и reapply-скрипта, отключение
+  автозапуска). Вызывается из `uninstall.sh` и пакетных `prerm` (Entware и
+  OpenWrt) ДО удаления файлов, с shell-fallback на случай недоступности python.
+- `uninstall.sh`: маркер S99zapret обновлён (`zapret-gui:nfqws-autostart`) —
+  старый grep по `ZAPRET-GUI` не находил новый шаблон.
+- `install.sh`: версия синхронизирована (была устаревшая 0.19.29).
+
+### Проверено
+- `make ipk` / `make openwrt-ipk`: новые файлы (`blob_registry`,
+  `firewall_persistence`, `teardown`, `list_ui.js`) попадают в пакет
+  автоматически (копирование каталогов целиком); версия берётся из
+  `core/version.py`. Linux-архив и release.yml — по всему дереву.
+
 ## v0.20.1 — UI: оптимизация длинных списков (стратегии, домены, IP, блобы, routing)
 
 Списки на 100-1000+ элементов рендерились разом — приходилось скроллить

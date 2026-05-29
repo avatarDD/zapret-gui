@@ -59,6 +59,7 @@ LOCAL_SCRIPT_PATH = os.path.join(LOCAL_INIT_DIR, SCRIPT_NAME)
 _S99ZAPRET_TEMPLATE = r"""#!/bin/sh
 #
 # Zapret Web-GUI — автозапуск nfqws2
+# zapret-gui:nfqws-autostart
 # Сгенерировано автоматически. Не редактируйте вручную — изменения затрутся
 # при следующей генерации из GUI.
 #
