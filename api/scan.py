@@ -120,6 +120,39 @@ def register(app):
 
         return {"ok": True, **status}
 
+    @app.route("/api/scan/generated")
+    def api_scan_generated():
+        """Предпросмотр стратегий, сгенерированных «на лету».
+
+        Query: ?protocol=tcp|udp & level=quick|standard|full
+        Возвращает упорядоченный (от простых к сложным) список без запуска
+        самого подбора — для UI/диагностики.
+        """
+        from bottle import request as _req
+        response.content_type = "application/json; charset=utf-8"
+
+        protocol = (_req.query.get("protocol") or "tcp").lower()
+        level = (_req.query.get("level") or "standard").lower()
+
+        try:
+            from core.strategy_generator import generate, complexity_key
+            entries = generate(protocol=protocol, level=level)
+            items = [
+                {
+                    "id": e.section_id,
+                    "name": e.name,
+                    "description": e.description,
+                    "args": e.get_args_list(),
+                    "complexity": list(complexity_key(e.get_args_list())),
+                }
+                for e in entries
+            ]
+            return {"ok": True, "protocol": protocol, "level": level,
+                    "count": len(items), "strategies": items}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)[:200]}
+
     @app.route("/api/scan/results")
     def api_scan_results():
         """Результаты подбора стратегий."""

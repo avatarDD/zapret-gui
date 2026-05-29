@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.20.4 — Стратегии: генератор «на лету» + новые методы из blockcheckw
+
+### Добавлено
+- **`core/strategy_generator.py`** — генератор стратегий по параметрическим
+  сеткам (positions × seqovl × fooling × repeats для multisplit/
+  multidisorder/fakedsplit/fakeddisorder/fake; tcpseg, oob). Дедуп против
+  каталога, ранжирование от простых к сложным. Альтернатива хранению
+  готовых файлов с тысячами комбинаций (как в blockcheckw): 11/39/85 TCP
+  и 1/3/5 UDP вариантов на quick/standard/full.
+- **Интеграция в strategy_scanner**: в режимах `standard/full` сканер
+  добавляет генерированные стратегии к каталожным (флаг
+  `scan.use_generated`, по умолчанию включён); сортировка теперь учитывает
+  `complexity_key` — лёгкие/одноступенчатые тестируются раньше
+  (заимствовано из blockcheckw/rank.rs).
+- **Новые приёмы из blockcheckw** как именованные пресеты:
+  `catalogs/advanced/tcp_blockcheckw.txt` (tcpseg pos/repeats × ip_id=rnd,
+  oob urp=b/midsld) и `catalogs/advanced/http80_blockcheckw.txt`
+  (http_domcase, http_unixeol).
+- **Регистрация blob'ов в сканере**: `strategy_scanner._wrap_trick_args`
+  подмешивает `--blob=NAME:@bin/file.bin` через `blob_registry`. Раньше
+  приёмы с именованными блобами (`tls_google` и т.п.) тестировались
+  пустым fake.
+- **API**: `GET /api/scan/generated?protocol=&level=` — предпросмотр
+  сгенерированных стратегий без запуска подбора.
+
 ## v0.20.3 — BlockCheck: IP-блок vs DPI-блок (идея из blockcheckw)
 
 Заимствование из rcd27/blockcheckw (MIT): различать блокировку, которую
