@@ -576,11 +576,55 @@ class FirewallManager:
         ("nat", "POSTROUTING"),
     )
 
+    # Именованные цепочки персистентного режима (reapply-хук создаёт их
+    # вместо вставки правил по комментарию). Чистим их тоже, чтобы после
+    # flush+reapply не оставались осиротевшие цепочки. (таблица, цепочка-хук,
+    # имя нашей цепочки).
+    _IPT_NAMED_CHAINS = (
+        ("mangle", "POSTROUTING", "nfqws_post"),
+        ("mangle", "PREROUTING", "nfqws_pre"),
+        ("nat", "POSTROUTING", "nfqws_nat"),
+    )
+
     def _remove_ipt_family(self, ipt_cmd) -> bool:
         """Удалить правила одного семейства из всех наших цепочек."""
         for table, chain in self._IPT_CHAINS:
             self._remove_ipt_chain(ipt_cmd, table, chain)
+        # Снести именованные цепочки персистентного режима, если остались.
+        for table, hook, name in self._IPT_NAMED_CHAINS:
+            self._remove_ipt_named_chain(ipt_cmd, table, hook, name)
         return True
+
+    def _remove_ipt_named_chain(self, ipt_cmd, table, hook, name) -> None:
+        """Отцепить и удалить именованную цепочку nfqws_* (best-effort).
+
+        Тихо выходим, если цепочки нет (обычный случай в GUI-режиме без
+        reapply) — чтобы не сыпать предупреждениями на каждый stop.
+        """
+        if not shutil.which(ipt_cmd):
+            return
+        try:
+            exists = subprocess.run(
+                [ipt_cmd, "-w", "-t", table, "-L", name, "-n"],
+                capture_output=True, text=True, timeout=5,
+            ).returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            return
+        if not exists:
+            return
+
+        # Снять переходы из hook-цепочки (могут быть дубли).
+        for _ in range(10):
+            r = subprocess.run(
+                [ipt_cmd, "-w", "-t", table, "-C", hook, "-j", name],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                break
+            self._run_cmd([ipt_cmd, "-t", table, "-D", hook, "-j", name])
+        # Очистить и удалить саму цепочку.
+        self._run_cmd([ipt_cmd, "-t", table, "-F", name])
+        self._run_cmd([ipt_cmd, "-t", table, "-X", name])
 
     def _remove_ipt_chain(self, ipt_cmd, table, chain) -> None:
         """Удалить все правила с комментарием IPT_COMMENT из одной цепочки."""
