@@ -81,140 +81,11 @@ MARK_EXCLUDE="@MARK_EXCLUDE@"
 IPV6_ENABLED="@IPV6_ENABLED@"
 WAN_IFACES="@WAN_IFACES@"
 
-IPT_GROUP_POST="nfqws_post"
-IPT_GROUP_PRE="nfqws_pre"
-IPT_GROUP_NAT="nfqws_nat"
-
-JNFQ="-j NFQUEUE --queue-num $QUEUE_NUM --queue-bypass"
-CONN_CHECK="-m mark ! --mark $MARK_PROCESSED"
-CB_ORIG="-m connbytes --connbytes-dir=original --connbytes-mode=packets"
-CB_REPLY="-m connbytes --connbytes-dir=reply --connbytes-mode=packets"
-
 is_running() {
     [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null
 }
 
-kernel_modules() {
-    modprobe -a -q nfnetlink_queue xt_multiport xt_connbytes xt_NFQUEUE xt_CONNMARK xt_connmark nf_conntrack 2>/dev/null
-}
-
-system_config() {
-    sysctl -w net.netfilter.nf_conntrack_checksum=0 >/dev/null 2>&1
-    sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=1 >/dev/null 2>&1
-}
-
-# Перечень интерфейсов для итерации. Пусто → один проход без -o/-i (все).
-_iface_list() {
-    if [ -n "$WAN_IFACES" ]; then
-        echo "$WAN_IFACES"
-    else
-        echo "__ALL__"
-    fi
-}
-
-_firewall_start() {
-    CMD="$1"  # iptables | ip6tables
-
-    $CMD -w -t mangle -N $IPT_GROUP_POST 2>/dev/null
-    $CMD -w -t mangle -F $IPT_GROUP_POST
-    $CMD -w -t mangle -C POSTROUTING -j $IPT_GROUP_POST 2>/dev/null || \
-        $CMD -w -t mangle -A POSTROUTING -j $IPT_GROUP_POST
-
-    $CMD -w -t mangle -N $IPT_GROUP_PRE 2>/dev/null
-    $CMD -w -t mangle -F $IPT_GROUP_PRE
-    $CMD -w -t mangle -C PREROUTING -j $IPT_GROUP_PRE 2>/dev/null || \
-        $CMD -w -t mangle -A PREROUTING -j $IPT_GROUP_PRE
-
-    if [ "$CMD" = "iptables" ]; then
-        $CMD -w -t nat -N $IPT_GROUP_NAT 2>/dev/null
-        $CMD -w -t nat -F $IPT_GROUP_NAT
-        $CMD -w -t nat -C POSTROUTING -j $IPT_GROUP_NAT 2>/dev/null || \
-            $CMD -w -t nat -A POSTROUTING -j $IPT_GROUP_NAT
-    fi
-
-    for IFACE in $(_iface_list); do
-        if [ "$IFACE" = "__ALL__" ]; then
-            OIF=""; IIF=""
-        else
-            OIF="-o $IFACE"; IIF="-i $IFACE"
-        fi
-
-        # --- POSTROUTING (исходящий трафик) ---
-        $CMD -w -t mangle -A $IPT_GROUP_POST $OIF -m connmark --mark $MARK_EXCLUDE -j RETURN
-        if [ -n "$PORTS_UDP" ]; then
-            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p udp -m multiport --dports $PORTS_UDP $CB_ORIG --connbytes 1:$MAX_PKT_OUT_UDP $JNFQ
-        fi
-        if [ -n "$PORTS_TCP" ]; then
-            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP $CB_ORIG --connbytes 1:$MAX_PKT_OUT $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP --tcp-flags fin fin $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP --tcp-flags rst rst $JNFQ
-        fi
-
-        # nfqws2 переписывает адреса в пакетах → нужен повторный MASQUERADE.
-        if [ "$CMD" = "iptables" ]; then
-            $CMD -w -t nat -A $IPT_GROUP_NAT $OIF -m mark --mark $MARK_PROCESSED -p udp -j MASQUERADE
-        fi
-
-        # --- PREROUTING (входящий трафик / ответы) ---
-        $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m connmark --mark $MARK_EXCLUDE -j RETURN
-        $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m mark --mark $MARK_PROCESSED -j RETURN
-        if [ -n "$PORTS_UDP" ]; then
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p udp -m multiport --sports $PORTS_UDP $CB_REPLY --connbytes 1:$MAX_PKT_IN $JNFQ
-        fi
-        if [ -n "$PORTS_TCP" ]; then
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP $CB_REPLY --connbytes 1:$MAX_PKT_IN $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags syn,ack syn,ack $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags fin fin $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags rst rst $JNFQ
-        fi
-    done
-}
-
-_firewall_stop() {
-    CMD="$1"
-
-    while $CMD -w -t mangle -C POSTROUTING -j $IPT_GROUP_POST 2>/dev/null; do
-        $CMD -w -t mangle -D POSTROUTING -j $IPT_GROUP_POST 2>/dev/null || break
-    done
-    while $CMD -w -t mangle -C PREROUTING -j $IPT_GROUP_PRE 2>/dev/null; do
-        $CMD -w -t mangle -D PREROUTING -j $IPT_GROUP_PRE 2>/dev/null || break
-    done
-    if [ "$CMD" = "iptables" ]; then
-        while $CMD -w -t nat -C POSTROUTING -j $IPT_GROUP_NAT 2>/dev/null; do
-            $CMD -w -t nat -D POSTROUTING -j $IPT_GROUP_NAT 2>/dev/null || break
-        done
-    fi
-
-    $CMD -w -t mangle -F $IPT_GROUP_POST 2>/dev/null
-    $CMD -w -t mangle -X $IPT_GROUP_POST 2>/dev/null
-    $CMD -w -t mangle -F $IPT_GROUP_PRE 2>/dev/null
-    $CMD -w -t mangle -X $IPT_GROUP_PRE 2>/dev/null
-    if [ "$CMD" = "iptables" ]; then
-        $CMD -w -t nat -F $IPT_GROUP_NAT 2>/dev/null
-        $CMD -w -t nat -X $IPT_GROUP_NAT 2>/dev/null
-    fi
-}
-
-firewall_iptables() {
-    command -v iptables >/dev/null 2>&1 && _firewall_start iptables
-}
-
-firewall_ip6tables() {
-    [ "$IPV6_ENABLED" = "1" ] || return 0
-    command -v ip6tables >/dev/null 2>&1 && _firewall_start ip6tables
-}
-
-firewall_stop() {
-    command -v iptables >/dev/null 2>&1 && _firewall_stop iptables
-    if [ "$IPV6_ENABLED" = "1" ] && command -v ip6tables >/dev/null 2>&1; then
-        _firewall_stop ip6tables
-    fi
-}
-
-apply_firewall() {
-    firewall_iptables
-    firewall_ip6tables
-}
+@FIREWALL_FUNCS@
 
 start() {
     if is_running; then
@@ -491,6 +362,15 @@ class AutostartManager:
         if not ok:
             return {"ok": False, "message": "Ошибка установки скрипта в %s" % INIT_DIR}
 
+        # Устанавливаем хуки персистентности (Keenetic ndm / OpenWrt hotplug),
+        # чтобы правила переустанавливались после flush'а системного firewall.
+        try:
+            from core.firewall_persistence import install_hooks
+            install_hooks()
+        except Exception as e:
+            log.warning("Не удалось установить хуки персистентности: %s" % e,
+                        source="autostart")
+
         # Обновляем конфиг
         cfg.set("autostart", "enabled", True)
         cfg.save()
@@ -511,6 +391,14 @@ class AutostartManager:
 
         # Удаляем init.d-скрипт если он есть (Entware-режим)
         removed = self._remove_script()
+
+        # Снимаем хуки персистентности firewall.
+        try:
+            from core.firewall_persistence import remove_hooks
+            remove_hooks()
+        except Exception as e:
+            log.warning("Не удалось снять хуки персистентности: %s" % e,
+                        source="autostart")
 
         # Обновляем конфиг в любом случае. На systemd этого достаточно:
         # GUI при старте проверит флаг и не будет применять стратегию.
@@ -666,6 +554,9 @@ class AutostartManager:
         mark_proc_full = "%s/%s" % (mark_processed, mark_processed)
         mark_excl_full = "%s/%s" % (mark_exclude, mark_exclude)
 
+        # Единый источник shell-функций firewall (общий с reapply-хуками).
+        from core.firewall_persistence import FIREWALL_SH_FUNCTIONS
+
         repl = {
             "@STRATEGY_NAME@": strategy_name,
             "@STRATEGY_ID@": strategy_id or "none",
@@ -680,6 +571,7 @@ class AutostartManager:
             "@MARK_EXCLUDE@": mark_excl_full,
             "@IPV6_ENABLED@": ipv6_enabled,
             "@WAN_IFACES@": wan_ifaces,
+            "@FIREWALL_FUNCS@": FIREWALL_SH_FUNCTIONS,
         }
 
         script = _S99ZAPRET_TEMPLATE

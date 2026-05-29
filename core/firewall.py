@@ -214,6 +214,14 @@ class FirewallManager:
                 if ok:
                     self._applied = True
                     log.success("Правила firewall применены", source="firewall")
+                    # Персистентность на роутере: сохранить рантайм-конфиг и
+                    # установить ndm/hotplug-хуки, чтобы правила переживали
+                    # flush системного firewall (Keenetic NDMS / OpenWrt fw3).
+                    self._ensure_persistence(
+                        qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,
+                        tcp_pkt_in, udp_pkt_in, mark_exclude,
+                        disable_ipv6, wan4, wan6,
+                    )
                 else:
                     log.error("Ошибка при применении правил", source="firewall")
                 return ok
@@ -222,6 +230,40 @@ class FirewallManager:
                 log.error("Исключение при применении правил: %s" % e,
                           source="firewall")
                 return False
+
+    @staticmethod
+    def _ensure_persistence(qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,
+                            tcp_pkt_in, udp_pkt_in, mark_exclude,
+                            disable_ipv6, wan4, wan6):
+        """Записать рантайм-конфиг firewall и установить хуки (только роутер).
+
+        На обычных хостах (systemd/desktop) ndm/hotplug отсутствуют — тогда
+        ничего не делаем. Хуки no-op'ят, пока nfqws2 не запущен (проверяют PID).
+        """
+        try:
+            from core import firewall_persistence as fp
+            if not (fp.is_keenetic() or fp.is_openwrt_hotplug()):
+                return
+            ifaces = set(wan4 or [])
+            if wan6:
+                ifaces.update(wan6)
+            params = {
+                "queue_num": qnum,
+                "ports_tcp": tcp,
+                "ports_udp": udp,
+                "tcp_pkt_out": tcp_pkt,
+                "udp_pkt_out": udp_pkt,
+                "pkt_in": max(int(tcp_pkt_in), int(udp_pkt_in), 1),
+                "mark_processed": "%s/%s" % (fwmark, fwmark),
+                "mark_exclude": "%s/%s" % (mark_exclude, mark_exclude),
+                "ipv6_enabled": "0" if disable_ipv6 else "1",
+                "wan_ifaces": " ".join(sorted(ifaces)),
+            }
+            fp.write_runtime_conf(params)
+            fp.install_hooks()
+        except Exception as e:
+            log.warning("Персистентность firewall не настроена: %s" % e,
+                        source="firewall")
 
     def remove_rules(self) -> bool:
         """Снять все правила NFQUEUE, установленные GUI."""
