@@ -70,11 +70,25 @@ def register(app):
                 }
             domains_override = [str(d).strip() for d in domains_override if str(d).strip()]
 
+        # Опциональный прокси (SOCKS5/HTTP) — для сравнения «прямо vs туннель»
+        proxy = None
+        proxy_raw = body.get("proxy")
+        if proxy_raw:
+            from core.testers.proxy import parse_proxy
+            proxy = parse_proxy(proxy_raw)
+            if proxy is None:
+                response.status = 400
+                return {
+                    "ok": False,
+                    "error": "Неверные параметры прокси (нужны type/host/port)",
+                }
+
         # Запускаем
         started = runner.start(
             mode=mode,
             extra_domains=extra_domains or None,
             domains_override=domains_override or None,
+            proxy=proxy,
         )
 
         if not started:
@@ -144,6 +158,47 @@ def register(app):
             "ok": True,
             "status": "cancelling",
         }
+
+    @app.post("/api/blockcheck/traceroute")
+    def api_blockcheck_traceroute():
+        """Deep Trace — traceroute до хоста (локализация рвущего хопа).
+
+        Body (JSON):
+            { "host": "youtube.com", "port": 443, "tcp": true }
+        """
+        response.content_type = "application/json; charset=utf-8"
+
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+
+        host = str(body.get("host", "")).strip()
+        if not host:
+            response.status = 400
+            return {"ok": False, "error": "Не указан host"}
+
+        # Нормализуем (убираем схему/путь/порт).
+        from core.blockcheck import _normalize_domain
+        host = _normalize_domain(host)
+        if not host:
+            response.status = 400
+            return {"ok": False, "error": "Невалидный host"}
+
+        try:
+            port = int(body.get("port", 443))
+        except (TypeError, ValueError):
+            port = 443
+        use_tcp = bool(body.get("tcp", True))
+
+        from core.diagnostics import traceroute_host
+        from core.testers.config import TRACEROUTE_MAX_HOPS, TRACEROUTE_TIMEOUT
+
+        result = traceroute_host(
+            host, max_hops=TRACEROUTE_MAX_HOPS, port=port,
+            use_tcp=use_tcp, timeout=TRACEROUTE_TIMEOUT,
+        )
+        return {"ok": True, "result": result}
 
     @app.route("/api/blockcheck/domains")
     def api_blockcheck_domains_get():

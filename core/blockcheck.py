@@ -140,6 +140,46 @@ def load_domains(data_dir: str | None = None) -> tuple[list[str], str]:
     return list(_DEFAULT_DOMAINS), "fallback:defaults"
 
 
+# Приоритетные домены для тяжёлых проб (QUIC / большой ClientHello) —
+# по ним важнее всего получить вердикт.
+_PRIORITY_PROBE_DOMAINS: tuple[str, ...] = (
+    "www.youtube.com", "youtube.com", "googlevideo.com",
+    "www.google.com", "discord.com", "www.cloudflare.com",
+)
+
+
+def _proxy_label(proxy: dict | None) -> str:
+    """Безопасно получить метку прокси (без падения, если модуль не нужен)."""
+    if not proxy:
+        return ""
+    try:
+        from core.testers.proxy import proxy_label
+        return proxy_label(proxy)
+    except Exception:
+        return f"{proxy.get('type', '?')}://{proxy.get('host', '?')}"
+
+
+def _select_probe_domains(domains: list[str], limit: int) -> list[str]:
+    """Подвыборка доменов для тяжёлых проб: приоритетные + первые из списка."""
+    seen: set[str] = set()
+    out: list[str] = []
+    lowered = {d.lower(): d for d in domains}
+    for p in _PRIORITY_PROBE_DOMAINS:
+        if p in lowered and p not in seen:
+            out.append(p)
+            seen.add(p)
+        if len(out) >= limit:
+            return out
+    for d in domains:
+        dl = d.lower()
+        if dl not in seen:
+            out.append(d)
+            seen.add(dl)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _normalize_domain(raw: str) -> str:
     """Извлечь домен из URL или строки."""
     raw = raw.strip()
@@ -248,6 +288,7 @@ class BlockcheckRunner:
         domains_override: list[str] | None = None,
         callback: Callable | None = None,
         timeout: int | None = None,
+        proxy: dict | None = None,
     ) -> bool:
         """Запустить blockcheck в фоновом потоке.
 
@@ -257,6 +298,7 @@ class BlockcheckRunner:
             domains_override: Полная замена базового списка доменов.
             callback: Callable(event_type: str, data: dict) для уведомлений.
             timeout: Таймаут для тестов (в секундах), None = из конфига.
+            proxy: dict прокси (type/host/port/user/pass) или None.
 
         Returns:
             True если запущен, False если уже выполняется.
@@ -283,7 +325,8 @@ class BlockcheckRunner:
 
         thread = threading.Thread(
             target=self._run,
-            args=(mode, extra_domains, domains_override, timeout, max_workers),
+            args=(mode, extra_domains, domains_override, timeout,
+                  max_workers, proxy),
             daemon=True,
             name="blockcheck-runner",
         )
@@ -389,6 +432,7 @@ class BlockcheckRunner:
         domains_override: list[str] | None,
         timeout: int,
         max_workers: int,
+        proxy: dict | None = None,
     ) -> None:
         """Основной метод — запускается в отдельном потоке."""
         report = BlockcheckReport(
@@ -396,60 +440,59 @@ class BlockcheckRunner:
             started_at=time.time(),
         )
 
+        # Через прокси UDP-пробы (STUN/QUIC/Ping/throughput) не идут —
+        # исключаем их из плана и помечаем это в отчёте.
+        use_proxy = bool(proxy)
+        report.proxy_label = _proxy_label(proxy)
+
         try:
             domains = _build_domain_list(extra_domains, domains_override)
-            phase_count = self._count_phases(mode)
-            current_phase = 0
 
-            # --- Фаза 1: DNS ---
-            if mode in (RunMode.FULL, RunMode.DPI_ONLY) and not self._is_cancelled:
-                current_phase += 1
-                self._set_phase(
-                    f"Фаза {current_phase}/{phase_count}: DNS проверка"
-                )
-                self._run_dns_phase(domains, report)
+            # --- Строим план фаз в зависимости от режима ---
+            FULL, DPI_ONLY, QUICK = (
+                RunMode.FULL, RunMode.DPI_ONLY, RunMode.QUICK,
+            )
+            plan: list[tuple[str, Callable[[], None]]] = []
 
-            # --- Фаза 2: TLS ---
-            if not self._is_cancelled:
-                current_phase += 1
-                self._set_phase(
-                    f"Фаза {current_phase}/{phase_count}: TLS тесты"
-                )
-                self._run_tls_phase(
-                    domains, report, mode, timeout, max_workers,
-                )
+            if mode in (FULL, DPI_ONLY):
+                plan.append(("DNS проверка",
+                             lambda: self._run_dns_phase(domains, report)))
 
-            # --- Фаза 3: ISP-детекция ---
-            if mode in (RunMode.FULL, RunMode.DPI_ONLY) and not self._is_cancelled:
-                current_phase += 1
-                self._set_phase(
-                    f"Фаза {current_phase}/{phase_count}: ISP детекция"
-                )
-                self._run_isp_phase(report, max_workers)
+            plan.append(("TLS тесты",
+                         lambda: self._run_tls_phase(
+                             domains, report, mode, timeout, max_workers, proxy)))
 
-            # --- Фаза 4: TCP 16-20KB ---
-            if mode in (RunMode.FULL, RunMode.DPI_ONLY) and not self._is_cancelled:
-                current_phase += 1
-                self._set_phase(
-                    f"Фаза {current_phase}/{phase_count}: TCP 16-20KB"
-                )
-                self._run_tcp_phase(report, max_workers)
+            if mode in (FULL, DPI_ONLY):
+                plan.append(("ISP детекция",
+                             lambda: self._run_isp_phase(report, max_workers)))
+                plan.append(("TCP 16-20KB",
+                             lambda: self._run_tcp_phase(report, max_workers)))
+                plan.append(("ClientHello (PQ/большой)",
+                             lambda: self._run_bighello_phase(
+                                 domains, report, timeout, max_workers, proxy)))
+                if not use_proxy:
+                    plan.append(("QUIC / HTTP-3",
+                                 lambda: self._run_quic_phase(
+                                     domains, report, max_workers)))
 
-            # --- Фаза 5: STUN/UDP ---
-            if mode == RunMode.FULL and not self._is_cancelled:
-                current_phase += 1
-                self._set_phase(
-                    f"Фаза {current_phase}/{phase_count}: STUN/UDP"
-                )
-                self._run_stun_phase(report, max_workers)
+            if mode == FULL:
+                if not use_proxy:
+                    plan.append(("STUN/UDP",
+                                 lambda: self._run_stun_phase(report, max_workers)))
+                plan.append(("YouTube CDN",
+                             lambda: self._run_youtube_cdn_phase(
+                                 report, domains, timeout, max_workers, proxy)))
 
-            # --- Фаза 6: Ping ---
-            if mode in (RunMode.FULL, RunMode.QUICK) and not self._is_cancelled:
-                current_phase += 1
-                self._set_phase(
-                    f"Фаза {current_phase}/{phase_count}: Ping"
-                )
-                self._run_ping_phase(domains, report)
+            if mode in (FULL, QUICK) and not use_proxy:
+                plan.append(("Ping",
+                             lambda: self._run_ping_phase(domains, report)))
+
+            phase_count = len(plan)
+            for idx, (name, fn) in enumerate(plan, 1):
+                if self._is_cancelled:
+                    break
+                self._set_phase(f"Фаза {idx}/{phase_count}: {name}")
+                fn()
 
             # --- Классификация DPI ---
             if not self._is_cancelled:
@@ -568,6 +611,7 @@ class BlockcheckRunner:
         mode: str,
         timeout: int,
         max_workers: int,
+        proxy: dict | None = None,
     ) -> None:
         """TLS-тесты: HTTP, TLS 1.2, TLS 1.3 для каждого домена."""
         from core.testers.tls_tester import test_tls
@@ -596,6 +640,7 @@ class BlockcheckRunner:
                 host=domain,
                 timeout=timeout,
                 tls_version=tls_version,
+                proxy=proxy,
             )
 
         pool = ThreadPoolExecutor(max_workers=max_workers)
@@ -818,6 +863,221 @@ class BlockcheckRunner:
             report.targets.append(tcp_target_result)
 
     # ------------------------------------------------------------------
+    # Phase: ClientHello (PQ / большой) — size-based DPI
+    # ------------------------------------------------------------------
+
+    def _run_bighello_phase(
+        self,
+        domains: list[str],
+        report: BlockcheckReport,
+        timeout: int,
+        max_workers: int,
+        proxy: dict | None = None,
+    ) -> None:
+        """Большой / post-quantum ClientHello для подвыборки доменов."""
+        from core.testers.tls_tester import probe_clienthello
+        from core.testers.config import BIGHELLO_MAX_DOMAINS
+
+        targets = _select_probe_domains(domains, BIGHELLO_MAX_DOMAINS)
+        if not targets:
+            return
+
+        total = len(targets)
+        completed = 0
+
+        def _one(domain: str) -> SingleTestResult:
+            return probe_clienthello(
+                host=domain, timeout=timeout, with_pq=True, proxy=proxy,
+            )
+
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures = {}
+            for d in targets:
+                if self._is_cancelled:
+                    break
+                futures[pool.submit(_one, d)] = d
+
+            for future in as_completed(futures):
+                if self._is_cancelled:
+                    break
+                domain = futures[future]
+                completed += 1
+                self._set_progress(completed, total, f"ClientHello: {domain}")
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = SingleTestResult(
+                        target=domain, test_type=TestType.TLS_BIGHELLO.value,
+                        status=TestStatus.ERROR.value, error="EXCEPTION",
+                        details=str(e)[:100],
+                    )
+                tr = self._get_or_create_target(report, domain)
+                tr.results.append(result)
+                self._emit("test_result", {"result": result.to_dict()})
+                log.debug(f"BigHello {domain}: {result.status} — {result.details}",
+                          source="blockcheck")
+        finally:
+            self._shutdown_pool(pool)
+
+    # ------------------------------------------------------------------
+    # Phase: QUIC / HTTP-3 (UDP/443)
+    # ------------------------------------------------------------------
+
+    def _run_quic_phase(
+        self,
+        domains: list[str],
+        report: BlockcheckReport,
+        max_workers: int,
+    ) -> None:
+        """QUIC-проба (UDP/443) для подвыборки доменов."""
+        from core.testers.quic_tester import test_quic
+        from core.testers.config import QUIC_MAX_DOMAINS
+
+        targets = _select_probe_domains(domains, QUIC_MAX_DOMAINS)
+        if not targets:
+            return
+
+        total = len(targets)
+        completed = 0
+
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures = {}
+            for d in targets:
+                if self._is_cancelled:
+                    break
+                futures[pool.submit(test_quic, d)] = d
+
+            for future in as_completed(futures):
+                if self._is_cancelled:
+                    break
+                domain = futures[future]
+                completed += 1
+                self._set_progress(completed, total, f"QUIC: {domain}")
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = SingleTestResult(
+                        target=domain, test_type=TestType.QUIC.value,
+                        status=TestStatus.ERROR.value, error="EXCEPTION",
+                        details=str(e)[:100],
+                    )
+                tr = self._get_or_create_target(report, domain)
+                tr.results.append(result)
+                self._emit("test_result", {"result": result.to_dict()})
+                log.debug(f"QUIC {domain}: {result.status} — {result.details}",
+                          source="blockcheck")
+        finally:
+            self._shutdown_pool(pool)
+
+    # ------------------------------------------------------------------
+    # Phase: YouTube CDN (динамические шарды + замер скорости)
+    # ------------------------------------------------------------------
+
+    def _run_youtube_cdn_phase(
+        self,
+        report: BlockcheckReport,
+        domains: list[str],
+        timeout: int,
+        max_workers: int,
+        proxy: dict | None = None,
+    ) -> None:
+        """Определить реальные шарды googlevideo, протестировать их + скорость."""
+        from core.testers.youtube_cdn import (
+            discover_cdn_hosts, measure_throughput, _SHARD_RE,
+        )
+        from core.testers.tls_tester import test_tls
+
+        self._set_progress(0, 1, "Определение CDN-шардов googlevideo...")
+        hosts, source = discover_cdn_hosts()
+
+        # Fallback: report_mapping региональнозависим и не везде отдаёт шарды.
+        # Берём googlevideo-шарды, уже указанные в списке доменов пользователя.
+        if not hosts:
+            seen: set[str] = set()
+            for d in domains:
+                m = _SHARD_RE.fullmatch(d.strip())
+                if m and d.lower() not in seen:
+                    hosts.append(d.strip())
+                    seen.add(d.lower())
+            if hosts:
+                source = "domains.txt"
+
+        cdn_tr = TargetResult(domain="YouTube CDN")
+        cdn_tr.summary = f"источник: {source}"
+
+        if not hosts:
+            cdn_tr.results.append(SingleTestResult(
+                target="redirector.googlevideo.com",
+                test_type=TestType.HTTP.value,
+                status=TestStatus.SKIPPED.value, error="NO_CDN",
+                details=f"Не удалось определить шарды ({source})",
+            ))
+            report.targets.append(cdn_tr)
+            return
+
+        # TLS 1.2 + 1.3 для каждого реального шарда (детекция RST/троттлинга).
+        jobs: list[tuple[str, str]] = []
+        for h in hosts:
+            jobs.append((h, "1.2"))
+            jobs.append((h, "1.3"))
+
+        total = len(jobs) + (0 if proxy else 1)  # +1 на замер скорости
+        completed = 0
+
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures = {}
+            for host, ver in jobs:
+                if self._is_cancelled:
+                    break
+                fut = pool.submit(test_tls, host, 443, timeout, ver, "auto", proxy)
+                futures[fut] = (host, ver)
+
+            for future in as_completed(futures):
+                if self._is_cancelled:
+                    break
+                host, ver = futures[future]
+                completed += 1
+                self._set_progress(completed, total, f"CDN TLS{ver}: {host}")
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = SingleTestResult(
+                        target=host,
+                        test_type=(TestType.TLS_13.value if ver == "1.3"
+                                   else TestType.TLS_12.value),
+                        status=TestStatus.ERROR.value, error="EXCEPTION",
+                        details=str(e)[:100],
+                    )
+                cdn_tr.results.append(result)
+                self._emit("test_result", {"result": result.to_dict()})
+        finally:
+            self._shutdown_pool(pool)
+
+        # Замер пропускной способности (без прокси — UDP/большой объём).
+        if not proxy and not self._is_cancelled:
+            completed += 1
+            self._set_progress(completed, total, "Замер скорости (i.ytimg.com)...")
+            try:
+                thr = measure_throughput(timeout=max(timeout, 12))
+            except Exception as e:
+                thr = SingleTestResult(
+                    target="i.ytimg.com", test_type=TestType.HTTP.value,
+                    status=TestStatus.ERROR.value, error="EXCEPTION",
+                    details=str(e)[:100],
+                )
+            cdn_tr.results.append(thr)
+            self._emit("test_result", {"result": thr.to_dict()})
+
+        report.targets.append(cdn_tr)
+        log.info(
+            f"YouTube CDN: протестировано {len(hosts)} шардов ({source})",
+            source="blockcheck",
+        )
+
+    # ------------------------------------------------------------------
     # Phase: STUN/UDP
     # ------------------------------------------------------------------
 
@@ -990,12 +1250,15 @@ class BlockcheckRunner:
         priority = [
             DPIClassification.TLS_DPI.value,
             DPIClassification.TLS_MITM.value,
+            DPIClassification.CLIENTHELLO_DPI.value,
             DPIClassification.ISP_PAGE.value,
             DPIClassification.HTTP_INJECT.value,
             DPIClassification.IP_BLOCK.value,
             DPIClassification.FULL_BLOCK.value,
             DPIClassification.TCP_RESET.value,
             DPIClassification.TCP_16_20.value,
+            DPIClassification.THROTTLED.value,
+            DPIClassification.QUIC_BLOCK.value,
             DPIClassification.STUN_BLOCK.value,
             DPIClassification.DNS_FAKE.value,
         ]
@@ -1039,15 +1302,6 @@ class BlockcheckRunner:
         tr = TargetResult(domain=domain)
         report.targets.append(tr)
         return tr
-
-    @staticmethod
-    def _count_phases(mode: str) -> int:
-        """Количество фаз для данного режима."""
-        if mode == RunMode.QUICK:
-            return 2    # TLS + Ping
-        if mode == RunMode.DPI_ONLY:
-            return 4    # DNS + TLS + ISP + TCP
-        return 6        # DNS + TLS + ISP + TCP + STUN + Ping
 
     def _build_summary_stats(self, report: BlockcheckReport) -> dict[str, Any]:
         """Построить статистику по отчёту."""

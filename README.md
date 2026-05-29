@@ -328,4 +328,7 @@ MIT
 
 - [bol-van/zapret2](https://github.com/bol-van/zapret) — основной инструмент
 - [youtubediscord/zapret](https://github.com/youtubediscord/zapret) — вдохновлялся
+- [Shiperoid/YT-DPI](https://github.com/Shiperoid/YT-DPI) — идеи диагностики
+  (троттлинг, реальные CDN-шарды googlevideo, Deep Trace, QUIC, большой
+  ClientHello)
 - [Bottle](https://bottlepy.org/) — микро-фреймворк для Python
