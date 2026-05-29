@@ -134,3 +134,81 @@ class TestManagerCRUD(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from core import mihomo_installer as mi
+from core import binary_installer as _bi
+import gzip as _gzip
+
+
+class TestMihomoArchMap(unittest.TestCase):
+
+    def test_known(self):
+        self.assertEqual(mi.map_arch("x86_64"), "amd64")
+        self.assertEqual(mi.map_arch("aarch64"), "arm64")
+        self.assertEqual(mi.map_arch("armv7"), "armv7")
+        self.assertEqual(mi.map_arch("mipsel-softfloat"), "mipsle-softfloat")
+        self.assertEqual(mi.map_arch("mips-softfloat"), "mips-softfloat")
+
+    def test_unknown(self):
+        self.assertEqual(mi.map_arch("riscv64"), "")
+        self.assertEqual(mi.map_arch(""), "")
+
+
+class TestSelectAsset(unittest.TestCase):
+
+    ASSETS = [
+        {"name": "mihomo-linux-amd64-compatible-v1.18.0.gz",
+         "browser_download_url": "u1"},
+        {"name": "mihomo-linux-amd64-v1.18.0.gz",
+         "browser_download_url": "u2"},
+        {"name": "mihomo-linux-arm64-v1.18.0.gz",
+         "browser_download_url": "u3"},
+        {"name": "mihomo-linux-mipsle-softfloat-v1.18.0.gz",
+         "browser_download_url": "u4"},
+        {"name": "mihomo-linux-amd64-v1.18.0.deb"},
+    ]
+
+    def test_amd64_exact_not_compatible(self):
+        r = mi.select_asset(self.ASSETS, "amd64")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["name"], "mihomo-linux-amd64-v1.18.0.gz")
+        self.assertEqual(r["url"], "u2")
+
+    def test_arm64(self):
+        r = mi.select_asset(self.ASSETS, "arm64")
+        self.assertEqual(r["url"], "u3")
+
+    def test_mipsle(self):
+        r = mi.select_asset(self.ASSETS, "mipsle-softfloat")
+        self.assertEqual(r["url"], "u4")
+
+    def test_missing_arch(self):
+        r = mi.select_asset(self.ASSETS, "armv7")
+        self.assertFalse(r["ok"])
+        self.assertIn("candidates", r)
+
+    def test_empty_token(self):
+        self.assertFalse(mi.select_asset(self.ASSETS, "")["ok"])
+
+
+class TestExtractGz(unittest.TestCase):
+
+    def test_gunzip(self):
+        with tempfile.TemporaryDirectory() as d:
+            gz = os.path.join(d, "mihomo.gz")
+            with _gzip.open(gz, "wb") as f:
+                f.write(b"\x7fELF-fake-binary")
+            out = os.path.join(d, "out", "mihomo")
+            r = _bi.extract_gz(gz, out)
+            self.assertTrue(r["ok"], r)
+            with open(out, "rb") as f:
+                self.assertEqual(f.read(), b"\x7fELF-fake-binary")
+
+    def test_bad_gz(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = os.path.join(d, "bad.gz")
+            with open(bad, "wb") as f:
+                f.write(b"not gzip at all")
+            r = _bi.extract_gz(bad, os.path.join(d, "out"))
+            self.assertFalse(r["ok"])

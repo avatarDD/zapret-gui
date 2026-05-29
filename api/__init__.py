@@ -28,6 +28,7 @@ def register_routes(app):
     from api.devices import register as reg_devices
     from api.connectivity import register as reg_connectivity
     from api.singbox import register as reg_singbox
+    from api.mihomo import register as reg_mihomo
 
     reg_status(app)
     reg_logs(app)
@@ -51,3 +52,4 @@ def register_routes(app):
     reg_devices(app)
     reg_connectivity(app)
     reg_singbox(app)
+    reg_mihomo(app)

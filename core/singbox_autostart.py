@@ -249,4 +249,12 @@ def apply_now() -> dict:
         if not en:
             continue
         results.append({"name": name, "result": mgr.up(name)})
-    return {"ok": True, "applied": results}
+    # Прозрачное проксирование (firewall) не переживает перезагрузку —
+    # переприменяем из сохранённых настроек вместе с движком.
+    transparent = None
+    try:
+        from core.singbox_transparent import reapply_saved
+        transparent = reapply_saved()
+    except Exception as e:
+        log.warning("singbox: reapply transparent: %s" % e, source="singbox")
+    return {"ok": True, "applied": results, "transparent": transparent}

@@ -248,6 +248,28 @@ def make_transparent_inbounds(*, mode: str = "tproxy",
     return inbounds
 
 
+_TRANSPARENT_TAGS = {"redirect-in", "tproxy-in", "dns-in"}
+
+
+def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
+                             tcp_port: int = 1100, udp_port: int = 1102,
+                             dns_port: int = 0, sniff: bool = True) -> dict:
+    """
+    Вставить/заменить наши transparent-inbound'ы в конфиге (cfg
+    модифицируется и возвращается). Прежние наши inbound'ы
+    (redirect-in/tproxy-in/dns-in) убираются, пользовательские —
+    сохраняются. Чистая функция (без I/O), удобно тестировать.
+    """
+    existing = [ib for ib in (cfg.get("inbounds") or [])
+                if not (isinstance(ib, dict)
+                        and ib.get("tag") in _TRANSPARENT_TAGS)]
+    new_ibs = make_transparent_inbounds(
+        mode=mode, tcp_port=tcp_port, udp_port=udp_port,
+        dns_port=dns_port, sniff=sniff)
+    cfg["inbounds"] = new_ibs + existing
+    return cfg
+
+
 def make_vless_outbound(tag: str, server: str, port: int, uuid: str,
                         *, flow: str = "",
                         transport: dict = None,

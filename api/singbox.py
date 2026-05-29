@@ -32,6 +32,15 @@ REST API для sing-box.
   PUT    /api/singbox/configs/<name>/outbounds/<tag> — обновить
   DELETE /api/singbox/configs/<name>/outbounds/<tag> — удалить
 
+  GET    /api/singbox/transparent/status    — доступность + сохранённые
+                                                настройки прозрач. проксир.
+  POST   /api/singbox/transparent/apply     — поднять firewall TProxy/
+                                                Redirect/Hybrid
+  POST   /api/singbox/transparent/remove    — снять firewall-правила
+  POST   /api/singbox/configs/<name>/transparent-inbounds
+                                              — вставить transparent-
+                                                inbound'ы в конфиг
+
   GET    /api/singbox/autostart             — статус автозапуска
   POST   /api/singbox/autostart/<name>      — body: {"enabled": bool}
   POST   /api/singbox/autostart/regenerate
@@ -562,6 +571,115 @@ def register(app):
                 "group_type": group_type,
                 "outbounds_count": len([o for o in cfg.get("outbounds", [])
                                          if isinstance(o, dict)])}
+
+    # ─────── transparent proxy (TProxy/Redirect/Hybrid) ──────────
+
+    @app.route("/api/singbox/transparent/status")
+    def singbox_transparent_status():
+        response.content_type = "application/json; charset=utf-8"
+        from core import singbox_transparent as tp
+        from core.config_manager import get_config_manager
+        saved = get_config_manager().get("singbox", "transparent",
+                                         default={}) or {}
+        return {"ok": True,
+                "available_v4": tp.available("v4"),
+                "available_v6": tp.available("v6"),
+                "settings": saved}
+
+    @app.route("/api/singbox/configs/<name>/transparent-inbounds",
+               method="POST")
+    def singbox_transparent_inbounds(name):
+        """
+        Вставить transparent-inbound'ы (redirect/tproxy/hybrid) в конфиг.
+        body: {mode, tcp_port, udp_port, dns_port, sniff}.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core.singbox_manager import get_singbox_manager
+        from core.singbox_config import set_transparent_inbounds, render_conf
+        mgr = get_singbox_manager()
+        cfg_resp = mgr.get_config(name)
+        if not cfg_resp.get("ok"):
+            response.status = 404
+            return cfg_resp
+        cfg = cfg_resp.get("parsed") or {}
+        set_transparent_inbounds(
+            cfg,
+            mode=(body.get("mode") or "tproxy"),
+            tcp_port=int(body.get("tcp_port") or 1100),
+            udp_port=int(body.get("udp_port") or 1102),
+            dns_port=int(body.get("dns_port") or 0),
+            sniff=bool(body.get("sniff", True)))
+        save = mgr.save_config(name, text=render_conf(cfg))
+        if not save.get("ok"):
+            response.status = 500
+        return save
+
+    @app.route("/api/singbox/transparent/apply", method="POST")
+    def singbox_transparent_apply():
+        """
+        Поднять firewall-правила прозрачного проксирования.
+        body: mode, tcp_port, udp_port, mark, table, families[],
+              lan_ifaces[], server_ips[], bypass[], proxy_self,
+              dns_hijack_port, ipv6_policy.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core import singbox_transparent as tp
+        from core.config_manager import get_config_manager
+        try:
+            params = dict(
+                mode=(body.get("mode") or "tproxy"),
+                tcp_port=int(body.get("tcp_port") or 1100),
+                udp_port=int(body.get("udp_port") or 1102),
+                mark=int(body.get("mark") or tp.DEFAULT_TPROXY_MARK),
+                table=int(body.get("table") or tp.DEFAULT_TPROXY_TABLE),
+                families=tuple(body.get("families") or ["v4"]),
+                lan_ifaces=body.get("lan_ifaces") or None,
+                server_ips=body.get("server_ips") or None,
+                bypass=body.get("bypass") or None,
+                proxy_self=bool(body.get("proxy_self", False)),
+                dns_hijack_port=int(body.get("dns_hijack_port") or 0),
+                ipv6_policy=(body.get("ipv6_policy") or "allow"),
+            )
+        except (TypeError, ValueError) as e:
+            response.status = 400
+            return {"ok": False, "error": "Некорректные параметры: %s" % e}
+        res = tp.apply(**params)
+        # Запоминаем настройки, чтобы UI показал текущее состояние и
+        # чтобы можно было снять/переприменить.
+        if res.get("ok"):
+            cfg = get_config_manager()
+            # families/lan_ifaces — списки; tuple не сериализуется в JSON.
+            persist = dict(params)
+            persist["families"] = list(params["families"])
+            cfg.set("singbox", "transparent", persist)
+            cfg.save()
+        if not res.get("ok"):
+            response.status = 500
+        return res
+
+    @app.route("/api/singbox/transparent/remove", method="POST")
+    def singbox_transparent_remove():
+        response.content_type = "application/json; charset=utf-8"
+        from core import singbox_transparent as tp
+        from core.config_manager import get_config_manager
+        saved = get_config_manager().get("singbox", "transparent",
+                                         default={}) or {}
+        res = tp.remove(
+            mark=int(saved.get("mark") or tp.DEFAULT_TPROXY_MARK),
+            table=int(saved.get("table") or tp.DEFAULT_TPROXY_TABLE),
+            families=("v4", "v6"))
+        cfg = get_config_manager()
+        cfg.set("singbox", "transparent", {})
+        cfg.save()
+        return res
 
     # ─────── autostart ────────────────────────────────────────────
 
