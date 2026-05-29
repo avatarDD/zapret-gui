@@ -5,7 +5,7 @@ REST API для selective routing.
 Маршруты:
   GET    /api/routing/rules               — список всех правил
   POST   /api/routing/rules               — создать правило
-                                              (поле type: cidr|domain|device)
+                                              (поле type: cidr|domain|device|dscp)
   GET    /api/routing/rules/<id>          — одно правило
   PUT    /api/routing/rules/<id>          — обновить правило
   DELETE /api/routing/rules/<id>          — удалить правило

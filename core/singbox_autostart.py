@@ -98,6 +98,10 @@ NAMES={names_quoted}
 
 mkdir -p "$PIDS_DIR" "$LOGS_DIR"
 
+# Поднимаем лимит дескрипторов: прокси-движок под нагрузкой упирается
+# в дефолтные 1024 и роняет коннекты "too many open files".
+ulimit -n 65536 2>/dev/null || true
+
 start_one() {{
     name="$1"
     config="$CONFIGS_DIR/$name.json"
@@ -179,6 +183,7 @@ Type=simple
 ExecStart={binary} run -c {configs_dir}/{name}.json
 Restart=on-failure
 RestartSec=5
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

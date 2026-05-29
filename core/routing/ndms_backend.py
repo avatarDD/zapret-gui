@@ -27,7 +27,9 @@ config'е и руками не пересекался.
 import re
 
 from core.log_buffer import log
-from core.ndms.commands import get_ndms_commands, make_owned_name
+from core.ndms.commands import (
+    get_ndms_commands, make_owned_name, is_owned_name,
+)
 from core.routing.rules import (
     DomainRoutingRule,
     CidrRoutingRule,
@@ -327,6 +329,45 @@ def remove_cidr_rule(rule: CidrRoutingRule) -> dict:
 # отдаём False из can_handle_device_rule() и manager идёт на
 # стандартный путь через `ip rule from <ip>`.
 
+# ─────── сохранение прежней политики хоста (parental control и пр.) ──
+#
+# Перед тем как назначить хосту нашу туннельную политику, запоминаем
+# его текущую персональную политику (если это не наша). При снятии
+# правила — восстанавливаем её вместо «снять политику», чтобы не
+# затереть родительский контроль / «Нет доступа в интернет», которые
+# пользователь настроил в самом Keenetic. Заимствовано из XKeen.
+
+def _save_prev_host_policy(mac: str, prev_policy: str):
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        saved = cfg.get("routing", "saved_host_policies", default={}) or {}
+        if not isinstance(saved, dict):
+            saved = {}
+        saved[mac] = prev_policy
+        cfg.set("routing", "saved_host_policies", saved)
+        cfg.save()
+    except Exception as e:
+        log.warning("routing(ndms): не удалось сохранить прежнюю политику"
+                    " хоста %s: %s" % (mac, e), source="routing")
+
+
+def _pop_prev_host_policy(mac: str) -> str:
+    """Вернуть и удалить сохранённую прежнюю политику хоста (или '')."""
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        saved = cfg.get("routing", "saved_host_policies", default={}) or {}
+        if not isinstance(saved, dict) or mac not in saved:
+            return ""
+        prev = str(saved.pop(mac) or "")
+        cfg.set("routing", "saved_host_policies", saved)
+        cfg.save()
+        return prev
+    except Exception:
+        return ""
+
+
 def can_handle_device_rule(rule: DeviceRoutingRule) -> bool:
     """
     Может ли NDMS-backend обработать это device-правило.
@@ -383,10 +424,27 @@ def apply_device_rule(rule: DeviceRoutingRule) -> dict:
             "policy":  policy_name,
         }
 
+    # Совместимость с родительским контролем / «Нет доступа в интернет»:
+    # запомним прежнюю персональную политику хоста, если она чужая (не
+    # наша). При снятии правила восстановим её, а не просто снимем.
+    warning = ""
+    prev = cmd.get_host_policy(rule.mac)
+    if prev.get("ok") and prev.get("found"):
+        prev_pol = prev.get("policy", "")
+        if prev_pol and not is_owned_name(prev_pol):
+            _save_prev_host_policy(rule.mac, prev_pol)
+            warning = ("у устройства уже была политика '%s' (напр. "
+                       "родительский контроль) — она временно перекрыта "
+                       "туннельной и будет восстановлена при удалении "
+                       "правила" % prev_pol)
+            log.warning("routing(ndms): %s (mac=%s)" % (warning, rule.mac),
+                        source="routing")
+
     h_res = cmd.assign_host_policy(rule.mac, policy_name)
     if not h_res.get("ok"):
         # Откат — снимаем политику, чтобы не оставлять мусор.
         cmd.delete_ip_policy(policy_name)
+        _pop_prev_host_policy(rule.mac)
         return {
             "ok":      False,
             "backend": "ndms",
@@ -406,6 +464,7 @@ def apply_device_rule(rule: DeviceRoutingRule) -> dict:
         "mac":     rule.mac,
         "iface":   rule.target_iface,
         "saved":   bool(save_res.get("ok")),
+        "warning": warning,
     }
 
 
@@ -419,9 +478,23 @@ def remove_device_rule(rule: DeviceRoutingRule) -> dict:
     errors = []
 
     if rule.mac:
-        u_res = cmd.unassign_host_policy(rule.mac)
-        if not u_res.get("ok"):
-            errors.append("ip hotspot host policy: %s" % u_res.get("error", "?"))
+        # Если у хоста была своя политика (родительский контроль и т.п.) —
+        # восстанавливаем её. Иначе просто снимаем нашу.
+        prev_pol = _pop_prev_host_policy(rule.mac)
+        if prev_pol:
+            r_res = cmd.assign_host_policy(rule.mac, prev_pol)
+            if not r_res.get("ok"):
+                errors.append("restore host policy '%s': %s"
+                              % (prev_pol, r_res.get("error", "?")))
+            else:
+                log.info("routing(ndms): восстановлена прежняя политика"
+                         " '%s' хоста %s" % (prev_pol, rule.mac),
+                         source="routing")
+        else:
+            u_res = cmd.unassign_host_policy(rule.mac)
+            if not u_res.get("ok"):
+                errors.append("ip hotspot host policy: %s"
+                              % u_res.get("error", "?"))
 
     p_res = cmd.delete_ip_policy(policy_name)
     if not p_res.get("ok"):

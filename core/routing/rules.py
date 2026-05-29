@@ -182,12 +182,48 @@ class DeviceRoutingRule(RoutingRule):
         return d
 
 
+# ───────────────────────── DSCP / QoS ────────────────────────────────
+
+class DscpRoutingRule(RoutingRule):
+    """
+    Маршрутизация по DSCP-метке (QoS). Заимствовано из XKeen.
+
+    Пакеты, несущие заданное значение DSCP в IP-заголовке, уходят
+    через `target_iface`. Метку DSCP обычно ставит штатный QoS роутера
+    (Keenetic IntelliQoS, OpenWrt SQM/qosify) — по приложению, порту,
+    устройству. Мы лишь маршрутизируем уже промаркированный трафик в
+    туннель: `-m dscp --dscp N -j MARK` + `ip rule fwmark`.
+
+    dscp: 0..63 (DSCP-класс, напр. 46 = EF для realtime).
+    """
+
+    type_name = "dscp"
+
+    def __init__(self, target_iface: str, dscp=None,
+                 proxy_self: bool = False, **kwargs):
+        super().__init__(target_iface=target_iface, **kwargs)
+        try:
+            self.dscp = int(dscp)
+        except (TypeError, ValueError):
+            raise ValueError("DSCP должен быть числом 0..63")
+        if not (0 <= self.dscp <= 63):
+            raise ValueError("DSCP вне диапазона 0..63: %d" % self.dscp)
+        self.proxy_self = bool(proxy_self)
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d["dscp"] = self.dscp
+        d["proxy_self"] = self.proxy_self
+        return d
+
+
 # ───────────────────────── factory ───────────────────────────────────
 
 _TYPE_REGISTRY = {
     "cidr":   CidrRoutingRule,
     "domain": DomainRoutingRule,
     "device": DeviceRoutingRule,
+    "dscp":   DscpRoutingRule,
 }
 
 
@@ -225,6 +261,12 @@ def rule_from_dict(d: dict) -> RoutingRule:
             source_ip=d.get("source_ip") or "",
             mac=d.get("mac") or "",
             hostname=d.get("hostname") or "",
+            **common,
+        )
+    if cls is DscpRoutingRule:
+        return DscpRoutingRule(
+            dscp=d.get("dscp"),
+            proxy_self=bool(d.get("proxy_self", False)),
             **common,
         )
     raise ValueError("Неподдерживаемый тип: %s" % rtype)

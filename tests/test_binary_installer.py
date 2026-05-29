@@ -171,3 +171,77 @@ class TestHumanSize(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestResolveUrl(unittest.TestCase):
+    GH = "https://github.com/owner/repo/releases/download/v1/asset.tar.gz"
+
+    def test_no_mirror_passthrough(self):
+        self.assertEqual(bi.resolve_url(self.GH, mirror=""), self.GH)
+
+    def test_mirror_prefixes_github(self):
+        out = bi.resolve_url(self.GH, mirror="https://mirror.example")
+        self.assertEqual(out, "https://mirror.example/" + self.GH)
+
+    def test_mirror_trailing_slash(self):
+        out = bi.resolve_url(self.GH, mirror="https://mirror.example/")
+        self.assertEqual(out, "https://mirror.example/" + self.GH)
+
+    def test_non_github_untouched(self):
+        url = "https://example.org/x.tar.gz"
+        self.assertEqual(bi.resolve_url(url, mirror="https://mirror.example"),
+                         url)
+
+    def test_raw_githubusercontent_rewritten(self):
+        url = "https://raw.githubusercontent.com/o/r/main/f"
+        out = bi.resolve_url(url, mirror="https://m.example")
+        self.assertTrue(out.startswith("https://m.example/https://raw."))
+
+    def test_local_url_untouched(self):
+        self.assertEqual(bi.resolve_url("file:///tmp/a.tar.gz",
+                                        mirror="https://m"),
+                         "file:///tmp/a.tar.gz")
+
+    def test_env_mirror(self):
+        with mock.patch.dict(os.environ,
+                             {"ZAPRET_GUI_MIRROR": "https://envmirror"}):
+            out = bi.resolve_url(self.GH)
+        self.assertTrue(out.startswith("https://envmirror/"))
+
+
+class TestIsLocalUrl(unittest.TestCase):
+
+    def test_http_not_local(self):
+        self.assertFalse(bi.is_local_url("https://x/y"))
+        self.assertFalse(bi.is_local_url("http://x/y"))
+
+    def test_file_scheme(self):
+        self.assertTrue(bi.is_local_url("file:///tmp/a"))
+
+    def test_plain_path(self):
+        self.assertTrue(bi.is_local_url("/tmp/a.tar.gz"))
+
+    def test_local_path_of(self):
+        self.assertEqual(bi.local_path_of("file:///tmp/a"), "/tmp/a")
+        self.assertEqual(bi.local_path_of("/tmp/b"), "/tmp/b")
+
+
+class TestOfflineDownload(unittest.TestCase):
+
+    def test_copy_local_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src.bin")
+            with open(src, "wb") as f:
+                f.write(b"hello-offline")
+            dest = os.path.join(d, "out", "dest.bin")
+            r = bi.download_file("file://" + src, dest)
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["size"], len(b"hello-offline"))
+            with open(dest, "rb") as f:
+                self.assertEqual(f.read(), b"hello-offline")
+
+    def test_copy_missing_local_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = os.path.join(d, "dest.bin")
+            r = bi.download_file("/nonexistent/path.bin", dest)
+            self.assertFalse(r["ok"])

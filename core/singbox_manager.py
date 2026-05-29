@@ -31,6 +31,39 @@ import subprocess
 import threading
 import time
 
+try:
+    import resource
+except ImportError:          # не-POSIX (на роутерах всегда есть)
+    resource = None
+
+
+# Желаемый лимит открытых файловых дескрипторов для процесса движка.
+# Прокси с большим числом соединений (как Xray/sing-box под нагрузкой)
+# упирается в дефолтные 1024 и начинает ронять коннекты с "too many
+# open files". XKeen поднимает лимит явно — делаем так же.
+SINGBOX_NOFILE = 65536
+
+
+def _raise_nofile():
+    """preexec_fn: поднять RLIMIT_NOFILE для дочернего процесса движка."""
+    if resource is None:
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = SINGBOX_NOFILE
+        # Нельзя превысить hard-лимит без root-привилегий на raise hard;
+        # под root поднимаем и hard. Берём максимум доступного.
+        new_hard = hard if hard != resource.RLIM_INFINITY else target
+        new_soft = min(target, new_hard) if new_hard != resource.RLIM_INFINITY \
+            else target
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, target))
+        except (ValueError, OSError):
+            # hard поднять не дали — ставим хотя бы soft до hard.
+            resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, new_hard))
+    except (ValueError, OSError):
+        pass
+
 from core.log_buffer import log
 from core.singbox_platform import detect_singbox_platform
 from core.singbox_config import parse_conf, render_conf, validate
@@ -323,6 +356,7 @@ class SingboxManager:
                 stdout=log_fh, stderr=log_fh,
                 close_fds=True,
                 start_new_session=True,
+                preexec_fn=_raise_nofile,
             )
         except OSError as e:
             log_fh.close()
