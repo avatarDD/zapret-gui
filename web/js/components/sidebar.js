@@ -46,6 +46,7 @@ const Sidebar = (() => {
         {
             label: 'Списки',
             items: [
+                { id: 'lists',     label: 'Списки (общие)', icon: 'hostlist' },
                 { id: 'hostlists', label: 'Домены',      icon: 'hostlist' },
                 { id: 'ipsets',    label: 'IP-списки',    icon: 'ipset' },
                 { id: 'lua',       label: 'Lua-скрипты',  icon: 'lua' },
@@ -66,7 +67,8 @@ const Sidebar = (() => {
                 { id: 'awg',         label: 'AmneziaWG',  icon: 'awg' },
                 { id: 'awg-configs', label: 'Конфиги',    icon: 'lua' },
                 { id: 'awg-warp',    label: 'WARP',       icon: 'awg' },
-                { id: 'awg-routing', label: 'Routing',    icon: 'globe' },
+                { id: 'routing',     label: 'Маршрутизация', icon: 'globe' },
+                { id: 'awg-routing', label: 'Routing (AWG)', icon: 'globe' },
                 { id: 'awg-setup',   label: 'Установка',  icon: 'settings' },
                 { id: 'singbox',         label: 'sing-box',     icon: 'awg' },
                 { id: 'singbox-configs', label: 'sing-box: конфиги', icon: 'lua' },

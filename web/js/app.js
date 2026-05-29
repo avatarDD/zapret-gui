@@ -31,6 +31,8 @@ const App = (() => {
         'singbox-configs': SingboxConfigsPage,
         'singbox-setup':   SingboxSetupPage,
         mihomo:            MihomoPage,
+        lists:       ListsPage,
+        routing:     RoutingUnifiedPage,
         settings:    SettingsPage,
     };
 
