@@ -270,6 +270,91 @@ def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
     return cfg
 
 
+def build_geo_route_rule(outbound_tag: str, *, domains=None,
+                         geosite=None, geoip=None) -> dict:
+    """
+    Собрать route-правило sing-box, отправляющее заданные селекторы в
+    outbound `outbound_tag`. Используется единым слоем для geosite/geoip
+    (их iptables-routing развернуть не может — это нативные концепции
+    движка).
+
+    Используем поля sing-box route rule:
+      domain_suffix / geosite / geoip → outbound.
+    Пустые селекторы не добавляются. Возвращает dict-правило.
+    """
+    rule = {}
+    doms = [str(d).strip().lower() for d in (domains or []) if str(d).strip()]
+    gs = [str(g).strip() for g in (geosite or []) if str(g).strip()]
+    gi = [str(g).strip() for g in (geoip or []) if str(g).strip()]
+    if doms:
+        rule["domain_suffix"] = doms
+    if gs:
+        rule["geosite"] = gs
+    if gi:
+        rule["geoip"] = gi
+    rule["outbound"] = outbound_tag
+    return rule
+
+
+def add_route_rule(cfg: dict, rule: dict, *, front: bool = True) -> dict:
+    """Вставить route-правило в cfg (создаёт route/rules при отсутствии)."""
+    route = cfg.setdefault("route", {})
+    rules = route.setdefault("rules", [])
+    if not isinstance(rules, list):
+        rules = []
+        route["rules"] = rules
+    if front:
+        rules.insert(0, rule)
+    else:
+        rules.append(rule)
+    return cfg
+
+
+def remove_route_rule(cfg: dict, rule: dict) -> bool:
+    """Удалить точное совпадение route-правила. True — если удалили."""
+    route = cfg.get("route")
+    if not isinstance(route, dict):
+        return False
+    rules = route.get("rules")
+    if not isinstance(rules, list):
+        return False
+    before = len(rules)
+    route["rules"] = [r for r in rules if r != rule]
+    return len(route["rules"]) != before
+
+
+def pick_proxy_outbound(cfg: dict) -> str:
+    """
+    Выбрать «основной» прокси-outbound конфига для маршрутизации geo:
+      1) первый selector/urltest (group) — это обычно «PROXY»;
+      2) иначе первый реальный outbound (не direct/block/dns).
+    Возвращает tag или '' если не нашли.
+    """
+    obs = cfg.get("outbounds") if isinstance(cfg, dict) else None
+    if not isinstance(obs, list):
+        return ""
+    for ob in obs:
+        if isinstance(ob, dict) and ob.get("type") in ("selector", "urltest"):
+            if ob.get("tag"):
+                return ob["tag"]
+    for ob in obs:
+        if not isinstance(ob, dict):
+            continue
+        if ob.get("type") in ("direct", "block", "dns", "selector", "urltest"):
+            continue
+        if ob.get("tag"):
+            return ob["tag"]
+    return ""
+
+
+def find_tun_interface(cfg: dict) -> str:
+    """interface_name tun-inbound'а конфига (или '' если нет tun)."""
+    for ib in (cfg.get("inbounds") or []):
+        if isinstance(ib, dict) and ib.get("type") == "tun":
+            return ib.get("interface_name") or ""
+    return ""
+
+
 def make_vless_outbound(tag: str, server: str, port: int, uuid: str,
                         *, flow: str = "",
                         transport: dict = None,

@@ -75,23 +75,33 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
     resolved = route.destination.resolve()
     domains = resolved["domains"]
     cidrs = resolved["cidrs"]
+    has_geo = bool(resolved.get("geosite") or resolved.get("geoip"))
     skipped = []
-    if resolved.get("geosite") or resolved.get("geoip"):
-        skipped.append("geosite/geoip (нужен sing-box/mihomo route)")
 
     if kind in ("awg", "singbox", "mihomo"):
         res = _apply_tunnel(route, target, domains, cidrs)
+        # geosite/geoip — через конфиг движка (sing-box/mihomo), не iptables.
+        geo = _apply_geo(route, method)
+        if geo.get("skipped"):
+            skipped.append(geo.get("reason", "geosite/geoip пропущены"))
         res["method"] = method
+        res["geo"] = geo
         res["skipped_selectors"] = skipped
         return res
     if kind == "nfqws2":
         res = _apply_nfqws(route, domains)
+        if has_geo:
+            skipped.append("geosite/geoip игнорируются для метода nfqws2")
+        _remove_geo(route)
         res["method"] = method
         res["skipped_selectors"] = skipped
         return res
     # direct — снимаем все производные артефакты, трафик идёт штатно.
     _remove_routing_rules(route.id)
     _remove_hostlist(route.id)
+    _remove_geo(route)
+    if has_geo:
+        skipped.append("geosite/geoip игнорируются для метода direct")
     log.info("unified: маршрут %s = direct (артефакты сняты)" % route.id,
              source="unified")
     return {"ok": True, "method": "direct", "skipped_selectors": skipped}
@@ -102,8 +112,28 @@ def remove_route(route: UnifiedRoute) -> dict:
     rid = route.id if isinstance(route, UnifiedRoute) else str(route)
     _remove_routing_rules(rid)
     _remove_hostlist(rid)
+    if isinstance(route, UnifiedRoute):
+        _remove_geo(route)
     log.info("unified: маршрут %s снят" % rid, source="unified")
     return {"ok": True, "id": rid}
+
+
+def _apply_geo(route, method) -> dict:
+    try:
+        from core.unified import geo_engine
+        return geo_engine.apply_geo(route, method)
+    except Exception as e:
+        log.warning("unified geo apply %s: %s" % (route.id, e),
+                    source="unified")
+        return {"ok": False, "error": str(e)}
+
+
+def _remove_geo(route):
+    try:
+        from core.unified import geo_engine
+        geo_engine.remove_geo(route)
+    except Exception:
+        pass
 
 
 # ─────────────────────── tunnel method ───────────────────────────────
