@@ -60,6 +60,7 @@ const HostlistsPage = (() => {
                     <div class="lists-toolbar">
                         <div class="lists-toolbar-left">
                             <span class="lists-tab-desc" id="hl-tab-desc"></span>
+                            <span class="lists-search-status" id="hl-search-status"></span>
                             <span class="lists-unsaved" id="hl-unsaved" style="display:none;">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
@@ -69,6 +70,26 @@ const HostlistsPage = (() => {
                             </span>
                         </div>
                         <div class="lists-toolbar-right">
+                            <div class="list-ui-search" style="flex:0 0 240px; min-width:160px; max-width:280px;">
+                                <svg class="list-ui-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <circle cx="11" cy="11" r="8"/>
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                </svg>
+                                <input type="text" class="form-input list-ui-search-input" id="hl-search-input"
+                                       placeholder="Поиск в списке (Enter — след., Shift+Enter — пред.)"
+                                       spellcheck="false" autocomplete="off">
+                                <button class="list-ui-search-clear" id="hl-search-clear" title="Очистить" style="display:none;">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <button class="btn btn-ghost btn-sm" onclick="HostlistsPage.sortDedupe()" title="Отсортировать и удалить дубликаты">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <path d="M3 6h13M3 12h9M3 18h5M17 8l4 4-4 4M21 12h-6"/>
+                                </svg>
+                                Сорт./Дедуп
+                            </button>
                             <button class="btn btn-ghost btn-sm" onclick="HostlistsPage.showImportModal()" title="Импорт">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -242,6 +263,113 @@ const HostlistsPage = (() => {
         if (editor) {
             editor.addEventListener('input', onEditorInput);
         }
+
+        // Поиск
+        const searchInput = document.getElementById('hl-search-input');
+        const searchClear = document.getElementById('hl-search-clear');
+        if (searchInput) {
+            searchInput.addEventListener('input', e => {
+                const q = e.target.value;
+                if (searchClear) searchClear.style.display = q ? '' : 'none';
+                updateSearchStatus(q);
+            });
+            searchInput.addEventListener('keydown', e => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    findInEditor(searchInput.value, e.shiftKey ? -1 : 1);
+                } else if (e.key === 'Escape') {
+                    searchInput.value = '';
+                    if (searchClear) searchClear.style.display = 'none';
+                    updateSearchStatus('');
+                }
+            });
+        }
+        if (searchClear) {
+            searchClear.addEventListener('click', () => {
+                if (searchInput) {
+                    searchInput.value = '';
+                    searchInput.focus();
+                }
+                searchClear.style.display = 'none';
+                updateSearchStatus('');
+            });
+        }
+    }
+
+    // ══════════════════ Search в редакторе ══════════════════
+
+    function updateSearchStatus(q) {
+        const status = document.getElementById('hl-search-status');
+        const editor = document.getElementById('hl-editor');
+        if (!status || !editor) return;
+        if (!q) { status.textContent = ''; return; }
+        const text = editor.value;
+        const lines = text.split('\n');
+        const needle = q.toLowerCase();
+        let matches = 0;
+        for (const line of lines) if (line.toLowerCase().includes(needle)) matches++;
+        status.textContent = matches
+            ? `Совпадений: ${matches} (из ${lines.filter(Boolean).length} строк)`
+            : `Не найдено`;
+    }
+
+    /**
+     * Найти следующее/предыдущее вхождение q в textarea, проскроллить и выделить.
+     * direction: +1 — вперёд, -1 — назад.
+     */
+    function findInEditor(q, direction = 1) {
+        const editor = document.getElementById('hl-editor');
+        if (!editor || !q) return;
+        const text = editor.value;
+        const needle = q.toLowerCase();
+        const hay = text.toLowerCase();
+
+        let pos;
+        if (direction > 0) {
+            pos = hay.indexOf(needle, editor.selectionEnd);
+            if (pos < 0) pos = hay.indexOf(needle); // wrap
+        } else {
+            const slice = hay.slice(0, Math.max(0, editor.selectionStart - 1));
+            pos = slice.lastIndexOf(needle);
+            if (pos < 0) pos = hay.lastIndexOf(needle); // wrap
+        }
+        if (pos < 0) return;
+
+        editor.focus();
+        editor.setSelectionRange(pos, pos + q.length);
+        // Прокрутить к выделению (примерно по числу строк до позиции)
+        const before = text.slice(0, pos);
+        const lineNo = (before.match(/\n/g) || []).length;
+        const lineH = parseFloat(getComputedStyle(editor).lineHeight) || 18;
+        editor.scrollTop = Math.max(0, (lineNo - 3) * lineH);
+    }
+
+    /**
+     * Отсортировать строки + удалить дубликаты, обновить textarea.
+     * Помечает как несохранённое.
+     */
+    function sortDedupe() {
+        const editor = document.getElementById('hl-editor');
+        if (!editor || editor.disabled) return;
+        const lines = editor.value.split('\n').map(s => s.trim());
+        const seen = new Set();
+        const out = [];
+        for (const line of lines) {
+            if (!line) continue;
+            const key = line.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(line);
+        }
+        out.sort((a, b) => a.localeCompare(b));
+        const before = editor.value;
+        editor.value = out.join('\n');
+        if (editor.value !== before) {
+            setUnsaved(true);
+            Toast.info('Отсортировано и дедуплицировано. Нажмите «Сохранить».');
+        } else {
+            Toast.info('Список уже отсортирован и без дубликатов.');
+        }
     }
 
     // ══════════════════ Tabs ══════════════════
@@ -375,6 +503,13 @@ const HostlistsPage = (() => {
         document.querySelectorAll('.lists-tab').forEach(el => {
             el.classList.toggle('active', el.dataset.tab === name);
         });
+
+        // Сбрасываем поиск
+        const searchInput = document.getElementById('hl-search-input');
+        const searchClear = document.getElementById('hl-search-clear');
+        if (searchInput) searchInput.value = '';
+        if (searchClear) searchClear.style.display = 'none';
+        updateSearchStatus('');
 
         loadTab(name);
     }
@@ -709,6 +844,7 @@ const HostlistsPage = (() => {
         resetList,
         deleteList,
         quickAdd,
+        sortDedupe,
         showCreateModal,
         closeCreateModal,
         createList,
