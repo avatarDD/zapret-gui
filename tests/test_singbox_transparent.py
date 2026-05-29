@@ -8,6 +8,7 @@ iptables (его нет в CI и он требует рута).
 """
 
 import unittest
+from unittest import mock
 
 from core import singbox_transparent as tp
 from core.singbox_config import (
@@ -182,6 +183,36 @@ class TestSetTransparentInbounds(unittest.TestCase):
         tags = {ib["tag"] for ib in cfg["inbounds"]}
         self.assertIn("redirect-in", tags)
         self.assertIn("tproxy-in", tags)
+
+
+class TestReapplySaved(unittest.TestCase):
+
+    def test_noop_when_no_settings(self):
+        fake_cfg = mock.Mock()
+        fake_cfg.get.return_value = {}
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=fake_cfg):
+            r = tp.reapply_saved()
+        self.assertTrue(r["ok"])
+        self.assertTrue(r.get("noop"))
+
+    def test_calls_apply_with_saved(self):
+        fake_cfg = mock.Mock()
+        fake_cfg.get.return_value = {
+            "mode": "tproxy", "tcp_port": 1100, "families": ["v4"],
+            "bogus_key": "ignored",
+        }
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=fake_cfg), \
+             mock.patch.object(tp, "apply",
+                               return_value={"ok": True}) as m:
+            r = tp.reapply_saved()
+        self.assertTrue(r["ok"])
+        m.assert_called_once()
+        kwargs = m.call_args.kwargs
+        self.assertEqual(kwargs["mode"], "tproxy")
+        self.assertEqual(kwargs["families"], ("v4",))
+        self.assertNotIn("bogus_key", kwargs)
 
 
 if __name__ == "__main__":

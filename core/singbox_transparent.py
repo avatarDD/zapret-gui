@@ -496,3 +496,30 @@ def remove(*, mark: int = DEFAULT_TPROXY_MARK,
                     break
     log.info("singbox transparent: правила сняты", source="singbox")
     return {"ok": True}
+
+
+def reapply_saved() -> dict:
+    """
+    Переприменить прозрачное проксирование из сохранённых настроек
+    (`singbox.transparent` в settings.json). Вызывается при apply-now /
+    автозапуске — firewall-правила не переживают перезагрузку, поэтому
+    их нужно поднять заново вместе с движком.
+
+    Если настроек нет — no-op.
+    """
+    try:
+        from core.config_manager import get_config_manager
+        saved = get_config_manager().get("singbox", "transparent",
+                                         default={}) or {}
+    except Exception:
+        saved = {}
+    if not saved or not saved.get("mode"):
+        return {"ok": True, "noop": True}
+    params = dict(saved)
+    params["families"] = tuple(params.get("families") or ["v4"])
+    # Отбрасываем неизвестные ключи на случай старого формата.
+    allowed = {"mode", "tcp_port", "udp_port", "mark", "table", "families",
+               "lan_ifaces", "server_ips", "bypass", "proxy_self",
+               "dns_hijack_port", "ipv6_policy"}
+    params = {k: v for k, v in params.items() if k in allowed}
+    return apply(**params)
