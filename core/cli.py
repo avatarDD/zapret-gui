@@ -26,7 +26,7 @@ import sys
 
 
 # Подкоманды верхнего уровня, по которым app.py решает «это CLI, не web».
-COMMANDS = ("status", "nfqws", "strategy", "singbox")
+COMMANDS = ("status", "nfqws", "strategy", "singbox", "mihomo")
 
 
 def _p(msg=""):
@@ -83,6 +83,16 @@ def _cmd_status(_args) -> int:
         if cfgs:
             up = [c["name"] for c in cfgs if c.get("running")]
             _p("sing-box: %d конфигов, запущено: %s"
+               % (len(cfgs), ", ".join(up) if up else "—"))
+    except Exception:
+        pass
+    # mihomo
+    try:
+        from core.mihomo_manager import get_mihomo_manager
+        cfgs = get_mihomo_manager().list_configs()
+        if cfgs:
+            up = [c["name"] for c in cfgs if c.get("running")]
+            _p("mihomo:   %d конфигов, запущено: %s"
                % (len(cfgs), ", ".join(up) if up else "—"))
     except Exception:
         pass
@@ -180,6 +190,32 @@ def _cmd_singbox(args) -> int:
     return 2
 
 
+def _cmd_mihomo(args) -> int:
+    from core.mihomo_manager import get_mihomo_manager
+    mgr = get_mihomo_manager()
+    if args.action == "list":
+        cfgs = mgr.list_configs()
+        if not cfgs:
+            _p("mihomo: конфигов нет")
+            return 0
+        for c in cfgs:
+            _p("  %-24s %s" % (c["name"],
+                               "запущен" if c.get("running")
+                               else "остановлен"))
+        return 0
+    if not args.name:
+        _p("Укажите имя конфига: zapret-gui mihomo %s <name>" % args.action)
+        return 2
+    if args.action == "up":
+        return _ok("mihomo up %s" % args.name, mgr.up(args.name))
+    if args.action == "down":
+        return _ok("mihomo down %s" % args.name, mgr.down(args.name))
+    if args.action == "restart":
+        return _ok("mihomo restart %s" % args.name, mgr.restart(args.name))
+    _p("Неизвестное действие: %s" % args.action)
+    return 2
+
+
 # ─────────────────────── entry ───────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -203,6 +239,10 @@ def build_parser() -> argparse.ArgumentParser:
     pb.add_argument("action", choices=["list", "up", "down", "restart"])
     pb.add_argument("name", nargs="?", help="Имя конфига")
 
+    pm = sub.add_parser("mihomo", help="Управление mihomo (Clash.Meta)")
+    pm.add_argument("action", choices=["list", "up", "down", "restart"])
+    pm.add_argument("name", nargs="?", help="Имя конфига")
+
     return p
 
 
@@ -211,6 +251,7 @@ _DISPATCH = {
     "nfqws":    _cmd_nfqws,
     "strategy": _cmd_strategy,
     "singbox":  _cmd_singbox,
+    "mihomo":   _cmd_mihomo,
 }
 
 
