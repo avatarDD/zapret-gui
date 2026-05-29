@@ -29,6 +29,8 @@ def register_routes(app):
     from api.connectivity import register as reg_connectivity
     from api.singbox import register as reg_singbox
     from api.mihomo import register as reg_mihomo
+    from api.lists import register as reg_lists
+    from api.unified import register as reg_unified
 
     reg_status(app)
     reg_logs(app)
@@ -53,3 +55,5 @@ def register_routes(app):
     reg_connectivity(app)
     reg_singbox(app)
     reg_mihomo(app)
+    reg_lists(app)
+    reg_unified(app)

@@ -63,3 +63,14 @@ class TestDscpBuilder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNftDscpFragment(unittest.TestCase):
+
+    def test_fragment(self):
+        frag = dscp_rule.build_nft_dscp_fragment(46, 123)
+        self.assertEqual(frag, "ip dscp 0x2e meta mark set 123")
+
+    def test_fragment_zero(self):
+        self.assertEqual(dscp_rule.build_nft_dscp_fragment(0, 5),
+                         "ip dscp 0x00 meta mark set 5")

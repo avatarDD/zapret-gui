@@ -60,6 +60,20 @@ def _iface_exists(ifname: str) -> bool:
     return rc == 0
 
 
+def _backend() -> str:
+    """iptables приоритетнее (Keenetic/Entware), иначе nft (OpenWrt 22+)."""
+    rc, _o, _e = _run(["iptables", "-V"], timeout=3)
+    if rc == 0:
+        return "iptables"
+    rc, _o, _e = _run(["nft", "--version"], timeout=3)
+    return "nftables" if rc == 0 else "none"
+
+
+def build_nft_dscp_fragment(dscp: int, mark: int) -> str:
+    """nft rule-фрагмент маркировки по DSCP (чистая функция)."""
+    return "ip dscp 0x%02x meta mark set %d" % (dscp, mark)
+
+
 def _ensure_chain(chain: str):
     _run(["iptables", "-t", "mangle", "-N", chain])
 
@@ -87,6 +101,8 @@ def build_mark_rules(chain: str, dscp: int, mark: int) -> list:
 def apply_dscp_rule(rule: DscpRoutingRule) -> dict:
     if not isinstance(rule, DscpRoutingRule):
         return {"ok": False, "error": "Не DscpRoutingRule"}
+    if _backend() == "nftables":
+        return _apply_dscp_nft(rule)
 
     ifname = rule.target_iface
     table = _table_id_for(ifname)
@@ -160,9 +176,86 @@ def apply_dscp_rule(rule: DscpRoutingRule) -> dict:
                                        "table": table, "iface": ifname}]}
 
 
+def _apply_dscp_nft(rule: DscpRoutingRule) -> dict:
+    """nft-вариант: правило в таблице awg_routing (общая с domain-routing)."""
+    from core.routing import nftset_backend as nfb
+    ifname = rule.target_iface
+    table = _table_id_for(ifname)
+    mark = table
+    with _lock:
+        if not _iface_exists(ifname):
+            return {"ok": False, "deferred": True,
+                    "message": "Интерфейс %s ещё не поднят" % ifname}
+        # default route в таблицу iface
+        rc, out, _e = _run(["ip", "-4", "route", "show", "table",
+                            str(table), "default"])
+        if not (rc == 0 and ("dev %s" % ifname) in (out or "")):
+            rc, _o, err = _run(["ip", "-4", "route", "add", "default",
+                                "dev", ifname, "table", str(table)])
+            if rc != 0 and "File exists" not in (err or ""):
+                return {"ok": False, "error": "default-route: %s" % err.strip()}
+
+        nfb._ensure_table_and_chains()
+        frag = build_nft_dscp_fragment(rule.dscp, mark)
+        errors = []
+        chains = ["prerouting"] + (["output"] if rule.proxy_self else [])
+        for chain in chains:
+            rc, out, _e = _run(["nft", "list", "chain", "inet",
+                               nfb.TABLE_NAME, chain])
+            if rc == 0 and frag in out:
+                continue
+            rc, _o, err = _run(["nft", "add", "rule", "inet", nfb.TABLE_NAME,
+                               chain] + frag.split())
+            if rc != 0:
+                errors.append("%s: %s" % (chain, err.strip()))
+        nfb.add_ip_rule_fwmark(mark, table, family="v4", priority=DSCP_PRIORITY)
+        try:
+            from core.routing import masquerade
+            masquerade.ensure_for_iface(ifname, families=("v4",))
+        except Exception:
+            pass
+        if errors:
+            return {"ok": False, "errors": errors}
+        log.info("routing(dscp/nft): правило %s (dscp=%d → %s)"
+                 % (rule.id, rule.dscp, ifname), source="routing")
+        return {"ok": True, "added": [{"dscp": rule.dscp, "mark": mark,
+                                       "iface": ifname, "backend": "nftables"}]}
+
+
+def _remove_dscp_nft(rule: DscpRoutingRule) -> dict:
+    from core.routing import nftset_backend as nfb
+    ifname = rule.target_iface
+    table = _table_id_for(ifname)
+    mark = table
+    frag = build_nft_dscp_fragment(rule.dscp, mark)
+    with _lock:
+        for chain in ("prerouting", "output"):
+            rc, out, _e = _run(["nft", "-a", "list", "chain", "inet",
+                               nfb.TABLE_NAME, chain])
+            if rc != 0:
+                continue
+            for line in out.splitlines():
+                if frag in line and "handle" in line:
+                    h = line.rsplit("handle", 1)[1].strip().split()[0]
+                    if h.isdigit():
+                        _run(["nft", "delete", "rule", "inet", nfb.TABLE_NAME,
+                              chain, "handle", h])
+        nfb.del_ip_rule_fwmark(mark, table, family="v4")
+        try:
+            from core.routing import masquerade
+            masquerade.remove_if_unused(ifname, excluding_id=rule.id)
+        except Exception:
+            pass
+        log.info("routing(dscp/nft): правило %s снято" % rule.id,
+                 source="routing")
+        return {"ok": True}
+
+
 def remove_dscp_rule(rule: DscpRoutingRule) -> dict:
     if not isinstance(rule, DscpRoutingRule):
         return {"ok": False, "error": "Не DscpRoutingRule"}
+    if _backend() == "nftables":
+        return _remove_dscp_nft(rule)
     ifname = rule.target_iface
     table = _table_id_for(ifname)
     mark = table
