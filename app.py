@@ -20,6 +20,10 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 # Bottle — микрофреймворк (один файл, 0 зависимостей)
 try:
     from bottle import Bottle, static_file, response, request, ServerAdapter
+    import bottle as _bottle
+    # Поднимаем лимит тела запроса (дефолт 100 KB): импорт бэкапа и
+    # крупные blob/конфиг-POST'ы могут быть больше.
+    _bottle.BaseRequest.MEMFILE_MAX = 16 * 1024 * 1024
 except ImportError:
     print("ОШИБКА: Bottle не найден. Установите: pip3 install bottle")
     print("  или: opkg install python3-bottle")
@@ -421,12 +425,33 @@ def create_app(config_dir: str = None) -> Bottle:
     return app
 
 
+def _cli_command_in(argv) -> bool:
+    """
+    Является ли это CLI-вызовом (status/nfqws/…)? Допускаем ведущий
+    `--config DIR` / `--config=DIR` перед подкомандой, чтобы команда
+    `zapret-gui` (обёртка) могла передать каталог установленного конфига.
+    Любые другие опции (`--host`/`--port`/`--debug`/…) означают web-режим.
+    """
+    from core.cli import COMMANDS as _CLI_COMMANDS
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--config":
+            i += 2
+            continue
+        if a.startswith("--config="):
+            i += 1
+            continue
+        return a in _CLI_COMMANDS
+    return False
+
+
 def main():
     """Точка входа: парсинг аргументов и запуск сервера."""
-    # CLI-подкоманды (status / nfqws / strategy / singbox) — если первый
-    # аргумент один из них, работаем как консольная утилита, а не web.
-    from core.cli import COMMANDS as _CLI_COMMANDS
-    if len(sys.argv) > 1 and sys.argv[1] in _CLI_COMMANDS:
+    # CLI-подкоманды (status / nfqws / strategy / singbox / mihomo) — если
+    # первый позиционный аргумент один из них, работаем как консольная
+    # утилита, а не web (с учётом возможного ведущего --config).
+    if _cli_command_in(sys.argv[1:]):
         from core.cli import run as _cli_run
         sys.exit(_cli_run(sys.argv[1:]))
 

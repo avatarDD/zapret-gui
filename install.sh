@@ -516,6 +516,26 @@ install_from_github() {
     # Права
     $SUDO chmod 755 "$APP_DIR/app.py"
 
+    # CLI-обёртка `zapret-gui` в PATH (status/nfqws/strategy/singbox/mihomo).
+    case "$APP_DIR" in
+        /opt/*) BIN_DIR="/opt/bin" ;;
+        *)      BIN_DIR="/usr/bin" ;;
+    esac
+    $SUDO mkdir -p "$BIN_DIR"
+    $SUDO sh -c "cat > '$BIN_DIR/zapret-gui'" <<EOF
+#!/bin/sh
+# zapret-gui — консольная обёртка над app.py (создана install.sh).
+APP="$APP_DIR/app.py"
+CFG="$CONFIG_DIR"
+if [ "\$#" -eq 0 ] || [ "\$1" = "-h" ] || [ "\$1" = "--help" ]; then
+    echo "Usage: zapret-gui {status|nfqws|strategy|singbox|mihomo} [args]"
+    [ "\$#" -eq 0 ] && exit 1 || exit 0
+fi
+exec python3 "\$APP" --config "\$CFG" "\$@"
+EOF
+    $SUDO chmod 755 "$BIN_DIR/zapret-gui"
+    ok "CLI-команда установлена: $BIN_DIR/zapret-gui"
+
     # Импорт bundled-ассетов (blobs/lua/lists → /opt/zapret2/) и
     # bundled-стратегий (merge в catalogs/). Базовая установка
     # zapret2 даёт только бинарник — всё остальное доставляет GUI.

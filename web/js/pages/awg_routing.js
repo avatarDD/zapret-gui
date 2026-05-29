@@ -52,9 +52,12 @@ const AwgRoutingPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Selective routing</h1>
+                    <h1 class="page-title">Selective routing (AWG, расширенный)</h1>
                     <p class="page-description">
-                        Какой трафик в какой туннель направлять.
+                        Низкоуровневые правила для AWG-туннелей (CIDR / домены /
+                        устройства / DSCP, dnsmasq, NDMS). Для обычного выбора
+                        «куда → через что» используйте
+                        <a href="#routing" style="text-decoration:underline;">Маршрутизацию</a>.
                     </p>
                 </div>
                 <div style="display:flex; gap:8px;">
@@ -189,7 +192,7 @@ const AwgRoutingPage = (() => {
 
         box.innerHTML = `
             <div class="card" style="margin-bottom: 12px;">
-                <div class="card-title">Добавить DSCP-правило</div>
+                <div class="card-title">Добавить DSCP-правило${typeof Help !== 'undefined' ? Help.button('dscp') : ''}</div>
                 ${configs.length === 0 ? `
                     <p class="text-muted" style="margin-top: 8px;">
                         Нет ни одного AWG-конфига. Сначала создайте туннель в разделе

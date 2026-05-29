@@ -31,6 +31,7 @@ def register_routes(app):
     from api.mihomo import register as reg_mihomo
     from api.lists import register as reg_lists
     from api.unified import register as reg_unified
+    from api.backup import register as reg_backup
 
     reg_status(app)
     reg_logs(app)
@@ -57,3 +58,4 @@ def register_routes(app):
     reg_mihomo(app)
     reg_lists(app)
     reg_unified(app)
+    reg_backup(app)

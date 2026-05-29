@@ -187,6 +187,27 @@ const AwgDashboardPage = (() => {
         wrap.innerHTML = cards.join('');
 
         renderKeeneticRouting();
+        loadSparklines();
+    }
+
+    // Подтягиваем traffic-серии для активных интерфейсов и рисуем спарклайны.
+    async function loadSparklines() {
+        const active = configs.filter(c => c.active).map(c => c.iface || c.name);
+        const seen = new Set();
+        for (const iface of active) {
+            if (!iface || seen.has(iface)) continue;
+            seen.add(iface);
+            const el = document.getElementById('spark-' + iface);
+            if (!el) continue;
+            try {
+                const r = await API.get('/api/connectivity/traffic/' +
+                                        encodeURIComponent(iface));
+                const series = (r && r.series) || [];
+                if (series.length >= 2 && typeof Sparkline !== 'undefined') {
+                    el.innerHTML = Sparkline.trafficBlock(series);
+                }
+            } catch (_) { /* график — не критично */ }
+        }
     }
 
     function renderKeeneticRouting() {
@@ -291,6 +312,8 @@ const AwgDashboardPage = (() => {
                         <span style="display:flex; gap: 6px; align-items: center; margin-left: 8px;">
                             ${statusBadge}
                         </span>
+                        ${active ? `<span class="awg-spark" id="spark-${escapeAttr(cfg.iface || cfg.name)}"
+                                          style="margin-left:12px;"></span>` : ''}
                     </div>
                     <div style="display:flex; gap: 12px; align-items: center;">
                         ${autoToggle}

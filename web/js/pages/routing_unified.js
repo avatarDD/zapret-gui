@@ -24,7 +24,7 @@ const RoutingUnifiedPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Маршрутизация</h1>
+                    <h1 class="page-title">Маршрутизация${typeof Help !== 'undefined' ? Help.button('routing') : ''}</h1>
                     <p class="page-description">
                         Единый слой: для каждого назначения — через что пустить
                         трафик (direct / nfqws2 / туннель), с резервными методами
@@ -44,6 +44,13 @@ const RoutingUnifiedPage = (() => {
             <div id="ru-editor"></div>
             <div id="ru-body">
                 <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
+            </div>
+            <div class="text-muted" style="margin-top:14px; font-size:12px;">
+                Классические инструменты (расширенный режим):
+                <a href="#strategies" style="text-decoration:underline;">Стратегии</a> ·
+                <a href="#awg-routing" style="text-decoration:underline;">Routing (AWG)</a> ·
+                <a href="#scan" style="text-decoration:underline;">Подбор стратегий</a> ·
+                <a href="#lists" style="text-decoration:underline;">Списки</a>
             </div>
         `;
         loadAux().then(refresh);

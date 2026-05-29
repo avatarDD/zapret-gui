@@ -4,7 +4,9 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/avatarDD/zapret-gui/release.yml?style=flat-square&label=build)](https://github.com/avatarDD/zapret-gui/actions)
 [![License](https://img.shields.io/github/license/avatarDD/zapret-gui?style=flat-square)](LICENSE)
 
-Веб-интерфейс для управления **nfqws2** (zapret2) на роутерах с Entware (Keenetic) и OpenWrt.
+Веб-интерфейс для обхода блокировок на роутерах с Entware (Keenetic) и
+OpenWrt: **nfqws2** (zapret2), туннели **AmneziaWG / sing-box / mihomo** и
+**единый слой маршрутизации** «назначение → метод» поверх них.
 
 Тёмная тема, мобильная адаптация, SPA на vanilla JS + Python/Bottle бэкенд.
 
@@ -37,6 +39,9 @@
   strategy … | singbox … | mihomo …`
 - **Зеркало/оффлайн-установка** бинарников (env `ZAPRET_GUI_MIRROR`
   или `install.mirror` / `file://`) — когда GitHub заблокирован
+- **Бэкап/восстановление** — выгрузка всей конфигурации (настройки,
+  стратегии, конфиги sing-box/mihomo, hostlist'ы) в один JSON-файл и
+  восстановление из него (Настройки → Бэкап)
 
 ## Требования
 
@@ -112,6 +117,9 @@ python3 app.py --host 0.0.0.0 --port 8080
 3. Или **Подбор стратегий** → автоматический поиск рабочей стратегии
 4. **Автозапуск** → включите для работы после перезагрузки
 5. **BlockCheck** или **Диагностика** → проверьте доступность
+6. Нужны туннели/гибкая маршрутизация? → **AmneziaWG/sing-box/mihomo** +
+   страница **Маршрутизация** (для домена/списка выберите метод и
+   резервную цепочку)
 
 ### Страницы
 
@@ -130,7 +138,7 @@ python3 app.py --host 0.0.0.0 --port 8080
 | Диагностика | Проверка сервисов, конфликтов, системы |
 | Логи | Журнал событий в реальном времени |
 | Автозапуск | Управление init-скриптом |
-| Настройки | Конфигурация GUI, nfqws, firewall |
+| Настройки | Конфигурация GUI, nfqws, firewall, зеркало, **бэкап/восстановление** |
 | AmneziaWG → Setup | Wizard: детект окружения, prerequisites, установка бинарников |
 | AmneziaWG → Dashboard | Статус интерфейсов и peer'ов, up/down, autostart |
 | AmneziaWG → Configs | Редактор `.conf`, импорт/экспорт, валидация |
@@ -188,13 +196,15 @@ python3 app.py --host 0.0.0.0 --port 8080
   - **WARP-in-WARP** — два WARP-туннеля поверх друг друга
     (static route для inner endpoint через outer интерфейс).
 - **Selective routing** — таблица `awg<N>` → `table 100+N`,
-  правила трёх типов:
+  правила четырёх типов:
   - **CIDR** — IPv4/IPv6 сети напрямую через `ip rule from`/`ip route`;
   - **Домены** — управляемый блок `dnsmasq.d/zapret-gui-awg-routing.conf`
     с include-once в основной `dnsmasq.conf`, ipset (Entware) или
     nftables set (OpenWrt 22+);
   - **Устройства** — список из `dhcp.leases`/ARP, per-device правила
-    через source-IP либо fwmark, если платформа поддерживает.
+    через source-IP либо fwmark, если платформа поддерживает;
+  - **DSCP** — маршрутизация по QoS-метке (`-m dscp` / `ip dscp` →
+    fwmark), iptables или nftables.
 - **Autostart** — per-config флаг `autostart` в `settings.json`.
   Init-скрипт под платформу вызывает `python3 app.py --apply-awg-autostart`,
   который поднимает интерфейсы и применяет routing rules в правильном
@@ -269,33 +279,46 @@ opkg remove zapret-gui
 
 ## API
 
-REST API: `http://<host>:8080/api/` — 80+ эндпоинтов.
+REST API: `http://<host>:8080/api/` — 120+ эндпоинтов.
 
 | Метод | Путь | Описание |
 |-------|------|----------|
 | GET | /api/status | Общий статус |
-| POST | /api/start | Запустить nfqws2 |
-| POST | /api/stop | Остановить nfqws2 |
-| GET | /api/strategies | Список стратегий |
-| POST | /api/strategies/:id/apply | Применить стратегию |
+| POST | /api/start · /api/stop | Запуск/остановка nfqws2 |
+| GET/POST | /api/strategies · /api/strategies/:id/apply | Стратегии |
 | GET | /api/logs/stream | SSE-поток логов |
-| GET | /api/gui/check | Проверить обновления |
-| POST | /api/gui/update | Обновить GUI |
-| POST | /api/blockcheck/start | Запустить BlockCheck |
-| POST | /api/scan/start | Запустить подбор стратегий |
-| GET | /api/awg/environment | Отчёт детектора окружения AWG |
-| POST | /api/awg/install | Установить бинарники AWG |
-| GET | /api/awg/configs | Список AWG-конфигов |
-| POST | /api/awg/configs/:name/up | Поднять AWG-интерфейс |
-| POST | /api/awg/configs/:name/down | Снять AWG-интерфейс |
-| POST | /api/awg/warp/import | Импорт WARP-конфига |
-| POST | /api/awg/warp/generate | Нативная генерация WARP |
-| POST | /api/awg/warp-in-warp | Включить двойной WARP |
-| GET | /api/routing/rules | Список selective-routing правил |
-| POST | /api/routing/rules | Добавить правило (CIDR/domain/device) |
-| GET | /api/devices | Список устройств из DHCP/ARP |
+| GET/POST | /api/gui/check · /api/gui/update | Обновление GUI |
+| POST | /api/blockcheck/start · /api/scan/start | BlockCheck / подбор |
+| GET/POST | /api/awg/environment · /api/awg/install · /api/awg/configs/:name/{up,down} | AmneziaWG |
+| POST | /api/awg/warp/{import,generate} · /api/awg/warp-in-warp | Cloudflare WARP |
+| GET/POST | /api/routing/rules | Selective-routing (cidr/domain/device/**dscp**) |
+| GET | /api/routing/interfaces · /api/devices | Интерфейсы / устройства |
+| GET/POST | /api/singbox/configs · …/:name/{up,down,restart} | sing-box инстансы |
+| GET/POST | /api/singbox/transparent/{status,apply,remove} | Прозрачное проксирование |
+| GET/POST | /api/mihomo/{environment,install,version,configs} | mihomo (Clash.Meta) |
+| GET/POST/PUT/DELETE | /api/lists · /api/lists/:id | Именованные списки доменов/CIDR |
+| GET/POST | /api/unified/routes · …/:id/{apply,scan} | Единый слой «назначение → метод» |
+| GET/POST | /api/unified/status · /api/unified/monitor | Статус/мониторинг единого слоя |
+| GET/POST | /api/backup/{export,summary,import} | Бэкап/восстановление конфигурации |
 
 Полный список — см. `api/` директорию.
+
+## CLI
+
+После установки (ipk или `install.sh`) доступна команда `zapret-gui`
+в `$PATH` — управление из консоли по SSH без браузера:
+
+```bash
+zapret-gui status                       # общий статус
+zapret-gui nfqws {start|stop|restart|status}
+zapret-gui strategy {list|apply <id>}
+zapret-gui singbox {list|up|down|restart <name>}
+zapret-gui mihomo  {list|up|down|restart <name>}
+```
+
+Обёртка вызывает `python3 <app_dir>/app.py --config <config_dir> …`,
+поэтому видит то же состояние, что и веб-GUI. Из клона репозитория —
+напрямую: `python3 app.py status`.
 
 ## Структура проекта
 
@@ -306,16 +329,25 @@ zapret-gui/
 ├── config/           # Стратегии (builtin JSON + user)
 ├── core/             # Бизнес-логика
 │   ├── testers/      # Сетевые тестеры (TLS, STUN, TCP, DPI)
-│   ├── routing/      # Selective routing engine (CIDR/domain/device)
-│   ├── awg_*.py      # AmneziaWG: platform, detector, installer, manager, config
+│   ├── connectivity/ # Матрица доступности + traffic-серии (RAM)
+│   ├── routing/      # Selective routing engine (cidr/domain/device/dscp)
+│   ├── ndms/         # Keenetic RCI: интерфейсы, политики хостов
+│   ├── unified/      # Единый слой: model, applier, monitor, failover,
+│   │                 #   geo_engine, nfqws_hostlist, scanner_hint, manager
+│   ├── named_lists.py        # Общие именованные списки доменов/CIDR
+│   ├── binary_installer.py   # Загрузка/распаковка + зеркало/оффлайн
+│   ├── cli.py                # CLI-подкоманды (status/nfqws/strategy/…)
+│   ├── awg_*.py      # AmneziaWG: platform, detector, installer, manager
+│   ├── singbox_*.py  # sing-box: manager, transparent (iptables/nft), …
+│   ├── mihomo_*.py   # mihomo: platform, detector, installer, manager
 │   └── warp_*.py     # Cloudflare WARP: импорт, нативная генерация
 ├── data/             # Данные (домены, TCP-цели)
 ├── packaging/        # Скрипты сборки ipk (Entware/OpenWrt)
 ├── web/              # Фронтенд (SPA)
 │   ├── css/
 │   ├── js/
-│   │   ├── components/
-│   │   ├── pages/
+│   │   ├── components/   # sidebar, toast, list_ui, sparkline, help
+│   │   ├── pages/        # dashboard, routing (единый слой), lists, mihomo, …
 │   │   └── utils/
 │   └── index.html
 ├── .github/workflows/

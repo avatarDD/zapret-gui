@@ -17,12 +17,36 @@ class TestTeardownRun(unittest.TestCase):
         with mock.patch.object(teardown, "_disable_autostart") as a, \
              mock.patch.object(teardown, "_stop_nfqws") as s, \
              mock.patch.object(teardown, "_remove_firewall") as f, \
-             mock.patch.object(teardown, "_remove_persistence") as p:
+             mock.patch.object(teardown, "_remove_persistence") as p, \
+             mock.patch.object(teardown, "_stop_engines") as e, \
+             mock.patch.object(teardown, "_remove_transparent") as t:
             self.assertEqual(teardown.run(), 0)
             a.assert_called_once()
             s.assert_called_once()
             f.assert_called_once()
             p.assert_called_once()
+            e.assert_called_once()
+            t.assert_called_once()
+
+    def test_stop_engines_stops_running(self):
+        sb = mock.Mock()
+        sb.list_configs.return_value = [
+            {"name": "vpn", "running": True},
+            {"name": "off", "running": False},
+        ]
+        mh = mock.Mock()
+        mh.list_configs.return_value = []
+        with mock.patch("core.singbox_manager.get_singbox_manager",
+                        return_value=sb), \
+             mock.patch("core.mihomo_manager.get_mihomo_manager",
+                        return_value=mh):
+            teardown._stop_engines()
+        sb.down.assert_called_once_with("vpn")
+
+    def test_remove_transparent_calls_tp(self):
+        with mock.patch("core.singbox_transparent.remove") as rm:
+            teardown._remove_transparent()
+        rm.assert_called_once()
 
     def test_step_exception_is_isolated(self):
         # Если менеджер бросает — обёртка ловит и не пробрасывает наружу.

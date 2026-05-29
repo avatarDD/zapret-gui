@@ -9,14 +9,19 @@
 
 ## ★ Главный план: единый слой маршрутизации (nfqws2 + AWG + sing-box)
 
-Большая стратегическая цель. Сейчас три подсистемы живут параллельно:
-nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели), у каждой —
-свои списки доменов/IP и своя логика. Хотим **единый слой**, где для
-каждого «назначения» (домен / ipset / geosite / geoip) можно гибко
-выбрать, **через что** пустить трафик, и чтобы система **сама следила**
-за успешностью и переключала метод при проблемах.
+> **Статус: реализовано (backend + API + UI).** Все этапы ниже закрыты;
+> остаётся полевое тестирование firewall/инъекций на железе.
 
-Этапы (примерный порядок, каждый — отдельная веха):
+Большая стратегическая цель. Раньше три подсистемы жили параллельно:
+nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели), у каждой —
+свои списки доменов/IP и своя логика. Теперь есть **единый слой**, где для
+каждого «назначения» (домен / CIDR / список / geosite / geoip) выбирается,
+**через что** пустить трафик (`direct` / `nfqws2` / `awg:` / `singbox:` /
+`mihomo:`), с резервной цепочкой; система **сама следит** за успешностью
+и переключает метод при деградации (`core/unified/*`, страница
+«Маршрутизация»).
+
+Этапы (все выполнены):
 
 - [x] **Объединение списков** — `core/named_lists.py` (хранилище
       доменов/CIDR, classify/parse, CRUD), страница «Списки (общие)»
@@ -46,14 +51,18 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
 
 Открытые улучшения единого слоя (next):
 
-- [ ] **geosite/geoip через движок** — сейчас пропускаются на уровне
-      ipset-routing (skipped_selectors); развернуть через route-правила
-      sing-box/mihomo, когда метод — соответствующий движок.
-- [ ] **Инъекция nfqws2-hostlist** в аргументы запущенной стратегии
-      (домены уже материализуются в hostlist `unified_<id>`, осталось
-      автоподключение к args nfqws).
-- [ ] **Слияние** старых страниц Стратегии / Routing(AWG) в единую
-      «Маршрутизацию» по мере стабилизации (пока сосуществуют).
+- [x] **geosite/geoip через движок** — `core/unified/geo_engine.py`:
+      для метода `singbox:<iface>` находит конфиг по interface_name и
+      инжектирует route-правило {domain_suffix/geosite/geoip → proxy},
+      идемпотентно через sidecar. mihomo/awg — понятный skip (нет
+      YAML-эмиттера / iptables не умеет geo).
+- [x] **Инъекция nfqws2-hostlist** — `core/unified/nfqws_hostlist.py`:
+      агрегат доменов nfqws2-маршрутов → `--hostlist` перед профилями
+      стратегии (opt-in `nfqws.unified_hostlist`, тумблер в Настройках).
+- [~] **Слияние** старых страниц Стратегии / Routing(AWG) в единую
+      «Маршрутизацию» — сделан безопасный шаг: «Маршрутизация» как
+      основная точка входа + кросс-ссылки, старые помечены «расширенный
+      режим». Полное удаление — после полевых тестов.
 
 ### Заимствования из rcd27/blockcheckw (MIT)
 
@@ -127,12 +136,15 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
       (`web/js/pages/mihomo.js`: обзор/установка/инстансы/YAML-редактор),
       вкладка DSCP в routing, карточка прозрачного проксирования на
       странице sing-box, секция «Установка» с полем зеркала в Настройках.
-- [ ] **nftables-вариант** прозрачного проксирования и DSCP (сейчас
-      iptables; на OpenWrt 22+ нужен nft-бэкенд, как у ipset/nftset).
-- [ ] **Boot-персистентность transparent-firewall** на уровне
-      init-скрипта (сейчас переприменяется через `apply_now` /
-      `reapply_saved`, но генерируемый init-скрипт sing-box запускает
-      только бинарь — полноценный hook на загрузку остаётся задачей).
+- [x] **nftables-вариант** прозрачного проксирования и DSCP —
+      `core/singbox_transparent_nft.py` (таблица `inet sbtproxy`,
+      redirect/tproxy/hybrid) + nft-путь в `core/routing/dscp_rule.py`.
+      `choose_backend()`: iptables приоритетнее (Keenetic), nft для
+      OpenWrt 22+.
+- [x] **Boot-персистентность transparent-firewall** — `app.py
+      --apply/--remove-singbox-transparent`; init-скрипт sing-box
+      (entware + systemd) на старте переприменяет firewall из
+      сохранённых настроек, на остановке снимает.
 - [ ] **Полевое тестирование** firewall-правил TProxy/Redirect/DSCP на
       железе (Keenetic/OpenWrt) — код не проверялся на устройствах.
 
@@ -143,9 +155,10 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
       встроенный awg, если он умеет).
 - [ ] **Импорт `.conf` через QR с камеры** в браузере
       (`navigator.mediaDevices` + jsQR через CDN — опционально).
-- [ ] **UI-sparkline** для per-peer и per-iface статистики —
-      backend (`core/connectivity/traffic.py`) уже отдаёт серии,
-      осталась отрисовка на фронте.
+- [x] **UI-sparkline** для per-iface статистики —
+      `web/js/components/sparkline.js` (inline-SVG) + дашборд AWG рисует
+      rx/tx-серии из `/api/connectivity/traffic/<iface>`. Per-peer
+      sparkline — по мере надобности (серии бэкенд отдаёт).
 - [ ] **Полевое тестирование** на железе: OpenWrt 22.03+ (nftset
       backend) и KeenOS 4.x (детектор/инструкции) — код есть,
       не проверено на устройствах.
@@ -154,13 +167,21 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
 
 - [ ] **i18n** — UI русскоязычный. На будущее — выделить строки в
       словарь (`web/js/i18n/{ru,en}.js`).
-- [ ] **Рефакторинг `awg_installer.py` / `zapret_installer.py`** на
-      общий `core/binary_installer.py` (фундамент готов; миграция
-      поэтапная, чтобы не сломать рабочие пути).
-- [ ] **Расширить покрытие тестами** ещё не покрытых модулей:
-      strategy_scanner, blockcheck, diagnostics (heavy I/O),
-      catalog_*, file-resource менеджеры, warp_generator,
-      awg_installer/zapret_installer (нужны моки GitHub API).
+- [x] **Рефакторинг `awg_installer.py` / `zapret_installer.py`** на
+      общий `core/binary_installer.py` — загрузка делегирована
+      download_file (зеркало + оффлайн + retry), GitHub API через
+      resolve_url. Покрыто tests/test_installer_mirror.py.
+- [~] **Расширить покрытие тестами** — добавлены log_buffer, scan_targets,
+      catalog_loader, named_lists, unified/*, geo_engine, nfqws_hostlist,
+      mihomo, transparent (iptables+nft), dscp, installer mirror.
+      Осталось: strategy_scanner, blockcheck, diagnostics, warp_generator.
+- [x] **Контекстные подсказки «?»** — `web/js/components/help.js`
+      (модалка с примерами) на ключевых страницах.
+- [x] **Бэкап/восстановление конфигурации** — `core/backup.py` +
+      `api/backup.py` (export/summary/import) + секция «Бэкап» в
+      Настройках. Один JSON: настройки, пользовательские стратегии,
+      конфиги sing-box/mihomo, hostlist'ы. Восстановление gui-секции —
+      опционально. MEMFILE_MAX поднят до 16 МБ.
 
 ## Идеи
 

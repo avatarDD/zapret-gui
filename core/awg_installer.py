@@ -52,6 +52,12 @@ MANIFEST_CACHE_TTL = 300
 
 
 def _http_get(url: str, accept: str = "application/json", timeout: int = HTTP_TIMEOUT):
+    # Применяем зеркало (ZAPRET_GUI_MIRROR / install.mirror) к GitHub-URL.
+    try:
+        from core.binary_installer import resolve_url
+        url = resolve_url(url)
+    except Exception:
+        pass
     req = Request(url, headers={
         "User-Agent": "zapret-gui-awg/1.0",
         "Accept": accept,
@@ -691,31 +697,18 @@ class AwgInstaller:
     def _download(self, url: str, dest: str,
                   progress_from: int, progress_to: int, label: str):
         log.info("Загрузка %s → %s" % (url, dest), source="awg_installer")
-        try:
-            with _http_get(url, accept="application/octet-stream",
-                           timeout=DOWNLOAD_TIMEOUT) as resp:
-                total = resp.getheader("Content-Length")
-                total = int(total) if total and total.isdigit() else 0
-                downloaded = 0
-                with open(dest, "wb") as f:
-                    while True:
-                        chunk = resp.read(64 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total > 0:
-                            pct = progress_from + int(
-                                (progress_to - progress_from) * downloaded / total
-                            )
-                        else:
-                            pct = (progress_from + progress_to) // 2
-                        self._set_progress(
-                            "Загрузка %s (%s)" % (label, _human_size(downloaded)),
-                            pct,
-                        )
-        except (HTTPError, URLError, OSError) as e:
-            raise RuntimeError("Ошибка загрузки %s: %s" % (url, e))
+        # Делегируем общей утилите: зеркало (ZAPRET_GUI_MIRROR /
+        # install.mirror), оффлайн (file://), retry. Прогресс маппим в
+        # _set_progress в исходном диапазоне.
+        from core import binary_installer as bi
+        res = bi.download_file(
+            url, dest,
+            progress_cb=lambda _s, pct, lbl: self._set_progress(lbl, pct),
+            label=label, progress_from=progress_from,
+            progress_to=progress_to, timeout=DOWNLOAD_TIMEOUT)
+        if not res.get("ok"):
+            raise RuntimeError("Ошибка загрузки %s: %s"
+                               % (url, res.get("error")))
 
     def _verify_sha256(self, path: str, expected: str):
         if not expected:

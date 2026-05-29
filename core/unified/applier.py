@@ -75,23 +75,34 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
     resolved = route.destination.resolve()
     domains = resolved["domains"]
     cidrs = resolved["cidrs"]
+    has_geo = bool(resolved.get("geosite") or resolved.get("geoip"))
     skipped = []
-    if resolved.get("geosite") or resolved.get("geoip"):
-        skipped.append("geosite/geoip (нужен sing-box/mihomo route)")
 
     if kind in ("awg", "singbox", "mihomo"):
         res = _apply_tunnel(route, target, domains, cidrs)
+        # geosite/geoip — через конфиг движка (sing-box/mihomo), не iptables.
+        geo = _apply_geo(route, method)
+        if geo.get("skipped"):
+            skipped.append(geo.get("reason", "geosite/geoip пропущены"))
         res["method"] = method
+        res["geo"] = geo
         res["skipped_selectors"] = skipped
         return res
     if kind == "nfqws2":
         res = _apply_nfqws(route, domains)
+        if has_geo:
+            skipped.append("geosite/geoip игнорируются для метода nfqws2")
+        _remove_geo(route)
         res["method"] = method
         res["skipped_selectors"] = skipped
         return res
     # direct — снимаем все производные артефакты, трафик идёт штатно.
     _remove_routing_rules(route.id)
     _remove_hostlist(route.id)
+    _remove_geo(route)
+    _rebuild_nfqws_aggregate()
+    if has_geo:
+        skipped.append("geosite/geoip игнорируются для метода direct")
     log.info("unified: маршрут %s = direct (артефакты сняты)" % route.id,
              source="unified")
     return {"ok": True, "method": "direct", "skipped_selectors": skipped}
@@ -102,8 +113,38 @@ def remove_route(route: UnifiedRoute) -> dict:
     rid = route.id if isinstance(route, UnifiedRoute) else str(route)
     _remove_routing_rules(rid)
     _remove_hostlist(rid)
+    if isinstance(route, UnifiedRoute):
+        _remove_geo(route)
+    _rebuild_nfqws_aggregate()
     log.info("unified: маршрут %s снят" % rid, source="unified")
     return {"ok": True, "id": rid}
+
+
+def _apply_geo(route, method) -> dict:
+    try:
+        from core.unified import geo_engine
+        return geo_engine.apply_geo(route, method)
+    except Exception as e:
+        log.warning("unified geo apply %s: %s" % (route.id, e),
+                    source="unified")
+        return {"ok": False, "error": str(e)}
+
+
+def _remove_geo(route):
+    try:
+        from core.unified import geo_engine
+        geo_engine.remove_geo(route)
+    except Exception:
+        pass
+
+
+def _rebuild_nfqws_aggregate():
+    """Пересобрать агрегатный nfqws2-hostlist (после ухода маршрута с nfqws2)."""
+    try:
+        from core.unified import nfqws_hostlist
+        nfqws_hostlist.rebuild()
+    except Exception:
+        pass
 
 
 # ─────────────────────── tunnel method ───────────────────────────────
@@ -136,6 +177,7 @@ def _apply_tunnel(route, iface, domains, cidrs) -> dict:
 
     # nfqws2-hostlist этого маршрута больше не нужен.
     _remove_hostlist(route.id)
+    _rebuild_nfqws_aggregate()
 
     ok = all(r.get("ok", False) or r.get("deferred") for r in results) \
         if results else True
@@ -178,10 +220,20 @@ def _apply_nfqws(route, domains) -> dict:
         name = _hostlist_name(route.id)
         res = hm.save_hostlist(name, domains)
         ok = bool(res.get("ok", True)) if isinstance(res, dict) else True
-        return {"ok": ok, "hostlist": name, "domains": len(domains),
-                "note": "nfqws2 должен использовать hostlist '%s'" % name}
     except Exception as e:
         return {"ok": False, "error": "hostlist: %s" % e}
+    # Пересобираем агрегат и (если фича включена) перезапускаем nfqws2,
+    # чтобы домены реально подхватились запущенной стратегией.
+    agg = None
+    try:
+        from core.unified import nfqws_hostlist
+        agg = nfqws_hostlist.rebuild()
+    except Exception as e:
+        log.warning("unified nfqws aggregate: %s" % e, source="unified")
+    return {"ok": ok, "hostlist": name, "domains": len(domains),
+            "aggregate": agg,
+            "note": ("включите nfqws.unified_hostlist, чтобы стратегия "
+                     "применялась к этим доменам автоматически")}
 
 
 def _remove_hostlist(route_id):

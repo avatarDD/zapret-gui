@@ -61,6 +61,12 @@ const SettingsPage = (() => {
             ]
         },
         {
+            id: 'backup',
+            label: 'Бэкап',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>',
+            fields: [],
+        },
+        {
             id: 'install',
             label: 'Установка',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
@@ -86,6 +92,8 @@ const SettingsPage = (() => {
                 { key: 'nfqws.desync_mark_postnat',  label: 'Desync mark (postnat)',  type: 'text', placeholder: '0x20000000' },
                 { key: 'nfqws.user',                 label: 'Пользователь',           type: 'text', placeholder: 'nobody' },
                 { key: 'nfqws.disable_ipv6',         label: 'Отключить IPv6',         type: 'toggle' },
+                { key: 'nfqws.unified_hostlist',     label: 'Единый слой: ограничить домены', type: 'toggle',
+                  hint: 'Применять стратегию nfqws2 только к доменам маршрутов «Маршрутизации» с методом nfqws2 (через --hostlist агрегата unified_nfqws). Выключено — стратегия глобальна, как раньше.' },
             ]
         },
         {
@@ -290,11 +298,45 @@ const SettingsPage = (() => {
             html += renderInterfacesBlock();
         }
 
+        // Блок резервного копирования
+        if (activeSection === 'backup') {
+            html += renderBackupBlock();
+        }
+
         formEl.innerHTML = html;
 
         if (activeSection === 'interfaces') {
             loadInterfaces();
         }
+    }
+
+    function renderBackupBlock() {
+        return `
+            <div style="margin-top: 4px; font-size: 13px; line-height: 1.5;">
+                <p class="text-muted">
+                    Полный бэкап: настройки, пользовательские стратегии,
+                    конфиги sing-box/mihomo и hostlist'ы — в один JSON-файл.
+                    Удобно при переустановке или переносе на другой роутер.
+                </p>
+                <div style="margin: 14px 0;">
+                    <a class="btn btn-primary btn-sm" href="/api/backup/export"
+                       download>Скачать бэкап</a>
+                </div>
+                <div style="border-top:1px solid var(--border); margin-top:14px; padding-top:14px;">
+                    <h3 style="font-size:14px; margin:0 0 8px;">Восстановление</h3>
+                    <label class="text-muted" style="display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:10px;">
+                        <input type="checkbox" id="backup-restore-gui">
+                        Восстановить и параметры Web-GUI (адрес/порт/авторизация)
+                        — иначе они останутся текущими
+                    </label>
+                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.pickBackupFile()">
+                        Выбрать файл бэкапа…
+                    </button>
+                    <input type="file" id="backup-restore-file" accept=".json"
+                           style="display:none" onchange="SettingsPage.handleBackupFile(this)">
+                </div>
+            </div>
+        `;
     }
 
     /** Блок с заголовком + кнопками + контейнер для списка интерфейсов. */
@@ -661,6 +703,60 @@ const SettingsPage = (() => {
         }
     }
 
+    // ══════════════════ Backup / Restore ══════════════════
+
+    function pickBackupFile() {
+        const inp = document.getElementById('backup-restore-file');
+        if (inp) inp.click();
+    }
+
+    async function handleBackupFile(input) {
+        const file = input.files[0];
+        if (!file) return;
+        const restoreGui = !!(document.getElementById('backup-restore-gui') || {}).checked;
+        try {
+            const text = await file.text();
+            let backup;
+            try {
+                backup = JSON.parse(text);
+            } catch (e) {
+                Toast.error('Файл не является JSON: ' + e.message);
+                return;
+            }
+            // Сводка для подтверждения.
+            const sresp = await API.post('/api/backup/summary', backup);
+            if (!sresp || !sresp.ok) {
+                Toast.error((sresp && sresp.error) || 'Это не похоже на бэкап zapret-gui');
+                return;
+            }
+            const s = sresp.summary;
+            const msg = 'Восстановить из бэкапа?\n\n' +
+                'Версия: ' + (s.app_version || '?') + '\n' +
+                'Настройки: ' + (s.has_settings ? 'да' : 'нет') + '\n' +
+                'Стратегии: ' + s.strategies + '\n' +
+                'sing-box: ' + s.singbox + ', mihomo: ' + s.mihomo + '\n' +
+                'Списки доменов: ' + s.hostlists + '\n\n' +
+                (restoreGui ? 'ВКЛ. параметры Web-GUI.\n\n' : '') +
+                'Текущие данные будут перезаписаны.';
+            if (!confirm(msg)) return;
+
+            const r = await API.post('/api/backup/import',
+                                     { backup: backup, restore_gui: restoreGui });
+            if (r && r.ok) {
+                const parts = Object.entries(r.restored || {})
+                    .map(([k, v]) => k + ':' + v).join(', ');
+                Toast.success('Восстановлено (' + parts + '). Перезагрузите страницу.');
+                await loadConfig();
+            } else {
+                Toast.error((r && r.error) || 'Ошибка восстановления');
+            }
+        } catch (err) {
+            Toast.error('Ошибка чтения файла: ' + err.message);
+        } finally {
+            input.value = '';
+        }
+    }
+
     // ══════════════════ Interface Roles ══════════════════
 
     async function loadInterfaces() {
@@ -954,6 +1050,8 @@ const SettingsPage = (() => {
         exportConfig,
         importConfig,
         handleImportFile,
+        pickBackupFile,
+        handleBackupFile,
         refreshInterfaces,
         autoDetectRoles,
         clearRoles,

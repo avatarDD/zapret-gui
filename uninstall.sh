@@ -129,6 +129,14 @@ else
     printf "${YELLOW}[--]${NC}  Приложение не найдено: $APP_DIR\n"
 fi
 
+# 3a. CLI-обёртка zapret-gui (живёт вне APP_DIR — в /opt/bin или /usr/bin)
+for bin in /opt/bin/zapret-gui /usr/bin/zapret-gui; do
+    if [ -f "$bin" ]; then
+        rm -f "$bin"
+        printf "${GREEN}[OK]${NC}  CLI-команда удалена: $bin\n"
+    fi
+done
+
 # 4. PID файл
 rm -f "$PID_FILE" 2>/dev/null || true
 

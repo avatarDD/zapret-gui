@@ -73,6 +73,36 @@ def _disable_autostart():
         _log("не удалось отключить автозапуск: %s" % e)
 
 
+def _remove_transparent():
+    """Снять firewall прозрачного проксирования sing-box (iptables+nft+ip rule)."""
+    try:
+        from core import singbox_transparent as tp
+        tp.remove()
+        _log("transparent-proxy firewall снят")
+    except Exception as e:  # noqa: BLE001
+        _log("не удалось снять transparent-proxy: %s" % e)
+
+
+def _stop_engines():
+    """Остановить запущенные инстансы sing-box и mihomo (иначе осиротеют)."""
+    for mod, getter, label in (
+        ("core.singbox_manager", "get_singbox_manager", "sing-box"),
+        ("core.mihomo_manager", "get_mihomo_manager", "mihomo"),
+    ):
+        try:
+            import importlib
+            mgr = getattr(importlib.import_module(mod), getter)()
+            stopped = 0
+            for cfg in mgr.list_configs():
+                if cfg.get("running"):
+                    mgr.down(cfg["name"])
+                    stopped += 1
+            if stopped:
+                _log("%s: остановлено инстансов: %d" % (label, stopped))
+        except Exception as e:  # noqa: BLE001
+            _log("не удалось остановить %s: %s" % (label, e))
+
+
 def run():
     """Выполнить полную очистку. Всегда возвращает 0."""
     _log("очистка runtime-артефактов zapret-gui...")
@@ -80,6 +110,8 @@ def run():
     _stop_nfqws()
     _remove_firewall()
     _remove_persistence()  # на случай, если хуки ставил живой путь, а не автозапуск
+    _stop_engines()        # sing-box / mihomo инстансы
+    _remove_transparent()  # transparent-proxy firewall (iptables/nft/ip rule)
     _log("очистка завершена")
     return 0
 

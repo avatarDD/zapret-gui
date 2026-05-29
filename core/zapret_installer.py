@@ -560,8 +560,13 @@ class ZapretInstaller:
 
     def _fetch_github_latest_release(self) -> dict:
         """Получить данные последнего релиза с GitHub API."""
+        try:
+            from core.binary_installer import resolve_url
+            api_url = resolve_url(GITHUB_API_URL)
+        except Exception:
+            api_url = GITHUB_API_URL
         req = Request(
-            GITHUB_API_URL,
+            api_url,
             headers={
                 "Accept": "application/vnd.github.v3+json",
                 "User-Agent": "zapret-gui/1.0",
@@ -1053,54 +1058,43 @@ class ZapretInstaller:
         return None
 
     def _download_file(self, url: str, dest: str) -> bool:
-        """Загрузить файл по URL."""
+        """Загрузить файл по URL.
+
+        Делегируем общей утилите core/binary_installer.download_file —
+        она применяет зеркало (ZAPRET_GUI_MIRROR / install.mirror) и
+        умеет оффлайн (file://), плюс retry. Прогресс маппим в _update_op
+        (диапазон 20%-50%, как раньше). wget/curl остаются fallback'ом на
+        переписанный (зеркальный) URL.
+        """
         log.info("Загрузка: %s" % url, source="installer")
 
-        # Пробуем через urllib (стандартная библиотека)
         try:
-            req = Request(url, headers={"User-Agent": "zapret-gui/1.0"})
-            with urlopen(req, timeout=INSTALL_TIMEOUT) as resp:
-                total = resp.getheader("Content-Length")
-                total = int(total) if total else 0
-                downloaded = 0
-                chunk_size = 64 * 1024  # 64KB
+            from core import binary_installer as bi
 
-                with open(dest, "wb") as f:
-                    while True:
-                        chunk = resp.read(chunk_size)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
+            def _cb(_stage, pct, label):
+                # bi отдаёт 0..50 (progress_to=50) — используем как есть.
+                self._update_op(label, max(20, min(50, int(pct))))
 
-                        # Обновляем прогресс (20%-50% — загрузка)
-                        if total > 0:
-                            pct = 20 + int(30 * downloaded / total)
-                            size_str = "%s / %s" % (
-                                self._format_size(downloaded),
-                                self._format_size(total),
-                            )
-                        else:
-                            pct = 35
-                            size_str = self._format_size(downloaded)
-
-                        self._update_op(
-                            "Загрузка: %s" % size_str, pct
-                        )
-
-            log.info("Загружено: %s (%s)" % (
-                dest, self._format_size(os.path.getsize(dest))
-            ), source="installer")
-            return True
-
-        except Exception as e:
-            log.error("Ошибка загрузки через urllib: %s" % e,
+            res = bi.download_file(url, dest, progress_cb=_cb,
+                                   progress_from=20, progress_to=50,
+                                   timeout=INSTALL_TIMEOUT)
+            if res.get("ok"):
+                log.info("Загружено: %s (%s)" % (
+                    dest, self._format_size(res.get("size", 0))
+                ), source="installer")
+                return True
+            log.error("Ошибка загрузки: %s" % res.get("error"),
                       source="installer")
+            eff_url = bi.resolve_url(url)
+        except Exception as e:
+            log.error("Ошибка загрузки через binary_installer: %s" % e,
+                      source="installer")
+            eff_url = url
 
-        # Fallback: wget
+        # Fallback: wget (на зеркальный URL, если зеркало задано)
         try:
             result = subprocess.run(
-                ["wget", "-q", "-O", dest, url],
+                ["wget", "-q", "-O", dest, eff_url],
                 timeout=INSTALL_TIMEOUT,
                 capture_output=True, text=True,
             )
@@ -1113,7 +1107,7 @@ class ZapretInstaller:
         # Fallback: curl
         try:
             result = subprocess.run(
-                ["curl", "-sL", "-o", dest, url],
+                ["curl", "-sL", "-o", dest, eff_url],
                 timeout=INSTALL_TIMEOUT,
                 capture_output=True, text=True,
             )
