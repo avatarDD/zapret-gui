@@ -237,6 +237,29 @@ class DPIClassifier:
                     "HTTPS/TLS timeouts while connectivity exists",
                 )
 
+        # --- IP-level block (заимствовано из rcd27/blockcheckw) ---
+        # Если TCP-соединение вообще не устанавливается (refused / host|net
+        # unreachable) на всех веб-пробах — это блок на уровне IP, а не DPI:
+        # локальный обход (zapret) тут бесполезен, нужен туннель.
+        # RST во время handshake уже классифицирован выше как TLS_DPI (там TCP
+        # связь устанавливается). Чистый timeout НЕ считаем IP-блоком — он
+        # неоднозначен (DPI silent-drop тоже даёт timeout).
+        ip_block_codes = {"TCP_REFUSED", "HOST_UNREACH", "NET_UNREACH"}
+        if tls_relevant and not tls_ok and tls_fails and all(
+            t.error in ip_block_codes for t in tls_fails
+        ):
+            # DNS должен резолвиться (иначе это DNS-проблема, а не IP-блок).
+            dns_tests_ipb = by_type.get(TestType.DNS.value, [])
+            dns_failed = (
+                dns_tests_ipb
+                and all(t.status != TestStatus.SUCCESS.value for t in dns_tests_ipb)
+            )
+            if not dns_failed:
+                return (
+                    DPIClassification.IP_BLOCK,
+                    "TCP connect fails (IP-level block, DPI bypass won't help)",
+                )
+
         # --- TCP 16-20KB block ---
         tcp_tests = by_type.get(TestType.TCP_16_20.value, [])
         if any(

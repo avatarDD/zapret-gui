@@ -61,9 +61,43 @@ class DPIClassification(Enum):
     TCP_RESET = "tcp_reset"
     TCP_16_20 = "tcp_16_20"
     STUN_BLOCK = "stun_block"
+    IP_BLOCK = "ip_block"        # TCP connect не проходит → блок по IP, zapret не поможет
     FULL_BLOCK = "full_block"
     TIMEOUT_DROP = "timeout_drop"
     UNKNOWN = "unknown"
+
+
+# Рекомендуемый способ обхода для каждого типа блокировки (машиночитаемо).
+# Идея заимствована из rcd27/blockcheckw: важно отличать блок, который лечится
+# локальным обходом DPI (zapret/nfqws2), от блока на уровне IP, где поможет
+# только туннель (AmneziaWG / sing-box) или смена маршрута. Поле напрямую
+# питает будущий «единый слой маршрутизации» (см. TODO): по нему можно
+# автоматически выбирать метод доставки трафика до узла.
+#   "zapret" — поможет обход DPI (nfqws2-стратегии)
+#   "tunnel" — нужен туннель (AWG/sing-box) или смена IP
+#   "dns"    — проблема в DNS (DoH/DoT или hosts)
+#   "none"   — обход не требуется
+#   "unknown"— не удалось определить
+REMEDIATION_BY_DPI: dict[str, str] = {
+    DPIClassification.NONE.value: "none",
+    DPIClassification.DNS_FAKE.value: "dns",
+    DPIClassification.HTTP_INJECT.value: "zapret",
+    DPIClassification.ISP_PAGE.value: "zapret",
+    DPIClassification.TLS_DPI.value: "zapret",
+    DPIClassification.TLS_MITM.value: "zapret",
+    DPIClassification.TCP_RESET.value: "zapret",
+    DPIClassification.TCP_16_20.value: "zapret",
+    DPIClassification.STUN_BLOCK.value: "zapret",
+    DPIClassification.TIMEOUT_DROP.value: "zapret",
+    DPIClassification.IP_BLOCK.value: "tunnel",
+    DPIClassification.FULL_BLOCK.value: "tunnel",
+    DPIClassification.UNKNOWN.value: "unknown",
+}
+
+
+def remediation_for(dpi_value: str) -> str:
+    """Машиночитаемая рекомендация по обходу для типа блокировки."""
+    return REMEDIATION_BY_DPI.get(dpi_value, "unknown")
 
 
 class ScanMode(Enum):
@@ -143,6 +177,7 @@ class TargetResult:
             "overall_status": overall,
             "dpi_classification": self.dpi_classification,
             "dpi_detail": self.dpi_detail,
+            "remediation": remediation_for(self.dpi_classification),
             "summary": self.summary,
         }
 
@@ -233,6 +268,7 @@ class BlockcheckReport:
                 if self.finished_at > 0 and self.started_at > 0 else 0.0,
             "dpi_classification": self.dpi_classification,
             "dpi_detail": self.dpi_detail,
+            "remediation": remediation_for(self.dpi_classification),
             "error": self.error,
             "total_tests": total_tests,
             "passed_tests": passed_tests,
@@ -260,8 +296,12 @@ class BlockcheckReport:
             recs.append("TCP-блокировка на 16-20KB. Попробуйте стратегии с split/disorder.")
         elif dpi == DPIClassification.STUN_BLOCK.value:
             recs.append("STUN/UDP заблокирован. Голосовые звонки могут не работать. Попробуйте UDP-стратегии.")
+        elif dpi == DPIClassification.IP_BLOCK.value:
+            recs.append("Блокировка на уровне IP (TCP-соединение не устанавливается). "
+                        "Обход DPI (zapret) здесь НЕ поможет — нужен туннель "
+                        "(AmneziaWG / sing-box) или смена маршрута до узла.")
         elif dpi == DPIClassification.FULL_BLOCK.value:
-            recs.append("Полная блокировка всех протоколов. Возможно требуется VPN/прокси.")
+            recs.append("Полная блокировка всех протоколов. Вероятно нужен туннель (AmneziaWG / sing-box).")
         elif dpi == DPIClassification.TIMEOUT_DROP.value:
             recs.append("Пакеты дропаются (timeout). Попробуйте стратегии с desync=fake.")
         elif dpi == DPIClassification.NONE.value:
