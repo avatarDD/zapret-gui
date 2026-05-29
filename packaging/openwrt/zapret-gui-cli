@@ -1,0 +1,16 @@
+#!/bin/sh
+# zapret-gui — консольная обёртка над app.py (OpenWrt / generic Linux).
+# Подкоманды: status | nfqws | strategy | singbox | mihomo.
+APP="/usr/share/zapret-gui/app.py"
+CFG="/etc/zapret-gui"
+
+if [ "$#" -eq 0 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "Usage: zapret-gui {status|nfqws|strategy|singbox|mihomo} [args]"
+    echo "Примеры:"
+    echo "  zapret-gui status"
+    echo "  zapret-gui nfqws restart"
+    echo "  zapret-gui singbox up my-vpn"
+    [ "$#" -eq 0 ] && exit 1 || exit 0
+fi
+
+exec python3 "$APP" --config "$CFG" "$@"

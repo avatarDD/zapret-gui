@@ -130,6 +130,11 @@ _prepare_data:
 	@cp packaging/entware/S99zapret-gui $(DATA_DIR)$(DEST_INITD)/S99zapret-gui
 	@chmod 755 $(DATA_DIR)$(DEST_INITD)/S99zapret-gui
 
+	# CLI-обёртка `zapret-gui` в PATH
+	@mkdir -p $(DATA_DIR)/opt/bin
+	@cp packaging/entware/zapret-gui-cli $(DATA_DIR)/opt/bin/zapret-gui
+	@chmod 755 $(DATA_DIR)/opt/bin/zapret-gui
+
 	# Создаём пустые директории для runtime
 	@mkdir -p $(DATA_DIR)$(DEST_APP)/init.d
 	@mkdir -p $(DATA_DIR)$(DEST_APP)/lists
@@ -200,6 +205,11 @@ _prepare_data_openwrt:
 
 	@cp packaging/openwrt/zapret-gui.init $(DATA_DIR)/etc/init.d/zapret-gui
 	@chmod 755 $(DATA_DIR)/etc/init.d/zapret-gui
+
+	# CLI-обёртка `zapret-gui` в PATH
+	@mkdir -p $(DATA_DIR)/usr/bin
+	@cp packaging/openwrt/zapret-gui-cli $(DATA_DIR)/usr/bin/zapret-gui
+	@chmod 755 $(DATA_DIR)/usr/bin/zapret-gui
 
 	@mkdir -p $(DATA_DIR)/usr/share/$(PKG_NAME)/init.d
 	@mkdir -p $(DATA_DIR)/usr/share/$(PKG_NAME)/lists
