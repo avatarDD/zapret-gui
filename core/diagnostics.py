@@ -662,6 +662,7 @@ def get_firewall_status():
         "nfqueue_available": False,
         "nfqueue_count": 0,
         "raw_output": "",
+        "persistence": {},
     }
 
     # Определяем тип firewall
@@ -678,6 +679,14 @@ def get_firewall_status():
 
     # Проверяем NFQUEUE
     result["nfqueue_available"] = _check_nfqueue_available()
+
+    # Статус хуков персистентности (ndm/hotplug) — важно для диагностики
+    # «обход то работает, то отваливается» на роутерах.
+    try:
+        from core.firewall_persistence import get_status as fp_status
+        result["persistence"] = fp_status()
+    except Exception:
+        pass
 
     _cache_set(cache_key, result)
     return result

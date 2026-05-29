@@ -114,18 +114,9 @@ class NFQWSManager:
             # Стратегические аргументы
             strategy_args = list(args) if args else []
 
-            # Собираем базовые аргументы (--user/--fwmark/--qnum)
-            base_args = self._build_base_args(cfg)
-
-            # Лua-скрипты: core + нужные extensions, в правильном порядке.
-            lua_path = cfg.get("zapret", "lua_path") or "/opt/zapret2/lua"
-            lua_args = self._build_lua_init_args(strategy_args, lua_path)
-
-            # Дедуп --lua-init=@... между нашими и теми, что уже в стратегии:
-            # сохраняем порядок, выкидываем повторы.
-            full_args = self._dedup_lua_init(
-                [binary] + base_args + lua_args + strategy_args
-            )
+            # Полная команда (binary + base + lua-init + strategy), дедуп lua.
+            full_args = self.compose_command(strategy_args, binary=binary,
+                                              cfg=cfg)
             self._last_args = strategy_args
 
             log.info("Запуск nfqws2...", source="nfqws")
@@ -309,6 +300,45 @@ class NFQWSManager:
             "exit_code": self._exit_code,
         }
 
+    # ─────────────────────── command builder ───────────────────────
+
+    def compose_command(self, strategy_args: list, binary: str = None,
+                         cfg=None) -> list:
+        """Собрать полную команду запуска nfqws2.
+
+        Единый источник истины для argv: используется и при живом запуске
+        (start), и при генерации init-скрипта автозапуска — чтобы команды
+        были идентичны (одни и те же base-args, lua-init, blob-декларации).
+
+        Порядок: [binary] + base(--user/--fwmark/--qnum[/--bind-fix*]) +
+                 lua-init(core+ext) + strategy_args, с дедупом --lua-init.
+
+        Args:
+            strategy_args: Аргументы стратегии (то, что вернул
+                           StrategyManager.build_nfqws_args — уже с
+                           blob-декларациями и резолвленными путями).
+            binary: Путь к бинарнику nfqws2 (берётся из конфига, если None).
+            cfg: ConfigManager (получаем сами, если None).
+
+        Returns:
+            list[str] — полный argv (включая путь к бинарнику).
+        """
+        if cfg is None:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+        if binary is None:
+            binary = cfg.get("zapret", "nfqws_binary")
+
+        strategy_args = list(strategy_args or [])
+        base_args = self._build_base_args(cfg)
+
+        lua_path = cfg.get("zapret", "lua_path") or "/opt/zapret2/lua"
+        lua_args = self._build_lua_init_args(strategy_args, lua_path)
+
+        return self._dedup_lua_init(
+            [binary] + base_args + lua_args + strategy_args
+        )
+
     # ─────────────────────── internal helpers ───────────────────────
 
     def _build_base_args(self, cfg) -> list:
@@ -331,7 +361,34 @@ class NFQWSManager:
         queue_num = cfg.get("nfqws", "queue_num", default=300)
         args.append("--qnum=%d" % int(queue_num))
 
+        # --bind-fix4/6 при нескольких WAN-интерфейсах. Без этого nfqws2
+        # биндит raw-сокет только к первому интерфейсу, и на multi-WAN
+        # (например, основной + резервный канал) обход на втором не работает.
+        # Логика как в nfqws2-keenetic (_startup_args).
+        try:
+            wan4 = self._detect_wan_interfaces(cfg, "wan")
+            if len(wan4) > 1:
+                args.append("--bind-fix4")
+                disable_ipv6 = cfg.get("nfqws", "disable_ipv6", default=True)
+                if not disable_ipv6:
+                    args.append("--bind-fix6")
+        except Exception:
+            # Детект интерфейсов не должен мешать запуску.
+            pass
+
         return args
+
+    @staticmethod
+    def _detect_wan_interfaces(cfg, role: str) -> list:
+        """WAN-интерфейсы из конфига или авто-детект по таблице маршрутов."""
+        val = cfg.get("interfaces", role, default="")
+        if isinstance(val, str):
+            val = val.strip()
+        if val:
+            return val.split()
+        from core.firewall import _detect_wan_from_routes, _detect_wan6_from_routes
+        return _detect_wan6_from_routes() if role == "wan6" \
+            else _detect_wan_from_routes()
 
     @staticmethod
     def _build_lua_init_args(strategy_args: list, lua_path: str) -> list:

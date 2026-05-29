@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.20.0 — Паритет с nfqws2-keenetic: персистентность правил, blob'ы, firewall
+
+Перенос ключевых решений из проекта nfqws/nfqws2-keenetic — устраняет случаи,
+когда обход DPI «молча» не работал по сравнению с нативным пакетом.
+
+### Исправлено
+- **Именованные blob'ы не регистрировались → пустые fake-пакеты.** Компактные
+  каталоги (basic/advanced) ссылались на `blob=tls_google` и т.п. через
+  метаполе `blobs =`, но декларацию `--blob=NAME:@bin/file.bin` не несли —
+  nfqws2 слал пустой fake, и обход не срабатывал. Добавлен реестр блобов
+  (`core/blob_registry.py`, 59 алиасов), декларации подмешиваются автоматически.
+- **Рассинхронизация fwmark/queue в автозапуске.** Сгенерированный S99zapret
+  использовал `fwmark=0x10000` и `queue=200`, а живой путь — `0x40000000`/`300`,
+  и не передавал `--fwmark/--user/--lua-init`. Итог: петля/дубликаты пакетов и
+  неработающий `--lua-desync`. Команда запуска теперь единая (compose_command).
+- **Правила firewall ставились только на исходящее направление.** Добавлены
+  PREROUTING (ответный трафик), RETURN для MARK_EXCLUDE, NAT MASQUERADE для UDP
+  и обработка TCP-флагов (fin/rst/syn,ack) — паритет с nfqws2-keenetic, и для
+  iptables, и для nftables.
+- **conntrack не тюнился** → ядро дропало out-of-window сегменты десинка. Теперь
+  при применении правил выставляются `nf_conntrack_tcp_be_liberal=1` и
+  `nf_conntrack_checksum=0`.
+
+### Добавлено
+- **Персистентность firewall-правил** (`core/firewall_persistence.py`): хуки
+  переустановки правил после flush'а системного firewall —
+  `/opt/etc/ndm/netfilter.d/100-zapret-gui.sh` (Keenetic NDMS) и
+  `/etc/hotplug.d/firewall/90-zapret-gui` (OpenWrt). Это главная причина, по
+  которой обход «отваливался» на роутерах. Статус хуков виден в диагностике.
+- **Режимы списков** (`filter.mode`): `none` / `hostlist` / `autohostlist`
+  (`--hostlist-auto` — nfqws2 сам добавляет недоступные домены) / `ipset`, плюс
+  подключение exclude-списка `netrogat.txt`.
+- **Расширенные дефолтные порты**: TCP `80,443,2053,2083,2087,2096,5222,8443`,
+  UDP `443,3478:3481,5349,19294:19344,49152:65535` (QUIC, STUN/TURN, Discord
+  voice). Существующим установкам расширяются только нетронутые значения.
+- **`--bind-fix4/6`** при нескольких WAN-интерфейсах.
+- **Автозапуск на чистом OpenWrt (procd)** — раньше был «unsupported».
+
 ## v0.19.29 — Routing: форвард LAN→туннель резался FORWARD-policy DROP + понятная ошибка dnsmasq
 
 ### Исправлено
