@@ -37,6 +37,12 @@ const AwgRoutingPage = (() => {
     let devicesAutoRefresh = false;
     let devicesAutoTimer   = null;
 
+    // Форма создания (DSCP/QoS)
+    let formDscpIface = '';
+    let formDscpValue = '';     // 0..63
+    let formDscpSelf  = false;  // заворачивать трафик самого роутера
+    let formDscpDesc  = '';
+
     // Фильтр списка
     let filterIface  = '';
 
@@ -74,6 +80,10 @@ const AwgRoutingPage = (() => {
                 <button class="tab-btn ${activeTab === 'device' ? 'active' : ''}"
                         onclick="AwgRoutingPage.switchTab('device')">
                     Устройства
+                </button>
+                <button class="tab-btn ${activeTab === 'dscp' ? 'active' : ''}"
+                        onclick="AwgRoutingPage.switchTab('dscp')">
+                    DSCP / QoS
                 </button>
             </div>
 
@@ -117,6 +127,9 @@ const AwgRoutingPage = (() => {
             if (!formDevIface && configs.length > 0) {
                 formDevIface = configs[0].name;
             }
+            if (!formDscpIface && configs.length > 0) {
+                formDscpIface = configs[0].name;
+            }
         } catch (err) {
             const box = document.getElementById('awg-routing-tab-content');
             if (box) box.innerHTML = `<div class="text-muted">Ошибка: ${escapeHtml(err.message)}</div>`;
@@ -140,7 +153,7 @@ const AwgRoutingPage = (() => {
         document.querySelectorAll('.tabs-bar .tab-btn').forEach(btn => {
             btn.classList.remove('active');
         });
-        const map = { cidr: 0, domain: 1, device: 2 };
+        const map = { cidr: 0, domain: 1, device: 2, dscp: 3 };
         const btns = document.querySelectorAll('.tabs-bar .tab-btn');
         if (btns[map[tab]]) btns[map[tab]].classList.add('active');
         renderTab();
@@ -154,6 +167,118 @@ const AwgRoutingPage = (() => {
         if (activeTab === 'cidr')   return renderCidrTab(box);
         if (activeTab === 'domain') return renderDomainTab(box);
         if (activeTab === 'device') return renderDeviceTab(box);
+        if (activeTab === 'dscp')   return renderDscpTab(box);
+    }
+
+    // ══════════════ tab: DSCP / QoS ══════════════
+
+    function renderDscpTab(box) {
+        const dscpRules = rules.filter(r => r.type === 'dscp');
+        const cfgOptions = configs.map(c =>
+            `<option value="${escapeAttr(c.name)}" ${c.name === formDscpIface ? 'selected' : ''}>
+                ${escapeHtml(c.name)}${c.active ? ' (активен)' : ''}
+             </option>`
+        ).join('');
+
+        // Частые DSCP-классы для подсказки.
+        const presets = [
+            ['', '— произвольное —'], ['46', '46 · EF (realtime/VoIP)'],
+            ['34', '34 · AF41 (видео)'], ['26', '26 · AF31'],
+            ['10', '10 · AF11'], ['8', '8 · CS1 (bulk)'], ['0', '0 · CS0 (best effort)'],
+        ];
+
+        box.innerHTML = `
+            <div class="card" style="margin-bottom: 12px;">
+                <div class="card-title">Добавить DSCP-правило</div>
+                ${configs.length === 0 ? `
+                    <p class="text-muted" style="margin-top: 8px;">
+                        Нет ни одного AWG-конфига. Сначала создайте туннель в разделе
+                        <a href="#awg-configs">Конфиги</a>.
+                    </p>
+                ` : `
+                    <p class="text-muted" style="margin-top: 6px; font-size: 13px;">
+                        Трафик с заданной DSCP-меткой (её ставит штатный QoS роутера —
+                        Keenetic IntelliQoS, OpenWrt SQM/qosify) уходит в выбранный
+                        туннель. Реализуется через
+                        <code>iptables -m dscp --dscp N -j MARK</code> + fwmark-route.
+                    </p>
+                    <div style="display: grid; grid-template-columns: 200px 1fr; gap: 8px 12px; margin-top: 8px; align-items: start;">
+                        <label class="text-muted" style="padding-top: 6px;">Туннель назначения</label>
+                        <select id="rt-dscp-iface" onchange="AwgRoutingPage.setFormDscpIface(this.value)"
+                                class="form-control" style="max-width: 280px;">
+                            ${cfgOptions}
+                        </select>
+
+                        <label class="text-muted" style="padding-top: 6px;">DSCP (0–63)</label>
+                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <input type="number" min="0" max="63" id="rt-dscp-value"
+                                   value="${escapeAttr(formDscpValue)}"
+                                   oninput="AwgRoutingPage.setFormDscpValue(this.value)"
+                                   class="form-control" style="max-width: 120px;">
+                            <select onchange="AwgRoutingPage.setFormDscpValue(this.value); document.getElementById('rt-dscp-value').value=this.value;"
+                                    class="form-control" style="max-width: 220px;">
+                                ${presets.map(([v, l]) =>
+                                    `<option value="${v}" ${String(formDscpValue) === v ? 'selected' : ''}>${escapeHtml(l)}</option>`
+                                ).join('')}
+                            </select>
+                        </div>
+
+                        <label class="text-muted" style="padding-top: 6px;">Трафик роутера</label>
+                        <label class="text-muted" style="display:flex; align-items:center; gap:6px; padding-top:6px;">
+                            <input type="checkbox" ${formDscpSelf ? 'checked' : ''}
+                                   onchange="AwgRoutingPage.setFormDscpSelf(this.checked)">
+                            Заворачивать и трафик самого роутера (OUTPUT), а не только LAN
+                        </label>
+
+                        <label class="text-muted" style="padding-top: 6px;">Описание</label>
+                        <input type="text" id="rt-dscp-desc"
+                               oninput="AwgRoutingPage.setFormDscpDesc(this.value)"
+                               value="${escapeAttr(formDscpDesc)}"
+                               placeholder="например: realtime (EF) через WARP"
+                               class="form-control" style="max-width: 480px;">
+                    </div>
+                    <div style="margin-top: 12px;">
+                        <button class="btn btn-primary btn-sm" ${busy ? 'disabled' : ''}
+                                onclick="AwgRoutingPage.submitDscp()">
+                            Добавить правило
+                        </button>
+                    </div>
+                `}
+            </div>
+
+            <div class="card">
+                <div class="card-title">DSCP-правила (${dscpRules.length})</div>
+                ${dscpRules.length === 0
+                    ? `<p class="text-muted" style="margin-top: 12px;">Правил пока нет.</p>`
+                    : `
+                <table class="table" style="margin-top: 8px;">
+                    <thead>
+                        <tr>
+                            <th style="width: 16%;">Интерфейс</th>
+                            <th style="width: 10%;">DSCP</th>
+                            <th style="width: 14%;">Роутер</th>
+                            <th>Описание</th>
+                            <th style="width: 6%;"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${dscpRules.map(r => `
+                            <tr>
+                                <td><strong>${escapeHtml(r.target_iface)}</strong></td>
+                                <td style="font-family: monospace;">${escapeHtml(r.dscp)}</td>
+                                <td>${r.proxy_self ? 'LAN + роутер' : 'только LAN'}</td>
+                                <td>${escapeHtml(r.description || '')}</td>
+                                <td style="text-align: right;">
+                                    <button class="btn btn-ghost btn-sm" title="Удалить"
+                                            onclick="AwgRoutingPage.deleteRule('${escapeAttr(r.id)}')">✕</button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>`
+                }
+            </div>
+        `;
     }
 
     // ══════════════ tab: CIDR ══════════════
@@ -1009,6 +1134,11 @@ const AwgRoutingPage = (() => {
     function setFormDevManual(v) { formDevManual = v; }
     function setFormDevDesc(v)   { formDevDesc   = v; }
 
+    function setFormDscpIface(v) { formDscpIface = v; }
+    function setFormDscpValue(v) { formDscpValue = v; }
+    function setFormDscpSelf(v)  { formDscpSelf  = !!v; }
+    function setFormDscpDesc(v)  { formDscpDesc  = v; }
+
     function parseCidrs(text) {
         return String(text || '')
             .split(/[\s,;]+/)
@@ -1047,6 +1177,44 @@ const AwgRoutingPage = (() => {
                 }
                 formCidrs = '';
                 formDesc  = '';
+                await refresh();
+            } else {
+                Toast.error(resp.error || 'Ошибка добавления');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        } finally {
+            busy = false;
+        }
+    }
+
+    async function submitDscp() {
+        if (busy) return;
+        if (!formDscpIface) { Toast.error('Выберите интерфейс'); return; }
+        const dscp = parseInt(formDscpValue, 10);
+        if (isNaN(dscp) || dscp < 0 || dscp > 63) {
+            Toast.error('DSCP должен быть числом 0–63');
+            return;
+        }
+        busy = true;
+        try {
+            const resp = await API.post('/api/routing/rules', {
+                type:         'dscp',
+                target_iface: formDscpIface,
+                dscp:         dscp,
+                proxy_self:   formDscpSelf,
+                description:  formDscpDesc,
+                enabled:      true,
+            });
+            if (resp.ok) {
+                Toast.success('Правило добавлено');
+                if (resp.applied && resp.applied.deferred) {
+                    Toast.info('Интерфейс не поднят — правило применится при старте');
+                } else if (resp.applied && resp.applied.errors && resp.applied.errors.length) {
+                    Toast.error('Ошибки применения: ' + resp.applied.errors.join('; '));
+                }
+                formDscpValue = '';
+                formDscpDesc  = '';
                 await refresh();
             } else {
                 Toast.error(resp.error || 'Ошибка добавления');
@@ -1191,6 +1359,8 @@ const AwgRoutingPage = (() => {
         setFormDevIface, setFormDevManual, setFormDevDesc,
         bindDeviceFromList, submitDeviceManual,
         refreshDevices, toggleDevicesAutoRefresh,
+        setFormDscpIface, setFormDscpValue, setFormDscpSelf, setFormDscpDesc,
+        submitDscp,
         runDnsmasqSetup, runDnsmasqRevert,
     };
 })();

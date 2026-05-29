@@ -111,13 +111,20 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
 - [x] **Совместимость с политиками Keenetic** — `commands.get_host_policy()`
       + сохранение/восстановление прежней политики хоста в
       `ndms_backend` (родительский контроль не затирается).
-- [ ] **UI для нового бэкенда** — выбор режима прозрачного проксирования
-      sing-box, управление mihomo-конфигами, DSCP-правило в форме
-      routing, поле «зеркало» в Настройках. Бэкенд готов, фронт — дальше.
-- [ ] **Установщик mihomo** (`core/mihomo_installer.py` поверх
-      `binary_installer`) + API/детектор-отчёт для UI Setup.
+- [x] **Установщик mihomo** — `core/mihomo_installer.py` поверх
+      `binary_installer` (апстрим MetaCubeX/mihomo, per-arch .gz через
+      зеркало/оффлайн) + `api/mihomo.py` (environment/install/version/
+      configs/autostart).
+- [x] **UI для нового бэкенда** — страница mihomo
+      (`web/js/pages/mihomo.js`: обзор/установка/инстансы/YAML-редактор),
+      вкладка DSCP в routing, карточка прозрачного проксирования на
+      странице sing-box, секция «Установка» с полем зеркала в Настройках.
 - [ ] **nftables-вариант** прозрачного проксирования и DSCP (сейчас
       iptables; на OpenWrt 22+ нужен nft-бэкенд, как у ipset/nftset).
+- [ ] **Boot-персистентность transparent-firewall** на уровне
+      init-скрипта (сейчас переприменяется через `apply_now` /
+      `reapply_saved`, но генерируемый init-скрипт sing-box запускает
+      только бинарь — полноценный hook на загрузку остаётся задачей).
 - [ ] **Полевое тестирование** firewall-правил TProxy/Redirect/DSCP на
       железе (Keenetic/OpenWrt) — код не проверялся на устройствах.
 

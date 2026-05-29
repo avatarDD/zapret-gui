@@ -131,7 +131,9 @@ python3 app.py --host 0.0.0.0 --port 8080
 | AmneziaWG → Dashboard | Статус интерфейсов и peer'ов, up/down, autostart |
 | AmneziaWG → Configs | Редактор `.conf`, импорт/экспорт, валидация |
 | AmneziaWG → WARP | Импорт WARP, нативная генерация, WARP-in-WARP |
-| AmneziaWG → Routing | Selective routing: CIDR / домены / устройства |
+| AmneziaWG → Routing | Selective routing: CIDR / домены / устройства / DSCP |
+| sing-box | Инстансы, up/down, прозрачное проксирование (TProxy/Redirect/Hybrid) |
+| mihomo | Движок Clash.Meta: установка, инстансы, YAML-редактор конфигов |
 
 ### INI-каталоги стратегий
 
