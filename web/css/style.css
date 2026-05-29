@@ -4105,12 +4105,32 @@ input:focus, textarea:focus, select:focus {
 
 /* ═══════════════ Strategy compact card (used by ListUI) ═══════════════ */
 
-.strategy-card.compact .strategy-card-args-wrap,
-.strategy-card.compact .strategy-card-profiles { display: none; }
-.strategy-card.compact.expanded .strategy-card-args-wrap,
-.strategy-card.compact.expanded .strategy-card-profiles { display: flex; flex-wrap: wrap; }
+.strategy-card.compact .strategy-card-args-wrap { display: none; }
+.strategy-card.compact.expanded .strategy-card-args-wrap { display: flex; flex-direction: column; }
+
+/* Бейджи профилей в компактном виде ограничиваем в одной строке (overflow → ...) */
+.strategy-card.compact .strategy-card-profiles {
+    flex-wrap: nowrap;
+    overflow: hidden;
+    max-height: 22px;
+    margin-top: 2px;
+}
+.strategy-card.compact.expanded .strategy-card-profiles {
+    flex-wrap: wrap;
+    overflow: visible;
+    max-height: none;
+}
 .strategy-card.compact .strategy-card-header { margin-bottom: 0; }
-.strategy-card.compact .strategy-card-actions { margin-top: 8px; }
+.strategy-card.compact .strategy-card-actions { margin-top: 6px; }
+/* Описание — одной строкой с многоточием в компактном виде */
+.strategy-card.compact .strategy-card-desc {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.strategy-card.compact.expanded .strategy-card-desc {
+    white-space: normal;
+}
 
 .strategy-card-meta {
     display: inline-flex;
