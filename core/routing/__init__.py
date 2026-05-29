@@ -28,6 +28,7 @@ from core.routing.rules import (
     CidrRoutingRule,
     DomainRoutingRule,
     DeviceRoutingRule,
+    DscpRoutingRule,
     rule_from_dict,
 )
 from core.routing.manager import RoutingManager, get_routing_manager
@@ -41,6 +42,7 @@ __all__ = [
     "CidrRoutingRule",
     "DomainRoutingRule",
     "DeviceRoutingRule",
+    "DscpRoutingRule",
     "rule_from_dict",
     "RoutingManager",
     "get_routing_manager",

@@ -26,6 +26,7 @@ from core.routing.rules import (
     CidrRoutingRule,
     DomainRoutingRule,
     DeviceRoutingRule,
+    DscpRoutingRule,
 )
 from core.routing import storage
 
@@ -293,6 +294,9 @@ class RoutingManager:
                             source="routing")
             from core.routing.device_rule import apply_device_rule
             return apply_device_rule(rule)
+        if isinstance(rule, DscpRoutingRule):
+            from core.routing.dscp_rule import apply_dscp_rule
+            return apply_dscp_rule(rule)
         return {"ok": False, "error": "Неизвестный тип правила"}
 
     def _remove(self, rule: RoutingRule) -> dict:
@@ -320,6 +324,9 @@ class RoutingManager:
                             source="routing")
             from core.routing.device_rule import remove_device_rule
             return remove_device_rule(rule)
+        if isinstance(rule, DscpRoutingRule):
+            from core.routing.dscp_rule import remove_dscp_rule
+            return remove_dscp_rule(rule)
         return {"ok": True, "skipped": True}
 
     # ─────────── apply ALL on iface up/down ───────────
