@@ -48,6 +48,8 @@ class TestType(Enum):
     PING = "ping"
     ISP_DETECT = "isp_detect"
     HTTP_INJECT = "http_inject"
+    QUIC = "quic"                 # QUIC / HTTP-3 (UDP/443)
+    TLS_BIGHELLO = "tls_bighello"  # большой / PQ ClientHello (size-based DPI)
 
 
 class DPIClassification(Enum):
@@ -58,9 +60,12 @@ class DPIClassification(Enum):
     ISP_PAGE = "isp_page"
     TLS_DPI = "tls_dpi"
     TLS_MITM = "tls_mitm"
+    CLIENTHELLO_DPI = "clienthello_dpi"  # рвётся большой/PQ ClientHello (size-based DPI)
     TCP_RESET = "tcp_reset"
     TCP_16_20 = "tcp_16_20"
     STUN_BLOCK = "stun_block"
+    QUIC_BLOCK = "quic_block"    # UDP/443 (QUIC/HTTP-3) заблокирован
+    THROTTLED = "throttled"      # соединение работает, но деградирует (троттлинг)
     IP_BLOCK = "ip_block"        # TCP connect не проходит → блок по IP, zapret не поможет
     FULL_BLOCK = "full_block"
     TIMEOUT_DROP = "timeout_drop"
@@ -85,9 +90,12 @@ REMEDIATION_BY_DPI: dict[str, str] = {
     DPIClassification.ISP_PAGE.value: "zapret",
     DPIClassification.TLS_DPI.value: "zapret",
     DPIClassification.TLS_MITM.value: "zapret",
+    DPIClassification.CLIENTHELLO_DPI.value: "zapret",
     DPIClassification.TCP_RESET.value: "zapret",
     DPIClassification.TCP_16_20.value: "zapret",
     DPIClassification.STUN_BLOCK.value: "zapret",
+    DPIClassification.QUIC_BLOCK.value: "zapret",
+    DPIClassification.THROTTLED.value: "zapret",
     DPIClassification.TIMEOUT_DROP.value: "zapret",
     DPIClassification.IP_BLOCK.value: "tunnel",
     DPIClassification.FULL_BLOCK.value: "tunnel",
@@ -241,6 +249,7 @@ class BlockcheckReport:
     dpi_classification: str = DPIClassification.NONE.value
     dpi_detail: str = ""
     error: str = ""
+    proxy_label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         # Подсчёт статистики
@@ -270,6 +279,7 @@ class BlockcheckReport:
             "dpi_detail": self.dpi_detail,
             "remediation": remediation_for(self.dpi_classification),
             "error": self.error,
+            "proxy_label": self.proxy_label,
             "total_tests": total_tests,
             "passed_tests": passed_tests,
             "failed_tests": failed_tests,
@@ -296,6 +306,19 @@ class BlockcheckReport:
             recs.append("TCP-блокировка на 16-20KB. Попробуйте стратегии с split/disorder.")
         elif dpi == DPIClassification.STUN_BLOCK.value:
             recs.append("STUN/UDP заблокирован. Голосовые звонки могут не работать. Попробуйте UDP-стратегии.")
+        elif dpi == DPIClassification.CLIENTHELLO_DPI.value:
+            recs.append("Блокируется большой/post-quantum ClientHello (size-based DPI). "
+                        "Используйте стратегии с фрагментацией/split ClientHello "
+                        "(--dpi-desync=split2/fakedsplit), либо отключите Kyber в браузере "
+                        "(chrome://flags PostQuantumKeyAgreement).")
+        elif dpi == DPIClassification.QUIC_BLOCK.value:
+            recs.append("QUIC/HTTP-3 (UDP/443) заблокирован — YouTube переключится на TCP, "
+                        "видео может тормозить. Примените UDP-стратегии для QUIC или "
+                        "отключите QUIC в браузере, чтобы исключить лишние таймауты.")
+        elif dpi == DPIClassification.THROTTLED.value:
+            recs.append("Обнаружен троттлинг (соединение работает, но замедлено). Часто так "
+                        "ограничивают YouTube/googlevideo. Попробуйте стратегии обхода DPI "
+                        "(fake/split ClientHello) или туннель до CDN.")
         elif dpi == DPIClassification.IP_BLOCK.value:
             recs.append("Блокировка на уровне IP (TCP-соединение не устанавливается). "
                         "Обход DPI (zapret) здесь НЕ поможет — нужен туннель "

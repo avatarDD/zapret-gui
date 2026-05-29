@@ -187,6 +187,114 @@ def ping_host(host, count=3, timeout=3):
     return result
 
 
+# ─────────────────────── Traceroute (Deep Trace) ───────────────────────
+
+def _parse_traceroute(output):
+    """Разобрать вывод traceroute -n в список хопов.
+
+    Возвращает список dict: {hop, ip, rtt_ms, timeout, annotation}.
+    """
+    hops = []
+    for line in (output or "").splitlines():
+        line = line.rstrip()
+        m = re.match(r"^\s*(\d+)\s+(.*)$", line)
+        if not m:
+            continue
+        hop_no = int(m.group(1))
+        rest = m.group(2).strip()
+
+        if not rest or rest.replace("*", "").strip() == "":
+            hops.append({"hop": hop_no, "ip": None, "rtt_ms": None,
+                         "timeout": True, "annotation": ""})
+            continue
+
+        ip_match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]{3,})", rest)
+        ip = ip_match.group(1) if ip_match else None
+        rtt_match = re.search(r"([\d.]+)\s*ms", rest)
+        rtt = float(rtt_match.group(1)) if rtt_match else None
+        # Аннотации недостижимости: !H (host), !N (net), !X (admin prohibited)…
+        ann_match = re.search(r"(!\w+)", rest)
+        annotation = ann_match.group(1) if ann_match else ""
+
+        hops.append({
+            "hop": hop_no,
+            "ip": ip,
+            "rtt_ms": rtt,
+            "timeout": ip is None,
+            "annotation": annotation,
+        })
+    return hops
+
+
+def traceroute_host(host, max_hops=20, port=443, use_tcp=True, timeout=45):
+    """
+    TCP/UDP traceroute до хоста — локализация хопа, рвущего соединение
+    (Deep Trace, идея из YT-DPI).
+
+    Returns:
+        dict: { host, target_ip, method, hops:[...], reached, error }
+    """
+    result = {
+        "host": host,
+        "target_ip": None,
+        "method": "",
+        "hops": [],
+        "reached": False,
+        "error": None,
+    }
+
+    # Резолвим целевой IP (для определения, дошли ли мы).
+    try:
+        result["target_ip"] = socket.gethostbyname(host)
+    except (socket.gaierror, OSError):
+        result["target_ip"] = None
+
+    tr_bin = _find_binary(["traceroute"])
+    hop_wait = 2
+
+    if tr_bin:
+        attempts = []
+        if use_tcp:
+            # TCP SYN traceroute к указанному порту (нужен root/CAP_NET_RAW).
+            attempts.append((["-T", "-p", str(port)], f"tcp/{port}"))
+        # UDP/ICMP fallback.
+        attempts.append(([], "udp"))
+
+        for extra, method in attempts:
+            cmd = [tr_bin, "-n", "-q", "1", "-w", str(hop_wait),
+                   "-m", str(max_hops)] + extra + [host]
+            rc, stdout, stderr = _run(cmd, timeout=timeout)
+            if stdout and re.search(r"^\s*\d+\s", stdout, re.MULTILINE):
+                result["method"] = method
+                result["hops"] = _parse_traceroute(stdout)
+                break
+            else:
+                result["error"] = (stderr or stdout or "traceroute failed").strip()[:200]
+    else:
+        # Fallback: tracepath (часто есть на Entware без root-привилегий).
+        tp_bin = _find_binary(["tracepath", "tracepath6"])
+        if not tp_bin:
+            result["error"] = "traceroute/tracepath не найдены"
+            return result
+        cmd = [tp_bin, "-n", "-m", str(max_hops), host]
+        rc, stdout, stderr = _run(cmd, timeout=timeout)
+        result["method"] = "tracepath"
+        if stdout:
+            result["hops"] = _parse_traceroute(stdout)
+        else:
+            result["error"] = (stderr or "tracepath failed").strip()[:200]
+
+    # Дошли ли до цели: последний хоп с IP совпадает с target_ip.
+    if result["hops"]:
+        for hop in reversed(result["hops"]):
+            if hop.get("ip"):
+                if result["target_ip"] and hop["ip"] == result["target_ip"]:
+                    result["reached"] = True
+                break
+
+    return result
+
+
 # ─────────────────────── HTTP Check ───────────────────────
 
 def check_http(url, timeout=5):

@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.21.0 — BlockCheck: идеи из YT-DPI + информативный GUI диагностики
+
+Заимствование полезных техник из [Shiperoid/YT-DPI](https://github.com/Shiperoid/YT-DPI)
+(MIT) и переработка интерфейса диагностики.
+
+### Добавлено
+- **Вердикт `THROTTLED` (троттлинг)** — отдельный класс деградации, когда
+  соединение работает, но замедлено. Срабатывает в двух случаях:
+  часть TLS-версий работает, а часть обрывается с DPI-ошибкой (RST/EOF/
+  timeout); либо реальная скорость загрузки ниже порога при рабочем
+  соединении. Классика для YouTube/googlevideo.
+- **Динамические CDN-шарды googlevideo** (`core/testers/youtube_cdn.py`) —
+  определение реальных узлов, обслуживающих клиента, через
+  `redirector.googlevideo.com/report_mapping` (с fallback на шарды из
+  `domains.txt`). Тестируются TLS 1.2/1.3 каждого шарда + замер реальной
+  скорости через превью `i.ytimg.com` (детекция троттлинга по KB/s).
+- **Deep Trace (traceroute)** — `core/diagnostics.traceroute_host()` +
+  эндпоинт `POST /api/blockcheck/traceroute`. TCP/UDP-трассировка с
+  локализацией хопа, рвущего соединение (по требованию из таблицы доменов).
+- **QUIC / HTTP-3 проба** (`core/testers/quic_tester.py`) — проверка
+  доступности UDP/443 через QUIC Version Negotiation (без криптографии).
+  Новый вердикт `QUIC_BLOCK` (UDP/443 блокирован при рабочем HTTPS).
+- **Большой / post-quantum ClientHello** (`tls_tester.probe_clienthello`) —
+  отправка ClientHello с Kyber/X25519MLKEM768 key_share (~1.7 КБ, выходит
+  за один TCP-сегмент) для детекции size-based DPI. Новый вердикт
+  `CLIENTHELLO_DPI`.
+- **Прокси (SOCKS5 / HTTP CONNECT)** в BlockCheck
+  (`core/testers/proxy.py`, чистый stdlib) — прогон TLS-проб через прокси
+  для сравнения «напрямую vs туннель». UDP-тесты при этом пропускаются.
+- **Новые типы тестов** `TestType.QUIC`, `TestType.TLS_BIGHELLO` и фазы
+  BlockCheck (QUIC, ClientHello, YouTube CDN) с планом фаз по режимам.
+
+### Изменено
+- **Полностью переработан GUI диагностики** (`web/js/pages/blockcheck.js`,
+  `web/css/blockcheck_scan.css`): крупный вердикт-герой с рекомендацией по
+  обходу (zapret/туннель/DNS), сводная статистика по категориям тестов,
+  разворачиваемые строки таблицы с детализацией по каждому тесту и кнопкой
+  Deep Trace, секция YouTube CDN со скоростью/троттлингом, форма прокси,
+  экспорт отчёта в JSON, легенда вердиктов. Добавлены колонки QUIC и
+  ClientHello PQ.
+- Приоритеты агрегации DPI и `REMEDIATION_BY_DPI` дополнены новыми классами.
+
 ## v0.20.5 — BlockCheck: оставшиеся сигналы из blockcheckw
 
 Завершены оставшиеся пункты заимствования из rcd27/blockcheckw (MIT).

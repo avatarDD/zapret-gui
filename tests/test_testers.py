@@ -369,5 +369,205 @@ class TestRemediation(unittest.TestCase):
         self.assertEqual(tr.to_dict()["remediation"], "tunnel")
 
 
+# ─────── THROTTLED / CLIENTHELLO_DPI / QUIC_BLOCK (заимствовано из YT-DPI) ───────
+
+class TestNewClassifications(unittest.TestCase):
+    """Новые вердикты: троттлинг, size-based DPI на ClientHello, QUIC-блок."""
+
+    def _target(self, *results):
+        from core.models import TargetResult
+        tr = TargetResult(domain="example.com")
+        tr.results = list(results)
+        return tr
+
+    def _r(self, test_type, status, error=""):
+        from core.models import SingleTestResult, TestType, TestStatus
+        tt = getattr(TestType, test_type).value
+        st = getattr(TestStatus, status).value
+        return SingleTestResult(target="example.com", test_type=tt,
+                                status=st, error=error)
+
+    def test_throttled_on_tls_version_mix(self):
+        # TLS 1.2 работает, TLS 1.3 обрывается → троттлинг, не полный DPI.
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("TLS_12", "SUCCESS"),
+            self._r("TLS_13", "FAILED", "TLS_RESET"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertEqual(c, DPIClassification.THROTTLED)
+
+    def test_all_tls_fail_is_not_throttled(self):
+        # Если ВСЕ версии падают — это TLS_DPI, а не троттлинг.
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("TLS_12", "FAILED", "TLS_RESET"),
+            self._r("TLS_13", "FAILED", "TLS_RESET"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertEqual(c, DPIClassification.TLS_DPI)
+
+    def test_throttled_on_slow_throughput(self):
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("TLS_13", "SUCCESS"),
+            self._r("HTTP", "FAILED", "THROTTLE_SLOW"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertEqual(c, DPIClassification.THROTTLED)
+
+    def test_clienthello_dpi(self):
+        # Обычный TLS ок, большой/PQ ClientHello рвётся → size-based DPI.
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("TLS_13", "SUCCESS"),
+            self._r("TLS_BIGHELLO", "FAILED", "TLS_EOF_EARLY"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertEqual(c, DPIClassification.CLIENTHELLO_DPI)
+
+    def test_quic_block_while_https_works(self):
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("TLS_13", "SUCCESS"),
+            self._r("QUIC", "TIMEOUT", "TIMEOUT"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertEqual(c, DPIClassification.QUIC_BLOCK)
+
+    def test_quic_fail_without_https_not_quic_block(self):
+        # QUIC падает, но и TLS падает → это не специфичный QUIC-блок.
+        from core.models import DPIClassification
+        tr = self._target(
+            self._r("TLS_13", "FAILED", "TLS_RESET"),
+            self._r("QUIC", "TIMEOUT", "TIMEOUT"),
+        )
+        c, _ = dpi_classifier.DPIClassifier.classify(tr)
+        self.assertNotEqual(c, DPIClassification.QUIC_BLOCK)
+
+    def test_remediation_for_new_types(self):
+        from core.models import remediation_for
+        self.assertEqual(remediation_for("throttled"), "zapret")
+        self.assertEqual(remediation_for("quic_block"), "zapret")
+        self.assertEqual(remediation_for("clienthello_dpi"), "zapret")
+
+
+# ─────── QUIC probe builder ───────
+
+class TestQuicProbe(unittest.TestCase):
+
+    def test_packet_is_long_header_and_padded(self):
+        from core.testers import quic_tester
+        pkt, dcid, scid = quic_tester.build_quic_vn_probe()
+        self.assertGreaterEqual(len(pkt), 1200)         # anti-amplification
+        self.assertTrue(pkt[0] & 0x80)                  # long header form
+        self.assertTrue(pkt[0] & 0x40)                  # fixed bit
+        self.assertEqual(len(dcid), 8)
+        self.assertEqual(len(scid), 8)
+
+    def test_version_is_force_vn(self):
+        import struct
+        from core.testers import quic_tester
+        pkt, _, _ = quic_tester.build_quic_vn_probe()
+        version = struct.unpack(">I", pkt[1:5])[0]
+        # «greasing»-версия (?a?a?a?a) форсирует Version Negotiation.
+        self.assertEqual(version & 0x0F0F0F0F, 0x0A0A0A0A)
+
+    def test_response_detection(self):
+        import struct
+        from core.testers import quic_tester
+        # Version Negotiation: version == 0.
+        vn = b"\xc0" + struct.pack(">I", 0) + b"\x00" * 8
+        self.assertTrue(quic_tester._looks_like_quic_response(vn, b"", b""))
+        self.assertFalse(quic_tester._looks_like_quic_response(b"\x00\x01", b"", b""))
+
+
+# ─────── Большой / PQ ClientHello ───────
+
+class TestClientHelloBuilder(unittest.TestCase):
+
+    def test_record_and_handshake_lengths(self):
+        import struct
+        from core.testers import tls_tester
+        ch = tls_tester.build_client_hello("youtube.com", with_pq=True)
+        self.assertEqual(ch[0], 0x16)                   # handshake record
+        rec_len = struct.unpack(">H", ch[3:5])[0]
+        self.assertEqual(rec_len, len(ch) - 5)
+        self.assertEqual(ch[5], 0x01)                   # client_hello
+        hs_len = struct.unpack(">I", b"\x00" + ch[6:9])[0]
+        self.assertEqual(hs_len, len(ch) - 9)
+
+    def test_pq_group_present_and_big(self):
+        from core.testers import tls_tester
+        ch = tls_tester.build_client_hello("youtube.com", with_pq=True)
+        # X25519MLKEM768 codepoint 0x11ec должен присутствовать.
+        self.assertIn(b"\x11\xec", ch)
+        # PQ key_share (1216 B) делает ClientHello > одного сегмента.
+        self.assertGreater(len(ch), 1460)
+
+    def test_sni_present(self):
+        from core.testers import tls_tester
+        ch = tls_tester.build_client_hello("example.com", with_pq=False)
+        self.assertIn(b"example.com", ch)
+
+    def test_pad_to_reached(self):
+        from core.testers import tls_tester
+        ch = tls_tester.build_client_hello("a.com", with_pq=False, pad_to=1700)
+        self.assertEqual(len(ch), 1700)
+
+
+# ─────── CDN shard regex / proxy parse ───────
+
+class TestCdnAndProxy(unittest.TestCase):
+
+    def test_shard_regex(self):
+        from core.testers.youtube_cdn import _SHARD_RE
+        body = (
+            "redirector => rr5---sn-c0q7lnz7.googlevideo.com, "
+            "r2---sn-jvhnu5g-c35k.googlevideo.com\n"
+            "noise example.com not-a-shard.com"
+        )
+        hosts = [m.group(1) for m in _SHARD_RE.finditer(body)]
+        self.assertIn("rr5---sn-c0q7lnz7.googlevideo.com", hosts)
+        self.assertIn("r2---sn-jvhnu5g-c35k.googlevideo.com", hosts)
+        self.assertEqual(len(hosts), 2)
+
+    def test_proxy_parse_socks5(self):
+        from core.testers.proxy import parse_proxy, proxy_label
+        p = parse_proxy({"type": "socks5h", "host": "h", "port": "1080",
+                         "user": "u", "pass": "p"})
+        self.assertEqual(p["type"], "socks5")
+        self.assertEqual(p["port"], 1080)
+        self.assertIn("socks5://", proxy_label(p))
+
+    def test_proxy_parse_http_and_invalid(self):
+        from core.testers.proxy import parse_proxy
+        self.assertEqual(parse_proxy({"type": "http", "host": "h",
+                                      "port": 8080})["type"], "http")
+        self.assertIsNone(parse_proxy({"type": "ftp", "host": "h", "port": 1}))
+        self.assertIsNone(parse_proxy({"host": "", "port": 1}))
+        self.assertIsNone(parse_proxy(None))
+
+
+# ─────── Traceroute parser ───────
+
+class TestTracerouteParser(unittest.TestCase):
+
+    def test_parse_hops(self):
+        from core.diagnostics import _parse_traceroute
+        out = (
+            " 1  192.168.1.1  1.234 ms\n"
+            " 2  * \n"
+            " 3  10.0.0.1  5.6 ms !X\n"
+        )
+        hops = _parse_traceroute(out)
+        self.assertEqual(len(hops), 3)
+        self.assertEqual(hops[0]["ip"], "192.168.1.1")
+        self.assertAlmostEqual(hops[0]["rtt_ms"], 1.234)
+        self.assertTrue(hops[1]["timeout"])
+        self.assertIsNone(hops[1]["ip"])
+        self.assertEqual(hops[2]["annotation"], "!X")
+
+
 if __name__ == "__main__":
     unittest.main()

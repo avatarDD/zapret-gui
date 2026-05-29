@@ -204,6 +204,47 @@ class DPIClassifier:
         if any(t.error and "MITM" in t.error for t in tls_fails):
             return DPIClassification.TLS_MITM, "TLS MITM proxy detected"
 
+        # --- Большой / PQ ClientHello (size-based DPI) ---
+        # Если обычный TLS работает, но большой/PQ ClientHello рвётся — это
+        # фильтрация по размеру ClientHello (заимствовано из YT-DPI: Kyber/
+        # X25519MLKEM768 не влезает в один сегмент, и DPI его режет).
+        big_tests = by_type.get(TestType.TLS_BIGHELLO.value, [])
+        big_fail = [
+            t for t in big_tests
+            if t.status in (TestStatus.FAILED.value, TestStatus.TIMEOUT.value)
+        ]
+        normal_tls_ok = any(
+            t.status == TestStatus.SUCCESS.value for t in tls_tests
+        )
+        if big_tests and big_fail and normal_tls_ok and len(big_fail) == len(
+            [t for t in big_tests if t.status != TestStatus.SKIPPED.value]
+        ):
+            return (
+                DPIClassification.CLIENTHELLO_DPI,
+                "Большой/PQ ClientHello рвётся при рабочем обычном TLS",
+            )
+
+        # --- Троттлинг по версиям TLS ---
+        # Часть TLS-версий работает, а часть обрывается с DPI-подобной ошибкой
+        # (RST/EOF/timeout) — это не полный блок, а выборочная деградация
+        # (троттлинг / частичный DPI). Заимствовано из YT-DPI (вердикт THROTTLED).
+        throttle_codes = {
+            "TLS_RESET", "TCP_RESET", "TLS_EOF_EARLY", "TLS_TIMEOUT",
+            "TIMEOUT", "READ_TIMEOUT", "READ_RESET", "RST",
+        }
+        tls_success_list = [
+            t for t in tls_tests if t.status == TestStatus.SUCCESS.value
+        ]
+        tls_dpi_fail = [
+            t for t in tls_fails
+            if t.error in throttle_codes or t.status == TestStatus.TIMEOUT.value
+        ]
+        if tls_success_list and tls_dpi_fail:
+            return (
+                DPIClassification.THROTTLED,
+                "Часть TLS-версий работает, часть обрывается (троттлинг/выборочный DPI)",
+            )
+
         # TCP RST / EOF во время TLS — классический DPI
         dpi_error_codes = {"TLS_RESET", "TCP_RESET", "TLS_EOF_EARLY"}
         if any(t.error in dpi_error_codes for t in tls_fails):
@@ -267,6 +308,28 @@ class DPIClassifier:
             for t in tcp_tests
         ):
             return DPIClassification.TCP_16_20, "TCP block at 16-20KB boundary"
+
+        # --- Троттлинг по скорости (низкий KB/s при рабочем соединении) ---
+        if any(t.error == "THROTTLE_SLOW" for t in tests):
+            return (
+                DPIClassification.THROTTLED,
+                "Низкая скорость загрузки при рабочем соединении (троттлинг)",
+            )
+
+        # --- QUIC / HTTP-3 block (UDP/443) ---
+        quic_tests = by_type.get(TestType.QUIC.value, [])
+        quic_relevant = [
+            t for t in quic_tests if t.status != TestStatus.SKIPPED.value
+        ]
+        quic_all_fail = (
+            quic_relevant
+            and all(t.status != TestStatus.SUCCESS.value for t in quic_relevant)
+        )
+        if quic_all_fail:
+            # Только если HTTPS/TCP работает — иначе это общий блок, не QUIC.
+            http_ok = any(t.status == TestStatus.SUCCESS.value for t in tls_tests)
+            if http_ok:
+                return DPIClassification.QUIC_BLOCK, "QUIC/UDP 443 blocked while HTTPS works"
 
         # --- STUN block ---
         stun_tests = by_type.get(TestType.STUN.value, [])
