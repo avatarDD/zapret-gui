@@ -151,3 +151,63 @@ class TestExtractDnsProxyRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeClient:
+    """Мини-RCI-клиент: отдаёт заранее заданный ответ на get()."""
+    def __init__(self, get_result=None, post_result=None):
+        self._get = get_result or {"ok": True, "data": {}}
+        self._post = post_result or {"ok": True, "data": {}}
+        self.posts = []
+
+    def get(self, path, timeout=0):
+        return self._get
+
+    def post(self, payload, timeout=0):
+        self.posts.append(payload)
+        return self._post
+
+
+class TestGetHostPolicy(unittest.TestCase):
+
+    def _cmd(self, get_result):
+        from core.ndms.commands import NdmsCommands
+        return NdmsCommands(client=_FakeClient(get_result=get_result))
+
+    def test_found_with_policy(self):
+        data = {"data": {"host": [
+            {"mac": "aa:bb:cc:dd:ee:ff", "policy": "ParentalControl"},
+            {"mac": "11:22:33:44:55:66", "policy": "Other"},
+        ]}, "ok": True}
+        cmd = self._cmd(data)
+        r = cmd.get_host_policy("aa:bb:cc:dd:ee:ff")
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["found"])
+        self.assertEqual(r["policy"], "ParentalControl")
+
+    def test_found_no_policy(self):
+        data = {"ok": True, "data": {"host": [
+            {"mac": "aa:bb:cc:dd:ee:ff"},
+        ]}}
+        cmd = self._cmd(data)
+        r = cmd.get_host_policy("aa:bb:cc:dd:ee:ff")
+        self.assertTrue(r["found"])
+        self.assertEqual(r["policy"], "")
+
+    def test_not_found(self):
+        data = {"ok": True, "data": {"host": []}}
+        cmd = self._cmd(data)
+        r = cmd.get_host_policy("aa:bb:cc:dd:ee:ff")
+        self.assertFalse(r["found"])
+
+    def test_single_host_dict(self):
+        # NDMS может вернуть один хост как объект, а не список.
+        data = {"ok": True, "data": {"host":
+                {"mac": "aa:bb:cc:dd:ee:ff", "policy": "P1"}}}
+        cmd = self._cmd(data)
+        r = cmd.get_host_policy("AA:BB:CC:DD:EE:FF")
+        self.assertEqual(r["policy"], "P1")
+
+    def test_bad_mac(self):
+        cmd = self._cmd({"ok": True, "data": {}})
+        self.assertFalse(cmd.get_host_policy("nope")["ok"])

@@ -327,6 +327,40 @@ class NdmsCommands:
         }
         return self.client.post(payload)
 
+    def get_host_policy(self, mac: str) -> dict:
+        """
+        Узнать, какая политика сейчас назначена хосту (read-only).
+
+        Нужно для совместимости с родительским контролем и политикой
+        «Нет доступа в интернет» (как в XKeen): прежде чем перебить
+        политику хоста нашей туннельной, мы должны знать прежнюю —
+        чтобы предупредить пользователя и восстановить её при снятии
+        правила.
+
+        Возвращает {"ok": bool, "policy": str, "found": bool}.
+        policy="" — у хоста нет персональной политики (наследует
+        политику сегмента, т.е. обычный доступ).
+        """
+        if not mac:
+            return {"ok": False, "error": "mac пустой"}
+        normalized = _normalize_mac(mac)
+        if not normalized:
+            return {"ok": False, "error": "Некорректный MAC: %s" % mac}
+        res = self.client.get("show/ip/hotspot/host")
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error", "?")}
+        data = res.get("data") or {}
+        hosts = data.get("host")
+        if isinstance(hosts, dict):
+            hosts = [hosts]
+        for h in (hosts or []):
+            if not isinstance(h, dict):
+                continue
+            if _normalize_mac(str(h.get("mac", ""))) == normalized:
+                return {"ok": True, "found": True,
+                        "policy": str(h.get("policy", "") or "")}
+        return {"ok": True, "found": False, "policy": ""}
+
     def unassign_host_policy(self, mac: str) -> dict:
         """`no ip hotspot host <mac> policy` — снять политику с хоста."""
         if not mac:
