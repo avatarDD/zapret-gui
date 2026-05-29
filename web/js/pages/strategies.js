@@ -68,21 +68,8 @@ const StrategiesPage = (() => {
                 </div>
             </div>
 
-            <!-- Фильтры -->
-            <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
-                <button class="btn btn-ghost btn-sm strat-filter active" data-filter="all" onclick="StrategiesPage.setFilter('all')">Все</button>
-                <button class="btn btn-ghost btn-sm strat-filter" data-filter="favorites" onclick="StrategiesPage.setFilter('favorites')">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-                    </svg>
-                    Избранные
-                </button>
-                <button class="btn btn-ghost btn-sm strat-filter" data-filter="builtin" onclick="StrategiesPage.setFilter('builtin')">Встроенные</button>
-                <button class="btn btn-ghost btn-sm strat-filter" data-filter="user" onclick="StrategiesPage.setFilter('user')">Пользовательские</button>
-            </div>
-
-            <!-- Список стратегий -->
-            <div id="strategies-list">
+            <!-- Список стратегий (ListUI рендерит свой поиск/фильтры/пагинацию) -->
+            <div id="strategies-list-host">
                 <div class="text-muted" style="text-align:center; padding:32px;">
                     <div class="spinner" style="margin:0 auto 12px;"></div>
                     Загрузка стратегий...
@@ -259,6 +246,8 @@ const StrategiesPage = (() => {
 
     // ══════════════════ Data ══════════════════
 
+    let listUI = null;
+
     async function fetchStrategies() {
         try {
             const data = await API.get('/api/strategies');
@@ -272,22 +261,19 @@ const StrategiesPage = (() => {
             renderActiveCard(active);
             renderList(strategies);
         } catch (err) {
-            document.getElementById('strategies-list').innerHTML =
-                '<div class="card" style="text-align:center; padding:24px; color:var(--error);">Ошибка загрузки: ' + escapeHtml(err.message) + '</div>';
+            const host = document.getElementById('strategies-list-host');
+            if (host) {
+                host.innerHTML =
+                    '<div class="card" style="text-align:center; padding:24px; color:var(--error);">Ошибка загрузки: ' + escapeHtml(err.message) + '</div>';
+            }
         }
     }
 
-    // ══════════════════ Render List ══════════════════
+    // ══════════════════ Render List (через ListUI) ══════════════════
 
-    let currentFilter = 'all';
-
-    function setFilter(filter) {
-        currentFilter = filter;
-        // Обновляем кнопки
-        document.querySelectorAll('.strat-filter').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.filter === filter);
-        });
-        renderList(strategies);
+    function setFilter(_filter) {
+        // Совместимость со старым API — фильтры теперь внутри ListUI.
+        if (listUI) listUI.refresh();
     }
 
     function renderActiveCard(active) {
@@ -320,57 +306,94 @@ const StrategiesPage = (() => {
     }
 
     function renderList(list) {
-        const container = document.getElementById('strategies-list');
-        if (!container) return;
+        const host = document.getElementById('strategies-list-host');
+        if (!host) return;
 
-        // Фильтрация
-        let filtered = list;
-        if (currentFilter === 'favorites') {
-            filtered = list.filter(s => s.is_favorite);
-        } else if (currentFilter === 'builtin') {
-            filtered = list.filter(s => s.is_builtin);
-        } else if (currentFilter === 'user') {
-            filtered = list.filter(s => !s.is_builtin);
-        }
+        // Если ListUI уже создан — просто обновляем данные.
+        if (listUI) { listUI.setItems(list); return; }
 
-        if (filtered.length === 0) {
-            const msgs = {
-                all: 'Нет стратегий',
-                favorites: 'Нет избранных стратегий',
-                builtin: 'Нет встроенных стратегий',
-                user: 'Нет пользовательских стратегий. Создайте первую!',
-            };
-            container.innerHTML = `<div class="card" style="text-align:center; padding:32px; color:var(--text-muted);">${msgs[currentFilter] || msgs.all}</div>`;
-            return;
-        }
+        const container = document.createElement('div');
+        container.id = 'strategies-list';
+        host.innerHTML = '';
+        host.appendChild(container);
 
-        container.innerHTML = filtered.map(s => renderStrategyCard(s)).join('');
+        listUI = ListUI.create({
+            container,
+            items: list,
+            searchPlaceholder: 'Поиск по имени, автору, описанию, args...',
+            searchFields: s => [
+                s.name, s.description, s.author, s.label, s.id,
+                (s.profiles || []).map(p => p.args || '').join(' '),
+            ],
+            filters: [
+                { id: 'all', label: 'Все', test: () => true, default: true },
+                { id: 'favorites', label: '★ Избранное', test: s => s.is_favorite },
+                { id: 'recommended', label: 'Рекомендуемые', test: s => s.label === 'recommended' },
+                { id: 'builtin', label: 'Встроенные', test: s => s.is_builtin },
+                { id: 'user', label: 'Пользовательские', test: s => !s.is_builtin },
+            ],
+            groupBy: s => (s.protocol || 'other').toLowerCase(),
+            groupLabel: g => ({
+                tcp: 'TCP', udp: 'UDP / QUIC', http: 'HTTP', tls: 'TLS', other: 'Прочее',
+            }[g] || String(g).toUpperCase()),
+            renderItem: renderStrategyCard,
+            pageSize: 80,
+            storageKey: 'strategies-list',
+            renderEmpty: (q, f) => `<div class="list-ui-empty">${
+                q ? 'По запросу «' + escapeHtml(q) + '» ничего не найдено' :
+                f === 'favorites' ? 'Нет избранных стратегий. Нажмите ★ на любой карточке.' :
+                f === 'user' ? 'Нет пользовательских стратегий. Создайте первую кнопкой выше.' :
+                'Нет стратегий'
+            }</div>`,
+            countLabel: (v, t) => v + ' из ' + t + ' стратегий',
+        });
     }
 
+    /**
+     * Карточка стратегии. По умолчанию компактная (имя/бейджи/действия);
+     * подробности (профили, args) раскрываются кнопкой «Подробнее» —
+     * ListUI обрабатывает клик по [data-list-ui-toggle].
+     */
     function renderStrategyCard(s) {
         const isActive = s.id === currentId;
         const isFav = s.is_favorite;
         const isBuiltin = s.is_builtin;
+
+        const labelTag = s.label
+            ? `<span class="label ${escapeAttr(s.label)}">${escapeHtml(s.label)}</span>` : '';
+        const authorTag = s.author
+            ? `<span title="Автор">${escapeHtml(s.author)}</span>` : '';
+        const metaInline = (labelTag || authorTag)
+            ? `<span class="strategy-card-meta">${labelTag}${authorTag}</span>` : '';
+
         const profileBadges = (s.profiles || []).map(p => {
             const enabled = p.enabled !== false;
             let color = 'var(--text-muted)';
-            let label = p.name || p.id;
-            if (label.toLowerCase().includes('http') && !label.toLowerCase().includes('https') && !label.toLowerCase().includes('tls')) color = 'var(--warning)';
-            if (label.toLowerCase().includes('tls')) color = 'var(--success)';
-            if (label.toLowerCase().includes('quic') || label.toLowerCase().includes('udp')) color = 'var(--info)';
+            const label = p.name || p.id;
+            const ll = label.toLowerCase();
+            if (ll.includes('http') && !ll.includes('https') && !ll.includes('tls')) color = 'var(--warning)';
+            if (ll.includes('tls')) color = 'var(--success)';
+            if (ll.includes('quic') || ll.includes('udp')) color = 'var(--info)';
             return `<span class="profile-badge${enabled ? '' : ' disabled'}" style="--badge-color:${color};">${escapeHtml(label)}</span>`;
         }).join('');
 
+        const argsBlocks = (s.profiles || []).filter(p => p.enabled !== false).map(p => {
+            const args = p.args || '';
+            if (!args) return '';
+            return '<div class="strategy-args-preview">' + NfqwsSyntax.highlight(args) + '</div>';
+        }).join('');
+
         return `
-            <div class="strategy-card${isActive ? ' active' : ''}" data-id="${s.id}">
+            <div class="strategy-card compact${isActive ? ' active' : ''}" data-id="${s.id}" data-list-ui-card>
                 <div class="strategy-card-header">
                     <div class="strategy-card-info">
                         <div class="strategy-card-name">
                             ${isActive ? '<span class="status-dot running" style="width:8px;height:8px;"></span>' : ''}
                             ${escapeHtml(s.name)}
                             ${isBuiltin ? '<span class="badge badge-muted">builtin</span>' : '<span class="badge badge-accent">user</span>'}
+                            ${metaInline}
                         </div>
-                        <div class="strategy-card-desc">${escapeHtml(s.description || '')}</div>
+                        ${s.description ? `<div class="strategy-card-desc">${escapeHtml(s.description)}</div>` : ''}
                     </div>
                     <button class="btn-icon-only fav-btn${isFav ? ' active' : ''}" onclick="StrategiesPage.toggleFavorite('${s.id}')" title="${isFav ? 'Убрать из избранного' : 'В избранное'}">
                         <svg viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" width="18" height="18">
@@ -379,16 +402,16 @@ const StrategiesPage = (() => {
                     </button>
                 </div>
                 <div class="strategy-card-profiles">${profileBadges}</div>
-                <div class="strategy-card-args-wrap">
-                    ${(s.profiles || []).filter(p => p.enabled !== false).map(p => {
-                        const args = p.args || '';
-                        if (!args) return '';
-                        return '<div class="strategy-args-preview">' + NfqwsSyntax.highlight(args) + '</div>';
-                    }).join('')}
-                </div>
+                <div class="strategy-card-args-wrap">${argsBlocks}</div>
                 <div class="strategy-card-actions">
                     <button class="btn btn-primary btn-sm" onclick="StrategiesPage.applyStrategy('${s.id}')"${isActive ? ' disabled' : ''}>
                         ${isActive ? '✓ Активна' : 'Применить'}
+                    </button>
+                    <button class="strategy-card-toggle" data-list-ui-toggle title="Развернуть/свернуть подробности">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                            <polyline points="6 9 12 15 18 9"/>
+                        </svg>
+                        Подробнее
                     </button>
                     <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.showPreview('${s.id}')" title="Превью команды">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -421,6 +444,10 @@ const StrategiesPage = (() => {
                 </div>
             </div>
         `;
+    }
+
+    function escapeAttr(text) {
+        return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     // ══════════════════ Actions ══════════════════
@@ -874,6 +901,10 @@ const StrategiesPage = (() => {
         if (catalogPollTimer) {
             clearInterval(catalogPollTimer);
             catalogPollTimer = null;
+        }
+        if (listUI) {
+            try { listUI.destroy(); } catch (_e) {}
+            listUI = null;
         }
     }
 
