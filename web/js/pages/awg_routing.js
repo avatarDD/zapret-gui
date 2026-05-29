@@ -246,22 +246,33 @@ const AwgRoutingPage = (() => {
             </div>
 
             <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div class="card-title">CIDR-правила (${cidrRules.length})</div>
-                    <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
-                           title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
-                        Фильтр по интерфейсу:
-                        <select onchange="AwgRoutingPage.setFilterIface(this.value)"
-                                class="form-control" style="max-width: 220px;">
-                            ${filterOptions}
-                        </select>
-                    </label>
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div class="card-title">CIDR-правила (<span id="rt-cidr-count">${visibleRules.length}</span>)</div>
+                    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                        ${visibleRules.length > 0 ? `
+                            <div class="list-ui-search" style="flex:0 0 220px; min-width:160px; max-width:260px;">
+                                <svg class="list-ui-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                </svg>
+                                <input type="text" class="form-input list-ui-search-input" id="rt-cidr-search"
+                                       placeholder="Поиск по таблице..." spellcheck="false" autocomplete="off">
+                            </div>
+                        ` : ''}
+                        <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
+                               title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
+                            Интерфейс:
+                            <select onchange="AwgRoutingPage.setFilterIface(this.value)"
+                                    class="form-control" style="max-width: 220px;">
+                                ${filterOptions}
+                            </select>
+                        </label>
+                    </div>
                 </div>
 
                 ${visibleRules.length === 0
                     ? `<p class="text-muted" style="margin-top: 12px;">Правил пока нет.</p>`
                     : `
-                <table class="table" style="margin-top: 8px;">
+                <table class="table" id="rt-cidr-table" style="margin-top: 8px;">
                     <thead>
                         <tr>
                             <th style="width: 14%;">Интерфейс</th>
@@ -294,6 +305,18 @@ const AwgRoutingPage = (() => {
                 }
             </div>
         `;
+
+        // Подключаем клиентский фильтр к таблице — даёт быстрый поиск
+        // без перерисовки всего блока, даже когда правил сотни.
+        const $input = document.getElementById('rt-cidr-search');
+        const $table = document.getElementById('rt-cidr-table');
+        const $count = document.getElementById('rt-cidr-count');
+        if ($input && $table) {
+            ListUI.attachTableFilter({
+                input: $input, table: $table, counter: $count,
+                countLabel: (v, t) => v === t ? String(t) : `${v}/${t}`,
+            });
+        }
     }
 
     // Платформо-зависимое пояснение: для чего нужен dnsmasq и почему он
@@ -498,22 +521,33 @@ const AwgRoutingPage = (() => {
             </div>
 
             <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div class="card-title">Domain-правила (${dnRules.length})</div>
-                    <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
-                           title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
-                        Фильтр по интерфейсу:
-                        <select onchange="AwgRoutingPage.setFilterIface(this.value)"
-                                class="form-control" style="max-width: 220px;">
-                            ${filterOptions}
-                        </select>
-                    </label>
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div class="card-title">Domain-правила (<span id="rt-dom-count">${visibleRules.length}</span>)</div>
+                    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                        ${visibleRules.length > 0 ? `
+                            <div class="list-ui-search" style="flex:0 0 220px; min-width:160px; max-width:260px;">
+                                <svg class="list-ui-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                </svg>
+                                <input type="text" class="form-input list-ui-search-input" id="rt-dom-search"
+                                       placeholder="Поиск по таблице..." spellcheck="false" autocomplete="off">
+                            </div>
+                        ` : ''}
+                        <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
+                               title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
+                            Интерфейс:
+                            <select onchange="AwgRoutingPage.setFilterIface(this.value)"
+                                    class="form-control" style="max-width: 220px;">
+                                ${filterOptions}
+                            </select>
+                        </label>
+                    </div>
                 </div>
 
                 ${visibleRules.length === 0
                     ? `<p class="text-muted" style="margin-top: 12px;">Правил пока нет.</p>`
                     : `
-                <table class="table" style="margin-top: 8px;">
+                <table class="table" id="rt-dom-table" style="margin-top: 8px;">
                     <thead>
                         <tr>
                             <th style="width: 14%;">Интерфейс</th>
@@ -545,6 +579,16 @@ const AwgRoutingPage = (() => {
                 }
             </div>
         `;
+
+        const $input = document.getElementById('rt-dom-search');
+        const $table = document.getElementById('rt-dom-table');
+        const $count = document.getElementById('rt-dom-count');
+        if ($input && $table) {
+            ListUI.attachTableFilter({
+                input: $input, table: $table, counter: $count,
+                countLabel: (v, t) => v === t ? String(t) : `${v}/${t}`,
+            });
+        }
     }
 
     // ══════════════ tab: Devices ══════════════
@@ -735,22 +779,33 @@ const AwgRoutingPage = (() => {
             </div>
 
             <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div class="card-title">Device-правила (${devRules.length})</div>
-                    <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
-                           title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
-                        Фильтр по интерфейсу:
-                        <select onchange="AwgRoutingPage.setFilterIface(this.value)"
-                                class="form-control" style="max-width: 220px;">
-                            ${filterOptions}
-                        </select>
-                    </label>
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div class="card-title">Device-правила (<span id="rt-dev-count">${visibleRules.length}</span>)</div>
+                    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                        ${visibleRules.length > 0 ? `
+                            <div class="list-ui-search" style="flex:0 0 220px; min-width:160px; max-width:260px;">
+                                <svg class="list-ui-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                </svg>
+                                <input type="text" class="form-input list-ui-search-input" id="rt-dev-search"
+                                       placeholder="Поиск по IP/MAC/имени..." spellcheck="false" autocomplete="off">
+                            </div>
+                        ` : ''}
+                        <label class="text-muted" style="font-size:12px; display:flex; align-items:center; gap:6px;"
+                               title="Показать в таблице ниже только правила, ведущие в выбранный туннель">
+                            Интерфейс:
+                            <select onchange="AwgRoutingPage.setFilterIface(this.value)"
+                                    class="form-control" style="max-width: 220px;">
+                                ${filterOptions}
+                            </select>
+                        </label>
+                    </div>
                 </div>
 
                 ${visibleRules.length === 0
                     ? `<p class="text-muted" style="margin-top: 12px;">Правил пока нет.</p>`
                     : `
-                <table class="table" style="margin-top: 8px;">
+                <table class="table" id="rt-dev-table" style="margin-top: 8px;">
                     <thead>
                         <tr>
                             <th style="width: 14%;">Интерфейс</th>
@@ -784,6 +839,16 @@ const AwgRoutingPage = (() => {
                 }
             </div>
         `;
+
+        const $input = document.getElementById('rt-dev-search');
+        const $table = document.getElementById('rt-dev-table');
+        const $count = document.getElementById('rt-dev-count');
+        if ($input && $table) {
+            ListUI.attachTableFilter({
+                input: $input, table: $table, counter: $count,
+                countLabel: (v, t) => v === t ? String(t) : `${v}/${t}`,
+            });
+        }
     }
 
     async function refreshDevices() {

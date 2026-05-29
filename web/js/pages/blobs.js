@@ -64,6 +64,16 @@ const BlobsPage = (() => {
                         </svg>
                     </button>
                 </div>
+                <div style="padding:8px 12px; display:flex; gap:12px; align-items:center; border-bottom:1px solid var(--border);">
+                    <div class="list-ui-search" style="flex:1; max-width:360px;">
+                        <svg class="list-ui-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <input type="text" class="form-input list-ui-search-input" id="blobs-search"
+                               placeholder="Поиск по имени или типу..." spellcheck="false" autocomplete="off">
+                    </div>
+                    <span class="list-ui-count" id="blobs-count" style="color:var(--text-muted); font-size:12px;"></span>
+                </div>
                 <div id="blobs-table-wrap">
                     <div class="text-muted" style="text-align:center; padding:32px;">
                         <div class="spinner" style="margin:0 auto 12px;"></div>
@@ -400,6 +410,35 @@ const BlobsPage = (() => {
 
         html += '</div>';
         wrap.innerHTML = html;
+
+        // Клиентский фильтр по имени/типу
+        const $search = document.getElementById('blobs-search');
+        const $count = document.getElementById('blobs-count');
+        if ($search) {
+            const apply = () => {
+                const q = $search.value.trim().toLowerCase();
+                const rows = wrap.querySelectorAll('.blob-table-row');
+                let visible = 0;
+                rows.forEach(r => {
+                    const hay = r.textContent.toLowerCase();
+                    const match = !q || hay.includes(q);
+                    r.style.display = match ? '' : 'none';
+                    if (match) visible++;
+                });
+                if ($count) {
+                    $count.textContent = q ? `${visible} из ${rows.length}` : `${rows.length} блобов`;
+                }
+            };
+            // Привязываем один раз
+            if (!$search.dataset.bound) {
+                $search.addEventListener('input', Utils.debounce(apply, 150));
+                $search.addEventListener('keydown', e => {
+                    if (e.key === 'Escape') { $search.value = ''; apply(); }
+                });
+                $search.dataset.bound = '1';
+            }
+            apply();
+        }
     }
 
     // ══════════════════ View Blob ══════════════════

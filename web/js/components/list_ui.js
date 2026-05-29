@@ -333,5 +333,51 @@ const ListUI = (() => {
         };
     }
 
-    return { create };
+    /**
+     * Лёгкий фильтр-инпут для существующей <table>. Скрывает строки, в
+     * tbody которых нет ни одной ячейки, содержащей поисковую строку
+     * (case-insensitive). Возвращает контроллер с update()/destroy().
+     *
+     * Использование:
+     *   ListUI.attachTableFilter({
+     *       input:  document.getElementById('my-search'),
+     *       table:  document.getElementById('my-table'),
+     *       counter: document.getElementById('my-count'),  // опционально
+     *       countLabel: (visible, total) => `${visible}/${total}`,
+     *   });
+     */
+    function attachTableFilter(opts) {
+        const $input = opts.input;
+        const $table = opts.table;
+        if (!$input || !$table) return null;
+        const $counter = opts.counter || null;
+        const countLabel = opts.countLabel || ((v, t) => `${v} из ${t}`);
+
+        const onInput = Utils.debounce(() => {
+            const q = $input.value.trim().toLowerCase();
+            const rows = $table.tBodies[0] ? Array.from($table.tBodies[0].rows) : [];
+            let visible = 0;
+            for (const tr of rows) {
+                const hay = tr.textContent.toLowerCase();
+                const match = !q || hay.includes(q);
+                tr.style.display = match ? '' : 'none';
+                if (match) visible++;
+            }
+            if ($counter) $counter.textContent = countLabel(visible, rows.length);
+        }, 150);
+
+        $input.addEventListener('input', onInput);
+        $input.addEventListener('keydown', e => {
+            if (e.key === 'Escape') { $input.value = ''; onInput(); }
+        });
+        // Запустим один раз, чтобы счётчик показал текущее состояние.
+        onInput();
+
+        return {
+            update: onInput,
+            destroy() { $input.removeEventListener('input', onInput); },
+        };
+    }
+
+    return { create, attachTableFilter };
 })();
