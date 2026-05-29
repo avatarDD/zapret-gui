@@ -118,6 +118,13 @@ class FirewallManager:
         self._applied = False
         self._fw_type = None          # "iptables" | "nftables" | None
         self._rules_info = []         # Для UI
+        # Доп. параметры для PREROUTING / NAT / TCP-флагов (заполняется в
+        # apply_rules). Дефолты — на случай прямого вызова _apply_* в тестах.
+        self._extra = {
+            "tcp_pkt_in": 10,
+            "udp_pkt_in": 3,
+            "mark_exclude": "0x20000000",
+        }
 
     # ─────────────────────────── public API ───────────────────────────
 
@@ -159,7 +166,18 @@ class FirewallManager:
                                      default="0x40000000")
             tcp_pkt = int(cfg.get("nfqws", "tcp_pkt_out", default=20))
             udp_pkt = int(cfg.get("nfqws", "udp_pkt_out", default=5))
+            tcp_pkt_in = int(cfg.get("nfqws", "tcp_pkt_in", default=10))
+            udp_pkt_in = int(cfg.get("nfqws", "udp_pkt_in", default=3))
+            mark_exclude = cfg.get("nfqws", "desync_mark_postnat",
+                                   default="0x20000000")
             disable_ipv6 = cfg.get("nfqws", "disable_ipv6", default=True)
+            # Параметры ответного направления и исключения — для PREROUTING /
+            # NAT MASQUERADE / TCP-флагов (паритет с nfqws2-keenetic).
+            self._extra = {
+                "tcp_pkt_in": tcp_pkt_in,
+                "udp_pkt_in": udp_pkt_in,
+                "mark_exclude": mark_exclude,
+            }
 
             # WAN-интерфейсы из конфига или auto-detect
             wan4 = self._get_wan_interfaces(cfg, "wan")
@@ -336,9 +354,17 @@ class FirewallManager:
         """
         Применить правила для одного семейства (iptables / ip6tables).
 
-        Аналог zapret2 _fw_nfqws_post4 / _fw_nfqws_post6:
-          - Если wan_ifaces не пуст: для каждого -o $iface отдельное правило
-          - Если пуст: правило без -o (все интерфейсы)
+        Портировано из nfqws2-keenetic (_firewall_start). На каждый WAN
+        (или без привязки, если список пуст) вешаются правила на ОБА
+        направления:
+          • POSTROUTING (исходящий): RETURN для исключённых меток,
+            NFQUEUE для первых N пакетов соединения + по TCP-флагам fin/rst;
+          • NAT POSTROUTING (только IPv4): MASQUERADE для пакетов, которые
+            переписал nfqws2 (иначе пакеты с новым адресом отбрасываются);
+          • PREROUTING (входящий/ответы): RETURN для исключённых и уже
+            обработанных, NFQUEUE по reply-connbytes + TCP-флагам syn,ack/fin/rst.
+
+        Все правила помечаются комментарием IPT_COMMENT — по нему же чистятся.
         """
         ok = True
         family_tag = "IPv4" if ipt_cmd == "iptables" else "IPv6"
@@ -349,67 +375,123 @@ class FirewallManager:
                         source="firewall")
             return True  # Не ошибка — просто нет поддержки
 
-        # Для каждого WAN или без -o
+        mark_proc = "%s/%s" % (fwmark, fwmark)
+        mark_excl_raw = self._extra.get("mark_exclude", "0x20000000")
+        mark_excl = "%s/%s" % (mark_excl_raw, mark_excl_raw)
+        tcp_pkt_in = self._extra.get("tcp_pkt_in", 10)
+        udp_pkt_in = self._extra.get("udp_pkt_in", 3)
+        do_nat = (ipt_cmd == "iptables")  # MASQUERADE только для IPv4
+
+        def _comment():
+            return ["-m", "comment", "--comment", IPT_COMMENT]
+
+        def _nfq():
+            return ["-j", "NFQUEUE", "--queue-num", str(qnum), "--queue-bypass"]
+
+        # Для каждого WAN или без привязки к интерфейсу
         oif_list = wan_ifaces if wan_ifaces else [None]
 
         for oif in oif_list:
             oif_args = ["-o", oif] if oif else []
-            oif_tag = " -o %s" % oif if oif else " (все)"
+            iif_args = ["-i", oif] if oif else []
+            tag = (" %s" % oif) if oif else " (все)"
 
-            # 1) ACCEPT для помеченных (не зацикливать)
-            cmd = [
-                ipt_cmd, "-t", "mangle", "-I", "POSTROUTING",
-            ] + oif_args + [
-                "-m", "mark", "--mark", "%s/%s" % (fwmark, fwmark),
-                "-m", "comment", "--comment", IPT_COMMENT,
-                "-j", "ACCEPT"
-            ]
-            if self._run_cmd(cmd):
-                rules.append("%s ACCEPT mark%s" % (family_tag, oif_tag))
+            # ───────── POSTROUTING (исходящий) ─────────
+            # 1) ACCEPT для уже обработанных (не зацикливаем)
+            if self._run_cmd(
+                [ipt_cmd, "-t", "mangle", "-I", "POSTROUTING"] + oif_args
+                + ["-m", "mark", "--mark", mark_proc] + _comment()
+                + ["-j", "ACCEPT"]
+            ):
+                rules.append("%s ACCEPT processed%s" % (family_tag, tag))
             else:
                 ok = False
 
-            # 2) TCP → NFQUEUE
+            # 2) RETURN для исключённых соединений
+            self._run_cmd(
+                [ipt_cmd, "-t", "mangle", "-A", "POSTROUTING"] + oif_args
+                + ["-m", "connmark", "--mark", mark_excl] + _comment()
+                + ["-j", "RETURN"]
+            )
+
+            # 3) TCP → NFQUEUE (первые N пакетов + fin/rst)
             if ports_tcp:
-                cmd = [
-                    ipt_cmd, "-t", "mangle", "-A", "POSTROUTING",
-                ] + oif_args + [
-                    "-p", "tcp",
-                    "-m", "multiport", "--dports", ports_tcp,
-                    "-m", "connbytes", "--connbytes-dir=original",
-                    "--connbytes-mode=packets",
-                    "--connbytes", "1:%d" % tcp_pkt,
-                    "-m", "comment", "--comment", IPT_COMMENT,
-                    "-j", "NFQUEUE",
-                    "--queue-num", str(qnum),
-                    "--queue-bypass"
-                ]
-                if self._run_cmd(cmd):
+                base = ([ipt_cmd, "-t", "mangle", "-A", "POSTROUTING"]
+                        + oif_args + ["-p", "tcp", "-m", "multiport",
+                                      "--dports", ports_tcp])
+                if self._run_cmd(
+                    base + ["-m", "connbytes", "--connbytes-dir=original",
+                            "--connbytes-mode=packets", "--connbytes",
+                            "1:%d" % tcp_pkt] + _comment() + _nfq()
+                ):
                     rules.append("%s TCP %s → NFQUEUE %d%s" % (
-                        family_tag, ports_tcp, qnum, oif_tag))
+                        family_tag, ports_tcp, qnum, tag))
+                else:
+                    ok = False
+                self._run_cmd(base + ["--tcp-flags", "fin", "fin"]
+                              + _comment() + _nfq())
+                self._run_cmd(base + ["--tcp-flags", "rst", "rst"]
+                              + _comment() + _nfq())
+
+            # 4) UDP → NFQUEUE
+            if ports_udp:
+                if self._run_cmd(
+                    [ipt_cmd, "-t", "mangle", "-A", "POSTROUTING"] + oif_args
+                    + ["-p", "udp", "-m", "multiport", "--dports", ports_udp,
+                       "-m", "connbytes", "--connbytes-dir=original",
+                       "--connbytes-mode=packets", "--connbytes",
+                       "1:%d" % udp_pkt] + _comment() + _nfq()
+                ):
+                    rules.append("%s UDP %s → NFQUEUE %d%s" % (
+                        family_tag, ports_udp, qnum, tag))
                 else:
                     ok = False
 
-            # 3) UDP → NFQUEUE
+            # ───────── NAT POSTROUTING (только IPv4) ─────────
+            # nfqws2 переписывает адреса → повторный MASQUERADE для UDP.
+            if do_nat:
+                if self._run_cmd(
+                    [ipt_cmd, "-t", "nat", "-A", "POSTROUTING"] + oif_args
+                    + ["-m", "mark", "--mark", mark_proc, "-p", "udp"]
+                    + _comment() + ["-j", "MASQUERADE"]
+                ):
+                    rules.append("%s NAT MASQUERADE udp%s" % (family_tag, tag))
+
+            # ───────── PREROUTING (входящий / ответы) ─────────
+            # RETURN для исключённых и уже обработанных
+            self._run_cmd(
+                [ipt_cmd, "-t", "mangle", "-A", "PREROUTING"] + iif_args
+                + ["-m", "connmark", "--mark", mark_excl] + _comment()
+                + ["-j", "RETURN"]
+            )
+            self._run_cmd(
+                [ipt_cmd, "-t", "mangle", "-A", "PREROUTING"] + iif_args
+                + ["-m", "mark", "--mark", mark_proc] + _comment()
+                + ["-j", "RETURN"]
+            )
+            if ports_tcp:
+                base = ([ipt_cmd, "-t", "mangle", "-A", "PREROUTING"]
+                        + iif_args + ["-p", "tcp", "-m", "multiport",
+                                      "--sports", ports_tcp])
+                self._run_cmd(
+                    base + ["-m", "connbytes", "--connbytes-dir=reply",
+                            "--connbytes-mode=packets", "--connbytes",
+                            "1:%d" % tcp_pkt_in] + _comment() + _nfq()
+                )
+                self._run_cmd(base + ["--tcp-flags", "syn,ack", "syn,ack"]
+                              + _comment() + _nfq())
+                self._run_cmd(base + ["--tcp-flags", "fin", "fin"]
+                              + _comment() + _nfq())
+                self._run_cmd(base + ["--tcp-flags", "rst", "rst"]
+                              + _comment() + _nfq())
             if ports_udp:
-                cmd = [
-                    ipt_cmd, "-t", "mangle", "-A", "POSTROUTING",
-                ] + oif_args + [
-                    "-p", "udp",
-                    "-m", "multiport", "--dports", ports_udp,
-                    "-m", "connbytes", "--connbytes-dir=original",
-                    "--connbytes-mode=packets",
-                    "--connbytes", "1:%d" % udp_pkt,
-                    "-m", "comment", "--comment", IPT_COMMENT,
-                    "-j", "NFQUEUE",
-                    "--queue-num", str(qnum),
-                    "--queue-bypass"
-                ]
-                if self._run_cmd(cmd):
-                    rules.append("%s UDP %s → NFQUEUE %d%s" % (
-                        family_tag, ports_udp, qnum, oif_tag))
-                else:
-                    ok = False
+                self._run_cmd(
+                    [ipt_cmd, "-t", "mangle", "-A", "PREROUTING"] + iif_args
+                    + ["-p", "udp", "-m", "multiport", "--sports", ports_udp,
+                       "-m", "connbytes", "--connbytes-dir=reply",
+                       "--connbytes-mode=packets", "--connbytes",
+                       "1:%d" % udp_pkt_in] + _comment() + _nfq()
+                )
 
         return ok
 
@@ -423,13 +505,26 @@ class FirewallManager:
         self._rules_info = []
         return ok
 
+    # Цепочки, в которые мы добавляем правила (таблица, цепочка).
+    _IPT_CHAINS = (
+        ("mangle", "POSTROUTING"),
+        ("mangle", "PREROUTING"),
+        ("nat", "POSTROUTING"),
+    )
+
     def _remove_ipt_family(self, ipt_cmd) -> bool:
-        """Удалить правила одного семейства (несколько проходов)."""
+        """Удалить правила одного семейства из всех наших цепочек."""
+        for table, chain in self._IPT_CHAINS:
+            self._remove_ipt_chain(ipt_cmd, table, chain)
+        return True
+
+    def _remove_ipt_chain(self, ipt_cmd, table, chain) -> None:
+        """Удалить все правила с комментарием IPT_COMMENT из одной цепочки."""
         for _ in range(20):
             found = False
             try:
                 result = subprocess.run(
-                    [ipt_cmd, "-t", "mangle", "-L", "POSTROUTING",
+                    [ipt_cmd, "-t", table, "-L", chain,
                      "--line-numbers", "-n"],
                     capture_output=True, text=True, timeout=5
                 )
@@ -441,8 +536,8 @@ class FirewallManager:
                         parts = line.split()
                         if parts and parts[0].isdigit():
                             self._run_cmd([
-                                ipt_cmd, "-t", "mangle",
-                                "-D", "POSTROUTING", parts[0]
+                                ipt_cmd, "-t", table,
+                                "-D", chain, parts[0]
                             ])
                             found = True
             except Exception:
@@ -450,8 +545,6 @@ class FirewallManager:
 
             if not found:
                 break
-
-        return True
 
     def _get_iptables_rules(self) -> list:
         """Получить текущие NFQUEUE-правила iptables + ip6tables."""
@@ -479,59 +572,87 @@ class FirewallManager:
                         fwmark, tcp_pkt, udp_pkt,
                         wan4_ifaces, wan6_ifaces) -> bool:
         """
-        Применить правила nftables с привязкой к WAN-интерфейсам.
+        Применить правила nftables (паритет с iptables-путём).
 
-        В nftables правила inet-семейства работают для обоих протоколов.
-        Фильтр интерфейса: `oifname { "eth0", "eth1" }`.
+        В inet-таблице создаём три цепочки:
+          • postrouting (исходящий): RETURN для исключённых, NFQUEUE первых N
+            пакетов + по TCP-флагам fin/rst;
+          • prerouting (входящий/ответы): RETURN исключённых и обработанных,
+            NFQUEUE по reply-пакетам + TCP-флагам syn,ack/fin/rst;
+          • nat postrouting: MASQUERADE для пакетов, переписанных nfqws2.
+        Фильтр интерфейса: `oifname { "eth0", "eth1" }` / `iifname ...`.
         """
-        cmds = []
+        mark_excl_raw = self._extra.get("mark_exclude", "0x20000000")
+        tcp_pkt_in = self._extra.get("tcp_pkt_in", 10)
+        udp_pkt_in = self._extra.get("udp_pkt_in", 3)
 
-        # Создаём таблицу и цепочку
-        cmds.append("add table inet %s" % NFT_TABLE)
-        cmds.append(
-            "add chain inet %s postrouting "
-            "{ type filter hook postrouting priority 150 ; }" % NFT_TABLE
-        )
-
-        # Собираем уникальные WAN-интерфейсы для oifname
+        # Собираем уникальные WAN-интерфейсы
         all_wan = set(wan4_ifaces or [])
         if wan6_ifaces:
             all_wan.update(wan6_ifaces)
-        oif_filter = ""
-        if all_wan:
+
+        def _iface(kw):
+            if not all_wan:
+                return ""
             if len(all_wan) == 1:
-                # Один интерфейс — без фигурных скобок
-                oif_filter = "oifname %s " % list(all_wan)[0]
-            else:
-                # Несколько — множество nft
-                oif_filter = "oifname { %s } " % ", ".join(sorted(all_wan))
+                return "%s %s " % (kw, list(all_wan)[0])
+            return "%s { %s } " % (kw, ", ".join(sorted(all_wan)))
 
-        # ACCEPT для помеченных пакетов
-        cmds.append(
-            "add rule inet %s postrouting %s"
-            "meta mark and %s == %s accept" % (
-                NFT_TABLE, oif_filter, fwmark, fwmark)
-        )
+        oif = _iface("oifname")
+        iif = _iface("iifname")
+        tcp_ports = "{ %s }" % ports_tcp if ports_tcp else None
+        udp_ports = "{ %s }" % ports_udp if ports_udp else None
 
-        # TCP → NFQUEUE
-        if ports_tcp:
-            ports_nft = "{ %s }" % ports_tcp
-            cmds.append(
-                "add rule inet %s postrouting %s"
-                "tcp dport %s ct original packets 1-%d "
-                "queue num %d bypass" % (
-                    NFT_TABLE, oif_filter, ports_nft, tcp_pkt, qnum)
-            )
+        cmds = []
+        cmds.append("add table inet %s" % NFT_TABLE)
+        cmds.append("add chain inet %s postrouting "
+                    "{ type filter hook postrouting priority 150 ; }" % NFT_TABLE)
+        cmds.append("add chain inet %s prerouting "
+                    "{ type filter hook prerouting priority -150 ; }" % NFT_TABLE)
+        cmds.append("add chain inet %s natpost "
+                    "{ type nat hook postrouting priority 100 ; }" % NFT_TABLE)
 
-        # UDP → NFQUEUE
-        if ports_udp:
-            ports_nft = "{ %s }" % ports_udp
-            cmds.append(
-                "add rule inet %s postrouting %s"
-                "udp dport %s ct original packets 1-%d "
-                "queue num %d bypass" % (
-                    NFT_TABLE, oif_filter, ports_nft, udp_pkt, qnum)
-            )
+        # ─── postrouting (исходящий) ───
+        cmds.append("add rule inet %s postrouting %smeta mark and %s == %s return"
+                    % (NFT_TABLE, oif, mark_excl_raw, mark_excl_raw))
+        cmds.append("add rule inet %s postrouting %smeta mark and %s == %s return"
+                    % (NFT_TABLE, oif, fwmark, fwmark))
+        if tcp_ports:
+            cmds.append("add rule inet %s postrouting %stcp dport %s "
+                        "ct original packets 1-%d queue num %d bypass"
+                        % (NFT_TABLE, oif, tcp_ports, tcp_pkt, qnum))
+            cmds.append("add rule inet %s postrouting %stcp dport %s "
+                        "tcp flags fin queue num %d bypass"
+                        % (NFT_TABLE, oif, tcp_ports, qnum))
+            cmds.append("add rule inet %s postrouting %stcp dport %s "
+                        "tcp flags rst queue num %d bypass"
+                        % (NFT_TABLE, oif, tcp_ports, qnum))
+        if udp_ports:
+            cmds.append("add rule inet %s postrouting %sudp dport %s "
+                        "ct original packets 1-%d queue num %d bypass"
+                        % (NFT_TABLE, oif, udp_ports, udp_pkt, qnum))
+
+        # ─── prerouting (входящий/ответы) ───
+        cmds.append("add rule inet %s prerouting %smeta mark and %s == %s return"
+                    % (NFT_TABLE, iif, mark_excl_raw, mark_excl_raw))
+        cmds.append("add rule inet %s prerouting %smeta mark and %s == %s return"
+                    % (NFT_TABLE, iif, fwmark, fwmark))
+        if tcp_ports:
+            cmds.append("add rule inet %s prerouting %stcp sport %s "
+                        "ct reply packets 1-%d queue num %d bypass"
+                        % (NFT_TABLE, iif, tcp_ports, tcp_pkt_in, qnum))
+            cmds.append("add rule inet %s prerouting %stcp sport %s "
+                        "tcp flags syn,ack queue num %d bypass"
+                        % (NFT_TABLE, iif, tcp_ports, qnum))
+        if udp_ports:
+            cmds.append("add rule inet %s prerouting %sudp sport %s "
+                        "ct reply packets 1-%d queue num %d bypass"
+                        % (NFT_TABLE, iif, udp_ports, udp_pkt_in, qnum))
+
+        # ─── nat postrouting: MASQUERADE для переписанных nfqws2 пакетов ───
+        cmds.append("add rule inet %s natpost %smeta mark and %s == %s "
+                    "meta l4proto udp masquerade"
+                    % (NFT_TABLE, oif, fwmark, fwmark))
 
         ok = True
         rules = []
