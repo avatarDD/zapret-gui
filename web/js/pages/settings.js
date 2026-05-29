@@ -61,6 +61,16 @@ const SettingsPage = (() => {
             ]
         },
         {
+            id: 'install',
+            label: 'Установка',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+            fields: [
+                { key: 'install.mirror', label: 'Зеркало для загрузки бинарников', type: 'text',
+                  placeholder: 'https://mirror.example (пусто = напрямую с GitHub)',
+                  hint: 'GitHub-прокси: ссылки github.com/... дописываются в хвост зеркала (схема ghproxy). Полезно, когда GitHub заблокирован. Можно переопределить переменной окружения ZAPRET_GUI_MIRROR.' },
+            ]
+        },
+        {
             id: 'nfqws',
             label: 'nfqws',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
@@ -377,10 +387,14 @@ const SettingsPage = (() => {
                 break;
         }
 
+        const hintHtml = field.hint
+            ? `<div class="text-muted" style="font-size:11px; margin-top:4px;">${escapeAttr(field.hint)}</div>`
+            : '';
+
         return `
             <div class="settings-field">
                 <label class="settings-field-label" for="${id}">${field.label}</label>
-                <div class="settings-field-input">${inputHtml}</div>
+                <div class="settings-field-input">${inputHtml}${hintHtml}</div>
             </div>
         `;
     }
