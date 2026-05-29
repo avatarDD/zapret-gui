@@ -46,14 +46,18 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
 
 Открытые улучшения единого слоя (next):
 
-- [ ] **geosite/geoip через движок** — сейчас пропускаются на уровне
-      ipset-routing (skipped_selectors); развернуть через route-правила
-      sing-box/mihomo, когда метод — соответствующий движок.
-- [ ] **Инъекция nfqws2-hostlist** в аргументы запущенной стратегии
-      (домены уже материализуются в hostlist `unified_<id>`, осталось
-      автоподключение к args nfqws).
-- [ ] **Слияние** старых страниц Стратегии / Routing(AWG) в единую
-      «Маршрутизацию» по мере стабилизации (пока сосуществуют).
+- [x] **geosite/geoip через движок** — `core/unified/geo_engine.py`:
+      для метода `singbox:<iface>` находит конфиг по interface_name и
+      инжектирует route-правило {domain_suffix/geosite/geoip → proxy},
+      идемпотентно через sidecar. mihomo/awg — понятный skip (нет
+      YAML-эмиттера / iptables не умеет geo).
+- [x] **Инъекция nfqws2-hostlist** — `core/unified/nfqws_hostlist.py`:
+      агрегат доменов nfqws2-маршрутов → `--hostlist` перед профилями
+      стратегии (opt-in `nfqws.unified_hostlist`, тумблер в Настройках).
+- [~] **Слияние** старых страниц Стратегии / Routing(AWG) в единую
+      «Маршрутизацию» — сделан безопасный шаг: «Маршрутизация» как
+      основная точка входа + кросс-ссылки, старые помечены «расширенный
+      режим». Полное удаление — после полевых тестов.
 
 ### Заимствования из rcd27/blockcheckw (MIT)
 
@@ -143,9 +147,10 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
       встроенный awg, если он умеет).
 - [ ] **Импорт `.conf` через QR с камеры** в браузере
       (`navigator.mediaDevices` + jsQR через CDN — опционально).
-- [ ] **UI-sparkline** для per-peer и per-iface статистики —
-      backend (`core/connectivity/traffic.py`) уже отдаёт серии,
-      осталась отрисовка на фронте.
+- [x] **UI-sparkline** для per-iface статистики —
+      `web/js/components/sparkline.js` (inline-SVG) + дашборд AWG рисует
+      rx/tx-серии из `/api/connectivity/traffic/<iface>`. Per-peer
+      sparkline — по мере надобности (серии бэкенд отдаёт).
 - [ ] **Полевое тестирование** на железе: OpenWrt 22.03+ (nftset
       backend) и KeenOS 4.x (детектор/инструкции) — код есть,
       не проверено на устройствах.
@@ -154,13 +159,16 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
 
 - [ ] **i18n** — UI русскоязычный. На будущее — выделить строки в
       словарь (`web/js/i18n/{ru,en}.js`).
-- [ ] **Рефакторинг `awg_installer.py` / `zapret_installer.py`** на
-      общий `core/binary_installer.py` (фундамент готов; миграция
-      поэтапная, чтобы не сломать рабочие пути).
-- [ ] **Расширить покрытие тестами** ещё не покрытых модулей:
-      strategy_scanner, blockcheck, diagnostics (heavy I/O),
-      catalog_*, file-resource менеджеры, warp_generator,
-      awg_installer/zapret_installer (нужны моки GitHub API).
+- [x] **Рефакторинг `awg_installer.py` / `zapret_installer.py`** на
+      общий `core/binary_installer.py` — загрузка делегирована
+      download_file (зеркало + оффлайн + retry), GitHub API через
+      resolve_url. Покрыто tests/test_installer_mirror.py.
+- [~] **Расширить покрытие тестами** — добавлены log_buffer, scan_targets,
+      catalog_loader, named_lists, unified/*, geo_engine, nfqws_hostlist,
+      mihomo, transparent (iptables+nft), dscp, installer mirror.
+      Осталось: strategy_scanner, blockcheck, diagnostics, warp_generator.
+- [x] **Контекстные подсказки «?»** — `web/js/components/help.js`
+      (модалка с примерами) на ключевых страницах.
 
 ## Идеи
 
