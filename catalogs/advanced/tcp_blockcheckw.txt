@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────
+#  Методы из rcd27/blockcheckw (MIT), отсутствовавшие у нас.
+#  Курированный набор канонических вариантов (не полный
+#  комбинаторный перебор оригинала). Протокол: TCP/TLS.
+#
+#  Новые приёмы:
+#    tcpseg — TCP-сегментация полезной нагрузки (новый способ нарезки,
+#             отличный от multisplit; поддерживает ip_id=rnd и seqovl).
+#    oob    — out-of-band байт через TCP urgent pointer (urp=...).
+# ─────────────────────────────────────────────────────────────
+
+[tcpseg_pos1_r1]
+name = TCP-сегментация pos 0,1 (лёгкая)
+author = blockcheckw
+label = experimental
+description = TCP-сегментация ClientHello на позициях 0 и 1, рандомный IP ID, 1 повтор. Лёгкий вариант нарезки на уровне TCP-сегментов.
+--payload=tls_client_hello
+--lua-desync=tcpseg:pos=0,1:ip_id=rnd:repeats=1
+
+[tcpseg_midsld_r20]
+name = TCP-сегментация midsld (×20)
+author = blockcheckw
+label = experimental
+description = Сегментация по середине SLD с рандомным IP ID и 20 повторами. Часто пробивает DPI, чувствительные к границам сегментов.
+--payload=tls_client_hello
+--lua-desync=tcpseg:pos=0,midsld:ip_id=rnd:repeats=20
+
+[tcpseg_pos1_r100]
+name = TCP-сегментация pos 0,1 (×100, агрессивная)
+author = blockcheckw
+label = experimental
+description = Агрессивная сегментация с сотней повторов. Нагружает CPU, применять при упорном DPI.
+--payload=tls_client_hello
+--lua-desync=tcpseg:pos=0,1:ip_id=rnd:repeats=100
+
+[tcpseg_seqovl1]
+name = TCP-сегментация + seqovl 1
+author = blockcheckw
+label = experimental
+description = Сегментация pos 0,-1 с перекрытием по sequence (seqovl=1). Сбивает реассемблер DPI наложением сегментов.
+--payload=tls_client_hello
+--lua-desync=tcpseg:pos=0,-1:seqovl=1
+
+[oob_urp_b]
+name = OOB urgent pointer (b)
+author = blockcheckw
+label = experimental
+description = Вставка out-of-band байта через TCP urgent pointer (urp=b). Некоторые DPI неверно обрабатывают urgent-данные и пропускают ClientHello.
+--in-range=-s1
+--lua-desync=oob:urp=b
+
+[oob_urp_midsld]
+name = OOB urgent pointer (midsld)
+author = blockcheckw
+label = experimental
+description = OOB-байт через urgent pointer на позиции midsld. Вариант OOB-трюка с другой точкой вставки.
+--in-range=-s1
+--lua-desync=oob:urp=midsld
