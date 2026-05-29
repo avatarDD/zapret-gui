@@ -303,13 +303,16 @@ class StrategyManager:
         if not strategy or "profiles" not in strategy:
             return []
 
-        # Определяем hostlist из конфига если не задан
-        if hostlist_path is None:
-            from core.config_manager import get_config_manager
-            cfg = get_config_manager()
-            lists_path = cfg.get("zapret", "lists_path",
-                                 default="/opt/zapret2/lists")
-            hostlist_path = os.path.join(lists_path, "other.txt")
+        # Флаги списков (--hostlist / --hostlist-auto / --hostlist-exclude),
+        # которые надо подмешать в каждый профиль.
+        #   • hostlist_path задан явно (сканер) → один --hostlist=<path>
+        #     (обратная совместимость);
+        #   • иначе — по режиму filter.mode из конфига.
+        if hostlist_path is not None:
+            list_flags = (["--hostlist=%s" % hostlist_path]
+                          if os.path.isfile(hostlist_path) else [])
+        else:
+            list_flags = self._compute_list_flags()
 
         enabled_profiles = [
             p for p in strategy["profiles"]
@@ -331,11 +334,11 @@ class StrategyManager:
             # Парсим args из профиля
             profile_args = self._parse_profile_args(profile["args"])
 
-            # Вставляем --hostlist= перед --payload (если есть hostlist и
-            # профиль содержит filter)
-            if hostlist_path and os.path.isfile(hostlist_path):
-                profile_args = self._inject_hostlist(
-                    profile_args, hostlist_path
+            # Вставляем флаги списков перед --payload (если профиль их ещё
+            # не содержит).
+            if list_flags:
+                profile_args = self._inject_list_flags(
+                    profile_args, list_flags
                 )
 
             all_args.extend(profile_args)
@@ -402,19 +405,56 @@ class StrategyManager:
 
         return result
 
-    def _inject_hostlist(self, args: list, hostlist_path: str) -> list:
-        """
-        Вставить --hostlist=path в список аргументов профиля.
+    @staticmethod
+    def _compute_list_flags() -> list:
+        """Вычислить флаги списков по режиму filter.mode (паритет nfqws2-keenetic).
 
-        Вставляет после --filter-* аргументов, перед --payload.
-        Если --hostlist уже есть — не дублируем.
+        Режимы (config.filter.mode):
+          • none          — без списков: десинк применяется ко всему трафику,
+                            попавшему под --filter-* (MODE_ALL без exclude);
+          • hostlist      — только домены из other.txt (+ exclude netrogat);
+          • autohostlist  — other.txt + авто-список auto.txt, куда nfqws2 сам
+                            добавляет недоступные домены (+ exclude);
+          • ipset         — фильтрация по IP (--ipset), hostlist не подмешиваем.
+
+        Файл exclude (netrogat.txt) и hostlist (other.txt) добавляются только
+        если существуют; auto.txt добавляется всегда (nfqws2 создаёт его сам).
         """
-        # Проверяем: не содержит ли уже hostlist
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        mode = (cfg.get("filter", "mode", default="hostlist") or "hostlist").lower()
+        lists_path = cfg.get("zapret", "lists_path",
+                             default="/opt/zapret2/lists")
+
+        if mode in ("ipset", "none"):
+            return []
+
+        flags = []
+        other = os.path.join(lists_path, "other.txt")
+        if os.path.isfile(other):
+            flags.append("--hostlist=%s" % other)
+
+        if mode in ("autohostlist", "auto"):
+            auto = os.path.join(lists_path, "auto.txt")
+            flags.append("--hostlist-auto=%s" % auto)
+
+        netrogat = os.path.join(lists_path, "netrogat.txt")
+        if os.path.isfile(netrogat):
+            flags.append("--hostlist-exclude=%s" % netrogat)
+
+        return flags
+
+    @staticmethod
+    def _inject_list_flags(args: list, list_flags: list) -> list:
+        """Вставить флаги списков в профиль (после --filter-*, перед --payload).
+
+        Если профиль уже содержит какой-либо --hostlist*/--ipset* — не трогаем
+        (полные winws2-пресеты несут свои списки).
+        """
         for a in args:
-            if a.startswith("--hostlist=") or a.startswith("--hostlist-exclude="):
-                return args  # Уже есть
+            if a.startswith("--hostlist") or a.startswith("--ipset"):
+                return args  # профиль сам задаёт списки
 
-        # Ищем позицию: после последнего --filter-* и перед --payload
         insert_pos = 0
         for i, a in enumerate(args):
             if a.startswith("--filter-"):
@@ -424,7 +464,8 @@ class StrategyManager:
                 break
 
         result = list(args)
-        result.insert(insert_pos, "--hostlist=%s" % hostlist_path)
+        for j, flag in enumerate(list_flags):
+            result.insert(insert_pos + j, flag)
         return result
 
     def build_preview_command(self, strategy: dict,
