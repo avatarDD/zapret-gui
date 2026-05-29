@@ -30,6 +30,7 @@ const App = (() => {
         singbox:           SingboxDashboardPage,
         'singbox-configs': SingboxConfigsPage,
         'singbox-setup':   SingboxSetupPage,
+        mihomo:            MihomoPage,
         settings:    SettingsPage,
     };
 
