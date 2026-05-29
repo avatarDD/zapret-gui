@@ -214,6 +214,10 @@ class FirewallManager:
                 if ok:
                     self._applied = True
                     log.success("Правила firewall применены", source="firewall")
+                    # Тюнинг conntrack: без be_liberal ядро отбрасывает
+                    # out-of-window сегменты, которые порождает десинхронизация
+                    # (split/disorder/fake с badseq) — обход не срабатывает.
+                    self._apply_sysctl_tuning()
                     # Персистентность на роутере: сохранить рантайм-конфиг и
                     # установить ndm/hotplug-хуки, чтобы правила переживали
                     # flush системного firewall (Keenetic NDMS / OpenWrt fw3).
@@ -230,6 +234,24 @@ class FirewallManager:
                 log.error("Исключение при применении правил: %s" % e,
                           source="firewall")
                 return False
+
+    @staticmethod
+    def _apply_sysctl_tuning():
+        """Настроить conntrack под десинхронизацию (как nfqws2-keenetic).
+
+        net.netfilter.nf_conntrack_tcp_be_liberal=1 — не дропать пакеты вне TCP
+        window (десинк намеренно их шлёт). nf_conntrack_checksum=0 — не считать
+        контрольные суммы (nfqws2 их портит намеренно, badsum). Best-effort.
+        """
+        for key, val in (
+            ("net.netfilter.nf_conntrack_tcp_be_liberal", "1"),
+            ("net.netfilter.nf_conntrack_checksum", "0"),
+        ):
+            try:
+                subprocess.run(["sysctl", "-w", "%s=%s" % (key, val)],
+                               capture_output=True, timeout=5)
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
 
     @staticmethod
     def _ensure_persistence(qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,

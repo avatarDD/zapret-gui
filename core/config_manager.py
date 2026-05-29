@@ -58,8 +58,12 @@ DEFAULT_CONFIG = {
     # --- Настройки nfqws ---
     "nfqws": {
         "queue_num": 300,
-        "ports_tcp": "80,443",
-        "ports_udp": "443",
+        # Расширенный набор портов (паритет с nfqws2-keenetic): помимо HTTP/
+        # HTTPS — Cloudflare alt-порты (2053/2083/2087/2096/8443), Telegram
+        # MTProto (5222), а по UDP — QUIC (443), STUN/TURN, WireGuard-диапазоны
+        # и Discord voice (49152:65535).
+        "ports_tcp": "80,443,2053,2083,2087,2096,5222,8443",
+        "ports_udp": "443,3478:3481,5349,19294:19344,49152:65535",
         "tcp_pkt_out": 20,
         "tcp_pkt_in": 10,
         "udp_pkt_out": 5,
@@ -207,6 +211,16 @@ class ConfigManager:
             changed = True
         if "ipset_path" not in z:
             z["ipset_path"] = "/opt/zapret2/ipset"
+            changed = True
+
+        # Расширение портов: только если значение НЕ трогали (равно прежнему
+        # узкому дефолту). Кастомные значения пользователя не перетираем.
+        n = self._config.get("nfqws", {})
+        if n.get("ports_tcp") == "80,443":
+            n["ports_tcp"] = "80,443,2053,2083,2087,2096,5222,8443"
+            changed = True
+        if n.get("ports_udp") == "443":
+            n["ports_udp"] = "443,3478:3481,5349,19294:19344,49152:65535"
             changed = True
         return changed
 
