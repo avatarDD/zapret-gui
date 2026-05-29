@@ -30,6 +30,8 @@ from core.testers.config import (
     ISP_BODY_MARKERS,
     TCP_BLOCK_RANGE_MAX,
     TCP_BLOCK_RANGE_MIN,
+    TCP_BLOCK_RANGE_WIDE_MAX,
+    TCP_BLOCK_RANGE_WIDE_MIN,
 )
 
 
@@ -166,7 +168,29 @@ def probe_body(
                 },
             )
 
-        # Классификация
+        # FAKE_LEAK: HTTP 400 от реального сервера = сервер получил мусор
+        # (наш fake-пакет дошёл, десинк не сработал на этой стратегии).
+        # Заимствовано из rcd27/blockcheckw: «http code 400. likely the
+        # server receives fakes». В отличие от RKN-заглушки (200/302 + body
+        # marker), 400 здесь — сигнал «эта конкретная стратегия не годится».
+        if status_code == 400:
+            return SingleTestResult(
+                target=url,
+                test_type=TestType.HTTP.value,
+                status=TestStatus.FAILED.value,
+                error="FAKE_LEAK",
+                latency_ms=round(elapsed * 1000, 2),
+                details="HTTP 400 — сервер получает fake-пакеты "
+                        "(десинк-стратегия не работает)",
+                raw_data={
+                    "bytes_received": bytes_received,
+                    "kbps": round(kbps, 1),
+                    "status_code": status_code,
+                    "dpi_marker": "fake_leak",
+                },
+            )
+
+        # Классификация: узкое окно — классический DPI-обрыв 16-20 КБ.
         if (TCP_BLOCK_RANGE_MIN <= bytes_received <= TCP_BLOCK_RANGE_MAX
                 and bytes_received < min_bytes):
             return SingleTestResult(
@@ -181,6 +205,25 @@ def probe_body(
                     "kbps": round(kbps, 1),
                     "status_code": status_code,
                     "dpi_marker": "tcp_16_20",
+                },
+            )
+
+        # Широкое окно (10..25 КБ, из blockcheckw): тот же тип блока, но с
+        # другим размером DPI-буфера. Распознаём, чтобы не упустить вариацию.
+        if (TCP_BLOCK_RANGE_WIDE_MIN <= bytes_received <= TCP_BLOCK_RANGE_WIDE_MAX
+                and bytes_received < min_bytes):
+            return SingleTestResult(
+                target=url,
+                test_type=TestType.TCP_16_20.value,
+                status=TestStatus.FAILED.value,
+                error="TCP_16_20",
+                latency_ms=round(elapsed * 1000, 2),
+                details="Обрыв на %d B (вероятно DPI data-limit)" % bytes_received,
+                raw_data={
+                    "bytes_received": bytes_received,
+                    "kbps": round(kbps, 1),
+                    "status_code": status_code,
+                    "dpi_marker": "tcp_16_20_wide",
                 },
             )
 
@@ -225,9 +268,13 @@ def probe_body(
 
     except (socket.timeout, TimeoutError):
         elapsed = time.time() - start
-        marker = "tcp_16_20" if (
-            TCP_BLOCK_RANGE_MIN <= bytes_received <= TCP_BLOCK_RANGE_MAX
-        ) else "timeout"
+        # Узкое окно → строгий tcp_16_20, широкое → tcp_16_20_wide, иначе timeout.
+        if TCP_BLOCK_RANGE_MIN <= bytes_received <= TCP_BLOCK_RANGE_MAX:
+            marker = "tcp_16_20"
+        elif TCP_BLOCK_RANGE_WIDE_MIN <= bytes_received <= TCP_BLOCK_RANGE_WIDE_MAX:
+            marker = "tcp_16_20_wide"
+        else:
+            marker = "timeout"
         kbps = (bytes_received / 1024.0) / max(elapsed, 0.001)
         return SingleTestResult(
             target=url,
@@ -245,15 +292,18 @@ def probe_body(
         )
     except (ssl.SSLError, OSError, http.client.HTTPException) as e:
         elapsed = time.time() - start
-        marker = "tcp_16_20" if (
-            TCP_BLOCK_RANGE_MIN <= bytes_received <= TCP_BLOCK_RANGE_MAX
-        ) else "rst"
+        if TCP_BLOCK_RANGE_MIN <= bytes_received <= TCP_BLOCK_RANGE_MAX:
+            marker = "tcp_16_20"
+        elif TCP_BLOCK_RANGE_WIDE_MIN <= bytes_received <= TCP_BLOCK_RANGE_WIDE_MAX:
+            marker = "tcp_16_20_wide"
+        else:
+            marker = "rst"
         kbps = (bytes_received / 1024.0) / max(elapsed, 0.001)
         return SingleTestResult(
             target=url,
             test_type=TestType.HTTP.value,
             status=TestStatus.FAILED.value,
-            error="TCP_16_20" if marker == "tcp_16_20" else "RST",
+            error="RST" if marker == "rst" else "TCP_16_20",
             latency_ms=round(elapsed * 1000, 2),
             details="%s (получено %d B)" % (str(e)[:80], bytes_received),
             raw_data={

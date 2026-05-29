@@ -1246,6 +1246,7 @@ class StrategyScanner:
 
         # Список приоритетов: чем выше — тем информативнее
         priority = [
+            "FAKE_LEAK",         # HTTP 400 — сервер получил fake, стратегия не сработала
             "ISP_PAGE",          # body — провайдерская заглушка
             "HTTP_INJECT",       # HTTP инъекция
             "TLS_MITM_SELF",     # MITM с самоподписанным

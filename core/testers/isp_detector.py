@@ -33,6 +33,46 @@ from core.testers.config import ISP_BODY_MARKERS, ISP_PAGE_TIMEOUT, ISP_REDIRECT
 # HTTP injection check (raw socket, port 80)
 # ---------------------------------------------------------------------------
 
+def _registrable_domain(host: str) -> str:
+    """Грубое сравнение eTLD+1 без PSL: последние две метки.
+
+    Для большинства случаев (`youtube.com`, `m.youtube.com`,
+    `consent.youtube.com`) работает корректно. На вложенных TLD типа
+    `co.uk` даст ложные срабатывания (`bbc.co.uk` vs `news.bbc.co.uk` —
+    OK; но `example.co.uk` vs `other.co.uk` будут «совпадающими» по
+    последним двум меткам). Это компромисс stdlib-only.
+    """
+    if not host:
+        return ""
+    parts = host.lower().strip().rstrip(".").split(".")
+    if len(parts) < 2:
+        return host.lower()
+    return ".".join(parts[-2:])
+
+
+def is_off_domain_redirect(src_host: str, location: str) -> bool:
+    """Указывает ли Location-редирект на другой регистрируемый домен.
+
+    Заимствовано из rcd27/blockcheckw: «suspicious redirection {code} to:
+    {location}» — редирект на чужой домен как мягкий признак заглушки
+    провайдера (в дополнение к жёсткому списку ISP_REDIRECT_MARKERS).
+    Не считаем относительные редиректы (`/path`) и редиректы на тот же
+    регистрируемый домен (m.example.com → example.com — норма).
+    """
+    if not location:
+        return False
+    loc = location.strip()
+    if not loc or loc.startswith("/") or loc.startswith("#"):
+        return False
+    try:
+        loc_host = urlparse(loc).hostname or ""
+    except Exception:
+        return False
+    if not loc_host:
+        return False
+    return _registrable_domain(loc_host) != _registrable_domain(src_host)
+
+
 def check_http_injection(
     domain: str,
     timeout: int = ISP_PAGE_TIMEOUT,
@@ -220,7 +260,14 @@ def detect_isp_page(
                             },
                         )
 
-                redirect_chain.append(location)
+                # Off-domain redirect — мягкий сигнал, фиксируем флагом, но
+                # НЕ помечаем как FAILED: легитимные кросс-доменные редиректы
+                # встречаются (consent.youtube.com → google.com, шортлинки).
+                # Сигнал виден в raw_data и в первой строке redirect_chain.
+                if is_off_domain_redirect(host, location):
+                    redirect_chain.append("[off-domain] " + location)
+                else:
+                    redirect_chain.append(location)
 
                 # Абсолютный или относительный URL
                 if location.startswith("http"):
