@@ -20,6 +20,10 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 # Bottle — микрофреймворк (один файл, 0 зависимостей)
 try:
     from bottle import Bottle, static_file, response, request, ServerAdapter
+    import bottle as _bottle
+    # Поднимаем лимит тела запроса (дефолт 100 KB): импорт бэкапа и
+    # крупные blob/конфиг-POST'ы могут быть больше.
+    _bottle.BaseRequest.MEMFILE_MAX = 16 * 1024 * 1024
 except ImportError:
     print("ОШИБКА: Bottle не найден. Установите: pip3 install bottle")
     print("  или: opkg install python3-bottle")

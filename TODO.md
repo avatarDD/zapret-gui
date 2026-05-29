@@ -177,6 +177,11 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
       Осталось: strategy_scanner, blockcheck, diagnostics, warp_generator.
 - [x] **Контекстные подсказки «?»** — `web/js/components/help.js`
       (модалка с примерами) на ключевых страницах.
+- [x] **Бэкап/восстановление конфигурации** — `core/backup.py` +
+      `api/backup.py` (export/summary/import) + секция «Бэкап» в
+      Настройках. Один JSON: настройки, пользовательские стратегии,
+      конфиги sing-box/mihomo, hostlist'ы. Восстановление gui-секции —
+      опционально. MEMFILE_MAX поднят до 16 МБ.
 
 ## Идеи
 

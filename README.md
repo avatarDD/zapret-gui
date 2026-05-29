@@ -39,6 +39,9 @@ OpenWrt: **nfqws2** (zapret2), туннели **AmneziaWG / sing-box / mihomo** 
   strategy … | singbox … | mihomo …`
 - **Зеркало/оффлайн-установка** бинарников (env `ZAPRET_GUI_MIRROR`
   или `install.mirror` / `file://`) — когда GitHub заблокирован
+- **Бэкап/восстановление** — выгрузка всей конфигурации (настройки,
+  стратегии, конфиги sing-box/mihomo, hostlist'ы) в один JSON-файл и
+  восстановление из него (Настройки → Бэкап)
 
 ## Требования
 
@@ -135,7 +138,7 @@ python3 app.py --host 0.0.0.0 --port 8080
 | Диагностика | Проверка сервисов, конфликтов, системы |
 | Логи | Журнал событий в реальном времени |
 | Автозапуск | Управление init-скриптом |
-| Настройки | Конфигурация GUI, nfqws, firewall |
+| Настройки | Конфигурация GUI, nfqws, firewall, зеркало, **бэкап/восстановление** |
 | AmneziaWG → Setup | Wizard: детект окружения, prerequisites, установка бинарников |
 | AmneziaWG → Dashboard | Статус интерфейсов и peer'ов, up/down, autostart |
 | AmneziaWG → Configs | Редактор `.conf`, импорт/экспорт, валидация |
@@ -296,6 +299,7 @@ REST API: `http://<host>:8080/api/` — 120+ эндпоинтов.
 | GET/POST/PUT/DELETE | /api/lists · /api/lists/:id | Именованные списки доменов/CIDR |
 | GET/POST | /api/unified/routes · …/:id/{apply,scan} | Единый слой «назначение → метод» |
 | GET/POST | /api/unified/status · /api/unified/monitor | Статус/мониторинг единого слоя |
+| GET/POST | /api/backup/{export,summary,import} | Бэкап/восстановление конфигурации |
 
 Полный список — см. `api/` директорию.
 
