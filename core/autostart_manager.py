@@ -169,6 +169,19 @@ def _is_systemd() -> bool:
         "/etc/systemd/system"
     )
 
+
+def _is_openwrt_procd() -> bool:
+    """Чистый OpenWrt с procd (без Entware /opt/etc/init.d).
+
+    На таких системах nfqws2 запускает сам GUI при старте (app.py boot-apply),
+    а GUI поднимается через procd-сервис /etc/init.d/zapret-gui. Персистентность
+    firewall обеспечивает hotplug-хук.
+    """
+    return (
+        os.path.exists("/sbin/procd")
+        or os.path.exists("/etc/openwrt_release")
+    ) and os.path.isfile("/etc/init.d/zapret-gui")
+
 # Singleton
 _instance = None
 _instance_lock = threading.Lock()
@@ -210,6 +223,11 @@ class AutostartManager:
             # сам GUI при старте.
             method = "systemd"
             effective_enabled = enabled and os.path.isfile(SYSTEMD_UNIT_PATH)
+        elif _is_openwrt_procd():
+            # Чистый OpenWrt: стратегию применяет GUI при старте, GUI поднимает
+            # procd. Персистентность firewall — через hotplug-хук.
+            method = "openwrt"
+            effective_enabled = enabled
         else:
             method = "unsupported"
             effective_enabled = False
@@ -332,6 +350,42 @@ class AutostartManager:
                 "ok": True,
                 "message": "Автозапуск включён. Сохранённая стратегия "
                            "будет применена при загрузке системы.",
+            }
+
+        # Чистый OpenWrt с procd (без Entware): nfqws2 запускает GUI при
+        # старте, persistence — hotplug-хук. Включаем procd-сервис GUI и
+        # ставим хуки.
+        if not _is_entware() and _is_openwrt_procd():
+            try:
+                subprocess.run(
+                    ["/etc/init.d/zapret-gui", "enable"],
+                    check=False, timeout=10,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+
+            try:
+                from core.firewall_persistence import install_hooks
+                install_hooks()
+            except Exception as e:
+                log.warning("Не удалось установить хуки персистентности: %s" % e,
+                            source="autostart")
+
+            cfg.set("autostart", "enabled", True)
+            cfg.set("autostart", "method", "openwrt")
+            cfg.save()
+
+            strategy_name = cfg.get("strategy", "current_name") or strategy_id
+            log.success(
+                "Автозапуск включён (OpenWrt/procd, стратегия: %s "
+                "применится при загрузке)" % strategy_name,
+                source="autostart",
+            )
+            return {
+                "ok": True,
+                "message": "Автозапуск включён. Сохранённая стратегия будет "
+                           "применена при загрузке (OpenWrt).",
             }
 
         # Дальше — путь Entware с init.d-скриптом
