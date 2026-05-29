@@ -153,7 +153,10 @@ class _MonitorLoop:
         self._interval = 60
 
     def running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        # _stop.is_set() → пользователь остановил, даже если фоновый
+        # поток ещё досыпает в wait(interval) и формально alive.
+        return (self._thread is not None and self._thread.is_alive()
+                and not self._stop.is_set())
 
     def start(self, interval: int = 60):
         if self.running():
