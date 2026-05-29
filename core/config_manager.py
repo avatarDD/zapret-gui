@@ -139,6 +139,9 @@ DEFAULT_CONFIG = {
         "default_protocol": "tcp",
         "stabilization_delay": 2,
         "probe_timeout": 10,
+        # Включать сгенерированные «на лету» стратегии в режимах standard/full
+        # (комбинаторное расширение без хранения файлов). См. strategy_generator.
+        "use_generated": True,
     },
 }
 

@@ -14,7 +14,6 @@ name = TCP-сегментация pos 0,1 (лёгкая)
 author = blockcheckw
 label = experimental
 description = TCP-сегментация ClientHello на позициях 0 и 1, рандомный IP ID, 1 повтор. Лёгкий вариант нарезки на уровне TCP-сегментов.
---payload=tls_client_hello
 --lua-desync=tcpseg:pos=0,1:ip_id=rnd:repeats=1
 
 [tcpseg_midsld_r20]
@@ -22,7 +21,6 @@ name = TCP-сегментация midsld (×20)
 author = blockcheckw
 label = experimental
 description = Сегментация по середине SLD с рандомным IP ID и 20 повторами. Часто пробивает DPI, чувствительные к границам сегментов.
---payload=tls_client_hello
 --lua-desync=tcpseg:pos=0,midsld:ip_id=rnd:repeats=20
 
 [tcpseg_pos1_r100]
@@ -30,7 +28,6 @@ name = TCP-сегментация pos 0,1 (×100, агрессивная)
 author = blockcheckw
 label = experimental
 description = Агрессивная сегментация с сотней повторов. Нагружает CPU, применять при упорном DPI.
---payload=tls_client_hello
 --lua-desync=tcpseg:pos=0,1:ip_id=rnd:repeats=100
 
 [tcpseg_seqovl1]
@@ -38,7 +35,6 @@ name = TCP-сегментация + seqovl 1
 author = blockcheckw
 label = experimental
 description = Сегментация pos 0,-1 с перекрытием по sequence (seqovl=1). Сбивает реассемблер DPI наложением сегментов.
---payload=tls_client_hello
 --lua-desync=tcpseg:pos=0,-1:seqovl=1
 
 [oob_urp_b]

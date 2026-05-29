@@ -54,10 +54,24 @@ nfqws2 (обход DPI на месте), AmneziaWG и sing-box (туннели),
       блок (TCP ок, рвётся TLS → поможет zapret). Машиночитаемое поле
       `remediation` (`zapret`/`tunnel`/`dns`/`none`) на каждой цели —
       прямой вход для авто-выбора метода в «едином слое» выше.
-- [ ] **Ранжирование стратегий по простоте** — при равном покрытии сортировать
-      стратегии по `(кол-во desync-действий, max repeats, многоступенчатость)`
-      возр.: лёгкие/одноступенчатые раньше. Быстрее находит рабочую и щадит
-      CPU роутера. (`strategy_scanner._select_strategies`).
+- [x] **Ранжирование стратегий по простоте** —
+      `strategy_scanner._select_strategies` использует `complexity_key`
+      (action_count, max_repeats, is_multi_stage) из
+      `core/strategy_generator.py`. Лёгкие/одноступенчатые тестируются
+      раньше, рабочая стратегия находится быстрее.
+- [x] **Новые методы из blockcheckw как именованные пресеты** —
+      `catalogs/advanced/{tcp,http80}_blockcheckw.txt`: `tcpseg`
+      (TCP-сегментация, `ip_id=rnd`, seqovl), `oob` (urgent pointer),
+      `http_domcase`, `http_unixeol`. Курированный набор (не весь
+      комбинаторный перебор оригинала).
+- [x] **Генератор стратегий «на лету»** — `core/strategy_generator.py`:
+      параметрические сетки (positions × seqovl × fooling × repeats для
+      multisplit/multidisorder/fakedsplit/fakeddisorder/fake/tcpseg/oob),
+      дедуп против каталога, ранжирование от простых к сложным. Сканер
+      добавляет генерированные стратегии в режимах standard/full
+      (флаг `scan.use_generated`). Альтернатива хранению 13K строк
+      готовых вариантов как в blockcheckw. API:
+      `GET /api/scan/generated?protocol=&level=` для предпросмотра.
 - [ ] **Сигнал «сервер получает fake-пакеты»** — HTTP 400 при пробе через
       nfqws2 = десинк «протёк» на сервер (неверная стратегия). Помечать такую
       стратегию как неудачную с пояснением в scanner.

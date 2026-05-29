@@ -8,7 +8,6 @@ name = HTTP domcase (регистр домена)
 author = blockcheckw
 label = experimental
 description = Меняет регистр символов домена в HTTP Host. DPI, сравнивающие домен побайтово/чувствительно к регистру, не находят совпадения.
---payload=http_req
 --lua-desync=http_domcase
 
 [http_unixeol]
@@ -16,5 +15,4 @@ name = HTTP Unix EOL (LF вместо CRLF)
 author = blockcheckw
 label = experimental
 description = Заменяет CRLF на одиночный LF в HTTP-заголовках. Реальные серверы такое принимают, а часть DPI-парсеров — нет.
---payload=http_req
 --lua-desync=http_unixeol

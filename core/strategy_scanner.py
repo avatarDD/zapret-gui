@@ -590,13 +590,39 @@ class StrategyScanner:
             tail = [e for e in entries if e.section_id not in existing_ids]
             entries = top_builtin + tail
 
-        # Сортировка: full presets вперёд, recommended вторыми
+        # Генерированные стратегии «на лету» (standard/full): расширяем
+        # покрытие без хранения файлов. Дедуп против уже отобранных по args.
+        from core.config_manager import get_config_manager
+        if (self._mode in ("standard", "full")
+                and get_config_manager().get("scan", "use_generated", default=True)):
+            try:
+                from core.strategy_generator import generate, _norm_args
+                have_args = {_norm_args(e.get_args_list()) for e in entries}
+                gen = generate(protocol=protocol, level=self._mode)
+                added = 0
+                for ge in gen:
+                    if _norm_args(ge.get_args_list()) not in have_args:
+                        entries.append(ge)
+                        have_args.add(_norm_args(ge.get_args_list()))
+                        added += 1
+                if added:
+                    log.info("Добавлено сгенерированных стратегий: %d" % added,
+                             source="scanner")
+            except Exception as e:
+                log.warning("Генератор стратегий недоступен: %s" % e,
+                            source="scanner")
+
+        # Сортировка: full presets вперёд, recommended вторыми, внутри
+        # группы — от простых стратегий к сложным (blockcheckw rank).
+        from core.strategy_generator import complexity_key
+
         def _sort_key(e: CatalogEntry) -> tuple:
             full = _is_full_preset_entry(e)
             recommended = (e.label == "recommended")
             # 0 — самый приоритетный
             return (
                 0 if full else (1 if recommended else 2),
+                complexity_key(e.get_args_list()),
                 # внутри группы — стабильный порядок
                 e.source_file,
                 e.section_id,
@@ -925,6 +951,18 @@ class StrategyScanner:
         if payload_arg:
             wrapped.append(payload_arg)
         wrapped.extend(raw_args)
+
+        # Регистрация именованных blob'ов (tls_google и т.п.): без декларации
+        # --blob=NAME:@bin/file.bin nfqws2 шлёт ПУСТОЙ fake и проба ложно
+        # падает. Подмешиваем недостающие декларации в начало (как в
+        # strategy_builder.build_nfqws_args для ручного применения).
+        try:
+            from core.blob_registry import build_blob_declarations
+            blob_decls = build_blob_declarations(wrapped)
+            if blob_decls:
+                wrapped = blob_decls + wrapped
+        except Exception:
+            pass
 
         # Резолвим пути в самих raw_args (могут содержать @lua/, @bin/, lists/)
         return CatalogManager.resolve_paths_in_args(
