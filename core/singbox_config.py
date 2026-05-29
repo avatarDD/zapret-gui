@@ -195,6 +195,59 @@ def make_minimal_config(*, listen_port: int = 1080,
 
 # ─────── outbound builders (вызываются из subscription_importer) ───────
 
+def make_transparent_inbounds(*, mode: str = "tproxy",
+                              tcp_port: int = 1100,
+                              udp_port: int = 1102,
+                              dns_port: int = 0,
+                              sniff: bool = True,
+                              mark: int = 1) -> list:
+    """
+    Сгенерить inbound'ы движка под прозрачное проксирование (см.
+    core/singbox_transparent.py — firewall-часть).
+
+      mode='redirect' → один `redirect` inbound (TCP) на tcp_port.
+      mode='tproxy'   → один `tproxy` inbound (TCP+UDP) на tcp_port.
+      mode='hybrid'   → `redirect` (TCP, tcp_port) + `tproxy` (UDP,
+                        udp_port). Два inbound'а.
+
+    sniff=True добавляет sniff-настройки (определение домена из
+    TLS/HTTP/QUIC) — нужно чтобы route-правила по доменам/geosite
+    работали для прозрачного трафика без явного Host.
+
+    dns_port>0 добавит отдельный `direct`-inbound для перехвата DNS
+    (используется вместе с dns_hijack в firewall) — sing-box отдаёт
+    его на свой dns-resolver через route action hijack-dns.
+    """
+    sniff_opts = {}
+    if sniff:
+        # sing-box 1.8+: sniff на уровне inbound (для старых схем). На
+        # 1.11+ sniff переехал в route action, но поле игнорируется
+        # молча, поэтому совместимо.
+        sniff_opts = {"sniff": True, "sniff_override_destination": False}
+
+    inbounds = []
+    if mode in ("redirect", "hybrid"):
+        ib = {"type": "redirect", "tag": "redirect-in",
+              "listen": "::", "listen_port": int(tcp_port)}
+        ib.update(sniff_opts)
+        inbounds.append(ib)
+    if mode in ("tproxy", "hybrid"):
+        port = int(udp_port) if mode == "hybrid" else int(tcp_port)
+        net = "udp" if mode == "hybrid" else ""
+        ib = {"type": "tproxy", "tag": "tproxy-in",
+              "listen": "::", "listen_port": port}
+        if net:
+            ib["network"] = net
+        ib.update(sniff_opts)
+        inbounds.append(ib)
+    if dns_port:
+        ib = {"type": "direct", "tag": "dns-in",
+              "listen": "::", "listen_port": int(dns_port),
+              "network": "udp"}
+        inbounds.append(ib)
+    return inbounds
+
+
 def make_vless_outbound(tag: str, server: str, port: int, uuid: str,
                         *, flow: str = "",
                         transport: dict = None,
