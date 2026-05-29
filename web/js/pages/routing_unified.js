@@ -24,7 +24,7 @@ const RoutingUnifiedPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Маршрутизация</h1>
+                    <h1 class="page-title">Маршрутизация${typeof Help !== 'undefined' ? Help.button('routing') : ''}</h1>
                     <p class="page-description">
                         Единый слой: для каждого назначения — через что пустить
                         трафик (direct / nfqws2 / туннель), с резервными методами

@@ -25,7 +25,7 @@ const MihomoPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">mihomo (Clash.Meta)</h1>
+                    <h1 class="page-title">mihomo (Clash.Meta)${typeof Help !== 'undefined' ? Help.button('mihomo') : ''}</h1>
                     <p class="page-description">
                         Альтернативный прокси-движок: clash-YAML конфиги,
                         VLESS/Trojan/SS/Hysteria2/TUIC, GeoIP/GeoSite-роутинг.

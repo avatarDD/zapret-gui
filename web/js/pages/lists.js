@@ -14,7 +14,7 @@ const ListsPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Списки</h1>
+                    <h1 class="page-title">Списки${typeof Help !== 'undefined' ? Help.button('lists') : ''}</h1>
                     <p class="page-description">
                         Именованные списки доменов и IP/CIDR. Используются
                         в «Маршрутизации» (назначение → метод) и как

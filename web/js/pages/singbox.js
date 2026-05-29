@@ -55,7 +55,7 @@ const SingboxDashboardPage = (() => {
             <div id="sb-instances"></div>
 
             <div class="card" id="sb-transparent" style="margin-top:16px;">
-                <div class="card-title">Прозрачное проксирование (TProxy / Redirect / Hybrid)</div>
+                <div class="card-title">Прозрачное проксирование (TProxy / Redirect / Hybrid)${typeof Help !== 'undefined' ? Help.button('transparent') : ''}</div>
                 <div id="sb-transparent-body" style="margin-top:8px;">
                     <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
                 </div>
