@@ -10,7 +10,9 @@ iptables (его нет в CI и он требует рута).
 import unittest
 
 from core import singbox_transparent as tp
-from core.singbox_config import make_transparent_inbounds
+from core.singbox_config import (
+    make_transparent_inbounds, set_transparent_inbounds,
+)
 
 
 def _flat(rules):
@@ -152,6 +154,34 @@ class TestTransparentInbounds(unittest.TestCase):
         without = make_transparent_inbounds(mode="tproxy", sniff=False)
         self.assertIn("sniff", with_sniff[0])
         self.assertNotIn("sniff", without[0])
+
+
+class TestSetTransparentInbounds(unittest.TestCase):
+
+    def test_adds_and_preserves_user_inbounds(self):
+        cfg = {"inbounds": [{"type": "mixed", "tag": "user-mixed"}],
+               "outbounds": []}
+        set_transparent_inbounds(cfg, mode="tproxy", tcp_port=1100)
+        tags = [ib["tag"] for ib in cfg["inbounds"]]
+        self.assertIn("tproxy-in", tags)
+        self.assertIn("user-mixed", tags)
+
+    def test_replaces_previous_transparent(self):
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="redirect", tcp_port=1100)
+        set_transparent_inbounds(cfg, mode="tproxy", tcp_port=1100)
+        tags = [ib["tag"] for ib in cfg["inbounds"]]
+        # старый redirect-in должен быть вытеснен, не дублироваться
+        self.assertEqual(tags.count("redirect-in"), 0)
+        self.assertEqual(tags.count("tproxy-in"), 1)
+
+    def test_hybrid_adds_both(self):
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="hybrid",
+                                 tcp_port=1100, udp_port=1102)
+        tags = {ib["tag"] for ib in cfg["inbounds"]}
+        self.assertIn("redirect-in", tags)
+        self.assertIn("tproxy-in", tags)
 
 
 if __name__ == "__main__":
