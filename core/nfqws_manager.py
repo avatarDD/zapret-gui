@@ -335,8 +335,17 @@ class NFQWSManager:
         lua_path = cfg.get("zapret", "lua_path") or "/opt/zapret2/lua"
         lua_args = self._build_lua_init_args(strategy_args, lua_path)
 
+        # Единый слой (opt-in): --hostlist агрегата nfqws2-маршрутов перед
+        # профилями стратегии — стратегия применяется к этим доменам.
+        unified_args = []
+        try:
+            from core.unified import nfqws_hostlist
+            unified_args = nfqws_hostlist.compose_extra_args()
+        except Exception:
+            unified_args = []
+
         return self._dedup_lua_init(
-            [binary] + base_args + lua_args + strategy_args
+            [binary] + base_args + lua_args + unified_args + strategy_args
         )
 
     # ─────────────────────── internal helpers ───────────────────────

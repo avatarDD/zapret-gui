@@ -86,6 +86,8 @@ const SettingsPage = (() => {
                 { key: 'nfqws.desync_mark_postnat',  label: 'Desync mark (postnat)',  type: 'text', placeholder: '0x20000000' },
                 { key: 'nfqws.user',                 label: 'Пользователь',           type: 'text', placeholder: 'nobody' },
                 { key: 'nfqws.disable_ipv6',         label: 'Отключить IPv6',         type: 'toggle' },
+                { key: 'nfqws.unified_hostlist',     label: 'Единый слой: ограничить домены', type: 'toggle',
+                  hint: 'Применять стратегию nfqws2 только к доменам маршрутов «Маршрутизации» с методом nfqws2 (через --hostlist агрегата unified_nfqws). Выключено — стратегия глобальна, как раньше.' },
             ]
         },
         {

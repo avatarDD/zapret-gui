@@ -98,10 +98,11 @@ class TestApplyNfqwsAndDirect(unittest.TestCase):
             r = _route("nfqws2", domains=["x.com", "y.com"])
             res = apply_route(r)
         self.assertTrue(res["ok"])
-        hm.save_hostlist.assert_called_once()
-        args = hm.save_hostlist.call_args.args
-        self.assertEqual(args[0], _hostlist_name(r.id))
-        self.assertEqual(args[1], ["x.com", "y.com"])
+        # Вызывается per-route save + пересборка агрегата unified_nfqws.
+        per_route = [c for c in hm.save_hostlist.call_args_list
+                     if c.args[0] == _hostlist_name(r.id)]
+        self.assertEqual(len(per_route), 1)
+        self.assertEqual(per_route[0].args[1], ["x.com", "y.com"])
 
     def test_direct_cleans_up(self):
         with mock.patch("core.unified.applier._remove_hostlist") as rh:
