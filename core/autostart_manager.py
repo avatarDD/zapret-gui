@@ -46,6 +46,247 @@ LOCAL_INIT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "init.
 LOCAL_SCRIPT_PATH = os.path.join(LOCAL_INIT_DIR, SCRIPT_NAME)
 
 
+# Шаблон init-скрипта S99zapret. Плейсхолдеры вида @NAME@ подставляются в
+# _generate_script(). Firewall-логика портирована из nfqws2-keenetic
+# (etc/init.d/common): отдельные цепочки nfqws_post/nfqws_pre/nfqws_nat,
+# метки MARK_PROCESSED/MARK_EXCLUDE, правила на оба направления, NAT
+# MASQUERADE для UDP, обработка TCP-флагов и тюнинг conntrack через sysctl.
+#
+# Подкоманды firewall_iptables/firewall_ip6tables/firewall_stop позволяют
+# ndm-хуку (Keenetic) и hotplug-хуку (OpenWrt) переустанавливать правила
+# после flush'а системного firewall — без этого правила слетают и nfqws2
+# работает «вхолостую».
+_S99ZAPRET_TEMPLATE = r"""#!/bin/sh
+#
+# Zapret Web-GUI — автозапуск nfqws2
+# Сгенерировано автоматически. Не редактируйте вручную — изменения затрутся
+# при следующей генерации из GUI.
+#
+# Стратегия: @STRATEGY_NAME@ (@STRATEGY_ID@)
+#
+
+SCRIPT_NAME="S99zapret"
+NFQWS_BIN="@NFQWS_BIN@"
+NFQWS_ARGS="@NFQWS_ARGS@"
+PID_FILE="/var/run/zapret-nfqws.pid"
+
+QUEUE_NUM="@QUEUE_NUM@"
+PORTS_TCP="@PORTS_TCP@"
+PORTS_UDP="@PORTS_UDP@"
+MAX_PKT_OUT="@TCP_PKT@"
+MAX_PKT_OUT_UDP="@UDP_PKT@"
+MAX_PKT_IN=15
+MARK_PROCESSED="@MARK_PROCESSED@"
+MARK_EXCLUDE="@MARK_EXCLUDE@"
+IPV6_ENABLED="@IPV6_ENABLED@"
+WAN_IFACES="@WAN_IFACES@"
+
+IPT_GROUP_POST="nfqws_post"
+IPT_GROUP_PRE="nfqws_pre"
+IPT_GROUP_NAT="nfqws_nat"
+
+JNFQ="-j NFQUEUE --queue-num $QUEUE_NUM --queue-bypass"
+CONN_CHECK="-m mark ! --mark $MARK_PROCESSED"
+CB_ORIG="-m connbytes --connbytes-dir=original --connbytes-mode=packets"
+CB_REPLY="-m connbytes --connbytes-dir=reply --connbytes-mode=packets"
+
+is_running() {
+    [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null
+}
+
+kernel_modules() {
+    modprobe -a -q nfnetlink_queue xt_multiport xt_connbytes xt_NFQUEUE xt_CONNMARK xt_connmark nf_conntrack 2>/dev/null
+}
+
+system_config() {
+    sysctl -w net.netfilter.nf_conntrack_checksum=0 >/dev/null 2>&1
+    sysctl -w net.netfilter.nf_conntrack_tcp_be_liberal=1 >/dev/null 2>&1
+}
+
+# Перечень интерфейсов для итерации. Пусто → один проход без -o/-i (все).
+_iface_list() {
+    if [ -n "$WAN_IFACES" ]; then
+        echo "$WAN_IFACES"
+    else
+        echo "__ALL__"
+    fi
+}
+
+_firewall_start() {
+    CMD="$1"  # iptables | ip6tables
+
+    $CMD -w -t mangle -N $IPT_GROUP_POST 2>/dev/null
+    $CMD -w -t mangle -F $IPT_GROUP_POST
+    $CMD -w -t mangle -C POSTROUTING -j $IPT_GROUP_POST 2>/dev/null || \
+        $CMD -w -t mangle -A POSTROUTING -j $IPT_GROUP_POST
+
+    $CMD -w -t mangle -N $IPT_GROUP_PRE 2>/dev/null
+    $CMD -w -t mangle -F $IPT_GROUP_PRE
+    $CMD -w -t mangle -C PREROUTING -j $IPT_GROUP_PRE 2>/dev/null || \
+        $CMD -w -t mangle -A PREROUTING -j $IPT_GROUP_PRE
+
+    if [ "$CMD" = "iptables" ]; then
+        $CMD -w -t nat -N $IPT_GROUP_NAT 2>/dev/null
+        $CMD -w -t nat -F $IPT_GROUP_NAT
+        $CMD -w -t nat -C POSTROUTING -j $IPT_GROUP_NAT 2>/dev/null || \
+            $CMD -w -t nat -A POSTROUTING -j $IPT_GROUP_NAT
+    fi
+
+    for IFACE in $(_iface_list); do
+        if [ "$IFACE" = "__ALL__" ]; then
+            OIF=""; IIF=""
+        else
+            OIF="-o $IFACE"; IIF="-i $IFACE"
+        fi
+
+        # --- POSTROUTING (исходящий трафик) ---
+        $CMD -w -t mangle -A $IPT_GROUP_POST $OIF -m connmark --mark $MARK_EXCLUDE -j RETURN
+        if [ -n "$PORTS_UDP" ]; then
+            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p udp -m multiport --dports $PORTS_UDP $CB_ORIG --connbytes 1:$MAX_PKT_OUT_UDP $JNFQ
+        fi
+        if [ -n "$PORTS_TCP" ]; then
+            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP $CB_ORIG --connbytes 1:$MAX_PKT_OUT $JNFQ
+            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP --tcp-flags fin fin $JNFQ
+            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP --tcp-flags rst rst $JNFQ
+        fi
+
+        # nfqws2 переписывает адреса в пакетах → нужен повторный MASQUERADE.
+        if [ "$CMD" = "iptables" ]; then
+            $CMD -w -t nat -A $IPT_GROUP_NAT $OIF -m mark --mark $MARK_PROCESSED -p udp -j MASQUERADE
+        fi
+
+        # --- PREROUTING (входящий трафик / ответы) ---
+        $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m connmark --mark $MARK_EXCLUDE -j RETURN
+        $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m mark --mark $MARK_PROCESSED -j RETURN
+        if [ -n "$PORTS_UDP" ]; then
+            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p udp -m multiport --sports $PORTS_UDP $CB_REPLY --connbytes 1:$MAX_PKT_IN $JNFQ
+        fi
+        if [ -n "$PORTS_TCP" ]; then
+            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP $CB_REPLY --connbytes 1:$MAX_PKT_IN $JNFQ
+            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags syn,ack syn,ack $JNFQ
+            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags fin fin $JNFQ
+            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags rst rst $JNFQ
+        fi
+    done
+}
+
+_firewall_stop() {
+    CMD="$1"
+
+    while $CMD -w -t mangle -C POSTROUTING -j $IPT_GROUP_POST 2>/dev/null; do
+        $CMD -w -t mangle -D POSTROUTING -j $IPT_GROUP_POST 2>/dev/null || break
+    done
+    while $CMD -w -t mangle -C PREROUTING -j $IPT_GROUP_PRE 2>/dev/null; do
+        $CMD -w -t mangle -D PREROUTING -j $IPT_GROUP_PRE 2>/dev/null || break
+    done
+    if [ "$CMD" = "iptables" ]; then
+        while $CMD -w -t nat -C POSTROUTING -j $IPT_GROUP_NAT 2>/dev/null; do
+            $CMD -w -t nat -D POSTROUTING -j $IPT_GROUP_NAT 2>/dev/null || break
+        done
+    fi
+
+    $CMD -w -t mangle -F $IPT_GROUP_POST 2>/dev/null
+    $CMD -w -t mangle -X $IPT_GROUP_POST 2>/dev/null
+    $CMD -w -t mangle -F $IPT_GROUP_PRE 2>/dev/null
+    $CMD -w -t mangle -X $IPT_GROUP_PRE 2>/dev/null
+    if [ "$CMD" = "iptables" ]; then
+        $CMD -w -t nat -F $IPT_GROUP_NAT 2>/dev/null
+        $CMD -w -t nat -X $IPT_GROUP_NAT 2>/dev/null
+    fi
+}
+
+firewall_iptables() {
+    command -v iptables >/dev/null 2>&1 && _firewall_start iptables
+}
+
+firewall_ip6tables() {
+    [ "$IPV6_ENABLED" = "1" ] || return 0
+    command -v ip6tables >/dev/null 2>&1 && _firewall_start ip6tables
+}
+
+firewall_stop() {
+    command -v iptables >/dev/null 2>&1 && _firewall_stop iptables
+    if [ "$IPV6_ENABLED" = "1" ] && command -v ip6tables >/dev/null 2>&1; then
+        _firewall_stop ip6tables
+    fi
+}
+
+apply_firewall() {
+    firewall_iptables
+    firewall_ip6tables
+}
+
+start() {
+    if is_running; then
+        echo "$SCRIPT_NAME: nfqws2 уже запущен (PID $(cat "$PID_FILE"))"
+        return 0
+    fi
+    if [ ! -x "$NFQWS_BIN" ]; then
+        echo "$SCRIPT_NAME: ОШИБКА — $NFQWS_BIN не найден или не исполняемый"
+        return 1
+    fi
+
+    echo "$SCRIPT_NAME: Запуск nfqws2..."
+    kernel_modules
+
+    $NFQWS_BIN $NFQWS_ARGS --daemon --pidfile="$PID_FILE" \
+        2>>/tmp/zapret-nfqws-stderr.log
+
+    sleep 1
+    if is_running; then
+        apply_firewall
+        system_config
+        echo "$SCRIPT_NAME: nfqws2 запущен (PID $(cat "$PID_FILE"))"
+    else
+        echo "$SCRIPT_NAME: ОШИБКА — nfqws2 не удалось запустить"
+        return 1
+    fi
+}
+
+stop() {
+    firewall_stop
+    if [ -f "$PID_FILE" ]; then
+        PID="$(cat "$PID_FILE")"
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "$SCRIPT_NAME: Остановка nfqws2 (PID $PID)..."
+            kill "$PID" 2>/dev/null
+            for i in 1 2 3 4 5; do
+                kill -0 "$PID" 2>/dev/null || break
+                sleep 1
+            done
+            kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+    fi
+    echo "$SCRIPT_NAME: Остановлен"
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    status)
+        if is_running; then
+            echo "$SCRIPT_NAME: запущен (PID $(cat "$PID_FILE"))"
+        else
+            echo "$SCRIPT_NAME: остановлен"
+        fi
+        ;;
+    firewall_iptables) is_running && firewall_iptables ;;
+    firewall_ip6tables) is_running && firewall_ip6tables ;;
+    firewall_stop) firewall_stop ;;
+    reapply) is_running && apply_firewall ;;
+    kernel_modules) kernel_modules ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status|reapply|firewall_iptables|firewall_ip6tables|firewall_stop}"
+        exit 1
+        ;;
+esac
+
+exit 0
+"""
+
+
 def _is_entware() -> bool:
     """Запущены ли мы на Entware (есть /opt/etc/init.d)."""
     return os.path.isdir(INIT_DIR)
@@ -358,266 +599,92 @@ class AutostartManager:
 
     def _generate_script(self) -> str:
         """
-        Сгенерировать shell-скрипт для init.d.
+        Сгенерировать shell-скрипт для init.d (Entware).
 
-        Скрипт использует текущую стратегию и настройки из конфига.
+        Команда запуска nfqws2 и параметры firewall берутся из тех же полей
+        конфига, что и живой путь (NFQWSManager/FirewallManager) — раньше
+        автозапуск использовал РАССИНХРОНИЗИРОВАННЫЕ значения (хардкод
+        fwmark=0x10000, queue из firewall.queue_num=200, без --fwmark/--user
+        и без --lua-init), из-за чего обход в режиме автозапуска ломался:
+        nfqws2 метил пакеты одной меткой, а ACCEPT-правило проверяло другую →
+        петля/дубли; lua-движок не грузился → --lua-desync не работал.
+
+        firewall приведён к схеме nfqws2-keenetic: отдельные цепочки
+        nfqws_post/nfqws_pre/nfqws_nat, метки MARK_PROCESSED/MARK_EXCLUDE,
+        правила на оба направления (POSTROUTING + PREROUTING), NAT MASQUERADE
+        для UDP и обработка TCP-флагов.
         """
         from core.config_manager import get_config_manager
         from core.strategy_builder import get_strategy_manager
+        from core.nfqws_manager import get_nfqws_manager
 
         cfg = get_config_manager()
         sb = get_strategy_manager()
+        nm = get_nfqws_manager()
 
         strategy_id = cfg.get("strategy", "current_id")
         strategy_name = cfg.get("strategy", "current_name") or "unknown"
-        nfqws_bin = cfg.get("zapret", "nfqws_binary",
-                            default="/opt/zapret2/nfq2/nfqws2")
-        queue_num = cfg.get("firewall", "queue_num", default=200)
-        fw_type = cfg.get("firewall", "type", default="auto")
 
-        # Получаем аргументы из стратегии
-        nfqws_args = []
+        # Полная команда nfqws2 (binary + base + lua-init + strategy) —
+        # ровно та же, что собирает живой путь NFQWSManager.start().
+        full_cmd = []
         if strategy_id:
             try:
                 strategy = sb.get_strategy(strategy_id)
                 if strategy:
-                    nfqws_args = sb.build_nfqws_args(strategy)
+                    strategy_args = sb.build_nfqws_args(strategy)
+                    full_cmd = nm.compose_command(strategy_args, cfg=cfg)
             except Exception as e:
-                log.warning("Не удалось собрать аргументы стратегии: %s" % e,
+                log.warning("Не удалось собрать команду стратегии: %s" % e,
                             source="autostart")
+        if not full_cmd:
+            full_cmd = [cfg.get("zapret", "nfqws_binary",
+                                default="/opt/zapret2/nfq2/nfqws2")]
 
-        # Формируем строку аргументов
-        args_str = " ".join(nfqws_args) if nfqws_args else ""
+        nfqws_bin = full_cmd[0]
+        nfqws_args = " ".join(full_cmd[1:])
 
-        # Порты из конфига/стратегии
-        ports_tcp = "80,443"
-        ports_udp = "443,50000:50100"
-        tcp_pkt = 8
-        udp_pkt = 8
+        # Параметры firewall — из секции nfqws (совпадают с FirewallManager).
+        queue_num = int(cfg.get("nfqws", "queue_num", default=300))
+        ports_tcp = cfg.get("nfqws", "ports_tcp", default="80,443")
+        ports_udp = cfg.get("nfqws", "ports_udp", default="443")
+        tcp_pkt = int(cfg.get("nfqws", "tcp_pkt_out", default=20))
+        udp_pkt = int(cfg.get("nfqws", "udp_pkt_out", default=5))
+        mark_processed = cfg.get("nfqws", "desync_mark",
+                                 default="0x40000000")
+        mark_exclude = cfg.get("nfqws", "desync_mark_postnat",
+                               default="0x20000000")
+        disable_ipv6 = cfg.get("nfqws", "disable_ipv6", default=True)
+        ipv6_enabled = "0" if disable_ipv6 else "1"
 
-        if strategy_id:
-            try:
-                strategy = sb.get_strategy(strategy_id)
-                if strategy:
-                    fw = strategy.get("firewall", {})
-                    if fw.get("ports_tcp"):
-                        ports_tcp = fw["ports_tcp"]
-                    if fw.get("ports_udp"):
-                        ports_udp = fw["ports_udp"]
-                    if fw.get("tcp_packets"):
-                        tcp_pkt = fw["tcp_packets"]
-                    if fw.get("udp_packets"):
-                        udp_pkt = fw["udp_packets"]
-            except Exception:
-                pass
+        # WAN-интерфейсы (из конфига или авто-детект). Пусто → правила без
+        # привязки к интерфейсу (на всех).
+        wan4 = nm._detect_wan_interfaces(cfg, "wan")
+        wan_ifaces = " ".join(wan4)
 
-        fwmark = "0x10000"
-        fwmask = "0x10000"
+        # Маски для --mark: nfqws2-keenetic использует "MARK/MARK".
+        mark_proc_full = "%s/%s" % (mark_processed, mark_processed)
+        mark_excl_full = "%s/%s" % (mark_exclude, mark_exclude)
 
-        script = """#!/bin/sh
-#
-# Zapret Web-GUI — автозапуск nfqws2
-# Сгенерировано автоматически. Не редактируйте вручную.
-#
-# Стратегия: {strategy_name} ({strategy_id})
-# Дата генерации: $(date 2>/dev/null || echo "unknown")
-#
+        repl = {
+            "@STRATEGY_NAME@": strategy_name,
+            "@STRATEGY_ID@": strategy_id or "none",
+            "@NFQWS_BIN@": nfqws_bin,
+            "@NFQWS_ARGS@": nfqws_args,
+            "@QUEUE_NUM@": str(queue_num),
+            "@PORTS_TCP@": ports_tcp or "",
+            "@PORTS_UDP@": ports_udp or "",
+            "@TCP_PKT@": str(tcp_pkt),
+            "@UDP_PKT@": str(udp_pkt),
+            "@MARK_PROCESSED@": mark_proc_full,
+            "@MARK_EXCLUDE@": mark_excl_full,
+            "@IPV6_ENABLED@": ipv6_enabled,
+            "@WAN_IFACES@": wan_ifaces,
+        }
 
-SCRIPT_NAME="S99zapret"
-NFQWS_BIN="{nfqws_bin}"
-NFQWS_ARGS="{args_str}"
-QUEUE_NUM="{queue_num}"
-PID_FILE="/var/run/zapret-nfqws.pid"
-
-# Параметры firewall
-PORTS_TCP="{ports_tcp}"
-PORTS_UDP="{ports_udp}"
-TCP_PKT="{tcp_pkt}"
-UDP_PKT="{udp_pkt}"
-FWMARK="{fwmark}"
-FWMASK="{fwmask}"
-IPT_COMMENT="zapret-gui"
-
-start() {{
-    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        echo "$SCRIPT_NAME: nfqws2 уже запущен (PID $(cat "$PID_FILE"))"
-        return 0
-    fi
-
-    if [ ! -x "$NFQWS_BIN" ]; then
-        echo "$SCRIPT_NAME: ОШИБКА — $NFQWS_BIN не найден или не исполняемый"
-        return 1
-    fi
-
-    echo "$SCRIPT_NAME: Запуск nfqws2..."
-
-    # Применяем правила firewall
-    apply_firewall
-
-    # Запускаем nfqws2
-    $NFQWS_BIN --qnum=$QUEUE_NUM $NFQWS_ARGS --daemon --pidfile="$PID_FILE" \\
-        2>>/tmp/zapret-nfqws-stderr.log
-
-    sleep 1
-
-    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        echo "$SCRIPT_NAME: nfqws2 запущен (PID $(cat "$PID_FILE"))"
-    else
-        echo "$SCRIPT_NAME: ОШИБКА — nfqws2 не удалось запустить"
-        remove_firewall
-        return 1
-    fi
-}}
-
-stop() {{
-    if [ -f "$PID_FILE" ]; then
-        PID="$(cat "$PID_FILE")"
-        if kill -0 "$PID" 2>/dev/null; then
-            echo "$SCRIPT_NAME: Остановка nfqws2 (PID $PID)..."
-            kill "$PID" 2>/dev/null
-            # Ждём завершения
-            for i in 1 2 3 4 5; do
-                kill -0 "$PID" 2>/dev/null || break
-                sleep 1
-            done
-            # SIGKILL если не завершился
-            if kill -0 "$PID" 2>/dev/null; then
-                kill -9 "$PID" 2>/dev/null
-                sleep 1
-            fi
-        fi
-        rm -f "$PID_FILE"
-    fi
-
-    # Снимаем правила firewall
-    remove_firewall
-
-    echo "$SCRIPT_NAME: Остановлен"
-}}
-
-apply_firewall() {{
-    # Определяем доступный инструмент
-    if command -v iptables >/dev/null 2>&1; then
-        apply_iptables
-    elif command -v nft >/dev/null 2>&1; then
-        apply_nftables
-    else
-        echo "$SCRIPT_NAME: ПРЕДУПРЕЖДЕНИЕ — ни iptables, ни nft не найдены"
-    fi
-}}
-
-remove_firewall() {{
-    if command -v iptables >/dev/null 2>&1; then
-        remove_iptables
-    fi
-    if command -v nft >/dev/null 2>&1; then
-        remove_nftables
-    fi
-}}
-
-apply_iptables() {{
-    # ACCEPT для помеченных пакетов
-    iptables -t mangle -I POSTROUTING -m mark --mark "$FWMARK/$FWMASK" \\
-        -m comment --comment "$IPT_COMMENT" -j ACCEPT 2>/dev/null
-
-    # TCP -> NFQUEUE
-    if [ -n "$PORTS_TCP" ]; then
-        iptables -t mangle -I POSTROUTING -p tcp \\
-            -m multiport --dports "$PORTS_TCP" \\
-            -m connbytes --connbytes-dir=original --connbytes-mode=packets \\
-            --connbytes "1:$TCP_PKT" \\
-            -m comment --comment "$IPT_COMMENT" \\
-            -j NFQUEUE --queue-num "$QUEUE_NUM" --queue-bypass 2>/dev/null
-    fi
-
-    # UDP -> NFQUEUE
-    if [ -n "$PORTS_UDP" ]; then
-        iptables -t mangle -I POSTROUTING -p udp \\
-            -m multiport --dports "$PORTS_UDP" \\
-            -m connbytes --connbytes-dir=original --connbytes-mode=packets \\
-            --connbytes "1:$UDP_PKT" \\
-            -m comment --comment "$IPT_COMMENT" \\
-            -j NFQUEUE --queue-num "$QUEUE_NUM" --queue-bypass 2>/dev/null
-    fi
-}}
-
-remove_iptables() {{
-    # Удаляем все правила с нашим комментарием (несколько проходов)
-    for pass in 1 2 3 4 5 6 7 8 9 10; do
-        FOUND=0
-        iptables -t mangle -L POSTROUTING --line-numbers -n 2>/dev/null | \\
-            grep "$IPT_COMMENT" | awk '{{print $1}}' | sort -rn | while read NUM; do
-            iptables -t mangle -D POSTROUTING "$NUM" 2>/dev/null
-            FOUND=1
-        done
-        [ "$FOUND" = "0" ] && break
-    done
-}}
-
-apply_nftables() {{
-    nft add table inet zapret-gui 2>/dev/null
-    nft add chain inet zapret-gui postrouting "{{ type filter hook postrouting priority 150; policy accept; }}" 2>/dev/null
-
-    # ACCEPT помеченных
-    nft add rule inet zapret-gui postrouting mark and "$FWMASK" == "$FWMARK" accept 2>/dev/null
-
-    # TCP -> NFQUEUE
-    if [ -n "$PORTS_TCP" ]; then
-        nft add rule inet zapret-gui postrouting tcp dport "{{ $PORTS_TCP }}" \\
-            ct original packets le "$TCP_PKT" queue num "$QUEUE_NUM" bypass 2>/dev/null
-    fi
-
-    # UDP -> NFQUEUE
-    if [ -n "$PORTS_UDP" ]; then
-        nft add rule inet zapret-gui postrouting udp dport "{{ $PORTS_UDP }}" \\
-            ct original packets le "$UDP_PKT" queue num "$QUEUE_NUM" bypass 2>/dev/null
-    fi
-}}
-
-remove_nftables() {{
-    nft delete table inet zapret-gui 2>/dev/null
-}}
-
-case "$1" in
-    start)
-        start
-        ;;
-    stop)
-        stop
-        ;;
-    restart)
-        stop
-        sleep 1
-        start
-        ;;
-    status)
-        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-            echo "$SCRIPT_NAME: запущен (PID $(cat "$PID_FILE"))"
-        else
-            echo "$SCRIPT_NAME: остановлен"
-        fi
-        ;;
-    *)
-        echo "Usage: $0 {{start|stop|restart|status}}"
-        exit 1
-        ;;
-esac
-
-exit 0
-""".format(
-            strategy_name=strategy_name,
-            strategy_id=strategy_id or "none",
-            nfqws_bin=nfqws_bin,
-            args_str=args_str,
-            queue_num=queue_num,
-            ports_tcp=ports_tcp,
-            ports_udp=ports_udp,
-            tcp_pkt=tcp_pkt,
-            udp_pkt=udp_pkt,
-            fwmark=fwmark,
-            fwmask=fwmask,
-        )
-
+        script = _S99ZAPRET_TEMPLATE
+        for key, value in repl.items():
+            script = script.replace(key, value)
         return script
 
 
