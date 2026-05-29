@@ -365,6 +365,28 @@ def available(family: str = "v4") -> bool:
     return rc == 0
 
 
+def choose_backend(prefer: str = "auto") -> str:
+    """
+    Выбрать firewall-бэкенд: 'iptables' | 'nftables' | 'none'.
+
+    prefer='auto': iptables приоритетнее (Keenetic/Entware), т.к. там
+    наш iptables-путь основной и проверен; nft — для систем без iptables
+    (OpenWrt 22.03+). prefer='iptables'/'nftables' — принудительно.
+    """
+    if prefer == "iptables":
+        return "iptables" if available("v4") else "none"
+    if prefer == "nftables":
+        from core import singbox_transparent_nft as nft
+        return "nftables" if nft.available() else "none"
+    # auto
+    if available("v4"):
+        return "iptables"
+    from core import singbox_transparent_nft as nft
+    if nft.available():
+        return "nftables"
+    return "none"
+
+
 def apply(*, mode: str,
           tcp_port: int = 0,
           udp_port: int = 0,
@@ -376,7 +398,8 @@ def apply(*, mode: str,
           bypass: list = None,
           proxy_self: bool = False,
           dns_hijack_port: int = 0,
-          ipv6_policy: str = "allow") -> dict:
+          ipv6_policy: str = "allow",
+          backend: str = "auto") -> dict:
     """
     Применить прозрачное проксирование.
 
@@ -389,9 +412,21 @@ def apply(*, mode: str,
       families: какие IP-семейства обрабатывать ('v4','v6').
       ipv6_policy: 'allow' | 'drop' | 'proxy' — что делать с IPv6
                    когда 'v6' не в families.
+      backend: 'auto' | 'iptables' | 'nftables'.
     """
     if mode not in ("redirect", "tproxy", "hybrid"):
         return {"ok": False, "error": "Неизвестный режим: %s" % mode}
+
+    chosen = choose_backend(backend)
+    if chosen == "none":
+        return {"ok": False, "error": "Нет ни iptables, ни nft"}
+    if chosen == "nftables":
+        from core import singbox_transparent_nft as nft
+        return nft.apply(
+            mode=mode, tcp_port=tcp_port, udp_port=udp_port, mark=mark,
+            table=table, families=tuple(families), lan_ifaces=lan_ifaces,
+            server_ips=server_ips, bypass=bypass, proxy_self=proxy_self,
+            dns_hijack_port=dns_hijack_port, ipv6_policy=ipv6_policy)
 
     cmds = []   # (family, table, [argv...]) — для лога/отладки
     errors = []
@@ -471,8 +506,18 @@ def apply(*, mode: str,
 
 def remove(*, mark: int = DEFAULT_TPROXY_MARK,
            table: int = DEFAULT_TPROXY_TABLE,
-           families: tuple = ("v4", "v6")) -> dict:
-    """Снять все наши правила прозрачного проксирования (идемпотентно)."""
+           families: tuple = ("v4", "v6"),
+           backend: str = "auto") -> dict:
+    """Снять все наши правила прозрачного проксирования (идемпотентно).
+
+    Снимаем на ОБОИХ бэкендах (если присутствуют) — на случай, если
+    режим применялся одним, а снимается в другой конфигурации.
+    """
+    from core import singbox_transparent_nft as nft
+    if nft.available():
+        nft.remove(mark=mark, table=table, families=families)
+    if not available("v4") and not available("v6"):
+        return {"ok": True}
     for family in families:
         if not available(family):
             continue

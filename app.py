@@ -291,6 +291,36 @@ def _run_awg_autostart_cli(args, stop: bool = False):
         sys.exit(2)
 
 
+def _run_singbox_transparent_cli(args, remove: bool = False):
+    """
+    CLI-режим прозрачного проксирования sing-box: вызывается init-скриптом
+    на старте (reapply из сохранённых настроек) / стопе (снять правила).
+    """
+    from core.config_manager import init_config
+    from core.log_buffer import log
+
+    init_config(args.config)
+    try:
+        from core import singbox_transparent as tp
+        if remove:
+            result = tp.remove()
+        else:
+            result = tp.reapply_saved()
+        ok = bool(result.get("ok", False))
+        log.info("CLI singbox transparent %s: %s"
+                 % ("remove" if remove else "apply",
+                    "ok" if ok else result.get("error", "ошибка")),
+                 source="singbox")
+        sys.exit(0 if ok else 1)
+    except Exception as e:
+        try:
+            from core.log_buffer import log as _log
+            _log.error("CLI singbox transparent: %s" % e, source="singbox")
+        except Exception:
+            pass
+        sys.exit(2)
+
+
 def create_app(config_dir: str = None) -> Bottle:
     """
     Создать и настроить Bottle-приложение.
@@ -428,12 +458,25 @@ def main():
         "--stop-awg-autostart", action="store_true",
         help="CLI-режим: опустить все поднятые AWG-интерфейсы и выйти"
     )
+    parser.add_argument(
+        "--apply-singbox-transparent", action="store_true",
+        help="CLI-режим: переприменить firewall прозрачного "
+             "проксирования из сохранённых настроек и выйти"
+    )
+    parser.add_argument(
+        "--remove-singbox-transparent", action="store_true",
+        help="CLI-режим: снять firewall прозрачного проксирования и выйти"
+    )
 
     args = parser.parse_args()
 
     # CLI-режимы (не запускаем web-сервер)
     if args.apply_awg_autostart or args.stop_awg_autostart:
         _run_awg_autostart_cli(args, stop=args.stop_awg_autostart)
+        return
+    if args.apply_singbox_transparent or args.remove_singbox_transparent:
+        _run_singbox_transparent_cli(
+            args, remove=args.remove_singbox_transparent)
         return
 
     # Создаём приложение

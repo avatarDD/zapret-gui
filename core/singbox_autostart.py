@@ -12,10 +12,18 @@ settings.json под ключом `singbox.autostart[name]`.
 
 import json
 import os
+import sys
 import threading
 
 from core.log_buffer import log
 from core.singbox_platform import detect_singbox_platform
+
+
+# Путь к app.py — для вызова CLI-режима из init-скрипта (переприменение
+# transparent-firewall на загрузке, по аналогии с AWG).
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APP_PY = os.path.join(APP_DIR, "app.py")
+PYTHON_BIN = sys.executable or "/opt/bin/python3"
 
 
 # ─────── settings ───────
@@ -84,6 +92,10 @@ def _entware_init_script(binary: str, configs_dir: str,
                          names: list) -> str:
     """
     Init-скрипт под Entware (Keenetic / OpenWrt-Entware). BusyBox-shell.
+
+    На старте дополнительно переприменяет firewall прозрачного
+    проксирования (если настроен), на остановке — снимает его, вызывая
+    app.py в CLI-режиме. Так правила переживают перезагрузку.
     """
     names_quoted = " ".join('"%s"' % n for n in names)
     return f"""#!/bin/sh
@@ -94,6 +106,8 @@ BINARY="{binary}"
 CONFIGS_DIR="{configs_dir}"
 PIDS_DIR="{pids_dir}"
 LOGS_DIR="{logs_dir}"
+PYTHON="{PYTHON_BIN}"
+APP_PY="{APP_PY}"
 NAMES={names_quoted}
 
 mkdir -p "$PIDS_DIR" "$LOGS_DIR"
@@ -101,6 +115,15 @@ mkdir -p "$PIDS_DIR" "$LOGS_DIR"
 # Поднимаем лимит дескрипторов: прокси-движок под нагрузкой упирается
 # в дефолтные 1024 и роняет коннекты "too many open files".
 ulimit -n 65536 2>/dev/null || true
+
+reapply_transparent() {{
+    [ -f "$APP_PY" ] || return 0
+    "$PYTHON" "$APP_PY" --apply-singbox-transparent >> "$LOGS_DIR/transparent.log" 2>&1 || true
+}}
+remove_transparent() {{
+    [ -f "$APP_PY" ] || return 0
+    "$PYTHON" "$APP_PY" --remove-singbox-transparent >> "$LOGS_DIR/transparent.log" 2>&1 || true
+}}
 
 start_one() {{
     name="$1"
@@ -138,14 +161,18 @@ stop_one() {{
 case "$1" in
     start)
         for n in $NAMES; do start_one "$n"; done
+        reapply_transparent
         ;;
     stop)
+        remove_transparent
         for n in $NAMES; do stop_one "$n"; done
         ;;
     restart)
+        remove_transparent
         for n in $NAMES; do stop_one "$n"; done
         sleep 1
         for n in $NAMES; do start_one "$n"; done
+        reapply_transparent
         ;;
     status)
         for n in $NAMES; do
@@ -181,6 +208,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={binary} run -c {configs_dir}/{name}.json
+ExecStartPost=-{PYTHON_BIN} {APP_PY} --apply-singbox-transparent
+ExecStopPost=-{PYTHON_BIN} {APP_PY} --remove-singbox-transparent
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
