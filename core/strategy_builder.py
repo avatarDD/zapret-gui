@@ -340,6 +340,17 @@ class StrategyManager:
 
             all_args.extend(profile_args)
 
+        # Регистрация именованных blob'ов. Компактные каталоги (basic/advanced)
+        # ссылаются на blob=tls_google и т.п. через метаполе `blobs =`, но саму
+        # декларацию --blob=NAME:@bin/file.bin не несут — без неё nfqws2 шлёт
+        # ПУСТОЙ fake и обход не работает. Подмешиваем недостающие декларации
+        # ОДИН раз в начало (blob-декларации в nfqws2 глобальны, до первого
+        # --new). Уже объявленные в стратегии (полные winws2-пресеты) не дублируем.
+        from core.blob_registry import build_blob_declarations
+        blob_decls = build_blob_declarations(all_args)
+        if blob_decls:
+            all_args = blob_decls + all_args
+
         # Резолвим @lua/, @bin/, lists/ → абсолютные пути zapret2
         from core.catalog_loader import CatalogManager
         from core.config_manager import get_config_manager
@@ -510,6 +521,7 @@ def _catalog_entry_to_strategy(entry) -> dict:
         "label": entry.label,
         "author": entry.author,
         "protocol": entry.protocol,
+        "blobs": list(getattr(entry, "blobs", []) or []),
         "profiles": profiles,
     }
 
