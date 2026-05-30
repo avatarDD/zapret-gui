@@ -9,6 +9,8 @@ API диагностики сети и системы.
   POST /api/diagnostics/service    — комплексная проверка сервиса
   POST /api/diagnostics/check-all  — проверить все сервисы
   GET  /api/diagnostics/conflicts  — конфликты nfqws/tpws
+  GET  /api/diagnostics/known-conflicts — конфликты окружения
+                                          (getdomains/XKeen/podkop/Xray/…)
   GET  /api/diagnostics/firewall   — статус firewall
   GET  /api/diagnostics/system     — расширенная системная информация
   GET  /api/diagnostics/services   — список доступных сервисов
@@ -134,6 +136,13 @@ def register(app):
         from core.diagnostics import check_nfqws_conflicts
         result = check_nfqws_conflicts()
         return {"ok": True, "result": result}
+
+    @app.route("/api/diagnostics/known-conflicts")
+    def api_diagnostics_known_conflicts():
+        """Конфликты окружения: getdomains/XKeen/podkop/Xray/redsocks и пр."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.diagnostics import check_known_conflicts
+        return {"ok": True, "result": check_known_conflicts()}
 
     @app.route("/api/diagnostics/firewall")
     def api_diagnostics_firewall():

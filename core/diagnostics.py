@@ -750,6 +750,151 @@ def check_nfqws_conflicts():
     }
 
 
+# ─────────────── Конфликты окружения (podkop-стиль) ───────────────
+
+# Сторонние инструменты обхода/маршрутизации, которые спорят с
+# zapret-gui за dnsmasq/ipset, прозрачное проксирование и правила
+# файрвола. Детект по маркер-файлам (надёжно, без ложного убийства
+# процессов).
+_KNOWN_TOOL_MARKERS = (
+    {
+        "id": "getdomains",
+        "name": "getdomains",
+        "paths": ("/opt/etc/init.d/S99getdomains",
+                  "/etc/init.d/getdomains",
+                  "/opt/etc/getdomains"),
+        "hint": "getdomains маршрутизирует домены через свой dnsmasq+ipset "
+                "и туннель. Одновременно с единым слоем zapret-gui они будут "
+                "спорить за одни и те же домены/ipset — используйте "
+                "что-то одно.",
+    },
+    {
+        "id": "xkeen",
+        "name": "XKeen",
+        "paths": ("/opt/sbin/xkeen", "/opt/etc/init.d/S99xkeen"),
+        "hint": "XKeen поднимает собственный Xray с прозрачным "
+                "проксированием — это конфликтует с прозрачным режимом "
+                "sing-box/mihomo zapret-gui (двойной TProxy/REDIRECT).",
+    },
+    {
+        "id": "podkop",
+        "name": "podkop",
+        "paths": ("/etc/init.d/podkop", "/usr/bin/podkop",
+                  "/opt/etc/init.d/S99podkop"),
+        "hint": "podkop тоже маршрутизирует трафик через sing-box. "
+                "Одновременный запуск приведёт к конфликту правил "
+                "маршрутизации и файрвола.",
+    },
+    {
+        "id": "hydraroute",
+        "name": "HydraRoute",
+        "paths": ("/opt/etc/init.d/S99hydraroute", "/opt/bin/hydraroute"),
+        "hint": "HydraRoute — ещё один маршрутизатор поверх Xray/sing-box; "
+                "одновременная работа с единым слоем zapret-gui чревата "
+                "конфликтом ipset/маршрутов.",
+    },
+)
+
+# Сторонние демоны, которые zapret-gui сам никогда не запускает — их
+# присутствие в процессах однозначно указывает на стороннюю систему
+# обхода/редиректа.
+_KNOWN_FOREIGN_DAEMONS = {
+    "xray": "Запущен Xray (вероятно XKeen или ручной Xray) — конфликтует "
+            "с прозрачным проксированием sing-box/mihomo.",
+    "redsocks": "Запущен redsocks — прозрачный TCP-редирект, конфликтует "
+                "с TProxy/REDIRECT zapret-gui.",
+}
+
+
+def evaluate_conflicts(existing_paths, running, *,
+                       markers=_KNOWN_TOOL_MARKERS,
+                       daemons=None):
+    """
+    Чистая функция: по множеству найденных маркер-путей и запущенных
+    имён процессов вернуть список предупреждений. Тестируется без I/O.
+    """
+    if daemons is None:
+        daemons = _KNOWN_FOREIGN_DAEMONS
+    existing_paths = set(existing_paths or ())
+    running = set(running or ())
+    warnings = []
+    for m in markers:
+        hit = [p for p in m["paths"] if p in existing_paths]
+        if hit:
+            warnings.append({
+                "id": m["id"],
+                "severity": "warning",
+                "title": "Обнаружен %s" % m["name"],
+                "detail": "Найдено: %s" % ", ".join(hit),
+                "hint": m["hint"],
+            })
+    for name in sorted(daemons):
+        if name in running:
+            warnings.append({
+                "id": "proc-%s" % name,
+                "severity": "warning",
+                "title": "Запущен процесс %s" % name,
+                "detail": "Процесс «%s» активен" % name,
+                "hint": daemons[name],
+            })
+    return warnings
+
+
+def _running_process_names(wanted):
+    """Множество basenames из `wanted`, найденных среди процессов /proc."""
+    found = set()
+    wanted = set(wanted or ())
+    if not wanted:
+        return found
+    try:
+        for pid_dir in os.listdir("/proc"):
+            if not pid_dir.isdigit():
+                continue
+            try:
+                with open("/proc/%s/cmdline" % pid_dir, "rb") as f:
+                    raw = f.read()
+            except (IOError, OSError, PermissionError):
+                continue
+            if not raw:
+                continue
+            argv0 = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+            if not argv0:
+                continue
+            name = os.path.basename(argv0)
+            if name in wanted:
+                found.add(name)
+    except (IOError, OSError):
+        pass
+    return found
+
+
+def check_known_conflicts():
+    """
+    Конфликты окружения: сторонние системы обхода/маршрутизации
+    (getdomains, XKeen, podkop, HydraRoute, Xray, redsocks), которые
+    мешают единому слою и прозрачному проксированию zapret-gui.
+
+    Returns:
+        dict: { ok, warnings: [{id, severity, title, detail, hint}],
+                has_conflicts }
+    """
+    existing = set()
+    for m in _KNOWN_TOOL_MARKERS:
+        for p in m["paths"]:
+            try:
+                if os.path.exists(p):
+                    existing.add(p)
+            except OSError:
+                continue
+    running = _running_process_names(set(_KNOWN_FOREIGN_DAEMONS.keys()))
+    warnings = evaluate_conflicts(existing, running)
+    return {
+        "ok": True,
+        "warnings": warnings,
+        "has_conflicts": len(warnings) > 0,
+    }
+
+
 # ─────────────────────── Статус Firewall ───────────────────────
 
 def get_firewall_status():
