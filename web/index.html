@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#0f1117">
     <title>Zapret GUI</title>
+    <!-- Применяем тему до отрисовки, чтобы не было «вспышки» тёмного. -->
+    <script>
+      try {
+        var _t = localStorage.getItem('zapret-gui-theme');
+        document.documentElement.setAttribute(
+          'data-theme', (_t === 'light' || _t === 'dark') ? _t : 'dark');
+      } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
+    </script>
     <link rel="icon" href="/img/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/css/style.css">
     <link rel="stylesheet" href="/css/blockcheck_scan.css">
@@ -40,6 +48,8 @@
 
             <div class="sidebar-footer">
                 <div class="sidebar-version" id="sidebar-version">...</div>
+                <button id="theme-toggle" class="theme-toggle" title="Тема"
+                        onclick="Theme.toggle()"></button>
             </div>
         </nav>
 
@@ -68,6 +78,7 @@
     <script src="/js/utils/lua_syntax.js"></script>
     <script src="/js/utils/autocomplete.js"></script>
     <script src="/js/components/toast.js"></script>
+    <script src="/js/components/theme.js"></script>
     <script src="/js/components/sidebar.js"></script>
     <script src="/js/components/list_ui.js"></script>
     <script src="/js/components/sparkline.js"></script>
