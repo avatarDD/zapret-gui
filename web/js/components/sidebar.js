@@ -27,6 +27,7 @@ const Sidebar = (() => {
         blockcheck:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>',
         scan:        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>',
         awg:         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M8 11l3 3 5-6"/></svg>',
+        chevron:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
     };
 
     // Группы с разделителями
@@ -64,16 +65,18 @@ const Sidebar = (() => {
         {
             label: 'VPN',
             items: [
-                { id: 'awg',         label: 'AmneziaWG',  icon: 'awg' },
-                { id: 'awg-configs', label: 'Конфиги',    icon: 'lua' },
-                { id: 'awg-warp',    label: 'WARP',       icon: 'awg' },
-                { id: 'routing',     label: 'Маршрутизация', icon: 'globe' },
-                { id: 'awg-routing', label: 'Routing (AWG)', icon: 'globe' },
-                { id: 'awg-setup',   label: 'Установка',  icon: 'settings' },
-                { id: 'singbox',         label: 'sing-box',     icon: 'awg' },
-                { id: 'singbox-configs', label: 'sing-box: конфиги', icon: 'lua' },
-                { id: 'singbox-setup',   label: 'sing-box: установка', icon: 'settings' },
-                { id: 'mihomo',          label: 'mihomo',       icon: 'awg' },
+                { id: 'routing', label: 'Маршрутизация', icon: 'globe' },
+                { id: 'awg', label: 'AmneziaWG', icon: 'awg', children: [
+                    { id: 'awg-configs', label: 'Конфиги',  icon: 'lua' },
+                    { id: 'awg-warp',    label: 'WARP',      icon: 'awg' },
+                    { id: 'awg-routing', label: 'Routing',   icon: 'globe' },
+                    { id: 'awg-setup',   label: 'Установка', icon: 'settings' },
+                ] },
+                { id: 'singbox', label: 'sing-box', icon: 'awg', children: [
+                    { id: 'singbox-configs', label: 'Конфиги',  icon: 'lua' },
+                    { id: 'singbox-setup',   label: 'Установка', icon: 'settings' },
+                ] },
+                { id: 'mihomo', label: 'mihomo', icon: 'awg' },
             ]
         },
         {
@@ -89,6 +92,72 @@ const Sidebar = (() => {
     ];
 
     let currentPage = 'dashboard';
+    // Состояние раскрытия родительских пунктов дерева (id → bool).
+    const expanded = {};
+
+    function _hasActiveChild(item) {
+        return (item.children || []).some(c => c.id === currentPage);
+    }
+
+    function _navigate(pageId) {
+        window.location.hash = pageId;
+        if (window.innerWidth <= 768) {
+            document.getElementById('sidebar')?.classList.remove('open');
+        }
+    }
+
+    function _renderLeaf(parentEl, item, isChild) {
+        const el = document.createElement('div');
+        el.className = 'nav-item'
+            + (isChild ? ' nav-child' : '')
+            + (item.id === currentPage ? ' active' : '');
+        el.dataset.page = item.id;
+        el.innerHTML = `
+            <span class="nav-item-icon">${ICONS[item.icon] || ''}</span>
+            <span class="nav-item-label">${item.label}</span>
+        `;
+        el.addEventListener('click', () => _navigate(item.id));
+        parentEl.appendChild(el);
+    }
+
+    function _renderParent(nav, item) {
+        // Автораскрытие, если активна сама ветка или один из детей.
+        if (expanded[item.id] === undefined
+            && (item.id === currentPage || _hasActiveChild(item))) {
+            expanded[item.id] = true;
+        }
+        const isOpen = !!expanded[item.id];
+
+        const row = document.createElement('div');
+        row.className = 'nav-item nav-parent'
+            + (item.id === currentPage ? ' active' : '')
+            + (_hasActiveChild(item) ? ' has-active-child' : '')
+            + (isOpen ? ' open' : '');
+        row.dataset.page = item.id;
+        row.innerHTML = `
+            <span class="nav-item-icon">${ICONS[item.icon] || ''}</span>
+            <span class="nav-item-label">${item.label}</span>
+            <span class="nav-caret">${ICONS.chevron}</span>
+        `;
+        row.addEventListener('click', (e) => {
+            // Клик по шеврону — только свернуть/развернуть, без перехода.
+            if (e.target.closest('.nav-caret')) {
+                expanded[item.id] = !expanded[item.id];
+                render();
+                return;
+            }
+            // Клик по строке — переходим на страницу и раскрываем ветку.
+            expanded[item.id] = true;
+            if (item.id) _navigate(item.id);
+            else { render(); }
+        });
+        nav.appendChild(row);
+
+        const box = document.createElement('div');
+        box.className = 'nav-children' + (isOpen ? ' open' : '');
+        (item.children || []).forEach(c => _renderLeaf(box, c, true));
+        nav.appendChild(box);
+    }
 
     function render() {
         const nav = document.getElementById('sidebar-nav');
@@ -97,7 +166,6 @@ const Sidebar = (() => {
         nav.innerHTML = '';
 
         NAV_GROUPS.forEach((group, gi) => {
-            // Пропускаем пустые группы
             if (group.items.length === 0) return;
 
             // Разделитель между группами (кроме первой)
@@ -115,33 +183,22 @@ const Sidebar = (() => {
                 nav.appendChild(label);
             }
 
-            // Элементы
+            // Элементы (с поддержкой вложенных children)
             group.items.forEach(item => {
-                const el = document.createElement('div');
-                el.className = `nav-item${item.id === currentPage ? ' active' : ''}`;
-                el.dataset.page = item.id;
-                el.innerHTML = `
-                    <span class="nav-item-icon">${ICONS[item.icon] || ''}</span>
-                    <span class="nav-item-label">${item.label}</span>
-                `;
-                el.addEventListener('click', () => {
-                    window.location.hash = item.id;
-                    // На мобильных — закрываем sidebar
-                    if (window.innerWidth <= 768) {
-                        document.getElementById('sidebar')?.classList.remove('open');
-                    }
-                });
-                nav.appendChild(el);
+                if (item.children && item.children.length) {
+                    _renderParent(nav, item);
+                } else {
+                    _renderLeaf(nav, item, false);
+                }
             });
         });
     }
 
     function setCurrentPage(pageId) {
         currentPage = pageId;
-        // Обновляем active-класс
-        document.querySelectorAll('.nav-item').forEach(el => {
-            el.classList.toggle('active', el.dataset.page === pageId);
-        });
+        // Полная перерисовка — чтобы активная ветка дерева авто-раскрылась
+        // (например, при переходе по прямой ссылке на дочернюю страницу).
+        render();
     }
 
     function initMobileToggle() {
