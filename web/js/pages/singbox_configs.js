@@ -63,6 +63,7 @@ const SingboxConfigsPage = (() => {
 
     function destroy() {
         if (testTimer) { clearTimeout(testTimer); testTimer = null; }
+        if (poolRefreshTimer) { clearTimeout(poolRefreshTimer); poolRefreshTimer = null; }
     }
 
     function switchTab(tab) {
@@ -1244,6 +1245,9 @@ const SingboxConfigsPage = (() => {
     let testState = { running: false, result: null,
                       progress: { phase: '', done: 0, total: 0 } };
     let testTimer = null;
+    let poolRefreshState = { running: false,
+                             progress: { phase: '', done: 0, total: 0 } };
+    let poolRefreshTimer = null;
 
     async function loadPool() {
         try {
@@ -1387,14 +1391,16 @@ const SingboxConfigsPage = (() => {
                         ${s.last_error ? ' · <span style="color:#e58;">'+escapeHtml(s.last_error)+'</span>' : ''}
                     </div>
                     <div style="display:flex; gap:6px;">
-                        <button class="btn btn-primary btn-sm" ${poolBusy?'disabled':''}
-                                onclick="SingboxConfigsPage.poolRefresh()">Собрать пул сейчас</button>
+                        <button class="btn btn-primary btn-sm" ${poolBusy||poolRefreshState.running?'disabled':''}
+                                onclick="SingboxConfigsPage.poolRefresh()">
+                            ${poolRefreshState.running?'Сборка идёт…':'Собрать пул сейчас'}</button>
                         <button class="btn btn-ghost btn-sm" ${testState.running?'disabled':''}
                                 onclick="SingboxConfigsPage.testConfig('${escapeAttr(s.config_name||'server-pool')}')">
                             ${testState.running?'Тест идёт…':'Тест серверов'}
                         </button>
                     </div>
                 </div>
+                ${renderPoolProgress()}
             </div>
 
             ${renderTestResults()}`;
@@ -1518,17 +1524,62 @@ const SingboxConfigsPage = (() => {
         } catch (e) { Toast.error(e.message); }
     }
 
+    function renderPoolProgress() {
+        const st = poolRefreshState;
+        if (!st.running) return '';
+        const labels = { fetch: 'Скачивание источников',
+                         test: 'Проверка серверов', build: 'Сборка конфига' };
+        const total = st.progress.total || 0;
+        const done = st.progress.done || 0;
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        return `
+            <div style="margin-top:12px;">
+                <div style="display:flex; justify-content:space-between; font-size:12px;">
+                    <span class="text-muted">${labels[st.progress.phase] || 'Сборка пула'}…</span>
+                    <span class="text-muted">${done}${total?(' / '+total+' ('+pct+'%)'):''}</span>
+                </div>
+                <div style="height:6px; background:var(--bg-input); border-radius:4px; overflow:hidden; margin-top:6px;">
+                    <div style="height:100%; width:${total?pct:30}%; background:var(--accent); transition:width .3s;"></div>
+                </div>
+            </div>`;
+    }
+
     async function poolRefresh() {
-        poolBusy = true; renderTab();
-        Toast.info('Собираем пул… (может занять время при включённом фильтре живых)');
         try {
             const r = await API.post('/api/singbox/pool/refresh');
-            if (r && r.ok) {
-                Toast.success(`Пул собран: ${r.count} серверов (из ${r.total_before_filter||r.count})`);
-            } else { Toast.error((r&&r.error)||'не удалось собрать'); }
-            await loadPool();
+            if (!r || !r.ok) { Toast.error((r&&r.error)||'не удалось'); return; }
+            Toast.info('Собираем пул…');
+            poolRefreshState.running = true;
+            poolRefreshState.progress = { phase: 'fetch', done: 0, total: 0 };
+            renderTab();
+            pollPoolRefresh();
         } catch (e) { Toast.error(e.message); }
-        finally { poolBusy = false; renderTab(); }
+    }
+
+    function pollPoolRefresh() {
+        if (poolRefreshTimer) clearTimeout(poolRefreshTimer);
+        poolRefreshTimer = setTimeout(async () => {
+            try {
+                const st = await API.get('/api/singbox/pool/refresh/status');
+                poolRefreshState.running = !!st.running;
+                if (st.progress) poolRefreshState.progress = st.progress;
+                if (!st.running) {
+                    const res = st.result || {};
+                    if (res.ok) {
+                        Toast.success(`Пул собран: ${res.count} серверов (из ${res.total_before_filter||res.count})`);
+                    } else if (res.error) {
+                        Toast.error(res.error);
+                    }
+                    await loadPool();   // обновит обзор/статус
+                    renderTab();
+                    return;
+                }
+                renderTab();
+                pollPoolRefresh();
+            } catch (e) {
+                poolRefreshState.running = false; renderTab();
+            }
+        }, 1000);
     }
 
     // ── tester (общий: можно вызвать на любой конфиг) ──

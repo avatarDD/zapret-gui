@@ -240,6 +240,14 @@ class TestSingboxAPI(unittest.TestCase):
         self.assertEqual(r["_status"], 200)
         self.assertFalse(r["ok"])
 
+    def test_pool_refresh_status_shape(self):
+        r = self.client.get_json("/api/singbox/pool/refresh/status")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertIn("running", r)
+        self.assertIn("progress", r)
+        self.assertIn("phase", r["progress"])
+
     # ─── proxy tester ───
 
     def test_test_status(self):

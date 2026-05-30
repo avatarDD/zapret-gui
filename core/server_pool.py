@@ -318,7 +318,7 @@ def dedup_outbounds(outbounds: list) -> list:
 
 # ─────── refresh ───────
 
-def refresh_pool() -> dict:
+def refresh_pool(progress_cb=None) -> dict:
     """
     Скачать все включённые источники, слить → дедуп → (опц.) тест →
     cap → собрать конфиг `server-pool` с urltest-группой.
@@ -326,8 +326,18 @@ def refresh_pool() -> dict:
     Инвариант «не затирать при пустом»: источник, который не отдал
     ключей, заменяется своим last-good набором. Если ВЕСЬ агрегат
     пустой (и кэша нет) — конфиг не перезаписываем.
+
+    progress_cb(phase, done, total) — опциональный колбэк прогресса:
+      phase ∈ {"fetch","test","build"}.
     """
     from core.subscription_manager import fetch_outbounds
+
+    def _report(phase, done, total):
+        if progress_cb:
+            try:
+                progress_cb(phase, done, total)
+            except Exception:
+                pass
 
     settings = get_settings()
     sources = list_sources()
@@ -339,7 +349,8 @@ def refresh_pool() -> dict:
     per_source = []
     aggregate = []
 
-    for s in enabled:
+    _report("fetch", 0, len(enabled))
+    for idx, s in enumerate(enabled):
         sid = s["id"]
         res = fetch_outbounds(s["url"], s.get("format") or "auto")
         obs = res.get("outbounds") or []
@@ -362,6 +373,7 @@ def refresh_pool() -> dict:
                 "count": len(obs), "used_cache": False, "error": "",
             })
         aggregate.extend(obs)
+        _report("fetch", idx + 1, len(enabled))
 
     _save_cache(cache)
 
@@ -381,7 +393,8 @@ def refresh_pool() -> dict:
             from core.proxy_tester import test_outbounds
             tested = test_outbounds(
                 aggregate, target=settings["target"],
-                max_servers=min(MAX_CAP, max(cap * 2, cap)))
+                max_servers=min(MAX_CAP, max(cap * 2, cap)),
+                progress_cb=lambda ph, d, t: _report("test", d, t))
             alive_tags = [r["tag"] for r in tested.get("results", [])
                           if r.get("alive")]
             by_tag = {o["tag"]: o for o in aggregate}
@@ -399,12 +412,14 @@ def refresh_pool() -> dict:
                 "tested": (tested.get("summary") if tested else None)}
 
     # Сборка конфига с группой.
+    _report("build", 0, 1)
     try:
         _build_and_save(aggregate, settings["group"])
     except Exception as e:
         _record(ok=False, error="save: %s" % e, count=len(aggregate))
         return {"ok": False, "error": "Сборка конфига: %s" % e}
 
+    _report("build", 1, 1)
     _record(ok=True, error="", count=len(aggregate))
     log.success("server-pool: собран из %d источников, серверов %d "
                 "(до фильтра %d)" % (len(enabled), len(aggregate),
@@ -467,6 +482,62 @@ def _record(*, ok: bool, error: str, count: int):
         if ok:
             pool["last_count"] = count
         _save_pool(pool)
+
+
+# ─────── async refresh job (для UI: запустил → опрашиваешь прогресс) ───
+
+class _RefreshJob:
+    """Один фоновый прогон сборки пула с прогрессом (fetch/test/build)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._running = False
+        self._result: dict = {}
+        self._progress = {"phase": "", "done": 0, "total": 0}
+
+    def running(self) -> bool:
+        with self._lock:
+            return self._running
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._running:
+                return False
+            self._running = True
+            self._result = {}
+            self._progress = {"phase": "fetch", "done": 0, "total": 0}
+
+        def _cb(phase, done, total):
+            with self._lock:
+                self._progress = {"phase": phase, "done": done, "total": total}
+
+        def _run():
+            try:
+                res = refresh_pool(progress_cb=_cb)
+            except Exception as e:
+                res = {"ok": False, "error": str(e)}
+            with self._lock:
+                self._result = res
+                self._running = False
+
+        threading.Thread(target=_run, name="pool-refresh",
+                         daemon=True).start()
+        return True
+
+    def status(self) -> dict:
+        with self._lock:
+            return {
+                "running": self._running,
+                "result": self._result,
+                "progress": dict(self._progress),
+            }
+
+
+_refresh_job = _RefreshJob()
+
+
+def get_refresh_job() -> _RefreshJob:
+    return _refresh_job
 
 
 # ─────── background refresher ───────

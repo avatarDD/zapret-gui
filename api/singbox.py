@@ -63,7 +63,8 @@ REST API для sing-box.
   POST   /api/singbox/pool/sources          — добавить источник
   PUT    /api/singbox/pool/sources/<sid>    — обновить (enabled/name/url)
   DELETE /api/singbox/pool/sources/<sid>    — удалить источник
-  POST   /api/singbox/pool/refresh          — пересобрать пул сейчас
+  POST   /api/singbox/pool/refresh          — пересобрать пул (async job)
+  GET    /api/singbox/pool/refresh/status   — прогресс/результат сборки
 
   POST   /api/singbox/test                  — тест серверов (body: config |
                                                 outbounds | url; target,
@@ -921,11 +922,22 @@ def register(app):
     def singbox_pool_refresh():
         response.content_type = "application/json; charset=utf-8"
         from core import server_pool as sp
-        # Может быть долго (health-filter) — гоняем в фоне, чтобы не
-        # держать HTTP-воркер. Но для UX вернём результат, если успеем
-        # быстро (без health-filter). Упростим: синхронно, но это уже
-        # выполняется в ThreadedWSGIServer-воркере.
-        return sp.refresh_pool()
+        # Сборка может быть долгой (скачивание источников + health-filter
+        # с тестом каждого сервера). Гоняем в фоне как job и отдаём
+        # прогресс через /pool/refresh/status — UI рисует прогресс-бар.
+        started = sp.get_refresh_job().start()
+        if not started:
+            return {"ok": True, "running": True,
+                    "message": "Сборка уже выполняется"}
+        return {"ok": True, "started": True}
+
+    @app.route("/api/singbox/pool/refresh/status")
+    def singbox_pool_refresh_status():
+        response.content_type = "application/json; charset=utf-8"
+        from core import server_pool as sp
+        st = sp.get_refresh_job().status()
+        st["ok"] = True
+        return st
 
     # ─────── proxy tester ──────────────────────────────────────────
 
