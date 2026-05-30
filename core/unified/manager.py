@@ -38,9 +38,20 @@ def save_route(data: dict, *, apply: bool = True) -> dict:
         applied = applier.apply_route(route)
     elif not route.enabled:
         applier.remove_route(route)
+    _sync_monitor()
     log.info("unified: сохранён маршрут %s (%s → %s)"
              % (route.id, route.name, route.method), source="unified")
     return {"ok": True, "route": route.to_dict(), "applied": applied}
+
+
+def _sync_monitor():
+    """Поднять/остановить фоновый мониторинг по факту наличия маршрутов
+    с включённым мониторингом/автопереключением."""
+    try:
+        from core.unified import monitor
+        monitor.autostart_if_needed()
+    except Exception:
+        pass
 
 
 def delete_route(route_id: str) -> dict:
@@ -55,6 +66,7 @@ def delete_route(route_id: str) -> dict:
         monitor.clear(route_id)
     except Exception:
         pass
+    _sync_monitor()
     return {"ok": True, "id": route_id}
 
 
@@ -66,7 +78,9 @@ def apply_route_by_id(route_id: str) -> dict:
 
 
 def apply_all() -> dict:
-    return applier.apply_all()
+    res = applier.apply_all()
+    _sync_monitor()
+    return res
 
 
 def status() -> dict:

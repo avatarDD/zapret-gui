@@ -230,11 +230,20 @@ const RoutingUnifiedPage = (() => {
                            placeholder="для мониторинга (по умолч. первый домен)"
                            value="${escAttr(e.probe_domain||'')}">
 
-                    <label class="text-muted" style="padding-top:6px;">Опции</label>
-                    <div style="display:flex; gap:16px; flex-wrap:wrap; padding-top:4px;">
-                        <label class="text-muted" style="font-size:12px;"><input type="checkbox" id="ru-enabled" ${e.enabled ? 'checked' : ''}> включён</label>
-                        <label class="text-muted" style="font-size:12px;"><input type="checkbox" id="ru-mon" ${e.monitor_enabled ? 'checked' : ''}> мониторинг</label>
-                        <label class="text-muted" style="font-size:12px;"><input type="checkbox" id="ru-fo" ${e.failover_enabled ? 'checked' : ''}> авто-переключение (failover)</label>
+                    <label class="text-muted" style="padding-top:6px;">Опции
+                        ${typeof Help !== 'undefined' ? Help.button('failover') : ''}</label>
+                    <div style="display:flex; flex-direction:column; gap:6px; padding-top:4px;">
+                        <label style="font-size:13px; display:flex; gap:6px; align-items:center;">
+                            <input type="checkbox" id="ru-enabled" ${e.enabled ? 'checked' : ''}> включён</label>
+                        <label style="font-size:13px; display:flex; gap:6px; align-items:center;">
+                            <input type="checkbox" id="ru-fo" ${e.failover_enabled ? 'checked' : ''}>
+                            <b>Автопереключение метода при сбоях</b> (failover)</label>
+                        <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center; margin-left:22px;">
+                            <input type="checkbox" id="ru-mon" ${e.monitor_enabled ? 'checked' : ''}>
+                            только следить за доступностью (без переключения)</label>
+                        <span class="text-muted" style="font-size:11px; margin-left:22px;">
+                            Любая из галок включает фоновую проверку автоматически —
+                            отдельно запускать мониторинг сверху не нужно.</span>
                     </div>
                 </div>
                 <div style="margin-top:12px;">

@@ -183,7 +183,11 @@ class _MonitorLoop:
     def _tick(self):
         from core.unified import storage
         for route in storage.load_routes():
-            if not route.enabled or not route.monitor_enabled:
+            # failover требует проб — поэтому пробуем маршрут, если включён
+            # мониторинг ЛИБО автопереключение.
+            if not route.enabled:
+                continue
+            if not (route.monitor_enabled or route.failover_enabled):
                 continue
             ok = probe_route(route)
             record(route.id, ok)
@@ -197,6 +201,35 @@ class _MonitorLoop:
 
 
 _loop = _MonitorLoop()
+
+
+def needs_monitor() -> bool:
+    """Есть ли хоть один включённый маршрут с мониторингом/failover."""
+    try:
+        from core.unified import storage
+        for r in storage.load_routes():
+            if r.enabled and (r.monitor_enabled or r.failover_enabled):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def autostart_if_needed(interval: int = 60) -> bool:
+    """
+    Запустить фоновый мониторинг, если он нужен хотя бы одному маршруту,
+    иначе остановить. Возвращает итоговое состояние (running).
+
+    Так пользователю достаточно поставить галку «Автопереключение» у
+    маршрута — отдельно включать глобальный мониторинг не нужно.
+    """
+    if needs_monitor():
+        if not _loop.running():
+            _loop.start(interval=interval)
+    else:
+        if _loop.running():
+            _loop.stop()
+    return _loop.running()
 
 
 def get_monitor() -> _MonitorLoop:
