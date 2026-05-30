@@ -52,7 +52,7 @@ const AwgRoutingPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Selective routing (AWG, расширенный)</h1>
+                    <h1 class="page-title">AWG-правила (расширенное)${typeof Help !== 'undefined' ? Help.button('awgrules') : ''}</h1>
                     <p class="page-description">
                         Низкоуровневые правила для AWG-туннелей (CIDR / домены /
                         устройства / DSCP, dnsmasq, NDMS). Для обычного выбора

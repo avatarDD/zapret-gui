@@ -21,7 +21,7 @@ const AwgDashboardPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">AmneziaWG — туннели</h1>
+                    <h1 class="page-title">AmneziaWG — туннели${typeof Help !== 'undefined' ? Help.button('awg') : ''}</h1>
                     <p class="page-description">
                         Состояние интерфейсов amneziawg-go и управление ими.
                     </p>

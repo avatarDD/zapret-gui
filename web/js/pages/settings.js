@@ -277,10 +277,12 @@ const SettingsPage = (() => {
         const formEl = document.getElementById('settings-form');
         if (!formEl) return;
 
+        const helpBtn = (typeof Help !== 'undefined' && Help.topics[section.id])
+            ? Help.button(section.id) : '';
         let html = `
             <div class="settings-section-header">
                 <span class="settings-section-icon">${section.icon}</span>
-                <h2 class="settings-section-title">${section.label}</h2>
+                <h2 class="settings-section-title">${section.label}${helpBtn}</h2>
             </div>
             <div class="settings-fields">
         `;

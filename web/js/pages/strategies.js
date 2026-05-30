@@ -18,7 +18,7 @@ const StrategiesPage = (() => {
         container.innerHTML = `
             <div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
                 <div>
-                    <h1 class="page-title">Стратегии</h1>
+                    <h1 class="page-title">Стратегии${typeof Help !== 'undefined' ? Help.button('strategies') : ''}</h1>
                     <p class="page-description">Управление стратегиями desync для nfqws2</p>
                 </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">

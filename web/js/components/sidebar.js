@@ -30,7 +30,9 @@ const Sidebar = (() => {
         chevron:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
     };
 
-    // Группы с разделителями
+    // Группы с разделителями. Порядок — по логике использования:
+    // Главная → обход DPI (nfqws2) → VPN/туннели → списки/данные →
+    // диагностика → система.
     const NAV_GROUPS = [
         {
             items: [
@@ -38,38 +40,22 @@ const Sidebar = (() => {
             ]
         },
         {
-            label: 'Управление',
+            label: 'Обход DPI (nfqws2)',
             items: [
-                { id: 'control',    label: 'Управление',  icon: 'play' },
-                { id: 'strategies', label: 'Стратегии',    icon: 'strategy' },
-            ]
-        },
-        {
-            label: 'Списки',
-            items: [
-                { id: 'lists',     label: 'Списки (общие)', icon: 'hostlist' },
-                { id: 'hostlists', label: 'Домены',      icon: 'hostlist' },
-                { id: 'ipsets',    label: 'IP-списки',    icon: 'ipset' },
-                { id: 'lua',       label: 'Lua-скрипты',  icon: 'lua' },
-                { id: 'blobs',     label: 'Блобы',        icon: 'blob' },
-                { id: 'hosts',     label: 'Hosts',        icon: 'hosts' },
-            ]
-        },
-        {
-            label: 'Тестирование',
-            items: [
-                { id: 'blockcheck', label: 'BlockCheck',       icon: 'blockcheck' },
+                { id: 'control',    label: 'Управление',       icon: 'play' },
+                { id: 'strategies', label: 'Стратегии',        icon: 'strategy' },
                 { id: 'scan',       label: 'Подбор стратегий', icon: 'scan' },
+                { id: 'blockcheck', label: 'BlockCheck',       icon: 'blockcheck' },
             ]
         },
         {
-            label: 'VPN',
+            label: 'VPN и маршрутизация',
             items: [
                 { id: 'routing', label: 'Маршрутизация', icon: 'globe' },
                 { id: 'awg', label: 'AmneziaWG', icon: 'awg', children: [
                     { id: 'awg-configs', label: 'Конфиги',  icon: 'lua' },
                     { id: 'awg-warp',    label: 'WARP',      icon: 'awg' },
-                    { id: 'awg-routing', label: 'Routing',   icon: 'globe' },
+                    { id: 'awg-routing', label: 'AWG-правила', icon: 'globe' },
                     { id: 'awg-setup',   label: 'Установка', icon: 'settings' },
                 ] },
                 { id: 'singbox', label: 'sing-box', icon: 'awg', children: [
@@ -80,11 +66,27 @@ const Sidebar = (() => {
             ]
         },
         {
-            label: 'Система',
+            label: 'Списки и данные',
             items: [
-                { id: 'zapret',      label: 'Zapret2',     icon: 'zapret' },
+                { id: 'lists',     label: 'Списки маршрутизации', icon: 'globe' },
+                { id: 'hostlists', label: 'Домены (nfqws2)', icon: 'hostlist' },
+                { id: 'ipsets',    label: 'IP-списки',    icon: 'ipset' },
+                { id: 'blobs',     label: 'Блобы',        icon: 'blob' },
+                { id: 'lua',       label: 'Lua-скрипты',  icon: 'lua' },
+                { id: 'hosts',     label: 'Hosts',        icon: 'hosts' },
+            ]
+        },
+        {
+            label: 'Диагностика',
+            items: [
                 { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostic' },
                 { id: 'logs',        label: 'Логи',        icon: 'log' },
+            ]
+        },
+        {
+            label: 'Система',
+            items: [
+                { id: 'zapret',      label: 'Zapret2 (установка)', icon: 'zapret' },
                 { id: 'autostart',   label: 'Автозапуск',  icon: 'autostart' },
                 { id: 'settings',    label: 'Настройки',   icon: 'settings' },
             ]
