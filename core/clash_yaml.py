@@ -381,6 +381,11 @@ def _conv_vless(p: dict):
                 "public_key": str(reality.get("public-key") or ""),
                 "short_id":   "" if sid is None else str(sid),
             }
+            # sing-box требует utls для reality — если client-fingerprint
+            # не задан, ставим дефолтный chrome (иначе `sing-box check`
+            # падает: «uTLS is required by reality client»).
+            if "utls" not in tls_obj:
+                tls_obj["utls"] = {"enabled": True, "fingerprint": "chrome"}
         ob["tls"] = tls_obj
     return ob
 
