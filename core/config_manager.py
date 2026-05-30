@@ -172,6 +172,12 @@ class ConfigManager:
         Новые поля из DEFAULT_CONFIG добавляются автоматически.
         """
         with self._lock:
+            # Логируем «загружена/создана» только при ПЕРВОЙ загрузке.
+            # load() дёргается многими модулями (подписки, пул, статус-
+            # эндпоинты) — без этого гейта лог засорялся повторами
+            # «Конфигурация загружена…» на каждый тик/запрос.
+            first_load = not self._loaded
+
             # Начинаем с глубокой копии дефолтов
             self._config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -184,15 +190,17 @@ class ConfigManager:
                     # Миграция legacy путей под фактический layout zapret2
                     if self._migrate_legacy_paths():
                         self._save_locked()
-                    log.info(f"Конфигурация загружена: {self._config_path}",
-                             source="config")
+                    if first_load:
+                        log.info(f"Конфигурация загружена: {self._config_path}",
+                                 source="config")
                 except (json.JSONDecodeError, IOError) as e:
                     log.error(f"Ошибка чтения конфигурации: {e}", source="config")
                     log.warning("Используются настройки по умолчанию",
                                 source="config")
             else:
-                log.info("Конфигурация не найдена, создаём с дефолтами",
-                         source="config")
+                if first_load:
+                    log.info("Конфигурация не найдена, создаём с дефолтами",
+                             source="config")
                 self._save_locked()
 
             self._loaded = True

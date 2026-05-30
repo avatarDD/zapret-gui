@@ -179,6 +179,15 @@ def _parse_ndm_hosts_json(text: str) -> list:
     except (ValueError, TypeError):
         return []
 
+    return _extract_ndm_hosts(data)
+
+
+def _extract_ndm_hosts(data) -> list:
+    """
+    Достать список хостов из уже распарсенной NDM-структуры
+    (`{"host": [...]}`, массив или одиночный объект). Общий код для
+    CLI-JSON (`ndmq`) и RCI-HTTP (`show/ip/hotspot`).
+    """
     if isinstance(data, dict):
         hosts = data.get("host")
         if hosts is None:
@@ -275,6 +284,20 @@ def _read_ndm_hosts() -> list:
     Лучшие усилия по чтению списка хостов через NDM.
     Возвращает [] на не-Keenetic системах (когда ndmc/ndmq нет).
     """
+    # 0) RCI (HTTP API) — самый надёжный путь на Keenetic: не зависит от
+    #    наличия ndmc/ndmq в PATH процесса GUI (Entware). Именно из-за их
+    #    отсутствия колонка «Имя» часто оставалась пустой. RCI отдаёт те
+    #    же `show ip hotspot` host'ы с заданными в админке именами.
+    try:
+        from core.ndms.rci_client import get_rci_client
+        cli = get_rci_client()
+        if cli.is_available():
+            hosts = _extract_ndm_hosts(cli.get("show/ip/hotspot"))
+            if hosts:
+                return hosts
+    except Exception:
+        pass
+
     # Сначала пробуем JSON (легче и однозначнее парсится).
     for cmd in (
         ["ndmq", "-p", "show ip hotspot"],
