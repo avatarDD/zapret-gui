@@ -206,6 +206,30 @@ def update(list_id: str, *, name=None, description=None,
     return {"ok": True, "list": item}
 
 
+def update_fields(list_id: str, fields: dict) -> dict:
+    """
+    Низкоуровневое обновление произвольных полей списка (с блокировкой).
+
+    Используется обновлятелем курируемых списков (core/list_updater.py),
+    которому нужно записать не только domains/cidrs, но и служебные поля
+    (`_remote`, `last_refresh`, `last_status`, `interval_hours`, …).
+    """
+    if not isinstance(fields, dict):
+        return {"ok": False, "error": "fields должен быть dict"}
+    with _lock:
+        items = _all_raw()
+        idx = next((i for i, x in enumerate(items)
+                    if isinstance(x, dict) and x.get("id") == list_id), -1)
+        if idx < 0:
+            return {"ok": False, "error": "Список не найден"}
+        item = dict(items[idx])
+        item.update(fields)
+        item["updated_at"] = int(time.time())
+        items[idx] = item
+        _save_all(items)
+    return {"ok": True, "list": item}
+
+
 def delete(list_id: str) -> dict:
     with _lock:
         items = _all_raw()

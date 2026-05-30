@@ -7,6 +7,12 @@ REST API для именованных списков (core/named_lists).
   GET    /api/lists/<id>         — получить один список
   PUT    /api/lists/<id>         — обновить {name?, description?, entries?, replace?}
   DELETE /api/lists/<id>         — удалить
+
+  GET    /api/lists/curated      — курируемые пресеты + статус обновлятеля
+  POST   /api/lists/curated      — добавить {url} (пресет) или
+                                    {url, name?, description?, interval_hours?}
+  POST   /api/lists/<id>/refresh — обновить управляемый список из source_url
+  POST   /api/lists/refresh-all  — обновить все управляемые списки
 """
 
 from bottle import request, response
@@ -73,3 +79,55 @@ def register(app):
         if not r.get("ok"):
             response.status = 404
         return r
+
+    # ─────── курируемые списки (автообновление по URL) ───────
+
+    @app.route("/api/lists/curated")
+    def lists_curated():
+        response.content_type = "application/json; charset=utf-8"
+        from core import list_updater as lu
+        return {
+            "ok": True,
+            "presets": lu.presets(),
+            "refresher": lu.get_list_refresher().get_status(),
+        }
+
+    @app.route("/api/lists/curated", method="POST")
+    def lists_curated_add():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        url = (body.get("url") or "").strip()
+        if not url:
+            response.status = 400
+            return {"ok": False, "error": "Нужен url"}
+        from core import list_updater as lu
+        # Если это в точности один из пресетов — используем его метаданные.
+        if any(p["url"] == url for p in lu.CURATED_PRESETS):
+            r = lu.add_preset(url)
+        else:
+            try:
+                interval = int(body.get("interval_hours") or 12)
+            except (TypeError, ValueError):
+                interval = 12
+            r = lu.add_from_url(
+                url, name=(body.get("name") or "").strip(),
+                description=(body.get("description") or "").strip(),
+                interval_hours=interval)
+        if not r.get("ok"):
+            response.status = 400
+        return r
+
+    @app.route("/api/lists/<list_id>/refresh", method="POST")
+    def lists_refresh_one(list_id):
+        response.content_type = "application/json; charset=utf-8"
+        from core import list_updater as lu
+        return lu.refresh_one(list_id)
+
+    @app.route("/api/lists/refresh-all", method="POST")
+    def lists_refresh_all():
+        response.content_type = "application/json; charset=utf-8"
+        from core import list_updater as lu
+        return lu.refresh_all()

@@ -45,6 +45,11 @@ OpenWrt: **nfqws2** (zapret2), туннели **AmneziaWG / sing-box / mihomo** 
   CIDR / списка / geosite выбирается метод (`direct` / `nfqws2` /
   туннель) с резервной цепочкой, авто-мониторингом успешности и
   failover; общие именованные списки доменов/IP
+- **Курируемые списки доменов** (podkop-стиль) — готовые community-
+  списки (YouTube, Meta, X, Discord, Telegram, «вся заблокировка в РФ»;
+  источник itdoginfo/allow-domains) одним кликом, с автообновлением по
+  таймеру; ручные правки при обновлении сохраняются, пустой ответ не
+  затирает текущее
 - **CLI** — управление из консоли: `zapret-gui status | nfqws … |
   strategy … | singbox … | mihomo …`
 - **Зеркало/оффлайн-установка** бинарников (env `ZAPRET_GUI_MIRROR`
@@ -310,6 +315,7 @@ REST API: `http://<host>:8080/api/` — 120+ эндпоинтов.
 | GET/POST | /api/singbox/transparent/{status,apply,remove} | Прозрачное проксирование |
 | GET/POST | /api/mihomo/{environment,install,version,configs} | mihomo (Clash.Meta) |
 | GET/POST/PUT/DELETE | /api/lists · /api/lists/:id | Именованные списки доменов/CIDR |
+| GET/POST | /api/lists/curated · /api/lists/:id/refresh | Курируемые списки + автообновление |
 | GET/POST | /api/unified/routes · …/:id/{apply,scan} | Единый слой «назначение → метод» |
 | GET/POST | /api/unified/status · /api/unified/monitor | Статус/мониторинг единого слоя |
 | GET/POST | /api/backup/{export,summary,import} | Бэкап/восстановление конфигурации |

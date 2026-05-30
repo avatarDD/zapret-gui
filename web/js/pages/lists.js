@@ -9,6 +9,9 @@ const ListsPage = (() => {
 
     let lists = [];
     let editing = null;   // {id?, name, description, text, isNew}
+    let curated = { presets: [], refresher: {} };
+    let curatedUrl = '';
+    let busy = false;
 
     function render(container) {
         container.innerHTML = `
@@ -23,9 +26,11 @@ const ListsPage = (() => {
                 </div>
                 <div style="display:flex; gap:8px;">
                     <button class="btn btn-ghost btn-sm" onclick="ListsPage.newList()">+ Список</button>
+                    <button class="btn btn-ghost btn-sm" onclick="ListsPage.refreshAllManaged()">↻ Обновить списки</button>
                     <button class="btn btn-ghost btn-sm" onclick="ListsPage.refresh()">Обновить</button>
                 </div>
             </div>
+            <div id="lists-curated"></div>
             <div id="lists-editor"></div>
             <div id="lists-body">
                 <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
@@ -37,11 +42,48 @@ const ListsPage = (() => {
 
     async function refresh() {
         try {
-            const r = await API.get('/api/lists');
+            const [r, c] = await Promise.all([
+                API.get('/api/lists'),
+                API.get('/api/lists/curated').catch(() => null),
+            ]);
             lists = (r && r.lists) || [];
+            if (c && c.ok) curated = { presets: c.presets || [],
+                                       refresher: c.refresher || {} };
         } catch (e) { Toast.error(e.message); lists = []; }
+        renderCurated();
         renderEditor();
         renderBody();
+    }
+
+    function renderCurated() {
+        const box = document.getElementById('lists-curated');
+        if (!box) return;
+        const chips = (curated.presets || []).map(p => `
+            <button class="btn btn-ghost btn-sm" ${p.added||busy?'disabled':''}
+                    title="${escAttr(p.description||p.url)}"
+                    onclick="ListsPage.addPreset('${escAttr(p.url)}')">
+                ${p.added ? '✓ ' : '+ '}${esc(p.name)}
+            </button>`).join(' ');
+        box.innerHTML = `
+            <div class="card" style="margin-bottom:16px;">
+                <div class="card-title">Готовые списки (podkop-стиль)</div>
+                <p class="text-muted" style="font-size:12px; margin:4px 0 8px;">
+                    Community-списки доменов с автообновлением по таймеру
+                    (источник: itdoginfo/allow-domains). Добавьте одним кликом,
+                    затем используйте в «Маршрутизации». Ручные правки при
+                    обновлении сохраняются; пустой ответ сервера не затирает
+                    текущее содержимое.
+                </p>
+                <div style="display:flex; flex-wrap:wrap; gap:6px;">${chips}</div>
+                <div style="display:flex; gap:6px; margin-top:10px;">
+                    <input id="lst-curated-url" class="form-control" style="flex:1; min-width:220px;"
+                           placeholder="Свой URL списка доменов (raw .txt/.lst)"
+                           value="${escAttr(curatedUrl)}"
+                           oninput="ListsPage.onCuratedUrl(this.value)">
+                    <button class="btn btn-primary btn-sm" ${busy?'disabled':''}
+                            onclick="ListsPage.addCustomUrl()">Добавить URL</button>
+                </div>
+            </div>`;
     }
 
     function renderBody() {
@@ -54,18 +96,34 @@ const ListsPage = (() => {
         }
         box.innerHTML = `<div class="card"><table class="table">
             <thead><tr><th>Имя</th><th>Домены</th><th>CIDR</th>
-                <th>Описание</th><th style="width:120px;"></th></tr></thead>
-            <tbody>${lists.map(l => `
+                <th>Описание</th><th style="width:160px;"></th></tr></thead>
+            <tbody>${lists.map(l => {
+                const managed = !!(l.source_url && String(l.source_url).trim());
+                let badge = '';
+                if (managed) {
+                    const st = l.last_status;
+                    const color = st === 'ok' ? '#39c45e'
+                        : (st === 'error' ? '#e58'
+                           : (st === 'empty' ? '#e5a' : '#888'));
+                    const when = l.last_refresh
+                        ? new Date(l.last_refresh * 1000).toLocaleString() : 'никогда';
+                    badge = `<div class="text-muted" style="font-size:10px;">
+                        <span style="color:${color};">●</span> авто · обновлён: ${esc(when)}
+                        ${l.last_error ? ' · ' + esc(l.last_error) : ''}</div>`;
+                }
+                return `
                 <tr>
-                    <td><strong>${esc(l.name)}</strong></td>
+                    <td><strong>${esc(l.name)}</strong>${badge}</td>
                     <td>${l.domain_count}</td>
                     <td>${l.cidr_count}</td>
                     <td>${esc(l.description || '')}</td>
                     <td style="text-align:right;">
+                        ${managed ? `<button class="btn btn-ghost btn-sm" title="Обновить из источника"
+                            onclick="ListsPage.refreshList('${esc(l.id)}')">↻</button>` : ''}
                         <button class="btn btn-ghost btn-sm" onclick="ListsPage.edit('${esc(l.id)}')">Ред.</button>
                         <button class="btn btn-ghost btn-sm" onclick="ListsPage.del('${esc(l.id)}')">✕</button>
                     </td>
-                </tr>`).join('')}
+                </tr>`; }).join('')}
             </tbody></table></div>`;
     }
 
@@ -143,11 +201,60 @@ const ListsPage = (() => {
         } catch (e) { Toast.error(e.message); }
     }
 
+    // ─── курируемые списки ───
+
+    function onCuratedUrl(v) { curatedUrl = v; }
+
+    async function addPreset(url) {
+        busy = true; renderCurated();
+        try {
+            const r = await API.post('/api/lists/curated', { url });
+            if (r && r.ok) {
+                const rr = r.refresh;
+                Toast.success(rr && rr.ok
+                    ? `Добавлен: ${rr.domains||0} доменов`
+                    : 'Список добавлен');
+                await refresh();
+            } else { Toast.error((r && r.error) || 'не удалось'); }
+        } catch (e) { Toast.error(e.message); }
+        finally { busy = false; renderCurated(); }
+    }
+
+    async function addCustomUrl() {
+        const url = (curatedUrl || '').trim();
+        if (!url) { Toast.error('Укажите URL'); return; }
+        busy = true; renderCurated();
+        try {
+            const r = await API.post('/api/lists/curated', { url });
+            if (r && r.ok) { Toast.success('Список добавлен'); curatedUrl = ''; await refresh(); }
+            else { Toast.error((r && r.error) || 'не удалось'); }
+        } catch (e) { Toast.error(e.message); }
+        finally { busy = false; renderCurated(); }
+    }
+
+    async function refreshList(id) {
+        try {
+            const r = await API.post('/api/lists/' + encodeURIComponent(id) + '/refresh');
+            if (r && r.ok) Toast.success(`Обновлён: ${r.domains||0} доменов, ${r.cidrs||0} CIDR`);
+            else Toast.warning((r && r.error) || 'не обновлено');
+            await refresh();
+        } catch (e) { Toast.error(e.message); }
+    }
+
+    async function refreshAllManaged() {
+        try {
+            await API.post('/api/lists/refresh-all');
+            Toast.success('Обновление списков запущено');
+            await refresh();
+        } catch (e) { Toast.error(e.message); }
+    }
+
     function esc(s) {
         return String(s == null ? '' : s)
             .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
     function escAttr(s) { return esc(s).replace(/"/g,'&quot;'); }
 
-    return { render, destroy, refresh, newList, edit, closeEditor, save, del };
+    return { render, destroy, refresh, newList, edit, closeEditor, save, del,
+             onCuratedUrl, addPreset, addCustomUrl, refreshList, refreshAllManaged };
 })();

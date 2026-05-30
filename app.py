@@ -442,6 +442,11 @@ def create_app(config_dir: str = None) -> Bottle:
         get_pool_refresher().reconfigure()
     except Exception:
         pass
+    try:
+        from core.list_updater import get_list_refresher
+        get_list_refresher().reconfigure()
+    except Exception:
+        pass
 
     return app
 
