@@ -30,6 +30,7 @@ import os
 import shutil
 import stat
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -293,6 +294,85 @@ def extract_tarball(archive_path: str, dest_dir: str,
         return {"ok": True, "names": names, "dest_dir": dest_dir}
     except (tarfile.TarError, OSError) as e:
         return {"ok": False, "error": "распаковка: %s" % e}
+
+
+def disk_free(path: str) -> int:
+    """Свободно байт на ФС, где лежит path (ближайший существующий
+    предок). 0 — если не удалось определить."""
+    p = path or "/"
+    while p and not os.path.isdir(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    try:
+        st = os.statvfs(p or "/")
+        return st.f_bavail * st.f_frsize
+    except (OSError, AttributeError):
+        return 0
+
+
+def workbase(near: str = None) -> str:
+    """
+    Выбрать лучший base-каталог для временной работы установщиков.
+
+    На OpenWrt `/tmp` — это tmpfs (ОЗУ) и обычно крошечный, поэтому
+    распаковка релизов туда падает с ENOSPC (issue #98). На Keenetic/
+    Entware /opt постоянный — там проблемы нет, но логика общая.
+    Кандидаты:
+
+      1. env `ZAPRET_GUI_TMPDIR`;
+      2. config `install.tmpdir`;
+      3. `<near>/.zapret-gui-tmp` — та же ФС, что и цель установки
+         (там, куда реально кладём бинарь/файлы: флешка/overlay);
+      4. системный /tmp (fallback).
+
+    Среди кандидатов берём первый пригодный для записи с наибольшим
+    объёмом свободного места — так флешка-цель выигрывает у tmpfs.
+    """
+    candidates = []
+    env = (os.environ.get("ZAPRET_GUI_TMPDIR") or "").strip()
+    if env:
+        candidates.append(env)
+    try:
+        from core.config_manager import get_config_manager
+        cfgd = (get_config_manager().get("install", "tmpdir", default="") or "").strip()
+        if cfgd:
+            candidates.append(cfgd)
+    except Exception:
+        pass
+    if near:
+        base = near if os.path.isdir(near) else os.path.dirname(near)
+        if base:
+            candidates.append(os.path.join(base, ".zapret-gui-tmp"))
+    candidates.append(tempfile.gettempdir())
+
+    # Оставляем уникальные, считаем свободное место; берём с максимумом
+    # свободного места (флешка-цель выигрывает у tmpfs/ОЗУ).
+    seen, ranked = set(), []
+    for c in candidates:
+        c = os.path.abspath(c)
+        if c in seen:
+            continue
+        seen.add(c)
+        try:
+            os.makedirs(c, exist_ok=True)
+        except OSError:
+            continue
+        if os.access(c, os.W_OK):
+            ranked.append((disk_free(c), c))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return ranked[0][1] if ranked else tempfile.gettempdir()
+
+
+def make_workdir(near: str = None, prefix: str = "zapret-gui-") -> str:
+    """Создать уникальный временный каталог в лучшем доступном base
+    (см. `workbase`). Вызывающий сам удаляет его по завершении."""
+    base = workbase(near)
+    try:
+        return tempfile.mkdtemp(prefix=prefix, dir=base)
+    except OSError:
+        return tempfile.mkdtemp(prefix=prefix)
 
 
 def extract_gz(archive_path: str, dest_path: str) -> dict:

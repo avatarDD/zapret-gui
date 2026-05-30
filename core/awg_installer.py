@@ -729,7 +729,9 @@ class AwgInstaller:
             return {"ok": False, "message":
                     "Не удалось создать %s: %s" % (install_dir, e)}
 
-        with tempfile.TemporaryDirectory(prefix="awg-install-") as tmp:
+        from core.binary_installer import workbase
+        with tempfile.TemporaryDirectory(
+                prefix="awg-install-", dir=workbase(install_dir)) as tmp:
             # 1) amneziawg-go
             self._set_progress("Загрузка amneziawg-go...", 10)
             go_archive = os.path.join(tmp, go_bin["filename"])
