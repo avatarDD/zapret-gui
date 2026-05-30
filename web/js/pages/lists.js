@@ -12,6 +12,8 @@ const ListsPage = (() => {
     let curated = { presets: [], refresher: {} };
     let curatedUrl = '';
     let busy = false;
+    let interfaces = [];      // из /api/routing/interfaces (туннели)
+    let routeFor = null;      // {listId, listName} — открыт пикер «в маршрут»
 
     function render(container) {
         container.innerHTML = `
@@ -31,6 +33,7 @@ const ListsPage = (() => {
                 </div>
             </div>
             <div id="lists-curated"></div>
+            <div id="lists-route"></div>
             <div id="lists-editor"></div>
             <div id="lists-body">
                 <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
@@ -42,15 +45,18 @@ const ListsPage = (() => {
 
     async function refresh() {
         try {
-            const [r, c] = await Promise.all([
+            const [r, c, ifc] = await Promise.all([
                 API.get('/api/lists'),
                 API.get('/api/lists/curated').catch(() => null),
+                API.get('/api/routing/interfaces').catch(() => null),
             ]);
             lists = (r && r.lists) || [];
             if (c && c.ok) curated = { presets: c.presets || [],
                                        refresher: c.refresher || {} };
+            interfaces = (ifc && ifc.interfaces) || [];
         } catch (e) { Toast.error(e.message); lists = []; }
         renderCurated();
+        renderRoutePicker();
         renderEditor();
         renderBody();
     }
@@ -120,6 +126,8 @@ const ListsPage = (() => {
                     <td style="text-align:right;">
                         ${managed ? `<button class="btn btn-ghost btn-sm" title="Обновить из источника"
                             onclick="ListsPage.refreshList('${esc(l.id)}')">↻</button>` : ''}
+                        <button class="btn btn-ghost btn-sm" title="Создать маршрут для этого списка"
+                            onclick="ListsPage.openRoute('${esc(l.id)}', '${escAttr(l.name)}')">→ Маршрут</button>
                         <button class="btn btn-ghost btn-sm" onclick="ListsPage.edit('${esc(l.id)}')">Ред.</button>
                         <button class="btn btn-ghost btn-sm" onclick="ListsPage.del('${esc(l.id)}')">✕</button>
                     </td>
@@ -201,6 +209,86 @@ const ListsPage = (() => {
         } catch (e) { Toast.error(e.message); }
     }
 
+    // ─── список → маршрут (единый слой) ───
+
+    function methodOptions() {
+        const opts = [['nfqws2', 'nfqws2 (обход DPI)'], ['direct', 'Прямой (direct)']];
+        interfaces.forEach(i => {
+            const kind = (i.source === 'singbox') ? 'singbox'
+                       : (i.source === 'mihomo') ? 'mihomo' : 'awg';
+            opts.push([kind + ':' + i.name,
+                       `${kind} → ${i.name}${i.active ? ' (активен)' : ''}`]);
+        });
+        // По умолчанию первый туннель, если есть; иначе nfqws2.
+        const def = interfaces.length
+            ? (() => { const i = interfaces[0];
+                const k = (i.source === 'singbox') ? 'singbox'
+                        : (i.source === 'mihomo') ? 'mihomo' : 'awg';
+                return k + ':' + i.name; })()
+            : 'nfqws2';
+        return opts.map(([v, l]) =>
+            `<option value="${escAttr(v)}" ${v === def ? 'selected' : ''}>${esc(l)}</option>`
+        ).join('');
+    }
+
+    function openRoute(listId, listName) {
+        routeFor = { listId, listName };
+        renderRoutePicker();
+        const box = document.getElementById('lists-route');
+        if (box) box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function closeRoute() { routeFor = null; renderRoutePicker(); }
+
+    function renderRoutePicker() {
+        const box = document.getElementById('lists-route');
+        if (!box) return;
+        if (!routeFor) { box.innerHTML = ''; return; }
+        const noTunnels = interfaces.length === 0;
+        box.innerHTML = `
+            <div class="card" style="margin-bottom:16px; border:1px solid var(--accent,#39c45e);">
+                <div style="display:flex; justify-content:space-between;">
+                    <div class="card-title">Маршрут для списка «${esc(routeFor.listName)}»</div>
+                    <button class="btn btn-ghost btn-sm" onclick="ListsPage.closeRoute()">Закрыть</button>
+                </div>
+                <p class="text-muted" style="font-size:12px; margin:6px 0;">
+                    Создаст правило в «Маршрутизации»: домены/CIDR этого списка
+                    пойдут через выбранный метод. Дальше его можно донастроить
+                    на странице «Маршрутизация» (fallback, мониторинг).
+                    ${noTunnels ? '<br><strong>Туннели не найдены</strong> — доступны direct/nfqws2; для прокси сначала поднимите sing-box/mihomo/AWG.' : ''}
+                </p>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <label class="text-muted">Метод:</label>
+                    <select id="lst-route-method" class="form-control" style="max-width:320px;">${methodOptions()}</select>
+                    <button class="btn btn-primary btn-sm" ${busy?'disabled':''}
+                            onclick="ListsPage.createRoute()">Создать маршрут</button>
+                </div>
+            </div>`;
+    }
+
+    async function createRoute() {
+        if (!routeFor) return;
+        const method = document.getElementById('lst-route-method').value;
+        busy = true; renderRoutePicker();
+        try {
+            const payload = {
+                name: 'Список: ' + routeFor.listName,
+                method,
+                enabled: true,
+                destination: { list_ids: [routeFor.listId] },
+            };
+            const r = await API.post('/api/unified/routes', payload);
+            if (r && r.ok) {
+                Toast.success('Маршрут создан');
+                routeFor = null;
+                renderRoutePicker();
+            } else {
+                Toast.error((r && r.error) || 'не удалось создать маршрут');
+            }
+        } catch (e) { Toast.error(e.message); }
+        finally { busy = false; renderRoutePicker(); }
+    }
+
     // ─── курируемые списки ───
 
     function onCuratedUrl(v) { curatedUrl = v; }
@@ -256,5 +344,6 @@ const ListsPage = (() => {
     function escAttr(s) { return esc(s).replace(/"/g,'&quot;'); }
 
     return { render, destroy, refresh, newList, edit, closeEditor, save, del,
-             onCuratedUrl, addPreset, addCustomUrl, refreshList, refreshAllManaged };
+             onCuratedUrl, addPreset, addCustomUrl, refreshList, refreshAllManaged,
+             openRoute, closeRoute, createRoute };
 })();

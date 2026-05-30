@@ -15,6 +15,7 @@ const DiagnosticsPage = (() => {
     let systemInfo = null;
     let firewallInfo = null;
     let conflictsInfo = null;
+    let envConflicts = null;
 
     /* ──────── service icons (SVG) ──────── */
     const SVC_ICONS = {
@@ -125,7 +126,7 @@ const DiagnosticsPage = (() => {
                         <line x1="12" y1="9" x2="12" y2="13"/>
                         <line x1="12" y1="17" x2="12.01" y2="17"/>
                     </svg>
-                    Конфликты процессов
+                    Конфликты и окружение
                 </div>
                 <div id="diag-conflicts">
                     <div class="diag-loading">Загрузка…</div>
@@ -185,6 +186,7 @@ const DiagnosticsPage = (() => {
         systemInfo = null;
         firewallInfo = null;
         conflictsInfo = null;
+        envConflicts = null;
     }
 
     /* ═══════════════════ Загрузка данных ═══════════════════ */
@@ -230,11 +232,13 @@ const DiagnosticsPage = (() => {
 
     async function loadConflicts() {
         try {
-            const data = await API.get('/api/diagnostics/conflicts');
-            if (data.ok) {
-                conflictsInfo = data.result;
-                renderConflicts();
-            }
+            const [data, env] = await Promise.all([
+                API.get('/api/diagnostics/conflicts'),
+                API.get('/api/diagnostics/known-conflicts').catch(() => null),
+            ]);
+            if (data.ok) conflictsInfo = data.result;
+            if (env && env.ok) envConflicts = env.result;
+            renderConflicts();
         } catch (e) {
             document.getElementById('diag-conflicts').innerHTML =
                 '<div class="diag-error">Ошибка загрузки</div>';
@@ -488,38 +492,72 @@ const DiagnosticsPage = (() => {
 
     function renderConflicts() {
         const el = document.getElementById('diag-conflicts');
-        if (!el || !conflictsInfo) return;
-
+        if (!el) return;
         const ci = conflictsInfo;
+        const env = envConflicts;
+        if (!ci && !env) return;
 
-        if (!ci.has_conflicts) {
-            el.innerHTML = `
-                <div class="diag-no-conflicts">
-                    <span class="diag-dot diag-dot-ok"></span>
-                    Конфликтов не обнаружено — нет сторонних процессов nfqws/tpws.
-                </div>
-            `;
-            return;
+        let html = '';
+
+        // Процессы nfqws/tpws
+        if (ci) {
+            if (ci.has_conflicts) {
+                html += `
+                    <div class="diag-conflicts-warning">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2" width="18" height="18">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                        Обнаружены сторонние процессы, которые могут конфликтовать:
+                    </div>
+                    <div class="diag-conflicts-list">
+                        ${ci.conflicts.map(c => `
+                            <div class="diag-conflict-item">
+                                <span class="diag-conflict-pid">PID ${c.pid}</span>
+                                <span class="diag-conflict-name">${_esc(c.name)}</span>
+                                <code class="diag-conflict-cmd">${_esc(c.cmdline)}</code>
+                            </div>
+                        `).join('')}
+                    </div>`;
+            } else {
+                html += `
+                    <div class="diag-no-conflicts">
+                        <span class="diag-dot diag-dot-ok"></span>
+                        Нет сторонних процессов nfqws/tpws.
+                    </div>`;
+            }
         }
 
-        el.innerHTML = `
-            <div class="diag-conflicts-warning">
-                <svg viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2" width="18" height="18">
-                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                </svg>
-                Обнаружены сторонние процессы, которые могут конфликтовать:
-            </div>
-            <div class="diag-conflicts-list">
-                ${ci.conflicts.map(c => `
-                    <div class="diag-conflict-item">
-                        <span class="diag-conflict-pid">PID ${c.pid}</span>
-                        <span class="diag-conflict-name">${_esc(c.name)}</span>
-                        <code class="diag-conflict-cmd">${_esc(c.cmdline)}</code>
+        // Конфликты окружения (getdomains/XKeen/podkop/Xray/redsocks)
+        if (env) {
+            if (env.has_conflicts) {
+                html += `
+                    <div class="diag-conflicts-warning" style="margin-top:12px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2" width="18" height="18">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                        Сторонние системы обхода/маршрутизации (могут конфликтовать с единым слоем и прозрачным проксированием):
                     </div>
-                `).join('')}
-            </div>
-        `;
+                    <div class="diag-conflicts-list">
+                        ${env.warnings.map(w => `
+                            <div class="diag-conflict-item" style="flex-direction:column; align-items:flex-start; gap:4px;">
+                                <div><strong>${_esc(w.title)}</strong>
+                                    <span class="text-muted" style="font-size:11px;">${_esc(w.detail)}</span></div>
+                                <div class="text-muted" style="font-size:12px;">${_esc(w.hint)}</div>
+                            </div>
+                        `).join('')}
+                    </div>`;
+            } else {
+                html += `
+                    <div class="diag-no-conflicts" style="margin-top:12px;">
+                        <span class="diag-dot diag-dot-ok"></span>
+                        Сторонних систем обхода (getdomains/XKeen/podkop/Xray) не найдено.
+                    </div>`;
+            }
+        }
+
+        el.innerHTML = html;
     }
 
     /* ═══════════════════ Actions ═══════════════════ */

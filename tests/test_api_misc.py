@@ -98,6 +98,14 @@ class TestDiagnosticsAPI(unittest.TestCase):
         r = self.client.get_json("/api/diagnostics/services")
         self.assertIn(r["_status"], (200, 500))
 
+    def test_diagnostics_known_conflicts(self):
+        r = self.client.get_json("/api/diagnostics/known-conflicts")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertIn("warnings", r["result"])
+        self.assertIn("has_conflicts", r["result"])
+        self.assertIsInstance(r["result"]["warnings"], list)
+
 
 class TestHostsAPI(unittest.TestCase):
 
