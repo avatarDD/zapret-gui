@@ -120,6 +120,31 @@ class SingboxInstaller:
 
     # ─── manifest ───
 
+    def _list_all_releases(self) -> list:
+        """
+        Все релизы репозитория с пагинацией. Не зависим от номера
+        страницы: проходим по страницам, пока они не кончатся. Так
+        бинарный релиз не «теряется» за десятками GUI-релизов
+        (singbox-bin-* / manual-* могут оказаться на 3-4-й странице).
+        """
+        out = []
+        for page in range(1, 21):  # потолок 2000 релизов — с запасом
+            url = ("%s/repos/%s/releases?per_page=100&page=%d"
+                   % (GITHUB_API, GITHUB_REPO, page))
+            try:
+                data = _http_json(url)
+            except (urllib.error.URLError, urllib.error.HTTPError,
+                    OSError) as e:
+                if not out:
+                    raise RuntimeError("GitHub API недоступен: %s" % e)
+                break
+            if not isinstance(data, list) or not data:
+                break
+            out.extend(data)
+            if len(data) < 100:
+                break
+        return out
+
     def _resolve_latest_tag(self) -> str:
         """
         Найти самый свежий релиз с бинарниками sing-box в нашем репо.
@@ -130,16 +155,15 @@ class SingboxInstaller:
         несёт тот же ассет `manifest.json`. Релизы AWG (`awg-bin-*`) и
         самого GUI (`v*`) под фолбэк не попадают — у них нет нашего
         manifest.json sing-box (а `awg-bin-*` ещё и не `manual-*`).
+
+        Фильтруем по имени тэга и пагинируем — НЕ зависим от того, на
+        какой странице лежит релиз.
         """
-        url = "%s/repos/%s/releases?per_page=100" % (GITHUB_API, GITHUB_REPO)
-        try:
-            data = _http_json(url)
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-            raise RuntimeError("GitHub API недоступен: %s" % e)
+        data = self._list_all_releases()
         if not isinstance(data, list):
             raise RuntimeError("Не массив релизов")
 
-        # 1) штатный тэг singbox-bin-*
+        # 1) штатный тэг singbox-bin-* (новейший сверху)
         for rel in data:
             tag = rel.get("tag_name", "")
             if tag.startswith(RELEASE_TAG_PREFIX):
