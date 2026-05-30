@@ -100,6 +100,22 @@ class TestTestOutboundsNoBinary(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["summary"]["total"], 0)
 
+    def test_progress_cb_invoked(self):
+        # Недостижимые адреса → TCP-проба быстро падает; нас интересует,
+        # что progress_cb вызывается с (phase, done, total).
+        obs = [{"type": "vless", "tag": "a", "server": "192.0.2.1",
+                "server_port": 1, "uuid": "u"},
+               {"type": "vless", "tag": "b", "server": "192.0.2.2",
+                "server_port": 1, "uuid": "u"}]
+        calls = []
+        pt.test_outbounds(obs, binary="",
+                          progress_cb=lambda ph, d, t: calls.append((ph, d, t)))
+        self.assertTrue(calls)
+        # последний tcp-колбэк — done == total == 2
+        tcp = [c for c in calls if c[0] == "tcp"]
+        self.assertEqual(tcp[-1][1], 2)
+        self.assertEqual(tcp[-1][2], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
