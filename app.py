@@ -422,6 +422,14 @@ def create_app(config_dir: str = None) -> Bottle:
     # установлен — иначе он сам справится при загрузке системы).
     _apply_awg_autostart_on_boot()
 
+    # Поднять фоновый мониторинг единого слоя, если есть маршруты с
+    # включённым мониторингом/автопереключением (переживает рестарт GUI).
+    try:
+        from core.unified import monitor as _uni_monitor
+        _uni_monitor.autostart_if_needed()
+    except Exception:
+        pass
+
     return app
 
 

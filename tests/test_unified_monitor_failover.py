@@ -118,3 +118,63 @@ class TestFailoverState(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNeedsMonitorAutostart(unittest.TestCase):
+
+    def _route(self, **kw):
+        from core.unified.model import UnifiedRoute, Destination
+        return UnifiedRoute(destination=Destination(domains=["a.com"]), **kw)
+
+    def test_needs_monitor_true_when_failover(self):
+        r = self._route(name="r", method="awg:awg0", failover_enabled=True)
+        with mock.patch("core.unified.storage.load_routes", return_value=[r]):
+            self.assertTrue(monitor.needs_monitor())
+
+    def test_needs_monitor_true_when_monitor(self):
+        r = self._route(name="r", method="awg:awg0", monitor_enabled=True)
+        with mock.patch("core.unified.storage.load_routes", return_value=[r]):
+            self.assertTrue(monitor.needs_monitor())
+
+    def test_needs_monitor_false_when_none(self):
+        r = self._route(name="r", method="awg:awg0")
+        with mock.patch("core.unified.storage.load_routes", return_value=[r]):
+            self.assertFalse(monitor.needs_monitor())
+
+    def test_needs_monitor_ignores_disabled_route(self):
+        r = self._route(name="r", method="awg:awg0", enabled=False,
+                        failover_enabled=True)
+        with mock.patch("core.unified.storage.load_routes", return_value=[r]):
+            self.assertFalse(monitor.needs_monitor())
+
+    def test_autostart_starts_and_stops(self):
+        loop = monitor.get_monitor()
+        try:
+            with mock.patch("core.unified.monitor.needs_monitor",
+                            return_value=True):
+                monitor.autostart_if_needed(interval=15)
+            self.assertTrue(loop.running())
+            with mock.patch("core.unified.monitor.needs_monitor",
+                            return_value=False):
+                monitor.autostart_if_needed()
+            self.assertFalse(loop.running())
+        finally:
+            loop.stop()
+
+
+class TestFailoverNeedsProbeOnly(unittest.TestCase):
+    """failover_enabled без monitor_enabled теперь тоже пробится (tick)."""
+
+    def test_tick_probes_failover_only_route(self):
+        from core.unified.model import UnifiedRoute, Destination
+        r = UnifiedRoute(name="r", method="awg:awg0",
+                         destination=Destination(domains=["a.com"]),
+                         monitor_enabled=False, failover_enabled=True)
+        loop = monitor._MonitorLoop()
+        with mock.patch("core.unified.storage.load_routes", return_value=[r]), \
+             mock.patch("core.unified.monitor.probe_route",
+                        return_value=True) as pr, \
+             mock.patch("core.unified.failover.step") as st:
+            loop._tick()
+        pr.assert_called_once()
+        st.assert_called_once()
