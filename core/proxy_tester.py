@@ -43,7 +43,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core.log_buffer import log
 
@@ -97,10 +97,13 @@ def _tcp_connect_ok(host: str, port: int, timeout: float) -> tuple:
 
 
 def tcp_prefilter(outbounds: list, *, timeout: float = _TCP_TIMEOUT,
-                  workers: int = _TCP_WORKERS) -> dict:
+                  workers: int = _TCP_WORKERS, on_done=None) -> dict:
     """
     Параллельный TCP-отсев. Возвращает {tag: (ok, latency_ms)} для
     каждого outbound'а с тегом и server/server_port.
+
+    on_done(done, total) — опциональный колбэк прогресса, вызывается по
+    мере завершения каждой пробы.
     """
     targets = []
     for ob in outbounds:
@@ -113,6 +116,7 @@ def tcp_prefilter(outbounds: list, *, timeout: float = _TCP_TIMEOUT,
             targets.append((tag, host, port))
 
     results: dict = {}
+    total = len(targets)
     if not targets:
         return results
 
@@ -121,9 +125,18 @@ def tcp_prefilter(outbounds: list, *, timeout: float = _TCP_TIMEOUT,
         ok, ms = _tcp_connect_ok(host, port, timeout)
         return tag, ok, ms
 
-    with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as ex:
-        for tag, ok, ms in ex.map(_job, targets):
+    done = 0
+    with ThreadPoolExecutor(max_workers=min(workers, total)) as ex:
+        futs = [ex.submit(_job, t) for t in targets]
+        for fut in as_completed(futs):
+            tag, ok, ms = fut.result()
             results[tag] = (ok, ms)
+            done += 1
+            if on_done:
+                try:
+                    on_done(done, total)
+                except Exception:
+                    pass
     return results
 
 
@@ -237,10 +250,12 @@ def _singbox_binary() -> str:
 
 
 def _e2e_delays(outbounds: list, target_url: str, timeout_ms: int,
-                binary: str) -> dict:
+                binary: str, on_done=None) -> dict:
     """
     Поднять одноразовый sing-box, замерить delay каждого outbound'а
     через Clash API. Возвращает {tag: {ok, latency_ms|error}}.
+
+    on_done(done, total) — опциональный колбэк прогресса.
     """
     tags = [o.get("tag") for o in outbounds if isinstance(o, dict)
             and o.get("tag")]
@@ -283,10 +298,20 @@ def _e2e_delays(outbounds: list, target_url: str, timeout_ms: int,
             status, body = _clash_get(clash_port, secret, path, http_to)
             return tag, parse_delay(status, body)
 
+        total = len(tags)
+        done = 0
         with ThreadPoolExecutor(
-                max_workers=min(_E2E_WORKERS, len(tags))) as ex:
-            for tag, res in ex.map(_job, tags):
+                max_workers=min(_E2E_WORKERS, total)) as ex:
+            futs = [ex.submit(_job, t) for t in tags]
+            for fut in as_completed(futs):
+                tag, res = fut.result()
                 out[tag] = res
+                done += 1
+                if on_done:
+                    try:
+                        on_done(done, total)
+                    except Exception:
+                        pass
     finally:
         if popen is not None:
             try:
@@ -307,7 +332,7 @@ def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
                    timeout_ms: int = _DEFAULT_E2E_MS,
                    tcp_prefilter_enabled: bool = True,
                    max_servers: int = _MAX_SERVERS,
-                   binary: str = None) -> dict:
+                   binary: str = None, progress_cb=None) -> dict:
     """
     Протестировать список outbound'ов. Возвращает:
       {
@@ -331,9 +356,20 @@ def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
 
     meta = {o["tag"]: o for o in obs}
 
+    def _report(phase, done, total):
+        if progress_cb:
+            try:
+                progress_cb(phase, done, total)
+            except Exception:
+                pass
+
     # Фаза 1 — TCP-отсев.
-    tcp = tcp_prefilter(obs) if tcp_prefilter_enabled else {
-        o["tag"]: (True, None) for o in obs}
+    if tcp_prefilter_enabled:
+        _report("tcp", 0, len(obs))
+        tcp = tcp_prefilter(
+            obs, on_done=lambda d, t: _report("tcp", d, t))
+    else:
+        tcp = {o["tag"]: (True, None) for o in obs}
 
     survivors = [meta[t] for t, (ok, _ms) in tcp.items() if ok]
 
@@ -343,7 +379,9 @@ def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
     engine_used = False
     if bin_path and survivors:
         try:
-            e2e = _e2e_delays(survivors, target_url, timeout_ms, bin_path)
+            _report("e2e", 0, len(survivors))
+            e2e = _e2e_delays(survivors, target_url, timeout_ms, bin_path,
+                              on_done=lambda d, t: _report("e2e", d, t))
             engine_used = True
         except Exception as e:
             log.warning("proxy_tester e2e: %s" % e, source="singbox")
@@ -407,6 +445,7 @@ class _TestJob:
         self._running = False
         self._result: dict = {}
         self._started_at = 0.0
+        self._progress = {"phase": "", "done": 0, "total": 0}
 
     def running(self) -> bool:
         with self._lock:
@@ -419,10 +458,17 @@ class _TestJob:
             self._running = True
             self._result = {}
             self._started_at = time.time()
+            self._progress = {"phase": "tcp", "done": 0,
+                              "total": len(outbounds or [])}
+
+        def _progress_cb(phase, done, total):
+            with self._lock:
+                self._progress = {"phase": phase, "done": done,
+                                  "total": total}
 
         def _run():
             try:
-                res = test_outbounds(outbounds, **kw)
+                res = test_outbounds(outbounds, progress_cb=_progress_cb, **kw)
             except Exception as e:
                 res = {"ok": False, "error": str(e)}
             with self._lock:
@@ -439,6 +485,7 @@ class _TestJob:
                 "running": self._running,
                 "result": self._result,
                 "started_at": self._started_at,
+                "progress": dict(self._progress),
             }
 
 

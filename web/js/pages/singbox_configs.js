@@ -1241,7 +1241,8 @@ const SingboxConfigsPage = (() => {
     let pool = { settings: {}, sources: [], presets: [], refresher: {} };
     let poolBusy = false;
     let poolSrcForm = { name: '', url: '', format: 'auto' };
-    let testState = { running: false, result: null };
+    let testState = { running: false, result: null,
+                      progress: { phase: '', done: 0, total: 0 } };
     let testTimer = null;
 
     async function loadPool() {
@@ -1402,7 +1403,23 @@ const SingboxConfigsPage = (() => {
     function renderTestResults() {
         const res = testState.result;
         if (testState.running) {
-            return `<div class="card"><div class="text-muted">Тестирование серверов… (TCP-отсев + проверка через движок до облака)</div></div>`;
+            const p = testState.progress || { phase: '', done: 0, total: 0 };
+            const phaseLabel = p.phase === 'e2e'
+                ? 'Проверка через движок до облака'
+                : 'TCP-отсев живых';
+            const total = p.total || 0;
+            const done = p.done || 0;
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            return `
+                <div class="card">
+                    <div style="display:flex; justify-content:space-between; font-size:12px;">
+                        <span class="text-muted">${phaseLabel}…</span>
+                        <span class="text-muted">${done} / ${total}${total?` (${pct}%)`:''}</span>
+                    </div>
+                    <div style="height:6px; background:var(--bg-input); border-radius:4px; overflow:hidden; margin-top:6px;">
+                        <div style="height:100%; width:${pct}%; background:var(--accent); transition:width .3s;"></div>
+                    </div>
+                </div>`;
         }
         if (!res) return '';
         if (!res.ok) {
@@ -1524,7 +1541,9 @@ const SingboxConfigsPage = (() => {
                 return;
             }
             Toast.info(`Тестируем ${r.count} серверов…`);
-            testState.running = true; testState.result = null; renderTab();
+            testState.running = true; testState.result = null;
+            testState.progress = { phase: 'tcp', done: 0, total: r.count || 0 };
+            renderTab();
             pollTest();
         } catch (e) { Toast.error(e.message); }
     }
@@ -1535,6 +1554,7 @@ const SingboxConfigsPage = (() => {
             try {
                 const st = await API.get('/api/singbox/test/status');
                 testState.running = !!st.running;
+                if (st.progress) testState.progress = st.progress;
                 if (!st.running && st.result && Object.keys(st.result).length) {
                     testState.result = st.result;
                     renderTab();
@@ -1545,7 +1565,7 @@ const SingboxConfigsPage = (() => {
             } catch (e) {
                 testState.running = false; renderTab();
             }
-        }, 1500);
+        }, 1000);
     }
 
     // ══════════════ helpers ══════════════
