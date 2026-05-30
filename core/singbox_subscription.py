@@ -23,11 +23,12 @@
 """
 
 import base64
+import json
 import re
 import urllib.parse
 
 from core.singbox_config import (
-    make_vless_outbound, make_trojan_outbound,
+    make_vless_outbound, make_vmess_outbound, make_trojan_outbound,
     make_shadowsocks_outbound, make_hysteria2_outbound,
     make_tuic_outbound,
 )
@@ -153,6 +154,103 @@ def vless_to_outbound(uri: str) -> dict:
     outbound = make_vless_outbound(
         tag=tag, server=server, port=port, uuid=uuid,
         flow=flow, transport=transport, tls=tls)
+    return {"ok": True, "tag": tag, "outbound": outbound}
+
+
+# ─────── vmess ───────
+
+def vmess_to_outbound(uri: str) -> dict:
+    """
+    Формат (v2rayN/большинство публичных подписок):
+        vmess://<base64(JSON)>
+
+    где JSON — объект с полями:
+        ps   — имя (remark)              add  — server host
+        port — порт                      id   — uuid
+        aid  — alterId (обычно 0)        scy  — security/cipher ('auto')
+        net  — transport: tcp|ws|grpc|h2 type — header type ('none')
+        host — ws/http Host-заголовок    path — ws path / grpc serviceName
+        tls  — 'tls' либо ''             sni  — server_name
+        alpn — 'h2,http/1.1'             fp   — utls fingerprint
+
+    Изредка vmess:// содержит «сырой» URI вида
+    `vmess://<uuid>@host:port?...` (как vless) — такой формат публичными
+    репозиториями почти не используется; здесь поддерживаем именно
+    base64-JSON, как самый распространённый.
+    """
+    if not uri.lower().startswith("vmess://"):
+        return {"ok": False, "error": "не vmess-URI"}
+
+    payload = uri[len("vmess://"):].strip()
+    # Отрезаем возможный #fragment до base64-декода.
+    if "#" in payload:
+        payload = payload.split("#", 1)[0]
+    decoded = _b64_decode_padded(payload)
+    if not decoded:
+        return {"ok": False, "error": "vmess: base64 не декодируется"}
+
+    try:
+        data = json.loads(decoded)
+    except (json.JSONDecodeError, ValueError):
+        return {"ok": False, "error": "vmess: payload не JSON"}
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "vmess: JSON не объект"}
+
+    def _s(key: str, default: str = "") -> str:
+        v = data.get(key, default)
+        return str(v).strip() if v is not None else default
+
+    server = _s("add")
+    port_s = _s("port")
+    uuid = _s("id")
+    if not server or not port_s or not uuid:
+        return {"ok": False, "error": "vmess: нет add/port/id"}
+    try:
+        port = int(port_s)
+    except ValueError:
+        return {"ok": False, "error": "vmess: порт не число"}
+
+    tag = _safe_tag(_s("ps") or "vmess-%s" % server)
+    security = _s("scy") or "auto"
+    try:
+        alter_id = int(_s("aid") or 0)
+    except ValueError:
+        alter_id = 0
+
+    # transport
+    net = (_s("net") or "tcp").lower()
+    host_hdr = _s("host")
+    path = _s("path")
+    transport = None
+    if net == "ws":
+        transport = {"type": "ws", "path": path or "/"}
+        if host_hdr:
+            transport["headers"] = {"Host": host_hdr}
+    elif net == "grpc":
+        transport = {"type": "grpc", "service_name": path or ""}
+    elif net in ("h2", "http"):
+        transport = {"type": "http", "path": path or "/"}
+        if host_hdr:
+            transport["host"] = [h for h in host_hdr.split(",") if h]
+
+    # TLS
+    tls = None
+    if _s("tls").lower() in ("tls", "reality", "1", "true"):
+        tls = {"enabled": True}
+        sni = _s("sni") or host_hdr
+        if sni:
+            tls["server_name"] = sni
+        fp = _s("fp")
+        if fp:
+            tls["utls"] = {"enabled": True, "fingerprint": fp}
+        alpn = _s("alpn")
+        if alpn:
+            tls["alpn"] = [a for a in alpn.split(",") if a]
+
+    outbound = make_vmess_outbound(
+        tag=tag, server=server, port=port, uuid=uuid,
+        security=security, alter_id=alter_id,
+        transport=transport, tls=tls)
     return {"ok": True, "tag": tag, "outbound": outbound}
 
 
@@ -317,6 +415,7 @@ def tuic_to_outbound(uri: str) -> dict:
 
 _HANDLERS = {
     "vless":     vless_to_outbound,
+    "vmess":     vmess_to_outbound,
     "trojan":    trojan_to_outbound,
     "ss":        ss_to_outbound,
     "hysteria2": hysteria2_to_outbound,

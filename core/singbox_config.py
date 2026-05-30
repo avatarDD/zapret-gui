@@ -380,6 +380,28 @@ def make_vless_outbound(tag: str, server: str, port: int, uuid: str,
     return out
 
 
+def make_vmess_outbound(tag: str, server: str, port: int, uuid: str,
+                        *, security: str = "auto", alter_id: int = 0,
+                        transport: dict = None, tls: dict = None) -> dict:
+    """
+    Собрать VMess-outbound dict. Минимум: server, port, uuid.
+
+    security:   шифр VMess ('auto' / 'aes-128-gcm' / 'chacha20-poly1305' /
+                'none' / 'zero'); из vmess-URI поле `scy`.
+    alter_id:   legacy alterId (обычно 0 для VMess AEAD).
+    transport:  как у vless — {"type": "ws"/"grpc"/"http", ...}.
+    tls:        {"enabled": True, "server_name": "...", "utls": {...}}.
+    """
+    out = {"type": "vmess", "tag": tag,
+           "server": server, "server_port": int(port), "uuid": uuid,
+           "security": security or "auto", "alter_id": int(alter_id or 0)}
+    if transport:
+        out["transport"] = transport
+    if tls:
+        out["tls"] = tls
+    return out
+
+
 def make_trojan_outbound(tag: str, server: str, port: int, password: str,
                          *, sni: str = "",
                          transport: dict = None) -> dict:

@@ -1,13 +1,69 @@
 # tests/test_singbox_subscription.py
 """Unit-тесты для core/singbox_subscription.py."""
 
+import base64
+import json
 import unittest
 
 from core.singbox_subscription import (
-    uri_to_outbound, vless_to_outbound, trojan_to_outbound,
-    ss_to_outbound, hysteria2_to_outbound, tuic_to_outbound,
-    _safe_tag,
+    uri_to_outbound, vless_to_outbound, vmess_to_outbound,
+    trojan_to_outbound, ss_to_outbound, hysteria2_to_outbound,
+    tuic_to_outbound, _safe_tag,
 )
+
+
+def _vmess_uri(payload: dict) -> str:
+    return "vmess://" + base64.b64encode(
+        json.dumps(payload).encode("utf-8")).decode("ascii")
+
+
+class TestVmess(unittest.TestCase):
+
+    def test_ws_tls(self):
+        uri = _vmess_uri({
+            "v": "2", "ps": "Tokyo 01", "add": "1.2.3.4", "port": "443",
+            "id": "b831381d-6324-4d53-ad4f-8cda48b30811", "aid": "0",
+            "scy": "auto", "net": "ws", "host": "cdn.example.com",
+            "path": "/vm", "tls": "tls", "sni": "cdn.example.com",
+        })
+        r = vmess_to_outbound(uri)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        ob = r["outbound"]
+        self.assertEqual(ob["type"], "vmess")
+        self.assertEqual(ob["tag"], "Tokyo-01")
+        self.assertEqual(ob["server"], "1.2.3.4")
+        self.assertEqual(ob["server_port"], 443)
+        self.assertEqual(ob["uuid"], "b831381d-6324-4d53-ad4f-8cda48b30811")
+        self.assertEqual(ob["transport"]["type"], "ws")
+        self.assertEqual(ob["transport"]["path"], "/vm")
+        self.assertEqual(ob["transport"]["headers"]["Host"], "cdn.example.com")
+        self.assertTrue(ob["tls"]["enabled"])
+        self.assertEqual(ob["tls"]["server_name"], "cdn.example.com")
+
+    def test_plain_tcp(self):
+        uri = _vmess_uri({
+            "ps": "x", "add": "h.example", "port": "80",
+            "id": "u", "net": "tcp",
+        })
+        r = vmess_to_outbound(uri)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        self.assertNotIn("transport", r["outbound"])
+        self.assertNotIn("tls", r["outbound"])
+
+    def test_dispatch_via_uri_to_outbound(self):
+        uri = _vmess_uri({"add": "h", "port": "443", "id": "u"})
+        r = uri_to_outbound(uri)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        self.assertEqual(r["outbound"]["type"], "vmess")
+
+    def test_missing_fields(self):
+        uri = _vmess_uri({"ps": "x", "net": "tcp"})  # нет add/port/id
+        r = vmess_to_outbound(uri)
+        self.assertFalse(r["ok"])
+
+    def test_bad_base64(self):
+        r = vmess_to_outbound("vmess://!!!not-base64!!!")
+        self.assertFalse(r["ok"])
 
 
 class TestSafeTag(unittest.TestCase):

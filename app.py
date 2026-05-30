@@ -430,6 +430,19 @@ def create_app(config_dir: str = None) -> Bottle:
     except Exception:
         pass
 
+    # Поднять фоновые обновлятели подписок и пула серверов, если они
+    # настроены — чтобы автообновление по таймеру переживало рестарт GUI.
+    try:
+        from core.subscription_manager import get_refresher
+        get_refresher().reconfigure()
+    except Exception:
+        pass
+    try:
+        from core.server_pool import get_pool_refresher
+        get_pool_refresher().reconfigure()
+    except Exception:
+        pass
+
     return app
 
 

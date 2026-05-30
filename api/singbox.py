@@ -54,6 +54,21 @@ REST API для sing-box.
   DELETE /api/singbox/subscriptions/<id>    — удалить подписку
   POST   /api/singbox/subscriptions/<id>/refresh — force-refresh одной
   POST   /api/singbox/subscriptions/refresh-all  — force-refresh всех
+
+  GET    /api/singbox/pool                  — пул серверов: настройки,
+                                                источники, пресеты, статус
+  POST   /api/singbox/pool/settings         — настройки пула
+                                                (interval/cap/group/target/
+                                                 health_filter)
+  POST   /api/singbox/pool/sources          — добавить источник
+  PUT    /api/singbox/pool/sources/<sid>    — обновить (enabled/name/url)
+  DELETE /api/singbox/pool/sources/<sid>    — удалить источник
+  POST   /api/singbox/pool/refresh          — пересобрать пул сейчас
+
+  POST   /api/singbox/test                  — тест серверов (body: config |
+                                                outbounds | url; target,
+                                                timeout_ms) — запуск
+  GET    /api/singbox/test/status           — прогресс/результат теста
 """
 
 import threading
@@ -276,6 +291,58 @@ def _build_tls_from_form(body: dict):
     if body.get("insecure"):
         tls["insecure"] = True
     return tls
+
+
+_SERVICE_OUTBOUND_TYPES = {"direct", "block", "dns", "selector", "urltest"}
+
+
+def _real_outbounds(cfg: dict) -> list:
+    """Достать «реальные» (не служебные) outbound'ы конфига для теста."""
+    if not isinstance(cfg, dict):
+        return []
+    out = []
+    for ob in (cfg.get("outbounds") or []):
+        if (isinstance(ob, dict) and ob.get("type")
+                and ob.get("type") not in _SERVICE_OUTBOUND_TYPES
+                and ob.get("tag")):
+            out.append(ob)
+    return out
+
+
+def _resolve_test_outbounds(body: dict):
+    """
+    Источник серверов для теста (по приоритету):
+      1) body["outbounds"] — готовый список;
+      2) body["config"]    — имя сохранённого конфига (server-pool,
+                              imported-subscription-*, любой);
+      3) body["url"]       — скачать и распарсить подписку «на лету».
+    Возвращает list (возможно пустой) либо None, если ничего не задано.
+    """
+    obs = body.get("outbounds")
+    if isinstance(obs, list):
+        return [o for o in obs if isinstance(o, dict) and o.get("tag")]
+
+    name = (body.get("config") or "").strip()
+    if name:
+        try:
+            from core.singbox_manager import get_singbox_manager
+            res = get_singbox_manager().get_config(name)
+            if not isinstance(res, dict) or not res.get("ok"):
+                return []
+            return _real_outbounds(res.get("parsed") or {})
+        except Exception:
+            return []
+
+    url = (body.get("url") or "").strip()
+    if url:
+        try:
+            from core.subscription_manager import fetch_outbounds
+            res = fetch_outbounds(url, (body.get("format") or "auto").strip())
+            return res.get("outbounds") or []
+        except Exception:
+            return []
+
+    return None
 
 
 def register(app):
@@ -744,6 +811,7 @@ def register(app):
         name = (body.get("name") or "").strip()
         url  = (body.get("url")  or "").strip()
         fmt  = (body.get("format") or "auto").strip()
+        group = (body.get("group") or "urltest").strip()
         try:
             interval = int(body.get("interval_hours") or 6)
         except (TypeError, ValueError):
@@ -753,7 +821,7 @@ def register(app):
             return {"ok": False, "error": "Нужны поля name и url"}
         from core.subscription_manager import add_subscription
         return add_subscription(name=name, url=url, fmt=fmt,
-                                interval_hours=interval)
+                                interval_hours=interval, group=group)
 
     @app.route("/api/singbox/subscriptions/<sid>", method="PUT")
     def singbox_subscriptions_update(sid):
@@ -765,7 +833,7 @@ def register(app):
         # Передаём через **kwargs — функция возьмёт только известные поля.
         from core.subscription_manager import update_subscription
         kw = {}
-        for k in ("name", "url", "format", "interval_hours"):
+        for k in ("name", "url", "format", "interval_hours", "group"):
             if k in body:
                 kw[k] = body[k]
         if "interval_hours" in kw:
@@ -792,3 +860,110 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core.subscription_manager import refresh_all
         return refresh_all()
+
+    # ─────── server pool (публичные источники) ─────────────────────
+
+    @app.route("/api/singbox/pool")
+    def singbox_pool_get():
+        response.content_type = "application/json; charset=utf-8"
+        from core import server_pool as sp
+        return {
+            "ok": True,
+            "settings": sp.get_settings(),
+            "sources": sp.list_sources(),
+            "presets": sp.presets(),
+            "refresher": sp.get_pool_refresher().get_status(),
+        }
+
+    @app.route("/api/singbox/pool/settings", method="POST")
+    def singbox_pool_settings():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core import server_pool as sp
+        return sp.update_settings(**body)
+
+    @app.route("/api/singbox/pool/sources", method="POST")
+    def singbox_pool_source_add():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core import server_pool as sp
+        return sp.add_source(
+            name=(body.get("name") or "").strip(),
+            url=(body.get("url") or "").strip(),
+            fmt=(body.get("format") or "auto").strip(),
+            enabled=bool(body.get("enabled", True)))
+
+    @app.route("/api/singbox/pool/sources/<sid>", method="PUT")
+    def singbox_pool_source_update(sid):
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core import server_pool as sp
+        kw = {k: body[k] for k in ("name", "url", "format", "enabled")
+              if k in body}
+        return sp.update_source(sid, **kw)
+
+    @app.route("/api/singbox/pool/sources/<sid>", method="DELETE")
+    def singbox_pool_source_remove(sid):
+        response.content_type = "application/json; charset=utf-8"
+        from core import server_pool as sp
+        return sp.remove_source(sid)
+
+    @app.route("/api/singbox/pool/refresh", method="POST")
+    def singbox_pool_refresh():
+        response.content_type = "application/json; charset=utf-8"
+        from core import server_pool as sp
+        # Может быть долго (health-filter) — гоняем в фоне, чтобы не
+        # держать HTTP-воркер. Но для UX вернём результат, если успеем
+        # быстро (без health-filter). Упростим: синхронно, но это уже
+        # выполняется в ThreadedWSGIServer-воркере.
+        return sp.refresh_pool()
+
+    # ─────── proxy tester ──────────────────────────────────────────
+
+    @app.route("/api/singbox/test", method="POST")
+    def singbox_test_start():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+
+        outbounds = _resolve_test_outbounds(body)
+        if outbounds is None:
+            response.status = 400
+            return {"ok": False,
+                    "error": "Укажите config, url или outbounds"}
+        if not outbounds:
+            return {"ok": False, "error": "Не нашлось серверов для теста"}
+
+        target = (body.get("target") or "cloudflare").strip()
+        try:
+            timeout_ms = int(body.get("timeout_ms") or 5000)
+        except (TypeError, ValueError):
+            timeout_ms = 5000
+
+        from core.proxy_tester import get_test_job
+        job = get_test_job()
+        started = job.start(outbounds, target=target, timeout_ms=timeout_ms)
+        if not started:
+            return {"ok": False, "error": "Тест уже выполняется",
+                    "running": True}
+        return {"ok": True, "started": True, "count": len(outbounds)}
+
+    @app.route("/api/singbox/test/status")
+    def singbox_test_status():
+        response.content_type = "application/json; charset=utf-8"
+        from core.proxy_tester import get_test_job, TARGET_PRESETS
+        st = get_test_job().status()
+        st["ok"] = True
+        st["targets"] = list(TARGET_PRESETS.keys())
+        return st
