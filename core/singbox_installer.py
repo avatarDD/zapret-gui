@@ -131,7 +131,7 @@ class SingboxInstaller:
         самого GUI (`v*`) под фолбэк не попадают — у них нет нашего
         manifest.json sing-box (а `awg-bin-*` ещё и не `manual-*`).
         """
-        url = "%s/repos/%s/releases" % (GITHUB_API, GITHUB_REPO)
+        url = "%s/repos/%s/releases?per_page=100" % (GITHUB_API, GITHUB_REPO)
         try:
             data = _http_json(url)
         except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:

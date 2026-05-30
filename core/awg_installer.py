@@ -287,7 +287,7 @@ class AwgInstaller:
 
         GitHub API releases возвращает их в порядке создания (новые сверху).
         """
-        url = "%s/repos/%s/releases?per_page=30" % (GITHUB_API_BASE, repo)
+        url = "%s/repos/%s/releases?per_page=100" % (GITHUB_API_BASE, repo)
         try:
             with _http_get(url) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -337,7 +337,7 @@ class AwgInstaller:
     def _list_candidate_tags(self, repo: str, tag_prefix: str) -> list:
         """Тэги релизов с asset'ом manifest.json: сначала с префиксом
         (новые сверху), затем прочие (ручные `manual-*`)."""
-        url = "%s/repos/%s/releases?per_page=30" % (GITHUB_API_BASE, repo)
+        url = "%s/repos/%s/releases?per_page=100" % (GITHUB_API_BASE, repo)
         try:
             with _http_get(url) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
