@@ -18,6 +18,8 @@ const MihomoPage = (() => {
     let busy = {};
     let editing = null;   // {name, text} | null   (null = редактор закрыт)
     let installing = false;
+    let installState = { status: 'idle', progress: 0, message: '' };
+    let installTimer = null;
 
     // ══════════════ render ══════════════
 
@@ -57,6 +59,7 @@ const MihomoPage = (() => {
 
     function destroy() {
         stopPolling();
+        if (installTimer) { clearTimeout(installTimer); installTimer = null; }
     }
 
     // ══════════════ data ══════════════
@@ -141,7 +144,26 @@ const MihomoPage = (() => {
                     ${installBtn}
                 </div>
             </div>
+            ${renderInstallProgress()}
         `;
+    }
+
+    function renderInstallProgress() {
+        const st = installState;
+        const show = installing || st.status === 'done' || st.status === 'error';
+        if (!show) return '';
+        const pct = Math.max(0, Math.min(100, st.progress || 0));
+        const barColor = st.status === 'error' ? 'var(--error)' : 'var(--accent)';
+        return `
+            <div style="margin-top:12px;">
+                <div style="display:flex; justify-content:space-between; font-size:12px;">
+                    <span class="text-muted">${escapeHtml(st.message || 'Установка mihomo…')}</span>
+                    <span class="text-muted">${pct}%</span>
+                </div>
+                <div style="height:6px; background:var(--bg-input); border-radius:4px; overflow:hidden; margin-top:4px;">
+                    <div style="height:100%; width:${pct}%; background:${barColor}; transition:width .3s;"></div>
+                </div>
+            </div>`;
     }
 
     // ══════════════ instances ══════════════
@@ -354,20 +376,68 @@ rules:
     }
 
     async function install() {
+        if (installing) return;
         installing = true;
+        installState = { status: 'starting', progress: 0,
+                         message: 'Запуск установки mihomo…' };
         renderSummary();
-        Toast.success('Установка mihomo запущена...');
         try {
             const r = await API.post('/api/mihomo/install', {});
             if (r && r.ok && !r.in_progress) {
+                // Успели синхронно (быстрый канал/кэш).
+                installState = { status: 'done', progress: 100,
+                                 message: 'Установлено' };
+                installing = false;
+                renderSummary();
                 Toast.success('mihomo установлен: ' + (r.version || ''));
-            } else if (r && r.in_progress) {
-                Toast.success('Установка идёт в фоне — обновите через минуту');
-            } else {
-                Toast.error((r && r.error) || 'ошибка установки');
+                await refresh();
+                return;
             }
-        } catch (e) { Toast.error(e.message); }
-        finally { installing = false; await refresh(); }
+            if (r && r.error && !r.in_progress) {
+                installing = false;
+                installState = { status: 'error', progress: 0, message: r.error };
+                renderSummary();
+                Toast.error(r.error);
+                return;
+            }
+            // Идёт в фоне — поллим прогресс.
+            pollInstall();
+        } catch (e) {
+            installing = false;
+            installState = { status: 'error', progress: 0, message: e.message };
+            renderSummary();
+            Toast.error(e.message);
+        }
+    }
+
+    function pollInstall() {
+        if (installTimer) clearTimeout(installTimer);
+        installTimer = setTimeout(async () => {
+            try {
+                const r = await API.get('/api/mihomo/install/status');
+                if (r && r.progress) installState = r.progress;
+                renderSummary();
+                const s = installState.status;
+                if (s === 'done' || s === 'installed' || s === 'idle') {
+                    installing = false;
+                    renderSummary();
+                    Toast.success('mihomo установлен');
+                    await refresh();          // обновит обзор/версию без перезагрузки страницы
+                    return;
+                }
+                if (s === 'error') {
+                    installing = false;
+                    renderSummary();
+                    Toast.error(installState.message || 'ошибка установки');
+                    return;
+                }
+                pollInstall();                 // продолжаем поллить
+            } catch (e) {
+                installing = false;
+                renderSummary();
+                Toast.error(e.message);
+            }
+        }, 1200);
     }
 
     // ══════════════ helpers ══════════════

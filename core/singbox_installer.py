@@ -122,19 +122,50 @@ class SingboxInstaller:
 
     def _resolve_latest_tag(self) -> str:
         """
-        Найти самый свежий релиз с тэгом `singbox-bin-*` в нашем репо.
+        Найти самый свежий релиз с бинарниками sing-box в нашем репо.
+
+        Приоритет — тэг `singbox-bin-*` (штатный, создаётся auto-tag job'ом
+        и push'ем тэга). Фолбэк — релиз, опубликованный ручным
+        workflow_dispatch: он получает тэг вида `manual-<timestamp>`, но
+        несёт тот же ассет `manifest.json`. Релизы AWG (`awg-bin-*`) и
+        самого GUI (`v*`) под фолбэк не попадают — у них нет нашего
+        manifest.json sing-box (а `awg-bin-*` ещё и не `manual-*`).
         """
-        url = "%s/repos/%s/releases" % (GITHUB_API, GITHUB_REPO)
+        url = "%s/repos/%s/releases?per_page=100" % (GITHUB_API, GITHUB_REPO)
         try:
             data = _http_json(url)
         except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
             raise RuntimeError("GitHub API недоступен: %s" % e)
         if not isinstance(data, list):
             raise RuntimeError("Не массив релизов")
+
+        # 1) штатный тэг singbox-bin-*
         for rel in data:
             tag = rel.get("tag_name", "")
             if tag.startswith(RELEASE_TAG_PREFIX):
                 return tag
+
+        # 2) фолбэк: ручной релиз manual-* с manifest.json ИМЕННО sing-box.
+        # Проверяем содержимое манифеста (ключ `sing_box`), чтобы не
+        # перепутать с манифестом другого движка (AWG), который тоже
+        # лежит как manifest.json в релизе manual-* (ср. issue #111).
+        for rel in data:
+            tag = rel.get("tag_name", "")
+            if not tag.startswith("manual-"):
+                continue
+            assets = rel.get("assets") or []
+            if not any(a.get("name") == MANIFEST_ASSET for a in assets):
+                continue
+            man_url = ("https://github.com/%s/releases/download/%s/%s" %
+                       (GITHUB_REPO, tag, MANIFEST_ASSET))
+            try:
+                man = _http_json(man_url, timeout=20)
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+                continue
+            if isinstance(man, dict) and (man.get("sing_box")
+                                          or man.get("sing-box")):
+                return tag
+
         raise RuntimeError("Не найден релиз с тэгом %s*" % RELEASE_TAG_PREFIX)
 
     def get_manifest(self, tag: str = "", force: bool = False) -> dict:

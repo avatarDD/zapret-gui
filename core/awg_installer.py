@@ -287,7 +287,7 @@ class AwgInstaller:
 
         GitHub API releases возвращает их в порядке создания (новые сверху).
         """
-        url = "%s/repos/%s/releases?per_page=30" % (GITHUB_API_BASE, repo)
+        url = "%s/repos/%s/releases?per_page=100" % (GITHUB_API_BASE, repo)
         try:
             with _http_get(url) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -337,7 +337,7 @@ class AwgInstaller:
     def _list_candidate_tags(self, repo: str, tag_prefix: str) -> list:
         """Тэги релизов с asset'ом manifest.json: сначала с префиксом
         (новые сверху), затем прочие (ручные `manual-*`)."""
-        url = "%s/repos/%s/releases?per_page=30" % (GITHUB_API_BASE, repo)
+        url = "%s/repos/%s/releases?per_page=100" % (GITHUB_API_BASE, repo)
         try:
             with _http_get(url) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -368,6 +368,23 @@ class AwgInstaller:
         go = ((manifest.get("amneziawg_go") or {}).get("binaries") or {})
         tools = ((manifest.get("amneziawg_tools") or {}).get("binaries") or {})
         return arch in go and arch in tools
+
+    @staticmethod
+    def _is_awg_manifest(manifest: dict) -> bool:
+        """
+        Это вообще AWG-манифест? У него есть секции amneziawg_go /
+        amneziawg_tools с бинарниками. Нужно, чтобы не перепутать с
+        манифестом ДРУГОГО движка (например sing-box: ключ `sing_box`),
+        который тоже лежит как `manifest.json` в релизе `manual-*`
+        (issue #111: AWG-установщик тянул sing-box-релиз).
+        """
+        if not isinstance(manifest, dict):
+            return False
+        # Различаем по НАЛИЧИЮ секций (не по непустоте бинарников):
+        # AWG-манифест содержит amneziawg_go/amneziawg_tools, sing-box —
+        # ключ sing_box. Релиз AWG без бинарников под текущую арх — всё
+        # ещё AWG-манифест (его и берём «для диагностики»).
+        return ("amneziawg_go" in manifest) or ("amneziawg_tools" in manifest)
 
     def _fetch_manifest(self, repo: str, tag: str) -> dict:
         """Скачать+распарсить manifest.json конкретного тэга (без кэша)."""
@@ -401,22 +418,37 @@ class AwgInstaller:
                 "(префикс '%s'). Соберите бинарники через workflow "
                 "build-awg-binaries.yml или загрузите manifest.json." %
                 (repo, tag_prefix))
-        first = None
+        first_awg = None      # первый РЕЛИЗ именно с AWG-манифестом
+        saw_foreign = False   # встречали manifest.json чужого движка
         for tag in tags[:12]:
             try:
                 manifest = self._fetch_manifest(repo, tag)
             except (HTTPError, URLError, ValueError, OSError):
                 continue
-            if first is None:
-                first = (tag, manifest)
+            # Пропускаем чужие манифесты (sing-box и т.п.) — иначе тянем
+            # не тот движок (issue #111).
+            if not self._is_awg_manifest(manifest):
+                saw_foreign = True
+                continue
+            if first_awg is None:
+                first_awg = (tag, manifest)
             if self._manifest_supports_arch(manifest, arch):
                 return tag, manifest
-        if first is None:
+
+        if first_awg is None:
+            hint = (" (найденные manifest.json принадлежат другому "
+                    "движку, например sing-box)") if saw_foreign else ""
             raise RuntimeError(
-                "Не удалось скачать ни один manifest.json в %s" % repo)
+                "Не найден релиз с бинарниками AmneziaWG (тэг '%s*') в %s%s. "
+                "Соберите их через workflow build-awg-binaries.yml." %
+                (tag_prefix, repo, hint))
+
+        # AWG-релиз есть, но под нашу арх бинарников нет — вернём для
+        # диагностики (install выдаст «нет бинарников для <arch>»).
         log.info("awg: нет релиза с бинарниками под '%s' — берём %s "
-                 "для диагностики" % (arch, first[0]), source="awg_installer")
-        return first
+                 "для диагностики" % (arch, first_awg[0]),
+                 source="awg_installer")
+        return first_awg
 
     def get_manifest(self, tag: str = None, force: bool = False,
                      arch: str = None) -> dict:

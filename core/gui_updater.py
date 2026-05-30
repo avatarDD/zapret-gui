@@ -286,6 +286,11 @@ class GuiUpdater:
                 if os.path.isfile(src):
                     shutil.copy2(src, dst)
 
+            # Гарантируем CLI-обёртку `zapret-gui` в PATH. Старые ipk
+            # (до появления CLI) её не клали, а self-update раньше не
+            # создавал — поэтому после обновления команда отсутствовала.
+            self._ensure_cli_wrapper(app_dir)
+
             self._set_progress("Очистка кэша...", 90)
             for root, dirs, _files in os.walk(app_dir):
                 for d in dirs:
@@ -352,6 +357,62 @@ class GuiUpdater:
         finally:
             # Очистка tmp
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _ensure_cli_wrapper(self, app_dir: str):
+        """
+        Создать обёртку `zapret-gui` в PATH, если её нет.
+
+        Старые ipk (до появления CLI) обёртку не ставили, а раньше и
+        self-update её не создавал — поэтому после установки старого ipk
+        и обновления через GUI команда `zapret-gui` отсутствовала. Теперь
+        обновление гарантирует её наличие. Best-effort: любая ошибка лишь
+        логируется и не срывает обновление.
+        """
+        try:
+            # bin-dir + дефолтный конфиг по расположению приложения.
+            if app_dir.startswith("/opt"):
+                bin_dir, cfg_default = "/opt/bin", "/opt/etc/zapret-gui"
+            else:
+                bin_dir, cfg_default = "/usr/bin", "/etc/zapret-gui"
+            if not os.path.isdir(bin_dir):
+                return  # некуда ставить (generic Linux без /opt/bin|/usr/bin)
+
+            # Реальный каталог конфига текущего процесса (надёжнее дефолта).
+            cfg_dir = cfg_default
+            try:
+                from core.config_manager import get_config_manager
+                cfg_dir = os.path.dirname(
+                    get_config_manager().config_path) or cfg_default
+            except Exception:
+                pass
+
+            wrapper = os.path.join(bin_dir, "zapret-gui")
+            # Если уже есть и ссылается на app.py — не трогаем (мог быть
+            # кастомизирован пакетом).
+            if os.path.isfile(wrapper):
+                try:
+                    with open(wrapper, "r", encoding="utf-8",
+                              errors="ignore") as f:
+                        if "app.py" in f.read():
+                            return
+                except OSError:
+                    return
+
+            content = (
+                "#!/bin/sh\n"
+                "# zapret-gui — консольная обёртка над app.py "
+                "(создана self-update).\n"
+                'exec python3 "%s/app.py" --config "%s" "$@"\n'
+                % (app_dir, cfg_dir)
+            )
+            with open(wrapper, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            os.chmod(wrapper, 0o755)
+            log.success("CLI-команда установлена: %s" % wrapper,
+                        source="gui-updater")
+        except Exception as e:
+            log.warning("Не удалось создать CLI-обёртку: %s" % e,
+                        source="gui-updater")
 
     @staticmethod
     def _find_init_script() -> str | None:
