@@ -139,9 +139,11 @@ def vless_to_outbound(uri: str) -> dict:
                 "public_key": q.get("pbk", ""),
                 "short_id":   q.get("sid", ""),
             },
+            # sing-box ТРЕБУЕТ utls для reality-клиента
+            # («uTLS is required by reality client»). Если в URI нет fp —
+            # подставляем дефолтный chrome, иначе конфиг не проходит check.
+            "utls": {"enabled": True, "fingerprint": fp or "chrome"},
         }
-        if fp:
-            tls["utls"] = {"enabled": True, "fingerprint": fp}
     elif sec == "tls":
         tls = {"enabled": True}
         if sni:

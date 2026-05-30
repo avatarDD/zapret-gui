@@ -155,6 +155,28 @@ class TestParseClashYaml(unittest.TestCase):
         self.assertIn(vless["tls"]["reality"]["short_id"], ("01", "1"))
         self.assertEqual(vless["tls"]["utls"]["fingerprint"], "chrome")
 
+    def test_reality_without_fingerprint_defaults_chrome(self):
+        # reality-opts без client-fingerprint → utls должен проставиться
+        # по умолчанию (sing-box требует utls для reality).
+        yaml = (
+            "proxies:\n"
+            "  - name: r1\n"
+            "    type: vless\n"
+            "    server: ex.com\n"
+            "    port: 443\n"
+            "    uuid: u-1\n"
+            "    tls: true\n"
+            "    reality-opts:\n"
+            "      public-key: PK\n"
+            "      short-id: \"ab\"\n"
+        )
+        r = parse_clash_yaml(yaml)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        v = [o for o in r["outbounds"] if o["type"] == "vless"][0]
+        self.assertTrue(v["tls"]["reality"]["enabled"])
+        self.assertEqual(v["tls"]["utls"],
+                         {"enabled": True, "fingerprint": "chrome"})
+
     def test_trojan_skip_cert_verify(self):
         r = parse_clash_yaml(SIMPLE_CLASH)
         tr = [o for o in r["outbounds"] if o["type"] == "trojan"][0]

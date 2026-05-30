@@ -17,6 +17,26 @@ def _vmess_uri(payload: dict) -> str:
         json.dumps(payload).encode("utf-8")).decode("ascii")
 
 
+class TestVlessReality(unittest.TestCase):
+
+    def test_reality_without_fp_defaults_utls_chrome(self):
+        # sing-box требует utls для reality — даже без fp в URI.
+        uri = ("vless://uuid-1@vpn.example:443"
+               "?security=reality&pbk=PUB&sid=01&sni=cloudflare.com"
+               "&flow=xtls-rprx-vision&type=tcp#NoFP")
+        r = vless_to_outbound(uri)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        tls = r["outbound"]["tls"]
+        self.assertTrue(tls["reality"]["enabled"])
+        self.assertEqual(tls["utls"], {"enabled": True, "fingerprint": "chrome"})
+
+    def test_reality_with_fp_kept(self):
+        uri = ("vless://uuid-1@vpn.example:443"
+               "?security=reality&pbk=PUB&sid=01&fp=firefox#WithFP")
+        r = vless_to_outbound(uri)
+        self.assertEqual(r["outbound"]["tls"]["utls"]["fingerprint"], "firefox")
+
+
 class TestVmess(unittest.TestCase):
 
     def test_ws_tls(self):
