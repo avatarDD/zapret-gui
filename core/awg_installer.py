@@ -334,15 +334,33 @@ class AwgInstaller:
              (", ".join(t for t in seen if t) or "(нет релизов)"))
         )
 
+    def _list_all_releases(self, repo: str) -> list:
+        """
+        Все релизы репозитория с пагинацией — НЕ зависим от номера
+        страницы. AWG-релиз (`awg-bin-*`/`manual-*`) старше десятков
+        GUI-релизов и может лежать на 3-4-й странице; одностраничный
+        запрос его не видел (issue #111).
+        """
+        out = []
+        for page in range(1, 21):  # потолок 2000 релизов
+            url = ("%s/repos/%s/releases?per_page=100&page=%d"
+                   % (GITHUB_API_BASE, repo, page))
+            try:
+                with _http_get(url) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except (HTTPError, URLError, ValueError, OSError):
+                break
+            if not isinstance(data, list) or not data:
+                break
+            out.extend(data)
+            if len(data) < 100:
+                break
+        return out
+
     def _list_candidate_tags(self, repo: str, tag_prefix: str) -> list:
         """Тэги релизов с asset'ом manifest.json: сначала с префиксом
         (новые сверху), затем прочие (ручные `manual-*`)."""
-        url = "%s/repos/%s/releases?per_page=100" % (GITHUB_API_BASE, repo)
-        try:
-            with _http_get(url) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except (HTTPError, URLError, ValueError, OSError):
-            return []
+        data = self._list_all_releases(repo)
 
         def _has_manifest(rel):
             for a in rel.get("assets") or []:

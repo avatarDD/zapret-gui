@@ -86,8 +86,14 @@ jobs:
           GO_VER="${GO_REF#v}"
           TOOLS_VER="${TOOLS_REF#v}"
 
-          # Чистим версию, оставляем безопасные символы для тэга
-          sanitize() { echo "$1" | tr -c 'A-Za-z0-9._-' '-'; }
+          # Чистим версию, оставляем безопасные символы для тэга.
+          # ВАЖНО: printf, а НЕ echo — echo добавляет '\n', который
+          # tr -c превращает в '-', и тэг получал лишний дефис в конце
+          # (`…tools-1.0.20260223-`, `…go-0.2.18--tools-…`). Плюс срезаем
+          # ведущие/замыкающие дефисы.
+          sanitize() {
+            printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/^-*//' -e 's/-*$//'
+          }
           GO_S=$(sanitize "$GO_VER")
           TOOLS_S=$(sanitize "$TOOLS_VER")
 
@@ -574,3 +580,23 @@ jobs:
           files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Оставляем только KEEP последних релизов с префиксом awg-bin-,
+      # остальные (вместе с тэгами) удаляем, чтобы не захламлять Releases.
+      - name: Prune old awg-bin releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          PREFIX="awg-bin-"
+          KEEP=3
+          gh release list --repo "$REPO" --limit 300 --json tagName,createdAt \
+            | jq -r --arg p "$PREFIX" --argjson k "$KEEP" \
+                '[.[] | select(.tagName|startswith($p))]
+                 | sort_by(.createdAt) | reverse | .[$k:][].tagName' \
+            | while read -r t; do
+                [ -n "$t" ] || continue
+                echo "Удаляю старый релиз $t (и тэг)"
+                gh release delete "$t" --repo "$REPO" --yes --cleanup-tag || true
+              done

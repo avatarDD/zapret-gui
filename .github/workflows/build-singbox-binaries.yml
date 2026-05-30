@@ -93,7 +93,11 @@ jobs:
           SB_REF=$(resolve_latest "$SINGBOX_REPO")
           SB_VER="${SB_REF#v}"
 
-          sanitize() { echo "$1" | tr -c 'A-Za-z0-9._-' '-'; }
+          # printf, а НЕ echo: echo добавляет '\n' → tr -c делает из него
+          # '-' → лишний дефис в конце тэга (`singbox-bin-v1.14.0-alpha.26-`).
+          sanitize() {
+            printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/^-*//' -e 's/-*$//'
+          }
           SB_S=$(sanitize "$SB_VER")
 
           NEW_TAG="singbox-bin-v${SB_S}"
@@ -399,3 +403,24 @@ jobs:
           files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Чистим старьё: оставляем только KEEP последних релизов с
+      # префиксом singbox-bin-, остальные (вместе с тэгами) удаляем,
+      # чтобы не захламлять Releases. manual-* не трогаем.
+      - name: Prune old singbox-bin releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          PREFIX="singbox-bin-"
+          KEEP=3
+          gh release list --repo "$REPO" --limit 300 --json tagName,createdAt \
+            | jq -r --arg p "$PREFIX" --argjson k "$KEEP" \
+                '[.[] | select(.tagName|startswith($p))]
+                 | sort_by(.createdAt) | reverse | .[$k:][].tagName' \
+            | while read -r t; do
+                [ -n "$t" ] || continue
+                echo "Удаляю старый релиз $t (и тэг)"
+                gh release delete "$t" --repo "$REPO" --yes --cleanup-tag || true
+              done
