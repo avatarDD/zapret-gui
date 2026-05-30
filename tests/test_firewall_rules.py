@@ -97,5 +97,37 @@ class TestNftablesRules(unittest.TestCase):
         self.assertIn("tcp flags syn,ack", joined)
 
 
+    def test_port_ranges_use_dash_not_colon(self):
+        """Регрессия #101: nft диапазоны портов — через дефис."""
+        fw = FirewallManager()
+        captured = []
+        with mock.patch.object(fw, "_run_cmd",
+                               side_effect=lambda c: captured.append(" ".join(c)) or True):
+            fw._apply_nftables(
+                300, "80,443", "443,3478:3481,19294:19344,49152:65535",
+                "0x40000000", 20, 5, ["eth0"], None)
+        joined = "\n".join(captured)
+        self.assertIn("3478-3481", joined)
+        self.assertIn("19294-19344", joined)
+        self.assertIn("49152-65535", joined)
+        # старого двоеточного синтаксиса в udp dport/sport быть не должно
+        self.assertNotIn("3478:3481", joined)
+
+
+class TestNftPortSet(unittest.TestCase):
+
+    def test_converts_colon_to_dash(self):
+        from core.firewall import _nft_port_set
+        self.assertEqual(_nft_port_set("443,3478:3481,5349"),
+                         "443, 3478-3481, 5349")
+
+    def test_single_port(self):
+        from core.firewall import _nft_port_set
+        self.assertEqual(_nft_port_set("443"), "443")
+
+    def test_strips_blanks(self):
+        from core.firewall import _nft_port_set
+        self.assertEqual(_nft_port_set("443, , 80:90,"), "443, 80-90")
+
 if __name__ == "__main__":
     unittest.main()

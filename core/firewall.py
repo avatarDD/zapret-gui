@@ -32,6 +32,26 @@ NFT_TABLE = "zapret_gui"
 IPT_COMMENT = "zapret-gui"
 
 
+def _nft_port_set(spec: str) -> str:
+    """
+    Преобразовать iptables/multiport-список портов в nftables-синтаксис.
+
+    Диапазоны в nft записываются через дефис (`3478-3481`), тогда как
+    iptables-multiport и наш конфиг используют двоеточие (`3478:3481`).
+    Без конверсии nft падает с «Could not resolve service: Servname not
+    supported for ai_socktype» (issue #101).
+
+      "443,3478:3481,5349"  →  "443, 3478-3481, 5349"
+    """
+    parts = []
+    for tok in str(spec or "").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        parts.append(tok.replace(":", "-"))
+    return ", ".join(parts)
+
+
 # При запуске от обычного пользователя на Debian/Ubuntu (`python3 app.py`)
 # в PATH отсутствуют /sbin и /usr/sbin, где живут iptables/nft. Из-за
 # этого shutil.which() и subprocess не находят бинарники, и весь модуль
@@ -708,8 +728,8 @@ class FirewallManager:
 
         oif = _iface("oifname")
         iif = _iface("iifname")
-        tcp_ports = "{ %s }" % ports_tcp if ports_tcp else None
-        udp_ports = "{ %s }" % ports_udp if ports_udp else None
+        tcp_ports = "{ %s }" % _nft_port_set(ports_tcp) if ports_tcp else None
+        udp_ports = "{ %s }" % _nft_port_set(ports_udp) if ports_udp else None
 
         cmds = []
         cmds.append("add table inet %s" % NFT_TABLE)
