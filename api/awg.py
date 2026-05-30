@@ -523,7 +523,9 @@ def register(app):
             new = set_settings(**{k: body.get(k) for k in (
                 "enabled", "handshake_timeout_sec",
                 "check_interval_sec", "cooldown_sec",
-                "max_restarts_per_hour") if k in body})
+                "max_restarts_per_hour",
+                "probe_enabled", "probe_host", "probe_port",
+                "probe_timeout_sec", "probe_fail_threshold") if k in body})
             return {"ok": True, "status": get_watchdog().get_status(),
                     "settings": new}
         except Exception as e:

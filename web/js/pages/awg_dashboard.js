@@ -66,11 +66,13 @@ const AwgDashboardPage = (() => {
                 </div>
             </div>
 
+            <div class="card" id="awg-watchdog" style="margin-bottom: 16px;"></div>
             <div id="awg-tunnels"></div>
             <div id="awg-keenetic-routing"></div>
         `;
 
         refresh();
+        loadWatchdog();
         startPolling();
     }
 
@@ -744,8 +746,82 @@ const AwgDashboardPage = (() => {
         return String(s || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
     }
 
+    // ══════════════ watchdog (авто-переподключение) ══════════════
+
+    let _wd = null;
+
+    async function loadWatchdog() {
+        try {
+            const r = await API.get('/api/awg/watchdog');
+            _wd = (r && r.status) || null;
+        } catch (_) { _wd = null; }
+        renderWatchdog();
+    }
+
+    function renderWatchdog() {
+        const box = document.getElementById('awg-watchdog');
+        if (!box) return;
+        const s = (_wd && _wd.settings) || {};
+        // «Переподключать при плохом соединении» = watchdog + активная проба.
+        const reconnectOn = !!(s.enabled && s.probe_enabled);
+        const help = (typeof Help !== 'undefined') ? Help.button('watchdog') : '';
+        box.innerHTML = `
+            <div class="card-title">Авто-переподключение${help}</div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer;">
+                <input type="checkbox" id="wd-reconnect" ${reconnectOn ? 'checked' : ''}
+                       onchange="AwgDashboardPage.saveWatchdog()">
+                <span>Переподключать при плохом соединении</span>
+            </label>
+            <p class="text-muted" style="font-size:12px; margin:6px 0 0;">
+                Периодически проверяет связь через туннель и автоматически
+                перезапускает его, если соединение деградировало (handshake
+                устарел или проба не проходит). Помогает, когда AmneziaWG
+                «зависает»: сайты тормозят, потом сеть отваливается.
+            </p>
+            <div id="wd-advanced" style="margin-top:10px; ${reconnectOn ? '' : 'display:none;'}">
+                <div style="display:grid; grid-template-columns:200px 1fr; gap:6px 12px; max-width:560px; align-items:center;">
+                    <label class="text-muted" style="font-size:12px;">Хост для проверки</label>
+                    <input type="text" id="wd-probe-host" class="form-control" style="max-width:200px;"
+                           value="${escapeAttr(s.probe_host || '1.1.1.1')}">
+                    <label class="text-muted" style="font-size:12px;">Неудач подряд → рестарт</label>
+                    <input type="number" id="wd-probe-thr" class="form-control" style="max-width:100px;"
+                           min="1" max="10" value="${escapeAttr(s.probe_fail_threshold || 2)}">
+                    <label class="text-muted" style="font-size:12px;">Таймаут handshake, с</label>
+                    <input type="number" id="wd-hs" class="form-control" style="max-width:100px;"
+                           min="30" max="3600" value="${escapeAttr(s.handshake_timeout_sec || 180)}">
+                </div>
+                <div style="margin-top:8px;">
+                    <button class="btn btn-ghost btn-sm" onclick="AwgDashboardPage.saveWatchdog()">Сохранить параметры</button>
+                </div>
+            </div>
+        `;
+    }
+
+    async function saveWatchdog() {
+        const on = !!(document.getElementById('wd-reconnect') || {}).checked;
+        const host = (document.getElementById('wd-probe-host') || {}).value;
+        const thr = (document.getElementById('wd-probe-thr') || {}).value;
+        const hs = (document.getElementById('wd-hs') || {}).value;
+        const payload = { enabled: on, probe_enabled: on };
+        if (host) payload.probe_host = String(host).trim();
+        if (thr) payload.probe_fail_threshold = parseInt(thr, 10) || 2;
+        if (hs) payload.handshake_timeout_sec = parseInt(hs, 10) || 180;
+        try {
+            const r = await API.post('/api/awg/watchdog', payload);
+            if (r && r.ok) {
+                _wd = r.status || _wd;
+                Toast.success(on ? 'Авто-переподключение включено'
+                                 : 'Авто-переподключение выключено');
+                renderWatchdog();
+            } else {
+                Toast.error((r && r.error) || 'ошибка');
+            }
+        } catch (e) { Toast.error(e.message); }
+    }
+
     return {
         render, destroy, refresh, up, down, restart, diagnostics,
         toggleAutostart, installScript, removeScript, regenerateScript,
+        loadWatchdog, saveWatchdog,
     };
 })();

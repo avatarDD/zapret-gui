@@ -147,3 +147,57 @@ class TestStatus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDecideRestart(unittest.TestCase):
+    """Решение о рестарте: handshake-age + активная проба через туннель."""
+
+    def test_fresh_handshake_no_probe(self):
+        should, _ = awg_watchdog.decide_restart(
+            handshake_age=10, handshake_timeout=180,
+            probe_enabled=False, probe_consecutive_fails=0, probe_threshold=2)
+        self.assertFalse(should)
+
+    def test_stale_handshake_restarts(self):
+        should, reason = awg_watchdog.decide_restart(
+            handshake_age=200, handshake_timeout=180,
+            probe_enabled=False, probe_consecutive_fails=0, probe_threshold=2)
+        self.assertTrue(should)
+        self.assertIn("handshake", reason)
+
+    def test_no_handshake_yet_holds(self):
+        should, _ = awg_watchdog.decide_restart(
+            handshake_age=None, handshake_timeout=180,
+            probe_enabled=False, probe_consecutive_fails=0, probe_threshold=2)
+        self.assertFalse(should)
+
+    def test_probe_fail_restarts_even_with_fresh_handshake(self):
+        should, reason = awg_watchdog.decide_restart(
+            handshake_age=5, handshake_timeout=180,
+            probe_enabled=True, probe_consecutive_fails=2, probe_threshold=2)
+        self.assertTrue(should)
+        self.assertIn("проба", reason)
+
+    def test_probe_below_threshold_holds(self):
+        should, _ = awg_watchdog.decide_restart(
+            handshake_age=5, handshake_timeout=180,
+            probe_enabled=True, probe_consecutive_fails=1, probe_threshold=2)
+        self.assertFalse(should)
+
+    def test_probe_disabled_ignores_fails(self):
+        should, _ = awg_watchdog.decide_restart(
+            handshake_age=5, handshake_timeout=180,
+            probe_enabled=False, probe_consecutive_fails=9, probe_threshold=2)
+        self.assertFalse(should)
+
+
+class TestProbeSettings(unittest.TestCase):
+
+    def test_probe_defaults_present(self):
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=FakeConfigManager({})):
+            s = awg_watchdog._get_settings()
+        self.assertIn("probe_enabled", s)
+        self.assertEqual(s["probe_enabled"], False)
+        self.assertIn("probe_host", s)
+        self.assertIn("probe_fail_threshold", s)

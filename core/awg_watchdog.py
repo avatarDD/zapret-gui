@@ -22,6 +22,7 @@ settings.json (`awg.watchdog.enabled`) или API.
 Не запускаем поток на не-AWG платформах — модуль безопасен в import'е.
 """
 
+import socket
 import threading
 import time
 
@@ -34,6 +35,66 @@ DEFAULT_HANDSHAKE_TIMEOUT_SEC = 180   # 3 минуты без handshake → ре
 DEFAULT_CHECK_INTERVAL_SEC    = 30    # частота проверки
 DEFAULT_COOLDOWN_SEC          = 300   # пауза после рестарта — не дёргать снова
 DEFAULT_MAX_RESTARTS_PER_HOUR = 6     # защита от петли
+
+# Активная проба «качества» через туннель (опц.). Ловит случай, когда
+# handshake ещё «свежий», но трафик через туннель уже не идёт (сайты
+# тормозят → сеть отваливается; помогает рестарт). Проба делается с
+# привязкой к интерфейсу туннеля (SO_BINDTODEVICE), т.е. реально через него.
+DEFAULT_PROBE_ENABLED       = False
+DEFAULT_PROBE_HOST          = "1.1.1.1"
+DEFAULT_PROBE_PORT          = 443
+DEFAULT_PROBE_TIMEOUT_SEC   = 4
+DEFAULT_PROBE_FAIL_THRESHOLD = 2      # подряд неудач → рестарт
+
+
+def probe_via_iface(host: str, port: int = 443, iface: str = "",
+                    timeout: float = 4.0) -> bool:
+    """
+    TCP-проба host:port С ПРИВЯЗКОЙ к интерфейсу `iface` (через
+    SO_BINDTODEVICE) — пакет уходит именно через туннель. True, если
+    соединение установилось. Требует root (на роутере он есть); если
+    bind не удался — проба всё равно выполняется (но уже не гарантирует
+    маршрут через туннель).
+    """
+    if not host:
+        return False
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.settimeout(timeout)
+        if iface:
+            try:
+                s.setsockopt(socket.SOL_SOCKET, 25,  # SO_BINDTODEVICE
+                             (iface + "\0").encode())
+            except (OSError, AttributeError):
+                pass
+        s.connect((host, int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def decide_restart(*, handshake_age, handshake_timeout: int,
+                   probe_enabled: bool, probe_consecutive_fails: int,
+                   probe_threshold: int) -> tuple:
+    """
+    Чистое решение «рестартить ли туннель». Возвращает (bool, reason).
+
+      handshake_age — секунд с последнего handshake (или None, если его
+                      ещё не было / нет peer'ов);
+      probe_* — активная проба через туннель.
+    """
+    if probe_enabled and probe_consecutive_fails >= max(1, probe_threshold):
+        return (True, "проба через туннель не прошла %d раз подряд"
+                % probe_consecutive_fails)
+    if handshake_age is not None and handshake_age >= handshake_timeout:
+        return (True, "handshake %dс назад (>%dс)"
+                % (handshake_age, handshake_timeout))
+    return (False, "")
 
 
 # ─────── settings ───────
@@ -65,36 +126,35 @@ def _get_settings() -> dict:
             "cooldown_sec", DEFAULT_COOLDOWN_SEC)),
         "max_restarts_per_hour":    int(wd.get(
             "max_restarts_per_hour", DEFAULT_MAX_RESTARTS_PER_HOUR)),
+        "probe_enabled":            bool(wd.get(
+            "probe_enabled", DEFAULT_PROBE_ENABLED)),
+        "probe_host":               str(wd.get(
+            "probe_host", DEFAULT_PROBE_HOST) or DEFAULT_PROBE_HOST),
+        "probe_port":               int(wd.get(
+            "probe_port", DEFAULT_PROBE_PORT)),
+        "probe_timeout_sec":        int(wd.get(
+            "probe_timeout_sec", DEFAULT_PROBE_TIMEOUT_SEC)),
+        "probe_fail_threshold":     int(wd.get(
+            "probe_fail_threshold", DEFAULT_PROBE_FAIL_THRESHOLD)),
     }
 
 
 def set_settings(**kwargs) -> dict:
-    """Обновить настройки watchdog'а. Возвращает актуальные."""
+    """Обновить настройки watchdog'а (персистентно). Возвращает актуальные."""
     try:
-        from core.config_manager import get_config_manager, save_config
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        for k, v in kwargs.items():
+            if v is None:
+                continue
+            cm.set("awg", "watchdog", k, v)
+        cm.save()
     except Exception as e:
-        log.warning("awg_watchdog: settings unavailable: %s" % e,
-                    source="awg")
-        return _get_settings()
-
-    cfg = get_config_manager().load()
-    if not isinstance(cfg, dict):
-        cfg = {}
-    cfg.setdefault("awg", {}).setdefault("watchdog", {})
-    sec = cfg["awg"]["watchdog"]
-    for k, v in kwargs.items():
-        if v is None:
-            continue
-        sec[k] = v
-    try:
-        save_config()
-    except Exception as e:
-        log.warning("awg_watchdog: save_config: %s" % e, source="awg")
+        log.warning("awg_watchdog: save settings: %s" % e, source="awg")
 
     # При смене enabled-флага дёрнем синглтон, чтобы он стартанул/
     # остановил поток.
-    wd = get_watchdog()
-    wd.reconfigure()
+    get_watchdog().reconfigure()
     return _get_settings()
 
 
@@ -111,6 +171,8 @@ class AwgWatchdog:
         self._restart_log  = {}
         # Cooldown'ы: {iface: ts_last_restart}
         self._last_restart = {}
+        # Счётчик подряд-неудачных проб: {iface: int}
+        self._probe_fails  = {}
 
     # ─── lifecycle ───
 
@@ -197,25 +259,36 @@ class AwgWatchdog:
         if (now - last) < settings["cooldown_sec"]:
             return
 
-        # Самый свежий handshake по peer'ам.
+        # Возраст самого свежего handshake по peer'ам (None — если ещё
+        # не было / нет peer'ов: на первом подъёме не нервничаем).
         peers = status.get("peers") or []
-        if not peers:
-            # Если peer'ов вообще не видно — туннель в странном состоянии.
-            # Не рестартуем: возможно конфиг странный, либо ещё подключается.
-            return
         latest = 0
         for p in peers:
             try:
                 latest = max(latest, int(p.get("latest_handshake") or 0))
             except (TypeError, ValueError):
                 continue
-        if latest == 0:
-            # Handshake ещё ни разу не случился. Это часто на первом
-            # подъёме туннеля — не нервничаем.
-            return
+        age = (int(now) - latest) if latest > 0 else None
 
-        age = int(now) - latest
-        if age < settings["handshake_timeout_sec"]:
+        # Активная проба через туннель (если включена).
+        probe_enabled = bool(settings.get("probe_enabled", False))
+        probe_fails = self._probe_fails.get(iface, 0)
+        if probe_enabled:
+            ok = probe_via_iface(
+                settings.get("probe_host", DEFAULT_PROBE_HOST),
+                settings.get("probe_port", DEFAULT_PROBE_PORT), iface,
+                settings.get("probe_timeout_sec", DEFAULT_PROBE_TIMEOUT_SEC))
+            probe_fails = 0 if ok else probe_fails + 1
+            self._probe_fails[iface] = probe_fails
+
+        should, reason = decide_restart(
+            handshake_age=age,
+            handshake_timeout=settings["handshake_timeout_sec"],
+            probe_enabled=probe_enabled,
+            probe_consecutive_fails=probe_fails,
+            probe_threshold=settings.get("probe_fail_threshold",
+                                         DEFAULT_PROBE_FAIL_THRESHOLD))
+        if not should:
             return
 
         # Rate limit: не больше N рестартов в час.
@@ -223,16 +296,16 @@ class AwgWatchdog:
         history[:] = [ts for ts in history if (now - ts) < 3600]
         if len(history) >= settings["max_restarts_per_hour"]:
             log.warning(
-                "awg-watchdog: %s — handshake %dс назад, но лимит"
-                " рестартов исчерпан (%d/час); ничего не делаем"
-                % (iface, age, settings["max_restarts_per_hour"]),
+                "awg-watchdog: %s — %s, но лимит рестартов исчерпан"
+                " (%d/час). Туннель нездоров — рассмотрите смену"
+                " конфига/прокси или метод nfqws2 (failover в"
+                " «Маршрутизации»)."
+                % (iface, reason, settings["max_restarts_per_hour"]),
                 source="awg")
             return
 
-        log.warning(
-            "awg-watchdog: %s handshake %dс назад (>%dс) — рестартую"
-            % (iface, age, settings["handshake_timeout_sec"]),
-            source="awg")
+        log.warning("awg-watchdog: %s — %s; рестартую" % (iface, reason),
+                    source="awg")
         try:
             mgr.restart(iface)
         except Exception as e:
@@ -240,6 +313,7 @@ class AwgWatchdog:
                         source="awg")
             return
         self._last_restart[iface] = now
+        self._probe_fails[iface] = 0
         history.append(now)
 
     # ─── status (для UI) ───
