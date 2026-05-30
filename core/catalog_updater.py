@@ -39,6 +39,7 @@ import threading
 import time
 from collections import OrderedDict
 from typing import Optional
+import urllib.parse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -62,9 +63,14 @@ SOURCE_PRESETS_SUBPATH = "src/core/presets/builtin/winws2"
 # Префикс для section_id winws2-пресетов (защита от коллизий с direct)
 WINWS2_PREFIX = "winws2_"
 
+# ВАЖНО: запрашиваем последний коммит, ЗАТРОНУВШИЙ КАТАЛОГИ (subpath), а
+# не HEAD всей ветки. Иначе любой посторонний коммит в активный репозиторий
+# youtubediscord/zapret менял sha → «доступно обновление» появлялось снова
+# сразу после успешного обновления, хотя сами каталоги не менялись.
 GITHUB_COMMITS_API = (
-    "https://api.github.com/repos/%s/%s/commits/%s"
-    % (SOURCE_OWNER, SOURCE_REPO, SOURCE_BRANCH)
+    "https://api.github.com/repos/%s/%s/commits?path=%s&sha=%s&per_page=1"
+    % (SOURCE_OWNER, SOURCE_REPO,
+       urllib.parse.quote(SOURCE_DIRECT_SUBPATH), SOURCE_BRANCH)
 )
 GITHUB_ARCHIVE_URL = (
     "https://github.com/%s/%s/archive/refs/heads/%s.tar.gz"
@@ -172,8 +178,14 @@ class CatalogUpdater:
 
         try:
             data = _fetch_json(GITHUB_COMMITS_API)
-            sha = (data.get("sha") or "").strip()
-            commit = data.get("commit") or {}
+            # commits?path=... возвращает СПИСОК коммитов (новые сверху).
+            # commits/{ref} возвращал объект — поддержим обе формы.
+            if isinstance(data, list):
+                item = data[0] if data else {}
+            else:
+                item = data or {}
+            sha = (item.get("sha") or "").strip()
+            commit = item.get("commit") or {}
             author = commit.get("author") or {}
 
             result["ok"] = bool(sha)

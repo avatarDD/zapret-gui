@@ -26,7 +26,7 @@ const ZapretManagerPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Управление zapret2</h1>
+                    <h1 class="page-title">Управление zapret2${typeof Help !== 'undefined' ? Help.button('zapret') : ''}</h1>
                     <p class="page-description">Установка, обновление и удаление движка nfqws2</p>
                 </div>
                 <button class="btn btn-ghost btn-sm" onclick="ZapretManagerPage.refresh()" id="zm-btn-refresh">

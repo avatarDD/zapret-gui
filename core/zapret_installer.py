@@ -777,7 +777,10 @@ class ZapretInstaller:
 
         # ── Шаг 4: Загрузка ──
         self._update_op("Загрузка архива...", 20)
-        tmp_dir = "/tmp/zapret-gui-install-%d" % int(time.time())
+        # Рабочий каталог — на ПОСТОЯННОМ носителе рядом с base_path, а не
+        # в /tmp (на OpenWrt это tmpfs/ОЗУ и его не хватает — issue #98).
+        from core.binary_installer import make_workdir
+        tmp_dir = make_workdir(near=base_path, prefix="zapret-gui-install-")
         archive_path = os.path.join(tmp_dir, "zapret2-release.tar.gz")
 
         try:

@@ -334,9 +334,95 @@ class AwgInstaller:
              (", ".join(t for t in seen if t) or "(нет релизов)"))
         )
 
-    def get_manifest(self, tag: str = None, force: bool = False) -> dict:
+    def _list_candidate_tags(self, repo: str, tag_prefix: str) -> list:
+        """Тэги релизов с asset'ом manifest.json: сначала с префиксом
+        (новые сверху), затем прочие (ручные `manual-*`)."""
+        url = "%s/repos/%s/releases?per_page=30" % (GITHUB_API_BASE, repo)
+        try:
+            with _http_get(url) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError, ValueError, OSError):
+            return []
+
+        def _has_manifest(rel):
+            for a in rel.get("assets") or []:
+                if (a.get("name") or "").lower() == "manifest.json":
+                    return True
+            return False
+
+        prefixed, others = [], []
+        for rel in data:
+            if rel.get("draft"):
+                continue
+            tag = rel.get("tag_name") or ""
+            if not tag or not _has_manifest(rel):
+                continue
+            (prefixed if tag.startswith(tag_prefix) else others).append(tag)
+        return prefixed + others
+
+    @staticmethod
+    def _manifest_supports_arch(manifest: dict, arch: str) -> bool:
+        """В манифесте объявлены бинарники go И tools под arch."""
+        if not arch:
+            return True
+        go = ((manifest.get("amneziawg_go") or {}).get("binaries") or {})
+        tools = ((manifest.get("amneziawg_tools") or {}).get("binaries") or {})
+        return arch in go and arch in tools
+
+    def _fetch_manifest(self, repo: str, tag: str) -> dict:
+        """Скачать+распарсить manifest.json конкретного тэга (без кэша)."""
+        url = "https://github.com/%s/releases/download/%s/manifest.json" % (
+            repo, tag)
+        with _http_get(url) as resp:
+            manifest = json.loads(resp.read().decode("utf-8"))
+        manifest.setdefault("tag", tag)
+        return manifest
+
+    def _detect_arch(self) -> str:
+        try:
+            return get_awg_detector().detect_architecture().get(
+                "artifact_arch") or ""
+        except Exception:
+            return ""
+
+    def _resolve_best_release(self, repo: str, tag_prefix: str,
+                              arch: str) -> tuple:
         """
-        Получить manifest.json для указанного тэга (или последнего).
+        (tag, manifest) последнего релиза, у которого реально есть
+        бинарники под `arch`. Если такого нет — первый кандидат (для
+        диагностики). Так пустой/битый ручной релиз без бинарников под
+        нашу арх не перетягивает на себя «последний» и не вызывает
+        фантомное «доступно обновление» + ошибку установки.
+        """
+        tags = self._list_candidate_tags(repo, tag_prefix)
+        if not tags:
+            raise RuntimeError(
+                "Не найден релиз с manifest.json в репозитории %s "
+                "(префикс '%s'). Соберите бинарники через workflow "
+                "build-awg-binaries.yml или загрузите manifest.json." %
+                (repo, tag_prefix))
+        first = None
+        for tag in tags[:12]:
+            try:
+                manifest = self._fetch_manifest(repo, tag)
+            except (HTTPError, URLError, ValueError, OSError):
+                continue
+            if first is None:
+                first = (tag, manifest)
+            if self._manifest_supports_arch(manifest, arch):
+                return tag, manifest
+        if first is None:
+            raise RuntimeError(
+                "Не удалось скачать ни один manifest.json в %s" % repo)
+        log.info("awg: нет релиза с бинарниками под '%s' — берём %s "
+                 "для диагностики" % (arch, first[0]), source="awg_installer")
+        return first
+
+    def get_manifest(self, tag: str = None, force: bool = False,
+                     arch: str = None) -> dict:
+        """
+        Получить manifest.json. Если tag не задан — берётся последний
+        релиз с бинарниками под текущую (или переданную) архитектуру.
 
         Кэшируется на MANIFEST_CACHE_TTL секунд.
         """
@@ -355,19 +441,16 @@ class AwgInstaller:
         repo = s["repo"]
 
         if not tag:
-            tag = self._resolve_release_tag(repo, s["tag_prefix"])
-
-        url = "https://github.com/%s/releases/download/%s/manifest.json" % (repo, tag)
-        try:
-            with _http_get(url) as resp:
-                manifest = json.loads(resp.read().decode("utf-8"))
-        except (HTTPError, URLError, ValueError, OSError) as e:
-            raise RuntimeError(
-                "Не удалось скачать manifest.json (%s): %s" % (url, e)
-            )
-
-        # Подстраховка: tag в манифесте может отличаться от запрошенного
-        manifest.setdefault("tag", tag)
+            if arch is None:
+                arch = self._detect_arch()
+            tag, manifest = self._resolve_best_release(
+                repo, s["tag_prefix"], arch)
+        else:
+            try:
+                manifest = self._fetch_manifest(repo, tag)
+            except (HTTPError, URLError, ValueError, OSError) as e:
+                raise RuntimeError(
+                    "Не удалось скачать manifest.json (%s): %s" % (tag, e))
 
         with self._lock:
             self._manifest_cache = manifest
@@ -464,8 +547,9 @@ class AwgInstaller:
         """
         Сравнить установленную версию с последней доступной в манифесте.
         """
+        arch = self._detect_arch()
         try:
-            manifest = self.get_manifest(force=True)
+            manifest = self.get_manifest(force=True, arch=arch)
         except RuntimeError as e:
             return {"ok": False, "error": str(e)}
 
@@ -474,8 +558,17 @@ class AwgInstaller:
         latest_tools = manifest.get("amneziawg_tools", {}).get("version") or ""
         latest_tag = manifest.get("tag") or ""
 
+        # Поддерживает ли последний релиз нашу архитектуру. Если нет —
+        # не предлагаем обновление (иначе фантомный апдейт на битый/пустой
+        # релиз → ошибка установки «нет бинарников для <arch>»).
+        arch_supported = self._manifest_supports_arch(manifest, arch)
+        available_archs = sorted(set(
+            list(((manifest.get("amneziawg_go") or {}).get("binaries") or {}).keys())
+            + list(((manifest.get("amneziawg_tools") or {}).get("binaries") or {}).keys())
+        ))
+
         update_available = (
-            installed["installed"] and
+            installed["installed"] and arch_supported and
             (latest_tag and installed["tag"] != latest_tag)
         )
         return {
@@ -484,6 +577,9 @@ class AwgInstaller:
             "latest_tag":       latest_tag,
             "latest_go":        latest_go,
             "latest_tools":     latest_tools,
+            "arch":             arch,
+            "arch_supported":   bool(arch_supported),
+            "available_archs":  available_archs,
             "update_available": bool(update_available),
         }
 
@@ -633,7 +729,9 @@ class AwgInstaller:
             return {"ok": False, "message":
                     "Не удалось создать %s: %s" % (install_dir, e)}
 
-        with tempfile.TemporaryDirectory(prefix="awg-install-") as tmp:
+        from core.binary_installer import workbase
+        with tempfile.TemporaryDirectory(
+                prefix="awg-install-", dir=workbase(install_dir)) as tmp:
             # 1) amneziawg-go
             self._set_progress("Загрузка amneziawg-go...", 10)
             go_archive = os.path.join(tmp, go_bin["filename"])

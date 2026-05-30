@@ -413,8 +413,24 @@ detect_local_source() {
     return 1
 }
 
+# Выбрать базовый каталог для временной распаковки. На OpenWrt /tmp —
+# это tmpfs (ОЗУ) и его часто не хватает (issue #98). Предпочитаем
+# ZAPRET_GUI_TMPDIR, затем каталог рядом с местом установки (постоянный
+# носитель), затем /tmp.
+_tmp_base() {
+    if [ -n "$ZAPRET_GUI_TMPDIR" ] && mkdir -p "$ZAPRET_GUI_TMPDIR" 2>/dev/null; then
+        echo "$ZAPRET_GUI_TMPDIR"; return
+    fi
+    local parent
+    parent=$(dirname "$APP_DIR")
+    if [ -n "$parent" ] && mkdir -p "$parent/.zapret-gui-tmp" 2>/dev/null; then
+        echo "$parent/.zapret-gui-tmp"; return
+    fi
+    echo "/tmp"
+}
+
 install_from_github() {
-    local TMP_DIR="/tmp/zapret-gui-install-$$"
+    local TMP_DIR="$(_tmp_base)/zapret-gui-install-$$"
     mkdir -p "$TMP_DIR"
     trap "rm -rf '$TMP_DIR'" EXIT
 

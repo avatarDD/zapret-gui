@@ -392,7 +392,11 @@ const AwgSetupPage = (() => {
         const goOutdated    = !!(latestGo    && installed.go_version    && !verEqual(installed.go_version,    latestGo));
         const toolsOutdated = !!(latestTools && installed.tools_version && !verEqual(installed.tools_version, latestTools));
         const tagOutdated   = !!(latestTag   && installed.tag           && installed.tag !== latestTag);
-        const updateAvailable = installed.installed && (goOutdated || toolsOutdated || tagOutdated);
+        // archSupported — у выбранного релиза есть бинарники под нашу арх.
+        // Без него не предлагаем обновление: иначе пустой/битый ручной
+        // релиз даёт фантомное «доступно обновление» и ошибку установки.
+        const updateAvailable = installed.installed && archSupported &&
+                                (goOutdated || toolsOutdated || tagOutdated);
 
         // Если для external-установки версии так и не определились (бинарь
         // не отвечает на --version), считаем что предложить переустановку

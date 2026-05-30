@@ -49,7 +49,7 @@ const DiagnosticsPage = (() => {
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1 class="page-title">Диагностика</h1>
+                <h1 class="page-title">Диагностика${typeof Help !== 'undefined' ? Help.button('diagnostics') : ''}</h1>
                 <p class="page-description">Проверка доступности сервисов, сети и системы</p>
             </div>
 

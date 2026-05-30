@@ -12,7 +12,7 @@ const ControlPage = (() => {
     function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1 class="page-title">Управление</h1>
+                <h1 class="page-title">Управление${typeof Help !== 'undefined' ? Help.button('control') : ''}</h1>
                 <p class="page-description">Запуск, остановка и мониторинг nfqws2</p>
             </div>
 

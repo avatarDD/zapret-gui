@@ -249,7 +249,10 @@ class MihomoInstaller:
         platform = detect_mihomo_platform()
         target_binary = platform.binary_path()
 
-        with tempfile.TemporaryDirectory(prefix="mihomo-install-") as workdir:
+        from core.binary_installer import workbase
+        with tempfile.TemporaryDirectory(
+                prefix="mihomo-install-",
+                dir=workbase(target_binary)) as workdir:
             gz_path = os.path.join(workdir, sel["name"])
             dl = download_file(
                 sel["url"], gz_path,

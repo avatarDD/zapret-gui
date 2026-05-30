@@ -229,6 +229,34 @@ input:focus, textarea:focus, select:focus {
 
 .nav-item.active .nav-item-icon { opacity: 1; }
 
+/* Древовидное меню: родитель + сворачиваемые дети */
+.nav-parent .nav-caret {
+    margin-left: auto;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.6;
+    transition: transform var(--transition);
+    flex-shrink: 0;
+}
+.nav-parent.open .nav-caret { transform: rotate(90deg); }
+.nav-parent .nav-caret:hover { opacity: 1; }
+
+/* Подсветка родителя, когда активна его дочерняя страница */
+.nav-parent.has-active-child .nav-item-icon { opacity: 1; }
+.nav-parent.has-active-child { color: var(--text-primary); }
+
+.nav-children {
+    display: none;
+    margin-left: 12px;
+    padding-left: 10px;
+    border-left: 1px solid var(--border);
+}
+.nav-children.open { display: block; }
+.nav-child { padding-left: 10px; font-size: 12.5px; }
+
 .nav-separator {
     height: 1px;
     background: var(--border);

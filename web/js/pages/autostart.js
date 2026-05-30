@@ -21,7 +21,7 @@ const AutostartPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">Автозапуск</h1>
+                    <h1 class="page-title">Автозапуск${typeof Help !== 'undefined' ? Help.button('autostart') : ''}</h1>
                     <p class="page-description">Автоматический запуск nfqws2 при загрузке роутера</p>
                 </div>
             </div>

@@ -274,7 +274,10 @@ class SingboxInstaller:
         platform = detect_singbox_platform()
         target_binary = platform.binary_path()
 
-        with tempfile.TemporaryDirectory(prefix="singbox-install-") as workdir:
+        from core.binary_installer import workbase
+        with tempfile.TemporaryDirectory(
+                prefix="singbox-install-",
+                dir=workbase(target_binary)) as workdir:
             archive_path = os.path.join(workdir, info.get("filename")
                                         or "sing-box.tar.gz")
             extract_dir  = os.path.join(workdir, "extracted")

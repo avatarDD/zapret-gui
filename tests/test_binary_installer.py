@@ -245,3 +245,33 @@ class TestOfflineDownload(unittest.TestCase):
             dest = os.path.join(d, "dest.bin")
             r = bi.download_file("/nonexistent/path.bin", dest)
             self.assertFalse(r["ok"])
+
+
+class TestWorkdir(unittest.TestCase):
+
+    def test_disk_free_positive(self):
+        self.assertGreater(bi.disk_free("/"), 0)
+
+    def test_disk_free_nonexistent_walks_up(self):
+        # Несуществующий путь → берём ближайшего существующего предка.
+        self.assertGreaterEqual(bi.disk_free("/nonexistent/deep/path"), 0)
+
+    def test_workbase_prefers_most_free(self):
+        with tempfile.TemporaryDirectory() as big, \
+             tempfile.TemporaryDirectory() as small:
+            def fake_free(p):
+                return 10_000 if os.path.abspath(p).startswith(
+                    os.path.abspath(big)) else 10
+            with mock.patch.dict(os.environ, {"ZAPRET_GUI_TMPDIR": big}), \
+                 mock.patch.object(bi, "disk_free", fake_free):
+                base = bi.workbase(near=small)
+            self.assertEqual(os.path.abspath(base), os.path.abspath(big))
+
+    def test_make_workdir_under_base(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(bi, "workbase", return_value=d):
+                wd = bi.make_workdir(prefix="t-")
+            self.assertTrue(os.path.isdir(wd))
+            self.assertTrue(os.path.abspath(wd).startswith(os.path.abspath(d)))
+            shutil.rmtree(wd, ignore_errors=True)

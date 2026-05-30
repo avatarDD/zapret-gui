@@ -17,7 +17,7 @@ const ScanPage = (() => {
         container.innerHTML = `
             <div class="page-container">
                 <div class="page-header">
-                    <h1 class="page-title">Подбор стратегий</h1>
+                    <h1 class="page-title">Подбор стратегий${typeof Help !== 'undefined' ? Help.button('scan') : ''}</h1>
                     <p class="page-description">Автоматический поиск работающих стратегий обхода DPI</p>
                 </div>
 

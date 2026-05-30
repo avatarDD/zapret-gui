@@ -26,7 +26,9 @@ OpenWrt: **nfqws2** (zapret2), туннели **AmneziaWG / sing-box / mihomo** 
 - **Zapret2 installer** — установка/обновление nfqws2 с GitHub
 - **AmneziaWG** — туннели (AWG/WG), Cloudflare WARP (импорт/нативная
   генерация/WARP-in-WARP), selective routing по CIDR / доменам /
-  устройствам / **DSCP-меткам (QoS)**
+  устройствам / **DSCP-меткам (QoS)**; **авто-переподключение** туннеля
+  при деградации связи (watchdog: handshake-age + активная проба через
+  туннель)
 - **sing-box / mihomo** — два взаимозаменяемых прокси-движка; для
   sing-box — прозрачное проксирование в режимах **TProxy / Redirect /
   Hybrid** (заворот трафика LAN и самого роутера, DNS-hijack, anti-leak

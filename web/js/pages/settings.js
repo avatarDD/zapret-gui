@@ -74,6 +74,9 @@ const SettingsPage = (() => {
                 { key: 'install.mirror', label: 'Зеркало для загрузки бинарников', type: 'text',
                   placeholder: 'https://mirror.example (пусто = напрямую с GitHub)',
                   hint: 'GitHub-прокси: ссылки github.com/... дописываются в хвост зеркала (схема ghproxy). Полезно, когда GitHub заблокирован. Можно переопределить переменной окружения ZAPRET_GUI_MIRROR.' },
+                { key: 'install.tmpdir', label: 'Каталог для распаковки (temp)', type: 'text',
+                  placeholder: 'пусто = авто (диск с наибольшим свободным местом)',
+                  hint: 'Куда скачивать и распаковывать релизы. На OpenWrt /tmp — это ОЗУ (tmpfs) и его часто не хватает (ошибка «No space left on device»). Укажите путь на флешке/постоянном носителе, например /mnt/sda1/tmp. Пусто — выбирается автоматически каталог с наибольшим свободным местом рядом с местом установки. Можно переопределить переменной ZAPRET_GUI_TMPDIR.' },
             ]
         },
         {
@@ -274,10 +277,12 @@ const SettingsPage = (() => {
         const formEl = document.getElementById('settings-form');
         if (!formEl) return;
 
+        const helpBtn = (typeof Help !== 'undefined' && Help.topics[section.id])
+            ? Help.button(section.id) : '';
         let html = `
             <div class="settings-section-header">
                 <span class="settings-section-icon">${section.icon}</span>
-                <h2 class="settings-section-title">${section.label}</h2>
+                <h2 class="settings-section-title">${section.label}${helpBtn}</h2>
             </div>
             <div class="settings-fields">
         `;
