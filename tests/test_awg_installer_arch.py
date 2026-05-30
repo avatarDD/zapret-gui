@@ -81,6 +81,40 @@ class TestResolveBestRelease(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.inst._resolve_best_release("r", "p", "x")
 
+    def test_skips_foreign_singbox_manifest(self):
+        # issue #111: единственный manifest.json — sing-box (нет
+        # amneziawg_*). AWG-установщик не должен его брать, а обязан
+        # выдать понятную ошибку (а не «нет бинарников»/тянуть sing-box).
+        tags = ["manual-singbox"]
+        singbox_manifest = {"schema": 1, "tag": "manual-singbox",
+                            "sing_box": {"version": "1.14", "binaries": {
+                                "mipsel-softfloat": {"url": "u"}}}}
+        with mock.patch.object(self.inst, "_list_candidate_tags",
+                               return_value=tags), \
+             mock.patch.object(self.inst, "_fetch_manifest",
+                               side_effect=lambda repo, t: singbox_manifest):
+            with self.assertRaises(RuntimeError) as cm:
+                self.inst._resolve_best_release("r", "awg-bin-v",
+                                                "mipsel-softfloat")
+        self.assertIn("AmneziaWG", str(cm.exception))
+
+    def test_prefers_awg_over_foreign(self):
+        # Среди кандидатов и sing-box (новее), и AWG (старее, с нужной
+        # арх) — берём AWG, sing-box пропускаем.
+        tags = ["manual-singbox", "manual-awg"]
+        manifests = {
+            "manual-singbox": {"tag": "manual-singbox",
+                               "sing_box": {"binaries": {"mipsel-softfloat": {}}}},
+            "manual-awg": _manifest("manual-awg", arch="mipsel-softfloat"),
+        }
+        with mock.patch.object(self.inst, "_list_candidate_tags",
+                               return_value=tags), \
+             mock.patch.object(self.inst, "_fetch_manifest",
+                               side_effect=lambda repo, t: manifests[t]):
+            tag, _m = self.inst._resolve_best_release("r", "awg-bin-v",
+                                                      "mipsel-softfloat")
+        self.assertEqual(tag, "manual-awg")
+
 
 class TestCheckForUpdatesArch(unittest.TestCase):
 

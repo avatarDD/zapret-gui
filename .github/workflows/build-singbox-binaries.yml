@@ -335,7 +335,13 @@ jobs:
 
           SB_VER="${{ needs.resolve-version.outputs.singbox_version }}"
           TAG="${GITHUB_REF#refs/tags/}"
-          [ "$TAG" = "$GITHUB_REF" ] && TAG="manual-$(date -u +%Y%m%d%H%M%S)"
+          # Ручной workflow_dispatch (GITHUB_REF=refs/heads/...) не даёт тэга
+          # из ref — формируем штатный singbox-bin-v<версия>, чтобы релиз
+          # находился установщиком (он ищет именно singbox-bin-*), а не
+          # «manual-<timestamp>», как было раньше.
+          if [ "$TAG" = "$GITHUB_REF" ]; then
+            TAG="singbox-bin-v${SB_VER#v}"
+          fi
 
           REPO="${{ github.repository }}"
           BASE_URL="https://github.com/$REPO/releases/download/$TAG"
