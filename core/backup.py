@@ -134,12 +134,36 @@ def restore_backup(data: dict, *, sections=None,
         result["restored"]["hostlists"] = _restore_hostlists(
             data["hostlists"], result["errors"])
 
+    # После восстановления настроек поднимаем/переподнимаем фоновые задачи,
+    # чтобы восстановленные подписки/пул/курируемые списки и мониторинг
+    # единого слоя подхватились без перезапуска GUI.
+    if "settings" in want and isinstance(data.get("settings"), dict):
+        _reconfigure_runtime()
+
     result["ok"] = not result["errors"]
     log.info("backup: восстановление завершено (%s), ошибок: %d"
              % (", ".join("%s=%s" % (k, v)
                           for k, v in result["restored"].items()),
                 len(result["errors"])), source="backup")
     return result
+
+
+def _reconfigure_runtime():
+    """Перечитать конфиг фоновыми воркерами после restore (best-effort)."""
+    for fn in (
+        lambda: __import__("core.subscription_manager", fromlist=["x"])
+                .get_refresher().reconfigure(),
+        lambda: __import__("core.server_pool", fromlist=["x"])
+                .get_pool_refresher().reconfigure(),
+        lambda: __import__("core.list_updater", fromlist=["x"])
+                .get_list_refresher().reconfigure(),
+        lambda: __import__("core.unified.monitor", fromlist=["x"])
+                .autostart_if_needed(),
+    ):
+        try:
+            fn()
+        except Exception as e:
+            log.warning("backup: reconfigure: %s" % e, source="backup")
 
 
 # ─────────────────────── collectors ───────────────────────────────────

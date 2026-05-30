@@ -50,6 +50,9 @@ const App = (() => {
     }
 
     function init() {
+        // Тема (тёмная/светлая) — синхронизируем иконку переключателя
+        if (typeof Theme !== 'undefined') Theme.init();
+
         // Рендерим sidebar
         Sidebar.render();
         Sidebar.initMobileToggle();

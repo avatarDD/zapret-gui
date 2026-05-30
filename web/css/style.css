@@ -58,6 +58,70 @@
     --transition-slow: 300ms ease;
 }
 
+/* ── Светлая тема ── переопределяем только цвета; размеры/шрифты/
+   transitions берутся из :root. Активируется data-theme="light" на <html>
+   (см. web/js/components/theme.js и inline-скрипт в index.html). */
+:root[data-theme="light"] {
+    --bg-primary:     #f4f6f9;
+    --bg-secondary:   #ffffff;
+    --bg-card:        #ffffff;
+    --bg-card-hover:  #f1f4f8;
+    --bg-input:       #ffffff;
+    --bg-sidebar:     #eef1f6;
+
+    --text-primary:   #1d2230;
+    --text-secondary: #545b6e;
+    --text-muted:     #8990a1;
+    --text-heading:   #0f1320;
+
+    --accent:         #2f7de1;
+    --accent-hover:   #2468c4;
+    --accent-glow:    rgba(47, 125, 225, 0.14);
+
+    --success:        #1ba974;
+    --success-bg:     rgba(27, 169, 116, 0.12);
+    --warning:        #c98a00;
+    --warning-bg:     rgba(201, 138, 0, 0.12);
+    --error:          #d6453d;
+    --error-bg:       rgba(214, 69, 61, 0.10);
+    --info:           #2f7de1;
+    --info-bg:        rgba(47, 125, 225, 0.10);
+
+    --border:         rgba(0, 0, 0, 0.10);
+    --border-hover:   rgba(0, 0, 0, 0.20);
+
+    --shadow-sm:      0 1px 3px rgba(16, 24, 40, 0.08);
+    --shadow-md:      0 4px 12px rgba(16, 24, 40, 0.10);
+    --shadow-lg:      0 8px 24px rgba(16, 24, 40, 0.14);
+}
+
+/* Кнопка переключения темы в подвале сайдбара */
+.sidebar-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition);
+}
+.theme-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+}
+
 /* ===== Reset ===== */
 *, *::before, *::after {
     box-sizing: border-box;
