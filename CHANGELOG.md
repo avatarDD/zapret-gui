@@ -53,6 +53,14 @@
   (urltest/selector/none) в форме подписки.
 
 ### Исправлено
+- **Автозапуск nfqws2 на Debian/systemd (issue #107)** — если каталог
+  `/opt/etc/init.d` существовал на systemd-дистрибутиве, GUI ошибочно
+  считал это Entware, создавал «мёртвый» `S99zapret` (systemd его не
+  исполняет при загрузке) и пропускал собственный boot-apply → nfqws2 не
+  стартовал после перезагрузки. Введён `_autostart_model()` с приоритетом
+  systemd над «голым» `/opt/etc/init.d` и точная проверка
+  `external_boot_starts_nfqws()`. На Keenetic/OpenWrt (без systemd)
+  поведение не изменилось.
 - **Персистентность подписок** — `subscription_manager` ссылался на
   несуществующую `config_manager.save_config()` (импорт молча падал в
   except, настройки не сохранялись). Переведено на

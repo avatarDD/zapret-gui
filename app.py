@@ -115,12 +115,18 @@ def _apply_saved_strategy_on_boot():
             if not cfg.get("autostart", "enabled", default=False):
                 return
 
-            # На Entware есть отдельный init.d/S99zapret — он сам
-            # запускает nfqws2. GUI не должен дублировать.
-            if os.path.isfile("/opt/etc/init.d/S99zapret"):
+            # На Entware отдельный init.d/S99zapret сам запускает nfqws2
+            # при загрузке (через rc.unslung) — GUI не должен дублировать.
+            # ВАЖНО: проверяем именно «скрипт реально исполняется при
+            # загрузке», а не просто факт его наличия. На systemd-дистрибутивах
+            # (Debian/Ubuntu) каталог /opt/etc/init.d может существовать, но
+            # systemd НЕ запускает эти скрипты — там nfqws2 должен поднять
+            # сам GUI (issue #107).
+            from core.autostart_manager import external_boot_starts_nfqws
+            if external_boot_starts_nfqws():
                 log.info(
-                    "init.d/S99zapret установлен — автозапуск nfqws2 "
-                    "выполняется им, GUI пропускает",
+                    "init.d/S99zapret (Entware) сам запускает nfqws2 при "
+                    "загрузке — GUI пропускает",
                     source="autostart",
                 )
                 return
