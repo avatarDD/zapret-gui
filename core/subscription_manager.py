@@ -66,17 +66,20 @@ def _load_section() -> dict:
 
 def _save_section(subs: dict):
     try:
-        from core.config_manager import get_config_manager, save_config
+        from core.config_manager import get_config_manager
     except Exception as e:
         log.warning("subscription_manager: settings unavailable: %s" % e,
                     source="singbox")
         return
-    cfg = get_config_manager().load() or {}
+    cm = get_config_manager()
+    # Не `cm.load() or {}`: пустой валидный dict ложноотрицателен и
+    # оторвал бы нас от живого _config.
+    cfg = cm.load()
     if not isinstance(cfg, dict):
         cfg = {}
     cfg.setdefault("singbox", {})["subscriptions"] = subs
     try:
-        save_config()
+        cm.save()
     except Exception as e:
         log.warning("subscription_manager: save: %s" % e, source="singbox")
 
@@ -104,9 +107,16 @@ def get_subscription(sid: str) -> dict:
     return dict(s, id=sid)
 
 
+def _norm_group(group: str) -> str:
+    """Тип авто-группы для подписки: urltest (бесшовный failover по
+    задержке), selector (ручной выбор) или none (роут в первый сервер)."""
+    return group if group in ("urltest", "selector", "none") else "urltest"
+
+
 def add_subscription(name: str, url: str, *,
                      fmt: str = "auto",
-                     interval_hours: int = DEFAULT_INTERVAL_HOURS) -> dict:
+                     interval_hours: int = DEFAULT_INTERVAL_HOURS,
+                     group: str = "urltest") -> dict:
     if not name or not url:
         return {"ok": False, "error": "Нужны name и url"}
     parsed = urllib.parse.urlparse(url)
@@ -122,6 +132,7 @@ def add_subscription(name: str, url: str, *,
             "format":         fmt if fmt in ("auto", "uri", "clash",
                                               "singbox-json") else "auto",
             "interval_hours": max(1, int(interval_hours)),
+            "group":          _norm_group(group),
             "last_refresh":   0,
             "last_status":    "",
             "last_error":     "",
@@ -144,6 +155,8 @@ def update_subscription(sid: str, **kwargs) -> dict:
         for k in ("name", "url", "format", "interval_hours"):
             if k in kwargs and kwargs[k] is not None:
                 sub[k] = kwargs[k]
+        if kwargs.get("group") is not None:
+            sub["group"] = _norm_group(kwargs["group"])
         _save_section(subs)
     get_refresher().reconfigure()
     return {"ok": True, "id": sid}
@@ -194,20 +207,42 @@ def refresh_one(sid: str) -> dict:
 
     # Собираем sing-box-конфиг с этими outbound'ами + минимальным route
     try:
-        from core.singbox_config import make_minimal_config, render_conf
+        from core.singbox_config import (
+            make_minimal_config, render_conf,
+            make_urltest_outbound, make_selector_outbound,
+        )
         from core.singbox_manager import get_singbox_manager
         cfg = make_minimal_config()
         # Удалим placeholder direct-outbound с tag='proxy-out' — мы
-        # его заменим первым реальным outbound'ом.
-        first_tag = outbounds[0].get("tag") or "out"
+        # его заменим реальными outbound'ами (или группой).
         cfg["outbounds"] = [
             o for o in cfg.get("outbounds", [])
             if not (o.get("type") == "direct" and o.get("tag") == "proxy-out")
         ]
-        cfg["outbounds"] = outbounds + cfg["outbounds"]
-        # route.rules: всё, что пришло на mixed-in, → первый outbound.
+
+        # Группировка: по умолчанию urltest — sing-box сам пингует
+        # серверы и бесшовно переключается на живой с минимальной
+        # задержкой (server-level failover на пути данных, без рестарта).
+        group = _norm_group(sub.get("group") or "urltest")
+        member_tags = [o.get("tag") for o in outbounds if o.get("tag")]
+        if group != "none" and len(member_tags) >= 2:
+            group_tag = "auto"
+            # Не допускаем коллизии тега группы с реальным сервером.
+            if group_tag in member_tags:
+                group_tag = "auto-group"
+            if group == "selector":
+                grp = make_selector_outbound(group_tag, member_tags)
+            else:
+                grp = make_urltest_outbound(group_tag, member_tags)
+            route_target = group_tag
+            cfg["outbounds"] = [grp] + outbounds + cfg["outbounds"]
+        else:
+            route_target = member_tags[0] if member_tags else "direct"
+            cfg["outbounds"] = outbounds + cfg["outbounds"]
+
+        # route.rules: всё, что пришло на mixed-in, → группа/первый сервер.
         cfg["route"]["rules"] = [
-            {"inbound": ["mixed-in"], "outbound": first_tag},
+            {"inbound": ["mixed-in"], "outbound": route_target},
         ]
         cfg["route"]["final"] = "direct"
 
@@ -263,6 +298,25 @@ def _config_name_for(sid: str) -> str:
 
 
 # ─────── fetch + parse ───────
+
+def fetch_outbounds(url: str, fmt: str = "auto") -> dict:
+    """
+    Публичный помощник: скачать URL и распарсить в sing-box outbound'ы.
+
+    Возвращает {"ok": bool, "outbounds": list, "format": str,
+                "error": str}. Используется и одиночными подписками, и
+    агрегатором пула (core/server_pool.py), чтобы парсинг жил в одном
+    месте.
+    """
+    try:
+        text = _fetch(url)
+    except RuntimeError as e:
+        return {"ok": False, "outbounds": [], "format": fmt,
+                "error": str(e)}
+    outbounds, source_fmt = _parse_payload(text, fmt or "auto")
+    return {"ok": True, "outbounds": outbounds or [],
+            "format": source_fmt, "error": ""}
+
 
 def _fetch(url: str) -> str:
     req = urllib.request.Request(

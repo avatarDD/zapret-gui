@@ -223,6 +223,43 @@ class TestSingboxAPI(unittest.TestCase):
                                    {"name": "x"})
         self.assertEqual(r["_status"], 400)
 
+    # ─── server pool ───
+
+    def test_pool_get(self):
+        r = self.client.get_json("/api/singbox/pool")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertIn("settings", r)
+        self.assertIn("sources", r)
+        self.assertIsInstance(r["presets"], list)
+        self.assertTrue(len(r["presets"]) >= 1)
+
+    def test_pool_add_source_bad_url(self):
+        r = self.client.post_json("/api/singbox/pool/sources",
+                                   {"name": "x", "url": "ftp://nope"})
+        self.assertEqual(r["_status"], 200)
+        self.assertFalse(r["ok"])
+
+    # ─── proxy tester ───
+
+    def test_test_status(self):
+        r = self.client.get_json("/api/singbox/test/status")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertIn("running", r)
+        self.assertIn("targets", r)
+        self.assertIn("cloudflare", r["targets"])
+
+    def test_test_start_no_source(self):
+        r = self.client.post_json("/api/singbox/test", {})
+        self.assertEqual(r["_status"], 400)
+        self.assertFalse(r["ok"])
+
+    def test_test_start_empty_outbounds(self):
+        r = self.client.post_json("/api/singbox/test", {"outbounds": []})
+        self.assertEqual(r["_status"], 200)
+        self.assertFalse(r["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

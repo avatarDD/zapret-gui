@@ -51,6 +51,8 @@ const SingboxConfigsPage = (() => {
                         onclick="SingboxConfigsPage.switchTab('import')">Импорт</button>
                 <button class="tab-btn ${activeTab==='subs' ? 'active':''}"
                         onclick="SingboxConfigsPage.switchTab('subs')">Подписки</button>
+                <button class="tab-btn ${activeTab==='pool' ? 'active':''}"
+                        onclick="SingboxConfigsPage.switchTab('pool')">Пул серверов</button>
             </div>
 
             <div id="sb-cfg-tab"></div>
@@ -60,17 +62,18 @@ const SingboxConfigsPage = (() => {
     }
 
     function destroy() {
-        // ничего пока не держим
+        if (testTimer) { clearTimeout(testTimer); testTimer = null; }
     }
 
     function switchTab(tab) {
         activeTab = tab;
         document.querySelectorAll('.tabs-bar .tab-btn').forEach(b => b.classList.remove('active'));
-        const map = { list:0, builder:1, editor:2, import:3, subs:4 };
+        const map = { list:0, builder:1, editor:2, import:3, subs:4, pool:5 };
         const btns = document.querySelectorAll('.tabs-bar .tab-btn');
         if (btns[map[tab]]) btns[map[tab]].classList.add('active');
         if (tab === 'subs')    loadSubs();
         if (tab === 'builder') loadBuilder();
+        if (tab === 'pool')    loadPool();
         renderTab();
     }
 
@@ -112,6 +115,7 @@ const SingboxConfigsPage = (() => {
         if (activeTab === 'editor')  return renderEditorTab(box);
         if (activeTab === 'import')  return renderImportTab(box);
         if (activeTab === 'subs')    return renderSubsTab(box);
+        if (activeTab === 'pool')    return renderPoolTab(box);
     }
 
     function renderListTab(box) {
@@ -1017,7 +1021,8 @@ const SingboxConfigsPage = (() => {
     // ══════════════ tab: subs (saved subscriptions + autorefresh) ══════════════
 
     let subs = [];
-    let subForm = { name: '', url: '', format: 'auto', interval_hours: 6 };
+    let subForm = { name: '', url: '', format: 'auto', interval_hours: 6,
+                    group: 'urltest' };
     let subBusy = false;
 
     async function loadSubs() {
@@ -1056,6 +1061,7 @@ const SingboxConfigsPage = (() => {
                             </div>
                             <div class="text-muted" style="font-size:11px;">
                                 format: ${escapeHtml(s.format || 'auto')} ·
+                                группа: ${escapeHtml(s.group || 'urltest')} ·
                                 каждые ${s.interval_hours || 6}ч ·
                                 outbound'ов: ${s.last_outbounds || 0} ·
                                 обновлено: ${lastRel}
@@ -1106,11 +1112,30 @@ const SingboxConfigsPage = (() => {
                        placeholder="https://provider.example/subscribe?token=..."
                        value="${escapeAttr(subForm.url)}"
                        oninput="SingboxConfigsPage.subFormSet('url', this.value)">
-                <label class="form-label" style="margin-top:6px;">Формат:</label>
-                <select class="form-input"
-                        onchange="SingboxConfigsPage.subFormSet('format', this.value)">
-                    ${formatOptions}
-                </select>
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:6px;">
+                    <div>
+                        <label class="form-label">Формат:</label>
+                        <select class="form-input"
+                                onchange="SingboxConfigsPage.subFormSet('format', this.value)">
+                            ${formatOptions}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">Переключение серверов:</label>
+                        <select class="form-input"
+                                onchange="SingboxConfigsPage.subFormSet('group', this.value)">
+                            <option value="urltest" ${subForm.group==='urltest'?'selected':''}>urltest — авто (быстрейший живой)</option>
+                            <option value="selector" ${subForm.group==='selector'?'selected':''}>selector — вручную</option>
+                            <option value="none" ${subForm.group==='none'?'selected':''}>none — только первый сервер</option>
+                        </select>
+                    </div>
+                </div>
+                <p class="text-muted" style="font-size:11px; margin:6px 0 0;">
+                    <strong>urltest</strong> (рекомендуется): sing-box сам
+                    пингует серверы и бесшовно переключается на живой с
+                    минимальной задержкой — если сервер «упал», трафик
+                    мгновенно идёт через другой, без перезапуска.
+                </p>
                 <div style="margin-top:10px;">
                     <button class="btn btn-primary btn-sm" ${subBusy?'disabled':''}
                             onclick="SingboxConfigsPage.subsAdd()">
@@ -1153,7 +1178,8 @@ const SingboxConfigsPage = (() => {
                 `/api/singbox/subscriptions/${encodeURIComponent(add.id)}/refresh`);
             if (refresh && refresh.ok) {
                 Toast.success(`Загружено ${refresh.outbounds || 0} outbound'ов`);
-                subForm = { name:'', url:'', format:'auto', interval_hours:6 };
+                subForm = { name:'', url:'', format:'auto', interval_hours:6,
+                            group:'urltest' };
             } else {
                 Toast.error((refresh && refresh.error) || 'refresh failed');
             }
@@ -1210,6 +1236,318 @@ const SingboxConfigsPage = (() => {
         }
     }
 
+    // ══════════════ tab: pool (публичные источники + тестер) ══════════════
+
+    let pool = { settings: {}, sources: [], presets: [], refresher: {} };
+    let poolBusy = false;
+    let poolSrcForm = { name: '', url: '', format: 'auto' };
+    let testState = { running: false, result: null };
+    let testTimer = null;
+
+    async function loadPool() {
+        try {
+            const r = await API.get('/api/singbox/pool');
+            if (r && r.ok) {
+                pool = { settings: r.settings || {}, sources: r.sources || [],
+                         presets: r.presets || [], refresher: r.refresher || {} };
+            }
+        } catch (e) { Toast.error(e.message); }
+        renderTab();
+    }
+
+    function renderPoolTab(box) {
+        const s = pool.settings || {};
+        const lastRel = s.last_refresh
+            ? new Date(s.last_refresh * 1000).toLocaleString() : 'никогда';
+        const statusBadge = s.last_status === 'ok'
+            ? '<span style="color:#39c45e;">OK</span>'
+            : (s.last_status === 'error'
+               ? `<span style="color:#e58;">ERR</span>` : '<span class="text-muted">—</span>');
+
+        const presetBtns = (pool.presets || []).map(p => `
+            <button class="btn btn-ghost btn-sm" ${p.added||poolBusy?'disabled':''}
+                    title="${escapeAttr(p.url)}"
+                    onclick="SingboxConfigsPage.poolAddPreset('${escapeAttr(p.url)}')">
+                ${p.added ? '✓ ' : '+ '}${escapeHtml(p.name)}
+            </button>`).join(' ');
+
+        const srcRows = (pool.sources || []).length
+            ? pool.sources.map(src => `
+                <div class="card" style="margin-bottom:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+                        <div style="min-width:0; flex:1;">
+                            <label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:600;">
+                                <input type="checkbox" ${src.enabled?'checked':''}
+                                       onchange="SingboxConfigsPage.poolToggleSrc('${escapeAttr(src.id)}', this.checked)">
+                                ${escapeHtml(src.name)}
+                            </label>
+                            <div class="text-muted" style="font-size:11px; word-break:break-all;">
+                                ${escapeHtml(src.url)} · format: ${escapeHtml(src.format||'auto')}
+                            </div>
+                        </div>
+                        <button class="btn btn-ghost btn-sm"
+                                onclick="SingboxConfigsPage.poolRemoveSrc('${escapeAttr(src.id)}')">Удалить</button>
+                    </div>
+                </div>`).join('')
+            : '<div class="text-muted">Источников нет. Добавьте из рекомендованных или свой URL.</div>';
+
+        box.innerHTML = `
+            <div class="card" style="margin-bottom:12px;">
+                <h3 style="margin-top:0;">Что это</h3>
+                <p class="text-muted" style="font-size:12px;">
+                    Пул собирает серверы из <strong>публичных источников</strong>
+                    (свалки бесплатных ключей), дедуплицирует их и складывает в
+                    один конфиг <code>${escapeHtml(s.config_name||'server-pool')}</code>,
+                    обёрнутый в группу <strong>urltest</strong> — sing-box сам
+                    выбирает живой быстрейший сервер и бесшовно переключается.
+                    Если источник вернул пусто — берётся прошлый успешный набор
+                    (текущие серверы не теряются).
+                    Качество бесплатных ключей низкое, поэтому включите
+                    <strong>фильтр живых</strong> — мусор отсеется тестом.
+                </p>
+            </div>
+
+            <div class="card" style="margin-bottom:12px;">
+                <h3 style="margin-top:0;">Рекомендованные источники</h3>
+                <div style="display:flex; flex-wrap:wrap; gap:6px;">${presetBtns}</div>
+            </div>
+
+            <div class="card" style="margin-bottom:12px;">
+                <h3 style="margin-top:0;">Свой источник</h3>
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                    <div>
+                        <label class="form-label">Имя:</label>
+                        <input type="text" class="form-input" value="${escapeAttr(poolSrcForm.name)}"
+                               oninput="SingboxConfigsPage.poolSrcSet('name', this.value)">
+                    </div>
+                    <div>
+                        <label class="form-label">Формат:</label>
+                        <select class="form-input" onchange="SingboxConfigsPage.poolSrcSet('format', this.value)">
+                            ${['auto','uri','clash','singbox-json'].map(f=>`<option value="${f}" ${f===poolSrcForm.format?'selected':''}>${f}</option>`).join('')}
+                        </select>
+                    </div>
+                </div>
+                <label class="form-label" style="margin-top:6px;">URL (raw .txt со ссылками vmess/vless/ss/… или base64):</label>
+                <input type="text" class="form-input"
+                       placeholder="https://raw.githubusercontent.com/.../configs.txt"
+                       value="${escapeAttr(poolSrcForm.url)}"
+                       oninput="SingboxConfigsPage.poolSrcSet('url', this.value)">
+                <div style="margin-top:10px;">
+                    <button class="btn btn-primary btn-sm" ${poolBusy?'disabled':''}
+                            onclick="SingboxConfigsPage.poolAddSrc()">Добавить источник</button>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom:12px;">
+                <h3 style="margin-top:0;">Источники</h3>
+                ${srcRows}
+            </div>
+
+            <div class="card" style="margin-bottom:12px;">
+                <h3 style="margin-top:0;">Настройки пула</h3>
+                <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px;">
+                    <div>
+                        <label class="form-label">Интервал обновления (часы):</label>
+                        <input type="number" class="form-input" min="1" value="${s.interval_hours||12}"
+                               onchange="SingboxConfigsPage.poolSet('interval_hours', this.value)">
+                    </div>
+                    <div>
+                        <label class="form-label">Макс. серверов (cap):</label>
+                        <input type="number" class="form-input" min="1" value="${s.cap||100}"
+                               onchange="SingboxConfigsPage.poolSet('cap', this.value)">
+                    </div>
+                    <div>
+                        <label class="form-label">Группа:</label>
+                        <select class="form-input" onchange="SingboxConfigsPage.poolSet('group', this.value)">
+                            <option value="urltest" ${s.group==='urltest'?'selected':''}>urltest — авто</option>
+                            <option value="selector" ${s.group==='selector'?'selected':''}>selector — вручную</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">Цель теста:</label>
+                        <select class="form-input" onchange="SingboxConfigsPage.poolSet('target', this.value)">
+                            ${['cloudflare','amazon','google'].map(t=>`<option value="${t}" ${s.target===t?'selected':''}>${t}</option>`).join('')}
+                        </select>
+                    </div>
+                </div>
+                <label style="display:flex; align-items:center; gap:6px; margin-top:8px; font-size:13px;">
+                    <input type="checkbox" ${s.health_filter?'checked':''}
+                           onchange="SingboxConfigsPage.poolSet('health_filter', this.checked)">
+                    Фильтр живых при сборке (тест через движок, оставить только рабочие)
+                </label>
+            </div>
+
+            <div class="card" style="margin-bottom:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <div class="text-muted" style="font-size:12px;">
+                        Статус: ${statusBadge} ·
+                        серверов: ${s.last_count||0} ·
+                        обновлён: ${lastRel}
+                        ${s.last_error ? ' · <span style="color:#e58;">'+escapeHtml(s.last_error)+'</span>' : ''}
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                        <button class="btn btn-primary btn-sm" ${poolBusy?'disabled':''}
+                                onclick="SingboxConfigsPage.poolRefresh()">Собрать пул сейчас</button>
+                        <button class="btn btn-ghost btn-sm" ${testState.running?'disabled':''}
+                                onclick="SingboxConfigsPage.testConfig('${escapeAttr(s.config_name||'server-pool')}')">
+                            ${testState.running?'Тест идёт…':'Тест серверов'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            ${renderTestResults()}`;
+    }
+
+    function renderTestResults() {
+        const res = testState.result;
+        if (testState.running) {
+            return `<div class="card"><div class="text-muted">Тестирование серверов… (TCP-отсев + проверка через движок до облака)</div></div>`;
+        }
+        if (!res) return '';
+        if (!res.ok) {
+            return `<div class="card"><span style="color:#e58;">${escapeHtml(res.error||'ошибка теста')}</span></div>`;
+        }
+        const sum = res.summary || {};
+        const engineNote = res.engine_used
+            ? `проверка через движок до <code>${escapeHtml(res.target||'')}</code>`
+            : `только TCP (sing-box не установлен — e2e-замер пропущен)`;
+        const rows = (res.results||[]).map(r => {
+            const dot = r.alive ? '#39c45e' : '#e58';
+            const lat = r.latency_ms != null ? `${r.latency_ms} ms` : '—';
+            const stage = r.stage === 'e2e' ? 'e2e' : 'tcp';
+            return `<tr>
+                <td><span style="color:${dot};">●</span> ${escapeHtml(r.tag)}</td>
+                <td class="text-muted" style="font-size:11px;">${escapeHtml(r.type||'')}</td>
+                <td class="text-muted" style="font-size:11px;">${escapeHtml(String(r.server||''))}:${escapeHtml(String(r.port||''))}</td>
+                <td>${r.alive?'<span style="color:#39c45e;">жив</span>':'<span style="color:#e58;">мёртв</span>'}</td>
+                <td>${lat}</td>
+                <td class="text-muted" style="font-size:11px;">${stage}${r.error?(' · '+escapeHtml(r.error)):''}</td>
+            </tr>`;
+        }).join('');
+        return `
+            <div class="card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <h3 style="margin:0;">Результат теста</h3>
+                    <div class="text-muted" style="font-size:12px;">
+                        живых ${sum.alive||0} / ${sum.total||0} · ${engineNote}
+                    </div>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                        <thead><tr style="text-align:left;">
+                            <th>Сервер</th><th>Тип</th><th>Endpoint</th>
+                            <th>Статус</th><th>Задержка</th><th>Стадия</th>
+                        </tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            </div>`;
+    }
+
+    function poolSrcSet(field, value) { poolSrcForm[field] = value; }
+
+    async function poolAddSrc() {
+        if (!poolSrcForm.name || !poolSrcForm.url) {
+            Toast.error('Нужны имя и URL'); return;
+        }
+        poolBusy = true; renderTab();
+        try {
+            const r = await API.post('/api/singbox/pool/sources', poolSrcForm);
+            if (r && r.ok) {
+                Toast.success('Источник добавлен');
+                poolSrcForm = { name:'', url:'', format:'auto' };
+                await loadPool();
+            } else { Toast.error((r&&r.error)||'не удалось'); }
+        } catch (e) { Toast.error(e.message); }
+        finally { poolBusy = false; renderTab(); }
+    }
+
+    async function poolAddPreset(url) {
+        const p = (pool.presets||[]).find(x => x.url === url);
+        poolBusy = true; renderTab();
+        try {
+            const r = await API.post('/api/singbox/pool/sources',
+                { name: (p&&p.name)||url, url, format: (p&&p.format)||'auto' });
+            if (r && r.ok) { Toast.success('Добавлен'); await loadPool(); }
+            else { Toast.error((r&&r.error)||'не удалось'); }
+        } catch (e) { Toast.error(e.message); }
+        finally { poolBusy = false; renderTab(); }
+    }
+
+    async function poolToggleSrc(sid, enabled) {
+        try {
+            await API.put(`/api/singbox/pool/sources/${encodeURIComponent(sid)}`, { enabled });
+            await loadPool();
+        } catch (e) { Toast.error(e.message); }
+    }
+
+    async function poolRemoveSrc(sid) {
+        if (!confirm('Удалить источник?')) return;
+        try {
+            await API.delete(`/api/singbox/pool/sources/${encodeURIComponent(sid)}`);
+            await loadPool();
+        } catch (e) { Toast.error(e.message); }
+    }
+
+    async function poolSet(field, value) {
+        const body = {};
+        if (field === 'health_filter') body[field] = !!value;
+        else if (field === 'interval_hours' || field === 'cap') body[field] = parseInt(value, 10);
+        else body[field] = value;
+        try {
+            await API.post('/api/singbox/pool/settings', body);
+            await loadPool();
+        } catch (e) { Toast.error(e.message); }
+    }
+
+    async function poolRefresh() {
+        poolBusy = true; renderTab();
+        Toast.info('Собираем пул… (может занять время при включённом фильтре живых)');
+        try {
+            const r = await API.post('/api/singbox/pool/refresh');
+            if (r && r.ok) {
+                Toast.success(`Пул собран: ${r.count} серверов (из ${r.total_before_filter||r.count})`);
+            } else { Toast.error((r&&r.error)||'не удалось собрать'); }
+            await loadPool();
+        } catch (e) { Toast.error(e.message); }
+        finally { poolBusy = false; renderTab(); }
+    }
+
+    // ── tester (общий: можно вызвать на любой конфиг) ──
+
+    async function testConfig(configName) {
+        try {
+            const r = await API.post('/api/singbox/test', { config: configName });
+            if (!r || !r.ok) {
+                Toast.error((r&&r.error) || 'не удалось запустить тест');
+                return;
+            }
+            Toast.info(`Тестируем ${r.count} серверов…`);
+            testState.running = true; testState.result = null; renderTab();
+            pollTest();
+        } catch (e) { Toast.error(e.message); }
+    }
+
+    function pollTest() {
+        if (testTimer) clearTimeout(testTimer);
+        testTimer = setTimeout(async () => {
+            try {
+                const st = await API.get('/api/singbox/test/status');
+                testState.running = !!st.running;
+                if (!st.running && st.result && Object.keys(st.result).length) {
+                    testState.result = st.result;
+                    renderTab();
+                    return;
+                }
+                renderTab();
+                if (st.running) pollTest();
+            } catch (e) {
+                testState.running = false; renderTab();
+            }
+        }, 1500);
+    }
+
     // ══════════════ helpers ══════════════
 
     function escapeHtml(s) {
@@ -1229,6 +1567,9 @@ const SingboxConfigsPage = (() => {
         onImportUrlChange, onImportTextChange,
         // Subscriptions
         subFormSet, subsAdd, subsRefresh, subsRefreshAll, subsRemove,
+        // Server pool + tester
+        poolSrcSet, poolAddSrc, poolAddPreset, poolToggleSrc, poolRemoveSrc,
+        poolSet, poolRefresh, testConfig,
         // Builder
         builderSwitchTarget, builderAdd, builderEdit, builderCancel,
         builderFormSet, builderSave, builderDelete, builderQuickCreate,

@@ -33,6 +33,14 @@ OpenWrt: **nfqws2** (zapret2), туннели **AmneziaWG / sing-box / mihomo** 
   sing-box — прозрачное проксирование в режимах **TProxy / Redirect /
   Hybrid** (заворот трафика LAN и самого роутера, DNS-hijack, anti-leak
   IPv6), поднятие fd-лимитов под нагрузкой
+- **Подписки и пул серверов** — импорт подписок
+  (vmess/vless/trojan/ss/hysteria2/tuic, base64/clash/sing-box JSON) с
+  автообновлением по таймеру; **пул из публичных источников** (свалки
+  бесплатных ключей) с дедупом, редактируемым списком источников,
+  кэшем last-good (пустой ответ не затирает текущие) и обёрткой в
+  **urltest** (бесшовное переключение на живой сервер). **Тестер**
+  серверов: TCP-отсев + e2e-замер задержки через движок до крупного
+  облака (Cloudflare/Amazon), статус каждого сервера
 - **Единый слой маршрутизации** — «назначение → метод»: для домена /
   CIDR / списка / geosite выбирается метод (`direct` / `nfqws2` /
   туннель) с резервной цепочкой, авто-мониторингом успешности и
@@ -296,6 +304,9 @@ REST API: `http://<host>:8080/api/` — 120+ эндпоинтов.
 | GET/POST | /api/routing/rules | Selective-routing (cidr/domain/device/**dscp**) |
 | GET | /api/routing/interfaces · /api/devices | Интерфейсы / устройства |
 | GET/POST | /api/singbox/configs · …/:name/{up,down,restart} | sing-box инстансы |
+| GET/POST | /api/singbox/subscriptions · …/:id/refresh | Подписки + автообновление |
+| GET/POST | /api/singbox/pool · …/sources · …/refresh | Пул серверов из публичных источников |
+| POST/GET | /api/singbox/test · …/status | Тестер серверов (TCP + e2e через облако) |
 | GET/POST | /api/singbox/transparent/{status,apply,remove} | Прозрачное проксирование |
 | GET/POST | /api/mihomo/{environment,install,version,configs} | mihomo (Clash.Meta) |
 | GET/POST/PUT/DELETE | /api/lists · /api/lists/:id | Именованные списки доменов/CIDR |
