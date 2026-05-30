@@ -183,6 +183,38 @@ def _is_openwrt_procd() -> bool:
         or os.path.exists("/etc/openwrt_release")
     ) and os.path.isfile("/etc/init.d/zapret-gui")
 
+
+def _autostart_model() -> str:
+    """
+    Активная модель автозапуска: 'systemd' | 'entware' | 'openwrt' | 'none'.
+
+    ВАЖНО: systemd приоритетнее «голой» директории /opt/etc/init.d.
+    На Debian/Ubuntu (systemd) Entware-скрипты init.d НЕ исполняются при
+    загрузке — их запускает только Entware-механизм rc.unslung, которого
+    на systemd-дистрибутивах нет. Если бы здесь побеждал Entware (как было
+    раньше), GUI создавал бы «мёртвый» S99zapret и пропускал собственный
+    boot-apply → nfqws2 не стартовал после перезагрузки (issue #107).
+    На Keenetic/ASUS/OpenWrt systemd отсутствует, поэтому их поведение не
+    меняется.
+    """
+    if _is_systemd():
+        return "systemd"
+    if _is_entware():
+        return "entware"
+    if _is_openwrt_procd():
+        return "openwrt"
+    return "none"
+
+
+def external_boot_starts_nfqws() -> bool:
+    """
+    True, если nfqws2 поднимается при загрузке СТОРОННИМ механизмом
+    (Entware init.d/S99zapret через rc.unslung), и GUI не должен
+    дублировать запуск. На systemd/OpenWrt nfqws2 запускает сам GUI в
+    boot-apply (`app._apply_saved_strategy_on_boot`) → здесь False.
+    """
+    return _autostart_model() == "entware" and os.path.isfile(SCRIPT_PATH)
+
 # Singleton
 _instance = None
 _instance_lock = threading.Lock()
@@ -209,7 +241,13 @@ class AutostartManager:
         enabled = cfg.get("autostart", "enabled", default=False)
         installed = self._is_installed()
 
-        if _is_entware():
+        model = _autostart_model()
+        if model == "systemd":
+            # На systemd скрипт init.d не нужен — стратегию применяет
+            # сам GUI при старте.
+            method = "systemd"
+            effective_enabled = enabled and os.path.isfile(SYSTEMD_UNIT_PATH)
+        elif model == "entware":
             method = "initd"
             effective_enabled = enabled and installed
             # Рассинхронизация — флаг есть, скрипта нет
@@ -219,12 +257,7 @@ class AutostartManager:
                     "не установлен",
                     source="autostart",
                 )
-        elif _is_systemd():
-            # На systemd скрипт init.d не нужен — стратегию применяет
-            # сам GUI при старте.
-            method = "systemd"
-            effective_enabled = enabled and os.path.isfile(SYSTEMD_UNIT_PATH)
-        elif _is_openwrt_procd():
+        elif model == "openwrt":
             # Чистый OpenWrt: стратегию применяет GUI при старте, GUI поднимает
             # procd. Персистентность firewall — через hotplug-хук.
             method = "openwrt"
@@ -315,10 +348,12 @@ class AutostartManager:
             log.warning(msg, source="autostart")
             return {"ok": False, "message": msg}
 
+        model = _autostart_model()
+
         # На systemd-системах отдельный init для nfqws2 не создаётся:
         # стратегию применяет сам GUI при старте (см. app.py).
         # Достаточно убедиться, что unit-файл GUI существует и enabled.
-        if not _is_entware() and _is_systemd():
+        if model == "systemd":
             if not os.path.isfile(SYSTEMD_UNIT_PATH):
                 msg = (
                     "Systemd unit %s не найден. Установите zapret-gui "
@@ -356,7 +391,7 @@ class AutostartManager:
         # Чистый OpenWrt с procd (без Entware): nfqws2 запускает GUI при
         # старте, persistence — hotplug-хук. Включаем procd-сервис GUI и
         # ставим хуки.
-        if not _is_entware() and _is_openwrt_procd():
+        if model == "openwrt":
             try:
                 subprocess.run(
                     ["/etc/init.d/zapret-gui", "enable"],
@@ -479,13 +514,14 @@ class AutostartManager:
         if not strategy_id:
             return {"ok": False, "message": "Нет активной стратегии"}
 
-        # На systemd init.d-скрипт не нужен — стратегия применяется
-        # самим GUI при старте, а сохранённый id уже в конфиге.
-        if not _is_entware() and _is_systemd():
+        # Только Entware использует отдельный init.d-скрипт. На systemd/
+        # OpenWrt стратегию применяет сам GUI при старте (id уже в конфиге)
+        # — пересоздавать нечего.
+        if _autostart_model() != "entware":
             return {
                 "ok": True,
-                "message": "Systemd-режим: отдельный скрипт не требуется, "
-                           "сохранённая стратегия применится при загрузке.",
+                "message": "Отдельный скрипт не требуется: сохранённая "
+                           "стратегия применится при загрузке самим GUI.",
             }
 
         # Генерируем заново

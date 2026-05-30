@@ -4,67 +4,68 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/avatarDD/zapret-gui/release.yml?style=flat-square&label=build)](https://github.com/avatarDD/zapret-gui/actions)
 [![License](https://img.shields.io/github/license/avatarDD/zapret-gui?style=flat-square)](LICENSE)
 
-Веб-интерфейс для обхода блокировок на роутерах с Entware (Keenetic) и
-OpenWrt: **nfqws2** (zapret2), туннели **AmneziaWG / sing-box / mihomo** и
-**единый слой маршрутизации** «назначение → метод» поверх них.
+**Веб-интерфейс для обхода блокировок на роутерах** с Entware (Keenetic)
+и OpenWrt. Объединяет в одном окне:
 
-Тёмная тема, мобильная адаптация, SPA на vanilla JS + Python/Bottle бэкенд.
+- **nfqws2** (zapret2) — обход DPI «на месте», без туннеля;
+- туннели **AmneziaWG / sing-box / mihomo** — когда ресурс заблокирован
+  по IP и нужен прокси/VPN;
+- **единый слой маршрутизации** «назначение → метод» поверх всего этого:
+  для каждого домена/списка/подсети вы выбираете, *через что* пустить
+  трафик, с резервной цепочкой и автопереключением при сбое.
 
-## Возможности
+Тёмная тема, мобильная адаптация, SPA на vanilla JS + лёгкий
+Python/Bottle-бэкенд. Работает на роутере с ~20 МБ RAM.
 
-- **Управление nfqws2** — запуск/остановка/рестарт с мониторингом процесса
-- **Стратегии** — builtin + пользовательские JSON-стратегии, превью команды
-- **BlockCheck** — тестирование доступности сервисов, классификация типа DPI
-- **Подбор стратегий** — автоматический перебор стратегий из INI-каталогов
-- **Домены и IP-списки** — hostlists с нормализацией, ipsets с загрузкой по ASN
-- **Блобы** — hex-редактор, генерация fake TLS/HTTP ClientHello
-- **Hosts** — управление /etc/hosts с пресетами
-- **Диагностика** — ping, HTTP/HTTPS, DNS, проверка конфликтов
-- **Логи** — real-time SSE поток
-- **Автозапуск** — генерация init-скриптов
-- **Обновление GUI** — проверка и обновление из веб-интерфейса
-- **Zapret2 installer** — установка/обновление nfqws2 с GitHub
-- **AmneziaWG** — туннели (AWG/WG), Cloudflare WARP (импорт/нативная
-  генерация/WARP-in-WARP), selective routing по CIDR / доменам /
-  устройствам / **DSCP-меткам (QoS)**; **авто-переподключение** туннеля
-  при деградации связи (watchdog: handshake-age + активная проба через
-  туннель)
-- **sing-box / mihomo** — два взаимозаменяемых прокси-движка; для
-  sing-box — прозрачное проксирование в режимах **TProxy / Redirect /
-  Hybrid** (заворот трафика LAN и самого роутера, DNS-hijack, anti-leak
-  IPv6), поднятие fd-лимитов под нагрузкой
-- **Подписки и пул серверов** — импорт подписок
-  (vmess/vless/trojan/ss/hysteria2/tuic, base64/clash/sing-box JSON) с
-  автообновлением по таймеру; **пул из публичных источников** (свалки
-  бесплатных ключей) с дедупом, редактируемым списком источников,
-  кэшем last-good (пустой ответ не затирает текущие) и обёрткой в
-  **urltest** (бесшовное переключение на живой сервер). **Тестер**
-  серверов: TCP-отсев + e2e-замер задержки через движок до крупного
-  облака (Cloudflare/Amazon), статус каждого сервера
-- **Единый слой маршрутизации** — «назначение → метод»: для домена /
-  CIDR / списка / geosite выбирается метод (`direct` / `nfqws2` /
-  туннель) с резервной цепочкой, авто-мониторингом успешности и
-  failover; общие именованные списки доменов/IP
-- **Курируемые списки доменов** (podkop-стиль) — готовые community-
-  списки (YouTube, Meta, X, Discord, Telegram, «вся заблокировка в РФ»;
-  источник itdoginfo/allow-domains) одним кликом, с автообновлением по
-  таймеру; ручные правки при обновлении сохраняются, пустой ответ не
-  затирает текущее; кнопка «список → маршрут» создаёт правило
-  маршрутизации в один клик
-- **CLI** — управление из консоли: `zapret-gui status | nfqws … |
-  strategy … | singbox … | mihomo …`
-- **Зеркало/оффлайн-установка** бинарников (env `ZAPRET_GUI_MIRROR`
-  или `install.mirror` / `file://`) — когда GitHub заблокирован
-- **Бэкап/восстановление** — выгрузка всей конфигурации (настройки,
-  стратегии, конфиги sing-box/mihomo, hostlist'ы) в один JSON-файл и
-  восстановление из него (Настройки → Бэкап)
+> 📘 **Для разработчиков** — архитектура, модули, REST API, сборка пакетов
+> и соглашения вынесены в отдельный документ: **[CoderManual.md](CoderManual.md)**.
 
-## Требования
+![Главная](docs/img/dashboard.png)
 
-- Python 3.11+ (`python3-light` в Entware)
-- Bottle (`opkg install python3-bottle` или `pip3 install bottle`)
-- RAM: ~20–25 MB, Flash: ~500 KB (+ python3-light ~5 MB)
-- Архитектура: любая (mipsel, arm64, armv7, x86_64, mips, riscv64)
+---
+
+## Содержание
+
+- [Кому это нужно](#кому-это-нужно)
+- [Установка](#установка)
+- [Первый запуск и быстрый старт](#первый-запуск-и-быстрый-старт)
+- [Разделы интерфейса — подробно](#разделы-интерфейса--подробно)
+  - [Главная](#главная)
+  - [Обход DPI: Управление, Стратегии, Подбор, BlockCheck](#обход-dpi-nfqws2)
+  - [Маршрутизация (единый слой)](#маршрутизация-единый-слой)
+  - [AmneziaWG](#amneziawg)
+  - [sing-box](#sing-box)
+  - [mihomo](#mihomo)
+  - [Списки, домены, IP, блобы, Lua, hosts](#списки-и-данные)
+  - [Диагностика, логи, автозапуск, настройки](#диагностика-и-обслуживание)
+- [Управление из консоли (CLI)](#управление-из-консоли-cli)
+- [Обновление и удаление](#обновление-и-удаление)
+- [Откуда что качается (ресурсы)](#откуда-что-качается-ресурсы)
+- [Заимствования и благодарности](#заимствования-и-благодарности)
+- [Лицензия](#лицензия)
+
+---
+
+## Кому это нужно
+
+- У вас **роутер Keenetic** (с Entware/OPKG) или **OpenWrt 22.03+**, и
+  часть сайтов/сервисов не открывается из-за DPI или блокировки по IP.
+- Хотите **точечный** обход: YouTube/Discord/Instagram — через обход или
+  туннель, остальное — напрямую, без потери скорости.
+- Не хотите ковыряться в командной строке — нужен веб-интерфейс с
+  подсказками, диагностикой и автоподбором рабочих настроек.
+
+Требования:
+
+| Параметр | Значение |
+|----------|----------|
+| Python | 3.11+ (`python3-light` в Entware) |
+| Зависимость | Bottle (`opkg install python3-bottle` или `pip3 install bottle`) |
+| RAM | ~20–25 МБ |
+| Flash | ~500 КБ (+ python3-light ~5 МБ) |
+| Архитектуры | mipsel, mips, arm64, armv7, x86_64, riscv64 |
+
+---
 
 ## Установка
 
@@ -77,7 +78,7 @@ opkg install zapret-gui-keenetic.ipk
 /opt/etc/init.d/S99zapret-gui start
 ```
 
-**Другие роутеры с Entware (ASUS, Xiaomi, GL.iNet, etc.):**
+**Другие роутеры с Entware (ASUS, Xiaomi, GL.iNet и т.п.):**
 ```bash
 wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-entware.ipk
 opkg install zapret-gui-entware.ipk
@@ -94,239 +95,266 @@ opkg install zapret-gui-openwrt.ipk
 **Linux (tar.gz):**
 ```bash
 wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-linux.tar.gz
-tar xzf zapret-gui-linux.tar.gz
-cd zapret-gui
+tar xzf zapret-gui-linux.tar.gz && cd zapret-gui
 pip3 install bottle
 python3 app.py --host 0.0.0.0 --port 8080
 ```
 
-### Вариант 2: Автоустановка скриптом
-
+### Вариант 2: автоустановка скриптом
 ```bash
 wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/main/install.sh | sh
 ```
+Скрипт сам определит платформу, поставит зависимости и запустит GUI.
 
-Скрипт автоматически определит платформу, установит зависимости и запустит GUI.
-
-### Вариант 3: Ручная установка
-
+### Вариант 3: вручную из репозитория
 ```bash
-cd /opt
-git clone https://github.com/avatarDD/zapret-gui.git
-cd zapret-gui
+cd /opt && git clone https://github.com/avatarDD/zapret-gui.git && cd zapret-gui
 opkg install python3-light python3-bottle
 python3 app.py --host 0.0.0.0 --port 8080
 ```
+> Если `python3-bottle` нет в репозитории: `opkg install python3-pip && python3 -m pip install bottle`.
 
-> Если `python3-bottle` не нашёлся в репозитории, поставьте его через pip:
-> `opkg install python3-pip && python3 -m pip install bottle`.
-> `python3-light` сам по себе не содержит pip.
+### Если GitHub заблокирован
 
-## Использование
+Бинарники (nfqws2, sing-box, mihomo, amneziawg) можно тянуть с зеркала
+или из локальной папки — задайте `ZAPRET_GUI_MIRROR`, либо
+`install.mirror` в Настройках, либо путь `file://…`. Подробности — в
+разделе [Настройки](#диагностика-и-обслуживание).
 
-Веб-интерфейс: `http://<IP-роутера>:8080`
+---
 
-### Быстрый старт
+## Первый запуск и быстрый старт
 
-1. **Zapret2** → установите nfqws2
-2. **Стратегии** → выберите и примените стратегию
-3. Или **Подбор стратегий** → автоматический поиск рабочей стратегии
-4. **Автозапуск** → включите для работы после перезагрузки
-5. **BlockCheck** или **Диагностика** → проверьте доступность
-6. Нужны туннели/гибкая маршрутизация? → **AmneziaWG/sing-box/mihomo** +
-   страница **Маршрутизация** (для домена/списка выберите метод и
-   резервную цепочку)
+Откройте в браузере **`http://<IP-роутера>:8080`**.
 
-### Страницы
+**Сценарий А — «просто открыть YouTube/Discord без VPN» (обход DPI):**
 
-| Страница | Описание |
-|----------|----------|
-| Главная | Статус nfqws, текущая стратегия, быстрые действия |
-| Управление | Старт/стоп/рестарт, мониторинг процесса |
-| Стратегии | Список стратегий, редактор, превью команды |
-| Домены | Списки хостов для фильтрации |
-| IP-списки | IP-адреса и подсети, загрузка по ASN |
-| Блобы | Бинарные данные для fake-пакетов |
-| Hosts | Управление /etc/hosts |
-| BlockCheck | Тестирование доступности, классификация DPI |
-| Подбор стратегий | Автоматический перебор стратегий |
-| Zapret2 | Установка/обновление nfqws2 |
-| Диагностика | Проверка сервисов, конфликтов процессов и **окружения** (getdomains/XKeen/podkop/Xray), системы |
-| Логи | Журнал событий в реальном времени |
-| Автозапуск | Управление init-скриптом |
-| Настройки | Конфигурация GUI, nfqws, firewall, зеркало, **бэкап/восстановление** |
-| AmneziaWG → Setup | Wizard: детект окружения, prerequisites, установка бинарников |
-| AmneziaWG → Dashboard | Статус интерфейсов и peer'ов, up/down, autostart |
-| AmneziaWG → Configs | Редактор `.conf`, импорт/экспорт, валидация |
-| AmneziaWG → WARP | Импорт WARP, нативная генерация, WARP-in-WARP |
-| AmneziaWG → Routing | Selective routing: CIDR / домены / устройства / DSCP |
-| sing-box | Инстансы, up/down, прозрачное проксирование (TProxy/Redirect/Hybrid) |
-| mihomo | Движок Clash.Meta: установка, инстансы, YAML-редактор конфигов |
-| Списки (общие) | Именованные списки доменов/CIDR для маршрутизации и nfqws2 |
-| Маршрутизация | Единый слой «назначение → метод» с мониторингом и failover |
+1. **Zapret2** → нажмите «Установить» (скачает бинарь nfqws2 с GitHub).
+2. **Подбор стратегий** → запустите автоперебор: GUI сам найдёт рабочую
+   стратегию обхода для ваших сервисов.
+3. Примените найденную стратегию (или зайдите в **Стратегии** и выберите
+   вручную) → **Управление** → «Запустить».
+4. **Автозапуск** → включите, чтобы работало после перезагрузки роутера.
 
-### INI-каталоги стратегий
+**Сценарий Б — «ресурс заблокирован по IP, нужен туннель»:**
 
-Дополнительно доступны стратегии из INI-каталогов (из проекта [youtubediscord/zapret](https://github.com/youtubediscord/zapret) (оттуда же можно тащить обновления стратегий)):
-- `catalogs/basic/` — базовые стратегии TCP/UDP
-- `catalogs/advanced/` — продвинутые комбинации
-- `catalogs/direct/` — прямые стратегии
+1. Поднимите туннель: **AmneziaWG** (в т.ч. Cloudflare WARP),
+   **sing-box** или **mihomo** (см. разделы ниже).
+2. **Списки** → добавьте готовый список доменов (например, YouTube) или
+   создайте свой.
+3. На странице **Списки** нажмите у списка **«→ Маршрут»** → выберите
+   туннель → «Создать маршрут». Готово: эти домены пойдут в туннель,
+   остальное — напрямую.
 
-Используются в **Подборе стратегий** для автоматического тестирования.
+**Сценарий В — «и то, и другое с автопереключением»:** настройте в
+**Маршрутизации** для каждого назначения primary-метод и цепочку
+fallback'ов, включите мониторинг — система сама переключится на рабочий
+способ, если основной «упадёт».
 
-### Создание пользовательской стратегии
+---
 
-1. Нажмите «Создать стратегию»
-2. Укажите ID, название и описание
-3. Добавьте профили (каждый профиль = набор аргументов nfqws2)
-4. Используйте «Превью» для проверки финальной команды
-5. Сохраните и примените
+## Разделы интерфейса — подробно
 
-## AmneziaWG integration
+Меню слева сгруппировано: **Обход DPI**, **VPN и маршрутизация**,
+**Списки и данные**, **Диагностика и обслуживание**. Почти у каждой
+страницы есть кнопка «**?**» с примерами.
 
-Раздел **AmneziaWG** в сайдбаре управляет WireGuard / AmneziaWG туннелями
-поверх роутера, в том числе Cloudflare WARP, и точечной маршрутизацией
-выбранного трафика в эти туннели.
+### Главная
 
-### Что поддерживается
+Обзор состояния: статус nfqws2, текущая стратегия, автозапуск, система
+(uptime/RAM), установлен ли zapret2. Блок «Быстрые действия»
+(Запустить/Остановить/Перезапустить) и лента последних событий (логи в
+реальном времени).
 
-- **Бинарники `amneziawg-go` / `amneziawg-tools`** — собираются нашим
-  workflow'ом под `mipsel-softfloat`, `mips-softfloat`, `aarch64`,
-  `armv7`, `x86_64` и публикуются в GitHub Releases с тегом
-  `awg-bin-vX`. Setup wizard скачивает подходящий архив, проверяет
-  sha256 и раскладывает по `binary_dir` платформы.
-- **Платформы** — Keenetic (KeenOS 4.x/5.x с Entware + OpkgTun),
-  OpenWrt 22+ (procd + nftables), generic Linux (systemd +
-  iptables/nftables). Init-скрипты под каждую генерируются
-  автоматически.
-- **Конфиги** — парсер/генератор `.conf` со всеми AmneziaWG-полями
-  (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`, `H1`…`H4`, `I`). В UI —
-  моноширинный редактор, валидация, импорт текстом или файлом,
-  экспорт `.conf`.
-- **Cloudflare WARP** — три сценария:
-  - **Импорт** уже сгенерированного на стороннем сайте конфига
-    (эвристика по диапазонам Cloudflare WARP);
-  - **Нативная генерация** через `api.cloudflareclient.com` —
-    регистрация аккаунта, опционально апгрейд WARP+ по ключу,
-    автоподбор AmneziaWG обфускации;
-  - **WARP-in-WARP** — два WARP-туннеля поверх друг друга
-    (static route для inner endpoint через outer интерфейс).
-- **Selective routing** — таблица `awg<N>` → `table 100+N`,
-  правила четырёх типов:
-  - **CIDR** — IPv4/IPv6 сети напрямую через `ip rule from`/`ip route`;
-  - **Домены** — управляемый блок `dnsmasq.d/zapret-gui-awg-routing.conf`
-    с include-once в основной `dnsmasq.conf`, ipset (Entware) или
-    nftables set (OpenWrt 22+);
-  - **Устройства** — список из `dhcp.leases`/ARP, per-device правила
-    через source-IP либо fwmark, если платформа поддерживает;
-  - **DSCP** — маршрутизация по QoS-метке (`-m dscp` / `ip dscp` →
-    fwmark), iptables или nftables.
-- **Autostart** — per-config флаг `autostart` в `settings.json`.
-  Init-скрипт под платформу вызывает `python3 app.py --apply-awg-autostart`,
-  который поднимает интерфейсы и применяет routing rules в правильном
-  порядке.
+### Обход DPI (nfqws2)
 
-### С чего начать
+Обход DPI работает **без туннеля**: nfqws2 перехватывает исходящие
+пакеты и «ломает» работу DPI (фрагментация TLS ClientHello, fake-пакеты,
+desync), чтобы блокировка по SNI/домену не срабатывала.
 
-1. **AmneziaWG → Setup** — мастер проведёт через детект окружения,
-   подскажет недостающие пакеты (например, OpkgTun на Keenetic) и
-   установит бинарники.
-2. **AmneziaWG → WARP** — самый простой путь получить рабочий
-   туннель: вкладка «Генерация» → «Сгенерировать» → «Сохранить».
-3. **AmneziaWG → Dashboard** — поднять интерфейс, проверить
-   handshake и трафик.
-4. **AmneziaWG → Routing** — добавить правило, например
-   `youtube.com,googlevideo.com → awg-warp-1`. Применяется
-   автоматически при up интерфейса.
+#### Управление
+Старт/стоп/рестарт демона, мониторинг процесса (PID, аптайм), превью
+итоговой команды запуска.
 
-### Известные ограничения
+#### Стратегии
+![Стратегии](docs/img/strategies.png)
 
-- На Keenetic 4.x mark-based routing ограничен — per-device правила
-  работают через source IP, не fwmark.
-- Сборка `amneziawg-tools` под `mips-softfloat` использует Bootlin
-  musl toolchain; на роутерах с очень старыми ядрами возможны
-  проблемы с syscall ABI — открывайте issue с `uname -a`.
+Стратегия — это набор аргументов nfqws2 (профилей). Здесь:
+- список **встроенных** и **пользовательских** стратегий;
+- редактор: создаёте стратегию из профилей, каждый профиль = набор
+  приёмов desync для своего фильтра (TCP 443, HTTP 80, QUIC и т.д.);
+- **Превью** — показывает финальную командную строку перед применением;
+- доступны стратегии из INI-каталогов (`basic` / `advanced` / `direct` /
+  `builtin`), обновляемых из апстрима.
 
-## Обновление
+*Пример:* создать стратегию → добавить профиль для `tcp/443` с приёмом
+`multisplit` + `fake` → Превью → Сохранить → Применить.
 
-### Из веб-интерфейса
-На странице **Zapret2** отображается уведомление о новой версии. Нажмите **Обновить GUI** и обновите страницу.
+#### Подбор стратегий
+Автоматический перебор стратегий из каталогов против ваших целей. GUI
+тестирует доступность, ранжирует приёмы от простых к сложным и
+показывает первую рабочую. Можно сразу применить лучшую найденную.
 
-### Через пакетный менеджер
-```bash
-opkg upgrade zapret-gui
-```
+#### BlockCheck
+Тестирование доступности сервисов и **классификация типа блокировки**:
+различает блок на уровне **IP** (TCP-connect не проходит → нужен
+туннель) и **DPI/SNI** (TCP ок, рвётся TLS → поможет zapret). Поле
+`remediation` подсказывает способ: `zapret` / `tunnel` / `dns`. Есть
+детект троттлинга YouTube, QUIC-блока, traceroute до точки обрыва.
 
-### Скриптом
-```bash
-./install.sh --update
-```
+### Маршрутизация (единый слой)
 
-## Сборка пакетов
+![Маршрутизация](docs/img/routing-unified.png)
 
-```bash
-# Entware / Keenetic ipk
-make ipk
-# → dist/zapret-gui_<version>-1_all.ipk
+Центральная страница. Таблица правил «**назначение → метод**»:
 
-# OpenWrt ipk
-make openwrt-ipk
-# → dist/zapret-gui_<version>-1_openwrt.ipk
+- **Назначение** — домены, CIDR, именованный список, geosite/geoip.
+- **Метод** — `direct` (напрямую), `nfqws2` (обход DPI),
+  `awg:<iface>` / `singbox:<iface>` / `mihomo:<iface>` (туннель).
+- **Резервная цепочка (fallback)** — если primary деградирует, трафик
+  уходит на следующий метод.
+- **Мониторинг + автопереключение** — TLS-проба назначения; при падении
+  успешности ниже порога метод переключается автоматически (с
+  гистерезисом и cooldown, без «дёрганья»).
+- **«Подобрать»** — для деградировавшего nfqws2-маршрута запускает
+  подбор стратегии прямо отсюда.
 
-# Проверка синтаксиса
-make lint
+*Пример:* `youtube.com, googlevideo.com → singbox:proxy` с fallback
+`nfqws2`; включить мониторинг — если прокси ляжет, домены автоматически
+переедут на обход DPI.
 
-# Выпустить релиз (обновляет версию, создаёт тег → GitHub Actions публикует)
-make release VERSION=X.Y.Z
-```
+### AmneziaWG
 
-## Удаление
+Туннели WireGuard / AmneziaWG поверх роутера + точечная маршрутизация в
+них. Подменю:
 
-```bash
-# Через пакетный менеджер
-opkg remove zapret-gui
+- **Setup** — мастер: детект окружения, недостающие пакеты (например,
+  OpkgTun на Keenetic), установка бинарников `amneziawg-go`/`-tools`
+  (скачиваются из наших Releases, проверка sha256).
+- **Dashboard** — статус интерфейсов/пиров, up/down, handshake, трафик
+  (sparkline), автозапуск, «переподключать при плохом соединении»
+  (watchdog: handshake-age + активная проба через туннель).
+- **Configs** — редактор `.conf` со всеми AWG-полями (`Jc`, `Jmin`,
+  `Jmax`, `S1/S2`, `H1…H4`, `I`), импорт текстом/файлом, экспорт.
+- **WARP** — Cloudflare WARP: импорт готового конфига, **нативная
+  генерация** через `api.cloudflareclient.com` (регистрация, опц. WARP+
+  по ключу), **WARP-in-WARP** (два WARP друг над другом).
+- **Routing** — selective routing в туннель по: CIDR, доменам (через
+  dnsmasq+ipset/nftset), устройствам (по IP/MAC), **DSCP-меткам (QoS)**.
 
-# Скриптом (конфиг сохраняется)
-./uninstall.sh
+### sing-box
 
-# Полное удаление
-./uninstall.sh --full
-```
+![sing-box — конфиги, подписки, пул](docs/img/singbox-configs.png)
 
-## API
+Универсальный прокси-движок. Возможности:
 
-REST API: `http://<host>:8080/api/` — 120+ эндпоинтов.
+- **Инстансы** — несколько конфигов, up/down/restart, валидация через
+  `sing-box check`.
+- **Конструктор/Редактор** — собрать outbound (VLESS/VMess/Trojan/SS/
+  Hysteria2/TUIC) через форму или править JSON напрямую.
+- **Импорт** — вставить ключи `vmess://`/`vless://`/`trojan://`/`ss://`/
+  `hysteria2://`/`tuic://` или URL подписки.
+- **Подписки** — сохранённый URL обновляется по таймеру; outbound'ы
+  оборачиваются в **urltest** — sing-box сам пингует серверы и
+  **бесшовно переключается** на живой с минимальной задержкой (если
+  сервер «упал», трафик мгновенно идёт через другой, без рестарта).
+  Если URL вернул пусто — текущие серверы не затираются.
+- **Пул серверов** — слияние множества **публичных источников** (свалки
+  бесплатных ключей) в один конфиг `server-pool`: дедуп, потолок числа
+  серверов, last-good кэш, обёртка в urltest. Источники редактируются;
+  есть рекомендованные пресеты.
+- **Тестер серверов** — проверяет каждый сервер: быстрый TCP-отсев
+  мёртвых + e2e-замер задержки **через движок** до крупного облака
+  (Cloudflare/Amazon). Показывает статус каждого сервера (жив/мёртв +
+  ms). Опция «фильтр живых» при сборке пула отсеивает мусор.
+- **Прозрачное проксирование** — режимы **TProxy / Redirect / Hybrid**:
+  заворот трафика LAN и самого роутера, DNS-hijack, anti-leak IPv6.
 
-| Метод | Путь | Описание |
-|-------|------|----------|
-| GET | /api/status | Общий статус |
-| POST | /api/start · /api/stop | Запуск/остановка nfqws2 |
-| GET/POST | /api/strategies · /api/strategies/:id/apply | Стратегии |
-| GET | /api/logs/stream | SSE-поток логов |
-| GET/POST | /api/gui/check · /api/gui/update | Обновление GUI |
-| POST | /api/blockcheck/start · /api/scan/start | BlockCheck / подбор |
-| GET/POST | /api/awg/environment · /api/awg/install · /api/awg/configs/:name/{up,down} | AmneziaWG |
-| POST | /api/awg/warp/{import,generate} · /api/awg/warp-in-warp | Cloudflare WARP |
-| GET/POST | /api/routing/rules | Selective-routing (cidr/domain/device/**dscp**) |
-| GET | /api/routing/interfaces · /api/devices | Интерфейсы / устройства |
-| GET/POST | /api/singbox/configs · …/:name/{up,down,restart} | sing-box инстансы |
-| GET/POST | /api/singbox/subscriptions · …/:id/refresh | Подписки + автообновление |
-| GET/POST | /api/singbox/pool · …/sources · …/refresh | Пул серверов из публичных источников |
-| POST/GET | /api/singbox/test · …/status | Тестер серверов (TCP + e2e через облако) |
-| GET/POST | /api/singbox/transparent/{status,apply,remove} | Прозрачное проксирование |
-| GET/POST | /api/mihomo/{environment,install,version,configs} | mihomo (Clash.Meta) |
-| GET/POST/PUT/DELETE | /api/lists · /api/lists/:id | Именованные списки доменов/CIDR |
-| GET/POST | /api/lists/curated · /api/lists/:id/refresh | Курируемые списки + автообновление |
-| GET/POST | /api/unified/routes · …/:id/{apply,scan} | Единый слой «назначение → метод» |
-| GET/POST | /api/unified/status · /api/unified/monitor | Статус/мониторинг единого слоя |
-| GET/POST | /api/backup/{export,summary,import} | Бэкап/восстановление конфигурации |
+*Пример (бесплатные серверы за минуту):* sing-box → вкладка «Пул
+серверов» → добавить пресеты → включить «фильтр живых» → «Собрать пул
+сейчас» → запустить инстанс `server-pool`. Дальше — «Тест серверов»,
+чтобы видеть, что живо.
 
-Полный список — см. `api/` директорию.
+### mihomo
 
-## CLI
+Движок Clash.Meta как альтернатива sing-box: установка, инстансы,
+YAML-редактор конфигов (парсятся готовым clash-YAML-парсером), те же
+прозрачные режимы.
 
-После установки (ipk или `install.sh`) доступна команда `zapret-gui`
-в `$PATH` — управление из консоли по SSH без браузера:
+### Списки и данные
+
+#### Списки маршрутизации
+![Списки + готовые подборки](docs/img/lists.png)
+
+Именованные списки доменов и IP/CIDR — общий «строительный материал» для
+единого слоя и nfqws2-hostlist'ов. Возможности:
+
+- **Готовые списки (podkop-стиль)** — community-подборки доменов
+  (YouTube, Meta, X, Discord, Telegram, «вся заблокировка в РФ»;
+  источник [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains))
+  добавляются **одним кликом** и **обновляются по таймеру**. Ваши ручные
+  правки при обновлении сохраняются, пустой ответ сервера не затирает
+  текущее содержимое. Можно добавить **свой URL**.
+- **«→ Маршрут»** — у каждого списка кнопка, создающая правило
+  маршрутизации (домены списка → выбранный метод) в один клик.
+- Ручное создание/редактирование, импорт текстом.
+
+#### Домены (nfqws2)
+Hostlist'ы для фильтрации nfqws2 с нормализацией. Запись `example.com`
+автоматически покрывает и поддомены (`*.example.com`).
+
+#### IP-списки
+IP-адреса и подсети; загрузка по **ASN** (автоматически тянет диапазоны
+автономной системы). На OpenWrt — nftset, на Entware — ipset.
+
+#### Блобы
+Бинарные данные для fake-пакетов: hex-редактор, генерация fake TLS/HTTP
+ClientHello для приёмов desync.
+
+#### Lua-скрипты
+Управление .lua-скриптами nfqws2 (продвинутые сценарии desync).
+
+#### Hosts
+Управление `/etc/hosts` с пресетами (например, фиксированные IP для
+обхода DNS-блокировок).
+
+### Диагностика и обслуживание
+
+#### Диагностика
+![Диагностика + конфликты окружения](docs/img/diagnostics.png)
+
+- проверки **ping / HTTP(S) / DNS** до сервисов;
+- статус firewall;
+- **«Конфликты и окружение»** — находит сторонние процессы nfqws/tpws и
+  предупреждает о co-установленных системах обхода
+  (**getdomains / XKeen / podkop / HydraRoute / Xray / redsocks**),
+  которые спорят с единым слоем и прозрачным проксированием. Каждое
+  предупреждение — с пояснением, почему конфликтует;
+- расширенная системная информация.
+
+#### Логи
+Журнал событий в реальном времени (SSE-поток). Логи держатся в RAM, на
+flash не пишутся.
+
+#### Zapret2
+Установка/обновление бинаря nfqws2 с GitHub (или зеркала). Здесь же —
+уведомление о доступной новой версии GUI и кнопка «Обновить GUI».
+
+#### Автозапуск
+Генерация init-скрипта под платформу (Entware S99 / OpenWrt procd /
+systemd), чтобы nfqws2 и туннели поднимались после перезагрузки.
+
+#### Настройки
+Конфигурация GUI (порт), nfqws (порты TCP/UDP), firewall, **зеркало**
+для бинарников, тумблер «единый nfqws2-hostlist», и **Бэкап** — выгрузка
+всей конфигурации (настройки, стратегии, конфиги sing-box/mihomo,
+hostlist'ы) в один JSON-файл и восстановление из него.
+
+---
+
+## Управление из консоли (CLI)
+
+После установки доступна команда `zapret-gui` (по SSH, без браузера):
 
 ```bash
 zapret-gui status                       # общий статус
@@ -336,70 +364,83 @@ zapret-gui singbox {list|up|down|restart <name>}
 zapret-gui mihomo  {list|up|down|restart <name>}
 ```
 
-Обёртка вызывает `python3 <app_dir>/app.py --config <config_dir> …`,
-поэтому видит то же состояние, что и веб-GUI. Из клона репозитория —
-напрямую: `python3 app.py status`.
+Из клона репозитория — напрямую: `python3 app.py status`.
 
-## Структура проекта
+---
 
-```
-zapret-gui/
-├── api/              # REST API (Bottle routes)
-├── catalogs/         # INI-каталоги стратегий (basic/advanced/direct/builtin)
-├── config/           # Стратегии (builtin JSON + user)
-├── core/             # Бизнес-логика
-│   ├── testers/      # Сетевые тестеры (TLS, STUN, TCP, DPI)
-│   ├── connectivity/ # Матрица доступности + traffic-серии (RAM)
-│   ├── routing/      # Selective routing engine (cidr/domain/device/dscp)
-│   ├── ndms/         # Keenetic RCI: интерфейсы, политики хостов
-│   ├── unified/      # Единый слой: model, applier, monitor, failover,
-│   │                 #   geo_engine, nfqws_hostlist, scanner_hint, manager
-│   ├── named_lists.py        # Общие именованные списки доменов/CIDR
-│   ├── binary_installer.py   # Загрузка/распаковка + зеркало/оффлайн
-│   ├── cli.py                # CLI-подкоманды (status/nfqws/strategy/…)
-│   ├── awg_*.py      # AmneziaWG: platform, detector, installer, manager
-│   ├── singbox_*.py  # sing-box: manager, transparent (iptables/nft), …
-│   ├── mihomo_*.py   # mihomo: platform, detector, installer, manager
-│   └── warp_*.py     # Cloudflare WARP: импорт, нативная генерация
-├── data/             # Данные (домены, TCP-цели)
-├── packaging/        # Скрипты сборки ipk (Entware/OpenWrt)
-├── web/              # Фронтенд (SPA)
-│   ├── css/
-│   ├── js/
-│   │   ├── components/   # sidebar, toast, list_ui, sparkline, help
-│   │   ├── pages/        # dashboard, routing (единый слой), lists, mihomo, …
-│   │   └── utils/
-│   └── index.html
-├── .github/workflows/
-│   ├── release.yml                # CI/CD основного пакета
-│   └── build-awg-binaries.yml     # Кросс-сборка amneziawg-go/-tools
-├── app.py            # Точка входа
-├── Makefile          # Сборка пакетов
-├── install.sh        # Автоустановка
-└── uninstall.sh      # Удаление
+## Обновление и удаление
+
+```bash
+# Обновление
+opkg upgrade zapret-gui            # через пакетный менеджер
+./install.sh --update              # скриптом
+# либо кнопка «Обновить GUI» на странице Zapret2
+
+# Удаление
+opkg remove zapret-gui
+./uninstall.sh                     # конфиг сохраняется
+./uninstall.sh --full              # полное удаление
 ```
 
-### Ключевые решения
+---
 
-- **Кроссплатформенность** — весь код на Python/JS, архитектурно-зависим только бинарник nfqws2
-- **ThreadedWSGIServer** — многопоточный WSGI для параллельной обработки SSE и API
-- **Логи в RAM** — `collections.deque(maxlen=2000)`, без записи на flash
-- **Singleton-менеджеры** — thread-safe, lazy initialization
-- **Cache-Control: no-store** — предотвращение кеширования API-ответов
-- **SPA с hash-роутингом** — каждая страница — IIFE-модуль с `render()/destroy()`
+## Откуда что качается (ресурсы)
+
+GUI сам по себе — это Python/JS-код; «тяжёлые» бинарники и списки
+тянутся из внешних источников (все можно проксировать через зеркало
+`ZAPRET_GUI_MIRROR` / `file://`):
+
+| Что | Откуда | Где используется |
+|-----|--------|------------------|
+| **nfqws2** (zapret2) | [bol-van/zapret](https://github.com/bol-van/zapret) (Releases) | Страница Zapret2 |
+| **INI-каталоги стратегий** | [youtubediscord/zapret](https://github.com/youtubediscord/zapret) | Стратегии / Подбор (обновление каталогов) |
+| **sing-box** | [SagerNet/sing-box](https://github.com/SagerNet/sing-box) (Releases) | sing-box → установка |
+| **mihomo** (Clash.Meta) | [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) (Releases) | mihomo → установка |
+| **amneziawg-go / -tools** | сборка в наших Releases (тег `awg-bin-vX`) | AmneziaWG → Setup |
+| **Cloudflare WARP** | `api.cloudflareclient.com` | AmneziaWG → WARP (нативная генерация) |
+| **Курируемые списки доменов** | [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) | Списки → Готовые списки |
+| **Публичные серверы (пул)** | [Epodonios/v2ray-configs](https://github.com/Epodonios/v2ray-configs), [ebrasha/free-v2ray-public-list](https://github.com/ebrasha/free-v2ray-public-list), [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia), [kort0881/vpn-vless-configs-russia](https://github.com/kort0881/vpn-vless-configs-russia) | sing-box → Пул серверов (пресеты) |
+| **Проба тестера** | `cp.cloudflare.com` / `aws.amazon.com` / `www.gstatic.com` (generate_204) | sing-box → Тест серверов |
+| **IP по ASN** | публичные ASN-реестры | IP-списки → загрузка по ASN |
+
+> Списки публичных серверов — это «свалки» бесплатных ключей: качество
+> низкое, поэтому включайте «фильтр живых» и urltest. Подписки/серверы —
+> на ваш риск; редактируйте список источников под себя.
+
+---
+
+## Заимствования и благодарности
+
+Проект многое перенял (идеи и подходы, не код, если не указано иное) у
+сообщества:
+
+- [bol-van/zapret](https://github.com/bol-van/zapret) — основной
+  инструмент обхода DPI (nfqws2).
+- [youtubediscord/zapret](https://github.com/youtubediscord/zapret) —
+  каталоги стратегий и winws2-пресеты (источник обновлений).
+- [Shiperoid/YT-DPI](https://github.com/Shiperoid/YT-DPI) — идеи
+  диагностики: троттлинг, реальные CDN-шарды googlevideo, Deep Trace,
+  QUIC, большой ClientHello.
+- [jameszeroX/XKeen](https://github.com/jameszeroX/XKeen) — прозрачные
+  режимы TProxy/Redirect/Hybrid, движок mihomo, DSCP-роутинг, CLI,
+  оффлайн-зеркало, совместимость с политиками Keenetic.
+- [rcd27/blockcheckw](https://github.com/rcd27/blockcheckw) (MIT) —
+  IP-блок vs DPI-блок + `remediation`, ранжирование стратегий, методы
+  `tcpseg`/`oob`, генератор стратегий «на лету».
+- [itdoginfo/podkop](https://github.com/itdoginfo/podkop) +
+  [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains)
+  — идея курируемых списков доменов с автообновлением и
+  selective-routing через sing-box.
+- [qzeleza/kvas](https://github.com/qzeleza/kvas) — подход
+  DNS/ipset-маршрутизации и суффикс-матчинг доменов.
+- [SagerNet/sing-box](https://github.com/SagerNet/sing-box),
+  [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo),
+  [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go)
+  — движки туннелей.
+- [Bottle](https://bottlepy.org/) — микро-фреймворк бэкенда.
+
+---
 
 ## Лицензия
 
-MIT
-
-## Благодарности
-
-- [bol-van/zapret2](https://github.com/bol-van/zapret) — основной инструмент
-- [youtubediscord/zapret](https://github.com/youtubediscord/zapret) — вдохновлялся
-- [Shiperoid/YT-DPI](https://github.com/Shiperoid/YT-DPI) — идеи диагностики
-  (троттлинг, реальные CDN-шарды googlevideo, Deep Trace, QUIC, большой
-  ClientHello)
-- [jameszeroX/XKeen](https://github.com/jameszeroX/XKeen) — идеи
-  (прозрачные режимы TProxy/Redirect/Hybrid, движок mihomo, DSCP-роутинг,
-  CLI, оффлайн-зеркало, совместимость с политиками Keenetic)
-- [Bottle](https://bottlepy.org/) — микро-фреймворк для Python
+MIT.

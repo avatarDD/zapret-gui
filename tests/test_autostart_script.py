@@ -71,5 +71,61 @@ class TestGeneratedScript(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
+class TestAutostartModel(unittest.TestCase):
+    """Issue #107: на systemd (Debian) Entware-каталог /opt/etc/init.d
+    может существовать, но init.d-скрипты НЕ исполняются при загрузке.
+    Модель автозапуска должна отдавать приоритет systemd, а boot-apply
+    GUI — НЕ пропускать запуск nfqws2 из-за наличия мёртвого S99zapret."""
+
+    def _patch(self, *, systemd, entware, openwrt=False, script=True):
+        from unittest import mock
+        import core.autostart_manager as am
+        return [
+            mock.patch.object(am, "_is_systemd", return_value=systemd),
+            mock.patch.object(am, "_is_entware", return_value=entware),
+            mock.patch.object(am, "_is_openwrt_procd", return_value=openwrt),
+            mock.patch("os.path.isfile", return_value=script),
+        ]
+
+    def _run(self, **kw):
+        import core.autostart_manager as am
+        patches = self._patch(**kw)
+        for p in patches:
+            p.start()
+        try:
+            return am._autostart_model(), am.external_boot_starts_nfqws()
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_debian_systemd_with_entware_dir(self):
+        # /opt/etc/init.d есть + systemd → модель systemd, GUI стартует сам.
+        model, external = self._run(systemd=True, entware=True)
+        self.assertEqual(model, "systemd")
+        self.assertFalse(external)
+
+    def test_keenetic_entware(self):
+        # Entware без systemd + скрипт есть → init.d сам поднимает nfqws2.
+        model, external = self._run(systemd=False, entware=True, script=True)
+        self.assertEqual(model, "entware")
+        self.assertTrue(external)
+
+    def test_entware_without_script(self):
+        # Entware, но скрипт ещё не установлен → GUI должен поднять сам.
+        model, external = self._run(systemd=False, entware=True, script=False)
+        self.assertEqual(model, "entware")
+        self.assertFalse(external)
+
+    def test_openwrt_procd(self):
+        model, external = self._run(systemd=False, entware=False, openwrt=True)
+        self.assertEqual(model, "openwrt")
+        self.assertFalse(external)
+
+    def test_plain_linux_none(self):
+        model, external = self._run(systemd=False, entware=False, openwrt=False)
+        self.assertEqual(model, "none")
+        self.assertFalse(external)
+
+
 if __name__ == "__main__":
     unittest.main()
