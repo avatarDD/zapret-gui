@@ -944,13 +944,19 @@ const AwgRoutingPage = (() => {
                         </tr>
                     </thead>
                     <tbody>
-                        ${visibleRules.map(r => `
+                        ${visibleRules.map(r => {
+                            // hostname правила берём из сохранённого, а если
+                            // пусто (старые правила / привязка без имени) —
+                            // ищем по живому списку устройств (ip/mac).
+                            const hn = r.hostname || _deviceHostname(
+                                (r.source_ip || '').split('/')[0], r.mac);
+                            return `
                             <tr>
                                 <td><strong>${escapeHtml(r.target_iface)}</strong></td>
                                 <td style="font-family: monospace; font-size: 12px;">${escapeHtml(r.source_ip || '')}</td>
                                 <td style="font-family: monospace; font-size: 12px;">${escapeHtml(r.mac || '—')}</td>
                                 <td>
-                                    ${r.hostname ? `<strong>${escapeHtml(r.hostname)}</strong>` : ''}
+                                    ${hn ? `<strong>${escapeHtml(hn)}</strong>` : ''}
                                     ${r.description ? `<div class="text-muted" style="font-size: 12px;">${escapeHtml(r.description)}</div>` : ''}
                                 </td>
                                 <td style="text-align: right;">
@@ -960,8 +966,8 @@ const AwgRoutingPage = (() => {
                                         ✕
                                     </button>
                                 </td>
-                            </tr>
-                        `).join('')}
+                            </tr>`;
+                        }).join('')}
                     </tbody>
                 </table>`
                 }
@@ -1269,6 +1275,20 @@ const AwgRoutingPage = (() => {
 
     function escapeAttr(s) {
         return String(s || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    }
+
+    // hostname устройства из живого списка /api/devices по ip или mac.
+    // Используется как фолбэк для имён в таблице привязанных правил,
+    // когда у правила нет сохранённого hostname (старые привязки).
+    function _deviceHostname(ip, mac) {
+        const m = (mac || '').toLowerCase();
+        for (const d of devices) {
+            if ((ip && d.ip === ip) ||
+                (m && (d.mac || '').toLowerCase() === m)) {
+                if (d.hostname) return d.hostname;
+            }
+        }
+        return '';
     }
 
     async function runDnsmasqSetup() {
