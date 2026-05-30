@@ -242,10 +242,21 @@ const ScanPage = (() => {
             if (el) el.disabled = isRunning;
         });
 
-        // Заполнить из статуса если есть данные
+        // Восстанавливаем поля из статуса бэкенда (после возврата на
+        // страницу во время/после скана — чтобы не показывать дефолтный
+        // youtube.com вместо реальной цели). Поля при running disabled,
+        // поэтому значение не мешает вводу.
         if (data.target) {
             const el = document.getElementById('scan-target');
-            if (el && !isRunning) el.value = data.target;
+            if (el) el.value = data.target;
+        }
+        if (data.protocol) {
+            const el = document.getElementById('scan-protocol');
+            if (el) el.value = data.protocol;
+        }
+        if (data.mode) {
+            const el = document.getElementById('scan-mode');
+            if (el) el.value = data.mode;
         }
 
         // Прогресс
