@@ -61,9 +61,10 @@ DEFAULT_TARGET = "cloudflare"
 _TCP_TIMEOUT      = 3.0      # сек на TCP-connect (фаза 1)
 _TCP_WORKERS      = 32
 _E2E_WORKERS      = 16
+_E2E_BATCH        = 40       # серверов на один throwaway sing-box
 _DEFAULT_E2E_MS   = 5000     # таймаут одного delay-замера (мс)
 _MAX_SERVERS      = 200      # потолок числа серверов за один прогон
-_CLASH_BOOT_WAIT  = 10.0     # сек ждём, пока поднимется clash_api
+_CLASH_BOOT_WAIT  = 12.0     # сек ждём, пока поднимется clash_api
 
 
 def resolve_target(target: str) -> str:
@@ -231,8 +232,13 @@ def _clash_get(port: int, secret: str, path: str, timeout: float) -> tuple:
         return 0, str(e)
 
 
-def _wait_clash_ready(port: int, secret: str, deadline: float) -> bool:
+def _wait_clash_ready(port: int, secret: str, deadline: float,
+                      popen=None) -> bool:
     while time.time() < deadline:
+        # Если процесс уже завершился (битый конфиг/outbound) — нет смысла
+        # ждать до таймаута, выходим сразу.
+        if popen is not None and popen.poll() is not None:
+            return False
         status, _ = _clash_get(port, secret, "/version", timeout=1.5)
         if status == 200:
             return True
@@ -252,16 +258,54 @@ def _singbox_binary() -> str:
 def _e2e_delays(outbounds: list, target_url: str, timeout_ms: int,
                 binary: str, on_done=None) -> dict:
     """
-    Поднять одноразовый sing-box, замерить delay каждого outbound'а
-    через Clash API. Возвращает {tag: {ok, latency_ms|error}}.
+    Замерить delay каждого outbound'а через движок (Clash API).
 
-    on_done(done, total) — опциональный колбэк прогресса.
+    Тестируем НЕ всё одним sing-box'ом, а батчами по `_E2E_BATCH`: в
+    публичных списках попадаются битые/неподдерживаемые outbound'ы, а
+    sing-box — «всё или ничего»: одна плохая outbound валит весь процесс
+    (clash_api не поднимается). С батчами плохой сервер портит только
+    свой батч из ~40, остальные тестируются нормально.
+
+    Если батч не стартовал — его серверы помечаются `engine_fail`, и
+    выше (test_outbounds) они откатываются к TCP-результату, а не
+    считаются мёртвыми (иначе пул обнулялся бы целиком).
+
+    Возвращает {tag: {ok, latency_ms|error[, engine_fail]}}.
     """
-    tags = [o.get("tag") for o in outbounds if isinstance(o, dict)
-            and o.get("tag")]
-    if not tags:
+    items = [o for o in outbounds if isinstance(o, dict) and o.get("tag")]
+    total = len(items)
+    if not items:
         return {}
 
+    out: dict = {}
+    done = 0
+    for start in range(0, total, _E2E_BATCH):
+        batch = items[start:start + _E2E_BATCH]
+        batch_tags = [o["tag"] for o in batch]
+        try:
+            res = _e2e_batch(batch, target_url, timeout_ms, binary)
+        except RuntimeError as e:
+            # Батч не поднялся — не убиваем серверы, помечаем engine_fail.
+            res = {t: {"ok": False, "engine_fail": True, "error": str(e)}
+                   for t in batch_tags}
+        out.update(res)
+        done += len(batch)
+        if on_done:
+            try:
+                on_done(done, total)
+            except Exception:
+                pass
+    return out
+
+
+def _e2e_batch(outbounds: list, target_url: str, timeout_ms: int,
+               binary: str) -> dict:
+    """
+    Один throwaway sing-box на батч outbound'ов: поднять, замерить delay
+    каждого через Clash API, погасить. Бросает RuntimeError, если движок
+    не запустился (с хвостом stderr — обычно из-за битой outbound).
+    """
+    tags = [o["tag"] for o in outbounds]
     clash_port = _free_port()
     mixed_port = _free_port()
     secret = secrets.token_hex(8)
@@ -275,21 +319,29 @@ def _e2e_delays(outbounds: list, target_url: str, timeout_ms: int,
 
     out: dict = {}
     popen = None
+    err_path = os.path.join(tmp_dir, "stderr.log")
+    err_f = None
     try:
+        err_f = open(err_path, "wb")
         popen = subprocess.Popen(
             [binary, "run", "-c", cfg_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=err_f,
         )
         if not _wait_clash_ready(clash_port, secret,
-                                 time.time() + _CLASH_BOOT_WAIT):
-            log.warning("proxy_tester: clash_api не поднялся вовремя",
+                                 time.time() + _CLASH_BOOT_WAIT, popen):
+            try:
+                err_f.flush()
+            except Exception:
+                pass
+            tail = _tail_text(err_path, 600)
+            log.warning("proxy_tester: sing-box не запустился (батч %d)"
+                        % len(tags) + (": %s" % tail if tail else ""),
                         source="singbox")
-            return {t: {"ok": False, "error": "движок не запустился"}
-                    for t in tags}
+            raise RuntimeError("движок не запустился"
+                               + (": %s" % tail if tail else ""))
 
         delay_path = "/proxies/%s/delay?timeout=%d&url=%s"
         q_target = urllib.request.quote(target_url, safe="")
-        # delay-таймаут + запас на сетевой round-trip к локальному API.
         http_to = (timeout_ms / 1000.0) + 3.0
 
         def _job(tag):
@@ -298,20 +350,12 @@ def _e2e_delays(outbounds: list, target_url: str, timeout_ms: int,
             status, body = _clash_get(clash_port, secret, path, http_to)
             return tag, parse_delay(status, body)
 
-        total = len(tags)
-        done = 0
         with ThreadPoolExecutor(
-                max_workers=min(_E2E_WORKERS, total)) as ex:
+                max_workers=min(_E2E_WORKERS, len(tags))) as ex:
             futs = [ex.submit(_job, t) for t in tags]
             for fut in as_completed(futs):
                 tag, res = fut.result()
                 out[tag] = res
-                done += 1
-                if on_done:
-                    try:
-                        on_done(done, total)
-                    except Exception:
-                        pass
     finally:
         if popen is not None:
             try:
@@ -322,8 +366,25 @@ def _e2e_delays(outbounds: list, target_url: str, timeout_ms: int,
                     popen.kill()
                 except Exception:
                     pass
+        if err_f is not None:
+            try:
+                err_f.close()
+            except Exception:
+                pass
         shutil.rmtree(tmp_dir, ignore_errors=True)
     return out
+
+
+def _tail_text(path: str, limit: int = 600) -> str:
+    """Последние `limit` символов файла одной строкой (для лога)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return ""
+    text = data.decode("utf-8", errors="replace").strip()
+    text = " ".join(text.split())
+    return text[-limit:]
 
 
 # ─────── public API ───────
@@ -399,7 +460,7 @@ def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
                 "stage": "tcp", "error": "сервер не отвечает (TCP)",
             })
             continue
-        if engine_used and tag in e2e:
+        if engine_used and tag in e2e and not e2e[tag].get("engine_fail"):
             r = e2e[tag]
             results.append({
                 "tag": tag, "server": ob.get("server"),
@@ -410,6 +471,9 @@ def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
                 "error": "" if r.get("ok") else (r.get("error") or "недоступно"),
             })
         else:
+            # Сюда попадаем когда: нет бинаря / фаза 2 не сработала /
+            # батч движка не стартанул (engine_fail). Не убиваем сервер —
+            # считаем живым по TCP (иначе пул мог бы обнулиться).
             # Только TCP (нет бинаря или фаза 2 не сработала).
             results.append({
                 "tag": tag, "server": ob.get("server"),

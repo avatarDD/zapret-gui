@@ -4,12 +4,12 @@
 
 Источник: https://github.com/youtubediscord/zapret
 
-Берём ДВА набора файлов:
-  1) src/direct_preset/catalogs/winws2/{tcp,udp,http80,voice}.txt
+Берём ДВА набора файлов (пути в апстриме меняются — см. фолбэк-поиск):
+  1) src/profile/strategy_catalogs/winws2/{tcp,udp,http80,voice}.txt
      → catalogs/direct/{tcp,udp,http80,voice}.txt
      (одиночные приёмы desync для strategy scanner)
 
-  2) src/core/presets/builtin/winws2/*.txt  (~90 файлов)
+  2) src/presets/builtin/winws2/*.txt  (~100 файлов)
      → catalogs/builtin/winws2_presets.txt  (одна INI-сборка)
      (полные конфигурации с --filter-*, --new и глобалами)
 
@@ -53,12 +53,16 @@ SOURCE_OWNER = "youtubediscord"
 SOURCE_REPO = "zapret"
 SOURCE_BRANCH = "main"
 
-# Путь в архиве: одиночные приёмы (для direct/)
-SOURCE_DIRECT_SUBPATH = "src/direct_preset/catalogs/winws2"
+# Путь в архиве: одиночные приёмы (для direct/).
+# Апстрим youtubediscord/zapret периодически реструктурирует дерево —
+# раньше было src/direct_preset/catalogs/winws2 (issue #119: путь исчез,
+# обновление падало «не найдено файлов»). Если по этому пути файлов нет,
+# срабатывает фолбэк-поиск по архиву (см. _extract_direct_catalogs).
+SOURCE_DIRECT_SUBPATH = "src/profile/strategy_catalogs/winws2"
 CATALOG_FILES = ("tcp.txt", "udp.txt", "http80.txt", "voice.txt")
 
 # Путь в архиве: full-пресеты (для builtin/winws2_presets.txt)
-SOURCE_PRESETS_SUBPATH = "src/core/presets/builtin/winws2"
+SOURCE_PRESETS_SUBPATH = "src/presets/builtin/winws2"
 
 # Префикс для section_id winws2-пресетов (защита от коллизий с direct)
 WINWS2_PREFIX = "winws2_"
@@ -738,22 +742,48 @@ def _download(url: str, dest: str) -> bool:
 
 
 def _extract_direct_catalogs(archive_path: str, tmp_dir: str) -> dict:
-    """Извлечь direct-каталоги (4 файла) из архива."""
+    """
+    Извлечь direct-каталоги (4 файла) из архива.
+
+    Сначала пробуем настроенный путь SOURCE_DIRECT_SUBPATH. Если по нему
+    ничего не нашли (апстрим переехал — issue #119), фолбэк: ищем файлы
+    {tcp,udp,http80,voice}.txt, чья непосредственная папка называется
+    `winws2` (это отсекает winws1 с теми же именами).
+    """
     found: dict = {}
     wanted = set(CATALOG_FILES)
     suffix = "/" + SOURCE_DIRECT_SUBPATH.rstrip("/") + "/"
 
+    def _match(path):
+        basename = os.path.basename(path)
+        if basename not in wanted:
+            return False
+        if suffix in path:
+            return True
+        return False
+
+    def _match_fallback(path):
+        basename = os.path.basename(path)
+        if basename not in wanted:
+            return False
+        # папка файла должна называться именно winws2 (не winws1)
+        return os.path.basename(os.path.dirname(path)) == "winws2"
+
     try:
         with tarfile.open(archive_path, "r:gz") as tf:
-            for member in tf.getmembers():
-                if not member.isfile():
-                    continue
+            members = [m for m in tf.getmembers() if m.isfile()]
+            matcher = _match
+            if not any(_match(m.name) for m in members):
+                log.warning(
+                    "catalog-updater: путь %s не найден в архиве — "
+                    "ищем winws2-каталоги фолбэком (апстрим переехал)"
+                    % SOURCE_DIRECT_SUBPATH, source="catalog-updater")
+                matcher = _match_fallback
+            for member in members:
                 path = member.name
-                if suffix not in path:
+                if not matcher(path):
                     continue
                 basename = os.path.basename(path)
-                if basename not in wanted:
-                    continue
                 if member.size > _MAX_FILE_SIZE:
                     log.warning(
                         "Пропущен слишком большой файл: %s (%d байт)"
@@ -780,18 +810,37 @@ def _extract_direct_catalogs(archive_path: str, tmp_dir: str) -> dict:
 
 
 def _extract_preset_files(archive_path: str, tmp_dir: str) -> dict:
-    """Извлечь все winws2 full-пресеты (*.txt) из архива."""
+    """
+    Извлечь все winws2 full-пресеты (*.txt) из архива.
+
+    Как и для direct-каталогов: если настроенный SOURCE_PRESETS_SUBPATH
+    в архиве отсутствует (апстрим переехал), фолбэк — *.txt в папке
+    `winws2`, путь к которой содержит сегмент `presets` (чтобы не
+    подхватить strategy_catalogs/winws2 с его 4 файлами).
+    """
     found: dict = {}
     suffix = "/" + SOURCE_PRESETS_SUBPATH.rstrip("/") + "/"
     count = 0
 
+    def _in_presets_dir(path):
+        return (os.path.basename(os.path.dirname(path)) == "winws2"
+                and "presets" in path)
+
     try:
         with tarfile.open(archive_path, "r:gz") as tf:
-            for member in tf.getmembers():
-                if not member.isfile():
-                    continue
+            members = [m for m in tf.getmembers() if m.isfile()]
+            use_fallback = not any(suffix in m.name for m in members)
+            if use_fallback:
+                log.warning(
+                    "catalog-updater: путь %s не найден — ищем winws2-"
+                    "пресеты фолбэком" % SOURCE_PRESETS_SUBPATH,
+                    source="catalog-updater")
+            for member in members:
                 path = member.name
-                if suffix not in path:
+                if use_fallback:
+                    if not _in_presets_dir(path):
+                        continue
+                elif suffix not in path:
                     continue
                 basename = os.path.basename(path)
                 if not basename.lower().endswith(".txt"):
