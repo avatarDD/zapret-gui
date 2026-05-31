@@ -75,5 +75,66 @@ class TestComparison(unittest.TestCase):
         self.assertTrue(r["update_available"])
 
 
+class TestArchiveExtractionPathMove(unittest.TestCase):
+    """issue #119: апстрим переехал (src/direct_preset/catalogs/winws2 →
+    src/profile/strategy_catalogs/winws2). Извлечение должно находить
+    файлы и по новому пути, и фолбэком (по имени папки winws2)."""
+
+    def _make_archive(self, files: dict) -> str:
+        import io, os, tarfile, tempfile
+        fd, path = tempfile.mkstemp(suffix=".tar.gz")
+        os.close(fd)
+        with tarfile.open(path, "w:gz") as tf:
+            for name, content in files.items():
+                data = content.encode("utf-8")
+                info = tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+        return path
+
+    def test_direct_found_at_new_path(self):
+        arch = self._make_archive({
+            "zapret-main/src/profile/strategy_catalogs/winws2/tcp.txt": "[a]\n",
+            "zapret-main/src/profile/strategy_catalogs/winws2/udp.txt": "[b]\n",
+            "zapret-main/src/profile/strategy_catalogs/winws2/http80.txt": "[c]\n",
+            "zapret-main/src/profile/strategy_catalogs/winws2/voice.txt": "[d]\n",
+            # winws1 с теми же именами — НЕ должен попасть
+            "zapret-main/src/profile/strategy_catalogs/winws1/tcp.txt": "[x]\n",
+        })
+        import tempfile
+        found = cu._extract_direct_catalogs(arch, tempfile.mkdtemp())
+        self.assertEqual(sorted(found), ["http80.txt", "tcp.txt",
+                                          "udp.txt", "voice.txt"])
+
+    def test_direct_fallback_when_configured_path_gone(self):
+        # Конфигурный путь отсутствует — файлы под ДРУГИМ путём, но в winws2.
+        arch = self._make_archive({
+            "zapret-main/src/some/new/place/winws2/tcp.txt": "[a]\n",
+            "zapret-main/src/some/new/place/winws2/udp.txt": "[b]\n",
+            "zapret-main/src/some/new/place/winws2/http80.txt": "[c]\n",
+            "zapret-main/src/some/new/place/winws2/voice.txt": "[d]\n",
+            "zapret-main/src/some/new/place/winws1/tcp.txt": "[x]\n",
+        })
+        import tempfile
+        with mock.patch.object(cu, "SOURCE_DIRECT_SUBPATH",
+                               "src/GONE/winws2"):
+            found = cu._extract_direct_catalogs(arch, tempfile.mkdtemp())
+        self.assertEqual(sorted(found), ["http80.txt", "tcp.txt",
+                                          "udp.txt", "voice.txt"])
+
+    def test_presets_fallback(self):
+        arch = self._make_archive({
+            "zapret-main/src/presets/builtin/winws2/A preset.txt": "[p]\n",
+            "zapret-main/src/presets/builtin/winws2/B preset.txt": "[q]\n",
+            # каталоги winws2 (не presets) — не должны смешаться
+            "zapret-main/src/profile/strategy_catalogs/winws2/tcp.txt": "[a]\n",
+        })
+        import tempfile
+        with mock.patch.object(cu, "SOURCE_PRESETS_SUBPATH",
+                               "src/GONE/presets/winws2"):
+            found = cu._extract_preset_files(arch, tempfile.mkdtemp())
+        self.assertEqual(sorted(found), ["A preset.txt", "B preset.txt"])
+
+
 if __name__ == "__main__":
     unittest.main()
