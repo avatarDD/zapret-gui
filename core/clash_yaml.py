@@ -314,12 +314,18 @@ def _safe_tag(name: str) -> str:
 def _conv_ss(p: dict):
     if not p.get("server") or not p.get("port"):
         return None
+    from core.singbox_config import normalize_ss_method
+    raw = str(p.get("cipher") or p.get("method") or "aes-128-gcm")
+    method = normalize_ss_method(raw)
+    if not method:
+        # Легаси stream-шифр, не поддержан sing-box — пропускаем сервер.
+        return None
     return {
         "type":        "shadowsocks",
         "tag":         _safe_tag(p.get("name", "ss")),
         "server":      str(p["server"]),
         "server_port": int(p["port"]),
-        "method":      str(p.get("cipher") or p.get("method") or "aes-128-gcm"),
+        "method":      method,
         "password":    str(p.get("password") or ""),
     }
 

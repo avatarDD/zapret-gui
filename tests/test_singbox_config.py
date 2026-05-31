@@ -7,11 +7,34 @@ from core.singbox_config import (
     parse_conf, validate, render_conf, make_minimal_config,
     make_vless_outbound, make_trojan_outbound,
     make_shadowsocks_outbound, make_hysteria2_outbound,
-    make_tuic_outbound,
+    make_tuic_outbound, normalize_ss_method,
     make_selector_outbound, make_urltest_outbound,
     list_user_outbound_tags, wrap_in_group,
     KNOWN_OUTBOUND_TYPES,
 )
+
+
+class TestNormalizeSsMethod(unittest.TestCase):
+
+    def test_alias_chacha20(self):
+        self.assertEqual(normalize_ss_method("chacha20-poly1305"),
+                         "chacha20-ietf-poly1305")
+        self.assertEqual(normalize_ss_method("CHACHA20-POLY1305"),
+                         "chacha20-ietf-poly1305")
+
+    def test_supported_passthrough(self):
+        self.assertEqual(normalize_ss_method("aes-256-gcm"), "aes-256-gcm")
+        self.assertEqual(normalize_ss_method("2022-blake3-aes-256-gcm"),
+                         "2022-blake3-aes-256-gcm")
+
+    def test_unsupported_returns_empty(self):
+        self.assertEqual(normalize_ss_method("aes-256-cfb"), "")
+        self.assertEqual(normalize_ss_method("rc4-md5"), "")
+        self.assertEqual(normalize_ss_method(""), "")
+
+    def test_make_shadowsocks_normalizes(self):
+        ob = make_shadowsocks_outbound("t", "h", 1, "chacha20-poly1305", "p")
+        self.assertEqual(ob["method"], "chacha20-ietf-poly1305")
 
 
 class TestParseConf(unittest.TestCase):

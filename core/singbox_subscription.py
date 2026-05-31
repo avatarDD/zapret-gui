@@ -336,6 +336,17 @@ def ss_to_outbound(uri: str) -> dict:
         except ValueError:
             return {"ok": False, "error": "порт не число"}
 
+        # sing-box принимает только AEAD/2022-шифры; легаси (aes-256-cfb,
+        # chacha20-poly1305 без -ietf- и т.п.) — отбрасываем/нормализуем,
+        # иначе sing-box падает «unknown method».
+        from core.singbox_config import normalize_ss_method
+        norm = normalize_ss_method(method)
+        if not norm:
+            return {"ok": False,
+                    "error": "ss: метод '%s' не поддерживается sing-box"
+                             % method}
+        method = norm
+
         tag = _safe_tag(urllib.parse.unquote(frag or "")
                         or "ss-%s" % host)
         outbound = make_shadowsocks_outbound(

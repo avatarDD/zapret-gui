@@ -279,15 +279,33 @@ def _e2e_delays(outbounds: list, target_url: str, timeout_ms: int,
 
     out: dict = {}
     done = 0
+    engine_unavailable = False  # бинарь без clash_api — нет смысла пробовать дальше
     for start in range(0, total, _E2E_BATCH):
         batch = items[start:start + _E2E_BATCH]
         batch_tags = [o["tag"] for o in batch]
-        try:
-            res = _e2e_batch(batch, target_url, timeout_ms, binary)
-        except RuntimeError as e:
-            # Батч не поднялся — не убиваем серверы, помечаем engine_fail.
-            res = {t: {"ok": False, "engine_fail": True, "error": str(e)}
+        if engine_unavailable:
+            res = {t: {"ok": False, "engine_fail": True,
+                       "error": "clash_api недоступен в бинаре sing-box"}
                    for t in batch_tags}
+        else:
+            try:
+                res = _e2e_batch(batch, target_url, timeout_ms, binary)
+            except RuntimeError as e:
+                msg = str(e)
+                # Бинарь sing-box собран без clash_api — тест через движок
+                # невозможен ни для одного батча. Логируем один раз с
+                # понятной подсказкой и дальше не пробуем (экономим время).
+                if ("clash api is not included" in msg
+                        or "with_clash_api" in msg
+                        or "clash-server" in msg):
+                    engine_unavailable = True
+                    log.warning(
+                        "proxy_tester: бинарь sing-box собран без clash_api "
+                        "— e2e-тест через движок недоступен, используется "
+                        "только TCP-отсев. Обновите sing-box (в новых "
+                        "сборках clash_api включён).", source="singbox")
+                res = {t: {"ok": False, "engine_fail": True, "error": msg}
+                       for t in batch_tags}
         out.update(res)
         done += len(batch)
         if on_done:
