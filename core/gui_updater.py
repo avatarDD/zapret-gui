@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -31,6 +32,11 @@ from core.version import GUI_VERSION
 GITHUB_API_URL = "https://api.github.com/repos/avatarDD/zapret-gui/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/avatarDD/zapret-gui/releases"
 GITHUB_REPO_URL = "https://github.com/avatarDD/zapret-gui"
+
+# Тэг GUI-релиза: vX.Y[.Z]. Бинарные релизы (singbox-bin-*/awg-bin-*/
+# manual-*) под этот шаблон не подходят и при проверке обновлений
+# игнорируются.
+_GUI_TAG_RE = re.compile(r"^v?\d+\.\d+(\.\d+)?$")
 
 HTTP_TIMEOUT = 30
 REMOTE_VERSION_CACHE_TTL = 300  # 5 минут
@@ -596,28 +602,49 @@ class GuiUpdater:
             return False
 
     def _fetch_github_latest_release(self) -> dict:
-        """Получить данные последнего релиза с GitHub API."""
-        req = Request(
-            GITHUB_API_URL,
-            headers={
+        """
+        Получить последний релиз ИМЕННО GUI (тэг вида vX.Y.Z).
+
+        НЕ используем /releases/latest: GitHub отдаёт там самый свежий
+        non-prerelease релиз по дате, а у нас в репозитории публикуются и
+        бинарные релизы (singbox-bin-*, awg-bin-*, manual-*) тоже как
+        non-prerelease — они «перебивали» /releases/latest, и проверка
+        обновлений GUI переставала видеть новый vX.Y.Z. Поэтому берём
+        список релизов и выбираем новейший с тэгом-семвером, отбрасывая
+        бинарные.
+        """
+        for page in (1, 2):
+            url = ("https://api.github.com/repos/avatarDD/zapret-gui/"
+                   "releases?per_page=100&page=%d" % page)
+            req = Request(url, headers={
                 "Accept": "application/vnd.github.v3+json",
                 "User-Agent": "zapret-gui/%s" % GUI_VERSION,
-            },
-        )
-        try:
-            with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except HTTPError as e:
-            if e.code == 403:
-                raise Exception(
-                    "Лимит запросов GitHub API исчерпан. "
-                    "Попробуйте позже."
-                )
-            raise Exception("GitHub API вернул HTTP %d" % e.code)
-        except URLError as e:
-            raise Exception("Нет доступа к GitHub: %s" % e.reason)
-        except json.JSONDecodeError:
-            raise Exception("Ошибка разбора ответа GitHub API")
+            })
+            try:
+                with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except HTTPError as e:
+                if e.code == 403:
+                    raise Exception("Лимит запросов GitHub API исчерпан. "
+                                    "Попробуйте позже.")
+                raise Exception("GitHub API вернул HTTP %d" % e.code)
+            except URLError as e:
+                raise Exception("Нет доступа к GitHub: %s" % e.reason)
+            except json.JSONDecodeError:
+                raise Exception("Ошибка разбора ответа GitHub API")
+
+            if not isinstance(data, list) or not data:
+                break
+            for rel in data:
+                if rel.get("draft") or rel.get("prerelease"):
+                    continue
+                tag = (rel.get("tag_name") or "").strip()
+                if _GUI_TAG_RE.match(tag):
+                    return rel
+            if len(data) < 100:
+                break
+
+        raise Exception("Не найден GUI-релиз (тэг vX.Y.Z) среди релизов")
 
     def _is_newer_version(self, installed: str, latest: str) -> bool:
         """Проверить, является ли latest более новой версией."""
