@@ -44,18 +44,21 @@ permissions:
 env:
   SINGBOX_REPO: SagerNet/sing-box
   # Набор tags для роутерного билда. Меньше дефолтного апстрима —
-  # выкидываем with_clash_api, with_v2ray_api (мы не выставляем
-  # API наружу), with_acme (нам незачем Let's Encrypt на роутере),
-  # with_gvisor (большой) и with_dhcp.
+  # выкидываем with_v2ray_api, with_acme (нам незачем Let's Encrypt на
+  # роутере), with_gvisor (большой) и with_dhcp.
   # Оставляем то, что критично:
   #   with_quic     — Hysteria, Hysteria2, TUIC
   #   with_grpc     — VLESS+gRPC transport
   #   with_wireguard — WireGuard outbound (комплементарен AWG)
   #   with_utls     — uTLS / Reality (для VLESS)
+  #   with_clash_api — НУЖЕН тестеру серверов (proxy_tester поднимает
+  #     временный sing-box и дёргает /proxies/<tag>/delay). Без него
+  #     тест/health-filter пула не работает: «clash api is not included
+  #     in this build».
   # ВАЖНО: НЕ включаем with_ech — начиная с sing-box 1.10 ECH
   # реализован в stdlib, отдельный тэг deprecated и при попытке
   # сборки даёт ошибку «cannot use string constant as int».
-  SINGBOX_TAGS: 'with_quic with_grpc with_wireguard with_utls'
+  SINGBOX_TAGS: 'with_quic with_grpc with_wireguard with_utls with_clash_api'
 
 jobs:
   # ── 0. Авто-детект новых версий апстрима (только cron) ─────

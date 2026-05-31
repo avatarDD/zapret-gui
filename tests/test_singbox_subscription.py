@@ -190,6 +190,17 @@ class TestShadowsocks(unittest.TestCase):
         r = ss_to_outbound("vless://uuid@host:443")
         self.assertFalse(r["ok"])
 
+    def test_chacha20_poly1305_normalized(self):
+        # sing-box знает только chacha20-ietf-poly1305 — алиас нормализуем.
+        r = ss_to_outbound("ss://chacha20-poly1305:pass@host:8388#x")
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        self.assertEqual(r["outbound"]["method"], "chacha20-ietf-poly1305")
+
+    def test_legacy_stream_cipher_rejected(self):
+        # Легаси stream-шифр sing-box не поддерживает → сервер отбрасываем.
+        r = ss_to_outbound("ss://aes-256-cfb:pass@host:8388#x")
+        self.assertFalse(r["ok"])
+
 
 class TestHysteria2(unittest.TestCase):
 

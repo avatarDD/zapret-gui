@@ -421,8 +421,39 @@ def make_shadowsocks_outbound(tag: str, server: str, port: int,
     return {
         "type": "shadowsocks", "tag": tag,
         "server": server, "server_port": int(port),
-        "method": method, "password": password,
+        "method": normalize_ss_method(method) or method,
+        "password": password,
     }
+
+
+# Методы Shadowsocks, которые принимает sing-box (только AEAD + 2022).
+# Легаси stream-шифры (aes-256-cfb, rc4-md5, chacha20 и т.п.) sing-box
+# НЕ поддерживает — такие серверы из публичных списков надо отбрасывать,
+# иначе один такой outbound валит весь конфиг («unknown method: …»).
+SS_SUPPORTED_METHODS = {
+    "aes-128-gcm", "aes-192-gcm", "aes-256-gcm",
+    "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305",
+    "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+    "2022-blake3-chacha20-poly1305",
+    "none",
+}
+
+# Часто встречающиеся в подписках алиасы → канонические имена sing-box.
+_SS_METHOD_ALIASES = {
+    "chacha20-poly1305":   "chacha20-ietf-poly1305",
+    "xchacha20-poly1305":  "xchacha20-ietf-poly1305",
+    "chacha20-ietf":       "chacha20-ietf-poly1305",
+}
+
+
+def normalize_ss_method(method: str) -> str:
+    """
+    Привести имя SS-шифра к тому, что понимает sing-box. Возвращает
+    канонический метод или '' если шифр не поддерживается (легаси stream).
+    """
+    m = (method or "").strip().lower()
+    m = _SS_METHOD_ALIASES.get(m, m)
+    return m if m in SS_SUPPORTED_METHODS else ""
 
 
 def make_hysteria2_outbound(tag: str, server: str, port: int,

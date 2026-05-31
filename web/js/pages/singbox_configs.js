@@ -198,12 +198,7 @@ const SingboxConfigsPage = (() => {
             editText = r.text || '';
             editDirty = false;
             validateResult = null;
-            activeTab = 'editor';
-            // Обновим табы визуально
-            const btns = document.querySelectorAll('.tabs-bar .tab-btn');
-            btns.forEach(b => b.classList.remove('active'));
-            if (btns[1]) btns[1].classList.add('active');
-            renderTab();
+            switchTab('editor');
         } catch (e) {
             Toast.error(e.message);
         }
@@ -230,11 +225,7 @@ const SingboxConfigsPage = (() => {
         }, null, 2);
         editDirty = true;
         validateResult = null;
-        activeTab = 'editor';
-        const btns = document.querySelectorAll('.tabs-bar .tab-btn');
-        btns.forEach(b => b.classList.remove('active'));
-        if (btns[1]) btns[1].classList.add('active');
-        renderTab();
+        switchTab('editor');
     }
 
     function renderEditorTab(box) {
