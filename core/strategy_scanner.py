@@ -266,6 +266,11 @@ class StrategyScanner:
                 "failed_count": len(failed),
                 "success_rate": success_rate,
                 "elapsed_seconds": elapsed,
+                # Ресурс доступен без обхода → стратегии помечаются неуспешными
+                # (нечего «чинить»), success_rate будет 0%. Это ожидаемо, а не
+                # ошибка: подбор нужно запускать на ЗАБЛОКИРОВАННОМ ресурсе.
+                "baseline_open": self._baseline_open,
+                "baseline_by_af": dict(self._baseline_by_af),
             }
 
     def get_results(self) -> Optional[StrategyScanReport]:
