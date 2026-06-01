@@ -41,6 +41,12 @@ _CORE_LUA_FILES = (
 
 # Extension-скрипты подключаются только если соответствующая desync-функция
 # реально используется (имя слева от ':' в --lua-desync=...).
+#
+# ВАЖНО: набор функций должен зеркалить то, что РЕАЛЬНО экспортирует
+# соответствующий .lua (см. import/lua/*.lua). Если функция определена в
+# extension-скрипте, но отсутствует здесь, стратегия с её вызовом не
+# подгрузит скрипт → вызов несуществующей lua-функции → тихий 0%.
+# Сверка: grep '^function ' import/lua/zapret-multishake.lua и т.д.
 _EXTENSION_LUA_FILES = {
     "zapret-multishake.lua": {
         "hostfakesplit_stealth",
@@ -48,6 +54,9 @@ _EXTENSION_LUA_FILES = {
         "hostfakesplit_multi",
         "hostfakesplit_gradual",
         "hostfakesplit_decoy",
+        "hostfakesplit_blend",
+        "hostfakesplit_soft",
+        "snifakesplit",
     },
     "fakemultisplit.lua": {"fakemultisplit"},
     "fakemultidisorder.lua": {"fakemultidisorder"},
