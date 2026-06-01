@@ -1185,6 +1185,190 @@ def _get_nfqws_version(binary_path):
     return "unknown"
 
 
+# ─────────── Предпосылки для работы стратегий (lua / blob / nfqws) ───────────
+
+# Lua-скрипты, без которых десинк не определён вообще: zapret-lib.lua задаёт
+# базовые примитивы, zapret-antidpi.lua — сами функции fake/multisplit/…
+# Если их нет на lua_path — ЛЮБАЯ стратегия с --lua-desync молча не работает
+# (вызов несуществующей функции), и сканер показывает 0% на всём.
+_REQUIRED_LUA = ("zapret-lib.lua", "zapret-antidpi.lua")
+
+# Желательные (расширения/auto/диагностика) — без них часть стратегий
+# деградирует, но базовые работают.
+_RECOMMENDED_LUA = (
+    "zapret-auto.lua", "custom_funcs.lua", "custom_diag.lua",
+    "zapret-multishake.lua", "fakemultisplit.lua", "fakemultidisorder.lua",
+)
+
+
+def check_strategy_prerequisites():
+    """Проверить, что окружение готово к работе стратегий nfqws2.
+
+    Главный диагност «почему не находится ни одной рабочей стратегии / 0%».
+    Проверяет (без запуска nfqws2):
+      • бинарник nfqws2 существует и исполняемый;
+      • на lua_path есть обязательные lua-скрипты (zapret-lib/antidpi);
+      • на bin_path есть blob-файлы (иначе named-fake уходит пустым);
+      • существуют каталоги lists_path/ipset_path;
+      • доступен модуль NFQUEUE;
+      • conntrack tcp_be_liberal включён (десинк шлёт out-of-window сегменты).
+
+    Returns:
+        dict: { ok, issues:[{id,severity,title,detail,hint}], checks:{...} }
+        severity: "error" (стратегии не заработают) | "warning" (деградация).
+    """
+    from core.config_manager import get_config_manager
+    cfg = get_config_manager()
+
+    nfqws_binary = cfg.get("zapret", "nfqws_binary",
+                           default="/opt/zapret2/nfq2/nfqws2")
+    lua_path = cfg.get("zapret", "lua_path", default="/opt/zapret2/lua")
+    bin_path = cfg.get("zapret", "bin_path", default="/opt/zapret2/files/fake")
+    lists_path = cfg.get("zapret", "lists_path", default="/opt/zapret2/lists")
+    ipset_path = cfg.get("zapret", "ipset_path", default="/opt/zapret2/ipset")
+
+    issues = []
+    checks = {}
+
+    # 1. Бинарник nfqws2
+    bin_exists = os.path.isfile(nfqws_binary)
+    bin_exec = bin_exists and os.access(nfqws_binary, os.X_OK)
+    checks["nfqws_binary"] = {
+        "path": nfqws_binary, "exists": bin_exists, "executable": bin_exec,
+    }
+    if not bin_exists:
+        issues.append({
+            "id": "nfqws_missing", "severity": "error",
+            "title": "Бинарник nfqws2 не найден",
+            "detail": nfqws_binary,
+            "hint": "Установите zapret2 или укажите верный путь в "
+                    "Настройки → zapret.nfqws_binary.",
+        })
+    elif not bin_exec:
+        issues.append({
+            "id": "nfqws_not_exec", "severity": "error",
+            "title": "Бинарник nfqws2 не исполняемый",
+            "detail": nfqws_binary,
+            "hint": "chmod +x %s" % nfqws_binary,
+        })
+
+    # 2. Lua-скрипты (критично для --lua-desync)
+    lua_dir_exists = os.path.isdir(lua_path)
+    present = set()
+    if lua_dir_exists:
+        try:
+            present = {f for f in os.listdir(lua_path) if f.endswith(".lua")}
+        except OSError:
+            present = set()
+    missing_required = [f for f in _REQUIRED_LUA if f not in present]
+    missing_recommended = [f for f in _RECOMMENDED_LUA if f not in present]
+    checks["lua"] = {
+        "path": lua_path, "dir_exists": lua_dir_exists,
+        "present_count": len(present),
+        "missing_required": missing_required,
+        "missing_recommended": missing_recommended,
+    }
+    if not lua_dir_exists:
+        issues.append({
+            "id": "lua_dir_missing", "severity": "error",
+            "title": "Каталог lua-скриптов отсутствует",
+            "detail": lua_path,
+            "hint": "Без zapret-lib.lua и zapret-antidpi.lua функции "
+                    "--lua-desync=fake/multisplit не определены — десинк не "
+                    "применяется, сканер покажет 0%% на всех стратегиях. "
+                    "Импортируйте ассеты zapret2 или укажите zapret.lua_path.",
+        })
+    elif missing_required:
+        issues.append({
+            "id": "lua_required_missing", "severity": "error",
+            "title": "Нет обязательных lua-скриптов",
+            "detail": "Отсутствуют: %s (в %s)"
+                      % (", ".join(missing_required), lua_path),
+            "hint": "zapret-lib.lua задаёт примитивы, zapret-antidpi.lua — "
+                    "функции fake/multisplit/multidisorder. Без них любая "
+                    "стратегия с --lua-desync молча не работает (0%%).",
+        })
+    elif missing_recommended:
+        issues.append({
+            "id": "lua_recommended_missing", "severity": "warning",
+            "title": "Нет части дополнительных lua-скриптов",
+            "detail": "Отсутствуют: %s" % ", ".join(missing_recommended),
+            "hint": "Базовые стратегии работают, но hostfakesplit_*/"
+                    "fakemultisplit/fakemultidisorder и авто-режим могут "
+                    "деградировать.",
+        })
+
+    # 3. Blob-файлы (иначе named-fake пустой)
+    bin_dir_exists = os.path.isdir(bin_path)
+    bin_count = 0
+    if bin_dir_exists:
+        try:
+            bin_count = sum(1 for f in os.listdir(bin_path)
+                            if f.endswith(".bin"))
+        except OSError:
+            bin_count = 0
+    checks["blobs"] = {
+        "path": bin_path, "dir_exists": bin_dir_exists, "bin_count": bin_count,
+    }
+    if not bin_dir_exists or bin_count == 0:
+        issues.append({
+            "id": "blobs_missing", "severity": "warning",
+            "title": "Нет blob-файлов для fake-пакетов",
+            "detail": "%s (.bin: %d)" % (bin_path, bin_count),
+            "hint": "Стратегии с blob=tls_google/quic_* и т.п. отправят "
+                    "ПУСТОЙ fake и не сработают. Встроенные fake_default_* "
+                    "работают без файлов. Проверьте zapret.bin_path.",
+        })
+
+    # 4. Каталоги списков
+    checks["lists"] = {
+        "lists_path": lists_path, "lists_exists": os.path.isdir(lists_path),
+        "ipset_path": ipset_path, "ipset_exists": os.path.isdir(ipset_path),
+    }
+
+    # 5. NFQUEUE
+    nfqueue_ok = _check_nfqueue_available()
+    checks["nfqueue"] = {"available": nfqueue_ok}
+    if not nfqueue_ok:
+        issues.append({
+            "id": "nfqueue_missing", "severity": "error",
+            "title": "Модуль NFQUEUE недоступен",
+            "detail": "Не найден nfnetlink_queue / xt_NFQUEUE",
+            "hint": "Без NFQUEUE ядро не передаёт пакеты в nfqws2. На роутере "
+                    "загрузите модули netfilter; в контейнере без netfilter "
+                    "сканирование смысла не имеет.",
+        })
+
+    # 6. conntrack tcp_be_liberal (best-effort)
+    be_liberal = _read_sysctl_int(
+        "/proc/sys/net/netfilter/nf_conntrack_tcp_be_liberal")
+    checks["conntrack_be_liberal"] = be_liberal
+    if be_liberal == 0:
+        issues.append({
+            "id": "conntrack_strict", "severity": "warning",
+            "title": "nf_conntrack_tcp_be_liberal выключен",
+            "detail": "Текущее значение: 0",
+            "hint": "Ядро дропает out-of-window сегменты, которые порождает "
+                    "десинк (split/disorder/fake с badseq). Применение правил "
+                    "firewall в zapret-gui ставит =1 автоматически.",
+        })
+
+    ok = not any(i["severity"] == "error" for i in issues)
+    if not ok:
+        log.warning("Предпосылки стратегий: найдены блокеры (%d issue)"
+                    % len(issues), source="diagnostics")
+    return {"ok": ok, "issues": issues, "checks": checks}
+
+
+def _read_sysctl_int(path):
+    """Прочитать целочисленный sysctl из /proc; None если недоступен."""
+    try:
+        with open(path, "r") as f:
+            return int(f.read().strip())
+    except (IOError, OSError, ValueError):
+        return None
+
+
 # ─────────────────────── Публичные утилиты ───────────────────────
 
 def get_available_services():

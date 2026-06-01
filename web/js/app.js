@@ -18,6 +18,7 @@ const App = (() => {
         hosts:       HostsPage,
         diagnostics: DiagnosticsPage,
         blockcheck:  BlockcheckPage,
+        blockcheck2: Blockcheck2Page,
         scan:        ScanPage,
         logs:        LogsPage,
         autostart:   AutostartPage,

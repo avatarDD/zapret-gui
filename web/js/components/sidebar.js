@@ -42,10 +42,11 @@ const Sidebar = (() => {
         {
             label: 'Обход DPI (nfqws2)',
             items: [
-                { id: 'control',    label: 'Управление',       icon: 'play' },
-                { id: 'strategies', label: 'Стратегии',        icon: 'strategy' },
-                { id: 'scan',       label: 'Подбор стратегий', icon: 'scan' },
-                { id: 'blockcheck', label: 'BlockCheck',       icon: 'blockcheck' },
+                { id: 'control',     label: 'Управление',                icon: 'play' },
+                { id: 'strategies',  label: 'Стратегии',                 icon: 'strategy' },
+                { id: 'blockcheck2', label: 'BlockCheck2 (официальный)', icon: 'blockcheck' },
+                { id: 'scan',        label: 'BlockCheck(mod)',           icon: 'scan' },
+                { id: 'blockcheck',  label: 'Тестирование доступности',  icon: 'diagnostic' },
             ]
         },
         {

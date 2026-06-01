@@ -336,6 +336,11 @@ class StrategyScanner:
         started_at = time.time()
 
         try:
+            # 0. Проверка предпосылок: без lua-скриптов / NFQUEUE сканировать
+            #    бессмысленно — все стратегии дадут 0%. Не прерываем (на роутере
+            #    проверки могут быть неточны), но громко предупреждаем в лог.
+            self._check_prerequisites()
+
             # 1. Сохраняем текущее состояние nfqws/firewall
             self._save_current_state()
 
@@ -541,6 +546,34 @@ class StrategyScanner:
             # Удаляем resume file при успешном завершении
             if not self._cancelled:
                 self._remove_resume_state()
+
+    def _check_prerequisites(self) -> None:
+        """Предупредить о блокерах окружения (lua/blob/NFQUEUE) перед сканом."""
+        try:
+            from core.diagnostics import check_strategy_prerequisites
+            pre = check_strategy_prerequisites()
+        except Exception as e:
+            log.debug("Проверка предпосылок недоступна: %s" % e,
+                      source="scanner")
+            return
+
+        for issue in pre.get("issues", []):
+            msg = "Предпосылка [%s]: %s — %s" % (
+                issue.get("severity", "?"),
+                issue.get("title", ""),
+                issue.get("hint", ""),
+            )
+            if issue.get("severity") == "error":
+                log.error(msg, source="scanner")
+            else:
+                log.warning(msg, source="scanner")
+
+        if not pre.get("ok", True):
+            log.error(
+                "Окружение НЕ готово к стратегиям — вероятен 0%% на всём. "
+                "Откройте Диагностику (prerequisites) и устраните ошибки.",
+                source="scanner",
+            )
 
     # ─────────────────── Strategy selection ───────────────────
 

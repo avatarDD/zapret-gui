@@ -1,5 +1,56 @@
 /* ===== BlockCheck & Scan Pages ===== */
 
+/* BlockCheck2 (официальный): терминальный вывод телеметрии */
+.bc2-term {
+    background: #0a0c10;
+    color: #cbd5e1;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border, #2a2f3a);
+    max-height: 460px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+}
+[data-theme="light"] .bc2-term { background: #1a1d23; color: #e5e7eb; }
+.bc2-term:empty::before {
+    content: "Вывод blockcheck появится здесь после запуска…";
+    color: var(--text-muted, #6b7280);
+}
+.bc2-term .ln-hl { color: #fbbf24; font-weight: 600; }
+.bc2-term .ln-ok { color: #34d399; }
+.bc2-term .ln-bad { color: #f87171; }
+
+.bc2-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+}
+.bc2-checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+}
+.bc2-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.bc2-highlights {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+}
+.bc2-hl {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: rgba(251, 191, 36, 0.12);
+    color: #fbbf24;
+}
+
 /* Form layout */
 .bc-form {
     display: flex;
