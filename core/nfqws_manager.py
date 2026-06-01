@@ -34,6 +34,12 @@ PID_FILE = "/var/run/zapret-gui-nfqws.pid"
 _CORE_LUA_FILES = (
     "zapret-lib.lua",
     "zapret-antidpi.lua",
+    # init_vars.lua грузится ПОСЛЕ lib+antidpi (так задокументировано в самом
+    # файле): объявляет именованные SNI/pattern-переменные (tls_google и т.п.,
+    # используются как seqovl_pattern=/pattern=) и invert_bytes — примитив, от
+    # которого зависят obfs-скрипты. Поэтому держим его в core (всегда грузим
+    # при наличии --lua-desync), а не как extension.
+    "init_vars.lua",
     "zapret-auto.lua",
     "custom_funcs.lua",
     "custom_diag.lua",
@@ -60,6 +66,23 @@ _EXTENSION_LUA_FILES = {
     },
     "fakemultisplit.lua": {"fakemultisplit"},
     "fakemultidisorder.lua": {"fakemultidisorder"},
+    # WireGuard/UDP-обфускация и туннелирование. wgobfs определён и в
+    # zapret-wgobfs.lua, но zapret-obfs.lua — надмножество (wgobfs + ippxor +
+    # udp2icmp + synhide), поэтому маршрутизируем все эти функции в него, а
+    # zapret-wgobfs.lua не подключаем (дубль), чтобы не грузить wgobfs дважды.
+    "zapret-obfs.lua": {"wgobfs", "ippxor", "udp2icmp", "synhide"},
+    # 16KB-обход (фейк-флуд белым SNI, ttl-лесенка и пр.). Зависит от
+    # lib+antidpi (оба в core).
+    "zapret-16kb.lua": {
+        "flood_white", "ttl_ladder", "white_sandwich", "seqovl_white",
+    },
+    # Флуд RST с подобранным TTL до DPI. Зависит от lib+antidpi (core).
+    "zapret-rst-flood.lua": {"rst_flood"},
+    # Запись pcap из lua (требует --writeable). Триггер — pcap; вспомогательные
+    # pcap_write* включены, чтобы набор зеркалил экспорт скрипта (см. тест).
+    "zapret-pcap.lua": {
+        "pcap", "pcap_write", "pcap_write_packet", "pcap_write_header",
+    },
 }
 
 _LUA_DESYNC_FUNC_RE = re.compile(r"--lua-desync=([a-zA-Z0-9_]+)")
@@ -375,6 +398,72 @@ class NFQWSManager:
         return self._dedup_lua_init(
             [binary] + base_args + lua_args + unified_args + strategy_args
         )
+
+    def dry_run(self, strategy_args: list, timeout: float = 8.0) -> dict:
+        """Проверить стратегию через `nfqws2 --dry-run` без поднятия NFQUEUE.
+
+        Собирает argv тем же `compose_command` (единый источник истины), что
+        и реальный запуск, затем заменяет запуск на валидацию: nfqws2
+        разбирает параметры, прогоняет lua-init (то есть ловит вызовы
+        несуществующих lua-функций, битые `--blob`/`--lua-init`, плохой
+        синтаксис `--lua-desync`) и выходит с кодом 0 при успехе. NFQUEUE не
+        открывается, трафик не затрагивается.
+
+        Из argv убираем `--user=` — иначе nfqws2 при старте пытается setuid и
+        без root падает не по делу (к валидации синтаксиса это не относится).
+        `--daemon` мы и так не добавляем.
+
+        Returns:
+            dict: { ok, available, returncode, output, command }.
+                  available=False — бинарник недоступен (валидацию не
+                  провести, например, на dev-машине без zapret2).
+        """
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        binary = cfg.get("zapret", "nfqws_binary")
+
+        if (not binary or not os.path.isfile(binary)
+                or not os.access(binary, os.X_OK)):
+            return {
+                "ok": False, "available": False,
+                "error": "Бинарник nfqws2 недоступен: %s" % binary,
+                "returncode": None, "output": "", "command": "",
+            }
+
+        argv = self.compose_command(list(strategy_args or []),
+                                    binary=binary, cfg=cfg)
+        argv = [a for a in argv if not a.startswith("--user=")]
+        if "--dry-run" not in argv:
+            argv.append("--dry-run")
+
+        try:
+            proc = subprocess.run(
+                argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=timeout, check=False,
+            )
+            out = (proc.stdout.decode("utf-8", errors="replace")
+                   if proc.stdout else "")
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            return {
+                "ok": False, "available": True, "returncode": None,
+                "output": "Таймаут валидации (%.0fс)" % timeout,
+                "command": " ".join(argv),
+            }
+        except OSError as e:
+            return {
+                "ok": False, "available": True, "returncode": None,
+                "output": "Ошибка запуска валидации: %s" % e,
+                "command": " ".join(argv),
+            }
+
+        return {
+            "ok": rc == 0,
+            "available": True,
+            "returncode": rc,
+            "output": out.strip(),
+            "command": " ".join(argv),
+        }
 
     # ─────────────────────── internal helpers ───────────────────────
 

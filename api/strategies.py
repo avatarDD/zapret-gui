@@ -383,7 +383,7 @@ def register(app):
         command = sm.build_preview_command(strategy)
         args = sm.build_nfqws_args(strategy)
 
-        return {
+        result = {
             "ok": True,
             "command": command,
             "args": args,
@@ -392,6 +392,41 @@ def register(app):
                 if p.get("enabled", True)
             ]),
         }
+
+        # Опциональная валидация через nfqws2 --dry-run (без NFQUEUE):
+        # ловит несуществующие lua-функции, битые --blob/--lua-init и пр.
+        if body.get("validate"):
+            from core.nfqws_manager import get_nfqws_manager
+            result["validation"] = get_nfqws_manager().dry_run(args)
+
+        return result
+
+    @app.post("/api/strategies/<sid>/validate")
+    def api_strategies_validate(sid):
+        """Проверить стратегию через `nfqws2 --dry-run` (без поднятия NFQUEUE).
+
+        Собирает argv тем же путём, что и реальный запуск, и валидирует
+        параметры + lua-init. Возвращает validation: {ok, available,
+        returncode, output, command}.
+        """
+        response.content_type = "application/json; charset=utf-8"
+
+        from core.strategy_builder import get_strategy_manager
+        from core.nfqws_manager import get_nfqws_manager
+
+        sm = get_strategy_manager()
+        strategy = sm.get_strategy(sid)
+        if not strategy:
+            response.status = 404
+            return {"ok": False, "error": "Стратегия не найдена: %s" % sid}
+
+        args = sm.build_nfqws_args(strategy)
+        if not args:
+            response.status = 400
+            return {"ok": False, "error": "Нет включённых профилей в стратегии"}
+
+        validation = get_nfqws_manager().dry_run(args)
+        return {"ok": True, "validation": validation}
 
     # ═══════════════════ Категории ═══════════════════
 

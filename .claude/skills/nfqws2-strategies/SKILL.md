@@ -51,9 +51,21 @@ nfqws2 --qnum 300 \
    `multidisorder`, `fakedsplit`, `pktmod`, `wssize`, `syndata`, `luaexec` и т.д.
    **Без него `--lua-desync=fake:...` — это вызов несуществующей функции:
    nfqws2 либо падает на старте, либо десинк просто не применяется.**
-3. Extension-скрипты (`zapret-multishake.lua`, `fakemultisplit.lua`,
-   `fakemultidisorder.lua`) нужны только если стратегия использует функции
-   `hostfakesplit_*`, `fakemultisplit`, `fakemultidisorder`.
+3. Extension-скрипты подключаются `--lua-init` ТОЛЬКО если стратегия реально
+   вызывает их функции (`--lua-desync=FN`), см. `_EXTENSION_LUA_FILES` в
+   `nfqws_manager.py`. Карта (файл → его экспортируемые функции-триггеры):
+   - `zapret-multishake.lua` — `hostfakesplit_stealth/chaos/multi/gradual/decoy/blend/soft`, `snifakesplit`;
+   - `fakemultisplit.lua` — `fakemultisplit`; `fakemultidisorder.lua` — `fakemultidisorder`;
+   - `zapret-obfs.lua` — `wgobfs`, `ippxor`, `udp2icmp`, `synhide` (надмножество `zapret-wgobfs.lua`, последний поэтому НЕ грузим — иначе `wgobfs` определится дважды);
+   - `zapret-16kb.lua` — `flood_white`, `ttl_ladder`, `white_sandwich`, `seqovl_white`;
+   - `zapret-rst-flood.lua` — `rst_flood`; `zapret-pcap.lua` — `pcap` (требует `--writeable`).
+   **Инвариант:** набор-триггер каждого файла обязан совпадать с его
+   глобальными функциями (`grep '^function ' import/lua/<file>.lua`) — иначе
+   вызов «выпавшей» функции = тихий 0%. Сторожит `tests/test_nfqws_lua_map.py`.
+   Скрипты-оркестраторы/детекторы (`combined-detector`, `domain-grouping`,
+   `strategy-stats`, `strategy-lock-manager`, `silent-drop-detector`) — это
+   companion'ы роутерного auto-оркестратора, а НЕ desync-действия; в GUI-потоке
+   детекцию делает Python-сканер, поэтому в desync-путь они не подключаются.
 4. `--qnum N` **обязан** совпадать с номером очереди в правиле firewall
    (`queue num N`). Иначе пакеты уходят в очередь, которую никто не слушает.
 
@@ -395,10 +407,15 @@ mtproto_initial bt_handshake utp_bt_handshake`.
 
 ### 8.7 Важные следствия для zapret-gui
 
-- **`--dry-run`** — штатный способ валидировать собранную стратегию без
-  поднятия NFQUEUE (можно прикрутить к `build_preview_command`/линтеру
-  стратегий: собрать argv через `compose_command`, заменить запуск на
-  `--dry-run`, проверить код возврата 0).
+- **`--dry-run`** — штатная валидация собранной стратегии без поднятия
+  NFQUEUE. **Реализовано:** `NFQWSManager.dry_run(strategy_args)` собирает argv
+  тем же `compose_command`, убирает `--user=` (чтобы не было setuid вне
+  рантайма), добавляет `--dry-run`, запускает и проверяет `returncode==0`.
+  Ловит вызовы несуществующих lua-функций, битые `--blob`/`--lua-init`, плохой
+  синтаксис `--lua-desync`. API: `POST /api/strategies/<sid>/validate` и
+  `POST /api/strategies/preview` с `{"validate": true}` → поле `validation:
+  {ok, available, returncode, output, command}`. `available=false` — бинарника
+  нет (dev-машина без zapret2).
 - **`--version`** даёт `lua_compat_ver` — полезно при диагностике
   несовместимости lua-скриптов с версией движка.
 - **`--fwmark` дефолт `0x40000000`** совпадает с нашим `nfqws.desync_mark` —

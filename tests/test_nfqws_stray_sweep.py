@@ -99,5 +99,72 @@ class TestStraySweep(unittest.TestCase):
         sweep.assert_called_once()
 
 
+class TestDryRun(unittest.TestCase):
+
+    def setUp(self):
+        with mock.patch.object(NFQWSManager, "_recover_pid"):
+            self.mgr = NFQWSManager()
+
+    def test_unavailable_when_binary_missing(self):
+        cfg = mock.Mock()
+        cfg.get.return_value = "/no/such/nfqws2"
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cfg), \
+             mock.patch("core.nfqws_manager.os.path.isfile",
+                        return_value=False):
+            res = self.mgr.dry_run(["--filter-tcp=443"])
+        self.assertFalse(res["ok"])
+        self.assertFalse(res["available"])
+
+    def _patched_run(self, returncode, output=b""):
+        completed = mock.Mock(returncode=returncode, stdout=output)
+        cfg = mock.Mock()
+        cfg.get.return_value = "/opt/zapret2/nfq2/nfqws2"
+        return cfg, completed
+
+    def test_appends_dry_run_and_strips_user(self):
+        cfg, completed = self._patched_run(0, b"all ok")
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen["argv"] = argv
+            return completed
+
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cfg), \
+             mock.patch("core.nfqws_manager.os.path.isfile",
+                        return_value=True), \
+             mock.patch("core.nfqws_manager.os.access", return_value=True), \
+             mock.patch.object(self.mgr, "compose_command",
+                               return_value=["/opt/zapret2/nfq2/nfqws2",
+                                             "--user=nobody", "--qnum=300",
+                                             "--filter-tcp=443"]), \
+             mock.patch("core.nfqws_manager.subprocess.run",
+                        side_effect=fake_run):
+            res = self.mgr.dry_run(["--filter-tcp=443"])
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["returncode"], 0)
+        self.assertIn("--dry-run", seen["argv"])
+        self.assertNotIn("--user=nobody", seen["argv"])  # setuid не нужен
+
+    def test_nonzero_returncode_is_failure(self):
+        cfg, completed = self._patched_run(1, b"lua error: function 'foo' nil")
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cfg), \
+             mock.patch("core.nfqws_manager.os.path.isfile",
+                        return_value=True), \
+             mock.patch("core.nfqws_manager.os.access", return_value=True), \
+             mock.patch.object(self.mgr, "compose_command",
+                               return_value=["/opt/zapret2/nfq2/nfqws2",
+                                             "--lua-desync=foo"]), \
+             mock.patch("core.nfqws_manager.subprocess.run",
+                        return_value=completed):
+            res = self.mgr.dry_run(["--lua-desync=foo"])
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["returncode"], 1)
+        self.assertIn("lua error", res["output"])
+
+
 if __name__ == "__main__":
     unittest.main()
