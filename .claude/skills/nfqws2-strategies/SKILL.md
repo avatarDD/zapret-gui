@@ -96,29 +96,48 @@ nfqws2 --qnum 300 \
 
 ---
 
-## 2. Конвенции nfqws2-keenetic (эталон)
+## 2. Пути и layout — как в оригинальном bol-van/zapret2
 
-- Конфиг: `/opt/etc/nfqws2/nfqws2.conf` с переменными `NFQWS_ARGS` (HTTPS/TCP),
-  `NFQWS_ARGS_QUIC`, `NFQWS_ARGS_UDP`, `NFQWS_ARGS_CUSTOM`.
-- Списки: `user.list`, `auto.list`, `exclude.list`, `ipset.list`,
-  `ipset_exclude.list`.
-- Режимы выбора доменов: **list** (только user.list), **auto** (домен
-  добавляется после 3 фейлов за 60с), **all** (всё, кроме exclude.list).
-- init-скрипт `/opt/etc/init.d/S51nfqws2`, цепочка iptables `nfqws_post`,
-  очередь 300, проверка fwmark чтобы не обрабатывать уже промаркированное.
-- Порты: TCP 443 (+опц. 80), UDP 443 (QUIC).
-- **Обязательно**: отключить hardware offload (иначе iptables не видит трафик),
-  настроить conntrack (`nf_conntrack_tcp_be_liberal=1`), рекомендован DoT/DoH.
+Наш проект следует раскладке **bol-van/zapret2** (ZAPRET_BASE = `/opt/zapret2`),
+имена файлов и каталогов — как в апстриме. Используются ДВА корня:
+
+- **`/opt/zapret2/`** — ассеты движка zapret2 (дефолты в `core/config_manager`):
+  - `nfq2/nfqws2` — бинарник (`zapret.nfqws_binary`);
+  - `lua/` — Lua-скрипты `zapret-lib.lua`, `zapret-antidpi.lua`, … (`zapret.lua_path`);
+  - `lists/` — hostlist'ы (`zapret.lists_path`);
+  - `ipset/` — IP-списки (`zapret.ipset_path`);
+  - `files/fake/` — blob-файлы `*.bin` (`zapret.bin_path`);
+  - `blockcheck2.sh` / `blockcheck.sh` — штатный blockcheck
+    (`zapret.blockcheck2_path`, иначе автопоиск в `base_path`).
+- **`/opt/etc/zapret-gui/`** — конфиг и состояние самого GUI (НЕ движка):
+  - `settings.json` — конфигурация (`core/config_manager.DEFAULT_CONFIG_DIR`);
+    секции `zapret.*`, `nfqws.*`, `firewall.*`, `scan.*` и т.д.;
+  - runtime firewall-конфиг и хуки персистентности
+    (`core/firewall_persistence.GUI_RUNTIME_DIR`);
+  - state-файлы установщиков (singbox/mihomo и пр.).
+
+⚠️ Путей вида `/opt/etc/nfqws2/nfqws2.conf` или `/opt/etc/init.d/S51nfqws2` у нас
+**НЕТ** — это раскладка стороннего упаковщика nfqws2-keenetic, не bol-van/zapret2.
+Не использовать их в коде/доках как «наши».
+
+### nfqws2-keenetic — только поведенческий эталон
+
+Из nfqws2-keenetic берём идеи поведения (НЕ пути):
+- режимы выбора доменов: **list** / **auto** (домен добавляется после 3 фейлов
+  за 60с) / **all**;
+- порты: TCP 443 (+опц. 80), UDP 443 (QUIC);
+- **обязательно** отключить hardware offload (иначе iptables не видит трафик),
+  выставить `nf_conntrack_tcp_be_liberal=1`, рекомендован DoT/DoH.
 
 ---
 
 ## 3. Как это отображается в zapret-gui
 
-| nfqws2-keenetic | zapret-gui |
+| zapret2 (эталон) | zapret-gui |
 |---|---|
-| `nfqws2.conf` NFQWS_ARGS | стратегия (JSON user / каталог) → `strategy_builder` / `catalog_loader` |
-| init.d + iptables | `core/firewall.py` (`FirewallManager`) + `core/nfqws_manager.py` |
-| user/auto/exclude.list | `core/hostlist_manager.py`, `core/named_lists.py`, профили `scan_targets` |
+| опции nfqws2 в `config` ZAPRET_BASE | стратегия (JSON user / каталог) → `strategy_builder` / `catalog_loader` |
+| init.d + iptables (`init.d/`) | `core/firewall.py` (`FirewallManager`) + `core/nfqws_manager.py`; автозапуск — `core/autostart_manager.py` |
+| hostlist'ы в `ipset/` (`zapret-hosts-*.txt`) | `core/hostlist_manager.py`, `core/named_lists.py`, профили `scan_targets` |
 | ручной подбор | `core/strategy_scanner.py` (автоперебор) |
 
 ### Сборка argv: `NFQWSManager.compose_command()`
