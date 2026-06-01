@@ -57,6 +57,26 @@ class TestExtensionLuaMap(unittest.TestCase):
                 _global_funcs(lua_file),
                 "core lua-скрипт %s отсутствует в import/lua/" % lua_file)
 
+    def test_orchestrator_files_are_vendored(self):
+        for lua_file in nm._ORCHESTRATOR_LUA_FILES:
+            self.assertIsNotNone(
+                _global_funcs(lua_file),
+                "orchestrator lua-скрипт %s отсутствует в import/lua/"
+                % lua_file)
+
+    def test_orchestrator_triggers_are_defined_somewhere(self):
+        """Каждый триггер circular-bundle определён в core или в companion."""
+        loadable = set(nm._CORE_LUA_FILES) | set(nm._ORCHESTRATOR_LUA_FILES)
+        defined = set()
+        for lf in loadable:
+            defined |= _global_funcs(lf) or set()
+        missing = sorted(t for t in nm._ORCHESTRATOR_TRIGGERS
+                         if t not in defined)
+        self.assertEqual(
+            missing, [],
+            "Триггеры оркестратора без определения в core/companion: %s"
+            % missing)
+
 
 @unittest.skipUnless(os.path.isdir(LUA_DIR), "vendored import/lua not present")
 class TestCatalogDesyncCoverage(unittest.TestCase):
@@ -75,6 +95,8 @@ class TestCatalogDesyncCoverage(unittest.TestCase):
         deffile = self._func_to_files()
         core = set(nm._CORE_LUA_FILES)
 
+        orch = set(nm._ORCHESTRATOR_LUA_FILES)
+
         def satisfied(fn):
             files = deffile.get(fn)
             if not files:
@@ -84,6 +106,9 @@ class TestCatalogDesyncCoverage(unittest.TestCase):
             for extf, trig in nm._EXTENSION_LUA_FILES.items():
                 if extf in files and fn in trig:
                     return True
+            # circular-bundle: триггер грузит весь набор companion'ов.
+            if fn in nm._ORCHESTRATOR_TRIGGERS and files & orch:
+                return True
             return False
 
         cat_dir = os.path.join(os.path.dirname(__file__), "..", "catalogs")

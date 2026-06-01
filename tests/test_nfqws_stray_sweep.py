@@ -99,6 +99,33 @@ class TestStraySweep(unittest.TestCase):
         sweep.assert_called_once()
 
 
+class TestOrchestratorBundle(unittest.TestCase):
+    """circular-стратегия подтягивает companion-скрипты, обычная — нет."""
+
+    def test_circular_loads_orchestrator_bundle(self):
+        with mock.patch("core.nfqws_manager.os.path.isfile",
+                        return_value=True):
+            args = NFQWSManager._build_lua_init_args(
+                ["--lua-desync=circular:detector=combined_failure_detector"],
+                "/opt/zapret2/lua")
+        joined = " ".join(args)
+        from core import nfqws_manager as nm
+        for lf in nm._ORCHESTRATOR_LUA_FILES:
+            self.assertIn(lf, joined,
+                          "circular не подтянул %s" % lf)
+
+    def test_non_circular_does_not_load_orchestrator(self):
+        with mock.patch("core.nfqws_manager.os.path.isfile",
+                        return_value=True):
+            args = NFQWSManager._build_lua_init_args(
+                ["--lua-desync=multisplit:pos=1"], "/opt/zapret2/lua")
+        joined = " ".join(args)
+        self.assertNotIn("strategy-lock-manager.lua", joined)
+        self.assertNotIn("combined-detector.lua", joined)
+        # core при этом загружается
+        self.assertIn("zapret-lib.lua", joined)
+
+
 class TestDryRun(unittest.TestCase):
 
     def setUp(self):

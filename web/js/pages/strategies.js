@@ -100,7 +100,15 @@ const StrategiesPage = (() => {
                         <div class="log-viewer" id="preview-command" style="max-height:400px; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.6; padding:16px;">
                             Загрузка...
                         </div>
-                        <div style="margin-top:12px; text-align:right;">
+                        <div id="preview-validation" style="display:none; margin-top:12px;"></div>
+                        <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                            <button class="btn btn-primary" id="preview-validate-btn" onclick="StrategiesPage.validatePreview()" title="Проверить стратегию через nfqws2 --dry-run (без поднятия NFQUEUE и трафика)">
+                                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                    <path d="M9 11l3 3L22 4"/>
+                                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                                </svg>
+                                Проверить (dry-run)
+                            </button>
                             <button class="btn btn-ghost" onclick="StrategiesPage.copyPreview()">
                                 <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
@@ -526,6 +534,11 @@ const StrategiesPage = (() => {
 
         modal.style.display = 'flex';
         cmdEl.textContent = 'Загрузка...';
+        modal._sid = sid;
+
+        // Сбрасываем блок результата валидации от прошлого открытия.
+        const valEl = document.getElementById('preview-validation');
+        if (valEl) { valEl.style.display = 'none'; valEl.innerHTML = ''; }
 
         try {
             const result = await API.post('/api/strategies/preview', { strategy_id: sid });
@@ -539,6 +552,53 @@ const StrategiesPage = (() => {
         } catch (err) {
             cmdEl.textContent = 'Ошибка: ' + err.message;
             cmdEl._rawText = cmdEl.textContent;
+        }
+    }
+
+    async function validatePreview() {
+        const modal = document.getElementById('preview-modal');
+        const valEl = document.getElementById('preview-validation');
+        const btn = document.getElementById('preview-validate-btn');
+        if (!modal || !valEl || !modal._sid) return;
+
+        const sid = modal._sid;
+        valEl.style.display = 'block';
+        valEl.innerHTML = '<div class="alert alert-info" style="margin:0;">Проверка через nfqws2 --dry-run…</div>';
+        if (btn) btn.disabled = true;
+
+        try {
+            const res = await API.post('/api/strategies/' + encodeURIComponent(sid) + '/validate', {});
+            const v = res && res.validation;
+            if (!res || !res.ok || !v) {
+                valEl.innerHTML = '<div class="alert alert-danger" style="margin:0;">Ошибка: ' +
+                    ((res && res.error) || '?') + '</div>';
+                return;
+            }
+            if (!v.available) {
+                valEl.innerHTML = '<div class="alert alert-warning" style="margin:0;">' +
+                    'Валидация недоступна: бинарник nfqws2 не найден на этом устройстве ' +
+                    '(на роутере проверка работает).</div>';
+                return;
+            }
+            const out = (v.output || '').trim();
+            const outBlock = out
+                ? '<pre style="margin:8px 0 0; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-all; font-size:11px; opacity:.85;">' +
+                  escapeHtml(out) + '</pre>'
+                : '';
+            if (v.ok) {
+                valEl.innerHTML = '<div class="alert alert-success" style="margin:0;">' +
+                    '✓ Стратегия валидна — nfqws2 принял параметры и lua-init (код 0). ' +
+                    'NFQUEUE не поднимался, трафик не затрагивался.' + outBlock + '</div>';
+            } else {
+                valEl.innerHTML = '<div class="alert alert-danger" style="margin:0;">' +
+                    '✗ Стратегия не прошла проверку (код ' + (v.returncode != null ? v.returncode : '?') +
+                    '). Частые причины: вызов несуществующей lua-функции, битый --blob/--lua-init, ' +
+                    'плохой синтаксис --lua-desync.' + outBlock + '</div>';
+            }
+        } catch (err) {
+            valEl.innerHTML = '<div class="alert alert-danger" style="margin:0;">Ошибка: ' + err.message + '</div>';
+        } finally {
+            if (btn) btn.disabled = false;
         }
     }
 
@@ -919,6 +979,7 @@ const StrategiesPage = (() => {
         deleteStrategy,
         duplicateStrategy,
         showPreview,
+        validatePreview,
         closePreview,
         copyPreview,
         openCreate,
