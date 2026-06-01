@@ -64,8 +64,15 @@ nfqws2 --qnum 300 \
    вызов «выпавшей» функции = тихий 0%. Сторожит `tests/test_nfqws_lua_map.py`.
    Скрипты-оркестраторы/детекторы (`combined-detector`, `domain-grouping`,
    `strategy-stats`, `strategy-lock-manager`, `silent-drop-detector`) — это
-   companion'ы роутерного auto-оркестратора, а НЕ desync-действия; в GUI-потоке
-   детекцию делает Python-сканер, поэтому в desync-путь они не подключаются.
+   companion'ы auto-оркестратора `circular`, а НЕ desync-действия. Они грузятся
+   **bundle'ом** (`_ORCHESTRATOR_LUA_FILES`/`_ORCHESTRATOR_TRIGGERS`), когда
+   стратегия использует `--lua-desync=circular[...]` (или `circular_with_preload`):
+   `circular` сам вызывает их по имени через аргументы `detector=`/`success=`/
+   `hostkey=`/`preload=`. Грузятся после core, существующие-guard, порядок между
+   собой не важен (только определения + идемпотентная инициализация таблиц, без
+   `require()`). На обычные circular-стратегии без ссылок на эти функции лишние
+   определения не влияют. В превью эти `--lua-init` видны — это и есть «как
+   пользоваться из GUI»: достаточно выбрать circular-стратегию.
 4. `--qnum N` **обязан** совпадать с номером очереди в правиле firewall
    (`queue num N`). Иначе пакеты уходят в очередь, которую никто не слушает.
 

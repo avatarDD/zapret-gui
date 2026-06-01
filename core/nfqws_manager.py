@@ -85,6 +85,35 @@ _EXTENSION_LUA_FILES = {
     },
 }
 
+# Auto-оркестратор (circular) — companion-скрипты, которые подключаются
+# ВМЕСТЕ при использовании стратегии с `--lua-desync=circular[...]`.
+#
+# В отличие от extension-скриптов (триггер = собственные desync-функции),
+# здесь триггер — ФИЧА (circular): сами companion'ы экспортируют не
+# desync-действия, а детекторы/хосткеи/состояние, которые circular
+# вызывает по имени через свои аргументы (detector=, success=, hostkey=,
+# preload=...). Без их загрузки такие аргументы ссылались бы на
+# несуществующие функции.
+#
+# Загружаются ПОСЛЕ core (нужны standard_failure_detector/host_or_ip из
+# zapret-lib/zapret-auto). Порядок между собой не важен — на этапе load
+# только определения функций и идемпотентная инициализация глобальных
+# таблиц (SLM_* = SLM_* or {}), без вызовов и require(). Несуществующие
+# файлы пропускаются (guard по os.path.isfile), поэтому на сборках без
+# этих скриптов поведение не меняется.
+#
+# ВАЖНО (не ломать остальное): на обычные circular-стратегии из каталога,
+# которые НЕ ссылаются на companion-функции, загрузка лишних определений
+# не влияет — circular их просто не вызывает.
+_ORCHESTRATOR_TRIGGERS = {"circular", "circular_with_preload"}
+_ORCHESTRATOR_LUA_FILES = (
+    "strategy-lock-manager.lua",   # SLM_*-состояние + slm_*-хелперы
+    "domain-grouping.lua",         # get_grouped_hostname (группировка SNI)
+    "combined-detector.lua",       # combined_failure/success_detector, и пр.
+    "silent-drop-detector.lua",    # детектор тихого TCP-дропа
+    "strategy-stats.lua",          # preload + circular_with_preload
+)
+
 _LUA_DESYNC_FUNC_RE = re.compile(r"--lua-desync=([a-zA-Z0-9_]+)")
 _LUA_INIT_PATH_RE = re.compile(r"^--lua-init=@(.+)$")
 
@@ -525,30 +554,38 @@ class NFQWSManager:
 
     @staticmethod
     def _build_lua_init_args(strategy_args: list, lua_path: str) -> list:
-        """Сформировать список --lua-init для core+extension скриптов.
+        """Сформировать список --lua-init для core+extension+orchestrator.
 
         Логика по аналогии с youtubediscord/zapret:
           - если в стратегии нет --lua-desync — lua-скрипты не нужны;
           - core-список (zapret-lib первым) подключается всегда при наличии
             хотя бы одной desync-функции;
           - extension-скрипты добавляются только если в стратегии используются
-            функции, объявленные ими.
+            функции, объявленные ими;
+          - companion'ы auto-оркестратора подключаются, если стратегия
+            использует circular[...] (см. _ORCHESTRATOR_*).
         """
         used_funcs = set(_LUA_DESYNC_FUNC_RE.findall(" ".join(strategy_args)))
         if not used_funcs:
             return []
 
-        out = []
-        for lf in _CORE_LUA_FILES:
+        def _add(out, lf):
             full = os.path.join(lua_path, lf)
             if os.path.isfile(full):
                 out.append("--lua-init=@%s" % full)
 
+        out = []
+        for lf in _CORE_LUA_FILES:
+            _add(out, lf)
+
         for lf, funcs in _EXTENSION_LUA_FILES.items():
             if used_funcs & funcs:
-                full = os.path.join(lua_path, lf)
-                if os.path.isfile(full):
-                    out.append("--lua-init=@%s" % full)
+                _add(out, lf)
+
+        # Auto-оркестратор: companion'ы загружаются как bundle при circular.
+        if used_funcs & _ORCHESTRATOR_TRIGGERS:
+            for lf in _ORCHESTRATOR_LUA_FILES:
+                _add(out, lf)
 
         return out
 
