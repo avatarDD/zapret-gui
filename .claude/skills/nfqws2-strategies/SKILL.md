@@ -99,7 +99,7 @@ nfqws2 --qnum 300 \
 ## 2. Пути и layout — как в оригинальном bol-van/zapret2
 
 Наш проект следует раскладке **bol-van/zapret2** (ZAPRET_BASE = `/opt/zapret2`),
-имена файлов и каталогов — как в апстриме. Используются ДВА корня:
+имена файлов и каталогов — как в апстриме. Корни:
 
 - **`/opt/zapret2/`** — ассеты движка zapret2 (дефолты в `core/config_manager`):
   - `nfq2/nfqws2` — бинарник (`zapret.nfqws_binary`);
@@ -115,19 +115,32 @@ nfqws2 --qnum 300 \
   - runtime firewall-конфиг и хуки персистентности
     (`core/firewall_persistence.GUI_RUNTIME_DIR`);
   - state-файлы установщиков (singbox/mihomo и пр.).
+- **`/opt/etc/init.d/`** (Entware) — init-скрипты автозапуска:
+  - `S99zapret` — автозапуск nfqws2 с применённой стратегией + firewall;
+    генерируется `core/autostart_manager.py` (`INIT_DIR`/`SCRIPT_NAME`,
+    шаблон `_S99ZAPRET_TEMPLATE`; PID-файл `/var/run/zapret-nfqws.pid`);
+  - `S99zapret-gui` — сам сервис Web-GUI (создаётся `install.sh`).
 
 ⚠️ Путей вида `/opt/etc/nfqws2/nfqws2.conf` или `/opt/etc/init.d/S51nfqws2` у нас
 **НЕТ** — это раскладка стороннего упаковщика nfqws2-keenetic, не bol-van/zapret2.
-Не использовать их в коде/доках как «наши».
+Наш автозапуск — `S99zapret` (см. выше). Не путать.
 
 ### nfqws2-keenetic — только поведенческий эталон
 
 Из nfqws2-keenetic берём идеи поведения (НЕ пути):
 - режимы выбора доменов: **list** / **auto** (домен добавляется после 3 фейлов
   за 60с) / **all**;
-- порты: TCP 443 (+опц. 80), UDP 443 (QUIC);
 - **обязательно** отключить hardware offload (иначе iptables не видит трафик),
   выставить `nf_conntrack_tcp_be_liberal=1`, рекомендован DoT/DoH.
+
+**Порты — любые, зависят от целевого сервиса**, который «дурим». Задаются в
+`nfqws.ports_tcp` / `nfqws.ports_udp` (их использует `firewall.py` для NFQUEUE)
+и должны согласовываться с `--filter-tcp` / `--filter-udp` в стратегии. Дефолты
+в проекте намеренно шире, чем «443/QUIC» у keenetic:
+- `ports_tcp = "80,443,2053,2083,2087,2096,5222,8443"` (HTTP/HTTPS + alt-порты
+  Cloudflare, Telegram MTProto 5222);
+- `ports_udp = "443,3478:3481,5349,19294:19344,49152:65535"` (QUIC + STUN/TURN +
+  WireGuard-диапазоны + Discord voice).
 
 ---
 
@@ -136,7 +149,7 @@ nfqws2 --qnum 300 \
 | zapret2 (эталон) | zapret-gui |
 |---|---|
 | опции nfqws2 в `config` ZAPRET_BASE | стратегия (JSON user / каталог) → `strategy_builder` / `catalog_loader` |
-| init.d + iptables (`init.d/`) | `core/firewall.py` (`FirewallManager`) + `core/nfqws_manager.py`; автозапуск — `core/autostart_manager.py` |
+| init.d + iptables (`init.d/`) | `core/firewall.py` (`FirewallManager`) + `core/nfqws_manager.py`; автозапуск — `core/autostart_manager.py` → `/opt/etc/init.d/S99zapret` |
 | hostlist'ы в `ipset/` (`zapret-hosts-*.txt`) | `core/hostlist_manager.py`, `core/named_lists.py`, профили `scan_targets` |
 | ручной подбор | `core/strategy_scanner.py` (автоперебор) |
 
@@ -145,17 +158,19 @@ nfqws2 --qnum 300 \
 Единый источник argv (и для live-запуска, и для автозапуска):
 
 ```
-[binary] + base(--user/--fwmark/--qnum[/--bind-fix4/6]) + lua-init(core+ext)
+[binary] + base(--user/--fwmark/--qnum[/--debug][/--bind-fix4/6]) + lua-init(core+ext)
         + unified(--hostlist) + strategy_args
 ```
 
-- `_build_base_args` — `--user`, `--fwmark`, `--qnum` из конфига; `--bind-fix4/6`
-  при нескольких WAN.
+- `_build_base_args` — `--user`, `--fwmark`, `--qnum` из конфига; `--debug` при
+  `nfqws.debug=true`; `--bind-fix4/6` при нескольких WAN.
 - `_build_lua_init_args` — добавляет core-lua **только если** в стратегии есть
   `--lua-desync` **И файл существует** на `lua_path`. Extension-lua — по
   используемым функциям. Дедуп `--lua-init`.
 - `queue_num` берётся из `nfqws.queue_num` (по умолчанию **300**) — то же
   значение использует `firewall.py` для `queue num`. **Не разводить эти числа.**
+- **Превью команды** (`build_preview_command`, `POST /api/strategies/preview`)
+  собирается ЧЕРЕЗ тот же `compose_command` — превью = реальная команда.
 
 ### Каталоги `catalogs/`
 
@@ -267,5 +282,3 @@ nfqws2 --qnum 200 --debug \
 - При генерации стратегий «на лету» (`strategy_generator`) дедуп по
   нормализованным args (`_norm_args`).
 - Тестировать всегда на ЗАБЛОКИРОВАННОМ ресурсе, иначе baseline-aware даст 0%.
-</content>
-</invoke>
