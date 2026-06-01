@@ -73,6 +73,7 @@ class NFQWSManager:
         self._lock = threading.Lock()
         self._stderr_thread = None    # поток чтения stderr
         self._exit_code = None        # код выхода последнего процесса
+        self._debug = False           # --debug активен → stderr на уровне INFO
 
         # Пробуем восстановить PID из файла при инициализации
         self._recover_pid()
@@ -110,6 +111,9 @@ class NFQWSManager:
                 log.error("Бинарник не исполняемый: %s" % binary,
                           source="nfqws")
                 return False
+
+            # Режим отладки: при --debug stderr nfqws2 показываем на INFO.
+            self._debug = bool(cfg.get("nfqws", "debug", default=False))
 
             # Стратегические аргументы
             strategy_args = list(args) if args else []
@@ -370,6 +374,13 @@ class NFQWSManager:
         queue_num = cfg.get("nfqws", "queue_num", default=300)
         args.append("--qnum=%d" % int(queue_num))
 
+        # --debug — пер-пакетный лог nfqws2 для диагностики. Глобальная опция,
+        # добавляется один раз в base. Сам вывод (stderr) пишется в лог-буфер
+        # (_read_stderr); при debug он поднимается до уровня INFO, чтобы быть
+        # видимым в UI/логах.
+        if bool(cfg.get("nfqws", "debug", default=False)):
+            args.append("--debug")
+
         # --bind-fix4/6 при нескольких WAN-интерфейсах. Без этого nfqws2
         # биндит raw-сокет только к первому интерфейсу, и на multi-WAN
         # (например, основной + резервный канал) обход на втором не работает.
@@ -541,6 +552,10 @@ class NFQWSManager:
                     log.error(line, source="nfqws")
                 elif "warn" in low:
                     log.warning(line, source="nfqws")
+                elif self._debug:
+                    # В debug-режиме поднимаем обычные строки до INFO, чтобы
+                    # пер-пакетный вывод nfqws2 был виден при диагностике.
+                    log.info(line, source="nfqws")
                 else:
                     log.debug(line, source="nfqws")
         except Exception:
