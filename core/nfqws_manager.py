@@ -115,6 +115,12 @@ class NFQWSManager:
             # Режим отладки: при --debug stderr nfqws2 показываем на INFO.
             self._debug = bool(cfg.get("nfqws", "debug", default=False))
 
+            # Зачищаем любые «осиротевшие»/дублирующие nfqws2 перед
+            # стартом, чтобы на NFQUEUE остался ровно один наш процесс
+            # (issue #123). Сюда попадаем только если _is_running_locked()
+            # вернул False, т.е. отслеживаемого живого процесса у нас нет.
+            self._sweep_stray_processes()
+
             # Стратегические аргументы
             strategy_args = list(args) if args else []
 
@@ -184,54 +190,63 @@ class NFQWSManager:
             True если процесс остановлен (или не был запущен).
         """
         with self._lock:
+            result = True
+
             if not self._is_running_locked():
                 log.info("nfqws2 не запущен", source="nfqws")
                 self._cleanup()
-                return True
+            else:
+                pid = self._pid
+                log.info("Останавливаем nfqws2 (PID %d)..." % pid,
+                         source="nfqws")
+                result = self._stop_tracked_locked(pid)
 
-            pid = self._pid
-            log.info("Останавливаем nfqws2 (PID %d)..." % pid,
-                     source="nfqws")
+            # В любом случае добиваем возможные дубли/сироты, чтобы «стоп»
+            # действительно останавливал весь обход (issue #123): nfqws2
+            # из автозапуска S99zapret или оставшийся от прошлой сессии.
+            self._sweep_stray_processes()
+            return result
 
-            # Пробуем SIGTERM
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                log.info("Процесс уже завершён", source="nfqws")
-                self._cleanup()
-                return True
-            except PermissionError:
-                log.error("Нет прав для остановки PID %d" % pid,
-                          source="nfqws")
-                return False
-
-            # Ждём завершения (до 3 секунд)
-            for _ in range(30):
-                time.sleep(0.1)
-                if not self._check_pid_alive(pid):
-                    log.success("nfqws2 остановлен (SIGTERM)", source="nfqws")
-                    self._cleanup()
-                    return True
-
-            # Не остановился — SIGKILL
-            log.warning(
-                "nfqws2 не ответил на SIGTERM, отправляем SIGKILL",
-                source="nfqws"
-            )
-            try:
-                os.kill(pid, signal.SIGKILL)
-                time.sleep(0.5)
-            except ProcessLookupError:
-                pass
-
-            if not self._check_pid_alive(pid):
-                log.success("nfqws2 остановлен (SIGKILL)", source="nfqws")
-                self._cleanup()
-                return True
-
-            log.error("Не удалось остановить nfqws2 (PID %d)" % pid,
-                      source="nfqws")
+    def _stop_tracked_locked(self, pid: int) -> bool:
+        """Завершить отслеживаемый процесс pid (SIGTERM→SIGKILL). Под lock."""
+        # Пробуем SIGTERM
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            log.info("Процесс уже завершён", source="nfqws")
+            self._cleanup()
+            return True
+        except PermissionError:
+            log.error("Нет прав для остановки PID %d" % pid, source="nfqws")
             return False
+
+        # Ждём завершения (до 3 секунд)
+        for _ in range(30):
+            time.sleep(0.1)
+            if not self._check_pid_alive(pid):
+                log.success("nfqws2 остановлен (SIGTERM)", source="nfqws")
+                self._cleanup()
+                return True
+
+        # Не остановился — SIGKILL
+        log.warning(
+            "nfqws2 не ответил на SIGTERM, отправляем SIGKILL",
+            source="nfqws"
+        )
+        try:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.5)
+        except ProcessLookupError:
+            pass
+
+        if not self._check_pid_alive(pid):
+            log.success("nfqws2 остановлен (SIGKILL)", source="nfqws")
+            self._cleanup()
+            return True
+
+        log.error("Не удалось остановить nfqws2 (PID %d)" % pid,
+                  source="nfqws")
+        return False
 
     def restart(self, args: list = None) -> bool:
         """
@@ -460,16 +475,30 @@ class NFQWSManager:
         if self._process is not None:
             rc = self._process.poll()
             if rc is not None:
-                # Процесс завершился
+                # Процесс завершился — но мог быть подменён другим
+                # воркером/демоном, поэтому не выходим сразу, а проверяем
+                # PID-файл ниже.
                 self._exit_code = rc
                 self._process = None
                 self._remove_pid_file()
-                return False
-            return True
+            else:
+                return True
 
-        # Нет Popen, но есть PID (восстановлен из файла)
+        # Нет живого Popen. Пробуем PID из памяти ИЛИ из PID-файла — файл
+        # мог записать другой воркер bottle или восстановиться после
+        # перезапуска GUI. Без этого менеджер «не видит» живой nfqws2 и
+        # на следующем apply запускает дубль (issue #123).
+        if self._pid is None:
+            self._pid = self._read_pid_file()
+
         if self._pid is not None:
             if self._check_pid_alive(self._pid):
+                if self._start_time is None:
+                    try:
+                        self._start_time = os.stat(
+                            "/proc/%d" % self._pid).st_mtime
+                    except OSError:
+                        self._start_time = time.time()
                 return True
             else:
                 self._pid = None
@@ -478,6 +507,84 @@ class NFQWSManager:
                 return False
 
         return False
+
+    @staticmethod
+    def _find_nfqws_pids() -> list:
+        """Все PID процессов nfqws/nfqws2 в системе (по basename argv[0]).
+
+        Используется для зачистки «осиротевших» процессов (issue #123):
+        nfqws2 мог быть поднят автозапуском S99zapret (--daemon, чужой
+        PID-файл), остаться от упавшего GUI или от другого воркера. Все
+        они висят на одной NFQUEUE и мешают друг другу.
+        """
+        pids = []
+        try:
+            for d in os.listdir("/proc"):
+                if not d.isdigit():
+                    continue
+                pid = int(d)
+                try:
+                    with open("/proc/%d/cmdline" % pid, "rb") as f:
+                        raw = f.read()
+                except (IOError, OSError):
+                    continue
+                if not raw:
+                    continue
+                argv0 = raw.split(b"\x00", 1)[0].decode(
+                    "utf-8", errors="replace")
+                if argv0 and os.path.basename(argv0) in ("nfqws", "nfqws2"):
+                    pids.append(pid)
+        except OSError:
+            pass
+        return pids
+
+    def _sweep_stray_processes(self, exclude_pid=None):
+        """Завершить все процессы nfqws/nfqws2, кроме exclude_pid.
+
+        Гарантирует, что в системе не накапливаются параллельные nfqws2
+        (issue #123 «стакаются процессы запрета»). SIGTERM → ожидание →
+        SIGKILL. Чужие PID-файлы, указывающие на убитые процессы,
+        вычищаются, чтобы статус автозапуска не врал.
+        """
+        strays = [p for p in self._find_nfqws_pids() if p != exclude_pid]
+        if not strays:
+            return
+
+        log.warning(
+            "Обнаружены лишние процессы nfqws2 (PID %s) — завершаем во "
+            "избежание дублей на NFQUEUE" % ", ".join(
+                str(p) for p in strays),
+            source="nfqws"
+        )
+
+        for p in strays:
+            try:
+                os.kill(p, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            strays = [p for p in strays if self._check_pid_alive(p)]
+            if not strays:
+                break
+            time.sleep(0.1)
+
+        for p in strays:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        # Подчищаем чужие PID-файлы, указывающие на мёртвый теперь процесс.
+        for pf in ("/var/run/zapret-nfqws.pid", PID_FILE):
+            try:
+                with open(pf, "r") as f:
+                    fp = int(f.read().strip())
+                if not self._check_pid_alive(fp) and fp != exclude_pid:
+                    os.remove(pf)
+            except (IOError, OSError, ValueError):
+                pass
 
     @staticmethod
     def _check_pid_alive(pid: int) -> bool:
