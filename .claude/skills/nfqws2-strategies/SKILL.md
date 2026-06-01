@@ -99,7 +99,7 @@ nfqws2 --qnum 300 \
 ## 2. Пути и layout — как в оригинальном bol-van/zapret2
 
 Наш проект следует раскладке **bol-van/zapret2** (ZAPRET_BASE = `/opt/zapret2`),
-имена файлов и каталогов — как в апстриме. Используются ДВА корня:
+имена файлов и каталогов — как в апстриме. Корни:
 
 - **`/opt/zapret2/`** — ассеты движка zapret2 (дефолты в `core/config_manager`):
   - `nfq2/nfqws2` — бинарник (`zapret.nfqws_binary`);
@@ -115,10 +115,15 @@ nfqws2 --qnum 300 \
   - runtime firewall-конфиг и хуки персистентности
     (`core/firewall_persistence.GUI_RUNTIME_DIR`);
   - state-файлы установщиков (singbox/mihomo и пр.).
+- **`/opt/etc/init.d/`** (Entware) — init-скрипты автозапуска:
+  - `S99zapret` — автозапуск nfqws2 с применённой стратегией + firewall;
+    генерируется `core/autostart_manager.py` (`INIT_DIR`/`SCRIPT_NAME`,
+    шаблон `_S99ZAPRET_TEMPLATE`; PID-файл `/var/run/zapret-nfqws.pid`);
+  - `S99zapret-gui` — сам сервис Web-GUI (создаётся `install.sh`).
 
 ⚠️ Путей вида `/opt/etc/nfqws2/nfqws2.conf` или `/opt/etc/init.d/S51nfqws2` у нас
 **НЕТ** — это раскладка стороннего упаковщика nfqws2-keenetic, не bol-van/zapret2.
-Не использовать их в коде/доках как «наши».
+Наш автозапуск — `S99zapret` (см. выше). Не путать.
 
 ### nfqws2-keenetic — только поведенческий эталон
 
@@ -136,7 +141,7 @@ nfqws2 --qnum 300 \
 | zapret2 (эталон) | zapret-gui |
 |---|---|
 | опции nfqws2 в `config` ZAPRET_BASE | стратегия (JSON user / каталог) → `strategy_builder` / `catalog_loader` |
-| init.d + iptables (`init.d/`) | `core/firewall.py` (`FirewallManager`) + `core/nfqws_manager.py`; автозапуск — `core/autostart_manager.py` |
+| init.d + iptables (`init.d/`) | `core/firewall.py` (`FirewallManager`) + `core/nfqws_manager.py`; автозапуск — `core/autostart_manager.py` → `/opt/etc/init.d/S99zapret` |
 | hostlist'ы в `ipset/` (`zapret-hosts-*.txt`) | `core/hostlist_manager.py`, `core/named_lists.py`, профили `scan_targets` |
 | ручной подбор | `core/strategy_scanner.py` (автоперебор) |
 
