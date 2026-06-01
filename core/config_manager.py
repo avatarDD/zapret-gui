@@ -43,6 +43,9 @@ DEFAULT_CONFIG = {
         "lists_path": "/opt/zapret2/lists",
         "ipset_path": "/opt/zapret2/ipset",
         "bin_path": "/opt/zapret2/files/fake",
+        # Путь к штатному скрипту blockcheck zapret2. Пусто → автопоиск
+        # blockcheck2.sh / blockcheck.sh в base_path (см. core/blockcheck2.py).
+        "blockcheck2_path": "",
     },
 
     # --- Настройки Web-GUI ---

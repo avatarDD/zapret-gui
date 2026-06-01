@@ -217,7 +217,27 @@ nfqws2 --qnum 200 --debug \
 
 ---
 
-## 6. Правила при написании/правке стратегий
+## 6. Готовые инструменты диагностики в проекте
+
+- **Предпосылки стратегий** — `core/diagnostics.check_strategy_prerequisites()`,
+  API `GET /api/diagnostics/prerequisites`. Проверяет бинарник nfqws2,
+  обязательные lua (`zapret-lib.lua`, `zapret-antidpi.lua`), наличие blob-файлов,
+  каталоги списков, доступность NFQUEUE и `nf_conntrack_tcp_be_liberal`. Возвращает
+  `issues` с `severity` error|warning и `hint`. Сканер вызывает её на старте и
+  громко логирует блокеры (`_check_prerequisites`). **Первое, что смотреть при
+  «0% на всём».**
+- **Штатный blockcheck zapret2** — `core/blockcheck2.Blockcheck2Runner`, API
+  `/api/blockcheck2/{script,start,status,output,stop}`. Запускает оригинальный
+  `blockcheck2.sh`/`blockcheck.sh` как подпроцесс неинтерактивно (`BATCH=1`,
+  env `DOMAINS`/`IPVS`/`SCANLEVEL`/`ENABLE_*`/`REPEATS`/`PARALLEL`/…), стримит
+  вывод в лог-буфер (`source=blockcheck2`) и в кольцевой буфер для
+  инкрементального polling (`output?offset=N`). Путь — `zapret.blockcheck2_path`
+  или автопоиск в `base_path`. Это НЕ путать с `core/blockcheck.py` (наша
+  Python-реализация проб для GUI-тестера).
+- **nfqws2 `--debug`** — конфиг `nfqws.debug=true` добавляет `--debug` и
+  поднимает stderr nfqws2 до INFO (см. §5).
+
+## 7. Правила при написании/правке стратегий
 
 - НЕ использовать синтаксис nfqws1 (`--dpi-desync=`, `--dpi-desync-split-pos=`) —
   это другой движок. Только `--lua-desync=`.

@@ -1,0 +1,380 @@
+# core/blockcheck2.py
+"""
+Запуск штатного blockcheck из zapret2 (blockcheck2.sh / blockcheck.sh) с
+потоковой телеметрией в GUI.
+
+В отличие от core/blockcheck.py (наша Python-реализация проб), здесь мы
+запускаем ОРИГИНАЛЬНЫЙ скрипт bol-van как подпроцесс и стримим его вывод
+в лог-буфер и в кольцевой буфер строк, который UI забирает инкрементально
+(GET /api/blockcheck2/output?offset=N).
+
+Скрипт делается неинтерактивным через переменные окружения:
+  BATCH=1, DOMAINS=..., IPVS=4|6|46, SCANLEVEL=quick|standard|force,
+  ENABLE_HTTP, ENABLE_HTTPS_TLS12, ENABLE_HTTPS_TLS13, ENABLE_HTTP3,
+  REPEATS, PARALLEL, SKIP_TPWS, SKIP_PKTWS, CURL_VERBOSE, …
+stdin перенаправлен в /dev/null — оставшиеся `read` получают EOF и берут
+значения по умолчанию.
+
+Безопасность: подпроцесс запускается списком argv (без shell=True), env
+передаётся словарём — shell-инъекция невозможна. Ключи/значения env и
+домены дополнительно валидируются.
+
+Использование:
+    from core.blockcheck2 import get_blockcheck2_runner
+    r = get_blockcheck2_runner()
+    r.start(domains=["rutracker.org"], params={"IPVS": "4"})
+    r.get_status()
+    r.get_output(offset=0)
+    r.stop()
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import signal
+import subprocess
+import threading
+import time
+from typing import Any, Optional
+
+from core.log_buffer import log
+
+
+# Кандидаты на скрипт (если не задан явно в конфиге).
+_SCRIPT_CANDIDATES = ("blockcheck2.sh", "blockcheck.sh")
+
+# Лимиты буфера вывода (строк) — телеметрия может быть многословной.
+_MAX_OUTPUT_LINES = 5000
+
+# Разрешённые имена env-переменных параметров (UPPER_SNAKE).
+_ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+# Домен/хост (как в api/diagnostics._validate_host).
+_HOST_RE = re.compile(r"^[a-zA-Z0-9.:_-]+$")
+
+# Строки-«итоги» blockcheck (для подсветки в телеметрии).
+_HIGHLIGHT_RE = re.compile(r"!!!!!|AVAILABLE|BLOCKED|summary| play these", re.I)
+
+
+class Blockcheck2Runner:
+    """Singleton-обёртка над оригинальным blockcheck-скриптом zapret2."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._proc: Optional[subprocess.Popen] = None
+        self._reader: Optional[threading.Thread] = None
+
+        self._lines: list[str] = []
+        self._highlights: list[str] = []
+        self._started_at: float = 0.0
+        self._finished_at: float = 0.0
+        self._exit_code: Optional[int] = None
+        self._cmd: list[str] = []
+        self._script: str = ""
+        self._error: str = ""
+
+    # ─────────────────── script discovery ───────────────────
+
+    @staticmethod
+    def find_script() -> Optional[str]:
+        """Найти путь к blockcheck-скрипту: конфиг → кандидаты в base_path."""
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+
+        explicit = cfg.get("zapret", "blockcheck2_path", default="")
+        if explicit and os.path.isfile(explicit):
+            return explicit
+
+        base = cfg.get("zapret", "base_path", default="/opt/zapret2")
+        search_dirs = [base, "/opt/zapret2", "/opt/zapret"]
+        seen = set()
+        for d in search_dirs:
+            if not d or d in seen:
+                continue
+            seen.add(d)
+            for name in _SCRIPT_CANDIDATES:
+                cand = os.path.join(d, name)
+                if os.path.isfile(cand):
+                    return cand
+        return None
+
+    # ─────────────────── public API ───────────────────
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._is_running_locked()
+
+    def _is_running_locked(self) -> bool:
+        if self._proc is None:
+            return False
+        if self._proc.poll() is not None:
+            return False
+        return True
+
+    def start(
+        self,
+        domains: Optional[list[str]] = None,
+        params: Optional[dict[str, Any]] = None,
+        extra_args: Optional[list[str]] = None,
+        scanlevel: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Запустить blockcheck-скрипт.
+
+        Args:
+            domains:    домены для проверки (→ env DOMAINS, через пробел).
+            params:     прочие env-переменные (IPVS, ENABLE_HTTP, REPEATS…).
+            extra_args: дополнительные позиционные аргументы скрипта.
+            scanlevel:  quick|standard|force (→ env SCANLEVEL).
+
+        Returns:
+            dict: { ok, error?, script?, cmd? }.
+        """
+        with self._lock:
+            if self._is_running_locked():
+                return {"ok": False, "error": "blockcheck уже выполняется"}
+
+            script = self.find_script()
+            if not script:
+                return {
+                    "ok": False,
+                    "error": "Скрипт blockcheck не найден. Установите zapret2 "
+                             "или задайте zapret.blockcheck2_path в конфиге.",
+                }
+
+            # Сборка env (неинтерактивный режим).
+            env = dict(os.environ)
+            env["BATCH"] = "1"
+            # ZAPRET_BASE — каталог скрипта (он сам так делает, но зафиксируем).
+            env.setdefault("ZAPRET_BASE", os.path.dirname(script))
+
+            if scanlevel:
+                sl = str(scanlevel).strip().lower()
+                if sl not in ("quick", "standard", "force"):
+                    return {"ok": False,
+                            "error": "scanlevel: quick|standard|force"}
+                env["SCANLEVEL"] = sl
+
+            dom_list = self._clean_domains(domains)
+            if dom_list:
+                env["DOMAINS"] = " ".join(dom_list)
+
+            if params:
+                ok, err = self._apply_params(env, params)
+                if not ok:
+                    return {"ok": False, "error": err}
+
+            # Команда: исполняемый скрипт (по shebang) либо через sh.
+            if os.access(script, os.X_OK):
+                cmd = [script]
+            else:
+                cmd = ["sh", script]
+
+            clean_args = self._clean_extra_args(extra_args)
+            cmd.extend(clean_args)
+
+            # Старт.
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=os.path.dirname(script),
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    preexec_fn=os.setsid,  # своя группа — корректный kill
+                    bufsize=1,
+                    universal_newlines=True,
+                )
+            except (OSError, ValueError) as e:
+                self._error = str(e)
+                log.error("Не удалось запустить blockcheck: %s" % e,
+                          source="blockcheck2")
+                return {"ok": False, "error": str(e)}
+
+            # Сброс состояния.
+            self._proc = proc
+            self._lines = []
+            self._highlights = []
+            self._started_at = time.time()
+            self._finished_at = 0.0
+            self._exit_code = None
+            self._cmd = cmd
+            self._script = script
+            self._error = ""
+
+            self._reader = threading.Thread(
+                target=self._read_output, args=(proc,),
+                daemon=True, name="blockcheck2-reader",
+            )
+            self._reader.start()
+
+        log.info("Запущен blockcheck: %s (DOMAINS=%s, SCANLEVEL=%s)"
+                 % (script, env.get("DOMAINS", "—"),
+                    env.get("SCANLEVEL", "default")),
+                 source="blockcheck2")
+        return {"ok": True, "script": script, "cmd": cmd}
+
+    def stop(self) -> bool:
+        """Остановить выполняющийся blockcheck (SIGTERM группе, затем SIGKILL)."""
+        with self._lock:
+            if not self._is_running_locked():
+                return False
+            proc = self._proc
+
+        log.info("Остановка blockcheck...", source="blockcheck2")
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            return True
+
+        for _ in range(30):
+            if proc.poll() is not None:
+                return True
+            time.sleep(0.1)
+
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        return True
+
+    def get_status(self) -> dict[str, Any]:
+        with self._lock:
+            running = self._is_running_locked()
+            if not running and self._proc is not None and self._exit_code is None:
+                # Процесс завершился, но reader ещё не зафиксировал код.
+                self._exit_code = self._proc.poll()
+                if self._finished_at == 0.0:
+                    self._finished_at = time.time()
+
+            if running:
+                elapsed = time.time() - self._started_at
+            elif self._started_at:
+                end = self._finished_at or time.time()
+                elapsed = end - self._started_at
+            else:
+                elapsed = 0.0
+
+            return {
+                "running": running,
+                "started": self._started_at > 0,
+                "script": self._script,
+                "cmd": list(self._cmd),
+                "line_count": len(self._lines),
+                "exit_code": self._exit_code,
+                "elapsed_seconds": round(elapsed, 1),
+                "error": self._error,
+                "highlights": list(self._highlights[-20:]),
+            }
+
+    def get_output(self, offset: int = 0) -> dict[str, Any]:
+        """Строки телеметрии начиная с offset (для инкрементального polling)."""
+        with self._lock:
+            total = len(self._lines)
+            if offset < 0:
+                offset = 0
+            if offset > total:
+                offset = total
+            chunk = self._lines[offset:]
+            return {
+                "lines": chunk,
+                "offset": offset,
+                "next_offset": total,
+                "running": self._is_running_locked(),
+                "exit_code": self._exit_code,
+            }
+
+    # ─────────────────── internals ───────────────────
+
+    def _read_output(self, proc: subprocess.Popen) -> None:
+        """Фоновое чтение stdout → лог-буфер + кольцевой буфер строк."""
+        try:
+            for raw in proc.stdout:
+                line = raw.rstrip("\n")
+                with self._lock:
+                    self._lines.append(line)
+                    if len(self._lines) > _MAX_OUTPUT_LINES:
+                        # Держим хвост; offset у клиента может «съехать», но
+                        # это лучше, чем неограниченный рост памяти.
+                        drop = len(self._lines) - _MAX_OUTPUT_LINES
+                        del self._lines[:drop]
+                    if line and _HIGHLIGHT_RE.search(line):
+                        self._highlights.append(line)
+                if line:
+                    log.info(line, source="blockcheck2")
+        except Exception:
+            pass
+        finally:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+            rc = proc.wait()
+            with self._lock:
+                self._exit_code = rc
+                self._finished_at = time.time()
+            if rc == 0:
+                log.success("blockcheck завершён (exit=0)", source="blockcheck2")
+            else:
+                log.warning("blockcheck завершён (exit=%s)" % rc,
+                            source="blockcheck2")
+
+    @staticmethod
+    def _clean_domains(domains) -> list[str]:
+        """Отфильтровать/валидировать домены (защита, хотя shell не задействован)."""
+        out: list[str] = []
+        if not domains:
+            return out
+        if isinstance(domains, str):
+            domains = re.split(r"[\s,]+", domains)
+        for d in domains:
+            d = str(d).strip()
+            if d and len(d) <= 253 and _HOST_RE.match(d):
+                out.append(d)
+        return out
+
+    @staticmethod
+    def _apply_params(env: dict, params: dict) -> tuple[bool, str]:
+        """Влить params в env с валидацией ключей/значений."""
+        for key, val in params.items():
+            k = str(key).strip()
+            if not _ENV_KEY_RE.match(k):
+                return False, "Недопустимое имя параметра: %r" % key
+            if k in ("ZAPRET_BASE", "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH",
+                     "IFS"):
+                # Не даём переопределять чувствительное окружение.
+                return False, "Параметр %s запрещён" % k
+            v = "" if val is None else str(val)
+            if "\x00" in v or len(v) > 1024:
+                return False, "Недопустимое значение параметра %s" % k
+            env[k] = v
+        return True, ""
+
+    @staticmethod
+    def _clean_extra_args(extra_args) -> list[str]:
+        """Привести extra_args к списку безопасных строк (без NUL)."""
+        out: list[str] = []
+        if not extra_args:
+            return out
+        for a in extra_args:
+            s = str(a)
+            if "\x00" in s or len(s) > 512:
+                continue
+            out.append(s)
+        return out
+
+
+# ─────────────────── singleton ───────────────────
+
+_runner: Optional[Blockcheck2Runner] = None
+_runner_lock = threading.Lock()
+
+
+def get_blockcheck2_runner() -> Blockcheck2Runner:
+    global _runner
+    if _runner is None:
+        with _runner_lock:
+            if _runner is None:
+                _runner = Blockcheck2Runner()
+    return _runner

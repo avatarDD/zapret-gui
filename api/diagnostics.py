@@ -152,6 +152,17 @@ def register(app):
         result = get_firewall_status()
         return {"ok": True, "result": result}
 
+    @app.route("/api/diagnostics/prerequisites")
+    def api_diagnostics_prerequisites():
+        """Готовность окружения к работе стратегий (lua/blob/nfqws/NFQUEUE).
+
+        Главный диагност «почему сканер не находит ни одной рабочей
+        стратегии / 0%». Возвращает issues с severity error|warning и hint.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.diagnostics import check_strategy_prerequisites
+        return {"ok": True, "result": check_strategy_prerequisites()}
+
     @app.route("/api/diagnostics/system")
     def api_diagnostics_system():
         """Расширенная системная информация."""

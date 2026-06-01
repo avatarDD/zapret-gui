@@ -20,6 +20,7 @@ def register_routes(app):
     from api.autostart import register as reg_autostart
     from api.zapret_manager import register as reg_zapret_manager
     from api.blockcheck import register as reg_blockcheck
+    from api.blockcheck2 import register as reg_blockcheck2
     from api.scan import register as reg_scan
     from api.gui_update import register as reg_gui_update
     from api.catalog_update import register as reg_catalog_update
@@ -47,6 +48,7 @@ def register_routes(app):
     reg_autostart(app)
     reg_zapret_manager(app)
     reg_blockcheck(app)
+    reg_blockcheck2(app)
     reg_scan(app)
     reg_gui_update(app)
     reg_catalog_update(app)
