@@ -287,6 +287,19 @@ nfqws2 --qnum 200 --debug \
   инкрементального polling (`output?offset=N`). Путь — `zapret.blockcheck2_path`
   или автопоиск в `base_path`. Это НЕ путать с `core/blockcheck.py` (наша
   Python-реализация проб для GUI-тестера).
+  - **Примороженные итоги (`highlights`)** — `_HIGHLIGHT_RE` ловит ТОЛЬКО
+    найденные рабочие стратегии (`working strategy found …`) и заголовки
+    `* SUMMARY`/`* COMMON`, с дедупом и чисткой `!!!!!`. НЕ примораживать
+    `AVAILABLE`/`UNAVAILABLE` (вдобавок `AVAILABLE` — подстрока `UNAVAILABLE`,
+    на этом горел старый фильтр).
+  - **Обход блока по ~20КБ** — env `CURL_HTTPS_GET=1` (GUI-галка «Качать полное
+    тело»): HTTPS-проба делает GET всего тела вместо HEAD (`-I`). Ловит DPI,
+    который пускает первые ~16-20 КБ и рвёт (`curl code=28`). Аналог нашего
+    `BODY_PROBE_MIN_BYTES` в `strategy_scanner`. Прочие env (полный список — в
+    шапке `blockcheck2.sh`): `HTTP/HTTPS/QUIC_PORT`, `CURL_MAX_TIME[_QUIC|_DOH]`,
+    `MIN_TTL`/`MAX_TTL`, `SKIP_PKTWS`/`SKIP_IPBLOCK`/`SKIP_DNSCHECK`,
+    `UNBLOCKED_DOM`, `SECURE_DNS`/`DOH_SERVERS`. Документированы в help-топике
+    `blockcheck2` (`web/js/components/help.js`).
 - **nfqws2 `--debug`** — конфиг `nfqws.debug=true` добавляет `--debug` и
   поднимает stderr nfqws2 до INFO (см. §5).
 

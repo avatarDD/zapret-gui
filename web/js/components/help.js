@@ -216,12 +216,50 @@ const Help = (() => {
         body: 'Запускает ШТАТНЫЙ скрипт <code>blockcheck2.sh</code> из ' +
               'zapret2 (bol-van) как есть и стримит его вывод (телеметрию) ' +
               'в реальном времени. Подбирает рабочую стратегию средствами ' +
-              'самого zapret2. Параметры (домены, IP-версия, уровень ' +
-              'сканирования, протоколы) передаются скрипту через окружение ' +
-              '(BATCH-режим, без интерактивных вопросов). Это «эталон» — '+
-              'в отличие от BlockCheck(mod), который перебирает наш каталог.',
+              'самого zapret2 (BATCH-режим, без интерактивных вопросов). Это ' +
+              '«эталон» — в отличие от BlockCheck(mod), который перебирает наш ' +
+              'каталог.<br><br>' +
+              'Сверху телеметрии «примораживаются» <b>только найденные рабочие ' +
+              'стратегии</b> (строки <code>working strategy found … : &lt;движок ' +
+              'параметры&gt;</code>) и секции <code>* SUMMARY</code> / ' +
+              '<code>* COMMON</code> (стратегии, рабочие сразу для всех целей). ' +
+              'Попытки <code>UNAVAILABLE code=NN</code> и отдельные ' +
+              '<code>AVAILABLE</code> в шапку не выносятся — только в общий лог.' +
+              '<br><br>' +
+              '<b>Качать полное тело (обход блока по ~20КБ)</b> — выставляет ' +
+              '<code>CURL_HTTPS_GET=1</code>: HTTPS-проба тянет всё тело сайта ' +
+              '(GET) вместо заголовков (HEAD/<code>-I</code>). Нужно, когда DPI ' +
+              'пускает первые ~16-20 КБ и затем рвёт соединение (curl выдаёт ' +
+              '<code>code=28</code> — таймаут): без полного тела такой блок не ' +
+              'виден и стратегия ложно считается рабочей.<br><br>' +
+              '<b>Параметры скрипта (env).</b> Передаются через расширенные ' +
+              'поля «Доп. переменные окружения» (<code>KEY=VALUE</code>):' +
+              '<br>• <code>DOMAINS</code> — домены (по умолч. rutracker.org); ' +
+              '<code>IPVS</code> — версии IP (4 / 6 / 46);' +
+              '<br>• <code>ENABLE_HTTP</code>, <code>ENABLE_HTTPS_TLS12</code>, ' +
+              '<code>ENABLE_HTTPS_TLS13</code>, <code>ENABLE_HTTP3</code> — какие ' +
+              'протоколы проверять (0/1);' +
+              '<br>• <code>HTTP_PORT</code>=80, <code>HTTPS_PORT</code>=443, ' +
+              '<code>QUIC_PORT</code>=443 — порты;' +
+              '<br>• <code>SCANLEVEL</code> — quick / standard / force (глубина ' +
+              'перебора); <code>REPEATS</code> — повторов на тест (фильтр ' +
+              'нестабильных); <code>PARALLEL</code>=1 — параллельный прогон;' +
+              '<br>• <code>CURL_MAX_TIME</code>=2, <code>CURL_MAX_TIME_QUIC</code>, ' +
+              '<code>CURL_MAX_TIME_DOH</code>=2 — таймауты curl (сек); ' +
+              '<code>CURL_HTTPS_GET</code>=1 — GET вместо HEAD (см. выше); ' +
+              '<code>CURL_VERBOSE</code>=1 — подробный curl;' +
+              '<br>• <code>SKIP_PKTWS</code> — не тестировать pkt-движок (nfqws2); ' +
+              '<code>SKIP_IPBLOCK</code> — пропустить проверку блока по IP; ' +
+              '<code>SKIP_DNSCHECK</code> — пропустить проверку подмены DNS;' +
+              '<br>• <code>UNBLOCKED_DOM</code>=iana.org — эталонный незаблок. ' +
+              'домен; <code>SECURE_DNS</code> — использовать DoH при спуфинге ' +
+              'DNS; <code>DOH_SERVERS</code>, <code>DNSCHECK_DNS</code> — списки ' +
+              'серверов.<br>' +
+              'Полный перечень — в шапке самого <code>blockcheck2.sh</code>.',
         examples: [
             { label: 'Типовая цель', code: 'rutracker.org, IP=4, SCANLEVEL=standard' },
+            { label: 'Обход блока по 20КБ', code: 'CURL_HTTPS_GET=1 (галка «Качать полное тело»)' },
+            { label: 'TTL-диапазон (доп. env)', code: 'MIN_TTL=1\nMAX_TTL=12' },
         ],
     });
 

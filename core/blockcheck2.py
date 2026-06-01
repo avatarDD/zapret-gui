@@ -53,8 +53,16 @@ _ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Домен/хост (как в api/diagnostics._validate_host).
 _HOST_RE = re.compile(r"^[a-zA-Z0-9.:_-]+$")
 
-# Строки-«итоги» blockcheck (для подсветки в телеметрии).
-_HIGHLIGHT_RE = re.compile(r"!!!!!|AVAILABLE|BLOCKED|summary| play these", re.I)
+# Строки-«итоги» для приморозки сверху телеметрии. Примораживаем ТОЛЬКО
+# найденные рабочие стратегии и заголовки секций итогов — а НЕ каждую попытку
+# AVAILABLE/UNAVAILABLE (их сотни; вдобавок "AVAILABLE" — подстрока
+# "UNAVAILABLE", из-за чего старый фильтр ловил мусор). blockcheck печатает
+# найденную стратегию строкой вида:
+#   !!!!! curl_test_http: working strategy found for ipv4 host : nfqws ... !!!!!
+# и финальные секции «* SUMMARY» / «* COMMON» (стратегии, рабочие для всех целей).
+_HIGHLIGHT_RE = re.compile(
+    r"working\s+strategy\s+found|^\s*\*\s*(?:SUMMARY|COMMON)\b", re.I
+)
 
 
 class Blockcheck2Runner:
@@ -67,6 +75,7 @@ class Blockcheck2Runner:
 
         self._lines: list[str] = []
         self._highlights: list[str] = []
+        self._highlight_seen: set[str] = set()
         self._started_at: float = 0.0
         self._finished_at: float = 0.0
         self._exit_code: Optional[int] = None
@@ -196,6 +205,7 @@ class Blockcheck2Runner:
             self._proc = proc
             self._lines = []
             self._highlights = []
+            self._highlight_seen = set()
             self._started_at = time.time()
             self._finished_at = 0.0
             self._exit_code = None
@@ -265,7 +275,7 @@ class Blockcheck2Runner:
                 "exit_code": self._exit_code,
                 "elapsed_seconds": round(elapsed, 1),
                 "error": self._error,
-                "highlights": list(self._highlights[-20:]),
+                "highlights": list(self._highlights[-50:]),
             }
 
     def get_output(self, offset: int = 0) -> dict[str, Any]:
@@ -300,7 +310,14 @@ class Blockcheck2Runner:
                         drop = len(self._lines) - _MAX_OUTPUT_LINES
                         del self._lines[:drop]
                     if line and _HIGHLIGHT_RE.search(line):
-                        self._highlights.append(line)
+                        # Чистим декоративные «!!!!!» и пробелы по краям, и
+                        # дедупим: одна и та же стратегия печатается и при
+                        # находке, и в секции SUMMARY/COMMON — в «примороженном»
+                        # списке нужна по разу.
+                        clean = line.strip().strip("!").strip()
+                        if clean and clean not in self._highlight_seen:
+                            self._highlight_seen.add(clean)
+                            self._highlights.append(clean)
                 if line:
                     log.info(line, source="blockcheck2")
         except Exception:

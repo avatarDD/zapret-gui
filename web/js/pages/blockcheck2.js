@@ -93,10 +93,24 @@ const Blockcheck2Page = (() => {
                     <div class="form-group">
                         <label class="form-label">Дополнительно</label>
                         <div class="bc2-checks">
-                            <label class="bc2-check"><input type="checkbox" id="bc2-skip-tpws" checked> SKIP_TPWS</label>
-                            <label class="bc2-check"><input type="checkbox" id="bc2-skip-pktws"> SKIP_PKTWS</label>
-                            <label class="bc2-check"><input type="checkbox" id="bc2-parallel"> PARALLEL</label>
-                            <label class="bc2-check"><input type="checkbox" id="bc2-curl-verbose"> CURL_VERBOSE</label>
+                            <label class="bc2-check" title="CURL_HTTPS_GET=1 — качать всё тело сайта (GET) вместо заголовков (HEAD, -I). Ловит блокировку, когда DPI пускает первые ~16-20 КБ и обрывает соединение.">
+                                <input type="checkbox" id="bc2-https-get"> Качать полное тело (обход блока по ~20КБ)
+                            </label>
+                            <label class="bc2-check" title="SKIP_PKTWS — не тестировать pkt-движок (nfqws2).">
+                                <input type="checkbox" id="bc2-skip-pktws"> SKIP_PKTWS
+                            </label>
+                            <label class="bc2-check" title="SKIP_IPBLOCK — пропустить проверку блокировки по IP.">
+                                <input type="checkbox" id="bc2-skip-ipblock"> SKIP_IPBLOCK
+                            </label>
+                            <label class="bc2-check" title="SKIP_DNSCHECK — пропустить проверку подмены DNS.">
+                                <input type="checkbox" id="bc2-skip-dnscheck"> SKIP_DNSCHECK
+                            </label>
+                            <label class="bc2-check" title="PARALLEL=1 — параллельный прогон тестов (быстрее, вывод вперемешку).">
+                                <input type="checkbox" id="bc2-parallel"> PARALLEL
+                            </label>
+                            <label class="bc2-check" title="CURL_VERBOSE=1 — подробный вывод curl.">
+                                <input type="checkbox" id="bc2-curl-verbose"> CURL_VERBOSE
+                            </label>
                         </div>
                     </div>
 
@@ -191,8 +205,11 @@ const Blockcheck2Page = (() => {
         params.ENABLE_HTTPS_TLS13 = _chk('bc2-tls13') ? '1' : '0';
         params.ENABLE_HTTP3 = _chk('bc2-http3') ? '1' : '0';
 
-        if (_chk('bc2-skip-tpws')) params.SKIP_TPWS = '1';
+        // CURL_HTTPS_GET=1 — GET всего тела вместо HEAD (обход блока по ~20КБ).
+        if (_chk('bc2-https-get')) params.CURL_HTTPS_GET = '1';
         if (_chk('bc2-skip-pktws')) params.SKIP_PKTWS = '1';
+        if (_chk('bc2-skip-ipblock')) params.SKIP_IPBLOCK = '1';
+        if (_chk('bc2-skip-dnscheck')) params.SKIP_DNSCHECK = '1';
         if (_chk('bc2-parallel')) params.PARALLEL = '1';
         if (_chk('bc2-curl-verbose')) params.CURL_VERBOSE = '1';
 
@@ -321,9 +338,10 @@ const Blockcheck2Page = (() => {
     }
 
     function lineClass(line) {
-        if (/!!!!!|AVAILABLE/i.test(line)) return 'ln-hl';
-        if (/\bOK\b|success|доступ/i.test(line)) return 'ln-ok';
-        if (/BLOCK|FAIL|error|ошиб|недоступ/i.test(line)) return 'ln-bad';
+        if (/working strategy found/i.test(line)) return 'ln-hl';
+        // UNAVAILABLE проверяем РАНЬШE AVAILABLE (это её подстрока).
+        if (/UNAVAILABLE|BLOCK|FAIL|error|ошиб|недоступ/i.test(line)) return 'ln-bad';
+        if (/\bAVAILABLE\b|\bOK\b|success|доступ/i.test(line)) return 'ln-ok';
         return '';
     }
 
@@ -331,7 +349,8 @@ const Blockcheck2Page = (() => {
         const el = document.getElementById('bc2-highlights');
         if (!el) return;
         if (!highlights.length) { el.innerHTML = ''; return; }
-        el.innerHTML = highlights.map(h => `<div class="bc2-hl">${escapeHtml(h)}</div>`).join('');
+        const items = highlights.map(h => `<div class="bc2-hl">${escapeHtml(h)}</div>`).join('');
+        el.innerHTML = `<div class="bc2-hl-title">Найденные рабочие стратегии</div>${items}`;
     }
 
     /* ───────── helpers ───────── */
