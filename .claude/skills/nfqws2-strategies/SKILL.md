@@ -71,7 +71,7 @@ nfqws2 --qnum 300 \
 | `--ipset=FILE` / `--ipset-exclude=FILE` | Матч по IP |
 | `--new` | Разделитель ПРОФИЛЕЙ (мультистратегия) |
 | `--lua-desync=FN:p1=v1:p2=v2` | Вызов desync-функции (несколько — выполняются последовательно) |
-| `--debug` | Подробный пер-пакетный лог. **Главный инструмент отладки.** |
+| `--debug[=0\|1\|syslog\|@file]` | Пер-пакетный лог. Бэйр `--debug` ≡ `--debug=1`. **Главный инструмент отладки.** Полный справочник опций — §8. |
 
 ### Desync-функции и частые параметры
 
@@ -282,3 +282,130 @@ nfqws2 --qnum 200 --debug \
 - При генерации стратегий «на лету» (`strategy_generator`) дедуп по
   нормализованным args (`_norm_args`).
 - Тестировать всегда на ЗАБЛОКИРОВАННОМ ресурсе, иначе baseline-aware даст 0%.
+
+---
+
+## 8. Полный справочник CLI nfqws2 (`nfqws2 -?`, v0.9.5.2)
+
+Дамп `./nfqws2 -?` движка `bol-van/zapret2`. Версия движка печатается так:
+`github version v0.9.5.2 (<git-hash>) lua_compat_ver 5`. Это **источник истины**
+по опциям — сверяться с ним, а не угадывать. Опции с `[0|1]`/`[=val]` имеют
+необязательный аргумент (без него включаются дефолтом, обычно `=1`).
+
+### 8.1 Глобальные / общие
+
+| Опция | Назначение |
+|---|---|
+| `@<config_file>` / `$<config_file>` | Читать опции из файла. **Должен быть единственным аргументом** — остальные игнорируются. |
+| `--debug=0\|1\|syslog\|@<filename>` | Уровень/назначение отладочного лога. Бэйр `--debug` ≡ `=1`. |
+| `--version` | Печать версии и выход. |
+| `--dry-run` | Проверить параметры и выйти с кодом 0 при успехе. **Использовать для валидации стратегии без запуска** (preview/lint). |
+| `--comment=<text>` | Комментарий (no-op, для читабельности конфига). |
+| `--intercept=0\|1` | Включить перехват. Если выключить — выполнить только lua-init и выйти. |
+| `--qnum=<n>` | Номер NFQUEUE (== firewall `queue num`). |
+| `--daemon` | Демонизироваться. **GUI запускает БЕЗ него** (foreground-child + Popen). С ним работает только автозапуск `S99zapret` (свой `--pidfile`). |
+| `--chdir[=path]` | Сменить рабочий каталог (без аргумента — EXEDIR). |
+| `--pidfile=<file>` | Записать PID в файл. |
+| `--user=<username>` | Сбросить root-привилегии на пользователя. |
+| `--uid=uid[:gid1,gid2,...]` | Сбросить привилегии по uid/gid. |
+| `--bind-fix4` / `--bind-fix6` | Фикс выбора исходящего интерфейса для генерируемых IPv4/IPv6 пакетов (multi-WAN). |
+| `--fwmark=<int\|0xHEX>` | fwmark генерируемых пакетов. **Дефолт `0x40000000` (1073741824)**. |
+| `--ctrack-timeouts=S:E:F[:U]` | Таймауты внутреннего conntrack: TCP SYN, ESTABLISHED, FIN, UDP. Дефолт `60:300:60:60`. |
+| `--ctrack-disable[=0\|1]` | Отключить внутренний conntrack. |
+| `--payload-disable[=type[,type]]` | Не детектировать эти типы payload (без аргумента — все). |
+| `--server[=0\|1]` | Менять обработку src/dst ip/port для входящих соединений (серверный режим). |
+| `--ipcache-lifetime=<int>` | TTL кэша hop-count/имени домена, сек (дефолт 7200, 0 = вечно). |
+| `--ipcache-hostname[=0\|1]` | Кэшировать ip→hostname. |
+| `--reasm-disable[=type[,type]]` | Отключить reasm для L7 payload: `tls_client_hello`, `quic_initial` (без аргумента — все). |
+
+### 8.2 DESYNC ENGINE INIT
+
+| Опция | Назначение |
+|---|---|
+| `--writeable[=<dir>]` | Создать writeable-каталог для LUA-скриптов, путь → env `WRITEABLE` (только один). |
+| `--blob=<name>:[+ofs]@<file>\|0xHEX` | Загрузить blob в LUA-переменную `<name>`. Поддержан offset `+ofs`. |
+| `--lua-init=@<file>\|<lua_text>` | Загрузить LUA из файла или строки. **Порядок нескольких сохраняется.** Поддержаны gzip-файлы. |
+| `--lua-gc=<int>` | Принудительный GC каждые N сек (дефолт 60, триггерится при приходе пакета, 0 = выкл). |
+
+### 8.3 MULTI-STRATEGY (профили)
+
+| Опция | Назначение |
+|---|---|
+| `--new[=<name>]` | Начать новый профиль (опционально имя). |
+| `--skip` | Не использовать этот профиль. |
+| `--name=<name>` | Задать имя профиля. |
+| `--template[=<name>]` | Использовать профиль как шаблон (должен быть именованным). |
+| `--cookie[=<str>]` | Передать в LUA строку, привязанную к профилю. |
+| `--import=<name>` | Заполнить текущий профиль данными шаблона. |
+| `--filter-l3=ipv4\|ipv6` | Фильтр L3 (через запятую). |
+| `--filter-tcp=[~]port1[-port2]\|*` | Фильтр TCP-портов. `~` — отрицание. Список через запятую. Задание tcp-фильтра без прочих запрещает прочие. |
+| `--filter-udp=[~]port1[-port2]\|*` | Фильтр UDP-портов (аналогично). |
+| `--filter-icmp=type[:code]\|*` | Фильтр ICMP type+code. |
+| `--filter-ipp=proto` | Фильтр IP-протокола. |
+| `--filter-l7=proto[,proto]` | L6-L7 фильтр. Полный список ниже (§8.6). |
+| `--filter-ssid=ssid1[,...]` | Пер-профильный Wi-Fi SSID-фильтр. |
+| `--ipset=<file>` | Include по IP/CIDR (ipv4+ipv6, gzip, несколько). |
+| `--ipset-ip=<list>` | Фиксированный список подсетей через запятую. |
+| `--ipset-exclude=<file>` / `--ipset-exclude-ip=<list>` | Exclude по IP. |
+| `--hostlist=<file>` | Десинк только для перечисленных хостов (поддомены автоматически, gzip, несколько). |
+| `--hostlist-domains=<list>` | Фиксированный список доменов через запятую. |
+| `--hostlist-exclude=<file>` / `--hostlist-exclude-domains=<list>` | Исключения по хостам. |
+| `--hostlist-auto=<file>` | Автодетект DPI-блокировок и построение hostlist. |
+| `--hostlist-auto-fail-threshold=<int>` | Сколько фейлов добавляют хост в auto-hostlist (дефолт 3). |
+| `--hostlist-auto-fail-time=<int>` | Все фейлы в пределах N сек (дефолт 60). |
+| `--hostlist-auto-retrans-threshold=<int>` | Сколько ретрансмиссий запроса = провал попытки (дефолт 3). |
+| `--hostlist-auto-retrans-maxseq=<int>` | Считать ретрансмиссии только в пределах rel-seq (дефолт 32768). |
+| `--hostlist-auto-retrans-reset=[0\|1]` | Слать RST ретрансмиттеру (дефолт 1). |
+| `--hostlist-auto-incoming-maxseq=<int>` | Считать соединение успешным, если входящий rel-seq превысил порог (дефолт 4096). |
+| `--hostlist-auto-udp-out=<int>` | UDP-провал: отправлено ≥ udp_out пакетов (дефолт 4). |
+| `--hostlist-auto-udp-in=<int>` | UDP-провал: получено ≤ udp_in пакетов (дефолт 1). |
+| `--hostlist-auto-debug=<logfile>` | Лог срабатываний auto-hostlist (глобальный параметр). |
+
+### 8.4 LUA PACKET PASS MODE
+
+| Опция | Назначение |
+|---|---|
+| `--payload=type[,type]` | Какие типы payload обрабатывают следующие LUA-функции. Полный список — §8.6. |
+| `--out-range=[(n\|a\|d\|s\|p)<int>](-\|<)[...]` | Диапазон исходящих пакетов для следующих LUA-функций. |
+| `--in-range=[(n\|a\|d\|s\|p)<int>](-\|<)[...]` | Диапазон входящих пакетов. |
+
+Префиксы диапазона: `n` — номер пакета, `d` — номер data-пакета, `s` — rel-seq,
+`p` — позиция данных в rel-seq, `b` — счётчик байт, `x` — никогда, `a` — всегда.
+`-` включает конечную позицию, `<` — не включает.
+
+### 8.5 LUA DESYNC ACTION
+
+| Опция | Назначение |
+|---|---|
+| `--lua-desync=<function>[:p1=v1[:p2=v2]]` | Вызвать LUA-функцию при приходе пакета. |
+
+### 8.6 Справочные списки значений
+
+**`--filter-l7`:** `all unknown known http tls dtls quic wireguard dht discord
+stun xmpp dns mtproto bt utp_bt`.
+
+**`--payload` (типы):** `all unknown empty known ipv4 ipv6 icmp http_req
+http_reply tls_client_hello tls_server_hello dtls_client_hello
+dtls_server_hello quic_initial wireguard_initiation wireguard_response
+wireguard_cookie wireguard_keepalive wireguard_data dht discord_ip_discovery
+stun xmpp_stream xmpp_starttls xmpp_proceed xmpp_features dns_query dns_response
+mtproto_initial bt_handshake utp_bt_handshake`.
+
+**`--reasm-disable` (типы):** `tls_client_hello quic_initial`.
+
+### 8.7 Важные следствия для zapret-gui
+
+- **`--dry-run`** — штатный способ валидировать собранную стратегию без
+  поднятия NFQUEUE (можно прикрутить к `build_preview_command`/линтеру
+  стратегий: собрать argv через `compose_command`, заменить запуск на
+  `--dry-run`, проверить код возврата 0).
+- **`--version`** даёт `lua_compat_ver` — полезно при диагностике
+  несовместимости lua-скриптов с версией движка.
+- **`--fwmark` дефолт `0x40000000`** совпадает с нашим `nfqws.desync_mark` —
+  не путать с firewall MARK_PROCESSED/MARK_EXCLUDE (другой слой).
+- `@<config_file>` обязан быть **единственным** аргументом — нельзя
+  смешивать файл-конфиг с inline-опциями. Мы собираем всё inline через
+  `compose_command`, файл-конфиг не используем.
+- `--daemon` использует только автозапуск `S99zapret`; GUI ведёт процесс
+  как foreground-child. Один nfqws2 на NFQUEUE — дубли зачищает
+  `NFQWSManager._sweep_stray_processes` (issue #123).
