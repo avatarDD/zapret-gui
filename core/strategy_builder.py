@@ -473,35 +473,25 @@ class StrategyManager:
         """
         Собрать превью полной команды nfqws2 (для отображения в UI).
 
+        Превью обязано совпадать с тем, что реально запускается. Поэтому argv
+        собирается ЧЕРЕЗ NFQWSManager.compose_command() — единый источник
+        истины (то же, что live-запуск и автозапуск): base-args
+        (--user/--fwmark/--qnum[/--debug][/--bind-fix*]), условный lua-init
+        (core+extension, только при наличии --lua-desync и существующих
+        файлов, с дедупом), единый --hostlist-слой и сами strategy_args.
+
         Returns:
             Строка вида "nfqws2 --user=nobody ... --filter-tcp=443 ..."
         """
-        from core.config_manager import get_config_manager
-        cfg = get_config_manager()
+        from core.nfqws_manager import get_nfqws_manager
 
-        binary = cfg.get("zapret", "nfqws_binary",
-                         default="/opt/zapret2/nfq2/nfqws2")
-
-        # base args
-        parts = [binary]
-
-        user = cfg.get("nfqws", "user", default="nobody")
-        mark = cfg.get("nfqws", "desync_mark", default="0x40000000")
-        qnum = cfg.get("nfqws", "queue_num", default=300)
-
-        parts.append("--user=%s" % user)
-        parts.append("--fwmark=%s" % mark)
-        parts.append("--qnum=%d" % int(qnum))
-
-        lua_path = cfg.get("zapret", "lua_path", default="/opt/zapret2/lua")
-        for lf in ["zapret-lib.lua", "zapret-antidpi.lua", "zapret-auto.lua"]:
-            parts.append("--lua-init=@%s/%s" % (lua_path, lf))
-
-        # strategy args
+        # strategy args (с blob-декларациями и резолвом путей)
         strategy_args = self.build_nfqws_args(strategy, hostlist_path)
-        parts.extend(strategy_args)
 
-        return " \\\n  ".join(parts)
+        # Полная команда — тем же путём, что и реальный запуск.
+        full_args = get_nfqws_manager().compose_command(strategy_args)
+
+        return " \\\n  ".join(full_args)
 
 
 # ═══════════════════════════════════════════════════════════

@@ -130,9 +130,17 @@ nfqws2 --qnum 300 \
 Из nfqws2-keenetic берём идеи поведения (НЕ пути):
 - режимы выбора доменов: **list** / **auto** (домен добавляется после 3 фейлов
   за 60с) / **all**;
-- порты: TCP 443 (+опц. 80), UDP 443 (QUIC);
 - **обязательно** отключить hardware offload (иначе iptables не видит трафик),
   выставить `nf_conntrack_tcp_be_liberal=1`, рекомендован DoT/DoH.
+
+**Порты — любые, зависят от целевого сервиса**, который «дурим». Задаются в
+`nfqws.ports_tcp` / `nfqws.ports_udp` (их использует `firewall.py` для NFQUEUE)
+и должны согласовываться с `--filter-tcp` / `--filter-udp` в стратегии. Дефолты
+в проекте намеренно шире, чем «443/QUIC» у keenetic:
+- `ports_tcp = "80,443,2053,2083,2087,2096,5222,8443"` (HTTP/HTTPS + alt-порты
+  Cloudflare, Telegram MTProto 5222);
+- `ports_udp = "443,3478:3481,5349,19294:19344,49152:65535"` (QUIC + STUN/TURN +
+  WireGuard-диапазоны + Discord voice).
 
 ---
 
@@ -150,17 +158,19 @@ nfqws2 --qnum 300 \
 Единый источник argv (и для live-запуска, и для автозапуска):
 
 ```
-[binary] + base(--user/--fwmark/--qnum[/--bind-fix4/6]) + lua-init(core+ext)
+[binary] + base(--user/--fwmark/--qnum[/--debug][/--bind-fix4/6]) + lua-init(core+ext)
         + unified(--hostlist) + strategy_args
 ```
 
-- `_build_base_args` — `--user`, `--fwmark`, `--qnum` из конфига; `--bind-fix4/6`
-  при нескольких WAN.
+- `_build_base_args` — `--user`, `--fwmark`, `--qnum` из конфига; `--debug` при
+  `nfqws.debug=true`; `--bind-fix4/6` при нескольких WAN.
 - `_build_lua_init_args` — добавляет core-lua **только если** в стратегии есть
   `--lua-desync` **И файл существует** на `lua_path`. Extension-lua — по
   используемым функциям. Дедуп `--lua-init`.
 - `queue_num` берётся из `nfqws.queue_num` (по умолчанию **300**) — то же
   значение использует `firewall.py` для `queue num`. **Не разводить эти числа.**
+- **Превью команды** (`build_preview_command`, `POST /api/strategies/preview`)
+  собирается ЧЕРЕЗ тот же `compose_command` — превью = реальная команда.
 
 ### Каталоги `catalogs/`
 
@@ -272,5 +282,3 @@ nfqws2 --qnum 200 --debug \
 - При генерации стратегий «на лету» (`strategy_generator`) дедуп по
   нормализованным args (`_norm_args`).
 - Тестировать всегда на ЗАБЛОКИРОВАННОМ ресурсе, иначе baseline-aware даст 0%.
-</content>
-</invoke>
