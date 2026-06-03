@@ -804,6 +804,17 @@ SIMULATE=1, SIM_SUCCESS_RATE=N    # debug сам blockcheck2
 **НЕ примораживать** `AVAILABLE`/`UNAVAILABLE` (вдобавок `AVAILABLE` —
 подстрока `UNAVAILABLE`, на этом горел старый фильтр).
 
+**Структурные находки (`found`) → бейджи в GUI.** Помимо `highlights`,
+`blockcheck2.py` парсит строки `working strategy found` в структуру
+(`parse_found_strategy`/`_classify_test`): `{ipv, test, domain, engine,
+strategy, proto, port, l7, payload, label}` и отдаёт её в `get_status()`
+полем `found`. Тип теста (`curl_test_http`/`https_tls12`/`tls13`/`http3`) →
+proto/port/l7/payload как в `scan_targets`. Фронтенд (`blockcheck2.js`)
+рисует кликабельные бейджи; клик открывает редактор создания стратегии,
+предзаполненный фильтром из типа теста + **дословным** `--lua-desync`
+(реконструкция по той же конвенции, что `_wrap_trick_args`, см. §13.1). Сторож —
+`tests/test_blockcheck2_found.py`.
+
 Документация GUI-помощи — `web/js/components/help.js`, топик `blockcheck2`.
 
 ### 14.3 Тест `custom`
