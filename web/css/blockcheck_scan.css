@@ -102,9 +102,35 @@
 .bc2-found-dom {
     font-family: var(--font-mono);
 }
+.bc2-found-rate {
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--success, #34d399);
+}
+.bc2-found-strat {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    opacity: .75;
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .bc2-found-arrow {
     font-size: 11px;
     opacity: .7;
+}
+/* Частично успешные (не все попытки) — янтарные */
+.bc2-found-chip.bc2-found-partial {
+    border-color: var(--warning, #fbbf24);
+    background: rgba(251, 191, 36, 0.10);
+}
+.bc2-found-chip.bc2-found-partial:hover {
+    background: rgba(251, 191, 36, 0.22);
+}
+.bc2-found-chip.bc2-found-partial .bc2-found-proto,
+.bc2-found-chip.bc2-found-partial .bc2-found-rate {
+    color: var(--warning, #fbbf24);
 }
 
 /* Form layout */
