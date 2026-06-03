@@ -3811,6 +3811,22 @@ input:focus, textarea:focus, select:focus {
     opacity: 0.8;
 }
 
+/* Контекстная подсказка под args профиля (порт/фильтр, init_vars и т.п.) */
+.profile-hint-msg {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.4;
+}
+.profile-hint-msg:empty {
+    display: none;
+}
+.profile-hint-warn {
+    color: var(--warning, #fbbf24);
+}
+.profile-hint-info {
+    color: var(--text-muted);
+}
+
 /* Адаптив — на маленьких экранах popup уже */
 @media (max-width: 480px) {
     .nfq-ac-popup {

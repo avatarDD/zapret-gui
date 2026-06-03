@@ -20,6 +20,7 @@ const Blockcheck2Page = (() => {
     let outOffset = 0;            // next_offset для инкрементального вывода
     let scriptPath = null;
     let scriptFound = false;
+    let foundStrategies = [];     // структурные находки для кликабельных бейджей
 
     /* ───────── lifecycle ───────── */
 
@@ -150,6 +151,7 @@ const Blockcheck2Page = (() => {
             <!-- Телеметрия -->
             <div class="card" id="bc2-output-card">
                 <div class="card-title">Телеметрия blockcheck</div>
+                <div class="bc2-found" id="bc2-found"></div>
                 <div class="bc2-highlights" id="bc2-highlights"></div>
                 <pre class="bc2-term" id="bc2-term"></pre>
             </div>
@@ -261,6 +263,9 @@ const Blockcheck2Page = (() => {
         if (term) term.textContent = '';
         const hl = document.getElementById('bc2-highlights');
         if (hl) hl.innerHTML = '';
+        foundStrategies = [];
+        const fnd = document.getElementById('bc2-found');
+        if (fnd) fnd.innerHTML = '';
     }
 
     /* ───────── polling ───────── */
@@ -287,6 +292,7 @@ const Blockcheck2Page = (() => {
             if (btnStop) btnStop.classList.toggle('hidden', !running);
 
             renderHighlights(s.highlights || []);
+            renderFound(s.found || []);
 
             const statusEl = document.getElementById('bc2-run-status');
             if (statusEl) {
@@ -353,6 +359,46 @@ const Blockcheck2Page = (() => {
         el.innerHTML = `<div class="bc2-hl-title">Найденные рабочие стратегии</div>${items}`;
     }
 
+    // Кликабельные бейджи: каждый открывает редактор создания стратегии,
+    // предзаполненный приёмом из blockcheck2 (фильтр из типа теста + дословный
+    // lua-desync). Реконструкция по конвенции проекта (SKILL §3).
+    function renderFound(found) {
+        foundStrategies = Array.isArray(found) ? found : [];
+        const el = document.getElementById('bc2-found');
+        if (!el) return;
+        if (!foundStrategies.length) { el.innerHTML = ''; return; }
+        const chips = foundStrategies.map((f, i) => {
+            const title = escapeHtml((f.strategy || '').slice(0, 200));
+            return `<button class="bc2-found-chip" onclick="Blockcheck2Page.useStrategy(${i})" `
+                + `title="Создать стратегию из этого приёма&#10;${title}">`
+                + `<span class="bc2-found-proto">${escapeHtml(f.label || '')}</span> `
+                + `<span class="bc2-found-dom">${escapeHtml(f.domain || '')}</span>`
+                + `<span class="bc2-found-arrow">→ создать</span></button>`;
+        }).join('');
+        el.innerHTML = `<div class="bc2-found-title">Создать стратегию из находки blockcheck2</div>`
+            + `<div class="bc2-found-chips">${chips}</div>`;
+    }
+
+    function useStrategy(index) {
+        const f = foundStrategies[index];
+        if (!f) return;
+        if (typeof StrategiesPage === 'undefined' || !StrategiesPage.prefillCreate) {
+            Toast && Toast.error && Toast.error('Страница стратегий недоступна');
+            return;
+        }
+        const strat = String(f.strategy || '');
+        let args = `--filter-${f.proto}=${f.port} --filter-l7=${f.l7} `;
+        if (!/--payload=/.test(strat) && f.payload) {
+            args += `--payload=${f.payload} `;
+        }
+        args += strat;
+        StrategiesPage.prefillCreate({
+            name: `${f.domain} · ${f.label} (blockcheck2)`,
+            description: `Найдено blockcheck2 для ipv${f.ipv} ${f.domain}`,
+            args: args.trim(),
+        });
+    }
+
     /* ───────── helpers ───────── */
 
     function formatElapsed(sec) {
@@ -366,5 +412,5 @@ const Blockcheck2Page = (() => {
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    return { render, destroy, start, stop, clearOutput };
+    return { render, destroy, start, stop, clearOutput, useStrategy };
 })();

@@ -11,6 +11,15 @@ const StrategiesPage = (() => {
     let favorites = [];
     let pollTimer = null;
     let hostlistFiles = [];  // [{name, filename, path, is_builtin}] — для дропдауна в редакторе
+    let pendingPrefill = null;  // стратегия из blockcheck2-бейджа, открыть после навигации
+
+    // Пресеты «+ фильтр…» — значения согласованы с дефолтами ScanTarget и
+    // авто-обёрткой бэкенда (SKILL §3). Вставляются в НАЧАЛО args профиля.
+    const FILTER_PRESETS = {
+        tls443: '--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello',
+        http80: '--filter-tcp=80 --filter-l7=http --payload=http_req',
+        quic443: '--filter-udp=443 --filter-l7=quic --payload=quic_initial',
+    };
 
     // ══════════════════ Render ══════════════════
 
@@ -102,12 +111,12 @@ const StrategiesPage = (() => {
                         </div>
                         <div id="preview-validation" style="display:none; margin-top:12px;"></div>
                         <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
-                            <button class="btn btn-primary" id="preview-validate-btn" onclick="StrategiesPage.validatePreview()" title="Проверить стратегию через nfqws2 --dry-run (без поднятия NFQUEUE и трафика)">
+                            <button class="btn btn-primary" id="preview-validate-btn" onclick="StrategiesPage.validatePreview()" title="Проверить стратегию через nfqws2 --intercept=0 (грузит lua-init, без поднятия NFQUEUE и трафика)">
                                 <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <path d="M9 11l3 3L22 4"/>
                                     <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
                                 </svg>
-                                Проверить (dry-run)
+                                Проверить
                             </button>
                             <button class="btn btn-ghost" onclick="StrategiesPage.copyPreview()">
                                 <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -124,6 +133,8 @@ const StrategiesPage = (() => {
 
         fetchStrategies();
         refreshCatalogStatus();
+        // Если пришли сюда из blockcheck2-бейджа — открыть редактор с приёмом.
+        consumePendingPrefill();
     }
 
     // ══════════════════ Catalog updater ══════════════════
@@ -563,7 +574,7 @@ const StrategiesPage = (() => {
 
         const sid = modal._sid;
         valEl.style.display = 'block';
-        valEl.innerHTML = '<div class="alert alert-info" style="margin:0;">Проверка через nfqws2 --dry-run…</div>';
+        valEl.innerHTML = '<div class="alert alert-info" style="margin:0;">Проверка через nfqws2 --intercept=0…</div>';
         if (btn) btn.disabled = true;
 
         try {
@@ -592,8 +603,8 @@ const StrategiesPage = (() => {
             } else {
                 valEl.innerHTML = '<div class="alert alert-danger" style="margin:0;">' +
                     '✗ Стратегия не прошла проверку (код ' + (v.returncode != null ? v.returncode : '?') +
-                    '). Частые причины: вызов несуществующей lua-функции, битый --blob/--lua-init, ' +
-                    'плохой синтаксис --lua-desync.' + outBlock + '</div>';
+                    '). Частые причины: ошибка синтаксиса/загрузки lua-скрипта, ' +
+                    'отсутствующий файл --blob/--lua-init/--hostlist, кривой параметр CLI.' + outBlock + '</div>';
             }
         } catch (err) {
             valEl.innerHTML = '<div class="alert alert-danger" style="margin:0;">Ошибка: ' + err.message + '</div>';
@@ -742,6 +753,15 @@ const StrategiesPage = (() => {
                         <input type="text" class="form-input form-input-sm" value="${escapeHtml(profile.name || profile.id)}" placeholder="Имя профиля" onchange="StrategiesPage.updateProfileName(${index}, this.value)" style="flex:1; max-width:260px;">
                     </label>
                     <div style="display:flex; align-items:center; gap:6px;">
+                        <select class="form-input form-input-sm profile-filter-picker" data-index="${index}"
+                                onchange="StrategiesPage.insertFilter(${index}, this)"
+                                title="Вставить --filter-* + --payload в начало профиля (порт/протокол)"
+                                style="max-width:150px;">
+                            <option value="">+ фильтр…</option>
+                            <option value="tls443">TCP 443 · TLS</option>
+                            <option value="http80">TCP 80 · HTTP</option>
+                            <option value="quic443">UDP 443 · QUIC</option>
+                        </select>
                         <select class="form-input form-input-sm profile-hostlist-picker" data-index="${index}"
                                 onchange="StrategiesPage.insertHostlist(${index}, this)"
                                 title="Вставить --hostlist=<файл> в аргументы профиля"
@@ -760,8 +780,69 @@ const StrategiesPage = (() => {
                     <textarea class="form-textarea profile-args" rows="3" placeholder="--filter-tcp=443 --filter-l7=tls ..." onchange="StrategiesPage.updateProfileArgs(${index}, this.value)">${escapeHtml(profile.args || '')}</textarea>
                     <span class="profile-args-hint">Ctrl+Space</span>
                 </div>
+                <div class="profile-hint-msg" id="profile-hint-${index}">${renderProfileHint(profile.args || '')}</div>
             </div>
         `;
+    }
+
+    // Контекстная подсказка по args профиля (SKILL §2/§4): предупреждаем о
+    // «голом приёме» без фильтра и поясняем, что порт берётся из firewall, а
+    // фильтр выводится автоматически (см. превью).
+    function profileHint(args) {
+        const a = String(args || '');
+        if (!/--lua-desync/.test(a)) return null;
+        const hasFilter = /--filter-(?:tcp|udp|l7)\b/.test(a);
+        if (!hasFilter) {
+            const pm = a.match(/--payload=([a-z_]+)/i);
+            const known = pm && /^(tls_client_hello|http_req|http_reply|quic_initial)$/.test(pm[1]);
+            const text = known
+                ? 'Приём без --filter-*: будет автоматически ограничен по --payload (см. «Превью команды»). '
+                    + 'Порты задаёт firewall (nfqws.ports_tcp/udp).'
+                : 'Приём без --filter-* и без однозначного --payload: десинк применится ко всему '
+                    + 'трафику очереди (порты firewall). Ограничьте порт/протокол — «+ фильтр…».';
+            return { level: 'warn', text };
+        }
+        const m = a.match(/(?:blob|pattern|seqovl_pattern)=([A-Za-z_][A-Za-z0-9_]*)/g);
+        if (m && m.some(x => !/=fake_default_(?:tls|http|quic)$/.test(x))) {
+            return {
+                level: 'info',
+                text: 'Именованный паттерн → подключится init_vars.lua.',
+            };
+        }
+        return null;
+    }
+
+    function renderProfileHint(args) {
+        const h = profileHint(args);
+        if (!h) return '';
+        const icon = h.level === 'warn' ? '⚠' : 'ℹ';
+        return `<span class="profile-hint-${h.level}">${icon} ${escapeHtml(h.text)}</span>`;
+    }
+
+    function updateProfileHintEl(index) {
+        const el = document.getElementById('profile-hint-' + index);
+        if (!el || !editorData || !editorData.profiles[index]) return;
+        el.innerHTML = renderProfileHint(editorData.profiles[index].args || '');
+    }
+
+    function insertFilter(index, selectEl) {
+        if (!selectEl) return;
+        const key = selectEl.value;
+        selectEl.value = '';
+        const snippet = FILTER_PRESETS[key];
+        if (!snippet) return;
+
+        const item = document.querySelector('.profile-editor-item[data-index="' + index + '"]');
+        if (!item) return;
+        const textarea = item.querySelector('.profile-args');
+        if (!textarea) return;
+
+        // Фильтр ведёт профиль — вставляем в начало.
+        const val = textarea.value.trim();
+        textarea.value = val ? (snippet + ' ' + val) : snippet;
+        textarea.focus();
+        textarea.setSelectionRange(snippet.length, snippet.length);
+        updateProfileArgs(index, textarea.value);
     }
 
     function insertHostlist(index, selectEl) {
@@ -845,6 +926,36 @@ const StrategiesPage = (() => {
     function updateProfileArgs(index, args) {
         if (!editorData || !editorData.profiles[index]) return;
         editorData.profiles[index].args = args;
+        updateProfileHintEl(index);
+    }
+
+    // Открыть редактор СОЗДАНИЯ, предзаполненный приёмом из blockcheck2.
+    // payload: { name, description, args }. Реконструкция дословная: фильтр +
+    // payload (из типа теста) + lua-desync (как нашёл blockcheck2).
+    function prefillCreate(payload) {
+        pendingPrefill = payload || null;
+        if (window.location.hash.slice(1) === 'strategies') {
+            // Уже на странице — открываем сразу (render не вызовется повторно).
+            consumePendingPrefill();
+        } else {
+            window.location.hash = 'strategies';
+        }
+    }
+
+    function consumePendingPrefill() {
+        if (!pendingPrefill) return;
+        const p = pendingPrefill;
+        pendingPrefill = null;
+        openEditor({
+            id: '',
+            name: p.name || '',
+            description: p.description || '',
+            type: 'combined',
+            profiles: [
+                { id: 'bc2', name: p.name || 'blockcheck2', enabled: true,
+                  args: p.args || '' },
+            ],
+        }, 'create');
     }
 
     async function editorPreview() {
@@ -991,6 +1102,8 @@ const StrategiesPage = (() => {
         updateProfileName,
         updateProfileArgs,
         insertHostlist,
+        insertFilter,
+        prefillCreate,
         editorPreview,
         saveEditor,
         updateCatalog,

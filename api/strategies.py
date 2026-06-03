@@ -393,8 +393,8 @@ def register(app):
             ]),
         }
 
-        # Опциональная валидация через nfqws2 --dry-run (без NFQUEUE):
-        # ловит несуществующие lua-функции, битые --blob/--lua-init и пр.
+        # Опциональная валидация через nfqws2 --intercept=0 (без NFQUEUE):
+        # парсинг опций + наличие файлов + lua-init (синтаксис/порядок lua).
         if body.get("validate"):
             from core.nfqws_manager import get_nfqws_manager
             result["validation"] = get_nfqws_manager().dry_run(args)
@@ -403,11 +403,11 @@ def register(app):
 
     @app.post("/api/strategies/<sid>/validate")
     def api_strategies_validate(sid):
-        """Проверить стратегию через `nfqws2 --dry-run` (без поднятия NFQUEUE).
+        """Проверить стратегию через `nfqws2 --intercept=0` (без поднятия NFQUEUE).
 
         Собирает argv тем же путём, что и реальный запуск, и валидирует
-        параметры + lua-init. Возвращает validation: {ok, available,
-        returncode, output, command}.
+        парсинг опций + наличие файлов + lua-init. Возвращает validation:
+        {ok, available, returncode, output, command}.
         """
         response.content_type = "application/json; charset=utf-8"
 

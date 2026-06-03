@@ -64,6 +64,75 @@ _HIGHLIGHT_RE = re.compile(
     r"working\s+strategy\s+found|^\s*\*\s*(?:SUMMARY|COMMON)\b", re.I
 )
 
+# Структурный разбор строки найденной стратегии для бейджей в GUI. Формат
+# (после чистки «!!!!!»):
+#   <test>: working strategy found for ipv<N> <domain> : <engine> <strategy...>
+# например: curl_test_https_tls13: working strategy found for ipv4 youtube.com
+#           : nfqws2 --payload=tls_client_hello --lua-desync=fake:...
+_FOUND_RE = re.compile(
+    r"(?P<test>[\w.]+):\s*working\s+strategy\s+found\s+for\s+ipv(?P<ipv>[46])\s+"
+    r"(?P<domain>\S+)\s*:\s*(?P<rest>.+)$",
+    re.I,
+)
+
+
+def _classify_test(test: str) -> dict:
+    """Тип теста blockcheck2 → протокол/порт/l7/payload (как ScanTarget) + метка.
+
+    Используется для реконструкции стратегии из найденного приёма по конвенции
+    проекта (SKILL §3): фильтр выводится из протокола/порта, который тест
+    реально проверял.
+    """
+    t = test.lower()
+    if "http3" in t or "quic" in t:
+        return {"proto": "udp", "port": "443", "l7": "quic",
+                "payload": "quic_initial", "label": "QUIC"}
+    if "tls13" in t:
+        return {"proto": "tcp", "port": "443", "l7": "tls",
+                "payload": "tls_client_hello", "label": "TLS1.3"}
+    if "tls12" in t:
+        return {"proto": "tcp", "port": "443", "l7": "tls",
+                "payload": "tls_client_hello", "label": "TLS1.2"}
+    if "https" in t or "tls" in t:
+        return {"proto": "tcp", "port": "443", "l7": "tls",
+                "payload": "tls_client_hello", "label": "HTTPS"}
+    # http / прочее
+    return {"proto": "tcp", "port": "80", "l7": "http",
+            "payload": "http_req", "label": "HTTP"}
+
+
+def parse_found_strategy(clean_line: str) -> Optional[dict]:
+    """Разобрать «working strategy found»-строку в структуру для GUI-бейджа.
+
+    Возвращает None, если строка не подходит или в ней нет приёма (--…).
+    `strategy` — дословный приём из blockcheck2 (payload + lua-desync) без
+    ведущего токена-движка; фильтр/порт/l7 — из типа теста (`_classify_test`).
+    """
+    m = _FOUND_RE.search(clean_line)
+    if not m:
+        return None
+    rest = m.group("rest").strip()
+    idx = rest.find("--")
+    if idx < 0:
+        return None  # нет аргументов приёма — нечего реконструировать
+    engine = rest[:idx].strip()
+    strategy = rest[idx:].strip()
+    if not strategy:
+        return None
+    info = _classify_test(m.group("test"))
+    return {
+        "ipv": int(m.group("ipv")),
+        "test": m.group("test"),
+        "domain": m.group("domain"),
+        "engine": engine,
+        "strategy": strategy,
+        "proto": info["proto"],
+        "port": info["port"],
+        "l7": info["l7"],
+        "payload": info["payload"],
+        "label": info["label"],
+    }
+
 
 class Blockcheck2Runner:
     """Singleton-обёртка над оригинальным blockcheck-скриптом zapret2."""
@@ -76,6 +145,8 @@ class Blockcheck2Runner:
         self._lines: list[str] = []
         self._highlights: list[str] = []
         self._highlight_seen: set[str] = set()
+        self._found: list[dict] = []
+        self._found_seen: set[tuple] = set()
         self._started_at: float = 0.0
         self._finished_at: float = 0.0
         self._exit_code: Optional[int] = None
@@ -206,6 +277,8 @@ class Blockcheck2Runner:
             self._lines = []
             self._highlights = []
             self._highlight_seen = set()
+            self._found = []
+            self._found_seen = set()
             self._started_at = time.time()
             self._finished_at = 0.0
             self._exit_code = None
@@ -276,6 +349,7 @@ class Blockcheck2Runner:
                 "elapsed_seconds": round(elapsed, 1),
                 "error": self._error,
                 "highlights": list(self._highlights[-50:]),
+                "found": list(self._found[-50:]),
             }
 
     def get_output(self, offset: int = 0) -> dict[str, Any]:
@@ -318,6 +392,14 @@ class Blockcheck2Runner:
                         if clean and clean not in self._highlight_seen:
                             self._highlight_seen.add(clean)
                             self._highlights.append(clean)
+                        # Структурный разбор для кликабельных бейджей в GUI.
+                        found = parse_found_strategy(clean)
+                        if found:
+                            key = (found["ipv"], found["test"],
+                                   found["domain"], found["strategy"])
+                            if key not in self._found_seen:
+                                self._found_seen.add(key)
+                                self._found.append(found)
                 if line:
                     log.info(line, source="blockcheck2")
         except Exception:

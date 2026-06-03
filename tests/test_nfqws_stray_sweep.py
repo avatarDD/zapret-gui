@@ -149,7 +149,7 @@ class TestDryRun(unittest.TestCase):
         cfg.get.return_value = "/opt/zapret2/nfq2/nfqws2"
         return cfg, completed
 
-    def test_appends_dry_run_and_strips_user(self):
+    def test_appends_intercept0_and_strips_user(self):
         cfg, completed = self._patched_run(0, b"all ok")
         seen = {}
 
@@ -172,8 +172,37 @@ class TestDryRun(unittest.TestCase):
 
         self.assertTrue(res["ok"])
         self.assertEqual(res["returncode"], 0)
-        self.assertIn("--dry-run", seen["argv"])
+        # Валидация через --intercept=0 (грузит lua-init), без --dry-run.
+        self.assertIn("--intercept=0", seen["argv"])
+        self.assertNotIn("--dry-run", seen["argv"])
         self.assertNotIn("--user=nobody", seen["argv"])  # setuid не нужен
+
+    def test_strips_existing_intercept_and_dry_run(self):
+        cfg, completed = self._patched_run(0, b"ok")
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen["argv"] = argv
+            return completed
+
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cfg), \
+             mock.patch("core.nfqws_manager.os.path.isfile",
+                        return_value=True), \
+             mock.patch("core.nfqws_manager.os.access", return_value=True), \
+             mock.patch.object(self.mgr, "compose_command",
+                               return_value=["/opt/zapret2/nfq2/nfqws2",
+                                             "--intercept=1", "--dry-run",
+                                             "--filter-tcp=443"]), \
+             mock.patch("core.nfqws_manager.subprocess.run",
+                        side_effect=fake_run):
+            self.mgr.dry_run(["--filter-tcp=443"])
+
+        # Ровно один --intercept=0, никакого --intercept=1 / --dry-run.
+        self.assertEqual(
+            [a for a in seen["argv"] if a.startswith("--intercept")],
+            ["--intercept=0"])
+        self.assertNotIn("--dry-run", seen["argv"])
 
     def test_nonzero_returncode_is_failure(self):
         cfg, completed = self._patched_run(1, b"lua error: function 'foo' nil")
