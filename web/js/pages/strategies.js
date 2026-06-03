@@ -73,10 +73,19 @@ const StrategiesPage = (() => {
                         </svg>
                         Активная стратегия
                     </span>
-                    <label class="toggle-label" id="nfqws-debug-label" style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:400; color:var(--text-muted); cursor:pointer;" title="Режим отладки nfqws2 (--debug): пер-пакетный лог в журнал — грузятся ли lua, объявлены ли блобы, матчится ли пакет цели, какие desync применяются. Применяется сразу (если nfqws2 запущен — перезапустится).">
-                        <input type="checkbox" id="nfqws-debug-toggle" onchange="StrategiesPage.toggleDebug(this.checked)">
-                        🐞 Отладка nfqws2
-                    </label>
+                    <span style="display:flex; align-items:center; gap:12px;">
+                        <label class="toggle-label" id="nfqws-debug-label" style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:400; color:var(--text-muted); cursor:pointer;" title="Режим отладки nfqws2 (--debug): пер-пакетный лог в журнал — грузятся ли lua, объявлены ли блобы, матчится ли пакет цели, какие desync применяются. Применяется сразу (если nfqws2 запущен — перезапустится).">
+                            <input type="checkbox" id="nfqws-debug-toggle" onchange="StrategiesPage.toggleDebug(this.checked)">
+                            🐞 Отладка nfqws2
+                        </label>
+                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.openLogs()" title="Открыть журнал (логи nfqws2) — там виден пер-пакетный вывод при включённой отладке" style="font-size:12px; font-weight:400;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px;">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                            </svg>
+                            Журнал
+                        </button>
+                    </span>
                 </div>
                 <div id="active-strategy-info" style="display:flex; align-items:center; gap:12px;">
                     <span class="text-muted">Загрузка...</span>
@@ -156,6 +165,12 @@ const StrategiesPage = (() => {
                            && data.config.nfqws.debug);
             el.checked = dbg;
         } catch (_e) { /* без фатала */ }
+    }
+
+    // Открыть страницу «Логи» (журнал) — там виден пер-пакетный вывод nfqws2
+    // при включённой отладке. Навигация hash-based (см. app.js).
+    function openLogs() {
+        window.location.hash = 'logs';
     }
 
     // Включить/выключить --debug у nfqws2. Сохраняем в конфиг и, если nfqws2
@@ -883,44 +898,50 @@ const StrategiesPage = (() => {
         return !hasTarget;
     }
 
-    // Подтверждение сохранения, если в профилях забыт критичный кусок цели.
-    // Показываем примеры с выделением забытого куска (>>> … <<<). Возвращаем
-    // true, если можно сохранять (цель задана везде ИЛИ пользователь
-    // подтвердил сохранение «как есть»).
-    function confirmTargetOrProceed() {
-        const missing = (editorData.profiles || [])
-            .filter(p => p.enabled !== false)
-            .map((p, i) => ({
-                name: p.name || p.id || ('профиль ' + (i + 1)),
-                args: p.args || '',
-            }))
-            .filter(p => profileTargetMissing(p.args));
-        if (!missing.length) return true;
-
-        const names = missing.map(p => '«' + p.name + '»').join(', ');
-        const msg =
-            'Кажется, забыт критичный кусок цели (домен / ip / hostlist / ipset).\n\n'
-            + 'В ' + (missing.length > 1 ? 'профилях ' : 'профиле ') + names
-            + ' нет ни одного из них — стратегия применится КО ВСЕМУ трафику '
-            + 'очереди (по портам firewall).\n\n'
-            + 'Добавьте один из вариантов — выделен забытый кусок:\n'
-            + '    --filter-tcp=443 --filter-l7=tls  >>> --hostlist=youtube.txt <<<\n'
-            + '    --filter-tcp=443 --filter-l7=tls  >>> --hostlist-domains=youtube.com,googlevideo.com <<<\n'
-            + '    --filter-tcp=443 --filter-l7=tls  >>> --ipset-ip=1.2.3.0/24 <<<\n'
-            + '    --filter-tcp=443 --filter-l7=tls  >>> --hostlist-auto=auto.txt <<<\n\n'
-            + 'Подсказка: кнопки «+ hostlist…» / «+ фильтр…» над полем '
-            + 'аргументов вставят их за вас.\n\n'
-            + 'OK — сохранить как есть (десинк затронет весь трафик очереди; '
-            + 'при включённом «Едином слое» домены добавятся автоматически).\n'
-            + 'Отмена — вернуться и дописать вручную.';
-        return confirm(msg);
+    // Превью args профиля с выделенным КРАСНЫМ недостающим куском цели.
+    // Вставляем пример --hostlist=<домены> в правильное место (после
+    // фильтров, перед --payload/--lua-desync), чтобы пользователь видел,
+    // куда дописать забытый кусок прямо в этом же окне.
+    function highlightMissingTarget(args) {
+        const a = String(args || '');
+        const redSpan = '<span class="hint-missing">--hostlist=&lt;домены&gt;</span>';
+        const m = a.match(/--payload=|--lua-desync=/);
+        if (m) {
+            const idx = m.index;
+            const left = a.slice(0, idx);
+            const sep = (left && !/\s$/.test(left)) ? ' ' : '';
+            return escapeHtml(left) + sep + redSpan + ' ' + escapeHtml(a.slice(idx));
+        }
+        const sep = (a && !/\s$/.test(a)) ? ' ' : '';
+        return escapeHtml(a) + sep + redSpan;
     }
 
     function renderProfileHint(args) {
+        const blocks = [];
+
+        // Забыт критичный кусок цели → встроенное превью с красным выделением.
+        if (profileTargetMissing(args)) {
+            blocks.push(
+                '<div class="profile-hint-warn">⚠ Забыт критичный кусок цели '
+                + '(домен / ip / hostlist / ipset). Без него десинк затронет '
+                + '<b>весь</b> трафик очереди.</div>'
+                + '<div class="profile-hint-preview">'
+                + '<span class="profile-hint-preview-label">Превью:</span> '
+                + '<code>' + highlightMissingTarget(args) + '</code></div>'
+                + '<div class="profile-hint-info">Допишите выделенный кусок '
+                + '(<code>--hostlist=</code>/<code>--hostlist-domains=</code>/'
+                + '<code>--ipset-ip=</code> — кнопка «+ hostlist…») или сохраните '
+                + 'как есть: ограничение добавится автоматически (при включённом '
+                + '«Едином слое»).</div>'
+            );
+        }
+
         const h = profileHint(args);
-        if (!h) return '';
-        const icon = h.level === 'warn' ? '⚠' : 'ℹ';
-        return `<span class="profile-hint-${h.level}">${icon} ${escapeHtml(h.text)}</span>`;
+        if (h) {
+            const icon = h.level === 'warn' ? '⚠' : 'ℹ';
+            blocks.push(`<span class="profile-hint-${h.level}">${icon} ${escapeHtml(h.text)}</span>`);
+        }
+        return blocks.join('');
     }
 
     function updateProfileHintEl(index) {
@@ -1115,11 +1136,6 @@ const StrategiesPage = (() => {
             return;
         }
 
-        // Подсказка о забытом критичном куске цели (домен/ip/hostlist/ipset).
-        // Если пользователь подтвердил — сохраняем как есть (бэкенд при нужде
-        // ограничит автоматически). Если отменил — даём дописать вручную.
-        if (!confirmTargetOrProceed()) return;
-
         // Генерируем id для профилей если нет
         editorData.profiles.forEach((p, i) => {
             if (!p.id) p.id = 'profile_' + i;
@@ -1217,5 +1233,6 @@ const StrategiesPage = (() => {
         saveEditor,
         updateCatalog,
         toggleDebug,
+        openLogs,
     };
 })();
