@@ -94,6 +94,8 @@ const SettingsPage = (() => {
                 { key: 'nfqws.desync_mark',          label: 'Desync mark',            type: 'text', placeholder: '0x40000000' },
                 { key: 'nfqws.desync_mark_postnat',  label: 'Desync mark (postnat)',  type: 'text', placeholder: '0x20000000' },
                 { key: 'nfqws.user',                 label: 'Пользователь',           type: 'text', placeholder: 'nobody' },
+                { key: 'nfqws.debug',                label: 'Режим отладки nfqws2',   type: 'toggle',
+                  hint: 'Добавляет --debug к nfqws2: пер-пакетный лог (грузятся ли lua, объявлены ли блобы, матчится ли пакет цели, какие desync применяются) выводится в журнал на уровне INFO. Применяется при следующем запуске/перезапуске nfqws2. Включайте на время диагностики — лог многословный.' },
                 { key: 'nfqws.disable_ipv6',         label: 'Отключить IPv6',         type: 'toggle' },
                 { key: 'nfqws.unified_hostlist',     label: 'Единый слой: ограничить домены', type: 'toggle',
                   hint: 'Применять стратегию nfqws2 только к доменам маршрутов «Маршрутизации» с методом nfqws2 (через --hostlist агрегата unified_nfqws). Выключено — стратегия глобальна, как раньше.' },
