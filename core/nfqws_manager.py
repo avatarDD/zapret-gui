@@ -478,24 +478,30 @@ class NFQWSManager:
         )
 
     def dry_run(self, strategy_args: list, timeout: float = 8.0) -> dict:
-        """Проверить стратегию через `nfqws2 --dry-run` без поднятия NFQUEUE.
+        """Проверить стратегию через `nfqws2 --intercept=0` без поднятия NFQUEUE.
 
         Собирает argv тем же `compose_command` (единый источник истины), что
-        и реальный запуск, затем заменяет запуск на валидацию: nfqws2
-        разбирает опции CLI и проверяет доступность файлов (`--blob`/
-        `--lua-init`/`--hostlist`/…), затем выходит с кодом 0 при успехе.
-        NFQUEUE не открывается, трафик не затрагивается.
+        и реальный запуск, затем заменяет перехват на валидацию через
+        **`--intercept=0`** (эталон docs/manual.md zapret2: «0 = только
+        запустить lua-init и выйти»). nfqws2 разбирает опции CLI, проверяет
+        доступность файлов (`--blob`/`--lua-init`/`--hostlist`/…) И **исполняет
+        lua-init** — то есть загружает/парсит lua-скрипты, ловя их синтаксис и
+        ошибки времени загрузки (например, неверный порядок `--lua-init`, когда
+        `init_vars` вызывает `tls_mod` до загрузки `zapret-antidpi`). Затем
+        выходит с кодом 0 при успехе. NFQUEUE НЕ открывается, трафик не
+        затрагивается.
 
-        ВАЖНО (см. эталонный docs/manual.md zapret2): `--dry-run` **НЕ
-        загружает и не исполняет Lua** — синтаксис lua-скриптов и наличие
-        вызываемых `--lua-desync` функций он НЕ проверяет. Ловит только
-        кривой парсинг опций и отсутствующие файлы. От «тихого 0%» из-за
-        вызова незагруженной lua-функции защищает статический инвариант
-        `tests/test_nfqws_lua_map.py` (карта `_EXTENSION_LUA_FILES`), а не
-        этот dry-run.
+        Почему `--intercept=0`, а не `--dry-run`: `--dry-run` по эталону Lua
+        НЕ загружает («Lua не проверяется») — ловит только парсинг опций и
+        наличие файлов. `--intercept=0` дополнительно прогоняет lua-init.
+
+        Чего НЕ ловит даже так: вызов несуществующей `--lua-desync` функции —
+        это происходит по-пакетно в рантайме, а не на этапе lua-init. От такого
+        «тихого 0%» защищает статический инвариант `tests/test_nfqws_lua_map.py`
+        (карта `_EXTENSION_LUA_FILES`), а не эта валидация.
 
         Из argv убираем `--user=` — иначе nfqws2 при старте пытается setuid и
-        без root падает не по делу (к валидации опций это не относится).
+        без root падает не по делу (к валидации опций/lua это не относится).
         `--daemon` мы и так не добавляем.
 
         Returns:
@@ -517,9 +523,13 @@ class NFQWSManager:
 
         argv = self.compose_command(list(strategy_args or []),
                                     binary=binary, cfg=cfg)
-        argv = [a for a in argv if not a.startswith("--user=")]
-        if "--dry-run" not in argv:
-            argv.append("--dry-run")
+        # Без setuid (нет root в рантайме валидации) и без любых уже
+        # присутствующих intercept/dry-run флагов — задаём свой --intercept=0.
+        argv = [a for a in argv
+                if not a.startswith("--user=")
+                and not a.startswith("--intercept")
+                and a != "--dry-run"]
+        argv.append("--intercept=0")
 
         try:
             proc = subprocess.run(

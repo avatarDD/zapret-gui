@@ -111,12 +111,12 @@ const StrategiesPage = (() => {
                         </div>
                         <div id="preview-validation" style="display:none; margin-top:12px;"></div>
                         <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
-                            <button class="btn btn-primary" id="preview-validate-btn" onclick="StrategiesPage.validatePreview()" title="Проверить стратегию через nfqws2 --dry-run (без поднятия NFQUEUE и трафика)">
+                            <button class="btn btn-primary" id="preview-validate-btn" onclick="StrategiesPage.validatePreview()" title="Проверить стратегию через nfqws2 --intercept=0 (грузит lua-init, без поднятия NFQUEUE и трафика)">
                                 <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <path d="M9 11l3 3L22 4"/>
                                     <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
                                 </svg>
-                                Проверить (dry-run)
+                                Проверить
                             </button>
                             <button class="btn btn-ghost" onclick="StrategiesPage.copyPreview()">
                                 <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -574,7 +574,7 @@ const StrategiesPage = (() => {
 
         const sid = modal._sid;
         valEl.style.display = 'block';
-        valEl.innerHTML = '<div class="alert alert-info" style="margin:0;">Проверка через nfqws2 --dry-run…</div>';
+        valEl.innerHTML = '<div class="alert alert-info" style="margin:0;">Проверка через nfqws2 --intercept=0…</div>';
         if (btn) btn.disabled = true;
 
         try {
@@ -603,8 +603,8 @@ const StrategiesPage = (() => {
             } else {
                 valEl.innerHTML = '<div class="alert alert-danger" style="margin:0;">' +
                     '✗ Стратегия не прошла проверку (код ' + (v.returncode != null ? v.returncode : '?') +
-                    '). Частые причины: вызов несуществующей lua-функции, битый --blob/--lua-init, ' +
-                    'плохой синтаксис --lua-desync.' + outBlock + '</div>';
+                    '). Частые причины: ошибка синтаксиса/загрузки lua-скрипта, ' +
+                    'отсутствующий файл --blob/--lua-init/--hostlist, кривой параметр CLI.' + outBlock + '</div>';
             }
         } catch (err) {
             valEl.innerHTML = '<div class="alert alert-danger" style="margin:0;">Ошибка: ' + err.message + '</div>';
