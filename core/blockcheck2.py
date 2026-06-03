@@ -31,6 +31,7 @@ stdin перенаправлен в /dev/null — оставшиеся `read` п
 from __future__ import annotations
 
 import os
+import pty
 import re
 import signal
 import subprocess
@@ -140,6 +141,7 @@ class Blockcheck2Runner:
     def __init__(self):
         self._lock = threading.Lock()
         self._proc: Optional[subprocess.Popen] = None
+        self._master_fd: Optional[int] = None
         self._reader: Optional[threading.Thread] = None
 
         self._lines: list[str] = []
@@ -253,27 +255,62 @@ class Blockcheck2Runner:
             clean_args = self._clean_extra_args(extra_args)
             cmd.extend(clean_args)
 
-            # Старт.
+            # Старт. Вывод направляем в PTY, а не в обычный pipe: когда
+            # stdout — не tty, libc в самом скрипте и его детях (curl,
+            # nfqws2) переключается на блочную буферизацию, и строки
+            # «working strategy found» доходят до нас только под конец —
+            # список найденных стратегий в GUI наполняется лишь по
+            # завершении всех тестов. PTY даёт isatty()==true →
+            # построчная буферизация → находки стримятся в реальном
+            # времени (issue: «выводить рабочую стратегию сразу же»).
+            master_fd = None
             try:
+                master_fd, slave_fd = pty.openpty()
                 proc = subprocess.Popen(
                     cmd,
                     cwd=os.path.dirname(script),
                     env=env,
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
                     preexec_fn=os.setsid,  # своя группа — корректный kill
-                    bufsize=1,
-                    universal_newlines=True,
+                    close_fds=True,
                 )
+                os.close(slave_fd)  # slave остаётся открытым у ребёнка
             except (OSError, ValueError) as e:
-                self._error = str(e)
-                log.error("Не удалось запустить blockcheck: %s" % e,
-                          source="blockcheck2")
-                return {"ok": False, "error": str(e)}
+                # PTY недоступен — закрываем мастер и откатываемся на pipe.
+                if master_fd is not None:
+                    try:
+                        os.close(master_fd)
+                    except OSError:
+                        pass
+                    master_fd = None
+                log.warning(
+                    "PTY недоступен (%s), вывод blockcheck через pipe "
+                    "(находки могут появляться с задержкой)" % e,
+                    source="blockcheck2",
+                )
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=os.path.dirname(script),
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        preexec_fn=os.setsid,
+                        bufsize=1,
+                        universal_newlines=True,
+                    )
+                except (OSError, ValueError) as e2:
+                    self._error = str(e2)
+                    log.error("Не удалось запустить blockcheck: %s" % e2,
+                              source="blockcheck2")
+                    return {"ok": False, "error": str(e2)}
 
             # Сброс состояния.
             self._proc = proc
+            self._master_fd = master_fd
             self._lines = []
             self._highlights = []
             self._highlight_seen = set()
@@ -287,7 +324,7 @@ class Blockcheck2Runner:
             self._error = ""
 
             self._reader = threading.Thread(
-                target=self._read_output, args=(proc,),
+                target=self._read_output, args=(proc, master_fd),
                 daemon=True, name="blockcheck2-reader",
             )
             self._reader.start()
@@ -371,44 +408,33 @@ class Blockcheck2Runner:
 
     # ─────────────────── internals ───────────────────
 
-    def _read_output(self, proc: subprocess.Popen) -> None:
-        """Фоновое чтение stdout → лог-буфер + кольцевой буфер строк."""
+    def _read_output(self, proc: subprocess.Popen,
+                     master_fd: Optional[int] = None) -> None:
+        """Фоновое чтение вывода → лог-буфер + кольцевой буфер строк.
+
+        master_fd != None → читаем из PTY-мастера (построчная буферизация,
+        находки появляются в реальном времени). Иначе — фолбэк на
+        proc.stdout (обычный pipe).
+        """
         try:
-            for raw in proc.stdout:
-                line = raw.rstrip("\n")
-                with self._lock:
-                    self._lines.append(line)
-                    if len(self._lines) > _MAX_OUTPUT_LINES:
-                        # Держим хвост; offset у клиента может «съехать», но
-                        # это лучше, чем неограниченный рост памяти.
-                        drop = len(self._lines) - _MAX_OUTPUT_LINES
-                        del self._lines[:drop]
-                    if line and _HIGHLIGHT_RE.search(line):
-                        # Чистим декоративные «!!!!!» и пробелы по краям, и
-                        # дедупим: одна и та же стратегия печатается и при
-                        # находке, и в секции SUMMARY/COMMON — в «примороженном»
-                        # списке нужна по разу.
-                        clean = line.strip().strip("!").strip()
-                        if clean and clean not in self._highlight_seen:
-                            self._highlight_seen.add(clean)
-                            self._highlights.append(clean)
-                        # Структурный разбор для кликабельных бейджей в GUI.
-                        found = parse_found_strategy(clean)
-                        if found:
-                            key = (found["ipv"], found["test"],
-                                   found["domain"], found["strategy"])
-                            if key not in self._found_seen:
-                                self._found_seen.add(key)
-                                self._found.append(found)
-                if line:
-                    log.info(line, source="blockcheck2")
+            if master_fd is not None:
+                self._read_from_fd(master_fd)
+            else:
+                for raw in proc.stdout:
+                    self._handle_line(raw.rstrip("\n"))
         except Exception:
             pass
         finally:
-            try:
-                proc.stdout.close()
-            except Exception:
-                pass
+            if master_fd is not None:
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
+            else:
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
             rc = proc.wait()
             with self._lock:
                 self._exit_code = rc
@@ -418,6 +444,57 @@ class Blockcheck2Runner:
             else:
                 log.warning("blockcheck завершён (exit=%s)" % rc,
                             source="blockcheck2")
+
+    def _read_from_fd(self, fd: int) -> None:
+        """Построчное чтение из PTY-мастера до EOF/EIO."""
+        buf = b""
+        while True:
+            try:
+                data = os.read(fd, 4096)
+            except OSError:
+                # На Linux чтение из мастера после закрытия slave даёт EIO.
+                break
+            if not data:
+                break
+            buf += data
+            while True:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    break
+                line = buf[:nl].decode("utf-8", "replace").rstrip("\r")
+                buf = buf[nl + 1:]
+                self._handle_line(line)
+        if buf:
+            self._handle_line(buf.decode("utf-8", "replace").rstrip("\r"))
+
+    def _handle_line(self, line: str) -> None:
+        """Обработать одну строку вывода: буфер + highlight + found-разбор."""
+        with self._lock:
+            self._lines.append(line)
+            if len(self._lines) > _MAX_OUTPUT_LINES:
+                # Держим хвост; offset у клиента может «съехать», но
+                # это лучше, чем неограниченный рост памяти.
+                drop = len(self._lines) - _MAX_OUTPUT_LINES
+                del self._lines[:drop]
+            if line and _HIGHLIGHT_RE.search(line):
+                # Чистим декоративные «!!!!!» и пробелы по краям, и
+                # дедупим: одна и та же стратегия печатается и при
+                # находке, и в секции SUMMARY/COMMON — в «примороженном»
+                # списке нужна по разу.
+                clean = line.strip().strip("!").strip()
+                if clean and clean not in self._highlight_seen:
+                    self._highlight_seen.add(clean)
+                    self._highlights.append(clean)
+                # Структурный разбор для кликабельных бейджей в GUI.
+                found = parse_found_strategy(clean)
+                if found:
+                    key = (found["ipv"], found["test"],
+                           found["domain"], found["strategy"])
+                    if key not in self._found_seen:
+                        self._found_seen.add(key)
+                        self._found.append(found)
+        if line:
+            log.info(line, source="blockcheck2")
 
     @staticmethod
     def _clean_domains(domains) -> list[str]:

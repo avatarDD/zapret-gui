@@ -66,11 +66,17 @@ const StrategiesPage = (() => {
 
             <!-- Активная стратегия -->
             <div class="card" id="active-strategy-card" style="border-left: 3px solid var(--success);">
-                <div class="card-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                    </svg>
-                    Активная стратегия
+                <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                    <span style="display:flex; align-items:center; gap:6px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                        </svg>
+                        Активная стратегия
+                    </span>
+                    <label class="toggle-label" id="nfqws-debug-label" style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:400; color:var(--text-muted); cursor:pointer;" title="Режим отладки nfqws2 (--debug): пер-пакетный лог в журнал — грузятся ли lua, объявлены ли блобы, матчится ли пакет цели, какие desync применяются. Применяется сразу (если nfqws2 запущен — перезапустится).">
+                        <input type="checkbox" id="nfqws-debug-toggle" onchange="StrategiesPage.toggleDebug(this.checked)">
+                        🐞 Отладка nfqws2
+                    </label>
                 </div>
                 <div id="active-strategy-info" style="display:flex; align-items:center; gap:12px;">
                     <span class="text-muted">Загрузка...</span>
@@ -133,8 +139,60 @@ const StrategiesPage = (() => {
 
         fetchStrategies();
         refreshCatalogStatus();
+        refreshDebugToggle();
         // Если пришли сюда из blockcheck2-бейджа — открыть редактор с приёмом.
         consumePendingPrefill();
+    }
+
+    // ══════════════════ Debug-режим nfqws2 ══════════════════
+
+    // Отражает текущее значение nfqws.debug в переключателе активной карточки.
+    async function refreshDebugToggle() {
+        const el = document.getElementById('nfqws-debug-toggle');
+        if (!el) return;
+        try {
+            const data = await API.get('/api/config');
+            const dbg = !!(data && data.config && data.config.nfqws
+                           && data.config.nfqws.debug);
+            el.checked = dbg;
+        } catch (_e) { /* без фатала */ }
+    }
+
+    // Включить/выключить --debug у nfqws2. Сохраняем в конфиг и, если nfqws2
+    // запущен, перезапускаем — чтобы отладочный лог появился сразу.
+    async function toggleDebug(on) {
+        const el = document.getElementById('nfqws-debug-toggle');
+        try {
+            const res = await API.put('/api/config', { nfqws: { debug: !!on } });
+            if (!res || !res.ok) {
+                Toast.error((res && res.error) || 'Не удалось сохранить настройку');
+                if (el) el.checked = !on;
+                return;
+            }
+            // Применяем сразу: если nfqws2 запущен — перезапуск подхватит --debug.
+            let restarted = false;
+            try {
+                const st = await API.get('/api/status');
+                const running = !!(st && (st.nfqws ? st.nfqws.running : st.running));
+                if (running) {
+                    await API.post('/api/restart', {});
+                    restarted = true;
+                }
+            } catch (_e) { /* статус/перезапуск не критичны для сохранения */ }
+
+            if (on) {
+                Toast.success(restarted
+                    ? 'Отладка nfqws2 включена, nfqws2 перезапущен — смотрите журнал'
+                    : 'Отладка nfqws2 включена (применится при следующем запуске)');
+            } else {
+                Toast.info(restarted
+                    ? 'Отладка nfqws2 выключена, nfqws2 перезапущен'
+                    : 'Отладка nfqws2 выключена');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+            if (el) el.checked = !on;
+        }
     }
 
     // ══════════════════ Catalog updater ══════════════════
@@ -812,6 +870,52 @@ const StrategiesPage = (() => {
         return null;
     }
 
+    // Критичный кусок цели задан? (домен/ip/hostlist/ipset). Если в профиле
+    // есть приём (--lua-desync), но НЕ задано ничего из перечисленного — десинк
+    // применится ко всему трафику очереди. Используется для подсказки при
+    // сохранении (SKILL §1: сначала подсказать, авто-добавить только если
+    // пользователь проигнорировал).
+    function profileTargetMissing(args) {
+        const a = String(args || '');
+        if (!/--lua-desync/.test(a)) return false; // не приём — пропускаем
+        // include-формы, реально ограничивающие цель (exclude не в счёт):
+        const hasTarget = /--hostlist=|--hostlist-domains=|--hostlist-auto=|--ipset=|--ipset-ip=/.test(a);
+        return !hasTarget;
+    }
+
+    // Подтверждение сохранения, если в профилях забыт критичный кусок цели.
+    // Показываем примеры с выделением забытого куска (>>> … <<<). Возвращаем
+    // true, если можно сохранять (цель задана везде ИЛИ пользователь
+    // подтвердил сохранение «как есть»).
+    function confirmTargetOrProceed() {
+        const missing = (editorData.profiles || [])
+            .filter(p => p.enabled !== false)
+            .map((p, i) => ({
+                name: p.name || p.id || ('профиль ' + (i + 1)),
+                args: p.args || '',
+            }))
+            .filter(p => profileTargetMissing(p.args));
+        if (!missing.length) return true;
+
+        const names = missing.map(p => '«' + p.name + '»').join(', ');
+        const msg =
+            'Кажется, забыт критичный кусок цели (домен / ip / hostlist / ipset).\n\n'
+            + 'В ' + (missing.length > 1 ? 'профилях ' : 'профиле ') + names
+            + ' нет ни одного из них — стратегия применится КО ВСЕМУ трафику '
+            + 'очереди (по портам firewall).\n\n'
+            + 'Добавьте один из вариантов — выделен забытый кусок:\n'
+            + '    --filter-tcp=443 --filter-l7=tls  >>> --hostlist=youtube.txt <<<\n'
+            + '    --filter-tcp=443 --filter-l7=tls  >>> --hostlist-domains=youtube.com,googlevideo.com <<<\n'
+            + '    --filter-tcp=443 --filter-l7=tls  >>> --ipset-ip=1.2.3.0/24 <<<\n'
+            + '    --filter-tcp=443 --filter-l7=tls  >>> --hostlist-auto=auto.txt <<<\n\n'
+            + 'Подсказка: кнопки «+ hostlist…» / «+ фильтр…» над полем '
+            + 'аргументов вставят их за вас.\n\n'
+            + 'OK — сохранить как есть (десинк затронет весь трафик очереди; '
+            + 'при включённом «Едином слое» домены добавятся автоматически).\n'
+            + 'Отмена — вернуться и дописать вручную.';
+        return confirm(msg);
+    }
+
     function renderProfileHint(args) {
         const h = profileHint(args);
         if (!h) return '';
@@ -1011,6 +1115,11 @@ const StrategiesPage = (() => {
             return;
         }
 
+        // Подсказка о забытом критичном куске цели (домен/ip/hostlist/ipset).
+        // Если пользователь подтвердил — сохраняем как есть (бэкенд при нужде
+        // ограничит автоматически). Если отменил — даём дописать вручную.
+        if (!confirmTargetOrProceed()) return;
+
         // Генерируем id для профилей если нет
         editorData.profiles.forEach((p, i) => {
             if (!p.id) p.id = 'profile_' + i;
@@ -1107,5 +1216,6 @@ const StrategiesPage = (() => {
         editorPreview,
         saveEditor,
         updateCatalog,
+        toggleDebug,
     };
 })();
