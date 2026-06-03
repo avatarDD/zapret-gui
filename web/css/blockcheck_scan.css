@@ -59,6 +59,54 @@
     color: #fbbf24;
 }
 
+/* Кликабельные бейджи: создать стратегию из находки blockcheck2 */
+.bc2-found {
+    margin-bottom: 10px;
+}
+.bc2-found:empty {
+    display: none;
+}
+.bc2-found-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    color: var(--success, #34d399);
+    margin-bottom: 6px;
+}
+.bc2-found-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.bc2-found-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--success, #34d399);
+    background: rgba(52, 211, 153, 0.10);
+    color: var(--text, #e5e7eb);
+    cursor: pointer;
+    transition: background .12s ease;
+}
+.bc2-found-chip:hover {
+    background: rgba(52, 211, 153, 0.22);
+}
+.bc2-found-proto {
+    font-weight: 700;
+    color: var(--success, #34d399);
+}
+.bc2-found-dom {
+    font-family: var(--font-mono);
+}
+.bc2-found-arrow {
+    font-size: 11px;
+    opacity: .7;
+}
+
 /* Form layout */
 .bc-form {
     display: flex;

@@ -65,8 +65,11 @@ class TestExtensionLuaMap(unittest.TestCase):
                 % lua_file)
 
     def test_orchestrator_triggers_are_defined_somewhere(self):
-        """Каждый триггер circular-bundle определён в core или в companion."""
-        loadable = set(nm._CORE_LUA_FILES) | set(nm._ORCHESTRATOR_LUA_FILES)
+        """Каждый триггер circular-bundle определён среди файлов, которые
+        реально грузятся при срабатывании оркестратора: core + zapret-auto
+        (до-грузится в orchestrator-блоке) + companion'ы."""
+        loadable = (set(nm._CORE_LUA_FILES) | {"zapret-auto.lua"}
+                    | set(nm._ORCHESTRATOR_LUA_FILES))
         defined = set()
         for lf in loadable:
             defined |= _global_funcs(lf) or set()
@@ -74,7 +77,7 @@ class TestExtensionLuaMap(unittest.TestCase):
                          if t not in defined)
         self.assertEqual(
             missing, [],
-            "Триггеры оркестратора без определения в core/companion: %s"
+            "Триггеры оркестратора без определения в core/zapret-auto/companion: %s"
             % missing)
 
 
@@ -131,6 +134,80 @@ class TestCatalogDesyncCoverage(unittest.TestCase):
             unloadable, [],
             "Каталоги ссылаются на --lua-desync функции, которые не "
             "подгрузит ни один core/extension-скрипт: %s" % unloadable)
+
+
+@unittest.skipUnless(os.path.isdir(LUA_DIR), "vendored import/lua not present")
+class TestInitVarsTrigger(unittest.TestCase):
+    """init_vars.lua — value-триггер по именованным паттернам (не функц-карта)."""
+
+    _ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=", re.M)
+
+    def _init_vars_assignments(self):
+        path = os.path.join(LUA_DIR, "init_vars.lua")
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return set(self._ASSIGN_RE.findall(f.read()))
+
+    def test_named_set_matches_vendored_assignments(self):
+        """_INIT_VARS_NAMES ⊆ top-level присваиваний init_vars.lua (иначе
+        blob=/seqovl_pattern=<NAME> сошлётся на необъявленную переменную)."""
+        assigned = self._init_vars_assignments()
+        extra = sorted(nm._INIT_VARS_NAMES - assigned)
+        self.assertEqual(
+            extra, [],
+            "В _INIT_VARS_NAMES есть имена, не объявленные в init_vars.lua: %s"
+            % extra)
+
+    def test_init_vars_not_in_function_map(self):
+        """init_vars не должен быть в core/extension/orchestrator-картах —
+        он триггерится только по значению."""
+        self.assertNotIn("init_vars.lua", nm._CORE_LUA_FILES)
+        self.assertNotIn("init_vars.lua", nm._EXTENSION_LUA_FILES)
+        self.assertNotIn("init_vars.lua", nm._ORCHESTRATOR_LUA_FILES)
+
+
+@unittest.skipUnless(os.path.isdir(LUA_DIR), "vendored import/lua not present")
+class TestBuildLuaInitArgs(unittest.TestCase):
+    """Поведение _build_lua_init_args на вендоренном import/lua/."""
+
+    def _files(self, strategy_args):
+        out = nm.NFQWSManager._build_lua_init_args(strategy_args, LUA_DIR)
+        return [os.path.basename(a.split("@", 1)[1]) for a in out]
+
+    def test_no_desync_no_lua(self):
+        self.assertEqual(self._files(["--filter-tcp=443"]), [])
+
+    def test_plain_fake_loads_only_core(self):
+        files = self._files(["--lua-desync=fake:blob=fake_default_tls"])
+        self.assertEqual(files, ["zapret-lib.lua", "zapret-antidpi.lua"])
+
+    def test_named_pattern_pulls_init_vars_after_core(self):
+        files = self._files(
+            ["--lua-desync=multisplit:seqovl_pattern=tls_google"])
+        self.assertEqual(
+            files,
+            ["zapret-lib.lua", "zapret-antidpi.lua", "init_vars.lua"])
+
+    def test_builtin_blob_does_not_pull_init_vars(self):
+        files = self._files(["--lua-desync=fake:blob=fake_default_tls"])
+        self.assertNotIn("init_vars.lua", files)
+
+    def test_custom_funcs_pulled_by_its_function(self):
+        files = self._files(["--lua-desync=http_aggressive"])
+        self.assertIn("custom_funcs.lua", files)
+        self.assertNotIn("zapret-auto.lua", files)
+
+    def test_circular_pulls_zapret_auto_and_bundle(self):
+        files = self._files(["--lua-desync=circular:detector=combined_failure_detector"])
+        self.assertIn("zapret-auto.lua", files)
+        for comp in nm._ORCHESTRATOR_LUA_FILES:
+            self.assertIn(comp, files)
+
+    def test_circular_with_preload_also_pulls_zapret_auto(self):
+        """circular_with_preload не входит в экспорт zapret-auto, но bundle
+        зависит от standard_*_detector — zapret-auto обязан догрузиться."""
+        files = self._files(["--lua-desync=circular_with_preload"])
+        self.assertIn("zapret-auto.lua", files)
+        self.assertIn("strategy-stats.lua", files)
 
 
 if __name__ == "__main__":

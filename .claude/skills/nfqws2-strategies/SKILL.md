@@ -58,10 +58,23 @@ nfqws2 --qnum 300 \
    - `fakemultisplit.lua` — `fakemultisplit`; `fakemultidisorder.lua` — `fakemultidisorder`;
    - `zapret-obfs.lua` — `wgobfs`, `ippxor`, `udp2icmp`, `synhide` (надмножество `zapret-wgobfs.lua`, последний поэтому НЕ грузим — иначе `wgobfs` определится дважды);
    - `zapret-16kb.lua` — `flood_white`, `ttl_ladder`, `white_sandwich`, `seqovl_white`;
-   - `zapret-rst-flood.lua` — `rst_flood`; `zapret-pcap.lua` — `pcap` (требует `--writeable`).
+   - `zapret-rst-flood.lua` — `rst_flood`; `zapret-pcap.lua` — `pcap` (требует `--writeable`);
+   - `zapret-auto.lua` — `circular`/`condition`/`repeater`/`stopif`/`per_instance_condition`
+     + детекторы/хосткеи (`standard_*_detector`, `cond_*`, `automate_*`, …);
+     companion'ы circular-bundle зависят от его `standard_*_detector`, поэтому
+     `zapret-auto` до-грузится и в orchestrator-блоке (см. ниже);
+   - `custom_funcs.lua` — расширенный каталог приёмов проекта (`http_*`/`tls_*`/
+     `discord_*`/`multisplit_tls`/`tlsrec`/`rst_desync`/…); зависит только от core;
+   - `custom_diag.lua` — `diag_once`/`diag_always` (диагностические no-op).
    **Инвариант:** набор-триггер каждого файла обязан совпадать с его
    глобальными функциями (`grep '^function ' import/lua/<file>.lua`) — иначе
    вызов «выпавшей» функции = тихий 0%. Сторожит `tests/test_nfqws_lua_map.py`.
+   **`init_vars.lua` — особый случай (value-триггер, НЕ в функц-карте):**
+   объявляет именованные паттерн-переменные (`tls_google`, `tls_rnd*`, `bin_max`,
+   `fake_inverted_tls`, …), используемые как `blob=`/`pattern=`/`seqovl_pattern=<NAME>`,
+   и грузится сразу после core ТОЛЬКО если стратегия ссылается на такое имя
+   (см. `_INIT_VARS_NAMES`/`_NAMED_PATTERN_RE`). Встроенные блобы
+   (`fake_default_*`) init_vars не требуют. Сторожит `TestInitVarsTrigger`.
    Скрипты-оркестраторы/детекторы (`combined-detector`, `domain-grouping`,
    `strategy-stats`, `strategy-lock-manager`, `silent-drop-detector`) — это
    companion'ы auto-оркестратора `circular`, а НЕ desync-действия. Они грузятся

@@ -30,20 +30,32 @@ PID_FILE = "/var/run/zapret-gui-nfqws.pid"
 # Конвенции взяты из youtubediscord/zapret (winws_runtime/runners/zapret2_runner.py).
 #
 # Core-скрипты загружаются всегда, когда в стратегии есть --lua-desync;
-# zapret-lib.lua обязан идти первым (определяет базовые примитивы).
+# Core-lua = ровно то, что грузит эталонный blockcheck2 pktws_start() и что
+# задокументировано в SKILL.md §1/§1.3: zapret-lib.lua (ПЕРВЫМ — базовые
+# примитивы) + zapret-antidpi.lua (desync-функции fake/multisplit/...).
+# Всё остальное подключается условно (extension по функциям, init_vars по
+# именованным паттернам, orchestrator-bundle по circular) — см. ниже.
 _CORE_LUA_FILES = (
     "zapret-lib.lua",
     "zapret-antidpi.lua",
-    # init_vars.lua грузится ПОСЛЕ lib+antidpi (так задокументировано в самом
-    # файле): объявляет именованные SNI/pattern-переменные (tls_google и т.п.,
-    # используются как seqovl_pattern=/pattern=) и invert_bytes — примитив, от
-    # которого зависят obfs-скрипты. Поэтому держим его в core (всегда грузим
-    # при наличии --lua-desync), а не как extension.
-    "init_vars.lua",
-    "zapret-auto.lua",
-    "custom_funcs.lua",
-    "custom_diag.lua",
 )
+
+# init_vars.lua объявляет именованные SNI/pattern-переменные (tls_google и
+# т.п.), используемые как blob=/pattern=/seqovl_pattern=, и грузится ТОЛЬКО
+# если стратегия реально на них ссылается. Грузится сразу ПОСЛЕ core (на этапе
+# load зовёт tls_mod/fake_default_tls из antidpi). Его единственная функция
+# invert_bytes как desync-действие не вызывается, поэтому init_vars НЕ в
+# функц-карте, а триггерится по значению (см. _INIT_VARS_NAMES / _build_lua_init_args).
+_INIT_VARS_LUA_FILE = "init_vars.lua"
+_INIT_VARS_NAMES = {
+    "bin_max", "fake_inverted_tls", "fake_max", "tls_cloudflare", "tls_discord",
+    "tls_google", "tls_mail", "tls_padencap", "tls_padencap_google", "tls_rnd",
+    "tls_rnd_dupsid", "tls_rnd_dupsid_google", "tls_rnd_google", "tls_rndsni",
+    "tls_sber", "tls_vk", "tls_yandex", "tls_youtube",
+}
+# blob=/pattern=/seqovl_pattern=<NAME> — ссылка на именованный паттерн.
+_NAMED_PATTERN_RE = re.compile(
+    r"(?:blob|pattern|seqovl_pattern)=([A-Za-z_][A-Za-z0-9_]*)")
 
 # Extension-скрипты подключаются только если соответствующая desync-функция
 # реально используется (имя слева от ':' в --lua-desync=...).
@@ -83,6 +95,43 @@ _EXTENSION_LUA_FILES = {
     "zapret-pcap.lua": {
         "pcap", "pcap_write", "pcap_write_packet", "pcap_write_header",
     },
+    # Auto-оркестратор: circular/condition/repeater/stopif/per_instance_condition
+    # + детекторы/хосткеи, которые circular зовёт по имени. Companion-скрипты
+    # (combined-detector и пр.) зависят от standard_*_detector отсюда, поэтому
+    # zapret-auto до-грузится и в orchestrator-блоке (см. _build_lua_init_args).
+    "zapret-auto.lua": {
+        "automate_conn_record", "automate_failure_check",
+        "automate_failure_counter", "automate_failure_counter_reset",
+        "automate_host_record", "circular", "cond_false", "cond_lua",
+        "cond_payload_str", "cond_random", "cond_tcp_has_ts", "cond_true",
+        "condition", "is_dpi_redirect", "per_instance_condition", "repeater",
+        "require_iff", "standard_detector_defaults", "standard_failure_detector",
+        "standard_hostkey", "standard_success_detector", "stopif",
+    },
+    # Расширенный каталог приёмов проекта (http_*/tls_*/discord_*/multisplit_*).
+    # Зависит только от lib+antidpi (core).
+    "custom_funcs.lua": {
+        "decoy_hello", "desync_combo", "discord_ecn_exploit",
+        "discord_router_alert", "discord_timestamp_travel",
+        "discord_ultimate_combo", "discord_urgent_sni", "discord_window_collapse",
+        "http_absolute_uri_v2", "http_absolute_url", "http_aggressive",
+        "http_combo_bypass", "http_fake_continuation", "http_fake_xhost",
+        "http_garbage_prefix", "http_header_shuffle", "http_host_bytesplit",
+        "http_hostmod", "http_inject_safe_header", "http_ipfrag", "http_lf_prefix",
+        "http_method_obfuscate", "http_methodeol_hostcase", "http_methodeol_safe",
+        "http_methodeol_v2", "http_mgts_combo", "http_mixed_prefix",
+        "http_multi_crlf", "http_multidisorder", "http_oob_prefix",
+        "http_pipeline_fake", "http_pipeline_fake_v2", "http_seqovl_host",
+        "http_simple_bypass", "http_space_prefix", "http_syndata",
+        "http_tab_prefix", "http_triple_seqovl", "http_version_downgrade",
+        "http_xpadding", "multisplit_tls", "multisplitdisorder", "rst_desync",
+        "tls_aggressive", "tls_disorder_gentle", "tls_fake_disorder_gentle",
+        "tls_fake_flood", "tls_fake_simple", "tls_fake_split",
+        "tls_multisplit_sni", "tls_split_gentle", "tlsrec",
+    },
+    # Диагностические no-op desync-хелперы. Ни от чего не зависят, дозагрузка
+    # только при явном --lua-desync=diag_once/diag_always.
+    "custom_diag.lua": {"diag_always", "diag_once"},
 }
 
 # Auto-оркестратор (circular) — companion-скрипты, которые подключаются
@@ -556,16 +605,18 @@ class NFQWSManager:
     def _build_lua_init_args(strategy_args: list, lua_path: str) -> list:
         """Сформировать список --lua-init для core+extension+orchestrator.
 
-        Логика по аналогии с youtubediscord/zapret:
+        Логика по SKILL.md §1.3 (минимально достаточный набор):
           - если в стратегии нет --lua-desync — lua-скрипты не нужны;
-          - core-список (zapret-lib первым) подключается всегда при наличии
-            хотя бы одной desync-функции;
-          - extension-скрипты добавляются только если в стратегии используются
-            функции, объявленные ими;
-          - companion'ы auto-оркестратора подключаются, если стратегия
-            использует circular[...] (см. _ORCHESTRATOR_*).
+          - core (zapret-lib первым, затем zapret-antidpi) — всегда при наличии
+            хотя бы одной desync-функции (как эталонный blockcheck2 pktws_start);
+          - init_vars.lua — сразу после core, только если стратегия ссылается на
+            именованный паттерн (blob=/pattern=/seqovl_pattern=<NAME из init_vars>);
+          - extension-скрипты — только если используются их функции;
+          - companion'ы auto-оркестратора + zapret-auto — если стратегия
+            использует circular[...]/circular_with_preload (см. _ORCHESTRATOR_*).
         """
-        used_funcs = set(_LUA_DESYNC_FUNC_RE.findall(" ".join(strategy_args)))
+        joined = " ".join(strategy_args)
+        used_funcs = set(_LUA_DESYNC_FUNC_RE.findall(joined))
         if not used_funcs:
             return []
 
@@ -578,12 +629,21 @@ class NFQWSManager:
         for lf in _CORE_LUA_FILES:
             _add(out, lf)
 
+        # init_vars — сразу после core (load-time зависит от antidpi), только
+        # при ссылке на его именованные паттерны.
+        if _INIT_VARS_NAMES & set(_NAMED_PATTERN_RE.findall(joined)):
+            _add(out, _INIT_VARS_LUA_FILE)
+
         for lf, funcs in _EXTENSION_LUA_FILES.items():
             if used_funcs & funcs:
                 _add(out, lf)
 
-        # Auto-оркестратор: companion'ы загружаются как bundle при circular.
+        # Auto-оркестратор: bundle companion'ов при circular. Они зависят от
+        # standard_*_detector/circular из zapret-auto — для circular_with_preload
+        # (не входит в экспорт zapret-auto) до-грузим zapret-auto явно; дедуп
+        # уберёт повтор, если circular уже подтянул его как extension.
         if used_funcs & _ORCHESTRATOR_TRIGGERS:
+            _add(out, "zapret-auto.lua")
             for lf in _ORCHESTRATOR_LUA_FILES:
                 _add(out, lf)
 

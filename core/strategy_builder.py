@@ -31,6 +31,56 @@ import threading
 from core.log_buffer import log
 
 
+# ── Авто-ограничение «голого приёма» (SKILL.md §1/§2/§3) ────────────────────
+# Стратегия-приём вида «--lua-desync=fake:...» без --filter-* десинхронизирует
+# ВЕСЬ трафик очереди (skill §4 п.5). По конвенции проекта (как
+# StrategyScanner._wrap_trick_args) такой приём оборачивается фильтром,
+# выведенным из протокола/порта — это не «отсебятина», а штатное ограничение.
+# Профили, у которых уже есть --filter-*/--filter-l7 (в т.ч. полные пресеты и
+# реконструкции из blockcheck2 с фильтром), НЕ трогаем.
+_FILTER_FLAG_RE = re.compile(r"^--filter-(?:tcp|udp|l7)\b")
+# payload-тип → (proto, порт, l7); значения согласованы с дефолтами
+# core.scan_targets.ScanTarget.
+_PAYLOAD_FILTER = {
+    "tls_client_hello": ("tcp", "443", "tls"),
+    "http_req":         ("tcp", "80",  "http"),
+    "http_reply":       ("tcp", "80",  "http"),
+    "quic_initial":     ("udp", "443", "quic"),
+}
+
+
+def autowrap_bare_trick(profile_args: list) -> list:
+    """Ограничить «голый приём» фильтром, выведенным из однозначного --payload.
+
+    Возвращает profile_args без изменений, если:
+      • нет --lua-desync; либо
+      • уже есть какой-либо --filter-tcp/--filter-udp/--filter-l7 (профиль уже
+        ограничен или это полный пресет); либо
+      • --payload отсутствует или неоднозначен (`all`, пусто, неизвестный тип).
+    Последнее — намеренно: каталожные QUIC/UDP-приёмы идут с `--payload=all` и
+    `blob=quic_*`; угадывать протокол по умолчанию (TCP/TLS) нельзя — это
+    сломало бы их скоуп. Ограничиваем ТОЛЬКО при явном
+    tls_client_hello/http_req/http_reply/quic_initial.
+    """
+    if not any(a.startswith("--lua-desync") for a in profile_args):
+        return profile_args
+    if any(_FILTER_FLAG_RE.match(a) for a in profile_args):
+        return profile_args
+
+    payload = None
+    for a in profile_args:
+        if a.startswith("--payload="):
+            payload = a.split("=", 1)[1].split(",")[0].strip()
+            break
+
+    if payload not in _PAYLOAD_FILTER:
+        return profile_args
+
+    proto, port, l7 = _PAYLOAD_FILTER[payload]
+    return ["--filter-%s=%s" % (proto, port),
+            "--filter-l7=%s" % l7] + profile_args
+
+
 class StrategyManager:
     """
     Загрузка, хранение и сборка стратегий.
@@ -333,6 +383,10 @@ class StrategyManager:
 
             # Парсим args из профиля
             profile_args = self._parse_profile_args(profile["args"])
+
+            # Авто-ограничение «голого приёма» фильтром (SKILL §1/§2/§3):
+            # приём без --filter-* иначе десинхронизирует весь трафик очереди.
+            profile_args = autowrap_bare_trick(profile_args)
 
             # Вставляем флаги списков перед --payload (если профиль их ещё
             # не содержит).
