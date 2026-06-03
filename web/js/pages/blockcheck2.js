@@ -22,6 +22,7 @@ const Blockcheck2Page = (() => {
     let scriptFound = false;
     let foundStrategies = [];     // структурные находки для кликабельных бейджей
     let foundKeys = new Set();    // дедуп бейджей (ipv|test|domain|strategy)
+    let bcCur = null;             // текущий разбираемый блок стратегии
 
     /* ───────── lifecycle ───────── */
 
@@ -266,6 +267,7 @@ const Blockcheck2Page = (() => {
         if (hl) hl.innerHTML = '';
         foundStrategies = [];
         foundKeys = new Set();
+        bcCur = null;
         const fnd = document.getElementById('bc2-found');
         if (fnd) fnd.innerHTML = '';
     }
@@ -294,7 +296,10 @@ const Blockcheck2Page = (() => {
             if (btnStop) btnStop.classList.toggle('hidden', !running);
 
             renderHighlights(s.highlights || []);
-            renderFound(s.found || []);
+            // Бейджи ведём из потокового лога (см. processScanLine). Здесь
+            // лишь перерисовываем накопленное — чтобы они не пропали при
+            // возврате на вкладку и переотрисовке DOM.
+            renderFoundChips();
 
             const statusEl = document.getElementById('bc2-run-status');
             if (statusEl) {
@@ -341,20 +346,18 @@ const Blockcheck2Page = (() => {
             span.className = lineClass(line);
             span.textContent = line + '\n';
             frag.appendChild(span);
-            // Разбираем находку прямо из потоковой строки лога — так бейдж
-            // появляется ровно в момент, когда строка приходит в терминал,
-            // не дожидаясь серверного списка found и его цикла опроса.
-            if (/working strategy found/i.test(line)) {
-                const f = parseFoundLine(line);
-                if (f && addFound(f)) foundChanged = true;
-            }
+            // Разбор потокового лога blockcheck2 по «блокам стратегии», чтобы
+            // бейдж со стратегией и успешностью (напр. 3/3) появлялся СРАЗУ
+            // при завершении проверки очередной стратегии, не дожидаясь
+            // итоговой сводки «working strategy found» (она печатается только
+            // в конце прогона).
+            if (processScanLine(line)) foundChanged = true;
         });
         term.appendChild(frag);
         if (atBottom) term.scrollTop = term.scrollHeight;
         if (foundChanged) renderFoundChips();
     }
 
-    // ── разбор «working strategy found» на клиенте (зеркало parse_found_strategy) ──
     function classifyTest(test) {
         const t = String(test || '').toLowerCase();
         if (t.includes('http3') || t.includes('quic'))
@@ -368,25 +371,79 @@ const Blockcheck2Page = (() => {
         return { proto: 'tcp', port: '80', l7: 'http', payload: 'http_req', label: 'HTTP' };
     }
 
-    const FOUND_RE = /([\w.]+):\s*working\s+strategy\s+found\s+for\s+ipv([46])\s+(\S+)\s*:\s*(.+)$/i;
+    // Анонс проверяемой стратегии:
+    //   - curl_test_https_tls12 ipv4 youtube.com : nfqws2 --payload=… --lua-desync=…
+    const ANNOUNCE_RE = /^-\s+(\S+)\s+ipv([46])\s+(\S+)\s*:\s*(\S+)\s+(--.+)$/;
+    // Маркер попытки в начале строки: [attempt N] …
+    const ATTEMPT_RE = /^\[attempt\s+(\d+)\]/i;
 
-    function parseFoundLine(line) {
-        // Чистим декоративные «!!!!!» и пробелы, как на сервере.
-        const clean = String(line || '').trim().replace(/^!+|!+$/g, '').trim();
-        const m = clean.match(FOUND_RE);
-        if (!m) return null;
-        const rest = m[4].trim();
-        const idx = rest.indexOf('--');
-        if (idx < 0) return null;
-        const engine = rest.slice(0, idx).trim();
-        const strategy = rest.slice(idx).trim();
-        if (!strategy) return null;
-        const info = classifyTest(m[1]);
-        return {
-            ipv: parseInt(m[2], 10), test: m[1], domain: m[3], engine, strategy,
-            proto: info.proto, port: info.port, l7: info.l7,
-            payload: info.payload, label: info.label,
-        };
+    // Признак «попытка удалась»: строка содержит AVAILABLE, но это не итог
+    // «!!!!! AVAILABLE !!!!!» и не UNAVAILABLE.
+    function isAttemptSuccess(line) {
+        return /\bAVAILABLE\b/.test(line) && !/UNAVAILABLE/.test(line)
+            && !line.includes('!!!!!');
+    }
+
+    // Обработать одну строку лога. Возвращает true, если добавлен новый бейдж.
+    function processScanLine(line) {
+        const s = String(line || '');
+
+        // 1) Новый блок стратегии. Сначала финализируем предыдущий (если без
+        // явного вердикта — по факту накопленных попыток).
+        const a = s.match(ANNOUNCE_RE);
+        if (a) {
+            const added = finalizeBlock();
+            const info = classifyTest(a[1]);
+            bcCur = {
+                test: a[1], ipv: parseInt(a[2], 10), domain: a[3],
+                engine: a[4], strategy: a[5].trim(),
+                proto: info.proto, port: info.port, l7: info.l7,
+                payload: info.payload, label: info.label,
+                attemptMax: 0, okCount: 0, full: false,
+            };
+            return added;
+        }
+
+        if (!bcCur) return false;
+
+        // 2) Маркер попытки — обновляем число попыток.
+        const at = s.match(ATTEMPT_RE);
+        if (at) {
+            const n = parseInt(at[1], 10);
+            if (n > bcCur.attemptMax) bcCur.attemptMax = n;
+        }
+        // 3) Успех попытки (в т.ч. «[attempt N] AVAILABLE» и одиночное AVAILABLE).
+        if (isAttemptSuccess(s)) bcCur.okCount += 1;
+
+        // 4) Вердикт блока.
+        if (/!!!!!\s*AVAILABLE\s*!!!!!/.test(s)) {
+            bcCur.full = true;
+            return finalizeBlock();
+        }
+        if (/^UNAVAILABLE\b/.test(s.trim())) {
+            return finalizeBlock();
+        }
+        return false;
+    }
+
+    // Завершить текущий блок: посчитать ok/total и при ok>0 — добавить бейдж.
+    function finalizeBlock() {
+        const b = bcCur;
+        bcCur = null;
+        if (!b) return false;
+        const total = b.attemptMax > 0 ? b.attemptMax : 1;
+        let ok = b.okCount;
+        // REPEATS=1: попыток в выводе нет (нет «[attempt]»/«AVAILABLE»), судим
+        // по вердикту.
+        if (b.attemptMax === 0) ok = b.full ? 1 : 0;
+        if (ok <= 0 && !b.full) return false;
+        if (ok <= 0 && b.full) ok = total;
+        return addFound({
+            test: b.test, ipv: b.ipv, domain: b.domain, engine: b.engine,
+            strategy: b.strategy, proto: b.proto, port: b.port, l7: b.l7,
+            payload: b.payload, label: b.label,
+            ok: ok, total: total, full: !!b.full,
+        });
     }
 
     function foundKey(f) {
@@ -419,33 +476,41 @@ const Blockcheck2Page = (() => {
         el.innerHTML = `<div class="bc2-hl-title">Найденные рабочие стратегии</div>${items}`;
     }
 
-    // Кликабельные бейджи: каждый открывает редактор создания стратегии,
-    // предзаполненный приёмом из blockcheck2 (фильтр из типа теста + дословный
-    // lua-desync). Реконструкция по конвенции проекта (SKILL §3).
-    // Сливаем серверный список found с уже накопленным на клиенте (из
-    // потоковых строк). НЕ затираем клиентские находки — только добавляем
-    // недостающие. Так бейджи остаются стабильными между опросами.
-    function renderFound(found) {
-        let changed = false;
-        if (Array.isArray(found)) {
-            found.forEach(f => { if (addFound(f)) changed = true; });
-        }
-        if (changed || document.getElementById('bc2-found')) renderFoundChips();
-    }
-
+    // Кликабельные бейджи: каждый показывает стратегию + успешность (ok/total)
+    // и открывает редактор создания стратегии, предзаполненный этим приёмом
+    // (фильтр из типа теста + дословный --payload/--lua-desync, SKILL §3).
+    // Полностью успешные (вердикт «!!!!! AVAILABLE !!!!!», напр. 3/3) — вверху
+    // и зелёные; частичные (напр. 2/3) — ниже и янтарные.
     function renderFoundChips() {
         const el = document.getElementById('bc2-found');
         if (!el) return;
         if (!foundStrategies.length) { el.innerHTML = ''; return; }
-        const chips = foundStrategies.map((f, i) => {
-            const title = escapeHtml((f.strategy || '').slice(0, 200));
-            return `<button class="bc2-found-chip" onclick="Blockcheck2Page.useStrategy(${i})" `
-                + `title="Создать стратегию из этого приёма&#10;${title}">`
+
+        // Индексы в исходном массиве сохраняем для useStrategy(i).
+        const order = foundStrategies
+            .map((f, i) => ({ f, i }))
+            .sort((a, b) => {
+                if (!!b.f.full - !!a.f.full) return (b.f.full ? 1 : 0) - (a.f.full ? 1 : 0);
+                const ra = (a.f.ok || 0) / (a.f.total || 1);
+                const rb = (b.f.ok || 0) / (b.f.total || 1);
+                return rb - ra;
+            });
+
+        const chips = order.map(({ f, i }) => {
+            const rate = (f.ok != null && f.total != null) ? (f.ok + '/' + f.total) : '';
+            const cls = 'bc2-found-chip' + (f.full ? '' : ' bc2-found-partial');
+            const ttl = escapeHtml(`${f.engine || 'nfqws2'} ${f.strategy || ''}`.slice(0, 240));
+            return `<button class="${cls}" onclick="Blockcheck2Page.useStrategy(${i})" `
+                + `title="Создать стратегию из этого приёма&#10;успех ${rate}&#10;${ttl}">`
                 + `<span class="bc2-found-proto">${escapeHtml(f.label || '')}</span> `
-                + `<span class="bc2-found-dom">${escapeHtml(f.domain || '')}</span>`
+                + `<span class="bc2-found-dom">${escapeHtml(f.domain || '')}</span> `
+                + (rate ? `<span class="bc2-found-rate">${escapeHtml(rate)}</span> ` : '')
+                + `<span class="bc2-found-strat">${escapeHtml((f.strategy || '').slice(0, 60))}</span>`
                 + `<span class="bc2-found-arrow">→ создать</span></button>`;
         }).join('');
-        el.innerHTML = `<div class="bc2-found-title">Создать стратегию из находки blockcheck2</div>`
+        const full = foundStrategies.filter(f => f.full).length;
+        el.innerHTML = `<div class="bc2-found-title">Рабочие стратегии blockcheck2 `
+            + `(${full} полных · ${foundStrategies.length} всего · клик — создать)</div>`
             + `<div class="bc2-found-chips">${chips}</div>`;
     }
 
@@ -462,9 +527,11 @@ const Blockcheck2Page = (() => {
             args += `--payload=${f.payload} `;
         }
         args += strat;
+        const rate = (f.ok != null && f.total != null) ? ` ${f.ok}/${f.total}` : '';
         StrategiesPage.prefillCreate({
-            name: `${f.domain} · ${f.label} (blockcheck2)`,
-            description: `Найдено blockcheck2 для ipv${f.ipv} ${f.domain}`,
+            name: `${f.domain} · ${f.label}${rate} (blockcheck2)`,
+            description: `Найдено blockcheck2 для ipv${f.ipv} ${f.domain}`
+                + (rate ? ` · успех${rate}` + (f.full ? '' : ' (не все попытки)') : ''),
             args: args.trim(),
         });
     }
