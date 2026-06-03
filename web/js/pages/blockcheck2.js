@@ -21,6 +21,7 @@ const Blockcheck2Page = (() => {
     let scriptPath = null;
     let scriptFound = false;
     let foundStrategies = [];     // структурные находки для кликабельных бейджей
+    let foundKeys = new Set();    // дедуп бейджей (ipv|test|domain|strategy)
 
     /* ───────── lifecycle ───────── */
 
@@ -264,6 +265,7 @@ const Blockcheck2Page = (() => {
         const hl = document.getElementById('bc2-highlights');
         if (hl) hl.innerHTML = '';
         foundStrategies = [];
+        foundKeys = new Set();
         const fnd = document.getElementById('bc2-found');
         if (fnd) fnd.innerHTML = '';
     }
@@ -271,7 +273,7 @@ const Blockcheck2Page = (() => {
     /* ───────── polling ───────── */
 
     function startPolling() {
-        if (!pollTimer) pollTimer = setInterval(tick, 1200);
+        if (!pollTimer) pollTimer = setInterval(tick, 800);
         tick();
     }
     function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
@@ -333,14 +335,72 @@ const Blockcheck2Page = (() => {
         if (!term) return;
         const atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 40;
         const frag = document.createDocumentFragment();
+        let foundChanged = false;
         lines.forEach(line => {
             const span = document.createElement('span');
             span.className = lineClass(line);
             span.textContent = line + '\n';
             frag.appendChild(span);
+            // Разбираем находку прямо из потоковой строки лога — так бейдж
+            // появляется ровно в момент, когда строка приходит в терминал,
+            // не дожидаясь серверного списка found и его цикла опроса.
+            if (/working strategy found/i.test(line)) {
+                const f = parseFoundLine(line);
+                if (f && addFound(f)) foundChanged = true;
+            }
         });
         term.appendChild(frag);
         if (atBottom) term.scrollTop = term.scrollHeight;
+        if (foundChanged) renderFoundChips();
+    }
+
+    // ── разбор «working strategy found» на клиенте (зеркало parse_found_strategy) ──
+    function classifyTest(test) {
+        const t = String(test || '').toLowerCase();
+        if (t.includes('http3') || t.includes('quic'))
+            return { proto: 'udp', port: '443', l7: 'quic', payload: 'quic_initial', label: 'QUIC' };
+        if (t.includes('tls13'))
+            return { proto: 'tcp', port: '443', l7: 'tls', payload: 'tls_client_hello', label: 'TLS1.3' };
+        if (t.includes('tls12'))
+            return { proto: 'tcp', port: '443', l7: 'tls', payload: 'tls_client_hello', label: 'TLS1.2' };
+        if (t.includes('https') || t.includes('tls'))
+            return { proto: 'tcp', port: '443', l7: 'tls', payload: 'tls_client_hello', label: 'HTTPS' };
+        return { proto: 'tcp', port: '80', l7: 'http', payload: 'http_req', label: 'HTTP' };
+    }
+
+    const FOUND_RE = /([\w.]+):\s*working\s+strategy\s+found\s+for\s+ipv([46])\s+(\S+)\s*:\s*(.+)$/i;
+
+    function parseFoundLine(line) {
+        // Чистим декоративные «!!!!!» и пробелы, как на сервере.
+        const clean = String(line || '').trim().replace(/^!+|!+$/g, '').trim();
+        const m = clean.match(FOUND_RE);
+        if (!m) return null;
+        const rest = m[4].trim();
+        const idx = rest.indexOf('--');
+        if (idx < 0) return null;
+        const engine = rest.slice(0, idx).trim();
+        const strategy = rest.slice(idx).trim();
+        if (!strategy) return null;
+        const info = classifyTest(m[1]);
+        return {
+            ipv: parseInt(m[2], 10), test: m[1], domain: m[3], engine, strategy,
+            proto: info.proto, port: info.port, l7: info.l7,
+            payload: info.payload, label: info.label,
+        };
+    }
+
+    function foundKey(f) {
+        return [f.ipv, f.test, f.domain, f.strategy].join('|');
+    }
+
+    // Добавить находку с дедупом. true — если добавлена новая.
+    function addFound(f) {
+        if (!f) return false;
+        const k = foundKey(f);
+        if (foundKeys.has(k)) return false;
+        foundKeys.add(k);
+        foundStrategies.push(f);
+        return true;
     }
 
     function lineClass(line) {
@@ -362,8 +422,18 @@ const Blockcheck2Page = (() => {
     // Кликабельные бейджи: каждый открывает редактор создания стратегии,
     // предзаполненный приёмом из blockcheck2 (фильтр из типа теста + дословный
     // lua-desync). Реконструкция по конвенции проекта (SKILL §3).
+    // Сливаем серверный список found с уже накопленным на клиенте (из
+    // потоковых строк). НЕ затираем клиентские находки — только добавляем
+    // недостающие. Так бейджи остаются стабильными между опросами.
     function renderFound(found) {
-        foundStrategies = Array.isArray(found) ? found : [];
+        let changed = false;
+        if (Array.isArray(found)) {
+            found.forEach(f => { if (addFound(f)) changed = true; });
+        }
+        if (changed || document.getElementById('bc2-found')) renderFoundChips();
+    }
+
+    function renderFoundChips() {
         const el = document.getElementById('bc2-found');
         if (!el) return;
         if (!foundStrategies.length) { el.innerHTML = ''; return; }

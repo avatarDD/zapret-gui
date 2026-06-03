@@ -15,6 +15,7 @@ Stderr перенаправляется в лог-буфер.
 """
 
 import os
+import pty
 import re
 import signal
 import subprocess
@@ -181,9 +182,10 @@ class NFQWSManager:
         self._start_time = None       # time.time() момент запуска
         self._last_args = []          # аргументы последнего запуска
         self._lock = threading.Lock()
-        self._stderr_thread = None    # поток чтения stderr
+        self._stderr_thread = None    # поток чтения вывода
+        self._out_fd = None           # master-fd PTY (вывод nfqws2) | None=pipe
         self._exit_code = None        # код выхода последнего процесса
-        self._debug = False           # --debug активен → stderr на уровне INFO
+        self._debug = False           # --debug активен → вывод на уровне INFO
 
         # Пробуем восстановить PID из файла при инициализации
         self._recover_pid()
@@ -242,13 +244,39 @@ class NFQWSManager:
             log.info("Запуск nfqws2...", source="nfqws")
             log.debug("Команда: %s" % " ".join(full_args), source="nfqws")
 
+            # nfqws2 с --debug (DLOG) пишет пер-пакетный лог в STDOUT, а
+            # ошибки — в STDERR. Раньше stdout уходил в DEVNULL, поэтому при
+            # включённой отладке «в логах было пусто». Теперь объединяем
+            # stdout+stderr и читаем оба. Канал — PTY: nfqws2 видит tty и
+            # строчно буферизует вывод (через pipe stdout буферизуется блоками
+            # и debug появляется рывками/в конце). Фолбэк — pipe.
+            out_fd = None
             try:
-                self._process = subprocess.Popen(
-                    full_args,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    preexec_fn=os.setsid,  # Новая группа процессов
-                )
+                out_fd, slave_fd = pty.openpty()
+            except OSError:
+                out_fd = slave_fd = None
+
+            try:
+                if slave_fd is not None:
+                    self._process = subprocess.Popen(
+                        full_args,
+                        stdin=subprocess.DEVNULL,
+                        stdout=slave_fd,
+                        stderr=slave_fd,
+                        preexec_fn=os.setsid,  # Новая группа процессов
+                        close_fds=True,
+                    )
+                    os.close(slave_fd)
+                    slave_fd = None
+                else:
+                    self._process = subprocess.Popen(
+                        full_args,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        preexec_fn=os.setsid,  # Новая группа процессов
+                    )
+                self._out_fd = out_fd
 
                 self._pid = self._process.pid
                 self._start_time = time.time()
@@ -279,16 +307,28 @@ class NFQWSManager:
                 return True
 
             except FileNotFoundError:
+                self._close_out_fds(out_fd, slave_fd)
                 log.error("Не удалось запустить: файл не найден (%s)" % binary,
                           source="nfqws")
                 return False
             except PermissionError:
+                self._close_out_fds(out_fd, slave_fd)
                 log.error("Не удалось запустить: нет прав (%s)" % binary,
                           source="nfqws")
                 return False
             except OSError as e:
+                self._close_out_fds(out_fd, slave_fd)
                 log.error("Ошибка запуска nfqws2: %s" % e, source="nfqws")
                 return False
+
+    @staticmethod
+    def _close_out_fds(*fds):
+        for fd in fds:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def stop(self) -> bool:
         """
@@ -583,9 +623,10 @@ class NFQWSManager:
         args.append("--qnum=%d" % int(queue_num))
 
         # --debug — пер-пакетный лог nfqws2 для диагностики. Глобальная опция,
-        # добавляется один раз в base. Сам вывод (stderr) пишется в лог-буфер
-        # (_read_stderr); при debug он поднимается до уровня INFO, чтобы быть
-        # видимым в UI/логах.
+        # добавляется один раз в base. nfqws2 пишет debug в STDOUT (DLOG),
+        # ошибки — в STDERR; оба объединяются и читаются в _read_output_stream
+        # (через PTY, в реальном времени). При debug строки поднимаются до INFO,
+        # чтобы быть видимыми в UI/логах.
         if bool(cfg.get("nfqws", "debug", default=False)):
             args.append("--debug")
 
@@ -842,48 +883,86 @@ class NFQWSManager:
             )
 
     def _start_stderr_reader(self):
-        """Запустить фоновый поток для чтения stderr."""
-        if self._process and self._process.stderr:
-            t = threading.Thread(
-                target=self._read_stderr,
-                args=(self._process,),
-                daemon=True,
-                name="nfqws-stderr"
-            )
-            t.start()
-            self._stderr_thread = t
+        """Запустить фоновый поток для чтения вывода nfqws2 (stdout+stderr)."""
+        if self._process is None:
+            return
+        # Читаем PTY-мастер, если есть; иначе — объединённый proc.stdout.
+        if self._out_fd is None and not self._process.stdout:
+            return
+        t = threading.Thread(
+            target=self._read_output_stream,
+            args=(self._process, self._out_fd),
+            daemon=True,
+            name="nfqws-output"
+        )
+        t.start()
+        self._stderr_thread = t
 
-    def _read_stderr(self, proc):
-        """Читать stderr процесса и писать в лог-буфер."""
+    def _read_output_stream(self, proc, out_fd):
+        """Читать вывод nfqws2 (stdout+stderr) и писать в лог-буфер.
+
+        out_fd != None — PTY-мастер (построчно, в реальном времени); иначе —
+        объединённый proc.stdout (фолбэк на pipe).
+        """
+        if out_fd is not None:
+            buf = b""
+            try:
+                while True:
+                    try:
+                        data = os.read(out_fd, 4096)
+                    except OSError:
+                        break  # EIO после закрытия slave (процесс завершился)
+                    if not data:
+                        break
+                    buf += data
+                    while True:
+                        nl = buf.find(b"\n")
+                        if nl < 0:
+                            break
+                        line = buf[:nl].decode("utf-8", "replace").rstrip("\r")
+                        buf = buf[nl + 1:]
+                        self._log_nfqws_line(line)
+            finally:
+                if buf:
+                    self._log_nfqws_line(
+                        buf.decode("utf-8", "replace").rstrip("\r"))
+                try:
+                    os.close(out_fd)
+                except OSError:
+                    pass
+                self._out_fd = None
+            return
+
         try:
-            for raw_line in proc.stderr:
+            for raw_line in proc.stdout:
                 try:
                     line = raw_line.decode("utf-8", errors="replace").rstrip()
                 except Exception:
                     line = str(raw_line).rstrip()
-
-                if not line:
-                    continue
-
-                # Определяем уровень по содержимому
-                low = line.lower()
-                if "error" in low or "fail" in low:
-                    log.error(line, source="nfqws")
-                elif "warn" in low:
-                    log.warning(line, source="nfqws")
-                elif self._debug:
-                    # В debug-режиме поднимаем обычные строки до INFO, чтобы
-                    # пер-пакетный вывод nfqws2 был виден при диагностике.
-                    log.info(line, source="nfqws")
-                else:
-                    log.debug(line, source="nfqws")
+                self._log_nfqws_line(line)
         except Exception:
             pass
         finally:
             try:
-                proc.stderr.close()
+                proc.stdout.close()
             except Exception:
                 pass
+
+    def _log_nfqws_line(self, line):
+        """Записать строку вывода nfqws2 в лог-буфер с подбором уровня."""
+        if not line:
+            return
+        low = line.lower()
+        if "error" in low or "fail" in low:
+            log.error(line, source="nfqws")
+        elif "warn" in low:
+            log.warning(line, source="nfqws")
+        elif self._debug:
+            # В debug-режиме поднимаем обычные строки до INFO, чтобы
+            # пер-пакетный вывод nfqws2 был виден при диагностике.
+            log.info(line, source="nfqws")
+        else:
+            log.debug(line, source="nfqws")
 
     def _cleanup(self):
         """Очистить состояние после остановки."""
