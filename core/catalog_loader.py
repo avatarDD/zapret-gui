@@ -185,11 +185,12 @@ def _parse_catalog_content(
     current_description = ""
     current_blobs: list[str] = []
     current_args: list[str] = []
+    current_featured = False
 
     def _flush() -> None:
         nonlocal current_id, current_name, current_author
         nonlocal current_label, current_description
-        nonlocal current_blobs, current_args
+        nonlocal current_blobs, current_args, current_featured
 
         if current_id is None:
             return
@@ -222,6 +223,7 @@ def _parse_catalog_content(
             protocol=protocol,
             level=level,
             source_file=source_file,
+            featured=current_featured,
         )
         entries.append(entry)
 
@@ -243,6 +245,7 @@ def _parse_catalog_content(
             current_description = ""
             current_blobs = []
             current_args = []
+            current_featured = False
             continue
 
         # Строки до первой секции — игнорируем
@@ -273,6 +276,8 @@ def _parse_catalog_content(
                     b.strip() for b in value.split(",")
                     if b.strip()
                 ]
+            elif key == "featured":
+                current_featured = value.lower() in ("1", "true", "yes", "on")
 
     # Последняя секция
     _flush()

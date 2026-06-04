@@ -147,6 +147,12 @@ class HealthcheckDaemon:
                                        default=True)),
             "consecutive_failures": int(cfg.get(
                 "healthcheck", "consecutive_failures", default=2)),
+            "custom_domains": list(cfg.get("healthcheck", "custom_domains",
+                                           default=[]) or []),
+            "control_domain": cfg.get("healthcheck", "control_domain",
+                                      default="") or "",
+            "outage_guard": bool(cfg.get("healthcheck", "outage_guard",
+                                         default=True)),
             "started_at": self._started_at,
             "last_check_at": self._last_check_at,
             "next_check_at": self._next_check_at,
@@ -222,27 +228,19 @@ class HealthcheckDaemon:
             except Exception as e:
                 log.error("Healthcheck tick: %s" % e, source="healthcheck")
 
-    def _tick(self) -> dict:
-        """Один прогон проверки — для всех включённых сервисов.
+    @staticmethod
+    def _build_targets(cfg):
+        """Собрать список целей проверки: известные сервисы + кастомные домены.
 
-        Возвращает summary текущего прогона. При обнаружении провала
-        (consecutive >= threshold) сбрасывает state.tsv по затронутым
-        хостам, если auto_reset включён.
+        Каждая цель: {key, display, icon, url, hosts:[...]}.
+          - известные сервисы — из core.diagnostics.SERVICES;
+          - кастомные домены — пользовательские, хост выводится из URL.
         """
-        from core.config_manager import get_config_manager
-        from core.diagnostics import SERVICES, check_http
-        from core import strategy_state
+        from core.diagnostics import SERVICES
+        from urllib.parse import urlparse
 
-        cfg = get_config_manager()
-        wanted = cfg.get("healthcheck", "services", default=[]) or []
-        threshold = max(1, int(cfg.get("healthcheck", "consecutive_failures",
-                                       default=2)))
-        auto_reset = bool(cfg.get("healthcheck", "auto_reset", default=True))
-
-        # ── Фаза 1: пробы всех сервисов ──
-        results = []
-        ts = time.time()
-        for name in wanted:
+        targets = []
+        for name in (cfg.get("healthcheck", "services", default=[]) or []):
             svc = SERVICES.get(name)
             if not svc:
                 continue
@@ -250,17 +248,65 @@ class HealthcheckDaemon:
             hosts = svc.get("hosts") or []
             if not urls or not hosts:
                 continue
-
-            # Берём первый URL — Diagnostics уже его проверяет в общем UI.
-            # timeout — короткий: 8с. Cache check_http ставит TTL 30с,
-            # поэтому повторные тики не задавят сеть лишним curl'ом.
-            r = check_http(urls[0], timeout=8)
-            results.append({
-                "service": name,
+            targets.append({
+                "key": name,
                 "display": svc.get("name", name),
                 "icon": svc.get("icon", ""),
                 "url": urls[0],
-                "hosts": hosts,
+                "hosts": list(hosts),
+            })
+
+        for dom in (cfg.get("healthcheck", "custom_domains", default=[]) or []):
+            dom = (dom or "").strip()
+            if not dom:
+                continue
+            url = dom if dom.startswith(("http://", "https://")) \
+                else "https://" + dom
+            host = urlparse(url).hostname or dom
+            targets.append({
+                "key": "custom:" + host,
+                "display": host,
+                "icon": "🌐",
+                "url": url,
+                "hosts": [host],
+            })
+        return targets
+
+    def _tick(self) -> dict:
+        """Один прогон проверки — для всех включённых целей.
+
+        Возвращает summary текущего прогона. При обнаружении провала
+        (consecutive >= threshold) сбрасывает state.tsv по затронутым
+        хостам, если auto_reset включён.
+        """
+        from core.config_manager import get_config_manager
+        from core.diagnostics import check_http
+        from core import strategy_state
+
+        cfg = get_config_manager()
+        threshold = max(1, int(cfg.get("healthcheck", "consecutive_failures",
+                                       default=2)))
+        auto_reset = bool(cfg.get("healthcheck", "auto_reset", default=True))
+        outage_guard = bool(cfg.get("healthcheck", "outage_guard",
+                                    default=True))
+        control_domain = (cfg.get("healthcheck", "control_domain",
+                                  default="") or "").strip()
+
+        targets = self._build_targets(cfg)
+
+        # ── Фаза 1: пробы всех целей ──
+        results = []
+        ts = time.time()
+        for tgt in targets:
+            # Берём URL цели. timeout — короткий: 8с. Cache check_http ставит
+            # TTL 30с, поэтому повторные тики не задавят сеть лишним curl'ом.
+            r = check_http(tgt["url"], timeout=8)
+            results.append({
+                "service": tgt["key"],
+                "display": tgt["display"],
+                "icon": tgt["icon"],
+                "url": tgt["url"],
+                "hosts": tgt["hosts"],
                 "ok": bool(r.get("ok")),
                 "status_code": r.get("status_code") or 0,
                 "response_time": r.get("response_time"),
@@ -274,12 +320,28 @@ class HealthcheckDaemon:
         failed = total - ok
 
         # ── Защита от «глобального обвала» ──
-        # Если упали ВСЕ проверяемые сервисы — это почти наверняка общая
-        # проблема (нет интернета, не запущен nfqws2, лёг DNS/WAN), а НЕ
-        # отказ отдельных стратегий. Сбрасывать выученные стратегии в этом
-        # случае бессмысленно и вредно (трэшинг). Идея — как baseline-aware
-        # в сканере: чинить можно лишь то, что выборочно сломано.
-        global_outage = (total >= 2 and ok == 0)
+        # Если упали ВСЕ цели — это МОЖЕТ быть общая проблема (нет интернета,
+        # не запущен nfqws2, лёг DNS/WAN), а не отказ стратегий. Но это же
+        # бывает и когда DPI реально блокирует все цели сразу — тогда сброс
+        # как раз нужен. Различаем по «контрольному» сайту (control_domain),
+        # который НЕ блокируется: если он открывается — связь есть, провал
+        # всех целей = DPI, сброс ВЫПОЛНЯЕТСЯ. Если control тоже недоступен —
+        # это реальный обвал, сброс пропускаем.
+        all_failed = (total >= 1 and ok == 0)
+        global_outage = False
+        control_ok = None
+        if outage_guard and all_failed:
+            if control_domain:
+                curl = control_domain if control_domain.startswith(
+                    ("http://", "https://")) else "https://" + control_domain
+                cr = check_http(curl, timeout=8)
+                control_ok = bool(cr.get("ok"))
+                # Контрольный открылся → связь есть → это DPI, НЕ обвал.
+                global_outage = not control_ok
+            else:
+                # Без контрольного сайта — старая эвристика: ≥2 целей и все
+                # упали ⇒ считаем обвалом (консервативно, не трэшим).
+                global_outage = (total >= 2)
 
         # ── Фаза 2: решение о сбросе (по-сервисно, с учётом streak) ──
         for entry in results:
@@ -338,6 +400,8 @@ class HealthcheckDaemon:
             "ok": ok,
             "failed": failed,
             "global_outage": global_outage,
+            "control_domain": control_domain,
+            "control_ok": control_ok,
         }
         with self._lock:
             self._history.append(summary)
@@ -345,16 +409,23 @@ class HealthcheckDaemon:
             self._last_check_summary = {
                 "ts": ts, "total": total, "ok": ok, "failed": failed,
                 "global_outage": global_outage,
+                "control_domain": control_domain, "control_ok": control_ok,
             }
 
         if global_outage:
             log.warning(
-                "Healthcheck: упали ВСЕ %d сервиса — похоже на отсутствие "
+                "Healthcheck: упали ВСЕ %d цели%s — похоже на отсутствие "
                 "связи или не запущен nfqws2. Сброс стратегий пропущен "
-                "(не трэшим выученное)." % total,
+                "(не трэшим выученное)." % (
+                    total,
+                    (" и контрольный %s" % control_domain)
+                    if control_domain else ""),
                 source="healthcheck")
         elif total > 0:
             log.info(
-                "Healthcheck: %d/%d сервисов доступны" % (ok, total),
+                "Healthcheck: %d/%d целей доступны%s" % (
+                    ok, total,
+                    (" (контрольный %s открылся → провалы трактуем как DPI)"
+                     % control_domain) if (all_failed and control_ok) else ""),
                 source="healthcheck")
         return summary

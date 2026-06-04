@@ -114,6 +114,13 @@ const StrategiesPage = (() => {
                             </svg>
                             <span id="healthcheck-run-label">Проверить сейчас</span>
                         </button>
+                        <button class="btn btn-ghost btn-sm" id="healthcheck-cfg-btn" onclick="StrategiesPage.toggleHealthcheckSettings()" title="Настроить: какие сайты проверять, контрольный сайт, пороги">
+                            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <circle cx="12" cy="12" r="3"/>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                            </svg>
+                            Настроить
+                        </button>
                     </span>
                 </div>
                 <div class="text-muted" style="font-size:12px; line-height:1.5; margin-bottom:10px; padding:8px 10px; background:var(--bg-secondary, rgba(127,127,127,.08)); border-radius:6px;">
@@ -124,6 +131,7 @@ const StrategiesPage = (() => {
                     хотите, чтобы обход сам восстанавливался без вашего участия.
                     Кнопка «Проверить сейчас» работает и при выключенном демоне.
                 </div>
+                <div id="healthcheck-settings" style="display:none; margin-bottom:12px;"></div>
                 <div id="healthcheck-body" style="font-size:13px;">
                     <span class="text-muted">Загрузка...</span>
                 </div>
@@ -280,12 +288,18 @@ const StrategiesPage = (() => {
         // Баннер «глобального обвала» — объясняем, почему сброса не было.
         let outageHtml = '';
         if (summary && summary.global_outage) {
+            const ctl = summary.control_domain;
+            const ctlNote = ctl
+                ? `Контрольный сайт <code>${escapeHtml(ctl)}</code> тоже недоступен — связи, похоже, нет.`
+                : `Контрольный сайт не задан, поэтому падение всех сайтов считается обвалом.`;
             outageHtml = `<div style="font-size:12px; line-height:1.5; margin-bottom:8px; padding:8px 10px; border-radius:6px; background:rgba(248,113,113,.12); border-left:3px solid var(--danger, #f87171);">
-                ⚠ Не открылся ни один сайт. Это похоже на <b>общую</b> проблему
-                (нет интернета, не запущен nfqws2, проблема с DNS/WAN), а не на
-                отказ отдельных стратегий — поэтому выученные стратегии
-                <b>не сбрасывались</b>. Проверьте, запущен ли обход и есть ли
-                связь.
+                ⚠ Не открылся ни один сайт, поэтому выученные стратегии
+                <b>не сбрасывались</b>. ${ctlNote}
+                <div style="margin-top:4px;">Если у вас <b>реально</b> бывает, что все сайты заблокированы
+                одновременно — задайте «контрольный сайт» в
+                <a href="#" onclick="StrategiesPage.toggleHealthcheckSettings(); return false;">настройках</a>
+                (тогда при живой связи сброс будет срабатывать) или отключите
+                там же «защиту от обвала».</div>
             </div>`;
         }
 
@@ -475,6 +489,124 @@ const StrategiesPage = (() => {
                 : (st.enabled ? 'Включено' : 'Выключено');
         }
         body.innerHTML = renderHealthcheck(st);
+        lastHealthStatus = st;
+    }
+
+    // ══════════════════ Healthcheck: панель настроек ══════════════════
+
+    let lastHealthStatus = null;
+    let knownServicesCache = null;
+
+    async function toggleHealthcheckSettings() {
+        const panel = document.getElementById('healthcheck-settings');
+        if (!panel) return;
+        if (panel.style.display !== 'none') {
+            panel.style.display = 'none';
+            return;
+        }
+        // Подгружаем известные сервисы (для чекбоксов) и текущий статус.
+        if (!knownServicesCache) {
+            try {
+                const d = await API.get('/api/diagnostics/services');
+                knownServicesCache = (d && (d.services || d.result)) || {};
+            } catch (_e) { knownServicesCache = {}; }
+        }
+        if (!lastHealthStatus) {
+            try {
+                const d = await API.get('/api/healthcheck/status');
+                lastHealthStatus = (d && d.status) || {};
+            } catch (_e) { lastHealthStatus = {}; }
+        }
+        panel.innerHTML = renderHealthcheckSettings(lastHealthStatus, knownServicesCache);
+        panel.style.display = '';
+    }
+
+    function renderHealthcheckSettings(st, known) {
+        const sel = new Set(st.services || []);
+        const svcRows = Object.keys(known || {}).map(key => {
+            const svc = known[key] || {};
+            const checked = sel.has(key) ? 'checked' : '';
+            return `<label style="display:inline-flex; align-items:center; gap:5px; margin:2px 10px 2px 0; font-size:13px; cursor:pointer;">
+                <input type="checkbox" class="hc-svc" value="${escapeHtml(key)}" ${checked}>
+                ${escapeHtml(svc.icon || '')} ${escapeHtml(svc.name || key)}
+            </label>`;
+        }).join('');
+        const custom = (st.custom_domains || []).join('\n');
+        return `
+            <div style="border:1px solid var(--border, rgba(127,127,127,.2)); border-radius:8px; padding:12px; background:var(--bg-secondary, rgba(127,127,127,.05));">
+                <div style="font-weight:600; margin-bottom:8px; font-size:13px;">Настройки авто-починки</div>
+
+                <div style="margin-bottom:10px;">
+                    <div style="font-size:12px; color:var(--text-muted); margin-bottom:4px;">Известные сервисы для проверки:</div>
+                    <div>${svcRows || '<span class="text-muted">нет</span>'}</div>
+                </div>
+
+                <div style="margin-bottom:10px;">
+                    <div style="font-size:12px; color:var(--text-muted); margin-bottom:4px;">Свои сайты (по одному в строке: <code>example.com</code> или <code>https://example.com/path</code>):</div>
+                    <textarea id="hc-custom" rows="3" style="width:100%; font-family:monospace; font-size:12px; padding:6px;" placeholder="rutracker.org&#10;https://example.com">${escapeHtml(custom)}</textarea>
+                </div>
+
+                <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px;">
+                    <label style="font-size:13px;">Интервал, мин:
+                        <input type="number" id="hc-interval" min="1" max="1440" value="${st.interval_min || 5}" style="width:64px; margin-left:4px;">
+                    </label>
+                    <label style="font-size:13px;">Сброс после N провалов:
+                        <input type="number" id="hc-threshold" min="1" max="20" value="${st.consecutive_failures || 2}" style="width:56px; margin-left:4px;">
+                    </label>
+                </div>
+
+                <div style="margin-bottom:10px;">
+                    <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer; margin-bottom:6px;">
+                        <input type="checkbox" id="hc-outage-guard" ${st.outage_guard ? 'checked' : ''}>
+                        Защита от ложного сброса при «обвале связи»
+                    </label>
+                    <div style="font-size:12px; color:var(--text-muted); margin-left:24px;">
+                        Контрольный сайт (НЕ блокируется — если открывается, значит
+                        связь есть и провалы целевых = блокировка, сброс выполняется):
+                        <input type="text" id="hc-control" value="${escapeHtml(st.control_domain || '')}" placeholder="ya.ru" style="margin-left:4px; width:140px;">
+                        <div style="margin-top:3px;">Пусто = считать обвалом любое падение всех сайтов (старое поведение). Если у вас бывает, что все целевые блокируются разом — оставьте контрольный сайт, и сброс сработает.</div>
+                    </div>
+                </div>
+
+                <div style="display:flex; gap:8px;">
+                    <button class="btn btn-primary btn-sm" onclick="StrategiesPage.saveHealthcheckSettings()">Сохранить</button>
+                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.toggleHealthcheckSettings()">Отмена</button>
+                </div>
+            </div>
+        `;
+    }
+
+    async function saveHealthcheckSettings() {
+        const services = Array.from(document.querySelectorAll('.hc-svc'))
+            .filter(c => c.checked).map(c => c.value);
+        const customRaw = (document.getElementById('hc-custom') || {}).value || '';
+        const custom_domains = customRaw.split(/[\n,]+/)
+            .map(s => s.trim()).filter(Boolean);
+        const interval_min = parseInt((document.getElementById('hc-interval') || {}).value, 10) || 5;
+        const consecutive_failures = parseInt((document.getElementById('hc-threshold') || {}).value, 10) || 2;
+        const outage_guard = !!(document.getElementById('hc-outage-guard') || {}).checked;
+        const control_domain = ((document.getElementById('hc-control') || {}).value || '').trim();
+
+        if (services.length === 0 && custom_domains.length === 0) {
+            Toast.error('Выберите хотя бы один сайт для проверки');
+            return;
+        }
+        try {
+            const body = { services, custom_domains, interval_min,
+                consecutive_failures, outage_guard, control_domain };
+            const data = await API.post('/api/healthcheck/config', body);
+            if (data && data.ok) {
+                Toast.success('Настройки сохранены');
+                const panel = document.getElementById('healthcheck-settings');
+                if (panel) panel.style.display = 'none';
+                if (data.status) renderHealthcheckBody(data.status);
+                else refreshHealthcheck();
+            } else {
+                Toast.error((data && data.error) || 'Не удалось сохранить');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
     }
 
     // ══════════════════ Autocircular state (z2k-state-persist) ══════════════════
@@ -1738,5 +1870,7 @@ const StrategiesPage = (() => {
         refreshHealthcheck,
         toggleHealthcheck,
         runHealthcheckNow,
+        toggleHealthcheckSettings,
+        saveHealthcheckSettings,
     };
 })();

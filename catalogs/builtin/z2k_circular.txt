@@ -21,6 +21,7 @@
 name = z2k TLS/HTTP авто (умные детекторы)
 author = necronicle/z2k
 label = recommended
+featured = 1
 description = circular-автоподбор с детекторами z2k: ловит TLS-stall, молчание в потоке и блок-страницы РКН, не закрепляется на отказе сервера. Запоминает рабочую стратегию по доменам (переживает рестарт). Открывайте заблокированные сайты — подбор идёт сам.
 --filter-tcp=80,443 --filter-l7=tls,http --ipcache-hostname=1 --out-range=-s34228 --in-range=-s5556
 --lua-desync=circular:fails=3:retrans=3:nld=3:failure_detector=z2k_mid_stream_stall:success_detector=z2k_http_success_positive_only:hostkey=z2k_nohost_key
