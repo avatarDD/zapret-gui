@@ -1,0 +1,39 @@
+# Приёмы z2k для UDP (QUIC / игры / Discord voice).
+# Источник: github.com/necronicle/z2k (z2k-modern-core.lua).
+# Это «приёмы» (один --lua-desync) — сканер оборачивает их под цель
+# (--filter-udp/--filter-l7/--payload/--hostlist), см. strategy_scanner.
+
+[z2k_quic_morph]
+name = z2k QUIC morph
+author = necronicle/z2k
+label = recommended
+description = Морфинг QUIC Initial: фрагментация + модификация version/CID/token + шумовые пакеты. Против DPI, распознающего QUIC по сигнатуре первого пакета.
+--lua-desync=z2k_quic_morph_v2
+
+[z2k_quic_morph_frag2]
+name = z2k QUIC morph (профиль фрагментации 2)
+author = necronicle/z2k
+label = stable
+description = QUIC morph с явным профилем фрагментации 2 (две части).
+--lua-desync=z2k_quic_morph_v2:frag=2
+
+[z2k_quic_morph_frag3_noise]
+name = z2k QUIC morph (3 фрагмента + шум)
+author = necronicle/z2k
+label = stable
+description = QUIC morph с 3 фрагментами и генерацией шумового пакета — для агрессивного DPI.
+--lua-desync=z2k_quic_morph_v2:frag=3:noise=1
+
+[z2k_game_udp]
+name = z2k Game UDP fake
+author = necronicle/z2k
+label = recommended
+description = Инъекция поддельных UDP-датаграмм для игровых протоколов (с TTL/повторами). Для голоса Discord, игровых серверов, STUN.
+--lua-desync=z2k_game_udp:repeats=2
+
+[z2k_game_udp_ttl]
+name = z2k Game UDP fake + TTL
+author = necronicle/z2k
+label = stable
+description = Game UDP fake с авто-TTL для прохождения мимо ТСПУ.
+--lua-desync=z2k_game_udp:repeats=3:ip_autottl=-2,3-20:ip6_autottl=-2,3-20

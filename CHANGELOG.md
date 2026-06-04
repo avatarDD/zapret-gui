@@ -35,6 +35,26 @@
   `DELETE /api/strategies/state[/host/<h>|/key/<k>]` с опциональным
   `?reload=1` для SIGHUP nfqws2 (`api/strategies.py`,
   `core/strategy_state.py`, `web/js/pages/strategies.js`).
+- **Стратегии z2k в каталоге (используют новые движки)** — раньше были
+  добавлены только Lua-скрипты z2k, но ни одна стратегия их не вызывала
+  (детекторы/QUIC-morph/dynamic-TTL грузились, но «спали»). Теперь есть
+  стратегии, которые их реально задействуют, — они видны в списке
+  (автор `necronicle/z2k`) и участвуют в подборе:
+  - `catalogs/builtin/z2k_circular.txt` — **z2k TLS/HTTP авто (умные
+    детекторы)**: circular-автоподбор с `failure_detector=z2k_mid_stream_stall`
+    (ловит TLS-stall и молчание в потоке 8–32KB), `success_detector=
+    z2k_http_success_positive_only` (не закрепляется на блок-страницах
+    РКН / отказе сервера), `hostkey=z2k_nohost_key` (общий бакет для
+    бесхостовых потоков). Самодостаточна (встроенные блобы + hex-паттерны).
+    Видна в фильтре «⟳ Авто (circular)».
+  - `catalogs/advanced/udp_z2k_advanced.txt` — приёмы `z2k_quic_morph_v2`
+    (морфинг QUIC Initial) и `z2k_game_udp` (UDP-fake для игр/Discord),
+    тестируются при подборе UDP (режим full).
+  - `catalogs/advanced/tcp_z2k_advanced.txt` — приёмы с
+    `fool=z2k_dynamic_ttl` (TTL фейка = реальный−1, с первого пакета),
+    тестируются при подборе TCP (режим full).
+  - Новый value-триггер `fool=z2k_*` подгружает `z2k-fooling-ext.lua`
+    для не-circular приёмов (`core/nfqws_manager._FOOL_EXT_TRIGGER_RE`).
 - **Фильтр «⟳ Авто (circular)» в списке стратегий** — быстро показать
   только авто-стратегии (которые сами перебирают приёмы и запоминают
   рабочий). Карточка «Выученные стратегии» теперь видна всегда: при пустом

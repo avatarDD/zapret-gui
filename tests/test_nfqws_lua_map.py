@@ -265,6 +265,22 @@ class TestBuildLuaInitArgs(unittest.TestCase):
             ["--lua-desync=fake:blob=fake_default_tls:tcp_seq=-1000-1000"])
         self.assertIn("z2k-range-rand.lua", files)
 
+    # ──────────────── z2k fool=z2k_dynamic_ttl ────────────────
+
+    def test_fool_ext_triggered_by_dynamic_ttl(self):
+        """fake:fool=z2k_dynamic_ttl (НЕ circular) тянет z2k-fooling-ext.lua
+        по value-триггеру — иначе fool-функция не определена."""
+        files = self._files(
+            ["--lua-desync=fake:blob=fake_default_tls:fool=z2k_dynamic_ttl"])
+        self.assertIn("z2k-fooling-ext.lua", files)
+        # zapret-auto (orchestrator) НЕ должен подтягиваться без circular
+        self.assertNotIn("zapret-auto.lua", files)
+
+    def test_fool_ext_not_triggered_without_z2k_fool(self):
+        files = self._files(
+            ["--lua-desync=fake:blob=fake_default_tls:ip_autottl=-2,3-20"])
+        self.assertNotIn("z2k-fooling-ext.lua", files)
+
 
 if __name__ == "__main__":
     unittest.main()
