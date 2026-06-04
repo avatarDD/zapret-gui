@@ -108,13 +108,21 @@ const StrategiesPage = (() => {
                             <input type="checkbox" id="healthcheck-toggle" onchange="StrategiesPage.toggleHealthcheck(this.checked)">
                             <span id="healthcheck-toggle-label">Включить</span>
                         </label>
-                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.runHealthcheckNow()" title="Прогнать проверку прямо сейчас (без ожидания таймера)">
-                            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <button class="btn btn-ghost btn-sm" id="healthcheck-run-btn" onclick="StrategiesPage.runHealthcheckNow()" title="Прогнать проверку прямо сейчас (без ожидания таймера). Проверка идёт ~10–30 сек.">
+                            <svg class="btn-icon" id="healthcheck-run-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <polygon points="5 3 19 12 5 21 5 3"/>
                             </svg>
-                            Проверить сейчас
+                            <span id="healthcheck-run-label">Проверить сейчас</span>
                         </button>
                     </span>
+                </div>
+                <div class="text-muted" style="font-size:12px; line-height:1.5; margin-bottom:10px; padding:8px 10px; background:var(--bg-secondary, rgba(127,127,127,.08)); border-radius:6px;">
+                    Демон периодически проверяет доступность сайтов. Если сайт
+                    перестал открываться — сбрасывает «выученную» стратегию для
+                    него, и обход (circular) подберёт рабочую заново.
+                    <b>Полезно</b>, если используете авто-стратегию (circular) и
+                    хотите, чтобы обход сам восстанавливался без вашего участия.
+                    Кнопка «Проверить сейчас» работает и при выключенном демоне.
                 </div>
                 <div id="healthcheck-body" style="font-size:13px;">
                     <span class="text-muted">Загрузка...</span>
@@ -122,7 +130,7 @@ const StrategiesPage = (() => {
             </div>
 
             <!-- Выученные стратегии (z2k-state-persist autocircular) -->
-            <div class="card" id="autocircular-state-card" style="display:none;">
+            <div class="card" id="autocircular-state-card">
                 <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
                     <span style="display:flex; align-items:center; gap:6px;">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
@@ -223,19 +231,11 @@ const StrategiesPage = (() => {
 
     async function refreshHealthcheck() {
         const body = document.getElementById('healthcheck-body');
-        const toggle = document.getElementById('healthcheck-toggle');
-        const toggleLabel = document.getElementById('healthcheck-toggle-label');
-        if (!body || !toggle) return;
+        if (!body) return;
         try {
             const data = await API.get('/api/healthcheck/status');
             if (!data || !data.ok) return;
-            const st = data.status || {};
-            toggle.checked = !!st.enabled;
-            if (toggleLabel) {
-                toggleLabel.textContent = st.running ? 'Включено (работает)'
-                    : (st.enabled ? 'Включено' : 'Выключено');
-            }
-            body.innerHTML = renderHealthcheck(st);
+            renderHealthcheckBody(data.status || {});
         } catch (_e) {
             body.innerHTML = '<span class="text-muted">Сервис недоступен</span>';
         }
@@ -248,19 +248,47 @@ const StrategiesPage = (() => {
             catch (_) { return ts; }
         };
         const summary = st.last_summary;
+        const threshold = st.consecutive_failures || 2;
+
+        // Идёт проверка прямо сейчас — показываем спиннер.
+        if (st.checking) {
+            return `<div style="display:flex; align-items:center; gap:10px; padding:10px 0; color:var(--text-muted);">
+                <div class="spinner" style="width:18px; height:18px;"></div>
+                Проверяю доступность сайтов… (до ~30 секунд)
+            </div>` + cfgLine(st);
+        }
+
         let summaryHtml = '';
         if (summary && summary.total) {
-            const okBadge = summary.failed === 0
-                ? '<span class="badge badge-success">все OK</span>'
-                : `<span class="badge badge-warning">${summary.ok}/${summary.total}</span>`;
+            let statusBadge;
+            if (summary.global_outage) {
+                statusBadge = '<span class="badge badge-danger" title="Упали все сайты — похоже на отсутствие связи или nfqws2 не запущен">нет связи?</span>';
+            } else if (summary.failed === 0) {
+                statusBadge = '<span class="badge badge-success">все OK</span>';
+            } else {
+                statusBadge = `<span class="badge badge-warning">${summary.ok}/${summary.total} работает</span>`;
+            }
             summaryHtml = `
                 <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
                     <span class="text-muted" style="font-size:12px;">Последняя: ${escapeHtml(fmtTs(summary.ts))}</span>
-                    ${okBadge}
-                    ${st.next_check_at ? `<span class="text-muted" style="font-size:12px;">следующая: ${escapeHtml(fmtTs(st.next_check_at))}</span>` : ''}
+                    ${statusBadge}
+                    ${(st.running && st.next_check_at) ? `<span class="text-muted" style="font-size:12px;">следующая: ${escapeHtml(fmtTs(st.next_check_at))}</span>` : ''}
                 </div>
             `;
         }
+
+        // Баннер «глобального обвала» — объясняем, почему сброса не было.
+        let outageHtml = '';
+        if (summary && summary.global_outage) {
+            outageHtml = `<div style="font-size:12px; line-height:1.5; margin-bottom:8px; padding:8px 10px; border-radius:6px; background:rgba(248,113,113,.12); border-left:3px solid var(--danger, #f87171);">
+                ⚠ Не открылся ни один сайт. Это похоже на <b>общую</b> проблему
+                (нет интернета, не запущен nfqws2, проблема с DNS/WAN), а не на
+                отказ отдельных стратегий — поэтому выученные стратегии
+                <b>не сбрасывались</b>. Проверьте, запущен ли обход и есть ли
+                связь.
+            </div>`;
+        }
+
         const history = st.history || [];
         const last = history.length ? history[history.length - 1] : null;
         let resultsHtml = '';
@@ -270,15 +298,30 @@ const StrategiesPage = (() => {
                     ? '<span class="badge badge-success" style="font-size:11px;">OK</span>'
                     : '<span class="badge badge-danger" style="font-size:11px;">FAIL</span>';
                 const rt = r.response_time ? `${r.response_time} ms` : '—';
-                const reset = (r.hosts_reset || []).map(h =>
-                    `<span class="badge badge-warning" style="font-size:11px;" title="state.tsv сброшен для ${escapeHtml(h.host)} (${h.removed} записей)">↻ ${escapeHtml(h.host)}</span>`
-                ).join(' ');
+                // Код ответа или короткая ошибка.
+                let detail = '';
+                if (r.ok) {
+                    detail = r.status_code ? String(r.status_code) : '';
+                } else if (r.error) {
+                    detail = escapeHtml(String(r.error).slice(0, 50));
+                } else if (r.status_code) {
+                    detail = String(r.status_code);
+                }
+                // Сброс state или прогресс к нему.
+                let reset = '';
+                if ((r.hosts_reset || []).length) {
+                    reset = r.hosts_reset.map(h =>
+                        `<span class="badge badge-warning" style="font-size:11px;" title="Выученная стратегия сброшена для ${escapeHtml(h.host)} — circular переподберёт">↻ сброшено</span>`
+                    ).join(' ');
+                } else if (!r.ok && !summary.global_outage && r.fail_streak) {
+                    reset = `<span class="text-muted" style="font-size:11px;" title="При ${threshold} провалах подряд выученная стратегия сбросится автоматически">провал ${r.fail_streak}/${threshold}</span>`;
+                }
                 return `
                     <tr>
                         <td><span style="margin-right:4px;">${escapeHtml(r.icon || '')}</span><strong>${escapeHtml(r.display || r.service)}</strong></td>
                         <td>${okIcon}</td>
                         <td class="text-muted" style="font-size:12px;">${escapeHtml(rt)}</td>
-                        <td class="text-muted" style="font-size:12px;">${r.status_code || (r.error ? escapeHtml(String(r.error).slice(0, 60)) : '')}</td>
+                        <td class="text-muted" style="font-size:12px;">${detail}</td>
                         <td>${reset}</td>
                     </tr>
                 `;
@@ -288,11 +331,11 @@ const StrategiesPage = (() => {
                     <table class="data-table" style="width:100%; font-size:13px;">
                         <thead>
                             <tr>
-                                <th>Сервис</th>
+                                <th>Сайт</th>
                                 <th>Статус</th>
                                 <th>Время</th>
-                                <th>Код/Ошибка</th>
-                                <th>Сброс state</th>
+                                <th>Ответ</th>
+                                <th>Авто-починка</th>
                             </tr>
                         </thead>
                         <tbody>${rows}</tbody>
@@ -301,19 +344,23 @@ const StrategiesPage = (() => {
             `;
         } else if (!st.enabled) {
             resultsHtml = `<div class="text-muted" style="padding:8px 0;">
-                Демон выключен. Включите чекбоксом или нажмите «Проверить сейчас» для разовой проверки.
+                Демон выключен. Нажмите «Проверить сейчас» для разовой проверки
+                или включите автоматический режим переключателем.
             </div>`;
         } else {
-            resultsHtml = `<div class="text-muted" style="padding:8px 0;">Демон запущен, первая проверка ещё не выполнена.</div>`;
+            resultsHtml = `<div class="text-muted" style="padding:8px 0;">Демон запущен, первая проверка скоро выполнится (через ~30 сек после старта).</div>`;
         }
-        const cfg = `
+        return summaryHtml + outageHtml + resultsHtml + cfgLine(st);
+    }
+
+    function cfgLine(st) {
+        return `
             <div class="text-muted" style="font-size:11px; margin-top:6px;">
-                Интервал: ${st.interval_min || 5} мин · Сервисов: ${(st.services || []).length}
-                · Порог провалов: ${st.consecutive_failures || 2}
-                · Авто-сброс state: ${st.auto_reset ? 'да' : 'нет'}
+                Интервал: ${st.interval_min || 5} мин · Сайтов: ${(st.services || []).length}
+                · Сброс после: ${st.consecutive_failures || 2} провалов подряд
+                · Авто-сброс: ${st.auto_reset ? 'вкл' : 'выкл'}
             </div>
         `;
-        return summaryHtml + resultsHtml + cfg;
     }
 
     async function toggleHealthcheck(on) {
@@ -334,32 +381,107 @@ const StrategiesPage = (() => {
         }
     }
 
+    let healthcheckPollTimer = null;
+
+    function setRunBtnLoading(loading) {
+        const btn = document.getElementById('healthcheck-run-btn');
+        const label = document.getElementById('healthcheck-run-label');
+        const icon = document.getElementById('healthcheck-run-icon');
+        if (!btn) return;
+        btn.disabled = loading;
+        if (label) label.textContent = loading ? 'Проверяю…' : 'Проверить сейчас';
+        if (icon) icon.style.display = loading ? 'none' : '';
+    }
+
     async function runHealthcheckNow() {
+        // Защита от двойного клика
+        const btn = document.getElementById('healthcheck-run-btn');
+        if (btn && btn.disabled) return;
+
         try {
+            setRunBtnLoading(true);
+            // Неблокирующий запуск: бэкенд стартует проверку в фоне и сразу
+            // отвечает. Каждый сайт проверяется до 8с — синхронно ждать
+            // нельзя, поэтому опрашиваем /status и показываем спиннер.
             const data = await API.post('/api/healthcheck/run', {});
-            if (data && data.ok) {
-                const r = data.result || {};
-                if (r.total) {
-                    const msg = r.failed
-                        ? `Проверено ${r.total}, провалов: ${r.failed}`
-                        : `Все ${r.total} сервиса доступны`;
-                    Toast.info(msg);
-                }
-                refreshHealthcheck();
-                // state мог быть сброшен — освежим таблицу выученных
-                refreshState();
-            } else {
-                Toast.error((data && data.error) || 'Проверка не удалась');
+            if (!data || !data.ok) {
+                Toast.error((data && data.error) || 'Не удалось запустить проверку');
+                setRunBtnLoading(false);
+                return;
             }
+            const res = data.result || {};
+            if (res.busy) {
+                Toast.info('Проверка уже идёт…');
+            }
+            // Сразу показать состояние «идёт проверка».
+            await refreshHealthcheck();
+            // Поллинг до завершения (checking=false и появился свежий прогон).
+            startHealthcheckPoll();
         } catch (err) {
             Toast.error(err.message);
+            setRunBtnLoading(false);
         }
+    }
+
+    function startHealthcheckPoll() {
+        if (healthcheckPollTimer) clearInterval(healthcheckPollTimer);
+        let elapsed = 0;
+        const startTs = Date.now() / 1000;
+        healthcheckPollTimer = setInterval(async () => {
+            elapsed += 1.5;
+            try {
+                const data = await API.get('/api/healthcheck/status');
+                const st = (data && data.status) || {};
+                // Завершилось: не checking и есть прогон новее старта запроса.
+                const done = !st.checking &&
+                    st.last_check_at && st.last_check_at >= startTs - 2;
+                if (done || elapsed > 45) {
+                    clearInterval(healthcheckPollTimer);
+                    healthcheckPollTimer = null;
+                    setRunBtnLoading(false);
+                    renderHealthcheckBody(st);
+                    // Тост с итогом.
+                    const s = st.last_summary;
+                    if (s && s.total) {
+                        if (s.global_outage) {
+                            Toast.warning('Не открылся ни один сайт — похоже, нет связи или обход не запущен');
+                        } else if (s.failed === 0) {
+                            Toast.success(`Все ${s.total} сайта доступны`);
+                        } else {
+                            Toast.warning(`Работает ${s.ok} из ${s.total}`);
+                        }
+                    }
+                    // state мог быть сброшен — освежим таблицу выученных.
+                    refreshState();
+                } else {
+                    renderHealthcheckBody(st);
+                }
+            } catch (_e) {
+                clearInterval(healthcheckPollTimer);
+                healthcheckPollTimer = null;
+                setRunBtnLoading(false);
+            }
+        }, 1500);
+    }
+
+    function renderHealthcheckBody(st) {
+        const body = document.getElementById('healthcheck-body');
+        const toggle = document.getElementById('healthcheck-toggle');
+        const toggleLabel = document.getElementById('healthcheck-toggle-label');
+        if (!body) return;
+        if (toggle) toggle.checked = !!st.enabled;
+        if (toggleLabel) {
+            toggleLabel.textContent = st.running ? 'Включено (работает)'
+                : (st.enabled ? 'Включено' : 'Выключено');
+        }
+        body.innerHTML = renderHealthcheck(st);
     }
 
     // ══════════════════ Autocircular state (z2k-state-persist) ══════════════════
 
-    // Обновить таблицу выученных стратегий. Карточка скрыта если файла нет
-    // или записей 0 (autocircular пока не подобрал ничего — это норма).
+    // Обновить таблицу выученных стратегий. Карточка видна всегда: при пустом
+    // state показываем объяснение, как включить автоподбор (применить
+    // circular-стратегию), чтобы фича была обнаружимой.
     async function refreshState() {
         const card = document.getElementById('autocircular-state-card');
         const body = document.getElementById('autocircular-state-body');
@@ -367,23 +489,59 @@ const StrategiesPage = (() => {
         try {
             const data = await API.get('/api/strategies/state');
             if (!data || !data.ok) {
-                card.style.display = 'none';
+                body.innerHTML = emptyStateHtml();
                 return;
             }
             const entries = (data.entries || []);
             const summary = data.summary || {};
             if (entries.length === 0) {
-                // Не показываем карточку, если ничего ещё не выучено —
-                // не пугаем неактивным UI. Покажется как только circular
-                // закрепит первую стратегию.
-                card.style.display = 'none';
+                body.innerHTML = emptyStateHtml();
                 return;
             }
-            card.style.display = '';
             body.innerHTML = renderStateTable(entries, summary);
         } catch (_e) {
-            card.style.display = 'none';
+            body.innerHTML = emptyStateHtml();
         }
+    }
+
+    // Пустое состояние: объясняем что это и как включить автоподбор.
+    function emptyStateHtml() {
+        return `
+            <div style="font-size:13px; line-height:1.6; color:var(--text-muted);">
+                Пока ничего не выучено. «Автоподбор» — это стратегия типа
+                <b>circular</b>: nfqws2 сам перебирает приёмы для каждого сайта
+                и запоминает рабочий (память переживает перезагрузку роутера).
+                <br><br>
+                <b>Как включить автоподбор:</b>
+                <ol style="margin:6px 0 10px 18px; padding:0;">
+                    <li>Нажмите кнопку ниже — список отфильтруется по авто-стратегиям.</li>
+                    <li>Выберите любую «… (circular)» и нажмите «Применить».</li>
+                    <li>Открывайте заблокированные сайты — здесь начнут появляться
+                        выученные стратегии по доменам.</li>
+                </ol>
+                <button class="btn btn-primary btn-sm" onclick="StrategiesPage.showCircularStrategies()">
+                    <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                    </svg>
+                    Показать авто-стратегии
+                </button>
+                <div style="font-size:11px; margin-top:8px;">
+                    Альтернатива — разовый «Подбор стратегий» (вкладка «Подбор»):
+                    он один раз протестирует и применит лучшую. circular же
+                    подстраивается постоянно и сам.
+                </div>
+            </div>
+        `;
+    }
+
+    // Активировать фильтр «Авто (circular)» в списке и прокрутить к нему.
+    function showCircularStrategies() {
+        if (listUI && listUI.setFilter) {
+            listUI.setFilter('circular');
+        }
+        const host = document.getElementById('strategies-list-host');
+        if (host) host.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     function renderStateTable(entries, summary) {
@@ -750,6 +908,9 @@ const StrategiesPage = (() => {
             ],
             filters: [
                 { id: 'all', label: 'Все', test: () => true, default: true },
+                { id: 'circular', label: '⟳ Авто (circular)',
+                  test: s => /(?:^|[^a-z])circular/i.test(
+                      (s.profiles || []).map(p => p.args || '').join(' ')) },
                 { id: 'favorites', label: '★ Избранное', test: s => s.is_favorite },
                 { id: 'recommended', label: 'Рекомендуемые', test: s => s.label === 'recommended' },
                 { id: 'builtin', label: 'Встроенные', test: s => s.is_builtin },
@@ -1529,6 +1690,10 @@ const StrategiesPage = (() => {
             clearInterval(catalogPollTimer);
             catalogPollTimer = null;
         }
+        if (healthcheckPollTimer) {
+            clearInterval(healthcheckPollTimer);
+            healthcheckPollTimer = null;
+        }
         if (listUI) {
             try { listUI.destroy(); } catch (_e) {}
             listUI = null;
@@ -1569,6 +1734,7 @@ const StrategiesPage = (() => {
         clearAllState,
         clearHostState,
         clearKeyState,
+        showCircularStrategies,
         refreshHealthcheck,
         toggleHealthcheck,
         runHealthcheckNow,

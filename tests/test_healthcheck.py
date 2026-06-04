@@ -128,6 +128,51 @@ class TestHealthcheckTick(unittest.TestCase):
         # nonexistent тихо пропущен — только 1 результат
         self.assertEqual(result["total"], 1)
 
+    def test_global_outage_skips_reset(self):
+        """Если упали ВСЕ сервисы — это общий обвал (нет связи/nfqws),
+        сброс state НЕ должен происходить даже при повторных провалах."""
+        urls = {"https://www.youtube.com": False, "https://discord.com": False}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host") as mock_clear:
+                r1 = self.hc.run_now()  # обвал
+                r2 = self.hc.run_now()  # обвал снова — обычно был бы reset
+        self.assertTrue(r1["global_outage"])
+        self.assertTrue(r2["global_outage"])
+        mock_clear.assert_not_called()
+
+    def test_global_outage_holds_streak(self):
+        """При обвале streak НЕ растёт (не виним конкретную стратегию)."""
+        urls = {"https://www.youtube.com": False, "https://discord.com": False}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            self.hc.run_now()
+            self.hc.run_now()
+        # streak должен остаться 0 (не накопился), т.к. это обвал
+        self.assertEqual(self.hc._fail_streak.get("youtube", 0), 0)
+
+    def test_partial_failure_is_not_global_outage(self):
+        """1 из 2 упал — это НЕ обвал, нормальная логика сброса работает."""
+        urls = {"https://www.youtube.com": False, "https://discord.com": True}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            r = self.hc.run_now()
+        self.assertFalse(r["global_outage"])
+
+    def test_run_now_nonblocking_returns_started(self):
+        """run_now(blocking=False) запускает фон и сразу возвращает started."""
+        urls = {"https://www.youtube.com": True, "https://discord.com": True}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            res = self.hc.run_now(blocking=False)
+            self.assertTrue(res["started"])
+            # дождёмся фонового потока
+            t = self.hc._check_thread
+            if t:
+                t.join(timeout=5)
+        # После завершения флаг checking снят
+        self.assertFalse(self.hc._checking)
+
     def test_history_appends_each_tick(self):
         urls = {"https://www.youtube.com": True, "https://discord.com": True}
         with patch("core.diagnostics.check_http",

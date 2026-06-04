@@ -322,6 +322,19 @@ const ListUI = (() => {
             setItems(next) { items = (next || []).slice(); resetPagination(); refresh(); },
             getItems() { return items.slice(); },
             getFiltered() { return (filteredCache || []).slice(); },
+            // Программно активировать фильтр по id (как клик по кнопке).
+            // Используется, например, кнопкой «Показать авто-стратегии».
+            setFilter(id) {
+                if (!cfg.filters || !cfg.filters.some(f => f.id === id)) return;
+                state.filterId = id;
+                if ($filters) {
+                    $filters.querySelectorAll('[data-filter-id]').forEach(b =>
+                        b.classList.toggle('active', b.dataset.filterId === id));
+                }
+                resetPagination();
+                persist();
+                refresh();
+            },
             refresh,
             destroy() {
                 if (intersectionObserver) {

@@ -129,6 +129,24 @@ class TestHealthcheckAPI(unittest.TestCase):
         self.assertEqual(r["_status"], 200)
         self.assertTrue(r["ok"])
 
+    def test_healthcheck_run_is_nonblocking(self):
+        """POST /run отвечает сразу (started/busy), не дожидаясь проб.
+
+        Если бы был блокирующим, тест висел бы ~30с на сетевых таймаутах.
+        """
+        import time as _t
+        t0 = _t.time()
+        r = self.client.post_json("/api/healthcheck/run", {})
+        elapsed = _t.time() - t0
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertIn("result", r)
+        # Неблокирующий ответ должен прийти быстро (фон работает отдельно).
+        self.assertLess(elapsed, 5)
+        # Останавливаем демон/фон чтобы не мешал другим тестам.
+        from core.healthcheck import get_healthcheck
+        get_healthcheck().stop()
+
 
 class TestHostsAPI(unittest.TestCase):
 
