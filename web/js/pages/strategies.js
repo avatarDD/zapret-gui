@@ -92,6 +92,41 @@ const StrategiesPage = (() => {
                 </div>
             </div>
 
+            <!-- Выученные стратегии (z2k-state-persist autocircular) -->
+            <div class="card" id="autocircular-state-card" style="display:none;">
+                <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+                    <span style="display:flex; align-items:center; gap:6px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <path d="M12 2v4"/><path d="M12 18v4"/>
+                            <path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/>
+                            <path d="M2 12h4"/><path d="M18 12h4"/>
+                            <path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/>
+                        </svg>
+                        Выученные стратегии (autocircular)
+                        <span class="text-muted" style="font-size:12px; font-weight:400;">circular подобрал и закрепил</span>
+                    </span>
+                    <span style="display:flex; align-items:center; gap:8px;">
+                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.refreshState()" title="Обновить из файла state.tsv">
+                            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/>
+                                <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>
+                            </svg>
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="StrategiesPage.clearAllState()" title="Сбросить все выученные стратегии. После сброса circular переберёт стратегии заново для каждого нового потока.">
+                            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <polyline points="3 6 5 6 21 6"/>
+                                <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/>
+                            </svg>
+                            Сбросить всё
+                        </button>
+                    </span>
+                </div>
+                <div id="autocircular-state-body" style="font-size:13px;">
+                    <span class="text-muted">Загрузка...</span>
+                </div>
+            </div>
+
             <!-- Список стратегий (ListUI рендерит свой поиск/фильтры/пагинацию) -->
             <div id="strategies-list-host">
                 <div class="text-muted" style="text-align:center; padding:32px;">
@@ -149,8 +184,137 @@ const StrategiesPage = (() => {
         fetchStrategies();
         refreshCatalogStatus();
         refreshDebugToggle();
+        refreshState();
         // Если пришли сюда из blockcheck2-бейджа — открыть редактор с приёмом.
         consumePendingPrefill();
+    }
+
+    // ══════════════════ Autocircular state (z2k-state-persist) ══════════════════
+
+    // Обновить таблицу выученных стратегий. Карточка скрыта если файла нет
+    // или записей 0 (autocircular пока не подобрал ничего — это норма).
+    async function refreshState() {
+        const card = document.getElementById('autocircular-state-card');
+        const body = document.getElementById('autocircular-state-body');
+        if (!card || !body) return;
+        try {
+            const data = await API.get('/api/strategies/state');
+            if (!data || !data.ok) {
+                card.style.display = 'none';
+                return;
+            }
+            const entries = (data.entries || []);
+            const summary = data.summary || {};
+            if (entries.length === 0) {
+                // Не показываем карточку, если ничего ещё не выучено —
+                // не пугаем неактивным UI. Покажется как только circular
+                // закрепит первую стратегию.
+                card.style.display = 'none';
+                return;
+            }
+            card.style.display = '';
+            body.innerHTML = renderStateTable(entries, summary);
+        } catch (_e) {
+            card.style.display = 'none';
+        }
+    }
+
+    function renderStateTable(entries, summary) {
+        const fmtTs = (ts) => {
+            try { return new Date(ts * 1000).toLocaleString(); }
+            catch (_) { return ts; }
+        };
+        const fmtSummary = () => {
+            const byKey = summary.by_key || {};
+            const keys = Object.keys(byKey);
+            if (keys.length === 0) return '';
+            const parts = keys.map(k =>
+                `<button class="badge badge-ghost" onclick="StrategiesPage.clearKeyState('${escapeHtml(k)}')" title="Сбросить категорию ${escapeHtml(k)} (${byKey[k]} записей)">${escapeHtml(k)} × ${byKey[k]}</button>`
+            );
+            return `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">${parts.join(' ')}</div>`;
+        };
+        const rows = entries.map(e => `
+            <tr>
+                <td><code style="font-size:12px;">${escapeHtml(e.host)}</code></td>
+                <td><span class="badge badge-ghost">${escapeHtml(e.key)}</span></td>
+                <td style="text-align:center;"><strong>#${e.strategy}</strong></td>
+                <td class="text-muted" style="font-size:12px;">${escapeHtml(fmtTs(e.ts))}</td>
+                <td style="text-align:right;">
+                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.clearHostState('${escapeHtml(e.host)}')" title="Сбросить выученную стратегию для ${escapeHtml(e.host)} — circular переберёт заново.">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/>
+                        </svg>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+        return `
+            ${fmtSummary()}
+            <div style="overflow-x:auto;">
+                <table class="data-table" style="width:100%; font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th>Домен</th>
+                            <th>Категория</th>
+                            <th style="text-align:center;">Стратегия #</th>
+                            <th>Закреплено</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    async function clearAllState() {
+        if (!confirm('Сбросить все выученные стратегии? circular переберёт заново при следующих соединениях.')) return;
+        try {
+            const data = await API.delete('/api/strategies/state?reload=1');
+            if (data && data.ok) {
+                Toast.success(`Сброшено: ${data.removed || 0} записей`);
+                refreshState();
+            } else {
+                Toast.error((data && data.error) || 'Не удалось сбросить state');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
+    }
+
+    async function clearHostState(host) {
+        if (!host) return;
+        if (!confirm(`Сбросить выученную стратегию для домена ${host}?`)) return;
+        try {
+            const data = await API.delete(
+                `/api/strategies/state/host/${encodeURIComponent(host)}?reload=1`);
+            if (data && data.ok) {
+                Toast.success(`Сброшено: ${host} (${data.removed || 0})`);
+                refreshState();
+            } else {
+                Toast.error((data && data.error) || 'Не удалось сбросить');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
+    }
+
+    async function clearKeyState(key) {
+        if (!key) return;
+        if (!confirm(`Сбросить категорию ${key} (все домены в ней)?`)) return;
+        try {
+            const data = await API.delete(
+                `/api/strategies/state/key/${encodeURIComponent(key)}?reload=1`);
+            if (data && data.ok) {
+                Toast.success(`Сброшено ${key}: ${data.removed || 0}`);
+                refreshState();
+            } else {
+                Toast.error((data && data.error) || 'Не удалось сбросить');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
     }
 
     // ══════════════════ Debug-режим nfqws2 ══════════════════
@@ -1234,5 +1398,9 @@ const StrategiesPage = (() => {
         updateCatalog,
         toggleDebug,
         openLogs,
+        refreshState,
+        clearAllState,
+        clearHostState,
+        clearKeyState,
     };
 })();
