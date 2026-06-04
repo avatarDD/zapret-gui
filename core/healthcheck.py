@@ -165,7 +165,13 @@ class HealthcheckDaemon:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
 
-        # Сразу — первый прогон, чтобы юзер увидел в логах что демон жив.
+        # Начальная задержка перед первым тиком — чтобы nfqws2 успел
+        # подняться и применить стратегию. Без неё демон может «провалить»
+        # первый тик ещё до того, как обход заработает, и сбросить state.tsv
+        # на пустом месте.
+        if self._stop_evt.wait(30):
+            return
+
         try:
             self._tick()
         except Exception as e:
