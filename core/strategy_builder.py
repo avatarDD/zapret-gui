@@ -431,14 +431,24 @@ class StrategyManager:
 
     def _parse_profile_args(self, args_str: str) -> list:
         """
-        Разобрать строку аргументов профиля в список.
+        Разобрать строку аргументов профиля в список argv.
 
-        Поддерживает аргументы с пробелами внутри кавычек.
+        Кавычки используются ТОЛЬКО для группировки (пробел внутри кавычек не
+        разрывает токен), но сами символы кавычек СОХРАНЯЮТСЯ в токене. Это
+        критично для inline-Lua в ``--lua-init=``: одинарные кавычки там —
+        строковый литерал Lua, напр. ``--lua-init=fake_default_tls=tls_mod(
+        fake_default_tls,'rnd')``. Если их вырезать, nfqws2 получит
+        ``tls_mod(...,rnd)`` и Lua упадёт с «bad argument #2 to 'tls_mod'
+        (string expected, got nil)» — rnd станет неопределённой переменной.
+
+        argv уходит в nfqws2 через subprocess списком (без shell), поэтому
+        кавычки доходят дословно — повторной интерпретации оболочкой нет.
         """
         if not args_str:
             return []
 
-        # Простой парсинг: разбиваем по пробелам, но учитываем кавычки
+        # Разбиваем по пробелам, не разрывая токен внутри кавычек; сами кавычки
+        # оставляем в токене (см. docstring — нужны для Lua-литералов).
         result = []
         current = ""
         in_quote = None
@@ -446,9 +456,11 @@ class StrategyManager:
         for char in args_str:
             if char in ('"', "'") and in_quote is None:
                 in_quote = char
+                current += char
                 continue
             elif char == in_quote:
                 in_quote = None
+                current += char
                 continue
             elif char == ' ' and in_quote is None:
                 if current:
