@@ -209,6 +209,62 @@ class TestBuildLuaInitArgs(unittest.TestCase):
         self.assertIn("zapret-auto.lua", files)
         self.assertIn("strategy-stats.lua", files)
 
+    # ──────────────── z2k-bundle ────────────────
+
+    def test_circular_pulls_z2k_companions(self):
+        """z2k-* companion'ы (detectors, state-persist, modern-core,
+        fooling-ext) грузятся при любой circular-стратегии — детекторам
+        нужен доступ к standard_*_detector, state-persist обёртывает
+        circular()."""
+        files = self._files(["--lua-desync=circular"])
+        for lf in ("z2k-modern-core.lua", "z2k-detectors.lua",
+                   "z2k-fooling-ext.lua", "z2k-state-persist.lua"):
+            self.assertIn(lf, files, "%s не загружен при circular" % lf)
+
+    def test_state_persist_loads_after_zapret_auto(self):
+        """z2k-state-persist обёртывает функцию `circular` — должен идти
+        ПОСЛЕ zapret-auto.lua в списке --lua-init (иначе оборачивать
+        нечего)."""
+        files = self._files(["--lua-desync=circular"])
+        self.assertIn("zapret-auto.lua", files)
+        self.assertIn("z2k-state-persist.lua", files)
+        self.assertLess(
+            files.index("zapret-auto.lua"),
+            files.index("z2k-state-persist.lua"),
+            "z2k-state-persist должен загружаться ПОСЛЕ zapret-auto",
+        )
+
+    def test_z2k_modern_core_pulled_by_its_function(self):
+        """Прямой вызов z2k_quic_morph_v2 (без circular) тянет
+        z2k-modern-core.lua как extension."""
+        files = self._files(["--lua-desync=z2k_quic_morph_v2"])
+        self.assertIn("z2k-modern-core.lua", files)
+        self.assertNotIn("zapret-auto.lua", files)
+
+    # ──────────────── z2k-range-rand ────────────────
+
+    def test_range_rand_triggered_by_repeats_range(self):
+        """`repeats=A-B` синтаксис тянет z2k-range-rand.lua (sticky
+        per-flow random)."""
+        files = self._files(["--lua-desync=fake:blob=fake_default_tls:repeats=2-6"])
+        self.assertIn("z2k-range-rand.lua", files)
+
+    def test_range_rand_triggered_by_seqovl_range(self):
+        files = self._files(
+            ["--lua-desync=multisplit:pos=1:seqovl=5-50:seqovl_pattern=tls_google"])
+        self.assertIn("z2k-range-rand.lua", files)
+
+    def test_range_rand_not_triggered_by_fixed_value(self):
+        """`repeats=3` (фиксированное) НЕ должно тянуть range-rand."""
+        files = self._files(["--lua-desync=fake:blob=fake_default_tls:repeats=3"])
+        self.assertNotIn("z2k-range-rand.lua", files)
+
+    def test_range_rand_triggered_by_negative_range(self):
+        """`tcp_seq=-1000-1000` — диапазон со знаком."""
+        files = self._files(
+            ["--lua-desync=fake:blob=fake_default_tls:tcp_seq=-1000-1000"])
+        self.assertIn("z2k-range-rand.lua", files)
+
 
 if __name__ == "__main__":
     unittest.main()

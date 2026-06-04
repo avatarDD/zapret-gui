@@ -82,6 +82,16 @@ MARK_EXCLUDE="@MARK_EXCLUDE@"
 IPV6_ENABLED="@IPV6_ENABLED@"
 WAN_IFACES="@WAN_IFACES@"
 
+# Каталог для state.tsv (z2k-state-persist.lua). Переживает переустановку
+# zapret2, бекапится с настройками GUI. nfqws2 запускается под --user nobody,
+# поэтому права на каталог даём заранее. Если каталог недоступен — Lua
+# уйдёт в /tmp fallback и закреплённая стратегия теряется при ребуте.
+Z2K_STATE_DIR="/opt/etc/zapret-gui/state/autocircular"
+export Z2K_STATE_DIR_OVERRIDE="$Z2K_STATE_DIR"
+mkdir -p "$Z2K_STATE_DIR" 2>/dev/null
+chown -R "$(echo "$NFQWS_ARGS" | sed -n 's/.*--user=\([^ ]*\).*/\1/p' | head -1)" \
+    "$Z2K_STATE_DIR" 2>/dev/null || true
+
 is_running() {
     [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null
 }
