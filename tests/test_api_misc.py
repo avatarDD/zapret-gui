@@ -107,6 +107,29 @@ class TestDiagnosticsAPI(unittest.TestCase):
         self.assertIsInstance(r["result"]["warnings"], list)
 
 
+class TestHealthcheckAPI(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = WSGIClient(build_test_app())
+
+    def test_healthcheck_status(self):
+        r = self.client.get_json("/api/healthcheck/status")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertIn("running", r["status"])
+        self.assertIn("enabled", r["status"])
+        self.assertIn("interval_min", r["status"])
+        self.assertIn("services", r["status"])
+        self.assertIn("history", r["status"])
+
+    def test_healthcheck_disable_idempotent(self):
+        """Выключение healthcheck — всегда возвращает ok, даже если уже выключен."""
+        r = self.client.post_json("/api/healthcheck/disable", {})
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+
+
 class TestHostsAPI(unittest.TestCase):
 
     @classmethod

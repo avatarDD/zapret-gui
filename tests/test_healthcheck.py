@@ -1,0 +1,179 @@
+# tests/test_healthcheck.py
+"""Демон healthcheck: фоновый watchdog для autocircular state.
+
+Тестируем без реальных curl'ов — мокаем core.diagnostics.check_http
+и core.strategy_state.clear_host, чтобы видеть, КАК демон реагирует на
+провалы и когда триггерит сброс state.tsv.
+"""
+
+import os
+import threading
+import time
+import unittest
+from unittest.mock import patch
+
+
+def _fake_check_http_factory(map_url_to_ok):
+    """Возвращает фейковый check_http, который читает map_url_to_ok[url]."""
+    def _fake(url, timeout=5):
+        ok = bool(map_url_to_ok.get(url, False))
+        return {
+            "url": url,
+            "ok": ok,
+            "status_code": 200 if ok else 0,
+            "response_time": 50 if ok else None,
+            "error": None if ok else "fake-timeout",
+            "tls_version": None,
+            "redirect_url": None,
+        }
+    return _fake
+
+
+class TestHealthcheckTick(unittest.TestCase):
+
+    def setUp(self):
+        from core.healthcheck import HealthcheckDaemon
+        self.hc = HealthcheckDaemon()
+        # Чистим singleton конфига между тестами — берём config_manager и
+        # подменяем секцию healthcheck.
+        from core.config_manager import get_config_manager
+        self.cfg = get_config_manager()
+        self._saved_hc = dict(self.cfg._config.get("healthcheck") or {})
+        self.cfg._config["healthcheck"] = {
+            "enabled": True,
+            "interval_min": 5,
+            "consecutive_failures": 2,
+            "auto_reset": True,
+            "services": ["youtube", "discord"],
+            "history_size": 50,
+        }
+
+    def tearDown(self):
+        self.cfg._config["healthcheck"] = self._saved_hc
+
+    def test_tick_records_results_for_each_service(self):
+        urls = {
+            "https://www.youtube.com": True,
+            "https://discord.com": True,
+        }
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host") as mock_clear:
+                result = self.hc.run_now()
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["ok"], 2)
+        self.assertEqual(result["failed"], 0)
+        services_in_result = {r["service"] for r in result["results"]}
+        self.assertEqual(services_in_result, {"youtube", "discord"})
+        # Все OK → reset не вызывался
+        mock_clear.assert_not_called()
+
+    def test_consecutive_failures_under_threshold_no_reset(self):
+        """Первый провал НЕ должен триггерить сброс при threshold=2."""
+        urls = {"https://www.youtube.com": False, "https://discord.com": True}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host") as mock_clear:
+                self.hc.run_now()
+        mock_clear.assert_not_called()
+        self.assertEqual(self.hc._fail_streak["youtube"], 1)
+
+    def test_consecutive_failures_at_threshold_triggers_reset(self):
+        """Второй провал YouTube (threshold=2) ⇒ clear_host для всех его hosts."""
+        urls = {"https://www.youtube.com": False, "https://discord.com": True}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host",
+                       return_value={"ok": True, "removed": 3}) as mock_clear:
+                with patch("core.strategy_state.reload_nfqws",
+                           return_value={"ok": True}):
+                    self.hc.run_now()  # streak = 1
+                    self.hc.run_now()  # streak = 2 → reset
+        # YouTube hosts: youtube.com, www.youtube.com, i.ytimg.com (3 шт.)
+        self.assertEqual(mock_clear.call_count, 3)
+        # После reset streak сбрасывается, чтобы не зацикливать
+        self.assertEqual(self.hc._fail_streak["youtube"], 0)
+
+    def test_success_resets_failure_streak(self):
+        urls = {"https://www.youtube.com": False, "https://discord.com": True}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host",
+                       return_value={"ok": True, "removed": 0}):
+                self.hc.run_now()
+                self.assertEqual(self.hc._fail_streak["youtube"], 1)
+        # YouTube снова работает — streak → 0
+        urls["https://www.youtube.com"] = True
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            self.hc.run_now()
+        self.assertEqual(self.hc._fail_streak["youtube"], 0)
+
+    def test_auto_reset_off_does_not_clear_state(self):
+        self.cfg._config["healthcheck"]["auto_reset"] = False
+        urls = {"https://www.youtube.com": False, "https://discord.com": True}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host") as mock_clear:
+                self.hc.run_now()
+                self.hc.run_now()  # обычно triggers reset
+        mock_clear.assert_not_called()
+
+    def test_unknown_service_in_config_is_skipped(self):
+        self.cfg._config["healthcheck"]["services"] = ["youtube", "nonexistent"]
+        urls = {"https://www.youtube.com": True}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            result = self.hc.run_now()
+        # nonexistent тихо пропущен — только 1 результат
+        self.assertEqual(result["total"], 1)
+
+    def test_history_appends_each_tick(self):
+        urls = {"https://www.youtube.com": True, "https://discord.com": True}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            for _ in range(3):
+                self.hc.run_now()
+        with self.hc._lock:
+            self.assertEqual(len(self.hc._history), 3)
+            # newest right
+            self.assertGreaterEqual(
+                self.hc._history[-1]["ts"], self.hc._history[0]["ts"])
+
+
+class TestHealthcheckDaemonControl(unittest.TestCase):
+
+    def setUp(self):
+        from core.healthcheck import HealthcheckDaemon
+        self.hc = HealthcheckDaemon()
+        from core.config_manager import get_config_manager
+        self.cfg = get_config_manager()
+        self._saved_hc = dict(self.cfg._config.get("healthcheck") or {})
+
+    def tearDown(self):
+        self.hc.stop()
+        self.cfg._config["healthcheck"] = self._saved_hc
+
+    def test_start_no_op_when_disabled(self):
+        self.cfg._config["healthcheck"] = {"enabled": False}
+        started = self.hc.start()
+        self.assertFalse(started)
+        self.assertFalse(self.hc.is_running())
+
+    def test_get_status_reflects_config(self):
+        self.cfg._config["healthcheck"] = {
+            "enabled": True, "interval_min": 7,
+            "consecutive_failures": 3,
+            "auto_reset": False, "services": ["youtube"],
+            "history_size": 50,
+        }
+        st = self.hc.get_status()
+        self.assertTrue(st["enabled"])
+        self.assertEqual(st["interval_min"], 7)
+        self.assertEqual(st["services"], ["youtube"])
+        self.assertEqual(st["consecutive_failures"], 3)
+        self.assertFalse(st["auto_reset"])
+
+
+if __name__ == "__main__":
+    unittest.main()

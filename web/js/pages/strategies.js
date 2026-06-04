@@ -92,6 +92,35 @@ const StrategiesPage = (() => {
                 </div>
             </div>
 
+            <!-- Авто-починка (Healthcheck): фоновый watchdog сбрасывает
+                 выученные стратегии при провалах референс-доменов. -->
+            <div class="card" id="healthcheck-card">
+                <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+                    <span style="display:flex; align-items:center; gap:6px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                        </svg>
+                        Авто-починка (healthcheck)
+                        <span class="text-muted" style="font-size:12px; font-weight:400;">проверяет связь и обновляет circular при провалах</span>
+                    </span>
+                    <span style="display:flex; align-items:center; gap:8px;">
+                        <label class="toggle-label" style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;" title="Когда включено, демон каждые N минут проверяет YouTube/Discord/Telegram и при N провалах подряд сбрасывает выученную circular-стратегию (чтобы nfqws2 переподобрал её для затронутого домена).">
+                            <input type="checkbox" id="healthcheck-toggle" onchange="StrategiesPage.toggleHealthcheck(this.checked)">
+                            <span id="healthcheck-toggle-label">Включить</span>
+                        </label>
+                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.runHealthcheckNow()" title="Прогнать проверку прямо сейчас (без ожидания таймера)">
+                            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <polygon points="5 3 19 12 5 21 5 3"/>
+                            </svg>
+                            Проверить сейчас
+                        </button>
+                    </span>
+                </div>
+                <div id="healthcheck-body" style="font-size:13px;">
+                    <span class="text-muted">Загрузка...</span>
+                </div>
+            </div>
+
             <!-- Выученные стратегии (z2k-state-persist autocircular) -->
             <div class="card" id="autocircular-state-card" style="display:none;">
                 <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
@@ -185,8 +214,146 @@ const StrategiesPage = (() => {
         refreshCatalogStatus();
         refreshDebugToggle();
         refreshState();
+        refreshHealthcheck();
         // Если пришли сюда из blockcheck2-бейджа — открыть редактор с приёмом.
         consumePendingPrefill();
+    }
+
+    // ══════════════════ Healthcheck (autocircular watchdog) ══════════════════
+
+    async function refreshHealthcheck() {
+        const body = document.getElementById('healthcheck-body');
+        const toggle = document.getElementById('healthcheck-toggle');
+        const toggleLabel = document.getElementById('healthcheck-toggle-label');
+        if (!body || !toggle) return;
+        try {
+            const data = await API.get('/api/healthcheck/status');
+            if (!data || !data.ok) return;
+            const st = data.status || {};
+            toggle.checked = !!st.enabled;
+            if (toggleLabel) {
+                toggleLabel.textContent = st.running ? 'Включено (работает)'
+                    : (st.enabled ? 'Включено' : 'Выключено');
+            }
+            body.innerHTML = renderHealthcheck(st);
+        } catch (_e) {
+            body.innerHTML = '<span class="text-muted">Сервис недоступен</span>';
+        }
+    }
+
+    function renderHealthcheck(st) {
+        const fmtTs = (ts) => {
+            if (!ts) return '—';
+            try { return new Date(ts * 1000).toLocaleString(); }
+            catch (_) { return ts; }
+        };
+        const summary = st.last_summary;
+        let summaryHtml = '';
+        if (summary && summary.total) {
+            const okBadge = summary.failed === 0
+                ? '<span class="badge badge-success">все OK</span>'
+                : `<span class="badge badge-warning">${summary.ok}/${summary.total}</span>`;
+            summaryHtml = `
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+                    <span class="text-muted" style="font-size:12px;">Последняя: ${escapeHtml(fmtTs(summary.ts))}</span>
+                    ${okBadge}
+                    ${st.next_check_at ? `<span class="text-muted" style="font-size:12px;">следующая: ${escapeHtml(fmtTs(st.next_check_at))}</span>` : ''}
+                </div>
+            `;
+        }
+        const history = st.history || [];
+        const last = history.length ? history[history.length - 1] : null;
+        let resultsHtml = '';
+        if (last && last.results && last.results.length) {
+            const rows = last.results.map(r => {
+                const okIcon = r.ok
+                    ? '<span class="badge badge-success" style="font-size:11px;">OK</span>'
+                    : '<span class="badge badge-danger" style="font-size:11px;">FAIL</span>';
+                const rt = r.response_time ? `${r.response_time} ms` : '—';
+                const reset = (r.hosts_reset || []).map(h =>
+                    `<span class="badge badge-warning" style="font-size:11px;" title="state.tsv сброшен для ${escapeHtml(h.host)} (${h.removed} записей)">↻ ${escapeHtml(h.host)}</span>`
+                ).join(' ');
+                return `
+                    <tr>
+                        <td><span style="margin-right:4px;">${escapeHtml(r.icon || '')}</span><strong>${escapeHtml(r.display || r.service)}</strong></td>
+                        <td>${okIcon}</td>
+                        <td class="text-muted" style="font-size:12px;">${escapeHtml(rt)}</td>
+                        <td class="text-muted" style="font-size:12px;">${r.status_code || (r.error ? escapeHtml(String(r.error).slice(0, 60)) : '')}</td>
+                        <td>${reset}</td>
+                    </tr>
+                `;
+            }).join('');
+            resultsHtml = `
+                <div style="overflow-x:auto;">
+                    <table class="data-table" style="width:100%; font-size:13px;">
+                        <thead>
+                            <tr>
+                                <th>Сервис</th>
+                                <th>Статус</th>
+                                <th>Время</th>
+                                <th>Код/Ошибка</th>
+                                <th>Сброс state</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            `;
+        } else if (!st.enabled) {
+            resultsHtml = `<div class="text-muted" style="padding:8px 0;">
+                Демон выключен. Включите чекбоксом или нажмите «Проверить сейчас» для разовой проверки.
+            </div>`;
+        } else {
+            resultsHtml = `<div class="text-muted" style="padding:8px 0;">Демон запущен, первая проверка ещё не выполнена.</div>`;
+        }
+        const cfg = `
+            <div class="text-muted" style="font-size:11px; margin-top:6px;">
+                Интервал: ${st.interval_min || 5} мин · Сервисов: ${(st.services || []).length}
+                · Порог провалов: ${st.consecutive_failures || 2}
+                · Авто-сброс state: ${st.auto_reset ? 'да' : 'нет'}
+            </div>
+        `;
+        return summaryHtml + resultsHtml + cfg;
+    }
+
+    async function toggleHealthcheck(on) {
+        const toggle = document.getElementById('healthcheck-toggle');
+        try {
+            const endpoint = on ? '/api/healthcheck/enable' : '/api/healthcheck/disable';
+            const data = await API.post(endpoint, {});
+            if (data && data.ok) {
+                Toast.success(on ? 'Авто-починка включена' : 'Авто-починка выключена');
+                refreshHealthcheck();
+            } else {
+                Toast.error((data && data.error) || 'Не удалось переключить');
+                if (toggle) toggle.checked = !on;
+            }
+        } catch (err) {
+            Toast.error(err.message);
+            if (toggle) toggle.checked = !on;
+        }
+    }
+
+    async function runHealthcheckNow() {
+        try {
+            const data = await API.post('/api/healthcheck/run', {});
+            if (data && data.ok) {
+                const r = data.result || {};
+                if (r.total) {
+                    const msg = r.failed
+                        ? `Проверено ${r.total}, провалов: ${r.failed}`
+                        : `Все ${r.total} сервиса доступны`;
+                    Toast.info(msg);
+                }
+                refreshHealthcheck();
+                // state мог быть сброшен — освежим таблицу выученных
+                refreshState();
+            } else {
+                Toast.error((data && data.error) || 'Проверка не удалась');
+            }
+        } catch (err) {
+            Toast.error(err.message);
+        }
     }
 
     // ══════════════════ Autocircular state (z2k-state-persist) ══════════════════
@@ -1402,5 +1569,8 @@ const StrategiesPage = (() => {
         clearAllState,
         clearHostState,
         clearKeyState,
+        refreshHealthcheck,
+        toggleHealthcheck,
+        runHealthcheckNow,
     };
 })();
