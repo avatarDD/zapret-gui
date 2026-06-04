@@ -23,6 +23,12 @@ const Blockcheck2Page = (() => {
     let foundStrategies = [];     // структурные находки для кликабельных бейджей
     let foundKeys = new Set();    // дедуп бейджей (ipv|test|domain|strategy)
     let bcCur = null;             // текущий разбираемый блок стратегии
+    let formState = null;         // сохранённые значения формы (домены, галки) между переключениями вкладок
+
+    // Поля формы, состояние которых переживает уход/возврат на вкладку (SKILL-task §8).
+    const FORM_TEXT_IDS = ['bc2-domains', 'bc2-scanlevel', 'bc2-ipvs', 'bc2-repeats', 'bc2-env', 'bc2-args'];
+    const FORM_CHECK_IDS = ['bc2-http', 'bc2-tls12', 'bc2-tls13', 'bc2-http3', 'bc2-https-get',
+        'bc2-skip-pktws', 'bc2-skip-ipblock', 'bc2-skip-dnscheck', 'bc2-parallel', 'bc2-curl-verbose'];
 
     /* ───────── lifecycle ───────── */
 
@@ -159,13 +165,54 @@ const Blockcheck2Page = (() => {
             </div>
         `;
 
+        // Восстанавливаем заполненные ранее домены/галки (форма пересоздаётся
+        // при каждом render, а бейджи живут в module-state — SKILL-task §8).
+        restoreFormState();
+
         loadScript();
         // Подтянуть текущее состояние (вдруг запуск уже идёт).
         outOffset = 0;
         fetchStatus(true);
     }
 
-    function destroy() { stopPolling(); }
+    function destroy() {
+        // Сохраняем значения формы перед уничтожением DOM, чтобы при возврате
+        // на вкладку домены и галки не потерялись.
+        captureFormState();
+        stopPolling();
+    }
+
+    /* ───────── сохранение/восстановление формы ───────── */
+
+    function captureFormState() {
+        const st = {};
+        let any = false;
+        FORM_TEXT_IDS.forEach(id => {
+            const e = document.getElementById(id);
+            if (e) { st[id] = e.value; any = true; }
+        });
+        FORM_CHECK_IDS.forEach(id => {
+            const e = document.getElementById(id);
+            if (e) { st[id] = e.checked; any = true; }
+        });
+        const adv = document.getElementById('bc2-advanced');
+        if (adv) { st._adv = adv.open; any = true; }
+        if (any) formState = st;
+    }
+
+    function restoreFormState() {
+        if (!formState) return;
+        FORM_TEXT_IDS.forEach(id => {
+            const e = document.getElementById(id);
+            if (e && formState[id] != null) e.value = formState[id];
+        });
+        FORM_CHECK_IDS.forEach(id => {
+            const e = document.getElementById(id);
+            if (e && formState[id] != null) e.checked = formState[id];
+        });
+        const adv = document.getElementById('bc2-advanced');
+        if (adv && formState._adv != null) adv.open = formState._adv;
+    }
 
     /* ───────── script discovery ───────── */
 
@@ -481,13 +528,10 @@ const Blockcheck2Page = (() => {
     // (фильтр из типа теста + дословный --payload/--lua-desync, SKILL §3).
     // Полностью успешные (вердикт «!!!!! AVAILABLE !!!!!», напр. 3/3) — вверху
     // и зелёные; частичные (напр. 2/3) — ниже и янтарные.
-    function renderFoundChips() {
-        const el = document.getElementById('bc2-found');
-        if (!el) return;
-        if (!foundStrategies.length) { el.innerHTML = ''; return; }
-
-        // Индексы в исходном массиве сохраняем для useStrategy(i).
-        const order = foundStrategies
+    // Порядок бейджей: сначала полностью успешные, затем по убыванию ok/total.
+    // Общий для отрисовки чипов и «копировать все» (task §2).
+    function _foundOrder() {
+        return foundStrategies
             .map((f, i) => ({ f, i }))
             .sort((a, b) => {
                 if (!!b.f.full - !!a.f.full) return (b.f.full ? 1 : 0) - (a.f.full ? 1 : 0);
@@ -495,6 +539,36 @@ const Blockcheck2Page = (() => {
                 const rb = (b.f.ok || 0) / (b.f.total || 1);
                 return rb - ra;
             });
+    }
+
+    // Реконструкция дословных args приёма: фильтр (из типа теста) + опционально
+    // --hostlist-domains=<домены> + payload (если нет в стратегии) + сама стратегия.
+    function _buildArgs(f, domains) {
+        const strat = String(f.strategy || '');
+        let args = `--filter-${f.proto}=${f.port} --filter-l7=${f.l7} `;
+        if (domains && domains.length && !/--hostlist-domains=/.test(strat)) {
+            args += `--hostlist-domains=${domains.join(',')} `;
+        }
+        if (!/--payload=/.test(strat) && f.payload) {
+            args += `--payload=${f.payload} `;
+        }
+        args += strat;
+        return args.trim();
+    }
+
+    // Домены из поля формы (по одному на строку) — для --hostlist-domains (task §1).
+    function _domainsFromForm() {
+        const t = (document.getElementById('bc2-domains') || {}).value || '';
+        return t.split('\n').map(s => s.trim()).filter(Boolean);
+    }
+
+    function renderFoundChips() {
+        const el = document.getElementById('bc2-found');
+        if (!el) return;
+        if (!foundStrategies.length) { el.innerHTML = ''; return; }
+
+        // Индексы в исходном массиве сохраняем для useStrategy(i).
+        const order = _foundOrder();
 
         const chips = order.map(({ f, i }) => {
             const rate = (f.ok != null && f.total != null) ? (f.ok + '/' + f.total) : '';
@@ -509,9 +583,57 @@ const Blockcheck2Page = (() => {
                 + `<span class="bc2-found-arrow">→ создать</span></button>`;
         }).join('');
         const full = foundStrategies.filter(f => f.full).length;
-        el.innerHTML = `<div class="bc2-found-title">Рабочие стратегии blockcheck2 `
-            + `(${full} полных · ${foundStrategies.length} всего · клик — создать)</div>`
+        el.innerHTML = `<div class="bc2-found-title">`
+            + `<span>Рабочие стратегии blockcheck2 `
+            + `(${full} полных · ${foundStrategies.length} всего · клик — создать)</span>`
+            + `<button class="btn btn-ghost btn-sm bc2-found-copy" onclick="Blockcheck2Page.copyAllFound()" `
+            + `title="Скопировать все найденные стратегии в буфер обмена — потом сами скомпонуете нужные через --new">`
+            + `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13" style="margin-right:4px;">`
+            + `<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>`
+            + `<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
+            + `Копировать все</button></div>`
             + `<div class="bc2-found-chips">${chips}</div>`;
+    }
+
+    // Копировать список всех найденных стратегий в буфер обмена (task §2).
+    // Каждый приём — комментарий с доменом/успехом + готовая строка args,
+    // чтобы пользователь сам скомпоновал нужные профили через --new.
+    function copyAllFound() {
+        if (!foundStrategies.length) { Toast && Toast.info && Toast.info('Пока нет найденных стратегий'); return; }
+        const lines = [`# Рабочие стратегии blockcheck2 (${foundStrategies.length})`, ''];
+        _foundOrder().forEach(({ f }) => {
+            const rate = (f.ok != null && f.total != null) ? `${f.ok}/${f.total}` : '';
+            lines.push(`# ${f.label || ''} · ${f.domain || ''}`
+                + (rate ? ` · успех ${rate}` : '') + (f.full ? '' : ' (не все попытки)'));
+            lines.push(`${f.engine || 'nfqws2'} ${_buildArgs(f, null)}`);
+            lines.push('');
+        });
+        _copyText(lines.join('\n').trim() + '\n', `Скопировано стратегий: ${foundStrategies.length}`);
+    }
+
+    // Копирование в буфер с fallback на execCommand (как в strategies.js).
+    function _copyText(text, okMsg) {
+        const done = () => Toast && Toast.success && Toast.success(okMsg || 'Скопировано');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => _copyFallback(text, done));
+        } else {
+            _copyFallback(text, done);
+        }
+    }
+    function _copyFallback(text, done) {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            done();
+        } catch (_e) {
+            Toast && Toast.error && Toast.error('Не удалось скопировать');
+        }
     }
 
     function useStrategy(index) {
@@ -521,18 +643,17 @@ const Blockcheck2Page = (() => {
             Toast && Toast.error && Toast.error('Страница стратегий недоступна');
             return;
         }
-        const strat = String(f.strategy || '');
-        let args = `--filter-${f.proto}=${f.port} --filter-l7=${f.l7} `;
-        if (!/--payload=/.test(strat) && f.payload) {
-            args += `--payload=${f.payload} `;
-        }
-        args += strat;
+        // Домены для --hostlist-domains берём из поля формы; если пусто —
+        // используем сам протестированный домен (task §1).
+        const formDomains = _domainsFromForm();
+        const domList = formDomains.length ? formDomains : (f.domain ? [f.domain] : []);
+        const args = _buildArgs(f, domList);
         const rate = (f.ok != null && f.total != null) ? ` ${f.ok}/${f.total}` : '';
         StrategiesPage.prefillCreate({
             name: `${f.domain} · ${f.label}${rate} (blockcheck2)`,
             description: `Найдено blockcheck2 для ipv${f.ipv} ${f.domain}`
                 + (rate ? ` · успех${rate}` + (f.full ? '' : ' (не все попытки)') : ''),
-            args: args.trim(),
+            args: args,
         });
     }
 
@@ -549,5 +670,5 @@ const Blockcheck2Page = (() => {
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    return { render, destroy, start, stop, clearOutput, useStrategy };
+    return { render, destroy, start, stop, clearOutput, useStrategy, copyAllFound };
 })();

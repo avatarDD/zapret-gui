@@ -980,6 +980,47 @@ input:focus, textarea:focus, select:focus {
     align-items: center;
 }
 
+/* Чекбокс выделения карточки для объединения (§7) */
+.strategy-select-label {
+    display: flex;
+    align-items: center;
+    padding-top: 2px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.strategy-select {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.strategy-card.selected {
+    border-color: var(--accent, #5b9ef4);
+    box-shadow: inset 0 0 0 1px var(--accent, #5b9ef4);
+}
+
+/* Плавающая панель массовых действий */
+.strat-bulkbar {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 550;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: var(--shadow-lg);
+}
+.strat-bulkbar-count {
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
 /* Profile badges */
 .profile-badge {
     display: inline-flex;
@@ -1105,6 +1146,54 @@ input:focus, textarea:focus, select:focus {
 
 .modal-content.modal-lg {
     max-width: 680px;
+}
+
+/* Растягиваемое/перемещаемое окно редактора стратегии (§5).
+   Геометрию (left/top/width/height) задаёт JS; шапка тянет окно, ручки по
+   8 сторонам — ресайз. Тело прокручивается, шапка остаётся на месте. */
+.modal-content.modal-resizable {
+    position: fixed;
+    margin: 0;
+    max-width: none;
+    max-height: none;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: none;
+}
+.modal-content.modal-resizable .modal-header {
+    flex: 0 0 auto;
+    cursor: move;
+    user-select: none;
+}
+.modal-content.modal-resizable .modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+.modal-resize-handle {
+    position: absolute;
+    z-index: 5;
+    touch-action: none;
+}
+.modal-resize-handle.mrh-n { top: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; }
+.modal-resize-handle.mrh-s { bottom: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; }
+.modal-resize-handle.mrh-e { top: 0; bottom: 0; right: 0; width: 6px; cursor: ew-resize; }
+.modal-resize-handle.mrh-w { top: 0; bottom: 0; left: 0; width: 6px; cursor: ew-resize; }
+.modal-resize-handle.mrh-ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; z-index: 6; }
+.modal-resize-handle.mrh-nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; z-index: 6; }
+.modal-resize-handle.mrh-se { bottom: 0; right: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 6; }
+.modal-resize-handle.mrh-sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; z-index: 6; }
+/* Уголок снизу-справа — визуальная «риска», как у нативного resize. */
+.modal-content.modal-resizable .modal-resize-handle.mrh-se::after {
+    content: "";
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid var(--text-muted);
+    border-bottom: 2px solid var(--text-muted);
+    opacity: 0.5;
 }
 
 @keyframes modal-slide-in {
@@ -1490,12 +1579,27 @@ input:focus, textarea:focus, select:focus {
 }
 
 /* ===== Lists Tabs (Phase 3) ===== */
+/* Поиск файла по имени над табами списков (§6) */
+.lists-filebar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    background: var(--bg-secondary);
+}
+.lists-filebar-status {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
 .lists-tabs {
     display: flex;
     gap: 0;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border);
-    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
 }

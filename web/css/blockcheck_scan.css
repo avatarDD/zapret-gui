@@ -67,12 +67,23 @@
     display: none;
 }
 .bc2-found-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: .4px;
     color: var(--success, #34d399);
     margin-bottom: 6px;
+}
+.bc2-found-copy {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+    flex-shrink: 0;
 }
 .bc2-found-chips {
     display: flex;
