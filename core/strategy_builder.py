@@ -231,8 +231,11 @@ class StrategyManager:
     def _get_sorted_list(self) -> list:
         """Отсортированный список стратегий (builtin первыми)."""
         items = list(self._cache.values())
-        # Сортировка: builtin первыми, затем по имени
+        # Сортировка: featured (флагман — z2k auto) → builtin → по имени.
+        # featured поднимает «витринную» стратегию в самый верх списка/группы,
+        # чтобы рекомендованный автоподбор был на виду, а не терялся среди сотен.
         items.sort(key=lambda s: (
+            0 if s.get("featured") else 1,
             0 if s.get("is_builtin") else 1,
             s.get("name", ""),
         ))
@@ -606,6 +609,7 @@ def _catalog_entry_to_strategy(entry) -> dict:
         "label": entry.label,
         "author": entry.author,
         "protocol": entry.protocol,
+        "featured": bool(getattr(entry, "featured", False)),
         "blobs": list(getattr(entry, "blobs", []) or []),
         "profiles": profiles,
     }

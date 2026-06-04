@@ -159,6 +159,91 @@ class TestHealthcheckTick(unittest.TestCase):
             r = self.hc.run_now()
         self.assertFalse(r["global_outage"])
 
+    def test_control_domain_up_means_not_outage_and_resets(self):
+        """Все цели упали, НО контрольный сайт открылся → это DPI, не обвал:
+        сброс ВЫПОЛНЯЕТСЯ (кейс юзера: все сайты реально заблокированы)."""
+        self.cfg._config["healthcheck"]["control_domain"] = "ya.ru"
+        self.cfg._config["healthcheck"]["consecutive_failures"] = 1
+        urls = {
+            "https://www.youtube.com": False,
+            "https://discord.com": False,
+            "https://ya.ru": True,   # контрольный — открывается
+        }
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host",
+                       return_value={"ok": True, "removed": 1}) as mock_clear:
+                with patch("core.strategy_state.reload_nfqws",
+                           return_value={"ok": True}):
+                    r = self.hc.run_now()
+        self.assertFalse(r["global_outage"])
+        self.assertTrue(r["control_ok"])
+        mock_clear.assert_called()   # сброс произошёл
+
+    def test_control_domain_down_means_outage_no_reset(self):
+        """Все цели И контрольный упали → реальный обвал, сброс пропущен."""
+        self.cfg._config["healthcheck"]["control_domain"] = "ya.ru"
+        self.cfg._config["healthcheck"]["consecutive_failures"] = 1
+        urls = {
+            "https://www.youtube.com": False,
+            "https://discord.com": False,
+            "https://ya.ru": False,  # связи нет вообще
+        }
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host") as mock_clear:
+                r = self.hc.run_now()
+        self.assertTrue(r["global_outage"])
+        self.assertFalse(r["control_ok"])
+        mock_clear.assert_not_called()
+
+    def test_outage_guard_off_always_resets(self):
+        """outage_guard=False → даже при падении всех целей сброс выполняется."""
+        self.cfg._config["healthcheck"]["outage_guard"] = False
+        self.cfg._config["healthcheck"]["consecutive_failures"] = 1
+        urls = {"https://www.youtube.com": False, "https://discord.com": False}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host",
+                       return_value={"ok": True, "removed": 1}) as mock_clear:
+                with patch("core.strategy_state.reload_nfqws",
+                           return_value={"ok": True}):
+                    r = self.hc.run_now()
+        self.assertFalse(r["global_outage"])
+        mock_clear.assert_called()
+
+    def test_custom_domains_become_targets(self):
+        """Кастомные домены добавляются как цели проверки."""
+        self.cfg._config["healthcheck"]["services"] = []
+        self.cfg._config["healthcheck"]["custom_domains"] = [
+            "rutracker.org", "https://example.com/path"]
+        urls = {
+            "https://rutracker.org": True,
+            "https://example.com/path": True,
+        }
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            r = self.hc.run_now()
+        self.assertEqual(r["total"], 2)
+        keys = {x["service"] for x in r["results"]}
+        self.assertEqual(keys, {"custom:rutracker.org", "custom:example.com"})
+
+    def test_custom_domain_failure_resets_its_host(self):
+        """Провал кастомного домена сбрасывает state именно его хоста."""
+        self.cfg._config["healthcheck"]["services"] = []
+        self.cfg._config["healthcheck"]["custom_domains"] = ["rutracker.org"]
+        self.cfg._config["healthcheck"]["consecutive_failures"] = 1
+        self.cfg._config["healthcheck"]["outage_guard"] = False
+        urls = {"https://rutracker.org": False}
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(urls)):
+            with patch("core.strategy_state.clear_host",
+                       return_value={"ok": True, "removed": 2}) as mock_clear:
+                with patch("core.strategy_state.reload_nfqws",
+                           return_value={"ok": True}):
+                    self.hc.run_now()
+        mock_clear.assert_called_once_with("rutracker.org")
+
     def test_run_now_nonblocking_returns_started(self):
         """run_now(blocking=False) запускает фон и сразу возвращает started."""
         urls = {"https://www.youtube.com": True, "https://discord.com": True}

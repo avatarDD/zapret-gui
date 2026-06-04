@@ -129,6 +129,24 @@ class TestHealthcheckAPI(unittest.TestCase):
         self.assertEqual(r["_status"], 200)
         self.assertTrue(r["ok"])
 
+    def test_healthcheck_config_saves_sites(self):
+        """POST /config сохраняет список сайтов/контрольный домен без включения."""
+        body = {
+            "services": ["youtube"],
+            "custom_domains": ["rutracker.org"],
+            "control_domain": "ya.ru",
+            "outage_guard": True,
+            "interval_min": 7,
+        }
+        r = self.client.post_json("/api/healthcheck/config", body)
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        st = r["status"]
+        self.assertEqual(st["services"], ["youtube"])
+        self.assertEqual(st["custom_domains"], ["rutracker.org"])
+        self.assertEqual(st["control_domain"], "ya.ru")
+        self.assertEqual(st["interval_min"], 7)
+
     def test_healthcheck_run_is_nonblocking(self):
         """POST /run отвечает сразу (started/busy), не дожидаясь проб.
 

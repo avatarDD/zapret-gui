@@ -35,6 +35,43 @@ def register(app):
         result = get_healthcheck().run_now(blocking=False)
         return {"ok": True, "result": result}
 
+    # Поля конфигурации healthcheck, принимаемые из body (валидируются мягко).
+    _CFG_KEYS = (
+        "interval_min", "consecutive_failures", "auto_reset", "services",
+        "custom_domains", "control_domain", "outage_guard", "history_size",
+    )
+
+    def _apply_cfg_body(cfg, body):
+        for k in _CFG_KEYS:
+            if k in body:
+                cfg.set("healthcheck", k, body[k])
+
+    @app.post("/api/healthcheck/config")
+    def api_healthcheck_config():
+        """Сохранить настройки healthcheck БЕЗ изменения enabled.
+
+        Позволяет редактировать список сайтов/контрольный домен/пороги, даже
+        когда демон выключен. Если демон запущен — перечитывает конфиг.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.config_manager import get_config_manager
+        from core.healthcheck import get_healthcheck
+        from core.log_buffer import log
+
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        cfg = get_config_manager()
+        _apply_cfg_body(cfg, body)
+        cfg.save()
+        log.info("Healthcheck: настройки обновлены", source="healthcheck")
+        hc = get_healthcheck()
+        # Перечитать только если включён/работает (reload — no-op если выключен).
+        if hc.is_running():
+            hc.reload()
+        return {"ok": True, "status": hc.get_status()}
+
     @app.post("/api/healthcheck/enable")
     def api_healthcheck_enable():
         """Включить healthcheck (cfg.healthcheck.enabled = true) и запустить."""
@@ -50,10 +87,7 @@ def register(app):
             body = request.json or {}
         except Exception:
             body = {}
-        for k in ("interval_min", "consecutive_failures",
-                  "auto_reset", "services", "history_size"):
-            if k in body:
-                cfg.set("healthcheck", k, body[k])
+        _apply_cfg_body(cfg, body)
         cfg.save()
         log.info("Healthcheck: включён через API", source="healthcheck")
         result = get_healthcheck().reload()

@@ -472,6 +472,7 @@ class CatalogEntry:
     protocol: str = "tcp"
     level: str = "basic"
     source_file: str = ""
+    featured: bool = False
 
     def get_args_list(self) -> list[str]:
         """
