@@ -1021,6 +1021,28 @@ input:focus, textarea:focus, select:focus {
     color: var(--accent);
 }
 
+/* Семантические бейджи (статусы healthcheck, состояния и т.п.). */
+.badge-success {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+.badge-warning {
+    background: var(--warning-bg);
+    color: var(--warning);
+}
+
+.badge-danger {
+    background: var(--error-bg);
+    color: var(--error);
+}
+
+.badge-ghost {
+    background: rgba(127, 127, 127, 0.12);
+    color: var(--text-muted);
+    text-transform: none;
+}
+
 /* Favorite button */
 .btn-icon-only {
     display: inline-flex;

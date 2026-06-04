@@ -68,6 +68,11 @@ class HealthcheckDaemon:
         # после consecutive_failures штук, а не на одном случайном.
         self._fail_streak = {}     # service_name → int
 
+        # Идёт ли прямо сейчас проверка (для индикатора в GUI и защиты от
+        # параллельных run_now). Отдельный поток для неблокирующего run_now.
+        self._checking = False
+        self._check_thread = None
+
         # Дата запуска / последней проверки.
         self._started_at = None
         self._last_check_at = None
@@ -147,16 +152,44 @@ class HealthcheckDaemon:
             "next_check_at": self._next_check_at,
             "last_summary": self._last_check_summary,
             "fail_streak": dict(self._fail_streak),
+            "checking": self._checking,
             "history": history,
         }
 
-    def run_now(self) -> dict:
-        """Принудительный прогон проверки (кнопка «Проверить связь сейчас»).
+    def run_now(self, blocking: bool = True) -> dict:
+        """Принудительный прогон проверки (кнопка «Проверить сейчас»).
 
-        Возвращает результат сразу. НЕ требует, чтобы демон был запущен —
-        работает как одноразовая проверка из GUI.
+        blocking=True (дефолт, для тестов/CLI) — выполнить синхронно и
+        вернуть summary прогона.
+
+        blocking=False (для API/GUI) — запустить проверку в фоне и сразу
+        вернуть {started, busy}. Каждый сервис проверяется до 8с с
+        фолбэками, итого до ~30с на 3 сервиса — синхронный HTTP-ответ
+        столько ждать нельзя, поэтому GUI триггерит фон и опрашивает
+        /status, показывая спиннер.
         """
-        return self._tick()
+        if blocking:
+            return self._run_guarded()
+
+        with self._lock:
+            if self._checking:
+                return {"started": False, "busy": True}
+            self._checking = True
+            self._check_thread = threading.Thread(
+                target=self._run_guarded, name="HealthcheckRunNow",
+                daemon=True)
+            self._check_thread.start()
+        return {"started": True, "busy": False}
+
+    def _run_guarded(self) -> dict:
+        """Обёртка _tick с гарантированным сбросом флага _checking."""
+        with self._lock:
+            self._checking = True
+        try:
+            return self._tick()
+        finally:
+            with self._lock:
+                self._checking = False
 
     # ──────────────────────── Internal ────────────────────────
 
@@ -206,6 +239,7 @@ class HealthcheckDaemon:
                                        default=2)))
         auto_reset = bool(cfg.get("healthcheck", "auto_reset", default=True))
 
+        # ── Фаза 1: пробы всех сервисов ──
         results = []
         ts = time.time()
         for name in wanted:
@@ -221,72 +255,105 @@ class HealthcheckDaemon:
             # timeout — короткий: 8с. Cache check_http ставит TTL 30с,
             # поэтому повторные тики не задавят сеть лишним curl'ом.
             r = check_http(urls[0], timeout=8)
-            entry = {
+            results.append({
                 "service": name,
                 "display": svc.get("name", name),
                 "icon": svc.get("icon", ""),
                 "url": urls[0],
+                "hosts": hosts,
                 "ok": bool(r.get("ok")),
                 "status_code": r.get("status_code") or 0,
                 "response_time": r.get("response_time"),
                 "error": r.get("error"),
                 "hosts_reset": [],
-            }
-
-            if entry["ok"]:
-                self._fail_streak[name] = 0
-            else:
-                self._fail_streak[name] = self._fail_streak.get(name, 0) + 1
-                if (auto_reset
-                        and self._fail_streak[name] >= threshold):
-                    # Сброс state.tsv по всем известным хостам службы.
-                    for host in hosts:
-                        try:
-                            res = strategy_state.clear_host(host)
-                            removed = (res or {}).get("removed", 0)
-                            if removed > 0:
-                                entry["hosts_reset"].append(
-                                    {"host": host, "removed": removed})
-                        except Exception as e:
-                            log.warning(
-                                "Healthcheck reset %s: %s" % (host, e),
-                                source="healthcheck")
-                    # SIGHUP nfqws2 — чтобы Lua перечитал хостлисты и не
-                    # перезаписал state из своего in-RAM кэша до того, как
-                    # circular подберёт новую стратегию.
-                    try:
-                        strategy_state.reload_nfqws()
-                    except Exception:
-                        pass
-                    log.warning(
-                        "Healthcheck: %s провален %d раз подряд → сбросили "
-                        "state по %d хостам" % (
-                            name, self._fail_streak[name],
-                            len(entry["hosts_reset"])),
-                        source="healthcheck")
-                    # Сбрасываем счётчик чтобы не зацикливаться на reset —
-                    # circular должен успеть подобрать.
-                    self._fail_streak[name] = 0
-
-            results.append(entry)
+                "fail_streak": 0,
+            })
 
         total = len(results)
         ok = sum(1 for r in results if r["ok"])
+        failed = total - ok
+
+        # ── Защита от «глобального обвала» ──
+        # Если упали ВСЕ проверяемые сервисы — это почти наверняка общая
+        # проблема (нет интернета, не запущен nfqws2, лёг DNS/WAN), а НЕ
+        # отказ отдельных стратегий. Сбрасывать выученные стратегии в этом
+        # случае бессмысленно и вредно (трэшинг). Идея — как baseline-aware
+        # в сканере: чинить можно лишь то, что выборочно сломано.
+        global_outage = (total >= 2 and ok == 0)
+
+        # ── Фаза 2: решение о сбросе (по-сервисно, с учётом streak) ──
+        for entry in results:
+            name = entry["service"]
+            if entry["ok"]:
+                self._fail_streak[name] = 0
+                entry["fail_streak"] = 0
+                continue
+
+            if global_outage:
+                # Не виним конкретную стратегию — держим streak как есть,
+                # ничего не сбрасываем.
+                entry["fail_streak"] = self._fail_streak.get(name, 0)
+                continue
+
+            self._fail_streak[name] = self._fail_streak.get(name, 0) + 1
+            entry["fail_streak"] = self._fail_streak[name]
+
+            if auto_reset and self._fail_streak[name] >= threshold:
+                for host in entry["hosts"]:
+                    try:
+                        res = strategy_state.clear_host(host)
+                        removed = (res or {}).get("removed", 0)
+                        if removed > 0:
+                            entry["hosts_reset"].append(
+                                {"host": host, "removed": removed})
+                    except Exception as e:
+                        log.warning("Healthcheck reset %s: %s" % (host, e),
+                                    source="healthcheck")
+                # SIGHUP nfqws2 — чтобы Lua перечитал хостлисты и не
+                # перезаписал state из своего in-RAM кэша до того, как
+                # circular подберёт новую стратегию.
+                try:
+                    strategy_state.reload_nfqws()
+                except Exception:
+                    pass
+                log.warning(
+                    "Healthcheck: %s провален %d раз подряд → сбросили "
+                    "state по %d хостам" % (
+                        name, self._fail_streak[name],
+                        len(entry["hosts_reset"])),
+                    source="healthcheck")
+                # Сбрасываем счётчик чтобы не зацикливаться на reset —
+                # circular должен успеть подобрать.
+                self._fail_streak[name] = 0
+                entry["fail_streak"] = 0
+
+        # Убираем служебное поле hosts из результата (в API не нужно).
+        for entry in results:
+            entry.pop("hosts", None)
+
         summary = {
             "ts": ts,
             "results": results,
             "total": total,
             "ok": ok,
-            "failed": total - ok,
+            "failed": failed,
+            "global_outage": global_outage,
         }
         with self._lock:
             self._history.append(summary)
             self._last_check_at = ts
             self._last_check_summary = {
-                "ts": ts, "total": total, "ok": ok, "failed": total - ok,
+                "ts": ts, "total": total, "ok": ok, "failed": failed,
+                "global_outage": global_outage,
             }
 
-        if total > 0:
+        if global_outage:
+            log.warning(
+                "Healthcheck: упали ВСЕ %d сервиса — похоже на отсутствие "
+                "связи или не запущен nfqws2. Сброс стратегий пропущен "
+                "(не трэшим выученное)." % total,
+                source="healthcheck")
+        elif total > 0:
             log.info(
                 "Healthcheck: %d/%d сервисов доступны" % (ok, total),
                 source="healthcheck")

@@ -22,14 +22,17 @@ def register(app):
 
     @app.post("/api/healthcheck/run")
     def api_healthcheck_run():
-        """Принудительная проверка прямо сейчас.
+        """Принудительная проверка прямо сейчас (НЕблокирующая).
 
-        Возвращает результат проверки текущего тика. Работает даже когда
-        демон остановлен — это разовая проверка из GUI.
+        Запускает проверку в фоне и сразу возвращает {started, busy}.
+        Каждый сервис проверяется до 8с — синхронно ждать ~30с в HTTP
+        нельзя. GUI после этого опрашивает /status и показывает спиннер,
+        пока last_check_at не обновится. Работает даже когда демон
+        остановлен — это разовая проверка из GUI.
         """
         response.content_type = "application/json; charset=utf-8"
         from core.healthcheck import get_healthcheck
-        result = get_healthcheck().run_now()
+        result = get_healthcheck().run_now(blocking=False)
         return {"ok": True, "result": result}
 
     @app.post("/api/healthcheck/enable")
