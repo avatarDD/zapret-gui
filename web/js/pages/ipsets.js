@@ -16,6 +16,7 @@ const IPSetsPage = (() => {
     let originalContent = '';
     let hasUnsaved = false;
     let loading = false;
+    let fileQuery = '';     // §6 — фильтр по имени файла (табы/карточки)
 
     // ══════════════════ Render ══════════════════
 
@@ -48,6 +49,23 @@ const IPSetsPage = (() => {
 
             <!-- Табы -->
             <div class="card" style="padding: 0;">
+                <!-- Поиск файла по имени (когда списков много — §6) -->
+                <div class="lists-filebar">
+                    <div class="list-ui-search" style="flex:1; min-width:160px; max-width:340px;">
+                        <svg class="list-ui-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <circle cx="11" cy="11" r="8"/>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <input type="text" class="form-input list-ui-search-input" id="ip-file-search"
+                               placeholder="Поиск файла по имени…" spellcheck="false" autocomplete="off">
+                        <button class="list-ui-search-clear" id="ip-file-search-clear" title="Очистить" style="display:none;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <span class="lists-filebar-status" id="ip-file-search-status"></span>
+                </div>
                 <div class="lists-tabs" id="ip-tabs"></div>
 
                 <div class="lists-content" id="ip-content">
@@ -274,6 +292,59 @@ const IPSetsPage = (() => {
                 updateSearchStatus('');
             });
         }
+
+        // Поиск файла по имени (фильтрует табы и карточки-статистику — §6).
+        const fileSearch = document.getElementById('ip-file-search');
+        const fileSearchClear = document.getElementById('ip-file-search-clear');
+        if (fileSearch) {
+            fileSearch.value = fileQuery;
+            if (fileSearchClear) fileSearchClear.style.display = fileQuery ? '' : 'none';
+            fileSearch.addEventListener('input', e => {
+                fileQuery = e.target.value;
+                if (fileSearchClear) fileSearchClear.style.display = fileQuery ? '' : 'none';
+                applyFileFilter();
+            });
+            fileSearch.addEventListener('keydown', e => {
+                if (e.key === 'Escape') {
+                    fileQuery = '';
+                    fileSearch.value = '';
+                    if (fileSearchClear) fileSearchClear.style.display = 'none';
+                    applyFileFilter();
+                }
+            });
+        }
+        if (fileSearchClear) {
+            fileSearchClear.addEventListener('click', () => {
+                fileQuery = '';
+                if (fileSearch) { fileSearch.value = ''; fileSearch.focus(); }
+                fileSearchClear.style.display = 'none';
+                applyFileFilter();
+            });
+        }
+    }
+
+    // ══════════════════ Поиск файла по имени (§6) ══════════════════
+
+    function applyFileFilter() {
+        const q = (fileQuery || '').trim().toLowerCase();
+        let vis = 0;
+        document.querySelectorAll('#ip-tabs .lists-tab').forEach(el => {
+            const name = (el.dataset.tab || '').toLowerCase();
+            const labelEl = el.querySelector('.lists-tab-name');
+            const label = (labelEl ? labelEl.textContent : '').toLowerCase();
+            const match = !q || name.includes(q) || label.includes(q);
+            el.style.display = match ? '' : 'none';
+            if (match) vis++;
+        });
+        document.querySelectorAll('#ip-stats-grid .status-card').forEach(el => {
+            const name = (el.dataset.name || '').toLowerCase();
+            const labelEl = el.querySelector('.status-card-label');
+            const label = (labelEl ? labelEl.textContent : '').toLowerCase();
+            const match = !q || name.includes(q) || label.includes(q);
+            el.style.display = match ? '' : 'none';
+        });
+        const status = document.getElementById('ip-file-search-status');
+        if (status) status.textContent = q ? (vis ? `найдено: ${vis}` : 'ничего не найдено') : '';
     }
 
     // ══════════════════ Search в редакторе ══════════════════
@@ -369,6 +440,7 @@ const IPSetsPage = (() => {
                 <span class="lists-tab-count" id="ip-tab-count-${escapeAttr(t.name)}">—</span>
             </button>
         `).join('');
+        applyFileFilter();
     }
 
     function renderAsnTargetOptions() {
@@ -411,7 +483,7 @@ const IPSetsPage = (() => {
             const grid = document.getElementById('ip-stats-grid');
             if (grid) {
                 grid.innerHTML = (result.files || []).map(f => `
-                    <div class="status-card" style="cursor:pointer;" onclick="IPSetsPage.switchTab('${escapeAttr(f.name)}')">
+                    <div class="status-card" style="cursor:pointer;" data-name="${escapeAttr(f.name)}" onclick="IPSetsPage.switchTab('${escapeAttr(f.name)}')">
                         <div class="status-card-header">
                             <svg class="status-card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <circle cx="12" cy="12" r="10"/>
@@ -433,6 +505,9 @@ const IPSetsPage = (() => {
                 const cnt = document.getElementById('ip-tab-count-' + f.name);
                 if (cnt) cnt.textContent = f.count;
             });
+
+            // Применяем фильтр по имени к свежепостроенным карточкам/табам (§6).
+            applyFileFilter();
 
             loadTab(activeTab);
         } catch (err) {
@@ -805,6 +880,7 @@ const IPSetsPage = (() => {
     function destroy() {
         hasUnsaved = false;
         loading = false;
+        fileQuery = '';
     }
 
     // ══════════════════ Public API ══════════════════

@@ -13,6 +13,13 @@ const StrategiesPage = (() => {
     let hostlistFiles = [];  // [{name, filename, path, is_builtin}] — для дропдауна в редакторе
     let pendingPrefill = null;  // стратегия из blockcheck2-бейджа, открыть после навигации
 
+    // §3/§4/§5/§7 — буфер обмена, ESC, ресайз окна, массовое объединение.
+    let selectedIds = new Set();   // выделенные карточки для объединения (§7)
+    let editorOnSaved = null;      // коллбэк после успешного сохранения редактора
+    let escKeyHandler = null;      // document keydown (ESC) — закрыть редактор/превью (§4)
+    let pasteHandler = null;       // document paste (Ctrl+V) — вставка стратегии (§3)
+    let modalResize = null;        // активный ресайзер окна редактора (§5)
+
     // Пресеты «+ фильтр…» — значения согласованы с дефолтами ScanTarget и
     // авто-обёрткой бэкенда (SKILL §3). Вставляются в НАЧАЛО args профиля.
     const FILTER_PRESETS = {
@@ -39,6 +46,13 @@ const StrategiesPage = (() => {
                             <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>
                         </svg>
                         <span id="strat-update-btn-label">Обновить стратегии</span>
+                    </button>
+                    <button class="btn btn-ghost" onclick="StrategiesPage.pasteStrategyFromClipboard()" title="Вставить стратегию из буфера обмена (или Ctrl+V на странице) — откроется создание новой стратегии с профилями из буфера">
+                        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+                            <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+                        </svg>
+                        Вставить из буфера
                     </button>
                     <button class="btn btn-primary" onclick="StrategiesPage.openCreate()">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -180,6 +194,9 @@ const StrategiesPage = (() => {
                 </div>
             </div>
 
+            <!-- Панель массовых действий (объединение выбранных стратегий) -->
+            <div id="strat-bulkbar" class="strat-bulkbar" style="display:none;"></div>
+
             <!-- Модальное окно: редактор стратегии -->
             <div id="strategy-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -231,6 +248,10 @@ const StrategiesPage = (() => {
         refreshDebugToggle();
         refreshState();
         refreshHealthcheck();
+        // ESC закрывает редактор/превью (§4), Ctrl+V на странице вставляет
+        // стратегию из буфера (§3).
+        attachGlobalKeys();
+        renderBulkBar();
         // Если пришли сюда из blockcheck2-бейджа — открыть редактор с приёмом.
         consumePendingPrefill();
     }
@@ -971,8 +992,14 @@ const StrategiesPage = (() => {
             currentId = active ? active.id : null;
             favorites = strategies.filter(s => s.is_favorite).map(s => s.id);
 
+            // Чистим выделение от исчезнувших стратегий (напр. после объединения).
+            Array.from(selectedIds).forEach(id => {
+                if (!strategies.find(s => s.id === id)) selectedIds.delete(id);
+            });
+
             renderActiveCard(active);
             renderList(strategies);
+            renderBulkBar();
         } catch (err) {
             const host = document.getElementById('strategies-list-host');
             if (host) {
@@ -1074,6 +1101,7 @@ const StrategiesPage = (() => {
         const isActive = s.id === currentId;
         const isFav = s.is_favorite;
         const isBuiltin = s.is_builtin;
+        const isSelected = selectedIds.has(s.id);
 
         const labelTag = s.label
             ? `<span class="label ${escapeAttr(s.label)}">${escapeHtml(s.label)}</span>` : '';
@@ -1100,8 +1128,11 @@ const StrategiesPage = (() => {
         }).join('');
 
         return `
-            <div class="strategy-card compact${isActive ? ' active' : ''}" data-id="${s.id}" data-list-ui-card>
+            <div class="strategy-card compact${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}" data-id="${s.id}" data-list-ui-card>
                 <div class="strategy-card-header">
+                    <label class="strategy-select-label" title="Выделить для объединения с другими стратегиями" onclick="event.stopPropagation();">
+                        <input type="checkbox" class="strategy-select"${isSelected ? ' checked' : ''} onclick="StrategiesPage.toggleSelect(event, '${escapeAttr(s.id)}')">
+                    </label>
                     <div class="strategy-card-info">
                         <div class="strategy-card-name">
                             ${isActive ? '<span class="status-dot running" style="width:8px;height:8px;"></span>' : ''}
@@ -1134,6 +1165,13 @@ const StrategiesPage = (() => {
                             <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
                         </svg>
                         Превью
+                    </button>
+                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.copyStrategyToClipboard('${s.id}')" title="Скопировать стратегию со всеми профилями (через --new) в буфер обмена">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                        </svg>
+                        В буфер
                     </button>
                     ${!isBuiltin ? `
                         <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.openEdit('${s.id}')" title="Редактировать">
@@ -1370,6 +1408,9 @@ const StrategiesPage = (() => {
 
         // Грузим список hostlist-файлов и перерисовываем форму, чтобы дропдаун был актуален
         renderEditorForm(body);
+        // Делаем окно растягиваемым во все стороны (ширина по умолчанию 2× — §5).
+        // Вызываем ПОСЛЕ renderEditorForm, чтобы измерить высоту формы.
+        enableModalResize();
         attachAutocompleteToProfiles();
         loadHostlistFiles().then(() => {
             // Перерисовываем только список профилей, не трогая остальные поля
@@ -1775,8 +1816,11 @@ const StrategiesPage = (() => {
 
             if (result.ok) {
                 Toast.success(editorMode === 'create' ? 'Стратегия создана' : 'Стратегия обновлена');
+                // Забираем отложенный коллбэк ДО closeModal (он его сбрасывает).
+                const onSaved = editorOnSaved;
                 closeModal();
                 fetchStrategies();
+                if (typeof onSaved === 'function') onSaved();
             } else {
                 Toast.error(result.error || 'Ошибка сохранения');
             }
@@ -1799,9 +1843,446 @@ const StrategiesPage = (() => {
 
     function closeModal() {
         NfqwsAutocomplete.detachAll();
+        disableModalResize();
         const modal = document.getElementById('strategy-modal');
         if (modal) modal.style.display = 'none';
         editorData = null;
+        // Сбрасываем отложенный коллбэк объединения, чтобы он не выстрелил
+        // на следующем (несвязанном) сохранении.
+        editorOnSaved = null;
+    }
+
+    // ══════════════════ Буфер обмена: копирование/вставка стратегий (§3) ══════════════════
+
+    // Копировать выбранную стратегию со всеми профилями (через --new) в буфер.
+    function copyStrategyToClipboard(sid) {
+        const s = strategies.find(x => x.id === sid);
+        if (!s) return;
+        const parts = (s.profiles || []).map(p => (p.args || '').trim()).filter(Boolean);
+        if (!parts.length) { Toast.warning('У стратегии нет аргументов для копирования'); return; }
+        const text = parts.join(' --new ');
+        _copyText(text, 'Стратегия скопирована в буфер (профилей: ' + parts.length + ')');
+    }
+
+    // Вставка по кнопке: пытаемся прочитать буфер (в secure-context). На роутере
+    // по http navigator.clipboard.readText недоступен — подсказываем Ctrl+V,
+    // который работает через событие paste (см. attachGlobalKeys).
+    async function pasteStrategyFromClipboard() {
+        let text = '';
+        try {
+            if (navigator.clipboard && navigator.clipboard.readText) {
+                text = await navigator.clipboard.readText();
+            }
+        } catch (_e) { /* доступ к буферу запрещён */ }
+        if (!text) {
+            Toast.info('Скопируйте стратегию и нажмите Ctrl+V на этой странице');
+            return;
+        }
+        if (!_looksLikeStrategy(text)) {
+            Toast.warning('В буфере нет распознаваемой стратегии nfqws2');
+            return;
+        }
+        _openPasteEditor(text);
+    }
+
+    // Эвристика: похоже ли содержимое буфера на стратегию nfqws2.
+    function _looksLikeStrategy(text) {
+        return /--(?:lua-desync|dpi-desync|filter-(?:tcp|udp|l7|l3)|new|hostlist|payload|wssize|dup)\b/.test(String(text || ''));
+    }
+
+    // Разбить строку args по разделителю профилей --new.
+    function _splitNew(s) {
+        return String(s || '').split(/\s+--new\s+/).map(x => x.trim()).filter(Boolean);
+    }
+
+    // Имя/id профиля из его args (зеркалит backend _detect_profile_info).
+    function _detectProfileInfo(argStr, idx) {
+        const toks = String(argStr || '').split(/\s+/);
+        for (const t of toks) {
+            if (t.startsWith('--filter-tcp=')) {
+                const port = t.split('=')[1] || '';
+                if (port === '80') return ['http' + (idx + 1), 'HTTP (порт 80)'];
+                return ['tcp' + (idx + 1), 'TCP (порты ' + port + ')'];
+            }
+            if (t.startsWith('--filter-udp=')) {
+                const port = t.split('=')[1] || '';
+                return ['udp' + (idx + 1), 'UDP (порты ' + port + ')'];
+            }
+            if (t.startsWith('--filter-l3=')) {
+                const ver = t.split('=')[1] || '';
+                return [ver + '_' + (idx + 1), ver.toUpperCase()];
+            }
+        }
+        return ['profile' + (idx + 1), 'Профиль ' + (idx + 1)];
+    }
+
+    // Распарсить текст из буфера в массив профилей. Поддерживает наш формат
+    // (args --new args) и блочный вывод blockcheck2 (строки «nfqws2 args»,
+    // комментарии «# …» игнорируются).
+    function _parseStrategyArgs(text) {
+        const lines = String(text || '').split('\n')
+            .map(l => l.trim())
+            .filter(l => l && !l.startsWith('#'));
+        const segs = [];
+        lines.forEach(line => {
+            const noEngine = line.replace(/^(?:nfqws2?|winws2?)\s+/i, '');
+            _splitNew(noEngine).forEach(seg => { if (seg) segs.push(seg); });
+        });
+        return segs.map((argStr, i) => {
+            const info = _detectProfileInfo(argStr, i);
+            return { id: info[0], name: info[1], enabled: true, args: argStr };
+        });
+    }
+
+    // Открыть редактор СОЗДАНИЯ, предзаполненный профилями из буфера.
+    // Автоматически НЕ сохраняем — решение за пользователем (§3).
+    function _openPasteEditor(text) {
+        const profiles = _parseStrategyArgs(text);
+        if (!profiles.length) { Toast.warning('В буфере нет распознаваемой стратегии'); return; }
+        openEditor({
+            id: '',
+            name: '',
+            description: 'Вставлено из буфера обмена',
+            type: profiles.length > 1 ? 'combined' : 'single',
+            profiles,
+        }, 'create');
+        Toast.info('Стратегия из буфера — задайте ID/имя, проверьте и сохраните');
+    }
+
+    // Копирование в буфер с fallback на execCommand (работает и по http,
+    // где navigator.clipboard недоступен).
+    function _copyText(text, okMsg) {
+        const done = () => Toast.success(okMsg || 'Скопировано');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => _copyFallback(text, done));
+        } else {
+            _copyFallback(text, done);
+        }
+    }
+    function _copyFallback(text, done) {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            done();
+        } catch (_e) {
+            Toast.error('Не удалось скопировать');
+        }
+    }
+
+    // ══════════════════ Множественный выбор и объединение (§7) ══════════════════
+
+    function toggleSelect(ev, id) {
+        if (ev) ev.stopPropagation();
+        const checked = ev && ev.target ? !!ev.target.checked : !selectedIds.has(id);
+        if (checked) selectedIds.add(id); else selectedIds.delete(id);
+        const card = ev && ev.target && ev.target.closest('.strategy-card');
+        if (card) card.classList.toggle('selected', checked);
+        renderBulkBar();
+    }
+
+    function clearSelection() {
+        selectedIds.clear();
+        document.querySelectorAll('.strategy-select').forEach(c => { c.checked = false; });
+        document.querySelectorAll('.strategy-card.selected').forEach(c => c.classList.remove('selected'));
+        renderBulkBar();
+    }
+
+    function renderBulkBar() {
+        const bar = document.getElementById('strat-bulkbar');
+        if (!bar) return;
+        const n = selectedIds.size;
+        if (n === 0) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+        const canMerge = n >= 2;
+        bar.style.display = 'flex';
+        bar.innerHTML = `
+            <span class="strat-bulkbar-count">Выбрано: <b>${n}</b></span>
+            <button class="btn btn-primary btn-sm" onclick="StrategiesPage.mergeSelected()"
+                    ${canMerge ? '' : 'disabled'}
+                    title="${canMerge ? 'Объединить выбранные стратегии в одну (профили сложатся)' : 'Выберите минимум 2 стратегии'}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px;">
+                    <polyline points="8 17 12 21 16 17"/><line x1="12" y1="21" x2="12" y2="9"/>
+                    <path d="M5 9a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4"/>
+                </svg>
+                Объединить
+            </button>
+            <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.clearSelection()">Снять выделение</button>
+        `;
+    }
+
+    // Объединить выбранные стратегии: открываем редактор СОЗДАНИЯ с суммой их
+    // профилей. После сохранения предложим удалить исходные (§7).
+    function mergeSelected() {
+        const ids = Array.from(selectedIds);
+        if (ids.length < 2) { Toast.warning('Выберите минимум 2 стратегии'); return; }
+        const sources = ids.map(id => strategies.find(s => s.id === id)).filter(Boolean);
+        if (sources.length < 2) { Toast.error('Не удалось найти выбранные стратегии'); return; }
+
+        const profiles = [];
+        sources.forEach(s => {
+            (s.profiles || []).forEach(p => {
+                profiles.push({
+                    id: '',  // переназначится в saveEditor
+                    name: p.name || p.id || 'Профиль',
+                    enabled: p.enabled !== false,
+                    args: p.args || '',
+                });
+            });
+        });
+
+        const name = sources.map(s => s.name).join(' + ');
+        const baseId = ('merged_' + sources.map(s => String(s.id).replace(/[^a-zA-Z0-9_-]/g, '')).join('_'))
+            .slice(0, 48);
+
+        // Источники для возможного удаления после сохранения. Захватываем в
+        // замыкание, т.к. closeModal сбрасывает editorOnSaved до вызова коллбэка.
+        const userIds = sources.filter(s => !s.is_builtin).map(s => s.id);
+        const builtinKept = sources.filter(s => s.is_builtin).map(s => s.name);
+        editorOnSaved = () => afterMergeSave(userIds, builtinKept);
+
+        openEditor({
+            id: baseId,
+            name: name.slice(0, 120),
+            description: 'Объединено из: ' + sources.map(s => s.name).join(', '),
+            type: 'combined',
+            profiles,
+        }, 'create');
+        Toast.info('Проверьте объединённую стратегию (ID/имя/профили) и сохраните');
+    }
+
+    // После успешного сохранения объединённой стратегии — предложить удалить
+    // исходные (только пользовательские; встроенные удалить нельзя).
+    function afterMergeSave(toDelete, builtinKept) {
+        toDelete = (toDelete || []).slice();
+        builtinKept = (builtinKept || []).slice();
+
+        if (!toDelete.length) {
+            if (builtinKept.length) {
+                Toast.info('Встроенные стратегии не удаляются: ' + builtinKept.join(', '));
+            }
+            clearSelection();
+            return;
+        }
+        let msg = 'Объединённая стратегия создана.\n\nУдалить исходные стратегии (' + toDelete.length + ' шт.)?';
+        if (builtinKept.length) {
+            msg += '\n\nВстроенные нельзя удалить, они останутся: ' + builtinKept.join(', ');
+        }
+        if (!confirm(msg)) { clearSelection(); return; }
+        deleteStrategiesSeq(toDelete);
+    }
+
+    async function deleteStrategiesSeq(ids) {
+        let ok = 0, fail = 0;
+        for (const id of ids) {
+            try {
+                const r = await API.delete('/api/strategies/' + encodeURIComponent(id));
+                if (r && r.ok) ok++; else fail++;
+            } catch (_e) { fail++; }
+        }
+        if (ok) Toast.success('Удалено исходных стратегий: ' + ok);
+        if (fail) Toast.error('Не удалось удалить: ' + fail);
+        clearSelection();
+        fetchStrategies();
+    }
+
+    // ══════════════════ Глобальные клавиши: ESC (§4) + Ctrl+V (§3) ══════════════════
+
+    function _modalOpen(el) {
+        return !!(el && el.style && el.style.display && el.style.display !== 'none');
+    }
+    function _anyModalOpen() {
+        return _modalOpen(document.getElementById('strategy-modal'))
+            || _modalOpen(document.getElementById('preview-modal'));
+    }
+
+    function attachGlobalKeys() {
+        detachGlobalKeys();
+        escKeyHandler = (e) => {
+            if (e.key !== 'Escape' || e.defaultPrevented) return; // autocomplete и т.п. уже обработали
+            if (_modalOpen(document.getElementById('strategy-modal'))) {
+                e.preventDefault();
+                closeModal();
+            } else if (_modalOpen(document.getElementById('preview-modal'))) {
+                e.preventDefault();
+                closePreview();
+            }
+        };
+        pasteHandler = (e) => {
+            const t = e.target;
+            // Не мешаем обычной вставке в поля ввода и при открытых окнах.
+            if (t && (t.closest && t.closest('input, textarea, select') || t.isContentEditable)) return;
+            if (_anyModalOpen()) return;
+            const cd = e.clipboardData || window.clipboardData;
+            const text = cd && cd.getData ? cd.getData('text') : '';
+            if (!text || !_looksLikeStrategy(text)) return;
+            e.preventDefault();
+            _openPasteEditor(text);
+        };
+        document.addEventListener('keydown', escKeyHandler);
+        document.addEventListener('paste', pasteHandler);
+    }
+
+    function detachGlobalKeys() {
+        if (escKeyHandler) document.removeEventListener('keydown', escKeyHandler);
+        if (pasteHandler) document.removeEventListener('paste', pasteHandler);
+        escKeyHandler = null;
+        pasteHandler = null;
+    }
+
+    // ══════════════════ Ресайз/перемещение окна редактора (§5) ══════════════════
+
+    const MODAL_GEOM_KEY = 'strategy-modal-geom';
+    const MODAL_MIN_W = 420;
+    const MODAL_MIN_H = 240;
+
+    // Начальная геометрия: сохранённая пользователем (если есть) либо дефолт —
+    // ширина 2× прежней (modal-lg=680 → 1360), высота по содержимому формы,
+    // окно по центру. Содержимое измеряем при целевой ширине (§5).
+    function _initialGeom(content) {
+        const saved = _loadModalGeom();
+        if (saved) return _clampGeom(saved);
+        const vw = window.innerWidth, vh = window.innerHeight;
+        const width = Math.min(1360, Math.max(MODAL_MIN_W, vw - 40));
+        // Меряем естественную высоту при заданной ширине.
+        content.style.left = '0px';
+        content.style.top = '0px';
+        content.style.width = width + 'px';
+        content.style.height = '';
+        const natural = content.scrollHeight;
+        const height = Math.min(Math.max(MODAL_MIN_H, natural + 2),
+            Math.round(vh * 0.92), vh - 24);
+        const left = Math.max(12, Math.round((vw - width) / 2));
+        const top = Math.max(12, Math.round((vh - height) / 2));
+        return { left, top, width, height };
+    }
+    function _loadModalGeom() {
+        try {
+            const g = JSON.parse(localStorage.getItem(MODAL_GEOM_KEY) || 'null');
+            if (g && typeof g.width === 'number' && typeof g.height === 'number') return g;
+        } catch (_e) { /* ignore */ }
+        return null;
+    }
+    function _saveModalGeom(g) {
+        try { localStorage.setItem(MODAL_GEOM_KEY, JSON.stringify(g)); } catch (_e) { /* quota */ }
+    }
+    function _curGeom(el) {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, width: r.width, height: r.height };
+    }
+    function _clampGeom(g) {
+        const vw = window.innerWidth, vh = window.innerHeight;
+        const width = Math.max(MODAL_MIN_W, Math.min(g.width, vw - 16));
+        const height = Math.max(MODAL_MIN_H, Math.min(g.height, vh - 16));
+        const left = Math.min(Math.max(8, g.left), Math.max(8, vw - width - 8));
+        const top = Math.min(Math.max(8, g.top), Math.max(8, vh - height - 8));
+        return { left, top, width, height };
+    }
+    function _applyGeom(el, g) {
+        el.style.left = g.left + 'px';
+        el.style.top = g.top + 'px';
+        el.style.width = g.width + 'px';
+        el.style.height = g.height + 'px';
+    }
+
+    function enableModalResize() {
+        const modal = document.getElementById('strategy-modal');
+        if (!modal) return;
+        const content = modal.querySelector('.modal-content');
+        if (!content) return;
+        disableModalResize();
+        content.classList.add('modal-resizable');
+
+        _applyGeom(content, _initialGeom(content));
+
+        const dirs = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+        const handles = dirs.map(dir => {
+            const h = document.createElement('div');
+            h.className = 'modal-resize-handle mrh-' + dir;
+            h.addEventListener('pointerdown', (e) => startResize(e, content, dir));
+            content.appendChild(h);
+            return h;
+        });
+
+        const header = content.querySelector('.modal-header');
+        const onHeaderDown = (e) => startMove(e, content);
+        if (header) header.addEventListener('pointerdown', onHeaderDown);
+
+        const onWinResize = () => _applyGeom(content, _clampGeom(_curGeom(content)));
+        window.addEventListener('resize', onWinResize);
+
+        modalResize = {
+            cleanup() {
+                handles.forEach(h => h.remove());
+                if (header) header.removeEventListener('pointerdown', onHeaderDown);
+                window.removeEventListener('resize', onWinResize);
+                content.classList.remove('modal-resizable');
+                content.style.left = content.style.top = content.style.width = content.style.height = '';
+            },
+        };
+    }
+
+    function disableModalResize() {
+        if (modalResize) {
+            try { modalResize.cleanup(); } catch (_e) { /* ignore */ }
+            modalResize = null;
+        }
+    }
+
+    function startResize(e, el, dir) {
+        if (e.button != null && e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const sx = e.clientX, sy = e.clientY;
+        const s = _curGeom(el);
+        const move = (ev) => {
+            const dx = ev.clientX - sx, dy = ev.clientY - sy;
+            let { left, top, width, height } = s;
+            if (dir.indexOf('e') >= 0) width = s.width + dx;
+            if (dir.indexOf('s') >= 0) height = s.height + dy;
+            if (dir.indexOf('w') >= 0) { width = s.width - dx; left = s.left + dx; }
+            if (dir.indexOf('n') >= 0) { height = s.height - dy; top = s.top + dy; }
+            if (width < MODAL_MIN_W) {
+                if (dir.indexOf('w') >= 0) left = s.left + (s.width - MODAL_MIN_W);
+                width = MODAL_MIN_W;
+            }
+            if (height < MODAL_MIN_H) {
+                if (dir.indexOf('n') >= 0) top = s.top + (s.height - MODAL_MIN_H);
+                height = MODAL_MIN_H;
+            }
+            _applyGeom(el, { left, top, width, height });
+        };
+        const up = () => {
+            document.removeEventListener('pointermove', move);
+            document.removeEventListener('pointerup', up);
+            _saveModalGeom(_clampGeom(_curGeom(el)));
+        };
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', up);
+    }
+
+    function startMove(e, el) {
+        // Не таскаем, если ухватились за кнопку/поле в шапке.
+        if (e.target && e.target.closest && e.target.closest('.modal-close, button, input, select, textarea, a')) return;
+        if (e.button != null && e.button !== 0) return;
+        e.preventDefault();
+        const sx = e.clientX, sy = e.clientY;
+        const s = _curGeom(el);
+        const move = (ev) => {
+            const dx = ev.clientX - sx, dy = ev.clientY - sy;
+            _applyGeom(el, _clampGeom({ left: s.left + dx, top: s.top + dy, width: s.width, height: s.height }));
+        };
+        const up = () => {
+            document.removeEventListener('pointermove', move);
+            document.removeEventListener('pointerup', up);
+            _saveModalGeom(_curGeom(el));
+        };
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', up);
     }
 
     // ══════════════════ Utils ══════════════════
@@ -1814,6 +2295,9 @@ const StrategiesPage = (() => {
 
     function destroy() {
         NfqwsAutocomplete.detachAll();
+        detachGlobalKeys();
+        disableModalResize();
+        selectedIds.clear();
         if (pollTimer) {
             clearInterval(pollTimer);
             pollTimer = null;
@@ -1872,5 +2356,12 @@ const StrategiesPage = (() => {
         runHealthcheckNow,
         toggleHealthcheckSettings,
         saveHealthcheckSettings,
+        // §3 буфер обмена
+        copyStrategyToClipboard,
+        pasteStrategyFromClipboard,
+        // §7 множественный выбор / объединение
+        toggleSelect,
+        clearSelection,
+        mergeSelected,
     };
 })();
