@@ -3,6 +3,51 @@
 ## Unreleased — Пул публичных серверов, тестер прокси, vmess, urltest-подписки
 
 ### Добавлено
+- **z2k-bundle: autocircular с памятью + расширенные детекторы + авто-починка**
+  (порт из [necronicle/z2k](https://github.com/necronicle/z2k)).
+  - **Persist выученной стратегии** между рестартами nfqws2 — circular
+    запоминает, какая подстратегия закрепилась после первого успеха на
+    каждом домене, и пишет на диск `/opt/etc/zapret-gui/state/autocircular/
+    state.tsv`. После рестарта nfqws2 начинает с выученной, а не с
+    `strategy=1` (`import/lua/z2k-state-persist.lua`).
+  - **Расширенные failure/success-детекторы** для circular: TLS fatal-alert,
+    per-host CH-without-SH stall (10–120с), mid-stream stall (8–32KB
+    silence-window), HTTP-классификатор (positive/neutral/hard_fail/
+    server_active_reject) с маркерами РКН/WAF/host-префиксов, silent-drop.
+    Закрывает «тихий 0%», когда формально соединение установилось, но
+    реальный трафик блокируется (`import/lua/z2k-detectors.lua`).
+  - **QUIC Initial morphing** (`z2k_quic_morph_v2`), 3-фрагментная IP-frag
+    с overlap (`z2k_ipfrag3`), общий hostkey для бесхостовых потоков
+    Discord/STUN (`z2k_nohost_key`), UDP-fake для игровых протоколов
+    (`z2k_game_udp`) (`import/lua/z2k-modern-core.lua`).
+  - **Dynamic TTL fooling** (`fool=z2k_dynamic_ttl`) — TTL фейка =
+    `real_ttl-1`, без `ipcache`, работает с первого пакета потока
+    (`import/lua/z2k-fooling-ext.lua`).
+  - **Sticky-random range syntax** — аргументы `repeats=2-6`,
+    `seqovl=10-50`, `tcp_seq=-1000-1000` разрешаются в случайное целое
+    sticky per-flow (replay байт-в-байт)
+    (`import/lua/z2k-range-rand.lua`).
+- **Выученные стратегии (UI и API)** — на странице Стратегии карточка
+  «Выученные стратегии (autocircular)» с таблицей домен | категория |
+  # подстратегии | момент закрепления. Кнопки: сбросить домен, сбросить
+  категорию (yt_tcp / rkn_tcp / ...), сбросить всё. Карточка скрыта,
+  пока circular ничего не выучил. API: `GET /api/strategies/state`,
+  `DELETE /api/strategies/state[/host/<h>|/key/<k>]` с опциональным
+  `?reload=1` для SIGHUP nfqws2 (`api/strategies.py`,
+  `core/strategy_state.py`, `web/js/pages/strategies.js`).
+- **Авто-починка (healthcheck-демон)** — фоновый watchdog проверяет
+  каждые 5 мин YouTube/Discord/Telegram и при N провалах подряд
+  автоматически сбрасывает state.tsv для затронутых доменов, чтобы
+  circular переподобрал стратегию (закрывает кейс «DPI обновился, а
+  выученная стратегия больше не работает, и юзер не знает»). По
+  умолчанию ВЫКЛЮЧЕН (фоновый трафик роутера наружу — пользовательский
+  выбор), включается одним кликом в карточке «Авто-починка» на странице
+  Стратегии. Там же — кнопка «Проверить сейчас» для разовой диагностики.
+  Конфиг: `healthcheck.{enabled,interval_min,consecutive_failures,
+  auto_reset,services,history_size}`. API:
+  `GET /api/healthcheck/status`, `POST /api/healthcheck/run`,
+  `POST /api/healthcheck/{enable,disable}` (`core/healthcheck.py`,
+  `api/healthcheck.py`).
 - **Встроенная подсказка о забытом куске цели при создании стратегии** —
   если в профиле есть приём (`--lua-desync`), но не указан ни один
   критичный кусок цели (`--hostlist`/`--hostlist-domains`/

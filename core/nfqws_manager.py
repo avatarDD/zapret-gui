@@ -109,6 +109,24 @@ _EXTENSION_LUA_FILES = {
         "require_iff", "standard_detector_defaults", "standard_failure_detector",
         "standard_hostkey", "standard_success_detector", "stopif",
     },
+    # z2k-modern-core: расширения уровня core от necronicle/z2k.
+    #   z2k_nohost_key  — hostkey-генератор для бесхостовых потоков
+    #                     (Discord/STUN UDP без SNI). Плагается в circular
+    #                     через `hostkey=z2k_nohost_key`. Без этого
+    #                     standard_hostkey бакетит состояние по dest-IP →
+    #                     Discord voice фрагментируется по CDN-IP.
+    #   z2k_ipfrag3 / z2k_ipfrag3_tiny — 3-фрагментные IP-фрагментаторы с
+    #                     опциональным overlap (для обхода DPI-reassembly).
+    #   z2k_timing_morph    — размытие сигнатур первых пакетов хендшейка
+    #                         через bad-checksum фейки.
+    #   z2k_quic_morph_v2   — QUIC Initial: фрагментация + модификация
+    #                         version/CID/token + шумовые пакеты.
+    #   z2k_game_udp        — UDP fake-инъекция для игровых протоколов.
+    # Зависит только от lib+antidpi (core). См. import/lua/z2k-modern-core.lua.
+    "z2k-modern-core.lua": {
+        "z2k_nohost_key", "z2k_ipfrag3", "z2k_ipfrag3_tiny",
+        "z2k_timing_morph", "z2k_quic_morph_v2", "z2k_game_udp",
+    },
     # Расширенный каталог приёмов проекта (http_*/tls_*/discord_*/multisplit_*).
     # Зависит только от lib+antidpi (core).
     "custom_funcs.lua": {
@@ -162,7 +180,32 @@ _ORCHESTRATOR_LUA_FILES = (
     "combined-detector.lua",       # combined_failure/success_detector, и пр.
     "silent-drop-detector.lua",    # детектор тихого TCP-дропа
     "strategy-stats.lua",          # preload + circular_with_preload
+    # ─────────── z2k-bundle (companion для circular) ───────────
+    # Порядок важен: detectors зависят от standard_*_detector из
+    # zapret-auto и от is_dpi_redirect/http_dissect_reply из antidpi;
+    # state-persist обёртывает функцию circular() и ДОЛЖЕН грузиться
+    # ПОСЛЕ zapret-auto (иначе оборачивать нечего).
+    "z2k-modern-core.lua",         # z2k_nohost_key (hostkey=), ipfrag3, QUIC morph
+    "z2k-detectors.lua",           # TLS-stall, mid-stream-stall, HTTP-classifier,
+                                   # server-active-reject, silent-drop
+    "z2k-fooling-ext.lua",         # fool=z2k_dynamic_ttl (real_ttl-1)
+    "z2k-state-persist.lua",       # persist выученной стратегии (state.tsv);
+                                   # путь — env Z2K_STATE_DIR_OVERRIDE
 )
+
+# z2k-range-rand: оборачивает fake/multisplit/multidisorder/fakedsplit/
+# fakeddisorder/hostfakesplit/syndata так, что аргументы вида
+# `repeats=2-6`, `seqovl=10-50`, `tcp_seq=-1000-1000`, `tcp_ts=-5-5`
+# разрешаются в случайное целое (sticky per-flow). Триггер — наличие
+# range-синтаксиса в любом из этих ключей в strategy_args.
+_RANGE_RAND_TRIGGER_RE = re.compile(
+    r"(?:repeats|seqovl|tcp_seq|tcp_ts)=-?\d+-(?:-)?\d+")
+_RANGE_RAND_LUA_FILE = "z2k-range-rand.lua"
+
+# Путь к state-каталогу (Z2K_STATE_DIR_OVERRIDE для z2k-state-persist.lua).
+# Пишем в наш GUI-каталог, а не в /opt/zapret2/extra_strats — чтобы state
+# выживал переустановку zapret2 и был частью бекапа GUI.
+Z2K_STATE_DIR = "/opt/etc/zapret-gui/state/autocircular"
 
 _LUA_DESYNC_FUNC_RE = re.compile(r"--lua-desync=([a-zA-Z0-9_]+)")
 _LUA_INIT_PATH_RE = re.compile(r"^--lua-init=@(.+)$")
@@ -256,6 +299,32 @@ class NFQWSManager:
             except OSError:
                 out_fd = slave_fd = None
 
+            # env для z2k-state-persist.lua: state.tsv пишется в наш каталог
+            # (а не /opt/zapret2/extra_strats — переживает переустановку
+            # zapret2 и бекапится вместе с GUI). Каталог создаём заранее,
+            # nfqws2 запускается под --user (обычно nobody) и при отсутствии
+            # каталога Lua делает fallback в /tmp (тоже работает, но теряется
+            # при ребуте).
+            try:
+                os.makedirs(Z2K_STATE_DIR, mode=0o755, exist_ok=True)
+                # nfqws2 запускается под `--user nobody` — даём ему права на запись
+                try:
+                    import shutil
+                    if shutil.which("chown"):
+                        subprocess.run(
+                            ["chown", "-R", cfg.get("nfqws", "user") or "nobody",
+                             Z2K_STATE_DIR],
+                            check=False, timeout=5,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+                except Exception:
+                    pass
+            except OSError:
+                # Без каталога z2k-state-persist уйдёт в /tmp fallback — это ОК.
+                pass
+            child_env = dict(os.environ)
+            child_env["Z2K_STATE_DIR_OVERRIDE"] = Z2K_STATE_DIR
+
             try:
                 if slave_fd is not None:
                     self._process = subprocess.Popen(
@@ -265,6 +334,7 @@ class NFQWSManager:
                         stderr=slave_fd,
                         preexec_fn=os.setsid,  # Новая группа процессов
                         close_fds=True,
+                        env=child_env,
                     )
                     os.close(slave_fd)
                     slave_fd = None
@@ -275,6 +345,7 @@ class NFQWSManager:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         preexec_fn=os.setsid,  # Новая группа процессов
+                        env=child_env,
                     )
                 self._out_fd = out_fd
 
@@ -704,6 +775,14 @@ class NFQWSManager:
             _add(out, "zapret-auto.lua")
             for lf in _ORCHESTRATOR_LUA_FILES:
                 _add(out, lf)
+
+        # z2k-range-rand: триггер по range-синтаксису (repeats=A-B и т.п.).
+        # Должен грузиться ПОСЛЕ antidpi (он оборачивает её глобалы
+        # fake/multisplit/...). Так как core грузится первым, естественный
+        # порядок соблюдается. В orchestrator-bundle уже могла быть
+        # подгрузка — дедуп уберёт повтор.
+        if _RANGE_RAND_TRIGGER_RE.search(joined):
+            _add(out, _RANGE_RAND_LUA_FILE)
 
         return out
 

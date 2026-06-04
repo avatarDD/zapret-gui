@@ -428,6 +428,73 @@ def register(app):
         validation = get_nfqws_manager().dry_run(args)
         return {"ok": True, "validation": validation}
 
+    # ═══════════════════ Autocircular state (state.tsv) ═══════════════════
+
+    @app.route("/api/strategies/state")
+    def api_strategies_state_list():
+        """Список выученных circular-стратегий.
+
+        z2k-state-persist.lua пишет state.tsv: для каждого (key|host)
+        запомнен номер подстратегии, которая закрепилась после успеха.
+        Этот endpoint показывает таблицу. Сброс — DELETE.
+        """
+        response.content_type = "application/json; charset=utf-8"
+
+        from core import strategy_state
+        return {
+            "ok": True,
+            "summary": strategy_state.get_summary(),
+            "entries": strategy_state.list_entries(),
+        }
+
+    @app.delete("/api/strategies/state")
+    def api_strategies_state_clear_all():
+        """Полный сброс state.tsv (по всем доменам и категориям).
+
+        После сброса circular начнёт перебор стратегий заново на новых
+        потоках. Уже установленные соединения не затрагиваются — Lua
+        в памяти nfqws2 продолжает работать; SIGHUP помогает только
+        перечитать хостлисты, но не сбрасывает per-host circular-state
+        в памяти.
+        """
+        response.content_type = "application/json; charset=utf-8"
+
+        from core import strategy_state
+        result = strategy_state.clear_all()
+        if request.query.get("reload") in ("1", "true", "yes"):
+            result["reload"] = strategy_state.reload_nfqws()
+        return result
+
+    @app.delete("/api/strategies/state/host/<host>")
+    def api_strategies_state_clear_host(host):
+        """Сброс state.tsv по одному домену (по всем category-key'ам).
+
+        Удобно когда отдельный сайт перестал работать, а остальные
+        категории должны остаться с выученными стратегиями.
+        """
+        response.content_type = "application/json; charset=utf-8"
+
+        from core import strategy_state
+        result = strategy_state.clear_host(host)
+        if request.query.get("reload") in ("1", "true", "yes"):
+            result["reload"] = strategy_state.reload_nfqws()
+        return result
+
+    @app.delete("/api/strategies/state/key/<key>")
+    def api_strategies_state_clear_key(key):
+        """Сброс state.tsv по одной category-key (yt_tcp/rkn_tcp/...).
+
+        Удобно когда «сломалась» вся категория (YouTube тормозит),
+        а другие (Discord, общая TLS) — работают.
+        """
+        response.content_type = "application/json; charset=utf-8"
+
+        from core import strategy_state
+        result = strategy_state.clear_key(key)
+        if request.query.get("reload") in ("1", "true", "yes"):
+            result["reload"] = strategy_state.reload_nfqws()
+        return result
+
     # ═══════════════════ Категории ═══════════════════
 
     @app.route("/api/categories")

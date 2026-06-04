@@ -107,6 +107,29 @@ class TestDiagnosticsAPI(unittest.TestCase):
         self.assertIsInstance(r["result"]["warnings"], list)
 
 
+class TestHealthcheckAPI(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = WSGIClient(build_test_app())
+
+    def test_healthcheck_status(self):
+        r = self.client.get_json("/api/healthcheck/status")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertIn("running", r["status"])
+        self.assertIn("enabled", r["status"])
+        self.assertIn("interval_min", r["status"])
+        self.assertIn("services", r["status"])
+        self.assertIn("history", r["status"])
+
+    def test_healthcheck_disable_idempotent(self):
+        """Выключение healthcheck — всегда возвращает ok, даже если уже выключен."""
+        r = self.client.post_json("/api/healthcheck/disable", {})
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+
+
 class TestHostsAPI(unittest.TestCase):
 
     @classmethod
@@ -187,6 +210,78 @@ class TestStrategiesAPI(unittest.TestCase):
     def test_strategies_list(self):
         r = self.client.get_json("/api/strategies")
         self.assertEqual(r["_status"], 200)
+
+    # ─── autocircular state (z2k-state-persist) ───
+
+    def test_strategies_state_list_returns_summary(self):
+        """GET /api/strategies/state — даже на пустом state возвращает
+        summary + entries=[] (а не 500)."""
+        import os
+        # Изолированный каталог: нет реального файла → entries=[], total=0
+        prev = os.environ.get("Z2K_STATE_DIR_OVERRIDE")
+        os.environ["Z2K_STATE_DIR_OVERRIDE"] = "/nonexistent-zg-test-dir"
+        try:
+            r = self.client.get_json("/api/strategies/state")
+            self.assertEqual(r["_status"], 200)
+            self.assertTrue(r["ok"])
+            self.assertIn("entries", r)
+            self.assertIn("summary", r)
+            self.assertEqual(r["entries"], [])
+        finally:
+            if prev is None:
+                os.environ.pop("Z2K_STATE_DIR_OVERRIDE", None)
+            else:
+                os.environ["Z2K_STATE_DIR_OVERRIDE"] = prev
+
+    def test_strategies_state_clear_all_idempotent(self):
+        """DELETE /api/strategies/state на пустом state — ok=True, removed=0."""
+        import os
+        prev = os.environ.get("Z2K_STATE_DIR_OVERRIDE")
+        os.environ["Z2K_STATE_DIR_OVERRIDE"] = "/nonexistent-zg-test-dir"
+        try:
+            r = self.client.delete_json("/api/strategies/state")
+            self.assertEqual(r["_status"], 200)
+            self.assertTrue(r["ok"])
+            self.assertEqual(r["removed"], 0)
+        finally:
+            if prev is None:
+                os.environ.pop("Z2K_STATE_DIR_OVERRIDE", None)
+            else:
+                os.environ["Z2K_STATE_DIR_OVERRIDE"] = prev
+
+    def test_strategies_state_clear_host_with_real_data(self):
+        """DELETE /api/strategies/state/host/<h> на подготовленном state.tsv
+        удаляет нужный host и не трогает остальное."""
+        import os
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="zg-state-api-")
+        prev = os.environ.get("Z2K_STATE_DIR_OVERRIDE")
+        os.environ["Z2K_STATE_DIR_OVERRIDE"] = tmp
+        try:
+            # Подготовка
+            with open(os.path.join(tmp, "state.tsv"), "w") as f:
+                f.write("# header\n# key\thost\tstrategy\tts\n")
+                f.write("default\tyoutube.com\t2\t100\n")
+                f.write("default\trutracker.org\t5\t200\n")
+
+            r = self.client.delete_json(
+                "/api/strategies/state/host/youtube.com")
+            self.assertEqual(r["_status"], 200)
+            self.assertTrue(r["ok"])
+            self.assertEqual(r["removed"], 1)
+
+            # rutracker остался
+            r2 = self.client.get_json("/api/strategies/state")
+            hosts = [e["host"] for e in r2["entries"]]
+            self.assertNotIn("youtube.com", hosts)
+            self.assertIn("rutracker.org", hosts)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+            if prev is None:
+                os.environ.pop("Z2K_STATE_DIR_OVERRIDE", None)
+            else:
+                os.environ["Z2K_STATE_DIR_OVERRIDE"] = prev
 
 
 class TestZapretManagerAPI(unittest.TestCase):

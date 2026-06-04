@@ -454,6 +454,14 @@ def create_app(config_dir: str = None) -> Bottle:
     except Exception:
         pass
 
+    # Healthcheck-демон (autocircular watchdog): ничего не делает, если
+    # cfg.healthcheck.enabled = false (дефолт). Включается через GUI.
+    try:
+        from core.healthcheck import get_healthcheck
+        get_healthcheck().start()
+    except Exception as e:
+        log.warning("Healthcheck при boot: %s" % e, source="app")
+
     return app
 
 
