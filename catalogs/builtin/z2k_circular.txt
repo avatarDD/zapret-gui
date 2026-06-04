@@ -1,0 +1,39 @@
+# Полный circular-пресет z2k с УМНЫМИ детекторами.
+# Источник: github.com/necronicle/z2k (z2k-detectors.lua, z2k-modern-core.lua).
+#
+# Отличие от штатных circular-пресетов (youtubediscord): здесь circular
+# использует расширенные детекторы z2k, которые ловят провалы, невидимые
+# стандартному детектору:
+#   failure_detector=z2k_mid_stream_stall — TLS fatal-alert + «второй
+#     ClientHello без ServerHello» + молчание в потоке (8–32KB) после
+#     хендшейка (DPI пускает начало ответа и рвёт середину).
+#   success_detector=z2k_http_success_positive_only — успехом считается
+#     только 2xx/304/same-SLD-3xx; блок-страницы РКН/редиректы на
+#     warn./deny. НЕ закрепляются как «рабочая стратегия».
+#   hostkey=z2k_nohost_key — бесхостовые потоки (нет SNI) делят один
+#     бакет ротации, а не плодят состояние по dest-IP.
+#
+# Стратегия самодостаточна: только встроенные блобы (fake_default_tls/http)
+# и hex-паттерны seqovl — без --blob и init_vars. state.tsv (выученная
+# стратегия) сохраняется автоматически через z2k-state-persist.
+
+[z2k_tls_circular_smart]
+name = z2k TLS/HTTP авто (умные детекторы)
+author = necronicle/z2k
+label = recommended
+description = circular-автоподбор с детекторами z2k: ловит TLS-stall, молчание в потоке и блок-страницы РКН, не закрепляется на отказе сервера. Запоминает рабочую стратегию по доменам (переживает рестарт). Открывайте заблокированные сайты — подбор идёт сам.
+--filter-tcp=80,443 --filter-l7=tls,http --ipcache-hostname=1 --out-range=-s34228 --in-range=-s5556
+--lua-desync=circular:fails=3:retrans=3:nld=3:failure_detector=z2k_mid_stream_stall:success_detector=z2k_http_success_positive_only:hostkey=z2k_nohost_key
+--in-range=x
+--payload=tls_client_hello
+--lua-desync=fake:blob=fake_default_tls:tls_mod=rnd,dupsid:tcp_md5:repeats=2:strategy=1
+--lua-desync=multidisorder:pos=1,midsld:strategy=2
+--lua-desync=multisplit:pos=1:seqovl=5:seqovl_pattern=0x1603030000:strategy=3
+--lua-desync=fake:blob=fake_default_tls:fool=z2k_dynamic_ttl:tls_mod=rnd:strategy=4
+--lua-desync=fake:blob=fake_default_tls:tls_mod=rnd:strategy=5 --lua-desync=multisplit:pos=1,midsld:strategy=5
+--lua-desync=multisplit:pos=host:strategy=6
+--payload=http_req
+--lua-desync=fake:blob=fake_default_http:tcp_md5:strategy=1
+--lua-desync=fake:blob=fake_default_http:fool=z2k_dynamic_ttl:strategy=2
+--lua-desync=multisplit:pos=method+2,host:strategy=3
+--lua-desync=multidisorder:pos=method+2,host:strategy=4

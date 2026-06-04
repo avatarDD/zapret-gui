@@ -1,0 +1,26 @@
+# Приёмы z2k для TCP (TLS/HTTP).
+# Источник: github.com/necronicle/z2k (z2k-fooling-ext.lua, z2k-modern-core.lua).
+# Это «приёмы» — сканер оборачивает под цель (--filter-tcp/--filter-l7/
+# --payload/--hostlist). fool=z2k_dynamic_ttl грузит z2k-fooling-ext.lua
+# по value-триггеру (см. nfqws_manager._FOOL_EXT_TRIGGER_RE).
+
+[z2k_fake_dyn_ttl]
+name = z2k Fake + динамический TTL
+author = necronicle/z2k
+label = recommended
+description = Fake TLS с TTL = (реальный TTL − 1), без зависимости от ipcache — работает с первого пакета потока. Против ТСПУ, сверяющего TTL фейка.
+--lua-desync=fake:blob=fake_default_tls:fool=z2k_dynamic_ttl:tls_mod=rnd,dupsid
+
+[z2k_fake_dyn_ttl_repeats]
+name = z2k Fake + дин. TTL (повторы)
+author = necronicle/z2k
+label = stable
+description = Fake TLS с динамическим TTL и 6 повторами для надёжного прохода.
+--lua-desync=fake:blob=fake_default_tls:fool=z2k_dynamic_ttl:repeats=6:tls_mod=rnd,dupsid
+
+[z2k_fake_dyn_ttl_split]
+name = z2k Fake дин.TTL + multisplit
+author = necronicle/z2k
+label = stable
+description = Fake с динамическим TTL, затем multisplit по SNI — комбинация фейка и сегментации.
+--lua-desync=fake:blob=fake_default_tls:fool=z2k_dynamic_ttl:tls_mod=rnd --lua-desync=multisplit:pos=1,midsld

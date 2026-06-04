@@ -202,6 +202,14 @@ _RANGE_RAND_TRIGGER_RE = re.compile(
     r"(?:repeats|seqovl|tcp_seq|tcp_ts)=-?\d+-(?:-)?\d+")
 _RANGE_RAND_LUA_FILE = "z2k-range-rand.lua"
 
+# z2k-fooling-ext: fool=z2k_dynamic_ttl ссылается на кастомную fool-функцию,
+# которая НЕ является --lua-desync (значит, не триггерится extension-картой по
+# имени). Для circular она грузится в orchestrator-bundle, но для обычного
+# приёма (например, fake:fool=z2k_dynamic_ttl) нужен отдельный value-триггер.
+# Грузится по значению fool=z2k_*.
+_FOOL_EXT_TRIGGER_RE = re.compile(r"\bfool=(z2k_[A-Za-z0-9_]+)")
+_FOOL_EXT_LUA_FILE = "z2k-fooling-ext.lua"
+
 # Путь к state-каталогу (Z2K_STATE_DIR_OVERRIDE для z2k-state-persist.lua).
 # Пишем в наш GUI-каталог, а не в /opt/zapret2/extra_strats — чтобы state
 # выживал переустановку zapret2 и был частью бекапа GUI.
@@ -783,6 +791,11 @@ class NFQWSManager:
         # подгрузка — дедуп уберёт повтор.
         if _RANGE_RAND_TRIGGER_RE.search(joined):
             _add(out, _RANGE_RAND_LUA_FILE)
+
+        # z2k-fooling-ext по value-триггеру fool=z2k_* (для не-circular приёмов;
+        # для circular уже подтянут bundle'ом — дедуп уберёт повтор).
+        if _FOOL_EXT_TRIGGER_RE.search(joined):
+            _add(out, _FOOL_EXT_LUA_FILE)
 
         return out
 
