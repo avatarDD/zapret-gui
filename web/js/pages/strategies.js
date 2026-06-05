@@ -20,6 +20,10 @@ const StrategiesPage = (() => {
     let pasteHandler = null;       // document paste (Ctrl+V) — вставка стратегии (§3)
     let modalResize = null;        // активный ресайзер окна редактора (§5)
 
+    // IDE-редактор: активный профиль и позиция курсора — чтобы боковая панель
+    // показывала подсказку по токену под курсором именно в нём.
+    let editorActive = { index: 0, cursor: 0 };
+
     // Пресеты «+ фильтр…» — значения согласованы с дефолтами ScanTarget и
     // авто-обёрткой бэкенда (SKILL §3). Вставляются в НАЧАЛО args профиля.
     const FILTER_PRESETS = {
@@ -218,7 +222,7 @@ const StrategiesPage = (() => {
                         <button class="modal-close" onclick="StrategiesPage.closePreview()">&times;</button>
                     </div>
                     <div class="modal-body">
-                        <div class="log-viewer" id="preview-command" style="max-height:400px; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.6; padding:16px;">
+                        <div class="log-viewer nfq-resizable" id="preview-command" style="height:340px; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.6; padding:16px;">
                             Загрузка...
                         </div>
                         <div id="preview-validation" style="display:none; margin-top:12px;"></div>
@@ -1397,6 +1401,7 @@ const StrategiesPage = (() => {
     function openEditor(data, mode) {
         editorData = data;
         editorMode = mode;
+        editorActive = { index: 0, cursor: 0 };
 
         const modal = document.getElementById('strategy-modal');
         const title = document.getElementById('modal-title');
@@ -1429,21 +1434,23 @@ const StrategiesPage = (() => {
         const isCreate = editorMode === 'create';
 
         container.innerHTML = `
-            <div class="form-group">
+          <div class="strat-editor-layout">
+            <div class="strat-editor-main">
+              <div class="form-group">
                 <label class="form-label">ID стратегии</label>
                 <input type="text" id="edit-id" class="form-input" value="${escapeHtml(d.id)}" placeholder="my_strategy" ${!isCreate ? 'readonly style="opacity:0.6;"' : ''}>
                 <div class="form-hint">Латиница, цифры, дефис, подчёркивание</div>
-            </div>
-            <div class="form-group">
+              </div>
+              <div class="form-group">
                 <label class="form-label">Название</label>
                 <input type="text" id="edit-name" class="form-input" value="${escapeHtml(d.name)}" placeholder="Моя стратегия">
-            </div>
-            <div class="form-group">
+              </div>
+              <div class="form-group">
                 <label class="form-label">Описание</label>
                 <input type="text" id="edit-desc" class="form-input" value="${escapeHtml(d.description || '')}" placeholder="Краткое описание стратегии">
-            </div>
+              </div>
 
-            <div class="form-group">
+              <div class="form-group">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     <label class="form-label" style="margin-bottom:0;">Профили</label>
                     <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.addProfile()">
@@ -1456,24 +1463,29 @@ const StrategiesPage = (() => {
                 <div id="profiles-editor">
                     ${d.profiles.map((p, i) => renderProfileEditor(p, i)).join('')}
                 </div>
-            </div>
+              </div>
 
-            <div class="form-group" style="margin-top:16px;">
+              <div class="form-group" style="margin-top:16px;">
                 <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.editorPreview()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                         <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
                     </svg>
                     Превью команды
                 </button>
-                <div id="editor-preview-output" class="log-viewer" style="max-height:120px; margin-top:8px; display:none; white-space:pre-wrap; word-break:break-all; font-size:11px; padding:12px;"></div>
-            </div>
+                <div id="editor-preview-output" class="log-viewer nfq-resizable" style="height:120px; margin-top:8px; display:none; white-space:pre-wrap; word-break:break-all; font-size:11px; padding:12px;"></div>
+              </div>
 
-            <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
+              <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
                 <button class="btn btn-ghost" onclick="StrategiesPage.closeModal()">Отмена</button>
                 <button class="btn btn-primary" onclick="StrategiesPage.saveEditor()">
                     ${isCreate ? 'Создать' : 'Сохранить'}
                 </button>
+              </div>
             </div>
+
+            <!-- Боковая панель «как в IDE»: скелет стратегии + подсказки по коду -->
+            <aside class="strat-editor-side" id="editor-sidepanel"></aside>
+          </div>
         `;
     }
 
@@ -1514,8 +1526,9 @@ const StrategiesPage = (() => {
                         </button>
                     </div>
                 </div>
-                <div class="profile-args-wrap">
-                    <textarea class="form-textarea profile-args" rows="3" placeholder="--filter-tcp=443 --filter-l7=tls ..." onchange="StrategiesPage.updateProfileArgs(${index}, this.value)">${escapeHtml(profile.args || '')}</textarea>
+                <div class="profile-args-wrap nfq-editor" data-index="${index}">
+                    <pre class="nfq-editor-pre" aria-hidden="true"></pre>
+                    <textarea class="form-textarea profile-args nfq-editor-ta" rows="3" wrap="off" spellcheck="false" placeholder="--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls" onchange="StrategiesPage.updateProfileArgs(${index}, this.value)">${escapeHtml(profile.args || '')}</textarea>
                     <span class="profile-args-hint">Ctrl+Space</span>
                 </div>
                 <div class="profile-hint-msg" id="profile-hint-${index}">${renderProfileHint(profile.args || '')}</div>
@@ -1584,6 +1597,27 @@ const StrategiesPage = (() => {
     function renderProfileHint(args) {
         const blocks = [];
 
+        // Диагностика синтаксиса (линтер nfqws2): ошибки и предупреждения
+        // прямо под редактором. Структурные (весь трафик/порядок) показываем
+        // в боковой панели, чтобы не дублировать действенное превью ниже.
+        let analysis = null;
+        try { analysis = Nfqws2Lint.analyze(String(args || '')); } catch (_e) { analysis = null; }
+        if (analysis) {
+            const errs = analysis.diagnostics.filter(d => d.severity === 'error');
+            const warns = analysis.diagnostics.filter(d => d.severity === 'warn' && !d.structural);
+            errs.slice(0, 5).forEach(d => {
+                blocks.push('<div class="profile-hint-err">✕ ' + escapeHtml(d.message) + '</div>');
+            });
+            warns.slice(0, 3).forEach(d => {
+                blocks.push('<div class="profile-hint-warn">⚠ ' + escapeHtml(d.message) + '</div>');
+            });
+            const more = (errs.length - 5) + (warns.length - 3);
+            if (errs.length > 5 || warns.length > 3) {
+                blocks.push('<div class="profile-hint-info">…ещё '
+                    + Math.max(0, more) + ' — см. «Проверка синтаксиса» в панели справа.</div>');
+            }
+        }
+
         // Забыт критичный кусок цели → встроенное превью с красным выделением.
         if (profileTargetMissing(args)) {
             blocks.push(
@@ -1602,9 +1636,8 @@ const StrategiesPage = (() => {
         }
 
         const h = profileHint(args);
-        if (h) {
-            const icon = h.level === 'warn' ? '⚠' : 'ℹ';
-            blocks.push(`<span class="profile-hint-${h.level}">${icon} ${escapeHtml(h.text)}</span>`);
+        if (h && h.level === 'info') {
+            blocks.push(`<span class="profile-hint-info">ℹ ${escapeHtml(h.text)}</span>`);
         }
         return blocks.join('');
     }
@@ -1716,7 +1749,10 @@ const StrategiesPage = (() => {
     function updateProfileArgs(index, args) {
         if (!editorData || !editorData.profiles[index]) return;
         editorData.profiles[index].args = args;
-        updateProfileHintEl(index);
+        const item = document.querySelector('.profile-editor-item[data-index="' + index + '"]');
+        if (item) syncOverlay(item);          // подсветка + кэш анализа
+        updateProfileHintEl(index);            // инлайн-диагностика под редактором
+        if (editorActive.index === index) renderSidePanel();  // панель справа
     }
 
     // Открыть редактор СОЗДАНИЯ, предзаполненный приёмом из blockcheck2.
@@ -1829,16 +1865,205 @@ const StrategiesPage = (() => {
         }
     }
 
+    // Полная настройка IDE-редакторов профилей: автодополнение + overlay-подсветка
+    // с диагностикой + боковая панель (скелет/подсказки). Имя сохранено —
+    // вызывается из openEditor/addProfile/removeProfile/prefill.
     function attachAutocompleteToProfiles() {
-        // Detach old instances first
         NfqwsAutocomplete.detachAll();
-        // Pre-load file lists for suggestions
         NfqwsAutocomplete.loadFiles();
-        // Attach to all profile textareas (async to ensure DOM is ready)
+        if (editorData && editorData.profiles) {
+            if (editorActive.index >= editorData.profiles.length) editorActive.index = 0;
+        }
         setTimeout(() => {
-            const textareas = document.querySelectorAll('.profile-args');
-            textareas.forEach(ta => NfqwsAutocomplete.attach(ta));
+            document.querySelectorAll('.profile-editor-item').forEach(item => {
+                const ta = item.querySelector('.profile-args');
+                if (!ta) return;
+                NfqwsAutocomplete.attach(ta);
+                mountOverlayEditor(item, ta);
+                syncOverlay(item);
+            });
+            renderSidePanel();
         }, 0);
+    }
+
+    // ══════════════════ IDE: overlay-подсветка + диагностика ══════════════════
+
+    // Навесить на textarea профиля синхронизацию подсветки и обновление панели.
+    function mountOverlayEditor(item, ta) {
+        if (ta._nfqMounted) return;
+        ta._nfqMounted = true;
+        const idx = parseInt(item.dataset.index, 10) || 0;
+
+        // Изменение текста: пересобрать данные, подсветку, инлайн-диагностику, панель.
+        ta.addEventListener('input', () => {
+            editorActive = { index: idx, cursor: ta.selectionStart || 0 };
+            updateProfileArgs(idx, ta.value);
+        });
+        // Перемещение курсора (стрелки/клик/выделение/фокус) — обновить подсказку панели.
+        const onCursor = () => {
+            editorActive = { index: idx, cursor: ta.selectionStart || 0 };
+            renderSidePanel();
+        };
+        ta.addEventListener('keyup', onCursor);
+        ta.addEventListener('click', onCursor);
+        ta.addEventListener('focus', onCursor);
+        ta.addEventListener('select', onCursor);
+        // Прокрутка textarea — синхронно прокрутить слой подсветки.
+        ta.addEventListener('scroll', () => {
+            const pre = item.querySelector('.nfq-editor-pre');
+            if (pre) { pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; }
+        });
+    }
+
+    // Перерисовать слой подсветки (с разметкой ошибок) под текущий текст профиля.
+    // Анализ кэшируется на элементе для боковой панели/инлайна (один lint на изменение).
+    function syncOverlay(item) {
+        const ta = item.querySelector('.profile-args');
+        const pre = item.querySelector('.nfq-editor-pre');
+        if (!ta || !pre) return;
+        const text = ta.value;
+        let analysis = null;
+        try { analysis = Nfqws2Lint.analyze(text); } catch (_e) { analysis = null; }
+        item._analysis = analysis;
+        const diags = analysis ? analysis.diagnostics : [];
+        let html = NfqwsSyntax.highlightWithDiagnostics(text, diags);
+        // хвостовой перенос строки — добавить «якорь», чтобы высота слоя совпала
+        if (text.endsWith('\n')) html += '​';
+        pre.innerHTML = html || '​';
+        pre.scrollTop = ta.scrollTop;
+        pre.scrollLeft = ta.scrollLeft;
+    }
+
+    // ══════════════════ IDE: боковая панель (скелет + подсказки) ══════════════════
+
+    const SKEL_SLOTS = [
+        { slot: 'filter', label: 'Фильтр', hint: '--filter-tcp/udp/l7' },
+        { slot: 'list',   label: 'Домены/IP', hint: '--hostlist / --ipset' },
+        { slot: 'range',  label: 'Диапазон/payload', hint: '--out-range / --payload' },
+        { slot: 'desync', label: 'Действие', hint: '--lua-desync=…' },
+    ];
+
+    function renderSidePanel() {
+        const el = document.getElementById('editor-sidepanel');
+        if (!el) return;
+        const idx = editorActive.index;
+        const profiles = (editorData && editorData.profiles) || [];
+        const item = document.querySelector('.profile-editor-item[data-index="' + idx + '"]');
+        const args = profiles[idx] ? (profiles[idx].args || '') : '';
+        let analysis = item && item._analysis ? item._analysis : null;
+        if (!analysis) { try { analysis = Nfqws2Lint.analyze(args); } catch (_e) { analysis = { slots: new Set(), diagnostics: [] }; } }
+
+        let doc = null;
+        try { doc = Nfqws2Lint.docAt(args, editorActive.cursor); } catch (_e) { doc = null; }
+
+        el.innerHTML =
+            renderSkeletonHtml(analysis, profiles.length, idx)
+            + renderTokenDocHtml(doc)
+            + renderDiagListHtml(analysis, idx);
+    }
+
+    function renderSkeletonHtml(analysis, profileCount, idx) {
+        const chips = SKEL_SLOTS.map((s, i) => {
+            const filled = analysis.slots && analysis.slots.has(s.slot);
+            const arrow = i > 0 ? '<span class="nfq-skel-arrow">→</span>' : '';
+            return arrow + '<span class="nfq-skel-chip' + (filled ? ' filled' : '')
+                + '" title="' + escapeHtml(s.hint) + '">' + escapeHtml(s.label) + '</span>';
+        }).join('');
+        const multi = profileCount > 1
+            ? '<div class="nfq-side-sub">Профиль ' + (idx + 1) + ' из ' + profileCount
+              + ' · профили разделяются <code>--new</code></div>'
+            : '';
+        return '<div class="nfq-side-card nfq-side-skel">'
+            + '<div class="nfq-side-title">Скелет стратегии nfqws2</div>'
+            + '<div class="nfq-skel-flow">' + chips + '</div>'
+            + '<div class="nfq-side-note">Порядок внутри профиля: фильтр → домены/IP → '
+            + 'диапазон/payload → действие. Блобы <code>--blob=</code> — в начало, до '
+            + 'первого <code>--new</code>.</div>'
+            + multi
+            + '</div>';
+    }
+
+    function renderTokenDocHtml(doc) {
+        if (!doc) {
+            return '<div class="nfq-side-card nfq-side-doc nfq-side-doc-empty">'
+                + '<div class="nfq-side-title">Подсказка по коду</div>'
+                + '<div class="nfq-side-note">Поставьте курсор на флаг, функцию или параметр — '
+                + 'здесь появится его описание, тип и допустимые значения. '
+                + 'Автодополнение: <kbd>Ctrl</kbd>+<kbd>Space</kbd> или «=».</div></div>';
+        }
+        const parts = [];
+        parts.push('<div class="nfq-side-title">' + escapeHtml(doc.title || '')
+            + (doc.kind === 'func' ? ' <span class="nfq-doc-tag">функция</span>' : '')
+            + (doc.kind === 'flag' ? ' <span class="nfq-doc-tag">флаг</span>' : '')
+            + (doc.kind === 'subarg' ? ' <span class="nfq-doc-tag">параметр</span>' : '')
+            + '</div>');
+        if (doc.signature)
+            parts.push('<div class="nfq-doc-sig"><code>' + escapeHtml(doc.signature) + '</code></div>');
+        if (doc.desc)
+            parts.push('<div class="nfq-doc-desc">' + escapeHtml(doc.desc) + '</div>');
+        const meta = [];
+        if (doc.type) meta.push('тип: <code>' + escapeHtml(doc.type) + '</code>');
+        if (doc.file) meta.push('из <code>' + escapeHtml(doc.file) + '</code>');
+        if (doc.group && doc.group !== 'arg') meta.push('группа: <code>' + escapeHtml(doc.group) + '</code>');
+        if (doc.payload) meta.push('payload: <code>' + escapeHtml(doc.payload) + '</code>');
+        if (meta.length) parts.push('<div class="nfq-doc-meta">' + meta.join(' · ') + '</div>');
+        if (doc.values && doc.values.length) {
+            const vals = doc.values.slice(0, 24).map(v => '<code class="nfq-doc-val">' + escapeHtml(String(v)) + '</code>').join(' ');
+            parts.push('<div class="nfq-doc-vals"><span class="nfq-doc-label">значения:</span> ' + vals
+                + (doc.values.length > 24 ? ' …' : '') + '</div>');
+        }
+        if (doc.examples && doc.examples.length)
+            parts.push('<div class="nfq-doc-vals"><span class="nfq-doc-label">примеры:</span> '
+                + doc.examples.map(v => '<code class="nfq-doc-val">' + escapeHtml(String(v)) + '</code>').join(' ') + '</div>');
+        if (doc.groups && doc.groups.length)
+            parts.push('<div class="nfq-doc-meta">принимает опции: ' + doc.groups.map(g => '<code>' + escapeHtml(g) + '</code>').join(', ') + '</div>');
+        if (doc.argList && doc.argList.length) {
+            const rows = doc.argList.map(a =>
+                '<div class="nfq-doc-arg"><code>' + escapeHtml(a.name) + '</code>'
+                + '<span class="nfq-doc-arg-type">' + escapeHtml(a.type || '') + '</span>'
+                + (a.desc ? '<span class="nfq-doc-arg-desc">' + escapeHtml(a.desc) + '</span>' : '') + '</div>').join('');
+            parts.push('<div class="nfq-doc-args"><div class="nfq-doc-label">параметры:</div>' + rows + '</div>');
+        }
+        return '<div class="nfq-side-card nfq-side-doc">' + parts.join('') + '</div>';
+    }
+
+    function renderDiagListHtml(analysis, idx) {
+        const diags = (analysis && analysis.diagnostics) || [];
+        if (!diags.length) {
+            return '<div class="nfq-side-card nfq-side-diag nfq-diag-ok">'
+                + '<div class="nfq-side-title">Проверка синтаксиса</div>'
+                + '<div class="nfq-diag-ok-row">✓ Ошибок не найдено</div></div>';
+        }
+        const order = { error: 0, warn: 1, info: 2 };
+        const icon = { error: '✕', warn: '⚠', info: 'ℹ' };
+        const sorted = diags.slice().sort((a, b) => (order[a.severity] - order[b.severity]) || (a.start - b.start));
+        const rows = sorted.map(d => {
+            const jump = (!d.structural && d.end > d.start)
+                ? ' onclick="StrategiesPage.jumpToDiag(' + idx + ',' + d.start + ',' + d.end + ')" style="cursor:pointer;"'
+                : '';
+            return '<div class="nfq-diag-row nfq-diag-' + d.severity + '"' + jump + '>'
+                + '<span class="nfq-diag-ico">' + icon[d.severity] + '</span>'
+                + '<span class="nfq-diag-msg">' + escapeHtml(d.message) + '</span></div>';
+        }).join('');
+        const nErr = diags.filter(d => d.severity === 'error').length;
+        const nWarn = diags.filter(d => d.severity === 'warn').length;
+        const summary = (nErr ? nErr + ' ошиб. ' : '') + (nWarn ? nWarn + ' предупр.' : '');
+        return '<div class="nfq-side-card nfq-side-diag">'
+            + '<div class="nfq-side-title">Проверка синтаксиса '
+            + (summary ? '<span class="nfq-diag-sum">' + escapeHtml(summary.trim()) + '</span>' : '') + '</div>'
+            + rows + '</div>';
+    }
+
+    // Перейти к проблемному месту: выделить диапазон в textarea активного профиля.
+    function jumpToDiag(index, start, end) {
+        editorActive.index = index;
+        const item = document.querySelector('.profile-editor-item[data-index="' + index + '"]');
+        const ta = item && item.querySelector('.profile-args');
+        if (!ta) return;
+        ta.focus();
+        try { ta.setSelectionRange(start, end); } catch (_e) { /* ignore */ }
+        editorActive.cursor = start;
+        renderSidePanel();
     }
 
     function closeModal() {
@@ -2340,6 +2565,7 @@ const StrategiesPage = (() => {
         updateProfileArgs,
         insertHostlist,
         insertFilter,
+        jumpToDiag,
         prefillCreate,
         editorPreview,
         saveEditor,
