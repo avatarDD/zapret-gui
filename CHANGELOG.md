@@ -207,6 +207,46 @@
   подписки/пул/именованные списки/маршруты единого слоя — проверено).
 
 ### Исправлено
+- **На Keenetic нельзя было добавить domain-правило в «AWG-правила → Домены»:
+  кнопка «Добавить правило» оставалась серой.** Под зелёным баннером
+  «Активен Keenetic-native режим (NDMS)» кнопка всё равно гейтилась на
+  готовности dnsmasq (`dnReady`), а на Keenetic'е dnsmasq намеренно не
+  поднимается (53-й порт занят системным ndnsproxy) — поэтому `dnReady`
+  всегда `false` и кнопка была вечно неактивной. При этом NDMS-backend
+  (`core/routing/ndms_backend.py`: `object-group fqdn` + `dns-proxy route`)
+  давно реализован и полностью рабочий — не хватало только разблокировки в
+  UI. Теперь в `web/js/pages/awg_routing.js` введён флаг
+  `domainReady = ndmsActive || dnReady`: на нём гейтятся и кнопка, и подсказка
+  «недоступно». Дополнительно:
+  - в NDMS-режиме текст-подсказка описывает реальный путь (ndnsproxy +
+    `dns-proxy route`, без dnsmasq/ipset), а не «dnsmasq будет резолвить…»;
+  - в выпадающий список «Туннель назначения» подмешиваются **нативные
+    Keenetic-WG-интерфейсы** (`Wireguard0…`, источник `/api/routing/interfaces`,
+    `source=ndms`) — именно их понимает `dns-proxy route`, тогда как
+    userspace-`awg0` NDMS не видит; раньше на роутере с нативным WG и без
+    наших AWG-конфигов список был пуст. Сравнение с поведением
+    [hoaxisr/awg-manager](https://github.com/hoaxisr/awg-manager) (там
+    domain-routing тоже идёт через системные NDMS-WG-интерфейсы)
+    подтвердило, что цель правила — именно нативный интерфейс.
+- **Тестер серверов сыпал в лог `FATAL … clash api is not included in this
+  build` на каждый батч и каждую пересборку пула.** Бинарь sing-box у
+  пользователя собран без `with_clash_api`, поэтому фаза 2 (e2e через Clash
+  API) была обречена. Хотя `proxy_tester` и раньше деградировал на TCP-отсев,
+  он всё равно поднимал заведомо падающий sing-box и логировал сырой stderr
+  с ANSI-цветами (`\x1b[31mFATAL\x1b[0m`). Теперь:
+  - перед фазой 2 — дешёвый pre-flight `binary_has_clash_api()` по строке
+    `Tags:` из `sing-box version`; если clash_api заведомо нет, фаза 2
+    пропускается с одним внятным INFO (вместо FATAL на каждый батч);
+  - в лог-хвост stderr добавлена очистка ANSI (`_strip_ansi`);
+  - детектор (`core/singbox_detector.py`) парсит build-теги и отдаёт
+    `tags` + `has_clash_api`; инсталлятор (`check_for_updates`) выставляет
+    `needs_reinstall`, даже если upstream-версия совпадает (наша свежая
+    сборка с тем же номером уже включает `with_clash_api`) — иначе
+    обновление по версии не предлагалось и пользователь застревал без
+    e2e-теста навсегда;
+  - на странице «sing-box → Установка» показывается статус `clash_api` и
+    жёлтая плашка с предложением переустановить. Сам релизный workflow уже
+    собирает с `with_clash_api` (тэг добавлен в `SINGBOX_TAGS`).
 - **`LUA ERROR: invalid failure detector function 'z2k_mid_stream_stall'`
   после обновления GUI через веб-интерфейс** (issue #144). Самообновление
   `gui_updater._do_update` копировало только `api/core/web/config/catalogs/

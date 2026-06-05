@@ -128,6 +128,10 @@ const SingboxSetupPage = (() => {
         const availableArchs = Object.keys(sb.binaries || {}).sort();
         const latestVersion  = sb.version || (version && version.latest && version.latest.version) || '';
         const hasUpdate = !!(version && version.has_update);
+        // Бинарь собран без clash_api → тестер серверов умеет только TCP.
+        // Версия при этом может совпадать с релизом, поэтому отдельный сигнал.
+        const needsReinstall = !!(version && version.needs_reinstall);
+        const reinstallReason = (version && version.reinstall_reason) || '';
 
         const installInProgress = ['starting', 'manifest', 'downloading',
                                    'verifying', 'extracting', 'installing']
@@ -198,11 +202,26 @@ const SingboxSetupPage = (() => {
                             В нашем релизе: <strong>${escapeHtml(latestVersion)}</strong>
                             ${hasUpdate ? '<span style="color:#fb8;">— доступно обновление</span>' : ''}
                         </div>` : ''}
+                    ${installed ? `
+                        <div style="margin-top:4px;">
+                            clash_api: ${bin.has_clash_api
+                                ? '<span style="color:#39c45e;">включён</span>'
+                                : '<span style="color:#fb8;">нет</span> — тестер серверов работает только по TCP'}
+                        </div>` : ''}
                     ${manifestError ? `
                         <div class="text-muted" style="color:#e58; font-size:11px; margin-top:4px;">
                             ${escapeHtml(manifestError)}
                         </div>` : ''}
                 </div>
+
+                ${needsReinstall ? `
+                    <div class="alert alert-warning" style="margin-top:10px;">
+                        <div class="alert-title">Бинарь sing-box собран без clash_api</div>
+                        <p style="font-size:12px; margin:6px 0 0;">
+                            ${escapeHtml(reinstallReason || 'Тестер серверов сейчас отсеивает только по TCP (фаза e2e через движок недоступна).')}
+                            Нажмите «${hasUpdate ? 'Обновить' : 'Переустановить'}» ниже — свежая сборка из нашего релиза включает clash_api.
+                        </p>
+                    </div>` : ''}
 
                 ${archSelect}
 
