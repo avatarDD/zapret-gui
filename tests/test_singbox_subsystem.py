@@ -90,6 +90,56 @@ class TestSingboxDetectorProbeVersion(unittest.TestCase):
             self.assertEqual(v, "unexpected output here")
 
 
+class TestSingboxDetectorBuildTags(unittest.TestCase):
+    """Парсинг строки `Tags:` и определение clash_api."""
+
+    _MODERN = ("sing-box version 1.12.0\n"
+               "Environment: go1.23 linux/amd64\n"
+               "Tags: with_quic,with_grpc,with_utls,with_clash_api\n"
+               "Revision: abcdef\nCGO: disabled")
+    _NO_CLASH = ("sing-box version 1.12.0\n"
+                 "Tags: with_quic,with_grpc,with_utls\n"
+                 "CGO: disabled")
+    _NO_TAGS = "sing-box version 1.12.0\nCGO: disabled"
+
+    def setUp(self):
+        self.det = singbox_detector.SingboxDetector()
+
+    def test_clash_api_present(self):
+        with mock.patch.object(singbox_detector, "_cmd_out",
+                                return_value=self._MODERN):
+            info = self.det._probe_version_info("/opt/sing-box")
+        self.assertEqual(info["version"], "1.12.0")
+        self.assertIn("with_clash_api", info["tags"])
+        self.assertTrue(info["has_clash_api"])
+
+    def test_clash_api_absent(self):
+        with mock.patch.object(singbox_detector, "_cmd_out",
+                                return_value=self._NO_CLASH):
+            info = self.det._probe_version_info("/opt/sing-box")
+        self.assertTrue(info["tags"])              # теги распарсились
+        self.assertFalse(info["has_clash_api"])    # но clash_api нет
+
+    def test_no_tags_line(self):
+        with mock.patch.object(singbox_detector, "_cmd_out",
+                                return_value=self._NO_TAGS):
+            info = self.det._probe_version_info("/opt/sing-box")
+        self.assertEqual(info["tags"], [])         # строки Tags нет
+        self.assertFalse(info["has_clash_api"])
+
+    def test_detect_binary_surfaces_capability(self):
+        with mock.patch.object(self.det, "detect_platform") as dp, \
+             mock.patch("os.path.isfile", return_value=True), \
+             mock.patch("os.access", return_value=True), \
+             mock.patch.object(singbox_detector, "_cmd_out",
+                                return_value=self._MODERN):
+            dp.return_value.binary_path.return_value = "/opt/sing-box"
+            info = self.det.detect_binary()
+        self.assertTrue(info["installed"])
+        self.assertTrue(info["has_clash_api"])
+        self.assertIn("with_clash_api", info["tags"])
+
+
 class TestSingboxDetectTun(unittest.TestCase):
 
     def test_tun_present(self):
@@ -182,6 +232,47 @@ class TestInstallerProgress(unittest.TestCase):
         self.assertEqual(s["status"], "downloading")
         self.assertEqual(s["progress"], 42)
         self.assertEqual(s["message"], "test")
+
+
+class TestInstallerNeedsReinstall(unittest.TestCase):
+    """check_for_updates флагует переустановку, если в бинаре нет clash_api."""
+
+    def _check(self, bin_info, manifest_ver="1.12.0"):
+        i = singbox_installer.SingboxInstaller()
+        fake_det = mock.Mock()
+        fake_det.detect_binary.return_value = bin_info
+        with mock.patch.object(singbox_installer, "get_singbox_detector",
+                               return_value=fake_det), \
+             mock.patch.object(i, "get_manifest", return_value={
+                 "tag": "singbox-bin-v%s" % manifest_ver,
+                 "sing_box": {"version": manifest_ver}}):
+            return i.check_for_updates()
+
+    def test_flags_reinstall_when_clash_api_missing(self):
+        r = self._check({"installed": True, "version": "1.12.0",
+                         "tags": ["with_quic", "with_utls"],
+                         "has_clash_api": False})
+        self.assertTrue(r["needs_reinstall"])
+        self.assertFalse(r["has_update"])          # та же upstream-версия
+        self.assertIn("clash_api", r["reinstall_reason"])
+
+    def test_no_reinstall_when_clash_api_present(self):
+        r = self._check({"installed": True, "version": "1.12.0",
+                         "tags": ["with_quic", "with_clash_api"],
+                         "has_clash_api": True})
+        self.assertFalse(r["needs_reinstall"])
+        self.assertEqual(r["reinstall_reason"], "")
+
+    def test_no_reinstall_when_tags_unknown(self):
+        # Теги не распарсились — не дёргаем пользователя ложной тревогой.
+        r = self._check({"installed": True, "version": "1.12.0",
+                         "tags": [], "has_clash_api": False})
+        self.assertFalse(r["needs_reinstall"])
+
+    def test_no_reinstall_when_not_installed(self):
+        r = self._check({"installed": False, "version": "",
+                         "tags": [], "has_clash_api": False})
+        self.assertFalse(r["needs_reinstall"])
 
 
 if __name__ == "__main__":

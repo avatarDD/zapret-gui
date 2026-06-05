@@ -1,7 +1,9 @@
 # tests/test_proxy_tester.py
 """Unit-тесты для core/proxy_tester.py (чистые помощники, без бинаря)."""
 
+import types
 import unittest
+from unittest import mock
 
 from core import proxy_tester as pt
 from core.proxy_tester import build_test_config, parse_delay
@@ -115,6 +117,77 @@ class TestTestOutboundsNoBinary(unittest.TestCase):
         tcp = [c for c in calls if c[0] == "tcp"]
         self.assertEqual(tcp[-1][1], 2)
         self.assertEqual(tcp[-1][2], 2)
+
+
+class TestStripAnsi(unittest.TestCase):
+
+    def test_removes_color_codes(self):
+        raw = "\x1b[31mFATAL\x1b[0m[0000] create clash-server: clash api is not included"
+        self.assertEqual(
+            pt._strip_ansi(raw),
+            "FATAL[0000] create clash-server: clash api is not included")
+
+    def test_plain_unchanged(self):
+        self.assertEqual(pt._strip_ansi("plain text"), "plain text")
+
+
+class TestBinaryHasClashApi(unittest.TestCase):
+
+    def _run(self, stdout):
+        return mock.patch.object(
+            pt.subprocess, "run",
+            return_value=types.SimpleNamespace(stdout=stdout, returncode=0))
+
+    def test_present(self):
+        with self._run("sing-box version 1.12.0\n"
+                       "Tags: with_quic,with_clash_api\nCGO: disabled"):
+            self.assertIs(pt.binary_has_clash_api("/opt/sing-box"), True)
+
+    def test_absent(self):
+        with self._run("sing-box version 1.12.0\n"
+                       "Tags: with_quic,with_utls\nCGO: disabled"):
+            self.assertIs(pt.binary_has_clash_api("/opt/sing-box"), False)
+
+    def test_unknown_when_no_tags_line(self):
+        with self._run("sing-box version 1.12.0\nCGO: disabled"):
+            self.assertIsNone(pt.binary_has_clash_api("/opt/sing-box"))
+
+    def test_empty_binary_is_unknown(self):
+        self.assertIsNone(pt.binary_has_clash_api(""))
+
+
+class TestSkipE2EWithoutClashApi(unittest.TestCase):
+    """Фаза 2 не запускается, если бинарь заведомо без clash_api."""
+
+    def test_no_clash_api_skips_engine(self):
+        obs = [{"type": "vless", "tag": "a", "server": "1.1.1.1",
+                "server_port": 443, "uuid": "u"}]
+        with mock.patch.object(pt, "tcp_prefilter",
+                               return_value={"a": (True, 12)}), \
+             mock.patch.object(pt, "binary_has_clash_api",
+                               return_value=False), \
+             mock.patch.object(pt, "_e2e_delays") as e2e:
+            res = pt.test_outbounds(obs, binary="/opt/sing-box")
+        e2e.assert_not_called()              # движок не поднимали
+        self.assertFalse(res["engine_used"])
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["results"][0]["stage"], "tcp")
+        self.assertTrue(res["results"][0]["alive"])
+
+    def test_clash_api_present_runs_engine(self):
+        obs = [{"type": "vless", "tag": "a", "server": "1.1.1.1",
+                "server_port": 443, "uuid": "u"}]
+        with mock.patch.object(pt, "tcp_prefilter",
+                               return_value={"a": (True, 12)}), \
+             mock.patch.object(pt, "binary_has_clash_api",
+                               return_value=True), \
+             mock.patch.object(pt, "_e2e_delays",
+                               return_value={"a": {"ok": True,
+                                                   "latency_ms": 99}}) as e2e:
+            res = pt.test_outbounds(obs, binary="/opt/sing-box")
+        e2e.assert_called_once()
+        self.assertTrue(res["engine_used"])
+        self.assertEqual(res["results"][0]["stage"], "e2e")
 
 
 if __name__ == "__main__":

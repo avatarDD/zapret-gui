@@ -227,11 +227,13 @@ class SingboxInstaller:
         bin_info = get_singbox_detector().detect_binary()
         state = _read_state()
         return {
-            "installed":    bin_info.get("installed", False),
-            "path":         bin_info.get("path", ""),
-            "version":      bin_info.get("version", ""),
-            "tag":          state.get("tag", ""),
-            "installed_at": state.get("installed_at", 0),
+            "installed":     bin_info.get("installed", False),
+            "path":          bin_info.get("path", ""),
+            "version":       bin_info.get("version", ""),
+            "tags":          bin_info.get("tags", []),
+            "has_clash_api": bin_info.get("has_clash_api", False),
+            "tag":           state.get("tag", ""),
+            "installed_at":  state.get("installed_at", 0),
         }
 
     def check_for_updates(self) -> dict:
@@ -244,11 +246,28 @@ class SingboxInstaller:
         latest_ver = (manifest.get("sing_box") or {}).get("version", "")
         latest_tag = manifest.get("tag", "")
         has_update = bool(latest_ver) and latest_ver != installed.get("version")
+        # Переустановка нужна, даже если версия совпадает: наши сборки
+        # начиная с тэга «clash_api в бинаре» включают with_clash_api, без
+        # которого не работает тестер серверов (proxy_tester). Если в
+        # установленном бинаре уверенно нет clash_api (теги распарсились и
+        # тега там нет) — подсказываем переустановиться. has_update при
+        # этом может быть False (одна и та же upstream-версия), поэтому
+        # сигнал нужен отдельный, иначе пользователь никогда не узнает.
+        needs_reinstall = bool(
+            installed.get("installed")
+            and installed.get("tags")               # теги распарсились
+            and not installed.get("has_clash_api")  # но clash_api среди них нет
+        )
         return {
-            "ok":         True,
-            "installed":  installed,
-            "latest":     {"tag": latest_tag, "version": latest_ver},
-            "has_update": has_update,
+            "ok":              True,
+            "installed":       installed,
+            "latest":          {"tag": latest_tag, "version": latest_ver},
+            "has_update":      has_update,
+            "needs_reinstall": needs_reinstall,
+            "reinstall_reason": ("Бинарь собран без clash_api — тестер серверов"
+                                 " работает только по TCP. Переустановите, чтобы"
+                                 " включить полную e2e-проверку."
+                                 if needs_reinstall else ""),
         }
 
     # ─── architecture ───

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -46,6 +47,15 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from core.log_buffer import log
+
+
+# sing-box печатает stderr с ANSI-цветами (FATAL красным и т.п.). В наш
+# лог-буфер они попадают сырыми («\x1b[31mFATAL\x1b[0m»), поэтому чистим.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s or "")
 
 
 # ─────── target presets ───────
@@ -400,9 +410,38 @@ def _tail_text(path: str, limit: int = 600) -> str:
             data = f.read()
     except OSError:
         return ""
-    text = data.decode("utf-8", errors="replace").strip()
+    text = _strip_ansi(data.decode("utf-8", errors="replace")).strip()
     text = " ".join(text.split())
     return text[-limit:]
+
+
+def binary_has_clash_api(binary: str):
+    """
+    Определить по build-тегам, собран ли бинарь sing-box с clash_api.
+
+    Возвращает:
+      True  — clash_api точно есть;
+      False — `Tags:` распарсились, но clash_api там нет (точно нет);
+      None  — определить не удалось (нет бинаря / нет строки Tags) —
+              трактуем как «неизвестно», движок всё равно пробуем.
+
+    Используется как дешёвый pre-flight перед фазой 2: если clash_api
+    заведомо нет, нет смысла поднимать заведомо падающий sing-box и
+    засорять лог FATAL'ом — отдаём только TCP-результат.
+    """
+    if not binary:
+        return None
+    try:
+        r = subprocess.run([binary, "version"], capture_output=True,
+                           text=True, timeout=4)
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    out = r.stdout or ""
+    m = re.search(r"^\s*Tags:\s*(.+)$", out, re.IGNORECASE | re.MULTILINE)
+    if not m:
+        return None
+    tags = [t.strip() for t in re.split(r"[,\s]+", m.group(1)) if t.strip()]
+    return any("clash_api" in t for t in tags)
 
 
 # ─────── public API ───────
@@ -457,14 +496,25 @@ def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
     e2e: dict = {}
     engine_used = False
     if bin_path and survivors:
-        try:
-            _report("e2e", 0, len(survivors))
-            e2e = _e2e_delays(survivors, target_url, timeout_ms, bin_path,
-                              on_done=lambda d, t: _report("e2e", d, t))
-            engine_used = True
-        except Exception as e:
-            log.warning("proxy_tester e2e: %s" % e, source="singbox")
-            e2e = {}
+        # Pre-flight: если бинарь заведомо собран без clash_api, фаза 2
+        # обречена (sing-box упадёт с «clash api is not included»). Не
+        # поднимаем заведомо падающий процесс на каждый батч и не сыпем
+        # FATAL'ом в лог — один внятный INFO и graceful degrade на TCP.
+        if binary_has_clash_api(bin_path) is False:
+            log.info(
+                "proxy_tester: бинарь sing-box собран без clash_api — "
+                "e2e-тест через движок пропущен, фильтрация только по TCP. "
+                "Переустановите sing-box (раздел «sing-box → Установка»), "
+                "чтобы включить полную проверку серверов.", source="singbox")
+        else:
+            try:
+                _report("e2e", 0, len(survivors))
+                e2e = _e2e_delays(survivors, target_url, timeout_ms, bin_path,
+                                  on_done=lambda d, t: _report("e2e", d, t))
+                engine_used = True
+            except Exception as e:
+                log.warning("proxy_tester e2e: %s" % e, source="singbox")
+                e2e = {}
 
     results = []
     for ob in obs:

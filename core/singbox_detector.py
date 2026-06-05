@@ -73,24 +73,57 @@ class SingboxDetector:
         if not path:
             path = _find_binary(["sing-box"])
         if not path:
-            return {"installed": False, "path": "", "version": ""}
-        version = self._probe_version(path)
-        return {"installed": True, "path": path, "version": version}
+            return {"installed": False, "path": "", "version": "",
+                    "tags": [], "has_clash_api": False}
+        info = self._probe_version_info(path)
+        return {"installed": True, "path": path,
+                "version":       info["version"],
+                "tags":          info["tags"],
+                # has_clash_api отражает УВЕРЕННОЕ наличие тега в сборке.
+                # Если `Tags:`-строку распарсить не удалось (tags пуст) —
+                # оставляем False, но потребители (proxy_tester/installer)
+                # реагируют только на «уверенно отсутствует»: tags непуст и
+                # clash_api в них нет. Это страхует от ложных срабатываний
+                # на сборках, не печатающих Tags.
+                "has_clash_api": info["has_clash_api"]}
 
     def _probe_version(self, binary: str) -> str:
-        """`sing-box version` отдаёт многострочный вывод; нас интересует
-        первая строка с номером."""
+        """Только номер версии (обёртка над `_probe_version_info`)."""
+        return self._probe_version_info(binary)["version"]
+
+    def _probe_version_info(self, binary: str) -> dict:
+        """
+        `sing-box version` отдаёт многострочный вывод вида:
+
+            sing-box version 1.12.0
+            Environment: go1.23 linux/amd64
+            Tags: with_quic,with_grpc,with_utls,with_clash_api
+            Revision: ...
+            CGO: disabled
+
+        Возвращаем {version, tags, has_clash_api}. `tags` — список build-
+        тегов из строки `Tags:` (может быть пуст, если её нет). По нему
+        определяется, собран ли бинарь с clash_api — без него тестер
+        серверов (proxy_tester) не может прогнать e2e-замеры.
+        """
         out = _cmd_out([binary, "version"], timeout=3)
         if not out:
-            return ""
+            return {"version": "", "tags": [], "has_clash_api": False}
         # sing-box version 1.x.y -- ... либо первая строка содержит
         # «sing-box version 1.x.y»
         m = re.search(r"sing-box\s+(?:version\s+)?(\S+)", out, re.IGNORECASE)
         if m:
-            return m.group(1)
-        # Fallback — взять первый токен
-        first = out.splitlines()[0].strip()
-        return first
+            version = m.group(1)
+        else:
+            version = out.splitlines()[0].strip()
+        # Строка `Tags: a,b,c` (теги через запятую и/или пробелы).
+        tags = []
+        tm = re.search(r"^\s*Tags:\s*(.+)$", out, re.IGNORECASE | re.MULTILINE)
+        if tm:
+            tags = [t.strip() for t in re.split(r"[,\s]+", tm.group(1))
+                    if t.strip()]
+        has_clash = any("clash_api" in t for t in tags)
+        return {"version": version, "tags": tags, "has_clash_api": has_clash}
 
     def detect_tun(self) -> dict:
         dev_tun = os.path.exists("/dev/net/tun") or os.path.exists("/dev/tun")

@@ -15,6 +15,7 @@ const AwgRoutingPage = (() => {
     let environment  = null;   // отчёт детектора (для подсказок)
     let dnsmasqInfo  = null;   // /api/routing/dnsmasq/status
     let ndmsInfo     = null;   // /api/routing/ndms/status (Keenetic-native)
+    let routeIfaces  = [];     // /api/routing/interfaces (вкл. нативные NDMS WG)
     let devices      = [];     // /api/devices (DHCP+ARP)
     let devicesSrc   = null;   // sources status
     let busy         = false;
@@ -108,19 +109,21 @@ const AwgRoutingPage = (() => {
 
     async function loadAll() {
         try {
-            const [rulesResp, cfgsResp, envResp, dnResp, ndmsResp] =
+            const [rulesResp, cfgsResp, envResp, dnResp, ndmsResp, ifResp] =
                 await Promise.all([
                     API.get('/api/routing/rules'),
                     API.get('/api/awg/configs'),
                     API.get('/api/awg/environment').catch(() => null),
                     API.get('/api/routing/dnsmasq/status').catch(() => null),
                     API.get('/api/routing/ndms/status').catch(() => null),
+                    API.get('/api/routing/interfaces').catch(() => null),
                 ]);
             rules       = (rulesResp && rulesResp.rules)   || [];
             configs     = (cfgsResp  && cfgsResp.configs)  || [];
             environment = envResp || null;
             dnsmasqInfo = dnResp   || null;
             ndmsInfo    = ndmsResp || null;
+            routeIfaces = (ifResp  && ifResp.interfaces)   || [];
             if (!formIface && configs.length > 0) {
                 formIface = configs[0].name;
             }
@@ -507,6 +510,14 @@ const AwgRoutingPage = (() => {
         const ndmsActive = !!(ndmsInfo && ndmsInfo.available);
 
         const dnReady = !!dn.available && !!dn.running && !!preferred;
+        // Domain-routing готов, если работает ХОТЬ ОДИН бэкенд: либо
+        // Keenetic-native (ndnsproxy через dns-proxy route — dnsmasq на
+        // этой платформе не нужен и не запускается), либо классический
+        // dnsmasq+ipset/nftset. Раньше кнопка «Добавить правило» гейтилась
+        // только на dnReady, поэтому на Keenetic'е (где dnReady=false by
+        // design) она оставалась навсегда неактивной — хотя NDMS-backend
+        // полностью реализован (см. core/routing/ndms_backend.py).
+        const domainReady = ndmsActive || dnReady;
         const setupApplied = !!(dnsmasqInfo && dnsmasqInfo.auto_setup_applied);
         // Кнопка нужна, если у нас не работает domain-routing и есть хоть
         // какая-то надежда поднять его: либо dnsmasq установлен (его надо
@@ -583,9 +594,36 @@ const AwgRoutingPage = (() => {
                </div>`;
         }
 
-        const cfgOptions = configs.map(c =>
-            `<option value="${escapeAttr(c.name)}" ${c.name === formDomIface ? 'selected' : ''}>
-                ${escapeHtml(c.name)}${c.active ? ' (активен)' : ''}
+        // Цели для domain-правил: наши AWG-конфиги + (в NDMS-режиме)
+        // нативные Keenetic-WG-интерфейсы (Wireguard0…). Именно последние
+        // понимает `dns-proxy route` — userspace-awg0 NDMS не видит. Без
+        // этого на «голом» Keenetic'е (нативный WG, но без наших AWG-
+        // конфигов) список был бы пуст и кнопку некуда было бы нацелить.
+        const nativeNdms = (routeIfaces || []).filter(i => i && i.source === 'ndms');
+        const cfgNames = new Set(configs.map(c => c.name));
+        const domTargets = configs.map(c => ({
+            name:  c.name,
+            label: escapeHtml(c.name) + (c.active ? ' (активен)' : ''),
+        })).concat(
+            nativeNdms
+                .filter(i => i.name && !cfgNames.has(i.name))
+                .map(i => ({
+                    name:  i.name,
+                    label: escapeHtml(i.name) + ' · Keenetic'
+                         + (i.description ? ' (' + escapeHtml(i.description) + ')' : '')
+                         + (i.active ? ' — активен' : ''),
+                }))
+        );
+        // formDomIface мог проинициализироваться из configs[0] в loadAll;
+        // если конфигов нет, а нативные интерфейсы есть — берём первый из них.
+        const domTargetNames = domTargets.map(t => t.name);
+        if ((!formDomIface || !domTargetNames.includes(formDomIface)) && domTargets.length) {
+            formDomIface = domTargets[0].name;
+        }
+
+        const cfgOptions = domTargets.map(t =>
+            `<option value="${escapeAttr(t.name)}" ${t.name === formDomIface ? 'selected' : ''}>
+                ${t.label}
              </option>`
         ).join('');
 
@@ -602,21 +640,30 @@ const AwgRoutingPage = (() => {
 
             <div class="card" style="margin-bottom: 12px;">
                 <div class="card-title">Добавить правило по доменам</div>
-                ${configs.length === 0 ? `
+                ${domTargets.length === 0 ? `
                     <p class="text-muted" style="margin-top: 8px;">
-                        Нет ни одного AWG-конфига. Сначала создайте туннель в разделе
-                        <a href="#awg-configs">Конфиги</a>.
+                        Нет ни одного интерфейса для маршрутизации. Создайте AWG-туннель
+                        в разделе <a href="#awg-configs">Конфиги</a>${ndmsActive
+                            ? ' или поднимите нативный WireGuard в веб-админке Keenetic'
+                            : ''}.
                     </p>
                 ` : `
                     <p class="text-muted" style="margin-top: 6px; font-size: 13px;">
+                        ${ndmsActive ? `
+                        Встроенный ndnsproxy Keenetic'а разрезолвит эти домены и направит
+                        трафик к ним через выбранный интерфейс (<code>dns-proxy route</code>) —
+                        ни dnsmasq, ни ipset/nftset не нужны.
+                        ` : `
                         dnsmasq будет резолвить эти домены и добавлять полученные IP
                         в ${escapeHtml(preferred || 'set')}. Маркированные пакеты уйдут
-                        через выбранный интерфейс. Поддерживаются поддомены: например,
+                        через выбранный интерфейс.
+                        `}
+                        Поддерживаются поддомены: например,
                         <code>example.com</code> покрывает <code>www.example.com</code>.
                     </p>
                     <div style="display: grid; grid-template-columns: 200px 1fr; gap: 8px 12px; margin-top: 8px; align-items: start;">
                         <label class="text-muted" style="padding-top: 6px;"
-                               title="AWG-туннель, в который пойдёт выбранный трафик. В списке — ваши конфиги; пометка «(активен)» означает, что туннель сейчас поднят.">
+                               title="Интерфейс, в который пойдёт выбранный трафик. В списке — ваши AWG-конфиги${ndmsActive ? ' и нативные WireGuard-интерфейсы Keenetic' : ''}; пометка «(активен)» означает, что туннель сейчас поднят.">
                             Туннель назначения
                         </label>
                         <select id="rt-dom-iface" onchange="AwgRoutingPage.setFormDomIface(this.value)"
@@ -639,11 +686,11 @@ const AwgRoutingPage = (() => {
                                class="form-control" style="max-width: 480px;">
                     </div>
                     <div style="margin-top: 12px;">
-                        <button class="btn btn-primary btn-sm" ${(busy || !dnReady) ? 'disabled' : ''}
+                        <button class="btn btn-primary btn-sm" ${(busy || !domainReady) ? 'disabled' : ''}
                                 onclick="AwgRoutingPage.submitDomain()">
                             Добавить правило
                         </button>
-                        ${dnReady ? '' : '<span class="text-muted" style="margin-left:10px; font-size:12px;">недоступно: см. сообщение выше</span>'}
+                        ${domainReady ? '' : '<span class="text-muted" style="margin-left:10px; font-size:12px;">недоступно: см. сообщение выше</span>'}
                     </div>
                 `}
             </div>
