@@ -77,5 +77,36 @@ class TestFetchLatestGuiRelease(unittest.TestCase):
                 GuiUpdater()._fetch_github_latest_release()
 
 
+class TestSelfUpdateAssetSync(unittest.TestCase):
+    """
+    Regression для issue #144: self-update должен копировать import/ и
+    запускать asset_importer.import_runtime_assets() — иначе обновлённый
+    core/ ссылается на lua-скрипты, которых нет в /opt/zapret2/lua/, и
+    nfqws2 падает с «LUA ERROR: invalid failure detector function ...».
+    """
+
+    def test_import_dir_is_copied_on_update(self):
+        """import/ обязан быть в dirs_to_update — иначе bundled lua/blob/
+        lists не доедут до /opt/zapret2/, а триггеры в новом core/ их
+        ожидают."""
+        import inspect
+        src = inspect.getsource(GuiUpdater._do_update)
+        # ищем литерал списка dirs_to_update — там обязан быть "import"
+        self.assertIn('"import"', src,
+                      "self-update должен копировать import/ "
+                      "(см. issue #144)")
+
+    def test_asset_importer_called_after_copy(self):
+        """После копирования файлов self-update должен вызвать
+        asset_importer.import_runtime_assets() — без этого новые bundled
+        lua/blob/lists не попадут в /opt/zapret2/."""
+        import inspect
+        src = inspect.getsource(GuiUpdater._do_update)
+        self.assertIn("import_runtime_assets", src,
+                      "self-update должен синхронизировать import/ "
+                      "с /opt/zapret2/ через asset_importer "
+                      "(см. issue #144)")
+
+
 if __name__ == "__main__":
     unittest.main()

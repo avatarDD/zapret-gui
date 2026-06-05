@@ -181,6 +181,29 @@
   подписки/пул/именованные списки/маршруты единого слоя — проверено).
 
 ### Исправлено
+- **`LUA ERROR: invalid failure detector function 'z2k_mid_stream_stall'`
+  после обновления GUI через веб-интерфейс** (issue #144). Самообновление
+  `gui_updater._do_update` копировало только `api/core/web/config/catalogs/
+  data/app.py` — каталог `import/` с bundled lua/blob/lists в список не
+  входил, а `asset_importer` после обновления не вызывался. В результате
+  обновлённый `core/nfqws_manager.py` приходил с триггерами на `z2k-*.lua`
+  (`z2k_mid_stream_stall`, `z2k_http_success_positive_only`, `z2k_nohost_key`,
+  `z2k_dynamic_ttl`), но сами файлы оставались от предыдущей версии или
+  отсутствовали в `/opt/zapret2/lua/`. `_build_lua_init_args` молча
+  пропускал их (`os.path.isfile=False`), и стратегия «z2k TLS/HTTP авто»
+  падала на вызове необъявленной функции. Теперь `import/` копируется
+  вместе с остальными директориями, а сразу после распаковки запускается
+  `asset_importer.import_runtime_assets()` — bundled-ассеты разъезжаются
+  в `/opt/zapret2/{lua,files/fake,lists,ipset}/`, как при первой установке
+  (`core/gui_updater.py`).
+- **BlockCheck2: «Копировать все» не подставлял домены из поля формы.**
+  Клик по конкретному бейджу (`useStrategy`) корректно собирал
+  `--hostlist-domains=` из поля «Домены» (или брал сам протестированный
+  домен как фолбэк), а кнопка «Копировать все» (`copyAllFound`) вызывала
+  `_buildArgs(f, null)` — список доменов отбрасывался, и в буфер уходили
+  стратегии без `--hostlist-domains=`. Теперь обе ветки используют один
+  источник: домены из формы, при пустом поле — `f.domain`
+  (`web/js/pages/blockcheck2.js`).
 - **Перезапуск nfqws2 применял старую стратегию после её правки.** Кнопки
   «Старт»/«Перезапуск» (`/api/start`, `/api/restart`) переиспользовали
   закэшированные в `nfqws_manager._last_args` аргументы прошлого запуска,
