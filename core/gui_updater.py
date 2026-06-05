@@ -265,9 +265,16 @@ class GuiUpdater:
 
             self._set_progress("Обновление файлов...", 55)
 
-            # 4. Копировать новые файлы поверх старых
+            # 4. Копировать новые файлы поверх старых.
+            #
+            # import/ обязателен: там лежат bundled lua/blob/lists, которые
+            # после копирования синхронизируются в /opt/zapret2/ через
+            # asset_importer (шаг 5). Без него self-update приносит новый
+            # core/ с триггерами на z2k-*.lua, но сами файлы остаются от
+            # предыдущей версии (или отсутствуют), и nfqws2 падает с
+            # «LUA ERROR: invalid failure detector function ...» (issue #144).
             dirs_to_update = [
-                "api", "core", "web", "config", "catalogs", "data",
+                "api", "core", "web", "config", "catalogs", "data", "import",
             ]
             files_to_update = ["app.py"]
 
@@ -291,6 +298,31 @@ class GuiUpdater:
                 dst = os.path.join(app_dir, f)
                 if os.path.isfile(src):
                     shutil.copy2(src, dst)
+
+            # 5. Импорт обновлённых bundled-ассетов в runtime zapret2:
+            #    import/lua/*.lua    → /opt/zapret2/lua/
+            #    import/bin/*.bin    → /opt/zapret2/files/fake/
+            #    import/lists/*.txt  → /opt/zapret2/{lists,ipset}/
+            # Без этого новые lua-скрипты (например, z2k-*.lua), на которые
+            # ссылается обновлённый core/nfqws_manager.py, остаются только в
+            # import/ и не попадают в lua_path → _build_lua_init_args их
+            # молча пропускает (os.path.isfile=False), и nfqws2 пытается
+            # вызвать функцию из необъявленного файла.
+            self._set_progress("Импорт ассетов в zapret2...", 75)
+            try:
+                from core.asset_importer import import_runtime_assets
+                import_runtime_assets()
+            except Exception as e:
+                # Best-effort: ошибка импорта не должна срывать обновление,
+                # но её нужно громко залогировать — иначе следующий запуск
+                # nfqws2 загадочно упадёт на отсутствующей lua-функции.
+                log.warning(
+                    "Не удалось импортировать bundled-ассеты после "
+                    "обновления: %s. Проверьте права на %s/lua и при "
+                    "необходимости запустите `python3 -m core.asset_importer "
+                    "--only runtime` вручную." % (e, "/opt/zapret2"),
+                    source="gui-updater",
+                )
 
             # Гарантируем CLI-обёртку `zapret-gui` в PATH. Старые ipk
             # (до появления CLI) её не клали, а self-update раньше не

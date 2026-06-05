@@ -598,14 +598,19 @@ const Blockcheck2Page = (() => {
     // Копировать список всех найденных стратегий в буфер обмена (task §2).
     // Каждый приём — комментарий с доменом/успехом + готовая строка args,
     // чтобы пользователь сам скомпоновал нужные профили через --new.
+    // Домены для --hostlist-domains подставляем из поля формы; если пусто —
+    // используем сам протестированный домен (как в useStrategy, чтобы
+    // «Копировать все» и клик по бейджу давали одинаковую сборку).
     function copyAllFound() {
         if (!foundStrategies.length) { Toast && Toast.info && Toast.info('Пока нет найденных стратегий'); return; }
+        const formDomains = _domainsFromForm();
         const lines = [`# Рабочие стратегии blockcheck2 (${foundStrategies.length})`, ''];
         _foundOrder().forEach(({ f }) => {
             const rate = (f.ok != null && f.total != null) ? `${f.ok}/${f.total}` : '';
+            const domList = formDomains.length ? formDomains : (f.domain ? [f.domain] : []);
             lines.push(`# ${f.label || ''} · ${f.domain || ''}`
                 + (rate ? ` · успех ${rate}` : '') + (f.full ? '' : ' (не все попытки)'));
-            lines.push(`${f.engine || 'nfqws2'} ${_buildArgs(f, null)}`);
+            lines.push(`${f.engine || 'nfqws2'} ${_buildArgs(f, domList)}`);
             lines.push('');
         });
         _copyText(lines.join('\n').trim() + '\n', `Скопировано стратегий: ${foundStrategies.length}`);
