@@ -3979,6 +3979,228 @@ input:focus, textarea:focus, select:focus {
     text-decoration-style: dotted;
 }
 
+/* Инлайн-ошибка синтаксиса под редактором профиля */
+.profile-hint-err {
+    color: var(--error, #f87171);
+    font-weight: 600;
+}
+
+/* ══════════════════ IDE-редактор стратегий nfqws2 ══════════════════ */
+
+/* Двухколоночная раскладка: редактор слева, инфо-панель справа */
+.strat-editor-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(260px, 28%, 340px);
+    gap: 16px;
+    align-items: start;
+}
+.strat-editor-main { min-width: 0; }
+.strat-editor-side {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: calc(100vh - 160px);
+    overflow: auto;
+}
+/* Узкое окно — панель уходит вниз */
+@media (max-width: 760px) {
+    .strat-editor-layout { grid-template-columns: 1fr; }
+    .strat-editor-side { position: static; max-height: none; }
+}
+
+/* Overlay code-editor: textarea (прозрачный текст) поверх слоя подсветки.
+   Метрики обоих слоёв ДОЛЖНЫ совпадать — иначе каретка «уплывёт». */
+.nfq-editor { position: relative; }
+.nfq-editor-pre,
+.nfq-editor-ta {
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    letter-spacing: 0;
+    tab-size: 4;
+    white-space: pre;            /* без soft-wrap — слои совпадают 1:1 */
+    overflow: auto;
+    box-sizing: border-box;
+    min-height: 64px;
+}
+.nfq-editor-pre {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border-color: var(--border);
+    pointer-events: none;
+    overflow: hidden;            /* прокрутку зеркалит JS из textarea */
+    white-space: pre;
+}
+.nfq-editor-ta {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    background: transparent !important;
+    color: transparent;
+    caret-color: var(--text-primary);
+    resize: vertical;
+}
+.nfq-editor-ta::placeholder { color: var(--text-muted); opacity: 0.5; }
+.nfq-editor-ta::selection { background: rgba(88, 166, 255, 0.28); color: transparent; }
+.nfq-editor-ta:focus { box-shadow: 0 0 0 2px var(--accent-glow); outline: none; }
+.nfq-editor:focus-within .nfq-editor-pre { border-color: var(--border-focus); }
+.profile-args-hint { z-index: 2; }
+
+/* Подсветка ошибок/предупреждений в слое (поверх синтаксиса) */
+.nfq-error {
+    text-decoration: underline wavy var(--error, #f87171);
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+    background: rgba(248, 113, 113, 0.10);
+    border-radius: 2px;
+}
+.nfq-warn {
+    text-decoration: underline wavy var(--warning, #fbbf24);
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+    background: rgba(251, 191, 36, 0.08);
+    border-radius: 2px;
+}
+
+/* Карточки боковой панели */
+.nfq-side-card {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 12px;
+}
+.nfq-side-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.nfq-side-note {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+    margin-top: 6px;
+}
+.nfq-side-note code, .nfq-side-sub code {
+    font-family: var(--font-mono);
+    background: rgba(127, 127, 127, 0.14);
+    padding: 0 4px;
+    border-radius: 3px;
+}
+.nfq-side-sub { color: var(--text-muted); font-size: 11px; margin-top: 8px; }
+
+/* Скелет-схема: слот-чипы со стрелками */
+.nfq-skel-flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+}
+.nfq-skel-chip {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px dashed var(--border);
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+}
+.nfq-skel-chip.filled {
+    border-style: solid;
+    border-color: var(--accent, #58a6ff);
+    background: rgba(88, 166, 255, 0.12);
+    color: var(--text-primary);
+    font-weight: 600;
+}
+.nfq-skel-arrow { color: var(--text-muted); opacity: 0.6; font-size: 11px; }
+
+/* Карточка документации по токену */
+.nfq-doc-tag {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(127, 127, 127, 0.18);
+    color: var(--text-muted);
+    text-transform: none;
+    letter-spacing: 0;
+}
+.nfq-doc-sig code {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--accent, #58a6ff);
+    word-break: break-all;
+}
+.nfq-doc-desc { color: var(--text-primary); line-height: 1.5; margin-top: 6px; }
+.nfq-doc-meta { color: var(--text-muted); font-size: 11px; margin-top: 6px; }
+.nfq-doc-meta code, .nfq-doc-sig code { font-family: var(--font-mono); }
+.nfq-doc-vals { margin-top: 6px; line-height: 1.9; }
+.nfq-doc-label { color: var(--text-muted); font-size: 11px; margin-right: 4px; }
+.nfq-doc-val {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    background: rgba(127, 127, 127, 0.14);
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+.nfq-doc-args { margin-top: 8px; }
+.nfq-doc-arg {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+    border-top: 1px solid var(--border);
+}
+.nfq-doc-arg code { font-family: var(--font-mono); color: var(--accent-2, #7ee787); font-size: 11px; }
+.nfq-doc-arg-type { color: var(--text-muted); font-size: 10px; font-family: var(--font-mono); }
+.nfq-doc-arg-desc { color: var(--text-muted); font-size: 11px; flex: 1; }
+
+/* Список диагностики */
+.nfq-diag-sum { font-size: 10px; color: var(--warning, #fbbf24); text-transform: none; letter-spacing: 0; }
+.nfq-diag-row {
+    display: flex;
+    gap: 7px;
+    align-items: baseline;
+    padding: 4px 0;
+    line-height: 1.4;
+    border-top: 1px solid var(--border);
+}
+.nfq-diag-row:first-of-type { border-top: none; }
+.nfq-diag-row[onclick]:hover { background: rgba(127, 127, 127, 0.10); border-radius: 4px; }
+.nfq-diag-ico { font-size: 11px; flex-shrink: 0; }
+.nfq-diag-msg { font-size: 11.5px; }
+.nfq-diag-error .nfq-diag-ico, .nfq-diag-error .nfq-diag-msg { color: var(--error, #f87171); }
+.nfq-diag-warn  .nfq-diag-ico, .nfq-diag-warn  .nfq-diag-msg { color: var(--warning, #fbbf24); }
+.nfq-diag-info  .nfq-diag-ico, .nfq-diag-info  .nfq-diag-msg { color: var(--text-muted); }
+.nfq-diag-ok .nfq-diag-ok-row { color: var(--success, #7ee787); font-size: 12px; }
+
+/* Растягиваемое превью (по ширине и высоте) */
+.nfq-resizable {
+    resize: both;
+    overflow: auto;
+    min-height: 80px;
+    min-width: 200px;
+    max-width: 100%;
+}
+
 /* Адаптив — на маленьких экранах popup уже */
 @media (max-width: 480px) {
     .nfq-ac-popup {
