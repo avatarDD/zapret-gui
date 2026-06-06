@@ -30,6 +30,7 @@ const App = (() => {
         'awg-setup':   AwgSetupPage,
         singbox:           SingboxDashboardPage,
         'singbox-configs': SingboxConfigsPage,
+        'singbox-proxies': SingboxProxiesPage,
         'singbox-setup':   SingboxSetupPage,
         mihomo:            MihomoPage,
         lists:       ListsPage,

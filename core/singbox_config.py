@@ -608,3 +608,61 @@ def wrap_in_group(cfg: dict, group_tag: str, group_type: str,
         if route.get("final") in old_targets:
             route["final"] = group_tag
     return cfg
+
+
+# ─────── clash_api (для учёта трафика per-outbound) ───────
+#
+# Чтобы считать, сколько трафика прокачано через каждый сервер, нам
+# нужен локальный Clash API у ЗАПУЩЕННОГО инстанса: трекер опрашивает
+# `GET /connections` и агрегирует upload/download по тегу outbound'а
+# (см. core/proxy_traffic.py). Эти helper'ы умеют добавить clash_api в
+# конфиг идемпотентно и вытащить endpoint обратно.
+
+def make_clash_api(port: int, secret: str = "",
+                   host: str = "127.0.0.1") -> dict:
+    """Секция `experimental.clash_api` со слушателем только на localhost."""
+    block = {"external_controller": "%s:%d" % (host, int(port))}
+    if secret:
+        block["secret"] = secret
+    return block
+
+
+def ensure_clash_api(cfg: dict, *, port: int, secret: str = "",
+                     host: str = "127.0.0.1") -> tuple:
+    """
+    Добавить `experimental.clash_api`, если его ещё нет. Существующий
+    НЕ трогаем (у пользователя мог быть свой). Возвращает (cfg, changed).
+    """
+    if not isinstance(cfg, dict):
+        raise ValueError("cfg должен быть dict")
+    exp = cfg.setdefault("experimental", {})
+    if not isinstance(exp, dict):
+        raise ValueError("experimental — не объект")
+    if isinstance(exp.get("clash_api"), dict) and \
+            exp["clash_api"].get("external_controller"):
+        return cfg, False
+    exp["clash_api"] = make_clash_api(port, secret, host)
+    return cfg, True
+
+
+def clash_api_endpoint(cfg: dict) -> dict:
+    """
+    Вытащить endpoint Clash API из конфига:
+      {"host","port","secret"} либо None, если clash_api не настроен.
+    """
+    if not isinstance(cfg, dict):
+        return None
+    api = ((cfg.get("experimental") or {}).get("clash_api") or {})
+    ctrl = api.get("external_controller")
+    if not ctrl or ":" not in str(ctrl):
+        return None
+    host, _, port = str(ctrl).rpartition(":")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return None
+    # `0.0.0.0` / пусто → опрашиваем через loopback.
+    if not host or host in ("0.0.0.0", "::", "[::]"):
+        host = "127.0.0.1"
+    host = host.strip("[]")
+    return {"host": host, "port": port, "secret": api.get("secret") or ""}

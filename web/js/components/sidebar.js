@@ -61,6 +61,7 @@ const Sidebar = (() => {
                 ] },
                 { id: 'singbox', label: 'sing-box', icon: 'awg', children: [
                     { id: 'singbox-configs', label: 'Конфиги',  icon: 'lua' },
+                    { id: 'singbox-proxies', label: 'Прокси',   icon: 'globe' },
                     { id: 'singbox-setup',   label: 'Установка', icon: 'settings' },
                 ] },
                 { id: 'mihomo', label: 'mihomo', icon: 'awg' },

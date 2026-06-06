@@ -31,6 +31,14 @@ REST API для sing-box.
                                                        (body: {_form, ...} или raw)
   PUT    /api/singbox/configs/<name>/outbounds/<tag> — обновить
   DELETE /api/singbox/configs/<name>/outbounds/<tag> — удалить
+  POST   /api/singbox/configs/<name>/outbounds/delete-bulk — удалить
+                                                  несколько (body: {tags})
+  POST   /api/singbox/configs/<name>/import-links   — вставка из буфера
+                                                  (body: {text}) → outbound'ы
+  POST   /api/singbox/configs/<name>/enable-clash-api — включить clash_api
+                                                  (для учёта трафика)
+  POST   /api/singbox/export-links          — outbounds|config → share-ссылки
+                                                  (для копирования в буфер)
 
   GET    /api/singbox/transparent/status    — доступность + сохранённые
                                                 настройки прозрач. проксир.
@@ -70,6 +78,10 @@ REST API для sing-box.
                                                 outbounds | url; target,
                                                 timeout_ms) — запуск
   GET    /api/singbox/test/status           — прогресс/результат теста
+
+  GET    /api/singbox/traffic               — трафик per-proxy {tag:{up,down}}
+                                                (?config=<name> — фильтр+clash)
+  POST   /api/singbox/traffic/reset         — обнулить счётчики (body: {tags}?)
 """
 
 import threading
@@ -590,6 +602,148 @@ def register(app):
         return _modify_outbounds(
             name, lambda obs: _do_delete(obs, tag))
 
+    @app.route("/api/singbox/configs/<name>/outbounds/delete-bulk",
+               method="POST")
+    def singbox_outbounds_delete_bulk(name):
+        """Удалить несколько outbound'ов разом (body: {"tags": [...]}).
+
+        Используется на странице «Прокси» (хоткей Delete / кнопка
+        «Удалить выделенные»). Служебные/групповые теги, занятые в
+        route, пропускаются с пометкой."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        tags = [str(t) for t in (body.get("tags") or []) if t]
+        if not tags:
+            response.status = 400
+            return {"ok": False, "error": "Не переданы tags"}
+
+        report = {"deleted": [], "skipped": []}
+
+        def _mut(obs):
+            tagset = set(tags)
+            keep = []
+            for o in obs:
+                t = o.get("tag") if isinstance(o, dict) else None
+                if t in tagset:
+                    report["deleted"].append(t)
+                else:
+                    keep.append(o)
+            # Вычистить удалённые теги из групп selector/urltest, иначе
+            # останется висячая ссылка и sing-box check упадёт.
+            for o in keep:
+                if isinstance(o, dict) and o.get("type") in (
+                        "selector", "urltest") and isinstance(
+                            o.get("outbounds"), list):
+                    o["outbounds"] = [x for x in o["outbounds"]
+                                      if x not in tagset]
+            obs[:] = keep
+            missing = tagset - set(report["deleted"])
+            report["skipped"] = sorted(missing)
+            return None
+
+        res = _modify_outbounds(name, _mut)
+        if isinstance(res, dict) and res.get("ok"):
+            res.update(report)
+        return res
+
+    @app.route("/api/singbox/configs/<name>/import-links", method="POST")
+    def singbox_configs_import_links(name):
+        """
+        Вставка серверов из буфера обмена (Ctrl+V на странице «Прокси»).
+
+        body: {"text": "<vless://...>\\n<ss://...>\\n..."}. Распознаём
+        все share-URI из текста (как импорт подписки), конвертируем в
+        outbound'ы, дедуплицируем по tag и добавляем в конфиг <name>.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        text = (body.get("text") or "").strip()
+        if not text:
+            response.status = 400
+            return {"ok": False, "error": "Пустой текст"}
+
+        from core.subscription_importer import extract_items
+        from core.singbox_subscription import uri_to_outbound
+
+        items = extract_items(text)
+        parsed, errors = [], 0
+        for it in items:
+            if not isinstance(it, dict) or it.get("type") != "uri":
+                continue
+            uri = it.get("value")
+            if not uri:
+                continue
+            r = uri_to_outbound(uri)
+            if r.get("ok") and r.get("outbound"):
+                parsed.append(r["outbound"])
+            else:
+                errors += 1
+        if not parsed:
+            return {"ok": False, "error":
+                    "Не нашлось валидных серверов в тексте",
+                    "errors": errors}
+
+        report = {"added": 0, "renamed": 0, "errors": errors}
+
+        def _mut(obs):
+            existing = {o.get("tag") for o in obs if isinstance(o, dict)}
+            for ob in parsed:
+                tag = ob.get("tag") or "out"
+                if tag in existing:
+                    # Конфликт тегов — добавляем суффикс, не теряем сервер.
+                    base, n = tag, 2
+                    while ("%s-%d" % (base, n)) in existing:
+                        n += 1
+                    tag = "%s-%d" % (base, n)
+                    ob["tag"] = tag
+                    report["renamed"] += 1
+                existing.add(tag)
+                obs.append(ob)
+                report["added"] += 1
+            return None
+
+        res = _modify_outbounds(name, _mut)
+        if isinstance(res, dict) and res.get("ok"):
+            res.update(report)
+        return res
+
+    @app.route("/api/singbox/export-links", method="POST")
+    def singbox_export_links():
+        """
+        Копирование серверов в буфер (Ctrl+C на странице «Прокси»).
+
+        body: {"outbounds": [...]} либо {"config": "<name>"}. Возвращает
+        {"ok", "text": "<links\\n...>", "count"}. Служебные/групповые
+        outbound'ы пропускаются.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        obs = body.get("outbounds")
+        if not isinstance(obs, list):
+            name = (body.get("config") or "").strip()
+            if not name:
+                response.status = 400
+                return {"ok": False, "error": "Укажите outbounds или config"}
+            from core.singbox_manager import get_singbox_manager
+            res = get_singbox_manager().get_config(name)
+            if not res.get("ok"):
+                response.status = 404
+                return {"ok": False, "error": "Конфиг не найден"}
+            obs = _real_outbounds(res.get("parsed") or {})
+
+        from core.singbox_subscription import outbounds_to_links
+        links = outbounds_to_links(obs)
+        return {"ok": True, "text": "\n".join(links), "count": len(links)}
+
     @app.route("/api/singbox/configs/<name>/wrap", method="POST")
     def singbox_configs_wrap(name):
         """
@@ -979,3 +1133,89 @@ def register(app):
         st["ok"] = True
         st["targets"] = list(TARGET_PRESETS.keys())
         return st
+
+    # ─────── per-proxy traffic (учёт прокачанного трафика) ─────────
+
+    @app.route("/api/singbox/traffic")
+    def singbox_traffic():
+        """
+        Кумулятивный трафик по тегам outbound'ов: {tag: {up, down}}.
+        ?config=<name> — отфильтровать тегами этого конфига и заодно
+        сообщить, настроен ли у него clash_api (нужен для учёта).
+        Лениво поднимает фоновый трекер.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.proxy_traffic import get_traffic_tracker
+        tracker = get_traffic_tracker()
+        tracker.ensure_running()
+
+        name = (request.query.get("config") or "").strip()
+        tags = None
+        clash_enabled = None
+        running = None
+        if name:
+            from core.singbox_manager import get_singbox_manager
+            from core.singbox_config import (
+                clash_api_endpoint, list_user_outbound_tags)
+            mgr = get_singbox_manager()
+            res = mgr.get_config(name)
+            if res.get("ok"):
+                cfg = res.get("parsed") or {}
+                tags = list_user_outbound_tags(cfg)
+                clash_enabled = clash_api_endpoint(cfg) is not None
+                running = mgr.is_running(name)
+
+        return {"ok": True, "traffic": tracker.snapshot(tags),
+                "clash_api": clash_enabled, "running": running}
+
+    @app.route("/api/singbox/traffic/reset", method="POST")
+    def singbox_traffic_reset():
+        """Обнулить счётчики трафика (body: {"tags":[...]} либо все)."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        tags = body.get("tags")
+        if tags is not None and not isinstance(tags, list):
+            tags = None
+        from core.proxy_traffic import get_traffic_tracker
+        get_traffic_tracker().reset(tags)
+        return {"ok": True}
+
+    @app.route("/api/singbox/configs/<name>/enable-clash-api", method="POST")
+    def singbox_enable_clash_api(name):
+        """
+        Идемпотентно добавить `experimental.clash_api` в конфиг, чтобы
+        стало возможным считать трафик per-proxy. Порт выбираем
+        свободный (только 127.0.0.1), secret генерим. Если конфиг
+        запущен — нужно перезапустить (сообщаем флагом)."""
+        response.content_type = "application/json; charset=utf-8"
+        import secrets as _secrets
+        from core.singbox_manager import get_singbox_manager
+        from core.singbox_config import (
+            render_conf, ensure_clash_api, clash_api_endpoint)
+        from core.proxy_tester import _free_port
+
+        mgr = get_singbox_manager()
+        res = mgr.get_config(name)
+        if not res.get("ok"):
+            response.status = 404
+            return {"ok": False, "error": "Конфиг не найден"}
+        cfg = res.get("parsed") or {}
+
+        existing = clash_api_endpoint(cfg)
+        if existing:
+            return {"ok": True, "already": True, "port": existing["port"],
+                    "running": mgr.is_running(name)}
+
+        cfg, changed = ensure_clash_api(
+            cfg, port=_free_port(), secret=_secrets.token_hex(8))
+        save = mgr.save_config(name, text=render_conf(cfg))
+        if not save.get("ok"):
+            response.status = 500
+            return save
+        ep = clash_api_endpoint(cfg) or {}
+        return {"ok": True, "changed": changed, "port": ep.get("port"),
+                "running": mgr.is_running(name),
+                "needs_restart": mgr.is_running(name)}

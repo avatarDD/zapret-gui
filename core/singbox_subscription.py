@@ -450,3 +450,232 @@ def uri_to_outbound(uri: str) -> dict:
         return {"ok": False, "error":
                 "scheme '%s' не поддержан" % scheme}
     return h(uri)
+
+
+# ═══════════════════════════════════════════════════════════════
+# Обратное направление: outbound dict → share-URI.
+#
+# Нужно для «копирования» серверов из таблицы прокси в буфер обмена
+# (как Throne `ExportToLink`): пользователь выделяет строки, жмёт
+# Ctrl+C — получает `vless://…`/`ss://…`-ссылки, которые можно
+# вставить в любой клиент. Это зеркало `uri_to_outbound` — поэтому
+# `uri_to_outbound(outbound_to_uri(ob))` должно давать эквивалентный
+# outbound (round-trip по ключевым полям).
+# ═══════════════════════════════════════════════════════════════
+
+def _fmt_hostport(server: str, port) -> str:
+    """`host:port`, с обёрткой IPv6-литерала в квадратные скобки."""
+    s = str(server or "")
+    if ":" in s and not s.startswith("["):
+        s = "[%s]" % s
+    return "%s:%s" % (s, int(port))
+
+
+def _q(value: str) -> str:
+    """urlencode одного значения (для userinfo/path и т.п.)."""
+    return urllib.parse.quote(str(value or ""), safe="")
+
+
+def _build_query(params: dict) -> str:
+    """Query-строка из непустых параметров (стабильный порядок вставки)."""
+    items = [(k, v) for k, v in params.items()
+             if v not in (None, "", [], {})]
+    if not items:
+        return ""
+    return urllib.parse.urlencode(items, quote_via=urllib.parse.quote)
+
+
+def _frag(tag: str) -> str:
+    return urllib.parse.quote(str(tag or ""), safe="")
+
+
+def _transport_params(tr: dict) -> dict:
+    """Общие transport-параметры для vless/trojan (type/path/host/serviceName)."""
+    out = {}
+    if not isinstance(tr, dict) or not tr.get("type"):
+        return out
+    t_type = tr.get("type")
+    out["type"] = t_type
+    if t_type == "ws":
+        if tr.get("path"):
+            out["path"] = tr["path"]
+        host = (tr.get("headers") or {}).get("Host")
+        if host:
+            out["host"] = host
+    elif t_type == "grpc":
+        if tr.get("service_name"):
+            out["serviceName"] = tr["service_name"]
+    elif t_type in ("http", "h2"):
+        if tr.get("path"):
+            out["path"] = tr["path"]
+        h = tr.get("host")
+        if isinstance(h, list) and h:
+            out["host"] = h[0]
+        elif isinstance(h, str) and h:
+            out["host"] = h
+    return out
+
+
+def _vless_to_uri(ob: dict) -> str:
+    server, port, uuid = ob.get("server"), ob.get("server_port"), ob.get("uuid")
+    if not (server and port and uuid):
+        return ""
+    params = _transport_params(ob.get("transport") or {})
+    params.setdefault("type", "tcp")
+
+    tls = ob.get("tls") or {}
+    reality = tls.get("reality") or {}
+    if reality.get("enabled"):
+        params["security"] = "reality"
+        if reality.get("public_key"):
+            params["pbk"] = reality["public_key"]
+        if reality.get("short_id"):
+            params["sid"] = reality["short_id"]
+    elif tls.get("enabled"):
+        params["security"] = "tls"
+    else:
+        params["security"] = "none"
+    if tls.get("server_name"):
+        params["sni"] = tls["server_name"]
+    fp = (tls.get("utls") or {}).get("fingerprint")
+    if fp:
+        params["fp"] = fp
+    alpn = tls.get("alpn")
+    if alpn:
+        params["alpn"] = ",".join(alpn) if isinstance(alpn, list) else alpn
+    if ob.get("flow"):
+        params["flow"] = ob["flow"]
+
+    return "vless://%s@%s?%s#%s" % (
+        _q(uuid), _fmt_hostport(server, port),
+        _build_query(params), _frag(ob.get("tag")))
+
+
+def _vmess_to_uri(ob: dict) -> str:
+    server, port, uuid = ob.get("server"), ob.get("server_port"), ob.get("uuid")
+    if not (server and port and uuid):
+        return ""
+    tr = ob.get("transport") or {}
+    net = (tr.get("type") or "tcp").lower()
+    host, path = "", ""
+    if net == "ws":
+        path = tr.get("path") or ""
+        host = (tr.get("headers") or {}).get("Host") or ""
+    elif net == "grpc":
+        path = tr.get("service_name") or ""
+    elif net in ("http", "h2"):
+        net = "h2"
+        path = tr.get("path") or ""
+        h = tr.get("host")
+        host = (h[0] if isinstance(h, list) and h else (h or "")) or ""
+
+    tls = ob.get("tls") or {}
+    data = {
+        "v": "2", "ps": ob.get("tag") or "", "add": str(server),
+        "port": str(int(port)), "id": str(uuid),
+        "aid": str(ob.get("alter_id") or 0),
+        "scy": ob.get("security") or "auto",
+        "net": net, "type": "none", "host": host, "path": path,
+        "tls": "tls" if tls.get("enabled") else "",
+    }
+    if tls.get("server_name"):
+        data["sni"] = tls["server_name"]
+    fp = (tls.get("utls") or {}).get("fingerprint")
+    if fp:
+        data["fp"] = fp
+    raw = base64.b64encode(
+        json.dumps(data, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    return "vmess://" + raw
+
+
+def _trojan_to_uri(ob: dict) -> str:
+    server, port, pwd = ob.get("server"), ob.get("server_port"), ob.get("password")
+    if not (server and port and pwd):
+        return ""
+    params = _transport_params(ob.get("transport") or {})
+    tls = ob.get("tls") or {}
+    if tls.get("server_name"):
+        params["sni"] = tls["server_name"]
+    if tls.get("insecure"):
+        params["allowInsecure"] = "1"
+    return "trojan://%s@%s?%s#%s" % (
+        _q(pwd), _fmt_hostport(server, port),
+        _build_query(params), _frag(ob.get("tag")))
+
+
+def _ss_to_uri(ob: dict) -> str:
+    server, port = ob.get("server"), ob.get("server_port")
+    method, pwd = ob.get("method"), ob.get("password")
+    if not (server and port and method):
+        return ""
+    # SIP002: ss://base64(method:password)@host:port#tag
+    userinfo = base64.b64encode(
+        ("%s:%s" % (method, pwd or "")).encode("utf-8")).decode("ascii").rstrip("=")
+    return "ss://%s@%s#%s" % (
+        userinfo, _fmt_hostport(server, port), _frag(ob.get("tag")))
+
+
+def _hysteria2_to_uri(ob: dict) -> str:
+    server, port, pwd = ob.get("server"), ob.get("server_port"), ob.get("password")
+    if not (server and port and pwd):
+        return ""
+    tls = ob.get("tls") or {}
+    params = {}
+    if tls.get("server_name"):
+        params["sni"] = tls["server_name"]
+    if tls.get("insecure"):
+        params["insecure"] = "1"
+    return "hysteria2://%s@%s?%s#%s" % (
+        _q(pwd), _fmt_hostport(server, port),
+        _build_query(params), _frag(ob.get("tag")))
+
+
+def _tuic_to_uri(ob: dict) -> str:
+    server, port, uuid = ob.get("server"), ob.get("server_port"), ob.get("uuid")
+    if not (server and port and uuid):
+        return ""
+    tls = ob.get("tls") or {}
+    params = {}
+    if tls.get("server_name"):
+        params["sni"] = tls["server_name"]
+    userinfo = "%s:%s" % (_q(uuid), _q(ob.get("password") or ""))
+    return "tuic://%s@%s?%s#%s" % (
+        userinfo, _fmt_hostport(server, port),
+        _build_query(params), _frag(ob.get("tag")))
+
+
+_EXPORTERS = {
+    "vless":       _vless_to_uri,
+    "vmess":       _vmess_to_uri,
+    "trojan":      _trojan_to_uri,
+    "shadowsocks": _ss_to_uri,
+    "hysteria2":   _hysteria2_to_uri,
+    "tuic":        _tuic_to_uri,
+}
+
+
+def outbound_to_uri(ob: dict) -> str:
+    """
+    Конвертировать sing-box outbound dict в share-URI. Для служебных
+    (direct/block/dns/selector/urltest) и неподдерживаемых типов
+    возвращает "" (вызывающий код их отфильтрует).
+    """
+    if not isinstance(ob, dict):
+        return ""
+    fn = _EXPORTERS.get(ob.get("type"))
+    if not fn:
+        return ""
+    try:
+        return fn(ob) or ""
+    except Exception:
+        return ""
+
+
+def outbounds_to_links(outbounds: list) -> list:
+    """Список outbound'ов → список непустых share-ссылок (для копирования)."""
+    links = []
+    for ob in (outbounds or []):
+        uri = outbound_to_uri(ob)
+        if uri:
+            links.append(uri)
+    return links
