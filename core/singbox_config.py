@@ -608,3 +608,99 @@ def wrap_in_group(cfg: dict, group_tag: str, group_type: str,
         if route.get("final") in old_targets:
             route["final"] = group_tag
     return cfg
+
+
+# ─────── clash_api (для учёта трафика per-outbound) ───────
+#
+# Чтобы считать, сколько трафика прокачано через каждый сервер, нам
+# нужен локальный Clash API у ЗАПУЩЕННОГО инстанса: трекер опрашивает
+# `GET /connections` и агрегирует upload/download по тегу outbound'а
+# (см. core/proxy_traffic.py). Эти helper'ы умеют добавить clash_api в
+# конфиг идемпотентно и вытащить endpoint обратно.
+
+def make_clash_api(port: int, secret: str = "",
+                   host: str = "127.0.0.1") -> dict:
+    """Секция `experimental.clash_api` со слушателем только на localhost."""
+    block = {"external_controller": "%s:%d" % (host, int(port))}
+    if secret:
+        block["secret"] = secret
+    return block
+
+
+def ensure_clash_api(cfg: dict, *, port: int, secret: str = "",
+                     host: str = "127.0.0.1") -> tuple:
+    """
+    Добавить `experimental.clash_api`, если его ещё нет. Существующий
+    НЕ трогаем (у пользователя мог быть свой). Возвращает (cfg, changed).
+    """
+    if not isinstance(cfg, dict):
+        raise ValueError("cfg должен быть dict")
+    exp = cfg.setdefault("experimental", {})
+    if not isinstance(exp, dict):
+        raise ValueError("experimental — не объект")
+    if isinstance(exp.get("clash_api"), dict) and \
+            exp["clash_api"].get("external_controller"):
+        return cfg, False
+    exp["clash_api"] = make_clash_api(port, secret, host)
+    return cfg, True
+
+
+def plan_activation(cfg: dict, tag: str) -> dict:
+    """
+    Подготовить конфиг к «пустить трафик через сервер <tag>» (мутирует cfg).
+
+    Логика (как активация профиля в Throne):
+      - если есть selector (приоритет — содержащий tag) → делаем tag его
+        default'ом, добавляя его в outbounds при необходимости. Режим
+        'selector' + флаг already_member (был ли tag уже в группе — от
+        этого зависит, можно ли переключить вживую без рестарта);
+      - иначе → route.final = tag. Режим 'route'.
+
+    Возвращает {"ok", "mode", "selector"?, "already_member"?} либо
+    {"ok": False, "error"} если tag не найден среди outbound'ов.
+    """
+    obs = cfg.get("outbounds") or []
+    if tag not in {o.get("tag") for o in obs if isinstance(o, dict)}:
+        return {"ok": False, "error": "Сервер '%s' не в конфиге" % tag}
+
+    selectors = [o for o in obs if isinstance(o, dict)
+                 and o.get("type") == "selector"]
+    sel = next((s for s in selectors
+                if tag in (s.get("outbounds") or [])), None) \
+        or (selectors[0] if selectors else None)
+
+    if sel is not None:
+        inner = sel.setdefault("outbounds", [])
+        already_member = tag in inner
+        if not already_member:
+            inner.append(tag)
+        sel["default"] = tag
+        return {"ok": True, "mode": "selector", "selector": sel.get("tag"),
+                "already_member": already_member}
+
+    route = cfg.setdefault("route", {})
+    route["final"] = tag
+    return {"ok": True, "mode": "route"}
+
+
+def clash_api_endpoint(cfg: dict) -> dict:
+    """
+    Вытащить endpoint Clash API из конфига:
+      {"host","port","secret"} либо None, если clash_api не настроен.
+    """
+    if not isinstance(cfg, dict):
+        return None
+    api = ((cfg.get("experimental") or {}).get("clash_api") or {})
+    ctrl = api.get("external_controller")
+    if not ctrl or ":" not in str(ctrl):
+        return None
+    host, _, port = str(ctrl).rpartition(":")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return None
+    # `0.0.0.0` / пусто → опрашиваем через loopback.
+    if not host or host in ("0.0.0.0", "::", "[::]"):
+        host = "127.0.0.1"
+    host = host.strip("[]")
+    return {"host": host, "port": port, "secret": api.get("secret") or ""}
