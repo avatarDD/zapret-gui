@@ -37,6 +37,8 @@ REST API для sing-box.
                                                   (body: {text}) → outbound'ы
   POST   /api/singbox/configs/<name>/enable-clash-api — включить clash_api
                                                   (для учёта трафика)
+  POST   /api/singbox/configs/<name>/activate       — пустить трафик через
+                                                  сервер (body: {tag})
   POST   /api/singbox/export-links          — outbounds|config → share-ссылки
                                                   (для копирования в буфер)
 
@@ -320,6 +322,28 @@ def _real_outbounds(cfg: dict) -> list:
                 and ob.get("tag")):
             out.append(ob)
     return out
+
+
+def _clash_select(ep: dict, selector: str, name: str) -> bool:
+    """Живое переключение активного outbound'а в selector через Clash API:
+    PUT /proxies/<selector> {"name": "<outbound>"}. True при успехе."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+    url = "http://%s:%d/proxies/%s" % (
+        ep["host"], int(ep["port"]),
+        urllib.request.quote(selector, safe=""))
+    headers = {"Content-Type": "application/json"}
+    if ep.get("secret"):
+        headers["Authorization"] = "Bearer %s" % ep["secret"]
+    req = urllib.request.Request(
+        url, data=_json.dumps({"name": name}).encode("utf-8"),
+        headers=headers, method="PUT")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return r.getcode() in (200, 204)
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError):
+        return False
 
 
 def _resolve_test_outbounds(body: dict):
@@ -743,6 +767,64 @@ def register(app):
         from core.singbox_subscription import outbounds_to_links
         links = outbounds_to_links(obs)
         return {"ok": True, "text": "\n".join(links), "count": len(links)}
+
+    @app.route("/api/singbox/configs/<name>/activate", method="POST")
+    def singbox_configs_activate(name):
+        """
+        Пустить трафик через выбранный сервер (как «активировать профиль»
+        в Throne): body {"tag": "<outbound>"}.
+
+          - если в конфиге есть selector — делаем его default'ом (персист)
+            и, если конфиг запущен с clash_api, переключаем вживую
+            (PUT /proxies/<selector>) без рестарта;
+          - если selector'а нет — направляем route.final на этот outbound
+            (применится после перезапуска).
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        tag = (body.get("tag") or "").strip()
+        if not tag:
+            response.status = 400
+            return {"ok": False, "error": "Не указан tag"}
+
+        from core.singbox_manager import get_singbox_manager
+        from core.singbox_config import (
+            render_conf, clash_api_endpoint, plan_activation)
+        mgr = get_singbox_manager()
+        res = mgr.get_config(name)
+        if not res.get("ok"):
+            response.status = 404
+            return {"ok": False, "error": "Конфиг не найден"}
+        cfg = res.get("parsed") or {}
+
+        plan = plan_activation(cfg, tag)
+        if not plan.get("ok"):
+            response.status = 404
+            return plan
+
+        save = mgr.save_config(name, text=render_conf(cfg))
+        if not save.get("ok"):
+            response.status = 500
+            return save
+
+        running = mgr.is_running(name)
+        if plan["mode"] == "selector":
+            # Живое переключение возможно только если сервер уже был в
+            # selector'е запущенного процесса (иначе нужен рестарт).
+            live = False
+            if running and plan.get("already_member"):
+                ep = clash_api_endpoint(cfg)
+                if ep:
+                    live = _clash_select(ep, plan["selector"], tag)
+            return {"ok": True, "mode": "selector",
+                    "selector": plan["selector"], "active": tag,
+                    "live": live, "needs_restart": running and not live}
+
+        return {"ok": True, "mode": "route", "active": tag,
+                "needs_restart": running}
 
     @app.route("/api/singbox/configs/<name>/wrap", method="POST")
     def singbox_configs_wrap(name):

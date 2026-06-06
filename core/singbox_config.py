@@ -645,6 +645,44 @@ def ensure_clash_api(cfg: dict, *, port: int, secret: str = "",
     return cfg, True
 
 
+def plan_activation(cfg: dict, tag: str) -> dict:
+    """
+    Подготовить конфиг к «пустить трафик через сервер <tag>» (мутирует cfg).
+
+    Логика (как активация профиля в Throne):
+      - если есть selector (приоритет — содержащий tag) → делаем tag его
+        default'ом, добавляя его в outbounds при необходимости. Режим
+        'selector' + флаг already_member (был ли tag уже в группе — от
+        этого зависит, можно ли переключить вживую без рестарта);
+      - иначе → route.final = tag. Режим 'route'.
+
+    Возвращает {"ok", "mode", "selector"?, "already_member"?} либо
+    {"ok": False, "error"} если tag не найден среди outbound'ов.
+    """
+    obs = cfg.get("outbounds") or []
+    if tag not in {o.get("tag") for o in obs if isinstance(o, dict)}:
+        return {"ok": False, "error": "Сервер '%s' не в конфиге" % tag}
+
+    selectors = [o for o in obs if isinstance(o, dict)
+                 and o.get("type") == "selector"]
+    sel = next((s for s in selectors
+                if tag in (s.get("outbounds") or [])), None) \
+        or (selectors[0] if selectors else None)
+
+    if sel is not None:
+        inner = sel.setdefault("outbounds", [])
+        already_member = tag in inner
+        if not already_member:
+            inner.append(tag)
+        sel["default"] = tag
+        return {"ok": True, "mode": "selector", "selector": sel.get("tag"),
+                "already_member": already_member}
+
+    route = cfg.setdefault("route", {})
+    route["final"] = tag
+    return {"ok": True, "mode": "route"}
+
+
 def clash_api_endpoint(cfg: dict) -> dict:
     """
     Вытащить endpoint Clash API из конфига:

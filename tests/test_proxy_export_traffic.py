@@ -16,7 +16,7 @@ from core.singbox_subscription import (
     uri_to_outbound, outbound_to_uri, outbounds_to_links,
 )
 from core.singbox_config import (
-    make_clash_api, ensure_clash_api, clash_api_endpoint,
+    make_clash_api, ensure_clash_api, clash_api_endpoint, plan_activation,
 )
 import core.proxy_traffic as ptmod
 
@@ -126,6 +126,53 @@ class TestClashApiHelpers(unittest.TestCase):
         ep = clash_api_endpoint(cfg)
         self.assertEqual(ep["host"], "127.0.0.1")
         self.assertEqual(ep["port"], 9999)
+
+
+# ─────── активация сервера (пустить трафик через) ───────
+
+class TestPlanActivation(unittest.TestCase):
+
+    def _cfg_with_selector(self):
+        return {"outbounds": [
+            {"type": "selector", "tag": "select",
+             "outbounds": ["A", "B"], "default": "A"},
+            {"type": "vless", "tag": "A", "server": "a", "server_port": 1, "uuid": "u"},
+            {"type": "vless", "tag": "B", "server": "b", "server_port": 1, "uuid": "u"},
+            {"type": "vless", "tag": "C", "server": "c", "server_port": 1, "uuid": "u"},
+            {"type": "direct", "tag": "direct"},
+        ]}
+
+    def test_selector_existing_member(self):
+        cfg = self._cfg_with_selector()
+        plan = plan_activation(cfg, "B")
+        self.assertTrue(plan["ok"])
+        self.assertEqual(plan["mode"], "selector")
+        self.assertEqual(plan["selector"], "select")
+        self.assertTrue(plan["already_member"])
+        self.assertEqual(cfg["outbounds"][0]["default"], "B")
+
+    def test_selector_adds_missing_member(self):
+        cfg = self._cfg_with_selector()
+        plan = plan_activation(cfg, "C")     # C не в selector.outbounds
+        self.assertTrue(plan["ok"])
+        self.assertFalse(plan["already_member"])
+        self.assertIn("C", cfg["outbounds"][0]["outbounds"])
+        self.assertEqual(cfg["outbounds"][0]["default"], "C")
+
+    def test_route_final_when_no_selector(self):
+        cfg = {"outbounds": [
+            {"type": "vless", "tag": "A", "server": "a", "server_port": 1, "uuid": "u"},
+            {"type": "urltest", "tag": "auto", "outbounds": ["A"]},
+        ], "route": {"final": "auto"}}
+        plan = plan_activation(cfg, "A")
+        self.assertTrue(plan["ok"])
+        self.assertEqual(plan["mode"], "route")
+        self.assertEqual(cfg["route"]["final"], "A")
+
+    def test_unknown_tag_rejected(self):
+        cfg = self._cfg_with_selector()
+        plan = plan_activation(cfg, "NOPE")
+        self.assertFalse(plan["ok"])
 
 
 # ─────── traffic delta accumulation ───────

@@ -22,6 +22,7 @@ const SingboxProxiesPage = (() => {
     let configs = [];
     let configName = '';
     let outbounds = [];                 // только «реальные» серверы
+    let activeTag = '';                 // активный сервер (selector.default)
     let testResults = {};               // tag -> {alive, latency_ms, stage, error}
     let traffic = {};                   // tag -> {up, down}
     let clashEnabled = null;            // у конфига настроен clash_api?
@@ -104,6 +105,9 @@ const SingboxProxiesPage = (() => {
             const all = (r && r.outbounds) || [];
             const service = new Set(['direct', 'block', 'dns', 'selector', 'urltest']);
             outbounds = all.filter(o => o && o.tag && o.type && !service.has(o.type));
+            // Активный сервер — default первого selector'а (если он есть).
+            const sel = all.find(o => o && o.type === 'selector');
+            activeTag = sel ? (sel.default || (sel.outbounds || [])[0] || '') : '';
         } catch (e) { Toast.error(e.message); }
         // Чистим выбор от исчезнувших тегов.
         const present = new Set(outbounds.map(o => o.tag));
@@ -210,6 +214,11 @@ const SingboxProxiesPage = (() => {
                                 onclick="SingboxProxiesPage.test(true)">
                             Тест выделенных
                         </button>
+                        <button class="btn btn-primary btn-sm" ${busy || selCount !== 1 ? 'disabled' : ''}
+                                onclick="SingboxProxiesPage.activateSelected()"
+                                title="Пустить трафик через выделенный сервер (двойной клик по строке)">
+                            ▶ Через эту
+                        </button>
                         <button class="btn btn-ghost btn-sm" ${!selCount ? 'disabled' : ''}
                                 onclick="SingboxProxiesPage.copySelected()" title="Ctrl+C">
                             Копировать
@@ -305,14 +314,20 @@ const SingboxProxiesPage = (() => {
 
         const body = rows.map((r, idx) => {
             const sel = selected.has(r.tag);
+            const isActive = r.tag === activeTag;
             return `
                 <tr data-tag="${escapeAttr(r.tag)}" style="cursor:pointer; ${sel ? 'background:var(--bg-hover, rgba(120,140,255,.12));' : ''}"
-                    onclick="SingboxProxiesPage.onRowClick('${escapeAttr(r.tag)}', ${idx}, event)">
+                    title="Двойной клик — пустить трафик через этот сервер"
+                    onclick="SingboxProxiesPage.onRowClick('${escapeAttr(r.tag)}', ${idx}, event)"
+                    ondblclick="SingboxProxiesPage.activate('${escapeAttr(r.tag)}')">
                     <td style="width:28px; text-align:center;">
                         <input type="checkbox" ${sel ? 'checked' : ''}
                                onclick="event.stopPropagation(); SingboxProxiesPage.toggleRow('${escapeAttr(r.tag)}', ${idx})">
                     </td>
-                    <td><span style="font-weight:600;">${escapeHtml(r.tag)}</span></td>
+                    <td>
+                        ${isActive ? '<span style="color:#39c45e;" title="активный сервер">▶</span> ' : ''}
+                        <span style="font-weight:600;">${escapeHtml(r.tag)}</span>
+                    </td>
                     <td class="text-muted" style="font-size:11px;">${escapeHtml(r.type)}</td>
                     <td class="text-muted" style="font-size:11px;">${escapeHtml(r.address)}</td>
                     <td>${renderTestCell(r.tag)}</td>
@@ -579,6 +594,40 @@ const SingboxProxiesPage = (() => {
         finally { busy = false; renderBody(); }
     }
 
+    function activateSelected() {
+        if (selected.size !== 1) { Toast.error('Выберите один сервер'); return; }
+        activate([...selected][0]);
+    }
+
+    async function activate(tag) {
+        if (!configName) return;
+        busy = true; renderBody();
+        try {
+            const r = await API.post(
+                `/api/singbox/configs/${encodeURIComponent(configName)}/activate`,
+                { tag });
+            if (!r || !r.ok) { Toast.error((r && r.error) || 'не удалось'); return; }
+            if (r.live) {
+                Toast.success(`Трафик идёт через «${tag}»`);
+            } else if (r.needs_restart) {
+                // Применится только после перезапуска — предложим сразу.
+                if (confirm(`«${tag}» выбран. Перезапустить конфиг «${configName}», чтобы трафик пошёл через него?`)) {
+                    const rr = await API.post(
+                        `/api/singbox/configs/${encodeURIComponent(configName)}/restart`);
+                    if (rr && rr.ok) Toast.success(`Перезапущено — трафик через «${tag}»`);
+                    else Toast.error((rr && rr.error) || 'перезапуск не удался');
+                } else {
+                    Toast.info(`«${tag}» выбран, применится после перезапуска`);
+                }
+            } else {
+                Toast.success(`«${tag}» выбран активным`);
+            }
+            await loadOutbounds();
+            await loadTraffic();
+        } catch (e) { Toast.error(e.message); }
+        finally { busy = false; renderBody(); }
+    }
+
     async function enableClashApi() {
         busy = true; renderBody();
         try {
@@ -683,6 +732,6 @@ const SingboxProxiesPage = (() => {
         render, destroy, refreshAll, switchConfig, setTarget,
         sortBy, onRowClick, toggleRow, toggleAll,
         test, copySelected, togglePasteBox, importPasteBox,
-        deleteSelected, enableClashApi,
+        deleteSelected, enableClashApi, activate, activateSelected,
     };
 })();
