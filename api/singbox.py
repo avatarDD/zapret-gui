@@ -39,6 +39,8 @@ REST API для sing-box.
                                                   (для учёта трафика)
   POST   /api/singbox/configs/<name>/activate       — пустить трафик через
                                                   сервер (body: {tag})
+  POST   /api/singbox/configs/<name>/prune-invalid  — найти/удалить серверы
+                                                  с битым ключом (body:{apply})
   POST   /api/singbox/export-links          — outbounds|config → share-ссылки
                                                   (для копирования в буфер)
 
@@ -672,6 +674,81 @@ def register(app):
         if isinstance(res, dict) and res.get("ok"):
             res.update(report)
         return res
+
+    @app.route("/api/singbox/configs/<name>/prune-invalid", method="POST")
+    def singbox_configs_prune_invalid(name):
+        """
+        Найти (и по запросу удалить) outbound'ы с битым криптоключом —
+        reality без pbk / wireguard с некорректным ключом, — из-за которых
+        sing-box падает на старте с FATAL «invalid public_key» (всё-или-
+        ничего: один такой сервер не даёт запустить весь конфиг/батч).
+
+        body: {"apply": bool}. apply=false (по умолчанию) — только отчёт;
+        apply=true — удалить их, вычистив висячие ссылки в группах и
+        указатели default/route.final.
+        Возвращает {"ok", "invalid": [{tag, reason}], "removed": [...]}.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        do_apply = bool(body.get("apply"))
+
+        from core.singbox_manager import get_singbox_manager
+        from core.singbox_config import outbound_key_problem, render_conf
+        mgr = get_singbox_manager()
+        res = mgr.get_config(name)
+        if not res.get("ok"):
+            response.status = 404
+            return {"ok": False, "error": "Конфиг не найден"}
+        cfg = res.get("parsed") or {}
+        obs = cfg.get("outbounds") or []
+
+        invalid = []
+        for o in obs:
+            if isinstance(o, dict):
+                reason = outbound_key_problem(o)
+                if reason:
+                    invalid.append({"tag": o.get("tag"), "reason": reason})
+
+        if not do_apply or not invalid:
+            return {"ok": True, "invalid": invalid, "removed": [],
+                    "count": len(invalid)}
+
+        bad = {x["tag"] for x in invalid if x["tag"]}
+        keep = [o for o in obs
+                if not (isinstance(o, dict) and o.get("tag") in bad)]
+        # Вычистить удалённые теги из групп + поправить default, иначе
+        # останется висячая ссылка и sing-box check упадёт.
+        for o in keep:
+            if isinstance(o, dict) and o.get("type") in ("selector", "urltest") \
+                    and isinstance(o.get("outbounds"), list):
+                o["outbounds"] = [x for x in o["outbounds"] if x not in bad]
+                if o.get("default") in bad:
+                    o["default"] = o["outbounds"][0] if o["outbounds"] else None
+                    if not o["default"]:
+                        o.pop("default", None)
+        route = cfg.get("route")
+        if isinstance(route, dict) and route.get("final") in bad:
+            service = ("selector", "urltest", "direct", "block", "dns")
+            grp = next((o.get("tag") for o in keep if isinstance(o, dict)
+                        and o.get("type") in ("selector", "urltest")), None)
+            srv = next((o.get("tag") for o in keep if isinstance(o, dict)
+                        and o.get("type") not in service), None)
+            new_final = grp or srv
+            if new_final:
+                route["final"] = new_final
+            else:
+                route.pop("final", None)
+
+        cfg["outbounds"] = keep
+        save = mgr.save_config(name, text=render_conf(cfg))
+        if not save.get("ok"):
+            response.status = 500
+            return save
+        return {"ok": True, "invalid": invalid, "removed": sorted(bad),
+                "count": len(invalid), "outbounds_count": len(keep)}
 
     @app.route("/api/singbox/configs/<name>/import-links", method="POST")
     def singbox_configs_import_links(name):

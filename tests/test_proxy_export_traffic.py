@@ -7,18 +7,24 @@
   - дельта-аккумуляция трафика per-outbound (core/proxy_traffic).
 """
 
+import base64
 import json
 import os
 import tempfile
 import unittest
 
 from core.singbox_subscription import (
-    uri_to_outbound, outbound_to_uri, outbounds_to_links,
+    uri_to_outbound, outbound_to_uri, outbounds_to_links, vless_to_outbound,
 )
 from core.singbox_config import (
     make_clash_api, ensure_clash_api, clash_api_endpoint, plan_activation,
+    is_x25519_key, outbound_key_problem,
 )
+from core.proxy_tester import test_outbounds
 import core.proxy_traffic as ptmod
+
+# валидный 32-байтный x25519-ключ в base64url-без-паддинга (как pbk в ссылках)
+GOOD_PBK = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
 
 
 # ─────── outbound → URI (round-trip) ───────
@@ -29,7 +35,8 @@ class TestExportRoundTrip(unittest.TestCase):
         "vless://11111111-1111-1111-1111-111111111111@example.com:443"
         "?type=ws&security=tls&sni=a.com&path=%2Fws&host=a.com&fp=chrome#vlnode",
         "vless://22222222-2222-2222-2222-222222222222@1.2.3.4:443"
-        "?type=grpc&security=reality&pbk=PUBKEY&sid=ab12&flow=xtls-rprx-vision&sni=ya.ru#re1",
+        "?type=grpc&security=reality&pbk=" + GOOD_PBK +
+        "&sid=ab12&flow=xtls-rprx-vision&sni=ya.ru#re1",
         "trojan://pass123@host.tld:443?sni=host.tld&type=ws&path=%2Ftj#tro",
         "ss://aes-256-gcm:secret@5.6.7.8:8388#ssnode",
         "hysteria2://hpw@h2.host:443?sni=h2.host&insecure=1#hy2node",
@@ -126,6 +133,87 @@ class TestClashApiHelpers(unittest.TestCase):
         ep = clash_api_endpoint(cfg)
         self.assertEqual(ep["host"], "127.0.0.1")
         self.assertEqual(ep["port"], 9999)
+
+
+# ─────── валидация ключей (битый public_key роняет sing-box) ───────
+
+class TestKeyValidation(unittest.TestCase):
+
+    def test_is_x25519_key_accepts_valid(self):
+        self.assertTrue(is_x25519_key(GOOD_PBK))                 # base64url raw
+        self.assertTrue(is_x25519_key(bytes(range(32)).hex()))  # hex(64)
+        self.assertTrue(is_x25519_key(
+            base64.b64encode(bytes(32)).decode()))              # std b64 +pad
+
+    def test_is_x25519_key_rejects_bad(self):
+        for bad in ("", "   ", "не-ключ", "AAAA", GOOD_PBK[:-5], None, 123):
+            self.assertFalse(is_x25519_key(bad), bad)
+
+    def test_reality_empty_pubkey_flagged(self):
+        ob = {"type": "vless", "tag": "x", "server": "s", "server_port": 1,
+              "uuid": "u",
+              "tls": {"enabled": True,
+                      "reality": {"enabled": True, "public_key": ""}}}
+        self.assertIn("public_key", outbound_key_problem(ob) or "")
+
+    def test_reality_bad_pubkey_flagged(self):
+        ob = {"type": "vless", "tag": "x", "server": "s", "server_port": 1,
+              "uuid": "u",
+              "tls": {"enabled": True,
+                      "reality": {"enabled": True, "public_key": "garbage"}}}
+        self.assertIsNotNone(outbound_key_problem(ob))
+
+    def test_reality_valid_pubkey_ok(self):
+        ob = {"type": "vless", "tag": "x", "server": "s", "server_port": 1,
+              "uuid": "u",
+              "tls": {"enabled": True,
+                      "reality": {"enabled": True, "public_key": GOOD_PBK}}}
+        self.assertIsNone(outbound_key_problem(ob))
+
+    def test_plain_vless_not_flagged(self):
+        ob = {"type": "vless", "tag": "x", "server": "s", "server_port": 1,
+              "uuid": "u"}
+        self.assertIsNone(outbound_key_problem(ob))
+
+    def test_wireguard_bad_key_flagged(self):
+        ob = {"type": "wireguard", "tag": "wg",
+              "peer_public_key": "not-a-key"}
+        self.assertIsNotNone(outbound_key_problem(ob))
+
+
+class TestRealityImportRejection(unittest.TestCase):
+
+    def test_reality_link_without_pbk_rejected(self):
+        uri = "vless://11111111-1111-1111-1111-111111111111@h:443?security=reality&sni=x"
+        r = vless_to_outbound(uri)
+        self.assertFalse(r.get("ok"))
+
+    def test_reality_link_with_valid_pbk_ok(self):
+        uri = ("vless://11111111-1111-1111-1111-111111111111@h:443"
+               "?security=reality&sni=x&pbk=%s&sid=ab" % GOOD_PBK)
+        r = vless_to_outbound(uri)
+        self.assertTrue(r.get("ok"))
+        self.assertEqual(
+            r["outbound"]["tls"]["reality"]["public_key"], GOOD_PBK)
+
+
+class TestTesterSkipsBrokenKeys(unittest.TestCase):
+
+    def test_broken_key_marked_invalid_not_sent_to_engine(self):
+        good = {"type": "vless", "tag": "good", "server": "s",
+                "server_port": 1, "uuid": "u"}
+        bad = {"type": "vless", "tag": "bad", "server": "s",
+               "server_port": 2, "uuid": "u",
+               "tls": {"enabled": True,
+                       "reality": {"enabled": True, "public_key": ""}}}
+        # binary="" → фаза e2e не запускается; TCP отключаем → детерминизм.
+        res = test_outbounds([good, bad], tcp_prefilter_enabled=False,
+                             binary="")
+        by = {r["tag"]: r for r in res["results"]}
+        self.assertTrue(by["bad"].get("invalid"))
+        self.assertFalse(by["bad"]["alive"])
+        self.assertEqual(by["bad"]["stage"], "config")
+        self.assertTrue(by["good"]["alive"])     # годный прошёл пайплайн
 
 
 # ─────── активация сервера (пустить трафик через) ───────

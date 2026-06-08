@@ -11,6 +11,10 @@ from core.singbox_subscription import (
     tuic_to_outbound, _safe_tag,
 )
 
+# Валидный 32-байтный x25519 public key (reality-ссылки без него отвергаются,
+# т.к. sing-box падает на старте с «invalid public_key»).
+PUB = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
+
 
 def _vmess_uri(payload: dict) -> str:
     return "vmess://" + base64.b64encode(
@@ -22,7 +26,7 @@ class TestVlessReality(unittest.TestCase):
     def test_reality_without_fp_defaults_utls_chrome(self):
         # sing-box требует utls для reality — даже без fp в URI.
         uri = ("vless://uuid-1@vpn.example:443"
-               "?security=reality&pbk=PUB&sid=01&sni=cloudflare.com"
+               "?security=reality&pbk=" + PUB + "&sid=01&sni=cloudflare.com"
                "&flow=xtls-rprx-vision&type=tcp#NoFP")
         r = vless_to_outbound(uri)
         self.assertTrue(r["ok"], msg=r.get("error"))
@@ -32,7 +36,7 @@ class TestVlessReality(unittest.TestCase):
 
     def test_reality_with_fp_kept(self):
         uri = ("vless://uuid-1@vpn.example:443"
-               "?security=reality&pbk=PUB&sid=01&fp=firefox#WithFP")
+               "?security=reality&pbk=" + PUB + "&sid=01&fp=firefox#WithFP")
         r = vless_to_outbound(uri)
         self.assertEqual(r["outbound"]["tls"]["utls"]["fingerprint"], "firefox")
 
@@ -106,7 +110,7 @@ class TestVless(unittest.TestCase):
 
     def test_reality(self):
         uri = ("vless://uuid-1@vpn.example:443"
-               "?security=reality&pbk=PUB&sid=01"
+               "?security=reality&pbk=" + PUB + "&sid=01"
                "&sni=cloudflare.com&fp=chrome"
                "&flow=xtls-rprx-vision&type=tcp#MyReality")
         r = vless_to_outbound(uri)
@@ -117,7 +121,7 @@ class TestVless(unittest.TestCase):
         self.assertEqual(ob["uuid"], "uuid-1")
         self.assertEqual(ob["flow"], "xtls-rprx-vision")
         self.assertTrue(ob["tls"]["reality"]["enabled"])
-        self.assertEqual(ob["tls"]["reality"]["public_key"], "PUB")
+        self.assertEqual(ob["tls"]["reality"]["public_key"], PUB)
         self.assertEqual(ob["tls"]["utls"]["fingerprint"], "chrome")
 
     def test_ws_transport(self):

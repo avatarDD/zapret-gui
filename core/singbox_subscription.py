@@ -30,7 +30,7 @@ import urllib.parse
 from core.singbox_config import (
     make_vless_outbound, make_vmess_outbound, make_trojan_outbound,
     make_shadowsocks_outbound, make_hysteria2_outbound,
-    make_tuic_outbound,
+    make_tuic_outbound, is_x25519_key,
 )
 
 
@@ -131,12 +131,19 @@ def vless_to_outbound(uri: str) -> dict:
     sni = q.get("sni") or q.get("host") or ""
     fp  = q.get("fp", "")
     if sec == "reality":
+        # reality без валидного pbk (public_key сервера) бесполезен и
+        # роняет sing-box на старте («invalid public_key»). Отсекаем сразу,
+        # чтобы такой сервер не попал в пул и не сломал запуск/тест.
+        pbk = (q.get("pbk") or "").strip()
+        if not is_x25519_key(pbk):
+            return {"ok": False,
+                    "error": "reality-ссылка без валидного pbk (public_key)"}
         tls = {
             "enabled":      True,
             "server_name":  sni,
             "reality": {
                 "enabled":    True,
-                "public_key": q.get("pbk", ""),
+                "public_key": pbk,
                 "short_id":   q.get("sid", ""),
             },
             # sing-box ТРЕБУЕТ utls для reality-клиента
