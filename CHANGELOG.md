@@ -223,10 +223,20 @@
     lua из более нового релиза (сравнение `NFQWS2_COMPAT_VER_REQUIRED`,
     `_protected_core_lua`). Наши расширения (`zapret-multishake`,
     `custom_funcs`, `z2k-*`, …) выкладываются как раньше.
-  - Покрыто тестами (`tests/test_asset_importer_lua_compat.py`). Редактор
-    стратегий правок не потребовал: `delay` у `send` и `urp` у `oob` уже
-    были в `nfqws2_spec.js`, а переименованный `WRITEABLE` линтер не
-    проверял.
+  - Покрыто тестами (`tests/test_asset_importer_lua_compat.py`). Сам по себе
+    `delay` у `send` и `urp` у `oob` уже были в `nfqws2_spec.js`, а
+    переименованный `WRITEABLE` линтер не проверял.
+- **Редактор стратегий: ложная ошибка «неизвестный флаг» на глобальных
+  флагах nfqws2** (`--ipcache-hostname=1`, `--ipcache-lifetime`,
+  `--ctrack-*`, `--server`, `--lua-init` и т.д.). Линтер знал только
+  профильные флаги (filter/list/range/desync/blob) и ругался на легитимные
+  глобальные/служебные флаги как на «legacy nfqws1» — хотя они встречаются
+  в наших же builtin-пресетах. Добавили в `web/js/utils/nfqws2_spec.js`
+  весь набор глобальных/служебных флагов (`ipcache-*`, `ctrack-*`,
+  `server`, `payload-disable`, `reasm-disable`, `fwmark`, `bind-fix4/6`,
+  `lua-init/lua-gc`, `writable`, `comment`) и недостающие `--hostlist-auto-*`,
+  сверив с `bol-van/zapret2` v1.0.1 (`docs/manual.md`, `nfqws2 -?`).
+  Регресс-тесты — `tests/test_nfqws2_lint.js`.
 - **На Keenetic нельзя было добавить domain-правило в «AWG-правила → Домены»:
   кнопка «Добавить правило» оставалась серой.** Под зелёным баннером
   «Активен Keenetic-native режим (NDMS)» кнопка всё равно гейтилась на

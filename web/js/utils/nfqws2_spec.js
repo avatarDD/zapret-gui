@@ -562,12 +562,41 @@ const Nfqws2Spec = (() => {
         '--template':    { slot: 'filter', cat: 'special', desc: 'Сделать профиль шаблоном', arg: { type: 'name', optional: true } },
         '--import':      { slot: 'filter', cat: 'special', desc: 'Импорт настроек из шаблона', arg: { type: 'name' } },
         '--cookie':      { slot: 'filter', cat: 'special', desc: 'desync.cookie для инстансов профиля', arg: { type: 'string', optional: true } },
+
+        // ─── Глобальные / служебные (до первого --new) ───
+        // Часть из них GUI ставит сам (--qnum/--debug/--user/--fwmark/
+        // --lua-init), но ipcache-*/ctrack-*/server и т.п. легитимно
+        // встречаются в стратегиях и наших пресетах. Редактор обязан их
+        // знать — иначе ложная ошибка «неизвестный флаг» (напр. на
+        // --ipcache-hostname=1, который есть в builtin-пресетах).
+        // Список сверен с bol-van/zapret2 v1.0.1 (docs/manual.md, `-?`).
+        '--ipcache-hostname':  { slot: 'global', cat: 'service', desc: 'Кэшировать ip→hostname (нужно стратегиям нулевой фазы: wssize/syndata с хостлистами)', arg: { type: 'enum', values: ['0', '1'], optional: true } },
+        '--ipcache-lifetime':  { slot: 'global', cat: 'service', desc: 'TTL кэша ip→hostname, сек (дефолт 7200, 0 = без ограничений)', arg: { type: 'int', ex: ['7200', '8400'] } },
+        '--ctrack-timeouts':   { slot: 'global', cat: 'service', desc: 'Таймауты внутр. conntrack: TCP SYN:ESTABLISHED:FIN[:UDP] (дефолт 60:300:60:60)', arg: { type: 'string', ex: ['60:300:60:60'] } },
+        '--ctrack-disable':    { slot: 'global', cat: 'service', desc: 'Отключить внутренний conntrack', arg: { type: 'enum', values: ['0', '1'], optional: true } },
+        '--server':            { slot: 'global', cat: 'service', desc: 'Серверный режим (инверсия направлений и фильтрации)', arg: { type: 'enum', values: ['0', '1'], optional: true } },
+        '--payload-disable':   { slot: 'global', cat: 'service', desc: 'Не детектировать указанные payload-типы (без аргумента — все)', arg: { type: 'csv-enum', values: PAYLOAD_TYPES, optional: true } },
+        '--reasm-disable':     { slot: 'global', cat: 'service', desc: 'Отключить reasm для типов (tls_client_hello, quic_initial)', arg: { type: 'csv-enum', values: ['tls_client_hello', 'quic_initial'], optional: true } },
+        '--fwmark':            { slot: 'global', cat: 'service', desc: 'fwmark anti-loop (дефолт 0x40000000). Обычно ставит GUI', arg: { type: 'string', ex: ['0x40000000'] } },
+        '--bind-fix4':         { slot: 'global', cat: 'service', desc: 'Фикс выбора исходящего интерфейса IPv4 (PBR/multi-WAN). Обычно ставит GUI', arg: null },
+        '--bind-fix6':         { slot: 'global', cat: 'service', desc: 'Фикс выбора исходящего интерфейса IPv6. Обычно ставит GUI', arg: null },
+        '--lua-init':          { slot: 'global', cat: 'service', desc: 'Загрузить Lua (@файл|текст). Обычно ставит GUI (core + extension)', arg: { type: 'string', ex: ['@/opt/zapret2/lua/zapret-lib.lua'] } },
+        '--lua-gc':            { slot: 'global', cat: 'service', desc: 'Интервал GC Lua, сек (дефолт 60)', arg: { type: 'int' } },
+        '--writable':          { slot: 'global', cat: 'service', desc: 'Каталог с правом записи для Lua (env WRITABLE). До zapret2 1.0 — --writeable', arg: { type: 'string', optional: true } },
+        '--comment':           { slot: 'global', cat: 'service', desc: 'No-op, для читабельности конфига', arg: { type: 'string', optional: true } },
+
+        // доп. параметры автохостлиста (slot list, как остальные --hostlist-auto-*)
+        '--hostlist-auto-incoming-maxseq': { slot: 'list', cat: 'list', desc: 'Успех если входящий rel-seq > N (дефолт 4096)', arg: { type: 'int' } },
+        '--hostlist-auto-retrans-maxseq':  { slot: 'list', cat: 'list', desc: 'Макс. rel-seq ретрансмиссии (дефолт 32768)', arg: { type: 'int' } },
+        '--hostlist-auto-retrans-reset':   { slot: 'list', cat: 'list', desc: 'Слать RST ретрансмиттеру (дефолт 1)', arg: { type: 'enum', values: ['0', '1'], optional: true } },
+        '--hostlist-auto-udp-out':         { slot: 'list', cat: 'list', desc: 'UDP-провал по исходящим (дефолт 4)', arg: { type: 'int' } },
+        '--hostlist-auto-udp-in':          { slot: 'list', cat: 'list', desc: 'UDP-провал по входящим (дефолт 1)', arg: { type: 'int' } },
     };
 
     // Порядок слотов (для скелета и предупреждений о порядке)
     const SLOT_ORDER = ['global', 'sep', 'filter', 'list', 'range', 'desync'];
     const SLOT_LABELS = {
-        global: 'Блобы', sep: '--new', filter: 'Фильтр профиля',
+        global: 'Блобы/глоб.', sep: '--new', filter: 'Фильтр профиля',
         list: 'Домены/IP', range: 'Диапазон/payload', desync: 'Действие (desync)',
     };
 
