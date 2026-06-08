@@ -13,6 +13,7 @@ from unittest import mock
 from core import singbox_transparent as tp
 from core.singbox_config import (
     make_transparent_inbounds, set_transparent_inbounds, make_sniff_rule,
+    make_hijack_dns_rule,
 )
 
 
@@ -231,6 +232,40 @@ class TestSetTransparentInbounds(unittest.TestCase):
         # пользовательское правило не потеряно
         self.assertTrue(any(r.get("domain") == ["x.com"]
                             for r in cfg["route"]["rules"]))
+
+    def test_dns_hijack_adds_route_action_after_sniff(self):
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="tproxy", tcp_port=1100,
+                                 dns_port=1053, sniff=True)
+        rules = cfg["route"]["rules"]
+        self.assertIn(make_hijack_dns_rule(), rules)
+        # порядок: sniff раньше hijack-dns (иначе протокол DNS не распознан)
+        self.assertLess(rules.index(make_sniff_rule()),
+                        rules.index(make_hijack_dns_rule()))
+
+    def test_dns_hijack_forces_sniff(self):
+        # hijack-dns требует sniff — даже если sniff=False, он появится.
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="tproxy", dns_port=1053,
+                                 sniff=False)
+        self.assertIn(make_sniff_rule(), cfg["route"]["rules"])
+        self.assertIn(make_hijack_dns_rule(), cfg["route"]["rules"])
+
+    def test_no_dns_hijack_no_rule(self):
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="tproxy", dns_port=0, sniff=True)
+        self.assertNotIn(make_hijack_dns_rule(), cfg["route"]["rules"])
+
+    def test_dns_hijack_idempotent_and_removable(self):
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="tproxy", dns_port=1053)
+        set_transparent_inbounds(cfg, mode="tproxy", dns_port=1053)
+        hits = [r for r in cfg["route"]["rules"]
+                if r == make_hijack_dns_rule()]
+        self.assertEqual(len(hits), 1)                 # не дублируется
+        # выключение DNS-hijack снимает правило
+        set_transparent_inbounds(cfg, mode="tproxy", dns_port=0)
+        self.assertNotIn(make_hijack_dns_rule(), cfg["route"]["rules"])
 
 
 class TestReapplySaved(unittest.TestCase):

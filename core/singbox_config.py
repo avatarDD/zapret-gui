@@ -222,8 +222,10 @@ def make_transparent_inbounds(*, mode: str = "tproxy",
     `sniff` здесь оставлен для обратной совместимости и не влияет на
     inbound'ы.
 
-    dns_port>0 добавит отдельный `direct`-inbound для перехвата DNS
-    (используется вместе с dns_hijack в firewall).
+    dns_port>0 добавит `direct`-inbound-слушатель на dns_port, куда
+    firewall заворачивает DNS (:53) LAN-клиентов. Сам перехват на
+    резолвер движка делает route-правило hijack-dns (его добавляет
+    set_transparent_inbounds), а не сам inbound.
     """
     inbounds = []
     if mode in ("redirect", "hybrid"):
@@ -256,6 +258,17 @@ def make_sniff_rule() -> dict:
     return {"action": "sniff"}
 
 
+def make_hijack_dns_rule() -> dict:
+    """
+    Route-правило перехвата DNS (sing-box 1.11+) — замена удалённого в
+    1.13 спец-outbound'а `dns` (`{"protocol":"dns","outbound":"dns"}`).
+    Ловит соединения, определённые как DNS, и отдаёт их встроенному
+    резолверу движка (секция `dns`). Требует предшествующего
+    `{"action":"sniff"}` — иначе протокол DNS не будет распознан.
+    """
+    return {"protocol": "dns", "action": "hijack-dns"}
+
+
 def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
                              tcp_port: int = 1100, udp_port: int = 1102,
                              dns_port: int = 0, sniff: bool = True) -> dict:
@@ -266,8 +279,13 @@ def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
     сохраняются. Чистая функция (без I/O), удобно тестировать.
 
     sniff=True добавляет route-правило `{"action": "sniff"}` (sing-box
-    1.11+; legacy inbound-поле `sniff` удалено в 1.13). Идемпотентно:
-    наше прежнее sniff-правило снимается перед повторной вставкой.
+    1.11+; legacy inbound-поле `sniff` удалено в 1.13). dns_port>0
+    дополнительно добавляет `{"protocol":"dns","action":"hijack-dns"}`
+    (перехват DNS на резолвер движка вместо удалённого спец-outbound'а
+    `dns`); поскольку hijack-dns требует определения протокола, sniff при
+    этом включается принудительно. Идемпотентно: наши прежние правила
+    снимаются перед повторной вставкой, порядок — sniff, затем hijack-dns,
+    затем пользовательские правила.
     """
     existing = [ib for ib in (cfg.get("inbounds") or [])
                 if not (isinstance(ib, dict)
@@ -277,18 +295,22 @@ def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
         dns_port=dns_port, sniff=sniff)
     cfg["inbounds"] = new_ibs + existing
 
-    # Сниффинг — через route action (а не legacy-поле inbound'а).
+    # Сниффинг и перехват DNS — через route actions (а не legacy-поля
+    # inbound'а / спец-outbound `dns`, удалённые в sing-box 1.13).
     route = cfg.setdefault("route", {})
     rules = route.get("rules")
     if not isinstance(rules, list):
         rules = []
-    # Снять наше прежнее sniff-правило (ровно {"action": "sniff"}).
-    rules = [r for r in rules
-             if not (isinstance(r, dict) and r.get("action") == "sniff"
-                     and len(r) == 1)]
-    if sniff:
-        rules.insert(0, make_sniff_rule())
-    route["rules"] = rules
+    sniff_rule = make_sniff_rule()
+    dns_rule = make_hijack_dns_rule()
+    # Снять наши прежние правила (точные совпадения) — идемпотентность.
+    rules = [r for r in rules if r != sniff_rule and r != dns_rule]
+    managed = []
+    if sniff or dns_port:           # hijack-dns требует sniff
+        managed.append(sniff_rule)
+    if dns_port:
+        managed.append(dns_rule)
+    route["rules"] = managed + rules
     return cfg
 
 
