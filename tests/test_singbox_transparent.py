@@ -13,7 +13,8 @@ from unittest import mock
 from core import singbox_transparent as tp
 from core.singbox_config import (
     make_transparent_inbounds, set_transparent_inbounds, make_sniff_rule,
-    make_hijack_dns_rule,
+    make_hijack_dns_rule, make_tun_inbound, set_tun_inbound,
+    find_tun_interface,
 )
 
 
@@ -266,6 +267,53 @@ class TestSetTransparentInbounds(unittest.TestCase):
         # выключение DNS-hijack снимает правило
         set_transparent_inbounds(cfg, mode="tproxy", dns_port=0)
         self.assertNotIn(make_hijack_dns_rule(), cfg["route"]["rules"])
+
+
+class TestTunInbound(unittest.TestCase):
+
+    def _cfg(self):
+        return {"inbounds": [{"type": "mixed", "tag": "user"}], "outbounds": [
+            {"type": "selector", "tag": "PROXY",
+             "outbounds": ["s1"], "default": "s1"},
+            {"type": "vless", "tag": "s1", "server": "x",
+             "server_port": 443, "uuid": "u"}]}
+
+    def test_make_tun_uses_modern_fields_only(self):
+        ib = make_tun_inbound(interface_name="singbox-tun")
+        self.assertEqual(ib["type"], "tun")
+        self.assertEqual(ib["interface_name"], "singbox-tun")
+        self.assertIsInstance(ib["address"], list)        # не inet4_address
+        for legacy in ("inet4_address", "inet6_address",
+                       "inet4_route_address", "gso"):
+            self.assertNotIn(legacy, ib)
+
+    def test_make_tun_auto_route_off_by_default(self):
+        # для выборочной маршрутизации sing-box не должен забирать
+        # маршрут по умолчанию.
+        self.assertFalse(make_tun_inbound()["auto_route"])
+        self.assertTrue(make_tun_inbound(auto_route=True)["auto_route"])
+
+    def test_set_tun_inbound_creates_interface(self):
+        cfg = self._cfg()
+        set_tun_inbound(cfg, interface_name="singbox-tun")
+        self.assertEqual(find_tun_interface(cfg), "singbox-tun")
+        tags = [ib["tag"] for ib in cfg["inbounds"]]
+        self.assertIn("tun-in", tags)
+        self.assertIn("user", tags)                       # чужой inbound цел
+
+    def test_set_tun_routes_to_proxy_and_sniffs(self):
+        cfg = self._cfg()
+        set_tun_inbound(cfg, route_to_proxy=True, sniff=True)
+        self.assertEqual(cfg["route"]["final"], "PROXY")  # первый selector
+        self.assertIn(make_sniff_rule(), cfg["route"]["rules"])
+
+    def test_set_tun_idempotent(self):
+        cfg = self._cfg()
+        set_tun_inbound(cfg, interface_name="t0")
+        set_tun_inbound(cfg, interface_name="t1")
+        tun = [ib for ib in cfg["inbounds"] if ib["tag"] == "tun-in"]
+        self.assertEqual(len(tun), 1)                     # заменён, не дубль
+        self.assertEqual(tun[0]["interface_name"], "t1")
 
 
 class TestReapplySaved(unittest.TestCase):
