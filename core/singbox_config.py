@@ -212,45 +212,48 @@ def make_transparent_inbounds(*, mode: str = "tproxy",
       mode='hybrid'   → `redirect` (TCP, tcp_port) + `tproxy` (UDP,
                         udp_port). Два inbound'а.
 
-    sniff=True добавляет sniff-настройки (определение домена из
-    TLS/HTTP/QUIC) — нужно чтобы route-правила по доменам/geosite
-    работали для прозрачного трафика без явного Host.
+    Сниффинг (определение домена из TLS/HTTP/QUIC, нужно чтобы доменные/
+    geosite route-правила работали для прозрачного трафика) больше НЕ
+    задаётся полем inbound'а: sing-box 1.11 объявил поля `sniff`/
+    `sniff_override_destination` устаревшими, а 1.13 их УДАЛИЛ — конфиг с
+    ними падает с FATAL «legacy inbound fields … removed in sing-box
+    1.13.0». Теперь это route-правило `{"action": "sniff"}`, которое
+    добавляет set_transparent_inbounds()/make_sniff_rule(). Параметр
+    `sniff` здесь оставлен для обратной совместимости и не влияет на
+    inbound'ы.
 
     dns_port>0 добавит отдельный `direct`-inbound для перехвата DNS
-    (используется вместе с dns_hijack в firewall) — sing-box отдаёт
-    его на свой dns-resolver через route action hijack-dns.
+    (используется вместе с dns_hijack в firewall).
     """
-    sniff_opts = {}
-    if sniff:
-        # sing-box 1.8+: sniff на уровне inbound (для старых схем). На
-        # 1.11+ sniff переехал в route action, но поле игнорируется
-        # молча, поэтому совместимо.
-        sniff_opts = {"sniff": True, "sniff_override_destination": False}
-
     inbounds = []
     if mode in ("redirect", "hybrid"):
-        ib = {"type": "redirect", "tag": "redirect-in",
-              "listen": "::", "listen_port": int(tcp_port)}
-        ib.update(sniff_opts)
-        inbounds.append(ib)
+        inbounds.append({"type": "redirect", "tag": "redirect-in",
+                         "listen": "::", "listen_port": int(tcp_port)})
     if mode in ("tproxy", "hybrid"):
         port = int(udp_port) if mode == "hybrid" else int(tcp_port)
-        net = "udp" if mode == "hybrid" else ""
         ib = {"type": "tproxy", "tag": "tproxy-in",
               "listen": "::", "listen_port": port}
-        if net:
-            ib["network"] = net
-        ib.update(sniff_opts)
+        if mode == "hybrid":
+            ib["network"] = "udp"
         inbounds.append(ib)
     if dns_port:
-        ib = {"type": "direct", "tag": "dns-in",
-              "listen": "::", "listen_port": int(dns_port),
-              "network": "udp"}
-        inbounds.append(ib)
+        inbounds.append({"type": "direct", "tag": "dns-in",
+                         "listen": "::", "listen_port": int(dns_port),
+                         "network": "udp"})
     return inbounds
 
 
 _TRANSPARENT_TAGS = {"redirect-in", "tproxy-in", "dns-in"}
+
+
+def make_sniff_rule() -> dict:
+    """
+    Route-правило сниффинга (sing-box 1.11+) — замена удалённого в 1.13
+    legacy-поля inbound'а `sniff`. Не-терминальное действие: определяет
+    домен (TLS/HTTP/QUIC) и продолжает обработку правил, чтобы доменные/
+    geosite-правила срабатывали для прозрачного трафика.
+    """
+    return {"action": "sniff"}
 
 
 def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
@@ -261,6 +264,10 @@ def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
     модифицируется и возвращается). Прежние наши inbound'ы
     (redirect-in/tproxy-in/dns-in) убираются, пользовательские —
     сохраняются. Чистая функция (без I/O), удобно тестировать.
+
+    sniff=True добавляет route-правило `{"action": "sniff"}` (sing-box
+    1.11+; legacy inbound-поле `sniff` удалено в 1.13). Идемпотентно:
+    наше прежнее sniff-правило снимается перед повторной вставкой.
     """
     existing = [ib for ib in (cfg.get("inbounds") or [])
                 if not (isinstance(ib, dict)
@@ -269,6 +276,19 @@ def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
         mode=mode, tcp_port=tcp_port, udp_port=udp_port,
         dns_port=dns_port, sniff=sniff)
     cfg["inbounds"] = new_ibs + existing
+
+    # Сниффинг — через route action (а не legacy-поле inbound'а).
+    route = cfg.setdefault("route", {})
+    rules = route.get("rules")
+    if not isinstance(rules, list):
+        rules = []
+    # Снять наше прежнее sniff-правило (ровно {"action": "sniff"}).
+    rules = [r for r in rules
+             if not (isinstance(r, dict) and r.get("action") == "sniff"
+                     and len(r) == 1)]
+    if sniff:
+        rules.insert(0, make_sniff_rule())
+    route["rules"] = rules
     return cfg
 
 

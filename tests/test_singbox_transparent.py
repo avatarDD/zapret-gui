@@ -12,7 +12,7 @@ from unittest import mock
 
 from core import singbox_transparent as tp
 from core.singbox_config import (
-    make_transparent_inbounds, set_transparent_inbounds,
+    make_transparent_inbounds, set_transparent_inbounds, make_sniff_rule,
 )
 
 
@@ -32,6 +32,9 @@ class TestRedirectBuilder(unittest.TestCase):
         self.assertTrue(any("192.168.0.0/16 -j RETURN" in r for r in flat))
         # всё через iptables (v4)
         self.assertTrue(all(r.startswith("iptables") for r in flat))
+        # КАЖДОЕ правило идёт в таблицу nat (иначе -A уходит в filter, где
+        # нашей цепочки нет → «No chain/target/match by that name»).
+        self.assertTrue(all("-t nat -A " in r for r in flat), flat)
 
     def test_server_ip_excluded(self):
         rules = tp.build_redirect_rules(
@@ -71,6 +74,9 @@ class TestTproxyBuilder(unittest.TestCase):
         self.assertTrue(any("-p udp -j TPROXY --on-port 1100" in r
                             for r in flat))
         self.assertTrue(any("--tproxy-mark 1" in r for r in flat))
+        # КАЖДОЕ правило идёт в таблицу mangle (TPROXY живёт только там,
+        # и цепочка SBT_TP_PRE создаётся именно в mangle).
+        self.assertTrue(all("-t mangle -A " in r for r in flat), flat)
 
     def test_protocols_filter(self):
         rules = tp.build_tproxy_rules(
@@ -103,6 +109,7 @@ class TestDnsHijackBuilder(unittest.TestCase):
         # и udp и tcp
         self.assertTrue(any("-p udp --dport 53" in r for r in flat))
         self.assertTrue(any("-p tcp --dport 53" in r for r in flat))
+        self.assertTrue(all("-t mangle -A " in r for r in flat), flat)
 
     def test_redirect_dns(self):
         rules = tp.build_dns_hijack_rules(
@@ -110,6 +117,7 @@ class TestDnsHijackBuilder(unittest.TestCase):
         flat = _flat(rules)
         self.assertTrue(any("--dport 53 -j REDIRECT --to-ports 1053" in r
                             for r in flat))
+        self.assertTrue(all("-t nat -A " in r for r in flat), flat)
 
 
 class TestIpv6Block(unittest.TestCase):
@@ -150,11 +158,15 @@ class TestTransparentInbounds(unittest.TestCase):
         self.assertEqual(len(dns), 1)
         self.assertEqual(dns[0]["listen_port"], 1053)
 
-    def test_sniff_toggle(self):
-        with_sniff = make_transparent_inbounds(mode="tproxy", sniff=True)
-        without = make_transparent_inbounds(mode="tproxy", sniff=False)
-        self.assertIn("sniff", with_sniff[0])
-        self.assertNotIn("sniff", without[0])
+    def test_inbounds_carry_no_legacy_sniff(self):
+        # sing-box 1.13 удалил legacy inbound-поля; sniff не должен
+        # оказаться в inbound'е ни при каком значении флага.
+        for s in (True, False):
+            ibs = make_transparent_inbounds(mode="tproxy", sniff=s)
+            for ib in ibs:
+                self.assertNotIn("sniff", ib)
+                self.assertNotIn("sniff_override_destination", ib)
+                self.assertNotIn("domain_strategy", ib)
 
 
 class TestSetTransparentInbounds(unittest.TestCase):
@@ -183,6 +195,42 @@ class TestSetTransparentInbounds(unittest.TestCase):
         tags = {ib["tag"] for ib in cfg["inbounds"]}
         self.assertIn("redirect-in", tags)
         self.assertIn("tproxy-in", tags)
+
+    def test_sniff_added_as_route_action(self):
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="tproxy", tcp_port=1100,
+                                 sniff=True)
+        rules = cfg["route"]["rules"]
+        self.assertEqual(rules[0], make_sniff_rule())
+        # и в самих inbound'ах никаких legacy-полей sniff
+        for ib in cfg["inbounds"]:
+            self.assertNotIn("sniff", ib)
+
+    def test_sniff_route_action_idempotent(self):
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="tproxy", sniff=True)
+        set_transparent_inbounds(cfg, mode="tproxy", sniff=True)
+        sniffs = [r for r in cfg["route"]["rules"]
+                  if r.get("action") == "sniff"]
+        self.assertEqual(len(sniffs), 1)        # не дублируется
+
+    def test_sniff_false_removes_route_action(self):
+        cfg = {"outbounds": []}
+        set_transparent_inbounds(cfg, mode="tproxy", sniff=True)
+        set_transparent_inbounds(cfg, mode="tproxy", sniff=False)
+        sniffs = [r for r in cfg["route"].get("rules", [])
+                  if r.get("action") == "sniff"]
+        self.assertEqual(len(sniffs), 0)
+
+    def test_sniff_preserves_user_route_rules(self):
+        cfg = {"outbounds": [],
+               "route": {"rules": [{"domain": ["x.com"], "outbound": "o"}]}}
+        set_transparent_inbounds(cfg, mode="tproxy", sniff=True)
+        actions = [r.get("action") for r in cfg["route"]["rules"]]
+        self.assertIn("sniff", actions)
+        # пользовательское правило не потеряно
+        self.assertTrue(any(r.get("domain") == ["x.com"]
+                            for r in cfg["route"]["rules"]))
 
 
 class TestReapplySaved(unittest.TestCase):
