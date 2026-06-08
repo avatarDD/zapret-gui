@@ -23,6 +23,7 @@ const SingboxProxiesPage = (() => {
     let configName = '';
     let outbounds = [];                 // только «реальные» серверы
     let activeTag = '';                 // активный сервер (selector.default)
+    let invalidTags = {};               // tag -> причина (битый ключ; sing-box не стартует)
     let testResults = {};               // tag -> {alive, latency_ms, stage, error}
     let traffic = {};                   // tag -> {up, down}
     let clashEnabled = null;            // у конфига настроен clash_api?
@@ -109,6 +110,15 @@ const SingboxProxiesPage = (() => {
             const sel = all.find(o => o && o.type === 'selector');
             activeTag = sel ? (sel.default || (sel.outbounds || [])[0] || '') : '';
         } catch (e) { Toast.error(e.message); }
+        // Серверы с битым ключом (reality без pbk и т.п.) — sing-box на
+        // них не стартует. Помечаем их, чтобы было видно и можно удалить.
+        invalidTags = {};
+        try {
+            const p = await API.post(
+                `/api/singbox/configs/${encodeURIComponent(configName)}/prune-invalid`,
+                { apply: false });
+            if (p && p.ok) for (const it of (p.invalid || [])) invalidTags[it.tag] = it.reason;
+        } catch (e) { /* не критично — просто без бейджей */ }
         // Чистим выбор от исчезнувших тегов.
         const present = new Set(outbounds.map(o => o.tag));
         selected = new Set([...selected].filter(t => present.has(t)));
@@ -186,6 +196,7 @@ const SingboxProxiesPage = (() => {
         }
 
         const selCount = selected.size;
+        const invalidCount = Object.keys(invalidTags).length;
         box.innerHTML = `
             <div class="card" style="margin-bottom:12px;">
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
@@ -231,6 +242,13 @@ const SingboxProxiesPage = (() => {
                                 onclick="SingboxProxiesPage.deleteSelected()" title="Delete">
                             Удалить
                         </button>
+                        ${invalidCount ? `
+                        <button class="btn btn-ghost btn-sm" ${busy ? 'disabled' : ''}
+                                style="color:#e58; border-color:#e58;"
+                                onclick="SingboxProxiesPage.pruneInvalid()"
+                                title="Удалить серверы с битым ключом — из-за них sing-box не запускается">
+                            ⚠ Убрать битые (${invalidCount})
+                        </button>` : ''}
                     </div>
                 </div>
                 ${renderClashBanner()}
@@ -368,6 +386,10 @@ const SingboxProxiesPage = (() => {
     }
 
     function renderTestCell(tag) {
+        const bad = invalidTags[tag];
+        if (bad) {
+            return `<span style="color:#e58;" title="${escapeAttr(bad)}">⚠ битый ключ</span>`;
+        }
         const r = testResults[tag];
         if (!r) return '<span class="text-muted">—</span>';
         const dot = r.alive ? '#39c45e' : '#e58';
@@ -628,6 +650,26 @@ const SingboxProxiesPage = (() => {
         finally { busy = false; renderBody(); }
     }
 
+    async function pruneInvalid() {
+        if (!configName) return;
+        const n = Object.keys(invalidTags).length;
+        if (!n) { Toast.info('Серверов с битым ключом нет'); return; }
+        if (!confirm(`Удалить ${n} серв. с битым ключом? Из-за них sing-box не запускается («invalid public_key»).`))
+            return;
+        busy = true; renderBody();
+        try {
+            const r = await API.post(
+                `/api/singbox/configs/${encodeURIComponent(configName)}/prune-invalid`,
+                { apply: true });
+            if (r && r.ok) {
+                Toast.success(`Удалено серверов с битым ключом: ${(r.removed || []).length}`);
+                await loadOutbounds();
+                await loadTraffic();
+            } else { Toast.error((r && r.error) || 'не удалось'); }
+        } catch (e) { Toast.error(e.message); }
+        finally { busy = false; renderBody(); }
+    }
+
     async function enableClashApi() {
         busy = true; renderBody();
         try {
@@ -733,5 +775,6 @@ const SingboxProxiesPage = (() => {
         sortBy, onRowClick, toggleRow, toggleAll,
         test, copySelected, togglePasteBox, importPasteBox,
         deleteSelected, enableClashApi, activate, activateSelected,
+        pruneInvalid,
     };
 })();

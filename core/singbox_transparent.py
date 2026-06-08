@@ -105,15 +105,20 @@ def _ipt(family: str) -> str:
 # бинаря (iptables/ip6tables). Так apply() просто прогоняет их через _run.
 
 
-def build_bypass_rules(chain: str, family: str, bypass: list) -> list:
+def build_bypass_rules(chain: str, family: str, bypass: list,
+                       table: str) -> list:
     """
     RETURN-правила для bypass-сетей в начале нашей цепочки: пакеты к
     приватным/локальным адресам не заворачиваем.
+
+    `table` ОБЯЗАТЕЛЕН: наши цепочки живут в nat (redirect) или mangle
+    (tproxy), и `-A` без `-t <table>` ушёл бы в filter, где цепочки нет
+    → «No chain/target/match by that name».
     """
     cmd = _ipt(family)
     out = []
     for net in bypass:
-        out.append([cmd, "-A", chain, "-d", net, "-j", "RETURN"])
+        out.append([cmd, "-t", table, "-A", chain, "-d", net, "-j", "RETURN"])
     return out
 
 
@@ -146,32 +151,34 @@ def build_redirect_rules(*, family: str = "v4",
     rules = []
 
     # bypass-сети + сами прокси-сервера → RETURN
-    rules += build_bypass_rules(NAT_PRE, family, bypass)
+    rules += build_bypass_rules(NAT_PRE, family, bypass, "nat")
     for ip in (server_ips or []):
-        rules.append([cmd, "-A", NAT_PRE, "-d", ip, "-j", "RETURN"])
+        rules.append([cmd, "-t", "nat", "-A", NAT_PRE, "-d", ip, "-j", "RETURN"])
 
     # Основное правило: TCP → REDIRECT на порт движка.
     if lan_ifaces:
         for ifn in lan_ifaces:
-            rules.append([cmd, "-A", NAT_PRE, "-i", ifn, "-p", "tcp",
-                          "-j", "REDIRECT", "--to-ports", str(tcp_port)])
+            rules.append([cmd, "-t", "nat", "-A", NAT_PRE, "-i", ifn,
+                          "-p", "tcp", "-j", "REDIRECT",
+                          "--to-ports", str(tcp_port)])
     else:
-        rules.append([cmd, "-A", NAT_PRE, "-p", "tcp",
+        rules.append([cmd, "-t", "nat", "-A", NAT_PRE, "-p", "tcp",
                       "-j", "REDIRECT", "--to-ports", str(tcp_port)])
 
     if proxy_self:
-        rules += build_bypass_rules(NAT_OUT, family, bypass)
+        rules += build_bypass_rules(NAT_OUT, family, bypass, "nat")
         for ip in (server_ips or []):
-            rules.append([cmd, "-A", NAT_OUT, "-d", ip, "-j", "RETURN"])
+            rules.append([cmd, "-t", "nat", "-A", NAT_OUT, "-d", ip,
+                          "-j", "RETURN"])
         # Не заворачиваем трафик, который движок сам шлёт наружу — он
         # помечает свои сокеты собственным fwmark'ом? Для redirect это
         # не нужно: REDIRECT в OUTPUT не трогает локально-сгенерённый
         # трафик от процесса с uid root, если движок бежит под root.
         # Чтобы избежать петли — исключаем владельца по mark, который
         # движок ставит через routing_mark/so_mark (см. конфиг).
-        rules.append([cmd, "-A", NAT_OUT, "-m", "mark", "--mark",
-                      str(DEFAULT_TPROXY_MARK), "-j", "RETURN"])
-        rules.append([cmd, "-A", NAT_OUT, "-p", "tcp",
+        rules.append([cmd, "-t", "nat", "-A", NAT_OUT, "-m", "mark",
+                      "--mark", str(DEFAULT_TPROXY_MARK), "-j", "RETURN"])
+        rules.append([cmd, "-t", "nat", "-A", NAT_OUT, "-p", "tcp",
                       "-j", "REDIRECT", "--to-ports", str(tcp_port)])
     return rules
 
@@ -204,12 +211,13 @@ def build_tproxy_rules(*, family: str = "v4",
     rules = []
 
     # PREROUTING (forward от LAN) ----------------------------------------
-    rules += build_bypass_rules(MANGLE_PRE, family, bypass)
+    rules += build_bypass_rules(MANGLE_PRE, family, bypass, "mangle")
     for ip in (server_ips or []):
-        rules.append([cmd, "-A", MANGLE_PRE, "-d", ip, "-j", "RETURN"])
+        rules.append([cmd, "-t", "mangle", "-A", MANGLE_PRE, "-d", ip,
+                      "-j", "RETURN"])
 
     for proto in protocols:
-        base = [cmd, "-A", MANGLE_PRE]
+        base = [cmd, "-t", "mangle", "-A", MANGLE_PRE]
         if lan_ifaces:
             for ifn in lan_ifaces:
                 rules.append(base + ["-i", ifn, "-p", proto,
@@ -223,14 +231,15 @@ def build_tproxy_rules(*, family: str = "v4",
 
     # OUTPUT (трафик самого роутера) -------------------------------------
     if proxy_self:
-        rules += build_bypass_rules(MANGLE_OUT, family, bypass)
+        rules += build_bypass_rules(MANGLE_OUT, family, bypass, "mangle")
         for ip in (server_ips or []):
-            rules.append([cmd, "-A", MANGLE_OUT, "-d", ip, "-j", "RETURN"])
+            rules.append([cmd, "-t", "mangle", "-A", MANGLE_OUT, "-d", ip,
+                          "-j", "RETURN"])
         # Не зацикливаем сам движок: его сокеты помечены mark.
-        rules.append([cmd, "-A", MANGLE_OUT, "-m", "mark", "--mark",
-                      str(mark), "-j", "RETURN"])
+        rules.append([cmd, "-t", "mangle", "-A", MANGLE_OUT, "-m", "mark",
+                      "--mark", str(mark), "-j", "RETURN"])
         for proto in protocols:
-            rules.append([cmd, "-A", MANGLE_OUT, "-p", proto,
+            rules.append([cmd, "-t", "mangle", "-A", MANGLE_OUT, "-p", proto,
                           "-j", "MARK", "--set-mark", str(mark)])
     return rules
 
@@ -267,13 +276,13 @@ def build_dns_hijack_rules(*, family: str = "v4",
     for proto in ("udp", "tcp"):
         for ifn in ifaces:
             if via == "redirect":
-                r = [cmd, "-A", NAT_PRE]
+                r = [cmd, "-t", "nat", "-A", NAT_PRE]
                 if ifn:
                     r += ["-i", ifn]
                 r += ["-p", proto, "--dport", "53",
                       "-j", "REDIRECT", "--to-ports", str(dns_port)]
             else:
-                r = [cmd, "-A", MANGLE_PRE]
+                r = [cmd, "-t", "mangle", "-A", MANGLE_PRE]
                 if ifn:
                     r += ["-i", ifn]
                 r += ["-p", proto, "--dport", "53",

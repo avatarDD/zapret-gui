@@ -464,13 +464,31 @@ def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
         "summary": {"total","alive","dead"}
       }
     """
-    obs = [o for o in (outbounds or [])
-           if isinstance(o, dict) and o.get("tag")][:max_servers]
+    obs_all = [o for o in (outbounds or [])
+               if isinstance(o, dict) and o.get("tag")][:max_servers]
     target_url = resolve_target(target)
 
-    if not obs:
+    if not obs_all:
         return {"ok": True, "target": target_url, "engine_used": False,
                 "results": [], "summary": {"total": 0, "alive": 0, "dead": 0}}
+
+    # Статически отсеиваем серверы с заведомо битым ключом (reality без
+    # pbk / wireguard): sing-box на таком падает целиком, губя весь батч
+    # из ~40. Их сразу помечаем невалидными и в движок не отдаём.
+    from core.singbox_config import outbound_key_problem
+    bad_results = []
+    obs = []
+    for o in obs_all:
+        prob = outbound_key_problem(o)
+        if prob:
+            bad_results.append({
+                "tag": o["tag"], "server": o.get("server"),
+                "port": o.get("server_port"), "type": o.get("type"),
+                "alive": False, "latency_ms": None,
+                "stage": "config", "error": prob, "invalid": True,
+            })
+        else:
+            obs.append(o)
 
     meta = {o["tag"]: o for o in obs}
 
@@ -549,6 +567,9 @@ def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
                 "alive": True, "latency_ms": tcp_ms,
                 "stage": "tcp", "error": "",
             })
+
+    # Серверы с битым ключом — в общий список (осядут внизу при сортировке).
+    results.extend(bad_results)
 
     # Сортируем: живые сначала, по возрастанию задержки.
     results.sort(key=lambda r: (
