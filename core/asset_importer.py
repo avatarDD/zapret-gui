@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 from typing import Optional
 
@@ -86,6 +87,29 @@ CATALOG_BUILTIN_FILE = os.path.join(
 
 # Пропускаемые имена (техническая служебка репозитория-источника)
 _SKIP_PREFIXES = ("_",)
+
+# Lua-скрипты, которые являются дословными копиями upstream-релиза
+# bol-van/zapret2. Их версия ЖЁСТКО привязана к бинарнику nfqws2 через
+# NFQWS2_COMPAT_VER (см. первые строки zapret-lib.lua). Эти файлы кладутся в
+# /opt/zapret2/lua/ ещё и самим релизом (вместе с бинарником), поэтому их
+# нельзя «понижать» нашей bundled-копией, если на диске уже лежит lua из
+# более НОВОГО релиза — иначе получаем ровно тот LUA ERROR про несовместимый
+# NFQWS2_COMPAT_VER (issue #151), только в обратную сторону.
+#
+# Наши собственные расширения (zapret-multishake, custom_funcs, z2k-*,
+# fakemultisplit, … и устаревший zapret-wgobfs, которого в релизе уже нет)
+# сюда НЕ входят — в релизе их нет, их всегда выкладываем из bundle.
+_UPSTREAM_CORE_LUA = frozenset({
+    "zapret-lib.lua",
+    "zapret-antidpi.lua",
+    "zapret-auto.lua",
+    "zapret-obfs.lua",
+    "zapret-pcap.lua",
+    "zapret-tests.lua",
+})
+
+# Маркер версии lua↔бинарник из zapret-lib.lua (в самом начале файла).
+_COMPAT_VER_RE = re.compile(r"NFQWS2_COMPAT_VER_REQUIRED\s*=\s*(\d+)")
 
 
 # ─── Публичный API ───────────────────────────────────────────
@@ -145,9 +169,21 @@ def import_runtime_assets(base_path: Optional[str] = None) -> dict:
         IMPORT_BIN_DIR,
         os.path.join(base_path, "files", "fake"),
     )
+    # Upstream-core lua не понижаем, если на диске уже лежит более новый
+    # релиз (его lua совпадает с его же бинарником) — см. _protected_core_lua
+    # и issue #151.
+    lua_skip = _protected_core_lua(base_path)
+    if lua_skip:
+        log.info(
+            "asset-importer: lua на диске новее bundled по NFQWS2_COMPAT_VER "
+            "— сохраняем upstream-core из релиза, не затираем: %s"
+            % ", ".join(sorted(lua_skip)),
+            source="asset-importer",
+        )
     lua_stats = _sync_dir(
         IMPORT_LUA_DIR,
         os.path.join(base_path, "lua"),
+        skip_names=lua_skip,
     )
     # lists/ → split: ipset-файлы в ipset/, остальные в lists/
     lists_stats, ipset_stats = _sync_lists_split(
@@ -305,12 +341,14 @@ def import_bundled_strategies() -> dict:
 # ─── Внутренние хелперы: runtime assets ──────────────────────
 
 def _sync_dir(src_dir: str, dst_dir: str,
-              ext_whitelist: Optional[set] = None) -> dict:
+              ext_whitelist: Optional[set] = None,
+              skip_names: Optional[set] = None) -> dict:
     """
     Синхронизировать `src_dir` → `dst_dir` (однонаправленно).
 
     Поведение:
       * Файлы в src_dir с `_`-префиксом пропускаются.
+      * Файлы из `skip_names` пропускаются (считаются в skipped).
       * Если dst-файл не существует или отличается по содержимому —
         копируется (с сохранением mtime).
       * Если существует и идентичен — не трогается (идемпотентно).
@@ -322,6 +360,8 @@ def _sync_dir(src_dir: str, dst_dir: str,
         dst_dir:       Куда копируем.
         ext_whitelist: Множество разрешённых расширений (с точкой),
                        или None для всех файлов.
+        skip_names:    Имена файлов, которые НЕ перезаписывать (например,
+                       upstream-core lua из более нового релиза).
 
     Returns: {"copied": N, "skipped": M, "errors": [...]}
     """
@@ -340,6 +380,9 @@ def _sync_dir(src_dir: str, dst_dir: str,
 
     for name in sorted(os.listdir(src_dir)):
         if name.startswith(_SKIP_PREFIXES):
+            continue
+        if skip_names and name in skip_names:
+            stats["skipped"] += 1
             continue
         src = os.path.join(src_dir, name)
         if not os.path.isfile(src):
@@ -385,6 +428,44 @@ def _sha1(path: str) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _lua_compat_ver(path: str) -> Optional[int]:
+    """Прочитать NFQWS2_COMPAT_VER_REQUIRED из zapret-lib.lua (None если нет).
+
+    Маркер стоит в самом начале файла, читаем только голову.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(1024)
+    except OSError:
+        return None
+    m = _COMPAT_VER_RE.search(head)
+    try:
+        return int(m.group(1)) if m else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _protected_core_lua(base_path: str) -> set:
+    """Набор upstream-core lua, которые НЕ нужно перезаписывать bundle-копией.
+
+    Непустой набор возвращается только если на диске (<base>/lua) лежит
+    zapret-lib.lua с NFQWS2_COMPAT_VER_REQUIRED строго БОЛЬШЕ нашего bundled
+    — значит пользователь уже на более новом релизе zapret2 и его lua
+    совпадает с его бинарником. Затирать её нашей (более старой) копией
+    нельзя: это вызвало бы несовместимость lua↔nfqws2 (issue #151).
+
+    Если версию не удалось определить (нет файла / нет маркера) — ведём себя
+    как раньше: ничего не защищаем, выкладываем bundle (он же и чинит
+    отсутствующую/устаревшую lua).
+    """
+    bundled = _lua_compat_ver(os.path.join(IMPORT_LUA_DIR, "zapret-lib.lua"))
+    deployed = _lua_compat_ver(
+        os.path.join(base_path, "lua", "zapret-lib.lua"))
+    if bundled is not None and deployed is not None and deployed > bundled:
+        return set(_UPSTREAM_CORE_LUA)
+    return set()
 
 
 def _resolve_zapret_base_path() -> str:

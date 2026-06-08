@@ -207,6 +207,26 @@
   подписки/пул/именованные списки/маршруты единого слоя — проверено).
 
 ### Исправлено
+- **zapret2 1.0 ломал nfqws2: `LUA ERROR … Incompatible NFQWS2_COMPAT_VER`
+  ([#151](https://github.com/avatarDD/zapret-gui/issues/151)).** zapret2 1.0
+  сменил `lua_compat_ver` 5→6 (несовместимое изменение: везде `WRITEABLE`→
+  `WRITABLE`, плюс `delay` в `send` и фикс oob при `urp=b`). Наши bundled-lua
+  (`import/lua/`) были на compat 5, а `asset_importer` принудительно
+  раскладывает их в `/opt/zapret2/lua/`, затирая свежую lua из релиза 1.0 —
+  и nfqws2 падал сразу после старта.
+  - Обновили вендоренные upstream-core lua до v1.0.1 (compat 6):
+    `zapret-lib`, `zapret-antidpi`, `zapret-pcap`, `zapret-tests`
+    (`zapret-auto`/`zapret-obfs` уже совпадали; `--writeable`→`--writable`,
+    env `WRITEABLE`→`WRITABLE`).
+  - **Защита от повторения в обе стороны** (`core/asset_importer.py`):
+    bundled core-lua больше не «понижает» версию, если на диске уже лежит
+    lua из более нового релиза (сравнение `NFQWS2_COMPAT_VER_REQUIRED`,
+    `_protected_core_lua`). Наши расширения (`zapret-multishake`,
+    `custom_funcs`, `z2k-*`, …) выкладываются как раньше.
+  - Покрыто тестами (`tests/test_asset_importer_lua_compat.py`). Редактор
+    стратегий правок не потребовал: `delay` у `send` и `urp` у `oob` уже
+    были в `nfqws2_spec.js`, а переименованный `WRITEABLE` линтер не
+    проверял.
 - **На Keenetic нельзя было добавить domain-правило в «AWG-правила → Домены»:
   кнопка «Добавить правило» оставалась серой.** Под зелёным баннером
   «Активен Keenetic-native режим (NDMS)» кнопка всё равно гейтилась на

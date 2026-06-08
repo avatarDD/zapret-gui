@@ -74,7 +74,7 @@ nfqws2 **не имеет хардкод-стратегий**. Параметро
 | `zapret-antidpi.lua` | Готовые desync-аналоги nfqws1: `fake`, `multisplit`, `multidisorder`, `fakedsplit`, `fakeddisorder`, `hostfakesplit`, `tcpseg`, `oob`, `wsize`, `wssize`, `syndata`, `rst`, `synack`, `synack_split`, `udplen`, `dht_dn`, `http_*`, `pktmod`, `pass`, `luaexec`. **Без неё `--lua-desync=fake:...` — вызов несуществующей функции: тихий 0%**. |
 | `zapret-auto.lua` | Оркестраторы (`circular`, `repeater`, `condition`, `per_instance_condition`, `stopif`) и iff-функции (`cond_random`, `cond_payload_str`, `cond_lua`, …). |
 | `zapret-obfs.lua` | Обфускаторы: `wgobfs`, `ippxor`, `udp2icmp`, `synhide`. **Надмножество** `zapret-wgobfs.lua` — если грузим `obfs`, то `wgobfs.lua` грузить НЕ надо (двойное определение). |
-| `zapret-pcap.lua` | Запись pcap. Требует `--writeable`. |
+| `zapret-pcap.lua` | Запись pcap. Требует `--writable` (до 1.0 — `--writeable`). |
 | `zapret-tests.lua` | Тесты C-функций. |
 
 ### Наши расширения (`import/lua/`, разворачиваются на `lua_path` через `core/asset_importer.py`)
@@ -171,6 +171,16 @@ hostname (макс. 2 «перескока»). Если все инстансы 
 `github version v0.9.5.2 (<git-hash>) lua_compat_ver 5`. Опции с `[0|1]`/
 `[=val]` имеют необязательный аргумент (без него — дефолт, обычно `=1`).
 
+⚠️ **Совместимость lua↔бинарник (`NFQWS2_COMPAT_VER`).** zapret2 **1.0**
+сменил `lua_compat_ver` 5→6 (несовместимое изменение: везде `WRITEABLE`→
+`WRITABLE`, т.е. флаг `--writeable`→`--writable` и env `WRITABLE`; плюс
+`delay` в `send` и фикс oob при `urp=b`). `zapret-lib.lua:1` проверяет
+`NFQWS2_COMPAT_VER_REQUIRED` и падает с *«Incompatible NFQWS2_COMPAT_VER»*,
+если lua и бинарник из разных релизов. Наши bundled-lua (`import/lua/`)
+должны совпадать по compat с устанавливаемым бинарником; `core/asset_importer`
+не понижает core-lua, если на диске уже лежит более новый релиз
+(см. `_protected_core_lua`, issue #151).
+
 ### 3.1 Общие / служебные
 
 | Опция | Назначение |
@@ -201,7 +211,7 @@ hostname (макс. 2 «перескока»). Если все инстансы 
 
 | Опция | Назначение |
 |---|---|
-| `--writeable[=dir]` | Создать каталог для Lua (env `WRITEABLE`). |
+| `--writable[=dir]` | Создать каталог для Lua (env `WRITABLE`). До zapret2 1.0 — `--writeable`/`WRITEABLE`. |
 | `--blob=<name>:[+ofs]@<file>\|0xHEX` | Глобальная декларация именованного блоба. Поддержан offset `+ofs`. **До первого `--new`**. |
 | `--lua-init=@<file>\|<lua_text>` | Загрузить Lua. Порядок сохраняется. Поддержаны gzip-файлы. |
 | `--lua-gc=<sec>` | Интервал GC Lua (дефолт 60). |
@@ -1068,7 +1078,8 @@ end
   `timer_info(name)`, `timer_enum()`.
 - Пейлоады: `resolve_pos(blob, payload_type, marker)`, `resolve_multi_pos`,
   `resolve_range`, `tls_mod(blob, modlist, payload)`.
-- Файлы: `--writeable` создаст каталог, путь в `os.getenv("WRITEABLE")`.
+- Файлы: `--writable` создаст каталог, путь в `os.getenv("WRITABLE")`
+  (до zapret2 1.0 — `--writeable` / `WRITEABLE`).
 
 **Песочница:** `os.execute`, `io.popen`, `package.loadlib`, модуль `debug` —
 удалены.
