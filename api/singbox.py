@@ -49,6 +49,9 @@ REST API для sing-box.
   POST   /api/singbox/transparent/apply     — поднять firewall TProxy/
                                                 Redirect/Hybrid
   POST   /api/singbox/transparent/remove    — снять firewall-правила
+  POST   /api/singbox/configs/<name>/tun-inbound — добавить TUN-inbound
+                                              (sing-box как интерфейс для
+                                              Selective routing)
   POST   /api/singbox/configs/<name>/transparent-inbounds
                                               — вставить transparent-
                                                 inbound'ы в конфиг
@@ -997,6 +1000,51 @@ def register(app):
         save = mgr.save_config(name, text=render_conf(cfg))
         if not save.get("ok"):
             response.status = 500
+        return save
+
+    @app.route("/api/singbox/configs/<name>/tun-inbound", method="POST")
+    def singbox_tun_inbound(name):
+        """
+        Добавить/заменить TUN-inbound в конфиге: sing-box создаст сетевой
+        интерфейс (`interface_name`), который затем виден в системе и на
+        странице «Selective routing» как цель правил device/domain/cidr.
+
+        body: {interface_name, address, mtu, stack, auto_route, sniff}.
+          auto_route=false (по умолчанию) — что заворачивать в интерфейс,
+            решает выборочная маршрутизация (ip rule/nftset);
+          auto_route=true — весь трафик роутера/клиентов уходит в TUN.
+        После сохранения конфиг нужно (пере)запустить.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core.singbox_manager import get_singbox_manager
+        from core.singbox_config import set_tun_inbound, render_conf
+        mgr = get_singbox_manager()
+        cfg_resp = mgr.get_config(name)
+        if not cfg_resp.get("ok"):
+            response.status = 404
+            return cfg_resp
+        cfg = cfg_resp.get("parsed") or {}
+        addr = body.get("address")
+        if isinstance(addr, str):
+            addr = [a.strip() for a in addr.split(",") if a.strip()]
+        iface = (body.get("interface_name") or "singbox-tun").strip()
+        set_tun_inbound(
+            cfg,
+            interface_name=iface,
+            address=addr or None,
+            mtu=int(body.get("mtu") or 9000),
+            stack=(body.get("stack") or "system"),
+            auto_route=bool(body.get("auto_route", False)),
+            sniff=bool(body.get("sniff", True)))
+        save = mgr.save_config(name, text=render_conf(cfg))
+        if not save.get("ok"):
+            response.status = 500
+            return save
+        save["interface_name"] = iface
         return save
 
     @app.route("/api/singbox/transparent/apply", method="POST")

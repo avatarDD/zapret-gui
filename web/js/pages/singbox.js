@@ -19,6 +19,11 @@ const SingboxDashboardPage = (() => {
         proxy_self: false, dns_hijack_port: 0, ipv6_policy: 'allow',
         inject_config: '',
     };
+    let tunForm = {                  // форма TUN-интерфейса (для Selective routing)
+        config: '', interface_name: 'singbox-tun',
+        address: '172.18.0.1/30', stack: 'system', mtu: 9000,
+        auto_route: false,
+    };
 
     // ══════════════ render ══════════════
 
@@ -57,6 +62,13 @@ const SingboxDashboardPage = (() => {
             <div class="card" id="sb-transparent" style="margin-top:16px;">
                 <div class="card-title">Прозрачное проксирование (TProxy / Redirect / Hybrid)${typeof Help !== 'undefined' ? Help.button('transparent') : ''}</div>
                 <div id="sb-transparent-body" style="margin-top:8px;">
+                    <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
+                </div>
+            </div>
+
+            <div class="card" id="sb-tun" style="margin-top:16px;">
+                <div class="card-title">TUN-интерфейс (для выборочной маршрутизации)</div>
+                <div id="sb-tun-body" style="margin-top:8px;">
                     <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
                 </div>
             </div>
@@ -105,6 +117,7 @@ const SingboxDashboardPage = (() => {
         renderSummary();
         renderInstances();
         renderTransparent();
+        renderTun();
     }
 
     function startPolling() {
@@ -403,6 +416,92 @@ const SingboxDashboardPage = (() => {
         } catch (e) { Toast.error(e.message); }
     }
 
+    // ══════════════ TUN interface (for selective routing) ══════════════
+
+    function renderTun() {
+        const box = document.getElementById('sb-tun-body');
+        if (!box) return;
+        if (!tunForm.config && configs.length) tunForm.config = configs[0].name;
+        const cfgOpts = ['<option value="">— выбрать конфиг —</option>'].concat(
+            configs.map(c => `<option value="${escapeAttr(c.name)}"
+                ${c.name === tunForm.config ? 'selected' : ''}>${escapeHtml(c.name)}${c.running ? ' ●' : ''}</option>`)
+        ).join('');
+        const opt = (v, cur, label) =>
+            `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
+        box.innerHTML = `
+            <p class="text-muted" style="font-size:13px; margin-top:0;">
+                Создаёт сетевой интерфейс sing-box. После (пере)запуска конфига он
+                появится в системе и на странице
+                <a href="#routing" style="text-decoration:underline;">Selective routing</a>,
+                где можно завернуть в него выбранные устройства / домены / подсети.
+                Маршрут по умолчанию не забирается (auto_route выкл.) — что
+                заворачивать, решают правила маршрутизации.
+            </p>
+            <div style="display:grid; grid-template-columns:170px 1fr; gap:8px 12px; align-items:center; max-width:660px;">
+                <label class="text-muted">Конфиг</label>
+                <select class="form-control" style="max-width:240px;"
+                        onchange="SingboxDashboardPage.setTun('config', this.value)">${cfgOpts}</select>
+
+                <label class="text-muted">Имя интерфейса</label>
+                <input type="text" class="form-control" style="max-width:200px;"
+                       value="${escapeAttr(tunForm.interface_name)}"
+                       onchange="SingboxDashboardPage.setTun('interface_name', this.value)">
+
+                <label class="text-muted">Адрес (CIDR)</label>
+                <input type="text" class="form-control" style="max-width:200px;"
+                       value="${escapeAttr(tunForm.address)}"
+                       title="напр. 172.18.0.1/30"
+                       onchange="SingboxDashboardPage.setTun('address', this.value)">
+
+                <label class="text-muted">Сетевой стек</label>
+                <select class="form-control" style="max-width:280px;"
+                        onchange="SingboxDashboardPage.setTun('stack', this.value)">
+                    ${opt('system', tunForm.stack, 'system (быстрее, нужен tun ядра)')}
+                    ${opt('gvisor', tunForm.stack, 'gvisor (userspace, переносимее)')}
+                    ${opt('mixed', tunForm.stack, 'mixed')}
+                </select>
+
+                <label class="text-muted">MTU</label>
+                <input type="number" class="form-control" style="max-width:120px;"
+                       value="${escapeAttr(tunForm.mtu)}"
+                       onchange="SingboxDashboardPage.setTun('mtu', this.value)">
+
+                <label class="text-muted">Весь трафик</label>
+                <label class="text-muted" style="display:flex; align-items:center; gap:6px;">
+                    <input type="checkbox" ${tunForm.auto_route ? 'checked' : ''}
+                           onchange="SingboxDashboardPage.setTun('auto_route', this.checked)">
+                    auto_route — завернуть ВЕСЬ трафик (вместо выборочной маршрутизации)
+                </label>
+            </div>
+            <div style="margin-top:12px;">
+                <button class="btn btn-primary btn-sm"
+                        onclick="SingboxDashboardPage.createTunInbound()">Создать TUN-инбаунд</button>
+            </div>
+        `;
+    }
+
+    function setTun(key, value) {
+        if (key === 'auto_route') tunForm.auto_route = !!value;
+        else if (key === 'mtu') tunForm.mtu = parseInt(value, 10) || 9000;
+        else tunForm[key] = value;
+    }
+
+    async function createTunInbound() {
+        if (!tunForm.config) { Toast.error('Выберите конфиг'); return; }
+        try {
+            const r = await API.post(
+                `/api/singbox/configs/${encodeURIComponent(tunForm.config)}/tun-inbound`,
+                { interface_name: tunForm.interface_name, address: tunForm.address,
+                  stack: tunForm.stack, mtu: tunForm.mtu,
+                  auto_route: tunForm.auto_route });
+            if (r && r.ok) {
+                Toast.success('TUN-инбаунд добавлен в ' + tunForm.config +
+                    '. (Пере)запустите конфиг, затем настройте Selective routing.');
+                await refresh();
+            } else Toast.error((r && r.error) || 'ошибка');
+        } catch (e) { Toast.error(e.message); }
+    }
+
     // ══════════════ helpers ══════════════
 
     function escapeHtml(s) {
@@ -417,5 +516,6 @@ const SingboxDashboardPage = (() => {
         render, destroy, refresh,
         up, down, restart,
         setTp, applyTransparent, removeTransparent, injectInbounds,
+        setTun, createTunInbound,
     };
 })();

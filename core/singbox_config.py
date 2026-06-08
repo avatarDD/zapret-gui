@@ -294,23 +294,96 @@ def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
         mode=mode, tcp_port=tcp_port, udp_port=udp_port,
         dns_port=dns_port, sniff=sniff)
     cfg["inbounds"] = new_ibs + existing
-
     # Сниффинг и перехват DNS — через route actions (а не legacy-поля
     # inbound'а / спец-outbound `dns`, удалённые в sing-box 1.13).
+    _set_managed_route_rules(cfg, sniff=sniff, hijack_dns=bool(dns_port))
+    return cfg
+
+
+def _set_managed_route_rules(cfg: dict, *, sniff: bool,
+                             hijack_dns: bool) -> None:
+    """
+    Идемпотентно выставить наши служебные route actions в начало
+    `route.rules`: сначала `{"action":"sniff"}`, затем
+    `{"protocol":"dns","action":"hijack-dns"}`. Прежние наши правила
+    (точные совпадения) снимаются, пользовательские — сохраняются.
+    hijack_dns требует определения протокола, поэтому включает sniff.
+    """
     route = cfg.setdefault("route", {})
     rules = route.get("rules")
     if not isinstance(rules, list):
         rules = []
     sniff_rule = make_sniff_rule()
     dns_rule = make_hijack_dns_rule()
-    # Снять наши прежние правила (точные совпадения) — идемпотентность.
     rules = [r for r in rules if r != sniff_rule and r != dns_rule]
     managed = []
-    if sniff or dns_port:           # hijack-dns требует sniff
+    if sniff or hijack_dns:
         managed.append(sniff_rule)
-    if dns_port:
+    if hijack_dns:
         managed.append(dns_rule)
     route["rules"] = managed + rules
+
+
+_TUN_TAG = "tun-in"
+
+
+def make_tun_inbound(*, interface_name: str = "singbox-tun",
+                     address=None, mtu: int = 9000,
+                     stack: str = "system",
+                     auto_route: bool = False,
+                     strict_route: bool = False) -> dict:
+    """
+    Собрать TUN-inbound sing-box (создаёт сетевой интерфейс
+    `interface_name`). Используются ТОЛЬКО актуальные поля 1.11+/1.13:
+    `address` (а не удалённые `inet4_address`/`inet6_address`).
+
+    auto_route=False (по умолчанию) — sing-box НЕ забирает маршрут по
+    умолчанию: интерфейс просто создаётся, а какой трафик в него
+    заворачивать, решает страница «Selective routing» (ip rule/nftset).
+    Для режима «весь трафик» выставьте auto_route=True.
+
+    stack: 'system' (быстрее, нужен модуль tun ядра — на Keenetic есть),
+           'gvisor' (userspace, переносимее) или 'mixed'.
+    """
+    return {
+        "type": "tun",
+        "tag": _TUN_TAG,
+        "interface_name": interface_name or "singbox-tun",
+        "address": list(address) if address else ["172.18.0.1/30"],
+        "mtu": int(mtu) if mtu else 9000,
+        "auto_route": bool(auto_route),
+        "strict_route": bool(strict_route),
+        "stack": stack or "system",
+    }
+
+
+def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
+                    address=None, mtu: int = 9000, stack: str = "system",
+                    auto_route: bool = False, strict_route: bool = False,
+                    sniff: bool = True, route_to_proxy: bool = True) -> dict:
+    """
+    Вставить/заменить TUN-inbound в конфиге (cfg мутируется и
+    возвращается). Прежний наш `tun-in` убирается, остальные inbound'ы
+    сохраняются. Чистая функция (без I/O).
+
+    После этого конфиг можно запустить — интерфейс `interface_name`
+    появится в системе и в «Selective routing» (как цель device/domain/
+    cidr-правил). sniff=True добавляет `{"action":"sniff"}` (чтобы
+    доменные route-правила Selective routing срабатывали).
+    route_to_proxy=True направляет весь попавший в TUN трафик в основной
+    прокси-outbound конфига (route.final → selector/первый сервер).
+    """
+    existing = [ib for ib in (cfg.get("inbounds") or [])
+                if not (isinstance(ib, dict) and ib.get("tag") == _TUN_TAG)]
+    tun = make_tun_inbound(
+        interface_name=interface_name, address=address, mtu=mtu,
+        stack=stack, auto_route=auto_route, strict_route=strict_route)
+    cfg["inbounds"] = [tun] + existing
+    _set_managed_route_rules(cfg, sniff=sniff, hijack_dns=False)
+    if route_to_proxy:
+        proxy = pick_proxy_outbound(cfg)
+        if proxy:
+            cfg.setdefault("route", {})["final"] = proxy
     return cfg
 
 
