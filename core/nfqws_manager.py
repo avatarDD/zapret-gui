@@ -91,7 +91,7 @@ _EXTENSION_LUA_FILES = {
     },
     # Флуд RST с подобранным TTL до DPI. Зависит от lib+antidpi (core).
     "zapret-rst-flood.lua": {"rst_flood"},
-    # Запись pcap из lua (требует --writeable). Триггер — pcap; вспомогательные
+    # Запись pcap из lua (требует --writable). Триггер — pcap; вспомогательные
     # pcap_write* включены, чтобы набор зеркалил экспорт скрипта (см. тест).
     "zapret-pcap.lua": {
         "pcap", "pcap_write", "pcap_write_packet", "pcap_write_header",
