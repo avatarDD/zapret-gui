@@ -118,6 +118,46 @@ test('lint: неверный payload в csv = предупреждение', () 
     assert.ok(warns(r).some(d => /неизвестно/.test(d.message)));
 });
 
+// ──────────────── Глобальные/служебные флаги (--ipcache-hostname и пр.) ────────────────
+
+test('spec: знает глобальные/служебные флаги nfqws2 1.0.1', () => {
+    ['--ipcache-hostname', '--ipcache-lifetime', '--ctrack-timeouts',
+     '--ctrack-disable', '--server', '--payload-disable', '--reasm-disable',
+     '--fwmark', '--bind-fix4', '--bind-fix6', '--lua-init', '--lua-gc',
+     '--writable', '--comment',
+     '--hostlist-auto-incoming-maxseq', '--hostlist-auto-retrans-maxseq',
+     '--hostlist-auto-retrans-reset', '--hostlist-auto-udp-out',
+     '--hostlist-auto-udp-in',
+    ].forEach((f) => {
+        assert.ok(Spec.isKnownFlag(f), f + ' должен быть известен редактору');
+    });
+});
+
+test('lint: --ipcache-hostname=1 НЕ ошибка (раньше «неизвестный флаг»)', () => {
+    const r = Lint.analyze('--ipcache-hostname=1');
+    assert.strictEqual(errs(r).length, 0,
+        'не должно быть ошибок: ' + JSON.stringify(errs(r)));
+});
+
+test('lint: --ipcache-hostname без значения НЕ ошибка (arg optional)', () => {
+    const r = Lint.analyze('--ipcache-hostname');
+    assert.strictEqual(errs(r).length, 0);
+});
+
+test('lint: --ipcache-hostname=2 = предупреждение (enum 0|1)', () => {
+    const r = Lint.analyze('--ipcache-hostname=2');
+    assert.ok(warns(r).some(d => /недопустимое значение/.test(d.message)));
+});
+
+test('lint: строка builtin-пресета с ipcache без ложных ошибок', () => {
+    const r = Lint.analyze(
+        '--filter-tcp=80,443 --filter-l7=tls,http --ipcache-hostname=1 '
+        + '--ipcache-lifetime=8400 --out-range=-s34228 --in-range=-s5556 '
+        + '--lua-desync=circular');
+    assert.strictEqual(errs(r).length, 0,
+        'ложные ошибки на валидном пресете: ' + JSON.stringify(errs(r)));
+});
+
 test('lint: корректная стратегия — без ошибок', () => {
     const r = Lint.analyze(
         '--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello '
