@@ -132,6 +132,45 @@ def build_tproxy_fragments(*, family: str, port: int,
     return {"prerouting": pre, "output": out}
 
 
+def build_dns_hijack_fragments(*, family: str, dns_port: int,
+                               lan_ifaces: list = None,
+                               via: str = "tproxy",
+                               mark: int = DEFAULT_TPROXY_MARK) -> list:
+    """
+    Фрагменты перехвата DNS форвард-трафика (udp/tcp dport 53) на DNS-порт
+    движка — защита от DNS-leak мимо туннеля. Парно к build_dns_hijack_rules
+    из iptables-ветки.
+
+      via='redirect' → `redirect to :dns_port` (ставится в nat-цепочку predr);
+      via='tproxy'   → `tproxy … meta mark set` (в mangle-цепочку pretp).
+
+    `th dport 53` (transport-header dport) ловит и tcp, и udp. Возвращает
+    список фрагментов-строк (по одному на интерфейс).
+    """
+    tp_ip = "ip6" if family == "v6" else "ip"
+    ifaces = lan_ifaces or [None]
+    frags = []
+    for ifn in ifaces:
+        prefix = ('iifname "%s" ' % ifn) if ifn else ""
+        if via == "redirect":
+            frags.append("%smeta l4proto { tcp, udp } th dport 53 "
+                         "redirect to :%d" % (prefix, dns_port))
+        else:
+            frags.append("%smeta l4proto { tcp, udp } th dport 53 "
+                         "tproxy %s to :%d meta mark set %d"
+                         % (prefix, tp_ip, dns_port, mark))
+    return frags
+
+
+def build_ipv6_block_fragment() -> str:
+    """
+    Anti-leak: дроп всего форвард-IPv6, когда проксируем только v4 (иначе
+    IPv6-клиенты ходят мимо туннеля). В inet-таблице семейство различаем
+    через `meta nfproto ipv6` — аналог `ip6tables -A FORWARD -j DROP`.
+    """
+    return "meta nfproto ipv6 drop"
+
+
 # ─────────────────────── ip rule/route (shared с iptables) ───────────
 
 def _add_tproxy_route(family: str, mark: int, table: int) -> list:
@@ -231,6 +270,28 @@ def apply(*, mode: str,
                 if rc != 0:
                     errors.append("outtp: %s" % e.strip())
             errors.extend(_add_tproxy_route(family, mark, table))
+
+        # Перехват DNS (как в iptables-ветке): redirect-режим → в nat-
+        # цепочку, иначе → tproxy в mangle-цепочку.
+        if dns_hijack_port:
+            via = "redirect" if mode == "redirect" else "tproxy"
+            dns_chain = "predr" if via == "redirect" else "pretp"
+            for fr in build_dns_hijack_fragments(
+                    family=family, dns_port=dns_hijack_port,
+                    lan_ifaces=lan_ifaces, via=via, mark=mark):
+                rc, _o, e = _run(_nft_add_rule(dns_chain, fr))
+                rule_count += 1
+                if rc != 0:
+                    errors.append("%s(dns): %s" % (dns_chain, e.strip()))
+
+    # IPv6 anti-leak: дропнуть весь форвард-IPv6, если v6 не проксируем и
+    # политика drop (parity с iptables build_ipv6_block_rules).
+    if "v6" not in families and ipv6_policy == "drop":
+        _chain("fwd6", "{ type filter hook forward priority 0; policy accept; }")
+        rc, _o, e = _run(_nft_add_rule("fwd6", build_ipv6_block_fragment()))
+        rule_count += 1
+        if rc != 0:
+            errors.append("fwd6: %s" % e.strip())
 
     ok = not errors
     if ok:
