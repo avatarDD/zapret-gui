@@ -476,40 +476,53 @@ class StrategyManager:
 
     @staticmethod
     def _compute_list_flags() -> list:
-        """Вычислить флаги списков по режиму filter.mode (паритет nfqws2-keenetic).
+        """Вычислить флаги списков по режиму filter.mode.
+
+        ВАЖНО (поведение по умолчанию): include-список ``other.txt`` БОЛЬШЕ НЕ
+        подмешивается автоматически ни в одном режиме. Стратегия по умолчанию
+        применяется ко ВСЕМУ трафику на своих портах (``--filter-*``); circular
+        сам подбирает приём per-домен. Если нужно сузить — пользователь явно
+        добавляет ``--hostlist=`` / ``--hostlist-domains=`` в саму стратегию
+        (в редакторе это подсказка-INFO, не ошибка).
 
         Режимы (config.filter.mode):
-          • none          — без списков: десинк применяется ко всему трафику,
-                            попавшему под --filter-* (MODE_ALL без exclude);
-          • hostlist      — только домены из other.txt (+ exclude netrogat);
-          • autohostlist  — other.txt + авто-список auto.txt, куда nfqws2 сам
-                            добавляет недоступные домены (+ exclude);
-          • ipset         — фильтрация по IP (--ipset), hostlist не подмешиваем.
+          • none          — без include-списков (дефолт): десинк на весь
+                            трафик под ``--filter-*``;
+          • hostlist      — то же, что none (other.txt не подмешивается;
+                            оставлено для совместимости старых конфигов);
+          • autohostlist  — + авто-список auto.txt, куда nfqws2 сам добавляет
+                            недоступные домены;
+          • ipset         — фильтрация по IP (``--ipset``), hostlist не трогаем.
 
-        Файл exclude (netrogat.txt) и hostlist (other.txt) добавляются только
-        если существуют; auto.txt добавляется всегда (nfqws2 создаёт его сам).
+        Предохранитель (отдельно от include-логики): exclude ``netrogat.txt``
+        (банки/госуслуги/vk и т.п. — их НЕ десинкаем, чтобы не сломать).
+        Включён по умолчанию, отключается ``filter.protect_excluded=false``.
+        Применяется во всех режимах, кроме ipset; файл добавляется только если
+        существует.
         """
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
-        mode = (cfg.get("filter", "mode", default="hostlist") or "hostlist").lower()
+        mode = (cfg.get("filter", "mode", default="none") or "none").lower()
         lists_path = cfg.get("zapret", "lists_path",
                              default="/opt/zapret2/lists")
 
-        if mode in ("ipset", "none"):
+        # ipset-режим: фильтрация по IP, hostlist-флаги не подмешиваем.
+        if mode == "ipset":
             return []
 
         flags = []
-        other = os.path.join(lists_path, "other.txt")
-        if os.path.isfile(other):
-            flags.append("--hostlist=%s" % other)
 
+        # Автохостлист: nfqws2 сам копит недоступные домены в auto.txt.
         if mode in ("autohostlist", "auto"):
             auto = os.path.join(lists_path, "auto.txt")
             flags.append("--hostlist-auto=%s" % auto)
 
-        netrogat = os.path.join(lists_path, "netrogat.txt")
-        if os.path.isfile(netrogat):
-            flags.append("--hostlist-exclude=%s" % netrogat)
+        # Предохранитель: не десинкаем банки/госуслуги/vk (netrogat.txt).
+        # Это НЕ сужающий include, а защита от поломки критичных сервисов.
+        if cfg.get("filter", "protect_excluded", default=True):
+            netrogat = os.path.join(lists_path, "netrogat.txt")
+            if os.path.isfile(netrogat):
+                flags.append("--hostlist-exclude=%s" % netrogat)
 
         return flags
 
