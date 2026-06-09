@@ -99,19 +99,31 @@ DEFAULT_BYPASS_V6 = [
 
 # Сообщение, когда на роутере нет netfilter-цели TPROXY (issue #149):
 # у пользователя bypass-RETURN'ы проходят, но `-A ... -j TPROXY` падает с
-# «No chain/target/match by that name» — нет модуля ядра/расширения.
+# «No chain/target/match by that name» — нет модуля ядра/расширения. Ведём
+# с рабочих альтернатив (redirect/TUN): на части прошивок (Keenetic) ни
+# modprobe, ни пакета iptables-mod-tproxy нет и поставить их нельзя.
 _TPROXY_MISSING_MSG = (
-    "Режим '%s' требует netfilter-цель TPROXY, но её нет на этом роутере "
-    "(не установлен пакет iptables-mod-tproxy или не загружен модуль ядра "
-    "xt_TPROXY/nf_tproxy). Установите: opkg install iptables-mod-tproxy — и "
-    "при необходимости загрузите модуль: modprobe xt_TPROXY nf_tproxy_ipv4. "
-    "Либо выберите режим 'redirect' (только TCP, TPROXY не нужен) или "
-    "включите TUN-режим на вкладке sing-box — он тоже не требует TPROXY."
+    "Режим '%s' требует netfilter-цель TPROXY, но на этом роутере её нет "
+    "(не загружен модуль ядра xt_TPROXY/nf_tproxy и нет пакета "
+    "iptables-mod-tproxy). Рабочие альтернативы без TPROXY: режим "
+    "'redirect' (заворачивает TCP, работает почти везде; минус — UDP/QUIC "
+    "идёт напрямую) либо TUN-режим на вкладке sing-box. Если прошивка "
+    "поддерживает модуль — можно установить его (opkg install "
+    "iptables-mod-tproxy и, при наличии, modprobe xt_TPROXY nf_tproxy_ipv4); "
+    "на части прошивок (напр. Keenetic) модуля и modprobe нет — тогда "
+    "используйте redirect/TUN."
 )
 
 # Модули ядра, нужные для TPROXY (на Keenetic часто просто не загружены).
 _TPROXY_KMODS = ("nf_tproxy_ipv4", "nf_tproxy_ipv6", "xt_TPROXY",
                  "xt_socket", "xt_mark")
+
+# Кэш результата tproxy_available() по семейству. Нужен, потому что
+# /api/singbox/transparent/status поллится UI каждые 5с, а сам зонд делает
+# реальные iptables-вставки (+ modprobe) — на каждый poll это недопустимо.
+# apply()-префлайт пишет сюда свежий результат, чтобы статус не «залипал»
+# после установки/выгрузки модуля (issue #149).
+_tproxy_cache: dict = {}
 
 
 def _run(args, timeout=10):
@@ -446,6 +458,24 @@ def tproxy_available(family: str = "v4") -> bool:
     return True
 
 
+def tproxy_supported_cached(family: str = "v4", force: bool = False) -> bool:
+    """Кэшированный `tproxy_available` для частого поллинга статуса.
+
+    UI тянет /transparent/status каждые 5с — живой iptables-зонд на каждый
+    poll недопустим (вставка/удаление правила + modprobe). Поэтому статус
+    использует кэш; apply()-префлайт обновляет его свежим значением, а
+    `force=True` принудительно перепроверяет (issue #149).
+    """
+    if force or family not in _tproxy_cache:
+        _tproxy_cache[family] = tproxy_available(family)
+    return _tproxy_cache[family]
+
+
+def reset_tproxy_cache() -> None:
+    """Сбросить кэш доступности TPROXY (напр. после смены окружения)."""
+    _tproxy_cache.clear()
+
+
 def choose_backend(prefer: str = "auto") -> str:
     """
     Выбрать firewall-бэкенд: 'iptables' | 'nftables' | 'none'.
@@ -512,8 +542,16 @@ def apply(*, mode: str,
     # Префлайт TPROXY (issue #149): если режим требует TPROXY, а цели нет
     # ни на одном семействе — не пытаемся ставить правила (иначе сыплем
     # сырыми «No chain/target/match»), а отдаём ОДНУ понятную подсказку.
+    # Заодно обновляем кэш доступности, чтобы /transparent/status (UI рисует
+    # предупреждение по нему) сразу отразил реальный результат зонда.
     if mode in ("tproxy", "hybrid"):
-        if not any(available(f) and tproxy_available(f) for f in families):
+        supported = False
+        for f in families:
+            tp_ok = tproxy_available(f)
+            _tproxy_cache[f] = tp_ok
+            if available(f) and tp_ok:
+                supported = True
+        if not supported:
             msg = _TPROXY_MISSING_MSG % mode
             log.warning("singbox transparent: %s" % msg, source="singbox")
             return {"ok": False, "mode": mode, "errors": [msg],

@@ -289,6 +289,13 @@ const SingboxDashboardPage = (() => {
         if (!box) return;
         const backend = transparent ? (transparent.backend || 'none') : 'none';
         const avail = backend !== 'none';
+        // issue #149: на роутере может не быть netfilter-цели TPROXY (нет
+        // модуля ядра / пакета, на Keenetic — и modprobe нет). Тогда режимы
+        // tproxy/hybrid не поднимутся; предупреждаем заранее и ведём на
+        // redirect/TUN. Поле может отсутствовать на старых бэкендах → дефолт true.
+        const tproxySupported = !transparent
+            || transparent.tproxy_supported !== false;
+        const tpUnavail = avail && !tproxySupported;
         const applied = transparent && transparent.settings
                         && transparent.settings.mode;
         const cfgOpts = ['<option value="">— выбрать конфиг —</option>'].concat(
@@ -307,6 +314,14 @@ const SingboxDashboardPage = (() => {
                 ${backend === 'nftables' ? '<br><span style="color:#6aa;">iptables не найден — будет использован бэкенд <strong>nftables</strong>.</span>' : ''}
                 ${avail ? '' : '<br><span style="color:#e58;">Ни iptables, ни nftables не найдены — применение работать не будет.</span>'}
             </p>
+            ${tpUnavail ? `<div style="margin:0 0 10px; padding:9px 11px; border-radius:6px;
+                background:rgba(230,170,40,0.12); border:1px solid rgba(230,170,40,0.4);
+                color:#d9a521; font-size:12px; line-height:1.45;">
+                ⚠ Цель <b>TPROXY</b> на этом роутере недоступна (нет модуля ядра
+                <code>xt_TPROXY</code>/<code>nf_tproxy</code>). Режимы
+                <b>tproxy</b> и <b>hybrid</b> не поднимутся. Используйте
+                <b>redirect</b> (TCP, без TPROXY) или <b>TUN</b>-режим.
+                </div>` : ''}
             ${tpNote ? `<div style="margin:0 0 10px; padding:9px 11px; border-radius:6px;
                 background:rgba(229,80,136,0.12); border:1px solid rgba(229,80,136,0.35);
                 color:#e58; font-size:12px; line-height:1.45; white-space:pre-wrap;">${escapeHtml(tpNote)}</div>` : ''}
@@ -319,9 +334,9 @@ const SingboxDashboardPage = (() => {
                 <label class="text-muted">Режим</label>
                 <select class="form-control" style="max-width:220px;"
                         onchange="SingboxDashboardPage.setTp('mode', this.value)">
-                    ${opt('tproxy', tpForm.mode, 'TProxy (TCP+UDP)')}
-                    ${opt('redirect', tpForm.mode, 'Redirect (только TCP)')}
-                    ${opt('hybrid', tpForm.mode, 'Hybrid (TCP redirect + UDP tproxy)')}
+                    ${opt('tproxy', tpForm.mode, 'TProxy (TCP+UDP)' + (tpUnavail ? ' — нет на этом роутере' : ''))}
+                    ${opt('redirect', tpForm.mode, 'Redirect (только TCP)' + (tpUnavail ? ' — рекомендуется' : ''))}
+                    ${opt('hybrid', tpForm.mode, 'Hybrid (TCP redirect + UDP tproxy)' + (tpUnavail ? ' — нет на этом роутере' : ''))}
                 </select>
 
                 <label class="text-muted">TCP-порт</label>

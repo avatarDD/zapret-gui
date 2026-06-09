@@ -301,6 +301,24 @@
   отдельно проверяет реальные iptables-матчи/цель и отличает «NFQUEUE нет»
   (ошибка) от «multiport/connbytes нет» (предупреждение, обход работает).
   Покрыто тестами (`tests/test_firewall_rules.py`, `tests/test_firewall_persistence.py`).
+- **sing-box «Прозрачное проксирование»: на роутерах без TPROXY (напр.
+  Keenetic без `modprobe` и без пакета `iptables-mod-tproxy`) режимы
+  tproxy/hybrid молча упирались в `No chain/target/match`**
+  ([#149](https://github.com/avatarDD/zapret-gui/issues/149)). Бэкенд уже
+  отдавал понятную подсказку вместо HTTP 500, но узнать о проблеме можно было
+  только методом «применил → упало», а текст вёл к `opkg`/`modprobe`, которых
+  на такой прошивке нет. Теперь:
+  - `GET /api/singbox/transparent/status` отдаёт `tproxy_supported` (реальный
+    iptables-зонд цели TPROXY, **кэшированный** — статус поллится каждые 5с,
+    живой зонд на каждый poll недопустим; `?refresh=1` перепроверяет);
+    `apply()`-префлайт держит кэш свежим;
+  - UI заранее подсвечивает режимы `tproxy`/`hybrid` как недоступные, рисует
+    предупреждение и рекомендует `redirect`/TUN — пользователь не упирается в
+    ошибку вслепую;
+  - подсказка при отсутствии TPROXY переписана: ведёт с рабочих альтернатив
+    (redirect/TUN), а установку модуля подаёт как опцию «если прошивка
+    поддерживает» (на Keenetic — нет).
+  Покрыто тестами (`tests/test_singbox_transparent.py`).
 - **zapret2 1.0 ломал nfqws2: `LUA ERROR … Incompatible NFQWS2_COMPAT_VER`
   ([#151](https://github.com/avatarDD/zapret-gui/issues/151)).** zapret2 1.0
   сменил `lua_compat_ver` 5→6 (несовместимое изменение: везде `WRITEABLE`→

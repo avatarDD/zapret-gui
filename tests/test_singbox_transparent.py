@@ -420,6 +420,51 @@ class TestTproxyCapability(unittest.TestCase):
             self.assertTrue(tp.tproxy_available("v4"))
 
 
+class TestTproxyCache(unittest.TestCase):
+    """issue #149: /transparent/status поллится каждые 5с, поэтому доступность
+    TPROXY кэшируется (живой iptables-зонд на каждый poll недопустим), а
+    apply()-префлайт держит кэш свежим, чтобы UI сразу убрал/показал
+    предупреждение."""
+
+    def setUp(self):
+        tp.reset_tproxy_cache()
+
+    def tearDown(self):
+        tp.reset_tproxy_cache()
+
+    def test_cached_probes_once_until_force(self):
+        calls = {"n": 0}
+
+        def _probe(family="v4"):
+            calls["n"] += 1
+            return True
+
+        with mock.patch.object(tp, "tproxy_available", _probe):
+            self.assertTrue(tp.tproxy_supported_cached("v4"))
+            self.assertTrue(tp.tproxy_supported_cached("v4"))
+            self.assertEqual(calls["n"], 1)          # второй раз — из кэша
+            self.assertTrue(tp.tproxy_supported_cached("v4", force=True))
+            self.assertEqual(calls["n"], 2)          # force → перепроверка
+
+    def test_apply_preflight_populates_cache(self):
+        # TPROXY недоступна → apply пишет False в кэш; status потом отдаёт его
+        # БЕЗ повторного зонда.
+        with mock.patch.object(tp, "_run", lambda *a, **k: (0, "", "")), \
+                mock.patch.object(tp, "available", lambda family="v4": True), \
+                mock.patch.object(tp, "tproxy_available",
+                                  lambda family="v4": False):
+            r = tp.apply(mode="tproxy", tcp_port=1100,
+                         families=("v4",), backend="iptables")
+        self.assertEqual(r.get("need"), "tproxy")
+
+        # Теперь кэш уже False — зонд дёргаться не должен.
+        def _boom(family="v4"):
+            raise AssertionError("tproxy_available не должен вызываться — кэш")
+
+        with mock.patch.object(tp, "tproxy_available", _boom):
+            self.assertFalse(tp.tproxy_supported_cached("v4"))
+
+
 class TestSbinPath(unittest.TestCase):
     """PATH без /sbin (systemd/обычный юзер) не должен прятать iptables —
     available() ложно показывал «iptables недоступен» на Debian."""
