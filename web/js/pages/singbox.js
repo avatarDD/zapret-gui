@@ -287,7 +287,8 @@ const SingboxDashboardPage = (() => {
     function renderTransparent() {
         const box = document.getElementById('sb-transparent-body');
         if (!box) return;
-        const avail = transparent ? !!transparent.available_v4 : false;
+        const backend = transparent ? (transparent.backend || 'none') : 'none';
+        const avail = backend !== 'none';
         const applied = transparent && transparent.settings
                         && transparent.settings.mode;
         const cfgOpts = ['<option value="">— выбрать конфиг —</option>'].concat(
@@ -301,8 +302,10 @@ const SingboxDashboardPage = (() => {
             <p class="text-muted" style="font-size:13px; margin-top:0;">
                 Заворачивает трафик LAN-клиентов (и опц. самого роутера) в
                 sing-box без настройки клиентов. Нужен соответствующий inbound
-                в конфиге (кнопка «Добавить inbound'ы»). iptables-режим.
-                ${avail ? '' : '<br><span style="color:#e58;">iptables недоступен — применение работать не будет.</span>'}
+                в конфиге (кнопка «Добавить inbound'ы»).
+                ${backend === 'iptables' ? ' Бэкенд: <strong>iptables</strong>.' : ''}
+                ${backend === 'nftables' ? '<br><span style="color:#6aa;">iptables не найден — будет использован бэкенд <strong>nftables</strong>.</span>' : ''}
+                ${avail ? '' : '<br><span style="color:#e58;">Ни iptables, ни nftables не найдены — применение работать не будет.</span>'}
             </p>
             ${tpNote ? `<div style="margin:0 0 10px; padding:9px 11px; border-radius:6px;
                 background:rgba(229,80,136,0.12); border:1px solid rgba(229,80,136,0.35);
