@@ -207,6 +207,16 @@
   подписки/пул/именованные списки/маршруты единого слоя — проверено).
 
 ### Исправлено
+- **Firewall: на Entware/Keenetic без `iptables-mod-comment` правила не
+  применялись — `iptables: No chain/target/match by that name` ×14, сайты
+  не работали** ([#151](https://github.com/avatarDD/zapret-gui/issues/151)).
+  Каждое NFQUEUE-правило содержало `-m comment --comment`, а матч `xt_comment`
+  на Entware — отдельный пакет, которого часто нет; без него падали ВСЕ
+  правила и обход не поднимался. Теперь `core/firewall.py` определяет
+  доступность `-m comment` (`_comment_supported`) и при его отсутствии кладёт
+  правила в именованные цепочки `nfqws_post/nfqws_pre/nfqws_nat` без
+  комментариев (снимаются через `_remove_ipt_named_chain`). На системах, где
+  `comment` есть, поведение прежнее. Покрыто тестами (`tests/test_firewall_rules.py`).
 - **zapret2 1.0 ломал nfqws2: `LUA ERROR … Incompatible NFQWS2_COMPAT_VER`
   ([#151](https://github.com/avatarDD/zapret-gui/issues/151)).** zapret2 1.0
   сменил `lua_compat_ver` 5→6 (несовместимое изменение: везде `WRITEABLE`→
