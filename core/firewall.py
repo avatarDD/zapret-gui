@@ -133,6 +133,13 @@ class FirewallManager:
     # iptables ≤1.4.x (Entware/Keenetic) — только «-w» без значения.
     _wait_flag_cache: dict = {}
 
+    # Кэш поддержки матча `-m comment` (xt_comment) по бинарнику. На
+    # Entware/Keenetic это отдельный пакет iptables-mod-comment, которого
+    # часто нет — тогда КАЖДОЕ правило с `-m comment` падает с
+    # «No chain/target/match by that name» и обход не поднимается (issue #151).
+    # При положительном детекте отсутствия — переходим на именованные цепочки.
+    _comment_support_cache: dict = {}
+
     def __init__(self):
         self._lock = threading.Lock()
         self._applied = False
@@ -433,6 +440,85 @@ class FirewallManager:
         self._rules_info = rules
         return ok
 
+    def _comment_supported(self, ipt_cmd) -> bool:
+        """Доступен ли матч `-m comment` (xt_comment) у этого iptables.
+
+        На Entware/Keenetic это отдельный модуль (пакет iptables-mod-comment),
+        которого часто нет. Без него каждое правило с `-m comment` падает с
+        «No chain/target/match by that name», и весь обход не поднимается
+        (issue #151) — тогда мы кладём правила в именованные цепочки nfqws_*
+        без комментариев.
+
+        Переключаемся на запасной путь ТОЛЬКО при положительном детекте
+        отсутствия матча. Если проверить не удалось (нет iptables, нет прав,
+        иная ошибка) — считаем, что comment есть, и НЕ меняем привычное
+        поведение. Результат кэшируется по бинарнику.
+        """
+        cache = FirewallManager._comment_support_cache
+        if ipt_cmd in cache:
+            return cache[ipt_cmd]
+
+        wait = FirewallManager._iptables_wait_flag(ipt_cmd)
+        probe = "ZGUI_CMT_PROBE"
+
+        def _raw(args):
+            try:
+                return subprocess.run(
+                    [ipt_cmd] + wait + args,
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                return None
+
+        supported = True  # по умолчанию — как раньше (не ломаем рабочий путь)
+        # Одноразовая цепочка в таблице filter (всегда есть), вне тракта трафика.
+        _raw(["-t", "filter", "-N", probe])
+        add = _raw(["-t", "filter", "-A", probe,
+                    "-m", "comment", "--comment", "zgui", "-j", "RETURN"])
+        if (add is not None and add.returncode != 0
+                and "No chain/target/match" in (add.stderr or "")):
+            supported = False
+        _raw(["-t", "filter", "-F", probe])
+        _raw(["-t", "filter", "-X", probe])
+
+        cache[ipt_cmd] = supported
+        if not supported:
+            log.warning(
+                "%s: матч `-m comment` недоступен (нет пакета "
+                "iptables-mod-comment?). Правила пойдут в именованные цепочки "
+                "nfqws_* без комментариев (issue #151)." % ipt_cmd,
+                source="firewall",
+            )
+        return supported
+
+    def _ensure_named_chain(self, ipt_cmd, table, hook, name) -> None:
+        """Создать/очистить нашу цепочку `name` и подцепить её к `hook`.
+
+        Идемпотентно: цепочка создаётся (если нет) и флашится; лишние
+        дублирующие переходы из hook снимаются, затем ставится один переход
+        в начало hook. Снимается всё это потом в _remove_ipt_named_chain.
+        Используется, когда `-m comment` недоступен (issue #151).
+        """
+        wait = FirewallManager._iptables_wait_flag(ipt_cmd)
+
+        def _raw(args):
+            try:
+                return subprocess.run(
+                    [ipt_cmd] + wait + args,
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                return None
+
+        _raw(["-t", table, "-N", name])   # создать (может уже существовать — ок)
+        _raw(["-t", table, "-F", name])   # очистить от прошлых правил
+        for _ in range(10):               # снять старые переходы (анти-дубли)
+            chk = _raw(["-t", table, "-C", hook, "-j", name])
+            if not chk or chk.returncode != 0:
+                break
+            _raw(["-t", table, "-D", hook, "-j", name])
+        _raw(["-t", table, "-I", hook, "-j", name])  # один переход в начало hook
+
     def _apply_ipt_family(self, ipt_cmd, qnum, ports_tcp, ports_udp,
                           fwmark, tcp_pkt, udp_pkt, wan_ifaces, rules):
         """
@@ -466,8 +552,33 @@ class FirewallManager:
         udp_pkt_in = self._extra.get("udp_pkt_in", 3)
         do_nat = (ipt_cmd == "iptables")  # MASQUERADE только для IPv4
 
-        def _comment():
-            return ["-m", "comment", "--comment", IPT_COMMENT]
+        # На Entware/Keenetic матч `-m comment` (xt_comment) — отдельный
+        # пакет iptables-mod-comment, которого может не быть. Тогда КАЖДОЕ
+        # правило падало с «No chain/target/match by that name» и обход не
+        # поднимался (issue #151). Если матч недоступен — кладём правила в
+        # именованные цепочки nfqws_* (их снимает _remove_ipt_named_chain),
+        # без `-m comment`. Если доступен — поведение прежнее (правила прямо
+        # во встроенных цепочках, помечены комментарием).
+        use_comment = self._comment_supported(ipt_cmd)
+        if use_comment:
+            post_chain, pre_chain, nat_chain = (
+                "POSTROUTING", "PREROUTING", "POSTROUTING")
+            post_first = "-I"   # ACCEPT-processed — первым во встроенной цепочке
+
+            def _comment():
+                return ["-m", "comment", "--comment", IPT_COMMENT]
+        else:
+            post_chain, pre_chain, nat_chain = (
+                "nfqws_post", "nfqws_pre", "nfqws_nat")
+            post_first = "-A"   # свежая цепочка: порядок = порядок добавления
+
+            def _comment():
+                return []
+
+            self._ensure_named_chain(ipt_cmd, "mangle", "POSTROUTING", post_chain)
+            self._ensure_named_chain(ipt_cmd, "mangle", "PREROUTING", pre_chain)
+            if do_nat:
+                self._ensure_named_chain(ipt_cmd, "nat", "POSTROUTING", nat_chain)
 
         def _nfq():
             return ["-j", "NFQUEUE", "--queue-num", str(qnum), "--queue-bypass"]
@@ -483,7 +594,7 @@ class FirewallManager:
             # ───────── POSTROUTING (исходящий) ─────────
             # 1) ACCEPT для уже обработанных (не зацикливаем)
             if self._run_cmd(
-                [ipt_cmd, "-t", "mangle", "-I", "POSTROUTING"] + oif_args
+                [ipt_cmd, "-t", "mangle", post_first, post_chain] + oif_args
                 + ["-m", "mark", "--mark", mark_proc] + _comment()
                 + ["-j", "ACCEPT"]
             ):
@@ -493,14 +604,14 @@ class FirewallManager:
 
             # 2) RETURN для исключённых соединений
             self._run_cmd(
-                [ipt_cmd, "-t", "mangle", "-A", "POSTROUTING"] + oif_args
+                [ipt_cmd, "-t", "mangle", "-A", post_chain] + oif_args
                 + ["-m", "connmark", "--mark", mark_excl] + _comment()
                 + ["-j", "RETURN"]
             )
 
             # 3) TCP → NFQUEUE (первые N пакетов + fin/rst)
             if ports_tcp:
-                base = ([ipt_cmd, "-t", "mangle", "-A", "POSTROUTING"]
+                base = ([ipt_cmd, "-t", "mangle", "-A", post_chain]
                         + oif_args + ["-p", "tcp", "-m", "multiport",
                                       "--dports", ports_tcp])
                 if self._run_cmd(
@@ -520,7 +631,7 @@ class FirewallManager:
             # 4) UDP → NFQUEUE
             if ports_udp:
                 if self._run_cmd(
-                    [ipt_cmd, "-t", "mangle", "-A", "POSTROUTING"] + oif_args
+                    [ipt_cmd, "-t", "mangle", "-A", post_chain] + oif_args
                     + ["-p", "udp", "-m", "multiport", "--dports", ports_udp,
                        "-m", "connbytes", "--connbytes-dir=original",
                        "--connbytes-mode=packets", "--connbytes",
@@ -535,7 +646,7 @@ class FirewallManager:
             # nfqws2 переписывает адреса → повторный MASQUERADE для UDP.
             if do_nat:
                 if self._run_cmd(
-                    [ipt_cmd, "-t", "nat", "-A", "POSTROUTING"] + oif_args
+                    [ipt_cmd, "-t", "nat", "-A", nat_chain] + oif_args
                     + ["-m", "mark", "--mark", mark_proc, "-p", "udp"]
                     + _comment() + ["-j", "MASQUERADE"]
                 ):
@@ -544,17 +655,17 @@ class FirewallManager:
             # ───────── PREROUTING (входящий / ответы) ─────────
             # RETURN для исключённых и уже обработанных
             self._run_cmd(
-                [ipt_cmd, "-t", "mangle", "-A", "PREROUTING"] + iif_args
+                [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
                 + ["-m", "connmark", "--mark", mark_excl] + _comment()
                 + ["-j", "RETURN"]
             )
             self._run_cmd(
-                [ipt_cmd, "-t", "mangle", "-A", "PREROUTING"] + iif_args
+                [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
                 + ["-m", "mark", "--mark", mark_proc] + _comment()
                 + ["-j", "RETURN"]
             )
             if ports_tcp:
-                base = ([ipt_cmd, "-t", "mangle", "-A", "PREROUTING"]
+                base = ([ipt_cmd, "-t", "mangle", "-A", pre_chain]
                         + iif_args + ["-p", "tcp", "-m", "multiport",
                                       "--sports", ports_tcp])
                 self._run_cmd(
@@ -570,7 +681,7 @@ class FirewallManager:
                               + _comment() + _nfq())
             if ports_udp:
                 self._run_cmd(
-                    [ipt_cmd, "-t", "mangle", "-A", "PREROUTING"] + iif_args
+                    [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
                     + ["-p", "udp", "-m", "multiport", "--sports", ports_udp,
                        "-m", "connbytes", "--connbytes-dir=reply",
                        "--connbytes-mode=packets", "--connbytes",

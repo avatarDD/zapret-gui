@@ -21,6 +21,7 @@ def _capture_iptables(fw):
         return True
 
     with mock.patch.object(fw, "_run_cmd", side_effect=fake_run), \
+            mock.patch.object(fw, "_comment_supported", return_value=True), \
             mock.patch("core.firewall.shutil.which", return_value="/sbin/iptables"):
         rules = []
         fw._apply_ipt_family(
@@ -64,6 +65,97 @@ class TestIptablesRules(unittest.TestCase):
         pre = [c for c in self.flat if "PREROUTING" in c and "multiport" in c]
         self.assertTrue(all("--dports" in c for c in post))
         self.assertTrue(all("--sports" in c for c in pre))
+
+
+class TestIptablesNoCommentFallback(unittest.TestCase):
+    """issue #151: если матч `-m comment` недоступен (нет iptables-mod-comment
+    на Entware/Keenetic), правила КАЖДОЕ падали с «No chain/target/match» и
+    обход не поднимался. Теперь правила идут в именованные цепочки nfqws_*
+    без `-m comment`."""
+
+    def setUp(self):
+        self.fw = FirewallManager()
+        self.captured = []
+        with mock.patch.object(
+                self.fw, "_run_cmd",
+                side_effect=lambda c: self.captured.append(c) or True), \
+                mock.patch.object(self.fw, "_comment_supported",
+                                  return_value=False), \
+                mock.patch.object(self.fw, "_ensure_named_chain") as ens, \
+                mock.patch("core.firewall.shutil.which",
+                           return_value="/sbin/iptables"):
+            fw_rules = []
+            self.fw._apply_ipt_family(
+                "iptables", 300, "80,443", "443",
+                "0x40000000", 20, 5, ["eth0"], fw_rules,
+            )
+            self.ensure_calls = ens.call_args_list
+        self.flat = [" ".join(c) for c in self.captured]
+
+    def test_rules_go_to_named_chains(self):
+        self.assertTrue(any("nfqws_post" in c for c in self.flat))
+        self.assertTrue(any("nfqws_pre" in c for c in self.flat))
+        self.assertTrue(any("nfqws_nat" in c for c in self.flat))
+
+    def test_no_comment_match_used(self):
+        self.assertFalse(
+            any("comment" in c for c in self.flat),
+            "в no-comment режиме не должно быть `-m comment`")
+
+    def test_no_builtin_chains_touched(self):
+        # Правила (через _run_cmd) идут только в наши цепочки; во встроенные
+        # POSTROUTING/PREROUTING ходит лишь jump из _ensure_named_chain (замокан).
+        self.assertFalse(any(" POSTROUTING " in (" " + c + " ")
+                             for c in self.flat))
+        self.assertFalse(any(" PREROUTING " in (" " + c + " ")
+                             for c in self.flat))
+
+    def test_still_has_nfqueue_and_masquerade(self):
+        self.assertTrue(any("NFQUEUE" in c for c in self.flat))
+        self.assertTrue(any("MASQUERADE" in c for c in self.flat))
+
+    def test_named_chains_were_ensured(self):
+        names = {call.args[3] for call in self.ensure_calls}
+        self.assertEqual(names, {"nfqws_post", "nfqws_pre", "nfqws_nat"})
+
+
+class TestCommentProbe(unittest.TestCase):
+    """Детект `-m comment`: запасной путь включаем ТОЛЬКО при положительном
+    обнаружении отсутствия матча; иначе — как раньше (comment-режим)."""
+
+    def setUp(self):
+        FirewallManager._comment_support_cache.clear()
+        self.fw = FirewallManager()
+
+    def tearDown(self):
+        FirewallManager._comment_support_cache.clear()
+
+    def _run_with(self, add_rc, add_stderr):
+        class _R:
+            def __init__(self, rc, err=""):
+                self.returncode, self.stderr, self.stdout = rc, err, ""
+
+        def fake(cmd, **kw):
+            # cmd = [ipt, -w?, -t, filter, ACTION, ...]
+            if "-A" in cmd:
+                return _R(add_rc, add_stderr)
+            return _R(0)
+
+        with mock.patch("core.firewall.subprocess.run", side_effect=fake), \
+                mock.patch.object(FirewallManager, "_iptables_wait_flag",
+                                  return_value=["-w"]):
+            return self.fw._comment_supported("iptables")
+
+    def test_unsupported_when_no_chain_target_match(self):
+        self.assertFalse(self._run_with(
+            1, "iptables: No chain/target/match by that name."))
+
+    def test_supported_when_probe_rule_accepted(self):
+        self.assertTrue(self._run_with(0, ""))
+
+    def test_supported_when_failure_is_unrelated(self):
+        # иная ошибка (например, нет прав) → не ломаем рабочий путь
+        self.assertTrue(self._run_with(1, "Permission denied"))
 
 
 class TestNftablesRules(unittest.TestCase):
