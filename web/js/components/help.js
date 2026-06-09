@@ -221,18 +221,21 @@ const Help = (() => {
               '4. (Пере)запустите конфиг. «Снять» убирает firewall-правила.' +
               '<br><br>' +
               '<b>Если пишет «No chain/target/match by that name» (TPROXY).</b> ' +
-              'На роутере нет цели TPROXY. GUI сам пытается подгрузить модуль; ' +
-              'если не вышло — поставьте пакет <code>opkg install ' +
-              'iptables-mod-tproxy</code> и загрузите <code>modprobe ' +
-              'xt_TPROXY nf_tproxy_ipv4</code>, либо используйте <b>Redirect</b> ' +
-              'или <b>TUN-режим</b> (TPROXY не требуется).',
+              'На роутере нет цели TPROXY (модуля ядра <code>xt_TPROXY</code>). ' +
+              'GUI определяет это заранее и подсветит режимы tproxy/hybrid как ' +
+              'недоступные. Самый простой выход — <b>Redirect</b> (TCP без ' +
+              'TPROXY) или <b>TUN-режим</b>. Если прошивка поддерживает модуль, ' +
+              'можно поставить <code>opkg install iptables-mod-tproxy</code> и ' +
+              'загрузить <code>modprobe xt_TPROXY nf_tproxy_ipv4</code> — но на ' +
+              'части прошивок (напр. Keenetic) ни пакета, ни <code>modprobe</code> ' +
+              'нет, и поставить TPROXY нельзя; тогда только redirect/TUN.',
         examples: [
             { label: 'Типичный роутер: весь трафик, TCP+UDP',
               code: 'Режим: tproxy\nTCP-порт: 1100\nDNS-hijack: 1100 (или 0)\nIPv6: глушить (если прокси только v4)\nТрафик роутера: выкл' },
             { label: 'Максимальная совместимость (без модуля ядра)',
               code: 'Режим: redirect\nTCP-порт: 1100\n(UDP/QUIC пойдёт напрямую)' },
-            { label: 'Нет TPROXY — починка',
-              code: 'opkg install iptables-mod-tproxy\nmodprobe xt_TPROXY nf_tproxy_ipv4\n# либо переключиться на redirect' },
+            { label: 'Нет TPROXY (напр. Keenetic без модуля) — что делать',
+              code: '# вариант 1: режим redirect (TCP) или TUN — без TPROXY\n# вариант 2 (если прошивка поддерживает):\nopkg install iptables-mod-tproxy\nmodprobe xt_TPROXY nf_tproxy_ipv4' },
         ],
     });
 

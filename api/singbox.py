@@ -972,11 +972,22 @@ def register(app):
         ipt_v4 = tp.available("v4")
         nft_ok = nft.available()
         backend = "iptables" if ipt_v4 else ("nftables" if nft_ok else "none")
+        # Доступна ли цель TPROXY (issue #149) — чтобы UI заранее предупредил,
+        # что режимы tproxy/hybrid на этом роутере не поднимутся, и предложил
+        # redirect/TUN. Для iptables — кэшированный реальный зонд (status
+        # поллится каждые 5с); для nft пока не блокируем (юзеры с проблемой —
+        # на iptables-роутерах). force=refresh позволяет перепроверить вручную.
+        force = request.query.get("refresh") in ("1", "true", "yes")
+        if backend == "iptables":
+            tproxy_supported = tp.tproxy_supported_cached("v4", force=force)
+        else:
+            tproxy_supported = backend != "none"
         return {"ok": True,
                 "available_v4": ipt_v4,
                 "available_v6": tp.available("v6"),
                 "available_nft": nft_ok,
                 "backend": backend,
+                "tproxy_supported": tproxy_supported,
                 "settings": saved}
 
     @app.route("/api/singbox/configs/<name>/transparent-inbounds",
