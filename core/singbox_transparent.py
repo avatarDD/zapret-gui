@@ -49,9 +49,27 @@ firewall, мы умеем сами:
 `remove`) — тонкий слой, прогоняющий argv через идемпотентный `_run`.
 """
 
+import os
 import subprocess
 
 from core.log_buffer import log
+
+
+# При запуске от обычного пользователя / из systemd на Debian/Ubuntu в
+# PATH часто нет /sbin и /usr/sbin, где живут iptables/ip6tables/ip. Тогда
+# subprocess их не находит, available() ложно сообщает «iptables
+# недоступен» (хотя пакет установлен), и применение блокируется. Дополняем
+# PATH sbin-каталогами один раз при импорте — как в core/firewall.py.
+def _ensure_sbin_in_path():
+    extra = ["/usr/local/sbin", "/usr/sbin", "/sbin"]
+    cur = os.environ.get("PATH", "")
+    parts = cur.split(os.pathsep) if cur else []
+    added = [d for d in extra if d not in parts and os.path.isdir(d)]
+    if added:
+        os.environ["PATH"] = os.pathsep.join(parts + added)
+
+
+_ensure_sbin_in_path()
 
 
 # ─────────────────────── константы ───────────────────────────────────

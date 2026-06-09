@@ -420,5 +420,34 @@ class TestTproxyCapability(unittest.TestCase):
             self.assertTrue(tp.tproxy_available("v4"))
 
 
+class TestSbinPath(unittest.TestCase):
+    """PATH без /sbin (systemd/обычный юзер) не должен прятать iptables —
+    available() ложно показывал «iptables недоступен» на Debian."""
+
+    def test_sbin_dirs_added_when_present(self):
+        import os
+        orig = os.environ.get("PATH", "")
+        try:
+            os.environ["PATH"] = os.pathsep.join(["/usr/bin", "/bin"])
+            tp._ensure_sbin_in_path()
+            parts = os.environ["PATH"].split(os.pathsep)
+            for d in ("/usr/local/sbin", "/usr/sbin", "/sbin"):
+                if os.path.isdir(d):              # только реально существующие
+                    self.assertIn(d, parts)
+        finally:
+            os.environ["PATH"] = orig
+
+    def test_existing_path_preserved(self):
+        import os
+        orig = os.environ.get("PATH", "")
+        try:
+            os.environ["PATH"] = "/opt/custom/bin"
+            tp._ensure_sbin_in_path()
+            self.assertIn("/opt/custom/bin",
+                          os.environ["PATH"].split(os.pathsep))
+        finally:
+            os.environ["PATH"] = orig
+
+
 if __name__ == "__main__":
     unittest.main()
