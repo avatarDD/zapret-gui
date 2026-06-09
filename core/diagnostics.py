@@ -1339,6 +1339,61 @@ def check_strategy_prerequisites():
                     "сканирование смысла не имеет.",
         })
 
+    # 5b. iptables-матчи/цель (issue #151). На Entware/Keenetic NFQUEUE-цель и
+    #     матчи multiport / connbytes нередко вынесены в отдельные модули ядра,
+    #     которых нет и которые не ставятся через opkg ("Unknown package"). Без
+    #     NFQUEUE обход невозможен; без multiport/connbytes firewall.py
+    #     деградирует сам (порты → отдельные --dport/--sport, без ограничителя).
+    #     Проверка пробует реальные матчи/цель в одноразовой цепочке filter.
+    ipt = _find_binary(["iptables"])
+    if ipt:
+        try:
+            from core.firewall import FirewallManager
+            fw = FirewallManager()
+            caps = {
+                "nfqueue": fw._ipt_probe_rule(
+                    ipt, ["-j", "NFQUEUE", "--queue-num", "0",
+                          "--queue-bypass"]),
+                "multiport": fw._ipt_probe_rule(
+                    ipt, ["-p", "tcp", "-m", "multiport", "--dports",
+                          "80,443", "-j", "RETURN"]),
+                "connbytes": fw._ipt_probe_rule(
+                    ipt, ["-p", "tcp", "-m", "connbytes",
+                          "--connbytes-dir=original",
+                          "--connbytes-mode=packets", "--connbytes", "1:5",
+                          "-j", "RETURN"]),
+            }
+            checks["iptables_caps"] = caps
+            if not caps["nfqueue"]:
+                issues.append({
+                    "id": "ipt_nfqueue_target_missing", "severity": "error",
+                    "title": "iptables: цель NFQUEUE недоступна",
+                    "detail": "iptables не знает target NFQUEUE "
+                              "(модуль ядра xt_NFQUEUE / nfnetlink_queue).",
+                    "hint": "Без неё пакеты не попадают в nfqws2 — обход не "
+                            "работает. Догрузите модуль ядра NFQUEUE (на "
+                            "Keenetic — соответствующий компонент netfilter) "
+                            "или перейдите на nftables.",
+                })
+            else:
+                degraded = [n for n in ("multiport", "connbytes")
+                            if not caps[n]]
+                if degraded:
+                    issues.append({
+                        "id": "ipt_match_degraded", "severity": "warning",
+                        "title": "iptables: недоступны матчи %s"
+                                 % ", ".join(degraded),
+                        "detail": "Нет: %s (модули xt_%s)."
+                                  % (", ".join(degraded),
+                                     ", xt_".join(degraded)),
+                        "hint": "Не блокер: zapret-gui разобьёт списки портов "
+                                "на отдельные правила --dport/--sport и уберёт "
+                                "ограничитель connbytes (issue #151). Правила "
+                                "станут многословнее, но обход работает.",
+                    })
+        except Exception:
+            pass
+
     # 6. conntrack tcp_be_liberal (best-effort)
     be_liberal = _read_sysctl_int(
         "/proc/sys/net/netfilter/nf_conntrack_tcp_be_liberal")

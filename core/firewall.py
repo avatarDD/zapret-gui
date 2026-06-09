@@ -140,6 +140,22 @@ class FirewallManager:
     # При положительном детекте отсутствия — переходим на именованные цепочки.
     _comment_support_cache: dict = {}
 
+    # Кэш поддержки матчей/целей, которые на Entware/Keenetic нередко вынесены
+    # в отдельные (часто отсутствующие и неустанавливаемые через opkg) модули
+    # ядра:
+    #   multiport → iptables-mod-multiport (xt_multiport)
+    #   connbytes → iptables-mod-conntrack-extra (xt_connbytes)
+    #   NFQUEUE   → iptables-mod-nfqueue (xt_NFQUEUE / nfnetlink_queue)
+    # Без них правила с этими матчами/целью падали с «No chain/target/match by
+    # that name», и обход не поднимался даже после фикса `-m comment` — ровно
+    # 9 правил из 14 (все порт-зависимые) (issue #151). Деградируем:
+    #   нет multiport → список портов бьём на отдельные --dport/--sport;
+    #   нет connbytes → выкидываем ограничитель первых пакетов;
+    #   нет NFQUEUE   → обход через iptables невозможен (громкая ошибка).
+    _multiport_support_cache: dict = {}
+    _connbytes_support_cache: dict = {}
+    _nfqueue_support_cache: dict = {}
+
     def __init__(self):
         self._lock = threading.Lock()
         self._applied = False
@@ -440,26 +456,17 @@ class FirewallManager:
         self._rules_info = rules
         return ok
 
-    def _comment_supported(self, ipt_cmd) -> bool:
-        """Доступен ли матч `-m comment` (xt_comment) у этого iptables.
+    def _ipt_probe_rule(self, ipt_cmd, probe_args) -> bool:
+        """Можно ли добавить правило `probe_args` (есть ли матч/цель в ядре).
 
-        На Entware/Keenetic это отдельный модуль (пакет iptables-mod-comment),
-        которого часто нет. Без него каждое правило с `-m comment` падает с
-        «No chain/target/match by that name», и весь обход не поднимается
-        (issue #151) — тогда мы кладём правила в именованные цепочки nfqws_*
-        без комментариев.
-
-        Переключаемся на запасной путь ТОЛЬКО при положительном детекте
-        отсутствия матча. Если проверить не удалось (нет iptables, нет прав,
-        иная ошибка) — считаем, что comment есть, и НЕ меняем привычное
-        поведение. Результат кэшируется по бинарнику.
+        Создаёт одноразовую цепочку в таблице filter (она есть всегда и вне
+        тракта трафика), пытается добавить туда правило и смотрит на «No chain/
+        target/match by that name». Возвращает False ТОЛЬКО при таком явном
+        вердикте; при любой иной ошибке или невозможности проверить — True (не
+        ломаем рабочий путь). За собой пробную цепочку чистит.
         """
-        cache = FirewallManager._comment_support_cache
-        if ipt_cmd in cache:
-            return cache[ipt_cmd]
-
         wait = FirewallManager._iptables_wait_flag(ipt_cmd)
-        probe = "ZGUI_CMT_PROBE"
+        probe = "ZGUI_PROBE"
 
         def _raw(args):
             try:
@@ -470,26 +477,92 @@ class FirewallManager:
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 return None
 
-        supported = True  # по умолчанию — как раньше (не ломаем рабочий путь)
-        # Одноразовая цепочка в таблице filter (всегда есть), вне тракта трафика.
+        available = True
         _raw(["-t", "filter", "-N", probe])
-        add = _raw(["-t", "filter", "-A", probe,
-                    "-m", "comment", "--comment", "zgui", "-j", "RETURN"])
+        add = _raw(["-t", "filter", "-A", probe] + probe_args)
         if (add is not None and add.returncode != 0
                 and "No chain/target/match" in (add.stderr or "")):
-            supported = False
+            available = False
         _raw(["-t", "filter", "-F", probe])
         _raw(["-t", "filter", "-X", probe])
+        return available
 
-        cache[ipt_cmd] = supported
-        if not supported:
-            log.warning(
-                "%s: матч `-m comment` недоступен (нет пакета "
-                "iptables-mod-comment?). Правила пойдут в именованные цепочки "
-                "nfqws_* без комментариев (issue #151)." % ipt_cmd,
-                source="firewall",
-            )
-        return supported
+    def _feature_supported(self, ipt_cmd, cache, probe_args, warn=None) -> bool:
+        """Кэшируемый детект матча/цели (см. _ipt_probe_rule).
+
+        `warn % ipt_cmd` логируется один раз — при первом обнаружении
+        отсутствия. Результат кэшируется по бинарнику.
+        """
+        if ipt_cmd in cache:
+            return cache[ipt_cmd]
+        ok = self._ipt_probe_rule(ipt_cmd, probe_args)
+        cache[ipt_cmd] = ok
+        if not ok and warn:
+            log.warning(warn % ipt_cmd, source="firewall")
+        return ok
+
+    def _comment_supported(self, ipt_cmd) -> bool:
+        """Доступен ли матч `-m comment` (xt_comment) у этого iptables.
+
+        На Entware/Keenetic это отдельный модуль (пакет iptables-mod-comment),
+        которого часто нет. Без него каждое правило с `-m comment` падает с
+        «No chain/target/match by that name», и весь обход не поднимается
+        (issue #151) — тогда мы кладём правила в именованные цепочки nfqws_*
+        без комментариев. Переключаемся ТОЛЬКО при положительном детекте
+        отсутствия матча.
+        """
+        return self._feature_supported(
+            ipt_cmd, FirewallManager._comment_support_cache,
+            ["-m", "comment", "--comment", "zgui", "-j", "RETURN"],
+            warn="%s: матч `-m comment` недоступен (нет пакета "
+                 "iptables-mod-comment?). Правила пойдут в именованные цепочки "
+                 "nfqws_* без комментариев (issue #151).",
+        )
+
+    def _multiport_supported(self, ipt_cmd) -> bool:
+        """Доступен ли матч `-m multiport` (xt_multiport).
+
+        Если нет — список портов нельзя задать одним правилом; бьём его на
+        отдельные правила `--dport/--sport` (нативный матч tcp/udp понимает и
+        одиночный порт, и диапазон X:Y) (issue #151).
+        """
+        return self._feature_supported(
+            ipt_cmd, FirewallManager._multiport_support_cache,
+            ["-p", "tcp", "-m", "multiport", "--dports", "80,443",
+             "-j", "RETURN"],
+            warn="%s: матч `-m multiport` недоступен (нет "
+                 "iptables-mod-multiport?). Списки портов разбиваем на "
+                 "отдельные правила --dport/--sport (issue #151).",
+        )
+
+    def _connbytes_supported(self, ipt_cmd) -> bool:
+        """Доступен ли матч `-m connbytes` (xt_connbytes).
+
+        Если нет — выкидываем ограничитель «первые N пакетов»; в очередь пойдут
+        все пакеты целевых портов (дороже по CPU, но обход работает; cutoff
+        внутри nfqws2 всё равно отрабатывает) (issue #151).
+        """
+        return self._feature_supported(
+            ipt_cmd, FirewallManager._connbytes_support_cache,
+            ["-p", "tcp", "-m", "connbytes", "--connbytes-dir=original",
+             "--connbytes-mode=packets", "--connbytes", "1:5", "-j", "RETURN"],
+            warn="%s: матч `-m connbytes` недоступен (нет "
+                 "iptables-mod-conntrack-extra?). Ограничитель первых пакетов "
+                 "отключён — в очередь идут все пакеты целевых портов "
+                 "(issue #151).",
+        )
+
+    def _nfqueue_supported(self, ipt_cmd) -> bool:
+        """Доступна ли цель NFQUEUE (xt_NFQUEUE / nfnetlink_queue).
+
+        Без неё ядро физически не может отдать пакеты в nfqws2 — обход через
+        iptables невозможен (issue #151). Детект — единственный, по которому
+        мы прекращаем накат правил (см. _apply_ipt_family).
+        """
+        return self._feature_supported(
+            ipt_cmd, FirewallManager._nfqueue_support_cache,
+            ["-j", "NFQUEUE", "--queue-num", "0", "--queue-bypass"],
+        )
 
     def _ensure_named_chain(self, ipt_cmd, table, hook, name) -> None:
         """Создать/очистить нашу цепочку `name` и подцепить её к `hook`.
@@ -552,6 +625,27 @@ class FirewallManager:
         udp_pkt_in = self._extra.get("udp_pkt_in", 3)
         do_nat = (ipt_cmd == "iptables")  # MASQUERADE только для IPv4
 
+        # NFQUEUE — фундаментальная цель: без неё ядро не отдаёт пакеты в
+        # nfqws2 и обход не работает в принципе. Если её нет — громко сообщаем
+        # и не накатываем ничего (иначе все порт-правила тихо падают). Детект
+        # консервативен (False только на явное «No chain/target/match»), потому
+        # ему можно доверять (issue #151).
+        if not self._nfqueue_supported(ipt_cmd):
+            log.error(
+                "%s: цель NFQUEUE недоступна — нет модуля ядра xt_NFQUEUE / "
+                "nfnetlink_queue. Перенаправление трафика в nfqws2 невозможно, "
+                "обход работать не будет. Догрузите модуль ядра NFQUEUE (на "
+                "Keenetic — соответствующий компонент netfilter) либо перейдите "
+                "на nftables (issue #151)." % ipt_cmd,
+                source="firewall",
+            )
+            return False
+
+        # multiport / connbytes на Entware/Keenetic тоже бывают недоступны —
+        # тогда деградируем (см. _multiport_supported / _connbytes_supported).
+        use_multiport = self._multiport_supported(ipt_cmd)
+        use_connbytes = self._connbytes_supported(ipt_cmd)
+
         # На Entware/Keenetic матч `-m comment` (xt_comment) — отдельный
         # пакет iptables-mod-comment, которого может не быть. Тогда КАЖДОЕ
         # правило падало с «No chain/target/match by that name» и обход не
@@ -583,6 +677,32 @@ class FirewallManager:
         def _nfq():
             return ["-j", "NFQUEUE", "--queue-num", str(qnum), "--queue-bypass"]
 
+        def _port_bases(prefix, proto, direction, ports):
+            """Базовые правила под список портов.
+
+            С `-m multiport` — одно правило на весь список. Без него — по
+            одному правилу на каждый токен через нативный `--dport/--sport`
+            (он понимает и одиночный порт, и диапазон вида `3478:3481`).
+            `direction` — "dports" (исходящие) или "sports" (ответные).
+            """
+            if use_multiport:
+                return [prefix + ["-p", proto, "-m", "multiport",
+                                  "--%s" % direction, ports]]
+            single = "--dport" if direction == "dports" else "--sport"
+            bases = []
+            for tok in str(ports).split(","):
+                tok = tok.strip()
+                if tok:
+                    bases.append(prefix + ["-p", proto, single, tok])
+            return bases
+
+        def _connbytes_args(conn_dir, limit):
+            """Ограничитель «первые N пакетов»; пусто, если connbytes нет."""
+            if not use_connbytes:
+                return []
+            return ["-m", "connbytes", "--connbytes-dir=%s" % conn_dir,
+                    "--connbytes-mode=packets", "--connbytes", "1:%d" % limit]
+
         # Для каждого WAN или без привязки к интерфейсу
         oif_list = wan_ifaces if wan_ifaces else [None]
 
@@ -611,36 +731,35 @@ class FirewallManager:
 
             # 3) TCP → NFQUEUE (первые N пакетов + fin/rst)
             if ports_tcp:
-                base = ([ipt_cmd, "-t", "mangle", "-A", post_chain]
-                        + oif_args + ["-p", "tcp", "-m", "multiport",
-                                      "--dports", ports_tcp])
-                if self._run_cmd(
-                    base + ["-m", "connbytes", "--connbytes-dir=original",
-                            "--connbytes-mode=packets", "--connbytes",
-                            "1:%d" % tcp_pkt] + _comment() + _nfq()
-                ):
-                    rules.append("%s TCP %s → NFQUEUE %d%s" % (
-                        family_tag, ports_tcp, qnum, tag))
-                else:
-                    ok = False
-                self._run_cmd(base + ["--tcp-flags", "fin", "fin"]
-                              + _comment() + _nfq())
-                self._run_cmd(base + ["--tcp-flags", "rst", "rst"]
-                              + _comment() + _nfq())
+                prefix = [ipt_cmd, "-t", "mangle", "-A", post_chain] + oif_args
+                logged = False
+                for base in _port_bases(prefix, "tcp", "dports", ports_tcp):
+                    if self._run_cmd(base + _connbytes_args("original", tcp_pkt)
+                                     + _comment() + _nfq()):
+                        if not logged:
+                            rules.append("%s TCP %s → NFQUEUE %d%s" % (
+                                family_tag, ports_tcp, qnum, tag))
+                            logged = True
+                    else:
+                        ok = False
+                    self._run_cmd(base + ["--tcp-flags", "fin", "fin"]
+                                  + _comment() + _nfq())
+                    self._run_cmd(base + ["--tcp-flags", "rst", "rst"]
+                                  + _comment() + _nfq())
 
             # 4) UDP → NFQUEUE
             if ports_udp:
-                if self._run_cmd(
-                    [ipt_cmd, "-t", "mangle", "-A", post_chain] + oif_args
-                    + ["-p", "udp", "-m", "multiport", "--dports", ports_udp,
-                       "-m", "connbytes", "--connbytes-dir=original",
-                       "--connbytes-mode=packets", "--connbytes",
-                       "1:%d" % udp_pkt] + _comment() + _nfq()
-                ):
-                    rules.append("%s UDP %s → NFQUEUE %d%s" % (
-                        family_tag, ports_udp, qnum, tag))
-                else:
-                    ok = False
+                prefix = [ipt_cmd, "-t", "mangle", "-A", post_chain] + oif_args
+                logged = False
+                for base in _port_bases(prefix, "udp", "dports", ports_udp):
+                    if self._run_cmd(base + _connbytes_args("original", udp_pkt)
+                                     + _comment() + _nfq()):
+                        if not logged:
+                            rules.append("%s UDP %s → NFQUEUE %d%s" % (
+                                family_tag, ports_udp, qnum, tag))
+                            logged = True
+                    else:
+                        ok = False
 
             # ───────── NAT POSTROUTING (только IPv4) ─────────
             # nfqws2 переписывает адреса → повторный MASQUERADE для UDP.
@@ -665,28 +784,21 @@ class FirewallManager:
                 + ["-j", "RETURN"]
             )
             if ports_tcp:
-                base = ([ipt_cmd, "-t", "mangle", "-A", pre_chain]
-                        + iif_args + ["-p", "tcp", "-m", "multiport",
-                                      "--sports", ports_tcp])
-                self._run_cmd(
-                    base + ["-m", "connbytes", "--connbytes-dir=reply",
-                            "--connbytes-mode=packets", "--connbytes",
-                            "1:%d" % tcp_pkt_in] + _comment() + _nfq()
-                )
-                self._run_cmd(base + ["--tcp-flags", "syn,ack", "syn,ack"]
-                              + _comment() + _nfq())
-                self._run_cmd(base + ["--tcp-flags", "fin", "fin"]
-                              + _comment() + _nfq())
-                self._run_cmd(base + ["--tcp-flags", "rst", "rst"]
-                              + _comment() + _nfq())
+                prefix = [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
+                for base in _port_bases(prefix, "tcp", "sports", ports_tcp):
+                    self._run_cmd(base + _connbytes_args("reply", tcp_pkt_in)
+                                  + _comment() + _nfq())
+                    self._run_cmd(base + ["--tcp-flags", "syn,ack", "syn,ack"]
+                                  + _comment() + _nfq())
+                    self._run_cmd(base + ["--tcp-flags", "fin", "fin"]
+                                  + _comment() + _nfq())
+                    self._run_cmd(base + ["--tcp-flags", "rst", "rst"]
+                                  + _comment() + _nfq())
             if ports_udp:
-                self._run_cmd(
-                    [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
-                    + ["-p", "udp", "-m", "multiport", "--sports", ports_udp,
-                       "-m", "connbytes", "--connbytes-dir=reply",
-                       "--connbytes-mode=packets", "--connbytes",
-                       "1:%d" % udp_pkt_in] + _comment() + _nfq()
-                )
+                prefix = [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
+                for base in _port_bases(prefix, "udp", "sports", ports_udp):
+                    self._run_cmd(base + _connbytes_args("reply", udp_pkt_in)
+                                  + _comment() + _nfq())
 
         return ok
 
