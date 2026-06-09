@@ -22,6 +22,9 @@ def _capture_iptables(fw):
 
     with mock.patch.object(fw, "_run_cmd", side_effect=fake_run), \
             mock.patch.object(fw, "_comment_supported", return_value=True), \
+            mock.patch.object(fw, "_multiport_supported", return_value=True), \
+            mock.patch.object(fw, "_connbytes_supported", return_value=True), \
+            mock.patch.object(fw, "_nfqueue_supported", return_value=True), \
             mock.patch("core.firewall.shutil.which", return_value="/sbin/iptables"):
         rules = []
         fw._apply_ipt_family(
@@ -81,6 +84,12 @@ class TestIptablesNoCommentFallback(unittest.TestCase):
                 side_effect=lambda c: self.captured.append(c) or True), \
                 mock.patch.object(self.fw, "_comment_supported",
                                   return_value=False), \
+                mock.patch.object(self.fw, "_multiport_supported",
+                                  return_value=True), \
+                mock.patch.object(self.fw, "_connbytes_supported",
+                                  return_value=True), \
+                mock.patch.object(self.fw, "_nfqueue_supported",
+                                  return_value=True), \
                 mock.patch.object(self.fw, "_ensure_named_chain") as ens, \
                 mock.patch("core.firewall.shutil.which",
                            return_value="/sbin/iptables"):
@@ -156,6 +165,133 @@ class TestCommentProbe(unittest.TestCase):
     def test_supported_when_failure_is_unrelated(self):
         # иная ошибка (например, нет прав) → не ломаем рабочий путь
         self.assertTrue(self._run_with(1, "Permission denied"))
+
+
+def _apply_with_caps(multiport, connbytes, nfqueue, ports_tcp="80,443",
+                     ports_udp="443,3478:3481"):
+    """Прогнать _apply_ipt_family с заданной доступностью матчей/цели.
+
+    Возвращает (ok, плоский список строк-команд). comment-режим включён
+    (правила во встроенных цепочках), чтобы не отвлекаться на named-chains.
+    """
+    fw = FirewallManager()
+    captured = []
+    with mock.patch.object(fw, "_run_cmd",
+                           side_effect=lambda c: captured.append(c) or True), \
+            mock.patch.object(fw, "_comment_supported", return_value=True), \
+            mock.patch.object(fw, "_multiport_supported", return_value=multiport), \
+            mock.patch.object(fw, "_connbytes_supported", return_value=connbytes), \
+            mock.patch.object(fw, "_nfqueue_supported", return_value=nfqueue), \
+            mock.patch("core.firewall.shutil.which", return_value="/sbin/iptables"):
+        rules = []
+        ok = fw._apply_ipt_family(
+            "iptables", 300, ports_tcp, ports_udp,
+            "0x40000000", 20, 5, ["eth0"], rules,
+        )
+    return ok, [" ".join(c) for c in captured]
+
+
+class TestIptablesNoMultiportConnbytesFallback(unittest.TestCase):
+    """issue #151: на Keenetic/Entware матчи `-m multiport` / `-m connbytes`
+    нередко недоступны и неустановимы через opkg. Тогда после фикса `-m comment`
+    падали ровно 9 порт-зависимых правил из 14. Теперь порты бьются на отдельные
+    --dport/--sport, а ограничитель connbytes выкидывается."""
+
+    def setUp(self):
+        self.ok, self.flat = _apply_with_caps(
+            multiport=False, connbytes=False, nfqueue=True)
+
+    def test_no_multiport_match(self):
+        self.assertFalse(any("multiport" in c for c in self.flat),
+                         "без xt_multiport не должно быть `-m multiport`")
+
+    def test_no_connbytes_match(self):
+        self.assertFalse(any("connbytes" in c for c in self.flat),
+                         "без xt_connbytes не должно быть `-m connbytes`")
+
+    def test_per_port_rules_emitted(self):
+        # каждый TCP-порт получает своё правило --dport/--sport
+        self.assertTrue(any("--dport 80 " in (c + " ") for c in self.flat))
+        self.assertTrue(any("--dport 443 " in (c + " ") for c in self.flat))
+        self.assertTrue(any("--sport 80 " in (c + " ") for c in self.flat))
+        self.assertTrue(any("--sport 443 " in (c + " ") for c in self.flat))
+
+    def test_udp_range_preserved_as_native_range(self):
+        # диапазон портов остаётся диапазоном (нативный матч понимает X:Y)
+        self.assertTrue(any("--dport 3478:3481" in c for c in self.flat))
+        self.assertTrue(any("--sport 3478:3481" in c for c in self.flat))
+
+    def test_nfqueue_still_present(self):
+        self.assertTrue(any("NFQUEUE" in c for c in self.flat))
+
+    def test_tcp_flags_still_present_per_port(self):
+        self.assertTrue(any("--dport 80 --tcp-flags fin fin" in c
+                            for c in self.flat))
+        self.assertTrue(any("--sport 443 --tcp-flags syn,ack syn,ack" in c
+                            for c in self.flat))
+
+
+class TestIptablesNfqueueMissingAborts(unittest.TestCase):
+    """issue #151: если цели NFQUEUE нет — обход невозможен, правила не льём."""
+
+    def setUp(self):
+        self.ok, self.flat = _apply_with_caps(
+            multiport=True, connbytes=True, nfqueue=False)
+
+    def test_returns_false(self):
+        self.assertFalse(self.ok)
+
+    def test_no_rules_emitted(self):
+        # ни одного NFQUEUE/MASQUERADE-правила — выходим до их наката
+        self.assertFalse(any("NFQUEUE" in c for c in self.flat))
+        self.assertFalse(any("MASQUERADE" in c for c in self.flat))
+
+
+class TestIptablesMultiportOnlyMissing(unittest.TestCase):
+    """connbytes есть, multiport нет — connbytes сохраняется на каждом
+    раздробленном правиле."""
+
+    def setUp(self):
+        self.ok, self.flat = _apply_with_caps(
+            multiport=False, connbytes=True, nfqueue=True)
+
+    def test_connbytes_kept_on_split_rules(self):
+        cb = [c for c in self.flat if "connbytes" in c]
+        self.assertTrue(cb)
+        # connbytes-правила тоже без multiport
+        self.assertFalse(any("multiport" in c for c in cb))
+
+
+class TestFeatureProbe(unittest.TestCase):
+    """Обобщённый детект матча/цели: False ТОЛЬКО на «No chain/target/match»."""
+
+    def setUp(self):
+        self.fw = FirewallManager()
+
+    def _probe(self, add_rc, add_stderr):
+        class _R:
+            def __init__(self, rc, err=""):
+                self.returncode, self.stderr, self.stdout = rc, err, ""
+
+        def fake(cmd, **kw):
+            return _R(add_rc, add_stderr) if "-A" in cmd else _R(0)
+
+        with mock.patch("core.firewall.subprocess.run", side_effect=fake), \
+                mock.patch.object(FirewallManager, "_iptables_wait_flag",
+                                  return_value=["-w"]):
+            return self.fw._ipt_probe_rule(
+                "iptables", ["-j", "NFQUEUE", "--queue-num", "0",
+                             "--queue-bypass"])
+
+    def test_unavailable_on_no_chain_target_match(self):
+        self.assertFalse(self._probe(
+            1, "iptables: No chain/target/match by that name."))
+
+    def test_available_on_success(self):
+        self.assertTrue(self._probe(0, ""))
+
+    def test_available_on_unrelated_error(self):
+        self.assertTrue(self._probe(2, "Permission denied (you must be root)"))
 
 
 class TestNftablesRules(unittest.TestCase):

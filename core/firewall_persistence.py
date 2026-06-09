@@ -81,12 +81,66 @@ _iface_list() {
     if [ -n "$WAN_IFACES" ]; then echo "$WAN_IFACES"; else echo "__ALL__"; fi
 }
 
+# Можно ли добавить правило (есть ли матч/цель в ядре)? $1=CMD, далее — аргументы
+# правила. Возврат 1 ТОЛЬКО на явное «No chain/target/match by that name», иначе 0
+# (не ломаем рабочий путь). Проба — в одноразовой цепочке таблицы filter.
+_fw_probe() {
+    _pc="$1"; shift
+    "$_pc" -w -t filter -N ZGUI_PROBE 2>/dev/null
+    _po=$("$_pc" -w -t filter -A ZGUI_PROBE "$@" 2>&1); _pr=$?
+    "$_pc" -w -t filter -F ZGUI_PROBE 2>/dev/null
+    "$_pc" -w -t filter -X ZGUI_PROBE 2>/dev/null
+    if [ "$_pr" != "0" ] && echo "$_po" | grep -q "No chain/target/match"; then
+        return 1
+    fi
+    return 0
+}
+
+# Детект multiport/connbytes/NFQUEUE для $1=CMD (issue #151). На Entware/Keenetic
+# эти модули нередко отсутствуют и неустановимы через opkg — тогда деградируем.
+_fw_caps() {
+    _cc="$1"
+    HAVE_MULTIPORT=1; HAVE_CONNBYTES=1; HAVE_NFQUEUE=1
+    _fw_probe "$_cc" -p tcp -m multiport --dports 80,443 -j RETURN || HAVE_MULTIPORT=0
+    _fw_probe "$_cc" -p tcp -m connbytes --connbytes-dir=original --connbytes-mode=packets --connbytes 1:5 -j RETURN || HAVE_CONNBYTES=0
+    _fw_probe "$_cc" -j NFQUEUE --queue-num 0 --queue-bypass || HAVE_NFQUEUE=0
+}
+
+# Фрагмент(ы) матча портов, по одному на строку. С multiport — одна строка;
+# без него — по строке на токен (одиночный порт или диапазон X:Y, понятный
+# базовому матчу tcp/udp). $1=proto $2=dports|sports $3=ports.
+_fw_port_match() {
+    _proto="$1"; _dir="$2"; _ports="$3"
+    if [ "$HAVE_MULTIPORT" = "1" ]; then
+        echo "-p $_proto -m multiport --$_dir $_ports"
+        return 0
+    fi
+    if [ "$_dir" = "dports" ]; then _single="--dport"; else _single="--sport"; fi
+    _oifs="$IFS"; IFS=,
+    for _p in $_ports; do
+        IFS="$_oifs"
+        [ -n "$_p" ] && echo "-p $_proto $_single $_p"
+        IFS=,
+    done
+    IFS="$_oifs"
+}
+
+# Фрагмент ограничителя «первые N пакетов»; пусто, если connbytes недоступен.
+# $1=original|reply $2=limit.
+_fw_cb() {
+    [ "$HAVE_CONNBYTES" = "1" ] || return 0
+    echo "-m connbytes --connbytes-dir=$1 --connbytes-mode=packets --connbytes 1:$2"
+}
+
 _firewall_start() {
     CMD="$1"
+    _fw_caps "$CMD"
+    if [ "$HAVE_NFQUEUE" != "1" ]; then
+        echo "zapret-gui: NFQUEUE недоступна для $CMD (нет xt_NFQUEUE / nfnetlink_queue) — обход не работает (issue #151)" >&2
+        return 0
+    fi
     JNFQ="$(_jnfq)"
     CONN_CHECK="-m mark ! --mark $MARK_PROCESSED"
-    CB_ORIG="-m connbytes --connbytes-dir=original --connbytes-mode=packets"
-    CB_REPLY="-m connbytes --connbytes-dir=reply --connbytes-mode=packets"
 
     $CMD -w -t mangle -N $IPT_GROUP_POST 2>/dev/null
     $CMD -w -t mangle -F $IPT_GROUP_POST
@@ -108,12 +162,19 @@ _firewall_start() {
 
         $CMD -w -t mangle -A $IPT_GROUP_POST $OIF -m connmark --mark $MARK_EXCLUDE -j RETURN
         if [ -n "$PORTS_UDP" ]; then
-            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p udp -m multiport --dports $PORTS_UDP $CB_ORIG --connbytes 1:$MAX_PKT_OUT_UDP $JNFQ
+            CB="$(_fw_cb original $MAX_PKT_OUT_UDP)"
+            _fw_port_match udp dports "$PORTS_UDP" | while read -r PM; do
+                [ -n "$PM" ] && $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK $PM $CB $JNFQ
+            done
         fi
         if [ -n "$PORTS_TCP" ]; then
-            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP $CB_ORIG --connbytes 1:$MAX_PKT_OUT $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP --tcp-flags fin fin $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK -p tcp -m multiport --dports $PORTS_TCP --tcp-flags rst rst $JNFQ
+            CB="$(_fw_cb original $MAX_PKT_OUT)"
+            _fw_port_match tcp dports "$PORTS_TCP" | while read -r PM; do
+                [ -n "$PM" ] || continue
+                $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK $PM $CB $JNFQ
+                $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK $PM --tcp-flags fin fin $JNFQ
+                $CMD -w -t mangle -A $IPT_GROUP_POST $OIF $CONN_CHECK $PM --tcp-flags rst rst $JNFQ
+            done
         fi
 
         if [ "$CMD" = "iptables" ]; then
@@ -123,13 +184,20 @@ _firewall_start() {
         $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m connmark --mark $MARK_EXCLUDE -j RETURN
         $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m mark --mark $MARK_PROCESSED -j RETURN
         if [ -n "$PORTS_UDP" ]; then
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p udp -m multiport --sports $PORTS_UDP $CB_REPLY --connbytes 1:$MAX_PKT_IN $JNFQ
+            CB="$(_fw_cb reply $MAX_PKT_IN)"
+            _fw_port_match udp sports "$PORTS_UDP" | while read -r PM; do
+                [ -n "$PM" ] && $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK $PM $CB $JNFQ
+            done
         fi
         if [ -n "$PORTS_TCP" ]; then
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP $CB_REPLY --connbytes 1:$MAX_PKT_IN $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags syn,ack syn,ack $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags fin fin $JNFQ
-            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK -p tcp -m multiport --sports $PORTS_TCP --tcp-flags rst rst $JNFQ
+            CB="$(_fw_cb reply $MAX_PKT_IN)"
+            _fw_port_match tcp sports "$PORTS_TCP" | while read -r PM; do
+                [ -n "$PM" ] || continue
+                $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK $PM $CB $JNFQ
+                $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK $PM --tcp-flags syn,ack syn,ack $JNFQ
+                $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK $PM --tcp-flags fin fin $JNFQ
+                $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF $CONN_CHECK $PM --tcp-flags rst rst $JNFQ
+            done
         fi
     done
 }

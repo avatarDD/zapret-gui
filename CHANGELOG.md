@@ -278,6 +278,29 @@
   правила в именованные цепочки `nfqws_post/nfqws_pre/nfqws_nat` без
   комментариев (снимаются через `_remove_ipt_named_chain`). На системах, где
   `comment` есть, поведение прежнее. Покрыто тестами (`tests/test_firewall_rules.py`).
+- **Firewall: продолжение #151 — на Keenetic/Entware падали и оставшиеся 9 из
+  14 правил (`No chain/target/match` после фикса `-m comment`), сайты по-
+  прежнему не работали** ([#151](https://github.com/avatarDD/zapret-gui/issues/151)).
+  Причина — порт-зависимые правила опираются на матчи/цель, которые на mips-
+  Keenetic нередко отсутствуют и **не ставятся через opkg** («Unknown package»
+  для `iptables-mod-comment`/`-nfqueue`/`-conntrack-extra`): `-m multiport`
+  (`xt_multiport`), `-m connbytes` (`xt_connbytes`) и цель `NFQUEUE`
+  (`xt_NFQUEUE`). Теперь и Python-путь (`core/firewall.py`), и shell-путь
+  автозапуска/реаплая (`core/firewall_persistence.py`) **детектируют каждую
+  фичу** одноразовой пробой в таблице `filter` и **деградируют**:
+  - нет `multiport` → список портов разбивается на отдельные правила
+    `--dport/--sport` (нативный матч tcp/udp понимает одиночный порт и диапазон
+    `X:Y`, так что `3478:3481` сохраняется как диапазон);
+  - нет `connbytes` → выкидывается ограничитель «первые N пакетов» (в очередь
+    идут все пакеты целевых портов; внутренний cutoff nfqws2 всё равно
+    отрабатывает);
+  - нет `NFQUEUE` → обход через iptables физически невозможен: громкая ошибка
+    с подсказкой (догрузить модуль ядра / перейти на nftables), правила не
+    льются впустую.
+  Диагностика предпосылок (`GET /api/diagnostics/prerequisites`) теперь
+  отдельно проверяет реальные iptables-матчи/цель и отличает «NFQUEUE нет»
+  (ошибка) от «multiport/connbytes нет» (предупреждение, обход работает).
+  Покрыто тестами (`tests/test_firewall_rules.py`, `tests/test_firewall_persistence.py`).
 - **zapret2 1.0 ломал nfqws2: `LUA ERROR … Incompatible NFQWS2_COMPAT_VER`
   ([#151](https://github.com/avatarDD/zapret-gui/issues/151)).** zapret2 1.0
   сменил `lua_compat_ver` 5→6 (несовместимое изменение: везде `WRITEABLE`→
