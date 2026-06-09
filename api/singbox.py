@@ -962,12 +962,21 @@ def register(app):
     def singbox_transparent_status():
         response.content_type = "application/json; charset=utf-8"
         from core import singbox_transparent as tp
+        from core import singbox_transparent_nft as nft
         from core.config_manager import get_config_manager
         saved = get_config_manager().get("singbox", "transparent",
                                          default={}) or {}
+        # Доступность по обоим бэкендам: на «чистом» nftables-роутере
+        # (без команды iptables) применение всё равно работает через nft,
+        # поэтому UI не должен пугать «iptables недоступен».
+        ipt_v4 = tp.available("v4")
+        nft_ok = nft.available()
+        backend = "iptables" if ipt_v4 else ("nftables" if nft_ok else "none")
         return {"ok": True,
-                "available_v4": tp.available("v4"),
+                "available_v4": ipt_v4,
                 "available_v6": tp.available("v6"),
+                "available_nft": nft_ok,
+                "backend": backend,
                 "settings": saved}
 
     @app.route("/api/singbox/configs/<name>/transparent-inbounds",
