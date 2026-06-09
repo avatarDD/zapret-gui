@@ -346,5 +346,79 @@ class TestReapplySaved(unittest.TestCase):
         self.assertNotIn("bogus_key", kwargs)
 
 
+class TestTproxyCapability(unittest.TestCase):
+    """Префлайт TPROXY (issue #149): когда цели TPROXY нет на роутере,
+    apply() для tproxy/hybrid должен отдать ОДНУ понятную подсказку и не
+    ставить правила; redirect — не трогать проверку вовсе."""
+
+    def setUp(self):
+        # Подменяем I/O: iptables «есть», все команды «успешны».
+        self._patchers = [
+            mock.patch.object(tp, "_run", lambda *a, **k: (0, "", "")),
+            mock.patch.object(tp, "available", lambda family="v4": True),
+        ]
+        for p in self._patchers:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patchers:
+            p.stop()
+
+    def test_tproxy_missing_blocks_with_actionable_error(self):
+        with mock.patch.object(tp, "tproxy_available",
+                               lambda family="v4": False):
+            r = tp.apply(mode="tproxy", tcp_port=1100,
+                         families=("v4",), backend="iptables")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r.get("need"), "tproxy")
+        self.assertEqual(r.get("rule_count"), 0)
+        joined = " ".join(r["errors"]).lower()
+        for hint in ("tproxy", "iptables-mod-tproxy", "redirect", "tun"):
+            self.assertIn(hint, joined)        # подсказка самодостаточна
+
+    def test_hybrid_missing_tproxy_also_blocks(self):
+        with mock.patch.object(tp, "tproxy_available",
+                               lambda family="v4": False):
+            r = tp.apply(mode="hybrid", tcp_port=1100, udp_port=1102,
+                         families=("v4",), backend="iptables")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r.get("need"), "tproxy")
+
+    def test_tproxy_present_proceeds(self):
+        with mock.patch.object(tp, "tproxy_available",
+                               lambda family="v4": True):
+            r = tp.apply(mode="tproxy", tcp_port=1100,
+                         families=("v4",), backend="iptables")
+        self.assertTrue(r["ok"])               # _run всё «успешно»
+        self.assertNotIn("need", r)
+
+    def test_redirect_skips_tproxy_probe(self):
+        # redirect не требует TPROXY — проверку даже не запускаем.
+        calls = {"n": 0}
+
+        def _probe(family="v4"):
+            calls["n"] += 1
+            return False
+
+        with mock.patch.object(tp, "tproxy_available", _probe):
+            r = tp.apply(mode="redirect", tcp_port=1100,
+                         families=("v4",), backend="iptables")
+        self.assertTrue(r["ok"])
+        self.assertEqual(calls["n"], 0)
+
+    def test_probe_detects_missing_target(self):
+        # tproxy_available → False, когда вставка падает с «No chain/...».
+        def _fake_run(args, timeout=10):
+            if "-A" in args and "TPROXY" in args:
+                return (1, "", "iptables: No chain/target/match by that name.")
+            return (0, "", "")
+        with mock.patch.object(tp, "_run", _fake_run):
+            self.assertFalse(tp.tproxy_available("v4"))
+
+    def test_probe_ok_when_insert_succeeds(self):
+        with mock.patch.object(tp, "_run", lambda *a, **k: (0, "", "")):
+            self.assertTrue(tp.tproxy_available("v4"))
+
+
 if __name__ == "__main__":
     unittest.main()

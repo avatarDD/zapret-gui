@@ -24,6 +24,7 @@ const SingboxDashboardPage = (() => {
         address: '172.18.0.1/30', stack: 'system', mtu: 9000,
         auto_route: false,
     };
+    let tpNote = '';                 // последняя ошибка применения firewall (persist)
 
     // ══════════════ render ══════════════
 
@@ -303,6 +304,9 @@ const SingboxDashboardPage = (() => {
                 в конфиге (кнопка «Добавить inbound'ы»). iptables-режим.
                 ${avail ? '' : '<br><span style="color:#e58;">iptables недоступен — применение работать не будет.</span>'}
             </p>
+            ${tpNote ? `<div style="margin:0 0 10px; padding:9px 11px; border-radius:6px;
+                background:rgba(229,80,136,0.12); border:1px solid rgba(229,80,136,0.35);
+                color:#e58; font-size:12px; line-height:1.45; white-space:pre-wrap;">${escapeHtml(tpNote)}</div>` : ''}
             ${applied ? `<div style="margin-bottom:8px; font-size:12px;">
                 Сейчас активно: <strong>${escapeHtml(transparent.settings.mode)}</strong>,
                 порты ${escapeHtml(transparent.settings.tcp_port)}${transparent.settings.mode==='hybrid' ? '/'+escapeHtml(transparent.settings.udp_port) : ''}
@@ -388,16 +392,22 @@ const SingboxDashboardPage = (() => {
                 dns_hijack_port: tpForm.dns_hijack_port,
                 ipv6_policy: tpForm.ipv6_policy,
             });
-            if (r && r.ok) Toast.success('Прозрачное проксирование применено (' + tpForm.mode + ')');
-            else Toast.error((r && (r.error || (r.errors||[]).join('; '))) || 'ошибка');
-        } catch (e) { Toast.error(e.message); }
+            if (r && r.ok) {
+                tpNote = '';
+                Toast.success('Прозрачное проксирование применено (' + tpForm.mode + ')');
+            } else {
+                tpNote = (r && (r.error || (r.errors || []).join('; '))) || 'ошибка';
+                // Подсказку про TPROXY держим дольше — её надо прочитать.
+                Toast.error(tpNote, r && r.need === 'tproxy' ? 15000 : undefined);
+            }
+        } catch (e) { tpNote = e.message; Toast.error(e.message); }
         finally { await refresh(); }
     }
 
     async function removeTransparent() {
         try {
             const r = await API.post('/api/singbox/transparent/remove', {});
-            if (r && r.ok) Toast.success('Правила сняты');
+            if (r && r.ok) { tpNote = ''; Toast.success('Правила сняты'); }
             else Toast.error((r && r.error) || 'ошибка');
         } catch (e) { Toast.error(e.message); }
         finally { await refresh(); }

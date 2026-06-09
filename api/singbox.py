@@ -1091,7 +1091,11 @@ def register(app):
             cfg.set("singbox", "transparent", persist)
             cfg.save()
         if not res.get("ok"):
-            response.status = 500
+            # Префлайт-условие (нет цели TPROXY, issue #149) — это не
+            # серверная ошибка: отдаём 200, чтобы фронт показал понятную
+            # подсказку из тела (res.need/errors), а не безликое «HTTP 500»
+            # (API.post на не-2xx бросает исключение и теряет errors[]).
+            response.status = 200 if res.get("need") else 500
         return res
 
     @app.route("/api/singbox/transparent/remove", method="POST")

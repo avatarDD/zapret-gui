@@ -79,6 +79,22 @@ DEFAULT_BYPASS_V6 = [
     "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
 ]
 
+# Сообщение, когда на роутере нет netfilter-цели TPROXY (issue #149):
+# у пользователя bypass-RETURN'ы проходят, но `-A ... -j TPROXY` падает с
+# «No chain/target/match by that name» — нет модуля ядра/расширения.
+_TPROXY_MISSING_MSG = (
+    "Режим '%s' требует netfilter-цель TPROXY, но её нет на этом роутере "
+    "(не установлен пакет iptables-mod-tproxy или не загружен модуль ядра "
+    "xt_TPROXY/nf_tproxy). Установите: opkg install iptables-mod-tproxy — и "
+    "при необходимости загрузите модуль: modprobe xt_TPROXY nf_tproxy_ipv4. "
+    "Либо выберите режим 'redirect' (только TCP, TPROXY не нужен) или "
+    "включите TUN-режим на вкладке sing-box — он тоже не требует TPROXY."
+)
+
+# Модули ядра, нужные для TPROXY (на Keenetic часто просто не загружены).
+_TPROXY_KMODS = ("nf_tproxy_ipv4", "nf_tproxy_ipv6", "xt_TPROXY",
+                 "xt_socket", "xt_mark")
+
 
 def _run(args, timeout=10):
     try:
@@ -374,6 +390,44 @@ def available(family: str = "v4") -> bool:
     return rc == 0
 
 
+def _modprobe_tproxy():
+    """Best-effort подгрузка модулей ядра для TPROXY (молча)."""
+    for mod in _TPROXY_KMODS:
+        _run(["modprobe", mod], timeout=5)
+
+
+def tproxy_available(family: str = "v4") -> bool:
+    """
+    Доступна ли netfilter-цель TPROXY (`-j TPROXY`) на этом роутере.
+
+    Сначала пытаемся подгрузить модули ядра (на Keenetic они нередко
+    просто не загружены — после modprobe цель появляется), затем
+    проверяем РЕАЛЬНОЙ вставкой правила во временную цепочку mangle
+    (TPROXY допустим только в mangle). Это надёжнее, чем парсить lsmod
+    или искать libxt_TPROXY.so.
+
+    Возвращаем False ТОЛЬКО при положительном детекте отсутствия цели
+    («No chain/target/match by that name»); если проверить нельзя (нет
+    iptables) — считаем доступной, чтобы не блокировать рабочие
+    конфигурации (основной путь сам сообщит об ошибке). Ср. firewall.py
+    `_comment_supported` (issue #151) — тот же приём.
+    """
+    cmd = _ipt(family)
+    if not available(family):
+        return True
+    _modprobe_tproxy()
+    probe = "SBT_PROBE"
+    _run([cmd, "-t", "mangle", "-N", probe])
+    _run([cmd, "-t", "mangle", "-F", probe])
+    rc, _o, err = _run([cmd, "-t", "mangle", "-A", probe, "-p", "tcp",
+                        "-j", "TPROXY", "--on-port", "1", "--tproxy-mark", "1"])
+    _run([cmd, "-t", "mangle", "-F", probe])
+    _run([cmd, "-t", "mangle", "-X", probe])
+    if rc != 0 and "no chain/target/match" in (err or "").lower():
+        return False
+    return True
+
+
 def choose_backend(prefer: str = "auto") -> str:
     """
     Выбрать firewall-бэкенд: 'iptables' | 'nftables' | 'none'.
@@ -436,6 +490,16 @@ def apply(*, mode: str,
             table=table, families=tuple(families), lan_ifaces=lan_ifaces,
             server_ips=server_ips, bypass=bypass, proxy_self=proxy_self,
             dns_hijack_port=dns_hijack_port, ipv6_policy=ipv6_policy)
+
+    # Префлайт TPROXY (issue #149): если режим требует TPROXY, а цели нет
+    # ни на одном семействе — не пытаемся ставить правила (иначе сыплем
+    # сырыми «No chain/target/match»), а отдаём ОДНУ понятную подсказку.
+    if mode in ("tproxy", "hybrid"):
+        if not any(available(f) and tproxy_available(f) for f in families):
+            msg = _TPROXY_MISSING_MSG % mode
+            log.warning("singbox transparent: %s" % msg, source="singbox")
+            return {"ok": False, "mode": mode, "errors": [msg],
+                    "need": "tproxy", "rule_count": 0}
 
     cmds = []   # (family, table, [argv...]) — для лога/отладки
     errors = []
