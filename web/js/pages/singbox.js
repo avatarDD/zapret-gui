@@ -32,7 +32,7 @@ const SingboxDashboardPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">sing-box — инстансы</h1>
+                    <h1 class="page-title">sing-box — инстансы${typeof Help !== 'undefined' ? Help.button('singbox') : ''}</h1>
                     <p class="page-description">
                         VLESS / Trojan / Hysteria2 / TUIC / Shadowsocks через
                         универсальный sing-box-движок.
@@ -68,7 +68,7 @@ const SingboxDashboardPage = (() => {
             </div>
 
             <div class="card" id="sb-tun" style="margin-top:16px;">
-                <div class="card-title">TUN-интерфейс (для выборочной маршрутизации)</div>
+                <div class="card-title">TUN-интерфейс (для выборочной маршрутизации)${typeof Help !== 'undefined' ? Help.button('singbox-tun') : ''}</div>
                 <div id="sb-tun-body" style="margin-top:8px;">
                     <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
                 </div>
