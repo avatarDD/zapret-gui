@@ -122,12 +122,16 @@ const SettingsPage = (() => {
             label: 'Фильтрация',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>',
             fields: [
-                { key: 'filter.mode',  label: 'Режим фильтрации',  type: 'select', options: [
-                    { value: 'none', label: 'Без фильтрации' },
-                    { value: 'ipset', label: 'По IP-списку' },
-                    { value: 'hostlist', label: 'По хостлисту' },
-                    { value: 'autohostlist', label: 'Авто-хостлист' },
+                { key: 'filter.mode',  label: 'Режим фильтрации',  type: 'select',
+                  hint: 'other.txt больше НЕ подставляется автоматически — стратегия по умолчанию работает на весь трафик на своих портах (--filter-*). Чтобы сузить, добавьте --hostlist=/--hostlist-domains= прямо в стратегию.',
+                  options: [
+                    { value: 'none', label: 'Весь трафик (по умолчанию)' },
+                    { value: 'autohostlist', label: 'Авто-хостлист (auto.txt)' },
+                    { value: 'ipset', label: 'По IP-списку (--ipset)' },
+                    { value: 'hostlist', label: 'По хостлисту (= весь трафик)' },
                 ]},
+                { key: 'filter.protect_excluded', label: 'Защищать исключения (netrogat)', type: 'toggle',
+                  hint: 'Не применять десинк к банкам/госуслугам/vk и т.п. (lists/netrogat.txt) — предохранитель от поломки критичных сервисов. Рекомендуется оставить включённым.' },
             ]
         },
         {

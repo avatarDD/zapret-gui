@@ -92,7 +92,19 @@ DEFAULT_CONFIG = {
 
     # --- Фильтрация ---
     "filter": {
-        "mode": "hostlist",  # none, ipset, hostlist, autohostlist
+        # Режим include-списков. other.txt НЕ подмешивается автоматически —
+        # стратегия по умолчанию применяется ко всему трафику на своих портах
+        # (--filter-*). Сузить можно, добавив --hostlist=/--hostlist-domains=
+        # прямо в стратегию.
+        #   none         — без include-списков (дефолт);
+        #   autohostlist — + auto.txt (nfqws2 копит недоступные домены);
+        #   ipset        — фильтрация по IP (--ipset);
+        #   hostlist     — алиас none (для совместимости старых конфигов).
+        "mode": "none",
+        # Предохранитель: exclude netrogat.txt (банки/госуслуги/vk и т.п.) от
+        # десинка, чтобы не сломать критичные сервисы. True по умолчанию;
+        # false — десинкать вообще всё без исключений.
+        "protect_excluded": True,
     },
 
     # --- Текущая стратегия ---

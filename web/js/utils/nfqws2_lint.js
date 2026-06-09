@@ -280,6 +280,15 @@ const Nfqws2Lint = (() => {
                 message: 'Есть приём (--lua-desync), но нет ни --filter-*, ни --payload — '
                     + 'десинк применится ко всему трафику очереди. Ограничьте порт/протокол.' });
         }
+        // нет include-списка/доменов → стратегия работает на весь трафик
+        // под --filter-*. Это НЕ ошибка (так задуманы авто/circular-стратегии):
+        // other.txt больше не подставляется автоматически. Просто инфо.
+        if (sawDesync && slots.has('filter') && !slots.has('list')) {
+            diagnostics.push({ start: 0, end: 0, severity: SEV.INFO, structural: true,
+                message: 'Список доменов/IP не указан — стратегия применяется ко всему '
+                    + 'трафику на портах фильтра (исключения netrogat учитываются отдельно). '
+                    + 'Чтобы сузить — добавьте --hostlist=… или --hostlist-domains=…' });
+        }
         // порядок: desync должен идти после filter (мягко).
         const di = order.indexOf('desync');
         const fi = order.indexOf('filter');

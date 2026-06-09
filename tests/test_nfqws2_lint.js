@@ -182,6 +182,21 @@ test('lint: приём без фильтра/payload = структурное п
     assert.ok(r.slots.has('desync'));
 });
 
+test('lint: фильтр без списка/доменов = INFO, не ошибка', () => {
+    const r = Lint.analyze('--filter-tcp=80,443 --filter-l7=tls,http '
+        + '--lua-desync=fake:blob=fake_default_tls');
+    assert.strictEqual(errs(r).length, 0, JSON.stringify(r.diagnostics));
+    const infos = r.diagnostics.filter(d => d.severity === 'info');
+    assert.ok(infos.some(d => d.structural && /Список доменов\/IP не указан/.test(d.message)),
+        'ожидался INFO про отсутствие списка: ' + JSON.stringify(r.diagnostics));
+});
+
+test('lint: фильтр + hostlist = без INFO про отсутствие списка', () => {
+    const r = Lint.analyze('--filter-tcp=443 --hostlist=yt.txt --lua-desync=fake');
+    const infos = r.diagnostics.filter(d => d.severity === 'info');
+    assert.ok(!infos.some(d => /Список доменов\/IP не указан/.test(d.message)));
+});
+
 test('lint: анализ слотов скелета', () => {
     const r = Lint.analyze('--filter-tcp=443 --hostlist=yt.txt --payload=tls_client_hello --lua-desync=fake');
     assert.ok(r.slots.has('filter') && r.slots.has('list') && r.slots.has('range') && r.slots.has('desync'));
