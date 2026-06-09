@@ -81,6 +81,33 @@
     тестируются при подборе TCP (режим full).
   - Новый value-триггер `fool=z2k_*` подгружает `z2k-fooling-ext.lua`
     для не-circular приёмов (`core/nfqws_manager._FOOL_EXT_TRIGGER_RE`).
+- **Полный перенос autocircular-профилей z2k (TCP-трио + QUIC)** — дословный
+  порт пяти профилей из [necronicle/z2k](https://github.com/necronicle/z2k)
+  (`strats_new2.txt`, `quic_strats.ini`) как builtin-пресеты. Раньше был только
+  обобщённый `z2k_tls_circular_smart`; теперь есть сами профили:
+  - `catalogs/builtin/z2k_autocircular_tcp.txt` — **RKN** (50 подстратегий,
+    TLS на 443/2053/2083/2087/2096/8443, `key=rkn_tcp`), **YouTube TCP**
+    (22, `key=yt_tcp`), **YouTube GV / googlevideo** (22, `key=gv_tcp`).
+  - `catalogs/builtin/z2k_autocircular_quic.txt` — **Discord voice/video**
+    (12 подстратегий: `z2k_quic_morph_v2` + `z2k_timing_morph` +
+    3-фрагментный ipfrag, `hostkey=z2k_nohost_key`, `key=discord_voice`) и
+    **YouTube QUIC** (9: fake quic_google/quic1/4/5/6 + udplen-морфинг,
+    `key=yt_quic`).
+  - Аргументы перенесены **байт-в-байт** (сверка с исходником z2k — 1:1);
+    circular закрепляет рабочую подстратегию по доменам через
+    `z2k-state-persist` (state.tsv), категории `key=` совпадают с
+    `core/strategy_state.py` (rkn_tcp / yt_tcp / gv_tcp / yt_quic /
+    discord_voice).
+  - Блобы: докачаны 3 новых .bin из апстрима (`t2.bin`,
+    `tls_clienthello_activated.bin`, `tls_clienthello_www_onetrust_com.bin`),
+    остальные совпадают с нашими байт-в-байт (md5). Каждый профиль
+    самодостаточен — несёт свои `--blob=` декларации (резолвятся через
+    `core/blob_registry`).
+  - Функция `z2k_timing_morph` (была в `import/lua/z2k-modern-core.lua`, но
+    ни одной стратегией каталога не вызывалась) теперь задействована
+    Discord-QUIC профилем. Глобальные функции `z2k-modern-core.lua`
+    идентичны апстриму; per-instance `out_range=` на fake/send/udplen
+    инертны и в самом z2k (stock nfqws2 их не читает) — перенесены дословно.
 - **Фильтр «⟳ Авто (circular)» в списке стратегий** — быстро показать
   только авто-стратегии (которые сами перебирают приёмы и запоминают
   рабочий). Карточка «Выученные стратегии» теперь видна всегда: при пустом
