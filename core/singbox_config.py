@@ -32,6 +32,7 @@ sing-box принимает JSON (не INI-like .conf). Структура сх�
 import base64
 import binascii
 import json
+import re
 from typing import Any
 
 
@@ -333,7 +334,8 @@ def make_tun_inbound(*, interface_name: str = "singbox-tun",
                      address=None, mtu: int = 9000,
                      stack: str = "system",
                      auto_route: bool = False,
-                     strict_route: bool = False) -> dict:
+                     strict_route: bool = False,
+                     auto_redirect: bool = False) -> dict:
     """
     Собрать TUN-inbound sing-box (создаёт сетевой интерфейс
     `interface_name`). Используются ТОЛЬКО актуальные поля 1.11+/1.13:
@@ -344,10 +346,15 @@ def make_tun_inbound(*, interface_name: str = "singbox-tun",
     заворачивать, решает страница «Selective routing» (ip rule/nftset).
     Для режима «весь трафик» выставьте auto_route=True.
 
+    auto_redirect=True (только вместе с auto_route и на nftables-платформах,
+    sing-box 1.10+) — sing-box сам ставит nftables-redirect, чтобы забирать
+    и ПЕРЕСЫЛАЕМЫЙ трафик LAN-клиентов (нужно для FakeIP-роутинга без ручной
+    правки firewall). На iptables-only платформах не включаем.
+
     stack: 'system' (быстрее, нужен модуль tun ядра — на Keenetic есть),
            'gvisor' (userspace, переносимее) или 'mixed'.
     """
-    return {
+    ib = {
         "type": "tun",
         "tag": _TUN_TAG,
         "interface_name": interface_name or "singbox-tun",
@@ -357,6 +364,9 @@ def make_tun_inbound(*, interface_name: str = "singbox-tun",
         "strict_route": bool(strict_route),
         "stack": stack or "system",
     }
+    if auto_redirect and auto_route:
+        ib["auto_redirect"] = True
+    return ib
 
 
 def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
@@ -472,6 +482,154 @@ def find_tun_interface(cfg: dict) -> str:
         if isinstance(ib, dict) and ib.get("type") == "tun":
             return ib.get("interface_name") or ""
     return ""
+
+
+# ─────── FakeIP-роутинг (умный доменный роутинг через движок) ───────
+#
+# Полный self-contained конфиг «как podkop, но мультиплатформенно»: TUN с
+# auto_route + DNS с FakeIP. Клиентский DNS перехватывается движком
+# (hijack-dns), домены из списка получают fake-IP (198.18.0.0/15), их трафик
+# по fake-IP роутится в прокси-outbound; остальное идёт напрямую. Это решает
+# проблемы ipset-пути: нет DNS-leak, работает для CDN/QUIC/ECH (роутинг по
+# домену из DNS, до handshake). См. skill §13.
+
+FAKEIP_INET4 = "198.18.0.0/15"
+FAKEIP_INET6 = "fc00::/18"
+
+_IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def _norm_suffix_domains(domains) -> list:
+    """Нормализовать домены под `domain_suffix`: lower, без схемы/www/*., без
+    дублей; отбросить IP/localhost (это не суффиксы)."""
+    out, seen = [], set()
+    for d in (domains or []):
+        s = str(d).strip().lower()
+        for pre in ("https://", "http://", "//", "*.", "www."):
+            if s.startswith(pre):
+                s = s[len(pre):]
+        s = s.split("/")[0].rstrip(".")
+        if not s or s in seen:
+            continue
+        if s == "localhost" or _IPV4_RE.match(s) or ":" in s:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def make_fakeip_dns(*, proxied_domains=None, direct_dns: str = "local",
+                    typed: bool = False, fakeip: bool = True) -> dict:
+    """
+    DNS-секция для FakeIP-роутинга.
+
+    typed=False → legacy-формат (`address`/top-level `dns.fakeip`), валиден
+    sing-box 1.8–1.13 (legacy удалён в 1.14). typed=True → формат 1.12+
+    (`type:`/`type:fakeip`). Оркестратор (core/singbox_fakeip) пробует один,
+    при провале `sing-box check` — другой.
+
+    direct_dns: 'local'/'' → системный резолвер (без host-поля, переносимо);
+    голый IP → udp-резолвер. fakeip=False → секция без FakeIP (для режима
+    «весь трафик»), только direct-сервер, чтобы hijack-dns был куда отдавать.
+    """
+    dd = (direct_dns or "local").strip()
+    is_local = dd in ("", "local")
+    is_ip = bool(_IPV4_RE.match(dd))
+
+    if typed:
+        if is_local:
+            direct_srv = {"tag": "dns-direct", "type": "local"}
+        elif is_ip:
+            direct_srv = {"tag": "dns-direct", "type": "udp", "server": dd,
+                          "detour": "direct"}
+        else:                                   # https:// / tls:// и т.п.
+            direct_srv = {"tag": "dns-direct", "type": "local"}
+    else:
+        direct_srv = {"tag": "dns-direct", "address": dd if dd else "local"}
+        if not is_local:
+            direct_srv["detour"] = "direct"
+
+    servers = [direct_srv]
+    rules = []
+    proxied = _norm_suffix_domains(proxied_domains)
+
+    if fakeip:
+        if typed:
+            servers.append({"tag": "dns-fakeip", "type": "fakeip",
+                            "inet4_range": FAKEIP_INET4,
+                            "inet6_range": FAKEIP_INET6})
+        else:
+            servers.append({"tag": "dns-fakeip", "address": "fakeip"})
+        if proxied:
+            rules.append({"domain_suffix": proxied, "server": "dns-fakeip"})
+
+    dns = {"servers": servers, "rules": rules,
+           "final": "dns-direct", "independent_cache": True}
+    if fakeip and not typed:
+        dns["fakeip"] = {"enabled": True,
+                         "inet4_range": FAKEIP_INET4,
+                         "inet6_range": FAKEIP_INET6}
+    return dns
+
+
+def build_fakeip_config(*, proxy_outbound: dict,
+                        proxied_domains=None, proxied_cidrs=None,
+                        route_all: bool = False,
+                        direct_dns: str = "local",
+                        tun_iface: str = "singbox-tun",
+                        tun_address=None, mtu: int = 9000,
+                        stack: str = "system",
+                        auto_redirect: bool = False,
+                        typed_dns: bool = False) -> dict:
+    """
+    Собрать полный sing-box-конфиг FakeIP-роутинга.
+
+    proxy_outbound — готовый dict outbound'а (vless/ss/...); его тег
+    принудительно = 'proxy-out'. route_all=True → весь трафик в прокси
+    (FakeIP не нужен, DNS прямой). Иначе — выбранные домены/подсети в прокси,
+    остальное напрямую, домены через FakeIP.
+    """
+    if not isinstance(proxy_outbound, dict) or not proxy_outbound.get("type"):
+        raise ValueError("proxy_outbound должен быть dict с полем type")
+
+    proxied = _norm_suffix_domains(proxied_domains)
+    cidrs = [str(c).strip() for c in (proxied_cidrs or []) if str(c).strip()]
+    fakeip_on = (not route_all) and bool(proxied)
+
+    proxy_ob = dict(proxy_outbound)
+    proxy_ob["tag"] = "proxy-out"
+
+    tun = make_tun_inbound(interface_name=tun_iface, address=tun_address,
+                           mtu=mtu, stack=stack, auto_route=True,
+                           strict_route=True, auto_redirect=auto_redirect)
+
+    rules = [
+        {"action": "sniff"},
+        {"protocol": "dns", "action": "hijack-dns"},
+        {"ip_is_private": True, "outbound": "direct"},
+    ]
+    if not route_all:
+        if proxied:
+            rules.append({"domain_suffix": proxied, "outbound": "proxy-out"})
+        if cidrs:
+            rules.append({"ip_cidr": cidrs, "outbound": "proxy-out"})
+
+    return {
+        "log": {"level": "info", "timestamp": True},
+        "dns": make_fakeip_dns(proxied_domains=proxied, direct_dns=direct_dns,
+                               typed=typed_dns, fakeip=fakeip_on),
+        "inbounds": [tun],
+        "outbounds": [proxy_ob, {"type": "direct", "tag": "direct"}],
+        "route": {
+            "rules": rules,
+            "final": "proxy-out" if route_all else "direct",
+            "auto_detect_interface": True,
+        },
+        "experimental": {
+            "cache_file": {"enabled": True, "store_fakeip": fakeip_on,
+                           "path": "cache.db"},
+        },
+    }
 
 
 def make_vless_outbound(tag: str, server: str, port: int, uuid: str,
