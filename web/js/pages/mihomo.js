@@ -267,8 +267,8 @@ rules:
                                  font-size:12px; white-space:pre; overflow:auto;">${escapeHtml(editing.text)}</textarea>
                 <div style="display:flex; gap:8px; margin-top:8px;">
                     <button class="btn btn-primary btn-sm" onclick="MihomoPage.save()">Сохранить</button>
-                    ${!isNew ? `<button class="btn btn-ghost btn-sm"
-                        onclick="MihomoPage.validate()">Проверить (mihomo -t)</button>` : ''}
+                    <button class="btn btn-ghost btn-sm"
+                        onclick="MihomoPage.validate()">Проверить (mihomo -t)</button>
                 </div>
             </div>
         `;
@@ -328,9 +328,20 @@ rules:
     }
 
     async function validate() {
-        if (!editing || editing.isNew) return;
+        if (!editing) return;
+        // Проверяем то, что СЕЙЧАС в редакторе (а не сохранённое на диск) —
+        // иначе кнопка вводит в заблуждение после правок без «Сохранить».
+        const ta = document.getElementById('mh-edit-text');
+        const text = ta ? ta.value : undefined;
+        let name = editing.name;
+        if (editing.isNew) {
+            const ni = document.getElementById('mh-edit-name');
+            name = ((ni && ni.value) || '').trim() || '_editor';
+        }
         try {
-            const r = await API.post(`/api/mihomo/configs/${encodeURIComponent(editing.name)}/validate`);
+            const r = await API.post(
+                `/api/mihomo/configs/${encodeURIComponent(name)}/validate`,
+                { text });
             if (r && r.ok) Toast.success('Конфиг валиден');
             else Toast.error('mihomo -t: ' + ((r && (r.stderr || r.error)) || 'ошибка'));
         } catch (e) { Toast.error(e.message); }

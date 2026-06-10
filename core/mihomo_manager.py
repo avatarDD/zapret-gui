@@ -17,6 +17,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -216,16 +217,54 @@ class MihomoManager:
 
     # ─────── validate via binary ───────
 
-    def validate_via_binary(self, name: str) -> dict:
-        if not _valid_name(name):
-            return {"ok": False, "error": "Некорректное имя"}
+    def validate_via_binary(self, name: str, text: str = None) -> dict:
+        """
+        Проверка конфига бинарём: `mihomo -t -d <config_dir> -f <file>`.
+
+        `-d <config_dir>` ОБЯЗАТЕЛЕН и ставится таким же, как при реальном
+        запуске (_do_up). Без него mihomo ищет geoip/geosite-базы и
+        rule-/proxy-provider-файлы в текущем рабочем каталоге процесса GUI
+        и «ругается на конфиг», хотя при запуске (`-d config_dir`) всё на
+        месте — это и была причина ложных ошибок «Проверить (mihomo -t)».
+
+        Если передан `text`, проверяем именно его (несохранённое содержимое
+        редактора) через временный файл внутри config_dir — чтобы `-d`
+        находил geo-базы и провайдеры ровно как при сохранённом конфиге.
+        """
         binary = self._binary()
         if not binary:
             return {"ok": False, "error": "mihomo не установлен"}
-        path = self._platform().config_path(name)
-        if not os.path.isfile(path):
-            return {"ok": False, "error": "Конфиг не найден"}
-        rc, out, err = _run([binary, "-t", "-f", path], timeout=15)
+        platform = self._platform()
+        config_dir = platform.config_dir
+        self._ensure_dir(config_dir)
+
+        tmp_path = None
+        if text is not None:
+            try:
+                # tmp-файл вне списка конфигов (не *.yaml/*.yml).
+                fd, tmp_path = tempfile.mkstemp(
+                    prefix=".validate-", suffix=".tmp", dir=config_dir)
+                with os.fdopen(fd, "w") as f:
+                    f.write(text)
+            except OSError as e:
+                return {"ok": False, "error": "write tmp: %s" % e}
+            path = tmp_path
+        else:
+            if not _valid_name(name):
+                return {"ok": False, "error": "Некорректное имя"}
+            path = platform.config_path(name)
+            if not os.path.isfile(path):
+                return {"ok": False, "error": "Конфиг не найден"}
+
+        try:
+            rc, out, err = _run(
+                [binary, "-t", "-d", config_dir, "-f", path], timeout=15)
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
         return {"ok": rc == 0, "stdout": out, "stderr": err,
                 "returncode": rc}
 
@@ -271,8 +310,11 @@ class MihomoManager:
         if self.is_running(name):
             return {"ok": True, "already_running": True}
 
-        # Pre-flight: mihomo -t.
-        chk_rc, _o, chk_err = _run([binary, "-t", "-f", config], timeout=15)
+        # Pre-flight: mihomo -t (с тем же -d, что и при запуске, иначе
+        # geoip/geosite/провайдеры ищутся не там и проверка ложно падает).
+        chk_rc, _o, chk_err = _run(
+            [binary, "-t", "-d", platform.config_dir, "-f", config],
+            timeout=15)
         if chk_rc != 0:
             return {"ok": False, "error":
                     "mihomo -t %s: %s" % (name, (chk_err or "").strip())}

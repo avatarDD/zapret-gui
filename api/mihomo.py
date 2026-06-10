@@ -188,8 +188,15 @@ def register(app):
     @app.route("/api/mihomo/configs/<name>/validate", method="POST")
     def mihomo_configs_validate(name):
         response.content_type = "application/json; charset=utf-8"
+        # Опциональный body {text}: проверить несохранённое содержимое
+        # редактора. Без него — проверяется сохранённый на диск конфиг.
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        text = body.get("text") if isinstance(body, dict) else None
         from core.mihomo_manager import get_mihomo_manager
-        return get_mihomo_manager().validate_via_binary(name)
+        return get_mihomo_manager().validate_via_binary(name, text=text)
 
     # ─────── autostart ────────────────────────────────────────────
 

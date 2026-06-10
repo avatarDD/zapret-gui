@@ -12,6 +12,7 @@ const SingboxSetupPage = (() => {
     let manifest = null;
     let manifestError = '';
     let version = null;        // /api/singbox/version (installed + latest)
+    let latestState = 'idle';  // 'idle'|'loading'|'done' — проверка релиза (GitHub)
     let installState = { status: 'idle', progress: 0, message: '' };
 
     let pollTimer = null;
@@ -50,33 +51,48 @@ const SingboxSetupPage = (() => {
     // ══════════════ data ══════════════
 
     async function refresh() {
+        // Шаг 1 — БЫСТРАЯ локальная часть (платформа/TUN/установленная
+        // версия). Без сети, поэтому рисуем сразу и страница не «висит».
         try {
-            const [envResp, verResp] = await Promise.all([
-                API.post('/api/singbox/environment/refresh').catch(() => null),
-                API.get('/api/singbox/version').catch(() => null),
-            ]);
-            env     = envResp || null;
-            version = verResp || null;
+            env = await API.post('/api/singbox/environment/refresh')
+                           .catch(() => null);
         } catch (e) {
             // ignore
         }
+        renderContent();
 
-        // Manifest опционально — если нет интернета или нет релиза
+        // Шаг 2 — МЕДЛЕННАЯ часть (GitHub: версия в релизе + manifest).
+        // Грузим в фоне и перерисовываем, когда придёт, чтобы запрос к
+        // сети (на роутере он может тянуться десятки секунд) не блокировал
+        // открытие раздела.
+        loadLatest();
+    }
+
+    // Проверка «что в нашем релизе» — отдельно и асинхронно (см. refresh).
+    async function loadLatest() {
+        latestState = 'loading';
+        renderContent();
         try {
-            const r = await API.get('/api/singbox/manifest');
-            if (r && r.ok) {
-                manifest = r.manifest;
+            const [verResp, manResp] = await Promise.all([
+                API.get('/api/singbox/version').catch(() => null),
+                API.get('/api/singbox/manifest').catch(() => null),
+            ]);
+            version = verResp || null;
+            if (manResp && manResp.ok) {
+                manifest = manResp.manifest;
                 manifestError = '';
             } else {
                 manifest = null;
-                manifestError = (r && r.error) || 'Не удалось получить manifest';
+                manifestError = (manResp && manResp.error)
+                                || 'Не удалось получить manifest (нет сети/релиза)';
             }
         } catch (e) {
             manifest = null;
             manifestError = e.message;
+        } finally {
+            latestState = 'done';
+            renderContent();
         }
-
-        renderContent();
     }
 
     // ══════════════ poll install progress ══════════════
@@ -197,7 +213,12 @@ const SingboxSetupPage = (() => {
                         <div class="text-muted" style="font-size:11px;">
                             ${escapeHtml(bin.path || '')}
                         </div>` : ''}
-                    ${latestVersion ? `
+                    ${latestState === 'loading' ? `
+                        <div style="margin-top:4px;" class="text-muted">
+                            В нашем релизе: проверяю…
+                            <span class="spinner spinner-inline"></span>
+                        </div>`
+                      : latestVersion ? `
                         <div style="margin-top:4px;">
                             В нашем релизе: <strong>${escapeHtml(latestVersion)}</strong>
                             ${hasUpdate ? '<span style="color:#fb8;">— доступно обновление</span>' : ''}
