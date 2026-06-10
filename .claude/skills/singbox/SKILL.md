@@ -246,6 +246,11 @@ endpoint заменил старый `type:wireguard` outbound.
 > типизированные серверы; legacy-`address` всё ещё валиден как `type:legacy`,
 > но это путь к будущим поломкам. DNS-перехват у нас делается route-action
 > `hijack-dns`, а не спец-outbound `dns` (тот удалён, §9).
+>
+> ⚠️ **Реальность нашего кода:** мы **НЕ эмитим секцию `dns`** и **не
+> используем fakeip**. `hijack-dns` добавляется только в transparent-режиме с
+> `dns_port>0`. Доменный selective-routing через TUN у нас сделан на уровне
+> ОС, а не DNS движка — см. §13.
 
 ---
 
@@ -332,7 +337,53 @@ kort0881 → `*_for_mirror.txt`), `configs.txt`/`vless.txt` в корне мог
 
 ---
 
-## 13. Layout (где что)
+## 13. Наша selective-routing модель и DNS (и чем отличаемся от podkop)
+
+**Как мы заворачиваем выбранные ресурсы в sing-box-TUN** (единый слой,
+`core/unified`; см. `applier._apply_tunnel` + `geo_engine`):
+- **домены / CIDR** правит **НЕ sing-box, а ОС-роутинг** (`core/routing`:
+  dnsmasq + ipset/nftset + `ip rule`) — листовые домены резолвятся в ipset,
+  их IP маршрутизируются в TUN-интерфейс; sing-box просто форвардит всё, что
+  вошло в TUN, в прокси-outbound (`route.final`). DNS-leak частично закрывает
+  `core/routing/doh_resolver.py` (преднаполнение set'а через DoH).
+- **geosite / geoip** — нативные концепции движка, ОС их не выразит →
+  `geo_engine._inject_singbox` добавляет их как sing-box route-правила
+  (`domain_suffix/geosite/geoip → proxy`, `build_geo_route_rule`).
+- `set_tun_inbound()` добавляет `{"action":"sniff"}` (доменные правила
+  ВНУТРИ движка матчатся по SNI), но **`hijack_dns=False`** и **секцию `dns`
+  не генерирует**. `auto_route=false` по умолчанию (трафик в TUN загоняет
+  Selective routing через `ip rule`/ipset, а не сам sing-box).
+
+**podkop устроен наоборот — DNS-центрично:** dnsmasq → sing-box DNS с
+**FakeIP**; домены из списков получают fake-IP, диапазон fake-IP роутится в
+TUN, sing-box по fake-IP восстанавливает домен и проксирует. Маршрутизация
+управляется DNS/FakeIP внутри движка. podkop — **только OpenWrt 24.10+**
+(fw4/nftset + переписываемый dnsmasq). Списки доменов у обоих из одного
+источника — **itdoginfo/allow-domains** (наш `core/list_updater.py`).
+
+**Почему у нас иначе:** мультиплатформенность (Keenetic/Entware с NDM-dnsmasq
+и iptables, OpenWrt, Linux). На Keenetic нельзя свободно переписать резолвер
+на sing-box-fakeip, поэтому базовый путь — ОС-роутинг по ipset.
+
+**Известные ограничения нашего пути (которых нет у fakeip):**
+- DNS клиента для проксируемого домена может уйти мимо и зарезолвиться в IP
+  вне нашего ipset (geo-split CDN) → соединение не завернётся / лёгкий
+  DNS-leak; `doh_resolver` смягчает, но best-effort.
+- QUIC/ECH (шифрованный ClientHello) ломает SNI-sniff → доменные правила
+  ВНУТРИ движка не сработают (fakeip сработал бы).
+- Режим «весь трафик» (`auto_route=true`) без секции `dns` → системный
+  резолвер может течь.
+
+**Возможность (НЕ реализовано):** опциональный режим **fakeip + hijack-dns**
+для платформ, где резолвер можно перенаправить в sing-box (OpenWrt; Keenetic —
+через dns-override). Дал бы podkop-уровень надёжности доменного роутинга.
+Требует генерации `dns`-секции (`servers:[{type:fakeip,...},{type:udp,...}]`,
+`fakeip:{enabled,inet4_range}`) + `experimental.cache_file.store_fakeip` в
+`singbox_config`.
+
+---
+
+## 14. Layout (где что)
 
 - Бинарь: `singbox_detector.detect_binary()` (Entware: `/opt/sbin/sing-box`).
 - Конфиги: `platform.config_dir` (`/opt/etc/sing-box/` | `/etc/sing-box/`).
