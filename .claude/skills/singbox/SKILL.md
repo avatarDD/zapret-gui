@@ -393,9 +393,25 @@ TUN, sing-box по fake-IP восстанавливает домен и прок
   (`web/js/pages/singbox.js`): ссылка/конфиг прокси, чекбоксы списков,
   доп. домены/подсети, прямой DNS, режим «весь трафик».
 
-Ограничение: FakeIP требует, чтобы клиентский DNS доходил до движка. На nft
-это делает `auto_redirect`; иначе LAN-клиенты должны ходить через роутер
-(шлюз/DNS) — об этом в карточке есть подсказка.
+**DNS-перехват LAN-клиентов** (FakeIP работает, только если их DNS доходит до
+движка):
+- **nft** (OpenWrt): `auto_redirect` TUN сам забирает forwarded :53 → ничего
+  не нужно.
+- **iptables** (Keenetic): конфиг несёт `dns-in` direct-inbound на `dns_port`
+  (1153), а `SingboxManager` на **старте** ставит REDIRECT udp/tcp `:53 →
+  dns_port` и на **остановке** снимает (живёт ровно пока конфиг запущен —
+  иначе LAN остался бы без DNS). Сделано через `singbox_transparent`
+  **`mode="dns-only"`** (только DNS-hijack, без traffic-redirect; своя
+  цепочка `SBT_REDIR_PRE` в nat PREROUTING — локальный DNS роутера/движка в
+  OUTPUT не трогается → без петли). Состояние сохраняется как
+  `singbox.transparent={mode:dns-only,...}`, поэтому переживает перезагрузку
+  через штатный `--apply-singbox-transparent`. Сигнал «этому конфигу нужен
+  перехват» — наличие inbound'а `tag=dns-in` (`_config_dns_in_port`).
+  Конфликт-гард: если активно прозрачное проксирование (redirect/tproxy) —
+  dns-only не ставится (общие цепочки).
+- Управление — чекбокс «Перехватывать DNS LAN-клиентов» в карточке FakeIP
+  (`capture_dns`, по умолчанию вкл); `build_and_save` возвращает `dns_capture`
+  ∈ {auto_redirect, iptables-redirect, manual}.
 
 ---
 

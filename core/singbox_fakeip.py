@@ -116,7 +116,8 @@ def build_and_save(*, name: str = "fakeip", proxy_link: str = "",
                    proxy_config: str = "", hostlists=None, domains=None,
                    cidrs=None, direct_dns: str = "local",
                    route_all: bool = False, tun_iface: str = "singbox-tun",
-                   stack: str = "system") -> dict:
+                   stack: str = "system", capture_dns: bool = True,
+                   dns_port: int = 1153) -> dict:
     from core.singbox_config import build_fakeip_config, render_conf
     from core.singbox_manager import get_singbox_manager
     from core.singbox_platform import detect_singbox_platform
@@ -146,18 +147,22 @@ def build_and_save(*, name: str = "fakeip", proxy_link: str = "",
                 "error": "выберите списки/домены/подсети для проксирования "
                          "или включите режим «весь трафик»"}
 
-    auto_redirect = False
+    nft = False
     try:
-        auto_redirect = bool(detect_singbox_platform().supports_nftables())
+        nft = bool(detect_singbox_platform().supports_nftables())
     except Exception:
         pass
+    # nft: forwarded DNS забирает auto_redirect TUN. iptables (Keenetic):
+    # нужен REDIRECT :53 → dns-in порт (его ставит SingboxManager на старте).
+    auto_redirect = nft
+    fw_capture = bool(capture_dns) and not nft
 
     def _mk(typed: bool):
         cfg = build_fakeip_config(
             proxy_outbound=proxy_outbound, proxied_domains=proxied,
             proxied_cidrs=cidrs, route_all=route_all, direct_dns=direct_dns,
             tun_iface=tun_iface, stack=stack, auto_redirect=auto_redirect,
-            typed_dns=typed)
+            typed_dns=typed, capture_dns=fw_capture, dns_port=dns_port)
         return render_conf(cfg)
 
     # Порядок форматов: для свежих движков (≥1.14, legacy-DNS удалён) — typed
@@ -193,14 +198,22 @@ def build_and_save(*, name: str = "fakeip", proxy_link: str = "",
         return {"ok": False, "error": save.get("error")}
 
     fakeip_on = (not route_all) and bool(proxied)
+    if nft and capture_dns:
+        dns_capture = "auto_redirect"     # TUN auto_redirect сам ловит :53
+    elif fw_capture:
+        dns_capture = "iptables-redirect"  # REDIRECT :53 ставит менеджер на up
+    else:
+        dns_capture = "manual"             # LAN-клиенты должны слать DNS на роутер
     log.info("singbox FakeIP: конфиг '%s' создан (формат=%s, домены=%d, "
-             "подсети=%d, режим=%s)" % (name, fmt, len(proxied), len(cidrs),
-                                        "всё" if route_all else "выборочно"),
+             "подсети=%d, режим=%s, dns=%s)"
+             % (name, fmt, len(proxied), len(cidrs),
+                "всё" if route_all else "выборочно", dns_capture),
              source="singbox")
     return {
         "ok": True, "name": name, "dns_format": fmt, "fakeip": fakeip_on,
         "route_all": bool(route_all), "domains": len(proxied),
         "cidrs": len(cidrs), "auto_redirect": auto_redirect,
+        "dns_capture": dns_capture,
         "warning": warning,
         "warnings": save.get("warnings") or [],
     }

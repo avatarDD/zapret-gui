@@ -228,6 +228,78 @@ class SingboxManager:
         return {"ok": True, "name": name, "path": path, "exists": True,
                 "log": _tail_file(path, lines), "debug": self._debug_enabled()}
 
+    # ─────── FakeIP DNS-capture (firewall :53 → движок) ───────
+    #
+    # FakeIP работает, только если клиентский DNS доходит до движка. На nft
+    # это делает auto_redirect TUN. На iptables (Keenetic) нужен REDIRECT
+    # udp/tcp :53 → dns-in порт конфига. Сигнал «этому конфигу нужен перехват»
+    # — наличие inbound'а с tag=dns-in. Правило живёт РОВНО пока конфиг
+    # запущен (иначе :53 уходит в никуда → LAN без DNS): ставим на up, снимаем
+    # на down; для переживания перезагрузки сохраняем как transparent
+    # mode=dns-only (его переподнимает штатный --apply-singbox-transparent).
+
+    def _config_dns_in_port(self, name: str) -> int:
+        """Порт dns-in inbound'а конфига (FakeIP-перехват), иначе 0."""
+        try:
+            cfg = self.get_config(name).get("parsed") or {}
+            for ib in cfg.get("inbounds") or []:
+                if (isinstance(ib, dict) and ib.get("tag") == "dns-in"
+                        and ib.get("type") == "direct"):
+                    return int(ib.get("listen_port") or 0)
+        except Exception:
+            pass
+        return 0
+
+    def _apply_dns_capture(self, port: int):
+        if port <= 0:
+            return
+        try:
+            from core.singbox_platform import detect_singbox_platform
+            if detect_singbox_platform().supports_nftables():
+                return            # nft: auto_redirect TUN сам забирает DNS
+        except Exception:
+            pass
+        try:
+            from core import singbox_transparent as tp
+            if not tp.available("v4"):
+                return
+            from core.config_manager import get_config_manager
+            cm = get_config_manager()
+            saved = cm.get("singbox", "transparent", default={}) or {}
+            if saved.get("mode") and saved.get("mode") != "dns-only":
+                log.warning("singbox FakeIP: активно прозрачное "
+                            "проксирование (%s) — DNS-перехват не ставлю "
+                            "(конфликт цепочек)" % saved.get("mode"),
+                            source="singbox")
+                return
+            cm.set("singbox", "transparent",
+                   {"mode": "dns-only", "dns_hijack_port": int(port),
+                    "families": ["v4"]})
+            cm.save()
+            res = tp.apply(mode="dns-only", dns_hijack_port=int(port),
+                           families=("v4",), backend="iptables")
+            log.info("singbox FakeIP: DNS-перехват :53→%d %s"
+                     % (port, "ok" if res.get("ok")
+                        else ("; ".join(res.get("errors") or []))),
+                     source="singbox")
+        except Exception as e:
+            log.warning("singbox FakeIP dns-capture: %s" % e, source="singbox")
+
+    def _remove_dns_capture(self):
+        try:
+            from core import singbox_transparent as tp
+            from core.config_manager import get_config_manager
+            cm = get_config_manager()
+            saved = cm.get("singbox", "transparent", default={}) or {}
+            if saved.get("mode") == "dns-only":
+                tp.remove()
+                cm.set("singbox", "transparent", {})
+                cm.save()
+                log.info("singbox FakeIP: DNS-перехват снят", source="singbox")
+        except Exception as e:
+            log.warning("singbox FakeIP dns-capture remove: %s" % e,
+                        source="singbox")
+
     # ─────── CRUD ───────
 
     def list_configs(self) -> list:
@@ -495,6 +567,10 @@ class SingboxManager:
                              % popen.returncode,
                     "log_tail": tail}
 
+        # FakeIP: если у конфига есть dns-in inbound — поднять REDIRECT :53
+        # (живёт ровно пока конфиг запущен).
+        self._apply_dns_capture(self._config_dns_in_port(name))
+
         log.info("singbox: запущен '%s' (pid=%d)%s" % (
             name, popen.pid, " [debug]" if extra_cfg else ""),
                  source="singbox")
@@ -534,6 +610,10 @@ class SingboxManager:
             os.remove(pid_file)
         except OSError:
             pass
+
+        # FakeIP: снять REDIRECT :53, если этот конфиг его ставил.
+        if self._config_dns_in_port(name):
+            self._remove_dns_capture()
 
         log.info("singbox: остановлен '%s' (pid=%d)" % (name, pid),
                  source="singbox")

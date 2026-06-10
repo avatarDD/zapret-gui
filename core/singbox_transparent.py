@@ -525,7 +525,7 @@ def apply(*, mode: str,
                    когда 'v6' не в families.
       backend: 'auto' | 'iptables' | 'nftables'.
     """
-    if mode not in ("redirect", "tproxy", "hybrid"):
+    if mode not in ("redirect", "tproxy", "hybrid", "dns-only"):
         return {"ok": False, "error": "Неизвестный режим: %s" % mode}
 
     chosen = choose_backend(backend)
@@ -607,11 +607,20 @@ def apply(*, mode: str,
             errors.extend(r.get("errors", []))
 
         if dns_hijack_port:
-            via = "redirect" if mode == "redirect" else "tproxy"
+            # tproxy/hybrid → DNS через mangle TPROXY (MANGLE_PRE уже создан);
+            # redirect/dns-only → nat REDIRECT (NAT_PRE). В dns-only цепочку
+            # NAT_PRE никто не создавал — создаём/чистим/джампим её здесь
+            # (трафик через TUN+auto_route, firewall только заворачивает :53).
+            via = "tproxy" if mode in ("tproxy", "hybrid") else "redirect"
+            if via == "redirect" and mode == "dns-only":
+                _ensure_chain(family, "nat", NAT_PRE)
+                _flush_chain(family, "nat", NAT_PRE)
             for argv in build_dns_hijack_rules(
                     family=family, dns_port=dns_hijack_port,
                     lan_ifaces=lan_ifaces, via=via, mark=mark):
                 _exec(argv)
+            if via == "redirect" and mode == "dns-only":
+                _ensure_jump(family, "nat", "PREROUTING", NAT_PRE)
 
     # IPv6 anti-leak: если v6 не проксируем и политика drop — глушим
     # форвард-IPv6, чтобы клиенты не ходили мимо.

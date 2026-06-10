@@ -33,7 +33,7 @@ const SingboxDashboardPage = (() => {
     let fakeipForm = {               // состояние формы FakeIP-роутинга
         name: 'fakeip', source: 'link', proxy_link: '', proxy_config: '',
         route_all: false, hostlists: {}, domains: '', cidrs: '',
-        direct_dns: 'local', stack: 'system',
+        direct_dns: 'local', stack: 'system', capture_dns: true,
     };
 
     // ══════════════ render ══════════════
@@ -666,8 +666,8 @@ const SingboxDashboardPage = (() => {
             </label>`).join('') || '<span class="text-muted" style="font-size:12px;">нет списков</span>';
 
         const autoNote = o.nft
-            ? 'Платформа nftables: трафик LAN-клиентов забирается автоматически (auto_redirect).'
-            : 'Платформа без nftables: LAN-клиенты должны использовать роутер как шлюз/DNS.';
+            ? 'Платформа nftables: DNS и трафик LAN-клиентов забираются автоматически (auto_redirect TUN).'
+            : 'Платформа iptables (Keenetic): при включённом перехвате правило REDIRECT :53 ставится автоматически на время работы конфига (снимается при остановке). LAN-клиенты должны ходить через роутер как шлюз.';
 
         body.innerHTML = `
             <p class="text-muted" style="font-size:12.5px; margin-top:0;">
@@ -724,6 +724,12 @@ const SingboxDashboardPage = (() => {
                     <span class="text-muted" style="font-size:11px;">local = системный резолвер; или IP, напр. 77.88.8.8</span>
                 </label>
 
+                <label style="display:flex; align-items:center; gap:6px; font-size:12px;">
+                    <input type="checkbox" ${f.capture_dns ? 'checked' : ''}
+                           onchange="SingboxDashboardPage.setFakeip('capture_dns', this.checked)">
+                    Перехватывать DNS LAN-клиентов автоматически (нужно для FakeIP)
+                </label>
+
                 <div class="text-muted" style="font-size:11px;">${escapeHtml(autoNote)}</div>
 
                 <div>
@@ -760,7 +766,7 @@ const SingboxDashboardPage = (() => {
             hostlists: hostlists,
             domains: f.domains, cidrs: f.cidrs,
             direct_dns: f.direct_dns.trim() || 'local',
-            stack: f.stack,
+            stack: f.stack, capture_dns: f.capture_dns,
         };
         fakeipBusy = true;
         const btn = document.getElementById('sb-fakeip-create');
@@ -772,6 +778,9 @@ const SingboxDashboardPage = (() => {
                     : `${r.domains} доменов${r.cidrs ? ', ' + r.cidrs + ' подсетей' : ''}`;
                 Toast.success(`Конфиг «${r.name}» создан (${mode}, DNS=${r.dns_format}). Запустите его в списке выше.`);
                 if (r.warning) Toast.error(r.warning, 8000);
+                if (r.dns_capture === 'manual') {
+                    Toast.error('Авто-перехват DNS недоступен/выключен — FakeIP сработает, только если DNS клиентов идёт через этот sing-box (укажите роутер как DNS).', 10000);
+                }
                 await refresh();
             } else {
                 Toast.error((r && r.error) || 'ошибка создания');
