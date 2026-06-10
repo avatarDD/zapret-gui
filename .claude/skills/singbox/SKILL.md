@@ -9,8 +9,9 @@ description: >-
   uTLS/ECH, transport (ws/grpc/httpupgrade/h2/quic), multiplex, прозрачном
   проксировании (tproxy/redirect/tun), подписках и пуле серверов
   (server_pool, subscription_*), парсинге vless:// vmess:// ss:// trojan://
-  hysteria2:// tuic://, миграциях версий 1.11/1.12/1.13 (удалённые block/dns
-  outbounds, legacy inbound-поля, новый формат DNS), режиме отладки и
+  hysteria2:// tuic://, миграциях версий 1.11/1.12/1.13/1.14 (geoip/geosite
+  удалены в 1.12, block/dns outbounds + legacy inbound-поля + wireguard outbound
+  удалены в 1.13, новый формат DNS с 1.12 и удаление legacy-DNS в 1.14), отладке и
   диагностике «sing-box не запускается / конфиг не валиден / прокси не
   работает». Источник истины — sing-box.sagernet.org + sagernet/sing-box,
   привязка — наш код core/singbox_*.py, api/singbox.py, web/js/pages/singbox*.js.
@@ -191,7 +192,9 @@ debug ушёл. Просмотр лога: `GET /api/singbox/configs/<name>/log?
 
 ### 5.3 Endpoints (1.11+)
 `endpoints` (отдельно от outbounds): `wireguard`, `tailscale`. WireGuard как
-endpoint заменил старый `type:wireguard` outbound.
+endpoint заменил старый `type:wireguard` outbound (он deprecated в 1.11 и
+**удалён в 1.13.0** — на 1.13+ `{"type":"wireguard"}` в `outbounds` не парсится,
+нужен `endpoints`). Это встроенный WG sing-box; про AmneziaWG-туннели — skill `awg`.
 
 ### 5.4 TLS / Transport / Multiplex (вложенные объекты)
 - **tls**: `enabled`, `server_name`(SNI), `insecure`, `alpn`,
@@ -213,6 +216,10 @@ endpoint заменил старый `type:wireguard` outbound.
 `domain`/`domain_suffix`/`domain_keyword`/`domain_regex`, `ip_cidr`,
 `source_ip_cidr`, `port`/`port_range`, `network`(tcp/udp), `clash_mode`,
 `rule_set`, и т.д.
+
+> ⚠️ **`geoip`/`geosite` как матчеры route-правил УДАЛЕНЫ в 1.12.0** (deprecated
+> с 1.8). На 1.12+ конфиг с `{"geosite":...}`/`{"geoip":...}` в `route.rules` не
+> парсится — замена — `rule_set` (бинарные `.srs`) либо `ip_cidr`/`domain_suffix`.
 
 **Actions (это и есть «новая модель» 1.11+):**
 | action | смысл | ключевые параметры |
@@ -238,9 +245,10 @@ endpoint заменил старый `type:wireguard` outbound.
   `strategy`.
 - **С 1.12 (типизированный):** `dns.servers[].type` ∈ `udp | tcp | tls |
   https | quic | h3 | local | hosts | dhcp | fakeip | tailscale | resolved`,
-  плюс `type:legacy` для старого address-формата (старое всё ещё принимается
-  через `legacy`). Структура: `servers[]`, `rules[]`, `final`, `strategy`,
-  `independent_cache`, `client_subnet`.
+  плюс `type:legacy` для старого address-формата. Структура: `servers[]`,
+  `rules[]`, `final`, `strategy`, `independent_cache`, `client_subnet`.
+  ⚠️ **legacy address-формат (и `type:legacy`) УДАЛЁН в 1.14.0** — на 1.14+
+  конфиг с `dns.servers[].address` не запустится, только typed-серверы.
 
 > При генерации DNS-секции учитывай целевую версию: на 1.12+ предпочитай
 > типизированные серверы; legacy-`address` всё ещё валиден как `type:legacy`,
@@ -268,19 +276,23 @@ endpoint заменил старый `type:wireguard` outbound.
 
 ## 9. Миграции версий — таблица «что удалено» (ГЛАВНОЕ при «не работает»)
 
-| Версия | Удалено / изменено | Замена | Наш статус |
-|--------|--------------------|--------|-----------|
-| 1.8 | `geoip`, `geosite` (deprecated) | `rule_set` (бинарные `.srs`) | используем ipset/hostlist + rule-set при импорте |
-| 1.11 | спец-outbounds **`block`**, **`dns`** (deprecated) | `reject` / `hijack-dns` rule-actions | `block` убран из `make_minimal_config`; dns-hijack через route |
-| 1.11 | inbound-поля `sniff*`, `domain_strategy` (deprecated) | rule-actions `sniff` / `resolve` | `make_sniff_rule()` |
-| 1.12 | формат `dns` (типизированные серверы) | `type:...`/`type:legacy` | см. §7 |
-| **1.13** | **ФАКТИЧЕСКИ УДАЛЕНЫ** всё, что было deprecated в 1.11: `block`/`dns` outbounds и legacy inbound-поля | как выше | issue #149 — наш фикс; `validate()` оставляет block/dns в «известных типах» только для ЧТЕНИЯ чужих старых конфигов |
+Сверено с офиц. `sing-box.sagernet.org/deprecated` + `/migration`
+(deprecated ≠ removed — важно различать версию объявления и версию удаления):
 
-> Симптомы на 1.13: `FATAL ... legacy inbound fields ... removed in sing-box
-> 1.13.0` (legacy sniff) или падение на `{"type":"block"|"dns"}`. Лечится
-> переходом на rule-actions. Наш генератор уже чистый; импортированные/ручные
-> конфиги пользователя — нет, поэтому существует pre-flight `check` и режим
-> отладки.
+| Версия | Что произошло | Замена | Наш статус |
+|--------|---------------|--------|-----------|
+| 1.8 | deprecated: `geoip`, `geosite` | `rule_set` (бинарные `.srs`) | ipset/hostlist + rule-set при импорте |
+| 1.11 | deprecated: спец-outbounds **`block`**/**`dns`**; inbound-поля `sniff*`/`domain_strategy`; outbound `wireguard` | rule-actions `reject`/`hijack-dns`/`sniff`/`resolve`; `endpoints` для WG | `block` убран из `make_minimal_config`; sniff/dns-hijack через route |
+| **1.12** | **УДАЛЕНЫ `geoip`/`geosite`** (как route-матчеры); формат `dns` переписан на типизированные серверы (legacy-`address` пока принимается) | `rule_set`; `type:udp/tcp/tls/…` | geo — через ipset/rule-set; DNS см. §7 |
+| **1.13** | **УДАЛЕНЫ** `block`/`dns` outbounds, legacy inbound-поля (`sniff*`/`domain_strategy`), старый outbound `type:wireguard` | как deprecated в 1.11 | issue #149 — генератор чистый; `validate()` держит block/dns в «известных типах» только для ЧТЕНИЯ старых чужих конфигов |
+| **1.14** (latest — 1.14.0-alpha) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`); deprecated: inline `tls.acme`, address-filter поля DNS-правил (→ action `evaluate`), `independent_cache` (убрано), `store_rdrc`→`store_dns` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed |
+
+> Симптомы по версиям: на 1.12+ — падение на `{"geosite":…}`/`{"geoip":…}` в
+> route или на legacy-DNS уже на 1.14; на 1.13 — `FATAL ... legacy inbound
+> fields ... removed in sing-box 1.13.0` (legacy sniff) либо падение на
+> `{"type":"block"|"dns"|"wireguard"}`. Лечится переходом на rule-actions/
+> rule_set/endpoints/typed-DNS. Наш генератор уже чистый; импортированные/ручные
+> конфиги пользователя — нет, поэтому существует pre-flight `check` и режим отладки.
 
 ---
 
