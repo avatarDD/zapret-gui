@@ -182,7 +182,9 @@ def make_minimal_config(*, listen_port: int = 1080,
             # vless / trojan / hysteria2 outbound с tag=outbound_tag.
             {"type": "direct", "tag": outbound_tag},
             {"type": "direct", "tag": "direct"},
-            {"type": "block",  "tag": "block"},
+            # NB: спец-outbound {"type":"block"} здесь НЕ добавляем — он
+            # deprecated с 1.11 и УДАЛЁН в sing-box 1.13 (заменён route-
+            # action "reject"); неиспользуемый block ронял конфиг на 1.13.
         ],
         "route": {
             "rules": [

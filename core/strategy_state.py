@@ -27,7 +27,6 @@ z2k-state-persist.lua оборачивает функцию `circular` из zapr
 """
 
 import errno
-import fcntl
 import os
 import re
 import shutil
@@ -42,6 +41,10 @@ DEFAULT_STATE_DIR = "/opt/etc/zapret-gui/state/autocircular"
 STATE_FILE_NAME = "state.tsv"
 STATE_FILE_FALLBACK = "/tmp/z2k-autocircular-state.tsv"
 LOCK_SUFFIX = ".lock"
+
+# Lua (z2k-state-persist.lua) считает lock протухшим спустя столько секунд —
+# держим то же значение, чтобы протоколы совпадали байт-в-байт.
+LOCK_STALE_SEC = 10
 
 # Тот же заголовок, который пишет z2k-state-persist.lua — чтобы наш rewrite
 # не отличался для глаз и для merge'а в Lua.
@@ -110,22 +113,70 @@ def _flock_path(path: str) -> str:
     return path + LOCK_SUFFIX
 
 
-def _flock_exclusive(lock_path: str):
-    """Открыть/создать lock-файл и взять exclusive flock. Возвращает fd."""
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    return fd
+# ВАЖНО (issue #151). Python и Lua (nfqws2) пишут в ОДИН state.tsv и берут
+# ОДИН state.tsv.lock. Lua использует lock-файл с unix-ts внутри: свежий
+# (<10s) = «занято другим писателем», протухший = «красть». Раньше Python
+# брал на этом же файле fcntl.flock (advisory) — но Lua про flock не знает,
+# а после release Python оставлял ПУСТОЙ .lock. Lua читал пустой файл,
+# tonumber("")=nil, и его проверка протухания не срабатывала → Lua считал
+# лок «занятым навсегда» и больше НЕ МОГ писать state. Итог: после «Сбросить
+# всё» / авто-починки (healthcheck) подбор стратегий замирал, сайты не
+# грузились, пока .lock не удалят вручную. Теперь Python говорит на ТОМ ЖЕ
+# протоколе: пишет ts, крадёт пустой/протухший лок и УДАЛЯЕТ .lock на release.
+def _acquire_lock(path: str, timeout: float = 2.0):
+    """Взять Lua-совместимый ts-lock на ``path + .lock``.
+
+    Возвращает путь lock-файла при успехе (caller обязан вызвать
+    ``_release_lock``), либо None, если лок держит свежий писатель дольше
+    ``timeout``."""
+    lockfile = _flock_path(path)
+    deadline = time.time() + timeout
+    while True:
+        # Сначала пробуем украсть пустой/битый/протухший lock (как Lua).
+        try:
+            with open(lockfile, "r") as f:
+                content = (f.read() or "").strip()
+            try:
+                ts = float(content) if content else None
+            except ValueError:
+                ts = None
+            if ts is None or (time.time() - ts) > LOCK_STALE_SEC:
+                try:
+                    os.remove(lockfile)
+                except OSError:
+                    pass
+            elif time.time() < deadline:
+                time.sleep(0.05)
+                continue
+            else:
+                return None          # держит свежий писатель — сдаёмся
+        except OSError:
+            pass                     # файла нет — свободно
+        # Эксклюзивное создание (как Lua "wx"); проигравший в гонке — ждёт.
+        try:
+            fd = os.open(lockfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            if time.time() < deadline:
+                time.sleep(0.05)
+                continue
+            return None
+        except OSError:
+            return None
+        try:
+            os.write(fd, str(int(time.time())).encode("ascii"))
+        finally:
+            os.close(fd)
+        return lockfile
 
 
-def _flock_release(fd: int):
-    try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    except OSError:
-        pass
-    try:
-        os.close(fd)
-    except OSError:
-        pass
+def _release_lock(lockfile):
+    """Снять lock — УДАЛИТЬ файл (как release_lock() в Lua). Никогда не
+    оставляем пустой .lock, иначе заблокируем Lua-писателя (issue #151)."""
+    if lockfile:
+        try:
+            os.remove(lockfile)
+        except OSError:
+            pass
 
 
 # ──────────────────────── Public API ────────────────────────
@@ -212,9 +263,13 @@ def clear_all() -> dict:
         for path in _candidate_files():
             if not os.path.isfile(path):
                 continue
-            fd = None
+            lockfile = None
             try:
-                fd = _flock_exclusive(_flock_path(path))
+                lockfile = _acquire_lock(path)
+                if lockfile is None:
+                    log.warning("strategy_state.clear_all: lock занят, "
+                                "пропускаем %s" % path, source="strategy")
+                    continue
                 entries = list_entries()
                 # Удаляем все, оставляем пустой файл с заголовком — Lua
                 # merge_state_file_into прочитает его и не «оживит» удалённое.
@@ -224,8 +279,7 @@ def clear_all() -> dict:
                 log.error("strategy_state.clear_all: %s — %s" % (path, e),
                           source="strategy")
             finally:
-                if fd is not None:
-                    _flock_release(fd)
+                _release_lock(lockfile)
         log.info("Очищен autocircular-state (удалено записей: %d)" % removed,
                  source="strategy")
         return {"ok": True, "removed": removed}
@@ -241,9 +295,13 @@ def clear_host(host: str) -> dict:
         for path in _candidate_files():
             if not os.path.isfile(path):
                 continue
-            fd = None
+            lockfile = None
             try:
-                fd = _flock_exclusive(_flock_path(path))
+                lockfile = _acquire_lock(path)
+                if lockfile is None:
+                    log.warning("strategy_state.clear_host: lock занят, "
+                                "пропускаем %s" % path, source="strategy")
+                    continue
                 # Читаем именно из этого файла (без merge), чтобы не
                 # размазывать удаление по обоим кандидатам.
                 entries = _read_one(path)
@@ -254,8 +312,7 @@ def clear_host(host: str) -> dict:
                 log.error("strategy_state.clear_host: %s — %s" % (path, e),
                           source="strategy")
             finally:
-                if fd is not None:
-                    _flock_release(fd)
+                _release_lock(lockfile)
         log.info("Сброшен autocircular-state для host=%s (удалено: %d)"
                  % (host, removed), source="strategy")
         return {"ok": True, "removed": removed, "host": host}
@@ -270,9 +327,13 @@ def clear_key(key: str) -> dict:
         for path in _candidate_files():
             if not os.path.isfile(path):
                 continue
-            fd = None
+            lockfile = None
             try:
-                fd = _flock_exclusive(_flock_path(path))
+                lockfile = _acquire_lock(path)
+                if lockfile is None:
+                    log.warning("strategy_state.clear_key: lock занят, "
+                                "пропускаем %s" % path, source="strategy")
+                    continue
                 entries = _read_one(path)
                 kept = _filter_entries(entries, key=key)
                 _rewrite_locked(path, kept)
@@ -281,8 +342,7 @@ def clear_key(key: str) -> dict:
                 log.error("strategy_state.clear_key: %s — %s" % (path, e),
                           source="strategy")
             finally:
-                if fd is not None:
-                    _flock_release(fd)
+                _release_lock(lockfile)
         log.info("Сброшен autocircular-state для key=%s (удалено: %d)"
                  % (key, removed), source="strategy")
         return {"ok": True, "removed": removed, "key": key}

@@ -570,6 +570,43 @@ def register(app):
         from core.singbox_manager import get_singbox_manager
         return get_singbox_manager().validate_via_binary(name)
 
+    @app.route("/api/singbox/configs/<name>/log")
+    def singbox_configs_log(name):
+        """Хвост лог-файла инстанса — «видно, почему не работает» (#149)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.singbox_manager import get_singbox_manager
+        try:
+            lines = int(request.query.get("lines") or 200)
+        except (TypeError, ValueError):
+            lines = 200
+        res = get_singbox_manager().read_log(name, lines)
+        if not res.get("ok"):
+            response.status = 400
+        return res
+
+    @app.route("/api/singbox/debug")
+    def singbox_debug_get():
+        """Состояние режима отладки (log.level=debug при запуске)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.singbox_manager import get_singbox_manager
+        return get_singbox_manager().get_debug()
+
+    @app.route("/api/singbox/debug", method="POST")
+    def singbox_debug_set():
+        """Включить/выключить режим отладки. Применяется при следующем
+        запуске/перезапуске инстанса."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.singbox_manager import get_singbox_manager
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled"))
+        res = get_singbox_manager().set_debug(enabled)
+        if not res.get("ok"):
+            response.status = 500
+        return res
+
     # ─────── outbounds CRUD (для Outbounds Builder UI) ────────────
 
     @app.route("/api/singbox/configs/<name>/outbounds")

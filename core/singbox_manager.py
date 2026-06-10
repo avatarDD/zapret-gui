@@ -142,6 +142,92 @@ class SingboxManager:
         except OSError:
             pass
 
+    # ─────── debug mode ───────
+    #
+    # «Режим отладки»: видно, ПОЧЕМУ конфиг/прокси не работает (issue #149 —
+    # vless/Hysteria2 до VPS «молча» не поднимались). Реализован как overlay-
+    # конфиг {"log":{"level":"debug"}}, который подмешивается ВТОРЫМ файлом
+    # `-c` при запуске (sing-box объединяет несколько -c). Так debug-уровень
+    # включается для ЛЮБОГО конфига (в т.ч. импортированного/ручного) и НЕ
+    # пишется в сам файл — выключил тумблер, перезапустил, debug ушёл.
+
+    def _debug_enabled(self) -> bool:
+        try:
+            from core.config_manager import get_config_manager
+            return bool(get_config_manager().get("singbox", "debug_log",
+                                                  default=False))
+        except Exception:
+            return False
+
+    def _debug_overlay_path(self) -> str:
+        return os.path.join(self._platform().run_dir, "_zg-debug.json")
+
+    def _ensure_debug_overlay(self):
+        """Записать overlay-конфиг с debug-логом. Возвращает путь или None."""
+        self._ensure_run_dir()
+        path = self._debug_overlay_path()
+        overlay = {"log": {"disabled": False, "level": "debug",
+                           "timestamp": True}}
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(overlay, f)
+            os.replace(tmp, path)
+            return path
+        except OSError as e:
+            log.warning("singbox: не удалось записать debug-overlay: %s" % e,
+                        source="singbox")
+            return None
+
+    def _debug_extra_cfg(self, binary: str, config: str) -> list:
+        """Если включён debug И этот билд sing-box умеет merge нескольких -c —
+        вернуть ['-c', overlay]; иначе []. Проверяем merge через `check`, чтобы
+        НИКОГДА не сломать старт на билдах без поддержки (graceful)."""
+        if not self._debug_enabled():
+            return []
+        overlay = self._ensure_debug_overlay()
+        if not overlay:
+            return []
+        rc, _o, _e = _run([binary, "check", "-c", config, "-c", overlay],
+                          timeout=10)
+        if rc == 0:
+            return ["-c", overlay]
+        log.warning("singbox: этот билд не поддерживает merge -c, debug-лог "
+                    "не применён (конфиг стартует на обычном уровне)",
+                    source="singbox")
+        return []
+
+    def get_debug(self) -> dict:
+        return {"ok": True, "enabled": self._debug_enabled()}
+
+    def set_debug(self, enabled: bool) -> dict:
+        try:
+            from core.config_manager import get_config_manager
+            cm = get_config_manager()
+            cm.set("singbox", "debug_log", bool(enabled))
+            cm.save()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        log.info("singbox: режим отладки %s" % ("включён" if enabled
+                                                else "выключен"),
+                 source="singbox")
+        return {"ok": True, "enabled": bool(enabled)}
+
+    def read_log(self, name: str, lines: int = 200) -> dict:
+        """Хвост лог-файла инстанса (для просмотра в UI)."""
+        if not _valid_name(name):
+            return {"ok": False, "error": "Некорректное имя"}
+        path = self._platform().log_path(name)
+        try:
+            lines = max(1, min(2000, int(lines)))
+        except (TypeError, ValueError):
+            lines = 200
+        if not os.path.isfile(path):
+            return {"ok": True, "name": name, "path": path,
+                    "exists": False, "log": ""}
+        return {"ok": True, "name": name, "path": path, "exists": True,
+                "log": _tail_file(path, lines), "debug": self._debug_enabled()}
+
     # ─────── CRUD ───────
 
     def list_configs(self) -> list:
@@ -327,10 +413,14 @@ class SingboxManager:
         if self.is_running(name):
             return {"ok": True, "already_running": True}
 
+        # Режим отладки: подмешиваем overlay с log.level=debug (если билд
+        # умеет merge нескольких -c). Тот же набор -c уходит и в check, и в run.
+        extra_cfg = self._debug_extra_cfg(binary, config)
+
         # Pre-flight: спросим у самого sing-box, валиден ли конфиг.
         # Если нет — не пытаемся стартовать, сразу отдаём ошибку
         # пользователю.
-        chk_rc, _o, chk_err = _run([binary, "check", "-c", config],
+        chk_rc, _o, chk_err = _run([binary, "check", "-c", config] + extra_cfg,
                                     timeout=10)
         if chk_rc != 0:
             return {"ok": False, "error":
@@ -351,7 +441,7 @@ class SingboxManager:
 
         try:
             popen = subprocess.Popen(
-                [binary, "run", "-c", config],
+                [binary, "run", "-c", config] + extra_cfg,
                 stdin=subprocess.DEVNULL,
                 stdout=log_fh, stderr=log_fh,
                 close_fds=True,
@@ -381,10 +471,11 @@ class SingboxManager:
                              % popen.returncode,
                     "log_tail": tail}
 
-        log.info("singbox: запущен '%s' (pid=%d)" % (name, popen.pid),
+        log.info("singbox: запущен '%s' (pid=%d)%s" % (
+            name, popen.pid, " [debug]" if extra_cfg else ""),
                  source="singbox")
         return {"ok": True, "pid": popen.pid, "config": config,
-                "log_path": log_file}
+                "log_path": log_file, "debug": bool(extra_cfg)}
 
     def _do_down(self, name: str) -> dict:
         platform = self._platform()
