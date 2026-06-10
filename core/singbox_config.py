@@ -580,7 +580,9 @@ def build_fakeip_config(*, proxy_outbound: dict,
                         tun_address=None, mtu: int = 9000,
                         stack: str = "system",
                         auto_redirect: bool = False,
-                        typed_dns: bool = False) -> dict:
+                        typed_dns: bool = False,
+                        capture_dns: bool = False,
+                        dns_port: int = 1153) -> dict:
     """
     Собрать полный sing-box-конфиг FakeIP-роутинга.
 
@@ -602,6 +604,13 @@ def build_fakeip_config(*, proxy_outbound: dict,
     tun = make_tun_inbound(interface_name=tun_iface, address=tun_address,
                            mtu=mtu, stack=stack, auto_route=True,
                            strict_route=True, auto_redirect=auto_redirect)
+    inbounds = [tun]
+    if capture_dns:
+        # DNS-inbound для перехвата :53 LAN-клиентов (firewall REDIRECT :53 →
+        # dns_port); сам перехват ловит route-правило hijack-dns. Нужен на
+        # iptables-платформах (Keenetic), где auto_redirect недоступен.
+        inbounds.append({"type": "direct", "tag": "dns-in",
+                         "listen": "::", "listen_port": int(dns_port)})
 
     rules = [
         {"action": "sniff"},
@@ -618,7 +627,7 @@ def build_fakeip_config(*, proxy_outbound: dict,
         "log": {"level": "info", "timestamp": True},
         "dns": make_fakeip_dns(proxied_domains=proxied, direct_dns=direct_dns,
                                typed=typed_dns, fakeip=fakeip_on),
-        "inbounds": [tun],
+        "inbounds": inbounds,
         "outbounds": [proxy_ob, {"type": "direct", "tag": "direct"}],
         "route": {
             "rules": rules,

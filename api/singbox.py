@@ -645,6 +645,8 @@ def register(app):
             route_all=bool(body.get("route_all")),
             tun_iface=(body.get("tun_iface") or "singbox-tun"),
             stack=(body.get("stack") or "system"),
+            capture_dns=bool(body.get("capture_dns", True)),
+            dns_port=int(body.get("dns_port") or 1153),
         )
         if not res.get("ok"):
             response.status = 400

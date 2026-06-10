@@ -122,6 +122,66 @@ class TestBuildFakeipConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_fakeip_config(proxy_outbound={"no": "type"})
 
+    def test_capture_dns_adds_dns_in_inbound(self):
+        off = build_fakeip_config(proxy_outbound=_vless(),
+                                  proxied_domains=["a.com"])
+        self.assertEqual([i["tag"] for i in off["inbounds"]], ["tun-in"])
+        on = build_fakeip_config(proxy_outbound=_vless(),
+                                 proxied_domains=["a.com"],
+                                 capture_dns=True, dns_port=1153)
+        tags = {i["tag"]: i for i in on["inbounds"]}
+        self.assertIn("dns-in", tags)
+        self.assertEqual(tags["dns-in"]["type"], "direct")
+        self.assertEqual(tags["dns-in"]["listen_port"], 1153)
+
+
+class TestTransparentDnsOnly(unittest.TestCase):
+    """mode='dns-only' строит REDIRECT :53 (без traffic-redirect)."""
+
+    def test_dns_hijack_redirect_rules(self):
+        from core.singbox_transparent import build_dns_hijack_rules
+        rules = build_dns_hijack_rules(family="v4", dns_port=1153,
+                                       lan_ifaces=None, via="redirect")
+        # udp+tcp → REDIRECT --to-ports 1153 в nat
+        self.assertEqual(len(rules), 2)
+        for r in rules:
+            self.assertIn("-t", r)
+            self.assertIn("nat", r)
+            self.assertIn("REDIRECT", r)
+            self.assertIn("1153", r)
+            self.assertIn("53", r)
+
+    def test_apply_rejects_unknown_mode_but_accepts_dns_only(self):
+        from unittest import mock
+        from core import singbox_transparent as tp
+        # неизвестный режим — ошибка ещё до выбора бэкенда.
+        self.assertFalse(tp.apply(mode="bogus").get("ok"))
+        # dns-only — допустимый режим: гасим iptables-доступность, чтобы тест
+        # не трогал реальный netfilter — важно лишь, что это НЕ «Неизвестный
+        # режим» (т.е. режим распознан).
+        with mock.patch.object(tp, "available", return_value=False):
+            r = tp.apply(mode="dns-only", dns_hijack_port=1153,
+                         families=("v4",), backend="iptables")
+        self.assertNotIn("Неизвестный режим", str(r.get("error", "")))
+
+
+class TestManagerDnsInDetect(unittest.TestCase):
+    def test_detects_dns_in_port(self):
+        from unittest import mock
+        from core.singbox_manager import SingboxManager
+        mgr = SingboxManager()
+        cfg = build_fakeip_config(proxy_outbound=_vless(),
+                                  proxied_domains=["a.com"],
+                                  capture_dns=True, dns_port=1153)
+        with mock.patch.object(mgr, "get_config",
+                               return_value={"ok": True, "parsed": cfg}):
+            self.assertEqual(mgr._config_dns_in_port("x"), 1153)
+        plain = build_fakeip_config(proxy_outbound=_vless(),
+                                    proxied_domains=["a.com"])
+        with mock.patch.object(mgr, "get_config",
+                               return_value={"ok": True, "parsed": plain}):
+            self.assertEqual(mgr._config_dns_in_port("x"), 0)
+
 
 class _FakeMgr:
     def __init__(self, check_results):
@@ -151,8 +211,11 @@ class _FakeHM:
 
 
 class _FakePlat:
+    def __init__(self, nft=False):
+        self._nft = nft
+
     def supports_nftables(self):
-        return False
+        return self._nft
 
 
 class _FakeDet:
@@ -163,14 +226,14 @@ class _FakeDet:
         return {"version": self._v, "installed": self._i}
 
 
-def _patch(fakeip_mgr, ver="1.13.0", installed=True):
+def _patch(fakeip_mgr, ver="1.13.0", installed=True, nft=False):
     """Контекст: подменить зависимости build_and_save."""
     from unittest import mock
     return [
         mock.patch("core.singbox_manager.get_singbox_manager",
                    return_value=fakeip_mgr),
         mock.patch("core.singbox_platform.detect_singbox_platform",
-                   return_value=_FakePlat()),
+                   return_value=_FakePlat(nft)),
         mock.patch("core.singbox_detector.get_singbox_detector",
                    return_value=_FakeDet(ver, installed)),
         mock.patch("core.hostlist_manager.get_hostlist_manager",
@@ -186,8 +249,8 @@ class TestOrchestrator(unittest.TestCase):
         from core import singbox_fakeip
         self.sf = singbox_fakeip
 
-    def _run(self, mgr, ver="1.13.0", installed=True, **kw):
-        patches = _patch(mgr, ver, installed)
+    def _run(self, mgr, ver="1.13.0", installed=True, nft=False, **kw):
+        patches = _patch(mgr, ver, installed, nft)
         for p in patches:
             p.start()
         try:
@@ -242,6 +305,24 @@ class TestOrchestrator(unittest.TestCase):
         res = self._run(mgr, proxy_link="vless://u@h:443", hostlists=["svc"])
         self.assertTrue(res["ok"])
         self.assertGreaterEqual(res["domains"], 1)   # youtube.com из svc
+
+    def test_dns_capture_iptables(self):
+        mgr = _FakeMgr([{"ok": True}])
+        res = self._run(mgr, proxy_link="vless://u@h:443", domains="a.com",
+                        nft=False, capture_dns=True)
+        self.assertEqual(res["dns_capture"], "iptables-redirect")
+
+    def test_dns_capture_nft_auto_redirect(self):
+        mgr = _FakeMgr([{"ok": True}])
+        res = self._run(mgr, proxy_link="vless://u@h:443", domains="a.com",
+                        nft=True, capture_dns=True)
+        self.assertEqual(res["dns_capture"], "auto_redirect")
+
+    def test_dns_capture_manual_when_off(self):
+        mgr = _FakeMgr([{"ok": True}])
+        res = self._run(mgr, proxy_link="vless://u@h:443", domains="a.com",
+                        nft=False, capture_dns=False)
+        self.assertEqual(res["dns_capture"], "manual")
 
 
 if __name__ == "__main__":
