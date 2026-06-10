@@ -182,10 +182,15 @@ local function acquire_lock(path)
     local content = lf_ts:read("*a")
     lf_ts:close()
     local lock_time = tonumber(content)
-    if lock_time and (now_t() - lock_time) > 10 then
-      os.remove(lockfile)        -- stale (>10s) → steal
+    -- An empty/garbage lockfile (lock_time=nil) must be treated as STEALABLE,
+    -- not "held forever". Older GUI builds left a 0-byte state.tsv.lock here
+    -- (fcntl.flock side effect); tonumber("")=nil made the old `lock_time and
+    -- ...` guard fall through to "another writer holds it", permanently
+    -- jamming our writer after a webpanel reset / healthcheck (issue #151).
+    if (not lock_time) or (now_t() - lock_time) > 10 then
+      os.remove(lockfile)        -- empty/garbage/stale (>10s) → steal
     else
-      return nil, lockfile       -- fresh → another writer holds it
+      return nil, lockfile       -- fresh ts → another writer holds it
     end
   end
   -- Exclusive create where the Lua build supports the glibc "x" mode. Stock Lua

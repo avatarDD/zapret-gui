@@ -78,14 +78,18 @@ BUILTIN_PRESETS = [
     },
     {
         "name": "igareck vpn-configs-for-russia",
+        # configs.txt в репозитории нет (404). Актуальный файл «чёрных
+        # списков» — BLACK_VLESS_RUS.txt (issue #149/#166).
         "url": "https://raw.githubusercontent.com/igareck/"
-               "vpn-configs-for-russia/main/configs.txt",
+               "vpn-configs-for-russia/main/BLACK_VLESS_RUS.txt",
         "format": "auto",
     },
     {
         "name": "kort0881 vless-configs-russia",
+        # vless.txt в корне больше нет (404) — репозиторий переехал на
+        # mirror-файлы. Рабочий список — mermeroo_only_new_for_mirror.txt.
         "url": "https://raw.githubusercontent.com/kort0881/"
-               "vpn-vless-configs-russia/main/vless.txt",
+               "vpn-vless-configs-russia/main/mermeroo_only_new_for_mirror.txt",
         "format": "auto",
     },
 ]

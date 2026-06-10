@@ -163,6 +163,86 @@ class TestStateOperations(unittest.TestCase):
         self.assertEqual(self.ss.list_entries(), [])
 
 
+class TestLockProtocol(unittest.TestCase):
+    """Lua-совместимый ts-lock (issue #151).
+
+    Раньше Python брал fcntl.flock и оставлял пустой state.tsv.lock — Lua
+    (z2k-state-persist.lua) читал пустой файл, считал лок «занятым навсегда»
+    и переставал писать state, из-за чего после «Сбросить всё» / healthcheck
+    подбор стратегий замирал. Теперь обе стороны говорят на одном протоколе:
+    ts внутри, кража пустого/протухшего, удаление файла на release.
+    """
+
+    def setUp(self):
+        from core import strategy_state
+        self.ss = strategy_state
+        self.tmpdir = tempfile.mkdtemp(prefix="zg-lock-")
+        self.path = os.path.join(self.tmpdir, "state.tsv")
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("# header\n")
+        self.lockfile = self.ss._flock_path(self.path)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_acquire_writes_numeric_ts_then_release_removes(self):
+        lf = self.ss._acquire_lock(self.path)
+        self.assertEqual(lf, self.lockfile)
+        with open(self.lockfile) as f:
+            content = f.read().strip()
+        self.assertTrue(content.isdigit(), "lock должен содержать unix-ts")
+        self.ss._release_lock(lf)
+        self.assertFalse(os.path.exists(self.lockfile),
+                         "release обязан УДАЛИТЬ .lock (а не оставить пустым)")
+
+    def test_acquire_steals_empty_lock(self):
+        # Сценарий #151: на диске лежит пустой .lock от старой версии.
+        open(self.lockfile, "w").close()
+        lf = self.ss._acquire_lock(self.path, timeout=0.3)
+        self.assertEqual(lf, self.lockfile, "пустой lock должен красться")
+        with open(self.lockfile) as f:
+            self.assertTrue(f.read().strip().isdigit())
+        self.ss._release_lock(lf)
+
+    def test_acquire_steals_stale_ts_lock(self):
+        with open(self.lockfile, "w") as f:
+            f.write("1")             # 1970 — заведомо протухло (>10s)
+        lf = self.ss._acquire_lock(self.path, timeout=0.3)
+        self.assertEqual(lf, self.lockfile)
+        self.ss._release_lock(lf)
+
+    def test_acquire_yields_to_fresh_lock(self):
+        import time as _t
+        with open(self.lockfile, "w") as f:
+            f.write(str(int(_t.time())))   # свежий ts — держит «живой» писатель
+        lf = self.ss._acquire_lock(self.path, timeout=0.2)
+        self.assertIsNone(lf, "свежий lock красть нельзя")
+        # Чужой свежий lock не тронут.
+        self.assertTrue(os.path.exists(self.lockfile))
+
+    def test_clear_all_leaves_no_lockfile(self):
+        prev = os.environ.get("Z2K_STATE_DIR_OVERRIDE")
+        prev_fb = self.ss.STATE_FILE_FALLBACK
+        os.environ["Z2K_STATE_DIR_OVERRIDE"] = self.tmpdir
+        self.ss.STATE_FILE_FALLBACK = os.path.join(self.tmpdir, "fallback.tsv")
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                f.write("# z2k autocircular state (persisted circular nstrategy)\n")
+                f.write("# key\thost\tstrategy\tts\n")
+                f.write("default\tyoutube.com\t2\t1704067200\n")
+            self.ss.clear_all()
+            self.assertFalse(
+                os.path.exists(self.lockfile),
+                "после clear_all не должно оставаться .lock (issue #151)")
+        finally:
+            self.ss.STATE_FILE_FALLBACK = prev_fb
+            if prev is None:
+                os.environ.pop("Z2K_STATE_DIR_OVERRIDE", None)
+            else:
+                os.environ["Z2K_STATE_DIR_OVERRIDE"] = prev
+
+
 class TestEnvOverride(unittest.TestCase):
 
     def test_get_state_dir_respects_env(self):

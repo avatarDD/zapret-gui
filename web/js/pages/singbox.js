@@ -25,6 +25,8 @@ const SingboxDashboardPage = (() => {
         auto_route: false,
     };
     let tpNote = '';                 // последняя ошибка применения firewall (persist)
+    let debugEnabled = false;        // /api/singbox/debug (log.level=debug при запуске)
+    let logState = {};               // name -> { open, text, loading }
 
     // ══════════════ render ══════════════
 
@@ -86,16 +88,18 @@ const SingboxDashboardPage = (() => {
 
     async function loadAll() {
         try {
-            const [envResp, cfgsResp, autoResp, tpResp] = await Promise.all([
+            const [envResp, cfgsResp, autoResp, tpResp, dbgResp] = await Promise.all([
                 API.get('/api/singbox/environment').catch(() => null),
                 API.get('/api/singbox/configs').catch(() => null),
                 API.get('/api/singbox/autostart').catch(() => null),
                 API.get('/api/singbox/transparent/status').catch(() => null),
+                API.get('/api/singbox/debug').catch(() => null),
             ]);
             env       = envResp || null;
             configs   = (cfgsResp && cfgsResp.configs) || [];
             autostart = (autoResp && autoResp.status && autoResp.status.autostart) || {};
             transparent = tpResp || null;
+            debugEnabled = !!(dbgResp && dbgResp.enabled);
             // Подхватываем сохранённые настройки в форму (один раз и при смене).
             if (transparent && transparent.settings && transparent.settings.mode) {
                 const s = transparent.settings;
@@ -177,6 +181,15 @@ const SingboxDashboardPage = (() => {
                     <div class="text-muted" style="font-size:11px;">Конфиги</div>
                     <strong>${configs.length} <span class="text-muted">(активно ${active})</span></strong>
                 </div>
+                <div>
+                    <div class="text-muted" style="font-size:11px;">Отладка</div>
+                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"
+                           title="log.level=debug при запуске — видно, почему конфиг/прокси не работает. Применяется при следующем (пере)запуске инстанса.">
+                        <input type="checkbox" ${debugEnabled ? 'checked' : ''}
+                               onchange="SingboxDashboardPage.toggleDebug(this.checked)">
+                        <strong>${debugEnabled ? 'вкл' : 'выкл'}</strong>
+                    </label>
+                </div>
                 <div style="margin-left:auto; display:flex; gap:8px;">
                     ${installBtn}
                 </div>
@@ -239,13 +252,43 @@ const SingboxDashboardPage = (() => {
                             Restart
                         </button>
                         <button class="btn btn-ghost btn-sm"
+                                onclick="SingboxDashboardPage.showLog('${escapeAttr(c.name)}')">
+                            Лог
+                        </button>
+                        <button class="btn btn-ghost btn-sm"
                                 onclick="window.location.hash='singbox-configs?edit=${encodeURIComponent(c.name)}'">
                             Редактировать
                         </button>
                     </div>
                 </div>
+                ${renderLogBlock(c.name)}
             </div>`;
         }).join('');
+    }
+
+    function renderLogBlock(name) {
+        const st = logState[name];
+        if (!st || !st.open) return '';
+        const body = st.loading
+            ? 'загрузка…'
+            : (st.text && st.text.length ? escapeHtml(st.text) : 'лог пуст');
+        return `
+            <div style="margin-top:10px; border-top:1px solid var(--border, #2a2a2a); padding-top:8px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                    <span class="text-muted" style="font-size:11px;">
+                        Лог (хвост)${debugEnabled ? ' · <strong>debug</strong>' : ''}
+                    </span>
+                    <span style="display:flex; gap:6px;">
+                        <button class="btn btn-ghost btn-sm"
+                                onclick="SingboxDashboardPage.showLog('${escapeAttr(name)}', true)">↻ Обновить</button>
+                        <button class="btn btn-ghost btn-sm"
+                                onclick="SingboxDashboardPage.showLog('${escapeAttr(name)}')">Скрыть</button>
+                    </span>
+                </div>
+                <pre style="max-height:340px; overflow:auto; font-size:11px; line-height:1.4;
+                            background:var(--bg-code, #111); padding:10px; border-radius:6px;
+                            white-space:pre-wrap; word-break:break-word; margin:0;">${body}</pre>
+            </div>`;
     }
 
     // ══════════════ actions ══════════════
@@ -266,12 +309,13 @@ const SingboxDashboardPage = (() => {
         try {
             const r = await API.post(`/api/singbox/configs/${encodeURIComponent(name)}/${op}`);
             if (r && r.ok) {
-                Toast.success(`${name}: ${op} OK`);
+                Toast.success(`${name}: ${op} OK${r.debug ? ' (debug)' : ''}`);
             } else {
                 const err = (r && r.error) || 'ошибка';
                 Toast.error(`${name}: ${err}`);
                 if (r && r.log_tail) {
-                    console.warn(`sing-box ${name} log tail:`, r.log_tail);
+                    // Падение при старте — сразу показываем хвост лога в карточке.
+                    logState[name] = { open: true, text: r.log_tail, loading: false };
                 }
             }
         } catch (e) {
@@ -280,6 +324,50 @@ const SingboxDashboardPage = (() => {
             busy[name] = false;
             await refresh();
         }
+    }
+
+    // Переключить режим отладки (глобально). Применяется при следующем
+    // (пере)запуске инстанса.
+    async function toggleDebug(checked) {
+        try {
+            const r = await API.post('/api/singbox/debug', { enabled: !!checked });
+            if (r && r.ok) {
+                debugEnabled = !!r.enabled;
+                Toast.success('Режим отладки ' + (debugEnabled ? 'включён' : 'выключен') +
+                    '. Перезапустите инстанс, чтобы применить.');
+            } else {
+                Toast.error((r && r.error) || 'ошибка');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        }
+        renderSummary();
+    }
+
+    // Показать/скрыть/обновить хвост лога инстанса.
+    async function showLog(name, keepOpen) {
+        const st = logState[name] || { open: false, text: '', loading: false };
+        if (st.open && !keepOpen) {        // повторный клик «Лог»/«Скрыть» — закрыть
+            st.open = false;
+            logState[name] = st;
+            renderInstances();
+            return;
+        }
+        st.open = true;
+        st.loading = true;
+        logState[name] = st;
+        renderInstances();
+        try {
+            const r = await API.get(
+                `/api/singbox/configs/${encodeURIComponent(name)}/log?lines=300`);
+            st.text = (r && r.ok) ? (r.log || '')
+                                  : ((r && r.error) || 'ошибка чтения лога');
+        } catch (e) {
+            st.text = e.message;
+        }
+        st.loading = false;
+        logState[name] = st;
+        renderInstances();
     }
 
     // ══════════════ transparent proxy ══════════════
@@ -543,6 +631,7 @@ const SingboxDashboardPage = (() => {
     return {
         render, destroy, refresh,
         up, down, restart,
+        toggleDebug, showLog,
         setTp, applyTransparent, removeTransparent, injectInbounds,
         setTun, createTunInbound,
     };

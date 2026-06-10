@@ -4,12 +4,19 @@
 # Итоговый lists/netrogat.txt формируется автоматически как:
 #   netrogat.base.txt + netrogat.user.txt
 #
+# Источник истины для дефолтов — core/hostlist_manager.DEFAULT_NETROGAT
+# (синхронность проверяется tests/test_netrogat_consistency.py).
+#
 # Формат: один домен на строку, без протокола и пути.
 # Строки, начинающиеся с #, игнорируются.
+
+# --- Госуслуги / госсектор ---
 gosuslugi.ru
 government.ru
 mos.ru
 nalog.ru
+
+# --- VK / Mail.ru Group ---
 vk.com
 vk.ru
 vkvideo.ru
@@ -24,13 +31,18 @@ api.mycdn.me
 tns-counter.ru
 vc.ru
 osnova.io
+
+# --- Яндекс ---
 ya.ru
 yandex.net
 yandex.ru
 yandex.by
 yandex.kz
+yandex.com
 dzen.ru
 rutube.ru
+
+# --- Банки / финансы ---
 sberbank.ru
 sberbank.com
 sbrf.ru
@@ -44,18 +56,26 @@ t-static.ru
 tinkoffjournal.ru
 tjournal.tech
 alfabank.ru
+
+# --- Операторы связи ---
 megafon.ru
 mts.ru
+
+# --- Антивирусы ---
 kaspersky.com
 kaspersky.ru
 drweb.ru
 drweb.com
+
+# --- Маркетплейсы ---
 ozon.ru
 ozone.ru
 ozonusercontent.com
 wildberries.ru
 wb.ru
 wbbasket.ru
+
+# --- Контент / медиа / прочее ---
 deepl.com
 ixbt.com
 gitflic.ru
@@ -90,13 +110,19 @@ rootsplants.co.uk
 podviliepitomnik.ru
 cvetovod.by
 veresk.by
+
+# --- Microsoft / локальные ---
 microsoft.com
 live.com
 office.com
 localhost
 127.0.0.1
+
+# --- Образование ---
 netschool.edu22.info
 edu22.info
+
+# --- Tilda / Claude ---
 tilda.ws
 tilda.cc
 tildacdn.com
@@ -105,3 +131,38 @@ anthropic.com
 claude.com
 lmarena.ai
 ppl-ai-file-upload.s3.amazonaws.com
+
+# --- ЭДО / фискальные / госсервисы для бизнеса (issue #166) ---
+# 1С / Честный знак / ЕГАИС / ОФД / ЭДО / правовые базы — ломаются под DPI-десинком.
+taxcom.ru
+1c.ru
+1c-edo.ru
+1c-ofd.ru
+crpt.ru
+egais.ru
+atol.ru
+gov.ru
+diadoc.ru
+kontur.ru
+sbis.ru
+tensor.ru
+ofd.ru
+platformaofd.ru
+consultant.ru
+garant.ru
+moedelo.org
+
+# --- Объединено из list-exclude.txt (issue #166) ---
+twitch.tv
+ttvnw.net
+live-video.net
+donationalerts.com
+pusher.com
+citilink.ru
+dns-shop.ru
+3dnews.ru
+msi.com
+nvidia.com
+multimc.org
+akamaitechnologies.com
+2ip.ru
