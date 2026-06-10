@@ -29,6 +29,14 @@ const LogsPage = (() => {
     let statsTimer = null;
     let maxDisplayEntries = 500;
 
+    // Polling-фолбэк: когда SSE недоступен (часто на Keenetic за
+    // KeenDNS/прокси, которые буферизуют поток) — добираем новые записи
+    // обычным опросом /api/logs?since=<lastTs>, чтобы лог всё равно
+    // обновлялся «вживую», а не висел до ручного refresh.
+    let pollFallbackTimer = null;
+    let pollInFlight = false;
+    let lastTs = 0;                 // курсор: timestamp последней записи
+
     // Цветовая карта уровней
     const LEVEL_CONFIG = {
         DEBUG:   { color: '#6b7280', bg: 'rgba(107, 114, 128, 0.1)', label: 'DEBUG',   icon: '🔍' },
@@ -206,6 +214,9 @@ const LogsPage = (() => {
             const data = await API.get('/api/logs?n=500');
             if (data.ok && data.entries) {
                 entries = data.entries;
+                // Курсор для polling-фолбэка: самый свежий timestamp.
+                lastTs = entries.reduce((m, e) => Math.max(m, e.timestamp || 0), 0)
+                         || (Date.now() / 1000);
                 applyFilters();
                 renderEntries();
                 updateCounts();
@@ -224,19 +235,14 @@ const LogsPage = (() => {
             eventSource = null;
         }
 
-        // Защита от спама переподключений: если слишком много попыток
-        // подряд — останавливаемся и показываем ошибку
-        if (reconnectAttempts > 10) {
-            updateConnectionStatus('error');
-            return;
-        }
-
         try {
             eventSource = new EventSource('/api/logs/stream');
 
             eventSource.onopen = () => {
                 isConnected = true;
                 reconnectAttempts = 0;
+                // SSE снова живой — polling-фолбэк больше не нужен.
+                stopPollFallback();
                 updateConnectionStatus('connected');
             };
 
@@ -267,7 +273,6 @@ const LogsPage = (() => {
 
             eventSource.onerror = () => {
                 isConnected = false;
-                updateConnectionStatus('disconnected');
 
                 // Закрываем текущий EventSource
                 if (eventSource) {
@@ -275,11 +280,14 @@ const LogsPage = (() => {
                     eventSource = null;
                 }
 
+                // Включаем polling-фолбэк, чтобы лог продолжал наполняться,
+                // пока SSE недоступен, и продолжаем пытаться поднять SSE.
+                startPollFallback();
                 scheduleReconnect();
             };
         } catch (err) {
             isConnected = false;
-            updateConnectionStatus('error');
+            startPollFallback();
             scheduleReconnect();
         }
     }
@@ -288,15 +296,65 @@ const LogsPage = (() => {
         if (reconnectTimer) return;
 
         reconnectAttempts++;
-        // Экспоненциальная задержка: 1s, 2s, 4s, 8s, max 30s
+        // Экспоненциальная задержка: 1s, 2s, 4s, 8s, max 30s.
+        // Не сдаёмся «навсегда»: SSE дёшево пытать раз в 30с, а данные
+        // тем временем идут через polling-фолбэк.
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 30000);
 
-        updateConnectionStatus('reconnecting', delay);
+        // Если фолбэк активен и данные текут — не пугаем «Ошибкой соединения».
+        if (pollFallbackTimer) {
+            updateConnectionStatus('polling');
+        } else {
+            updateConnectionStatus('reconnecting', delay);
+        }
 
         reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
             connectSSE();
         }, delay);
+    }
+
+    // ── polling-фолбэк ──────────────────────────────────────────────
+
+    async function startPollFallback() {
+        if (pollFallbackTimer) return;
+        // Без курсора рискуем задвоить с loadInitialLogs — сперва убедимся,
+        // что начальная загрузка прошла (она и выставит lastTs).
+        if (lastTs === 0) {
+            await loadInitialLogs();
+        }
+        if (pollFallbackTimer) return;      // мог стартовать, пока ждали
+        pollFallbackTimer = setInterval(pollOnce, 3000);
+        if (!isConnected) updateConnectionStatus('polling');
+        pollOnce();                          // первый опрос сразу
+    }
+
+    function stopPollFallback() {
+        if (pollFallbackTimer) {
+            clearInterval(pollFallbackTimer);
+            pollFallbackTimer = null;
+        }
+        pollInFlight = false;
+    }
+
+    async function pollOnce() {
+        if (pollInFlight) return;
+        pollInFlight = true;
+        try {
+            if (lastTs === 0) lastTs = Math.floor(Date.now() / 1000) - 1;
+            const data = await API.get(
+                '/api/logs?since=' + encodeURIComponent(lastTs));
+            if (data && data.ok && Array.isArray(data.entries)) {
+                data.entries.forEach(e => {
+                    if (e && e.timestamp > lastTs) lastTs = e.timestamp;
+                    if (!isPaused) addEntry(e);
+                });
+            }
+        } catch (_) {
+            // сетевой сбой — продолжаем пытаться на следующем тике
+        } finally {
+            pollInFlight = false;
+        }
     }
 
     function disconnectSSE() {
@@ -308,12 +366,18 @@ const LogsPage = (() => {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
         }
+        stopPollFallback();
         isConnected = false;
     }
 
     // ══════════════════ Entry Management ══════════════════
 
     function addEntry(entry) {
+        // Двигаем курсор и для SSE-пути: если SSE затем оборвётся,
+        // polling-фолбэк продолжит ровно с последней показанной записи.
+        if (entry && entry.timestamp && entry.timestamp > lastTs) {
+            lastTs = entry.timestamp;
+        }
         entries.push(entry);
 
         // Ограничиваем буфер
@@ -653,6 +717,9 @@ const LogsPage = (() => {
             case 'reconnecting':
                 if (text) text.textContent = 'Переподключение... (' + Math.round(delay / 1000) + 'с)';
                 break;
+            case 'polling':
+                if (text) text.textContent = 'Обновление опросом';
+                break;
             case 'error':
                 if (text) text.textContent = 'Ошибка соединения';
                 break;
@@ -734,6 +801,10 @@ const LogsPage = (() => {
         entries = [];
         filteredEntries = [];
         newMessageCount = 0;
+        // Сбрасываем курсор/счётчики, чтобы повторный вход на страницу
+        // стартовал «с чистого листа».
+        reconnectAttempts = 0;
+        lastTs = 0;
     }
 
     // ══════════════════ Public API ══════════════════

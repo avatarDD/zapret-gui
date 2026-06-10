@@ -629,6 +629,16 @@ input:focus, textarea:focus, select:focus {
     to { transform: rotate(360deg); }
 }
 
+/* Маленький спиннер для строк/кнопок (рядом с текстом) */
+.spinner-inline {
+    width: 12px;
+    height: 12px;
+    border-width: 2px;
+    display: inline-block;
+    vertical-align: middle;
+    margin-left: 4px;
+}
+
 /* ===== Toast Notifications ===== */
 .toast-container {
     position: fixed;
@@ -2537,6 +2547,13 @@ input:focus, textarea:focus, select:focus {
 
 .logs-conn-error .logs-conn-dot { background: var(--error); }
 .logs-conn-error .logs-conn-text { color: var(--error); }
+
+/* polling-фолбэк: данные идут (опросом), не алармим — мягкий зелёный пульс */
+.logs-conn-polling .logs-conn-dot {
+    background: var(--success);
+    animation: pulse-dot 1.6s ease infinite;
+}
+.logs-conn-polling .logs-conn-text { color: var(--success); }
 
 @keyframes pulse-dot {
     0%, 100% { opacity: 1; }
