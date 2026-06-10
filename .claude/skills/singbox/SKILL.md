@@ -247,10 +247,11 @@ endpoint заменил старый `type:wireguard` outbound.
 > но это путь к будущим поломкам. DNS-перехват у нас делается route-action
 > `hijack-dns`, а не спец-outbound `dns` (тот удалён, §9).
 >
-> ⚠️ **Реальность нашего кода:** мы **НЕ эмитим секцию `dns`** и **не
-> используем fakeip**. `hijack-dns` добавляется только в transparent-режиме с
-> `dns_port>0`. Доменный selective-routing через TUN у нас сделан на уровне
-> ОС, а не DNS движка — см. §13.
+> ⚠️ **Реальность нашего кода:** базовый unified/OS-routing путь **НЕ эмитит
+> секцию `dns`** (`hijack-dns` — только в transparent-режиме с `dns_port>0`).
+> НО есть отдельный **FakeIP-режим** (`build_fakeip_config` /
+> `core/singbox_fakeip`), который генерирует полноценную `dns`-секцию с FakeIP
+> + `hijack-dns` — см. §13.
 
 ---
 
@@ -374,12 +375,27 @@ TUN, sing-box по fake-IP восстанавливает домен и прок
 - Режим «весь трафик» (`auto_route=true`) без секции `dns` → системный
   резолвер может течь.
 
-**Возможность (НЕ реализовано):** опциональный режим **fakeip + hijack-dns**
-для платформ, где резолвер можно перенаправить в sing-box (OpenWrt; Keenetic —
-через dns-override). Дал бы podkop-уровень надёжности доменного роутинга.
-Требует генерации `dns`-секции (`servers:[{type:fakeip,...},{type:udp,...}]`,
-`fakeip:{enabled,inet4_range}`) + `experimental.cache_file.store_fakeip` в
-`singbox_config`.
+**FakeIP-режим (РЕАЛИЗОВАН)** — podkop-уровень надёжности доменного роутинга,
+мультиплатформенно:
+- `singbox_config.build_fakeip_config()` — собирает self-contained конфиг:
+  TUN(`auto_route`+`strict_route`[+`auto_redirect` на nft]) + `dns` с FakeIP +
+  `{action:sniff}` + `{protocol:dns,action:hijack-dns}` + domain/cidr-правила
+  → `proxy-out`; `experimental.cache_file.store_fakeip`. `ip_is_private→direct`.
+- `make_fakeip_dns()` — DNS-секция в **двух форматах**: legacy (`address:fakeip`
+  + top-level `dns.fakeip`; валиден 1.8–1.13) и typed (`type:fakeip`; 1.12+).
+- `core/singbox_fakeip.py` — оркестратор: резолвит прокси из ссылки
+  (`uri_to_outbound`) или из конфига; домены берёт из hostlist'ов
+  пользователя + формы; **подбирает формат DNS под версию и проверяет
+  `sing-box check`-ом ДО сохранения** (`SingboxManager.check_text`), legacy↔typed
+  fallback; `route_all` отключает FakeIP (весь трафик в прокси).
+- API: `GET /api/singbox/fakeip/options`, `POST /api/singbox/fakeip/build`.
+- UI: карточка «Умный доменный роутинг (FakeIP)» на дашборде sing-box
+  (`web/js/pages/singbox.js`): ссылка/конфиг прокси, чекбоксы списков,
+  доп. домены/подсети, прямой DNS, режим «весь трафик».
+
+Ограничение: FakeIP требует, чтобы клиентский DNS доходил до движка. На nft
+это делает `auto_redirect`; иначе LAN-клиенты должны ходить через роутер
+(шлюз/DNS) — об этом в карточке есть подсказка.
 
 ---
 

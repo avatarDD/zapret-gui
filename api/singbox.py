@@ -91,6 +91,7 @@ REST API для sing-box.
   POST   /api/singbox/traffic/reset         — обнулить счётчики (body: {tags}?)
 """
 
+import re
 import threading
 from bottle import request, response
 
@@ -605,6 +606,48 @@ def register(app):
         res = get_singbox_manager().set_debug(enabled)
         if not res.get("ok"):
             response.status = 500
+        return res
+
+    # ─────── FakeIP-роутинг (умный доменный роутинг) ────────────
+
+    @app.route("/api/singbox/fakeip/options")
+    def singbox_fakeip_options():
+        """Данные для формы FakeIP: версия, hostlist'ы, конфиги, nft."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.singbox_fakeip import build_options
+        return build_options()
+
+    @app.route("/api/singbox/fakeip/build", method="POST")
+    def singbox_fakeip_build():
+        """Собрать и сохранить FakeIP-конфиг (проверяется `sing-box check`)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.singbox_fakeip import build_and_save
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+
+        def _list(v):
+            if isinstance(v, list):
+                return [str(x).strip() for x in v if str(x).strip()]
+            if isinstance(v, str):
+                return [s.strip() for s in re.split(r"[\s,]+", v) if s.strip()]
+            return []
+
+        res = build_and_save(
+            name=(body.get("name") or "fakeip"),
+            proxy_link=(body.get("proxy_link") or ""),
+            proxy_config=(body.get("proxy_config") or ""),
+            hostlists=_list(body.get("hostlists")),
+            domains=_list(body.get("domains")),
+            cidrs=_list(body.get("cidrs")),
+            direct_dns=(body.get("direct_dns") or "local"),
+            route_all=bool(body.get("route_all")),
+            tun_iface=(body.get("tun_iface") or "singbox-tun"),
+            stack=(body.get("stack") or "system"),
+        )
+        if not res.get("ok"):
+            response.status = 400
         return res
 
     # ─────── outbounds CRUD (для Outbounds Builder UI) ────────────

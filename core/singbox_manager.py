@@ -362,6 +362,30 @@ class SingboxManager:
         return {"ok": rc == 0, "stdout": out, "stderr": err,
                 "returncode": rc}
 
+    def check_text(self, text: str) -> dict:
+        """Проверить произвольный конфиг-текст бинарём sing-box (через
+        временный файл). Нужен, чтобы валидировать сгенерированный FakeIP-
+        конфиг ДО сохранения и выбрать формат DNS под версию движка."""
+        binary = self._binary()
+        if not binary:
+            return {"ok": False, "error": "sing-box не установлен",
+                    "no_binary": True}
+        self._ensure_run_dir()
+        tmp = os.path.join(self._platform().run_dir, "_zg-check.json")
+        try:
+            with open(tmp, "w") as f:
+                f.write(text)
+        except OSError as e:
+            return {"ok": False, "error": "write: %s" % e}
+        try:
+            rc, _out, err = _run([binary, "check", "-c", tmp], timeout=10)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return {"ok": rc == 0, "error": (err or "").strip(), "returncode": rc}
+
     # ─────── lifecycle ───────
 
     def is_running(self, name: str) -> bool:

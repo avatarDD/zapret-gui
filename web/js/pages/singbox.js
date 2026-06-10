@@ -27,6 +27,14 @@ const SingboxDashboardPage = (() => {
     let tpNote = '';                 // последняя ошибка применения firewall (persist)
     let debugEnabled = false;        // /api/singbox/debug (log.level=debug при запуске)
     let logState = {};               // name -> { open, text, loading }
+    let fakeipOpts = null;           // /api/singbox/fakeip/options
+    let fakeipRendered = false;      // форму рендерим один раз (не теряем ввод при poll)
+    let fakeipBusy = false;
+    let fakeipForm = {               // состояние формы FakeIP-роутинга
+        name: 'fakeip', source: 'link', proxy_link: '', proxy_config: '',
+        route_all: false, hostlists: {}, domains: '', cidrs: '',
+        direct_dns: 'local', stack: 'system',
+    };
 
     // ══════════════ render ══════════════
 
@@ -62,6 +70,13 @@ const SingboxDashboardPage = (() => {
 
             <div id="sb-instances"></div>
 
+            <div class="card" id="sb-fakeip" style="margin-top:16px;">
+                <div class="card-title">Умный доменный роутинг (FakeIP)</div>
+                <div id="sb-fakeip-body" style="margin-top:8px;">
+                    <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
+                </div>
+            </div>
+
             <div class="card" id="sb-transparent" style="margin-top:16px;">
                 <div class="card-title">Прозрачное проксирование (TProxy / Redirect / Hybrid)${typeof Help !== 'undefined' ? Help.button('transparent') : ''}</div>
                 <div id="sb-transparent-body" style="margin-top:8px;">
@@ -88,18 +103,20 @@ const SingboxDashboardPage = (() => {
 
     async function loadAll() {
         try {
-            const [envResp, cfgsResp, autoResp, tpResp, dbgResp] = await Promise.all([
+            const [envResp, cfgsResp, autoResp, tpResp, dbgResp, fiResp] = await Promise.all([
                 API.get('/api/singbox/environment').catch(() => null),
                 API.get('/api/singbox/configs').catch(() => null),
                 API.get('/api/singbox/autostart').catch(() => null),
                 API.get('/api/singbox/transparent/status').catch(() => null),
                 API.get('/api/singbox/debug').catch(() => null),
+                API.get('/api/singbox/fakeip/options').catch(() => null),
             ]);
             env       = envResp || null;
             configs   = (cfgsResp && cfgsResp.configs) || [];
             autostart = (autoResp && autoResp.status && autoResp.status.autostart) || {};
             transparent = tpResp || null;
             debugEnabled = !!(dbgResp && dbgResp.enabled);
+            if (fiResp && fiResp.ok) fakeipOpts = fiResp;
             // Подхватываем сохранённые настройки в форму (один раз и при смене).
             if (transparent && transparent.settings && transparent.settings.mode) {
                 const s = transparent.settings;
@@ -121,6 +138,7 @@ const SingboxDashboardPage = (() => {
         await loadAll();
         renderSummary();
         renderInstances();
+        renderFakeip();
         renderTransparent();
         renderTun();
     }
@@ -618,6 +636,154 @@ const SingboxDashboardPage = (() => {
         } catch (e) { Toast.error(e.message); }
     }
 
+    // ══════════════ FakeIP smart routing ══════════════
+
+    function renderFakeip() {
+        const body = document.getElementById('sb-fakeip-body');
+        if (!body) return;
+        if (!fakeipOpts) {
+            body.innerHTML = `<div class="text-muted">Нет данных от сервера.</div>`;
+            return;
+        }
+        // Рендерим один раз — иначе 5-секундный poll стирал бы ввод формы.
+        if (fakeipRendered) return;
+        fakeipRendered = true;
+
+        const o = fakeipOpts;
+        const f = fakeipForm;
+        const notInstalled = !o.installed
+            ? `<div style="color:#e58; font-size:12px; margin-bottom:8px;">
+                 sing-box не установлен — конфиг сохранится без проверки.
+               </div>` : '';
+        const cfgOptions = (o.configs || []).map(n =>
+            `<option value="${escapeAttr(n)}" ${f.proxy_config === n ? 'selected' : ''}>${escapeHtml(n)}</option>`
+        ).join('');
+        const hostlistChecks = (o.hostlists || []).map(h => `
+            <label style="display:inline-flex; align-items:center; gap:5px; margin:2px 10px 2px 0; font-size:12px;">
+                <input type="checkbox" ${f.hostlists[h.name] ? 'checked' : ''}
+                       onchange="SingboxDashboardPage.toggleFakeipHostlist('${escapeAttr(h.name)}', this.checked)">
+                ${escapeHtml(h.name)} <span class="text-muted">(${h.count})</span>
+            </label>`).join('') || '<span class="text-muted" style="font-size:12px;">нет списков</span>';
+
+        const autoNote = o.nft
+            ? 'Платформа nftables: трафик LAN-клиентов забирается автоматически (auto_redirect).'
+            : 'Платформа без nftables: LAN-клиенты должны использовать роутер как шлюз/DNS.';
+
+        body.innerHTML = `
+            <p class="text-muted" style="font-size:12.5px; margin-top:0;">
+                Создаёт готовый sing-box-конфиг, который заворачивает выбранные
+                домены/подсети в ваш прокси через TUN + <strong>FakeIP</strong>
+                (надёжно для CDN/QUIC, без DNS-leak). Остальное идёт напрямую.
+                После создания запустите конфиг кнопкой выше.
+            </p>
+            ${notInstalled}
+            <div style="display:flex; flex-direction:column; gap:10px; max-width:680px;">
+                <label style="font-size:12px;">Имя конфига
+                    <input type="text" value="${escapeAttr(f.name)}" style="width:100%;"
+                           oninput="SingboxDashboardPage.setFakeip('name', this.value)">
+                </label>
+
+                <div>
+                    <div style="font-size:12px; margin-bottom:3px;">Прокси-сервер</div>
+                    <textarea rows="2" placeholder="vless:// ss:// trojan:// hysteria2:// tuic:// — вставьте ссылку"
+                              style="width:100%; font-family:monospace; font-size:12px;"
+                              oninput="SingboxDashboardPage.setFakeip('proxy_link', this.value)">${escapeHtml(f.proxy_link)}</textarea>
+                    <div class="text-muted" style="font-size:11px; margin-top:3px;">
+                        …или взять из конфига:
+                        <select onchange="SingboxDashboardPage.setFakeip('proxy_config', this.value)">
+                            <option value="">—</option>${cfgOptions}
+                        </select>
+                        <span>(если вставлена ссылка — используется она)</span>
+                    </div>
+                </div>
+
+                <label style="display:flex; align-items:center; gap:6px; font-size:12px;">
+                    <input type="checkbox" ${f.route_all ? 'checked' : ''}
+                           onchange="SingboxDashboardPage.setFakeip('route_all', this.checked)">
+                    Проксировать <strong>весь</strong> трафик (иначе — только выбранное ниже)
+                </label>
+
+                <div>
+                    <div style="font-size:12px; margin-bottom:3px;">Заворачивать списки доменов:</div>
+                    <div>${hostlistChecks}</div>
+                </div>
+
+                <label style="font-size:12px;">Доп. домены (по одному в строке)
+                    <textarea rows="2" placeholder="example.com&#10;site.org" style="width:100%; font-size:12px;"
+                              oninput="SingboxDashboardPage.setFakeip('domains', this.value)">${escapeHtml(f.domains)}</textarea>
+                </label>
+
+                <label style="font-size:12px;">Доп. подсети / IP (CIDR, по одному в строке)
+                    <textarea rows="2" placeholder="203.0.113.0/24" style="width:100%; font-size:12px;"
+                              oninput="SingboxDashboardPage.setFakeip('cidrs', this.value)">${escapeHtml(f.cidrs)}</textarea>
+                </label>
+
+                <label style="font-size:12px;">Прямой DNS (для остального трафика)
+                    <input type="text" value="${escapeAttr(f.direct_dns)}" style="width:220px;"
+                           oninput="SingboxDashboardPage.setFakeip('direct_dns', this.value)">
+                    <span class="text-muted" style="font-size:11px;">local = системный резолвер; или IP, напр. 77.88.8.8</span>
+                </label>
+
+                <div class="text-muted" style="font-size:11px;">${escapeHtml(autoNote)}</div>
+
+                <div>
+                    <button class="btn btn-primary btn-sm" id="sb-fakeip-create"
+                            onclick="SingboxDashboardPage.createFakeip()">
+                        Создать конфиг
+                    </button>
+                </div>
+            </div>`;
+    }
+
+    function setFakeip(key, val) {
+        if (key === 'route_all') fakeipForm.route_all = !!val;
+        else fakeipForm[key] = val;
+    }
+
+    function toggleFakeipHostlist(name, checked) {
+        fakeipForm.hostlists[name] = !!checked;
+    }
+
+    async function createFakeip() {
+        if (fakeipBusy) return;
+        const f = fakeipForm;
+        if (!f.proxy_link.trim() && !f.proxy_config) {
+            Toast.error('Укажите прокси: вставьте ссылку или выберите конфиг');
+            return;
+        }
+        const hostlists = Object.keys(f.hostlists).filter(k => f.hostlists[k]);
+        const payload = {
+            name: f.name.trim() || 'fakeip',
+            proxy_link: f.proxy_link.trim(),
+            proxy_config: f.proxy_config,
+            route_all: f.route_all,
+            hostlists: hostlists,
+            domains: f.domains, cidrs: f.cidrs,
+            direct_dns: f.direct_dns.trim() || 'local',
+            stack: f.stack,
+        };
+        fakeipBusy = true;
+        const btn = document.getElementById('sb-fakeip-create');
+        if (btn) { btn.disabled = true; btn.textContent = 'Создаю…'; }
+        try {
+            const r = await API.post('/api/singbox/fakeip/build', payload);
+            if (r && r.ok) {
+                const mode = r.route_all ? 'весь трафик'
+                    : `${r.domains} доменов${r.cidrs ? ', ' + r.cidrs + ' подсетей' : ''}`;
+                Toast.success(`Конфиг «${r.name}» создан (${mode}, DNS=${r.dns_format}). Запустите его в списке выше.`);
+                if (r.warning) Toast.error(r.warning, 8000);
+                await refresh();
+            } else {
+                Toast.error((r && r.error) || 'ошибка создания');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        } finally {
+            fakeipBusy = false;
+            if (btn) { btn.disabled = false; btn.textContent = 'Создать конфиг'; }
+        }
+    }
+
     // ══════════════ helpers ══════════════
 
     function escapeHtml(s) {
@@ -632,6 +798,7 @@ const SingboxDashboardPage = (() => {
         render, destroy, refresh,
         up, down, restart,
         toggleDebug, showLog,
+        setFakeip, toggleFakeipHostlist, createFakeip,
         setTp, applyTransparent, removeTransparent, injectInbounds,
         setTun, createTunInbound,
     };
