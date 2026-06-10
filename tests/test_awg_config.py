@@ -176,5 +176,45 @@ AllowedIPs = 0.0.0.0/0
             msg="голое I не должно валидироваться как число: %s" % errors)
 
 
+class TestAwgHeaderRange(unittest.TestCase):
+    """H1..H4: одиночный uint (1.0) ИЛИ диапазон `N-M` (AmneziaWG 2.0).
+
+    Раньше validate() проверял H1..H4 как строгий int и зря отклонял
+    валидный 2.0-конфиг с `H1 = 5-100`. Остальные числовые поля
+    обфускации (Jc/Jmin/Jmax/S1..S4/Itime) остаются строгими int.
+    """
+
+    TMPL = ("[Interface]\n"
+            "PrivateKey = aP1xJU3a3lYwTzZyB7hN4mE8oQ2rWcKfIvCdEh6gXyo=\n"
+            "Address = 10.66.66.2/32\n"
+            "%s\n\n"
+            "[Peer]\n"
+            "PublicKey = X4iC8z2qOaP3nE5gF7hM6kL9pR1tWcVbI0oUyA3sJdM=\n"
+            "Endpoint = awg.example.com:5000\n"
+            "AllowedIPs = 0.0.0.0/0\n")
+
+    def _errors_for(self, line, needle):
+        return [e for e in validate(parse_conf(self.TMPL % line)) if needle in e]
+
+    def test_single_uint_ok(self):
+        self.assertEqual(self._errors_for("H1 = 1234567", "H1"), [])
+
+    def test_range_ok(self):
+        # ключевая регрессия: диапазон N-M больше не считается ошибкой
+        self.assertEqual(self._errors_for("H1 = 5-100", "H1"), [])
+        self.assertEqual(self._errors_for("H4 = 0-4294967295", "H4"), [])
+
+    def test_garbage_rejected(self):
+        self.assertTrue(self._errors_for("H2 = abc", "H2"))
+
+    def test_inverted_range_rejected(self):
+        self.assertTrue(self._errors_for("H3 = 100-5", "H3"))
+
+    def test_other_numeric_fields_still_strict(self):
+        # range-синтаксис — только у H*; у прочих полей по-прежнему строгий int
+        self.assertTrue(self._errors_for("Jmin = abc", "Jmin"))
+        self.assertTrue(self._errors_for("S1 = 1-2", "S1"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -398,6 +398,25 @@ def render_setconf(cfg: dict) -> str:
 
 # ───────────────────────── validation ───────────────────────────────
 
+# H1..H4 в AmneziaWG: классически — одиночный uint, а в AmneziaWG 2.0 —
+# ДИАПАЗОН `N-M` (значения выбираются случайно в окне). amneziawg-tools
+# (src/config.c) хранит их как opaque-строки через parse_awg_string, поэтому
+# на нашей стороне валидируем только формат: int ИЛИ `N-M` (N<=M).
+_AWG_HEADER_FIELDS = frozenset(("H1", "H2", "H3", "H4"))
+_AWG_HEADER_RE = re.compile(r"^\d+(?:-\d+)?$")
+
+
+def _is_valid_awg_header(value) -> bool:
+    """True, если значение H1..H4 — целое или диапазон `N-M` (N<=M)."""
+    s = str(value).strip()
+    if not _AWG_HEADER_RE.match(s):
+        return False
+    if "-" in s:
+        lo, hi = s.split("-", 1)
+        return int(lo) <= int(hi)
+    return True
+
+
 def validate(cfg: dict) -> list:
     """
     Проверить структуру конфига. Возвращает список строк-ошибок.
@@ -446,9 +465,16 @@ def validate(cfg: dict) -> list:
             except (ValueError, TypeError):
                 errors.append(f"[Interface] Address — неверный адрес: {a}")
 
-    # AWG обфускация — ожидаются числа
+    # AWG-обфускация: числовые поля — строгий int; заголовки H1..H4 —
+    # одиночный uint ИЛИ диапазон `N-M` (range-синтаксис AmneziaWG 2.0).
     for k in AWG_OBFUSCATION_FIELDS:
-        if k in iface and iface[k] not in ("", None):
+        if k not in iface or iface[k] in ("", None):
+            continue
+        if k in _AWG_HEADER_FIELDS:
+            if not _is_valid_awg_header(iface[k]):
+                errors.append(
+                    f"[Interface] {k} должен быть числом или диапазоном N-M")
+        else:
             try:
                 int(iface[k])
             except (TypeError, ValueError):
