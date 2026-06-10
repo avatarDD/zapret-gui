@@ -126,6 +126,13 @@ DEFAULT_CONFIG = {
         "file_enabled": True,
         "file_path": "/tmp/zapret-gui.log",
         "level": "INFO",  # DEBUG, INFO, WARNING, ERROR
+        # Персистентный лог критичных событий: пишется рядом с settings.json
+        # (постоянный носитель), поэтому ПЕРЕЖИВАЕТ перезагрузку роутера.
+        # Главный файл логов лежит в /tmp (ОЗУ) и при ребуте теряется — без
+        # этого нечем диагностировать «роутер ушёл в перезагрузку».
+        "persist_critical": True,
+        "persist_min_level": "WARNING",  # WARNING+ (или ERROR)
+        "persist_path": "",              # пусто = <config_dir>/critical.log
     },
 
     # --- Сетевые интерфейсы ---
@@ -144,6 +151,13 @@ DEFAULT_CONFIG = {
         "installed_tools":    "",
         "installed_arch":     "",
         "installed_at":       0,
+        # Лимит памяти userspace-демона amneziawg-go (Go) — для слабых
+        # роутеров, чтобы он не разрастался и не доводил систему до OOM
+        # (типичная причина «роутер ушёл в перезагрузку»). Применяется при
+        # следующем подъёме туннеля. Выключено по умолчанию.
+        "go_mem_enabled":     False,
+        "go_gogc":            50,   # GOGC: ниже = чаще GC, меньше пик heap
+        "go_memlimit_mb":     64,   # GOMEMLIMIT, МиБ (0 = не задавать)
     },
 
     # --- BlockCheck ---

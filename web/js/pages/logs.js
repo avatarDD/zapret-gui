@@ -56,6 +56,11 @@ const LogsPage = (() => {
                     <p class="page-description">Журнал событий в реальном времени</p>
                 </div>
                 <div class="logs-header-actions">
+                    <a class="btn btn-ghost btn-sm" href="/api/logs/persistent?raw=1"
+                       target="_blank" rel="noopener"
+                       title="Критичные события, сохранённые на диск — переживают перезагрузку роутера">
+                        Сохранённый лог
+                    </a>
                     <span class="logs-connection-status" id="logs-conn-status">
                         <span class="logs-conn-dot"></span>
                         <span class="logs-conn-text">Подключение...</span>

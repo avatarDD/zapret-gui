@@ -69,6 +69,21 @@ def register(app):
         # Возвращаем генератор — Bottle обработает как chunked response
         return _sse_generator()
 
+    @app.route("/api/logs/persistent")
+    def api_logs_persistent():
+        """
+        Персистентный лог критичных событий (переживает перезагрузку).
+        ?raw=1 — отдать как text/plain (для открытия/скачивания в браузере).
+        """
+        from core.log_buffer import get_log_buffer
+        buf = get_log_buffer()
+        text = buf.read_persistent()
+        if request.params.get("raw"):
+            response.content_type = "text/plain; charset=utf-8"
+            return text or "(персистентный лог пуст или отключён в Настройках → Логирование)"
+        response.content_type = "application/json; charset=utf-8"
+        return {"ok": True, "text": text, "status": buf.get_persistent_status()}
+
     @app.post("/api/logs/clear")
     def api_logs_clear():
         """Очистить буфер логов."""

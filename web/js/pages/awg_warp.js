@@ -304,15 +304,32 @@ const AwgWarpPage = (() => {
         const intro = `
             <p class="text-muted" style="margin: 0 0 12px 0;">
                 Двойной туннель: пользовательский трафик идёт сначала
-                через <strong>outer</strong> (первый WARP), а внутри
-                него — через <strong>inner</strong> (второй WARP).
-                Это меняет внешний IP дважды и помогает обойти ограничения,
+                через <strong>outer</strong> (первый WARP, наружу через WAN),
+                а внутри него — через <strong>inner</strong> (второй WARP).
+                Внешний IP меняется дважды — это помогает обойти ограничения,
                 настроенные под одиночный WARP.
             </p>
-            <p class="text-muted" style="margin: 0 0 16px 0; font-size: 12px;">
-                Рекомендуется заранее сгенерировать или импортировать
-                два разных WARP-конфига на вкладках «Импорт» / «Генерация».
-            </p>
+            <div style="padding:12px 14px; background: rgba(91,158,244,0.06);
+                        border-left:3px solid var(--accent, #5b9ef4); border-radius:6px;
+                        font-size:13px; line-height:1.55; margin:0 0 16px 0;">
+                <div style="font-weight:600; margin-bottom:6px;">Как завернуть трафик в WARP-in-WARP</div>
+                <ol style="margin:0; padding-left:18px;">
+                    <li>На вкладках «Импорт» / «Генерация» подготовьте
+                        <strong>два разных</strong> WARP-конфига.</li>
+                    <li>Здесь выберите <strong>outer</strong> (первый, через WAN)
+                        и <strong>inner</strong> (второй, пойдёт внутри outer)
+                        и нажмите «Поднять».</li>
+                    <li>Связка сама поднимет оба туннеля и пропишет маршрут до
+                        endpoint'а inner через outer. После этого весь обычный
+                        трафик идёт через inner — отдельные правила маршрутизации
+                        добавлять не нужно.</li>
+                </ol>
+                <div class="text-muted" style="margin-top:8px; font-size:12px;">
+                    Отключение — кнопкой разбора связки ниже (вернёт оба туннеля
+                    в обычный режим). Связка переживает перезапуск GUI —
+                    восстанавливается автоматически.
+                </div>
+            </div>
         `;
 
         if (active) {

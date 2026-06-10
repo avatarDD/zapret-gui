@@ -64,6 +64,14 @@ def register(app):
             log.info(f"Конфигурация обновлена: {', '.join(updated)}",
                      source="config")
 
+        # Настройки персистентного лога применяем «вживую» — без рестарта GUI.
+        if "logging" in updated:
+            try:
+                from core.log_buffer import reconfigure_persistent_from_config
+                reconfigure_persistent_from_config()
+            except Exception:
+                pass
+
         # Если поменяли host/port в gui — переписываем systemd unit,
         # чтобы он не подсовывал свои --host/--port из времени установки.
         # Без этого изменение порта в UI не применяется к реальному
