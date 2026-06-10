@@ -532,6 +532,47 @@ def register(app):
             response.status = 500
             return {"ok": False, "error": str(e)}
 
+    @app.route("/api/awg/go-memory")
+    def awg_go_memory_get():
+        """Текущие настройки лимита памяти amneziawg-go (GOGC/GOMEMLIMIT)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        return {
+            "ok": True,
+            "enabled":     bool(cm.get("awg", "go_mem_enabled", default=False)),
+            "gogc":        int(cm.get("awg", "go_gogc", default=50) or 50),
+            "memlimit_mb": int(cm.get("awg", "go_memlimit_mb", default=64) or 64),
+        }
+
+    @app.route("/api/awg/go-memory", method="POST")
+    def awg_go_memory_set():
+        """
+        Изменить лимит памяти amneziawg-go. Поля: enabled, gogc, memlimit_mb.
+        Применяется при следующем подъёме туннеля.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        if "enabled" in body:
+            cm.set("awg", "go_mem_enabled", bool(body.get("enabled")))
+        if "gogc" in body:
+            cm.set("awg", "go_gogc", max(0, int(body.get("gogc") or 0)))
+        if "memlimit_mb" in body:
+            cm.set("awg", "go_memlimit_mb", max(0, int(body.get("memlimit_mb") or 0)))
+        cm.save()
+        return {
+            "ok": True,
+            "enabled":     bool(cm.get("awg", "go_mem_enabled", default=False)),
+            "gogc":        int(cm.get("awg", "go_gogc", default=50) or 50),
+            "memlimit_mb": int(cm.get("awg", "go_memlimit_mb", default=64) or 64),
+            "note": "Применится при следующем подъёме туннеля",
+        }
+
     @app.route("/api/awg/subscription/import", method="POST")
     def awg_subscription_import():
         """

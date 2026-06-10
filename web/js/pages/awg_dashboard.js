@@ -67,12 +67,14 @@ const AwgDashboardPage = (() => {
             </div>
 
             <div class="card" id="awg-watchdog" style="margin-bottom: 16px;"></div>
+            <div class="card" id="awg-go-memory" style="margin-bottom: 16px;"></div>
             <div id="awg-tunnels"></div>
             <div id="awg-keenetic-routing"></div>
         `;
 
         refresh();
         loadWatchdog();
+        loadGoMemory();
         startPolling();
     }
 
@@ -819,9 +821,76 @@ const AwgDashboardPage = (() => {
         } catch (e) { Toast.error(e.message); }
     }
 
+    // ══════════════ лимит памяти amneziawg-go ══════════════
+
+    let _gomem = null;
+
+    async function loadGoMemory() {
+        try {
+            const r = await API.get('/api/awg/go-memory');
+            _gomem = (r && r.ok) ? r : null;
+        } catch (_) { _gomem = null; }
+        renderGoMemory();
+    }
+
+    function renderGoMemory() {
+        const box = document.getElementById('awg-go-memory');
+        if (!box) return;
+        const s = _gomem || {};
+        const on = !!s.enabled;
+        box.innerHTML = `
+            <div class="card-title">Лимит памяти amneziawg-go</div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer;">
+                <input type="checkbox" id="gomem-on" ${on ? 'checked' : ''}
+                       onchange="AwgDashboardPage.saveGoMemory()">
+                <span>Ограничивать память userspace-демона</span>
+            </label>
+            <p class="text-muted" style="font-size:12px; margin:6px 0 0;">
+                На роутерах с малым ОЗУ amneziawg-go (Go) может разрастаться и
+                доводить систему до нехватки памяти — частая причина внезапной
+                перезагрузки роутера. Лимит (GOGC/GOMEMLIMIT) удерживает
+                потребление в рамках. Применяется при следующем подъёме туннеля.
+            </p>
+            <div id="gomem-adv" style="margin-top:10px; ${on ? '' : 'display:none;'}">
+                <div style="display:grid; grid-template-columns:240px 1fr; gap:6px 12px; max-width:560px; align-items:center;">
+                    <label class="text-muted" style="font-size:12px;">GOGC (меньше = экономнее, чаще GC)</label>
+                    <input type="number" id="gomem-gogc" class="form-control" style="max-width:100px;"
+                           min="10" max="200" value="${escapeAttr(s.gogc || 50)}">
+                    <label class="text-muted" style="font-size:12px;">GOMEMLIMIT, МиБ (0 = не задавать)</label>
+                    <input type="number" id="gomem-mb" class="form-control" style="max-width:100px;"
+                           min="0" max="1024" value="${escapeAttr(s.memlimit_mb || 64)}">
+                </div>
+                <div style="margin-top:8px;">
+                    <button class="btn btn-ghost btn-sm" onclick="AwgDashboardPage.saveGoMemory()">Сохранить параметры</button>
+                </div>
+            </div>
+        `;
+    }
+
+    async function saveGoMemory() {
+        const on = !!(document.getElementById('gomem-on') || {}).checked;
+        const gogc = (document.getElementById('gomem-gogc') || {}).value;
+        const mb = (document.getElementById('gomem-mb') || {}).value;
+        const payload = { enabled: on };
+        if (gogc) payload.gogc = parseInt(gogc, 10) || 50;
+        if (mb !== undefined && mb !== '') payload.memlimit_mb = parseInt(mb, 10) || 0;
+        try {
+            const r = await API.post('/api/awg/go-memory', payload);
+            if (r && r.ok) {
+                _gomem = r;
+                Toast.success(on ? 'Лимит памяти включён (применится при подъёме туннеля)'
+                                 : 'Лимит памяти выключен');
+                renderGoMemory();
+            } else {
+                Toast.error((r && r.error) || 'ошибка');
+            }
+        } catch (e) { Toast.error(e.message); }
+    }
+
     return {
         render, destroy, refresh, up, down, restart, diagnostics,
         toggleAutostart, installScript, removeScript, regenerateScript,
         loadWatchdog, saveWatchdog,
+        loadGoMemory, saveGoMemory,
     };
 })();

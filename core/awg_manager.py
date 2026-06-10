@@ -43,12 +43,16 @@ from core.log_buffer import log
 
 # ───────────────────────── helpers ───────────────────────────────────
 
-def _run(args, timeout=15, input_text=None):
-    """Запустить команду, вернуть (returncode, stdout, stderr)."""
+def _run(args, timeout=15, input_text=None, env=None):
+    """Запустить команду, вернуть (returncode, stdout, stderr).
+
+    env=None — наследовать окружение текущего процесса (по умолчанию).
+    Передаётся для запуска amneziawg-go с лимитом памяти Go (GOGC/GOMEMLIMIT).
+    """
     try:
         r = subprocess.run(
             args, capture_output=True, text=True, timeout=timeout,
-            input=input_text,
+            input=input_text, env=env,
         )
         return r.returncode, r.stdout or "", r.stderr or ""
     except FileNotFoundError as e:
@@ -110,6 +114,29 @@ class AwgManager:
         if info.get("amneziawg_go") and os.path.isfile(info["amneziawg_go"]):
             return info["amneziawg_go"]
         return os.path.join(self._binary_dir(), "amneziawg-go")
+
+    def _amneziawg_go_env(self):
+        """
+        Окружение для запуска amneziawg-go. Если в настройках включён лимит
+        памяти Go (awg.go_mem_enabled) — добавляем GOGC/GOMEMLIMIT, чтобы
+        userspace-демон не разрастался и не доводил слабый роутер до OOM.
+        Возвращает None (наследовать окружение) либо dict.
+        """
+        try:
+            from core.config_manager import get_config_manager
+            cm = get_config_manager()
+            if not cm.get("awg", "go_mem_enabled", default=False):
+                return None
+            gogc = int(cm.get("awg", "go_gogc", default=50) or 0)
+            memmb = int(cm.get("awg", "go_memlimit_mb", default=0) or 0)
+        except Exception:
+            return None
+        env = dict(os.environ)
+        if gogc > 0:
+            env["GOGC"] = str(gogc)
+        if memmb > 0:
+            env["GOMEMLIMIT"] = "%dMiB" % memmb
+        return env
 
     def _awg_bin(self):
         info = get_awg_installer().get_installed_version()
@@ -896,7 +923,8 @@ class AwgManager:
                     % (awg_health["detail"] or "exec error",
                        self._binary_help_suffix())}
 
-        rc, _out, err = _run([bin_go, ifname], timeout=15)
+        rc, _out, err = _run([bin_go, ifname], timeout=15,
+                             env=self._amneziawg_go_env())
         if rc != 0:
             msg = "Не удалось запустить amneziawg-go: %s" % err.strip()
             low = (err or "").lower()

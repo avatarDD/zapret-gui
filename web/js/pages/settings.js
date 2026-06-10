@@ -146,6 +146,14 @@ const SettingsPage = (() => {
                     { value: 'DEBUG', label: 'DEBUG' }, { value: 'INFO', label: 'INFO' },
                     { value: 'WARNING', label: 'WARNING' }, { value: 'ERROR', label: 'ERROR' },
                 ]},
+                { key: 'logging.persist_critical', label: 'Сохранять критичные события (переживают перезагрузку)', type: 'toggle',
+                  hint: 'Пишет ошибки и предупреждения в отдельный файл рядом с settings.json (постоянный носитель). Основной журнал лежит в /tmp (ОЗУ) и при перезагрузке роутера ТЕРЯЕТСЯ — это единственный способ потом увидеть, что происходило перед внезапной перезагрузкой. Рекомендуется оставить включённым.' },
+                { key: 'logging.persist_min_level', label: 'Что сохранять персистентно', type: 'select', showIf: 'logging.persist_critical', options: [
+                    { value: 'WARNING', label: 'Предупреждения и ошибки' },
+                    { value: 'ERROR',   label: 'Только ошибки' },
+                ]},
+                { key: 'logging.persist_path', label: 'Путь к персистентному логу', type: 'text', showIf: 'logging.persist_critical',
+                  placeholder: 'пусто = рядом с settings.json (critical.log)' },
             ]
         },
         {

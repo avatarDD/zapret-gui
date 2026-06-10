@@ -43,8 +43,10 @@ MAX_FILE_SIZE = 512 * 1024  # 512 KB
 # Путь к файлу логов (RAM-диск)
 LOG_FILE_PATH = "/tmp/zapret-gui.log"
 
-# Путь для критических ошибок (persistent, но с ограничением)
-CRITICAL_LOG_PATH = None  # Устанавливается из конфига
+# Персистентный лог критичных событий (на постоянном носителе рядом с
+# settings.json) — переживает перезагрузку роутера.
+PERSIST_MAX_FILE_SIZE = 128 * 1024   # 128 KB, с ротацией
+PERSIST_MIN_PRIORITY_DEFAULT = 3      # WARNING и выше
 
 
 class LogEntry:
@@ -89,7 +91,13 @@ class LogBuffer:
         self._file_path = file_path
         self._file_enabled = True
         self._listeners = []  # Callbacks для SSE
+        self._listeners_lock = threading.Lock()
         self._counter = 0  # Счётчик записей (для SSE event ID)
+        # Персистентный лог критичных событий (переживает перезагрузку).
+        self._persist_enabled = False
+        self._persist_path = None
+        self._persist_min_priority = PERSIST_MIN_PRIORITY_DEFAULT
+        self._persist_max = PERSIST_MAX_FILE_SIZE
 
     def add(self, level: str, message: str, source: str = "") -> LogEntry:
         """Добавить запись в буфер."""
@@ -103,13 +111,29 @@ class LogBuffer:
         if self._file_enabled:
             self._write_to_file(entry)
 
-        # Уведомляем SSE-слушателей
-        for callback in self._listeners[:]:
+        # Персистентно — только критичные события (WARNING+), чтобы они
+        # пережили перезагрузку (главный лог в /tmp при ребуте теряется).
+        if self._persist_enabled and self._persist_path:
+            prio = LEVELS.get(entry.level, LEVELS["INFO"])["priority"]
+            if prio >= self._persist_min_priority:
+                self._write_persistent(entry)
+
+        # Уведомляем SSE-слушателей (снимок под локом, вызов — вне лока).
+        with self._listeners_lock:
+            listeners = self._listeners[:]
+        broken = []
+        for callback in listeners:
             try:
                 callback(entry)
             except Exception:
-                # Удаляем сломанных слушателей
-                self._listeners.remove(callback)
+                broken.append(callback)
+        if broken:
+            with self._listeners_lock:
+                for cb in broken:
+                    try:
+                        self._listeners.remove(cb)
+                    except ValueError:
+                        pass
 
         return entry
 
@@ -158,14 +182,78 @@ class LogBuffer:
 
     def add_listener(self, callback):
         """Добавить SSE-слушателя."""
-        self._listeners.append(callback)
+        with self._listeners_lock:
+            self._listeners.append(callback)
 
     def remove_listener(self, callback):
         """Удалить SSE-слушателя."""
+        with self._listeners_lock:
+            try:
+                self._listeners.remove(callback)
+            except ValueError:
+                pass
+
+    # ─────── персистентный лог критичных событий ───────
+
+    def set_persistent(self, enabled, path=None, min_level=None,
+                       max_size=None):
+        """
+        Настроить персистентный лог (переживает перезагрузку). Вызывается
+        из reconfigure_persistent_from_config() на старте и при смене
+        настроек в GUI.
+        """
+        with self._lock:
+            self._persist_enabled = bool(enabled)
+            if path is not None:
+                self._persist_path = path or None
+            if min_level:
+                self._persist_min_priority = LEVELS.get(
+                    str(min_level).upper(), LEVELS["WARNING"])["priority"]
+            if max_size:
+                self._persist_max = int(max_size)
+
+    def get_persistent_status(self) -> dict:
+        return {
+            "enabled":      self._persist_enabled,
+            "path":         self._persist_path,
+            "min_priority": self._persist_min_priority,
+            "max_size":     self._persist_max,
+        }
+
+    def read_persistent(self, max_bytes: int = 64 * 1024) -> str:
+        """Прочитать хвост персистентного лога (для показа в GUI)."""
+        path = self._persist_path
+        if not path or not os.path.exists(path):
+            return ""
         try:
-            self._listeners.remove(callback)
-        except ValueError:
-            pass
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                data = f.read()
+            return data[-max_bytes:]
+        except (OSError, IOError):
+            return ""
+
+    def _write_persistent(self, entry: "LogEntry"):
+        path = self._persist_path
+        if not path:
+            return
+        try:
+            d = os.path.dirname(path)
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+            # Ротация по размеру: оставляем последнюю половину.
+            if os.path.exists(path) and os.path.getsize(path) > self._persist_max:
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.writelines(lines[len(lines) // 2:])
+                except (OSError, IOError):
+                    pass
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(entry.format_line() + "\n")
+        except (OSError, IOError):
+            # Путь недоступен — отключаем, чтобы не долбить вхолостую.
+            self._persist_enabled = False
 
     def _write_to_file(self, entry: LogEntry):
         """Записать в файл с ротацией по размеру."""
@@ -233,3 +321,32 @@ log = Logger(_log_buffer)
 def get_log_buffer() -> LogBuffer:
     """Получить глобальный буфер логов."""
     return _log_buffer
+
+
+def reconfigure_persistent_from_config():
+    """
+    Прочитать настройки персистентного лога из settings.json и применить.
+
+    Путь по умолчанию — рядом с settings.json (постоянный носитель), чтобы
+    критичные события пережили перезагрузку. Вызывается на старте GUI и
+    после изменения секции `logging` в настройках.
+    """
+    lg = {}
+    cfg_dir = ""
+    try:
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        lg = cm.get("logging") or {}
+        cfg_dir = os.path.dirname(cm.path or "")
+    except Exception:
+        lg = {}
+    if not isinstance(lg, dict):
+        lg = {}
+
+    enabled = lg.get("persist_critical", True)  # по умолчанию ВКЛ
+    path = (lg.get("persist_path") or "").strip()
+    if not path:
+        path = os.path.join(cfg_dir or "/tmp", "critical.log")
+    min_level = lg.get("persist_min_level") or "WARNING"
+    _log_buffer.set_persistent(enabled, path=path, min_level=min_level)
+    return _log_buffer.get_persistent_status()

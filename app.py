@@ -347,6 +347,14 @@ def create_app(config_dir: str = None) -> Bottle:
     cfg_data = init_config(config_dir)
     cfg = get_config_manager()
 
+    # Персистентный лог критичных событий (переживает перезагрузку) —
+    # настраиваем сразу после загрузки конфига.
+    try:
+        from core.log_buffer import reconfigure_persistent_from_config
+        reconfigure_persistent_from_config()
+    except Exception:
+        pass
+
     log.info("=" * 50, source="app")
     log.info("Zapret Web-GUI запускается", source="app")
     log.info(f"Конфигурация: {cfg.path}", source="app")
