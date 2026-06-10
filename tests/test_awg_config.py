@@ -5,7 +5,7 @@ Unit-тесты для core/awg_config.py — парсер .conf-файлов.
 
 import unittest
 
-from core.awg_config import parse_conf, validate, render_conf
+from core.awg_config import parse_conf, validate, render_conf, render_setconf
 
 
 SIMPLE_CONF = """[Interface]
@@ -127,6 +127,93 @@ class TestRender(unittest.TestCase):
                          cfg["peers"][0]["PublicKey"])
         self.assertEqual(cfg2["peers"][0]["Endpoint"],
                          cfg["peers"][0]["Endpoint"])
+
+
+class TestAwgObfuscationFields(unittest.TestCase):
+    """Регрессия: голого поля `I` в AmneziaWG НЕТ — есть только I1..I5.
+
+    amneziawg-tools (src/config.c) в [Interface] матчит лишь "I1".."I5";
+    строка `I = ...` для `awg setconf` — неизвестный ключ, и тулза
+    отбросила бы весь конфиг (туннель не поднимется). Поэтому
+    render_setconf не должен выводить голое `I`, а validate — не считать
+    его числовым параметром обфускации.
+    """
+
+    CONF = """[Interface]
+PrivateKey = aP1xJU3a3lYwTzZyB7hN4mE8oQ2rWcKfIvCdEh6gXyo=
+Address = 10.66.66.2/32
+Jc = 4
+S1 = 30
+H1 = 5
+I = oops
+I1 = <b 0xf6ab34c1>
+
+[Peer]
+PublicKey = X4iC8z2qOaP3nE5gF7hM6kL9pR1tWcVbI0oUyA3sJdM=
+Endpoint = awg.example.com:5000
+AllowedIPs = 0.0.0.0/0
+"""
+
+    def test_bare_I_not_sent_to_setconf(self):
+        setconf = render_setconf(parse_conf(self.CONF))
+        lines = [ln.strip() for ln in setconf.splitlines()]
+        # голое `I` НЕ уходит в `awg setconf`
+        self.assertNotIn("I = oops", setconf)
+        self.assertFalse(
+            any(ln.startswith("I =") for ln in lines),
+            msg="голое поле I не должно попадать в setconf: %r" % setconf)
+        # реальные параметры обфускации — уходят
+        self.assertIn("Jc = 4", setconf)
+        self.assertIn("S1 = 30", setconf)
+        self.assertIn("H1 = 5", setconf)
+        # signature-пакет I1 уходит в нативной обёртке <b 0x..>
+        self.assertIn("I1 = <b 0xf6ab34c1>", setconf)
+
+    def test_bare_I_not_validated_as_number(self):
+        errors = validate(parse_conf(self.CONF))
+        self.assertFalse(
+            any(e.startswith("[Interface] I ") for e in errors),
+            msg="голое I не должно валидироваться как число: %s" % errors)
+
+
+class TestAwgHeaderRange(unittest.TestCase):
+    """H1..H4: одиночный uint (1.0) ИЛИ диапазон `N-M` (AmneziaWG 2.0).
+
+    Раньше validate() проверял H1..H4 как строгий int и зря отклонял
+    валидный 2.0-конфиг с `H1 = 5-100`. Остальные числовые поля
+    обфускации (Jc/Jmin/Jmax/S1..S4/Itime) остаются строгими int.
+    """
+
+    TMPL = ("[Interface]\n"
+            "PrivateKey = aP1xJU3a3lYwTzZyB7hN4mE8oQ2rWcKfIvCdEh6gXyo=\n"
+            "Address = 10.66.66.2/32\n"
+            "%s\n\n"
+            "[Peer]\n"
+            "PublicKey = X4iC8z2qOaP3nE5gF7hM6kL9pR1tWcVbI0oUyA3sJdM=\n"
+            "Endpoint = awg.example.com:5000\n"
+            "AllowedIPs = 0.0.0.0/0\n")
+
+    def _errors_for(self, line, needle):
+        return [e for e in validate(parse_conf(self.TMPL % line)) if needle in e]
+
+    def test_single_uint_ok(self):
+        self.assertEqual(self._errors_for("H1 = 1234567", "H1"), [])
+
+    def test_range_ok(self):
+        # ключевая регрессия: диапазон N-M больше не считается ошибкой
+        self.assertEqual(self._errors_for("H1 = 5-100", "H1"), [])
+        self.assertEqual(self._errors_for("H4 = 0-4294967295", "H4"), [])
+
+    def test_garbage_rejected(self):
+        self.assertTrue(self._errors_for("H2 = abc", "H2"))
+
+    def test_inverted_range_rejected(self):
+        self.assertTrue(self._errors_for("H3 = 100-5", "H3"))
+
+    def test_other_numeric_fields_still_strict(self):
+        # range-синтаксис — только у H*; у прочих полей по-прежнему строгий int
+        self.assertTrue(self._errors_for("Jmin = abc", "Jmin"))
+        self.assertTrue(self._errors_for("S1 = 1-2", "S1"))
 
 
 if __name__ == "__main__":

@@ -268,6 +268,25 @@
   подписки/пул/именованные списки/маршруты единого слоя — проверено).
 
 ### Исправлено
+- **AWG: убрано несуществующее поле обфускации `I`** (`core/awg_config.py`).
+  В `WG_INTERFACE_FIELDS`/`AWG_OBFUSCATION_FIELDS` ошибочно числился голый
+  параметр `I` (его принимали за поле «первого поколения» AmneziaWG). Такого
+  ключа в AmneziaWG нет — signature-пакеты это `I1..I5` (amneziawg-go README,
+  docs.amnezia.org, и парсер amneziawg-tools `src/config.c`, где `key_match`
+  есть только для `I1`..`I5`). Поле было инертным (наш код его нигде не
+  генерирует), но при наличии `I = ...` в конфиге `render_setconf` отдал бы его
+  в `awg setconf` как неизвестный ключ — и тулза отбросила бы весь конфиг
+  (туннель не поднялся бы); плюс `validate` зря требовал от него число. Теперь
+  `I` не в списках: попадись он в конфиге — в демон не уйдёт, а в хранимом
+  `.conf` сохранится как unknown-passthrough. Регрессия — `tests/test_awg_config.py`.
+- **AWG: `validate()` ложно отклонял диапазонный синтаксис `H1–H4`**
+  (`core/awg_config.py`). В AmneziaWG 2.0 magic-заголовки можно задавать
+  диапазоном `H1 = N-M` (значение выбирается случайно в окне; amneziawg-tools
+  хранит их как строки через `parse_awg_string`), а наш валидатор требовал
+  строгий int и зарубал валидный 2.0-конфиг ошибкой «H1 должен быть числом».
+  Теперь `H1–H4` принимают либо одиночный uint, либо `N-M` (с `N<=M`); прочие
+  числовые поля обфускации (Jc/Jmin/Jmax/S1..S4/Itime) — по-прежнему строгий
+  int. Регрессия — `tests/test_awg_config.py`.
 - **Firewall: на Entware/Keenetic без `iptables-mod-comment` правила не
   применялись — `iptables: No chain/target/match by that name` ×14, сайты
   не работали** ([#151](https://github.com/avatarDD/zapret-gui/issues/151)).

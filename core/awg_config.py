@@ -5,7 +5,7 @@
 Формат совместим с wg-quick + AmneziaWG расширениями:
   [Interface] PrivateKey, Address, ListenPort, DNS, MTU, Table,
               PreUp, PostUp, PreDown, PostDown,
-              Jc, Jmin, Jmax, S1, S2, H1, H2, H3, H4, I
+              Jc, Jmin, Jmax, S1..S4, H1..H4, I1..I5, J1..J3, Itime
   [Peer]      PublicKey, PresharedKey, AllowedIPs,
               Endpoint, PersistentKeepalive
 
@@ -31,11 +31,14 @@ WG_INTERFACE_FIELDS = (
     "PrivateKey",
     "ListenPort",
     "FwMark",
-    # AmneziaWG-обфускация v1
+    # AmneziaWG-обфускация v1 (классический набор 1.0)
     "Jc", "Jmin", "Jmax",
     "S1", "S2",
     "H1", "H2", "H3", "H4",
-    "I",
+    # NB: голого поля `I` в AmneziaWG НЕТ — signature-пакеты это I1..I5
+    # (см. amneziawg-tools src/config.c: key_match только "I1".."I5").
+    # Не добавлять "I" обратно: при наличии в конфиге оно ушло бы в
+    # `awg setconf` как неизвестный ключ и тулза отбросила бы весь конфиг.
     # AmneziaWG-обфускация v2 (новые поля из свежих релизов
     # amneziawg-go/amneziawg-tools). Если их не передать в setconf,
     # демон работает в режиме v1, handshake проходит, а data-пакеты
@@ -67,7 +70,7 @@ KNOWN_INTERFACE_FIELDS = set(WG_INTERFACE_FIELDS) | set(WGQUICK_INTERFACE_FIELDS
 
 # AmneziaWG-обфускация — числовые поля, валидируем как int.
 AWG_OBFUSCATION_FIELDS = ("Jc", "Jmin", "Jmax", "S1", "S2",
-                          "H1", "H2", "H3", "H4", "I",
+                          "H1", "H2", "H3", "H4",
                           # AmneziaWG-v2 числовые
                           "S3", "S4", "Itime")
 
@@ -395,6 +398,25 @@ def render_setconf(cfg: dict) -> str:
 
 # ───────────────────────── validation ───────────────────────────────
 
+# H1..H4 в AmneziaWG: классически — одиночный uint, а в AmneziaWG 2.0 —
+# ДИАПАЗОН `N-M` (значения выбираются случайно в окне). amneziawg-tools
+# (src/config.c) хранит их как opaque-строки через parse_awg_string, поэтому
+# на нашей стороне валидируем только формат: int ИЛИ `N-M` (N<=M).
+_AWG_HEADER_FIELDS = frozenset(("H1", "H2", "H3", "H4"))
+_AWG_HEADER_RE = re.compile(r"^\d+(?:-\d+)?$")
+
+
+def _is_valid_awg_header(value) -> bool:
+    """True, если значение H1..H4 — целое или диапазон `N-M` (N<=M)."""
+    s = str(value).strip()
+    if not _AWG_HEADER_RE.match(s):
+        return False
+    if "-" in s:
+        lo, hi = s.split("-", 1)
+        return int(lo) <= int(hi)
+    return True
+
+
 def validate(cfg: dict) -> list:
     """
     Проверить структуру конфига. Возвращает список строк-ошибок.
@@ -443,9 +465,16 @@ def validate(cfg: dict) -> list:
             except (ValueError, TypeError):
                 errors.append(f"[Interface] Address — неверный адрес: {a}")
 
-    # AWG обфускация — ожидаются числа
+    # AWG-обфускация: числовые поля — строгий int; заголовки H1..H4 —
+    # одиночный uint ИЛИ диапазон `N-M` (range-синтаксис AmneziaWG 2.0).
     for k in AWG_OBFUSCATION_FIELDS:
-        if k in iface and iface[k] not in ("", None):
+        if k not in iface or iface[k] in ("", None):
+            continue
+        if k in _AWG_HEADER_FIELDS:
+            if not _is_valid_awg_header(iface[k]):
+                errors.append(
+                    f"[Interface] {k} должен быть числом или диапазоном N-M")
+        else:
             try:
                 int(iface[k])
             except (TypeError, ValueError):
