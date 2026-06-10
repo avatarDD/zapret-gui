@@ -5,7 +5,7 @@ Unit-тесты для core/awg_config.py — парсер .conf-файлов.
 
 import unittest
 
-from core.awg_config import parse_conf, validate, render_conf
+from core.awg_config import parse_conf, validate, render_conf, render_setconf
 
 
 SIMPLE_CONF = """[Interface]
@@ -127,6 +127,53 @@ class TestRender(unittest.TestCase):
                          cfg["peers"][0]["PublicKey"])
         self.assertEqual(cfg2["peers"][0]["Endpoint"],
                          cfg["peers"][0]["Endpoint"])
+
+
+class TestAwgObfuscationFields(unittest.TestCase):
+    """Регрессия: голого поля `I` в AmneziaWG НЕТ — есть только I1..I5.
+
+    amneziawg-tools (src/config.c) в [Interface] матчит лишь "I1".."I5";
+    строка `I = ...` для `awg setconf` — неизвестный ключ, и тулза
+    отбросила бы весь конфиг (туннель не поднимется). Поэтому
+    render_setconf не должен выводить голое `I`, а validate — не считать
+    его числовым параметром обфускации.
+    """
+
+    CONF = """[Interface]
+PrivateKey = aP1xJU3a3lYwTzZyB7hN4mE8oQ2rWcKfIvCdEh6gXyo=
+Address = 10.66.66.2/32
+Jc = 4
+S1 = 30
+H1 = 5
+I = oops
+I1 = <b 0xf6ab34c1>
+
+[Peer]
+PublicKey = X4iC8z2qOaP3nE5gF7hM6kL9pR1tWcVbI0oUyA3sJdM=
+Endpoint = awg.example.com:5000
+AllowedIPs = 0.0.0.0/0
+"""
+
+    def test_bare_I_not_sent_to_setconf(self):
+        setconf = render_setconf(parse_conf(self.CONF))
+        lines = [ln.strip() for ln in setconf.splitlines()]
+        # голое `I` НЕ уходит в `awg setconf`
+        self.assertNotIn("I = oops", setconf)
+        self.assertFalse(
+            any(ln.startswith("I =") for ln in lines),
+            msg="голое поле I не должно попадать в setconf: %r" % setconf)
+        # реальные параметры обфускации — уходят
+        self.assertIn("Jc = 4", setconf)
+        self.assertIn("S1 = 30", setconf)
+        self.assertIn("H1 = 5", setconf)
+        # signature-пакет I1 уходит в нативной обёртке <b 0x..>
+        self.assertIn("I1 = <b 0xf6ab34c1>", setconf)
+
+    def test_bare_I_not_validated_as_number(self):
+        errors = validate(parse_conf(self.CONF))
+        self.assertFalse(
+            any(e.startswith("[Interface] I ") for e in errors),
+            msg="голое I не должно валидироваться как число: %s" % errors)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 Формат совместим с wg-quick + AmneziaWG расширениями:
   [Interface] PrivateKey, Address, ListenPort, DNS, MTU, Table,
               PreUp, PostUp, PreDown, PostDown,
-              Jc, Jmin, Jmax, S1, S2, H1, H2, H3, H4, I
+              Jc, Jmin, Jmax, S1..S4, H1..H4, I1..I5, J1..J3, Itime
   [Peer]      PublicKey, PresharedKey, AllowedIPs,
               Endpoint, PersistentKeepalive
 
@@ -31,11 +31,14 @@ WG_INTERFACE_FIELDS = (
     "PrivateKey",
     "ListenPort",
     "FwMark",
-    # AmneziaWG-обфускация v1
+    # AmneziaWG-обфускация v1 (классический набор 1.0)
     "Jc", "Jmin", "Jmax",
     "S1", "S2",
     "H1", "H2", "H3", "H4",
-    "I",
+    # NB: голого поля `I` в AmneziaWG НЕТ — signature-пакеты это I1..I5
+    # (см. amneziawg-tools src/config.c: key_match только "I1".."I5").
+    # Не добавлять "I" обратно: при наличии в конфиге оно ушло бы в
+    # `awg setconf` как неизвестный ключ и тулза отбросила бы весь конфиг.
     # AmneziaWG-обфускация v2 (новые поля из свежих релизов
     # amneziawg-go/amneziawg-tools). Если их не передать в setconf,
     # демон работает в режиме v1, handshake проходит, а data-пакеты
@@ -67,7 +70,7 @@ KNOWN_INTERFACE_FIELDS = set(WG_INTERFACE_FIELDS) | set(WGQUICK_INTERFACE_FIELDS
 
 # AmneziaWG-обфускация — числовые поля, валидируем как int.
 AWG_OBFUSCATION_FIELDS = ("Jc", "Jmin", "Jmax", "S1", "S2",
-                          "H1", "H2", "H3", "H4", "I",
+                          "H1", "H2", "H3", "H4",
                           # AmneziaWG-v2 числовые
                           "S3", "S4", "Itime")
 
