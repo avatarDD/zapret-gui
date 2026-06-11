@@ -199,7 +199,7 @@ const SingboxDashboardPage = (() => {
                     <div class="text-muted" style="font-size:11px;">Конфиги</div>
                     <strong>${configs.length} <span class="text-muted">(активно ${active})</span></strong>
                 </div>
-                <div>
+                <div class="expert-only">
                     <div class="text-muted" style="font-size:11px;">Отладка</div>
                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"
                            title="log.level=debug при запуске — видно, почему конфиг/прокси не работает. Применяется при следующем (пере)запуске инстанса.">

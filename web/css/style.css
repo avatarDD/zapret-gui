@@ -4673,3 +4673,31 @@ input:focus, textarea:focus, select:focus {
     margin-left: 8px;
 }
 
+
+/* ===== Режим эксперта (components/expert.js) ===== */
+/* Продвинутые поля видны только в режиме эксперта (body.expert-mode).
+   Подсказки «здесь скрыты расширенные настройки» — наоборот, только в
+   простом режиме. Механика чисто CSS — без перерисовок страниц. */
+body:not(.expert-mode) .expert-only { display: none !important; }
+body.expert-mode .expert-note { display: none !important; }
+
+.expert-note {
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-top: 8px;
+}
+
+/* Галка «эксперт» в футере сайдбара */
+.expert-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+.expert-toggle:hover { color: var(--text-primary); }
+.expert-toggle input { cursor: pointer; }

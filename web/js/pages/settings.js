@@ -54,7 +54,7 @@ const SettingsPage = (() => {
             fields: [
                 { key: 'gui.host',            label: 'Адрес привязки',    type: 'text',   placeholder: '0.0.0.0' },
                 { key: 'gui.port',            label: 'Порт',              type: 'number', placeholder: '8080', min: 1, max: 65535 },
-                { key: 'gui.debug',           label: 'Режим отладки',     type: 'toggle' },
+                { key: 'gui.debug',           label: 'Режим отладки',     type: 'toggle', expert: true },
                 { key: 'gui.auth_enabled',    label: 'Авторизация',       type: 'toggle' },
                 { key: 'gui.auth_user',       label: 'Логин',             type: 'text',   placeholder: 'admin', showIf: 'gui.auth_enabled' },
                 { key: 'gui.auth_password',   label: 'Пароль',            type: 'password', placeholder: '••••••', showIf: 'gui.auth_enabled' },
@@ -84,16 +84,16 @@ const SettingsPage = (() => {
             label: 'nfqws',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
             fields: [
-                { key: 'nfqws.queue_num',           label: 'Номер очереди NFQUEUE',  type: 'number', min: 0, max: 65535 },
+                { key: 'nfqws.queue_num',           label: 'Номер очереди NFQUEUE',  type: 'number', min: 0, max: 65535, expert: true },
                 { key: 'nfqws.ports_tcp',            label: 'TCP-порты',              type: 'text', placeholder: '80,443' },
                 { key: 'nfqws.ports_udp',            label: 'UDP-порты',              type: 'text', placeholder: '443' },
-                { key: 'nfqws.tcp_pkt_out',          label: 'TCP пакетов OUT',        type: 'number', min: 1, max: 100 },
-                { key: 'nfqws.tcp_pkt_in',           label: 'TCP пакетов IN',         type: 'number', min: 0, max: 100 },
-                { key: 'nfqws.udp_pkt_out',          label: 'UDP пакетов OUT',        type: 'number', min: 1, max: 100 },
-                { key: 'nfqws.udp_pkt_in',           label: 'UDP пакетов IN',         type: 'number', min: 0, max: 100 },
-                { key: 'nfqws.desync_mark',          label: 'Desync mark',            type: 'text', placeholder: '0x40000000' },
-                { key: 'nfqws.desync_mark_postnat',  label: 'Desync mark (postnat)',  type: 'text', placeholder: '0x20000000' },
-                { key: 'nfqws.user',                 label: 'Пользователь',           type: 'text', placeholder: 'nobody' },
+                { key: 'nfqws.tcp_pkt_out',          label: 'TCP пакетов OUT',        type: 'number', min: 1, max: 100, expert: true },
+                { key: 'nfqws.tcp_pkt_in',           label: 'TCP пакетов IN',         type: 'number', min: 0, max: 100, expert: true },
+                { key: 'nfqws.udp_pkt_out',          label: 'UDP пакетов OUT',        type: 'number', min: 1, max: 100, expert: true },
+                { key: 'nfqws.udp_pkt_in',           label: 'UDP пакетов IN',         type: 'number', min: 0, max: 100, expert: true },
+                { key: 'nfqws.desync_mark',          label: 'Desync mark',            type: 'text', placeholder: '0x40000000', expert: true },
+                { key: 'nfqws.desync_mark_postnat',  label: 'Desync mark (postnat)',  type: 'text', placeholder: '0x20000000', expert: true },
+                { key: 'nfqws.user',                 label: 'Пользователь',           type: 'text', placeholder: 'nobody', expert: true },
                 { key: 'nfqws.debug',                label: 'Режим отладки nfqws2',   type: 'toggle',
                   hint: 'Добавляет --debug к nfqws2: пер-пакетный лог (грузятся ли lua, объявлены ли блобы, матчится ли пакет цели, какие desync применяются) выводится в журнал на уровне INFO. Применяется при следующем запуске/перезапуске nfqws2. Включайте на время диагностики — лог многословный.' },
                 { key: 'nfqws.disable_ipv6',         label: 'Отключить IPv6',         type: 'toggle' },
@@ -110,11 +110,11 @@ const SettingsPage = (() => {
                     { value: 'auto', label: 'Авто' }, { value: 'iptables', label: 'iptables' }, { value: 'nftables', label: 'nftables' }
                 ]},
                 { key: 'firewall.apply_on_start',  label: 'Применять правила при старте', type: 'toggle' },
-                { key: 'firewall.flowoffload',     label: 'Flow Offload',    type: 'select', options: [
+                { key: 'firewall.flowoffload',     label: 'Flow Offload',    type: 'select', expert: true, options: [
                     { value: 'donttouch', label: 'Не трогать' }, { value: 'none', label: 'Выключить' },
                     { value: 'software', label: 'Software' }, { value: 'hardware', label: 'Hardware' },
                 ]},
-                { key: 'firewall.postnat',         label: 'Post-NAT',        type: 'toggle' },
+                { key: 'firewall.postnat',         label: 'Post-NAT',        type: 'toggle', expert: true },
             ]
         },
         {
@@ -301,16 +301,26 @@ const SettingsPage = (() => {
             <div class="settings-fields">
         `;
 
+        let expertCount = 0;
         section.fields.forEach(field => {
             if (field.showIf) {
                 const depValue = getNestedValue(config, field.showIf);
                 if (!depValue) return;
             }
+            if (field.expert) expertCount++;
             const value = getNestedValue(config, field.key);
             html += renderField(field, value);
         });
 
         html += '</div>';
+
+        // Поля с expert:true рендерятся всегда, но скрыты классом
+        // .expert-only (см. components/expert.js) — в простом режиме
+        // вместо них подсказка.
+        if (expertCount > 0 && typeof Expert !== 'undefined') {
+            html += Expert.noteHtml(
+                `Скрыто расширенных настроек: ${expertCount}`);
+        }
 
         // Блок назначения ролей интерфейсам
         if (activeSection === 'interfaces') {
@@ -453,7 +463,7 @@ const SettingsPage = (() => {
             : '';
 
         return `
-            <div class="settings-field">
+            <div class="settings-field${field.expert ? ' expert-only' : ''}">
                 <label class="settings-field-label" for="${id}">${field.label}</label>
                 <div class="settings-field-input">${inputHtml}${hintHtml}</div>
             </div>

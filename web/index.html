@@ -48,6 +48,11 @@
 
             <div class="sidebar-footer">
                 <div class="sidebar-version" id="sidebar-version">...</div>
+                <label class="expert-toggle" id="expert-toggle"
+                       title="Режим эксперта — показать расширенные настройки во всех разделах">
+                    <input type="checkbox" onchange="Expert.set(this.checked)">
+                    <span>эксперт</span>
+                </label>
                 <button id="theme-toggle" class="theme-toggle" title="Тема"
                         onclick="Theme.toggle()"></button>
             </div>
@@ -81,10 +86,13 @@
     <script src="/js/utils/autocomplete.js"></script>
     <script src="/js/components/toast.js"></script>
     <script src="/js/components/theme.js"></script>
+    <script src="/js/components/expert.js"></script>
     <script src="/js/components/sidebar.js"></script>
     <script src="/js/components/list_ui.js"></script>
     <script src="/js/components/sparkline.js"></script>
     <script src="/js/components/help.js"></script>
+    <script src="/js/components/setup_ui.js"></script>
+    <script src="/js/components/proxy_table.js"></script>
     <script src="/js/pages/dashboard.js"></script>
     <script src="/js/pages/control.js"></script>
     <script src="/js/pages/strategies.js"></script>
