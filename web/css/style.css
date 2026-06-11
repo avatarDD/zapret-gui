@@ -141,6 +141,9 @@ body {
     line-height: 1.5;
     overflow: hidden;
     height: 100vh;
+    /* На мобильных 100vh больше видимой области (адресная строка) —
+       dvh учитывает её; старые браузеры остаются на 100vh выше. */
+    height: 100dvh;
 }
 
 a { color: var(--accent); text-decoration: none; }
@@ -176,6 +179,7 @@ input:focus, textarea:focus, select:focus {
 #app {
     display: flex;
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
 }
 
@@ -184,6 +188,7 @@ input:focus, textarea:focus, select:focus {
     width: var(--sidebar-width);
     min-width: var(--sidebar-width);
     height: 100vh;
+    height: 100dvh;
     background: var(--bg-sidebar);
     border-right: 1px solid var(--border);
     display: flex;
@@ -345,6 +350,62 @@ input:focus, textarea:focus, select:focus {
 .sidebar-version {
     font-size: 11px;
     color: var(--text-muted);
+}
+
+/* ===== Мобильная шапка (бургер-меню) ===== */
+/* На десктопе скрыта; на ≤768px #app становится колонкой:
+   шапка сверху, контент под ней, sidebar выезжает поверх (fixed). */
+.mobile-topbar {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+    min-height: 52px;
+    padding: 8px 12px;
+    background: var(--bg-sidebar);
+    border-bottom: 1px solid var(--border);
+}
+
+.mobile-burger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    transition: background var(--transition);
+}
+
+.mobile-burger:hover,
+.mobile-burger:active {
+    background: var(--bg-card-hover);
+}
+
+.mobile-topbar-title {
+    min-width: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-heading);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Затемнение контента под открытым мобильным меню. Показывается
+   CSS-селектором .sidebar.open + .sidebar-backdrop (см. @media ниже),
+   JS только вешает/снимает .open на sidebar. */
+.sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 99; /* под sidebar (100), над контентом и шапкой */
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--transition-slow), visibility var(--transition-slow);
 }
 
 /* ===== Content ===== */
@@ -854,7 +915,17 @@ input:focus, textarea:focus, select:focus {
 /* ===== Responsive ===== */
 @media (max-width: 768px) {
     :root {
-        --sidebar-width: 260px;
+        /* На совсем узких экранах меню не шире 85% вьюпорта */
+        --sidebar-width: min(280px, 85vw);
+    }
+
+    /* Шапка с бургером сверху, контент под ней */
+    #app {
+        flex-direction: column;
+    }
+
+    .mobile-topbar {
+        display: flex;
     }
 
     .sidebar {
@@ -869,12 +940,14 @@ input:focus, textarea:focus, select:focus {
         transform: translateX(0);
     }
 
-    .sidebar-toggle {
-        display: flex;
+    /* Затемнение под открытым меню */
+    .sidebar.open + .sidebar-backdrop {
+        opacity: 1;
+        visibility: visible;
     }
 
-    /* На мобильных toggle всегда виден в шапке */
-    #sidebar-toggle-mobile {
+    /* Крестик «закрыть» в шапке выехавшего меню */
+    .sidebar-toggle {
         display: flex;
     }
 
@@ -3437,6 +3510,25 @@ input:focus, textarea:focus, select:focus {
     .settings-toggle-slider::after { width: 20px; height: 20px; }
     .settings-toggle input:checked + .settings-toggle-slider::after { left: 22px; }
     .logs-level-btn { min-height: 36px; padding: 6px 12px; }
+
+    /* То же для полей без класса .form-input (в страницах часто
+       class="form-control" без CSS-определения или голые input/select):
+       16px = iOS не приближает страницу при фокусе. */
+    input[type="text"], input[type="password"], input[type="number"],
+    input[type="search"], input[type="url"], input[type="email"],
+    select, textarea {
+        font-size: 16px;
+    }
+    input[type="text"], input[type="password"], input[type="number"],
+    input[type="search"], input[type="url"], input[type="email"],
+    select {
+        min-height: 40px;
+    }
+    /* Чекбоксы/радио чуть крупнее под палец */
+    input[type="checkbox"], input[type="radio"] {
+        width: 18px;
+        height: 18px;
+    }
 }
 
 /* ── Settings: планшет ── */
@@ -3551,21 +3643,72 @@ input:focus, textarea:focus, select:focus {
         -webkit-overflow-scrolling: touch;
     }
 
+    /* Таблицы данных (маршруты, прокси, списки, blockcheck…) на узких
+       экранах прокручиваются по горизонтали, а не сжимаются в кашу:
+       display:block даёт таблице собственный скролл, авто-раскладка
+       (вместо table-layout:fixed) — колонкам естественную ширину. */
+    #page-container table,
+    .modal-content table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    /* Модалки: меньше отступ вокруг, не выше видимой области.
+       Для resizable-окна (редактор стратегии) min-ширина JS = 420px —
+       шире многих телефонов, поэтому жёстко ограничиваем вьюпортом. */
+    .modal-backdrop {
+        padding: 10px;
+    }
+
+    .modal-content {
+        max-height: calc(100dvh - 20px);
+    }
+
+    .modal-content.modal-resizable {
+        max-width: calc(100vw - 16px);
+        max-height: calc(100dvh - 16px);
+    }
+
     /* Desktop-only label скрытие */
     .btn-label-desktop {
         display: none;
     }
 
-    /* Toast: полная ширина */
+    /* Toast: полная ширина, прижаты к низу (не закрывают шапку с бургером) */
     .toast-container {
+        top: auto;
         left: 12px;
         right: 12px;
         bottom: 12px;
         max-width: none;
+        justify-content: flex-end;
     }
 
     .toast {
         width: 100%;
+    }
+}
+
+/* ── Портретные телефоны: 600px ── */
+
+@media (max-width: 600px) {
+    /* Инлайн-гриды форм (label/value слева-справа, пары полей) по всем
+       страницам складываем в одну колонку. Селектор по style-атрибуту —
+       сознательно: эти сетки задаются inline в JS-шаблонах, и это
+       единственный способ накрыть их все без правки каждой страницы.
+       Складывание в колонку безопасно для любой формы. */
+    #page-container div[style*="grid-template-columns"],
+    .modal-content div[style*="grid-template-columns"],
+    #modal-overlay div[style*="grid-template-columns"] {
+        grid-template-columns: 1fr !important;
+    }
+
+    /* AWG-конфиги: список над редактором (после складывания колонок)
+       не должен занимать инлайновые 70vh */
+    #awg-cfg-list {
+        max-height: 40vh !important;
     }
 }
 
@@ -4470,7 +4613,9 @@ input:focus, textarea:focus, select:focus {
     position: sticky;
     top: 0;
     z-index: 5;
-    background: var(--bg);
+    /* Непрозрачный фон обязателен: тулбар sticky, под него подъезжает
+       содержимое списка (--bg не существует — было прозрачно). */
+    background: var(--bg-primary);
     padding: 8px 0;
     border-bottom: 1px solid var(--border);
 }
