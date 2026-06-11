@@ -144,82 +144,6 @@ download() {
     fi
 }
 
-# ── Прямая установка bottle (fallback) ────────────────────────
-
-_install_bottle_direct() {
-    # Bottle — один файл. Скачиваем напрямую если pip не работает.
-    info "  Прямая загрузка bottle.py..."
-
-    # Зеркала на случай блокировок DPI: raw.githubusercontent.com часто
-    # режется у российских провайдеров, а jsdelivr CDN обычно доступен.
-    local BOTTLE_URLS="
-https://cdn.jsdelivr.net/gh/bottlepy/bottle@master/bottle.py
-https://raw.githubusercontent.com/bottlepy/bottle/master/bottle.py
-"
-
-    # Предпочитаем user site-packages (не требует root)
-    local SITE_PACKAGES=""
-    SITE_PACKAGES=$(python3 -c "import site; print(site.getusersitepackages())" 2>/dev/null)
-
-    # Fallback на системный
-    if [ -z "$SITE_PACKAGES" ]; then
-        SITE_PACKAGES=$(python3 -c "import site; ps=site.getsitepackages(); print(ps[0] if ps else '')" 2>/dev/null)
-    fi
-
-    if [ -z "$SITE_PACKAGES" ]; then
-        error "Не удалось определить site-packages"
-        return 1
-    fi
-
-    mkdir -p "$SITE_PACKAGES" 2>/dev/null
-    if [ ! -w "$SITE_PACKAGES" ]; then
-        # Нет прав — пробуем через sudo
-        if command -v sudo >/dev/null 2>&1; then
-            sudo mkdir -p "$SITE_PACKAGES" 2>/dev/null
-        else
-            error "Нет прав на запись в $SITE_PACKAGES"
-            return 1
-        fi
-    fi
-
-    local DEST="$SITE_PACKAGES/bottle.py"
-    local TMP_BOTTLE="/tmp/bottle_$$.py"
-    local fetched=false
-    local url
-    for url in $BOTTLE_URLS; do
-        info "    -> $url"
-        if download "$url" "$TMP_BOTTLE" 2>/dev/null && [ -s "$TMP_BOTTLE" ]; then
-            fetched=true
-            break
-        fi
-        rm -f "$TMP_BOTTLE" 2>/dev/null
-    done
-
-    if ! $fetched; then
-        rm -f "$TMP_BOTTLE" 2>/dev/null
-        return 1
-    fi
-
-    # Перемещаем в site-packages (через sudo если нет прав)
-    if mv "$TMP_BOTTLE" "$DEST" 2>/dev/null; then
-        :
-    elif command -v sudo >/dev/null 2>&1 && sudo cp "$TMP_BOTTLE" "$DEST"; then
-        rm -f "$TMP_BOTTLE"
-    else
-        rm -f "$TMP_BOTTLE"
-        return 1
-    fi
-
-    # Проверяем
-    if python3 -c "import bottle" 2>/dev/null; then
-        ok "bottle.py установлен в $SITE_PACKAGES"
-        return 0
-    fi
-
-    rm -f "$DEST" 2>/dev/null
-    return 1
-}
-
 # ── Проверка зависимостей ─────────────────────────────────────
 
 OPKG_INSTALLED_LIST=""
@@ -236,162 +160,52 @@ _opkg_install_pkg() {
 
 check_deps() {
     info "Проверка зависимостей..."
-    local need_python=false
-    local need_bottle=false
 
-    # Python3
+    # Python3 — единственная внешняя зависимость.
     if command -v python3 >/dev/null 2>&1; then
         PY_VER=$(python3 --version 2>&1)
         ok "python3: $PY_VER"
     else
-        need_python=true
         warn "python3 не найден"
-    fi
-
-    # Bottle
-    if python3 -c "import bottle" 2>/dev/null; then
-        BOTTLE_VER=$(python3 -c "import bottle; print(bottle.__version__)" 2>/dev/null)
-        ok "bottle: $BOTTLE_VER"
-    else
-        need_bottle=true
-        warn "python3-bottle не найден"
-    fi
-
-    # Если всё есть — выходим
-    if ! $need_python && ! $need_bottle; then
-        return 0
-    fi
-
-    # Устанавливаем недостающее
-    case "$PKG_CMD" in
-        opkg)
-            # Entware / OpenWrt
-            $PKG_CMD update 2>/dev/null || true
-            if $need_python; then
+        case "$PKG_CMD" in
+            opkg)
+                # Entware / OpenWrt
+                $PKG_CMD update 2>/dev/null || true
                 info "  Устанавливаем python3-light..."
                 _opkg_install_pkg python3-light
-            fi
-            if $need_bottle; then
-                # Способ 1: системный пакет python3-bottle (есть в Entware и OpenWrt).
-                # python3-light не содержит pip, поэтому это основной путь.
-                info "  Устанавливаем python3-bottle через $PKG_CMD..."
-                if $PKG_CMD install python3-bottle 2>/dev/null \
-                   && python3 -c "import bottle" 2>/dev/null; then
-                    if [ -n "$CONFIG_DIR" ]; then
-                        mkdir -p "$CONFIG_DIR" 2>/dev/null
-                        echo "python3-bottle" >> "$CONFIG_DIR/opkg_installed.list"
-                    fi
-                    ok "bottle установлен через $PKG_CMD"
-                else
-                    # Способ 2: python3-pip + pip install bottle
-                    info "  python3-bottle недоступен, пробуем pip..."
-                    if ! python3 -m pip --version >/dev/null 2>&1; then
-                        info "  Устанавливаем python3-pip..."
-                        $PKG_CMD install python3-pip 2>/dev/null || true
-                    fi
-                    if python3 -m pip install bottle 2>/dev/null; then
-                        ok "bottle установлен через pip"
-                    else
-                        info "  pip не сработал, скачиваем bottle.py напрямую..."
-                        _install_bottle_direct || {
-                            error "Не удалось установить bottle"
-                            error "Установите вручную: opkg install python3-bottle"
-                            exit 1
-                        }
-                    fi
-                fi
-            fi
-            ok "Зависимости установлены"
-            ;;
-        apt-get|apt)
-            # Debian / Ubuntu
-            $SUDO $PKG_CMD update -qq 2>/dev/null || true
-            if $need_python; then
+                ;;
+            apt-get|apt)
+                # Debian / Ubuntu
+                $SUDO $PKG_CMD update -qq 2>/dev/null || true
                 info "  Устанавливаем python3..."
                 $SUDO $PKG_CMD install -y python3 || { error "Не удалось установить python3"; exit 1; }
-            fi
-            if $need_bottle; then
-                info "  Устанавливаем bottle..."
-                # Способ 1: системный пакет
-                if $SUDO $PKG_CMD install -y python3-bottle 2>/dev/null; then
-                    ok "bottle установлен через $PKG_CMD"
-                else
-                    # Способ 2: pip --user (не требует root)
-                    info "  Системный пакет не найден, устанавливаем через pip..."
-                    if ! python3 -m pip --version >/dev/null 2>&1; then
-                        info "  Устанавливаем python3-pip..."
-                        $SUDO $PKG_CMD install -y python3-pip 2>/dev/null || true
-                    fi
-                    if python3 -m pip install --user bottle 2>/dev/null; then
-                        ok "bottle установлен через pip (--user)"
-                    elif python3 -m pip install bottle --break-system-packages 2>/dev/null; then
-                        ok "bottle установлен через pip"
-                    elif python3 -m pip install bottle 2>/dev/null; then
-                        ok "bottle установлен через pip"
-                    else
-                        info "  pip не сработал, скачиваем bottle.py напрямую..."
-                        _install_bottle_direct || {
-                            error "Не удалось установить bottle"
-                            error "Установите вручную: pip3 install bottle  или  sudo apt install python3-bottle"
-                            exit 1
-                        }
-                    fi
-                fi
-            fi
-            ok "Зависимости установлены"
-            ;;
-        dnf|yum)
-            # Fedora / RHEL / CentOS
-            if $need_python; then
+                ;;
+            dnf|yum)
+                # Fedora / RHEL / CentOS
                 $PKG_CMD install -y python3 || { error "Не удалось установить python3"; exit 1; }
-            fi
-            if $need_bottle; then
-                python3 -m pip install bottle 2>/dev/null || {
-                    $PKG_CMD install -y python3-pip 2>/dev/null || true
-                    python3 -m pip install bottle || _install_bottle_direct || {
-                        error "Установите вручную: python3 -m pip install bottle"; exit 1;
-                    }
-                }
-            fi
-            ok "Зависимости установлены"
-            ;;
-        pacman)
-            # Arch Linux
-            if $need_python; then
+                ;;
+            pacman)
+                # Arch Linux
                 $PKG_CMD -S --noconfirm python || { error "Не удалось установить python"; exit 1; }
-            fi
-            if $need_bottle; then
-                python3 -m pip install bottle 2>/dev/null || {
-                    $PKG_CMD -S --noconfirm python-pip 2>/dev/null || true
-                    python3 -m pip install bottle || _install_bottle_direct || {
-                        error "Установите вручную: python3 -m pip install bottle"; exit 1;
-                    }
-                }
-            fi
-            ok "Зависимости установлены"
-            ;;
-        *)
-            # Нет пакетного менеджера — пробуем pip
-            if $need_python; then
+                ;;
+            *)
                 error "python3 не найден. Установите вручную."
                 exit 1
-            fi
-            if $need_bottle; then
-                info "  Устанавливаем bottle..."
-                if python3 -m pip install bottle --break-system-packages 2>/dev/null; then
-                    ok "bottle установлен через pip"
-                elif python3 -m pip install bottle 2>/dev/null; then
-                    ok "bottle установлен через pip"
-                else
-                    _install_bottle_direct || {
-                        error "Не удалось установить bottle"
-                        error "Установите вручную: python3 -m pip install bottle"
-                        exit 1
-                    }
-                fi
-            fi
-            ;;
-    esac
+                ;;
+        esac
+        ok "python3 установлен"
+    fi
+
+    # Bottle встроен в проект (vendor/bottle.py) — отдельная установка
+    # из сети (opkg/pip/GitHub) больше не нужна. Если в системе уже
+    # стоит python3-bottle — приложение использует его (приоритет у
+    # системного), иначе — встроенный.
+    if python3 -c "import bottle" 2>/dev/null; then
+        BOTTLE_VER=$(python3 -c "import bottle; print(bottle.__version__)" 2>/dev/null)
+        ok "bottle: системный $BOTTLE_VER"
+    else
+        ok "bottle: будет использован встроенный (vendor/bottle.py)"
+    fi
 }
 
 # ── Установка из GitHub ───────────────────────────────────────
@@ -504,7 +318,7 @@ install_from_github() {
 
     # Копируем основные файлы
     $SUDO cp "$src_dir/app.py" "$APP_DIR/"
-    for dir in api core config web catalogs data import; do
+    for dir in api core config web catalogs data import vendor; do
         if [ -d "$src_dir/$dir" ]; then
             $SUDO rm -rf "$APP_DIR/$dir"
             $SUDO cp -r "$src_dir/$dir" "$APP_DIR/"

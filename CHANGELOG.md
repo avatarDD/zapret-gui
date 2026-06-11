@@ -3,7 +3,28 @@
 ## Unreleased — Пул публичных серверов, тестер прокси, vmess, urltest-подписки
 
 ### Добавлено
-- **Адаптивная (мобильная) вёрстка** — задача №6 роадмапа. GUI теперь
+- **Bottle встроен в проект (`vendor/bottle.py`)** — установка больше не
+  требует сети для зависимостей. Раньше install.sh/postinst тянули bottle
+  каскадом opkg → pip (PyPI) → raw.githubusercontent/jsdelivr (причём
+  непинованный `@master`) — у целевой аудитории все три источника бывают
+  заблокированы, и установка падала. Теперь:
+  - `vendor/bottle.py` — пин 0.13.4 с PyPI (байт-в-байт из wheel, sha256
+    в `vendor/README.md`, лицензия MIT — `vendor/bottle.LICENSE`).
+  - Приоритет у **системного** bottle: `core/bottle_vendor.ensure_bottle()`
+    добавляет vendor/ в `sys.path` только когда `import bottle` не работает
+    — поведение существующих установок (opkg python3-bottle) не меняется.
+    Подключено в `app.py`, `api/__init__.py` (покрывает любой прямой импорт
+    `api.*`) и `tests/_wsgi_client.py`.
+  - install.sh: каскад установки bottle удалён (~150 строк), единственная
+    внешняя зависимость — python3; `vendor` добавлен в копируемые каталоги
+    (также в `core/gui_updater.py` и `Makefile` APP_DIRS для ipk/tar.gz).
+    postinst (entware/openwrt) больше не лезут в сеть за bottle; init-скрипт
+    S99zapret-gui не отказывается стартовать без системного bottle.
+  - Самодиагностика показывает источник: «версия X (системный / встроенный
+    vendor/)».
+  - Dev/тесты: api-тесты теперь работают без `pip install bottle` — полный
+    набор `python3 -m unittest discover tests` (1455 шт.) проходит в чистом
+    окружении; GUI поднимается на vendored-bottle (проверено).
   юзабелен на телефоне:
   - **Бургер-меню**: мобильная шапка сверху (бургер + название текущего
     раздела), меню выезжает поверх контента с затемнением; закрытие —

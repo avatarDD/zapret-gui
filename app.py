@@ -17,16 +17,21 @@ import argparse
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(APP_DIR, "web")
 
-# Bottle — микрофреймворк (один файл, 0 зависимостей)
+# Bottle — микрофреймворк (один файл, 0 зависимостей). Системный
+# приоритетен; если его нет — подключается встроенный vendor/bottle.py
+# (установка не требует сети, dev-окружение работает без pip).
 try:
+    from core.bottle_vendor import ensure_bottle
+    ensure_bottle()
     from bottle import Bottle, static_file, response, request, ServerAdapter
     import bottle as _bottle
     # Поднимаем лимит тела запроса (дефолт 100 KB): импорт бэкапа и
     # крупные blob/конфиг-POST'ы могут быть больше.
     _bottle.BaseRequest.MEMFILE_MAX = 16 * 1024 * 1024
 except ImportError:
-    print("ОШИБКА: Bottle не найден. Установите: pip3 install bottle")
-    print("  или: opkg install python3-bottle")
+    print("ОШИБКА: Bottle не найден (нет ни системного, ни vendor/bottle.py).")
+    print("  Копия проекта неполная? Переустановите zapret-gui")
+    print("  или поставьте вручную: opkg install python3-bottle / pip3 install bottle")
     sys.exit(1)
 
 

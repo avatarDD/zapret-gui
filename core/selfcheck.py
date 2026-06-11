@@ -97,15 +97,20 @@ def check_python() -> dict:
 
     # bottle — без него web-GUI не стартует (а вот CLI-самодиагностика
     # работает — ради этого модуль и не импортирует bottle сам).
+    # Системного может не быть — тогда подключается встроенный
+    # vendor/bottle.py (это норма, не ошибка).
     try:
-        import bottle  # noqa: F401
-        checks.append(_check("модуль bottle", True,
-                             "версия %s" % getattr(bottle, "__version__", "?")))
+        from core.bottle_vendor import ensure_bottle, is_vendored
+        bottle = ensure_bottle()
+        src = "встроенный vendor/" if is_vendored(bottle) else "системный"
+        checks.append(_check(
+            "модуль bottle", True,
+            "версия %s (%s)" % (getattr(bottle, "__version__", "?"), src)))
     except ImportError:
         checks.append(_check(
             "модуль bottle", False,
-            "не установлен — web-GUI не запустится и api-тесты упадут "
-            "(opkg install python3-bottle / pip install bottle)"))
+            "нет ни системного, ни vendor/bottle.py — web-GUI не запустится; "
+            "копия проекта неполная? (либо opkg install python3-bottle)"))
 
     # yaml — опциональный (нужен для round-trip правок clash-конфигов).
     try:
