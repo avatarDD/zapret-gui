@@ -110,6 +110,64 @@ class TestIpv6BlockFragment(unittest.TestCase):
                          "meta nfproto ipv6 drop")
 
 
+class TestSelfScopeFragments(unittest.TestCase):
+    """Локальный режим (задача №5): только OUTPUT самой машины."""
+
+    def test_redirect_self_no_prerouting(self):
+        f = nft.build_redirect_fragments(family="v4", tcp_port=1100,
+                                         scope="self")
+        self.assertEqual(f["prerouting"], [])
+        out = f["output"]
+        self.assertTrue(any("meta mark 1 return" in r for r in out))
+        # свои адреса машины (вкл. публичный IP) — мимо
+        self.assertTrue(any("fib daddr type local return" in r for r in out))
+        self.assertTrue(any("redirect to :1100" in r for r in out))
+
+    def test_redirect_self_server_bypass(self):
+        f = nft.build_redirect_fragments(
+            family="v4", tcp_port=1100, scope="self", server_ips=["1.2.3.4"])
+        self.assertTrue(any("ip daddr 1.2.3.4 return" in r
+                            for r in f["output"]))
+
+    def test_tproxy_self_output_guards(self):
+        f = nft.build_tproxy_fragments(family="v4", port=1100, scope="self")
+        out = f["output"]
+        self.assertTrue(any("meta mark 1 return" in r for r in out))
+        self.assertTrue(any("fib daddr type local return" in r for r in out))
+        # ответы на входящие соединения (SSH к машине) не метим
+        self.assertTrue(any("ct direction reply return" in r for r in out))
+        self.assertTrue(any("meta mark set 1" in r for r in out))
+
+    def test_tproxy_self_prerouting_only_lo(self):
+        f = nft.build_tproxy_fragments(family="v4", port=1100, scope="self")
+        tproxy = [r for r in f["prerouting"] if "tproxy" in r]
+        self.assertTrue(tproxy)
+        for r in tproxy:
+            self.assertIn('iifname "lo"', r)
+            self.assertIn("meta mark 1", r)
+
+    def test_dns_hijack_self_redirect(self):
+        frags = nft.build_dns_hijack_fragments(
+            family="v4", dns_port=1053, via="redirect", scope="self")
+        self.assertTrue(any("th dport 53" in f and "redirect to :1053" in f
+                            for f in frags))
+        self.assertTrue(all("iifname" not in f for f in frags))
+
+    def test_dns_hijack_self_tproxy_on_lo(self):
+        frags = nft.build_dns_hijack_fragments(
+            family="v4", dns_port=1053, via="tproxy", scope="self")
+        self.assertTrue(all(f.startswith('iifname "lo"') for f in frags))
+        self.assertTrue(any("tproxy ip to :1053" in f for f in frags))
+
+    def test_ipv6_self_block_fragments(self):
+        frags = nft.build_ipv6_self_block_fragments(mark=1)
+        self.assertIn("meta nfproto ipv4 return", frags)
+        self.assertIn("meta mark 1 return", frags)
+        self.assertIn("ct direction reply return", frags)
+        self.assertTrue(any("ip6 daddr" in f and "return" in f for f in frags))
+        self.assertEqual(frags[-1], "meta nfproto ipv6 drop")
+
+
 class TestNftApplyWiring(unittest.TestCase):
     """apply() через мок _run (без рута): DNS-hijack и IPv6-drop должны
     доезжать до нужных цепочек."""
@@ -157,6 +215,63 @@ class TestNftApplyWiring(unittest.TestCase):
         _res, cmds = self._run_apply(mode="tproxy", tcp_port=1100,
                                      families=("v4", "v6"), ipv6_policy="drop")
         self.assertFalse(any("fwd6" in c for c in cmds))
+
+
+class TestNftSelfScopeApply(unittest.TestCase):
+    """apply(scope='self') через мок _run: цепочки локального режима."""
+
+    def _run_apply(self, **kw):
+        cmds = []
+
+        def fake(args, timeout=10):
+            cmds.append(" ".join(args))
+            return (0, "", "")
+
+        with mock.patch.object(nft, "_run", fake), \
+             mock.patch.object(nft, "available", lambda: True):
+            res = nft.apply(**kw)
+        return res, cmds
+
+    def test_redirect_self_creates_outdr_not_predr(self):
+        res, cmds = self._run_apply(mode="redirect", tcp_port=1100,
+                                    families=("v4",), scope="self")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res.get("scope"), "self")
+        self.assertTrue(any("chain inet sbtproxy outdr" in c for c in cmds))
+        self.assertFalse(any("predr" in c for c in cmds))
+
+    def test_tproxy_self_creates_pretp_and_outtp(self):
+        res, cmds = self._run_apply(mode="tproxy", tcp_port=1100,
+                                    families=("v4",), scope="self")
+        self.assertTrue(res["ok"])
+        self.assertTrue(any("chain inet sbtproxy pretp" in c for c in cmds))
+        self.assertTrue(any("chain inet sbtproxy outtp" in c for c in cmds))
+        # TPROXY только для своих пакетов с lo
+        self.assertTrue(any('iifname "lo"' in c and "tproxy" in c
+                            for c in cmds))
+
+    def test_dns_redirect_self_goes_to_outdr(self):
+        _res, cmds = self._run_apply(mode="redirect", tcp_port=1100,
+                                     dns_hijack_port=1053,
+                                     families=("v4",), scope="self")
+        self.assertTrue(any("rule inet sbtproxy outdr" in c
+                            and "th dport 53" in c
+                            and "redirect to :1053" in c for c in cmds))
+
+    def test_ipv6_drop_self_uses_out6(self):
+        _res, cmds = self._run_apply(mode="tproxy", tcp_port=1100,
+                                     families=("v4",), scope="self",
+                                     ipv6_policy="drop")
+        self.assertTrue(any("chain inet sbtproxy out6" in c for c in cmds))
+        self.assertTrue(any("rule inet sbtproxy out6" in c
+                            and "meta nfproto ipv6 drop" in c for c in cmds))
+        self.assertFalse(any("fwd6" in c for c in cmds))
+
+    def test_invalid_scope_rejected(self):
+        res, _cmds = self._run_apply(mode="redirect", tcp_port=1100,
+                                     families=("v4",), scope="bogus")
+        self.assertFalse(res["ok"])
+        self.assertIn("Неизвестная область", res["error"])
 
 
 if __name__ == "__main__":

@@ -142,6 +142,14 @@ DEFAULT_CONFIG = {
         "lan": "",
     },
 
+    # --- Сетевое окружение (core/network_env) ---
+    # profile: auto | router | pc — роутер с LAN либо ПК/VPS с одной
+    # сетевой картой (локальный режим). auto — детект по платформе
+    # и интерфейсам.
+    "network": {
+        "profile": "auto",
+    },
+
     # --- AmneziaWG ---
     "awg": {
         "release_repo":       "avatardd/zapret-gui",

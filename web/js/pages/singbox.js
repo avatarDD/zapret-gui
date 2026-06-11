@@ -17,8 +17,10 @@ const SingboxDashboardPage = (() => {
     let tpForm = {                   // форма прозрачного проксирования
         mode: 'tproxy', tcp_port: 1100, udp_port: 1102,
         proxy_self: false, dns_hijack_port: 0, ipv6_policy: 'allow',
+        scope: 'forward',            // 'forward' — LAN-клиенты, 'self' — эта машина
         inject_config: '',
     };
+    let tpScopeAutoSet = false;      // scope уже предложен по профилю окружения
     let tunForm = {                  // форма TUN-интерфейса (для Selective routing)
         config: '', interface_name: 'singbox-tun',
         address: '172.18.0.1/30', stack: 'system', mtu: 9000,
@@ -125,7 +127,15 @@ const SingboxDashboardPage = (() => {
                     proxy_self: !!s.proxy_self,
                     dns_hijack_port: s.dns_hijack_port || 0,
                     ipv6_policy: s.ipv6_policy || 'allow',
+                    scope: s.scope || 'forward',
                 });
+                tpScopeAutoSet = true;
+            } else if (!tpScopeAutoSet && transparent && transparent.network
+                       && transparent.network.profile === 'pc') {
+                // ПК/VPS с одной сетевой картой: ничего ещё не применено —
+                // сразу предлагаем локальный режим (forward тут некого).
+                tpForm.scope = 'self';
+                tpScopeAutoSet = true;
             }
         } catch (err) {
             const box = document.getElementById('sb-summary-body');
@@ -404,6 +414,10 @@ const SingboxDashboardPage = (() => {
         const tpUnavail = avail && !tproxySupported;
         const applied = transparent && transparent.settings
                         && transparent.settings.mode;
+        const netProfile = (transparent && transparent.network
+                            && transparent.network.profile) || '';
+        const selfScope = tpForm.scope === 'self';
+        const pcHint = netProfile === 'pc' && !selfScope;
         const cfgOpts = ['<option value="">— выбрать конфиг —</option>'].concat(
             configs.map(c => `<option value="${escapeAttr(c.name)}"
                 ${c.name === tpForm.inject_config ? 'selected' : ''}>${escapeHtml(c.name)}</option>`)
@@ -413,13 +427,23 @@ const SingboxDashboardPage = (() => {
 
         box.innerHTML = `
             <p class="text-muted" style="font-size:13px; margin-top:0;">
-                Заворачивает трафик LAN-клиентов (и опц. самого роутера) в
-                sing-box без настройки клиентов. Нужен соответствующий inbound
-                в конфиге (кнопка «Добавить inbound'ы»).
+                Заворачивает в sing-box трафик LAN-клиентов (роутер) или
+                исходящий трафик этой машины (локальный режим — ПК/VPS с
+                одной сетевой картой) без настройки клиентов. Нужен
+                соответствующий inbound в конфиге (кнопка «Добавить
+                inbound'ы» — она же выставит <code>route.default_mark</code>,
+                чтобы не зациклить трафик самого движка).
                 ${backend === 'iptables' ? ' Бэкенд: <strong>iptables</strong>.' : ''}
                 ${backend === 'nftables' ? '<br><span style="color:#6aa;">iptables не найден — будет использован бэкенд <strong>nftables</strong>.</span>' : ''}
                 ${avail ? '' : '<br><span style="color:#e58;">Ни iptables, ни nftables не найдены — применение работать не будет.</span>'}
             </p>
+            ${pcHint ? `<div style="margin:0 0 10px; padding:9px 11px; border-radius:6px;
+                background:rgba(80,160,230,0.12); border:1px solid rgba(80,160,230,0.4);
+                color:#5aa0e6; font-size:12px; line-height:1.45;">
+                🖥 Похоже, это <b>ПК/VPS с одной сетевой картой</b> (LAN-клиентов
+                нет). Выберите область <b>«Эта машина»</b> — перехват форварда
+                на такой машине бесполезен и может мешать входящим соединениям.
+                </div>` : ''}
             ${tpUnavail ? `<div style="margin:0 0 10px; padding:9px 11px; border-radius:6px;
                 background:rgba(230,170,40,0.12); border:1px solid rgba(230,170,40,0.4);
                 color:#d9a521; font-size:12px; line-height:1.45;">
@@ -434,9 +458,17 @@ const SingboxDashboardPage = (() => {
             ${applied ? `<div style="margin-bottom:8px; font-size:12px;">
                 Сейчас активно: <strong>${escapeHtml(transparent.settings.mode)}</strong>,
                 порты ${escapeHtml(transparent.settings.tcp_port)}${transparent.settings.mode==='hybrid' ? '/'+escapeHtml(transparent.settings.udp_port) : ''}
-                ${transparent.settings.proxy_self ? ', +роутер' : ''}
+                ${transparent.settings.scope === 'self' ? ', <strong>локальный режим</strong>'
+                    : (transparent.settings.proxy_self ? ', +роутер' : '')}
                 </div>` : ''}
             <div style="display:grid; grid-template-columns:160px 1fr; gap:8px 12px; align-items:center; max-width:640px;">
+                <label class="text-muted">Область</label>
+                <select class="form-control" style="max-width:320px;"
+                        onchange="SingboxDashboardPage.setTp('scope', this.value)">
+                    ${opt('forward', tpForm.scope, 'LAN-клиенты (роутер)')}
+                    ${opt('self', tpForm.scope, 'Эта машина (локальный режим, ПК / 1 NIC)')}
+                </select>
+
                 <label class="text-muted">Режим</label>
                 <select class="form-control" style="max-width:220px;"
                         onchange="SingboxDashboardPage.setTp('mode', this.value)">
@@ -468,12 +500,19 @@ const SingboxDashboardPage = (() => {
                     ${opt('drop', tpForm.ipv6_policy, 'Глушить v6 (anti-leak)')}
                 </select>
 
+                ${selfScope ? `
+                <label class="text-muted">Трафик машины</label>
+                <span class="text-muted" style="font-size:12px;">
+                    Локальный режим: заворачивается исходящий трафик этой
+                    машины (OUTPUT). Входящие соединения (SSH/веб) и ответы
+                    на них не трогаются.
+                </span>` : `
                 <label class="text-muted">Трафик роутера</label>
                 <label class="text-muted" style="display:flex; align-items:center; gap:6px;">
                     <input type="checkbox" ${tpForm.proxy_self ? 'checked' : ''}
                            onchange="SingboxDashboardPage.setTp('proxy_self', this.checked)">
                     Заворачивать OUTPUT (трафик самого роутера)
-                </label>
+                </label>`}
             </div>
 
             <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
@@ -504,6 +543,8 @@ const SingboxDashboardPage = (() => {
         else if (['tcp_port', 'udp_port', 'dns_hijack_port'].includes(key))
             tpForm[key] = parseInt(value, 10) || 0;
         else tpForm[key] = value;
+        // Смена области меняет состав формы (строка proxy_self / подсказки).
+        if (key === 'scope') renderTransparent();
     }
 
     async function applyTransparent() {
@@ -515,10 +556,13 @@ const SingboxDashboardPage = (() => {
                 proxy_self: tpForm.proxy_self,
                 dns_hijack_port: tpForm.dns_hijack_port,
                 ipv6_policy: tpForm.ipv6_policy,
+                scope: tpForm.scope,
             });
             if (r && r.ok) {
                 tpNote = '';
-                Toast.success('Прозрачное проксирование применено (' + tpForm.mode + ')');
+                Toast.success('Прозрачное проксирование применено ('
+                    + tpForm.mode
+                    + (tpForm.scope === 'self' ? ', локальный режим' : '') + ')');
             } else {
                 tpNote = (r && (r.error || (r.errors || []).join('; '))) || 'ошибка';
                 // Подсказку про TPROXY держим дольше — её надо прочитать.

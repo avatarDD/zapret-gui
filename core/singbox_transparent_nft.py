@@ -16,6 +16,10 @@ apply()/remove() в основном модуле выбирает бэкенд 
   • tproxy   — mangle prerouting (TCP+UDP) tproxy + mark, ip rule/route;
   • hybrid   — redirect для TCP + tproxy для UDP.
 
+scope='self' — локальный режим (ПК/VPS с одной NIC, парно iptables-
+варианту): только OUTPUT самой машины, без перехвата форварда; анти-петля
+через mark движка / `fib daddr type local` / `ct direction reply`.
+
 Builder'ы (`build_*`) — чистые, возвращают список nft-argv и тестируются
 без рута.
 """
@@ -70,12 +74,25 @@ def build_redirect_fragments(*, family: str, tcp_port: int,
                              lan_ifaces: list = None,
                              server_ips: list = None,
                              bypass: list = None,
-                             proxy_self: bool = False) -> dict:
+                             proxy_self: bool = False,
+                             scope: str = "forward",
+                             mark: int = DEFAULT_TPROXY_MARK) -> dict:
     """
     Вернуть {"prerouting": [...], "output": [...]} фрагментов nft-правил
-    для redirect-режима.
+    для redirect-режима. scope='self' — локальный режим: prerouting пуст
+    (входящие соединения к машине не трогаем), всё в output.
     """
     daddr = _daddr(family)
+    if scope == "self":
+        out = ["meta mark %d return" % mark,
+               # свои адреса машины (вкл. публичный IP) — мимо
+               "fib daddr type local return",
+               "%s %s return" % (daddr, _bypass_set(family, bypass))]
+        for ip in (server_ips or []):
+            out.append("%s %s return" % (daddr, ip))
+        out.append("meta l4proto tcp redirect to :%d" % tcp_port)
+        return {"prerouting": [], "output": out}
+
     pre = ["%s %s return" % (daddr, _bypass_set(family, bypass))]
     for ip in (server_ips or []):
         pre.append("%s %s return" % (daddr, ip))
@@ -91,7 +108,7 @@ def build_redirect_fragments(*, family: str, tcp_port: int,
         out.append("%s %s return" % (daddr, _bypass_set(family, bypass)))
         for ip in (server_ips or []):
             out.append("%s %s return" % (daddr, ip))
-        out.append("meta mark %d return" % DEFAULT_TPROXY_MARK)
+        out.append("meta mark %d return" % mark)
         out.append("meta l4proto tcp redirect to :%d" % tcp_port)
     return {"prerouting": pre, "output": out}
 
@@ -102,13 +119,33 @@ def build_tproxy_fragments(*, family: str, port: int,
                            lan_ifaces: list = None,
                            server_ips: list = None,
                            bypass: list = None,
-                           proxy_self: bool = False) -> dict:
+                           proxy_self: bool = False,
+                           scope: str = "forward") -> dict:
     """
     Вернуть {"prerouting": [...], "output": [...]} фрагментов для tproxy.
+    scope='self' — локальный режим: output метит исходящий трафик машины
+    (анти-петля: mark движка, свои адреса через fib, ответы на входящие
+    через ct direction reply), prerouting ловит TPROXY'ем только
+    собственные помеченные пакеты с lo.
     """
     daddr = _daddr(family)
     tp_ip = "ip6" if family == "v6" else "ip"
     protoset = "{ %s }" % ", ".join(protocols)
+
+    if scope == "self":
+        out = ["meta mark %d return" % mark,
+               "fib daddr type local return",
+               "ct direction reply return",
+               "%s %s return" % (daddr, _bypass_set(family, bypass))]
+        for ip in (server_ips or []):
+            out.append("%s %s return" % (daddr, ip))
+        out.append("meta l4proto %s meta mark set %d" % (protoset, mark))
+        pre = ["%s %s return" % (daddr, _bypass_set(family, bypass))]
+        for ip in (server_ips or []):
+            pre.append("%s %s return" % (daddr, ip))
+        pre.append('iifname "lo" meta l4proto %s meta mark %d '
+                   'tproxy %s to :%d' % (protoset, mark, tp_ip, port))
+        return {"prerouting": pre, "output": out}
 
     pre = ["%s %s return" % (daddr, _bypass_set(family, bypass))]
     for ip in (server_ips or []):
@@ -135,19 +172,28 @@ def build_tproxy_fragments(*, family: str, port: int,
 def build_dns_hijack_fragments(*, family: str, dns_port: int,
                                lan_ifaces: list = None,
                                via: str = "tproxy",
-                               mark: int = DEFAULT_TPROXY_MARK) -> list:
+                               mark: int = DEFAULT_TPROXY_MARK,
+                               scope: str = "forward") -> list:
     """
-    Фрагменты перехвата DNS форвард-трафика (udp/tcp dport 53) на DNS-порт
-    движка — защита от DNS-leak мимо туннеля. Парно к build_dns_hijack_rules
+    Фрагменты перехвата DNS (udp/tcp dport 53) на DNS-порт движка —
+    защита от DNS-leak мимо туннеля. Парно к build_dns_hijack_rules
     из iptables-ветки.
 
-      via='redirect' → `redirect to :dns_port` (ставится в nat-цепочку predr);
-      via='tproxy'   → `tproxy … meta mark set` (в mangle-цепочку pretp).
+      via='redirect' → `redirect to :dns_port` (nat-цепочка: predr,
+                       в scope='self' — outdr);
+      via='tproxy'   → `tproxy … meta mark set` (mangle-цепочка pretp;
+                       в scope='self' — только свои пакеты с lo).
 
     `th dport 53` (transport-header dport) ловит и tcp, и udp. Возвращает
     список фрагментов-строк (по одному на интерфейс).
     """
     tp_ip = "ip6" if family == "v6" else "ip"
+    if scope == "self":
+        if via == "redirect":
+            return ["meta l4proto { tcp, udp } th dport 53 "
+                    "redirect to :%d" % dns_port]
+        return ['iifname "lo" meta l4proto { tcp, udp } th dport 53 '
+                "meta mark %d tproxy %s to :%d" % (mark, tp_ip, dns_port)]
     ifaces = lan_ifaces or [None]
     frags = []
     for ifn in ifaces:
@@ -169,6 +215,22 @@ def build_ipv6_block_fragment() -> str:
     через `meta nfproto ipv6` — аналог `ip6tables -A FORWARD -j DROP`.
     """
     return "meta nfproto ipv6 drop"
+
+
+def build_ipv6_self_block_fragments(mark: int = DEFAULT_TPROXY_MARK) -> list:
+    """
+    Anti-leak IPv6 локального режима: на ПК FORWARD пуст — глушим
+    ИСХОДЯЩИЙ v6 самой машины (цепочка out6, hook output). Исключения:
+    v4 целиком, трафик движка (mark), ответы на входящие соединения
+    (не рвём v6-SSH к машине) и локальные назначения.
+    """
+    return [
+        "meta nfproto ipv4 return",
+        "meta mark %d return" % mark,
+        "ct direction reply return",
+        "ip6 daddr %s return" % _bypass_set("v6", []),
+        "meta nfproto ipv6 drop",
+    ]
 
 
 # ─────────────────────── ip rule/route (shared с iptables) ───────────
@@ -207,11 +269,14 @@ def apply(*, mode: str,
           families: tuple = ("v4",),
           lan_ifaces: list = None, server_ips: list = None,
           bypass: list = None, proxy_self: bool = False,
-          dns_hijack_port: int = 0, ipv6_policy: str = "allow") -> dict:
+          dns_hijack_port: int = 0, ipv6_policy: str = "allow",
+          scope: str = "forward") -> dict:
     if not available():
         return {"ok": False, "error": "nft недоступен"}
     if mode not in ("redirect", "tproxy", "hybrid"):
         return {"ok": False, "error": "Неизвестный режим: %s" % mode}
+    if scope not in ("forward", "self"):
+        return {"ok": False, "error": "Неизвестная область: %s" % scope}
 
     errors = []
     # Сносим свою таблицу и создаём заново — простая идемпотентность.
@@ -220,6 +285,7 @@ def apply(*, mode: str,
     if rc != 0:
         return {"ok": False, "error": "nft add table: %s" % err.strip()}
 
+    self_scope = (scope == "self")
     need_nat = mode in ("redirect", "hybrid")
     need_mangle = mode in ("tproxy", "hybrid")
 
@@ -229,12 +295,14 @@ def apply(*, mode: str,
             errors.append("chain %s: %s" % (name, e.strip()))
 
     if need_nat:
-        _chain("predr", "{ type nat hook prerouting priority dstnat; policy accept; }")
-        if proxy_self:
+        if not self_scope:
+            _chain("predr", "{ type nat hook prerouting priority dstnat; policy accept; }")
+        if self_scope or proxy_self:
             _chain("outdr", "{ type nat hook output priority dstnat; policy accept; }")
     if need_mangle:
+        # pretp нужен и в self-режиме: возврат своих помеченных пакетов с lo.
         _chain("pretp", "{ type filter hook prerouting priority mangle; policy accept; }")
-        if proxy_self:
+        if self_scope or proxy_self:
             _chain("outtp", "{ type route hook output priority mangle; policy accept; }")
 
     rule_count = 0
@@ -242,7 +310,8 @@ def apply(*, mode: str,
         if need_nat:
             frags = build_redirect_fragments(
                 family=family, tcp_port=tcp_port, lan_ifaces=lan_ifaces,
-                server_ips=server_ips, bypass=bypass, proxy_self=proxy_self)
+                server_ips=server_ips, bypass=bypass, proxy_self=proxy_self,
+                scope=scope, mark=mark)
             for fr in frags["prerouting"]:
                 rc, _o, e = _run(_nft_add_rule("predr", fr))
                 rule_count += 1
@@ -250,6 +319,7 @@ def apply(*, mode: str,
                     errors.append("predr: %s" % e.strip())
             for fr in frags["output"]:
                 rc, _o, e = _run(_nft_add_rule("outdr", fr))
+                rule_count += 1
                 if rc != 0:
                     errors.append("outdr: %s" % e.strip())
 
@@ -259,7 +329,7 @@ def apply(*, mode: str,
             frags = build_tproxy_fragments(
                 family=family, port=tp_port, mark=mark, protocols=protocols,
                 lan_ifaces=lan_ifaces, server_ips=server_ips, bypass=bypass,
-                proxy_self=proxy_self)
+                proxy_self=proxy_self, scope=scope)
             for fr in frags["prerouting"]:
                 rc, _o, e = _run(_nft_add_rule("pretp", fr))
                 rule_count += 1
@@ -267,40 +337,54 @@ def apply(*, mode: str,
                     errors.append("pretp: %s" % e.strip())
             for fr in frags["output"]:
                 rc, _o, e = _run(_nft_add_rule("outtp", fr))
+                rule_count += 1
                 if rc != 0:
                     errors.append("outtp: %s" % e.strip())
             errors.extend(_add_tproxy_route(family, mark, table))
 
         # Перехват DNS (как в iptables-ветке): redirect-режим → в nat-
-        # цепочку, иначе → tproxy в mangle-цепочку.
+        # цепочку (self → outdr), иначе → tproxy в mangle-цепочку.
         if dns_hijack_port:
             via = "redirect" if mode == "redirect" else "tproxy"
-            dns_chain = "predr" if via == "redirect" else "pretp"
+            if via == "redirect":
+                dns_chain = "outdr" if self_scope else "predr"
+            else:
+                dns_chain = "pretp"
             for fr in build_dns_hijack_fragments(
                     family=family, dns_port=dns_hijack_port,
-                    lan_ifaces=lan_ifaces, via=via, mark=mark):
+                    lan_ifaces=lan_ifaces, via=via, mark=mark, scope=scope):
                 rc, _o, e = _run(_nft_add_rule(dns_chain, fr))
                 rule_count += 1
                 if rc != 0:
                     errors.append("%s(dns): %s" % (dns_chain, e.strip()))
 
-    # IPv6 anti-leak: дропнуть весь форвард-IPv6, если v6 не проксируем и
-    # политика drop (parity с iptables build_ipv6_block_rules).
+    # IPv6 anti-leak: если v6 не проксируем и политика drop — глушим
+    # форвард-IPv6 (роутер) либо исходящий v6 машины (локальный режим).
     if "v6" not in families and ipv6_policy == "drop":
-        _chain("fwd6", "{ type filter hook forward priority 0; policy accept; }")
-        rc, _o, e = _run(_nft_add_rule("fwd6", build_ipv6_block_fragment()))
-        rule_count += 1
-        if rc != 0:
-            errors.append("fwd6: %s" % e.strip())
+        if self_scope:
+            _chain("out6", "{ type filter hook output priority 0; policy accept; }")
+            for fr in build_ipv6_self_block_fragments(mark):
+                rc, _o, e = _run(_nft_add_rule("out6", fr))
+                rule_count += 1
+                if rc != 0:
+                    errors.append("out6: %s" % e.strip())
+        else:
+            _chain("fwd6", "{ type filter hook forward priority 0; policy accept; }")
+            rc, _o, e = _run(_nft_add_rule("fwd6", build_ipv6_block_fragment()))
+            rule_count += 1
+            if rc != 0:
+                errors.append("fwd6: %s" % e.strip())
 
     ok = not errors
     if ok:
-        log.info("singbox transparent (nft): режим '%s' (%s)"
-                 % (mode, ",".join(families)), source="singbox")
+        log.info("singbox transparent (nft): режим '%s' (%s%s)"
+                 % (mode, ",".join(families),
+                    ", локальный режим" if self_scope else ""),
+                 source="singbox")
     else:
         log.warning("singbox transparent (nft): '%s' с ошибками: %s"
                     % (mode, "; ".join(errors)), source="singbox")
-    return {"ok": ok, "mode": mode, "backend": "nftables",
+    return {"ok": ok, "mode": mode, "scope": scope, "backend": "nftables",
             "errors": errors, "rule_count": rule_count}
 
 

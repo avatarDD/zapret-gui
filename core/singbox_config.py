@@ -274,7 +274,8 @@ def make_hijack_dns_rule() -> dict:
 
 def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
                              tcp_port: int = 1100, udp_port: int = 1102,
-                             dns_port: int = 0, sniff: bool = True) -> dict:
+                             dns_port: int = 0, sniff: bool = True,
+                             mark: int = 1) -> dict:
     """
     Вставить/заменить наши transparent-inbound'ы в конфиге (cfg
     модифицируется и возвращается). Прежние наши inbound'ы
@@ -289,6 +290,14 @@ def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
     этом включается принудительно. Идемпотентно: наши прежние правила
     снимаются перед повторной вставкой, порядок — sniff, затем hijack-dns,
     затем пользовательские правила.
+
+    mark>0 выставляет `route.default_mark` — движок помечает СВОИ
+    исходящие сокеты этим fwmark'ом, а firewall-перехват (OUTPUT при
+    proxy_self / локальном режиме scope='self') исключает их по
+    mark-RETURN. Без этого соединения sing-box к серверам завернулись бы
+    в его же inbound — петля. Требует CAP_NET_ADMIN (движок у нас
+    запускается от root). Поле валидно во всех поддерживаемых версиях
+    (1.8–1.14, не deprecated).
     """
     existing = [ib for ib in (cfg.get("inbounds") or [])
                 if not (isinstance(ib, dict)
@@ -300,6 +309,8 @@ def set_transparent_inbounds(cfg: dict, *, mode: str = "tproxy",
     # Сниффинг и перехват DNS — через route actions (а не legacy-поля
     # inbound'а / спец-outbound `dns`, удалённые в sing-box 1.13).
     _set_managed_route_rules(cfg, sniff=sniff, hijack_dns=bool(dns_port))
+    if mark:
+        cfg.setdefault("route", {})["default_mark"] = int(mark)
     return cfg
 
 

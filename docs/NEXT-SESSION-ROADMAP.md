@@ -197,6 +197,36 @@ stale-очистка) и `DscpRoutingRule` (`uni-<route>-dscp`); для direct/n
 - Учесть исключения для локального трафика, чтобы не закольцевать.
 **Приёмка.** На обычном Linux-ПК с одной NIC можно завернуть трафик через
 awg/sing-box/mihomo по правилам маршрутизации; локальная связность не рвётся.
+**✅ Сделано (эта сессия).** Детект окружения: новый `core/network_env.py`
+(профиль `router`/`pc`: Keenetic/OpenWrt/Entware либо LAN-мост с физическим
+членом → router; docker0/virbr0 из veth профиль не меняют; `single_nic`;
+override `network.profile` в settings.json — действует без рестарта, скан
+железа кэшируется) + `GET /api/network/environment` (api/status.py, есть
+`?refresh=1`) + выбор профиля в Настройки→Интерфейсы. Локальный режим
+перехвата: `scope='self'` в `core/singbox_transparent{,_nft}.py`
+(apply/remove/reapply_saved + чистые builder'ы) — заворачивается ТОЛЬКО
+OUTPUT самой машины: redirect → nat OUTPUT (PREROUTING не трогаем — на
+машине с публичным IP он рвал бы входящие SSH/веб), tproxy → mangle OUTPUT
+mark + возврат своих пакетов строго `-i lo` с match по метке; анти-петля и
+связность: mark-RETURN движка (set_transparent_inbounds теперь выставляет
+`route.default_mark`, валидно в 1.8–1.14), `addrtype --dst-type LOCAL`
+(свои адреса; мягкая ошибка, если матча нет), `conntrack --ctdir REPLY`
+(ответы на входящие соединения), bypass-сети/server_ips; DNS-hijack self
+(redirect→NAT_OUT, dns-only+self с mark-RETURN — DNS движка не
+зацикливается); IPv6-drop self → цепочка `SBT_V6_OUT` в filter OUTPUT
+(nft: `out6`) с теми же исключениями. API: `scope` в
+`/api/singbox/transparent/apply` (персистится — переживает ребут через
+`--apply-singbox-transparent`), `network` в `/transparent/status`, `mark`
+в `/transparent-inbounds`. UI: селектор «Область» (LAN-клиенты / Эта
+машина) в singbox.js с авто-предложением self на профиле pc и баннером;
+строка «Локальный режим» и подсказка в выборе устройств в
+routing_unified.js (unified-правила домен/CIDR уже маркируют OUTPUT —
+на ПК работают как есть; nfqws2 через POSTROUTING тоже). Тесты:
+`tests/test_network_env.py` (новый), расширены
+test_singbox_transparent{,_nft}.py (self-scope builders + apply-wiring +
+default_mark + scope в reapply). Не сделано сознательно: mihomo/awg на ПК
+идут через unified-маршруты (OUTPUT-mark ipset-бэкенда) и TUN — отдельный
+transparent-режим им не нужен.
 
 ### 6. Адаптивная (мобильная) вёрстка
 **Цель.** Поддержать отображение GUI на мобильных устройствах.
