@@ -57,6 +57,9 @@ const App = (() => {
         // Тема (тёмная/светлая) — синхронизируем иконку переключателя
         if (typeof Theme !== 'undefined') Theme.init();
 
+        // Режим эксперта (галка в футере сайдбара) — расширенные поля
+        if (typeof Expert !== 'undefined') Expert.init();
+
         // Рендерим sidebar
         Sidebar.render();
         Sidebar.initMobileToggle();

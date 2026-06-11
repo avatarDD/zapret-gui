@@ -45,7 +45,7 @@ const RoutingUnifiedPage = (() => {
             <div id="ru-body">
                 <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
             </div>
-            <div class="text-muted" style="margin-top:14px; font-size:12px;">
+            <div class="text-muted expert-only" style="margin-top:14px; font-size:12px;">
                 Классические инструменты (расширенный режим):
                 <a href="#strategies" style="text-decoration:underline;">Стратегии</a> ·
                 <a href="#awg-routing" style="text-decoration:underline;">Routing (AWG)</a> ·
@@ -220,13 +220,13 @@ const RoutingUnifiedPage = (() => {
                     <label class="text-muted" style="padding-top:6px;">Метод</label>
                     <select id="ru-method" class="form-control" style="max-width:320px;">${methodOptions(e.method)}</select>
 
-                    <label class="text-muted" style="padding-top:6px;">Fallback-методы</label>
-                    <input id="ru-fallbacks" class="form-control" style="max-width:480px;"
+                    <label class="text-muted expert-only" style="padding-top:6px;">Fallback-методы</label>
+                    <input id="ru-fallbacks" class="form-control expert-only" style="max-width:480px;"
                            placeholder="через запятую: awg:awg0, nfqws2, direct"
                            value="${escAttr((e.fallbacks||[]).join(', '))}">
 
-                    <label class="text-muted" style="padding-top:6px;">Probe-домен</label>
-                    <input id="ru-probe" class="form-control" style="max-width:320px;"
+                    <label class="text-muted expert-only" style="padding-top:6px;">Probe-домен</label>
+                    <input id="ru-probe" class="form-control expert-only" style="max-width:320px;"
                            placeholder="для мониторинга (по умолч. первый домен)"
                            value="${escAttr(e.probe_domain||'')}">
 
@@ -246,6 +246,9 @@ const RoutingUnifiedPage = (() => {
                             отдельно запускать мониторинг сверху не нужно.</span>
                     </div>
                 </div>
+                ${typeof Expert !== 'undefined'
+                    ? Expert.noteHtml('Тонкая настройка (fallback-методы, probe-домен) скрыта')
+                    : ''}
                 <div style="margin-top:12px;">
                     <button class="btn btn-primary btn-sm" onclick="RoutingUnifiedPage.save()">Сохранить</button>
                 </div>

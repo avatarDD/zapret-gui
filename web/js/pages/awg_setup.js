@@ -507,6 +507,7 @@ const AwgSetupPage = (() => {
         // (ставит mips на mipsel → «Exec format error»). Если после
         // установки бинарники не запускаются — выберите другую арку
         // (обычно mipsel-softfloat ↔ mips-softfloat) и переустановите.
+        // Продвинутое — показываем только в режиме эксперта.
         let archSelectHtml = '';
         if (archs.length) {
             const opts = ['<option value="">Авто' +
@@ -516,7 +517,7 @@ const AwgSetupPage = (() => {
                     `<option value="${escapeHtml(a)}" ${a === archOverride ? 'selected' : ''}>${escapeHtml(a)}</option>`
                 )).join('');
             archSelectHtml = `
-                <div class="awg-row">
+                <div class="awg-row expert-only">
                     <div class="awg-row-icon info">⚙</div>
                     <div class="awg-row-body">
                         <div class="awg-row-title">Архитектура для установки</div>
@@ -530,7 +531,10 @@ const AwgSetupPage = (() => {
                             ${opts}
                         </select>
                     </div>
-                </div>`;
+                </div>
+                ${typeof Expert !== 'undefined'
+                    ? Expert.noteHtml('Ручной выбор архитектуры скрыт')
+                    : ''}`;
         }
 
         // Прогресс
