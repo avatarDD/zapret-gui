@@ -1327,6 +1327,7 @@ def register(app):
         url  = (body.get("url")  or "").strip()
         fmt  = (body.get("format") or "auto").strip()
         group = (body.get("group") or "urltest").strip()
+        transport = (body.get("transport") or "").strip()
         try:
             interval = int(body.get("interval_hours") or 6)
         except (TypeError, ValueError):
@@ -1336,7 +1337,8 @@ def register(app):
             return {"ok": False, "error": "Нужны поля name и url"}
         from core.subscription_manager import add_subscription
         return add_subscription(name=name, url=url, fmt=fmt,
-                                interval_hours=interval, group=group)
+                                interval_hours=interval, group=group,
+                                transport=transport)
 
     @app.route("/api/singbox/subscriptions/<sid>", method="PUT")
     def singbox_subscriptions_update(sid):
@@ -1348,7 +1350,8 @@ def register(app):
         # Передаём через **kwargs — функция возьмёт только известные поля.
         from core.subscription_manager import update_subscription
         kw = {}
-        for k in ("name", "url", "format", "interval_hours", "group"):
+        for k in ("name", "url", "format", "interval_hours", "group",
+                  "transport"):
             if k in body:
                 kw[k] = body[k]
         if "interval_hours" in kw:

@@ -72,6 +72,12 @@ def parse_transport(spec):
     return ("unknown", s)
 
 
+def is_valid_spec(spec) -> bool:
+    """Синтаксическая валидность спеки (доступность НЕ проверяется —
+    туннель может появиться позже). Для валидации сохраняемых настроек."""
+    return parse_transport(spec)[0] != "unknown"
+
+
 # ─────── чистые функции: где у движка локальный прокси ───────
 
 def _local_host(listen) -> str:

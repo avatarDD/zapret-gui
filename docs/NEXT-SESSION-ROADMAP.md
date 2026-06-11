@@ -248,6 +248,35 @@ sing-box.
   туннелю/прокси) и UI настройки таймера/источников/транспорта.
 **Приёмка.** Списки обновляются по расписанию; пользователь выбирает источник,
 интервал и транспорт; обновление переживает рестарт GUI.
+**✅ Сделано (эта сессия).** Все три рефрешера переведены на общий слой
+транспорта из задачи №8 (`urlopen_via` из `core/download_transport.py`,
+спека `direct`/`awg[:iface]`/`singbox[:конфиг]`/`mihomo[:конфиг]`; в
+download_transport добавлен `is_valid_spec()` для валидации сохраняемых
+настроек). Хранение по подсистемам (всё в settings.json → переживает
+рестарт; таймеры на boot уже были): списки — одна настройка
+`lists.transport` (`list_updater.get_transport/set_transport`,
+`refresh_one` качает через неё; `_fetch` заодно применяет зеркало
+`install.mirror` к GitHub-URL); подписки — поле `transport` per-подписка
+(`_norm_transport` приводит `direct`/мусор к '', `add/update_subscription`,
+`refresh_one` передаёт в `_fetch`); пул — `singbox.pool.transport`
+(`get_settings/update_settings`, `refresh_pool` передаёт в
+`fetch_outbounds(transport=)`). Недоступный транспорт = честная
+RuntimeError с человекочитаемым текстом → попадает в `last_error`
+(существующие механизмы «не затирать при пустом/ошибке» сохранены). API:
+`GET /api/lists/curated` отдаёт `transport`,
+`POST /api/lists/curated/settings {transport}` (400 на неизвестную
+спеку), `PUT /api/lists/<id>` принимает `interval_hours` (период
+автообновления managed-списка), `transport` в subscriptions add/update и
+pool settings. UI: новый общий `web/js/components/transport_select.js`
+(кэш 60с одного запроса `/api/install/transports`, опции с пометкой
+«сейчас недоступен», `labelFor`; InstallExtras из задачи 8 переведён на
+него); «Списки» — селект «Качать через» + интервал в форме добавления
+URL + интервал managed-списка в редакторе (и «каждые N ч» в таблице);
+sing-box → Конфиги: вкладка «Подписки» — селект в форме и инлайн-селект
+в каждой карточке, вкладка «Пул серверов» — «Качать источники через» в
+настройках. Тесты: `tests/test_refresher_transport.py` (новый, 15 шт.),
+расширены test_api_lists (transport get/set/reject) и test_api_singbox
+(прокидка transport в subscriptions/pool).
 
 ### 8. Скачивание не только последней версии, но и старых + выбор транспорта/локально
 **Цель.** Дать ставить произвольную (в т.ч. более старую) версию бинарей

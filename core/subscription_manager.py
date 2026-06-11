@@ -17,6 +17,7 @@ settings.json layout:
             "url":      "https://example.com/sub?token=...",
             "format":   "auto|uri|clash|singbox-json",
             "interval_hours": 6,
+            "transport": ""|"awg[:iface]"|"singbox[:конфиг]"|"mihomo[:конфиг]",
             "last_refresh": 1234567890,
             "last_status": "ok|error",
             "last_error":  "...",
@@ -32,7 +33,6 @@ import threading
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 import uuid as _uuid
 
 from core.log_buffer import log
@@ -113,10 +113,24 @@ def _norm_group(group: str) -> str:
     return group if group in ("urltest", "selector", "none") else "urltest"
 
 
+def _norm_transport(transport) -> str:
+    """Нормализовать транспорт скачивания ('' = напрямую). Неизвестная
+    спека приводится к '' — не сохраняем мусор."""
+    t = str(transport or "").strip()
+    if not t or t == "direct":
+        return ""
+    try:
+        from core.download_transport import is_valid_spec
+        return t if is_valid_spec(t) else ""
+    except Exception:
+        return ""
+
+
 def add_subscription(name: str, url: str, *,
                      fmt: str = "auto",
                      interval_hours: int = DEFAULT_INTERVAL_HOURS,
-                     group: str = "urltest") -> dict:
+                     group: str = "urltest",
+                     transport: str = "") -> dict:
     if not name or not url:
         return {"ok": False, "error": "Нужны name и url"}
     parsed = urllib.parse.urlparse(url)
@@ -133,6 +147,7 @@ def add_subscription(name: str, url: str, *,
                                               "singbox-json") else "auto",
             "interval_hours": max(1, int(interval_hours)),
             "group":          _norm_group(group),
+            "transport":      _norm_transport(transport),
             "last_refresh":   0,
             "last_status":    "",
             "last_error":     "",
@@ -157,6 +172,8 @@ def update_subscription(sid: str, **kwargs) -> dict:
                 sub[k] = kwargs[k]
         if kwargs.get("group") is not None:
             sub["group"] = _norm_group(kwargs["group"])
+        if "transport" in kwargs and kwargs["transport"] is not None:
+            sub["transport"] = _norm_transport(kwargs["transport"])
         _save_section(subs)
     get_refresher().reconfigure()
     return {"ok": True, "id": sid}
@@ -193,7 +210,7 @@ def refresh_one(sid: str) -> dict:
         return {"ok": False, "error": "Подписка не найдена"}
 
     try:
-        text = _fetch(sub["url"])
+        text = _fetch(sub["url"], transport=sub.get("transport") or "")
     except RuntimeError as e:
         _record_refresh(sid, ok=False, error=str(e))
         return {"ok": False, "error": str(e)}
@@ -299,17 +316,18 @@ def _config_name_for(sid: str) -> str:
 
 # ─────── fetch + parse ───────
 
-def fetch_outbounds(url: str, fmt: str = "auto") -> dict:
+def fetch_outbounds(url: str, fmt: str = "auto",
+                    transport: str = "") -> dict:
     """
     Публичный помощник: скачать URL и распарсить в sing-box outbound'ы.
 
     Возвращает {"ok": bool, "outbounds": list, "format": str,
                 "error": str}. Используется и одиночными подписками, и
     агрегатором пула (core/server_pool.py), чтобы парсинг жил в одном
-    месте.
+    месте. transport — через что качать (см. core/download_transport).
     """
     try:
-        text = _fetch(url)
+        text = _fetch(url, transport=transport)
     except RuntimeError as e:
         return {"ok": False, "outbounds": [], "format": fmt,
                 "error": str(e)}
@@ -318,14 +336,21 @@ def fetch_outbounds(url: str, fmt: str = "auto") -> dict:
             "format": source_fmt, "error": ""}
 
 
-def _fetch(url: str) -> str:
-    req = urllib.request.Request(
-        url, headers={"User-Agent": USER_AGENT})
+def _fetch(url: str, transport: str = "") -> str:
+    # Зеркало (install.mirror) применяется к GitHub-URL (источники-«свалки»
+    # пула обычно на raw.githubusercontent.com); приватные подписки
+    # провайдеров оно не трогает. Транспорт — core/download_transport.
+    from core.binary_installer import resolve_url
+    from core.download_transport import urlopen_via
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        with urlopen_via(resolve_url(url), transport=transport,
+                         timeout=HTTP_TIMEOUT,
+                         headers={"User-Agent": USER_AGENT}) as r:
             raw = r.read(MAX_DOWNLOAD_BYTES + 1)
     except urllib.error.HTTPError as e:
         raise RuntimeError("HTTP %s" % e.code)
+    except RuntimeError:
+        raise   # транспорт недоступен — сообщение уже человекочитаемое
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         raise RuntimeError("сеть: %s" % e)
     if len(raw) > MAX_DOWNLOAD_BYTES:

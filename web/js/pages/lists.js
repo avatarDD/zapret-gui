@@ -8,9 +8,12 @@
 const ListsPage = (() => {
 
     let lists = [];
-    let editing = null;   // {id?, name, description, text, isNew}
-    let curated = { presets: [], refresher: {} };
+    let editing = null;   // {id?, name, description, text, isNew,
+                          //  sourceUrl?, intervalHours?}
+    let curated = { presets: [], refresher: {}, transport: '' };
     let curatedUrl = '';
+    let curatedInterval = 12;   // интервал (часы) для добавляемого URL
+    let transports = null;      // /api/install/transports (через TransportSelect)
     let busy = false;
     let interfaces = [];      // из /api/routing/interfaces (туннели)
     let routeFor = null;      // {listId, listName} — открыт пикер «в маршрут»
@@ -45,15 +48,18 @@ const ListsPage = (() => {
 
     async function refresh() {
         try {
-            const [r, c, ifc] = await Promise.all([
+            const [r, c, ifc, tr] = await Promise.all([
                 API.get('/api/lists'),
                 API.get('/api/lists/curated').catch(() => null),
                 API.get('/api/routing/interfaces').catch(() => null),
+                TransportSelect.load().catch(() => null),
             ]);
             lists = (r && r.lists) || [];
             if (c && c.ok) curated = { presets: c.presets || [],
-                                       refresher: c.refresher || {} };
+                                       refresher: c.refresher || {},
+                                       transport: c.transport || '' };
             interfaces = (ifc && ifc.interfaces) || [];
+            if (tr) transports = tr;
         } catch (e) { Toast.error(e.message); lists = []; }
         renderCurated();
         renderRoutePicker();
@@ -81,13 +87,30 @@ const ListsPage = (() => {
                     текущее содержимое.
                 </p>
                 <div style="display:flex; flex-wrap:wrap; gap:6px;">${chips}</div>
-                <div style="display:flex; gap:6px; margin-top:10px;">
+                <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; align-items:center;">
                     <input id="lst-curated-url" class="form-control" style="flex:1; min-width:220px;"
                            placeholder="Свой URL списка доменов (raw .txt/.lst)"
                            value="${escAttr(curatedUrl)}"
                            oninput="ListsPage.onCuratedUrl(this.value)">
+                    <input id="lst-curated-interval" type="number" min="1" step="1"
+                           class="form-control" style="width:80px;"
+                           title="Интервал автообновления, часов"
+                           value="${curatedInterval}"
+                           onchange="ListsPage.onCuratedInterval(this.value)">
+                    <span class="text-muted" style="font-size:11px;">ч</span>
                     <button class="btn btn-primary btn-sm" ${busy?'disabled':''}
                             onclick="ListsPage.addCustomUrl()">Добавить URL</button>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap;">
+                    <label class="text-muted" style="font-size:12px;">Качать через:</label>
+                    <select class="form-control" style="max-width:300px;"
+                            onchange="ListsPage.setTransport(this.value)">
+                        ${TransportSelect.optionsHtml(transports, curated.transport)}
+                    </select>
+                    <span class="text-muted" style="font-size:11px;">
+                        для автообновления всех списков с URL; «напрямую»
+                        учитывает зеркало из Настройки → Установка
+                    </span>
                 </div>
             </div>`;
     }
@@ -114,7 +137,9 @@ const ListsPage = (() => {
                     const when = l.last_refresh
                         ? new Date(l.last_refresh * 1000).toLocaleString() : 'никогда';
                     badge = `<div class="text-muted" style="font-size:10px;">
-                        <span style="color:${color};">●</span> авто · обновлён: ${esc(when)}
+                        <span style="color:${color};">●</span> авто ·
+                        каждые ${parseInt(l.interval_hours, 10) || 12} ч ·
+                        обновлён: ${esc(when)}
                         ${l.last_error ? ' · ' + esc(l.last_error) : ''}</div>`;
                 }
                 return `
@@ -152,6 +177,17 @@ const ListsPage = (() => {
                     <label class="text-muted" style="padding-top:6px;">Описание</label>
                     <input id="lst-desc" class="form-control" style="max-width:480px;"
                            value="${escAttr(editing.description)}">
+                    ${editing.sourceUrl ? `
+                    <label class="text-muted" style="padding-top:6px;">Автообновление</label>
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <span class="text-muted" style="font-size:12px;">каждые</span>
+                        <input id="lst-interval" type="number" min="1" step="1"
+                               class="form-control" style="width:80px;"
+                               value="${parseInt(editing.intervalHours, 10) || 12}">
+                        <span class="text-muted" style="font-size:12px;">ч ·
+                            источник: <span style="word-break:break-all;">${esc(editing.sourceUrl)}</span>
+                        </span>
+                    </div>` : ''}
                     <label class="text-muted" style="padding-top:6px;">Записи</label>
                     <textarea id="lst-text" spellcheck="false"
                               placeholder="Домены и/или CIDR, по одному в строке или через запятую"
@@ -175,7 +211,9 @@ const ListsPage = (() => {
             const l = r.list;
             const text = [].concat(l.domains || [], l.cidrs || []).join('\n');
             editing = { id, name: l.name, description: l.description || '',
-                        text, isNew: false };
+                        text, isNew: false,
+                        sourceUrl: (l.source_url || '').trim(),
+                        intervalHours: l.interval_hours };
             renderEditor();
         } catch (e) { Toast.error(e.message); }
     }
@@ -192,8 +230,14 @@ const ListsPage = (() => {
             if (editing.isNew) {
                 r = await API.post('/api/lists', { name, description, entries });
             } else {
+                const body = { name, description, entries, replace: true };
+                const intervalEl = document.getElementById('lst-interval');
+                if (editing.sourceUrl && intervalEl) {
+                    const n = parseInt(intervalEl.value, 10);
+                    if (!isNaN(n) && n >= 1) body.interval_hours = n;
+                }
                 r = await API.put('/api/lists/' + encodeURIComponent(editing.id),
-                                  { name, description, entries, replace: true });
+                                  body);
             }
             if (r && r.ok) { Toast.success('Сохранено'); editing = null; await refresh(); }
             else Toast.error((r && r.error) || 'ошибка');
@@ -293,6 +337,25 @@ const ListsPage = (() => {
 
     function onCuratedUrl(v) { curatedUrl = v; }
 
+    function onCuratedInterval(v) {
+        const n = parseInt(v, 10);
+        curatedInterval = (isNaN(n) || n < 1) ? 12 : n;
+    }
+
+    async function setTransport(v) {
+        try {
+            const r = await API.post('/api/lists/curated/settings',
+                                     { transport: v || '' });
+            if (r && r.ok) {
+                curated.transport = r.transport || '';
+                Toast.success('Транспорт скачивания сохранён');
+            } else {
+                Toast.error((r && r.error) || 'не удалось сохранить');
+            }
+        } catch (e) { Toast.error(e.message); }
+        renderCurated();
+    }
+
     async function addPreset(url) {
         busy = true; renderCurated();
         try {
@@ -313,7 +376,8 @@ const ListsPage = (() => {
         if (!url) { Toast.error('Укажите URL'); return; }
         busy = true; renderCurated();
         try {
-            const r = await API.post('/api/lists/curated', { url });
+            const r = await API.post('/api/lists/curated',
+                                     { url, interval_hours: curatedInterval });
             if (r && r.ok) { Toast.success('Список добавлен'); curatedUrl = ''; await refresh(); }
             else { Toast.error((r && r.error) || 'не удалось'); }
         } catch (e) { Toast.error(e.message); }
@@ -344,6 +408,7 @@ const ListsPage = (() => {
     function escAttr(s) { return esc(s).replace(/"/g,'&quot;'); }
 
     return { render, destroy, refresh, newList, edit, closeEditor, save, del,
-             onCuratedUrl, addPreset, addCustomUrl, refreshList, refreshAllManaged,
+             onCuratedUrl, onCuratedInterval, setTransport,
+             addPreset, addCustomUrl, refreshList, refreshAllManaged,
              openRoute, closeRoute, createRoute };
 })();

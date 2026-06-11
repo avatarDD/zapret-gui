@@ -9,10 +9,16 @@ REST API для именованных списков (core/named_lists).
   DELETE /api/lists/<id>         — удалить
 
   GET    /api/lists/curated      — курируемые пресеты + статус обновлятеля
+                                    + транспорт скачивания
   POST   /api/lists/curated      — добавить {url} (пресет) или
                                     {url, name?, description?, interval_hours?}
+  POST   /api/lists/curated/settings — {transport} — через что качать
+                                    автообновляемые списки
   POST   /api/lists/<id>/refresh — обновить управляемый список из source_url
   POST   /api/lists/refresh-all  — обновить все управляемые списки
+
+PUT /api/lists/<id> дополнительно принимает interval_hours — период
+автообновления управляемого списка (часы).
 """
 
 from bottle import request, response
@@ -67,6 +73,13 @@ def register(app):
             description=body.get("description"),
             entries=body.get("entries"),
             replace=bool(body.get("replace", True)))
+        if r.get("ok") and body.get("interval_hours") is not None:
+            # Период автообновления управляемого списка (с source_url).
+            try:
+                named_lists.update_fields(list_id, {
+                    "interval_hours": max(1, int(body["interval_hours"]))})
+            except (TypeError, ValueError):
+                pass
         if not r.get("ok"):
             response.status = 400 if "найден" not in r.get("error", "") else 404
         return r
@@ -90,7 +103,22 @@ def register(app):
             "ok": True,
             "presets": lu.presets(),
             "refresher": lu.get_list_refresher().get_status(),
+            "transport": lu.get_transport(),
         }
+
+    @app.route("/api/lists/curated/settings", method="POST")
+    def lists_curated_settings():
+        """Настройки автообновления списков: {transport}."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core import list_updater as lu
+        r = lu.set_transport(body.get("transport") or "")
+        if not r.get("ok"):
+            response.status = 400
+        return r
 
     @app.route("/api/lists/curated", method="POST")
     def lists_curated_add():
