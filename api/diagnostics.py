@@ -14,6 +14,10 @@ API диагностики сети и системы.
   GET  /api/diagnostics/firewall   — статус firewall
   GET  /api/diagnostics/system     — расширенная системная информация
   GET  /api/diagnostics/services   — список доступных сервисов
+
+  POST /api/diagnostics/selfcheck         — запустить самодиагностику
+                                            (body: {tests, pattern}), фоном
+  GET  /api/diagnostics/selfcheck/status  — прогресс/результат прогона
 """
 
 import time
@@ -170,6 +174,33 @@ def register(app):
         from core.diagnostics import get_system_diagnostics
         result = get_system_diagnostics()
         return {"ok": True, "result": result, "timestamp": time.time()}
+
+    @app.route("/api/diagnostics/selfcheck", method="POST")
+    def api_diagnostics_selfcheck_start():
+        """
+        Запустить самодиагностику zapret-gui в фоне.
+        body: {"tests": bool (вкл. юнит-тесты, default true),
+               "pattern": "test_*.py" (фильтр тестов, опц.)}.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core import selfcheck
+        r = selfcheck.start_async(
+            include_tests=bool(body.get("tests", True)),
+            tests_pattern=(body.get("pattern") or "").strip())
+        if not r.get("ok"):
+            response.status = 409
+        return r
+
+    @app.route("/api/diagnostics/selfcheck/status")
+    def api_diagnostics_selfcheck_status():
+        """Прогресс и (по завершении) полный результат самодиагностики."""
+        response.content_type = "application/json; charset=utf-8"
+        from core import selfcheck
+        return selfcheck.status()
 
 
 def _validate_host(host):

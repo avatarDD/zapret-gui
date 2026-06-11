@@ -75,6 +75,43 @@ const DiagnosticsPage = (() => {
                 <span class="diag-progress-text" id="diag-progress-text">Проверка…</span>
             </div>
 
+            <!-- Самодиагностика zapret-gui -->
+            <div class="card">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        <path d="M9 12l2 2 4-4"/>
+                    </svg>
+                    Самодиагностика zapret-gui
+                </div>
+                <p class="text-muted" style="font-size:13px; margin:6px 0 10px;">
+                    Полная проверка прямо на этом устройстве: зависимости
+                    (python-модули, системные утилиты), движки
+                    (zapret2/AWG/sing-box/mihomo), конфигурация и прогон
+                    юнит-тестов. Все результаты пишутся в
+                    <a href="#logs" style="text-decoration:underline;">лог</a>
+                    (предупреждения — и в сохранённый лог).
+                </p>
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <button class="btn btn-primary btn-sm" id="diag-selfcheck-run"
+                            onclick="DiagnosticsPage.runSelfcheck()">Запустить</button>
+                    <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center;">
+                        <input type="checkbox" id="diag-selfcheck-tests" checked>
+                        с юнит-тестами (на роутере — несколько минут)
+                    </label>
+                    <span class="text-muted" style="font-size:12px;" id="diag-selfcheck-progress"></span>
+                </div>
+                <div id="diag-selfcheck-result" style="margin-top:10px;"></div>
+                <div class="text-muted expert-only" style="font-size:11px; margin-top:8px;">
+                    Из консоли (работает, даже когда GUI не стартует —
+                    например, без bottle):
+                    <code>python3 -m core.selfcheck</code>,
+                    флаги: <code>--no-tests</code>,
+                    <code>--pattern "test_unified_*.py"</code>,
+                    <code>--json</code>.
+                </div>
+            </div>
+
             <!-- Карточки сервисов -->
             <div class="card">
                 <div class="card-title">
@@ -176,6 +213,7 @@ const DiagnosticsPage = (() => {
         loadSystemInfo();
         loadFirewall();
         loadConflicts();
+        loadSelfcheckStatus();
     }
 
     function destroy() {
@@ -187,6 +225,128 @@ const DiagnosticsPage = (() => {
         firewallInfo = null;
         conflictsInfo = null;
         envConflicts = null;
+        stopSelfcheckPoll();
+    }
+
+    /* ═══════════════════ Самодиагностика ═══════════════════ */
+
+    let selfcheckTimer = null;
+
+    function stopSelfcheckPoll() {
+        if (selfcheckTimer) clearInterval(selfcheckTimer);
+        selfcheckTimer = null;
+    }
+
+    async function runSelfcheck() {
+        const withTests = !!document.getElementById('diag-selfcheck-tests')?.checked;
+        const btn = document.getElementById('diag-selfcheck-run');
+        try {
+            const r = await API.post('/api/diagnostics/selfcheck',
+                                     { tests: withTests });
+            if (!r || !r.ok) {
+                Toast.error((r && r.error) || 'Не удалось запустить');
+                return;
+            }
+            if (btn) btn.disabled = true;
+            _setSelfcheckProgress('запуск...');
+            stopSelfcheckPoll();
+            selfcheckTimer = setInterval(pollSelfcheck, 2000);
+        } catch (e) {
+            Toast.error(e.message);
+        }
+    }
+
+    async function loadSelfcheckStatus() {
+        // Показать прошлый результат / подцепиться к идущему прогону.
+        try {
+            const s = await API.get('/api/diagnostics/selfcheck/status');
+            if (s && s.running) {
+                const btn = document.getElementById('diag-selfcheck-run');
+                if (btn) btn.disabled = true;
+                _setSelfcheckProgress(s.progress || '...');
+                stopSelfcheckPoll();
+                selfcheckTimer = setInterval(pollSelfcheck, 2000);
+            } else if (s && s.result) {
+                renderSelfcheckResult(s.result);
+            }
+        } catch (_) {}
+    }
+
+    async function pollSelfcheck() {
+        try {
+            const s = await API.get('/api/diagnostics/selfcheck/status');
+            if (s && s.running) {
+                _setSelfcheckProgress(s.progress || '...');
+                return;
+            }
+            stopSelfcheckPoll();
+            const btn = document.getElementById('diag-selfcheck-run');
+            if (btn) btn.disabled = false;
+            _setSelfcheckProgress('');
+            if (s && s.result) {
+                renderSelfcheckResult(s.result);
+                if (s.result.ok) Toast.success('Самодиагностика: всё в порядке');
+                else Toast.error('Самодиагностика: есть проблемы — см. отчёт');
+            }
+        } catch (_) {}
+    }
+
+    function _setSelfcheckProgress(text) {
+        const el = document.getElementById('diag-selfcheck-progress');
+        if (el) el.textContent = text ? ('Идёт проверка: ' + text) : '';
+    }
+
+    function renderSelfcheckResult(res) {
+        const box = document.getElementById('diag-selfcheck-result');
+        if (!box) return;
+        if (res.error && !res.sections) {
+            box.innerHTML = `<div class="diag-error">${_esc(res.error)}</div>`;
+            return;
+        }
+        const marks = { ok: '✓', warn: '⚠', fail: '✗', info: '·' };
+        const colors = { ok: 'var(--success)', warn: 'var(--warning)',
+                         fail: 'var(--error)', info: 'var(--text-muted)' };
+        const sections = (res.sections || []).map(sec => {
+            const rows = sec.checks.map(c => `
+                <div style="display:flex; gap:8px; font-size:12px; padding:1px 0;">
+                    <span style="color:${colors[c.level] || 'inherit'}; width:14px; flex:none;">${marks[c.level] || '?'}</span>
+                    <span style="width:240px; flex:none;">${_esc(c.name)}</span>
+                    <span class="text-muted" style="word-break:break-word;">${_esc(c.details)}</span>
+                </div>`).join('');
+            return `<div style="margin-top:8px;">
+                <div style="font-size:12px; font-weight:600;">${_esc(sec.title)}</div>
+                ${rows}
+            </div>`;
+        }).join('');
+
+        let testsHtml = '';
+        const t = res.tests;
+        if (t) {
+            const ok = !!t.ok;
+            testsHtml = `<div style="margin-top:8px;">
+                <div style="font-size:12px; font-weight:600;">Юнит-тесты</div>
+                <div style="display:flex; gap:8px; font-size:12px;">
+                    <span style="color:${ok ? 'var(--success)' : 'var(--error)'}; width:14px; flex:none;">${ok ? '✓' : '✗'}</span>
+                    <span>${_esc(t.error || t.summary || '?')}
+                        ${t.ran ? ` — ${t.ran} тестов за ${(t.duration || 0).toFixed(1)}с` : ''}</span>
+                </div>
+                ${!ok && t.tail ? `<pre class="diag-manual-output" style="max-height:240px; overflow:auto; margin-top:6px;">${_esc(t.tail)}</pre>` : ''}
+            </div>`;
+        }
+
+        const s = res.summary || {};
+        box.innerHTML = `
+            <div style="border-top:1px solid var(--border, #333); padding-top:8px;">
+                <div style="font-size:13px;">
+                    Итог: <strong style="color:${res.ok ? 'var(--success)' : 'var(--error)'};">
+                        ${res.ok ? 'всё в порядке' : 'есть проблемы'}</strong>
+                    <span class="text-muted">— ok=${s.ok || 0}, warn=${s.warn || 0},
+                        fail=${s.fail || 0}, за ${res.duration || '?'}с
+                        ${res.started_at ? '· ' + new Date(res.started_at * 1000).toLocaleString() : ''}</span>
+                </div>
+                ${sections}
+                ${testsHtml}
+            </div>`;
     }
 
     /* ═══════════════════ Загрузка данных ═══════════════════ */
@@ -750,5 +910,6 @@ const DiagnosticsPage = (() => {
         manualPing,
         manualHttp,
         manualDns,
+        runSelfcheck,
     };
 })();

@@ -59,6 +59,13 @@ AmneziaWG (AWG), sing-box, mihomo, маршрутизацией (policy routing)
   памяти amneziawg-go GOGC/GOMEMLIMIT (карточка в AWG→Дашборд,
   `/api/awg/go-memory`, ВЫКЛ по умолчанию); подсказка на вкладке WARP-in-WARP;
   фикс гонки SSE-слушателей в `core/log_buffer.py`.
+- Самодиагностика (`core/selfcheck.py`): проверка зависимостей (python-
+  модули вкл. bottle, системные утилиты), движков (zapret2/AWG/sing-box/
+  mihomo), конфигурации, сети + прогон юнит-тестов подпроцессом — прямо на
+  устройстве, с записью в лог (source=selfcheck). GUI: Диагностика →
+  «Самодиагностика» (`POST /api/diagnostics/selfcheck` + `/status`, фон).
+  CLI без bottle: `python3 -m core.selfcheck [--no-tests|--pattern|--json]`
+  — именно так проверять то, что dev-окружение прогнать не может.
 
 ---
 
