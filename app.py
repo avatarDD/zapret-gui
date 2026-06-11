@@ -432,6 +432,15 @@ def create_app(config_dir: str = None) -> Bottle:
     # (для платформ без отдельного nfqws2-init: Ubuntu/systemd и пр.)
     _apply_saved_strategy_on_boot()
 
+    # Миграция legacy-правил selective routing в единый слой —
+    # ДО автоподъёма AWG, чтобы iface-up хук применял уже только
+    # производные uni-* правила (no-op, когда legacy-правил нет).
+    try:
+        from core.unified import migration as _uni_migration
+        _uni_migration.migrate_on_boot()
+    except Exception:
+        pass
+
     # Автоподъём AWG-интерфейсов при старте GUI (если init-скрипт не
     # установлен — иначе он сам справится при загрузке системы).
     _apply_awg_autostart_on_boot()

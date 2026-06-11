@@ -110,7 +110,7 @@ const AwgSetupPage = (() => {
                         <li><a href="#awg" style="color: var(--primary);">AmneziaWG → туннели</a> — статус интерфейсов, Start/Stop/Restart, peers и трафик.</li>
                         <li><a href="#awg-configs" style="color: var(--primary);">Конфиги</a> — создание и редактирование .conf, импорт.</li>
                         <li><a href="#awg-warp" style="color: var(--primary);">WARP</a> — нативная генерация и импорт Cloudflare WARP.</li>
-                        <li><a href="#awg-routing" style="color: var(--primary);">Routing</a> — selective routing по CIDR, доменам и устройствам.</li>
+                        <li><a href="#awg-routing" style="color: var(--primary);">AWG-правила</a> — маршрутизация по CIDR, доменам, устройствам и DSCP (вид раздела «Маршрутизация» с фильтром AWG).</li>
                     </ul>
                 </div>
             </div>

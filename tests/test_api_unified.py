@@ -91,6 +91,58 @@ class TestUnifiedApiFlow(unittest.TestCase):
         r2 = self.client.post_json('/api/unified/monitor', {"enabled": False})
         self.assertFalse(r2["running"])
 
+    def test_09_route_with_devices_and_dscp(self):
+        r = self.client.post_json('/api/unified/routes', {
+            "name": "R-dev", "method": "direct",
+            "destination": {},
+            "devices": [{"ip": "192.168.1.50", "hostname": "tv"}],
+            "dscp": 46, "dscp_self": True,
+        })
+        self.assertTrue(r["ok"], r)
+        rid = r["route"]["id"]
+        # для direct устройства/DSCP честно помечаются пропущенными
+        self.assertTrue(any("устройства/DSCP" in s for s in
+                            (r["applied"].get("skipped_selectors") or [])))
+        got = self.client.get_json('/api/unified/routes/' + rid)
+        self.assertEqual(got["route"]["devices"][0]["ip"], "192.168.1.50")
+        self.assertEqual(got["route"]["dscp"], 46)
+        self.assertTrue(got["route"]["dscp_self"])
+        d = self.client.delete_json('/api/unified/routes/' + rid)
+        self.assertTrue(d["ok"])
+
+    def test_10_legacy_and_migrate(self):
+        # Кладём legacy-правило прямо в routing.rules (старый формат).
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        cm.set("routing", {"rules": [{
+            "id": "cidr-test1234", "type": "cidr", "target_iface": "awg0",
+            "cidrs": ["10.10.0.0/16"], "ip_version": "auto",
+            "description": "legacy cidr", "enabled": False,
+            "priority": 0, "created_at": 1700000000,
+        }]})
+        cm.save()
+        leg = self.client.get_json('/api/unified/legacy')
+        self.assertTrue(leg["ok"])
+        self.assertEqual(leg["count"], 1)
+        m = self.client.post_json('/api/unified/migrate')
+        self.assertTrue(m["ok"], m)
+        self.assertEqual(len(m["migrated"]), 1)
+        self.assertEqual(m["migrated"][0]["route_id"], "mig-cidr-test1234")
+        # legacy-хранилище опустело, маршрут появился в едином слое
+        leg2 = self.client.get_json('/api/unified/legacy')
+        self.assertEqual(leg2["count"], 0)
+        got = self.client.get_json('/api/unified/routes/mig-cidr-test1234')
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["route"]["method"], "awg:awg0")
+        self.assertEqual(got["route"]["destination"]["cidrs"],
+                         ["10.10.0.0/16"])
+        # повторная миграция — идемпотентный no-op
+        m2 = self.client.post_json('/api/unified/migrate')
+        self.assertTrue(m2["ok"])
+        self.assertEqual(m2["migrated"], [])
+        d = self.client.delete_json('/api/unified/routes/mig-cidr-test1234')
+        self.assertTrue(d["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

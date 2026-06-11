@@ -13,6 +13,9 @@ REST API единого слоя маршрутизации (core/unified).
   POST   /api/unified/monitor             — {enabled, interval}
   POST   /api/unified/routes/<id>/scan    — подбор стратегии (nfqws2)
   POST   /api/unified/apply-best-strategy — применить лучшую найденную
+  GET    /api/unified/legacy              — legacy-правила core/routing,
+                                            ещё не перенесённые в единый слой
+  POST   /api/unified/migrate             — перенести их (идемпотентно)
 """
 
 from bottle import request, response
@@ -129,3 +132,26 @@ def register(app):
         if not r.get("ok"):
             response.status = 400
         return r
+
+    @app.route("/api/unified/legacy")
+    def unified_legacy():
+        """Legacy-правила core/routing, не принадлежащие единому слою."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.unified import migration
+            rules = migration.legacy_rules()
+            return {"ok": True, "count": len(rules), "rules": rules}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/unified/migrate", method="POST")
+    def unified_migrate():
+        """Перенести legacy-правила в единый слой (идемпотентно)."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.unified import migration
+            return migration.migrate(apply=True)
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}

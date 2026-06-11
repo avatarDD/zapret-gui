@@ -25,9 +25,10 @@ def save_route(data: dict, *, apply: bool = True) -> dict:
         route = UnifiedRoute.from_dict(data or {})
     except ValueError as e:
         return {"ok": False, "error": str(e)}
-    if route.destination.is_empty():
+    if not route.has_selectors():
         return {"ok": False, "error": "Назначение пустое — укажите домены/"
-                                      "CIDR/список/geosite"}
+                                      "CIDR/список/geosite, устройства "
+                                      "или DSCP"}
     existing = storage.get_route(route.id)
     if existing is not None:
         storage.update_route(route)
