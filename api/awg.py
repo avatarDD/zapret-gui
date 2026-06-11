@@ -7,8 +7,11 @@ REST API для интеграции amneziawg-go.
   POST /api/awg/environment/refresh     — сбросить кэш и пересканировать
 
   GET  /api/awg/manifest                — manifest.json последнего релиза
+  GET  /api/awg/releases                — релизы awg-bin-* (?transport=)
   GET  /api/awg/install/status          — прогресс текущей операции
   POST /api/awg/install                 — установить бинарники
+                                          (body: arch?, tag?, transport?)
+  POST /api/awg/install/local           — multipart: go и/или tools
   POST /api/awg/uninstall               — удалить бинарники
 
   GET  /api/awg/keenetic/opkg-tun       — состояние OpkgTun на Keenetic
@@ -136,11 +139,26 @@ def register(app):
             "target":     target,
         }
 
+    @app.route("/api/awg/releases")
+    def awg_releases():
+        """Список релизов awg-bin-* (с manifest.json) для выбора версии."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.awg_installer import get_awg_installer
+        transport = (request.params.get("transport") or "").strip()
+        force = request.params.get("force") in ("1", "true", "True")
+        try:
+            return get_awg_installer().list_releases(
+                transport=transport, force=force)
+        except Exception as e:
+            response.status = 502
+            return {"ok": False, "error": str(e)}
+
     @app.route("/api/awg/install", method="POST")
     def awg_install():
         """
-        Запустить установку бинарников. Тело: {"arch": "...", "tag": "..."}.
-        Оба поля опциональны — без них берётся detector + последний релиз.
+        Запустить установку бинарников.
+        Тело: {"arch": "...", "tag": "...", "transport": "..."}.
+        Все поля опциональны — без них берётся detector + последний релиз.
         """
         response.content_type = "application/json; charset=utf-8"
         from core.awg_installer import get_awg_installer
@@ -152,11 +170,13 @@ def register(app):
             body = {}
         arch = body.get("arch") or None
         tag = body.get("tag") or None
+        transport = (body.get("transport") or "").strip()
 
         result_holder = {"result": None}
 
         def task():
-            result_holder["result"] = inst.install_binaries(arch=arch, tag=tag)
+            result_holder["result"] = inst.install_binaries(
+                arch=arch, tag=tag, transport=transport)
 
         t = threading.Thread(target=task, daemon=True, name="awg-install")
         t.start()
@@ -175,6 +195,20 @@ def register(app):
         if not result.get("ok"):
             response.status = 500
         return result
+
+    @app.route("/api/awg/install/local", method="POST")
+    def awg_install_local():
+        """
+        Установка из локальных файлов: multipart-поля `go`
+        (amneziawg-go) и/или `tools` (awg). Хотя бы одно обязательно.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from api._install_upload import handle_multi_upload
+        from core.awg_installer import get_awg_installer
+        return handle_multi_upload(
+            [("go", "amneziawg-go.bin"), ("tools", "awg.bin")],
+            lambda paths: get_awg_installer().install_local(
+                go_path=paths.get("go"), tools_path=paths.get("tools")))
 
     @app.route("/api/awg/uninstall", method="POST")
     def awg_uninstall():

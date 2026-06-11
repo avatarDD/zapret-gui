@@ -51,17 +51,23 @@ GITHUB_API_BASE      = "https://api.github.com"
 MANIFEST_CACHE_TTL = 300
 
 
-def _http_get(url: str, accept: str = "application/json", timeout: int = HTTP_TIMEOUT):
+def _http_get(url: str, accept: str = "application/json",
+              timeout: int = HTTP_TIMEOUT, transport: str = ""):
     # Применяем зеркало (ZAPRET_GUI_MIRROR / install.mirror) к GitHub-URL.
     try:
         from core.binary_installer import resolve_url
         url = resolve_url(url)
     except Exception:
         pass
-    req = Request(url, headers={
+    headers = {
         "User-Agent": "zapret-gui-awg/1.0",
         "Accept": accept,
-    })
+    }
+    if transport:
+        from core.download_transport import urlopen_via
+        return urlopen_via(url, transport=transport, timeout=timeout,
+                           headers=headers)
+    req = Request(url, headers=headers)
     return urlopen(req, timeout=timeout)
 
 
@@ -154,6 +160,9 @@ class AwgInstaller:
 
         self._manifest_cache = None
         self._manifest_time = 0
+
+        self._releases_cache = None    # список релизов для выбора версии
+        self._releases_time = 0
 
     # ─────────────────── settings ─────────────────────────────────
 
@@ -334,7 +343,7 @@ class AwgInstaller:
              (", ".join(t for t in seen if t) or "(нет релизов)"))
         )
 
-    def _list_all_releases(self, repo: str) -> list:
+    def _list_all_releases(self, repo: str, transport: str = "") -> list:
         """
         Все релизы репозитория с пагинацией — НЕ зависим от номера
         страницы. AWG-релиз (`awg-bin-*`/`manual-*`) старше десятков
@@ -346,7 +355,7 @@ class AwgInstaller:
             url = ("%s/repos/%s/releases?per_page=100&page=%d"
                    % (GITHUB_API_BASE, repo, page))
             try:
-                with _http_get(url) as resp:
+                with _http_get(url, transport=transport) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             except (HTTPError, URLError, ValueError, OSError):
                 break
@@ -357,10 +366,55 @@ class AwgInstaller:
                 break
         return out
 
-    def _list_candidate_tags(self, repo: str, tag_prefix: str) -> list:
+    def list_releases(self, transport: str = "",
+                      force: bool = False) -> dict:
+        """
+        Релизы с бинарниками AWG (тэги awg-bin-* с manifest.json) для
+        выбора версии при установке. manual-* не включаем: их manifest
+        может принадлежать другому движку (issue #111), а опция
+        «Последняя» и так умеет manual-фолбэк. Кэш 5 минут.
+        """
+        s = self._settings()
+        now = time.time()
+        with self._lock:
+            if (self._releases_cache and not force
+                    and now - self._releases_time < MANIFEST_CACHE_TTL):
+                return self._releases_cache
+        data = self._list_all_releases(s["repo"], transport=transport)
+        if not data:
+            raise RuntimeError(
+                "Не удалось получить список релизов %s" % s["repo"])
+        ver_re = re.compile(
+            re.escape(s["tag_prefix"]) + r"go-(?P<go>.+)-tools-(?P<tools>.+)$")
+        rels = []
+        for rel in data:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            tag = rel.get("tag_name") or ""
+            if not tag.startswith(s["tag_prefix"]):
+                continue
+            if not any((a.get("name") or "").lower() == "manifest.json"
+                       for a in rel.get("assets") or []):
+                continue
+            item = {"tag": tag,
+                    "published_at": rel.get("published_at") or ""}
+            m = ver_re.match(tag)
+            if m:
+                item["go_version"] = m.group("go")
+                item["tools_version"] = m.group("tools")
+                item["version"] = m.group("go")
+            rels.append(item)
+        out = {"ok": True, "releases": rels}
+        with self._lock:
+            self._releases_cache = out
+            self._releases_time = now
+        return out
+
+    def _list_candidate_tags(self, repo: str, tag_prefix: str,
+                             transport: str = "") -> list:
         """Тэги релизов с asset'ом manifest.json: сначала с префиксом
         (новые сверху), затем прочие (ручные `manual-*`)."""
-        data = self._list_all_releases(repo)
+        data = self._list_all_releases(repo, transport=transport)
 
         def _has_manifest(rel):
             for a in rel.get("assets") or []:
@@ -404,11 +458,12 @@ class AwgInstaller:
         # ещё AWG-манифест (его и берём «для диагностики»).
         return ("amneziawg_go" in manifest) or ("amneziawg_tools" in manifest)
 
-    def _fetch_manifest(self, repo: str, tag: str) -> dict:
+    def _fetch_manifest(self, repo: str, tag: str,
+                        transport: str = "") -> dict:
         """Скачать+распарсить manifest.json конкретного тэга (без кэша)."""
         url = "https://github.com/%s/releases/download/%s/manifest.json" % (
             repo, tag)
-        with _http_get(url) as resp:
+        with _http_get(url, transport=transport) as resp:
             manifest = json.loads(resp.read().decode("utf-8"))
         manifest.setdefault("tag", tag)
         return manifest
@@ -421,7 +476,7 @@ class AwgInstaller:
             return ""
 
     def _resolve_best_release(self, repo: str, tag_prefix: str,
-                              arch: str) -> tuple:
+                              arch: str, transport: str = "") -> tuple:
         """
         (tag, manifest) последнего релиза, у которого реально есть
         бинарники под `arch`. Если такого нет — первый кандидат (для
@@ -429,7 +484,8 @@ class AwgInstaller:
         нашу арх не перетягивает на себя «последний» и не вызывает
         фантомное «доступно обновление» + ошибку установки.
         """
-        tags = self._list_candidate_tags(repo, tag_prefix)
+        tags = self._list_candidate_tags(repo, tag_prefix,
+                                         transport=transport)
         if not tags:
             raise RuntimeError(
                 "Не найден релиз с manifest.json в репозитории %s "
@@ -440,7 +496,8 @@ class AwgInstaller:
         saw_foreign = False   # встречали manifest.json чужого движка
         for tag in tags[:12]:
             try:
-                manifest = self._fetch_manifest(repo, tag)
+                manifest = self._fetch_manifest(repo, tag,
+                                                transport=transport)
             except (HTTPError, URLError, ValueError, OSError):
                 continue
             # Пропускаем чужие манифесты (sing-box и т.п.) — иначе тянем
@@ -469,7 +526,7 @@ class AwgInstaller:
         return first_awg
 
     def get_manifest(self, tag: str = None, force: bool = False,
-                     arch: str = None) -> dict:
+                     arch: str = None, transport: str = "") -> dict:
         """
         Получить manifest.json. Если tag не задан — берётся последний
         релиз с бинарниками под текущую (или переданную) архитектуру.
@@ -494,10 +551,11 @@ class AwgInstaller:
             if arch is None:
                 arch = self._detect_arch()
             tag, manifest = self._resolve_best_release(
-                repo, s["tag_prefix"], arch)
+                repo, s["tag_prefix"], arch, transport=transport)
         else:
             try:
-                manifest = self._fetch_manifest(repo, tag)
+                manifest = self._fetch_manifest(repo, tag,
+                                                transport=transport)
             except (HTTPError, URLError, ValueError, OSError) as e:
                 raise RuntimeError(
                     "Не удалось скачать manifest.json (%s): %s" % (tag, e))
@@ -653,7 +711,8 @@ class AwgInstaller:
     # ─────────────────── install / uninstall ──────────────────────
 
     def install_binaries(self, arch: str = None, tag: str = None,
-                         target_dir: str = None) -> dict:
+                         target_dir: str = None,
+                         transport: str = "") -> dict:
         """
         Скачать и установить amneziawg-go и amneziawg-tools (awg).
 
@@ -663,6 +722,8 @@ class AwgInstaller:
         target_dir  — куда поставить бинари. Если не задано — _resolve_target_dir():
                       сначала уважаем settings.installed_dir, потом каталог
                       найденной внешней установки, потом дефолт платформы.
+        transport   — через что качать ('', 'awg[:iface]', 'singbox[:name]',
+                      'mihomo[:name]', см. core/download_transport).
         """
         with self._lock:
             if self._op_in_progress:
@@ -671,9 +732,33 @@ class AwgInstaller:
             self._op_status = "Подготовка..."
             self._op_progress = 0
         try:
-            return self._do_install(arch=arch, tag=tag, target_dir=target_dir)
+            return self._do_install(arch=arch, tag=tag, target_dir=target_dir,
+                                    transport=transport)
         except Exception as e:
             log.error("Установка AWG провалилась: %s" % e, source="awg_installer")
+            return {"ok": False, "message": "Ошибка установки: %s" % e}
+        finally:
+            with self._lock:
+                self._op_in_progress = False
+
+    def install_local(self, go_path: str = None, tools_path: str = None,
+                      target_dir: str = None) -> dict:
+        """
+        Установить AWG-бинарники из локально загруженных файлов
+        (tar.gz из релиза / голый ELF) — без сети. Можно передать только
+        один из двух файлов (например, обновить только amneziawg-go).
+        """
+        with self._lock:
+            if self._op_in_progress:
+                return {"ok": False, "message": "Операция уже выполняется"}
+            self._op_in_progress = True
+            self._op_status = "Локальная установка..."
+            self._op_progress = 0
+        try:
+            return self._do_install_local(go_path, tools_path, target_dir)
+        except Exception as e:
+            log.error("Локальная установка AWG провалилась: %s" % e,
+                      source="awg_installer")
             return {"ok": False, "message": "Ошибка установки: %s" % e}
         finally:
             with self._lock:
@@ -738,7 +823,79 @@ class AwgInstaller:
 
     # ─────────────────── internals ────────────────────────────────
 
-    def _do_install(self, arch: str, tag: str, target_dir: str = None) -> dict:
+    def _do_install_local(self, go_path: str, tools_path: str,
+                          target_dir: str = None) -> dict:
+        if not go_path and not tools_path:
+            return {"ok": False,
+                    "message": "Не передан ни один файл (amneziawg-go / awg)"}
+        det = get_awg_detector()
+        platform = det.detect_platform()
+        target = self._resolve_target_dir(platform, prefer=target_dir or "")
+        install_dir = target["dir"]
+        try:
+            os.makedirs(install_dir, exist_ok=True)
+        except OSError as e:
+            return {"ok": False, "message":
+                    "Не удалось создать %s: %s" % (install_dir, e)}
+
+        from core import binary_installer as bi
+        installed = []
+        with tempfile.TemporaryDirectory(
+                prefix="awg-local-", dir=bi.workbase(install_dir)) as tmp:
+            for src, name in ((go_path, "amneziawg-go"),
+                              (tools_path, "awg")):
+                if not src:
+                    continue
+                self._set_progress("Распаковка %s..." % name, 30)
+                sub = os.path.join(tmp, name)
+                os.makedirs(sub, exist_ok=True)
+                prep = bi.prepare_local_binary(src, name, sub)
+                if not prep.get("ok"):
+                    return {"ok": False,
+                            "message": "%s: %s" % (name, prep.get("error"))}
+                self._set_progress("Установка %s..." % name, 70)
+                ins = bi.install_binary(
+                    prep["path"], os.path.join(install_dir, name))
+                if not ins.get("ok"):
+                    return {"ok": False,
+                            "message": "%s: %s" % (name, ins.get("error"))}
+                installed.append(name)
+
+        # Версии спрашиваем у самих бинарей; не получилось (например,
+        # чужая архитектура) — оставляем пусто, UI подскажет.
+        s = self._settings()
+        go_ver = (_detect_binary_version(
+                      os.path.join(install_dir, "amneziawg-go"))
+                  if go_path else s["installed_go"])
+        tools_ver = (_detect_binary_version(
+                         os.path.join(install_dir, "awg"))
+                     if tools_path else s["installed_tools"])
+        self._save_installed(
+            tag="local", go_version=go_ver, tools_version=tools_ver,
+            arch=self._detect_arch(), installed_dir=install_dir)
+
+        self._set_progress("Готово", 100)
+        log.success("AWG-бинарники установлены из локальных файлов: %s → %s"
+                    % (", ".join(installed), install_dir),
+                    source="awg_installer")
+        warning = ("" if (go_ver or not go_path) and
+                         (tools_ver or not tools_path)
+                   else "Бинарь не отвечает на запрос версии — проверьте, "
+                        "что архитектура совпадает с устройством")
+        return {
+            "ok": True,
+            "message": "Установлено из локальных файлов: %s в %s" %
+                       (", ".join(installed), install_dir),
+            "tag":           "local",
+            "installed":     installed,
+            "go_version":    go_ver,
+            "tools_version": tools_ver,
+            "binary_dir":    install_dir,
+            "warning":       warning,
+        }
+
+    def _do_install(self, arch: str, tag: str, target_dir: str = None,
+                    transport: str = "") -> dict:
         det = get_awg_detector()
         platform = det.detect_platform()
 
@@ -755,7 +912,8 @@ class AwgInstaller:
         install_dir = target["dir"]
 
         self._set_progress("Получение manifest.json...", 5)
-        manifest = self.get_manifest(tag=tag, force=True)
+        manifest = self.get_manifest(tag=tag, force=True,
+                                     transport=transport)
         actual_tag = manifest.get("tag", "")
 
         go_section    = manifest.get("amneziawg_go", {}) or {}
@@ -787,7 +945,7 @@ class AwgInstaller:
             go_archive = os.path.join(tmp, go_bin["filename"])
             self._download(go_bin["url"], go_archive,
                            progress_from=10, progress_to=40,
-                           label="amneziawg-go")
+                           label="amneziawg-go", transport=transport)
             self._verify_sha256(go_archive, go_bin.get("sha256", ""))
 
             # 2) amneziawg-tools (awg)
@@ -795,7 +953,7 @@ class AwgInstaller:
             tools_archive = os.path.join(tmp, tools_bin["filename"])
             self._download(tools_bin["url"], tools_archive,
                            progress_from=45, progress_to=75,
-                           label="amneziawg-tools")
+                           label="amneziawg-tools", transport=transport)
             self._verify_sha256(tools_archive, tools_bin.get("sha256", ""))
 
             # 3) Распаковка
@@ -843,17 +1001,19 @@ class AwgInstaller:
         }
 
     def _download(self, url: str, dest: str,
-                  progress_from: int, progress_to: int, label: str):
+                  progress_from: int, progress_to: int, label: str,
+                  transport: str = ""):
         log.info("Загрузка %s → %s" % (url, dest), source="awg_installer")
         # Делегируем общей утилите: зеркало (ZAPRET_GUI_MIRROR /
-        # install.mirror), оффлайн (file://), retry. Прогресс маппим в
-        # _set_progress в исходном диапазоне.
+        # install.mirror), оффлайн (file://), retry, транспорт. Прогресс
+        # маппим в _set_progress в исходном диапазоне.
         from core import binary_installer as bi
         res = bi.download_file(
             url, dest,
             progress_cb=lambda _s, pct, lbl: self._set_progress(lbl, pct),
             label=label, progress_from=progress_from,
-            progress_to=progress_to, timeout=DOWNLOAD_TIMEOUT)
+            progress_to=progress_to, timeout=DOWNLOAD_TIMEOUT,
+            transport=transport)
         if not res.get("ok"):
             raise RuntimeError("Ошибка загрузки %s: %s"
                                % (url, res.get("error")))

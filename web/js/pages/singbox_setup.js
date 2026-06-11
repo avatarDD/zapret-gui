@@ -22,6 +22,12 @@ const SingboxSetupPage = SetupUI.create({
     fetchManifest: true,
     latestLabel: 'В нашем релизе',
 
+    // Подпись релиза в селекте выбора версии (наши тэги singbox-bin-*).
+    releaseLabel: (r) => {
+        const date = (r.published_at || '').slice(0, 10);
+        return (r.version ? 'v' + r.version : r.tag) + (date ? ' — ' + date : '');
+    },
+
     // Какие архитектуры доступны в релизе (ручной выбор — режим эксперта).
     archsFromManifest: (manifest) =>
         Object.keys(((manifest || {}).sing_box || {}).binaries || {}).sort(),

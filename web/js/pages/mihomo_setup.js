@@ -23,4 +23,12 @@ const MihomoSetupPage = SetupUI.create({
     binaryLabel: 'mihomo',
     fetchManifest: false,
     latestLabel: 'В релизе',
+
+    // Подпись релиза в селекте выбора версии (апстрим-тэги MetaCubeX,
+    // включая скользящий Prerelease-Alpha).
+    releaseLabel: (r) => {
+        const date = (r.published_at || '').slice(0, 10);
+        return r.tag + (r.prerelease ? ' (предрелиз)' : '')
+            + (date ? ' — ' + date : '');
+    },
 });

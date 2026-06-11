@@ -5,7 +5,9 @@ REST API для mihomo (Clash.Meta). По структуре повторяет 
   GET    /api/mihomo/environment
   POST   /api/mihomo/environment/refresh
   GET    /api/mihomo/install/status
-  POST   /api/mihomo/install               — body: {arch?, tag?}
+  POST   /api/mihomo/install               — body: {arch?, tag?, transport?}
+  POST   /api/mihomo/install/local         — multipart: file (gz/tar.gz/ELF)
+  GET    /api/mihomo/releases              — ?transport=&force=1
   POST   /api/mihomo/uninstall
   GET    /api/mihomo/version
 
@@ -106,6 +108,7 @@ def register(app):
             body = {}
         arch = (body.get("arch") or "").strip()
         tag  = (body.get("tag")  or "").strip()
+        transport = (body.get("transport") or "").strip()
 
         from core.mihomo_installer import get_mihomo_installer
         installer = get_mihomo_installer()
@@ -114,7 +117,8 @@ def register(app):
 
         def _run():
             try:
-                result_box["result"] = installer.install(arch=arch, tag=tag)
+                result_box["result"] = installer.install(
+                    arch=arch, tag=tag, transport=transport)
             except Exception as e:
                 result_box["result"] = {"ok": False, "error": str(e)}
             finally:
@@ -126,6 +130,30 @@ def register(app):
                                                 "error": "no result"}
         return {"ok": True, "in_progress": True,
                 "progress": installer.get_operation_status()}
+
+    @app.route("/api/mihomo/install/local", method="POST")
+    def mihomo_install_local():
+        """Установка из локального файла: multipart-поле `file`."""
+        response.content_type = "application/json; charset=utf-8"
+        from api._install_upload import handle_single_upload
+        from core.mihomo_installer import get_mihomo_installer
+        return handle_single_upload(
+            lambda path, name: get_mihomo_installer().install_local(
+                path, orig_name=name))
+
+    @app.route("/api/mihomo/releases")
+    def mihomo_releases():
+        """Список релизов MetaCubeX/mihomo для выбора версии."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.mihomo_installer import get_mihomo_installer
+        transport = (request.params.get("transport") or "").strip()
+        force = request.params.get("force") in ("1", "true", "True")
+        try:
+            return get_mihomo_installer().list_releases(
+                transport=transport, force=force)
+        except Exception as e:
+            response.status = 502
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/mihomo/uninstall", method="POST")
     def mihomo_uninstall():

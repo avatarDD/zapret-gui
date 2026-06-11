@@ -21,6 +21,25 @@ const AwgSetupPage = (() => {
     let archOverride = '';   // ручной выбор архитектуры (пусто = авто)
     let currentStep = 1;
 
+    // Выбор версии релиза / транспорт скачивания / установка из
+    // локальных файлов — общий под-компонент (см. setup_ui.js).
+    const extras = InstallExtras.create({
+        globalPath: 'AwgSetupPage.extras',
+        apiBase: '/api/awg',
+        releaseLabel: (r) => r.go_version
+            ? `${r.tag} (go ${r.go_version}, tools ${r.tools_version})`
+            : r.tag,
+        uploadFields: [
+            { name: 'go',    label: 'amneziawg-go (tar.gz / ELF)' },
+            { name: 'tools', label: 'awg — amneziawg-tools (tar.gz / ELF)' },
+        ],
+        onChange: () => renderInstall(),
+        onInstalled: async () => {
+            await loadInstallStatus();
+            await loadEnv();
+        },
+    });
+
     // ══════════════ Render ══════════════
 
     function render(container) {
@@ -190,6 +209,8 @@ const AwgSetupPage = (() => {
 
     async function loadAll() {
         await Promise.all([loadEnv(), loadInstallStatus()]);
+        // Транспорты скачивания — локальный быстрый запрос, фоном.
+        extras.loadTransports();
         // Manifest подтягиваем независимо — может ошибиться (нет интернета)
         loadManifest();
     }
@@ -553,11 +574,32 @@ const AwgSetupPage = (() => {
             `;
         }
 
+        // Параметры загрузки: версия из списка релизов + транспорт.
+        const extrasHtml = `
+            <div class="awg-row">
+                <div class="awg-row-icon info">⚙</div>
+                <div class="awg-row-body">
+                    <div class="awg-row-title">Параметры загрузки</div>
+                    <div style="margin-top:6px;">${extras.optionsHtml()}</div>
+                </div>
+            </div>`;
+
+        // Установка из локальных файлов (когда у роутера нет GitHub).
+        const localHtml = `
+            <div class="awg-row">
+                <div class="awg-row-body">${extras.uploadHtml()}</div>
+            </div>`;
+
         // Кнопки
         const archOk = archSupported || (archOverride && archs.includes(archOverride));
-        const canInstall = ready && manifest && archOk && !op.in_progress && !installRunning;
+        // Без manifest ставить можно, если выбран транспорт скачивания:
+        // manifest скачается через него уже в процессе установки.
+        const haveSource = manifest || extras.installBody().transport;
+        const canInstall = ready && haveSource && archOk && !op.in_progress && !installRunning;
         let installLabel;
-        if (!installed.installed) {
+        if (extras.selectedTag()) {
+            installLabel = 'Установить выбранную версию';
+        } else if (!installed.installed) {
             installLabel = 'Установить';
         } else if (updateAvailable) {
             installLabel = latestTag
@@ -592,7 +634,8 @@ const AwgSetupPage = (() => {
         `;
 
         body.innerHTML = installedHtml + manifestHtml + targetHtml + activeHtml +
-                          archHtml + archSelectHtml + progressHtml + buttonsHtml;
+                          archHtml + archSelectHtml + extrasHtml +
+                          progressHtml + buttonsHtml + localHtml;
     }
 
     // ══════════════ Stepper state ══════════════
@@ -664,8 +707,9 @@ const AwgSetupPage = (() => {
         renderInstall();
         startPoll();
         try {
-            const r = await API.post('/api/awg/install',
-                                     archOverride ? { arch: archOverride } : {});
+            const installBody = archOverride ? { arch: archOverride } : {};
+            Object.assign(installBody, extras.installBody());
+            const r = await API.post('/api/awg/install', installBody);
             if (r.in_progress) {
                 Toast.info('Установка запущена');
             } else if (r.ok) {
@@ -764,5 +808,6 @@ const AwgSetupPage = (() => {
         doInstall,
         doUninstall,
         setArchOverride,
+        extras,
     };
 })();

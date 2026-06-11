@@ -124,9 +124,15 @@ def resolve_url(url: str, mirror: str = None) -> str:
 # ─────── http ───────
 
 def _http_open(url: str, accept: str = "application/octet-stream",
-               timeout: int = DEFAULT_HTTP_TIMEOUT):
-    """Открыть HTTP-соединение, вернуть response-объект."""
+               timeout: int = DEFAULT_HTTP_TIMEOUT, opener=None):
+    """Открыть HTTP-соединение, вернуть response-объект.
+
+    opener — кастомный urllib-opener (транспорт скачивания через
+    awg/sing-box/mihomo, см. core/download_transport); None — обычный.
+    """
     req = urllib.request.Request(url, headers={"Accept": accept})
+    if opener is not None:
+        return opener.open(req, timeout=timeout)
     return urllib.request.urlopen(req, timeout=timeout)
 
 
@@ -144,7 +150,8 @@ def download_file(url: str, dest_path: str,
                   progress_cb=None, label: str = "",
                   progress_from: int = 0, progress_to: int = 100,
                   retries: int = DEFAULT_RETRIES,
-                  timeout: int = DEFAULT_DOWNLOAD_TIMEOUT) -> dict:
+                  timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
+                  transport: str = "") -> dict:
     """
     Скачать файл по URL в dest_path. Retry с экспоненциальным backoff
     на сетевые ошибки.
@@ -155,6 +162,10 @@ def download_file(url: str, dest_path: str,
       progress_from, progress_to : диапазон прогресса для этой
                     операции (например, 0..50 если за этим идёт ещё
                     верификация / распаковка).
+      transport   : через что качать ('', 'awg[:iface]', 'singbox[:name]',
+                    'mihomo[:name]', см. core/download_transport).
+                    Недоступный транспорт — ошибка, а не тихий фолбэк
+                    на прямое соединение.
 
     Возвращает:
       {"ok": bool, "path": dest_path, "size": int, "error": str?}
@@ -169,12 +180,21 @@ def download_file(url: str, dest_path: str,
     # Переписываем на зеркало (если настроено).
     url = resolve_url(url)
 
+    opener = None
+    if transport and transport != "direct":
+        from core.download_transport import build_opener
+        try:
+            opener = build_opener(transport)
+        except RuntimeError as e:
+            return {"ok": False, "path": dest_path, "size": 0,
+                    "error": "транспорт скачивания: %s" % e}
+
     last_err = ""
     for attempt in range(1, max(1, retries) + 1):
         try:
             return _download_once(
                 url, dest_path, progress_cb, label,
-                progress_from, progress_to, timeout)
+                progress_from, progress_to, timeout, opener=opener)
         except (urllib.error.URLError, OSError, TimeoutError) as e:
             last_err = "%s (попытка %d/%d)" % (e, attempt, retries)
             if attempt < retries:
@@ -203,10 +223,11 @@ def _copy_local(src: str, dest_path: str, progress_cb, label,
 
 
 def _download_once(url, dest_path, progress_cb, label,
-                   progress_from, progress_to, timeout) -> dict:
+                   progress_from, progress_to, timeout,
+                   opener=None) -> dict:
     """Один проход — выбрасывает исключения для outer retry-loop."""
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
-    with _http_open(url, timeout=timeout) as resp:
+    with _http_open(url, timeout=timeout, opener=opener) as resp:
         total = resp.getheader("Content-Length")
         total = int(total) if total and total.isdigit() else 0
         downloaded = 0
@@ -403,6 +424,99 @@ def _is_safe_path(name: str) -> bool:
     return ".." not in parts
 
 
+# ─────── локальный файл (ручная загрузка бинаря) ───────
+
+ELF_MAGIC = b"\x7fELF"
+
+
+def _find_extracted_binary(root: str, expect_name: str) -> str:
+    """В распакованном каталоге найти файл с именем expect_name;
+    если такого нет, но regular-файл ровно один — взять его."""
+    matches, regulars = [], []
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in files:
+            p = os.path.join(dirpath, fn)
+            regulars.append(p)
+            if fn == expect_name:
+                matches.append(p)
+    if matches:
+        return matches[0]
+    if len(regulars) == 1:
+        return regulars[0]
+    return ""
+
+
+def prepare_local_binary(src_path: str, expect_name: str,
+                         workdir: str) -> dict:
+    """
+    Превратить загруженный пользователем файл в готовый к установке
+    бинарь `expect_name`. Формат определяется по magic-байтам, а не по
+    имени файла:
+
+      - tar.gz/tgz — распаковываем, ищем member `expect_name`
+        (или единственный файл);
+      - одиночный .gz (как у релизов mihomo) — gunzip;
+      - голый ELF — как есть.
+
+    Итоговый файл обязан быть ELF — иначе ставить его на роутер
+    бессмысленно (битый/не тот файл).
+
+    Возвращает {"ok": True, "path", "format"} | {"ok": False, "error"}.
+    """
+    try:
+        with open(src_path, "rb") as f:
+            magic = f.read(4)
+    except OSError as e:
+        return {"ok": False, "error": "чтение файла: %s" % e}
+
+    out = os.path.join(workdir, expect_name + ".local")
+    if magic[:2] == b"\x1f\x8b":
+        # gzip: либо tar.gz, либо одиночный gzip-бинарь.
+        if tarfile.is_tarfile(src_path):
+            ex_dir = os.path.join(workdir, "extracted-%s" % expect_name)
+            r = extract_tarball(src_path, ex_dir)
+            if not r.get("ok"):
+                return {"ok": False, "error": r.get("error", "распаковка")}
+            found = _find_extracted_binary(ex_dir, expect_name)
+            if not found:
+                names = ", ".join(r.get("names") or [])[:300]
+                return {"ok": False,
+                        "error": "в архиве нет файла '%s' (содержимое: %s)"
+                                 % (expect_name, names or "пусто")}
+            try:
+                shutil.copy2(found, out)
+            except OSError as e:
+                return {"ok": False, "error": "копирование: %s" % e}
+            fmt = "tar.gz"
+        else:
+            r = extract_gz(src_path, out)
+            if not r.get("ok"):
+                return {"ok": False, "error": r.get("error", "gunzip")}
+            fmt = "gz"
+    elif magic == ELF_MAGIC:
+        try:
+            shutil.copy2(src_path, out)
+        except OSError as e:
+            return {"ok": False, "error": "копирование: %s" % e}
+        fmt = "elf"
+    else:
+        return {"ok": False,
+                "error": "файл не похож ни на ELF-бинарь, ни на gzip/tar.gz "
+                         "архив (magic: %r)" % magic}
+
+    try:
+        with open(out, "rb") as f:
+            got = f.read(4)
+    except OSError as e:
+        return {"ok": False, "error": "чтение результата: %s" % e}
+    if got != ELF_MAGIC:
+        return {"ok": False,
+                "error": "после распаковки получился не ELF-бинарь "
+                         "(magic: %r) — проверьте, что загрузили релиз "
+                         "под Linux" % got}
+    return {"ok": True, "path": out, "format": fmt}
+
+
 # ─────── install ───────
 
 def chmod_executable(path: str) -> bool:
@@ -478,7 +592,8 @@ def fetch_verify_extract_install(
         binary_in_archive: str,
         final_dest: str,
         progress_cb=None,
-        label: str = "") -> dict:
+        label: str = "",
+        transport: str = "") -> dict:
     """
     Полный пайплайн: download → verify → extract → install.
 
@@ -494,7 +609,8 @@ def fetch_verify_extract_install(
     # 1) download
     dl = download_file(url, archive_path, progress_cb=progress_cb,
                        label=label,
-                       progress_from=0, progress_to=60)
+                       progress_from=0, progress_to=60,
+                       transport=transport)
     if not dl.get("ok"):
         return {"ok": False, "stage": "download", "error": dl.get("error"),
                 "download": dl}
