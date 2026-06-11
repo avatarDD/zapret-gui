@@ -506,3 +506,275 @@ _CLASH_CONVERTERS = {
     "hy2":        _conv_hysteria2,
     "tuic":       _conv_tuic,
 }
+
+
+# ─────── YAML emitter (python-структура → clash-YAML) ───────
+#
+# Нужен, чтобы:
+#   1) собирать одноразовый конфиг для тестера прокси mihomo (§тестер);
+#   2) безопасно перезаписывать список прокси из таблицы (только когда
+#      доступен pyyaml — иначе самописный парсер теряет вложенность/rules
+#      на round-trip и редактирование запрещается, см. mihomo_proxies).
+#
+# Когда установлен pyyaml — используем `yaml.safe_dump` (точнее и безопаснее).
+# Иначе — минимальный рекурсивный эмиттер (dict/list/scalar) c корректным
+# квотированием. mihomo читает YAML своим полнофункциональным парсером,
+# поэтому даже глубоко вложенные структуры эмиттер выдаёт валидно.
+
+def has_pyyaml() -> bool:
+    """Доступен ли модуль pyyaml (определяет, можно ли безопасно
+    перезаписывать сложные конфиги round-trip'ом)."""
+    try:
+        import yaml  # type: ignore  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_YAML_KEYWORDS = {"true", "false", "yes", "no", "on", "off", "null", "~",
+                  "none"}
+_QUOTE_CHARS_RE = re.compile(r"[:#\[\]{},&*!|>'\"%@`]")
+
+
+def _needs_quote(s: str) -> bool:
+    if s == "":
+        return True
+    low = s.lower()
+    if low in _YAML_KEYWORDS:
+        return True
+    if re.match(r"^-?\d+$", s) or re.match(r"^-?\d+\.\d+$", s):
+        return True
+    if s != s.strip():
+        return True
+    if _QUOTE_CHARS_RE.search(s):
+        return True
+    if s[0] in "-?:,[]{}#&*!|>'\"%@` ":
+        return True
+    return False
+
+
+def _yaml_scalar(v) -> str:
+    if v is None:
+        return "null"
+    if v is True:
+        return "true"
+    if v is False:
+        return "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return repr(v)
+    s = str(v)
+    if _needs_quote(s):
+        return '"%s"' % s.replace("\\", "\\\\").replace('"', '\\"')
+    return s
+
+
+def _emit_kv(key, value, indent: int, out: list):
+    pad = " " * indent
+    ks = _yaml_scalar(key) if _needs_quote(str(key)) else str(key)
+    if isinstance(value, dict):
+        if not value:
+            out.append("%s%s: {}" % (pad, ks))
+            return
+        out.append("%s%s:" % (pad, ks))
+        for k, v in value.items():
+            _emit_kv(k, v, indent + 2, out)
+    elif isinstance(value, list):
+        if not value:
+            out.append("%s%s: []" % (pad, ks))
+            return
+        out.append("%s%s:" % (pad, ks))
+        _emit_seq(value, indent + 2, out)
+    else:
+        out.append("%s%s: %s" % (pad, ks, _yaml_scalar(value)))
+
+
+def _emit_seq(seq: list, indent: int, out: list):
+    pad = " " * indent
+    for item in seq:
+        if isinstance(item, dict) and item:
+            keys = list(item.items())
+            k0, v0 = keys[0]
+            if isinstance(v0, (dict, list)) and v0:
+                out.append("%s-" % pad)
+                _emit_kv(k0, v0, indent + 2, out)
+            else:
+                ks = _yaml_scalar(k0) if _needs_quote(str(k0)) else str(k0)
+                out.append("%s- %s: %s" % (pad, ks, _yaml_scalar(v0)))
+            for k, v in keys[1:]:
+                _emit_kv(k, v, indent + 2, out)
+        elif isinstance(item, dict):
+            out.append("%s- {}" % pad)
+        elif isinstance(item, list) and item:
+            out.append("%s-" % pad)
+            _emit_seq(item, indent + 2, out)
+        elif isinstance(item, list):
+            out.append("%s- []" % pad)
+        else:
+            out.append("%s- %s" % (pad, _yaml_scalar(item)))
+
+
+def dump_yaml(data) -> str:
+    """Python-структура → текст clash/mihomo-YAML."""
+    try:
+        import yaml  # type: ignore
+        return yaml.safe_dump(data, allow_unicode=True, sort_keys=False,
+                              default_flow_style=False)
+    except ImportError:
+        pass
+    out: list = []
+    if isinstance(data, dict):
+        for k, v in data.items():
+            _emit_kv(k, v, 0, out)
+    elif isinstance(data, list):
+        _emit_seq(data, 0, out)
+    else:
+        out.append(_yaml_scalar(data))
+    return "\n".join(out) + "\n"
+
+
+def dump_seq(seq: list, indent: int = 2) -> list:
+    """Список (обычно proxies) → строки YAML с отступом `indent` (для
+    текстовой вставки в существующий блок без полного round-trip)."""
+    out: list = []
+    _emit_seq(seq, indent, out)
+    return out
+
+
+# ─────── clash-proxy ↔ share-URI (copy/paste в таблице прокси) ───────
+#
+# Экспорт (Ctrl+C): clash-proxy → sing-box outbound (готовые конвертеры
+# выше) → share-URI (core.singbox_subscription.outbound_to_uri).
+# Импорт (Ctrl+V): share-URI → sing-box outbound (uri_to_outbound) →
+# clash-proxy (_singbox_outbound_to_clash). Это даёт переиспользование
+# уже протестированных парсеров, а не дубль логики.
+
+def clash_proxy_to_uri(p: dict) -> str:
+    """clash-proxy dict → share-URI (или '' для неподдержанного типа)."""
+    if not isinstance(p, dict):
+        return ""
+    conv = _CLASH_CONVERTERS.get(str(p.get("type", "")).lower())
+    if not conv:
+        return ""
+    try:
+        ob = conv(p)
+    except Exception:
+        ob = None
+    if not ob:
+        return ""
+    name = str(p.get("name") or ob.get("tag") or "")
+    if name:
+        ob = dict(ob)
+        ob["tag"] = name
+    from core.singbox_subscription import outbound_to_uri
+    return outbound_to_uri(ob)
+
+
+def _apply_transport_to_clash(tr, base: dict):
+    if not isinstance(tr, dict):
+        return
+    tt = tr.get("type")
+    if tt == "ws":
+        base["network"] = "ws"
+        ws: dict = {}
+        if tr.get("path"):
+            ws["path"] = tr["path"]
+        host = (tr.get("headers") or {}).get("Host")
+        if host:
+            ws["headers"] = {"Host": host}
+        if ws:
+            base["ws-opts"] = ws
+    elif tt == "grpc":
+        base["network"] = "grpc"
+        if tr.get("service_name"):
+            base["grpc-opts"] = {"grpc-service-name": tr["service_name"]}
+
+
+def _apply_tls_to_clash(tls, base: dict, reality: bool):
+    if not isinstance(tls, dict) or not tls.get("enabled"):
+        return
+    base["tls"] = True
+    if tls.get("server_name"):
+        base["servername"] = tls["server_name"]
+    fp = (tls.get("utls") or {}).get("fingerprint")
+    if fp:
+        base["client-fingerprint"] = fp
+    ro = tls.get("reality") or {}
+    if reality and isinstance(ro, dict) and ro.get("enabled"):
+        opts: dict = {}
+        if ro.get("public_key"):
+            opts["public-key"] = ro["public_key"]
+        if ro.get("short_id"):
+            opts["short-id"] = ro["short_id"]
+        base["reality-opts"] = opts
+
+
+def _singbox_outbound_to_clash(ob: dict):
+    """sing-box outbound → clash-proxy dict (для 6 поддержанных типов)."""
+    if not isinstance(ob, dict):
+        return None
+    t = ob.get("type")
+    server, port = ob.get("server"), ob.get("server_port")
+    if not server or not port:
+        return None
+    base = {"name": ob.get("tag") or str(t),
+            "server": str(server), "port": int(port)}
+    if t == "shadowsocks":
+        base.update({"type": "ss",
+                     "cipher": ob.get("method") or "aes-128-gcm",
+                     "password": ob.get("password") or ""})
+        return base
+    if t == "vless":
+        base.update({"type": "vless", "uuid": ob.get("uuid") or ""})
+        if ob.get("flow"):
+            base["flow"] = ob["flow"]
+        _apply_transport_to_clash(ob.get("transport"), base)
+        _apply_tls_to_clash(ob.get("tls"), base, reality=True)
+        return base
+    if t == "vmess":
+        base.update({"type": "vmess", "uuid": ob.get("uuid") or "",
+                     "alterId": int(ob.get("alter_id") or 0),
+                     "cipher": ob.get("security") or "auto"})
+        _apply_transport_to_clash(ob.get("transport"), base)
+        _apply_tls_to_clash(ob.get("tls"), base, reality=False)
+        return base
+    if t == "trojan":
+        base.update({"type": "trojan", "password": ob.get("password") or ""})
+        tls = ob.get("tls") or {}
+        if tls.get("server_name"):
+            base["sni"] = tls["server_name"]
+        if tls.get("insecure"):
+            base["skip-cert-verify"] = True
+        _apply_transport_to_clash(ob.get("transport"), base)
+        return base
+    if t == "hysteria2":
+        base.update({"type": "hysteria2",
+                     "password": ob.get("password") or ""})
+        tls = ob.get("tls") or {}
+        if tls.get("server_name"):
+            base["sni"] = tls["server_name"]
+        if tls.get("insecure"):
+            base["skip-cert-verify"] = True
+        return base
+    if t == "tuic":
+        base.update({"type": "tuic", "uuid": ob.get("uuid") or ""})
+        if ob.get("password"):
+            base["password"] = ob["password"]
+        tls = ob.get("tls") or {}
+        if tls.get("server_name"):
+            base["sni"] = tls["server_name"]
+        return base
+    return None
+
+
+def uri_to_clash_proxy(uri: str) -> dict:
+    """share-URI → {"ok": bool, "proxy": dict} либо {"ok": False, "error"}."""
+    from core.singbox_subscription import uri_to_outbound
+    r = uri_to_outbound(uri)
+    if not r.get("ok") or not r.get("outbound"):
+        return {"ok": False, "error": r.get("error") or "URI не распознан"}
+    p = _singbox_outbound_to_clash(r["outbound"])
+    if not p:
+        return {"ok": False, "error": "тип не конвертируется в clash-proxy"}
+    return {"ok": True, "proxy": p}

@@ -68,7 +68,7 @@ def _clash_get(host: str, port: int, secret: str, path: str,
 
 def running_clash_targets() -> list:
     """
-    Запущенные конфиги с настроенным clash_api. Для каждого:
+    Запущенные конфиги sing-box с настроенным clash_api. Для каждого:
       {"config", "host", "port", "secret", "tags": [<real outbound tags>]}.
     Только read-only чтение конфигов — путь запуска не затрагивается.
     """
@@ -97,6 +97,47 @@ def running_clash_targets() -> list:
     return out
 
 
+def running_mihomo_clash_targets() -> list:
+    """
+    Запущенные конфиги mihomo с external-controller. mihomo — эталонная
+    реализация Clash, его `/connections` отдаёт тот же формат, что и
+    sing-box clash_api, поэтому трекер общий (см. get_mihomo_traffic_tracker).
+    """
+    out = []
+    try:
+        from core.mihomo_manager import get_mihomo_manager
+        from core.clash_yaml import parse_yaml
+        from core.mihomo_proxies import (
+            external_controller_endpoint, proxy_names)
+        mgr = get_mihomo_manager()
+        for c in mgr.list_configs():
+            if not c.get("running"):
+                continue
+            res = mgr.get_config(c["name"])
+            if not res.get("ok"):
+                continue
+            try:
+                cfg = parse_yaml(res.get("text") or "")
+            except Exception:
+                continue
+            ep = external_controller_endpoint(cfg)
+            if not ep:
+                continue
+            ep = dict(ep)
+            ep["config"] = c["name"]
+            ep["tags"] = proxy_names(cfg)
+            out.append(ep)
+    except Exception as e:
+        log.warning("proxy_traffic(mihomo): не удалось перечислить "
+                    "инстансы: %s" % e, source="mihomo")
+    return out
+
+
+def _mihomo_state_path() -> str:
+    from core.mihomo_platform import detect_mihomo_platform
+    return os.path.join(detect_mihomo_platform().run_dir, "proxy_traffic.json")
+
+
 def _pick_tag(chains) -> str:
     """Тег реального узла из chains (первый не служебный, обычно chains[0])."""
     if not isinstance(chains, list):
@@ -108,21 +149,28 @@ def _pick_tag(chains) -> str:
 
 
 class TrafficTracker:
-    """Фоновый накопитель трафика по тегам outbound'ов."""
+    """Фоновый накопитель трафика по тегам outbound'ов.
 
-    def __init__(self):
+    Параметризуется источником целей и путём состояния — один и тот же
+    класс обслуживает и sing-box (clash_api), и mihomo (external-
+    controller): формат `/connections` у них совпадает.
+    """
+
+    def __init__(self, targets_fn=None, state_path_fn=None):
         self._lock = threading.Lock()
         self._totals: dict = {}    # tag -> {"up","down","seen"}
         self._conn: dict = {}      # endpoint_key -> {conn_id: (up, down)}
         self._thread = None
         self._running = False
+        self._targets_fn = targets_fn or running_clash_targets
+        self._state_path_fn = state_path_fn or _state_path
         self._load()
 
     # ─────── persistence ───────
 
     def _load(self):
         try:
-            with open(_state_path(), "r") as f:
+            with open(self._state_path_fn(), "r") as f:
                 data = json.load(f)
         except (OSError, ValueError):
             return
@@ -138,7 +186,7 @@ class TrafficTracker:
                 }
 
     def _save(self):
-        path = _state_path()
+        path = self._state_path_fn()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".tmp"
@@ -169,7 +217,7 @@ class TrafficTracker:
             time.sleep(_POLL_INTERVAL)
 
     def _poll_all(self):
-        targets = running_clash_targets()
+        targets = self._targets_fn()
         active_keys = set()
         changed = False
         for t in targets:
@@ -247,13 +295,28 @@ class TrafficTracker:
 
 
 _tracker = None
+_mihomo_tracker = None
 _tracker_lock = threading.Lock()
 
 
 def get_traffic_tracker() -> TrafficTracker:
+    """Трекер трафика sing-box (clash_api)."""
     global _tracker
     if _tracker is None:
         with _tracker_lock:
             if _tracker is None:
                 _tracker = TrafficTracker()
     return _tracker
+
+
+def get_mihomo_traffic_tracker() -> TrafficTracker:
+    """Трекер трафика mihomo (external-controller). Отдельный экземпляр и
+    отдельный файл состояния (в run_dir mihomo)."""
+    global _mihomo_tracker
+    if _mihomo_tracker is None:
+        with _tracker_lock:
+            if _mihomo_tracker is None:
+                _mihomo_tracker = TrafficTracker(
+                    targets_fn=running_mihomo_clash_targets,
+                    state_path_fn=_mihomo_state_path)
+    return _mihomo_tracker

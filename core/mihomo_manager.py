@@ -40,6 +40,15 @@ def _valid_name(name: str) -> bool:
     return bool(name) and bool(_VALID_NAME_RE.match(name))
 
 
+def _inject_log_level(text: str, level: str = "debug") -> str:
+    """Подменить верхнеуровневый `log-level` (для режима отладки). Чисто
+    текстовая правка — не трогаем вложенные структуры/комментарии."""
+    out = [l for l in text.splitlines()
+           if not re.match(r"^log-level\s*:", l)]
+    out.insert(0, "log-level: %s" % level)
+    return "\n".join(out) + "\n"
+
+
 def _raise_nofile():
     if resource is None:
         return
@@ -140,6 +149,10 @@ class MihomoManager:
             return []
         out = []
         for fn in sorted(os.listdir(platform.config_dir)):
+            # Служебные dotfile'ы (debug-launch `.run-*.yaml`, временные
+            # `.validate-*`) не показываем как конфиги пользователя.
+            if fn.startswith("."):
+                continue
             if not (fn.endswith(".yaml") or fn.endswith(".yml")):
                 continue
             name = fn.rsplit(".", 1)[0]
@@ -214,6 +227,80 @@ class MihomoManager:
         except OSError as e:
             return {"ok": False, "error": "rm: %s" % e}
         return {"ok": True, "name": name}
+
+    # ─────── debug mode / log ───────
+    #
+    # «Режим отладки»: видно, ПОЧЕМУ прокси не работает. У mihomo нет merge
+    # нескольких `-f` (как `-c` у sing-box), поэтому при включённом debug
+    # запускаем из временного launch-конфига `.run-<name>.yaml` с
+    # подменённым `log-level: debug`. Сам пользовательский YAML не трогаем —
+    # выключил тумблер, перезапустил, debug ушёл.
+
+    def _debug_enabled(self) -> bool:
+        try:
+            from core.config_manager import get_config_manager
+            return bool(get_config_manager().get("mihomo", "debug_log",
+                                                  default=False))
+        except Exception:
+            return False
+
+    def get_debug(self) -> dict:
+        return {"ok": True, "enabled": self._debug_enabled()}
+
+    def set_debug(self, enabled: bool) -> dict:
+        try:
+            from core.config_manager import get_config_manager
+            cm = get_config_manager()
+            cm.set("mihomo", "debug_log", bool(enabled))
+            cm.save()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        log.info("mihomo: режим отладки %s" % ("включён" if enabled
+                                               else "выключен"),
+                 source="mihomo")
+        return {"ok": True, "enabled": bool(enabled)}
+
+    def _debug_launch_path(self, name: str) -> str:
+        return os.path.join(self._platform().config_dir,
+                            ".run-%s.yaml" % name)
+
+    def _write_debug_launch(self, name: str, config: str):
+        """Записать launch-конфиг с debug-логом, вернуть путь или None."""
+        try:
+            with open(config, "r") as f:
+                text = f.read()
+        except OSError:
+            return None
+        path = self._debug_launch_path(name)
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(_inject_log_level(text, "debug"))
+            os.replace(tmp, path)
+            return path
+        except OSError:
+            return None
+
+    def _cleanup_debug_launch(self, name: str):
+        try:
+            os.remove(self._debug_launch_path(name))
+        except OSError:
+            pass
+
+    def read_log(self, name: str, lines: int = 200) -> dict:
+        """Хвост лог-файла инстанса (для просмотра в UI)."""
+        if not _valid_name(name):
+            return {"ok": False, "error": "Некорректное имя"}
+        path = self._platform().log_path(name)
+        try:
+            lines = max(1, min(2000, int(lines)))
+        except (TypeError, ValueError):
+            lines = 200
+        if not os.path.isfile(path):
+            return {"ok": True, "name": name, "path": path,
+                    "exists": False, "log": ""}
+        return {"ok": True, "name": name, "path": path, "exists": True,
+                "log": _tail_file(path, lines), "debug": self._debug_enabled()}
 
     # ─────── validate via binary ───────
 
@@ -310,12 +397,24 @@ class MihomoManager:
         if self.is_running(name):
             return {"ok": True, "already_running": True}
 
+        # Режим отладки: запускаем из launch-конфига с log-level=debug
+        # (пользовательский YAML не трогаем). При любой ошибке — обычный.
+        run_config = config
+        debug_used = False
+        if self._debug_enabled():
+            dp = self._write_debug_launch(name, config)
+            if dp:
+                run_config = dp
+                debug_used = True
+
         # Pre-flight: mihomo -t (с тем же -d, что и при запуске, иначе
         # geoip/geosite/провайдеры ищутся не там и проверка ложно падает).
         chk_rc, _o, chk_err = _run(
-            [binary, "-t", "-d", platform.config_dir, "-f", config],
+            [binary, "-t", "-d", platform.config_dir, "-f", run_config],
             timeout=15)
         if chk_rc != 0:
+            if debug_used:
+                self._cleanup_debug_launch(name)
             return {"ok": False, "error":
                     "mihomo -t %s: %s" % (name, (chk_err or "").strip())}
 
@@ -329,7 +428,7 @@ class MihomoManager:
 
         try:
             popen = subprocess.Popen(
-                [binary, "-d", platform.config_dir, "-f", config],
+                [binary, "-d", platform.config_dir, "-f", run_config],
                 stdin=subprocess.DEVNULL,
                 stdout=log_fh, stderr=log_fh,
                 close_fds=True,
@@ -349,14 +448,17 @@ class MihomoManager:
         time.sleep(1.0)
         if popen.poll() is not None:
             tail = _tail_file(log_file, 80)
+            if debug_used:
+                self._cleanup_debug_launch(name)
             return {"ok": False,
                     "error": "mihomo упал при старте (exit=%s)"
                              % popen.returncode,
                     "log_tail": tail}
-        log.info("mihomo: запущен '%s' (pid=%d)" % (name, popen.pid),
+        log.info("mihomo: запущен '%s' (pid=%d)%s" % (
+            name, popen.pid, " [debug]" if debug_used else ""),
                  source="mihomo")
         return {"ok": True, "pid": popen.pid, "config": config,
-                "log_path": log_file}
+                "log_path": log_file, "debug": debug_used}
 
     def _do_down(self, name: str) -> dict:
         platform = self._platform()
@@ -383,6 +485,7 @@ class MihomoManager:
             os.remove(pid_file)
         except OSError:
             pass
+        self._cleanup_debug_launch(name)
         log.info("mihomo: остановлен '%s' (pid=%d)" % (name, pid),
                  source="mihomo")
         return {"ok": True, "pid": pid}

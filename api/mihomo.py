@@ -34,6 +34,46 @@ from bottle import request, response
 INSTALL_API_WAIT = 8
 
 
+def _load_cfg(name):
+    """(mgr, res, cfg|None). res — ответ get_config; cfg — разобранный YAML."""
+    from core.mihomo_manager import get_mihomo_manager
+    from core.clash_yaml import parse_yaml
+    mgr = get_mihomo_manager()
+    res = mgr.get_config(name)
+    if not res.get("ok"):
+        return mgr, res, None
+    try:
+        cfg = parse_yaml(res.get("text") or "")
+    except Exception:
+        cfg = {}
+    return mgr, res, (cfg if isinstance(cfg, dict) else {})
+
+
+def _resolve_test_proxies(body):
+    """
+    Источник прокси для теста: имя конфига `config` (+ опц. `names`
+    — подмножество). Возвращает (proxies|None, controller_ep|None).
+    Полные proxy-dict'ы достаём из конфига (для одноразового движка);
+    если конфиг запущен — отдаём ещё и его external-controller (тест
+    идёт через уже поднятые узлы).
+    """
+    from core import mihomo_proxies as mp
+    name = (body.get("config") or "").strip()
+    if not name:
+        return None, None
+    mgr, res, cfg = _load_cfg(name)
+    if not res.get("ok"):
+        return [], None
+    proxies = mp.list_proxies(cfg or {})
+    names = body.get("names")
+    if isinstance(names, list) and names:
+        ns = {str(n) for n in names}
+        proxies = [p for p in proxies if str(p.get("name")) in ns]
+    ep = mp.external_controller_endpoint(cfg or {}) \
+        if mgr.is_running(name) else None
+    return proxies, ep
+
+
 def register(app):
 
     # ─────── environment / install ────────────────────────────────
@@ -197,6 +237,319 @@ def register(app):
         text = body.get("text") if isinstance(body, dict) else None
         from core.mihomo_manager import get_mihomo_manager
         return get_mihomo_manager().validate_via_binary(name, text=text)
+
+    @app.route("/api/mihomo/configs/<name>/log")
+    def mihomo_configs_log(name):
+        """Хвост лог-файла инстанса — «видно, почему не работает»."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.mihomo_manager import get_mihomo_manager
+        try:
+            lines = int(request.query.get("lines") or 200)
+        except (TypeError, ValueError):
+            lines = 200
+        res = get_mihomo_manager().read_log(name, lines)
+        if not res.get("ok"):
+            response.status = 400
+        return res
+
+    # ─────── режим отладки ─────────────────────────────────────────
+
+    @app.route("/api/mihomo/debug")
+    def mihomo_debug_get():
+        response.content_type = "application/json; charset=utf-8"
+        from core.mihomo_manager import get_mihomo_manager
+        return get_mihomo_manager().get_debug()
+
+    @app.route("/api/mihomo/debug", method="POST")
+    def mihomo_debug_set():
+        """Вкл/выкл режим отладки (log-level=debug при следующем запуске)."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core.mihomo_manager import get_mihomo_manager
+        res = get_mihomo_manager().set_debug(bool(body.get("enabled")))
+        if not res.get("ok"):
+            response.status = 500
+        return res
+
+    # ─────── прокси-таблица ────────────────────────────────────────
+
+    @app.route("/api/mihomo/configs/<name>/proxies")
+    def mihomo_proxies_list(name):
+        """
+        Прокси конфига для таблицы: [{name,type,server,port}] + активный
+        узел/группы из запущенного external-controller (если доступен).
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core import mihomo_proxies as mp
+        mgr, res, cfg = _load_cfg(name)
+        if not res.get("ok"):
+            response.status = 404
+            return res
+        running = mgr.is_running(name)
+        ep = mp.external_controller_endpoint(cfg or {})
+        active, groups, controller_live = "", [], False
+        if running and ep:
+            live = mp.controller_proxies(ep)
+            if live.get("ok"):
+                controller_live = True
+                active = live.get("active") or ""
+                groups = live.get("groups") or []
+        return {"ok": True, "proxies": mp.proxy_rows(cfg or {}),
+                "active": active, "groups": groups, "running": running,
+                "controller": ep is not None,
+                "controller_live": controller_live,
+                "select_groups": mp.select_group_names(cfg or {})}
+
+    @app.route("/api/mihomo/configs/<name>/activate", method="POST")
+    def mihomo_configs_activate(name):
+        """
+        Пустить трафик через выбранный прокси: PUT /proxies/<group> на
+        external-controller (живое переключение, как metacubexd). Требует
+        запущенного инстанса с external-controller — у mihomo выбор узла
+        хранится в рантайме, не в YAML.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        tag = (body.get("name") or body.get("tag") or "").strip()
+        if not tag:
+            response.status = 400
+            return {"ok": False, "error": "Не указан прокси (name)"}
+        from core import mihomo_proxies as mp
+        mgr, res, cfg = _load_cfg(name)
+        if not res.get("ok"):
+            response.status = 404
+            return res
+        if not mgr.is_running(name):
+            return {"ok": False, "needs_running": True, "error":
+                    "Запустите конфиг — у mihomo прокси переключается на "
+                    "лету через external-controller."}
+        ep = mp.external_controller_endpoint(cfg or {})
+        if not ep:
+            return {"ok": False, "needs_controller": True, "error":
+                    "У конфига нет external-controller — включите "
+                    "управление кнопкой и перезапустите конфиг."}
+        return mp.controller_activate(ep, tag)
+
+    @app.route("/api/mihomo/configs/<name>/enable-controller",
+               method="POST")
+    def mihomo_enable_controller(name):
+        """
+        Идемпотентно добавить `external-controller` + `secret` в конфиг
+        (нужно для учёта трафика, теста через движок и переключения).
+        Свободный порт на 127.0.0.1, secret генерим. Если запущен —
+        нужен перезапуск.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        import secrets as _secrets
+        from core import mihomo_proxies as mp
+        from core.proxy_tester import _free_port
+        mgr, res, cfg = _load_cfg(name)
+        if not res.get("ok"):
+            response.status = 404
+            return res
+        ep = mp.external_controller_endpoint(cfg or {})
+        if ep:
+            return {"ok": True, "already": True, "port": ep["port"],
+                    "running": mgr.is_running(name)}
+        port = _free_port()
+        new_text = mp.enable_external_controller_text(
+            res.get("text") or "", "127.0.0.1", port, _secrets.token_hex(8))
+        save = mgr.save_config(name, text=new_text)
+        if not save.get("ok"):
+            response.status = 500
+            return save
+        return {"ok": True, "port": port, "running": mgr.is_running(name),
+                "needs_restart": mgr.is_running(name)}
+
+    @app.route("/api/mihomo/configs/<name>/proxies/delete-bulk",
+               method="POST")
+    def mihomo_proxies_delete_bulk(name):
+        """Удалить выбранные прокси (body: {names:[...]}). Round-trip —
+        требует PyYAML (иначе отказ, чтобы не повредить конфиг)."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        names = [str(n) for n in (body.get("names") or []) if n]
+        if not names:
+            response.status = 400
+            return {"ok": False, "error": "Не переданы names"}
+        from core import mihomo_proxies as mp
+        mgr, res, cfg = _load_cfg(name)
+        if not res.get("ok"):
+            response.status = 404
+            return res
+        present = set(mp.proxy_names(cfg or {}))
+        r = mp.safe_mutate(res.get("text") or "",
+                           lambda c: mp.remove_proxies(c, names))
+        if not r.get("ok"):
+            # needs_pyyaml — это не ошибка сервера: 200 с понятным телом,
+            # чтобы фронт показал подсказку (API.post бросает на не-2xx).
+            response.status = 200 if r.get("needs_pyyaml") else 400
+            return r
+        save = mgr.save_config(name, text=r["text"])
+        if not save.get("ok"):
+            response.status = 500
+            return save
+        deleted = sorted(present & set(names))
+        return {"ok": True, "deleted": deleted,
+                "skipped": sorted(set(names) - present)}
+
+    @app.route("/api/mihomo/configs/<name>/import-links", method="POST")
+    def mihomo_import_links(name):
+        """Вставка серверов из буфера (Ctrl+V): share-URI → clash-proxy,
+        дозапись в `proxies:` (аддитивно, работает и без PyYAML)."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        text_in = (body.get("text") or "").strip()
+        if not text_in:
+            response.status = 400
+            return {"ok": False, "error": "Пустой текст"}
+        from core.subscription_importer import extract_items
+        from core.clash_yaml import uri_to_clash_proxy
+        from core import mihomo_proxies as mp
+        mgr, res, cfg = _load_cfg(name)
+        if not res.get("ok"):
+            response.status = 404
+            return res
+        new, errors = [], 0
+        for it in extract_items(text_in):
+            if not isinstance(it, dict) or it.get("type") != "uri":
+                continue
+            uri = it.get("value")
+            if not uri:
+                continue
+            r = uri_to_clash_proxy(uri)
+            if r.get("ok") and r.get("proxy"):
+                new.append(r["proxy"])
+            else:
+                errors += 1
+        if not new:
+            return {"ok": False, "errors": errors,
+                    "error": "Не нашлось валидных серверов в тексте"}
+        existing = set(mp.proxy_names(cfg or {}))
+        added, renamed = 0, 0
+        for p in new:
+            nm = str(p.get("name") or "proxy")
+            if nm in existing:
+                base, n = nm, 2
+                while ("%s-%d" % (base, n)) in existing:
+                    n += 1
+                nm = "%s-%d" % (base, n)
+                p["name"] = nm
+                renamed += 1
+            existing.add(nm)
+            added += 1
+        new_text = mp.append_proxies_text(res.get("text") or "", new)
+        if new_text == (res.get("text") or ""):
+            return {"ok": False, "error":
+                    "Не удалось дописать прокси (нестандартный блок "
+                    "proxies). Отредактируйте YAML вручную."}
+        save = mgr.save_config(name, text=new_text)
+        if not save.get("ok"):
+            response.status = 500
+            return save
+        return {"ok": True, "added": added, "renamed": renamed,
+                "errors": errors}
+
+    @app.route("/api/mihomo/export-links", method="POST")
+    def mihomo_export_links():
+        """Копирование прокси в буфер (Ctrl+C): clash-proxy → share-URI.
+        body: {config, names?}."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        name = (body.get("config") or "").strip()
+        if not name:
+            response.status = 400
+            return {"ok": False, "error": "Укажите config"}
+        from core.clash_yaml import clash_proxy_to_uri
+        from core import mihomo_proxies as mp
+        _mgr, res, cfg = _load_cfg(name)
+        if not res.get("ok"):
+            response.status = 404
+            return res
+        proxies = mp.list_proxies(cfg or {})
+        names = body.get("names")
+        if isinstance(names, list) and names:
+            ns = {str(n) for n in names}
+            proxies = [p for p in proxies if str(p.get("name")) in ns]
+        links = [u for u in (clash_proxy_to_uri(p) for p in proxies) if u]
+        return {"ok": True, "text": "\n".join(links), "count": len(links)}
+
+    # ─────── tester / traffic ──────────────────────────────────────
+
+    @app.route("/api/mihomo/test", method="POST")
+    def mihomo_test_start():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        proxies, ep = _resolve_test_proxies(body)
+        if proxies is None:
+            response.status = 400
+            return {"ok": False, "error": "Укажите config"}
+        if not proxies:
+            return {"ok": False, "error": "Не нашлось прокси для теста"}
+        target = (body.get("target") or "cloudflare").strip()
+        try:
+            timeout_ms = int(body.get("timeout_ms") or 5000)
+        except (TypeError, ValueError):
+            timeout_ms = 5000
+        from core.mihomo_proxy_tester import get_mihomo_test_job
+        from core.mihomo_detector import get_mihomo_detector
+        binary = get_mihomo_detector().detect_binary().get("path", "")
+        started = get_mihomo_test_job().start(
+            proxies, target=target, timeout_ms=timeout_ms,
+            controller=ep, binary=binary)
+        if not started:
+            return {"ok": False, "running": True,
+                    "error": "Тест уже выполняется"}
+        return {"ok": True, "started": True, "count": len(proxies)}
+
+    @app.route("/api/mihomo/test/status")
+    def mihomo_test_status():
+        response.content_type = "application/json; charset=utf-8"
+        from core.mihomo_proxy_tester import get_mihomo_test_job
+        from core.proxy_tester import TARGET_PRESETS
+        st = get_mihomo_test_job().status()
+        st["ok"] = True
+        st["targets"] = list(TARGET_PRESETS.keys())
+        return st
+
+    @app.route("/api/mihomo/traffic")
+    def mihomo_traffic():
+        """Кумулятивный трафик per-proxy {name:{up,down}} (?config=<name>
+        — фильтр по тегам конфига + сообщить про external-controller)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.proxy_traffic import get_mihomo_traffic_tracker
+        from core import mihomo_proxies as mp
+        tracker = get_mihomo_traffic_tracker()
+        tracker.ensure_running()
+        name = (request.query.get("config") or "").strip()
+        tags, controller, running = None, None, None
+        if name:
+            mgr, res, cfg = _load_cfg(name)
+            if res.get("ok"):
+                tags = mp.proxy_names(cfg or {})
+                controller = mp.external_controller_endpoint(
+                    cfg or {}) is not None
+                running = mgr.is_running(name)
+        return {"ok": True, "traffic": tracker.snapshot(tags),
+                "controller": controller, "running": running}
 
     # ─────── autostart ────────────────────────────────────────────
 

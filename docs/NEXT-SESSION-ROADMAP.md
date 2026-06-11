@@ -98,6 +98,21 @@ latest с нормализацией версии).
   `tests/test_singbox_debug.py`, `core/singbox_manager.py`).
 **Приёмка.** Прокси mihomo видны и управляются таблицей без правки YAML; есть
 тест и debug-режим.
+**✅ Сделано (эта сессия).** Страница `web/js/pages/mihomo_proxies.js` (таблица
+имя/тип/адрес/задержка/трафик, мультивыбор, сортировка, copy/paste ссылок,
+активация выбранного), пункт «Прокси» в `sidebar.js`. Бэкенд: новые эндпоинты в
+`api/mihomo.py` (`/configs/<n>/proxies`, `/activate`, `/enable-controller`,
+`/proxies/delete-bulk`, `/import-links`, `/export-links`, `/test`+`/test/status`,
+`/traffic`, `/debug`, `/configs/<n>/log`); `core/mihomo_proxies.py` (разбор
+proxies, RESTful Clash API: список групп/активный/переключение, текстовые
+правки), `core/mihomo_proxy_tester.py` (TCP-отсев + e2e через external-controller
+запущенного инстанса или одноразовый mihomo, как у sing-box),
+`core/proxy_traffic.py` обобщён под mihomo-трекер (`get_mihomo_traffic_tracker`),
+YAML-эмиттер + clash↔URI-конвертеры в `core/clash_yaml.py`, режим отладки
+(`log-level=debug` launch-конфиг) и хвост лога в `core/mihomo_manager.py`. Тесты:
+`tests/test_mihomo_proxies.py`. NB: round-trip-удаление прокси из таблицы требует
+PyYAML (без него — честный отказ, чтобы не повредить сложный конфиг); импорт/
+экспорт/тест/трафик/переключение работают и без PyYAML.
 
 ### 3. Полная унификация интерфейса awg / mihomo / sing-box / маршрутизации
 **Цель.** Единый стиль и логика разделов; общие компоненты вместо копипасты;
