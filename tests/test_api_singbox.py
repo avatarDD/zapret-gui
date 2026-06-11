@@ -70,6 +70,40 @@ class TestSingboxAPI(unittest.TestCase):
         self.assertEqual(r["_status"], 400)
         self.assertFalse(r["ok"])
 
+    # ─── подписки/пул: транспорт скачивания (задача №7) ───
+
+    def test_subscription_add_passes_transport(self):
+        from unittest import mock
+        with mock.patch("core.subscription_manager.add_subscription",
+                        return_value={"ok": True, "id": "sub-x"}) as add:
+            r = self.client.post_json(
+                "/api/singbox/subscriptions",
+                {"name": "P", "url": "https://p/sub",
+                 "transport": "awg:wg0"})
+        self.assertEqual(r["_status"], 200)
+        self.assertEqual(add.call_args.kwargs.get("transport"), "awg:wg0")
+
+    def test_subscription_update_passes_transport(self):
+        from unittest import mock
+        with mock.patch("core.subscription_manager.update_subscription",
+                        return_value={"ok": True, "id": "sub-x"}) as upd:
+            r = self.client.put_json(
+                "/api/singbox/subscriptions/sub-x",
+                {"transport": "mihomo:main"})
+        self.assertEqual(r["_status"], 200)
+        self.assertEqual(upd.call_args.kwargs.get("transport"),
+                         "mihomo:main")
+
+    def test_pool_settings_passes_transport(self):
+        from unittest import mock
+        with mock.patch("core.server_pool.update_settings",
+                        return_value={"ok": True}) as upd:
+            r = self.client.post_json("/api/singbox/pool/settings",
+                                      {"transport": "singbox:proxy"})
+        self.assertEqual(r["_status"], 200)
+        self.assertEqual(upd.call_args.kwargs.get("transport"),
+                         "singbox:proxy")
+
     def test_version(self):
         # На не-установленной системе version падает, но не должен
         # ронять сервер — отдаёт ok=False с error.

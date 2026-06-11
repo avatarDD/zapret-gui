@@ -75,6 +75,16 @@ const SingboxConfigsPage = (() => {
         if (tab === 'subs')    loadSubs();
         if (tab === 'builder') loadBuilder();
         if (tab === 'pool')    loadPool();
+        if (tab === 'subs' || tab === 'pool') loadTransports();
+        renderTab();
+    }
+
+    // Транспорты скачивания (через что качать подписки/источники) —
+    // общий кэшируемый список из transport_select.js.
+    let transports = null;
+
+    async function loadTransports() {
+        transports = await TransportSelect.load();
         renderTab();
     }
 
@@ -1014,7 +1024,7 @@ const SingboxConfigsPage = (() => {
 
     let subs = [];
     let subForm = { name: '', url: '', format: 'auto', interval_hours: 6,
-                    group: 'urltest' };
+                    group: 'urltest', transport: '' };
     let subBusy = false;
 
     async function loadSubs() {
@@ -1058,6 +1068,13 @@ const SingboxConfigsPage = (() => {
                                 outbound'ов: ${s.last_outbounds || 0} ·
                                 обновлено: ${lastRel}
                                 ${s.last_error ? ' · <span style="color:#e58;">' + escapeHtml(s.last_error) + '</span>' : ''}
+                            </div>
+                            <div class="text-muted" style="font-size:11px; margin-top:4px; display:flex; align-items:center; gap:6px;">
+                                качать через:
+                                <select class="form-input" style="width:auto; font-size:11px; padding:2px 6px;"
+                                        onchange="SingboxConfigsPage.subsSetTransport('${escapeAttr(s.id)}', this.value)">
+                                    ${TransportSelect.optionsHtml(transports, s.transport)}
+                                </select>
                             </div>
                         </div>
                         <div style="display:flex; gap:6px;">
@@ -1121,6 +1138,13 @@ const SingboxConfigsPage = (() => {
                             <option value="none" ${subForm.group==='none'?'selected':''}>none — только первый сервер</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="form-label">Качать через:</label>
+                        <select class="form-input"
+                                onchange="SingboxConfigsPage.subFormSet('transport', this.value)">
+                            ${TransportSelect.optionsHtml(transports, subForm.transport)}
+                        </select>
+                    </div>
                 </div>
                 <p class="text-muted" style="font-size:11px; margin:6px 0 0;">
                     <strong>urltest</strong> (рекомендуется): sing-box сам
@@ -1171,7 +1195,7 @@ const SingboxConfigsPage = (() => {
             if (refresh && refresh.ok) {
                 Toast.success(`Загружено ${refresh.outbounds || 0} outbound'ов`);
                 subForm = { name:'', url:'', format:'auto', interval_hours:6,
-                            group:'urltest' };
+                            group:'urltest', transport:'' };
             } else {
                 Toast.error((refresh && refresh.error) || 'refresh failed');
             }
@@ -1226,6 +1250,17 @@ const SingboxConfigsPage = (() => {
         } catch (e) {
             Toast.error(e.message);
         }
+    }
+
+    async function subsSetTransport(sid, transport) {
+        try {
+            const r = await API.put(
+                `/api/singbox/subscriptions/${encodeURIComponent(sid)}`,
+                { transport: transport === 'direct' ? '' : (transport || '') });
+            if (r && r.ok) Toast.success('Транспорт скачивания сохранён');
+            else Toast.error((r && r.error) || 'не удалось сохранить');
+        } catch (e) { Toast.error(e.message); }
+        await loadSubs();
     }
 
     // ══════════════ tab: pool (публичные источники + тестер) ══════════════
@@ -1363,6 +1398,12 @@ const SingboxConfigsPage = (() => {
                         <label class="form-label">Цель теста:</label>
                         <select class="form-input" onchange="SingboxConfigsPage.poolSet('target', this.value)">
                             ${['cloudflare','amazon','google'].map(t=>`<option value="${t}" ${s.target===t?'selected':''}>${t}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="form-label">Качать источники через:</label>
+                        <select class="form-input" onchange="SingboxConfigsPage.poolSet('transport', this.value)">
+                            ${TransportSelect.optionsHtml(transports, s.transport)}
                         </select>
                     </div>
                 </div>
@@ -1508,6 +1549,7 @@ const SingboxConfigsPage = (() => {
         const body = {};
         if (field === 'health_filter') body[field] = !!value;
         else if (field === 'interval_hours' || field === 'cap') body[field] = parseInt(value, 10);
+        else if (field === 'transport') body[field] = (value === 'direct' ? '' : (value || ''));
         else body[field] = value;
         try {
             await API.post('/api/singbox/pool/settings', body);
@@ -1629,6 +1671,7 @@ const SingboxConfigsPage = (() => {
         onImportUrlChange, onImportTextChange,
         // Subscriptions
         subFormSet, subsAdd, subsRefresh, subsRefreshAll, subsRemove,
+        subsSetTransport,
         // Server pool + tester
         poolSrcSet, poolAddSrc, poolAddPreset, poolToggleSrc, poolRemoveSrc,
         poolSet, poolRefresh, testConfig,

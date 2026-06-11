@@ -30,6 +30,7 @@ settings.json layout:
           "cap": 100,
           "health_filter": false,
           "target": "cloudflare",
+          "transport": ""|"awg[:iface]"|"singbox[:конфиг]"|"mihomo[:конфиг]",
           "last_refresh": 0,
           "last_status": "",
           "last_error": "",
@@ -141,6 +142,7 @@ def get_settings() -> dict:
         "cap":            int(pool.get("cap") or DEFAULT_CAP),
         "health_filter":  bool(pool.get("health_filter")),
         "target":         pool.get("target") or DEFAULT_TARGET,
+        "transport":      pool.get("transport") or "",
         "last_refresh":   int(pool.get("last_refresh") or 0),
         "last_status":    pool.get("last_status") or "",
         "last_error":     pool.get("last_error") or "",
@@ -162,6 +164,11 @@ def update_settings(**kw) -> dict:
             pool["health_filter"] = bool(kw["health_filter"])
         if "target" in kw and kw["target"]:
             pool["target"] = str(kw["target"])
+        if "transport" in kw and kw["transport"] is not None:
+            # Транспорт скачивания источников ('' = напрямую). Неизвестную
+            # спеку не сохраняем.
+            from core.subscription_manager import _norm_transport
+            pool["transport"] = _norm_transport(kw["transport"])
         _save_pool(pool)
     get_pool_refresher().reconfigure()
     return {"ok": True}
@@ -356,7 +363,8 @@ def refresh_pool(progress_cb=None) -> dict:
     _report("fetch", 0, len(enabled))
     for idx, s in enumerate(enabled):
         sid = s["id"]
-        res = fetch_outbounds(s["url"], s.get("format") or "auto")
+        res = fetch_outbounds(s["url"], s.get("format") or "auto",
+                              transport=settings.get("transport") or "")
         obs = res.get("outbounds") or []
         used_cache = False
         if not obs:

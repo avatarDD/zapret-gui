@@ -476,14 +476,9 @@ const InstallExtras = (() => {
         // ── данные ──
 
         async function loadTransports() {
-            try {
-                const r = await API.get('/api/install/transports');
-                st.transports = (r && r.transports && r.transports.length)
-                    ? r.transports
-                    : [{ id: 'direct', kind: 'direct', label: 'Напрямую' }];
-            } catch (_) {
-                st.transports = [{ id: 'direct', kind: 'direct', label: 'Напрямую' }];
-            }
+            // Общий кэш списка транспортов (см. transport_select.js) —
+            // его же используют списки/подписки/пул.
+            st.transports = await TransportSelect.load();
             if (!st.transports.some(t => t.id === st.transport)) {
                 st.transport = 'direct';
             }

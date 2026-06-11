@@ -22,6 +22,13 @@
 Списки с заполненным `source_url` считаются управляемыми и попадают под
 автообновление. Списки без URL (чисто пользовательские) обновлятель не
 трогает.
+
+Транспорт скачивания (задача №7): одна настройка на подсистему —
+`lists.transport` в settings.json ('', 'awg[:iface]', 'singbox[:конфиг]',
+'mihomo[:конфиг]', см. core/download_transport). Применяется ко всем
+управляемым спискам; GitHub-URL дополнительно проходят через зеркало
+(install.mirror), как у установщиков. Недоступный транспорт — честная
+ошибка в last_error, содержимое списка не затирается.
 """
 
 from __future__ import annotations
@@ -29,7 +36,6 @@ from __future__ import annotations
 import threading
 import time
 import urllib.error
-import urllib.request
 
 from core.log_buffer import log
 from core import named_lists
@@ -80,6 +86,37 @@ CURATED_PRESETS = [
 
 
 _lock = threading.Lock()
+
+
+# ─────── транспорт скачивания (настройка подсистемы) ───────
+
+def get_transport() -> str:
+    """Транспорт скачивания управляемых списков ('' = напрямую)."""
+    try:
+        from core.config_manager import get_config_manager
+        v = get_config_manager().get("lists", "transport", default="")
+        return str(v or "").strip()
+    except Exception:
+        return ""
+
+
+def set_transport(transport: str) -> dict:
+    """Сохранить транспорт (переживает рестарт GUI)."""
+    t = str(transport or "").strip()
+    if t in ("direct",):
+        t = ""
+    if t:
+        from core.download_transport import is_valid_spec
+        if not is_valid_spec(t):
+            return {"ok": False, "error": "Неизвестный транспорт '%s'" % t}
+    try:
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        cm.set("lists", "transport", t)
+        cm.save()
+    except Exception as e:
+        return {"ok": False, "error": "settings: %s" % e}
+    return {"ok": True, "transport": t}
 
 
 # ─────── presets / creation ───────
@@ -143,13 +180,20 @@ def add_preset(url: str) -> dict:
 
 # ─────── fetch + merge ───────
 
-def _fetch(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def _fetch(url: str, transport: str = "") -> str:
+    # Зеркало (install.mirror) — GitHub-списки itdoginfo часто
+    # недоступны напрямую; транспорт — через core/download_transport.
+    from core.binary_installer import resolve_url
+    from core.download_transport import urlopen_via
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+        with urlopen_via(resolve_url(url), transport=transport,
+                         timeout=HTTP_TIMEOUT,
+                         headers={"User-Agent": USER_AGENT}) as r:
             raw = r.read(MAX_DOWNLOAD_BYTES + 1)
     except urllib.error.HTTPError as e:
         raise RuntimeError("HTTP %s" % e.code)
+    except RuntimeError:
+        raise   # транспорт недоступен — сообщение уже человекочитаемое
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         raise RuntimeError("сеть: %s" % e)
     if len(raw) > MAX_DOWNLOAD_BYTES:
@@ -198,7 +242,7 @@ def refresh_one(list_id: str) -> dict:
         return {"ok": False, "error": "У списка нет source_url"}
 
     try:
-        text = _fetch(url)
+        text = _fetch(url, transport=get_transport())
     except RuntimeError as e:
         named_lists.update_fields(list_id, {
             "last_refresh": int(time.time()),
