@@ -31,6 +31,13 @@ class TestStatusAPI(unittest.TestCase):
         self.assertEqual(r["_status"], 200)
         self.assertIn("version", r)
 
+    def test_install_transports(self):
+        # Без запущенных движков список содержит как минимум «Напрямую».
+        r = self.client.get_json("/api/install/transports")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["transports"])
+        self.assertEqual(r["transports"][0]["id"], "direct")
+
 
 class TestLogsAPI(unittest.TestCase):
 

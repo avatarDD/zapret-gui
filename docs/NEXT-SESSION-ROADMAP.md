@@ -260,6 +260,39 @@ sing-box.
 - Параметр «транспорт скачивания» (как в задаче 7).
 **Приёмка.** В разделах установки можно выбрать версию (по умолчанию — latest),
 указать транспорт или загрузить бинарь локально; установка проходит.
+**✅ Сделано (эта сессия).** Транспорт скачивания: новый
+`core/download_transport.py` (спека `direct` / `awg[:iface]` /
+`singbox[:конфиг]` / `mihomo[:конфиг]`; awg — SO_BINDTODEVICE с фолбэком
+на bind по IP интерфейса, sing-box/mihomo — их локальный mixed/http-порт
+как HTTP-прокси, inbound'ы с авторизацией и socks-only пропускаются;
+кандидаты/резолв/`build_opener`/`urlopen_via`; недоступный транспорт —
+честная ошибка, не тихий direct) + `GET /api/install/transports`
+(api/status.py). Транспорт пронизывает ВСЕ сетевые шаги установки
+(releases/manifest/бинари): `download_file(transport=)` и
+`fetch_verify_extract_install` в binary_installer, `_http_*` хелперы и
+`install(...)` всех трёх установщиков, поле `transport` в
+`POST /api/{awg,singbox,mihomo}/install` — слой готов для переиспользования
+задачей 7. Выбор версии: `list_releases()` у трёх установщиков (кэш 5 мин;
+awg — только `awg-bin-*` с manifest.json и парсингом версий go/tools из
+тега, manual-* не предлагаем — манифест может быть чужим, issue #111;
+sing-box — `singbox-bin-*`; mihomo — апстрим с пометкой prerelease) +
+`GET /api/{awg,singbox,mihomo}/releases?transport=&force=1`. Локальный
+файл: `prepare_local_binary()` в binary_installer (формат по magic:
+tar.gz/одиночный .gz/голый ELF; итог обязан быть ELF) + `install_local()`
+у трёх установщиков (state `tag="local"`, версия спрашивается у бинаря,
+не отвечает → warning про архитектуру) + `POST .../install/local`
+(multipart: singbox/mihomo — `file`, awg — `go` и/или `tools`; общий
+помощник api/_install_upload.py). Заодно зеркало install.mirror теперь
+применяется и к manifest-запросам sing-box. UI: под-компонент
+`InstallExtras` (web/js/components/setup_ui.js — «Версия: последняя /
+выбрать другую…», селект «Качать через» (виден только когда есть
+варианты), блок «Установить из локального файла…»; выбранные файлы
+переживают перерисовки) — встроен в SetupUI (sing-box/mihomo) и в
+awg_setup.js (там кнопка установки разблокируется при выбранном
+транспорте даже без manifest — он скачается через транспорт). Тесты:
+`tests/test_download_transport.py`, `tests/test_installer_releases.py`
+(новые), обновлены моки в test_awg_installer_arch /
+test_singbox_installer_resolve (новый kwarg `transport`).
 
 ---
 

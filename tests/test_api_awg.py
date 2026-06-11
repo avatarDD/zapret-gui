@@ -32,6 +32,30 @@ class TestAwgAPI(unittest.TestCase):
         r = self.client.get_json("/api/awg/install/status")
         self.assertEqual(r["_status"], 200)
 
+    def test_releases(self):
+        from unittest import mock
+        fake = {"ok": True, "releases": [
+            {"tag": "awg-bin-go-0.2.18-tools-1.0", "go_version": "0.2.18",
+             "tools_version": "1.0"}]}
+        with mock.patch("core.awg_installer.AwgInstaller.list_releases",
+                        return_value=fake):
+            r = self.client.get_json("/api/awg/releases")
+        self.assertEqual(r["_status"], 200)
+        self.assertEqual(r["releases"][0]["go_version"], "0.2.18")
+
+    def test_releases_network_error_502(self):
+        from unittest import mock
+        with mock.patch("core.awg_installer.AwgInstaller.list_releases",
+                        side_effect=RuntimeError("нет сети")):
+            r = self.client.get_json("/api/awg/releases")
+        self.assertEqual(r["_status"], 502)
+        self.assertFalse(r["ok"])
+
+    def test_install_local_requires_files(self):
+        r = self.client.post_json("/api/awg/install/local", {})
+        self.assertEqual(r["_status"], 400)
+        self.assertFalse(r["ok"])
+
     def test_keenetic_opkg_tun(self):
         r = self.client.get_json("/api/awg/keenetic/opkg-tun")
         self.assertEqual(r["_status"], 200)

@@ -58,7 +58,7 @@ class TestResolveBestRelease(unittest.TestCase):
         with mock.patch.object(self.inst, "_list_candidate_tags",
                                return_value=tags), \
              mock.patch.object(self.inst, "_fetch_manifest",
-                               side_effect=lambda repo, t: manifests[t]):
+                               side_effect=lambda repo, t, transport="": manifests[t]):
             tag, m = self.inst._resolve_best_release("r", "awg-bin-v",
                                                      "mipsel-softfloat")
         self.assertEqual(tag, "manual-20260513153446")
@@ -71,7 +71,7 @@ class TestResolveBestRelease(unittest.TestCase):
         with mock.patch.object(self.inst, "_list_candidate_tags",
                                return_value=tags), \
              mock.patch.object(self.inst, "_fetch_manifest",
-                               side_effect=lambda repo, t: manifests[t]):
+                               side_effect=lambda repo, t, transport="": manifests[t]):
             tag, _m = self.inst._resolve_best_release("r", "p", "mipsel-softfloat")
         self.assertEqual(tag, "manual-A")  # первый кандидат для диагностики
 
@@ -92,7 +92,7 @@ class TestResolveBestRelease(unittest.TestCase):
         with mock.patch.object(self.inst, "_list_candidate_tags",
                                return_value=tags), \
              mock.patch.object(self.inst, "_fetch_manifest",
-                               side_effect=lambda repo, t: singbox_manifest):
+                               side_effect=lambda repo, t, transport="": singbox_manifest):
             with self.assertRaises(RuntimeError) as cm:
                 self.inst._resolve_best_release("r", "awg-bin-v",
                                                 "mipsel-softfloat")
@@ -110,7 +110,7 @@ class TestResolveBestRelease(unittest.TestCase):
         with mock.patch.object(self.inst, "_list_candidate_tags",
                                return_value=tags), \
              mock.patch.object(self.inst, "_fetch_manifest",
-                               side_effect=lambda repo, t: manifests[t]):
+                               side_effect=lambda repo, t, transport="": manifests[t]):
             tag, _m = self.inst._resolve_best_release("r", "awg-bin-v",
                                                       "mipsel-softfloat")
         self.assertEqual(tag, "manual-awg")

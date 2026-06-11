@@ -103,6 +103,17 @@ const SetupUI = (() => {
         };
         let pollTimer = null;
 
+        // Выбор версии / транспорт скачивания / установка из файла —
+        // общий под-компонент (он же используется в awg_setup.js).
+        const extras = InstallExtras.create({
+            globalPath:   `${opts.globalName}.extras`,
+            apiBase:      opts.apiBase,
+            releaseLabel: opts.releaseLabel,
+            uploadFields: opts.uploadFields,
+            onChange:     () => renderContent(),
+            onInstalled:  () => setTimeout(refresh, 400),
+        });
+
         // ══════════════ render ══════════════
 
         function render(container) {
@@ -143,6 +154,9 @@ const SetupUI = (() => {
                                   .catch(() => null);
             } catch (e) { /* ignore */ }
             renderContent();
+
+            // Транспорты скачивания — локальный быстрый запрос, фоном.
+            extras.loadTransports();
 
             // Шаг 2 — МЕДЛЕННАЯ часть (GitHub: версия в релизе/manifest).
             // Грузим в фоне и перерисовываем, когда придёт, чтобы запрос к
@@ -324,6 +338,8 @@ const SetupUI = (() => {
                             </div>`).join('') : ''}
                     </div>
 
+                    <div style="margin-top:10px;">${extras.optionsHtml()}</div>
+
                     ${opts.alertHtml ? (opts.alertHtml(vm) || '') : ''}
 
                     ${archSelect}
@@ -331,7 +347,9 @@ const SetupUI = (() => {
                     <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
                         <button class="btn btn-primary btn-sm" ${installInProgress ? 'disabled' : ''}
                                 onclick="${opts.globalName}.install()">
-                            ${installed ? (vm.hasUpdate ? 'Обновить' : 'Переустановить') : 'Установить'}
+                            ${extras.selectedTag()
+                                ? 'Установить выбранную версию'
+                                : (installed ? (vm.hasUpdate ? 'Обновить' : 'Переустановить') : 'Установить')}
                         </button>
                         ${installed ? `
                         <button class="btn btn-ghost btn-sm" ${installInProgress ? 'disabled' : ''}
@@ -341,6 +359,8 @@ const SetupUI = (() => {
                     </div>
 
                     ${progressHtml(st.installState)}
+
+                    ${extras.uploadHtml()}
                 </div>
 
                 ${!ready && !installed ? `
@@ -370,6 +390,7 @@ const SetupUI = (() => {
                 const body = opts.installPayload
                     ? (opts.installPayload(st) || {})
                     : (st.archOverride ? { arch: st.archOverride } : {});
+                Object.assign(body, extras.installBody());
                 const r = await API.post(`${opts.apiBase}/install`, body);
                 if (r && r.ok && !r.in_progress) {
                     Toast.success(`${opts.binaryLabel} ${r.version || ''} установлен`);
@@ -401,9 +422,273 @@ const SetupUI = (() => {
         return {
             render, destroy, refresh,
             install, uninstall, onArchChange,
+            extras,
         };
     }
 
     return { create, environmentCardHtml, progressHtml,
              normalizeVer, verEqual, esc, escAttr };
+})();
+
+/**
+ * InstallExtras — под-компонент раздела установки: выбор версии из
+ * списка релизов (последняя — по умолчанию), транспорт скачивания
+ * (напрямую / awg / sing-box / mihomo) и установка из локального файла.
+ *
+ * Используется SetupUI (sing-box, mihomo) и awg_setup.js (свой layout):
+ * хозяин вставляет `optionsHtml()` и `uploadHtml()` в свою вёрстку,
+ * передаёт `installBody()` в тело POST /install и зовёт
+ * `loadTransports()` при открытии страницы.
+ *
+ * cfg:
+ *   globalPath   — путь до экземпляра для inline-обработчиков
+ *                  ('SingboxSetupPage.extras');
+ *   apiBase      — '/api/singbox' (нужны GET /releases,
+ *                  POST /install/local);
+ *   releaseLabel — fn(release) → подпись опции (опц.);
+ *   uploadFields — [{name, label}] поля файлов (дефолт — одно 'file');
+ *   onChange     — перерисовать страницу-хозяина;
+ *   onInstalled  — после успешной локальной установки (refresh).
+ */
+const InstallExtras = (() => {
+
+    const esc = (s) => SetupUI.esc(s);
+    const escAttr = (s) => SetupUI.escAttr(s);
+
+    function create(cfg) {
+        const st = {
+            transports: null,     // null — ещё не загружены
+            transport: 'direct',
+            releases: null,
+            relState: 'idle',     // idle|loading|done|error
+            relError: '',
+            selectedTag: '',      // '' = последняя (по умолчанию)
+            files: {},            // {fieldName: File} — переживает перерисовки
+            uploading: false,
+            localOpen: false,     // раскрыт ли блок «из файла»
+        };
+        const gp = cfg.globalPath;
+        const uploadFields = cfg.uploadFields && cfg.uploadFields.length
+            ? cfg.uploadFields
+            : [{ name: 'file', label: 'Файл бинаря (tar.gz / .gz / ELF)' }];
+        const idBase = String(gp).replace(/[^\w-]/g, '-');
+
+        // ── данные ──
+
+        async function loadTransports() {
+            try {
+                const r = await API.get('/api/install/transports');
+                st.transports = (r && r.transports && r.transports.length)
+                    ? r.transports
+                    : [{ id: 'direct', kind: 'direct', label: 'Напрямую' }];
+            } catch (_) {
+                st.transports = [{ id: 'direct', kind: 'direct', label: 'Напрямую' }];
+            }
+            if (!st.transports.some(t => t.id === st.transport)) {
+                st.transport = 'direct';
+            }
+            cfg.onChange && cfg.onChange();
+        }
+
+        async function loadReleases(force) {
+            st.relState = 'loading';
+            st.relError = '';
+            cfg.onChange && cfg.onChange();
+            try {
+                const q = [];
+                if (st.transport && st.transport !== 'direct') {
+                    q.push('transport=' + encodeURIComponent(st.transport));
+                }
+                if (force) q.push('force=1');
+                const r = await API.get(cfg.apiBase + '/releases'
+                                        + (q.length ? '?' + q.join('&') : ''));
+                if (r && r.ok) {
+                    st.releases = r.releases || [];
+                    st.relState = 'done';
+                } else {
+                    st.relState = 'error';
+                    st.relError = (r && r.error) || 'не удалось получить список релизов';
+                }
+            } catch (e) {
+                st.relState = 'error';
+                st.relError = e.message;
+            }
+            cfg.onChange && cfg.onChange();
+        }
+
+        // ── обработчики ──
+
+        function onTransportChange(v) {
+            st.transport = v || 'direct';
+            cfg.onChange && cfg.onChange();
+        }
+        function onTagChange(v) {
+            st.selectedTag = v || '';
+            cfg.onChange && cfg.onChange();
+        }
+        function onFileChange(name, inputEl) {
+            const f = inputEl && inputEl.files && inputEl.files[0];
+            if (f) st.files[name] = f;
+            cfg.onChange && cfg.onChange();
+        }
+        function onLocalToggle(open) {
+            st.localOpen = !!open;   // без onChange — иначе цикл перерисовки
+        }
+
+        // ── что уходит в POST /install ──
+
+        function installBody() {
+            const b = {};
+            if (st.selectedTag) b.tag = st.selectedTag;
+            if (st.transport && st.transport !== 'direct') b.transport = st.transport;
+            return b;
+        }
+        function selectedTag() { return st.selectedTag; }
+
+        // ── html: версия + транспорт ──
+
+        function defaultReleaseLabel(r) {
+            const date = (r.published_at || '').slice(0, 10);
+            return (r.tag || '')
+                + (r.prerelease ? ' (предрелиз)' : '')
+                + (date ? ' — ' + date : '');
+        }
+
+        function versionRowHtml() {
+            if (st.relState === 'idle') {
+                return `Версия: <strong>последняя</strong>
+                    <a href="#" style="font-size:12px;"
+                       onclick="${gp}.loadReleases(); return false;">выбрать другую…</a>`;
+            }
+            if (st.relState === 'loading') {
+                return `Версия: получаю список релизов…
+                    <span class="spinner spinner-inline"></span>`;
+            }
+            if (st.relState === 'error') {
+                return `Версия: <strong>последняя</strong>
+                    <span style="color:#e58; font-size:11px;">список релизов недоступен: ${esc(st.relError)}</span>
+                    <a href="#" style="font-size:12px;"
+                       onclick="${gp}.loadReleases(true); return false;">повторить</a>`;
+            }
+            const labelFn = cfg.releaseLabel || defaultReleaseLabel;
+            const options = [`<option value="">Последняя (по умолчанию)</option>`]
+                .concat((st.releases || []).map(r =>
+                    `<option value="${escAttr(r.tag)}" ${r.tag === st.selectedTag ? 'selected' : ''}>
+                        ${esc(labelFn(r))}
+                     </option>`));
+            const empty = !(st.releases || []).length;
+            return `Версия:
+                <select class="form-input" style="display:inline-block; width:auto; max-width:340px;"
+                        onchange="${gp}.onTagChange(this.value)">
+                    ${options.join('')}
+                </select>
+                ${empty ? '<span class="text-muted" style="font-size:11px;">в репозитории только текущий релиз</span>' : ''}
+                ${st.selectedTag ? '<span style="color:#fb8; font-size:11px;">будет установлена выбранная версия, не последняя</span>' : ''}`;
+        }
+
+        function transportRowHtml() {
+            const list = st.transports;
+            if (!list || list.length <= 1) return '';   // только «напрямую»
+            return `<div style="margin-top:6px;">
+                Качать через:
+                <select class="form-input" style="display:inline-block; width:auto; max-width:340px;"
+                        onchange="${gp}.onTransportChange(this.value)">
+                    ${list.map(t =>
+                        `<option value="${escAttr(t.id)}" title="${escAttr(t.detail || '')}"
+                                 ${t.id === st.transport ? 'selected' : ''}>${esc(t.label)}</option>`
+                    ).join('')}
+                </select>
+                ${st.transport !== 'direct'
+                    ? '<span class="text-muted" style="font-size:11px;">скачивание и проверка релизов пойдут через выбранный туннель/прокси</span>'
+                    : ''}
+            </div>`;
+        }
+
+        function optionsHtml() {
+            return `<div style="font-size:13px;">
+                <div>${versionRowHtml()}</div>
+                ${transportRowHtml()}
+            </div>`;
+        }
+
+        // ── html: установка из файла ──
+
+        function uploadHtml() {
+            const rows = uploadFields.map(f => `
+                <div style="margin-top:6px;">
+                    <label class="form-label" style="font-size:12px;">${esc(f.label)}</label>
+                    <input type="file" id="${idBase}-f-${escAttr(f.name)}"
+                           onchange="${gp}.onFileChange('${escAttr(f.name)}', this)">
+                    ${st.files[f.name]
+                        ? `<span class="text-muted" style="font-size:11px;">выбран: ${esc(st.files[f.name].name)}</span>`
+                        : ''}
+                </div>`).join('');
+            return `
+                <details style="margin-top:12px;" ${st.localOpen ? 'open' : ''}
+                         ontoggle="${gp}.onLocalToggle(this.open)">
+                    <summary style="cursor:pointer; font-size:13px;">
+                        Установить из локального файла…
+                    </summary>
+                    <div class="text-muted" style="font-size:12px; margin-top:6px;">
+                        Для устройств без доступа к GitHub: скачайте релиз на
+                        компьютер и загрузите сюда — tar.gz / .gz из релиза
+                        или уже распакованный бинарь.
+                    </div>
+                    ${rows}
+                    <button class="btn btn-sm" style="margin-top:8px;"
+                            ${st.uploading ? 'disabled' : ''}
+                            onclick="${gp}.upload()">
+                        ${st.uploading
+                            ? 'Загрузка и установка… <span class="spinner spinner-inline"></span>'
+                            : 'Установить из файла'}
+                    </button>
+                </details>`;
+        }
+
+        // ── загрузка файла ──
+
+        async function upload() {
+            const fd = new FormData();
+            let any = false;
+            for (const f of uploadFields) {
+                const el = document.getElementById(`${idBase}-f-${f.name}`);
+                const file = (el && el.files && el.files[0]) || st.files[f.name];
+                if (file) { fd.append(f.name, file); any = true; }
+            }
+            if (!any) { Toast.error('Выберите файл'); return; }
+            st.uploading = true;
+            st.localOpen = true;
+            cfg.onChange && cfg.onChange();
+            try {
+                const resp = await fetch(cfg.apiBase + '/install/local',
+                                         { method: 'POST', body: fd });
+                let r = null;
+                try { r = await resp.json(); } catch (_) { /* не JSON */ }
+                if (r && r.ok) {
+                    Toast.success(r.message
+                        || ('Установлено' + (r.version ? ' (' + r.version + ')' : '')));
+                    if (r.warning) Toast.info(r.warning);
+                    st.files = {};
+                    cfg.onInstalled && cfg.onInstalled();
+                } else {
+                    Toast.error((r && (r.error || r.message))
+                        || `Ошибка установки (HTTP ${resp.status})`);
+                }
+            } catch (e) {
+                Toast.error(e.message);
+            }
+            st.uploading = false;
+            cfg.onChange && cfg.onChange();
+        }
+
+        return {
+            st,
+            loadTransports, loadReleases,
+            onTransportChange, onTagChange, onFileChange, onLocalToggle,
+            installBody, selectedTag,
+            optionsHtml, uploadHtml, upload,
+        };
+    }
+
+    return { create };
 })();

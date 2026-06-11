@@ -25,7 +25,7 @@ class TestResolveLatestTagPaginated(unittest.TestCase):
         page1 = [_rel("v0.%d.0" % i) for i in range(100)]
         page2 = [_rel("v0.0.1"), _rel("singbox-bin-v1.14.0")]
 
-        def fake_json(url, timeout=15):
+        def fake_json(url, timeout=15, transport=""):
             if url.endswith("page=1"):
                 return page1
             if url.endswith("page=2"):
@@ -46,7 +46,7 @@ class TestResolveLatestTagPaginated(unittest.TestCase):
             "manual-sb": {"sing_box": {"version": "1.14"}},
         }
 
-        def fake_json(url, timeout=15):
+        def fake_json(url, timeout=15, transport=""):
             if "/releases?per_page" in url:
                 return page1 if url.endswith("page=1") else []
             for tag, man in manifests.items():
@@ -61,7 +61,7 @@ class TestResolveLatestTagPaginated(unittest.TestCase):
 
     def test_raises_when_none(self):
         with mock.patch("core.singbox_installer._http_json",
-                        side_effect=lambda url, timeout=15:
+                        side_effect=lambda url, timeout=15, transport="":
                         [_rel("v1.0.0")] if url.endswith("page=1") else []):
             with self.assertRaises(RuntimeError):
                 self.inst._resolve_latest_tag()

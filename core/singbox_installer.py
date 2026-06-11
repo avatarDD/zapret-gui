@@ -41,17 +41,20 @@ INSTALLED_STATE_FILE_FALLBACK = "/var/lib/zapret-gui/singbox-installed.json"
 # ─────── http ───────
 
 def _http_get(url: str, accept: str = "application/json",
-              timeout: int = HTTP_TIMEOUT):
-    req = urllib.request.Request(
-        url, headers={
+              timeout: int = HTTP_TIMEOUT, transport: str = ""):
+    from core.binary_installer import resolve_url
+    from core.download_transport import urlopen_via
+    return urlopen_via(
+        resolve_url(url), transport=transport, timeout=timeout,
+        headers={
             "Accept":     accept,
             "User-Agent": "zapret-gui/singbox-installer",
         })
-    return urllib.request.urlopen(req, timeout=timeout)
 
 
-def _http_json(url: str, timeout: int = HTTP_TIMEOUT):
-    with _http_get(url, accept="application/json", timeout=timeout) as r:
+def _http_json(url: str, timeout: int = HTTP_TIMEOUT, transport: str = ""):
+    with _http_get(url, accept="application/json", timeout=timeout,
+                   transport=transport) as r:
         return json.loads(r.read().decode("utf-8", errors="replace"))
 
 
@@ -102,6 +105,8 @@ class SingboxInstaller:
         self._progress = {"status": "idle", "progress": 0, "message": ""}
         self._manifest_cache = None
         self._manifest_at    = 0
+        self._releases_cache = None     # список релизов для выбора версии
+        self._releases_at    = 0
 
     # ─── progress ───
 
@@ -120,7 +125,7 @@ class SingboxInstaller:
 
     # ─── manifest ───
 
-    def _list_all_releases(self) -> list:
+    def _list_all_releases(self, transport: str = "") -> list:
         """
         Все релизы репозитория с пагинацией. Не зависим от номера
         страницы: проходим по страницам, пока они не кончатся. Так
@@ -132,7 +137,7 @@ class SingboxInstaller:
             url = ("%s/repos/%s/releases?per_page=100&page=%d"
                    % (GITHUB_API, GITHUB_REPO, page))
             try:
-                data = _http_json(url)
+                data = _http_json(url, transport=transport)
             except (urllib.error.URLError, urllib.error.HTTPError,
                     OSError) as e:
                 if not out:
@@ -145,7 +150,40 @@ class SingboxInstaller:
                 break
         return out
 
-    def _resolve_latest_tag(self) -> str:
+    def list_releases(self, transport: str = "",
+                      force: bool = False) -> dict:
+        """
+        Релизы с бинарниками sing-box (тэги singbox-bin-*) для выбора
+        версии при установке. manual-* сюда не попадают: чтобы понять,
+        чей у них manifest, пришлось бы качать каждый — а опция
+        «Последняя» и так умеет manual-фолбэк. Кэш 5 минут.
+        """
+        now = time.time()
+        with self._lock:
+            if (self._releases_cache and not force
+                    and (now - self._releases_at) < 300):
+                return self._releases_cache
+        data = self._list_all_releases(transport=transport)
+        rels = []
+        for rel in data:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            tag = rel.get("tag_name") or ""
+            if not tag.startswith(RELEASE_TAG_PREFIX):
+                continue
+            rels.append({
+                "tag":          tag,
+                "version":      tag[len(RELEASE_TAG_PREFIX):].lstrip("v"),
+                "prerelease":   bool(rel.get("prerelease")),
+                "published_at": rel.get("published_at") or "",
+            })
+        out = {"ok": True, "releases": rels}
+        with self._lock:
+            self._releases_cache = out
+            self._releases_at = now
+        return out
+
+    def _resolve_latest_tag(self, transport: str = "") -> str:
         """
         Найти самый свежий релиз с бинарниками sing-box в нашем репо.
 
@@ -159,7 +197,7 @@ class SingboxInstaller:
         Фильтруем по имени тэга и пагинируем — НЕ зависим от того, на
         какой странице лежит релиз.
         """
-        data = self._list_all_releases()
+        data = self._list_all_releases(transport=transport)
         if not isinstance(data, list):
             raise RuntimeError("Не массив релизов")
 
@@ -183,7 +221,7 @@ class SingboxInstaller:
             man_url = ("https://github.com/%s/releases/download/%s/%s" %
                        (GITHUB_REPO, tag, MANIFEST_ASSET))
             try:
-                man = _http_json(man_url, timeout=20)
+                man = _http_json(man_url, timeout=20, transport=transport)
             except (urllib.error.URLError, urllib.error.HTTPError, OSError):
                 continue
             if isinstance(man, dict) and (man.get("sing_box")
@@ -192,7 +230,8 @@ class SingboxInstaller:
 
         raise RuntimeError("Не найден релиз с тэгом %s*" % RELEASE_TAG_PREFIX)
 
-    def get_manifest(self, tag: str = "", force: bool = False) -> dict:
+    def get_manifest(self, tag: str = "", force: bool = False,
+                     transport: str = "") -> dict:
         """
         Прочитать manifest.json указанного релиза (или последнего).
         Кэшируется в RAM на 5 минут.
@@ -203,13 +242,13 @@ class SingboxInstaller:
             return self._manifest_cache
 
         if not tag:
-            tag = self._resolve_latest_tag()
+            tag = self._resolve_latest_tag(transport=transport)
 
         # Manifest публикуется как файл-asset в релизе.
         url = ("https://github.com/%s/releases/download/%s/%s" %
                (GITHUB_REPO, tag, MANIFEST_ASSET))
         try:
-            data = _http_json(url, timeout=30)
+            data = _http_json(url, timeout=30, transport=transport)
         except (urllib.error.URLError, urllib.error.HTTPError,
                 OSError) as e:
             raise RuntimeError("manifest.json (%s) недоступен: %s" %
@@ -288,7 +327,8 @@ class SingboxInstaller:
 
     # ─── install ───
 
-    def install(self, arch: str = "", tag: str = "") -> dict:
+    def install(self, arch: str = "", tag: str = "",
+                transport: str = "") -> dict:
         """
         Главный метод. Скачивает manifest, выбирает архитектуру,
         делает download → verify → extract → install через
@@ -302,7 +342,7 @@ class SingboxInstaller:
                               "message": "Подготовка"}
 
         try:
-            return self._do_install(arch=arch, tag=tag)
+            return self._do_install(arch=arch, tag=tag, transport=transport)
         finally:
             # При успехе перезагружаем кэш detector'а.
             try:
@@ -310,10 +350,12 @@ class SingboxInstaller:
             except Exception:
                 pass
 
-    def _do_install(self, arch: str = "", tag: str = "") -> dict:
+    def _do_install(self, arch: str = "", tag: str = "",
+                    transport: str = "") -> dict:
         self._set_progress("manifest", 5, "Получаем manifest.json")
         try:
-            manifest = self.get_manifest(tag=tag, force=True)
+            manifest = self.get_manifest(tag=tag, force=True,
+                                         transport=transport)
         except Exception as e:
             self._set_progress("error", 0, str(e))
             return {"ok": False, "error": str(e)}
@@ -366,6 +408,7 @@ class SingboxInstaller:
                 progress_cb=lambda stage, pct, msg:
                     self._set_progress(stage, pct, msg),
                 label="sing-box %s" % version,
+                transport=transport,
             )
 
         if not res.get("ok"):
@@ -382,6 +425,67 @@ class SingboxInstaller:
                  source="singbox_installer")
         return {"ok": True, "version": version, "path": target_binary,
                 "arch": arch, "tag": manifest.get("tag", "")}
+
+    # ─── локальная установка (файл от пользователя, без сети) ───
+
+    def install_local(self, src_path: str, orig_name: str = "") -> dict:
+        """
+        Установить sing-box из локально загруженного файла (tar.gz из
+        релиза / .gz / голый ELF). Для устройств вообще без интернета.
+        """
+        with self._lock:
+            if self._progress["status"] in ("downloading", "installing",
+                                            "extracting", "verifying"):
+                return {"ok": False, "error": "Установка уже идёт"}
+            self._progress = {"status": "starting", "progress": 0,
+                              "message": "Локальная установка"}
+        try:
+            return self._do_install_local(src_path, orig_name)
+        finally:
+            try:
+                get_singbox_detector().get_environment_report(force=True)
+            except Exception:
+                pass
+
+    def _do_install_local(self, src_path: str, orig_name: str = "") -> dict:
+        from core.binary_installer import workbase, prepare_local_binary
+        from core.singbox_platform import detect_singbox_platform
+        platform = detect_singbox_platform()
+        target_binary = platform.binary_path()
+
+        self._set_progress("extracting", 30, "Распаковка локального файла")
+        with tempfile.TemporaryDirectory(
+                prefix="singbox-local-",
+                dir=workbase(target_binary)) as workdir:
+            prep = prepare_local_binary(src_path, "sing-box", workdir)
+            if not prep.get("ok"):
+                self._set_progress("error", 0, prep.get("error", "файл"))
+                return {"ok": False, "error": prep.get("error"),
+                        "stage": "extract"}
+            self._set_progress("installing", 80, "Установка sing-box")
+            ins = install_binary(prep["path"], target_binary)
+            if not ins.get("ok"):
+                self._set_progress("error", 0, ins.get("error", "установка"))
+                return {"ok": False, "error": ins.get("error"),
+                        "stage": "install"}
+
+        version = ""
+        try:
+            version = (get_singbox_detector().detect_binary()
+                       .get("version") or "")
+        except Exception:
+            pass
+        warning = "" if version else (
+            "Бинарь установлен, но не отвечает на запрос версии — "
+            "проверьте, что архитектура совпадает с устройством")
+        _save_state(tag="local", version=version, path=target_binary)
+        self._set_progress("done", 100,
+                           "Установлено sing-box из локального файла")
+        log.info("sing-box установлен из локального файла %s → %s"
+                 % (orig_name or src_path, target_binary),
+                 source="singbox_installer")
+        return {"ok": True, "version": version, "path": target_binary,
+                "tag": "local", "source": "local", "warning": warning}
 
     # ─── uninstall ───
 

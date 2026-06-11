@@ -176,6 +176,23 @@ def register(app):
         force = request.query.get("refresh") in ("1", "true", "yes")
         return network_env.detect(force=force)
 
+    @app.route("/api/install/transports")
+    def api_install_transports():
+        """
+        Доступные транспорты скачивания (через что качать релизы):
+        напрямую + активные AWG-интерфейсы + запущенные sing-box/mihomo
+        конфиги с локальным mixed/http-портом. Общий для всех
+        разделов установки.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.download_transport import list_transports
+            return list_transports()
+        except Exception as e:
+            return {"ok": False, "error": str(e),
+                    "transports": [{"id": "direct", "kind": "direct",
+                                    "label": "Напрямую"}]}
+
     @app.route("/api/interfaces")
     def api_interfaces():
         """

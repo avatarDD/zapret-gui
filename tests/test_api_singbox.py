@@ -54,6 +54,22 @@ class TestSingboxAPI(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertIn("progress", r)
 
+    def test_releases(self):
+        from unittest import mock
+        fake = {"ok": True, "releases": [
+            {"tag": "singbox-bin-v1.12.4", "version": "1.12.4"}]}
+        with mock.patch(
+                "core.singbox_installer.SingboxInstaller.list_releases",
+                return_value=fake):
+            r = self.client.get_json("/api/singbox/releases")
+        self.assertEqual(r["_status"], 200)
+        self.assertEqual(r["releases"][0]["version"], "1.12.4")
+
+    def test_install_local_requires_file(self):
+        r = self.client.post_json("/api/singbox/install/local", {})
+        self.assertEqual(r["_status"], 400)
+        self.assertFalse(r["ok"])
+
     def test_version(self):
         # На не-установленной системе version падает, но не должен
         # ронять сервер — отдаёт ok=False с error.

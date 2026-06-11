@@ -8,8 +8,11 @@ REST API для sing-box.
   POST   /api/singbox/environment/refresh   — сбросить кэш
 
   GET    /api/singbox/manifest              — manifest.json релиза
+  GET    /api/singbox/releases              — релизы singbox-bin-* (?transport=)
   GET    /api/singbox/install/status        — прогресс текущей операции
   POST   /api/singbox/install               — установить бинарь
+                                              (body: arch?, tag?, transport?)
+  POST   /api/singbox/install/local         — multipart: file (tar.gz/gz/ELF)
   POST   /api/singbox/uninstall             — удалить бинарь
   GET    /api/singbox/version               — установленная версия + апдейт
 
@@ -418,6 +421,20 @@ def register(app):
             response.status = 500
             return {"ok": False, "error": str(e)}
 
+    @app.route("/api/singbox/releases")
+    def singbox_releases():
+        """Список релизов singbox-bin-* для выбора версии."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.singbox_installer import get_singbox_installer
+        transport = (request.params.get("transport") or "").strip()
+        force = request.params.get("force") in ("1", "true", "True")
+        try:
+            return get_singbox_installer().list_releases(
+                transport=transport, force=force)
+        except Exception as e:
+            response.status = 502
+            return {"ok": False, "error": str(e)}
+
     @app.route("/api/singbox/install/status")
     def singbox_install_status():
         response.content_type = "application/json; charset=utf-8"
@@ -438,6 +455,7 @@ def register(app):
             body = {}
         arch = (body.get("arch") or "").strip()
         tag  = (body.get("tag")  or "").strip()
+        transport = (body.get("transport") or "").strip()
 
         from core.singbox_installer import get_singbox_installer
         installer = get_singbox_installer()
@@ -447,7 +465,8 @@ def register(app):
 
         def _run():
             try:
-                result_box["result"] = installer.install(arch=arch, tag=tag)
+                result_box["result"] = installer.install(
+                    arch=arch, tag=tag, transport=transport)
             except Exception as e:
                 result_box["result"] = {"ok": False, "error": str(e)}
             finally:
@@ -460,6 +479,16 @@ def register(app):
                                                  "error": "no result"}
         return {"ok": True, "in_progress": True,
                 "progress": installer.get_operation_status()}
+
+    @app.route("/api/singbox/install/local", method="POST")
+    def singbox_install_local():
+        """Установка из локального файла: multipart-поле `file`."""
+        response.content_type = "application/json; charset=utf-8"
+        from api._install_upload import handle_single_upload
+        from core.singbox_installer import get_singbox_installer
+        return handle_single_upload(
+            lambda path, name: get_singbox_installer().install_local(
+                path, orig_name=name))
 
     @app.route("/api/singbox/uninstall", method="POST")
     def singbox_uninstall():
