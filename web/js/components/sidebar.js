@@ -106,11 +106,37 @@ const Sidebar = (() => {
         return (item.children || []).some(c => c.id === currentPage);
     }
 
+    // Брейкпоинт мобильного режима — синхронизирован с @media в style.css.
+    function _isMobile() {
+        return window.innerWidth <= 768;
+    }
+
+    // Открыть/закрыть выезжающее меню (на мобильных). Затемнение-backdrop
+    // показывается чистым CSS по классу .open, тут только класс и aria.
+    function _setOpen(open) {
+        const sidebar = document.getElementById('sidebar');
+        if (!sidebar) return;
+        sidebar.classList.toggle('open', open);
+        const burger = document.getElementById('mobile-burger');
+        if (burger) burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
     function _navigate(pageId) {
         window.location.hash = pageId;
-        if (window.innerWidth <= 768) {
-            document.getElementById('sidebar')?.classList.remove('open');
+        if (_isMobile()) _setOpen(false);
+    }
+
+    // Заголовок страницы для мобильной шапки: «Раздел» или
+    // «Родитель · Подраздел» для дочерних пунктов дерева.
+    function _pageTitle(pageId) {
+        for (const group of NAV_GROUPS) {
+            for (const item of group.items) {
+                if (item.id === pageId) return item.label;
+                const child = (item.children || []).find(c => c.id === pageId);
+                if (child) return `${item.label} · ${child.label}`;
+            }
         }
+        return 'Zapret GUI';
     }
 
     function _renderLeaf(parentEl, item, isChild) {
@@ -203,27 +229,46 @@ const Sidebar = (() => {
 
     function setCurrentPage(pageId) {
         currentPage = pageId;
+        // Название раздела в мобильной шапке.
+        const title = document.getElementById('mobile-topbar-title');
+        if (title) title.textContent = _pageTitle(pageId);
         // Полная перерисовка — чтобы активная ветка дерева авто-раскрылась
         // (например, при переходе по прямой ссылке на дочернюю страницу).
         render();
     }
 
     function initMobileToggle() {
-        const toggle = document.getElementById('sidebar-toggle');
         const sidebar = document.getElementById('sidebar');
-        if (!toggle || !sidebar) return;
+        if (!sidebar) return;
+        const toggle = () => _setOpen(!sidebar.classList.contains('open'));
 
-        toggle.addEventListener('click', (e) => {
-            e.stopPropagation();
-            sidebar.classList.toggle('open');
+        // Бургер в мобильной шапке — открыть/закрыть меню.
+        document.getElementById('mobile-burger')
+            ?.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+
+        // Крестик в шапке самого меню (виден только на мобильных).
+        document.getElementById('sidebar-toggle')
+            ?.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+
+        // Тап по затемнению — закрыть.
+        document.getElementById('sidebar-backdrop')
+            ?.addEventListener('click', () => _setOpen(false));
+
+        // Esc — закрыть открытое мобильное меню.
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && _isMobile()
+                && sidebar.classList.contains('open')) {
+                _setOpen(false);
+            }
         });
 
-        // Закрытие при клике вне sidebar на мобильных
+        // Страховка: клик вне sidebar на мобильных закрывает его
+        // (обычно тап перехватывает backdrop, но он может быть скрыт
+        // нестандартными стилями).
         document.addEventListener('click', (e) => {
-            if (window.innerWidth <= 768 &&
-                sidebar.classList.contains('open') &&
-                !sidebar.contains(e.target)) {
-                sidebar.classList.remove('open');
+            if (_isMobile() && sidebar.classList.contains('open')
+                && !sidebar.contains(e.target)) {
+                _setOpen(false);
             }
         });
     }

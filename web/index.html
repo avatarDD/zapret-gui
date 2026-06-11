@@ -2,7 +2,9 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <!-- Масштабирование не запрещаем: pinch-zoom полезен на плотных таблицах;
+         автозум iOS при фокусе полей убран через font-size:16px (pointer:coarse). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0f1117">
     <title>Zapret GUI</title>
     <!-- Применяем тему до отрисовки, чтобы не было «вспышки» тёмного. -->
@@ -19,6 +21,20 @@
 </head>
 <body>
     <div id="app">
+        <!-- Мобильная шапка: бургер + название раздела (видна только на ≤768px) -->
+        <header id="mobile-topbar" class="mobile-topbar">
+            <button id="mobile-burger" class="mobile-burger" aria-label="Открыть меню"
+                    aria-controls="sidebar" aria-expanded="false">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="3" y1="12" x2="21" y2="12"/>
+                    <line x1="3" y1="6" x2="21" y2="6"/>
+                    <line x1="3" y1="18" x2="21" y2="18"/>
+                </svg>
+            </button>
+            <span id="mobile-topbar-title" class="mobile-topbar-title">Zapret GUI</span>
+        </header>
+
         <!-- Sidebar -->
         <nav id="sidebar" class="sidebar">
             <div class="sidebar-header">
@@ -32,12 +48,13 @@
                     <span class="sidebar-title-text">Zapret</span>
                     <span class="sidebar-subtitle">Web GUI</span>
                 </div>
-                <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Меню">
+                <!-- На мобильных меню видно только открытым, так что эта
+                     кнопка всегда означает «закрыть» — крестик. -->
+                <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Закрыть меню">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="3" y1="12" x2="21" y2="12"/>
-                        <line x1="3" y1="6" x2="21" y2="6"/>
-                        <line x1="3" y1="18" x2="21" y2="18"/>
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
                     </svg>
                 </button>
             </div>
@@ -57,6 +74,11 @@
                         onclick="Theme.toggle()"></button>
             </div>
         </nav>
+
+        <!-- Затемнение контента под открытым мобильным меню
+             (должно идти сразу за sidebar — показывается CSS-селектором
+             .sidebar.open + .sidebar-backdrop) -->
+        <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
 
         <!-- Основной контент -->
         <main id="content" class="content">
