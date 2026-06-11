@@ -74,9 +74,9 @@
 | Параметр | Значение |
 |----------|----------|
 | Python | 3.11+ (`python3-light` в Entware) |
-| Зависимость | Bottle (`opkg install python3-bottle` или `pip3 install bottle`) |
+| Зависимость | нет — Bottle встроен (`vendor/bottle.py`; системный `python3-bottle`, если стоит, приоритетен) |
 | RAM | ~20–25 МБ |
-| Flash | ~500 КБ (+ python3-light ~5 МБ) |
+| Flash | ~700 КБ (+ python3-light ~5 МБ) |
 | Архитектуры | mipsel, mips, arm64, armv7, x86_64, riscv64 |
 
 ---
@@ -110,7 +110,6 @@ opkg install zapret-gui-openwrt.ipk
 ```bash
 wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-linux.tar.gz
 tar xzf zapret-gui-linux.tar.gz && cd zapret-gui
-pip3 install bottle
 python3 app.py --host 0.0.0.0 --port 8080
 ```
 
@@ -123,10 +122,11 @@ wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/main/install.sh 
 ### Вариант 3: вручную из репозитория
 ```bash
 cd /opt && git clone https://github.com/avatarDD/zapret-gui.git && cd zapret-gui
-opkg install python3-light python3-bottle
+opkg install python3-light
 python3 app.py --host 0.0.0.0 --port 8080
 ```
-> Если `python3-bottle` нет в репозитории: `opkg install python3-pip && python3 -m pip install bottle`.
+> Bottle ставить не нужно — он встроен (`vendor/bottle.py`) и подключается
+> автоматически, когда системного нет.
 
 ### Если GitHub заблокирован
 

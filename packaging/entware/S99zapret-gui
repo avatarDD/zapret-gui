@@ -51,9 +51,11 @@ start() {
         return 1
     fi
 
-    # Проверяем наличие bottle
-    if ! python3 -c "import bottle" 2>/dev/null; then
-        echo "ОШИБКА: python3-bottle не найден. Установите: opkg install python3-bottle"
+    # Проверяем наличие bottle: системный либо встроенный (vendor/)
+    if ! python3 -c "import bottle" 2>/dev/null \
+       && [ ! -f "$APP_DIR/vendor/bottle.py" ]; then
+        echo "ОШИБКА: bottle не найден (нет ни системного, ни $APP_DIR/vendor/bottle.py)."
+        echo "Переустановите zapret-gui или: opkg install python3-bottle"
         return 1
     fi
 
@@ -165,11 +167,13 @@ check() {
         OK=false
     fi
 
-    # Bottle
-    if python3 -c "import bottle; print('  ✓ bottle', bottle.__version__)" 2>/dev/null; then
+    # Bottle: системный либо встроенный (vendor/)
+    if python3 -c "import bottle; print('  ✓ bottle', bottle.__version__, '(системный)')" 2>/dev/null; then
         true
+    elif [ -f "$APP_DIR/vendor/bottle.py" ]; then
+        echo "  ✓ bottle: встроенный (vendor/)"
     else
-        echo "  ✗ python3-bottle не установлен"
+        echo "  ✗ bottle не найден (ни системный, ни vendor/)"
         OK=false
     fi
 

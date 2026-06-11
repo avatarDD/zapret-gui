@@ -85,24 +85,14 @@ if [ -n "$WAS_RUNNING" ]; then
         || echo "  ⚠ Не удалось запустить"
 fi
 
-# Проверяем и устанавливаем bottle
-if ! python3 -c "import bottle" 2>/dev/null; then
-    echo "  Установка bottle (python3-bottle недоступен в opkg)..."
-    if python3 -m pip install bottle --quiet 2>/dev/null; then
-        echo "  ✓ bottle установлен через pip"
-    else
-        SITE=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null) || true
-        if [ -z "$SITE" ]; then
-            SITE=$(python3 -c "import site; print(site.getusersitepackages())" 2>/dev/null) || true
-        fi
-        if [ -n "$SITE" ] && mkdir -p "$SITE" 2>/dev/null && \
-           wget -q -O "$SITE/bottle.py" \
-               "https://raw.githubusercontent.com/bottlepy/bottle/master/bottle.py" 2>/dev/null; then
-            echo "  ✓ bottle.py загружен в $SITE"
-        else
-            echo "  ⚠ Установите вручную: python3 -m pip install bottle"
-        fi
-    fi
+# Bottle встроен в пакет (vendor/bottle.py) — сетевая установка не
+# нужна. Системный python3-bottle, если стоит, имеет приоритет.
+if python3 -c "import bottle" 2>/dev/null; then
+    echo "  ✓ bottle: системный"
+elif [ -f "$APP_DIR/vendor/bottle.py" ]; then
+    echo "  ✓ bottle: встроенный (vendor/)"
+else
+    echo "  ⚠ bottle не найден (нет ни системного, ни $APP_DIR/vendor/bottle.py)"
 fi
 
 echo ""

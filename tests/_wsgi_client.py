@@ -140,7 +140,14 @@ def _parse_response(status: str, body: bytes) -> dict:
 # ─── helper для построения test-app ───
 
 def build_test_app():
-    """Создать чистое bottle-приложение с зарегистрированными API."""
+    """Создать чистое bottle-приложение с зарегистрированными API.
+
+    ensure_bottle(): в dev-окружении системного bottle может не быть —
+    тогда используется встроенный vendor/bottle.py, и api-тесты
+    работают без pip install.
+    """
+    from core.bottle_vendor import ensure_bottle
+    ensure_bottle()
     from bottle import Bottle
     from api import register_routes
     app = Bottle()

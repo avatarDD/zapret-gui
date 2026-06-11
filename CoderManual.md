@@ -32,7 +32,7 @@
 | WSGI-сервер | свой `ThreadedWSGIServer` (многопоточный, ради SSE + параллельных API) |
 | Фронтенд | vanilla JS (без сборки/фреймворков), hash-роутинг SPA, CSS-переменные |
 | Хранилище | один JSON `settings.json` + файлы конфигов движков на диске |
-| Зависимости | только `bottle` (опц. `pyyaml`; есть собственный YAML-fallback) |
+| Зависимости | только `bottle`, встроен в репо (`vendor/bottle.py` — фолбэк, когда нет системного; см. `core/bottle_vendor.py`); опц. `pyyaml` — есть собственный YAML-fallback |
 
 **Принципы, которые стоит сохранять:**
 
@@ -433,7 +433,9 @@ make lint
 - **Чистую логику выноси в отдельные функции** — её и тестируем без I/O
   (`evaluate_conflicts`, `merge_preserving_manual`, `failover.decide`,
   `proxy_tester.parse_delay/build_test_config`).
-- Зависимости для тестов: `pip install bottle pyyaml pytest`.
+- Зависимости для тестов: ставить ничего не нужно — bottle встроен
+  (`vendor/bottle.py`, подключается `ensure_bottle()` в
+  `tests/_wsgi_client.py`). Опционально: `pip install pyyaml pytest`.
 
 ---
 

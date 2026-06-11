@@ -3,6 +3,12 @@
 Регистрация всех API-маршрутов Bottle-приложения.
 """
 
+# Модули api/* импортируют bottle на уровне модуля. Если системного
+# bottle нет (dev-окружение, установка без python3-bottle) — здесь, при
+# первом же `import api.<...>`, подключается встроенный vendor/bottle.py.
+from core.bottle_vendor import ensure_bottle
+ensure_bottle()
+
 
 def register_routes(app):
     """Зарегистрировать все API-маршруты в Bottle-приложении."""

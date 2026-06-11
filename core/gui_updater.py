@@ -273,8 +273,11 @@ class GuiUpdater:
             # core/ с триггерами на z2k-*.lua, но сами файлы остаются от
             # предыдущей версии (или отсутствуют), и nfqws2 падает с
             # «LUA ERROR: invalid failure detector function ...» (issue #144).
+            # vendor/ — встроенный bottle.py: без него свежая установка
+            # (или система, где удалили python3-bottle) не запустится.
             dirs_to_update = [
                 "api", "core", "web", "config", "catalogs", "data", "import",
+                "vendor",
             ]
             files_to_update = ["app.py"]
 

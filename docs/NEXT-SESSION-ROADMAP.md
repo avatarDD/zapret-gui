@@ -14,9 +14,9 @@ AmneziaWG (AWG), sing-box, mihomo, маршрутизацией (policy routing)
 - Рабочая ветка: `claude/festive-pascal-o49x2x`.
 - Язык интерфейса и комментариев — **русский**.
 - Тесты — `unittest` (pytest не установлен). Прогон: `python3 -m unittest tests.test_<name>`.
-  ВАЖНО: в dev-окружении нет модуля `bottle`, поэтому тесты, импортирующие
-  `api/*`, локально падают на импорте — это ограничение окружения, не баг.
-  Проверяй `core/*` тестами + `python3 -m py_compile` и `node --check` для JS.
+  bottle теперь встроен в репо (`vendor/bottle.py`, фолбэк через
+  `core/bottle_vendor.ensure_bottle()`) — api-тесты работают и в dev-окружении
+  без pip. Дополнительно: `python3 -m py_compile` и `node --check` для JS.
 - Каталог конфига (постоянный носитель) — где лежит `settings.json`
   (`get_config_manager().path`). На Entware обычно на USB.
 
