@@ -3,13 +3,14 @@
 GET /api/status — общий статус системы, nfqws и firewall.
 GET /api/ping  — health check.
 GET /api/interfaces — список интерфейсов + авто-определение ролей.
+GET /api/network/environment — профиль окружения (роутер / ПК с 1 NIC).
 """
 
 import os
 import re
 import subprocess
 import time
-from bottle import response
+from bottle import request, response
 
 
 def _run_cmd(args, timeout=5):
@@ -162,6 +163,18 @@ def register(app):
         """Health check."""
         response.content_type = "application/json; charset=utf-8"
         return {"ok": True, "timestamp": time.time()}
+
+    @app.route("/api/network/environment")
+    def api_network_environment():
+        """
+        Профиль сетевого окружения: роутер с LAN (Keenetic/OpenWrt или
+        generic Linux с LAN-мостом) либо обычный ПК / VPS с одной
+        сетевой картой (локальный режим). ?refresh=1 — пересканировать.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core import network_env
+        force = request.query.get("refresh") in ("1", "true", "yes")
+        return network_env.detect(force=force)
 
     @app.route("/api/interfaces")
     def api_interfaces():

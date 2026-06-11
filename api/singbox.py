@@ -1064,12 +1064,23 @@ def register(app):
             tproxy_supported = tp.tproxy_supported_cached("v4", force=force)
         else:
             tproxy_supported = backend != "none"
+        # Профиль окружения (роутер / ПК с одной NIC) — чтобы UI сразу
+        # предложил локальный режим (scope=self) на обычном Linux-ПК.
+        try:
+            from core import network_env
+            env = network_env.detect()
+            network = {"profile": env.get("profile"),
+                       "single_nic": env.get("single_nic"),
+                       "default_iface": env.get("default_iface")}
+        except Exception:
+            network = {}
         return {"ok": True,
                 "available_v4": ipt_v4,
                 "available_v6": tp.available("v6"),
                 "available_nft": nft_ok,
                 "backend": backend,
                 "tproxy_supported": tproxy_supported,
+                "network": network,
                 "settings": saved}
 
     @app.route("/api/singbox/configs/<name>/transparent-inbounds",
@@ -1077,7 +1088,9 @@ def register(app):
     def singbox_transparent_inbounds(name):
         """
         Вставить transparent-inbound'ы (redirect/tproxy/hybrid) в конфиг.
-        body: {mode, tcp_port, udp_port, dns_port, sniff}.
+        body: {mode, tcp_port, udp_port, dns_port, sniff, mark}.
+        Заодно выставляет route.default_mark (анти-петля для перехвата
+        OUTPUT: proxy_self / локальный режим).
         """
         response.content_type = "application/json; charset=utf-8"
         try:
@@ -1086,6 +1099,7 @@ def register(app):
             body = {}
         from core.singbox_manager import get_singbox_manager
         from core.singbox_config import set_transparent_inbounds, render_conf
+        from core import singbox_transparent as tp
         mgr = get_singbox_manager()
         cfg_resp = mgr.get_config(name)
         if not cfg_resp.get("ok"):
@@ -1098,7 +1112,8 @@ def register(app):
             tcp_port=int(body.get("tcp_port") or 1100),
             udp_port=int(body.get("udp_port") or 1102),
             dns_port=int(body.get("dns_port") or 0),
-            sniff=bool(body.get("sniff", True)))
+            sniff=bool(body.get("sniff", True)),
+            mark=int(body.get("mark") or tp.DEFAULT_TPROXY_MARK))
         save = mgr.save_config(name, text=render_conf(cfg))
         if not save.get("ok"):
             response.status = 500
@@ -1155,7 +1170,9 @@ def register(app):
         Поднять firewall-правила прозрачного проксирования.
         body: mode, tcp_port, udp_port, mark, table, families[],
               lan_ifaces[], server_ips[], bypass[], proxy_self,
-              dns_hijack_port, ipv6_policy.
+              dns_hijack_port, ipv6_policy,
+              scope ('forward' — LAN-клиенты роутера, 'self' — локальный
+              режим: только исходящий трафик этой машины, ПК/1 NIC).
         """
         response.content_type = "application/json; charset=utf-8"
         try:
@@ -1178,6 +1195,7 @@ def register(app):
                 proxy_self=bool(body.get("proxy_self", False)),
                 dns_hijack_port=int(body.get("dns_hijack_port") or 0),
                 ipv6_policy=(body.get("ipv6_policy") or "allow"),
+                scope=(body.get("scope") or "forward"),
             )
         except (TypeError, ValueError) as e:
             response.status = 400

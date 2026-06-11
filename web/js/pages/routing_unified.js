@@ -27,6 +27,7 @@ const RoutingUnifiedPage = (() => {
     let dnsmasqInfo = null;   // /api/routing/dnsmasq/status
     let ndmsInfo = null;      // /api/routing/ndms/status
     let environment = null;   // /api/awg/environment (платформа/firewall)
+    let netEnv = null;        // /api/network/environment (роутер / ПК 1 NIC)
     let devices = [];         // /api/devices (для выбора устройств)
     let devicesSrc = null;
     let devicesLoaded = false;
@@ -134,7 +135,8 @@ const RoutingUnifiedPage = (() => {
 
     async function loadAux() {
         try {
-            const [ifResp, listResp, cfgResp, dnResp, ndmsResp, envResp, legResp] =
+            const [ifResp, listResp, cfgResp, dnResp, ndmsResp, envResp,
+                   netResp, legResp] =
                 await Promise.all([
                     API.get('/api/routing/interfaces').catch(() => null),
                     API.get('/api/lists').catch(() => null),
@@ -142,6 +144,7 @@ const RoutingUnifiedPage = (() => {
                     API.get('/api/routing/dnsmasq/status').catch(() => null),
                     API.get('/api/routing/ndms/status').catch(() => null),
                     API.get('/api/awg/environment').catch(() => null),
+                    API.get('/api/network/environment').catch(() => null),
                     API.get('/api/unified/legacy').catch(() => null),
                 ]);
             interfaces  = (ifResp && ifResp.interfaces) || [];
@@ -150,6 +153,7 @@ const RoutingUnifiedPage = (() => {
             dnsmasqInfo = dnResp || null;
             ndmsInfo    = ndmsResp || null;
             environment = envResp || null;
+            netEnv      = netResp || null;
             legacyRules = (legResp && legResp.rules) || [];
         } catch (_) {}
     }
@@ -283,7 +287,25 @@ const RoutingUnifiedPage = (() => {
     function renderBanners() {
         const box = document.getElementById('ru-banners');
         if (!box) return;
-        box.innerHTML = legacyBannerHtml() + infraHtml();
+        box.innerHTML = legacyBannerHtml() + pcModeHtml() + infraHtml();
+    }
+
+    // Локальный режим (задача №5): ПК/VPS без LAN-ролей — правила
+    // действуют на исходящий трафик самой машины (mangle OUTPUT уже
+    // маркируется ipset/nftset-бэкендом), форвардить некого.
+    function pcModeHtml() {
+        if (!netEnv || netEnv.profile !== 'pc') return '';
+        const what = netEnv.single_nic
+            ? 'одна сетевая карта' : 'ПК/VPS без LAN';
+        return `<div style="font-size:12px; margin-bottom:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <span>🖥</span>
+            <span class="text-muted">
+                <strong>Локальный режим</strong> (${esc(what)}): правила
+                применяются к исходящему трафику этой машины — LAN-форвардинг
+                не используется, выбор устройств сети обычно не нужен.
+                ${netEnv.profile_source === 'override' ? ' Профиль задан вручную в Настройках.' : ''}
+            </span>
+        </div>`;
     }
 
     function legacyBannerHtml() {
@@ -776,6 +798,11 @@ const RoutingUnifiedPage = (() => {
             <div class="text-muted" style="font-size:11px; margin-top:4px;">
                 Устройства и DSCP работают только с туннельными методами
                 (awg/sing-box/mihomo); для direct/nfqws2 они пропускаются.
+                ${netEnv && netEnv.profile === 'pc'
+                    ? '<br>🖥 Локальный режим (ПК без LAN-клиентов): устройства' +
+                      ' обычно не нужны — домены/CIDR-правила и так действуют' +
+                      ' на трафик этой машины.'
+                    : ''}
             </div>
         `;
     }

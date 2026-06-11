@@ -161,6 +161,16 @@ const SettingsPage = (() => {
             label: 'Интерфейсы',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
             fields: [
+                { key: 'network.profile', label: 'Профиль сети', type: 'select',
+                  hint: 'Роутер — есть LAN-клиенты, их трафик форвардится (Keenetic/OpenWrt). ' +
+                        'ПК / VPS — одна сетевая карта без LAN: заворачивается исходящий трафик ' +
+                        'самой машины (локальный режим в прозрачном проксировании и маршрутизации). ' +
+                        'Авто — определяется по платформе и интерфейсам; меняйте только если детект ошибся.',
+                  options: [
+                    { value: 'auto',   label: 'Авто (определять)' },
+                    { value: 'router', label: 'Роутер (есть LAN)' },
+                    { value: 'pc',     label: 'ПК / VPS (одна сетевая карта)' },
+                ]},
                 { key: 'interfaces.wan',   label: 'WAN (IFACE_WAN)',    type: 'text', placeholder: 'Авто-определение' },
                 { key: 'interfaces.wan6',  label: 'WAN6 (IFACE_WAN6)',  type: 'text', placeholder: 'Авто-определение' },
                 { key: 'interfaces.lan',   label: 'LAN (IFACE_LAN)',    type: 'text', placeholder: 'Авто-определение' },
