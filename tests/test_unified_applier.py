@@ -12,14 +12,16 @@ from unittest import mock
 
 from core.unified.applier import (
     apply_route, remove_route, _dom_rule_id, _cidr_rule_id, _hostlist_name,
+    _dev_rule_id, _dscp_rule_id,
 )
 from core.unified.model import UnifiedRoute, Destination
 
 
-def _route(method, domains=None, cidrs=None):
+def _route(method, domains=None, cidrs=None, devices=None, dscp=None):
     return UnifiedRoute(
         name="t", method=method,
-        destination=Destination(domains=domains or [], cidrs=cidrs or []))
+        destination=Destination(domains=domains or [], cidrs=cidrs or []),
+        devices=devices or [], dscp=dscp)
 
 
 class TestApplyTunnel(unittest.TestCase):
@@ -35,6 +37,10 @@ class TestApplyTunnel(unittest.TestCase):
         self._ps = mock.patch("core.routing.storage.get_rule",
                               return_value=None)
         self._ps.start()
+        # storage.load_rules → [] (нет stale device-правил)
+        self._pl = mock.patch("core.routing.storage.load_rules",
+                              return_value=[])
+        self._pl.start()
         # без активного failover-метода
         self._pf = mock.patch("core.unified.failover.current_method",
                               return_value=None)
@@ -44,7 +50,7 @@ class TestApplyTunnel(unittest.TestCase):
         self._ph.start()
 
     def tearDown(self):
-        for p in (self._pm, self._ps, self._pf, self._ph):
+        for p in (self._pm, self._ps, self._pl, self._pf, self._ph):
             p.stop()
 
     def test_tunnel_creates_domain_and_cidr_rules(self):
@@ -75,6 +81,45 @@ class TestApplyTunnel(unittest.TestCase):
                                                   geosite=["google"]))
         res = apply_route(r)
         self.assertTrue(res["skipped_selectors"])
+
+    def test_tunnel_creates_device_and_dscp_rules(self):
+        r = _route("awg:awg0",
+                   devices=[{"ip": "192.168.1.50", "mac": "aa",
+                             "hostname": "tv"},
+                            {"ip": "192.168.1.51"}],
+                   dscp=46)
+        res = apply_route(r)
+        self.assertTrue(res["ok"])
+        added = {c.args[0].id: c.args[0]
+                 for c in self.mgr.add_rule.call_args_list}
+        self.assertIn(_dev_rule_id(r.id, "192.168.1.50"), added)
+        self.assertIn(_dev_rule_id(r.id, "192.168.1.51"), added)
+        self.assertIn(_dscp_rule_id(r.id), added)
+        dev = added[_dev_rule_id(r.id, "192.168.1.50")]
+        self.assertEqual(dev.type_name, "device")
+        self.assertEqual(dev.source_ip, "192.168.1.50")
+        self.assertEqual(dev.hostname, "tv")
+        self.assertEqual(dev.target_iface, "awg0")
+        q = added[_dscp_rule_id(r.id)]
+        self.assertEqual(q.type_name, "dscp")
+        self.assertEqual(q.dscp, 46)
+
+    def test_tunnel_removes_stale_device_rules(self):
+        r = _route("awg:awg0", devices=[{"ip": "192.168.1.50"}])
+        # В storage уже есть device-правило от убранного устройства .51
+        stale = mock.Mock()
+        stale.type_name = "device"
+        stale.id = _dev_rule_id(r.id, "192.168.1.51")
+        with mock.patch("core.routing.storage.load_rules",
+                        return_value=[stale]), \
+             mock.patch("core.routing.storage.get_rule",
+                        side_effect=lambda rid:
+                            stale if rid == stale.id else None):
+            res = apply_route(r)
+        self.assertTrue(res["ok"])
+        removed_ids = [c.args[0]
+                       for c in self.mgr.remove_rule.call_args_list]
+        self.assertIn(stale.id, removed_ids)
 
 
 class TestApplyNfqwsAndDirect(unittest.TestCase):
@@ -111,6 +156,23 @@ class TestApplyNfqwsAndDirect(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["method"], "direct")
         rh.assert_called_once()
+
+    def test_devices_dscp_skipped_for_direct_and_nfqws(self):
+        with mock.patch("core.unified.applier._remove_hostlist"):
+            r = _route("direct", devices=[{"ip": "10.0.0.2"}], dscp=8)
+            res = apply_route(r)
+        self.assertTrue(res["ok"])
+        self.assertTrue(any("устройства/DSCP" in s
+                            for s in res["skipped_selectors"]))
+        hm = mock.Mock()
+        hm.save_hostlist.return_value = {"ok": True}
+        with mock.patch("core.hostlist_manager.get_hostlist_manager",
+                        return_value=hm):
+            r2 = _route("nfqws2", domains=["a.com"],
+                        devices=[{"ip": "10.0.0.2"}])
+            res2 = apply_route(r2)
+        self.assertTrue(any("устройства/DSCP" in s
+                            for s in res2["skipped_selectors"]))
 
 
 class TestRemoveRoute(unittest.TestCase):

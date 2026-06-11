@@ -100,6 +100,49 @@ class TestUnifiedRoute(unittest.TestCase):
         self.assertTrue(r2.monitor_enabled)
         self.assertEqual(r2.destination.domains, ["youtube.com"])
 
+    def test_devices_normalized(self):
+        r = UnifiedRoute(name="d", method="awg:awg0", devices=[
+            {"ip": " 192.168.1.50 ", "mac": "AA:BB", "hostname": "tv"},
+            {"ip": "192.168.1.50", "hostname": ""},     # дубль по ip
+            {"mac": "no-ip"},                            # без ip — мимо
+            "мусор",
+        ])
+        self.assertEqual(r.devices, [
+            {"ip": "192.168.1.50", "mac": "AA:BB", "hostname": "tv"}])
+
+    def test_dscp_validation(self):
+        r = UnifiedRoute(name="q", method="awg:awg0", dscp=46, dscp_self=True)
+        self.assertEqual(r.dscp, 46)
+        self.assertTrue(r.dscp_self)
+        self.assertIsNone(UnifiedRoute(name="q2", method="direct").dscp)
+        with self.assertRaises(ValueError):
+            UnifiedRoute(name="bad", method="direct", dscp=64)
+        with self.assertRaises(ValueError):
+            UnifiedRoute(name="bad", method="direct", dscp="ee")
+
+    def test_has_selectors(self):
+        self.assertFalse(UnifiedRoute(name="e", method="direct")
+                         .has_selectors())
+        self.assertTrue(UnifiedRoute(
+            name="d", method="direct",
+            destination=Destination(domains=["a.com"])).has_selectors())
+        self.assertTrue(UnifiedRoute(
+            name="dev", method="direct",
+            devices=[{"ip": "10.0.0.2"}]).has_selectors())
+        self.assertTrue(UnifiedRoute(
+            name="q", method="direct", dscp=0).has_selectors())
+
+    def test_roundtrip_devices_dscp(self):
+        r = UnifiedRoute(
+            name="src", method="awg:awg0",
+            devices=[{"ip": "10.0.0.5", "mac": "aa", "hostname": "pc"}],
+            dscp=34, dscp_self=True)
+        r2 = UnifiedRoute.from_dict(r.to_dict())
+        self.assertEqual(r2.devices,
+                         [{"ip": "10.0.0.5", "mac": "aa", "hostname": "pc"}])
+        self.assertEqual(r2.dscp, 34)
+        self.assertTrue(r2.dscp_self)
+
 
 class TestStorage(unittest.TestCase):
 

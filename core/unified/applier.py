@@ -8,9 +8,11 @@ deferred-apply / masquerade / ndms / nft:
 
   • tunnel-метод (awg:/singbox:/mihomo:<iface>) →
       производные routing-правила DomainRoutingRule + CidrRoutingRule
-      с детерминированными id (`uni-<route>-dom` / `-cidr`),
-      target_iface = iface метода. Управляются через RoutingManager,
-      поэтому переживают up/down интерфейса и переприменяются.
+      + DeviceRoutingRule (по одному на устройство) + DscpRoutingRule
+      с детерминированными id (`uni-<route>-dom` / `-cidr` /
+      `-dev-<hash(ip)>` / `-dscp`), target_iface = iface метода.
+      Управляются через RoutingManager, поэтому переживают up/down
+      интерфейса и переприменяются.
 
   • nfqws2 →
       домены назначения материализуются в управляемый hostlist
@@ -28,6 +30,8 @@ geosite/geoip в назначении движок ipset-routing не разво
 помечаются в результате как `skipped_selectors`.
 """
 
+import hashlib
+
 from core.log_buffer import log
 from core.unified.model import UnifiedRoute, parse_method
 
@@ -38,6 +42,20 @@ def _dom_rule_id(route_id: str) -> str:
 
 def _cidr_rule_id(route_id: str) -> str:
     return "uni-%s-cidr" % route_id
+
+
+def _dscp_rule_id(route_id: str) -> str:
+    return "uni-%s-dscp" % route_id
+
+
+def _dev_rule_prefix(route_id: str) -> str:
+    return "uni-%s-dev-" % route_id
+
+
+def _dev_rule_id(route_id: str, ip: str) -> str:
+    """Детерминированный id device-правила: один на устройство (по ip)."""
+    h = hashlib.sha1(ip.encode("utf-8", "replace")).hexdigest()[:8]
+    return _dev_rule_prefix(route_id) + h
 
 
 def _hostlist_name(route_id: str) -> str:
@@ -76,6 +94,7 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
     domains = resolved["domains"]
     cidrs = resolved["cidrs"]
     has_geo = bool(resolved.get("geosite") or resolved.get("geoip"))
+    has_src = bool(route.devices) or route.dscp is not None
     skipped = []
 
     if kind in ("awg", "singbox", "mihomo"):
@@ -92,6 +111,9 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
         res = _apply_nfqws(route, domains)
         if has_geo:
             skipped.append("geosite/geoip игнорируются для метода nfqws2")
+        if has_src:
+            skipped.append("устройства/DSCP применимы только к туннельным "
+                           "методам — для nfqws2 пропущены")
         _remove_geo(route)
         res["method"] = method
         res["skipped_selectors"] = skipped
@@ -103,6 +125,9 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
     _rebuild_nfqws_aggregate()
     if has_geo:
         skipped.append("geosite/geoip игнорируются для метода direct")
+    if has_src:
+        skipped.append("устройства/DSCP применимы только к туннельным "
+                       "методам — для direct пропущены")
     log.info("unified: маршрут %s = direct (артефакты сняты)" % route.id,
              source="unified")
     return {"ok": True, "method": "direct", "skipped_selectors": skipped}
@@ -151,7 +176,8 @@ def _rebuild_nfqws_aggregate():
 
 def _apply_tunnel(route, iface, domains, cidrs) -> dict:
     from core.routing import get_routing_manager
-    from core.routing.rules import DomainRoutingRule, CidrRoutingRule
+    from core.routing.rules import (DomainRoutingRule, CidrRoutingRule,
+                                    DeviceRoutingRule, DscpRoutingRule)
     mgr = get_routing_manager()
     results = []
 
@@ -174,6 +200,33 @@ def _apply_tunnel(route, iface, domains, cidrs) -> dict:
         results.append(_upsert(mgr, rule))
     else:
         _remove_one(mgr, _cidr_rule_id(route.id))
+
+    # device-rules: по одному на устройство; снятые из маршрута
+    # устройства убираем (id у каждого детерминирован по ip).
+    wanted_dev_ids = set()
+    for dev in (route.devices or []):
+        rid = _dev_rule_id(route.id, dev["ip"])
+        wanted_dev_ids.add(rid)
+        rule = DeviceRoutingRule(
+            target_iface=iface, source_ip=dev["ip"],
+            mac=dev.get("mac", ""), hostname=dev.get("hostname", ""),
+            rule_id=rid,
+            description="unified:%s" % route.name)
+        results.append(_upsert(mgr, rule))
+    for stale in _derived_device_ids(route.id):
+        if stale not in wanted_dev_ids:
+            _remove_one(mgr, stale)
+
+    # dscp-rule
+    if route.dscp is not None:
+        rule = DscpRoutingRule(
+            target_iface=iface, dscp=route.dscp,
+            proxy_self=route.dscp_self,
+            rule_id=_dscp_rule_id(route.id),
+            description="unified:%s" % route.name)
+        results.append(_upsert(mgr, rule))
+    else:
+        _remove_one(mgr, _dscp_rule_id(route.id))
 
     # nfqws2-hostlist этого маршрута больше не нужен.
     _remove_hostlist(route.id)
@@ -199,10 +252,24 @@ def _remove_one(mgr, rule_id):
         mgr.remove_rule(rule_id)
 
 
+def _derived_device_ids(route_id) -> list:
+    """id всех device-правил, производных от маршрута (по префиксу)."""
+    from core.routing import storage
+    prefix = _dev_rule_prefix(route_id)
+    out = []
+    for rule in storage.load_rules():
+        if rule.type_name == "device" and rule.id.startswith(prefix):
+            out.append(rule.id)
+    return out
+
+
 def _remove_routing_rules(route_id):
     from core.routing import get_routing_manager
     mgr = get_routing_manager()
-    for rid in (_dom_rule_id(route_id), _cidr_rule_id(route_id)):
+    for rid in (_dom_rule_id(route_id), _cidr_rule_id(route_id),
+                _dscp_rule_id(route_id)):
+        _remove_one(mgr, rid)
+    for rid in _derived_device_ids(route_id):
         _remove_one(mgr, rid)
 
 
