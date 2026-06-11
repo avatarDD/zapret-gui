@@ -33,6 +33,7 @@ const App = (() => {
         'singbox-proxies': SingboxProxiesPage,
         'singbox-setup':   SingboxSetupPage,
         mihomo:            MihomoPage,
+        'mihomo-setup':    MihomoSetupPage,
         lists:       ListsPage,
         routing:     RoutingUnifiedPage,
         settings:    SettingsPage,
