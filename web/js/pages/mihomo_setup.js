@@ -1,22 +1,35 @@
 /**
- * singbox_setup.js — установка sing-box.
+ * mihomo_setup.js — установка mihomo (Clash.Meta).
  *
- * Проверяет окружение (платформа, TUN, версия sing-box если уже
- * установлен), показывает manifest последнего релиза и позволяет
- * установить/обновить/удалить sing-box-бинарь.
+ * По образцу singbox_setup.js: проверяет окружение (платформа, TUN,
+ * firewall, установленная версия), асинхронно подтягивает версию из
+ * апстрим-релиза MetaCubeX/mihomo и позволяет установить/обновить/
+ * удалить бинарь с прогрессом.
+ *
+ * Бэкенд — /api/mihomo/{environment,version,install,install/status,
+ * uninstall}. У mihomo нет manifest-эндпоинта (бинарь берётся напрямую
+ * из апстрима), поэтому архитектура определяется автоматически.
+ *
+ * Отображение версий — в одном стиле с sing-box и AWG: «установлено X /
+ * в релизе Y», с нормализацией версии (v1.18.0 == 1.18.0 == 1.18.0-1).
  */
 
-const SingboxSetupPage = (() => {
+const MihomoSetupPage = (() => {
 
-    let env = null;
-    let manifest = null;
-    let manifestError = '';
-    let version = null;        // /api/singbox/version (installed + latest)
+    let env = null;            // /api/mihomo/environment (быстро, локально)
+    let version = null;        // /api/mihomo/version (installed + latest, сеть)
+    let versionError = '';
     let latestState = 'idle';  // 'idle'|'loading'|'done' — проверка релиза (GitHub)
     let installState = { status: 'idle', progress: 0, message: '' };
 
     let pollTimer = null;
-    let archOverride = '';
+
+    // Нормализация версий — как в awg_setup.js. Апстрим тег `v1.18.0`,
+    // `mihomo -v` → `1.18.0`, иногда суффикс сборки `-1`. Приводим к
+    // одному виду, чтобы не показывать ложное «доступно обновление».
+    const normalizeVer = v =>
+        String(v || '').trim().replace(/^v/i, '').replace(/-\d+$/, '');
+    const verEqual = (a, b) => normalizeVer(a) === normalizeVer(b);
 
     // ══════════════ render ══════════════
 
@@ -24,22 +37,23 @@ const SingboxSetupPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">sing-box — установка</h1>
+                    <h1 class="page-title">mihomo — установка</h1>
                     <p class="page-description">
-                        Установка и обновление бинаря sing-box из наших релизов.
+                        Установка и обновление бинаря mihomo (Clash.Meta) из
+                        апстрим-релизов MetaCubeX/mihomo.
                     </p>
                 </div>
                 <div style="display:flex; gap:8px;">
-                    <button class="btn btn-ghost btn-sm" onclick="window.location.hash='singbox'">
+                    <button class="btn btn-ghost btn-sm" onclick="window.location.hash='mihomo'">
                         ← Инстансы
                     </button>
-                    <button class="btn btn-ghost btn-sm" onclick="SingboxSetupPage.refresh()">
+                    <button class="btn btn-ghost btn-sm" onclick="MihomoSetupPage.refresh()">
                         Обновить
                     </button>
                 </div>
             </div>
 
-            <div id="sb-setup-content"></div>
+            <div id="mh-setup-content"></div>
         `;
         refresh();
     }
@@ -54,41 +68,36 @@ const SingboxSetupPage = (() => {
         // Шаг 1 — БЫСТРАЯ локальная часть (платформа/TUN/установленная
         // версия). Без сети, поэтому рисуем сразу и страница не «висит».
         try {
-            env = await API.post('/api/singbox/environment/refresh')
+            env = await API.post('/api/mihomo/environment/refresh')
                            .catch(() => null);
         } catch (e) {
             // ignore
         }
         renderContent();
 
-        // Шаг 2 — МЕДЛЕННАЯ часть (GitHub: версия в релизе + manifest).
-        // Грузим в фоне и перерисовываем, когда придёт, чтобы запрос к
-        // сети (на роутере он может тянуться десятки секунд) не блокировал
-        // открытие раздела.
+        // Шаг 2 — МЕДЛЕННАЯ часть (GitHub: версия в релизе). Грузим в
+        // фоне и перерисовываем, когда придёт, чтобы запрос к сети (на
+        // роутере он может тянуться десятки секунд) не блокировал открытие.
         loadLatest();
     }
 
-    // Проверка «что в нашем релизе» — отдельно и асинхронно (см. refresh).
+    // Проверка «что в апстрим-релизе» — отдельно и асинхронно (см. refresh).
     async function loadLatest() {
         latestState = 'loading';
         renderContent();
         try {
-            const [verResp, manResp] = await Promise.all([
-                API.get('/api/singbox/version').catch(() => null),
-                API.get('/api/singbox/manifest').catch(() => null),
-            ]);
-            version = verResp || null;
-            if (manResp && manResp.ok) {
-                manifest = manResp.manifest;
-                manifestError = '';
+            const verResp = await API.get('/api/mihomo/version').catch(() => null);
+            if (verResp && verResp.ok) {
+                version = verResp;
+                versionError = '';
             } else {
-                manifest = null;
-                manifestError = (manResp && manResp.error)
-                                || 'Не удалось получить manifest (нет сети/релиза)';
+                version = null;
+                versionError = (verResp && verResp.error)
+                               || 'Не удалось получить версию из релиза (нет сети/GitHub заблокирован)';
             }
         } catch (e) {
-            manifest = null;
-            manifestError = e.message;
+            version = null;
+            versionError = e.message;
         } finally {
             latestState = 'done';
             renderContent();
@@ -101,7 +110,7 @@ const SingboxSetupPage = (() => {
         stopPolling();
         pollTimer = setInterval(async () => {
             try {
-                const r = await API.get('/api/singbox/install/status');
+                const r = await API.get('/api/mihomo/install/status');
                 if (r && r.progress) {
                     installState = r.progress;
                     renderContent();
@@ -123,7 +132,7 @@ const SingboxSetupPage = (() => {
     // ══════════════ render ══════════════
 
     function renderContent() {
-        const box = document.getElementById('sb-setup-content');
+        const box = document.getElementById('mh-setup-content');
         if (!box) return;
 
         if (!env) {
@@ -139,31 +148,20 @@ const SingboxSetupPage = (() => {
         const ready    = !!env.ready;
         const installed = !!bin.installed;
 
-        // Какие архитектуры доступны в релизе
-        const sb = (manifest && manifest.sing_box) || {};
-        const availableArchs = Object.keys(sb.binaries || {}).sort();
-        const latestVersion  = sb.version || (version && version.latest && version.latest.version) || '';
-        const hasUpdate = !!(version && version.has_update);
-        // Бинарь собран без clash_api → тестер серверов умеет только TCP.
-        // Версия при этом может совпадать с релизом, поэтому отдельный сигнал.
-        const needsReinstall = !!(version && version.needs_reinstall);
-        const reinstallReason = (version && version.reinstall_reason) || '';
+        const installedVer = bin.version
+                             || (version && version.installed && version.installed.version)
+                             || '';
+        const latestVer = (version && version.latest && version.latest.version) || '';
+        const latestTag = (version && version.latest && version.latest.tag) || '';
+        // Обновление считаем сами, с нормализацией (как в AWG), а не
+        // доверяем сырому сравнению строк бэкенда — иначе `v1.18.0` !=
+        // `1.18.0` даёт фантомное обновление.
+        const hasUpdate = installed && !!latestVer && !!installedVer
+                          && !verEqual(installedVer, latestVer);
 
         const installInProgress = ['starting', 'manifest', 'downloading',
                                    'verifying', 'extracting', 'installing']
                                    .includes(installState.status);
-
-        const archSelect = availableArchs.length ? `
-            <label class="form-label" style="margin-top:8px;">
-                Архитектура (авто — пусто):
-            </label>
-            <select id="sb-arch" class="form-input"
-                    onchange="SingboxSetupPage.onArchChange()">
-                <option value="">авто</option>
-                ${availableArchs.map(a =>
-                    `<option value="${escapeAttr(a)}" ${a===archOverride?'selected':''}>${escapeHtml(a)}</option>`
-                ).join('')}
-            </select>` : '';
 
         const progressBlock = (installInProgress || installState.status === 'done'
                                 || installState.status === 'error')
@@ -202,60 +200,44 @@ const SingboxSetupPage = (() => {
 
             <div class="card" style="margin-bottom:12px;">
                 <div class="card-title">
-                    sing-box
+                    mihomo
                     ${installed
                         ? '<span style="color:#39c45e; font-size:12px; margin-left:8px;">установлен</span>'
                         : '<span style="color:#e58; font-size:12px; margin-left:8px;">не установлен</span>'}
                 </div>
                 <div style="margin-top:8px; font-size:13px;">
                     ${installed ? `
-                        <div>Версия: <strong>${escapeHtml(bin.version || '?')}</strong></div>
+                        <div>Версия: <strong>${escapeHtml(installedVer || '?')}</strong></div>
                         <div class="text-muted" style="font-size:11px;">
                             ${escapeHtml(bin.path || '')}
                         </div>` : ''}
                     ${latestState === 'loading' ? `
                         <div style="margin-top:4px;" class="text-muted">
-                            В нашем релизе: проверяю…
+                            В релизе: проверяю…
                             <span class="spinner spinner-inline"></span>
                         </div>`
-                      : latestVersion ? `
+                      : latestVer ? `
                         <div style="margin-top:4px;">
-                            В нашем релизе: <strong>${escapeHtml(latestVersion)}</strong>
+                            В релизе: <strong>${escapeHtml(latestVer)}</strong>
+                            ${latestTag ? `<span class="text-muted" style="font-size:11px;">(${escapeHtml(latestTag)})</span>` : ''}
                             ${hasUpdate
                                 ? '<span style="color:#fb8;">— доступно обновление</span>'
                                 : (installed ? '<span style="color:#39c45e;">— актуально</span>' : '')}
                         </div>` : ''}
-                    ${installed ? `
-                        <div style="margin-top:4px;">
-                            clash_api: ${bin.has_clash_api
-                                ? '<span style="color:#39c45e;">включён</span>'
-                                : '<span style="color:#fb8;">нет</span> — тестер серверов работает только по TCP'}
-                        </div>` : ''}
-                    ${manifestError ? `
+                    ${versionError && latestState === 'done' ? `
                         <div class="text-muted" style="color:#e58; font-size:11px; margin-top:4px;">
-                            ${escapeHtml(manifestError)}
+                            ${escapeHtml(versionError)}
                         </div>` : ''}
                 </div>
 
-                ${needsReinstall ? `
-                    <div class="alert alert-warning" style="margin-top:10px;">
-                        <div class="alert-title">Бинарь sing-box собран без clash_api</div>
-                        <p style="font-size:12px; margin:6px 0 0;">
-                            ${escapeHtml(reinstallReason || 'Тестер серверов сейчас отсеивает только по TCP (фаза e2e через движок недоступна).')}
-                            Нажмите «${hasUpdate ? 'Обновить' : 'Переустановить'}» ниже — свежая сборка из нашего релиза включает clash_api.
-                        </p>
-                    </div>` : ''}
-
-                ${archSelect}
-
                 <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
                     <button class="btn btn-primary btn-sm" ${installInProgress?'disabled':''}
-                            onclick="SingboxSetupPage.install()">
+                            onclick="MihomoSetupPage.install()">
                         ${installed ? (hasUpdate ? 'Обновить' : 'Переустановить') : 'Установить'}
                     </button>
                     ${installed ? `
                     <button class="btn btn-ghost btn-sm" ${installInProgress?'disabled':''}
-                            onclick="SingboxSetupPage.uninstall()">
+                            onclick="MihomoSetupPage.uninstall()">
                         Удалить
                     </button>` : ''}
                 </div>
@@ -268,15 +250,10 @@ const SingboxSetupPage = (() => {
                 <div class="alert-title">Что нужно для запуска</div>
                 <ul style="margin:6px 0 0; padding-left:18px; font-size:12px;">
                     ${!tun.available ? '<li>Установить TUN-компонент (см. AmneziaWG → Установка — компонент одинаковый)</li>' : ''}
-                    ${!installed ? '<li>Скачать и установить sing-box (кнопка выше)</li>' : ''}
+                    ${!installed ? '<li>Скачать и установить mihomo (кнопка выше)</li>' : ''}
                 </ul>
             </div>` : ''}
         `;
-    }
-
-    function onArchChange() {
-        const el = document.getElementById('sb-arch');
-        if (el) archOverride = el.value;
     }
 
     // ══════════════ actions ══════════════
@@ -287,11 +264,9 @@ const SingboxSetupPage = (() => {
         renderContent();
         startPolling();
         try {
-            const r = await API.post('/api/singbox/install', {
-                arch: archOverride || undefined,
-            });
-            if (r && r.ok) {
-                Toast.success(`sing-box ${r.version || ''} установлен`);
+            const r = await API.post('/api/mihomo/install', {});
+            if (r && r.ok && !r.in_progress) {
+                Toast.success(`mihomo ${r.version || ''} установлен`);
             } else if (r && r.in_progress) {
                 // Поллер сам подберёт
             } else if (r && r.error) {
@@ -303,11 +278,11 @@ const SingboxSetupPage = (() => {
     }
 
     async function uninstall() {
-        if (!confirm('Удалить sing-box?')) return;
+        if (!confirm('Удалить mihomo?')) return;
         try {
-            const r = await API.post('/api/singbox/uninstall');
+            const r = await API.post('/api/mihomo/uninstall');
             if (r && r.ok) {
-                Toast.success('sing-box удалён');
+                Toast.success('mihomo удалён');
             } else {
                 Toast.error((r && r.error) || 'failed');
             }
@@ -321,12 +296,9 @@ const SingboxSetupPage = (() => {
         return String(s == null ? '' : s)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
-    function escapeAttr(s) {
-        return escapeHtml(s).replace(/"/g, '&quot;');
-    }
 
     return {
         render, destroy, refresh,
-        install, uninstall, onArchChange,
+        install, uninstall,
     };
 })();

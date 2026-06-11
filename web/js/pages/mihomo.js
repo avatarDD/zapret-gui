@@ -2,8 +2,9 @@
  * mihomo.js — страница mihomo (Clash.Meta).
  *
  * Альтернативный прокси-движок рядом с sing-box (идея из XKeen).
- * Одна страница совмещает: обзор окружения + установку, список
- * инстансов с up/down/restart, и простой YAML-редактор конфигов.
+ * Страница инстансов: обзор окружения, список инстансов с
+ * up/down/restart и простой YAML-редактор конфигов. Установка/обновление
+ * бинаря вынесены в отдельный раздел (mihomo-setup) — как у sing-box.
  *
  * Бэкенд — /api/mihomo/* (зеркалит /api/singbox/*). Конфиги — clash-YAML.
  * Polling раз в 5 секунд.
@@ -17,9 +18,6 @@ const MihomoPage = (() => {
     let autostart = {};
     let busy = {};
     let editing = null;   // {name, text} | null   (null = редактор закрыт)
-    let installing = false;
-    let installState = { status: 'idle', progress: 0, message: '' };
-    let installTimer = null;
 
     // ══════════════ render ══════════════
 
@@ -36,6 +34,9 @@ const MihomoPage = (() => {
                 <div style="display:flex; gap:8px;">
                     <button class="btn btn-ghost btn-sm" onclick="MihomoPage.newConfig()">
                         + Конфиг
+                    </button>
+                    <button class="btn btn-ghost btn-sm" onclick="window.location.hash='mihomo-setup'">
+                        Установка
                     </button>
                     <button class="btn btn-ghost btn-sm" onclick="MihomoPage.refresh()">
                         Обновить
@@ -59,7 +60,6 @@ const MihomoPage = (() => {
 
     function destroy() {
         stopPolling();
-        if (installTimer) { clearTimeout(installTimer); installTimer = null; }
     }
 
     // ══════════════ data ══════════════
@@ -114,14 +114,14 @@ const MihomoPage = (() => {
         const installed = !!bin.installed;
         const active = configs.filter(c => c.running).length;
 
+        // Установка/обновление вынесены в отдельный раздел «Установка»
+        // (mihomo-setup) — как у sing-box. На дашборде показываем кнопку
+        // установки только когда бинарь ещё не стоит.
         const installBtn = installed
-            ? `<button class="btn btn-ghost btn-sm" ${installing ? 'disabled' : ''}
-                       onclick="MihomoPage.install()">
-                  ${installing ? 'Установка...' : 'Обновить mihomo'}
-               </button>`
-            : `<button class="btn btn-primary btn-sm" ${installing ? 'disabled' : ''}
-                       onclick="MihomoPage.install()">
-                  ${installing ? 'Установка...' : 'Установить mihomo'}
+            ? ''
+            : `<button class="btn btn-primary btn-sm"
+                       onclick="window.location.hash='mihomo-setup'">
+                  Установить mihomo
                </button>`;
 
         body.innerHTML = `
@@ -144,26 +144,7 @@ const MihomoPage = (() => {
                     ${installBtn}
                 </div>
             </div>
-            ${renderInstallProgress()}
         `;
-    }
-
-    function renderInstallProgress() {
-        const st = installState;
-        const show = installing || st.status === 'done' || st.status === 'error';
-        if (!show) return '';
-        const pct = Math.max(0, Math.min(100, st.progress || 0));
-        const barColor = st.status === 'error' ? 'var(--error)' : 'var(--accent)';
-        return `
-            <div style="margin-top:12px;">
-                <div style="display:flex; justify-content:space-between; font-size:12px;">
-                    <span class="text-muted">${escapeHtml(st.message || 'Установка mihomo…')}</span>
-                    <span class="text-muted">${pct}%</span>
-                </div>
-                <div style="height:6px; background:var(--bg-input); border-radius:4px; overflow:hidden; margin-top:4px;">
-                    <div style="height:100%; width:${pct}%; background:${barColor}; transition:width .3s;"></div>
-                </div>
-            </div>`;
     }
 
     // ══════════════ instances ══════════════
@@ -386,71 +367,6 @@ rules:
         finally { await refresh(); }
     }
 
-    async function install() {
-        if (installing) return;
-        installing = true;
-        installState = { status: 'starting', progress: 0,
-                         message: 'Запуск установки mihomo…' };
-        renderSummary();
-        try {
-            const r = await API.post('/api/mihomo/install', {});
-            if (r && r.ok && !r.in_progress) {
-                // Успели синхронно (быстрый канал/кэш).
-                installState = { status: 'done', progress: 100,
-                                 message: 'Установлено' };
-                installing = false;
-                renderSummary();
-                Toast.success('mihomo установлен: ' + (r.version || ''));
-                await refresh();
-                return;
-            }
-            if (r && r.error && !r.in_progress) {
-                installing = false;
-                installState = { status: 'error', progress: 0, message: r.error };
-                renderSummary();
-                Toast.error(r.error);
-                return;
-            }
-            // Идёт в фоне — поллим прогресс.
-            pollInstall();
-        } catch (e) {
-            installing = false;
-            installState = { status: 'error', progress: 0, message: e.message };
-            renderSummary();
-            Toast.error(e.message);
-        }
-    }
-
-    function pollInstall() {
-        if (installTimer) clearTimeout(installTimer);
-        installTimer = setTimeout(async () => {
-            try {
-                const r = await API.get('/api/mihomo/install/status');
-                if (r && r.progress) installState = r.progress;
-                renderSummary();
-                const s = installState.status;
-                if (s === 'done' || s === 'installed' || s === 'idle') {
-                    installing = false;
-                    renderSummary();
-                    Toast.success('mihomo установлен');
-                    await refresh();          // обновит обзор/версию без перезагрузки страницы
-                    return;
-                }
-                if (s === 'error') {
-                    installing = false;
-                    renderSummary();
-                    Toast.error(installState.message || 'ошибка установки');
-                    return;
-                }
-                pollInstall();                 // продолжаем поллить
-            } catch (e) {
-                installing = false;
-                renderSummary();
-                Toast.error(e.message);
-            }
-        }, 1200);
-    }
-
     // ══════════════ helpers ══════════════
 
     function escapeHtml(s) {
@@ -463,7 +379,7 @@ rules:
 
     return {
         render, destroy, refresh,
-        up, down, restart, install, toggleAuto,
+        up, down, restart, toggleAuto,
         newConfig, edit, closeEditor, save, validate, del,
     };
 })();
