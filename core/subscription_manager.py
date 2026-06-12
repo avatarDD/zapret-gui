@@ -408,14 +408,33 @@ def _parse_singbox_json(text: str):
     except json.JSONDecodeError:
         return []
     if isinstance(data, list):
-        return [o for o in data
-                if isinstance(o, dict) and o.get("type")]
-    if isinstance(data, dict):
+        obs = data
+    elif isinstance(data, dict):
         obs = data.get("outbounds") or []
-        if isinstance(obs, list):
-            return [o for o in obs
-                    if isinstance(o, dict) and o.get("type")]
-    return []
+        if not isinstance(obs, list):
+            return []
+    else:
+        return []
+    return _sanitize_outbounds(
+        o for o in obs if isinstance(o, dict) and o.get("type"))
+
+
+def _sanitize_outbounds(obs) -> list:
+    """
+    Чистка сырых outbound'ов (singbox-json приходит мимо наших билдеров):
+    vless-flow '…-vision-udp443' нормализуем до vision, серверы с flow,
+    который sing-box не примет («unsupported flow» валит весь конфиг и
+    каждый батч тестера), — отбрасываем.
+    """
+    from core.singbox_config import normalize_vless_flow, vless_flow_supported
+    out = []
+    for o in obs:
+        if o.get("type") == "vless" and o.get("flow"):
+            if not vless_flow_supported(o["flow"]):
+                continue
+            o = dict(o, flow=normalize_vless_flow(o["flow"]))
+        out.append(o)
+    return out
 
 
 def _parse_uri_list(text: str):

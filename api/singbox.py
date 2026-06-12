@@ -792,10 +792,11 @@ def register(app):
     @app.route("/api/singbox/configs/<name>/prune-invalid", method="POST")
     def singbox_configs_prune_invalid(name):
         """
-        Найти (и по запросу удалить) outbound'ы с битым криптоключом —
-        reality без pbk / wireguard с некорректным ключом, — из-за которых
-        sing-box падает на старте с FATAL «invalid public_key» (всё-или-
-        ничего: один такой сервер не даёт запустить весь конфиг/батч).
+        Найти (и по запросу удалить) outbound'ы, которые sing-box отвергнет
+        на initialize: битый криптоключ (reality без pbk / wireguard с
+        некорректным ключом → FATAL «invalid public_key») или vless с
+        неподдерживаемым flow (→ FATAL «unsupported flow»). Всё-или-ничего:
+        один такой сервер не даёт запустить весь конфиг/батч.
 
         body: {"apply": bool}. apply=false (по умолчанию) — только отчёт;
         apply=true — удалить их, вычистив висячие ссылки в группах и

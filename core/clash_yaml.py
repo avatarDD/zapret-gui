@@ -333,6 +333,11 @@ def _conv_ss(p: dict):
 def _conv_vless(p: dict):
     if not p.get("server") or not p.get("port"):
         return None
+    from core.singbox_config import normalize_vless_flow, vless_flow_supported
+    if not vless_flow_supported(p.get("flow")):
+        # Легаси xtls-flow (origin/direct/splice), sing-box такой outbound
+        # не примет («unsupported flow») — пропускаем сервер.
+        return None
     ob: dict[str, Any] = {
         "type":        "vless",
         "tag":         _safe_tag(p.get("name", "vless")),
@@ -340,9 +345,9 @@ def _conv_vless(p: dict):
         "server_port": int(p["port"]),
         "uuid":        str(p.get("uuid") or ""),
     }
-    flow = p.get("flow")
+    flow = normalize_vless_flow(p.get("flow"))
     if flow:
-        ob["flow"] = str(flow)
+        ob["flow"] = flow
 
     # network/transport
     net = str(p.get("network") or "tcp").lower()

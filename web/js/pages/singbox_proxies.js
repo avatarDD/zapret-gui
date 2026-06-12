@@ -51,15 +51,15 @@ const SingboxProxiesPage = (() => {
         const st = ctx.state;
         if (!st.configName) return;
         const n = Object.keys(st.extra.invalidTags || {}).length;
-        if (!n) { Toast.info('Серверов с битым ключом нет'); return; }
-        if (!confirm(`Удалить ${n} серв. с битым ключом? Из-за них sing-box не запускается («invalid public_key»).`))
+        if (!n) { Toast.info('Битых серверов нет'); return; }
+        if (!confirm(`Удалить ${n} битых серв. (некорректный ключ / flow)? Из-за них sing-box не запускается.`))
             return;
         st.busy = true; ctx.renderBody();
         try {
             const r = await API.post(cfgUrl(st.configName, '/prune-invalid'),
                                      { apply: true });
             if (r && r.ok) {
-                Toast.success(`Удалено серверов с битым ключом: ${(r.removed || []).length}`);
+                Toast.success(`Удалено битых серверов: ${(r.removed || []).length}`);
                 await ctx.loadItems();
                 await ctx.loadTraffic();
             } else { Toast.error((r && r.error) || 'не удалось'); }
@@ -200,7 +200,7 @@ const SingboxProxiesPage = (() => {
                 <button class="btn btn-ghost btn-sm" ${st.busy ? 'disabled' : ''}
                         style="color:#e58; border-color:#e58;"
                         onclick="SingboxProxiesPage.pruneInvalid()"
-                        title="Удалить серверы с битым ключом — из-за них sing-box не запускается">
+                        title="Удалить серверы с битым ключом или flow — из-за них sing-box не запускается">
                     ⚠ Убрать битые (${invalidCount})
                 </button>`;
         },

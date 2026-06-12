@@ -30,7 +30,7 @@ import urllib.parse
 from core.singbox_config import (
     make_vless_outbound, make_vmess_outbound, make_trojan_outbound,
     make_shadowsocks_outbound, make_hysteria2_outbound,
-    make_tuic_outbound, is_x25519_key,
+    make_tuic_outbound, is_x25519_key, vless_flow_supported,
 )
 
 
@@ -103,7 +103,14 @@ def vless_to_outbound(uri: str) -> dict:
     tag = _safe_tag(urllib.parse.unquote(p.fragment or "")
                     or "vless-%s" % server)
 
+    # sing-box принимает только flow='xtls-rprx-vision' (вариант
+    # '…-udp443' нормализуется до него в make_vless_outbound). Легаси
+    # xtls-flow (origin/direct/splice) роняет sing-box на старте
+    # («unsupported flow») — отсекаем сразу, как reality без pbk.
     flow = q.get("flow", "")
+    if not vless_flow_supported(flow):
+        return {"ok": False,
+                "error": "flow '%s' не поддерживается sing-box" % flow}
 
     # transport
     transport = None

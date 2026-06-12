@@ -180,6 +180,24 @@ class TestKeyValidation(unittest.TestCase):
               "peer_public_key": "not-a-key"}
         self.assertIsNotNone(outbound_key_problem(ob))
 
+    def test_vless_legacy_flow_flagged(self):
+        # «unsupported flow» роняет sing-box целиком — батч тестера/конфиг.
+        ob = {"type": "vless", "tag": "x", "server": "s", "server_port": 1,
+              "uuid": "u", "flow": "xtls-rprx-direct"}
+        self.assertIn("flow", outbound_key_problem(ob) or "")
+
+    def test_vless_vision_udp443_not_flagged(self):
+        # Нормализуемый вариант — не проблема: его чинит
+        # normalize_vless_flow на этапах импорта/теста.
+        ob = {"type": "vless", "tag": "x", "server": "s", "server_port": 1,
+              "uuid": "u", "flow": "xtls-rprx-vision-udp443"}
+        self.assertIsNone(outbound_key_problem(ob))
+
+    def test_vless_vision_flow_ok(self):
+        ob = {"type": "vless", "tag": "x", "server": "s", "server_port": 1,
+              "uuid": "u", "flow": "xtls-rprx-vision"}
+        self.assertIsNone(outbound_key_problem(ob))
+
 
 class TestRealityImportRejection(unittest.TestCase):
 

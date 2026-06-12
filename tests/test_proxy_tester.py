@@ -54,13 +54,29 @@ class TestBuildTestConfig(unittest.TestCase):
         self.assertEqual(cfg["route"]["rules"][0]["outbound"], "test-select")
         # реальные серверы сохранены
         tags = {o.get("tag") for o in cfg["outbounds"]}
-        self.assertTrue({"a", "b", "test-select", "direct", "block"} <= tags)
+        self.assertTrue({"a", "b", "test-select", "direct"} <= tags)
+        # block-outbound удалён в sing-box 1.13 — на новых бинарях он
+        # валил бы каждый батч; в тестовом конфиге его быть не должно.
+        self.assertNotIn("block", tags)
 
     def test_empty_outbounds_falls_back_direct(self):
         cfg = build_test_config([], clash_port=1, clash_secret="",
                                 mixed_port=2)
         sel = [o for o in cfg["outbounds"] if o.get("type") == "selector"][0]
         self.assertEqual(sel["outbounds"], ["direct"])
+
+    def test_vless_flow_udp443_normalized(self):
+        # Xray-flow '…-vision-udp443' встречается в сохранённых конфигах;
+        # sing-box на нём падает целиком («unsupported flow») — тестовый
+        # конфиг обязан нормализовать его до vision, не мутируя исходник.
+        obs = [{"type": "vless", "tag": "v", "server": "1.1.1.1",
+                "server_port": 443, "uuid": "u",
+                "flow": "xtls-rprx-vision-udp443"}]
+        cfg = build_test_config(obs, clash_port=1, clash_secret="",
+                                mixed_port=2)
+        v = [o for o in cfg["outbounds"] if o.get("tag") == "v"][0]
+        self.assertEqual(v["flow"], "xtls-rprx-vision")
+        self.assertEqual(obs[0]["flow"], "xtls-rprx-vision-udp443")
 
 
 class TestParseDelay(unittest.TestCase):
