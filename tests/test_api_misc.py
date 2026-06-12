@@ -12,6 +12,7 @@ catalog_update, zapret_manager.
 """
 
 import unittest
+from unittest import mock
 
 from tests._wsgi_client import WSGIClient, build_test_app
 
@@ -344,6 +345,92 @@ class TestZapretManagerAPI(unittest.TestCase):
     def test_zapret_progress(self):
         r = self.client.get_json("/api/zapret/progress")
         self.assertEqual(r["_status"], 200)
+
+    def test_zapret_releases_mocked(self):
+        # Список версий для выбора (мок — без сети).
+        with mock.patch(
+                "core.zapret_installer.ZapretInstaller.list_releases",
+                return_value={"ok": True, "releases": [
+                    {"tag": "v69.4", "version": "69.4",
+                     "prerelease": False, "published_at": ""}]}):
+            r = self.client.get_json("/api/zapret/releases")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["releases"][0]["tag"], "v69.4")
+
+    def test_zapret_install_passes_tag_and_transport(self):
+        captured = {}
+
+        def fake_install(self, tag="", transport=""):
+            captured["tag"] = tag
+            captured["transport"] = transport
+            return {"ok": True, "version": tag or "latest"}
+
+        with mock.patch(
+                "core.zapret_installer.ZapretInstaller.get_installed_version",
+                return_value={"installed": False, "version": None}), \
+             mock.patch("core.zapret_installer.ZapretInstaller.install",
+                        new=fake_install):
+            r = self.client.post_json("/api/zapret/install",
+                                      {"tag": "v69.3",
+                                       "transport": "singbox:proxy"})
+        self.assertIn(r["_status"], (200, 500))
+        self.assertEqual(captured.get("tag"), "v69.3")
+        self.assertEqual(captured.get("transport"), "singbox:proxy")
+
+    def test_zapret_update_passes_tag_and_transport(self):
+        captured = {}
+
+        def fake_update(self, tag="", transport=""):
+            captured["tag"] = tag
+            captured["transport"] = transport
+            return {"ok": True, "version": tag or "latest"}
+
+        with mock.patch(
+                "core.zapret_installer.ZapretInstaller.get_installed_version",
+                return_value={"installed": True, "version": "v69.0"}), \
+             mock.patch("core.zapret_installer.ZapretInstaller.update",
+                        new=fake_update):
+            r = self.client.post_json("/api/zapret/update",
+                                      {"transport": "mihomo:proxy"})
+        self.assertIn(r["_status"], (200, 500))
+        self.assertEqual(captured.get("tag"), "")
+        self.assertEqual(captured.get("transport"), "mihomo:proxy")
+
+
+class TestGuiReleasesAPI(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = WSGIClient(build_test_app())
+
+    def test_gui_releases_mocked(self):
+        with mock.patch(
+                "core.gui_updater.GuiUpdater.list_releases",
+                return_value={"ok": True, "releases": [
+                    {"tag": "v0.22.1", "version": "0.22.1",
+                     "published_at": "", "description": ""}]}):
+            r = self.client.get_json("/api/gui/releases")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["releases"][0]["tag"], "v0.22.1")
+
+    def test_gui_update_passes_tag_branch_transport(self):
+        captured = {}
+
+        def fake_update(self, tag="", branch="", transport=""):
+            captured.update(tag=tag, branch=branch, transport=transport)
+            return {"ok": True, "version": tag or "latest"}
+
+        with mock.patch("core.gui_updater.GuiUpdater.get_operation_status",
+                        return_value={"in_progress": False}), \
+             mock.patch("core.gui_updater.GuiUpdater.update", new=fake_update):
+            r = self.client.post_json("/api/gui/update",
+                                      {"tag": "v0.22.0",
+                                       "transport": "awg:wg0"})
+        self.assertIn(r["_status"], (200, 500))
+        self.assertEqual(captured.get("tag"), "v0.22.0")
+        self.assertEqual(captured.get("transport"), "awg:wg0")
 
 
 class TestCatalogUpdateAPI(unittest.TestCase):

@@ -195,6 +195,74 @@ class TestSingboxListReleases(unittest.TestCase):
         self.assertEqual(la.call_count, 2)
 
 
+class TestZapretListReleases(unittest.TestCase):
+    """nfqws2 (zapret2): выбор версии + транспорт скачивания —
+    list_releases() / get_release(tag) по аналогии с sing-box/mihomo."""
+
+    def _make(self):
+        from core.zapret_installer import ZapretInstaller
+        return ZapretInstaller()
+
+    def test_list_and_cache(self):
+        inst = self._make()
+        data = [
+            {"tag_name": "v69.4", "draft": False, "prerelease": False,
+             "published_at": "2025-05-01T00:00:00Z"},
+            {"tag_name": "v69.3", "draft": True},      # драфт — мимо
+            {"no_tag": True},                           # без тэга — мимо
+        ]
+        with mock.patch("core.zapret_installer._http_json",
+                        return_value=data) as hj:
+            r1 = inst.list_releases()
+            r2 = inst.list_releases()                   # из кэша
+        self.assertTrue(r1["ok"])
+        self.assertEqual([x["tag"] for x in r1["releases"]], ["v69.4"])
+        self.assertEqual(r1["releases"][0]["version"], "69.4")
+        self.assertIs(r1, r2)
+        hj.assert_called_once()
+
+    def test_force_refetches_and_transport_passed(self):
+        inst = self._make()
+        with mock.patch("core.zapret_installer._http_json",
+                        return_value=[]) as hj:
+            inst.list_releases(transport="singbox:proxy")
+            inst.list_releases(transport="singbox:proxy", force=True)
+        self.assertEqual(hj.call_count, 2)
+        self.assertEqual(hj.call_args.kwargs.get("transport"), "singbox:proxy")
+
+    def test_network_error_raises(self):
+        import urllib.error
+        inst = self._make()
+        with mock.patch("core.zapret_installer._http_json",
+                        side_effect=urllib.error.URLError("down")):
+            with self.assertRaises(RuntimeError):
+                inst.list_releases()
+
+    def test_get_release_by_tag(self):
+        inst = self._make()
+        raw = {"tag_name": "v69.3", "published_at": "x", "html_url": "u",
+               "body": "notes", "assets": [
+                   {"name": "zapret2-v69.3.tar.gz", "size": 10,
+                    "browser_download_url": "http://d/z.tar.gz"}]}
+        with mock.patch("core.zapret_installer._http_json",
+                        return_value=raw) as hj:
+            r = inst.get_release(tag="v69.3", transport="awg:wg0")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["tag_name"], "v69.3")
+        self.assertEqual(r["assets"][0]["download_url"], "http://d/z.tar.gz")
+        # Запрос идёт на тэг-эндпоинт, транспорт проброшен.
+        self.assertIn("releases/tags/v69.3", hj.call_args.args[0])
+        self.assertEqual(hj.call_args.kwargs.get("transport"), "awg:wg0")
+
+    def test_get_release_empty_tag_is_latest(self):
+        inst = self._make()
+        with mock.patch.object(inst, "get_latest_version",
+                               return_value={"ok": True}) as glv:
+            r = inst.get_release(tag="", transport="awg:wg0")
+        self.assertTrue(r["ok"])
+        glv.assert_called_once_with(force_refresh=False, transport="awg:wg0")
+
+
 class TestAwgListReleases(unittest.TestCase):
 
     SETTINGS = {

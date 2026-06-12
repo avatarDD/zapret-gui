@@ -30,6 +30,7 @@ from core.version import GUI_VERSION
 # ── Настройки ─────────────────────────────────────────────────
 
 GITHUB_API_URL = "https://api.github.com/repos/avatarDD/zapret-gui/releases/latest"
+GITHUB_API_RELEASES = "https://api.github.com/repos/avatarDD/zapret-gui/releases"
 GITHUB_RELEASES_URL = "https://github.com/avatarDD/zapret-gui/releases"
 GITHUB_REPO_URL = "https://github.com/avatarDD/zapret-gui"
 
@@ -39,7 +40,27 @@ GITHUB_REPO_URL = "https://github.com/avatarDD/zapret-gui"
 _GUI_TAG_RE = re.compile(r"^v?\d+\.\d+(\.\d+)?$")
 
 HTTP_TIMEOUT = 30
+DOWNLOAD_TIMEOUT = 300       # архив всего GUI — на роутере качается долго
 REMOTE_VERSION_CACHE_TTL = 300  # 5 минут
+RELEASES_CACHE_TTL = 300
+
+
+def _http_get_json(url: str, transport: str = "", timeout: int = HTTP_TIMEOUT):
+    """
+    GET JSON с GitHub через выбранный транспорт скачивания.
+
+    transport='' — обычное соединение; иначе через AWG/sing-box/mihomo
+    (см. core/download_transport). URL переписывается на зеркало
+    (resolve_url). Используется для списка версий и резолва последнего
+    тэга — чтобы выбор/установка работали и при заблокированном GitHub.
+    """
+    from core.binary_installer import resolve_url
+    from core.download_transport import urlopen_via
+    with urlopen_via(
+            resolve_url(url), transport=transport, timeout=timeout,
+            headers={"Accept": "application/vnd.github.v3+json",
+                     "User-Agent": "zapret-gui/%s" % GUI_VERSION}) as r:
+        return json.loads(r.read().decode("utf-8", errors="replace"))
 
 # Автоопределение пути установки GUI
 _APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,6 +88,10 @@ class GuiUpdater:
         # Кэш удалённой версии
         self._remote_version_cache = None
         self._remote_version_time = 0
+
+        # Кэш списка релизов (для выбора версии)
+        self._releases_cache = None
+        self._releases_time = 0
 
     # ═══════════════════ PUBLIC API ═══════════════════
 
@@ -139,6 +164,82 @@ class GuiUpdater:
         self._remote_version_time = now
         return result
 
+    def list_releases(self, transport: str = "", force: bool = False,
+                      limit: int = 30) -> dict:
+        """
+        Список релизов GUI (тэги vX.Y[.Z]) для выбора версии при
+        обновлении — последняя по умолчанию, но можно поставить старую.
+
+        Бинарные релизы (singbox-bin-*/awg-bin-*/manual-*) и предрелизы
+        отсеиваются (_GUI_TAG_RE + флаги draft/prerelease). transport —
+        через что обращаться к GitHub. Кэш 5 минут. Бросает RuntimeError
+        при недоступности GitHub.
+
+        Returns: {"ok": True, "releases": [{tag, version, published_at,
+                  description}]}
+        """
+        now = time.time()
+        with self._lock:
+            if (self._releases_cache is not None and not force
+                    and (now - self._releases_time) < RELEASES_CACHE_TTL):
+                return self._releases_cache
+
+        rels = []
+        want = max(1, min(int(limit or 30), 100))
+        for page in (1, 2):
+            url = "%s?per_page=100&page=%d" % (GITHUB_API_RELEASES, page)
+            try:
+                data = _http_get_json(url, transport=transport)
+            except HTTPError as e:
+                if e.code == 403:
+                    raise RuntimeError("Лимит запросов GitHub API исчерпан. "
+                                       "Попробуйте позже.")
+                raise RuntimeError("GitHub API вернул HTTP %d" % e.code)
+            except (URLError, OSError, ValueError) as e:
+                raise RuntimeError("Нет доступа к GitHub: %s" % e)
+
+            if not isinstance(data, list) or not data:
+                break
+            for rel in data:
+                if not isinstance(rel, dict):
+                    continue
+                if rel.get("draft") or rel.get("prerelease"):
+                    continue
+                tag = (rel.get("tag_name") or "").strip()
+                if not _GUI_TAG_RE.match(tag):
+                    continue
+                rels.append({
+                    "tag":          tag,
+                    "version":      tag.lstrip("v"),
+                    "published_at": rel.get("published_at") or "",
+                    "description":  (rel.get("body") or "")[:300],
+                })
+                if len(rels) >= want:
+                    break
+            if len(rels) >= want or len(data) < 100:
+                break
+
+        out = {"ok": True, "releases": rels}
+        with self._lock:
+            self._releases_cache = out
+            self._releases_time = now
+        return out
+
+    def _resolve_latest_tag(self, transport: str = "") -> str:
+        """
+        Тэг самого свежего GUI-релиза через выбранный транспорт ('' если
+        не удалось). Нужен для дефолта «последняя версия», когда GitHub
+        напрямую заблокирован, а обход поднят — list_releases пройдёт
+        через туннель.
+        """
+        try:
+            rels = self.list_releases(transport=transport).get("releases") or []
+        except Exception as e:
+            log.warning("Не удалось получить список релизов GUI: %s" % e,
+                        source="gui-updater")
+            return ""
+        return rels[0]["tag"] if rels else ""
+
     def get_version_comparison(self) -> dict:
         """
         Сравнить установленную и последнюю версии GUI.
@@ -172,12 +273,22 @@ class GuiUpdater:
             "error": latest.get("error"),
         }
 
-    def update(self, branch: str = "main") -> dict:
+    def update(self, tag: str = "", branch: str = "",
+               transport: str = "") -> dict:
         """
         Обновить zapret-gui из GitHub.
 
-        Скачивает архив ветки, распаковывает поверх текущей установки,
-        сохраняя конфигурацию и пользовательские стратегии.
+        Скачивает архив релиза/ветки, распаковывает поверх текущей
+        установки, сохраняя конфигурацию и пользовательские стратегии.
+
+        Источник (по приоритету):
+          tag    — конкретная версия (тэг релиза vX.Y.Z) →
+                   archive/refs/tags/<tag>.tar.gz;
+          branch — ветка (для разработки) → archive/refs/heads/<branch>;
+          ничего — последний релиз (latest by default); если его не
+                   удалось определить — фолбэк на ветку main.
+        transport — через что качать ('' — напрямую; иначе через
+                    AWG/sing-box/mihomo, см. core/download_transport).
 
         Returns:
             {"ok": bool, "message": str, "version": str | None}
@@ -190,7 +301,7 @@ class GuiUpdater:
             self._operation_progress = 0
 
         try:
-            return self._do_update(branch)
+            return self._do_update(tag=tag, branch=branch, transport=transport)
         finally:
             with self._lock:
                 self._operation_in_progress = False
@@ -211,22 +322,44 @@ class GuiUpdater:
             self._operation_status = status
             self._operation_progress = min(100, max(0, progress))
 
-    def _do_update(self, branch: str) -> dict:
+    def _do_update(self, tag: str = "", branch: str = "",
+                   transport: str = "") -> dict:
         """Основная логика обновления."""
         app_dir = _APP_DIR
         tmp_dir = "/tmp/zapret-gui-update-%d" % os.getpid()
 
+        # Что качаем: конкретный тэг → ветка → последний релиз (фолбэк main).
+        ref_label = ""
+        if tag:
+            archive_url = "%s/archive/refs/tags/%s.tar.gz" % (
+                GITHUB_REPO_URL, tag)
+            ref_label = "версии %s" % tag
+        elif branch:
+            archive_url = "%s/archive/refs/heads/%s.tar.gz" % (
+                GITHUB_REPO_URL, branch)
+            ref_label = "ветки %s" % branch
+        else:
+            latest_tag = self._resolve_latest_tag(transport=transport)
+            if latest_tag:
+                archive_url = "%s/archive/refs/tags/%s.tar.gz" % (
+                    GITHUB_REPO_URL, latest_tag)
+                ref_label = "последней версии (%s)" % latest_tag
+            else:
+                # Не смогли определить последний релиз (нет сети/лимит) —
+                # тянем main, как делали раньше.
+                archive_url = "%s/archive/refs/heads/main.tar.gz" % (
+                    GITHUB_REPO_URL)
+                ref_label = "ветки main"
+
         try:
             # 1. Скачать архив
-            self._set_progress("Загрузка с GitHub...", 10)
+            self._set_progress("Загрузка %s%s..." % (
+                ref_label, " через обход" if transport else " с GitHub"), 10)
             archive_path = os.path.join(tmp_dir, "gui.tar.gz")
             os.makedirs(tmp_dir, exist_ok=True)
 
-            archive_url = (
-                "%s/archive/refs/heads/%s.tar.gz"
-                % (GITHUB_REPO_URL, branch)
-            )
-            if not self._download_file(archive_url, archive_path):
+            if not self._download_file(archive_url, archive_path,
+                                       transport=transport):
                 return {
                     "ok": False,
                     "message": "Не удалось скачать архив с GitHub",
@@ -614,26 +747,34 @@ class GuiUpdater:
                 pass
         return None
 
-    def _download_file(self, url: str, dest: str) -> bool:
-        """Скачать файл."""
-        req = Request(
-            url,
-            headers={"User-Agent": "zapret-gui/%s" % GUI_VERSION},
-        )
+    def _download_file(self, url: str, dest: str, transport: str = "") -> bool:
+        """Скачать файл.
+
+        Делегируем core/binary_installer.download_file — зеркало
+        (ZAPRET_GUI_MIRROR / install.mirror), оффлайн (file://), транспорт
+        скачивания (awg/sing-box/mihomo) и retry. Прогресс загрузки
+        маппим в полосу обновления (диапазон 10%-28%, дальше идёт
+        распаковка/копирование).
+        """
         try:
-            with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                with open(dest, "wb") as f:
-                    while True:
-                        chunk = resp.read(65536)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-            return True
-        except (HTTPError, URLError, OSError) as e:
-            log.error(
-                "Ошибка загрузки %s: %s" % (url, e),
-                source="gui-updater",
-            )
+            from core import binary_installer as bi
+
+            def _cb(_stage, pct, _label):
+                self._set_progress("Загрузка с GitHub...",
+                                   max(10, min(28, int(pct))))
+
+            res = bi.download_file(url, dest, progress_cb=_cb,
+                                   progress_from=10, progress_to=28,
+                                   timeout=DOWNLOAD_TIMEOUT,
+                                   transport=transport)
+            if res.get("ok"):
+                return True
+            log.error("Ошибка загрузки %s: %s" % (url, res.get("error")),
+                      source="gui-updater")
+            return False
+        except Exception as e:
+            log.error("Ошибка загрузки %s: %s" % (url, e),
+                      source="gui-updater")
             return False
 
     def _fetch_github_latest_release(self) -> dict:

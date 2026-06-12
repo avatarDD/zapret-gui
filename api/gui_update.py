@@ -5,7 +5,8 @@ API обновления zapret-gui.
 Эндпоинты:
   GET  /api/gui/version     — текущая версия GUI
   GET  /api/gui/check       — проверить наличие обновлений GUI
-  POST /api/gui/update      — обновить GUI до последней версии
+  GET  /api/gui/releases    — список версий для выбора (?transport=&force=1)
+  POST /api/gui/update      — обновить GUI (body: {tag?, branch?, transport?})
   GET  /api/gui/progress    — прогресс обновления
 """
 
@@ -43,9 +44,29 @@ def register(app):
         comparison = updater.get_version_comparison()
         return {"ok": True, **comparison}
 
+    @app.route("/api/gui/releases")
+    def api_gui_releases():
+        """
+        Список релизов GUI для выбора версии при обновлении (последняя —
+        по умолчанию). ?transport= — через что обращаться к GitHub;
+        ?force=1 — мимо кэша.
+        """
+        response.content_type = "application/json; charset=utf-8"
+
+        from core.gui_updater import get_gui_updater
+        updater = get_gui_updater()
+
+        transport = (request.params.get("transport") or "").strip()
+        force = request.params.get("force", "").lower() in ("1", "true", "yes")
+        try:
+            return updater.list_releases(transport=transport, force=force)
+        except Exception as e:
+            response.status = 502
+            return {"ok": False, "error": str(e)}
+
     @app.post("/api/gui/update")
     def api_gui_update():
-        """Обновить GUI до последней версии."""
+        """Обновить GUI (body: {tag?, branch?, transport?})."""
         response.content_type = "application/json; charset=utf-8"
 
         from core.gui_updater import get_gui_updater
@@ -65,13 +86,17 @@ def register(app):
         except Exception:
             body = {}
 
-        branch = body.get("branch", "main")
+        # Пусто tag/branch → последний релиз (latest by default).
+        tag = (body.get("tag") or "").strip()
+        branch = (body.get("branch") or "").strip()
+        transport = (body.get("transport") or "").strip()
 
         # Запускаем в фоновом потоке
         result_holder = {"result": None}
 
         def update_task():
-            result_holder["result"] = updater.update(branch=branch)
+            result_holder["result"] = updater.update(
+                tag=tag, branch=branch, transport=transport)
 
         t = threading.Thread(
             target=update_task, daemon=True, name="gui-update"
