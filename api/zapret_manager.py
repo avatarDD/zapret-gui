@@ -9,8 +9,9 @@ API управления zapret2: версии, установка, обновл
   GET  /api/zapret/check        — проверить наличие обновлений
   GET  /api/zapret/running      — запущен ли nfqws2
   GET  /api/zapret/progress     — прогресс текущей операции
-  POST /api/zapret/install      — установить zapret2
-  POST /api/zapret/update       — обновить zapret2
+  GET  /api/zapret/releases     — список версий для выбора (?transport=&force=1)
+  POST /api/zapret/install      — установить zapret2 (body: {tag?, transport?})
+  POST /api/zapret/update       — обновить zapret2  (body: {tag?, transport?})
   GET  /api/zapret/uninstall-plan — что будет удалено
   POST /api/zapret/uninstall    — удалить zapret2
   POST /api/zapret/stop         — остановить nfqws2 (вспомогательный)
@@ -112,14 +113,41 @@ def register(app):
         data = inst.get_operation_status()
         return {"ok": True, **data}
 
-    @app.post("/api/zapret/install")
-    def api_zapret_install():
-        """Установить zapret2 из последнего релиза."""
+    @app.route("/api/zapret/releases")
+    def api_zapret_releases():
+        """
+        Список релизов bol-van/zapret2 для выбора версии при установке
+        (последняя — по умолчанию). ?transport= — через что обращаться к
+        GitHub (для аудитории с заблокированным GitHub); ?force=1 —
+        мимо кэша.
+        """
         response.content_type = "application/json; charset=utf-8"
 
         from core.zapret_installer import get_zapret_installer
-        from core.log_buffer import log
         inst = get_zapret_installer()
+
+        transport = (request.params.get("transport") or "").strip()
+        force = request.params.get("force", "").lower() in ("1", "true", "yes")
+        try:
+            return inst.list_releases(transport=transport, force=force)
+        except Exception as e:
+            response.status = 502
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/api/zapret/install")
+    def api_zapret_install():
+        """Установить zapret2 (body: {tag?, transport?})."""
+        response.content_type = "application/json; charset=utf-8"
+
+        from core.zapret_installer import get_zapret_installer
+        inst = get_zapret_installer()
+
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        tag = (body.get("tag") or "").strip()
+        transport = (body.get("transport") or "").strip()
 
         # Проверяем, не установлен ли уже
         installed = inst.get_installed_version()
@@ -136,7 +164,7 @@ def register(app):
         result_holder = {"result": None}
 
         def install_task():
-            result_holder["result"] = inst.install()
+            result_holder["result"] = inst.install(tag=tag, transport=transport)
 
         t = threading.Thread(target=install_task, daemon=True,
                              name="zapret-install")
@@ -162,11 +190,18 @@ def register(app):
 
     @app.post("/api/zapret/update")
     def api_zapret_update():
-        """Обновить zapret2 до последней версии."""
+        """Обновить zapret2 (body: {tag?, transport?}; пусто tag — последняя)."""
         response.content_type = "application/json; charset=utf-8"
 
         from core.zapret_installer import get_zapret_installer
         inst = get_zapret_installer()
+
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        tag = (body.get("tag") or "").strip()
+        transport = (body.get("transport") or "").strip()
 
         # Проверяем, установлен ли
         installed = inst.get_installed_version()
@@ -182,7 +217,7 @@ def register(app):
         result_holder = {"result": None}
 
         def update_task():
-            result_holder["result"] = inst.update()
+            result_holder["result"] = inst.update(tag=tag, transport=transport)
 
         t = threading.Thread(target=update_task, daemon=True,
                              name="zapret-update")

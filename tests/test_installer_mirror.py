@@ -38,6 +38,31 @@ class TestZapretDownloadDelegates(unittest.TestCase):
         called_urls = [c.args[0] for c in run.call_args_list]
         self.assertTrue(all("https://mirror/u" in argv for argv in called_urls))
 
+    def test_download_file_passes_transport(self):
+        """transport пробрасывается в binary_installer.download_file —
+        nfqws2 можно качать через AWG/sing-box/mihomo."""
+        from core.zapret_installer import ZapretInstaller
+        inst = ZapretInstaller()
+        with mock.patch("core.binary_installer.download_file",
+                        return_value={"ok": True, "size": 1}) as df:
+            ok = inst._download_file("https://github.com/o/r/x.tar.gz",
+                                     "/tmp/x", transport="awg:wg0")
+        self.assertTrue(ok)
+        self.assertEqual(df.call_args.kwargs.get("transport"), "awg:wg0")
+
+    def test_download_file_no_direct_fallback_with_transport(self):
+        """При явном транспорте прямой wget/curl-фолбэк запрещён —
+        иначе обход теряет смысл (GitHub заблокирован напрямую)."""
+        from core.zapret_installer import ZapretInstaller
+        inst = ZapretInstaller()
+        with mock.patch("core.binary_installer.download_file",
+                        return_value={"ok": False, "error": "net"}), \
+             mock.patch("subprocess.run") as run:
+            ok = inst._download_file("https://github.com/o/r/x", "/tmp/x",
+                                     transport="singbox:proxy")
+        self.assertFalse(ok)
+        run.assert_not_called()
+
 
 class TestAwgDownloadDelegates(unittest.TestCase):
 

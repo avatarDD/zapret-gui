@@ -4,9 +4,11 @@
 
 Функции:
   - Определение установленной версии nfqws2 (--version)
-  - Получение последней версии из GitHub Releases API
-  - Установка zapret2 из релизного архива
-  - Обновление zapret2 (с сохранением конфигурации)
+  - Получение последней версии и списка релизов из GitHub Releases API
+  - Установка/обновление zapret2 с выбором версии (последняя по умолчанию)
+  - Скачивание напрямую ИЛИ через средство обхода (AWG / sing-box /
+    mihomo) — по аналогии с установщиками этих движков, для аудитории с
+    заблокированным GitHub (см. core/download_transport)
   - Удаление zapret2 с очисткой
   - Определение архитектуры и платформы
 
@@ -15,8 +17,9 @@
     inst = get_zapret_installer()
     inst.get_installed_version()
     inst.get_latest_version()
-    inst.install()
-    inst.update()
+    inst.list_releases(transport="awg:wg0")     # версии для выбора
+    inst.install(tag="v69.4", transport="awg:wg0")
+    inst.update(transport="singbox:proxy")      # последняя, через обход
     inst.get_uninstall_plan()
     inst.uninstall()
 """
@@ -31,14 +34,15 @@ import tarfile
 import threading
 import time
 import zipfile
-from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
 from core.log_buffer import log
 
 
 # GitHub API для проверки последней версии
-GITHUB_API_URL = "https://api.github.com/repos/bol-van/zapret2/releases/latest"
+GITHUB_REPO = "bol-van/zapret2"
+GITHUB_API_BASE = "https://api.github.com/repos/bol-van/zapret2"
+GITHUB_API_URL = GITHUB_API_BASE + "/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/bol-van/zapret2/releases"
 
 # Таймауты (секунды)
@@ -48,6 +52,24 @@ INSTALL_TIMEOUT = 300  # 5 минут на загрузку + установку
 
 # Кэширование remote-версии (не чаще раза в 5 минут)
 REMOTE_VERSION_CACHE_TTL = 300
+
+
+def _http_json(url: str, timeout: int = HTTP_TIMEOUT, transport: str = ""):
+    """
+    GET JSON с GitHub API через выбранный транспорт скачивания.
+
+    transport='' — обычное соединение; 'awg[:iface]' / 'singbox[:name]' /
+    'mihomo[:name]' — через туннель/локальный прокси (см.
+    core/download_transport). URL переписывается на зеркало
+    (resolve_url), как и сами загрузки релизов.
+    """
+    from core.binary_installer import resolve_url
+    from core.download_transport import urlopen_via
+    with urlopen_via(
+            resolve_url(url), transport=transport, timeout=timeout,
+            headers={"Accept": "application/vnd.github.v3+json",
+                     "User-Agent": "zapret-gui/zapret-installer"}) as r:
+        return json.loads(r.read().decode("utf-8", errors="replace"))
 
 
 class ZapretInstaller:
@@ -65,6 +87,10 @@ class ZapretInstaller:
         self._remote_version_cache = None
         self._remote_version_time = 0
         self._remote_release_data = None
+
+        # Кэш списка релизов (для выбора версии при установке)
+        self._releases_cache = None
+        self._releases_time = 0
 
     # ═══════════════════ PUBLIC API ═══════════════════
 
@@ -119,9 +145,15 @@ class ZapretInstaller:
 
         return result
 
-    def get_latest_version(self, force_refresh: bool = False) -> dict:
+    def get_latest_version(self, force_refresh: bool = False,
+                           transport: str = "") -> dict:
         """
         Получить последнюю доступную версию из GitHub Releases.
+
+        transport — через что обращаться к GitHub ('' — напрямую;
+        'awg[:iface]' / 'singbox[:name]' / 'mihomo[:name]' — через
+        средство обхода, см. core/download_transport). Кэш общий для
+        всех транспортов (данные релиза одни и те же).
 
         Returns:
             {
@@ -154,7 +186,7 @@ class ZapretInstaller:
         }
 
         try:
-            data = self._fetch_github_latest_release()
+            data = self._fetch_github_latest_release(transport=transport)
             if data:
                 result["ok"] = True
                 result["version"] = data.get("tag_name", "").strip()
@@ -184,6 +216,97 @@ class ZapretInstaller:
         self._remote_version_time = now
 
         return result
+
+    def get_release(self, tag: str = "", transport: str = "",
+                    force: bool = False) -> dict:
+        """
+        Получить данные конкретного релиза (по тэгу) либо последнего.
+
+        Нормализованный результат той же формы, что у
+        get_latest_version (ok/version/tag_name/assets/...). Пустой tag —
+        последний релиз (с кэшем get_latest_version); конкретный tag
+        запрашивается каждый раз (без кэша — установка редкая операция).
+        """
+        if not tag:
+            return self.get_latest_version(force_refresh=force,
+                                           transport=transport)
+
+        result = {
+            "ok": False, "version": None, "tag_name": None,
+            "published_at": None, "release_url": GITHUB_RELEASES_URL,
+            "description": None, "assets": [], "error": None,
+        }
+        url = "%s/releases/tags/%s" % (GITHUB_API_BASE, tag)
+        try:
+            data = _http_json(url, transport=transport)
+        except HTTPError as e:
+            result["error"] = ("Релиз %s не найден на GitHub (HTTP %d)"
+                               % (tag, e.code))
+            return result
+        except (URLError, OSError, ValueError) as e:
+            result["error"] = "Нет доступа к GitHub: %s" % e
+            return result
+
+        if not isinstance(data, dict) or not data.get("tag_name"):
+            result["error"] = "Некорректный ответ GitHub для релиза %s" % tag
+            return result
+
+        result["ok"] = True
+        result["version"] = data.get("tag_name", "").strip()
+        result["tag_name"] = data.get("tag_name", "").strip()
+        result["published_at"] = data.get("published_at")
+        result["release_url"] = data.get("html_url", GITHUB_RELEASES_URL)
+        result["description"] = (data.get("body") or "")[:500]
+        result["assets"] = [{
+            "name": a.get("name", ""),
+            "size": a.get("size", 0),
+            "download_url": a.get("browser_download_url", ""),
+        } for a in data.get("assets", [])]
+        return result
+
+    def list_releases(self, transport: str = "", force: bool = False,
+                      limit: int = 30) -> dict:
+        """
+        Список релизов bol-van/zapret2 для выбора версии при установке
+        (последняя — по умолчанию, но можно поставить старую). Кэш 5
+        минут. Бросает RuntimeError при недоступности GitHub.
+
+        Returns: {"ok": True, "releases": [{tag, version, prerelease,
+                  published_at}]}
+        """
+        now = time.time()
+        with self._lock:
+            if (self._releases_cache is not None and not force
+                    and (now - self._releases_time) < REMOTE_VERSION_CACHE_TTL):
+                return self._releases_cache
+
+        url = "%s/releases?per_page=%d" % (
+            GITHUB_API_BASE, max(1, min(int(limit or 30), 100)))
+        try:
+            data = _http_json(url, transport=transport)
+        except (URLError, HTTPError, OSError, ValueError) as e:
+            raise RuntimeError("GitHub API недоступен: %s" % e)
+        if not isinstance(data, list):
+            raise RuntimeError("Некорректный ответ GitHub releases (не список)")
+
+        rels = []
+        for rel in data:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            tag = (rel.get("tag_name") or "").strip()
+            if not tag:
+                continue
+            rels.append({
+                "tag":          tag,
+                "version":      tag.lstrip("v"),
+                "prerelease":   bool(rel.get("prerelease")),
+                "published_at": rel.get("published_at") or "",
+            })
+        out = {"ok": True, "releases": rels}
+        with self._lock:
+            self._releases_cache = out
+            self._releases_time = now
+        return out
 
     def get_version_comparison(self) -> dict:
         """
@@ -217,9 +340,15 @@ class ZapretInstaller:
             "is_installed": installed["installed"],
         }
 
-    def install(self) -> dict:
+    def install(self, tag: str = "", transport: str = "") -> dict:
         """
-        Установить zapret2 из последнего релиза.
+        Установить zapret2 из релиза.
+
+        tag       — конкретная версия (тэг релиза bol-van/zapret2);
+                    пусто — последняя.
+        transport — через что качать ('' — напрямую; 'awg[:iface]' /
+                    'singbox[:name]' / 'mihomo[:name]' — через средство
+                    обхода, см. core/download_transport).
 
         Returns:
             {"ok": bool, "message": str, "version": str | None}
@@ -233,14 +362,18 @@ class ZapretInstaller:
             self._operation_progress = 0
 
         try:
-            return self._do_install(is_update=False)
+            return self._do_install(is_update=False, tag=tag,
+                                    transport=transport)
         finally:
             with self._lock:
                 self._operation_in_progress = False
 
-    def update(self) -> dict:
+    def update(self, tag: str = "", transport: str = "") -> dict:
         """
-        Обновить zapret2 до последней версии (с сохранением конфигурации).
+        Обновить zapret2 (с сохранением конфигурации).
+
+        tag       — конкретная версия; пусто — последняя.
+        transport — через что качать (см. install).
 
         Returns:
             {"ok": bool, "message": str, "version": str | None}
@@ -254,7 +387,8 @@ class ZapretInstaller:
             self._operation_progress = 0
 
         try:
-            return self._do_install(is_update=True)
+            return self._do_install(is_update=True, tag=tag,
+                                    transport=transport)
         finally:
             with self._lock:
                 self._operation_in_progress = False
@@ -558,25 +692,15 @@ class ZapretInstaller:
             return ver
         return None
 
-    def _fetch_github_latest_release(self) -> dict:
-        """Получить данные последнего релиза с GitHub API."""
-        try:
-            from core.binary_installer import resolve_url
-            api_url = resolve_url(GITHUB_API_URL)
-        except Exception:
-            api_url = GITHUB_API_URL
-        req = Request(
-            api_url,
-            headers={
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "zapret-gui/1.0",
-            },
-        )
+    def _fetch_github_latest_release(self, transport: str = "") -> dict:
+        """Получить данные последнего релиза с GitHub API.
 
+        transport — через что обращаться к GitHub (см. _http_json):
+        для аудитории с заблокированным GitHub проверка/установка может
+        идти через уже поднятый AWG/sing-box/mihomo.
+        """
         try:
-            with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return data
+            return _http_json(GITHUB_API_URL, transport=transport)
         except HTTPError as e:
             if e.code == 403:
                 raise Exception(
@@ -586,7 +710,7 @@ class ZapretInstaller:
             raise Exception("GitHub API вернул HTTP %d" % e.code)
         except URLError as e:
             raise Exception("Нет доступа к GitHub: %s" % e.reason)
-        except json.JSONDecodeError:
+        except (ValueError, json.JSONDecodeError):
             raise Exception("Ошибка разбора ответа GitHub API")
 
     def _is_newer_version(self, installed: str, latest: str) -> bool:
@@ -707,15 +831,20 @@ class ZapretInstaller:
         return {"ok": False,
                 "message": "Не удалось остановить nfqws2 (PID %d)" % pid}
 
-    def _do_install(self, is_update: bool = False) -> dict:
+    def _do_install(self, is_update: bool = False, tag: str = "",
+                    transport: str = "") -> dict:
         """
         Выполнить установку или обновление zapret2.
 
+        tag       — версия (тэг релиза); пусто — последняя.
+        transport — через что качать ('' — напрямую; иначе через
+                    AWG/sing-box/mihomo, см. core/download_transport).
+
         Шаги:
         1. Проверяем, запущен ли nfqws2 → останавливаем
-        2. Получаем данные последнего релиза
+        2. Получаем данные релиза (выбранного или последнего)
         3. Определяем подходящий архив для архитектуры
-        4. Скачиваем
+        4. Скачиваем (через выбранный транспорт)
         5. Распаковываем во временную директорию
         6. При обновлении — бэкапим конфиг
         7. Копируем файлы
@@ -728,7 +857,9 @@ class ZapretInstaller:
         action_name = "обновление" if is_update else "установку"
         base_path = cfg.get("zapret", "base_path") or "/opt/zapret2"
 
-        log.info("Начинаем %s zapret2..." % action_name, source="installer")
+        log.info("Начинаем %s zapret2 (версия: %s, транспорт: %s)..."
+                 % (action_name, tag or "последняя", transport or "напрямую"),
+                 source="installer")
 
         # ── Шаг 1: Остановить nfqws2 ──
         self._update_op("Проверка запущенных процессов...", 5)
@@ -747,9 +878,10 @@ class ZapretInstaller:
             self._remove_firewall_rules()
             time.sleep(0.5)
 
-        # ── Шаг 2: Получить последний релиз ──
-        self._update_op("Получение информации о последнем релизе...", 12)
-        latest = self.get_latest_version(force_refresh=True)
+        # ── Шаг 2: Получить релиз (выбранный или последний) ──
+        rel_label = ("релизе %s" % tag) if tag else "последнем релизе"
+        self._update_op("Получение информации о %s..." % rel_label, 12)
+        latest = self.get_release(tag=tag, transport=transport, force=True)
         if not latest["ok"]:
             return {
                 "ok": False,
@@ -786,7 +918,8 @@ class ZapretInstaller:
         try:
             os.makedirs(tmp_dir, exist_ok=True)
 
-            success = self._download_file(download_url, archive_path)
+            success = self._download_file(download_url, archive_path,
+                                          transport=transport)
             if not success:
                 return {
                     "ok": False,
@@ -1060,16 +1193,23 @@ class ZapretInstaller:
 
         return None
 
-    def _download_file(self, url: str, dest: str) -> bool:
+    def _download_file(self, url: str, dest: str, transport: str = "") -> bool:
         """Загрузить файл по URL.
 
         Делегируем общей утилите core/binary_installer.download_file —
-        она применяет зеркало (ZAPRET_GUI_MIRROR / install.mirror) и
-        умеет оффлайн (file://), плюс retry. Прогресс маппим в _update_op
-        (диапазон 20%-50%, как раньше). wget/curl остаются fallback'ом на
-        переписанный (зеркальный) URL.
+        она применяет зеркало (ZAPRET_GUI_MIRROR / install.mirror), умеет
+        оффлайн (file://) и транспорт скачивания (awg/sing-box/mihomo),
+        плюс retry. Прогресс маппим в _update_op (диапазон 20%-50%, как
+        раньше).
+
+        wget/curl остаются fallback'ом только для прямого скачивания: при
+        явном транспорте тихий откат на прямое соединение свёл бы на нет
+        весь смысл обхода (GitHub у пользователя заблокирован напрямую) —
+        поэтому при заданном transport фолбэк не используется.
         """
-        log.info("Загрузка: %s" % url, source="installer")
+        log.info("Загрузка: %s%s" % (
+            url, " (через %s)" % transport if transport else ""),
+            source="installer")
 
         try:
             from core import binary_installer as bi
@@ -1080,7 +1220,8 @@ class ZapretInstaller:
 
             res = bi.download_file(url, dest, progress_cb=_cb,
                                    progress_from=20, progress_to=50,
-                                   timeout=INSTALL_TIMEOUT)
+                                   timeout=INSTALL_TIMEOUT,
+                                   transport=transport)
             if res.get("ok"):
                 log.info("Загружено: %s (%s)" % (
                     dest, self._format_size(res.get("size", 0))
@@ -1093,6 +1234,13 @@ class ZapretInstaller:
             log.error("Ошибка загрузки через binary_installer: %s" % e,
                       source="installer")
             eff_url = url
+
+        # При явном транспорте прямой wget/curl-фолбэк недопустим.
+        if transport and transport != "direct":
+            log.error("Загрузка через транспорт '%s' не удалась "
+                      "(прямой фолбэк отключён)" % transport,
+                      source="installer")
+            return False
 
         # Fallback: wget (на зеркальный URL, если зеркало задано)
         try:

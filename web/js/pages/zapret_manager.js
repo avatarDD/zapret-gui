@@ -14,11 +14,38 @@ const ZapretManagerPage = (() => {
     // ══════════════════ State ══════════════════
 
     let data = null;
+    let guiInfo = null;            // последний ответ /api/gui/check
     let pollTimer = null;
     let progressTimer = null;
     let guiProgressTimer = null;
     let isOperationRunning = false;
     let guiUpdateRunning = false;
+
+    // Выбор версии + транспорт скачивания (напрямую / awg / sing-box /
+    // mihomo) — общий под-компонент (см. components/setup_ui.js), тот же,
+    // что в установке sing-box/mihomo/awg. Два независимых экземпляра:
+    // движок nfqws2 (/api/zapret) и сам веб-интерфейс (/api/gui).
+    const extrasNfqws = InstallExtras.create({
+        globalPath: 'ZapretManagerPage.extrasNfqws',
+        apiBase: '/api/zapret',
+        onChange: onExtrasChange,
+    });
+    const extrasGui = InstallExtras.create({
+        globalPath: 'ZapretManagerPage.extrasGui',
+        apiBase: '/api/gui',
+        onChange: onExtrasChange,
+    });
+
+    // Перерисовать только блоки «версия + транспорт» и подписи кнопок —
+    // лёгкая операция, безопасна до загрузки data.
+    function onExtrasChange() {
+        const n = document.getElementById('zm-nfqws-extras');
+        if (n) n.innerHTML = extrasNfqws.optionsHtml();
+        const g = document.getElementById('zm-gui-extras');
+        if (g) g.innerHTML = extrasGui.optionsHtml();
+        renderActions();
+        renderGuiActions();
+    }
 
     // ══════════════════ Render ══════════════════
 
@@ -154,8 +181,34 @@ const ZapretManagerPage = (() => {
                     </svg>
                     Действия
                 </div>
+                <!-- Выбор версии (последняя по умолчанию) + транспорт скачивания -->
+                <div id="zm-nfqws-extras" style="margin-top: 12px;"></div>
                 <div class="actions-row" style="margin-top: 12px;" id="zm-actions">
                     <!-- Кнопки формируются динамически -->
+                </div>
+            </div>
+
+            <!-- Управление веб-интерфейсом (zapret-gui) -->
+            <div class="card" style="margin-top: 16px; padding: 16px 20px;" id="zm-gui-card">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                        <line x1="8" y1="21" x2="16" y2="21"/>
+                        <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    Веб-интерфейс (zapret-gui)
+                </div>
+                <div style="margin-top: 8px; font-size: 13px; color: var(--text-secondary);">
+                    Текущая версия: <strong id="zm-gui-installed" style="color: var(--text-primary);">—</strong>
+                    <span id="zm-gui-latest-wrap" class="hidden">
+                        • последняя: <strong id="zm-gui-latest" style="color: var(--accent);">—</strong>
+                        <span id="zm-gui-updhint"></span>
+                    </span>
+                </div>
+                <!-- Выбор версии (последняя по умолчанию) + транспорт скачивания -->
+                <div id="zm-gui-extras" style="margin-top: 12px;"></div>
+                <div class="actions-row" style="margin-top: 12px;" id="zm-gui-actions">
+                    <!-- Кнопка формируется динамически -->
                 </div>
             </div>
 
@@ -221,6 +274,12 @@ const ZapretManagerPage = (() => {
             </div>
         `;
 
+        // Первичная отрисовка блоков «версия + транспорт» и кнопок;
+        // список транспортов подтянется фоном (общий кэш) и перерисует.
+        onExtrasChange();
+        extrasNfqws.loadTransports();
+        extrasGui.loadTransports();
+
         // Загружаем данные
         loadData();
         startPoll();
@@ -241,12 +300,65 @@ const ZapretManagerPage = (() => {
         // Проверка обновлений GUI (не блокирует основную загрузку)
         try {
             const guiCheck = await API.get('/api/gui/check');
+            guiInfo = guiCheck;
             if (guiCheck.update_available) {
                 showGuiUpdateBanner(guiCheck);
             }
+            renderGuiCard();
         } catch (e) {
             // Не критично — молча пропускаем
         }
+    }
+
+    // ══════════════════ GUI card (версия + обновление) ══════════════════
+
+    function renderGuiCard() {
+        const inst = document.getElementById('zm-gui-installed');
+        const wrap = document.getElementById('zm-gui-latest-wrap');
+        const latEl = document.getElementById('zm-gui-latest');
+        const hint = document.getElementById('zm-gui-updhint');
+        if (inst) {
+            inst.textContent = (guiInfo && guiInfo.installed_version)
+                ? ('v' + guiInfo.installed_version) : '—';
+        }
+        if (wrap && latEl) {
+            const latest = guiInfo && guiInfo.latest_version;
+            if (latest) {
+                wrap.classList.remove('hidden');
+                latEl.textContent = 'v' + latest;
+                if (hint) {
+                    hint.innerHTML = guiInfo.update_available
+                        ? '<span style="color: var(--warning);">— доступно обновление</span>'
+                        : '<span style="color: var(--success);">— актуально</span>';
+                }
+            } else {
+                wrap.classList.add('hidden');
+            }
+        }
+        renderGuiActions();
+    }
+
+    function renderGuiActions() {
+        const c = document.getElementById('zm-gui-actions');
+        if (!c) return;
+        const tag = extrasGui.selectedTag();
+        // Пока проверка версии не пришла (guiInfo === null) — нейтральное
+        // «Обновить GUI»; когда известно, что апдейта нет — «Переустановить».
+        const label = tag
+            ? 'Установить выбранную версию'
+            : ((guiInfo && !guiInfo.update_available) ? 'Переустановить GUI'
+               : 'Обновить GUI');
+        c.innerHTML = `
+            <button class="btn btn-primary btn-sm" id="zm-btn-gui-update"
+                    ${guiUpdateRunning ? 'disabled' : ''}
+                    onclick="ZapretManagerPage.updateGui()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                ${label}
+            </button>`;
     }
 
     function renderData() {
@@ -369,10 +481,13 @@ const ZapretManagerPage = (() => {
         if (!container || !data) return;
 
         const inst = data.installed || {};
-        const running = data.nfqws_running || {};
         const op = data.operation || {};
         const disabled = op.in_progress || isOperationRunning;
-        const updateDisabled = disabled || !data.update_available;
+        const tagSelected = !!extrasNfqws.selectedTag();
+        // Выбрана конкретная версия → разрешаем «обновить» даже когда
+        // апдейта нет (переустановка / откат на другую версию).
+        const updateDisabled = disabled || (!data.update_available
+                                            && !tagSelected);
 
         let html = '';
 
@@ -385,7 +500,7 @@ const ZapretManagerPage = (() => {
                         <polyline points="7 10 12 15 17 10"/>
                         <line x1="12" y1="15" x2="12" y2="3"/>
                     </svg>
-                    Установить zapret2
+                    ${tagSelected ? 'Установить выбранную версию' : 'Установить zapret2'}
                 </button>
             `;
         } else {
@@ -397,7 +512,7 @@ const ZapretManagerPage = (() => {
                         <polyline points="7 10 12 15 17 10"/>
                         <line x1="12" y1="15" x2="12" y2="3"/>
                     </svg>
-                    Обновить
+                    ${tagSelected ? 'Установить выбранную версию' : 'Обновить'}
                 </button>
                 <button class="btn btn-danger" onclick="ZapretManagerPage.showUninstallPlan()" ${disabled ? 'disabled' : ''} id="zm-btn-uninstall">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -446,7 +561,10 @@ const ZapretManagerPage = (() => {
         startProgressPolling();
 
         try {
-            const result = await API.post('/api/zapret/install', {});
+            // {tag?, transport?} — выбранная версия (пусто = последняя)
+            // и транспорт скачивания (пусто = напрямую).
+            const result = await API.post('/api/zapret/install',
+                                          extrasNfqws.installBody());
             if (result.in_progress) {
                 Toast.info('Установка запущена. Ожидайте...');
                 // Продолжаем polling прогресса
@@ -476,7 +594,8 @@ const ZapretManagerPage = (() => {
         startProgressPolling();
 
         try {
-            const result = await API.post('/api/zapret/update', {});
+            const result = await API.post('/api/zapret/update',
+                                          extrasNfqws.installBody());
             if (result.in_progress) {
                 Toast.info('Обновление запущено. Ожидайте...');
             } else if (result.ok) {
@@ -606,6 +725,10 @@ const ZapretManagerPage = (() => {
                     renderData();
                 }
 
+                if (guiCheck && guiCheck.ok) {
+                    guiInfo = guiCheck;
+                    renderGuiCard();
+                }
                 if (guiCheck && guiCheck.update_available) {
                     showGuiUpdateBanner(guiCheck);
                 } else if (guiCheck && !guiCheck.update_available && guiCheck.ok) {
@@ -862,11 +985,15 @@ const ZapretManagerPage = (() => {
         if (isOperationRunning || guiUpdateRunning) return;
 
         guiUpdateRunning = true;
+        renderGuiActions();
         showProgress('Запуск обновления GUI...', 0, 'Обновление zapret-gui...');
         startGuiProgressPolling();
 
         try {
-            const result = await API.post('/api/gui/update', {});
+            // {tag?, transport?} — выбранная версия (пусто = последняя)
+            // и транспорт скачивания (пусто = напрямую).
+            const result = await API.post('/api/gui/update',
+                                          extrasGui.installBody());
 
             if (result.in_progress) {
                 Toast.info('Обновление GUI запущено. Следите за прогрессом...');
@@ -883,12 +1010,14 @@ const ZapretManagerPage = (() => {
                 stopGuiProgressPolling();
                 guiUpdateRunning = false;
                 hideProgress();
+                renderGuiActions();
                 Toast.error(result.message || 'Ошибка обновления GUI');
             }
         } catch (err) {
             stopGuiProgressPolling();
             guiUpdateRunning = false;
             hideProgress();
+            renderGuiActions();
             Toast.error('Ошибка: ' + err.message);
         }
     }
@@ -919,5 +1048,9 @@ const ZapretManagerPage = (() => {
         confirmUninstall,
         closeUninstallModal,
         updateGui: doGuiUpdate,
+        // Экземпляры под-компонента «версия + транспорт» — для inline-
+        // обработчиков (loadReleases / onTagChange / onTransportChange).
+        extrasNfqws,
+        extrasGui,
     };
 })();

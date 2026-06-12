@@ -108,5 +108,85 @@ class TestSelfUpdateAssetSync(unittest.TestCase):
                       "(см. issue #144)")
 
 
+class TestGuiListReleases(unittest.TestCase):
+    """Выбор версии GUI: list_releases() отбирает тэги vX.Y[.Z],
+    отсеивая бинарные релизы и предрелизы, и пробрасывает транспорт."""
+
+    def test_filters_gui_tags(self):
+        page1 = [
+            {"tag_name": "singbox-bin-v1.14.0", "prerelease": False,
+             "draft": False},
+            {"tag_name": "v0.22.1", "prerelease": False, "draft": False,
+             "published_at": "2026-06-12T00:00:00Z", "body": "n"},
+            {"tag_name": "v0.22.0", "prerelease": False, "draft": False},
+            {"tag_name": "v0.21.9-rc1", "prerelease": True, "draft": False},
+            {"tag_name": "v0.21.8", "prerelease": False, "draft": True},
+        ]
+
+        def fake(url, transport="", timeout=0):
+            return page1 if "page=1" in url else []
+
+        with mock.patch.object(gu, "_http_get_json", side_effect=fake):
+            r = GuiUpdater().list_releases()
+        self.assertTrue(r["ok"])
+        self.assertEqual([x["tag"] for x in r["releases"]],
+                         ["v0.22.1", "v0.22.0"])
+        self.assertEqual(r["releases"][0]["version"], "0.22.1")
+
+    def test_transport_passed_and_cache(self):
+        with mock.patch.object(gu, "_http_get_json",
+                               return_value=[]) as hj:
+            up = GuiUpdater()
+            up.list_releases(transport="mihomo:proxy")
+            up.list_releases(transport="mihomo:proxy")        # из кэша
+            up.list_releases(transport="mihomo:proxy", force=True)
+        self.assertEqual(hj.call_count, 2)
+        self.assertEqual(hj.call_args.kwargs.get("transport"), "mihomo:proxy")
+
+    def test_network_error_raises(self):
+        import urllib.error
+        with mock.patch.object(gu, "_http_get_json",
+                               side_effect=urllib.error.URLError("x")):
+            with self.assertRaises(RuntimeError):
+                GuiUpdater().list_releases()
+
+
+class TestGuiUpdateRef(unittest.TestCase):
+    """update(tag/branch/'') резолвится в правильный archive-URL,
+    транспорт пробрасывается в загрузку (latest by default)."""
+
+    def _run(self, resolved="v9.9.9", **kw):
+        up = GuiUpdater()
+        seen = {}
+
+        def fake_dl(url, dest, transport=""):
+            seen["url"] = url
+            seen["transport"] = transport
+            return False    # обрываем до распаковки
+
+        with mock.patch.object(up, "_download_file", side_effect=fake_dl), \
+             mock.patch.object(up, "_resolve_latest_tag",
+                               return_value=resolved):
+            up._do_update(**kw)
+        return seen
+
+    def test_explicit_tag(self):
+        seen = self._run(tag="v1.2.3", transport="awg:wg0")
+        self.assertIn("/archive/refs/tags/v1.2.3.tar.gz", seen["url"])
+        self.assertEqual(seen["transport"], "awg:wg0")
+
+    def test_explicit_branch(self):
+        seen = self._run(branch="dev")
+        self.assertIn("/archive/refs/heads/dev.tar.gz", seen["url"])
+
+    def test_default_is_latest_release(self):
+        seen = self._run()
+        self.assertIn("/archive/refs/tags/v9.9.9.tar.gz", seen["url"])
+
+    def test_default_falls_back_to_main(self):
+        seen = self._run(resolved="")
+        self.assertIn("/archive/refs/heads/main.tar.gz", seen["url"])
+
+
 if __name__ == "__main__":
     unittest.main()
