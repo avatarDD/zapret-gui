@@ -167,8 +167,19 @@ def build_test_config(outbounds: list, *, clash_port: int,
     """
     Собрать одноразовый sing-box-конфиг для замеров: все кандидаты +
     selector + mixed-inbound + clash_api. Чистая функция (тестируется).
+
+    vless-flow нормализуется (…-vision-udp443 → vision): в сохранённых
+    ранее конфигах такой flow ещё встречается, а sing-box на нём падает
+    целиком — погиб бы весь батч. Спец-outbound'а block нет — он удалён
+    в sing-box 1.13 и тоже валил бы каждый батч на новых бинарях.
     """
-    tags = [o.get("tag") for o in outbounds if isinstance(o, dict)
+    from core.singbox_config import normalize_vless_flow
+    obs = []
+    for o in outbounds:
+        if isinstance(o, dict) and o.get("type") == "vless" and o.get("flow"):
+            o = dict(o, flow=normalize_vless_flow(o["flow"]))
+        obs.append(o)
+    tags = [o.get("tag") for o in obs if isinstance(o, dict)
             and o.get("tag")]
     group = {
         "type": "selector",
@@ -182,10 +193,9 @@ def build_test_config(outbounds: list, *, clash_port: int,
             "type": "mixed", "tag": "mixed-in",
             "listen": "127.0.0.1", "listen_port": int(mixed_port),
         }],
-        "outbounds": list(outbounds) + [
+        "outbounds": obs + [
             group,
             {"type": "direct", "tag": "direct"},
-            {"type": "block", "tag": "block"},
         ],
         "route": {
             "rules": [{"inbound": ["mixed-in"], "outbound": "test-select"}],

@@ -100,7 +100,20 @@ class TestRunUnitTests(unittest.TestCase):
         with mock.patch.object(selfcheck, "INSTALL_DIR", "/nonexistent-xyz"):
             r = selfcheck.run_unit_tests()
         self.assertFalse(r["ok"])
+        self.assertTrue(r["skipped_run"])
         self.assertIn("tests/", r["error"])
+
+    def test_run_all_with_skipped_tests_not_failed(self):
+        # Поставка без tests/ — не провал: итог зависит только от секций
+        # (раньше «тесты FAILED — каталог не найден» роняли весь итог).
+        from unittest import mock
+        skipped = {"ok": False, "skipped_run": True,
+                   "error": "каталог tests/ не найден (/x)"}
+        with mock.patch.object(selfcheck, "run_unit_tests",
+                               return_value=skipped):
+            res = selfcheck.run_all(include_tests=True)
+        self.assertEqual(res["ok"], res["summary"]["fail"] == 0)
+        self.assertTrue(res["tests"]["skipped_run"])
 
 
 class TestAsyncRunner(unittest.TestCase):

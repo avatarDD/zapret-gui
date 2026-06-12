@@ -177,6 +177,40 @@ class TestParseClashYaml(unittest.TestCase):
         self.assertEqual(v["tls"]["utls"],
                          {"enabled": True, "fingerprint": "chrome"})
 
+    def test_vision_udp443_flow_normalized(self):
+        # Xray-вариант flow → vision (sing-box иного не принимает).
+        yaml = (
+            "proxies:\n"
+            "  - name: u443\n"
+            "    type: vless\n"
+            "    server: ex.com\n"
+            "    port: 443\n"
+            "    uuid: u-1\n"
+            "    flow: xtls-rprx-vision-udp443\n"
+        )
+        r = parse_clash_yaml(yaml)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        v = [o for o in r["outbounds"] if o["type"] == "vless"][0]
+        self.assertEqual(v["flow"], "xtls-rprx-vision")
+
+    def test_legacy_flow_skipped(self):
+        # Легаси xtls-flow sing-box не примет («unsupported flow») —
+        # сервер пропускается, как ss с легаси stream-шифром.
+        yaml = (
+            "proxies:\n"
+            "  - name: legacy\n"
+            "    type: vless\n"
+            "    server: ex.com\n"
+            "    port: 443\n"
+            "    uuid: u-1\n"
+            "    flow: xtls-rprx-splice\n"
+        )
+        r = parse_clash_yaml(yaml)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        self.assertEqual(
+            [o for o in r["outbounds"] if o["type"] == "vless"], [])
+        self.assertEqual(len(r["skipped"]), 1)
+
     def test_trojan_skip_cert_verify(self):
         r = parse_clash_yaml(SIMPLE_CLASH)
         tr = [o for o in r["outbounds"] if o["type"] == "trojan"][0]

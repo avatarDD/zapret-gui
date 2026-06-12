@@ -652,6 +652,28 @@ def build_fakeip_config(*, proxy_outbound: dict,
     }
 
 
+# Единственный непустой flow, который принимает sing-box для vless.
+# Любой другой роняет ВЕСЬ процесс на initialize («unsupported flow: …»).
+# Xray-вариант 'xtls-rprx-vision-udp443' (vision + пропуск UDP/443)
+# для sing-box эквивалентен vision — нормализуем. Легаси-flow
+# (xtls-rprx-origin/direct/splice[-udp443]) sing-box не умеет вовсе —
+# такие серверы из публичных списков надо отбрасывать.
+VLESS_SUPPORTED_FLOW = "xtls-rprx-vision"
+
+
+def normalize_vless_flow(flow) -> str:
+    """'xtls-rprx-vision-udp443' → 'xtls-rprx-vision'; прочее — как есть."""
+    f = str(flow or "").strip()
+    if f == VLESS_SUPPORTED_FLOW + "-udp443":
+        return VLESS_SUPPORTED_FLOW
+    return f
+
+
+def vless_flow_supported(flow) -> bool:
+    """Пройдёт ли flow (после нормализации) через sing-box."""
+    return normalize_vless_flow(flow) in ("", VLESS_SUPPORTED_FLOW)
+
+
 def make_vless_outbound(tag: str, server: str, port: int, uuid: str,
                         *, flow: str = "",
                         transport: dict = None,
@@ -660,6 +682,7 @@ def make_vless_outbound(tag: str, server: str, port: int, uuid: str,
     Собрать VLESS-outbound dict. Минимум: server, port, uuid.
 
     flow:       часто 'xtls-rprx-vision' для Reality
+                ('…-udp443' нормализуется, см. normalize_vless_flow)
     transport:  {"type": "ws", "path": "/", "headers": {...}} или
                 {"type": "grpc", "service_name": "..."}
     tls:        {"enabled": True, "server_name": "...",
@@ -668,6 +691,7 @@ def make_vless_outbound(tag: str, server: str, port: int, uuid: str,
     """
     out = {"type": "vless", "tag": tag,
            "server": server, "server_port": int(port), "uuid": uuid}
+    flow = normalize_vless_flow(flow)
     if flow:
         out["flow"] = flow
     if transport:
@@ -981,10 +1005,15 @@ def outbound_key_problem(ob: dict):
     процесс sing-box (всё-или-ничего):
       - reality без public_key (ссылка без `pbk`) → пустой ключ;
       - reality с битым/обрезанным public_key;
-      - wireguard с некорректным peer public_key.
+      - wireguard с некорректным peer public_key;
+      - vless с flow, который sing-box не принимает («unsupported flow»).
+        Нормализуемый '…-vision-udp443' проблемой НЕ считается — его
+        чинят normalize_vless_flow на этапах импорта/теста.
     """
     if not isinstance(ob, dict):
         return None
+    if ob.get("type") == "vless" and not vless_flow_supported(ob.get("flow")):
+        return "vless: flow '%s' не поддерживается sing-box" % ob.get("flow")
     tls = ob.get("tls") or {}
     reality = (tls.get("reality") or {}) if isinstance(tls, dict) else {}
     if isinstance(reality, dict) and reality.get("enabled"):

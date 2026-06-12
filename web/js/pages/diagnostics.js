@@ -323,14 +323,18 @@ const DiagnosticsPage = (() => {
         const t = res.tests;
         if (t) {
             const ok = !!t.ok;
+            // skipped_run — тестов нет в поставке: не провал, нейтральная метка
+            const skipped = !ok && !!t.skipped_run;
+            const mark = ok ? '✓' : skipped ? '·' : '✗';
+            const color = ok ? 'var(--success)' : skipped ? 'var(--text-muted)' : 'var(--error)';
             testsHtml = `<div style="margin-top:8px;">
                 <div style="font-size:12px; font-weight:600;">Юнит-тесты</div>
                 <div style="display:flex; gap:8px; font-size:12px;">
-                    <span style="color:${ok ? 'var(--success)' : 'var(--error)'}; width:14px; flex:none;">${ok ? '✓' : '✗'}</span>
+                    <span style="color:${color}; width:14px; flex:none;">${mark}</span>
                     <span>${_esc(t.error || t.summary || '?')}
                         ${t.ran ? ` — ${t.ran} тестов за ${(t.duration || 0).toFixed(1)}с` : ''}</span>
                 </div>
-                ${!ok && t.tail ? `<pre class="diag-manual-output" style="max-height:240px; overflow:auto; margin-top:6px;">${_esc(t.tail)}</pre>` : ''}
+                ${!ok && !skipped && t.tail ? `<pre class="diag-manual-output" style="max-height:240px; overflow:auto; margin-top:6px;">${_esc(t.tail)}</pre>` : ''}
             </div>`;
         }
 

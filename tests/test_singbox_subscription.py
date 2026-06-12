@@ -124,6 +124,24 @@ class TestVless(unittest.TestCase):
         self.assertEqual(ob["tls"]["reality"]["public_key"], PUB)
         self.assertEqual(ob["tls"]["utls"]["fingerprint"], "chrome")
 
+    def test_vision_udp443_flow_normalized(self):
+        # Xray-вариант flow: sing-box знает только xtls-rprx-vision.
+        uri = ("vless://uuid-1@vpn.example:443"
+               "?security=reality&pbk=" + PUB + "&sid=01"
+               "&flow=xtls-rprx-vision-udp443&type=tcp#udp443")
+        r = vless_to_outbound(uri)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        self.assertEqual(r["outbound"]["flow"], "xtls-rprx-vision")
+
+    def test_legacy_flow_rejected(self):
+        # Легаси xtls-flow роняет sing-box на старте («unsupported flow»)
+        # — отсекаем при импорте, как reality без pbk.
+        uri = ("vless://uuid-1@vpn.example:443"
+               "?security=tls&flow=xtls-rprx-direct&type=tcp#legacy")
+        r = vless_to_outbound(uri)
+        self.assertFalse(r["ok"])
+        self.assertIn("flow", r["error"])
+
     def test_ws_transport(self):
         uri = ("vless://uuid@host:443"
                "?security=tls&type=ws&path=%2Fws&host=ws.example#wsv")

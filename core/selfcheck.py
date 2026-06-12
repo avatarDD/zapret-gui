@@ -327,8 +327,10 @@ def check_config() -> dict:
     has_tests = os.path.isdir(tests_dir)
     checks.append(_check(
         "каталог tests/", True,
-        tests_dir if has_tests else "не найден — юнит-тесты недоступны",
-        level="ok" if has_tests else "warn"))
+        tests_dir if has_tests else
+        "не найден — прогон юнит-тестов пропускается "
+        "(обновление через install.sh вернёт их)",
+        level="ok" if has_tests else "info"))
     return _section("config", "Конфигурация и файлы", checks)
 
 
@@ -415,7 +417,9 @@ def run_unit_tests(pattern: str = "", timeout: int = TESTS_TIMEOUT) -> dict:
     tests_dir = os.path.join(INSTALL_DIR, "tests")
     if not os.path.isdir(tests_dir):
         return {"ok": False, "skipped_run": True,
-                "error": "каталог tests/ не найден (%s)" % tests_dir}
+                "error": "каталог tests/ не найден (%s) — "
+                         "поставка без тестов, прогон пропущен; "
+                         "обновление через install.sh вернёт их" % tests_dir}
     args = [sys.executable, "-m", "unittest", "discover",
             "-s", "tests", "-p", pattern or "test_*.py"]
     rc, out, err = _run(args, timeout=timeout, cwd=INSTALL_DIR)
@@ -484,6 +488,11 @@ def run_all(include_tests: bool = True, tests_pattern: str = "",
                         (" (%s)" % tests["summary"]) if tests.get("summary")
                         else ""),
                      source="selfcheck")
+        elif tests.get("skipped_run"):
+            # Не провал, а отсутствие тестов в поставке — не пугаем
+            # «FAILED» и не роняем итог самодиагностики.
+            log.info("самодиагностика: тесты пропущены — %s"
+                     % tests.get("error", "?"), source="selfcheck")
         else:
             log.warning("самодиагностика: тесты FAILED — %s; хвост:\n%s"
                         % (tests.get("summary") or tests.get("error", "?"),
@@ -494,7 +503,8 @@ def run_all(include_tests: bool = True, tests_pattern: str = "",
     for sec in sections:
         for c in sec["checks"]:
             counts[c["level"]] = counts.get(c["level"], 0) + 1
-    ok = counts["fail"] == 0 and (tests is None or bool(tests.get("ok")))
+    ok = counts["fail"] == 0 and (tests is None or bool(tests.get("ok"))
+                                  or bool(tests.get("skipped_run")))
 
     result = {
         "ok": ok,
