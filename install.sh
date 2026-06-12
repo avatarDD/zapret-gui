@@ -316,9 +316,10 @@ install_from_github() {
     $SUDO mkdir -p "$APP_DIR"
     $SUDO mkdir -p "$CONFIG_DIR"
 
-    # Копируем основные файлы
+    # Копируем основные файлы (tests — для самодиагностики:
+    # она умеет гонять юнит-тесты прямо на устройстве)
     $SUDO cp "$src_dir/app.py" "$APP_DIR/"
-    for dir in api core config web catalogs data import vendor; do
+    for dir in api core config web catalogs data import vendor tests; do
         if [ -d "$src_dir/$dir" ]; then
             $SUDO rm -rf "$APP_DIR/$dir"
             $SUDO cp -r "$src_dir/$dir" "$APP_DIR/"
