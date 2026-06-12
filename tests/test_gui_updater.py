@@ -108,6 +108,25 @@ class TestSelfUpdateAssetSync(unittest.TestCase):
                       "(см. issue #144)")
 
 
+class TestSelfUpdateCopiesTests(unittest.TestCase):
+    """
+    Regression: self-update должен копировать tests/, как это делает
+    install.sh. Иначе после обновления через веб-интерфейс каталог
+    tests/ исчезает, и самодиагностика рапортует «поставка без тестов»
+    (хотя обновление прошло) — прогон юнит-тестов на устройстве молча
+    пропадает.
+    """
+
+    def test_tests_dir_is_copied_on_update(self):
+        """tests/ обязан быть в dirs_to_update — для самодиагностики,
+        которая гоняет юнит-тесты прямо на устройстве."""
+        import inspect
+        src = inspect.getsource(GuiUpdater._do_update)
+        self.assertIn('"tests"', src,
+                      "self-update должен копировать tests/ "
+                      "(паритет с install.sh)")
+
+
 class TestGuiListReleases(unittest.TestCase):
     """Выбор версии GUI: list_releases() отбирает тэги vX.Y[.Z],
     отсеивая бинарные релизы и предрелизы, и пробрасывает транспорт."""

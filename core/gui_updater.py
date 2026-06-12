@@ -408,9 +408,14 @@ class GuiUpdater:
             # «LUA ERROR: invalid failure detector function ...» (issue #144).
             # vendor/ — встроенный bottle.py: без него свежая установка
             # (или система, где удалили python3-bottle) не запустится.
+            # tests/ — для самодиагностики: она умеет гонять юнит-тесты
+            # прямо на устройстве. install.sh их копирует, поэтому
+            # self-update обязан делать то же самое — иначе после
+            # GUI-обновления каталог tests/ пропадает и selfcheck
+            # рапортует «поставка без тестов» (хотя обновление было).
             dirs_to_update = [
                 "api", "core", "web", "config", "catalogs", "data", "import",
-                "vendor",
+                "vendor", "tests",
             ]
             files_to_update = ["app.py"]
 
