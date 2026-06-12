@@ -3279,19 +3279,28 @@ input:focus, textarea:focus, select:focus {
 .settings-field-label {
     font-size: 13px;
     color: var(--text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.35;
+    /* Длинные подписи переносятся, а не обрезаются полем */
+    overflow-wrap: break-word;
+    min-width: 0;
 }
 
 .settings-field-input {
+    /* Колонка: подсказка (hint) встаёт ПОД полем, а не вплотную сбоку */
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    min-width: 0;
 }
 
 .settings-field-input .form-input {
     width: 100%;
     max-width: 360px;
+}
+
+.settings-field-input .text-muted {
+    max-width: 520px;
 }
 
 .settings-field-input .form-select {
