@@ -775,13 +775,20 @@ const AwgDashboardPage = (() => {
                 <span>Переподключать при плохом соединении</span>
             </label>
             <p class="text-muted" style="font-size:12px; margin:6px 0 0;">
-                Периодически проверяет связь через туннель и автоматически
-                перезапускает его, если соединение деградировало (handshake
-                устарел или проба не проходит). Помогает, когда AmneziaWG
-                «зависает»: сайты тормозят, потом сеть отваливается.
+                Следит за туннелем и автоматически перезапускает его при
+                зависании. Ловит три случая: handshake устарел; туннель
+                <b>шлёт, но не принимает</b> (данные встали, хотя handshake
+                ещё «свежий» — частая причина «сайты тормозят, потом сеть
+                отваливается»); активная проба не проходит. Детектор «приём
+                встал» работает по счётчикам самого демона — без лишнего
+                трафика. Совет: задайте в конфиге PersistentKeepalive&nbsp;=&nbsp;25,
+                чтобы зависание ловилось и в простое.
             </p>
             <div id="wd-advanced" style="margin-top:10px; ${reconnectOn ? '' : 'display:none;'}">
                 <div style="display:grid; grid-template-columns:200px 1fr; gap:6px 12px; max-width:560px; align-items:center;">
+                    <label class="text-muted" style="font-size:12px;">Нет приёма данных, с → рестарт</label>
+                    <input type="number" id="wd-rxstall" class="form-control" style="max-width:100px;"
+                           min="30" max="3600" value="${escapeAttr(s.rx_stall_timeout_sec || 120)}">
                     <label class="text-muted" style="font-size:12px;">Хост для проверки</label>
                     <input type="text" id="wd-probe-host" class="form-control" style="max-width:200px;"
                            value="${escapeAttr(s.probe_host || '1.1.1.1')}">
@@ -804,10 +811,12 @@ const AwgDashboardPage = (() => {
         const host = (document.getElementById('wd-probe-host') || {}).value;
         const thr = (document.getElementById('wd-probe-thr') || {}).value;
         const hs = (document.getElementById('wd-hs') || {}).value;
+        const rx = (document.getElementById('wd-rxstall') || {}).value;
         const payload = { enabled: on, probe_enabled: on };
         if (host) payload.probe_host = String(host).trim();
         if (thr) payload.probe_fail_threshold = parseInt(thr, 10) || 2;
         if (hs) payload.handshake_timeout_sec = parseInt(hs, 10) || 180;
+        if (rx) payload.rx_stall_timeout_sec = parseInt(rx, 10) || 120;
         try {
             const r = await API.post('/api/awg/watchdog', payload);
             if (r && r.ok) {
