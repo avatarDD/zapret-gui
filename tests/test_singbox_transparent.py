@@ -16,6 +16,7 @@ from core.singbox_config import (
     make_hijack_dns_rule, make_tun_inbound, set_tun_inbound,
     find_tun_interface, active_outbound_tag,
     make_routing_dns, collect_proxy_server_domains,
+    build_system_route_config,
 )
 
 
@@ -915,6 +916,54 @@ class TestSbinPath(unittest.TestCase):
                           os.environ["PATH"].split(os.pathsep))
         finally:
             os.environ["PATH"] = orig
+
+
+class TestSystemRouteConfig(unittest.TestCase):
+    """build_system_route_config — kernel-стек (auto_route+system+source_ip)."""
+
+    PROXY = {"type": "hysteria2", "tag": "x", "server": "vpn.example.com",
+             "server_port": 8449, "password": "p",
+             "tls": {"enabled": True, "server_name": "sni"}}
+
+    def test_selective_by_source_ip(self):
+        cfg = build_system_route_config(
+            proxy_outbound=self.PROXY, source_ips=["192.168.1.117"])
+        tun = next(ib for ib in cfg["inbounds"] if ib["type"] == "tun")
+        self.assertTrue(tun["auto_route"])
+        self.assertEqual(tun["stack"], "system")
+        self.assertFalse(tun.get("strict_route"))
+        # source_ip_cidr выбранного устройства → proxy-out
+        self.assertTrue(any(
+            r.get("source_ip_cidr") == ["192.168.1.117/32"]
+            and r.get("outbound") == "proxy-out"
+            for r in cfg["route"]["rules"]))
+        self.assertEqual(cfg["route"]["final"], "direct")
+        # служебные правила и прокси-DNS
+        self.assertIn(make_sniff_rule(), cfg["route"]["rules"])
+        self.assertIn(make_hijack_dns_rule(), cfg["route"]["rules"])
+        self.assertEqual(cfg["dns"]["final"], "dns-proxy")
+        self.assertEqual(cfg["outbounds"][0]["tag"], "proxy-out")
+
+    def test_route_all(self):
+        cfg = build_system_route_config(proxy_outbound=self.PROXY,
+                                        route_all=True)
+        self.assertEqual(cfg["route"]["final"], "proxy-out")
+        self.assertFalse(any("source_ip_cidr" in r
+                             for r in cfg["route"]["rules"]))
+
+    def test_reject_quic_and_typed_resolver(self):
+        cfg = build_system_route_config(
+            proxy_outbound=self.PROXY, source_ips=["10.0.0.5"],
+            reject_quic=True, typed_dns=True)
+        self.assertIn({"network": "udp", "port": 443, "action": "reject"},
+                      cfg["route"]["rules"])
+        self.assertEqual(cfg["route"]["default_domain_resolver"],
+                         {"server": "dns-direct"})
+        # домен прокси-сервера резолвится напрямую (без петли)
+        self.assertTrue(any(
+            r.get("server") == "dns-direct"
+            and "vpn.example.com" in (r.get("domain") or [])
+            for r in cfg["dns"]["rules"]))
 
 
 if __name__ == "__main__":

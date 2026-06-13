@@ -830,6 +830,40 @@ def register(app):
             response.status = 400
         return res
 
+    @app.route("/api/singbox/lite-route/build", method="POST")
+    def singbox_lite_route_build():
+        """
+        Собрать конфиг маршрутизации на kernel-стеке (auto_route+system+
+        source_ip_cidr) — низкий CPU. body: proxy_link|proxy_config,
+        source_ips[], route_all, reject_quic, tun_iface, name.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.singbox_fakeip import build_lite_route_and_save
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+
+        def _list(v):
+            if isinstance(v, list):
+                return [str(x).strip() for x in v if str(x).strip()]
+            if isinstance(v, str):
+                return [s.strip() for s in re.split(r"[\s,]+", v) if s.strip()]
+            return []
+
+        res = build_lite_route_and_save(
+            name=(body.get("name") or "lite-route"),
+            proxy_link=(body.get("proxy_link") or ""),
+            proxy_config=(body.get("proxy_config") or ""),
+            source_ips=_list(body.get("source_ips")),
+            route_all=bool(body.get("route_all")),
+            reject_quic=bool(body.get("reject_quic")),
+            tun_iface=(body.get("tun_iface") or "singbox-tun"),
+        )
+        if not res.get("ok"):
+            response.status = 400
+        return res
+
     # ─────── outbounds CRUD (для Outbounds Builder UI) ────────────
 
     @app.route("/api/singbox/configs/<name>/outbounds")
