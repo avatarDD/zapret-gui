@@ -112,6 +112,14 @@ class Destination:
         cidrs = list(self.cidrs)
         for lid in self.list_ids:
             try:
+                # `hl:<имя>` — существующий nfqws2-хостлист (hostlist_manager),
+                # чтобы в маршрутизации можно было выбирать уже заведённые
+                # списки доменов, а не только named-lists со страницы «Списки».
+                if isinstance(lid, str) and lid.startswith("hl:"):
+                    from core.hostlist_manager import get_hostlist_manager
+                    doms = get_hostlist_manager().get_hostlist(lid[3:]) or []
+                    domains += [str(d) for d in doms]
+                    continue
                 from core.named_lists import resolve as _resolve_list
                 r = _resolve_list(lid)
                 domains += r.get("domains", [])

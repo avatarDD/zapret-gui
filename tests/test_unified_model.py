@@ -66,6 +66,20 @@ class TestDestination(unittest.TestCase):
         self.assertIn("x.com", r["domains"])
         self.assertIn("9.9.9.9/32", r["cidrs"])
 
+    def test_resolve_with_nfqws_hostlist(self):
+        # list_id вида `hl:<имя>` разворачивается через hostlist_manager
+        # (nfqws2-хостлисты доступны для выбора в маршрутизации).
+        fake_hm = mock.Mock()
+        fake_hm.get_hostlist.return_value = ["yt.com", "vk.com"]
+        with mock.patch("core.hostlist_manager.get_hostlist_manager",
+                        return_value=fake_hm):
+            d = Destination(domains=["a.com"], list_ids=["hl:my-list"])
+            r = d.resolve()
+        fake_hm.get_hostlist.assert_called_once_with("my-list")
+        self.assertIn("a.com", r["domains"])
+        self.assertIn("yt.com", r["domains"])
+        self.assertIn("vk.com", r["domains"])
+
     def test_empty(self):
         self.assertTrue(Destination().is_empty())
         self.assertFalse(Destination(domains=["a.com"]).is_empty())

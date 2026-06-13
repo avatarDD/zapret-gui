@@ -23,6 +23,7 @@ const RoutingUnifiedPage = (() => {
     let interfaces = [];      // /api/routing/interfaces (ndms/singbox/активные awg)
     let awgConfigs = [];      // /api/awg/configs (цели даже для лежащих туннелей)
     let namedLists = [];
+    let hostLists = [];       // /api/hostlists — nfqws2-хостлисты (id `hl:имя`)
     let legacyRules = [];     // /api/unified/legacy — старый формат
     let dnsmasqInfo = null;   // /api/routing/dnsmasq/status
     let ndmsInfo = null;      // /api/routing/ndms/status
@@ -136,7 +137,7 @@ const RoutingUnifiedPage = (() => {
     async function loadAux() {
         try {
             const [ifResp, listResp, cfgResp, dnResp, ndmsResp, envResp,
-                   netResp, legResp] =
+                   netResp, legResp, hlResp] =
                 await Promise.all([
                     API.get('/api/routing/interfaces').catch(() => null),
                     API.get('/api/lists').catch(() => null),
@@ -146,9 +147,18 @@ const RoutingUnifiedPage = (() => {
                     API.get('/api/awg/environment').catch(() => null),
                     API.get('/api/network/environment').catch(() => null),
                     API.get('/api/unified/legacy').catch(() => null),
+                    API.get('/api/hostlists').catch(() => null),
                 ]);
             interfaces  = (ifResp && ifResp.interfaces) || [];
             namedLists  = (listResp && listResp.lists) || [];
+            // nfqws2-хостлисты как выбираемые списки маршрутизации (id `hl:имя`).
+            // Domain-движок разворачивает их через Destination.resolve().
+            const hlFiles = (hlResp && hlResp.files) || [];
+            hostLists = hlFiles.map(f => ({
+                id: 'hl:' + (f.name || f.file || ''),
+                name: ((f.name || f.file || '') + ' (nfqws2'
+                       + (f.count != null ? ', ' + f.count : '') + ')'),
+            })).filter(x => x.id !== 'hl:');
             awgConfigs  = (cfgResp && cfgResp.configs) || [];
             dnsmasqInfo = dnResp || null;
             ndmsInfo    = ndmsResp || null;
@@ -572,7 +582,8 @@ const RoutingUnifiedPage = (() => {
         if (!editing) { box.innerHTML = ''; renderBanners(); return; }
         const e = editing;
         const d = e.destination || {};
-        const listChecks = namedLists.map(l =>
+        const allLists = namedLists.concat(hostLists);
+        const listChecks = allLists.map(l =>
             `<label class="text-muted" style="display:inline-flex; gap:4px; margin-right:12px; font-size:12px;">
                 <input type="checkbox" value="${escAttr(l.id)}"
                        ${(d.list_ids||[]).includes(l.id) ? 'checked' : ''}
