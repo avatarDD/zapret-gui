@@ -217,3 +217,92 @@ def build_and_save(*, name: str = "fakeip", proxy_link: str = "",
         "warning": warning,
         "warnings": save.get("warnings") or [],
     }
+
+
+# ─────────────────────── lite-route (kernel-стек, low-CPU) ───────────────
+
+def build_lite_route_and_save(*, name: str = "lite-route", proxy_link: str = "",
+                              proxy_config: str = "", source_ips=None,
+                              route_all: bool = False, reject_quic: bool = False,
+                              tun_iface: str = "singbox-tun") -> dict:
+    """
+    Собрать конфиг маршрутизации на KERNEL-стеке (auto_route + system +
+    source_ip_cidr внутри движка) — низкий CPU, без gvisor. См.
+    core.singbox_config.build_system_route_config.
+    """
+    import secrets
+    from core.singbox_config import (
+        build_system_route_config, render_conf, ensure_clash_api)
+    from core.singbox_manager import get_singbox_manager
+    from core.singbox_platform import detect_singbox_platform
+    from core.singbox_detector import get_singbox_detector
+    from core.proxy_tester import _free_port
+
+    name = (name or "lite-route").strip()
+    tun_iface = (tun_iface or "singbox-tun").strip()[:15]
+
+    pr = _resolve_proxy(proxy_link, proxy_config)
+    if not pr.get("ok"):
+        return pr
+    proxy_outbound = pr["outbound"]
+
+    srcs = [str(s).strip() for s in (source_ips or []) if str(s).strip()]
+    if not route_all and not srcs:
+        return {"ok": False,
+                "error": "укажите IP устройств (source_ip) или включите"
+                         " режим «весь трафик»"}
+
+    nft = False
+    try:
+        nft = bool(detect_singbox_platform().supports_nftables())
+    except Exception:
+        pass
+
+    def _mk(typed: bool):
+        cfg = build_system_route_config(
+            proxy_outbound=proxy_outbound, source_ips=srcs,
+            route_all=route_all, tun_iface=tun_iface, typed_dns=typed,
+            reject_quic=reject_quic, auto_redirect=nft)
+        try:
+            ensure_clash_api(cfg, port=_free_port(),
+                             secret=secrets.token_hex(8))
+        except Exception:
+            pass
+        return render_conf(cfg)
+
+    ver = _parse_minor(get_singbox_detector().detect_binary().get("version"))
+    order = [True, False] if ver >= (1, 14) else [False, True]
+
+    mgr = get_singbox_manager()
+    chosen_text, fmt, warning, last_err = None, "", "", ""
+    for typed in order:
+        text = _mk(typed)
+        chk = mgr.check_text(text)
+        if chk.get("no_binary"):
+            chosen_text, fmt = text, ("typed" if typed else "legacy")
+            warning = "sing-box не установлен — конфиг сохранён без проверки"
+            break
+        if chk.get("ok"):
+            chosen_text, fmt = text, ("typed" if typed else "legacy")
+            break
+        last_err = chk.get("error") or last_err
+
+    if chosen_text is None:
+        return {"ok": False,
+                "error": "sing-box отверг сгенерированный конфиг: %s"
+                         % (last_err or "неизвестная ошибка")}
+
+    save = mgr.save_config(name, text=chosen_text)
+    if not save.get("ok"):
+        return {"ok": False, "error": save.get("error")}
+
+    log.info("singbox lite-route: конфиг '%s' создан (формат=%s, source=%d,"
+             " режим=%s, auto_redirect=%s)"
+             % (name, fmt, len(srcs), "всё" if route_all else "выборочно",
+                nft), source="singbox")
+    return {
+        "ok": True, "name": name, "dns_format": fmt, "stack": "system",
+        "route_all": bool(route_all), "sources": len(srcs),
+        "auto_redirect": nft, "warning": warning,
+        "warnings": save.get("warnings") or [],
+    }

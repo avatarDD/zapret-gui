@@ -842,7 +842,85 @@ def build_fakeip_config(*, proxy_outbound: dict,
     }
 
 
-# Единственный непустой flow, который принимает sing-box для vless.
+def _norm_src_cidr(s: str) -> str:
+    """IP без маски → /32 (v4) или /128 (v6); CIDR — как есть."""
+    s = (s or "").strip()
+    if not s or "/" in s:
+        return s
+    return s + ("/128" if ":" in s else "/32")
+
+
+def build_system_route_config(*, proxy_outbound: dict, source_ips=None,
+                              route_all: bool = False,
+                              tun_iface: str = "singbox-tun",
+                              tun_address=None, mtu: int = 1500,
+                              typed_dns: bool = False,
+                              reject_quic: bool = False,
+                              auto_redirect: bool = False,
+                              doh_ip: str = "1.1.1.1") -> dict:
+    """
+    Конфиг маршрутизации на KERNEL-стеке (low-CPU, без gvisor):
+
+      TUN(auto_route=true, stack="system") — sing-box сам забирает трафик
+      через системный сетевой стек ядра (намного легче gvisor на слабом
+      MIPS), а кого слать в прокси решают ВНУТРЕННИЕ route-правила движка:
+        - route_all=True  → весь трафик → proxy-out (final);
+        - иначе           → только source_ip_cidr выбранных устройств →
+                            proxy-out, остальное → direct (final).
+
+    DNS перехватывается (hijack-dns) и резолвится через прокси (DoH) — как в
+    остальных режимах. Приватные адреса (LAN) — мимо прокси. strict_route НЕ
+    включаем (чтобы случайно не «залочить» роутер), auto_detect_interface для
+    direct-выхода — чтобы не было петли через сам TUN.
+
+    ⚠️ Экспериментально на Keenetic: auto_route ставит свои ip rule/route, что
+    может конфликтовать с NDM; на iptables-Keenetic перехват ПЕРЕСЫЛАЕМОГО
+    трафика LAN-клиентов через auto_route не гарантирован (для nft есть
+    auto_redirect). Откат — простой `down` инстанса (auto_route снимается).
+    """
+    if not isinstance(proxy_outbound, dict) or not proxy_outbound.get("type"):
+        raise ValueError("proxy_outbound должен быть dict с полем type")
+
+    proxy_ob = dict(proxy_outbound)
+    proxy_ob["tag"] = "proxy-out"
+    srcs = [_norm_src_cidr(s) for s in (source_ips or []) if str(s).strip()]
+    selective = (not route_all) and bool(srcs)
+
+    tun = make_tun_inbound(interface_name=tun_iface, address=tun_address,
+                           mtu=mtu, stack="system", auto_route=True,
+                           strict_route=False, auto_redirect=auto_redirect)
+
+    srv = (proxy_ob.get("server") or "").strip()
+    proxy_doms = [srv] if (srv and not _looks_like_ip(srv)) else []
+
+    rules = [
+        {"action": "sniff"},
+        {"protocol": "dns", "action": "hijack-dns"},
+        {"ip_is_private": True, "outbound": "direct"},
+    ]
+    if reject_quic:
+        rules.append({"network": "udp", "port": 443, "action": "reject"})
+    if selective:
+        rules.append({"source_ip_cidr": srcs, "outbound": "proxy-out"})
+
+    route = {
+        "rules": rules,
+        "final": "proxy-out" if route_all else "direct",
+        "auto_detect_interface": True,
+    }
+    if typed_dns:
+        route["default_domain_resolver"] = {"server": "dns-direct"}
+
+    return {
+        "log": {"level": "info", "timestamp": True},
+        "dns": make_routing_dns(proxy_tag="proxy-out",
+                                proxy_server_domains=proxy_doms,
+                                doh_ip=doh_ip, typed=typed_dns),
+        "inbounds": [tun],
+        "outbounds": [proxy_ob, {"type": "direct", "tag": "direct"}],
+        "route": route,
+        "experimental": {"cache_file": {"enabled": True, "path": "cache.db"}},
+    }
 # Любой другой роняет ВЕСЬ процесс на initialize («unsupported flow: …»).
 # Xray-вариант 'xtls-rprx-vision-udp443' (vision + пропуск UDP/443)
 # для sing-box эквивалентен vision — нормализуем. Легаси-flow

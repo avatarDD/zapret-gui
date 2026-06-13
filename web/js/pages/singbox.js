@@ -38,6 +38,12 @@ const SingboxDashboardPage = (() => {
         route_all: false, hostlists: {}, domains: '', cidrs: '',
         direct_dns: 'local', stack: 'system', capture_dns: true,
     };
+    let liteForm = {                 // форма маршрутизации на kernel-стеке
+        name: 'lite-route', proxy_link: '', proxy_config: '',
+        source_ips: '', route_all: false, reject_quic: false,
+    };
+    let liteRendered = false;
+    let liteBusy = false;
 
     // ══════════════ render ══════════════
 
@@ -76,6 +82,13 @@ const SingboxDashboardPage = (() => {
             <div class="card" id="sb-fakeip" style="margin-top:16px;">
                 <div class="card-title">Умный доменный роутинг (FakeIP)</div>
                 <div id="sb-fakeip-body" style="margin-top:8px;">
+                    <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
+                </div>
+            </div>
+
+            <div class="card" id="sb-lite" style="margin-top:16px;">
+                <div class="card-title">Весь трафик через прокси — kernel-стек (ниже CPU)</div>
+                <div id="sb-lite-body" style="margin-top:8px;">
                     <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
                 </div>
             </div>
@@ -159,6 +172,7 @@ const SingboxDashboardPage = (() => {
         renderSummary();
         renderInstances();
         renderFakeip();
+        renderLiteRoute();
         renderTransparent();
         renderTun();
         renderWatchdog();
@@ -932,6 +946,106 @@ const SingboxDashboardPage = (() => {
         return escapeHtml(s).replace(/"/g, '&quot;');
     }
 
+    // ══════════════ lite-route (kernel-стек, ниже CPU) ══════════════
+
+    function renderLiteRoute() {
+        const body = document.getElementById('sb-lite-body');
+        if (!body) return;
+        if (liteRendered) return;       // не перерисовываем при poll (не теряем ввод)
+        liteRendered = true;
+        const f = liteForm;
+        const cfgs = (fakeipOpts && fakeipOpts.configs) || configs.map(c => c.name);
+        const cfgOpts = ['<option value="">— из ссылки ниже —</option>']
+            .concat((cfgs || []).map(n =>
+                `<option value="${escapeAttr(n)}">${escapeHtml(n)}</option>`))
+            .join('');
+        body.innerHTML = `
+            <p class="text-muted" style="font-size:12px; margin:0 0 8px;">
+                Лёгкий режим: sing-box сам забирает трафик через <b>kernel-стек
+                (system + auto_route)</b> — без gvisor, заметно ниже нагрузка на
+                CPU. Кого слать в прокси решают внутренние правила по
+                <b>source-IP</b>. Откат — просто остановите инстанс (down).
+            </p>
+            <div style="padding:8px 10px; border-radius:6px; margin-bottom:10px;
+                        background:rgba(220,170,60,.12); border:1px solid rgba(220,170,60,.4);
+                        font-size:12px;">
+                ⚠️ Экспериментально на Keenetic: auto_route ставит свои маршруты
+                (может конфликтовать с NDM); на iptables-прошивках перехват
+                ПЕРЕсылаемого трафика LAN-устройств не гарантирован. Если
+                устройство за роутером не заворачивается — используйте обычную
+                выборочную маршрутизацию (gvisor) или маршрут по доменам.
+            </div>
+            <div style="display:grid; grid-template-columns:160px 1fr; gap:8px 12px; max-width:640px; align-items:center;">
+                <label class="text-muted" style="font-size:12px;">Имя конфига</label>
+                <input type="text" class="form-control" style="max-width:220px;"
+                       value="${escapeAttr(f.name)}"
+                       oninput="SingboxDashboardPage.setLite('name', this.value)">
+                <label class="text-muted" style="font-size:12px;">Прокси из конфига</label>
+                <select class="form-control" style="max-width:320px;"
+                        onchange="SingboxDashboardPage.setLite('proxy_config', this.value)">${cfgOpts}</select>
+                <label class="text-muted" style="font-size:12px;">…или ссылка прокси</label>
+                <textarea class="form-control" rows="2" placeholder="vless:// / ss:// / hysteria2:// …"
+                          oninput="SingboxDashboardPage.setLite('proxy_link', this.value)">${escapeHtml(f.proxy_link)}</textarea>
+                <label class="text-muted" style="font-size:12px;">IP устройств (через запятую)</label>
+                <input type="text" class="form-control" placeholder="192.168.1.117, 192.168.1.84"
+                       value="${escapeAttr(f.source_ips)}"
+                       oninput="SingboxDashboardPage.setLite('source_ips', this.value)">
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer;">
+                <input type="checkbox" ${f.route_all ? 'checked' : ''}
+                       onchange="SingboxDashboardPage.setLite('route_all', this.checked)">
+                <span>Весь трафик роутера через прокси (игнорировать список IP)</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:6px; cursor:pointer;">
+                <input type="checkbox" ${f.reject_quic ? 'checked' : ''}
+                       onchange="SingboxDashboardPage.setLite('reject_quic', this.checked)">
+                <span>Глушить QUIC (если QUIC через прокси не работает)</span>
+            </label>
+            <div style="margin-top:10px;">
+                <button class="btn btn-primary btn-sm" id="sb-lite-create"
+                        onclick="SingboxDashboardPage.createLiteRoute()">Создать конфиг</button>
+            </div>`;
+    }
+
+    function setLite(key, val) {
+        if (key === 'route_all' || key === 'reject_quic') liteForm[key] = !!val;
+        else liteForm[key] = val;
+    }
+
+    async function createLiteRoute() {
+        if (liteBusy) return;
+        const f = liteForm;
+        if (!f.proxy_link.trim() && !f.proxy_config.trim()) {
+            Toast.error('Укажите прокси (ссылку или конфиг)'); return;
+        }
+        const payload = {
+            name: f.name.trim() || 'lite-route',
+            proxy_link: f.proxy_link.trim(),
+            proxy_config: f.proxy_config.trim(),
+            source_ips: f.source_ips,
+            route_all: f.route_all,
+            reject_quic: f.reject_quic,
+        };
+        liteBusy = true;
+        const btn = document.getElementById('sb-lite-create');
+        if (btn) { btn.disabled = true; btn.textContent = 'Создаём…'; }
+        try {
+            const r = await API.post('/api/singbox/lite-route/build', payload);
+            if (r && r.ok) {
+                Toast.success('Конфиг «' + r.name + '» создан (kernel-стек). '
+                    + 'Запустите его. Маршрут через ip rule НЕ нужен — '
+                    + 'sing-box заберёт трафик сам.');
+                await refresh();
+            } else {
+                Toast.error((r && r.error) || 'ошибка', 12000);
+            }
+        } catch (e) { Toast.error(e.message); }
+        finally {
+            liteBusy = false;
+            if (btn) { btn.disabled = false; btn.textContent = 'Создать конфиг'; }
+        }
+    }
+
     // ══════════════ watchdog (проверка соединения) ══════════════
 
     function renderWatchdog() {
@@ -999,6 +1113,7 @@ const SingboxDashboardPage = (() => {
         up, down, restart,
         toggleDebug, showLog, copyLog,
         setFakeip, toggleFakeipHostlist, createFakeip,
+        setLite, createLiteRoute,
         setTp, applyTransparent, removeTransparent, injectInbounds,
         setTun, createTunInbound,
         saveWatchdog,
