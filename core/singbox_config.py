@@ -816,17 +816,25 @@ def build_fakeip_config(*, proxy_outbound: dict,
         if cidrs:
             rules.append({"ip_cidr": cidrs, "outbound": "proxy-out"})
 
+    route = {
+        "rules": rules,
+        "final": "proxy-out" if route_all else "direct",
+        "auto_detect_interface": True,
+    }
+    # sing-box 1.12+ требует явный резолвер для доменов в dial-полях (адрес
+    # прокси-сервера); на 1.14 без него — FATAL. Резолвим их через dns-direct
+    # (local), без петли. Только для typed-формата: поле появилось в 1.12, на
+    # старых движках (legacy-DNS) его быть не должно.
+    if typed_dns:
+        route["default_domain_resolver"] = {"server": "dns-direct"}
+
     return {
         "log": {"level": "info", "timestamp": True},
         "dns": make_fakeip_dns(proxied_domains=proxied, direct_dns=direct_dns,
                                typed=typed_dns, fakeip=fakeip_on),
         "inbounds": inbounds,
         "outbounds": [proxy_ob, {"type": "direct", "tag": "direct"}],
-        "route": {
-            "rules": rules,
-            "final": "proxy-out" if route_all else "direct",
-            "auto_detect_interface": True,
-        },
+        "route": route,
         "experimental": {
             "cache_file": {"enabled": True, "store_fakeip": fakeip_on,
                            "path": "cache.db"},

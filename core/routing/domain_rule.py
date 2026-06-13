@@ -283,6 +283,163 @@ def _ensure_table_default(ifname: str, table: int, family: str) -> bool:
 
 # ───────────────────────── public API ───────────────────────────────
 
+def _is_native_ndms_iface(ifname: str) -> bool:
+    """NDMS-нативный интерфейс? (lazy-импорт, чтобы не зациклить manager)."""
+    try:
+        from core.routing.manager import _is_ndms_native_iface
+        return bool(_is_ndms_native_iface(ifname))
+    except Exception:
+        return False
+
+
+def _resolve_ips(domain: str, family: str) -> list:
+    """
+    Резолв домена в список IP. Сначала DoH (если включён — обходит
+    DNS-подмену провайдера), иначе системный getaddrinfo.
+    """
+    ips = []
+    try:
+        from core.routing import doh_resolver
+        if doh_resolver.is_enabled():
+            r = doh_resolver.resolve(domain, family=family)
+            if r.get("ok"):
+                ips = sorted(set(r.get("ips") or []))
+    except Exception:
+        pass
+    if not ips:
+        import socket
+        af = socket.AF_INET6 if family == "v6" else socket.AF_INET
+        try:
+            ai = socket.getaddrinfo(domain, None, af, socket.SOCK_STREAM)
+            ips = sorted({a[4][0] for a in ai if a and a[4]})
+        except (socket.gaierror, OSError):
+            ips = []
+    return ips
+
+
+def _iproute_state_load() -> dict:
+    """Состояние domain-iproute: {rule_id: [[cidr, '-4'|'-6'], ...]}."""
+    try:
+        from core.config_manager import get_config_manager
+        st = get_config_manager().get("routing", "domain_iproute",
+                                      default={}) or {}
+        return st if isinstance(st, dict) else {}
+    except Exception:
+        return {}
+
+
+def _iproute_state_save(state: dict) -> None:
+    try:
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        cm.set("routing", "domain_iproute", state)
+        cm.save()
+    except Exception as e:
+        log.warning("routing: сохранение domain_iproute: %s" % e,
+                    source="routing")
+
+
+def _apply_domain_via_iproute(rule: DomainRoutingRule) -> dict:
+    """
+    Доменное правило для userspace-туннеля (singbox-tun / amneziawg / WARP):
+    резолвим домены в IP и кладём их в таблицу интерфейса через
+    `ip rule add to <ip> lookup <table>` — ровно как CIDR-правило. Нужно,
+    потому что NDMS `dns-proxy route` умеет привязывать домены ТОЛЬКО к
+    нативным интерфейсам Keenetic, а dnsmasq+ipset на Keenetic не поднять
+    (53-й порт занят ndnsproxy).
+
+    Минус против dnsmasq/NDMS: нет динамического обновления при смене IP
+    (CDN-ротация) — IP фиксируются на момент применения. Чистый резолв
+    зависит от DoH (см. _resolve_ips); при подмене провайдером IP будут
+    неверными — поэтому для блокируемых доменов держите routing.doh вкл.
+    """
+    import subprocess
+    ifname = rule.target_iface
+    if not _iface_exists(ifname):
+        return {"ok": True, "deferred": True, "backend": "iproute",
+                "message": "Интерфейс %s ещё не поднят — домены"
+                           " разрешатся и применятся при старте" % ifname}
+
+    table = _table_id_for(ifname)
+    domains = _expand_rule_domains(rule)
+    if not domains:
+        return {"ok": False, "error": "после развёртки доменов не осталось"}
+
+    added = []          # [[cidr, family], ...] для хранения/снятия
+    errors = []
+    resolved_total = 0
+    for domain in domains:
+        for fam in ("v4", "v6"):
+            ips = _resolve_ips(domain, fam)
+            if not ips:
+                continue
+            resolved_total += len(ips)
+            family = "-6" if fam == "v6" else "-4"
+            if not _ensure_table_default(ifname, table, family):
+                errors.append("default-route %s table %d" % (family, table))
+                continue
+            for ip in ips:
+                cidr = ip + ("/128" if fam == "v6" else "/32")
+                subprocess.run(["ip", family, "rule", "del", "to", cidr,
+                                "lookup", str(table)],
+                               capture_output=True, timeout=5)
+                r = subprocess.run(["ip", family, "rule", "add", "to", cidr,
+                                    "lookup", str(table),
+                                    "priority", str(FWMARK_PRIORITY)],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    added.append([cidr, family])
+                elif "File exists" not in (r.stderr or ""):
+                    errors.append("ip rule add %s: %s"
+                                  % (cidr, (r.stderr or "").strip()))
+
+    if added:
+        from core.routing import masquerade
+        masquerade.ensure_for_iface(ifname)
+
+    # Сохраняем применённые маршруты для корректного снятия.
+    state = _iproute_state_load()
+    state[rule.id] = added
+    _iproute_state_save(state)
+
+    log.info("routing: domain-правило %s применено через ip-route (iface=%s,"
+             " %d IP, %d ошибок)"
+             % (rule.id, ifname, len(added), len(errors)), source="routing")
+    return {
+        "ok": bool(added) or resolved_total == 0,
+        "backend": "iproute",
+        "iface": ifname,
+        "ips_added": len(added),
+        "errors": errors,
+        "note": ("домены разрешены в IP на момент применения; при смене IP"
+                 " (CDN) примените правило заново"),
+    }
+
+
+def _remove_domain_via_iproute(rule: DomainRoutingRule) -> dict:
+    """Снять domain-правило, применённое через ip-route."""
+    import subprocess
+    table = _table_id_for(rule.target_iface)
+    state = _iproute_state_load()
+    entries = state.pop(rule.id, [])
+    for entry in entries:
+        try:
+            cidr, family = entry[0], entry[1]
+        except (TypeError, IndexError, ValueError):
+            continue
+        subprocess.run(["ip", family, "rule", "del", "to", cidr,
+                        "lookup", str(table)], capture_output=True, timeout=5)
+    _iproute_state_save(state)
+    try:
+        from core.routing import masquerade
+        masquerade.remove_if_unused(rule.target_iface, excluding_id=rule.id)
+    except Exception:
+        pass
+    log.info("routing: domain-правило %s (ip-route) снято, %d маршрутов"
+             % (rule.id, len(entries)), source="routing")
+    return {"ok": True, "backend": "iproute", "removed": len(entries)}
+
+
 def apply_domain_rule(rule: DomainRoutingRule) -> dict:
     """Применить одно domain-правило."""
     if not isinstance(rule, DomainRoutingRule):
@@ -295,16 +452,17 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
     # через нативный dns-proxy route. Никаких dnsmasq/ipset/fwmark
     # для этого пути не требуется. На любых других платформах
     # _ndms_available() == False и эта ветка пропускается.
-    if _ndms_available():
+    # ВАЖНО: NDMS `dns-proxy route` привязывает домены ТОЛЬКО к нативным
+    # NDMS-интерфейсам (Wireguard0/ISP/…). Для НАШИХ userspace-туннелей
+    # (singbox-tun, amneziawg/awg, WARP) NDMS такой iface не видит — правило
+    # «применяется», но трафик идёт мимо (см. issue: «по IP работает, по
+    # доменам нет»). Поэтому NDMS-путь только для нативных интерфейсов; для
+    # userspace уходим ниже (dnsmasq или ip-route).
+    if _ndms_available() and _is_native_ndms_iface(rule.target_iface):
         try:
             from core.routing import ndms_backend
             return ndms_backend.apply_domain_rule(rule)
         except Exception as e:
-            # Если NDMS-путь упал на ровном месте — логируем и
-            # пробуем fallback на dnsmasq. На Keenetic'е dnsmasq,
-            # скорее всего, тоже не поднимется, но это уже не наша
-            # вина и пользователь увидит понятную ошибку про
-            # dnsmasq, а не невнятный traceback.
             log.warning("routing(ndms): apply упал, fallback на dnsmasq: %s"
                         % e, source="routing")
 
@@ -320,29 +478,13 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
         # завершался ошибкой). Лучше упасть до любых side-effects.
         dn = dnsmasq_integration.DnsmasqIntegration()
         dn_status = dn.status()
-        if not dn_status.get("available"):
-            return {
-                "ok": False,
-                "error": (
-                    "dnsmasq не установлен на системе. Доменное routing"
-                    " работает только через dnsmasq (он заполняет"
-                    " ipset/nftset при резолве). Установите и запустите"
-                    " dnsmasq, либо используйте правило по CIDR."
-                ),
-            }
-        if not dn_status.get("running"):
-            return {
-                "ok": False,
-                "error": (
-                    "dnsmasq установлен, но не запущен. Откройте"
-                    " «Routing» и нажмите «Настроить dnsmasq"
-                    " автоматически» — GUI отключит DNSStubListener"
-                    " в systemd-resolved, запустит dnsmasq на :53 и"
-                    " автоматически откатит всё обратно при выключении"
-                    " последнего AWG-интерфейса. Если возиться не"
-                    " хочется — используйте правило по CIDR."
-                ),
-            }
+        if not (dn_status.get("available") and dn_status.get("running")):
+            # dnsmasq нет/не запущен (типичный Keenetic: 53-й порт у ndnsproxy,
+            # а интерфейс userspace, т.е. NDMS-путь выше не подошёл). Доменное
+            # routing через ipset невозможно — резолвим домены и кладём IP в
+            # таблицу интерфейса напрямую (ip rule), как CIDR. Динамики при
+            # смене IP нет, но для большинства доменов работает.
+            return _apply_domain_via_iproute(rule)
 
         backend, kind = _detect_backend()
         if backend is None:
@@ -498,14 +640,19 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
 
     # ── Keenetic NDMS-fast-path ─────────────────────────────────
     # Симметрично apply_domain_rule — на Keenetic'е снимаем через
-    # NDMS. На остальных платформах идём дальше по dnsmasq-пути.
-    if _ndms_available():
+    # NDMS — только для нативных интерфейсов (симметрично apply).
+    if _ndms_available() and _is_native_ndms_iface(rule.target_iface):
         try:
             from core.routing import ndms_backend
             return ndms_backend.remove_domain_rule(rule)
         except Exception as e:
             log.warning("routing(ndms): remove упал, fallback на dnsmasq: %s"
                         % e, source="routing")
+
+    # Если правило применялось через ip-route (userspace-туннель без
+    # dnsmasq) — снимаем тем же путём.
+    if rule.id in _iproute_state_load():
+        return _remove_domain_via_iproute(rule)
 
     with _lock:
         backend, kind = _detect_backend()
