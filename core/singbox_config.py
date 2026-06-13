@@ -381,7 +381,7 @@ def make_tun_inbound(*, interface_name: str = "singbox-tun",
 
 
 def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
-                    address=None, mtu: int = 9000, stack: str = "system",
+                    address=None, mtu: int = 9000, stack: str = "gvisor",
                     auto_route: bool = False, strict_route: bool = False,
                     sniff: bool = True, route_to_proxy: bool = True,
                     hijack_dns: bool = False, typed_dns: bool = False) -> dict:
@@ -389,6 +389,13 @@ def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
     Вставить/заменить TUN-inbound в конфиге (cfg мутируется и
     возвращается). Прежний наш `tun-in` убирается, остальные inbound'ы
     сохраняются. Чистая функция (без I/O).
+
+    stack='gvisor' (НЕ 'system') — критично для выборочной маршрутизации:
+    при auto_route=False трафик в TUN заворачивают НАШИ `ip rule`, а
+    системный стек sing-box БЕЗ auto_route не перехватывает TCP-соединения
+    (UDP/DNS при этом работают) → «сайты не открываются, хотя прокси живой».
+    gvisor читает все пакеты из TUN сам, поэтому TCP+UDP работают независимо
+    от auto_route.
 
     После этого конфиг можно запустить — интерфейс `interface_name`
     появится в системе и в «Selective routing» (как цель device/domain/

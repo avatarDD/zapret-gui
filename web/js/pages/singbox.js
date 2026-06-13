@@ -23,7 +23,7 @@ const SingboxDashboardPage = (() => {
     let tpScopeAutoSet = false;      // scope уже предложен по профилю окружения
     let tunForm = {                  // форма TUN-интерфейса (для Selective routing)
         config: '', interface_name: 'singbox-tun',
-        address: '172.18.0.1/30', stack: 'system', mtu: 9000,
+        address: '172.18.0.1/30', stack: 'gvisor', mtu: 9000,
         auto_route: false,
     };
     let tpNote = '';                 // последняя ошибка применения firewall (persist)
@@ -645,8 +645,8 @@ const SingboxDashboardPage = (() => {
                 <label class="text-muted">Сетевой стек</label>
                 <select class="form-control" style="max-width:280px;"
                         onchange="SingboxDashboardPage.setTun('stack', this.value)">
-                    ${opt('system', tunForm.stack, 'system (быстрее, нужен tun ядра)')}
-                    ${opt('gvisor', tunForm.stack, 'gvisor (userspace, переносимее)')}
+                    ${opt('gvisor', tunForm.stack, 'gvisor (для выборочной маршрутизации — TCP+UDP)')}
+                    ${opt('system', tunForm.stack, 'system (только для режима «весь трафик»/auto_route)')}
                     ${opt('mixed', tunForm.stack, 'mixed')}
                 </select>
 

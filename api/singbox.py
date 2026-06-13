@@ -377,7 +377,7 @@ def _should_auto_route(cfg: dict) -> bool:
 
 
 def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
-                           address=None, mtu=9000, stack="system",
+                           address=None, mtu=9000, stack="gvisor",
                            auto_route=False, sniff=True, hijack_dns=True):
     """
     Сделать конфиг «готовым к умной маршрутизации» и сохранить:
@@ -1308,7 +1308,7 @@ def register(app):
             iface=iface,
             address=addr or None,
             mtu=int(body.get("mtu") or 9000),
-            stack=(body.get("stack") or "system"),
+            stack=(body.get("stack") or "gvisor"),
             auto_route=bool(body.get("auto_route", False)),
             sniff=bool(body.get("sniff", True)),
             hijack_dns=bool(body.get("hijack_dns", True)))
