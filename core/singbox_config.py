@@ -383,7 +383,8 @@ def make_tun_inbound(*, interface_name: str = "singbox-tun",
 def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
                     address=None, mtu: int = 9000, stack: str = "system",
                     auto_route: bool = False, strict_route: bool = False,
-                    sniff: bool = True, route_to_proxy: bool = True) -> dict:
+                    sniff: bool = True, route_to_proxy: bool = True,
+                    hijack_dns: bool = False, typed_dns: bool = False) -> dict:
     """
     Вставить/заменить TUN-inbound в конфиге (cfg мутируется и
     возвращается). Прежний наш `tun-in` убирается, остальные inbound'ы
@@ -395,6 +396,16 @@ def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
     доменные route-правила Selective routing срабатывали).
     route_to_proxy=True направляет весь попавший в TUN трафик в основной
     прокси-outbound конфига (route.final → selector/первый сервер).
+
+    hijack_dns=True (нужно для маршрутизации УСТРОЙСТВА целиком) — добавляет
+    перехват DNS (`{"protocol":"dns","action":"hijack-dns"}`) и DNS-секцию с
+    локальным резолвером. Без этого у устройства, чей трафик целиком завёрнут
+    в TUN, DNS-запросы (UDP:53) уходят в туннель, но движок их не обрабатывает
+    → имена не резолвятся → «интернета нет», хотя прокси живой. Резолвим через
+    `local` (резолвер роутера): имена открываются, а трафик к полученным IP всё
+    равно идёт в прокси; bootstrap-петли (резолв самого прокси-сервера) нет.
+    Приватные адреса (LAN) пускаем мимо прокси (`ip_is_private → direct`).
+    typed_dns=True — DNS-секция в формате sing-box 1.12+ (иначе legacy).
     """
     existing = [ib for ib in (cfg.get("inbounds") or [])
                 if not (isinstance(ib, dict) and ib.get("tag") == _TUN_TAG)]
@@ -402,12 +413,73 @@ def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
         interface_name=interface_name, address=address, mtu=mtu,
         stack=stack, auto_route=auto_route, strict_route=strict_route)
     cfg["inbounds"] = [tun] + existing
-    _set_managed_route_rules(cfg, sniff=sniff, hijack_dns=False)
+    _set_managed_route_rules(cfg, sniff=(sniff or hijack_dns),
+                             hijack_dns=hijack_dns)
     if route_to_proxy:
         proxy = pick_proxy_outbound(cfg)
         if proxy:
             cfg.setdefault("route", {})["final"] = proxy
+    if hijack_dns:
+        # Локальный резолвер для перехваченного DNS (fakeip=False → только
+        # direct-сервер, см. make_fakeip_dns). LAN — мимо прокси.
+        cfg["dns"] = make_fakeip_dns(proxied_domains=None, direct_dns="local",
+                                     typed=typed_dns, fakeip=False)
+        _ensure_private_direct_rule(cfg)
     return cfg
+
+
+def _ensure_private_direct_rule(cfg: dict) -> None:
+    """
+    Гарантировать правило «приватные адреса (LAN/loopback) → direct» и
+    наличие самого `direct`-outbound'а. Чтобы устройство, целиком
+    завёрнутое в TUN, ходило в локальную сеть (роутер, принтеры, NAS)
+    напрямую, а не через прокси. Правило ставится после служебных
+    (sniff/hijack-dns), но перед доменными/final.
+    """
+    outs = cfg.setdefault("outbounds", [])
+    if not any(isinstance(o, dict) and o.get("type") == "direct" for o in outs):
+        outs.append({"type": "direct", "tag": "direct"})
+    direct_tag = next((o.get("tag") for o in outs if isinstance(o, dict)
+                       and o.get("type") == "direct"), "direct")
+    rule = {"ip_is_private": True, "outbound": direct_tag}
+    route = cfg.setdefault("route", {})
+    rules = route.setdefault("rules", [])
+    if not isinstance(rules, list):
+        rules = []
+        route["rules"] = rules
+    if rule in rules:
+        return
+    # Вставляем сразу после блока служебных правил (sniff/hijack-dns),
+    # которые _set_managed_route_rules держит в начале.
+    insert_at = 0
+    for i, r in enumerate(rules):
+        if isinstance(r, dict) and r.get("action") in ("sniff", "hijack-dns"):
+            insert_at = i + 1
+    rules.insert(insert_at, rule)
+
+
+def active_outbound_tag(cfg: dict) -> str:
+    """
+    Тег «активного» outbound'а, через который реально ходит трафик —
+    цель для health-пробы watchdog'а:
+      1) selector → его `default` (или первый член, или сам тег группы);
+      2) иначе route.final, если это пользовательский outbound;
+      3) иначе первый пользовательский outbound.
+    '' если не нашли.
+    """
+    if not isinstance(cfg, dict):
+        return ""
+    outs = [o for o in (cfg.get("outbounds") or []) if isinstance(o, dict)]
+    sel = next((o for o in outs if o.get("type") == "selector"), None)
+    if sel is not None:
+        members = sel.get("outbounds") or []
+        return (sel.get("default") or (members[0] if members else "")
+                or sel.get("tag") or "")
+    user_tags = list_user_outbound_tags(cfg)
+    final = ((cfg.get("route") or {}).get("final") or "")
+    if final and final in user_tags:
+        return final
+    return user_tags[0] if user_tags else ""
 
 
 def build_geo_route_rule(outbound_tag: str, *, domains=None,

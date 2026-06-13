@@ -14,7 +14,7 @@ from core import singbox_transparent as tp
 from core.singbox_config import (
     make_transparent_inbounds, set_transparent_inbounds, make_sniff_rule,
     make_hijack_dns_rule, make_tun_inbound, set_tun_inbound,
-    find_tun_interface,
+    find_tun_interface, active_outbound_tag,
 )
 
 
@@ -314,6 +314,87 @@ class TestTunInbound(unittest.TestCase):
         tun = [ib for ib in cfg["inbounds"] if ib["tag"] == "tun-in"]
         self.assertEqual(len(tun), 1)                     # заменён, не дубль
         self.assertEqual(tun[0]["interface_name"], "t1")
+
+    def test_no_dns_section_without_hijack(self):
+        # По умолчанию (hijack_dns=False) DNS-секцию НЕ добавляем —
+        # совместимость со старым поведением.
+        cfg = self._cfg()
+        set_tun_inbound(cfg)
+        self.assertNotIn("dns", cfg)
+        self.assertNotIn(make_hijack_dns_rule(), cfg["route"]["rules"])
+
+    def test_hijack_dns_adds_dns_and_rules(self):
+        # hijack_dns=True (маршрутизация устройства целиком) — перехват DNS,
+        # DNS-секция с резолвером, и LAN мимо прокси.
+        cfg = self._cfg()
+        set_tun_inbound(cfg, hijack_dns=True)
+        self.assertIn("dns", cfg)
+        self.assertTrue(cfg["dns"].get("servers"))
+        rules = cfg["route"]["rules"]
+        self.assertIn(make_hijack_dns_rule(), rules)
+        self.assertIn(make_sniff_rule(), rules)
+        # ip_is_private → direct присутствует
+        self.assertTrue(any(
+            isinstance(r, dict) and r.get("ip_is_private")
+            and r.get("outbound") == "direct" for r in rules))
+        # есть direct-outbound для этого правила
+        self.assertTrue(any(
+            o.get("type") == "direct" for o in cfg["outbounds"]))
+
+    def test_hijack_dns_idempotent(self):
+        cfg = self._cfg()
+        set_tun_inbound(cfg, hijack_dns=True)
+        set_tun_inbound(cfg, hijack_dns=True)
+        rules = cfg["route"]["rules"]
+        # ровно один sniff, один hijack-dns, одно ip_is_private-правило
+        self.assertEqual(sum(1 for r in rules if r == make_sniff_rule()), 1)
+        self.assertEqual(
+            sum(1 for r in rules if r == make_hijack_dns_rule()), 1)
+        self.assertEqual(sum(
+            1 for r in rules if isinstance(r, dict)
+            and r.get("ip_is_private")), 1)
+        self.assertEqual(
+            sum(1 for o in cfg["outbounds"] if o.get("type") == "direct"), 1)
+
+    def test_hijack_dns_typed_format(self):
+        cfg = self._cfg()
+        set_tun_inbound(cfg, hijack_dns=True, typed_dns=True)
+        servers = cfg["dns"]["servers"]
+        # typed-формат: у серверов есть поле type
+        self.assertTrue(all("type" in s for s in servers))
+
+
+class TestActiveOutboundTag(unittest.TestCase):
+
+    def test_selector_default(self):
+        cfg = {"outbounds": [
+            {"type": "vless", "tag": "s1"}, {"type": "vless", "tag": "s2"},
+            {"type": "selector", "tag": "PROXY",
+             "outbounds": ["s1", "s2"], "default": "s2"}]}
+        self.assertEqual(active_outbound_tag(cfg), "s2")
+
+    def test_selector_first_member_when_no_default(self):
+        cfg = {"outbounds": [
+            {"type": "vless", "tag": "s1"},
+            {"type": "selector", "tag": "PROXY", "outbounds": ["s1"]}]}
+        self.assertEqual(active_outbound_tag(cfg), "s1")
+
+    def test_route_final_when_no_selector(self):
+        cfg = {"outbounds": [
+            {"type": "vless", "tag": "a"}, {"type": "vless", "tag": "b"},
+            {"type": "direct", "tag": "direct"}],
+            "route": {"final": "b"}}
+        self.assertEqual(active_outbound_tag(cfg), "b")
+
+    def test_first_user_outbound_fallback(self):
+        cfg = {"outbounds": [
+            {"type": "direct", "tag": "direct"},
+            {"type": "trojan", "tag": "t1"}]}
+        self.assertEqual(active_outbound_tag(cfg), "t1")
+
+    def test_empty_when_no_user_outbounds(self):
+        cfg = {"outbounds": [{"type": "direct", "tag": "direct"}]}
+        self.assertEqual(active_outbound_tag(cfg), "")
 
 
 class TestReapplySaved(unittest.TestCase):

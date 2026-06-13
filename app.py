@@ -486,6 +486,15 @@ def create_app(config_dir: str = None) -> Bottle:
     except Exception as e:
         log.warning("AWG-watchdog при boot: %s" % e, source="awg")
 
+    # sing-box watchdog: авто-перезапуск инстанса, если прокси «завис»
+    # (проба через Clash API не проходит). Ничего не делает, если
+    # singbox.watchdog.enabled = false (дефолт).
+    try:
+        from core.singbox_watchdog import get_watchdog as _sb_watchdog
+        _sb_watchdog().reconfigure()
+    except Exception as e:
+        log.warning("sing-box watchdog при boot: %s" % e, source="singbox")
+
     # Healthcheck-демон (autocircular watchdog): ничего не делает, если
     # cfg.healthcheck.enabled = false (дефолт). Включается через GUI.
     try:
