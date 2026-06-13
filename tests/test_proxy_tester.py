@@ -135,6 +135,49 @@ class TestTestOutboundsNoBinary(unittest.TestCase):
         self.assertEqual(tcp[-1][2], 2)
 
 
+class TestUdpProtoPrefilter(unittest.TestCase):
+    """UDP/QUIC-протоколы (hysteria2/tuic/wireguard) не должны убиваться
+    TCP-отсевом — их сервер не слушает TCP."""
+
+    def test_hysteria2_bypasses_tcp_prefilter(self):
+        # Сразу (True, None), без TCP-пробы к недостижимому адресу.
+        obs = [{"type": "hysteria2", "tag": "h", "server": "192.0.2.1",
+                "server_port": 8449}]
+        res = pt.tcp_prefilter(obs)
+        self.assertEqual(res.get("h"), (True, None))
+
+    def test_tuic_and_wireguard_bypass(self):
+        obs = [{"type": "tuic", "tag": "t", "server": "192.0.2.1",
+                "server_port": 443},
+               {"type": "wireguard", "tag": "w", "server": "192.0.2.2",
+                "server_port": 51820}]
+        res = pt.tcp_prefilter(obs)
+        self.assertEqual(res.get("t"), (True, None))
+        self.assertEqual(res.get("w"), (True, None))
+
+    def test_tcp_proto_still_probed(self):
+        # Не-UDP тип по-прежнему проходит TCP-пробу.
+        obs = [{"type": "vless", "tag": "v", "server": "192.0.2.1",
+                "server_port": 443}]
+        with mock.patch.object(pt, "_tcp_connect_ok",
+                               return_value=(False, None)) as m:
+            res = pt.tcp_prefilter(obs)
+        m.assert_called_once()
+        self.assertEqual(res.get("v"), (False, None))
+
+    def test_hysteria2_not_dead_in_test_outbounds(self):
+        # Регресс: hysteria2 не помечается «мёртвым» TCP-фазой (была причина
+        # ложного «дохлая» у hysteria2/tuic).
+        obs = [{"type": "hysteria2", "tag": "h", "server": "192.0.2.1",
+                "server_port": 8449, "password": "p",
+                "tls": {"enabled": True, "server_name": "sni.example"}}]
+        res = pt.test_outbounds(obs, binary="")   # без движка → только фаза 1
+        self.assertTrue(res["ok"])
+        row = res["results"][0]
+        self.assertTrue(row["alive"])
+        self.assertNotIn("TCP", row.get("error") or "")
+
+
 class TestStripAnsi(unittest.TestCase):
 
     def test_removes_color_codes(self):
