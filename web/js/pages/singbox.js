@@ -198,7 +198,25 @@ const SingboxDashboardPage = (() => {
                   Установить sing-box
               </button>`;
 
-        body.innerHTML = `
+        // gvisor обязателен для выборочной маршрутизации через TUN. Если
+        // бинарь его уверенно не содержит (tags непуст, gvisor нет) — баннер.
+        const gvisorMissing = installed && (bin.tags || []).length
+                              && !bin.has_gvisor;
+        const gvisorBanner = gvisorMissing ? `
+            <div style="margin-bottom:12px; padding:10px 12px; border-radius:6px;
+                        background:rgba(220,80,80,.12); border:1px solid rgba(220,80,80,.4);
+                        font-size:13px; line-height:1.5;">
+                ⚠️ <strong>sing-box собран без gvisor.</strong> Для маршрутизации
+                трафика через TUN он обязателен — без него сайты не открываются
+                (системный стек без auto_route не пропускает TCP), а запуск
+                TUN может падать с «gVisor is not included».
+                <button class="btn btn-primary btn-sm" style="margin-left:6px;"
+                        onclick="window.location.hash='singbox-setup'">
+                    Обновить sing-box
+                </button>
+            </div>` : '';
+
+        body.innerHTML = gvisorBanner + `
             <div style="display:flex; gap:24px; flex-wrap:wrap; font-size:13px;">
                 <div>
                     <div class="text-muted" style="font-size:11px;">Платформа</div>
@@ -303,6 +321,17 @@ const SingboxDashboardPage = (() => {
                 ${renderLogBlock(c.name)}
             </div>`;
         }).join('');
+        _scrollOpenLogs();
+    }
+
+    // Прокрутить все открытые блоки лога в конец (автопромотка к свежим
+    // строкам). Зовём после каждого ре-рендера инстансов.
+    function _scrollOpenLogs() {
+        try {
+            document.querySelectorAll('.sb-log-pre').forEach(el => {
+                el.scrollTop = el.scrollHeight;
+            });
+        } catch (_) { /* no-op */ }
     }
 
     function renderLogBlock(name) {
@@ -319,15 +348,41 @@ const SingboxDashboardPage = (() => {
                     </span>
                     <span style="display:flex; gap:6px;">
                         <button class="btn btn-ghost btn-sm"
+                                onclick="SingboxDashboardPage.copyLog('${escapeAttr(name)}')">⧉ Копировать</button>
+                        <button class="btn btn-ghost btn-sm"
                                 onclick="SingboxDashboardPage.showLog('${escapeAttr(name)}', true)">↻ Обновить</button>
                         <button class="btn btn-ghost btn-sm"
                                 onclick="SingboxDashboardPage.showLog('${escapeAttr(name)}')">Скрыть</button>
                     </span>
                 </div>
-                <pre style="max-height:340px; overflow:auto; font-size:11px; line-height:1.4;
+                <pre class="sb-log-pre" style="max-height:340px; overflow:auto; font-size:11px; line-height:1.4;
                             background:var(--bg-code, #111); padding:10px; border-radius:6px;
                             white-space:pre-wrap; word-break:break-word; margin:0;">${body}</pre>
             </div>`;
+    }
+
+    async function copyLog(name) {
+        const st = logState[name];
+        const text = (st && st.text) || '';
+        if (!text) { Toast.error('Лог пуст'); return; }
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                // Фолбэк для http/старых браузеров: временный textarea.
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+            }
+            Toast.success('Лог скопирован в буфер');
+        } catch (e) {
+            Toast.error('Не удалось скопировать: ' + e.message);
+        }
     }
 
     // ══════════════ actions ══════════════
@@ -684,8 +739,17 @@ const SingboxDashboardPage = (() => {
                   stack: tunForm.stack, mtu: tunForm.mtu,
                   auto_route: tunForm.auto_route });
             if (r && r.ok) {
-                Toast.success('TUN-инбаунд добавлен в ' + tunForm.config +
-                    '. (Пере)запустите конфиг, затем настройте Selective routing.');
+                if (r.gvisor_missing) {
+                    Toast.error('Внимание: ваш sing-box собран БЕЗ gvisor — ' +
+                        'для выборочной маршрутизации он обязателен (system-стек ' +
+                        'без auto_route не пропускает TCP). Откатился на system. ' +
+                        'Обновите sing-box (раздел «Установка») на сборку с gvisor.',
+                        14000);
+                } else {
+                    Toast.success('TUN-инбаунд добавлен в ' + tunForm.config +
+                        ' (стек ' + (r.stack || 'gvisor') + '). (Пере)запустите ' +
+                        'конфиг, затем настройте Selective routing.');
+                }
                 await refresh();
             } else Toast.error((r && r.error) || 'ошибка');
         } catch (e) { Toast.error(e.message); }

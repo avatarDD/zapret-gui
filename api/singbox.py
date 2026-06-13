@@ -376,6 +376,27 @@ def _should_auto_route(cfg: dict) -> bool:
     return bool(list_user_outbound_tags(cfg))
 
 
+def _binary_has_gvisor(binary):
+    """
+    Собран ли sing-box с with_gvisor (по `version` → строка `Tags:`).
+    True — есть; False — Tags распарсились, gvisor нет; None — не определить.
+    """
+    if not binary:
+        return None
+    import subprocess as _sp
+    import re as _re
+    try:
+        r = _sp.run([binary, "version"], capture_output=True, text=True,
+                    timeout=4)
+    except (FileNotFoundError, OSError, _sp.SubprocessError):
+        return None
+    m = _re.search(r"^\s*Tags:\s*(.+)$", r.stdout or "", _re.I | _re.M)
+    if not m:
+        return None
+    tags = [t.strip() for t in _re.split(r"[,\s]+", m.group(1)) if t.strip()]
+    return any("gvisor" in t for t in tags)
+
+
 def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
                            address=None, mtu=9000, stack="gvisor",
                            auto_route=False, sniff=True, hijack_dns=True):
@@ -388,7 +409,7 @@ def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
       • clash_api (нужен health-watchdog'у и учёту трафика).
     Формат DNS подбираем под версию движка через `sing-box check`
     (legacy → typed 1.12+). Без бинаря оставляем legacy (валиден 1.8–1.13).
-    Возвращает save-dict (+ interface_name, dns_format).
+    Возвращает save-dict (+ interface_name, dns_format, stack, gvisor_missing).
     """
     import secrets as _secrets
     from core.singbox_config import (
@@ -401,6 +422,22 @@ def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
                              secret=_secrets.token_hex(8))
         except Exception:
             pass
+
+    # gvisor нужен для выборочной маршрутизации (system-стек без auto_route не
+    # перехватывает TCP). Но если бинарь собран БЕЗ gvisor — старт TUN падает
+    # с «gVisor is not included in this build». Поэтому используем gvisor
+    # только когда он ТОЧНО есть; иначе откатываемся на system (без FATAL) и
+    # помечаем gvisor_missing — UI подскажет обновить sing-box.
+    gvisor_missing = False
+    if stack in ("gvisor", "mixed"):
+        try:
+            binpath = mgr._binary() if hasattr(mgr, "_binary") else ""
+        except Exception:
+            binpath = ""
+        has_gvisor = _binary_has_gvisor(binpath)
+        if has_gvisor is not True:
+            gvisor_missing = (has_gvisor is False)
+            stack = "system"
 
     dns_format = "none"
     if not hijack_dns:
@@ -444,6 +481,8 @@ def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
     if isinstance(save, dict):
         save["interface_name"] = iface
         save["dns_format"] = dns_format
+        save["stack"] = stack
+        save["gvisor_missing"] = gvisor_missing
     return save
 
 

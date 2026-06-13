@@ -396,5 +396,70 @@ class TestApplyRoutingDomainResolver(unittest.TestCase):
         self.assertNotIn("dns", mgr.saved)
 
 
+class TestBinaryHasGvisor(unittest.TestCase):
+
+    def _run(self, stdout):
+        import types
+        return mock.patch("subprocess.run", return_value=types.SimpleNamespace(
+            stdout=stdout, returncode=0))
+
+    def test_present(self):
+        from api.singbox import _binary_has_gvisor
+        with self._run("sing-box version 1.14.0\n"
+                       "Tags: with_quic,with_gvisor,with_clash_api\n"):
+            self.assertTrue(_binary_has_gvisor("/x"))
+
+    def test_absent(self):
+        from api.singbox import _binary_has_gvisor
+        with self._run("sing-box version 1.14.0\nTags: with_quic,with_clash_api\n"):
+            self.assertFalse(_binary_has_gvisor("/x"))
+
+    def test_no_tags_line(self):
+        from api.singbox import _binary_has_gvisor
+        with self._run("sing-box version 1.14.0\n"):
+            self.assertIsNone(_binary_has_gvisor("/x"))
+
+    def test_empty_binary(self):
+        from api.singbox import _binary_has_gvisor
+        self.assertIsNone(_binary_has_gvisor(""))
+
+
+class TestGvisorStackFallback(unittest.TestCase):
+    """Без gvisor в сборке откатываемся на system (без FATAL) + флаг."""
+
+    def _cfg(self):
+        return {"outbounds": [{
+            "type": "hysteria2", "tag": "h", "server": "vpn.example.com",
+            "server_port": 8449, "password": "p",
+            "tls": {"enabled": True, "server_name": "sni"}}]}
+
+    def _mgr(self):
+        mgr = _FakeRoutingMgr(lambda c: True)
+        mgr._binary = lambda: "/opt/sbin/sing-box"
+        return mgr
+
+    def test_fallback_to_system_without_gvisor(self):
+        from api import singbox as sb
+        mgr = self._mgr()
+        with mock.patch.object(sb, "_binary_has_gvisor", return_value=False):
+            save = sb._apply_singbox_routing(mgr, "vpn", self._cfg())
+        self.assertTrue(save["gvisor_missing"])
+        self.assertEqual(save["stack"], "system")
+        tun = next(ib for ib in mgr.saved["inbounds"]
+                   if ib.get("type") == "tun")
+        self.assertEqual(tun["stack"], "system")
+
+    def test_uses_gvisor_when_present(self):
+        from api import singbox as sb
+        mgr = self._mgr()
+        with mock.patch.object(sb, "_binary_has_gvisor", return_value=True):
+            save = sb._apply_singbox_routing(mgr, "vpn", self._cfg())
+        self.assertFalse(save["gvisor_missing"])
+        self.assertEqual(save["stack"], "gvisor")
+        tun = next(ib for ib in mgr.saved["inbounds"]
+                   if ib.get("type") == "tun")
+        self.assertEqual(tun["stack"], "gvisor")
+
+
 if __name__ == "__main__":
     unittest.main()
