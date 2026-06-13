@@ -646,8 +646,10 @@ def make_fakeip_dns(*, proxied_domains=None, direct_dns: str = "local",
         if proxied:
             rules.append({"domain_suffix": proxied, "server": "dns-fakeip"})
 
-    dns = {"servers": servers, "rules": rules,
-           "final": "dns-direct", "independent_cache": True}
+    # independent_cache НЕ задаём: опция deprecated в sing-box 1.14 и
+    # удаляется в 1.16 (поведение по умолчанию нас устраивает) — иначе на
+    # 1.14 сыплет WARN, а на 1.16 конфиг может не пройти проверку.
+    dns = {"servers": servers, "rules": rules, "final": "dns-direct"}
     if fakeip and not typed:
         dns["fakeip"] = {"enabled": True,
                          "inet4_range": FAKEIP_INET4,

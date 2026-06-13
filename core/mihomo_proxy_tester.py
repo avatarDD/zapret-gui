@@ -236,8 +236,11 @@ def test_proxies(proxies: list, *, target: str = "cloudflare",
                 "results": [], "summary": {"total": 0, "alive": 0, "dead": 0}}
 
     meta = {str(p["name"]): p for p in obs}
+    # type прокидываем, чтобы tcp_prefilter пропустил UDP-протоколы
+    # (hysteria2/tuic/wireguard) мимо TCP-отсева — их сервер не слушает TCP.
     tcp_models = [{"tag": str(p["name"]), "server": p.get("server"),
-                   "server_port": p.get("port")} for p in obs]
+                   "server_port": p.get("port"), "type": p.get("type")}
+                  for p in obs]
 
     def _rep(phase, d, t):
         if progress_cb:
