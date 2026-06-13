@@ -24,7 +24,7 @@ const SingboxDashboardPage = (() => {
     let tunForm = {                  // форма TUN-интерфейса (для Selective routing)
         config: '', interface_name: 'singbox-tun',
         address: '172.18.0.1/30', stack: 'gvisor', mtu: 1500,
-        auto_route: false,
+        auto_route: false, reject_quic: false,
     };
     let tpNote = '';                 // последняя ошибка применения firewall (persist)
     let debugEnabled = false;        // /api/singbox/debug (log.level=debug при запуске)
@@ -716,6 +716,14 @@ const SingboxDashboardPage = (() => {
                            onchange="SingboxDashboardPage.setTun('auto_route', this.checked)">
                     auto_route — завернуть ВЕСЬ трафик (вместо выборочной маршрутизации)
                 </label>
+
+                <label class="text-muted">QUIC</label>
+                <label class="text-muted" style="display:flex; align-items:center; gap:6px;">
+                    <input type="checkbox" ${tunForm.reject_quic ? 'checked' : ''}
+                           onchange="SingboxDashboardPage.setTun('reject_quic', this.checked)">
+                    Глушить QUIC (UDP/443) — включать ТОЛЬКО если QUIC через прокси
+                    не работает; ломает DNS-over-QUIC, если клиент не откатывается на TCP
+                </label>
             </div>
             <div style="margin-top:12px;">
                 <button class="btn btn-primary btn-sm"
@@ -726,6 +734,7 @@ const SingboxDashboardPage = (() => {
 
     function setTun(key, value) {
         if (key === 'auto_route') tunForm.auto_route = !!value;
+        else if (key === 'reject_quic') tunForm.reject_quic = !!value;
         else if (key === 'mtu') tunForm.mtu = parseInt(value, 10) || 1500;
         else tunForm[key] = value;
     }
@@ -737,7 +746,8 @@ const SingboxDashboardPage = (() => {
                 `/api/singbox/configs/${encodeURIComponent(tunForm.config)}/tun-inbound`,
                 { interface_name: tunForm.interface_name, address: tunForm.address,
                   stack: tunForm.stack, mtu: tunForm.mtu,
-                  auto_route: tunForm.auto_route });
+                  auto_route: tunForm.auto_route,
+                  reject_quic: tunForm.reject_quic });
             if (r && r.ok) {
                 if (r.gvisor_missing) {
                     Toast.error('Внимание: ваш sing-box собран БЕЗ gvisor — ' +
@@ -987,7 +997,7 @@ const SingboxDashboardPage = (() => {
     return {
         render, destroy, refresh,
         up, down, restart,
-        toggleDebug, showLog,
+        toggleDebug, showLog, copyLog,
         setFakeip, toggleFakeipHostlist, createFakeip,
         setTp, applyTransparent, removeTransparent, injectInbounds,
         setTun, createTunInbound,

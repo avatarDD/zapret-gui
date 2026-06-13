@@ -357,26 +357,38 @@ class TestTunInbound(unittest.TestCase):
         proxy_srv = next(s for s in dns["servers"] if s["tag"] == "dns-proxy")
         self.assertEqual(proxy_srv["detour"], "PROXY")   # selector из _cfg
 
-    def test_hijack_dns_rejects_quic(self):
-        # QUIC (UDP/443) глушим, чтобы клиенты откатывались на TCP (включая
-        # DNS-over-QUIC) — иначе через прокси «ничего не открывается».
+    _QUIC_REJECT = {"network": "udp", "port": 443, "action": "reject"}
+
+    def test_quic_not_rejected_by_default(self):
+        # По умолчанию QUIC НЕ глушим: иначе ломается DNS-over-QUIC клиента.
         cfg = self._cfg()
         set_tun_inbound(cfg, hijack_dns=True)
+        self.assertNotIn(self._QUIC_REJECT, cfg["route"]["rules"])
+
+    def test_hijack_dns_rejects_quic_when_enabled(self):
+        # reject_quic=True — добавляем правило (для прокси без UDP/QUIC).
+        cfg = self._cfg()
+        set_tun_inbound(cfg, hijack_dns=True, reject_quic=True)
         rules = cfg["route"]["rules"]
-        self.assertIn({"network": "udp", "port": 443, "action": "reject"},
-                      rules)
+        self.assertIn(self._QUIC_REJECT, rules)
         # повторный вызов не плодит дубликат
-        set_tun_inbound(cfg, hijack_dns=True)
+        set_tun_inbound(cfg, hijack_dns=True, reject_quic=True)
         self.assertEqual(sum(
-            1 for r in cfg["route"]["rules"]
-            if r == {"network": "udp", "port": 443, "action": "reject"}), 1)
+            1 for r in cfg["route"]["rules"] if r == self._QUIC_REJECT), 1)
+
+    def test_reject_quic_toggle_off_removes_rule(self):
+        # Выключение reject_quic убирает ранее добавленное правило.
+        cfg = self._cfg()
+        set_tun_inbound(cfg, hijack_dns=True, reject_quic=True)
+        self.assertIn(self._QUIC_REJECT, cfg["route"]["rules"])
+        set_tun_inbound(cfg, hijack_dns=True, reject_quic=False)
+        self.assertNotIn(self._QUIC_REJECT, cfg["route"]["rules"])
 
     def test_no_quic_reject_without_hijack(self):
         cfg = self._cfg()
         set_tun_inbound(cfg)
-        self.assertNotIn(
-            {"network": "udp", "port": 443, "action": "reject"},
-            cfg.get("route", {}).get("rules", []))
+        self.assertNotIn(self._QUIC_REJECT,
+                         cfg.get("route", {}).get("rules", []))
 
     def test_hijack_dns_idempotent(self):
         cfg = self._cfg()
