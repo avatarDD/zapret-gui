@@ -45,7 +45,7 @@ env:
   SINGBOX_REPO: SagerNet/sing-box
   # Набор tags для роутерного билда. Меньше дефолтного апстрима —
   # выкидываем with_v2ray_api, with_acme (нам незачем Let's Encrypt на
-  # роутере), with_gvisor (большой) и with_dhcp.
+  # роутере) и with_dhcp.
   # Оставляем то, что критично:
   #   with_quic     — Hysteria, Hysteria2, TUIC
   #   with_grpc     — VLESS+gRPC transport
@@ -55,10 +55,18 @@ env:
   #     временный sing-box и дёргает /proxies/<tag>/delay). Без него
   #     тест/health-filter пула не работает: «clash api is not included
   #     in this build».
+  #   with_gvisor   — ОБЯЗАТЕЛЕН для выборочной маршрутизации через TUN.
+  #     Трафик в TUN заворачивают наши `ip rule` (auto_route=false), а
+  #     системный сетевой стек sing-box БЕЗ auto_route НЕ перехватывает TCP
+  #     (UDP/DNS при этом работают) → «сайты не открываются, хотя прокси
+  #     живой». gvisor (userspace-стек) читает все пакеты из TUN сам и
+  #     работает независимо от auto_route. Без него старт TUN падает с
+  #     «gVisor is not included in this build». Немного увеличивает размер —
+  #     ради рабочей маршрутизации это оправдано.
   # ВАЖНО: НЕ включаем with_ech — начиная с sing-box 1.10 ECH
   # реализован в stdlib, отдельный тэг deprecated и при попытке
   # сборки даёт ошибку «cannot use string constant as int».
-  SINGBOX_TAGS: 'with_quic with_grpc with_wireguard with_utls with_clash_api'
+  SINGBOX_TAGS: 'with_quic with_grpc with_wireguard with_utls with_clash_api with_gvisor'
 
 jobs:
   # ── 0. Авто-детект новых версий апстрима (только cron) ─────

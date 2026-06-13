@@ -74,18 +74,20 @@ class SingboxDetector:
             path = _find_binary(["sing-box"])
         if not path:
             return {"installed": False, "path": "", "version": "",
-                    "tags": [], "has_clash_api": False}
+                    "tags": [], "has_clash_api": False, "has_gvisor": False}
         info = self._probe_version_info(path)
         return {"installed": True, "path": path,
                 "version":       info["version"],
                 "tags":          info["tags"],
-                # has_clash_api отражает УВЕРЕННОЕ наличие тега в сборке.
-                # Если `Tags:`-строку распарсить не удалось (tags пуст) —
-                # оставляем False, но потребители (proxy_tester/installer)
-                # реагируют только на «уверенно отсутствует»: tags непуст и
-                # clash_api в них нет. Это страхует от ложных срабатываний
-                # на сборках, не печатающих Tags.
-                "has_clash_api": info["has_clash_api"]}
+                # has_clash_api / has_gvisor отражают УВЕРЕННОЕ наличие тега в
+                # сборке. Если `Tags:`-строку распарсить не удалось (tags пуст)
+                # — оставляем False, но потребители реагируют только на
+                # «уверенно отсутствует» (tags непуст и тега там нет). Это
+                # страхует от ложных срабатываний на сборках без Tags.
+                # has_gvisor: gvisor ОБЯЗАТЕЛЕН для выборочной маршрутизации
+                # через TUN (system-стек без auto_route не ловит TCP).
+                "has_clash_api": info["has_clash_api"],
+                "has_gvisor": any("gvisor" in t for t in info["tags"])}
 
     def _probe_version(self, binary: str) -> str:
         """Только номер версии (обёртка над `_probe_version_info`)."""
