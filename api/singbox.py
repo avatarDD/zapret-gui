@@ -355,6 +355,77 @@ def _clash_select(ep: dict, selector: str, name: str) -> bool:
         return False
 
 
+def _has_transparent_inbound(cfg: dict) -> bool:
+    """Есть ли уже TUN / tproxy / redirect inbound (их не трогаем)."""
+    for ib in ((cfg or {}).get("inbounds") or []):
+        if isinstance(ib, dict) and ib.get("type") in (
+                "tun", "tproxy", "redirect"):
+            return True
+    return False
+
+
+def _should_auto_route(cfg: dict) -> bool:
+    """
+    Стоит ли автоматически делать конфиг «готовым к маршрутизации»
+    (TUN + DNS): да, если есть хотя бы один пользовательский outbound и
+    ещё нет ни TUN, ни transparent-inbound'ов (их трогать нельзя).
+    """
+    from core.singbox_config import list_user_outbound_tags
+    if not isinstance(cfg, dict) or _has_transparent_inbound(cfg):
+        return False
+    return bool(list_user_outbound_tags(cfg))
+
+
+def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
+                           address=None, mtu=9000, stack="system",
+                           auto_route=False, sniff=True, hijack_dns=True):
+    """
+    Сделать конфиг «готовым к умной маршрутизации» и сохранить:
+      • TUN-inbound (цель для device/domain/cidr-правил «Маршрутизации»);
+      • перехват DNS + локальный резолвер (hijack_dns) — чтобы у устройства,
+        целиком завёрнутого в TUN, резолвились имена (иначе «инета нет», хотя
+        прокси живой);
+      • clash_api (нужен health-watchdog'у и учёту трафика).
+    Формат DNS подбираем под версию движка через `sing-box check`
+    (legacy → typed 1.12+). Без бинаря оставляем legacy (валиден 1.8–1.13).
+    Возвращает save-dict (+ interface_name, dns_format).
+    """
+    import secrets as _secrets
+    from core.singbox_config import (
+        set_tun_inbound, ensure_clash_api, clash_api_endpoint, render_conf)
+    from core.proxy_tester import _free_port
+
+    if clash_api_endpoint(cfg) is None:
+        try:
+            ensure_clash_api(cfg, port=_free_port(),
+                             secret=_secrets.token_hex(8))
+        except Exception:
+            pass
+
+    dns_format = "none"
+    if not hijack_dns:
+        set_tun_inbound(cfg, interface_name=iface, address=address, mtu=mtu,
+                        stack=stack, auto_route=auto_route, sniff=sniff,
+                        hijack_dns=False)
+    else:
+        chosen = None
+        for typed in (False, True):
+            set_tun_inbound(cfg, interface_name=iface, address=address,
+                            mtu=mtu, stack=stack, auto_route=auto_route,
+                            sniff=sniff, hijack_dns=True, typed_dns=typed)
+            chk = mgr.check_text(render_conf(cfg))
+            if chk.get("ok") or chk.get("no_binary"):
+                chosen = "typed" if typed else "legacy"
+                break
+        dns_format = chosen or "typed"
+
+    save = mgr.save_config(name, text=render_conf(cfg))
+    if isinstance(save, dict):
+        save["interface_name"] = iface
+        save["dns_format"] = dns_format
+    return save
+
+
 def _resolve_test_outbounds(body: dict):
     """
     Источник серверов для теста (по приоритету):
@@ -533,8 +604,24 @@ def register(app):
             response.status = 400
             return {"ok": False, "error": "Поле 'name' обязательно"}
         from core.singbox_manager import get_singbox_manager
-        return get_singbox_manager().save_config(
-            name, text=text, parsed=parsed)
+        mgr = get_singbox_manager()
+        save = mgr.save_config(name, text=text, parsed=parsed)
+        if not (isinstance(save, dict) and save.get("ok")):
+            return save
+        # TUN создаём по умолчанию: «обычный» (локальный SOCKS) прокси почти
+        # не нужен — основной сценарий это умная маршрутизация. routing=false
+        # в body отключает. Авто-применяем только если в конфиге есть прокси
+        # и ещё нет TUN/transparent-inbound'ов (см. _should_auto_route).
+        if body.get("routing", True):
+            cfg_resp = mgr.get_config(name)
+            cfg = (cfg_resp.get("parsed") or {}) \
+                if isinstance(cfg_resp, dict) else {}
+            if _should_auto_route(cfg):
+                routed = _apply_singbox_routing(mgr, name, cfg)
+                if isinstance(routed, dict) and routed.get("ok"):
+                    routed["routing_ready"] = True
+                    return routed
+        return save
 
     @app.route("/api/singbox/configs/<name>")
     def singbox_configs_get(name):
@@ -927,6 +1014,21 @@ def register(app):
         res = _modify_outbounds(name, _mut)
         if isinstance(res, dict) and res.get("ok"):
             res.update(report)
+            # После первой вставки прокси делаем конфиг готовым к
+            # маршрутизации (TUN+DNS), если он ещё не настроен.
+            try:
+                from core.singbox_manager import get_singbox_manager
+                mgr = get_singbox_manager()
+                cfg_resp = mgr.get_config(name)
+                cfg = (cfg_resp.get("parsed") or {}) \
+                    if isinstance(cfg_resp, dict) else {}
+                if _should_auto_route(cfg):
+                    routed = _apply_singbox_routing(mgr, name, cfg)
+                    if isinstance(routed, dict) and routed.get("ok"):
+                        res["routing_ready"] = True
+                        res["interface_name"] = routed.get("interface_name")
+            except Exception:
+                pass
         return res
 
     @app.route("/api/singbox/export-links", method="POST")
@@ -1168,7 +1270,6 @@ def register(app):
         except Exception:
             body = {}
         from core.singbox_manager import get_singbox_manager
-        from core.singbox_config import set_tun_inbound, render_conf
         mgr = get_singbox_manager()
         cfg_resp = mgr.get_config(name)
         if not cfg_resp.get("ok"):
@@ -1179,19 +1280,20 @@ def register(app):
         if isinstance(addr, str):
             addr = [a.strip() for a in addr.split(",") if a.strip()]
         iface = (body.get("interface_name") or "singbox-tun").strip()
-        set_tun_inbound(
-            cfg,
-            interface_name=iface,
+        # hijack_dns=True по умолчанию: для маршрутизации устройства целиком
+        # нужен перехват DNS, иначе у него не резолвятся имена.
+        save = _apply_singbox_routing(
+            mgr, name, cfg,
+            iface=iface,
             address=addr or None,
             mtu=int(body.get("mtu") or 9000),
             stack=(body.get("stack") or "system"),
             auto_route=bool(body.get("auto_route", False)),
-            sniff=bool(body.get("sniff", True)))
-        save = mgr.save_config(name, text=render_conf(cfg))
-        if not save.get("ok"):
+            sniff=bool(body.get("sniff", True)),
+            hijack_dns=bool(body.get("hijack_dns", True)))
+        if not (isinstance(save, dict) and save.get("ok")):
             response.status = 500
             return save
-        save["interface_name"] = iface
         return save
 
     @app.route("/api/singbox/transparent/apply", method="POST")
@@ -1456,6 +1558,42 @@ def register(app):
         st = sp.get_refresh_job().status()
         st["ok"] = True
         return st
+
+    # ─────── watchdog (авто-перезапуск при зависании прокси) ────────
+
+    @app.route("/api/singbox/watchdog")
+    def singbox_watchdog_get():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.singbox_watchdog import get_watchdog
+            return {"ok": True, "status": get_watchdog().get_status()}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/singbox/watchdog", method="POST")
+    def singbox_watchdog_set():
+        """
+        Изменить настройки. Любое подмножество полей: enabled,
+        check_interval_sec, cooldown_sec, max_restarts_per_hour,
+        probe_target, probe_timeout_ms, probe_fail_threshold.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        try:
+            from core.singbox_watchdog import set_settings, get_watchdog
+            new = set_settings(**{k: body.get(k) for k in (
+                "enabled", "check_interval_sec", "cooldown_sec",
+                "max_restarts_per_hour", "probe_target",
+                "probe_timeout_ms", "probe_fail_threshold") if k in body})
+            return {"ok": True, "status": get_watchdog().get_status(),
+                    "settings": new}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     # ─────── proxy tester ──────────────────────────────────────────
 

@@ -29,6 +29,7 @@ const SingboxDashboardPage = (() => {
     let tpNote = '';                 // последняя ошибка применения firewall (persist)
     let debugEnabled = false;        // /api/singbox/debug (log.level=debug при запуске)
     let logState = {};               // name -> { open, text, loading }
+    let watchdog = null;             // /api/singbox/watchdog status
     let fakeipOpts = null;           // /api/singbox/fakeip/options
     let fakeipRendered = false;      // форму рендерим один раз (не теряем ввод при poll)
     let fakeipBusy = false;
@@ -92,6 +93,13 @@ const SingboxDashboardPage = (() => {
                     <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
                 </div>
             </div>
+
+            <div class="card" id="sb-watchdog" style="margin-top:16px;">
+                <div class="card-title">Проверка соединения (авто-перезапуск)</div>
+                <div id="sb-watchdog-body" style="margin-top:8px;">
+                    <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
+                </div>
+            </div>
         `;
         refresh();
         startPolling();
@@ -105,13 +113,14 @@ const SingboxDashboardPage = (() => {
 
     async function loadAll() {
         try {
-            const [envResp, cfgsResp, autoResp, tpResp, dbgResp, fiResp] = await Promise.all([
+            const [envResp, cfgsResp, autoResp, tpResp, dbgResp, fiResp, wdResp] = await Promise.all([
                 API.get('/api/singbox/environment').catch(() => null),
                 API.get('/api/singbox/configs').catch(() => null),
                 API.get('/api/singbox/autostart').catch(() => null),
                 API.get('/api/singbox/transparent/status').catch(() => null),
                 API.get('/api/singbox/debug').catch(() => null),
                 API.get('/api/singbox/fakeip/options').catch(() => null),
+                API.get('/api/singbox/watchdog').catch(() => null),
             ]);
             env       = envResp || null;
             configs   = (cfgsResp && cfgsResp.configs) || [];
@@ -119,6 +128,7 @@ const SingboxDashboardPage = (() => {
             transparent = tpResp || null;
             debugEnabled = !!(dbgResp && dbgResp.enabled);
             if (fiResp && fiResp.ok) fakeipOpts = fiResp;
+            watchdog = (wdResp && wdResp.status) || watchdog;
             // Подхватываем сохранённые настройки в форму (один раз и при смене).
             if (transparent && transparent.settings && transparent.settings.mode) {
                 const s = transparent.settings;
@@ -151,6 +161,7 @@ const SingboxDashboardPage = (() => {
         renderFakeip();
         renderTransparent();
         renderTun();
+        renderWatchdog();
     }
 
     function startPolling() {
@@ -847,6 +858,68 @@ const SingboxDashboardPage = (() => {
         return escapeHtml(s).replace(/"/g, '&quot;');
     }
 
+    // ══════════════ watchdog (проверка соединения) ══════════════
+
+    function renderWatchdog() {
+        const box = document.getElementById('sb-watchdog-body');
+        if (!box) return;
+        const s = (watchdog && watchdog.settings) || {};
+        const on = !!s.enabled;
+        box.innerHTML = `
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                <input type="checkbox" id="sb-wd-on" ${on ? 'checked' : ''}
+                       onchange="SingboxDashboardPage.saveWatchdog()">
+                <span>Перезапускать sing-box при плохом соединении</span>
+            </label>
+            <p class="text-muted" style="font-size:12px; margin:6px 0 0;">
+                Периодически проверяет связь <b>через прокси</b> (Clash API:
+                реально открывает облако сквозь активный сервер) и
+                автоматически перезапускает инстанс, если соединение зависло
+                или движок перестал отвечать. Аналог авто-переподключения
+                AmneziaWG. Использует clash_api — наш TUN-флоу включает его
+                автоматически.
+            </p>
+            <div id="sb-wd-adv" style="margin-top:10px; ${on ? '' : 'display:none;'}">
+                <div style="display:grid; grid-template-columns:220px 1fr; gap:6px 12px; max-width:560px; align-items:center;">
+                    <label class="text-muted" style="font-size:12px;">Интервал проверки, с</label>
+                    <input type="number" id="sb-wd-iv" class="form-control" style="max-width:100px;"
+                           min="15" max="3600" value="${escapeAttr(s.check_interval_sec || 60)}">
+                    <label class="text-muted" style="font-size:12px;">Неудач подряд → рестарт</label>
+                    <input type="number" id="sb-wd-thr" class="form-control" style="max-width:100px;"
+                           min="1" max="10" value="${escapeAttr(s.probe_fail_threshold || 2)}">
+                    <label class="text-muted" style="font-size:12px;">Таймаут пробы, мс</label>
+                    <input type="number" id="sb-wd-to" class="form-control" style="max-width:100px;"
+                           min="1000" max="30000" value="${escapeAttr(s.probe_timeout_ms || 5000)}">
+                </div>
+                <div style="margin-top:8px;">
+                    <button class="btn btn-ghost btn-sm" onclick="SingboxDashboardPage.saveWatchdog()">Сохранить параметры</button>
+                </div>
+            </div>
+        `;
+    }
+
+    async function saveWatchdog() {
+        const on = !!(document.getElementById('sb-wd-on') || {}).checked;
+        const iv = (document.getElementById('sb-wd-iv') || {}).value;
+        const thr = (document.getElementById('sb-wd-thr') || {}).value;
+        const to = (document.getElementById('sb-wd-to') || {}).value;
+        const payload = { enabled: on };
+        if (iv) payload.check_interval_sec = parseInt(iv, 10) || 60;
+        if (thr) payload.probe_fail_threshold = parseInt(thr, 10) || 2;
+        if (to) payload.probe_timeout_ms = parseInt(to, 10) || 5000;
+        try {
+            const r = await API.post('/api/singbox/watchdog', payload);
+            if (r && r.ok) {
+                watchdog = r.status || watchdog;
+                Toast.success(on ? 'Проверка соединения включена'
+                                 : 'Проверка соединения выключена');
+                renderWatchdog();
+            } else {
+                Toast.error((r && r.error) || 'ошибка');
+            }
+        } catch (e) { Toast.error(e.message); }
+    }
+
     return {
         render, destroy, refresh,
         up, down, restart,
@@ -854,5 +927,6 @@ const SingboxDashboardPage = (() => {
         setFakeip, toggleFakeipHostlist, createFakeip,
         setTp, applyTransparent, removeTransparent, injectInbounds,
         setTun, createTunInbound,
+        saveWatchdog,
     };
 })();
