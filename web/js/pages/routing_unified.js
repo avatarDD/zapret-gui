@@ -67,7 +67,7 @@ const RoutingUnifiedPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1 class="page-title">${title}${typeof Help !== 'undefined' ? Help.button(helpId) : ''}</h1>
+                    <h1 class="page-title">${title}${typeof Help !== 'undefined' ? Help.button(helpId) : ''}${typeof Help !== 'undefined' ? Help.button('routing-modes', {label: '⇄'}) : ''}</h1>
                     <p class="page-description">${subtitle}</p>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
