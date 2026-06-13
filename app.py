@@ -476,6 +476,16 @@ def create_app(config_dir: str = None) -> Bottle:
     except Exception:
         pass
 
+    # AWG-watchdog: автоперезапуск «зависших» туннелей (handshake устарел
+    # ИЛИ приём встал). Поднимаем при старте GUI, чтобы защита работала
+    # автономно после ребута роутера, а не только когда открыта страница
+    # AWG. Ничего не делает, если awg.watchdog.enabled = false (дефолт).
+    try:
+        from core.awg_watchdog import get_watchdog
+        get_watchdog().reconfigure()
+    except Exception as e:
+        log.warning("AWG-watchdog при boot: %s" % e, source="awg")
+
     # Healthcheck-демон (autocircular watchdog): ничего не делает, если
     # cfg.healthcheck.enabled = false (дефолт). Включается через GUI.
     try:
