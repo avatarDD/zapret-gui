@@ -15,6 +15,7 @@ from core.singbox_config import (
     make_transparent_inbounds, set_transparent_inbounds, make_sniff_rule,
     make_hijack_dns_rule, make_tun_inbound, set_tun_inbound,
     find_tun_interface, active_outbound_tag,
+    make_routing_dns, collect_proxy_server_domains,
 )
 
 
@@ -340,6 +341,12 @@ class TestTunInbound(unittest.TestCase):
         # есть direct-outbound для этого правила
         self.assertTrue(any(
             o.get("type") == "direct" for o in cfg["outbounds"]))
+        # КЛЮЧЕВОЕ: DNS резолвится ЧЕРЕЗ прокси (detour на активный outbound),
+        # а не через локальный/провайдерский резолвер (иначе DNS-подмена DPI).
+        dns = cfg["dns"]
+        self.assertEqual(dns["final"], "dns-proxy")
+        proxy_srv = next(s for s in dns["servers"] if s["tag"] == "dns-proxy")
+        self.assertEqual(proxy_srv["detour"], "PROXY")   # selector из _cfg
 
     def test_hijack_dns_idempotent(self):
         cfg = self._cfg()
@@ -395,6 +402,44 @@ class TestActiveOutboundTag(unittest.TestCase):
     def test_empty_when_no_user_outbounds(self):
         cfg = {"outbounds": [{"type": "direct", "tag": "direct"}]}
         self.assertEqual(active_outbound_tag(cfg), "")
+
+
+class TestRoutingDns(unittest.TestCase):
+    """DNS-секция маршрутизации: резолв через прокси, домены прокси — мимо."""
+
+    def test_legacy_resolves_via_proxy(self):
+        dns = make_routing_dns(proxy_tag="PROXY",
+                               proxy_server_domains=["vpn.example.com"])
+        self.assertEqual(dns["final"], "dns-proxy")
+        proxy = next(s for s in dns["servers"] if s["tag"] == "dns-proxy")
+        self.assertEqual(proxy["detour"], "PROXY")
+        self.assertTrue(proxy["address"].startswith("https://"))
+        # домен прокси-сервера резолвится напрямую (без петли)
+        self.assertIn({"domain": ["vpn.example.com"], "server": "dns-direct"},
+                      dns["rules"])
+
+    def test_typed_format(self):
+        dns = make_routing_dns(proxy_tag="proxy-out",
+                               proxy_server_domains=[], typed=True)
+        tags = {s["tag"]: s for s in dns["servers"]}
+        self.assertEqual(tags["dns-proxy"]["type"], "https")
+        self.assertEqual(tags["dns-proxy"]["detour"], "proxy-out")
+        self.assertEqual(tags["dns-direct"]["type"], "local")
+        self.assertEqual(dns["rules"], [])      # нет доменов прокси → нет правил
+
+    def test_ip_proxy_server_no_rule(self):
+        # Прокси задан IP — резолвить нечего, правило не нужно.
+        dns = make_routing_dns(proxy_tag="P", proxy_server_domains=["1.2.3.4"])
+        self.assertEqual(dns["rules"], [])
+
+    def test_collect_domains_skips_ip_and_service(self):
+        cfg = {"outbounds": [
+            {"type": "vless", "tag": "a", "server": "host.example.com"},
+            {"type": "hysteria2", "tag": "b", "server": "5.6.7.8"},
+            {"type": "direct", "tag": "direct", "server": "ignored"},
+            {"type": "selector", "tag": "P", "outbounds": ["a", "b"]}]}
+        self.assertEqual(collect_proxy_server_domains(cfg),
+                         ["host.example.com"])
 
 
 class TestReapplySaved(unittest.TestCase):

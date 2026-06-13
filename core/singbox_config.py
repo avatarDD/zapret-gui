@@ -420,10 +420,17 @@ def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
         if proxy:
             cfg.setdefault("route", {})["final"] = proxy
     if hijack_dns:
-        # Локальный резолвер для перехваченного DNS (fakeip=False → только
-        # direct-сервер, см. make_fakeip_dns). LAN — мимо прокси.
-        cfg["dns"] = make_fakeip_dns(proxied_domains=None, direct_dns="local",
-                                     typed=typed_dns, fakeip=False)
+        # DNS перехваченных запросов резолвим ЧЕРЕЗ прокси (DoH поверх
+        # прокси-outbound) — чистый ответ без DNS-подмены DPI/провайдера.
+        # Иначе блокируемые домены резолвятся в подменённые IP и сайты не
+        # открываются, хотя прокси живой. Домены самих прокси-серверов —
+        # напрямую (local), чтобы не было петли (резолв сервера через сам
+        # же прокси).
+        proxy_tag = pick_proxy_outbound(cfg) or "proxy-out"
+        cfg["dns"] = make_routing_dns(
+            proxy_tag=proxy_tag,
+            proxy_server_domains=collect_proxy_server_domains(cfg),
+            typed=typed_dns)
         _ensure_private_direct_rule(cfg)
     return cfg
 
@@ -480,6 +487,65 @@ def active_outbound_tag(cfg: dict) -> str:
     if final and final in user_tags:
         return final
     return user_tags[0] if user_tags else ""
+
+
+def _looks_like_ip(s: str) -> bool:
+    """Грубо: это IP-литерал (v4/v6), а не доменное имя?"""
+    s = (s or "").strip().strip("[]")
+    return bool(_IPV4_RE.match(s)) or (":" in s)
+
+
+def collect_proxy_server_domains(cfg: dict) -> list:
+    """
+    Доменные имена `server` всех пользовательских outbound'ов (не IP).
+    Нужны, чтобы резолвить их НАПРЯМУЮ (а не через прокси) и не словить
+    петлю «резолв адреса прокси через сам прокси».
+    """
+    out = set()
+    for ob in (cfg.get("outbounds") or []):
+        if not isinstance(ob, dict):
+            continue
+        if ob.get("type") in ("direct", "block", "dns", "selector", "urltest"):
+            continue
+        srv = (ob.get("server") or "").strip()
+        if srv and not _looks_like_ip(srv):
+            out.add(srv)
+    return sorted(out)
+
+
+def make_routing_dns(*, proxy_tag: str = "proxy-out",
+                     proxy_server_domains=None, doh_ip: str = "1.1.1.1",
+                     typed: bool = False) -> dict:
+    """
+    DNS-секция для маршрутизации трафика через прокси.
+
+    Клиентские запросы резолвятся ЧЕРЕЗ прокси (DoH `https://<doh_ip>/dns-query`
+    поверх `proxy_tag`) — ответ чистый, без DNS-подмены DPI/провайдера (иначе
+    блокируемые домены резолвятся в подменённые IP и не открываются). DoH-узел
+    задаём IP-литералом (1.1.1.1) — его самого резолвить не нужно, петли нет.
+
+    Домены самих прокси-серверов (`proxy_server_domains`) резолвятся напрямую
+    (`local`) — иначе чтобы подключиться к прокси, надо было бы сперва
+    зайти на прокси (петля).
+
+    typed=False → legacy-формат (1.8–1.13), typed=True → 1.12+.
+    """
+    if typed:
+        srv_proxy = {"tag": "dns-proxy", "type": "https", "server": doh_ip,
+                     "detour": proxy_tag}
+        srv_direct = {"tag": "dns-direct", "type": "local"}
+    else:
+        srv_proxy = {"tag": "dns-proxy",
+                     "address": "https://%s/dns-query" % doh_ip,
+                     "detour": proxy_tag}
+        srv_direct = {"tag": "dns-direct", "address": "local"}
+    rules = []
+    doms = [d for d in (proxy_server_domains or [])
+            if d and not _looks_like_ip(d)]
+    if doms:
+        rules.append({"domain": doms, "server": "dns-direct"})
+    return {"servers": [srv_proxy, srv_direct], "rules": rules,
+            "final": "dns-proxy"}
 
 
 def build_geo_route_rule(outbound_tag: str, *, domains=None,
