@@ -316,6 +316,15 @@ class TestTunInbound(unittest.TestCase):
         self.assertEqual(len(tun), 1)                     # заменён, не дубль
         self.assertEqual(tun[0]["interface_name"], "t1")
 
+    def test_routing_tun_uses_gvisor_stack(self):
+        # system-стек без auto_route не перехватывает TCP — для выборочной
+        # маршрутизации (auto_route=False) нужен gvisor.
+        cfg = self._cfg()
+        set_tun_inbound(cfg)
+        tun = next(ib for ib in cfg["inbounds"] if ib["tag"] == "tun-in")
+        self.assertEqual(tun["stack"], "gvisor")
+        self.assertFalse(tun["auto_route"])
+
     def test_no_dns_section_without_hijack(self):
         # По умолчанию (hijack_dns=False) DNS-секцию НЕ добавляем —
         # совместимость со старым поведением.
