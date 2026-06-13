@@ -407,15 +407,36 @@ def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
         set_tun_inbound(cfg, interface_name=iface, address=address, mtu=mtu,
                         stack=stack, auto_route=auto_route, sniff=sniff,
                         hijack_dns=False)
+        # убрать возможный остаток от прежней hijack-конфигурации (resolver
+        # ссылался бы на отсутствующий теперь dns-сервер → FATAL)
+        cfg.setdefault("route", {}).pop("default_domain_resolver", None)
     else:
+        # Перебираем сочетания (формат DNS, default_domain_resolver) под
+        # версию движка и берём первое, что проходит `sing-box check`:
+        #   typed + object-resolver → sing-box 1.12.4+/1.13/1.14
+        #   typed + string-resolver → 1.12.0–1.12.3
+        #   legacy без resolver     → 1.8–1.11
+        # default_domain_resolver обязателен на 1.12+ (на 1.14 без него FATAL):
+        # резолвит домены прокси-серверов в dial-полях напрямую (dns-direct),
+        # без петли «резолв адреса прокси через сам прокси».
+        attempts = [
+            (True,  {"server": "dns-direct"}, "typed"),
+            (True,  "dns-direct",             "typed"),
+            (False, None,                     "legacy"),
+        ]
         chosen = None
-        for typed in (False, True):
+        for typed, resolver, label in attempts:
             set_tun_inbound(cfg, interface_name=iface, address=address,
                             mtu=mtu, stack=stack, auto_route=auto_route,
                             sniff=sniff, hijack_dns=True, typed_dns=typed)
+            route = cfg.setdefault("route", {})
+            if resolver is None:
+                route.pop("default_domain_resolver", None)
+            else:
+                route["default_domain_resolver"] = resolver
             chk = mgr.check_text(render_conf(cfg))
             if chk.get("ok") or chk.get("no_binary"):
-                chosen = "typed" if typed else "legacy"
+                chosen = label
                 break
         dns_format = chosen or "typed"
 

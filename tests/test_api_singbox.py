@@ -319,5 +319,82 @@ class TestSingboxAPI(unittest.TestCase):
         self.assertFalse(r["ok"])
 
 
+class _FakeRoutingMgr:
+    """Поддельный менеджер: check_text принимает конфиг по правилу accept,
+    save_config запоминает сохранённый (разобранный) конфиг."""
+
+    def __init__(self, accept):
+        self.accept = accept
+        self.saved = None
+
+    def check_text(self, text):
+        import json
+        return {"ok": bool(self.accept(json.loads(text)))}
+
+    def save_config(self, name, text=""):
+        import json
+        self.saved = json.loads(text)
+        return {"ok": True}
+
+
+class TestApplyRoutingDomainResolver(unittest.TestCase):
+    """_apply_singbox_routing подбирает default_domain_resolver под версию
+    движка (на 1.14 без него FATAL)."""
+
+    def _cfg(self):
+        return {"outbounds": [{
+            "type": "hysteria2", "tag": "h", "server": "vpn.example.com",
+            "server_port": 8449, "password": "p",
+            "tls": {"enabled": True, "server_name": "sni.example"}}]}
+
+    def test_object_resolver_when_accepted(self):
+        from api.singbox import _apply_singbox_routing
+        mgr = _FakeRoutingMgr(lambda c: True)        # всё ок (1.14)
+        save = _apply_singbox_routing(mgr, "vpn", self._cfg())
+        self.assertTrue(save["ok"])
+        self.assertEqual(mgr.saved["route"]["default_domain_resolver"],
+                         {"server": "dns-direct"})
+        # клиентский DNS — через прокси
+        self.assertEqual(mgr.saved["dns"]["final"], "dns-proxy")
+        self.assertEqual(save["dns_format"], "typed")
+
+    def test_string_resolver_fallback(self):
+        from api.singbox import _apply_singbox_routing
+        # имитируем 1.12.0: принимаем только строковый resolver
+        mgr = _FakeRoutingMgr(
+            lambda c: isinstance(
+                (c.get("route") or {}).get("default_domain_resolver"), str))
+        save = _apply_singbox_routing(mgr, "vpn", self._cfg())
+        self.assertTrue(save["ok"])
+        self.assertEqual(mgr.saved["route"]["default_domain_resolver"],
+                         "dns-direct")
+
+    def test_legacy_has_no_resolver(self):
+        from api.singbox import _apply_singbox_routing
+        # имитируем старый движок (1.8–1.11): typed-DNS не принимается,
+        # только legacy — и тогда resolver быть НЕ должно.
+        def accept(c):
+            servers = (c.get("dns") or {}).get("servers") or []
+            typed = any("type" in s for s in servers)
+            return (not typed) and \
+                "default_domain_resolver" not in (c.get("route") or {})
+        mgr = _FakeRoutingMgr(accept)
+        save = _apply_singbox_routing(mgr, "vpn", self._cfg())
+        self.assertTrue(save["ok"])
+        self.assertNotIn("default_domain_resolver",
+                         mgr.saved.get("route", {}))
+        self.assertEqual(save["dns_format"], "legacy")
+
+    def test_no_resolver_when_hijack_off(self):
+        from api.singbox import _apply_singbox_routing
+        mgr = _FakeRoutingMgr(lambda c: True)
+        save = _apply_singbox_routing(mgr, "vpn", self._cfg(),
+                                      hijack_dns=False)
+        self.assertTrue(save["ok"])
+        self.assertNotIn("default_domain_resolver",
+                         mgr.saved.get("route", {}))
+        self.assertNotIn("dns", mgr.saved)
+
+
 if __name__ == "__main__":
     unittest.main()
