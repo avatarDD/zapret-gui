@@ -87,7 +87,7 @@ const SingboxDashboardPage = (() => {
             </div>
 
             <div class="card" id="sb-lite" style="margin-top:16px;">
-                <div class="card-title">Весь трафик через прокси — kernel-стек (ниже CPU)</div>
+                <div class="card-title">Весь трафик через прокси — kernel-стек (ниже CPU)${typeof Help !== 'undefined' ? Help.button('singbox-lite') : ''}${typeof Help !== 'undefined' ? Help.button('routing-modes', {label: '⇄'}) : ''}</div>
                 <div id="sb-lite-body" style="margin-top:8px;">
                     <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
                 </div>
