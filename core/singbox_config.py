@@ -432,23 +432,16 @@ def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
             proxy_server_domains=collect_proxy_server_domains(cfg),
             typed=typed_dns)
         _ensure_private_direct_rule(cfg)
+        _ensure_quic_reject_rule(cfg)
     return cfg
 
 
-def _ensure_private_direct_rule(cfg: dict) -> None:
+def _insert_after_managed(cfg: dict, rule: dict) -> None:
     """
-    Гарантировать правило «приватные адреса (LAN/loopback) → direct» и
-    наличие самого `direct`-outbound'а. Чтобы устройство, целиком
-    завёрнутое в TUN, ходило в локальную сеть (роутер, принтеры, NAS)
-    напрямую, а не через прокси. Правило ставится после служебных
-    (sniff/hijack-dns), но перед доменными/final.
+    Идемпотентно вставить route-правило сразу ПОСЛЕ служебных
+    (sniff/hijack-dns, которые _set_managed_route_rules держит в начале),
+    но ПЕРЕД доменными/final. Дубликат не плодим.
     """
-    outs = cfg.setdefault("outbounds", [])
-    if not any(isinstance(o, dict) and o.get("type") == "direct" for o in outs):
-        outs.append({"type": "direct", "tag": "direct"})
-    direct_tag = next((o.get("tag") for o in outs if isinstance(o, dict)
-                       and o.get("type") == "direct"), "direct")
-    rule = {"ip_is_private": True, "outbound": direct_tag}
     route = cfg.setdefault("route", {})
     rules = route.setdefault("rules", [])
     if not isinstance(rules, list):
@@ -456,13 +449,41 @@ def _ensure_private_direct_rule(cfg: dict) -> None:
         route["rules"] = rules
     if rule in rules:
         return
-    # Вставляем сразу после блока служебных правил (sniff/hijack-dns),
-    # которые _set_managed_route_rules держит в начале.
     insert_at = 0
     for i, r in enumerate(rules):
         if isinstance(r, dict) and r.get("action") in ("sniff", "hijack-dns"):
             insert_at = i + 1
     rules.insert(insert_at, rule)
+
+
+def _ensure_private_direct_rule(cfg: dict) -> None:
+    """
+    Гарантировать правило «приватные адреса (LAN/loopback) → direct» и
+    наличие самого `direct`-outbound'а. Чтобы устройство, целиком
+    завёрнутое в TUN, ходило в локальную сеть (роутер, принтеры, NAS)
+    напрямую, а не через прокси.
+    """
+    outs = cfg.setdefault("outbounds", [])
+    if not any(isinstance(o, dict) and o.get("type") == "direct" for o in outs):
+        outs.append({"type": "direct", "tag": "direct"})
+    direct_tag = next((o.get("tag") for o in outs if isinstance(o, dict)
+                       and o.get("type") == "direct"), "direct")
+    _insert_after_managed(cfg, {"ip_is_private": True, "outbound": direct_tag})
+
+
+def _ensure_quic_reject_rule(cfg: dict) -> None:
+    """
+    Глушить QUIC (UDP/443), чтобы браузеры/ОС откатывались на TCP.
+
+    QUIC поверх прокси (hysteria2/tuic/…) часто не проходит (UDP/MTU/PMTU),
+    и тогда «ничего не открывается», хотя TCP через прокси работает. Сюда же
+    относится DNS-over-QUIC (DoH3): пока он висит на UDP/443, имена вообще не
+    резолвятся, и даже обычный TCP-сайт не открыть (его IP неизвестен). reject
+    шлёт ICMP-unreachable → клиент быстро переключается на TCP. Наш DNS (DoH
+    поверх прокси) ходит по TCP, поэтому от этого правила не страдает.
+    """
+    _insert_after_managed(
+        cfg, {"network": "udp", "port": 443, "action": "reject"})
 
 
 def active_outbound_tag(cfg: dict) -> str:
