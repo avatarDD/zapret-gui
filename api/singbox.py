@@ -399,7 +399,8 @@ def _binary_has_gvisor(binary):
 
 def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
                            address=None, mtu=1500, stack="gvisor",
-                           auto_route=False, sniff=True, hijack_dns=True):
+                           auto_route=False, sniff=True, hijack_dns=True,
+                           reject_quic=False):
     """
     Сделать конфиг «готовым к умной маршрутизации» и сохранить:
       • TUN-inbound (цель для device/domain/cidr-правил «Маршрутизации»);
@@ -465,7 +466,8 @@ def _apply_singbox_routing(mgr, name, cfg, *, iface="singbox-tun",
         for typed, resolver, label in attempts:
             set_tun_inbound(cfg, interface_name=iface, address=address,
                             mtu=mtu, stack=stack, auto_route=auto_route,
-                            sniff=sniff, hijack_dns=True, typed_dns=typed)
+                            sniff=sniff, hijack_dns=True, typed_dns=typed,
+                            reject_quic=reject_quic)
             route = cfg.setdefault("route", {})
             if resolver is None:
                 route.pop("default_domain_resolver", None)
@@ -1350,7 +1352,8 @@ def register(app):
             stack=(body.get("stack") or "gvisor"),
             auto_route=bool(body.get("auto_route", False)),
             sniff=bool(body.get("sniff", True)),
-            hijack_dns=bool(body.get("hijack_dns", True)))
+            hijack_dns=bool(body.get("hijack_dns", True)),
+            reject_quic=bool(body.get("reject_quic", False)))
         if not (isinstance(save, dict) and save.get("ok")):
             response.status = 500
             return save

@@ -389,7 +389,8 @@ def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
                     address=None, mtu: int = 1500, stack: str = "gvisor",
                     auto_route: bool = False, strict_route: bool = False,
                     sniff: bool = True, route_to_proxy: bool = True,
-                    hijack_dns: bool = False, typed_dns: bool = False) -> dict:
+                    hijack_dns: bool = False, typed_dns: bool = False,
+                    reject_quic: bool = False) -> dict:
     """
     Вставить/заменить TUN-inbound в конфиге (cfg мутируется и
     возвращается). Прежний наш `tun-in` убирается, остальные inbound'ы
@@ -444,7 +445,15 @@ def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
             proxy_server_domains=collect_proxy_server_domains(cfg),
             typed=typed_dns)
         _ensure_private_direct_rule(cfg)
-        _ensure_quic_reject_rule(cfg)
+        # QUIC-reject опционален и ВЫКЛ по умолчанию: глушение UDP/443 ломает
+        # DNS-over-QUIC (DoH3) клиента, если он не откатывается на TCP/plain —
+        # тогда имена вообще не резолвятся. Включать стоит, только если QUIC
+        # через прокси реально не ходит (тогда браузер уйдёт на TCP).
+        if reject_quic:
+            _ensure_quic_reject_rule(cfg)
+        else:
+            remove_route_rule(
+                cfg, {"network": "udp", "port": 443, "action": "reject"})
     return cfg
 
 
