@@ -23,7 +23,7 @@ const SingboxDashboardPage = (() => {
     let tpScopeAutoSet = false;      // scope уже предложен по профилю окружения
     let tunForm = {                  // форма TUN-интерфейса (для Selective routing)
         config: '', interface_name: 'singbox-tun',
-        address: '172.18.0.1/30', stack: 'gvisor', mtu: 9000,
+        address: '172.18.0.1/30', stack: 'gvisor', mtu: 1500,
         auto_route: false,
     };
     let tpNote = '';                 // последняя ошибка применения firewall (persist)
@@ -726,7 +726,7 @@ const SingboxDashboardPage = (() => {
 
     function setTun(key, value) {
         if (key === 'auto_route') tunForm.auto_route = !!value;
-        else if (key === 'mtu') tunForm.mtu = parseInt(value, 10) || 9000;
+        else if (key === 'mtu') tunForm.mtu = parseInt(value, 10) || 1500;
         else tunForm[key] = value;
     }
 

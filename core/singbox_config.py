@@ -342,7 +342,7 @@ _TUN_TAG = "tun-in"
 
 
 def make_tun_inbound(*, interface_name: str = "singbox-tun",
-                     address=None, mtu: int = 9000,
+                     address=None, mtu: int = 1500,
                      stack: str = "system",
                      auto_route: bool = False,
                      strict_route: bool = False,
@@ -364,13 +364,18 @@ def make_tun_inbound(*, interface_name: str = "singbox-tun",
 
     stack: 'system' (быстрее, нужен модуль tun ядра — на Keenetic есть),
            'gvisor' (userspace, переносимее) или 'mixed'.
+
+    mtu по умолчанию 1500 (а не 9000): для туннеля поверх прокси
+    (hysteria2/…) большой MTU бессмысленен (реальный путь ~1400), а с
+    gvisor-стеком 9000 раздувает буферы и на роутере с малым ОЗУ приводит к
+    GC-молотьбе и 100% CPU.
     """
     ib = {
         "type": "tun",
         "tag": _TUN_TAG,
         "interface_name": interface_name or "singbox-tun",
         "address": list(address) if address else ["172.18.0.1/30"],
-        "mtu": int(mtu) if mtu else 9000,
+        "mtu": int(mtu) if mtu else 1500,
         "auto_route": bool(auto_route),
         "strict_route": bool(strict_route),
         "stack": stack or "system",
@@ -381,7 +386,7 @@ def make_tun_inbound(*, interface_name: str = "singbox-tun",
 
 
 def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
-                    address=None, mtu: int = 9000, stack: str = "gvisor",
+                    address=None, mtu: int = 1500, stack: str = "gvisor",
                     auto_route: bool = False, strict_route: bool = False,
                     sniff: bool = True, route_to_proxy: bool = True,
                     hijack_dns: bool = False, typed_dns: bool = False) -> dict:
@@ -756,7 +761,7 @@ def build_fakeip_config(*, proxy_outbound: dict,
                         route_all: bool = False,
                         direct_dns: str = "local",
                         tun_iface: str = "singbox-tun",
-                        tun_address=None, mtu: int = 9000,
+                        tun_address=None, mtu: int = 1500,
                         stack: str = "system",
                         auto_redirect: bool = False,
                         typed_dns: bool = False,
