@@ -1156,8 +1156,7 @@ class AwgManager:
             # Списки наполнения: дёргаем list set отдельно, поскольку
             # nft list table даёт только описание, без элементов.
             try:
-                import re as _re
-                for m in _re.finditer(r"set\s+(awgr_\S+)\s*\{", t):
+                for m in re.finditer(r"set\s+(awgr_\S+)\s*\{", t):
                     sname = m.group(1)
                     rc2, body, _e2 = _run([
                         "nft", "list", "set", "inet", "awg_routing", sname

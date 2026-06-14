@@ -355,22 +355,28 @@ class FirewallManager:
 
     def is_applied(self) -> bool:
         """Применены ли правила GUI."""
-        rules = self.get_rules()
+        return self._rules_applied(self.get_rules())
+
+    def _rules_applied(self, rules) -> bool:
+        """Вычислить applied по списку правил и сохранить под локом
+        (запись _applied — под тем же локом, что и в apply/remove)."""
         has_rules = any(IPT_COMMENT in r or NFT_TABLE in r for r in rules)
-        self._applied = has_rules
+        with self._lock:
+            self._applied = has_rules
         return has_rules
 
     def get_status(self) -> dict:
         """Полный статус для API."""
         fw_type = self.detect_fw_type()
-        applied = self.is_applied()
-        rules = self.get_rules() if applied else []
-
+        # Один вызов get_rules вместо двух (is_applied + повтор): get_rules
+        # шеллит наружу, дважды на каждый poll статуса — лишняя нагрузка.
+        rules = self.get_rules()
+        applied = self._rules_applied(rules)
         return {
             "type": fw_type,
             "applied": applied,
-            "rules": rules,
-            "rules_count": len(rules),
+            "rules": rules if applied else [],
+            "rules_count": len(rules) if applied else 0,
         }
 
     # ──────────────── WAN interfaces ────────────────

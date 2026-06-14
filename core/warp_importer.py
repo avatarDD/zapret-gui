@@ -37,6 +37,11 @@ WARP_ENDPOINT_NETWORKS_V6 = (
     "2606:4700:d1::/48",
 )
 
+# Предвычисленные ip_network — чтобы не пересоздавать их в цикле на каждый
+# вызов _is_in_warp_range (мелкая, но бесплатная оптимизация).
+_WARP_NETS_V4 = tuple(ipaddress.ip_network(c) for c in WARP_ENDPOINT_NETWORKS_V4)
+_WARP_NETS_V6 = tuple(ipaddress.ip_network(c) for c in WARP_ENDPOINT_NETWORKS_V6)
+
 # AllowedIPs, типичные для WARP (full-tunnel).
 WARP_ALLOWED_IPS = ("0.0.0.0/0", "::/0")
 
@@ -82,14 +87,11 @@ def _is_in_warp_range(host: str) -> bool:
         if "cloudflareclient.com" in h or h.endswith(".cloudflare.com"):
             return True
         return False
-    if isinstance(ip, ipaddress.IPv4Address):
-        for cidr in WARP_ENDPOINT_NETWORKS_V4:
-            if ip in ipaddress.ip_network(cidr):
-                return True
-    else:
-        for cidr in WARP_ENDPOINT_NETWORKS_V6:
-            if ip in ipaddress.ip_network(cidr):
-                return True
+    nets = (_WARP_NETS_V4 if isinstance(ip, ipaddress.IPv4Address)
+            else _WARP_NETS_V6)
+    for net in nets:
+        if ip in net:
+            return True
     return False
 
 

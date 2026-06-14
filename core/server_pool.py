@@ -59,6 +59,9 @@ DEFAULT_CAP            = 100
 MAX_CAP               = 300
 DEFAULT_GROUP         = "urltest"
 DEFAULT_TARGET        = "cloudflare"
+# Параллельный фетч источников пула: иначе N «свалок» по 20с таймаута
+# фетчатся последовательно (N×20с) и блокируют фоновый PoolRefresher.
+POOL_FETCH_WORKERS    = 6
 
 # Рекомендованные публичные источники (пользователь может добавить
 # одним кликом и потом редактировать/удалять). Это «свалки» бесплатных
@@ -361,10 +364,31 @@ def refresh_pool(progress_cb=None) -> dict:
     aggregate = []
 
     _report("fetch", 0, len(enabled))
-    for idx, s in enumerate(enabled):
+    transport = settings.get("transport") or ""
+
+    # Фетчим источники ПАРАЛЛЕЛЬНО (сеть, до 20с на источник), но результаты
+    # обрабатываем в порядке источников — детерминизм + никаких гонок на
+    # cache/aggregate/per_source.
+    import concurrent.futures
+    fetched = {}
+    done = 0
+    workers = min(POOL_FETCH_WORKERS, len(enabled))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(fetch_outbounds, s["url"],
+                          s.get("format") or "auto",
+                          transport=transport): s for s in enabled}
+        for fu in concurrent.futures.as_completed(futs):
+            s = futs[fu]
+            try:
+                fetched[s["id"]] = fu.result()
+            except Exception as e:
+                fetched[s["id"]] = {"outbounds": [], "error": str(e)}
+            done += 1
+            _report("fetch", done, len(enabled))
+
+    for s in enabled:
         sid = s["id"]
-        res = fetch_outbounds(s["url"], s.get("format") or "auto",
-                              transport=settings.get("transport") or "")
+        res = fetched.get(sid) or {"outbounds": [], "error": "пусто"}
         obs = res.get("outbounds") or []
         used_cache = False
         if not obs:
@@ -385,7 +409,6 @@ def refresh_pool(progress_cb=None) -> dict:
                 "count": len(obs), "used_cache": False, "error": "",
             })
         aggregate.extend(obs)
-        _report("fetch", idx + 1, len(enabled))
 
     _save_cache(cache)
 

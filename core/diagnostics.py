@@ -136,7 +136,9 @@ def ping_host(host, count=3, timeout=3):
     Returns:
         dict: { host, alive, rtt_min, rtt_avg, rtt_max, packet_loss, raw_output }
     """
-    cache_key = f"ping:{host}:{count}"
+    # timeout — часть ключа: иначе вызов с другим таймаутом вернул бы
+    # закэшированный результат от прежнего.
+    cache_key = f"ping:{host}:{count}:{timeout}"
     cached = _cache_get(cache_key)
     if cached:
         return cached
