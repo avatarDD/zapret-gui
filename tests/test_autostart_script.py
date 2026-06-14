@@ -23,14 +23,17 @@ class TestGeneratedScript(unittest.TestCase):
         cls.cfg = get_config_manager()
 
     def test_queue_num_matches_config(self):
+        # Значения подставляются через shlex.quote: для безопасных строк
+        # (число) кавычки не добавляются → `QUEUE_NUM=300`.
         qnum = str(self.cfg.get("nfqws", "queue_num", default=300))
-        self.assertIn('QUEUE_NUM="%s"' % qnum, self.script)
+        self.assertIn('QUEUE_NUM=%s\n' % qnum, self.script)
         # Не остался старый рассинхронизированный дефолт firewall.queue_num=200.
-        self.assertNotIn('QUEUE_NUM="200"', self.script)
+        self.assertNotIn('QUEUE_NUM=200\n', self.script)
 
     def test_mark_matches_config(self):
         mark = self.cfg.get("nfqws", "desync_mark", default="0x40000000")
-        self.assertIn("MARK_PROCESSED=\"%s/%s\"" % (mark, mark), self.script)
+        # `0x.../0x...` — безопасная для shlex строка, кавычки не добавляются.
+        self.assertIn("MARK_PROCESSED=%s/%s\n" % (mark, mark), self.script)
         # Старый хардкод 0x10000 должен исчезнуть.
         self.assertNotIn("0x10000", self.script)
 

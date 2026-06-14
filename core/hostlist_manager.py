@@ -701,10 +701,10 @@ class HostlistManager:
             import urllib.request
             import ssl
 
-            # Создаём SSL-контекст без проверки сертификата (для роутеров)
+            # Проверка сертификата ВКЛЮЧЕНА: содержимое попадает в hostlist
+            # обхода DPI, поэтому MITM-подмена доменов недопустима (раньше
+            # здесь стоял CERT_NONE «для роутеров» — это была дыра).
             ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
 
             req = urllib.request.Request(url, headers={"User-Agent": "zapret-gui/1.0"})
             with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:

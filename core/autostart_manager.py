@@ -25,6 +25,7 @@
 
 import os
 import re
+import shlex
 import stat
 import shutil
 import subprocess
@@ -67,20 +68,22 @@ _S99ZAPRET_TEMPLATE = r"""#!/bin/sh
 #
 
 SCRIPT_NAME="S99zapret"
-NFQWS_BIN="@NFQWS_BIN@"
-NFQWS_ARGS="@NFQWS_ARGS@"
+# Значения ниже подставляются из GUI уже shell-квотированными (shlex.quote),
+# поэтому кавычек в шаблоне нет — иначе закавыченное значение исказилось бы.
+NFQWS_BIN=@NFQWS_BIN@
+NFQWS_ARGS=@NFQWS_ARGS@
 PID_FILE="/var/run/zapret-nfqws.pid"
 
-QUEUE_NUM="@QUEUE_NUM@"
-PORTS_TCP="@PORTS_TCP@"
-PORTS_UDP="@PORTS_UDP@"
-MAX_PKT_OUT="@TCP_PKT@"
-MAX_PKT_OUT_UDP="@UDP_PKT@"
+QUEUE_NUM=@QUEUE_NUM@
+PORTS_TCP=@PORTS_TCP@
+PORTS_UDP=@PORTS_UDP@
+MAX_PKT_OUT=@TCP_PKT@
+MAX_PKT_OUT_UDP=@UDP_PKT@
 MAX_PKT_IN=15
-MARK_PROCESSED="@MARK_PROCESSED@"
-MARK_EXCLUDE="@MARK_EXCLUDE@"
-IPV6_ENABLED="@IPV6_ENABLED@"
-WAN_IFACES="@WAN_IFACES@"
+MARK_PROCESSED=@MARK_PROCESSED@
+MARK_EXCLUDE=@MARK_EXCLUDE@
+IPV6_ENABLED=@IPV6_ENABLED@
+WAN_IFACES=@WAN_IFACES@
 
 # Каталог для state.tsv (z2k-state-persist.lua). Переживает переустановку
 # zapret2, бекапится с настройками GUI. nfqws2 запускается под --user nobody,
@@ -658,20 +661,33 @@ class AutostartManager:
         # Единый источник shell-функций firewall (общий с reapply-хуками).
         from core.firewall_persistence import FIREWALL_SH_FUNCTIONS
 
+        # shell-квотирование значений, попадающих в присваивания S99-скрипта.
+        # Без него strategy_name/args с кавычкой/`$()`/переводом строки ломали
+        # бы (или инжектили) shell, исполняемый под root при каждой загрузке.
+        # shlex.quote добавляет кавычки только при необходимости — для int и
+        # простых строк значение не меняется.
+        def _q(v):
+            return shlex.quote(str(v))
+
+        # В комментарий нельзя пускать управляющие символы / перевод строки —
+        # иначе хвост строки стал бы исполняемым кодом.
+        def _comment(v):
+            return re.sub(r"[\x00-\x1f]+", " ", str(v)).strip()
+
         repl = {
-            "@STRATEGY_NAME@": strategy_name,
-            "@STRATEGY_ID@": strategy_id or "none",
-            "@NFQWS_BIN@": nfqws_bin,
-            "@NFQWS_ARGS@": nfqws_args,
-            "@QUEUE_NUM@": str(queue_num),
-            "@PORTS_TCP@": ports_tcp or "",
-            "@PORTS_UDP@": ports_udp or "",
-            "@TCP_PKT@": str(tcp_pkt),
-            "@UDP_PKT@": str(udp_pkt),
-            "@MARK_PROCESSED@": mark_proc_full,
-            "@MARK_EXCLUDE@": mark_excl_full,
-            "@IPV6_ENABLED@": ipv6_enabled,
-            "@WAN_IFACES@": wan_ifaces,
+            "@STRATEGY_NAME@": _comment(strategy_name),
+            "@STRATEGY_ID@": _comment(strategy_id or "none"),
+            "@NFQWS_BIN@": _q(nfqws_bin),
+            "@NFQWS_ARGS@": _q(nfqws_args),
+            "@QUEUE_NUM@": _q(queue_num),
+            "@PORTS_TCP@": _q(ports_tcp or ""),
+            "@PORTS_UDP@": _q(ports_udp or ""),
+            "@TCP_PKT@": _q(tcp_pkt),
+            "@UDP_PKT@": _q(udp_pkt),
+            "@MARK_PROCESSED@": _q(mark_proc_full),
+            "@MARK_EXCLUDE@": _q(mark_excl_full),
+            "@IPV6_ENABLED@": _q(ipv6_enabled),
+            "@WAN_IFACES@": _q(wan_ifaces),
             "@FIREWALL_FUNCS@": FIREWALL_SH_FUNCTIONS,
         }
 

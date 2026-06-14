@@ -1432,6 +1432,20 @@ class AwgManager:
             return
         # Подставляем %i как имя интерфейса (как в wg-quick)
         cmd = cmd.replace("%i", ifname)
+        # Хуки исполняются через shell под root. Конфиги часто импортируются
+        # из публичных подписок, где `PostUp = ...` = произвольная команда →
+        # RCE. Поэтому исполнение под явным opt-in (awg.allow_hooks).
+        try:
+            from core.config_manager import get_config_manager
+            allowed = bool(get_config_manager().get(
+                "awg", "allow_hooks", default=False))
+        except Exception:
+            allowed = False
+        if not allowed:
+            log.warning(
+                "[%s %s] хук пропущен (awg.allow_hooks=false): %s"
+                % (label, ifname, cmd), source="awg_manager")
+            return
         log.info("[%s %s] $ %s" % (label, ifname, cmd), source="awg_manager")
         try:
             r = subprocess.run(cmd, shell=True, capture_output=True,

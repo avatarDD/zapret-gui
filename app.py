@@ -365,18 +365,85 @@ def create_app(config_dir: str = None) -> Bottle:
     log.info(f"Конфигурация: {cfg.path}", source="app")
     log.info(f"Zapret path: {cfg.get('zapret', 'base_path')}", source="app")
 
-    # --- CORS для разработки ---
+    # --- Безопасность: аутентификация + CORS/CSRF ---
+    import hmac
+    import urllib.parse as _urlparse
+    from bottle import HTTPResponse
+
+    if cfg.get("gui", "auth_enabled", default=False) and not (
+            cfg.get("gui", "auth_password", default="") or ""):
+        log.warning("gui.auth_enabled=true, но пароль пуст — HTTP-"
+                    "аутентификация НЕ активна; задайте gui.auth_password",
+                    source="app")
+
+    def _allowed_origins():
+        origins = cfg.get("gui", "cors_origins", default=[])
+        return origins if isinstance(origins, list) else []
+
+    def _origin_ok(origin: str) -> bool:
+        """Origin допустим, если он same-origin (host:port совпадает с
+        запросом — без учёта схемы, чтобы пережить TLS-терминирующий прокси)
+        либо явно в allowlist gui.cors_origins."""
+        if not origin:
+            return True  # запрос без Origin — не cross-site
+        try:
+            o = _urlparse.urlparse(origin)
+            host_req = (request.get_header("Host") or "").lower()
+            if o.netloc.lower() == host_req and host_req:
+                return True
+        except Exception:
+            pass
+        return origin in _allowed_origins()
+
+    @app.hook("before_request")
+    def _security_gate():
+        # OPTIONS (CORS preflight) — без проверок: браузер не шлёт ни
+        # креденшелы, ни тело; ответ отдаёт options_handler.
+        if request.method == "OPTIONS":
+            return
+        # 1) CSRF: мутирующий cross-origin запрос отвергаем. Браузер шлёт
+        #    Origin на POST/PUT/DELETE; same-origin SPA проходит. Без этого
+        #    Basic-креды браузер сам приложил бы к cross-site запросу.
+        if request.method in ("POST", "PUT", "DELETE"):
+            origin = request.headers.get("Origin", "")
+            if origin and not _origin_ok(origin):
+                raise HTTPResponse(
+                    '{"ok": false, "error": "cross-origin запрос отклонён"}',
+                    status=403,
+                    headers={"Content-Type":
+                             "application/json; charset=utf-8"})
+        # 2) Аутентификация (если включена и задан непустой пароль).
+        if cfg.get("gui", "auth_enabled", default=False):
+            password = cfg.get("gui", "auth_password", default="") or ""
+            if password:
+                user = cfg.get("gui", "auth_user", default="admin") or "admin"
+                auth = request.auth  # (user, pass) | None — парсит Basic
+                ok = (auth is not None
+                      and hmac.compare_digest(auth[0], user)
+                      and hmac.compare_digest(auth[1], password))
+                if not ok:
+                    raise HTTPResponse(
+                        "401 Unauthorized", status=401,
+                        headers={"WWW-Authenticate":
+                                 'Basic realm="zapret-gui"'})
+
     @app.hook("after_request")
-    def enable_cors():
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = \
-            "GET, POST, PUT, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = \
-            "Origin, Content-Type, Accept"
-        # Запрещаем кеширование API-ответов — без этого браузер
-        # может вернуть устаревшие данные после POST/PUT/DELETE
+    def _set_response_headers():
+        # CORS: отражаем Origin ТОЛЬКО для разрешённых источников (никогда
+        # `*`) — иначе любой сайт мог бы читать ответы API роутера.
+        origin = request.headers.get("Origin", "")
+        if origin and _origin_ok(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Methods"] = \
+                "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = \
+                "Origin, Content-Type, Accept, Authorization"
+        # Запрещаем кеширование API-ответов — без этого браузер может
+        # вернуть устаревшие данные после POST/PUT/DELETE.
         if request.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Cache-Control"] = \
+                "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
 
     @app.route("/api/<path:path>", method="OPTIONS")

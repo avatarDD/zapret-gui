@@ -19,6 +19,7 @@ import json
 import copy
 import threading
 from core.log_buffer import log
+from core.safe_io import atomic_write_json
 
 
 # Путь по умолчанию для конфигурации
@@ -56,6 +57,10 @@ DEFAULT_CONFIG = {
         "auth_enabled": False,
         "auth_user": "admin",
         "auth_password": "",
+        # Доверенные cross-origin источники для CORS (по умолчанию пусто —
+        # разрешён только same-origin; `*` НЕ используется). Пример:
+        # ["https://my.dashboard.example"].
+        "cors_origins": [],
     },
 
     # --- Настройки nfqws ---
@@ -166,6 +171,11 @@ DEFAULT_CONFIG = {
         "go_mem_enabled":     False,
         "go_gogc":            50,   # GOGC: ниже = чаще GC, меньше пик heap
         "go_memlimit_mb":     64,   # GOMEMLIMIT, МиБ (0 = не задавать)
+        # PreUp/PostUp/PreDown/PostDown из .conf исполняются через shell под
+        # root (стиль wg-quick). Конфиги часто импортируются из публичных
+        # подписок, поэтому по умолчанию хуки ВЫКЛЮЧЕНЫ — иначе строка
+        # `PostUp = ...` в чужом конфиге = RCE на роутере. Включать осознанно.
+        "allow_hooks":        False,
     },
 
     # --- BlockCheck ---
@@ -324,13 +334,18 @@ class ConfigManager:
             return self._save_locked()
 
     def _save_locked(self) -> bool:
-        """Сохранение (вызывается под lock)."""
+        """Сохранение (вызывается под lock).
+
+        Атомарно: запись во временный файл в том же каталоге → ``fsync`` →
+        ``os.replace``. Без этого креш/``ENOSPC``/потеря питания во время
+        записи на роутере усекали бы ``settings.json``, и при следующем
+        старте ``load()`` молча падал бы в дефолты (потеря всей конфигурации).
+        """
         try:
             os.makedirs(self._config_dir, exist_ok=True)
-            with open(self._config_path, "w", encoding="utf-8") as f:
-                json.dump(self._config, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self._config_path, self._config)
             return True
-        except (IOError, OSError) as e:
+        except (IOError, OSError, TypeError, ValueError) as e:
             log.error(f"Не удалось сохранить конфигурацию: {e}", source="config")
             return False
 

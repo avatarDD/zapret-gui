@@ -38,6 +38,7 @@ from urllib.request import Request, urlopen
 from core.awg_detector import get_awg_detector
 from core.config_manager import get_config_manager
 from core.log_buffer import log
+from core.safe_io import is_safe_member_name
 
 
 HTTP_TIMEOUT = 30
@@ -1046,10 +1047,22 @@ class AwgInstaller:
                         "В архиве %s нет файла '%s'" %
                         (os.path.basename(archive), expect)
                     )
+                # Защита от slip-tar: basename совпал с expect, но full name
+                # члена может быть '../../amneziawg-go' — тогда tar.extract
+                # записал бы файл вне tmpdir (под root). Отвергаем такие имена.
+                if not is_safe_member_name(target.name):
+                    raise RuntimeError(
+                        "небезопасный путь в архиве %s: %s" %
+                        (os.path.basename(archive), target.name))
                 # Извлекаем в tmp и копируем в dest_dir под нужным именем
                 tmpdir = tempfile.mkdtemp(prefix="awg-extract-")
                 try:
-                    tar.extract(target, tmpdir)
+                    try:
+                        tar.extract(target, tmpdir, filter="data")
+                    except TypeError:
+                        # Python < 3.12 — параметра filter нет; проверка имени
+                        # выше уже исключила traversal.
+                        tar.extract(target, tmpdir)
                     src = os.path.join(tmpdir, target.name)
                     dst = os.path.join(dest_dir, expect)
                     if os.path.exists(dst):
