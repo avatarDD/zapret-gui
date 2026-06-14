@@ -301,8 +301,10 @@ class AwgWatchdog:
             return
 
         try:
-            from core.awg_manager import AwgManager
-            mgr = AwgManager()
+            # Синглтон: общий лок с интерактивными up/down/restart, иначе
+            # рестарт watchdog'ом может гоняться с действием пользователя.
+            from core.awg_manager import get_awg_manager
+            mgr = get_awg_manager()
             ifaces = mgr.list_interfaces()
         except Exception as e:
             log.warning("awg-watchdog: список интерфейсов: %s" % e,

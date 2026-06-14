@@ -355,22 +355,28 @@ class FirewallManager:
 
     def is_applied(self) -> bool:
         """Применены ли правила GUI."""
-        rules = self.get_rules()
+        return self._rules_applied(self.get_rules())
+
+    def _rules_applied(self, rules) -> bool:
+        """Вычислить applied по списку правил и сохранить под локом
+        (запись _applied — под тем же локом, что и в apply/remove)."""
         has_rules = any(IPT_COMMENT in r or NFT_TABLE in r for r in rules)
-        self._applied = has_rules
+        with self._lock:
+            self._applied = has_rules
         return has_rules
 
     def get_status(self) -> dict:
         """Полный статус для API."""
         fw_type = self.detect_fw_type()
-        applied = self.is_applied()
-        rules = self.get_rules() if applied else []
-
+        # Один вызов get_rules вместо двух (is_applied + повтор): get_rules
+        # шеллит наружу, дважды на каждый poll статуса — лишняя нагрузка.
+        rules = self.get_rules()
+        applied = self._rules_applied(rules)
         return {
             "type": fw_type,
             "applied": applied,
-            "rules": rules,
-            "rules_count": len(rules),
+            "rules": rules if applied else [],
+            "rules_count": len(rules) if applied else 0,
         }
 
     # ──────────────── WAN interfaces ────────────────
@@ -786,8 +792,12 @@ class FirewallManager:
             if ports_tcp:
                 prefix = [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
                 for base in _port_bases(prefix, "tcp", "sports", ports_tcp):
-                    self._run_cmd(base + _connbytes_args("reply", tcp_pkt_in)
-                                  + _comment() + _nfq())
+                    # Reply-path NFQUEUE функционально обязателен (обход в
+                    # обратную сторону) — гейтим ok, иначе полупримененный
+                    # ruleset рапортуется как успех (см. #28).
+                    if not self._run_cmd(base + _connbytes_args("reply", tcp_pkt_in)
+                                         + _comment() + _nfq()):
+                        ok = False
                     self._run_cmd(base + ["--tcp-flags", "syn,ack", "syn,ack"]
                                   + _comment() + _nfq())
                     self._run_cmd(base + ["--tcp-flags", "fin", "fin"]
@@ -797,8 +807,9 @@ class FirewallManager:
             if ports_udp:
                 prefix = [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
                 for base in _port_bases(prefix, "udp", "sports", ports_udp):
-                    self._run_cmd(base + _connbytes_args("reply", udp_pkt_in)
-                                  + _comment() + _nfq())
+                    if not self._run_cmd(base + _connbytes_args("reply", udp_pkt_in)
+                                         + _comment() + _nfq()):
+                        ok = False
 
         return ok
 
@@ -964,7 +975,11 @@ class FirewallManager:
                     "{ type nat hook postrouting priority 100 ; }" % NFT_TABLE)
 
         # ─── postrouting (исходящий) ───
-        cmds.append("add rule inet %s postrouting %smeta mark and %s == %s return"
+        # EXCLUDE — это CONNMARK (ставится на conntrack), поэтому матчим
+        # `ct mark`, а не пакетный `meta mark` (иначе на пакетах без
+        # восстановленной метки исключённое соединение повторно попадёт в
+        # очередь — расхождение с iptables-путём, где стоит -m connmark).
+        cmds.append("add rule inet %s postrouting %sct mark and %s == %s return"
                     % (NFT_TABLE, oif, mark_excl_raw, mark_excl_raw))
         cmds.append("add rule inet %s postrouting %smeta mark and %s == %s return"
                     % (NFT_TABLE, oif, fwmark, fwmark))
@@ -984,7 +999,8 @@ class FirewallManager:
                         % (NFT_TABLE, oif, udp_ports, udp_pkt, qnum))
 
         # ─── prerouting (входящий/ответы) ───
-        cmds.append("add rule inet %s prerouting %smeta mark and %s == %s return"
+        # EXCLUDE — connmark (см. коммент в postrouting): матчим `ct mark`.
+        cmds.append("add rule inet %s prerouting %sct mark and %s == %s return"
                     % (NFT_TABLE, iif, mark_excl_raw, mark_excl_raw))
         cmds.append("add rule inet %s prerouting %smeta mark and %s == %s return"
                     % (NFT_TABLE, iif, fwmark, fwmark))

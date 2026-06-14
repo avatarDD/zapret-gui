@@ -628,19 +628,28 @@ class HostsManager:
             log.error(f"Бэкап не найден: {backup_path}", source="hosts")
             return False
 
-        # Безопасность: только файлы из /tmp/
-        if not backup_path.startswith(BACKUP_DIR + "/"):
-            log.error(f"Восстановление разрешено только из {BACKUP_DIR}", source="hosts")
+        # Безопасность: только файлы из BACKUP_DIR с именем hosts.bak.*.
+        # realpath обязателен — иначе startswith("/tmp/") обходится через
+        # "/tmp/../etc/passwd" (и произвольный файл попал бы в /etc/hosts →
+        # утечка через GET /api/hosts/raw). Открываем уже разрешённый путь,
+        # чтобы symlink внутри BACKUP_DIR не увёл наружу.
+        real = os.path.realpath(backup_path)
+        backup_root = os.path.realpath(BACKUP_DIR)
+        if (os.path.dirname(real) != backup_root
+                or not os.path.basename(real).startswith("hosts.bak.")):
+            log.error(
+                f"Восстановление разрешено только из {BACKUP_DIR}/hosts.bak.*",
+                source="hosts")
             return False
 
         with self._lock:
             try:
-                with open(backup_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(real, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
                 # Бэкап текущей версии перед восстановлением
                 self.backup()
                 if self._write_file(content):
-                    log.info(f"Восстановлено из бэкапа: {backup_path}", source="hosts")
+                    log.info(f"Восстановлено из бэкапа: {real}", source="hosts")
                     return True
                 return False
             except OSError as e:

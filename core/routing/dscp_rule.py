@@ -61,12 +61,21 @@ def _iface_exists(ifname: str) -> bool:
 
 
 def _backend() -> str:
-    """iptables приоритетнее (Keenetic/Entware), иначе nft (OpenWrt 22+)."""
-    rc, _o, _e = _run(["iptables", "-V"], timeout=3)
-    if rc == 0:
+    """iptables приоритетнее (Keenetic/Entware), иначе nft (OpenWrt 22+).
+
+    Но если `iptables` — это nft-compat shim (вывод `-V` содержит
+    'nf_tables', как на OpenWrt 22+), предпочитаем НАТИВНЫЙ nft: иначе
+    DSCP-правила легли бы в iptables-nft chain'ы, несогласованные с
+    nftset/masquerade-таблицами проекта, и маршрутизация по DSCP молча
+    не срабатывала бы.
+    """
+    rc, out, _e = _run(["iptables", "-V"], timeout=3)
+    if rc == 0 and "nf_tables" not in (out or "").lower():
         return "iptables"
-    rc, _o, _e = _run(["nft", "--version"], timeout=3)
-    return "nftables" if rc == 0 else "none"
+    rc2, _o, _e = _run(["nft", "--version"], timeout=3)
+    if rc2 == 0:
+        return "nftables"
+    return "iptables" if rc == 0 else "none"
 
 
 def build_nft_dscp_fragment(dscp: int, mark: int) -> str:

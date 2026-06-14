@@ -866,11 +866,33 @@ class AwgManager:
         with self._lock:
             return self._do_down(name)
 
+    def _config_for_name(self, name: str) -> str:
+        """Вернуть имя КОНФИГА для `name`.
+
+        `name` может быть именем конфига (есть `<name>.conf` → вернём как
+        есть) либо именем реального интерфейса (`opkgtun0`) — тогда найдём
+        конфиг, чей интерфейс резолвится в него. Нужно watchdog'у:
+        `list_interfaces()` отдаёт ИМЯ ИНТЕРФЕЙСА, а `_do_up` ждёт ИМЯ
+        КОНФИГА (`<label>-<iface>.conf`); без резолва туннель опускался и
+        не поднимался обратно.
+        """
+        if os.path.isfile(self._config_path(name)):
+            return name
+        for cfg in self._all_config_names():
+            try:
+                if self._iface_for_name(cfg) == name:
+                    return cfg
+            except Exception:
+                continue
+        return name  # не нашли — прежнее поведение
+
     def restart(self, name: str) -> dict:
         with self._lock:
-            res_down = self._do_down(name)
+            # Принимаем и имя конфига, и имя интерфейса (как status()).
+            cfg_name = self._config_for_name(name)
+            res_down = self._do_down(cfg_name)
             time.sleep(0.3)
-            res_up = self._do_up(name)
+            res_up = self._do_up(cfg_name)
             return {
                 "ok":   res_up.get("ok", False),
                 "down": res_down,
@@ -1134,8 +1156,7 @@ class AwgManager:
             # Списки наполнения: дёргаем list set отдельно, поскольку
             # nft list table даёт только описание, без элементов.
             try:
-                import re as _re
-                for m in _re.finditer(r"set\s+(awgr_\S+)\s*\{", t):
+                for m in re.finditer(r"set\s+(awgr_\S+)\s*\{", t):
                     sname = m.group(1)
                     rc2, body, _e2 = _run([
                         "nft", "list", "set", "inet", "awg_routing", sname
@@ -1432,6 +1453,20 @@ class AwgManager:
             return
         # Подставляем %i как имя интерфейса (как в wg-quick)
         cmd = cmd.replace("%i", ifname)
+        # Хуки исполняются через shell под root. Конфиги часто импортируются
+        # из публичных подписок, где `PostUp = ...` = произвольная команда →
+        # RCE. Поэтому исполнение под явным opt-in (awg.allow_hooks).
+        try:
+            from core.config_manager import get_config_manager
+            allowed = bool(get_config_manager().get(
+                "awg", "allow_hooks", default=False))
+        except Exception:
+            allowed = False
+        if not allowed:
+            log.warning(
+                "[%s %s] хук пропущен (awg.allow_hooks=false): %s"
+                % (label, ifname, cmd), source="awg_manager")
+            return
         log.info("[%s %s] $ %s" % (label, ifname, cmd), source="awg_manager")
         try:
             r = subprocess.run(cmd, shell=True, capture_output=True,

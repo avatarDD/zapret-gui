@@ -107,9 +107,20 @@ class DnsmasqIntegration:
             base = os.path.dirname(main_conf)
             cand = os.path.join(base, "dnsmasq.d")
             return cand
-        for d in self.CONFDIR_CANDIDATES:
-            return d
-        return "/etc/dnsmasq.d"
+        # Предпочитаем СУЩЕСТВУЮЩИЙ conf-dir; иначе — тот, чей родитель
+        # записываемый (сможем mkdir); иначе — последний кандидат как
+        # запасной. Раньше безусловный `return d` всегда брал первого
+        # кандидата (обычно /opt/etc/dnsmasq.d), даже если его нет, а
+        # fallthrough был мёртвым кодом.
+        candidates = list(self.CONFDIR_CANDIDATES) or ["/etc/dnsmasq.d"]
+        for d in candidates:
+            if os.path.isdir(d):
+                return d
+        for d in candidates:
+            parent = os.path.dirname(d.rstrip("/")) or "/"
+            if os.path.isdir(parent) and os.access(parent, os.W_OK):
+                return d
+        return candidates[-1]
 
     def managed_file_path(self, main_conf=""):
         return os.path.join(self.find_confdir(main_conf), MANAGED_FILENAME)
@@ -322,9 +333,14 @@ class DnsmasqIntegration:
                              (joined, spec_v4, spec_v6))
             else:  # ipset
                 name = blk.get("set_name") or ""
-                # dnsmasq directive: ipset=/dom1/dom2/<set>
+                # dnsmasq directive: ipset=/dom1/dom2/<set4>,<set6>.
+                # Перечисляем И v4-, И v6-set (имя v6 = name+"6", он реально
+                # создаётся в domain_rule). Без v6-имени dnsmasq никогда не
+                # запишет AAAA-IP → весь IPv6-трафик к домену идёт мимо
+                # туннеля (браузеры предпочитают v6). dnsmasq кладёт каждый
+                # адрес в set с совпадающим семейством.
                 joined = "/".join(doms)
-                lines.append("ipset=/%s/%s" % (joined, name))
+                lines.append("ipset=/%s/%s,%s6" % (joined, name, name))
             lines.append("")
 
         text = "\n".join(lines).rstrip() + "\n"

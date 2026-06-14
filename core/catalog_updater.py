@@ -44,6 +44,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from core.log_buffer import log
+from core.safe_io import atomic_write_json, atomic_write_text
 from core.version import GUI_VERSION
 
 
@@ -318,8 +319,9 @@ class CatalogUpdater:
             for name, src_path in direct_extracted.items():
                 dst = os.path.join(_TARGET_DIR, name)
                 merged, added, updated, preserved = _merge_file(dst, src_path)
-                with open(dst, "w", encoding="utf-8") as f:
-                    f.write(merged)
+                # Атомарно: прерванный (медленный линк/креш) merge не оставит
+                # полу-записанный каталог, который сканер потом не распарсит.
+                atomic_write_text(dst, merged)
                 installed.append({
                     "name": name,
                     "size": os.path.getsize(dst),
@@ -341,8 +343,7 @@ class CatalogUpdater:
                 merged, added, updated, preserved = _merge_content(
                     local_content, remote_presets_ini,
                 )
-                with open(_PRESETS_FILE, "w", encoding="utf-8") as f:
-                    f.write(merged)
+                atomic_write_text(_PRESETS_FILE, merged)
                 presets_info = {
                     "name": os.path.basename(_PRESETS_FILE),
                     "size": os.path.getsize(_PRESETS_FILE),
@@ -934,10 +935,8 @@ def _load_state() -> Optional[dict]:
 
 def _save_state(state: dict) -> None:
     try:
-        os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
-        with open(_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, ensure_ascii=False)
-    except OSError as e:
+        atomic_write_json(_STATE_FILE, state)
+    except (OSError, TypeError, ValueError) as e:
         log.warning(
             "Не удалось сохранить state каталогов: %s" % e,
             source="catalog-updater",

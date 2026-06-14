@@ -107,7 +107,10 @@ def probe_host(host: str, port: int = 443, timeout: float = 4.0,
     except (OSError, socket.timeout):
         return False
     try:
-        if tls and port == 443:
+        # TLS-рукопожатие при tls=True на ЛЮБОМ порту (не только 443) —
+        # иначе на нестандартном порту проба возвращала бы успех на голом
+        # TCP-connect, и маршрут помечался здоровым без реального handshake.
+        if tls:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE

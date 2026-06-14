@@ -29,6 +29,7 @@ URI-схемы, которые встречаются в подписках:
 """
 
 import base64
+import ipaddress
 import re
 import urllib.error
 import urllib.parse
@@ -62,12 +63,45 @@ _CONF_SECTION_RE = re.compile(
 # fetch
 # ════════════════════════════════════════════════════════════
 
+def _host_is_internal(host: str) -> bool:
+    """True, если host — IP-литерал из приватного/loopback/link-local/
+    reserved диапазона. Имена не резолвим (без DNS), потому проверка ловит
+    прямые литералы вроде 169.254.169.254 / 10.0.0.1 / ::1."""
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Редирект разрешён только на http/https и НЕ на приватные/link-local
+    IP-литералы. Без этого внешняя подписка могла бы 30x-редиректом увести
+    GET на внутренние адреса / облачные метаданные (169.254.169.254) — SSRF.
+    Счётчик хопов ограничивает базовый HTTPRedirectHandler."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        p = urllib.parse.urlparse(newurl)
+        if p.scheme not in ("http", "https"):
+            raise urllib.error.URLError(
+                "редирект подписки на недопустимую схему: %s" % p.scheme)
+        if _host_is_internal(p.hostname or ""):
+            raise urllib.error.URLError(
+                "редирект подписки на внутренний адрес запрещён: %s"
+                % p.hostname)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_subscription(url: str, timeout: float = DEFAULT_TIMEOUT) -> str:
     """
     GET <url>. Возвращает body как str.
 
     Принимает HTTPS и HTTP. На неудачу — поднимает RuntimeError с
-    описанием. Body ограничен MAX_DOWNLOAD_BYTES.
+    описанием. Body ограничен MAX_DOWNLOAD_BYTES. Редиректы
+    ревалидируются (:class:`_SafeRedirectHandler`) против SSRF.
     """
     if not url or not isinstance(url, str):
         raise RuntimeError("Пустой URL")
@@ -77,8 +111,9 @@ def fetch_subscription(url: str, timeout: float = DEFAULT_TIMEOUT) -> str:
 
     req = urllib.request.Request(
         url, headers={"User-Agent": USER_AGENT})
+    opener = urllib.request.build_opener(_SafeRedirectHandler())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             raw = resp.read(MAX_DOWNLOAD_BYTES + 1)
     except urllib.error.HTTPError as e:
         raise RuntimeError("HTTP %s при загрузке подписки" % e.code)

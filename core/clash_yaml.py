@@ -57,6 +57,24 @@ def _try_pyyaml(text: str):
         raise ValueError("YAML: %s" % e)
 
 
+def _strip_yaml_comment(line: str) -> str:
+    """Срезать трейлинг `#`-комментарий, НЕ трогая `#` внутри кавычек.
+
+    YAML: `#` начинает комментарий только если перед ним пробел/начало
+    строки. Прежний `re.sub(r"\\s+#.*$","")` портил значения с ` #` внутри
+    кавычек (пароли/пути вида `password: "p@ss #1"`)."""
+    in_s = in_d = False
+    for i, ch in enumerate(line):
+        if ch == "'" and not in_d:
+            in_s = not in_s
+        elif ch == '"' and not in_s:
+            in_d = not in_d
+        elif ch == "#" and not in_s and not in_d:
+            if i == 0 or line[i - 1] in (" ", "\t"):
+                return line[:i]
+    return line
+
+
 def _fallback_yaml_parser(text: str):
     """
     Минимальный парсер clash-стиля YAML. Не претендует на
@@ -92,8 +110,8 @@ def _fallback_yaml_parser(text: str):
         state["current_subdict_indent"] = -1
 
     for raw in lines:
-        # Срезаем `#`-комментарии (но не внутри значения — упрощаем)
-        line_no_comment = re.sub(r"\s+#.*$", "", raw)
+        # Срезаем `#`-комментарии, уважая кавычки (не портим ` #` в значениях).
+        line_no_comment = _strip_yaml_comment(raw)
         if not line_no_comment.strip():
             continue
 
@@ -384,13 +402,22 @@ def _conv_vless(p: dict):
         reality = p.get("reality-opts")
         if isinstance(reality, dict):
             sid = reality.get("short-id")
-            # YAML без кавычек '01' приходит как int 1 — теряем leading
-            # zero. В реальных подписках hex-shortID лучше всегда
-            # оборачивать в кавычки. Мы здесь делаем best-effort.
+            # YAML без кавычек ('01', '08') приходит как int → теряется
+            # ведущий ноль. short-id — hex-строка чётной длины; трактуем
+            # десятичную запись как hex-текст и доводим до чётной длины
+            # (best-effort; в подписках hex-shortID стоит брать в кавычки).
+            if sid is None:
+                sid_str = ""
+            elif isinstance(sid, int):
+                sid_str = str(sid)
+                if len(sid_str) % 2:
+                    sid_str = "0" + sid_str
+            else:
+                sid_str = str(sid)
             tls_obj["reality"] = {
                 "enabled":    True,
                 "public_key": str(reality.get("public-key") or ""),
-                "short_id":   "" if sid is None else str(sid),
+                "short_id":   sid_str,
             }
             # sing-box требует utls для reality — если client-fingerprint
             # не задан, ставим дефолтный chrome (иначе `sing-box check`
@@ -606,7 +633,15 @@ def _emit_seq(seq: list, indent: int, out: list):
                 _emit_kv(k0, v0, indent + 2, out)
             else:
                 ks = _yaml_scalar(k0) if _needs_quote(str(k0)) else str(k0)
-                out.append("%s- %s: %s" % (pad, ks, _yaml_scalar(v0)))
+                # Пустой dict/list НЕЛЬЗЯ прогонять через _yaml_scalar — он
+                # вернул бы строку "{}"/"[]" (или закавычит её), исказив тип и
+                # ломая YAML для mihomo. Эмитим корректные пустые контейнеры.
+                if isinstance(v0, dict):
+                    out.append("%s- %s: {}" % (pad, ks))
+                elif isinstance(v0, list):
+                    out.append("%s- %s: []" % (pad, ks))
+                else:
+                    out.append("%s- %s: %s" % (pad, ks, _yaml_scalar(v0)))
             for k, v in keys[1:]:
                 _emit_kv(k, v, indent + 2, out)
         elif isinstance(item, dict):

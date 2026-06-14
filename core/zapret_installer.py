@@ -30,13 +30,12 @@ import platform
 import re
 import shutil
 import subprocess
-import tarfile
 import threading
 import time
-import zipfile
 from urllib.error import URLError, HTTPError
 
 from core.log_buffer import log
+from core.safe_io import safe_extract_archive
 
 
 # GitHub API для проверки последней версии
@@ -1272,37 +1271,18 @@ class ZapretInstaller:
         return False
 
     def _extract_archive(self, archive_path: str, dest_dir: str) -> bool:
-        """Распаковать архив (tar.gz или zip)."""
-        try:
-            if archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
-                with tarfile.open(archive_path, "r:gz") as tar:
-                    tar.extractall(dest_dir)
-                return True
-            elif archive_path.endswith(".zip"):
-                with zipfile.ZipFile(archive_path, "r") as zf:
-                    zf.extractall(dest_dir)
-                return True
-            else:
-                # Пробуем как tar.gz
-                try:
-                    with tarfile.open(archive_path, "r:gz") as tar:
-                        tar.extractall(dest_dir)
-                    return True
-                except tarfile.TarError:
-                    pass
-                # Пробуем как zip
-                try:
-                    with zipfile.ZipFile(archive_path, "r") as zf:
-                        zf.extractall(dest_dir)
-                    return True
-                except zipfile.BadZipFile:
-                    pass
+        """Безопасно распаковать архив (tar.gz/tgz/tar или zip).
 
-                log.error("Неизвестный формат архива", source="installer")
-                return False
-        except Exception as e:
-            log.error("Ошибка распаковки: %s" % e, source="installer")
-            return False
+        Делегирует в ``core.safe_io.safe_extract_archive``, который отвергает
+        path-traversal (slip-tar/zip, CVE-2007-4559) и symlink-escape. Это
+        критично: архив скачивается под root с настраиваемого зеркала/
+        ``transport``, поэтому ``extractall`` без валидации позволял бы
+        записать файлы вне ``dest_dir`` (например, ``../../opt/etc/init.d``).
+        """
+        ok, err = safe_extract_archive(archive_path, dest_dir)
+        if not ok:
+            log.error("Ошибка распаковки: %s" % err, source="installer")
+        return ok
 
     def _find_source_dir(self, extract_dir: str) -> str:
         """Найти корневую директорию zapret2 внутри распакованного архива."""
