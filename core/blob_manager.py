@@ -322,7 +322,11 @@ class BlobManager:
             return False, f"Размер превышает лимит ({MAX_BLOB_SIZE} байт)"
 
         self._ensure_dir()
-        full_path = self._blob_path(name)
+        # ВСЕГДА пишем в пользовательский blobs/, никогда в системный
+        # files/fake/. Иначе сохранение блоба с именем, совпадающим с
+        # системным .bin, затёрло бы общий системный файл (т.к. _blob_path
+        # резолвит существующее имя в системную директорию).
+        full_path = os.path.join(self.blobs_dir, name)
 
         try:
             with self._lock:
@@ -363,8 +367,14 @@ class BlobManager:
         if self.is_builtin(name):
             return False, "Нельзя удалить встроенный блоб"
 
-        full_path = self._blob_path(name)
+        # Удаляем строго из пользовательского blobs/. Системные .bin
+        # (files/fake/) — только для чтения: иначе delete_blob с именем
+        # системного файла (без BUILTIN_PREFIX) снёс бы общий системный блоб.
+        full_path = os.path.join(self.blobs_dir, name)
         if not os.path.isfile(full_path):
+            sys_path = os.path.join(self.system_blobs_dir or "", name)
+            if self.system_blobs_dir and os.path.isfile(sys_path):
+                return False, "Нельзя удалить системный блоб"
             return False, f"Блоб не найден: {name}"
 
         try:

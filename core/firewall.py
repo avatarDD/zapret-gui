@@ -786,8 +786,12 @@ class FirewallManager:
             if ports_tcp:
                 prefix = [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
                 for base in _port_bases(prefix, "tcp", "sports", ports_tcp):
-                    self._run_cmd(base + _connbytes_args("reply", tcp_pkt_in)
-                                  + _comment() + _nfq())
+                    # Reply-path NFQUEUE функционально обязателен (обход в
+                    # обратную сторону) — гейтим ok, иначе полупримененный
+                    # ruleset рапортуется как успех (см. #28).
+                    if not self._run_cmd(base + _connbytes_args("reply", tcp_pkt_in)
+                                         + _comment() + _nfq()):
+                        ok = False
                     self._run_cmd(base + ["--tcp-flags", "syn,ack", "syn,ack"]
                                   + _comment() + _nfq())
                     self._run_cmd(base + ["--tcp-flags", "fin", "fin"]
@@ -797,8 +801,9 @@ class FirewallManager:
             if ports_udp:
                 prefix = [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
                 for base in _port_bases(prefix, "udp", "sports", ports_udp):
-                    self._run_cmd(base + _connbytes_args("reply", udp_pkt_in)
-                                  + _comment() + _nfq())
+                    if not self._run_cmd(base + _connbytes_args("reply", udp_pkt_in)
+                                         + _comment() + _nfq()):
+                        ok = False
 
         return ok
 

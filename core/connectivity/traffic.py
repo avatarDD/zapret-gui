@@ -269,8 +269,10 @@ class TrafficSampler:
 
     def _tick(self):
         """Один опрос всех интерфейсов + per-peer."""
-        from core.awg_manager import AwgManager
-        mgr = AwgManager()
+        # Синглтон, а не новый AwgManager() каждый тик: общий лок с
+        # интерактивными up/down (иначе гонка), плюс не плодим объекты.
+        from core.awg_manager import get_awg_manager
+        mgr = get_awg_manager()
         ifaces = mgr.list_interfaces()
         now = int(time.time())
         for entry in ifaces:

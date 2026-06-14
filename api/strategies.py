@@ -19,7 +19,14 @@ API стратегий и категорий.
 
 import os
 import json
+import threading
 from bottle import request, response
+
+from core.safe_io import atomic_write_json
+
+# Сериализует read-modify-write categories.json между потоками (сервер
+# многопоточный — два параллельных PUT иначе теряют обновления).
+_CATEGORIES_LOCK = threading.Lock()
 
 
 def register(app):
@@ -532,19 +539,23 @@ def register(app):
             response.status = 400
             return {"ok": False, "error": "'categories' должен быть массивом"}
 
-        categories = _load_categories()
+        # read-modify-write под локом — иначе два параллельных PUT теряют
+        # обновления друг друга.
+        with _CATEGORIES_LOCK:
+            categories = _load_categories()
 
-        # Применяем обновления
-        cat_map = {c["id"]: c for c in categories}
-        for upd in updates:
-            cid = upd.get("id")
-            if cid and cid in cat_map:
-                if "enabled" in upd:
-                    cat_map[cid]["enabled"] = bool(upd["enabled"])
+            # Применяем обновления
+            cat_map = {c["id"]: c for c in categories}
+            for upd in updates:
+                cid = upd.get("id")
+                if cid and cid in cat_map:
+                    if "enabled" in upd:
+                        cat_map[cid]["enabled"] = bool(upd["enabled"])
 
-        # Сохраняем
-        categories = list(cat_map.values())
-        if _save_categories(categories):
+            # Сохраняем
+            categories = list(cat_map.values())
+            saved = _save_categories(categories)
+        if saved:
             log.info("Категории обновлены", source="categories")
             return {"ok": True, "categories": categories}
         else:
@@ -585,11 +596,10 @@ def _load_categories() -> list:
 
 
 def _save_categories(categories: list) -> bool:
-    """Сохранить категории в файл."""
+    """Сохранить категории в файл (атомарно — temp+rename)."""
     path = _get_categories_path()
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(categories, f, indent=2, ensure_ascii=False)
+        atomic_write_json(path, categories)
         return True
-    except (IOError, OSError):
+    except (IOError, OSError, TypeError, ValueError):
         return False

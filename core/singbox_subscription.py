@@ -395,7 +395,11 @@ def hysteria2_to_outbound(uri: str) -> dict:
     tag = _safe_tag(urllib.parse.unquote(p.fragment or "")
                     or "hy2-%s" % server)
     sni = q.get("sni") or ""
-    insecure = q.get("insecure") in ("1", "true", "True")
+    # Нормализуем регистр: insecure=TRUE/Yes/1 тоже должны включать
+    # пропуск проверки TLS, иначе outbound к серверу с self-signed не
+    # поднимется (handshake падает).
+    insecure = (q.get("insecure") or "").strip().lower() in (
+        "1", "true", "yes", "on")
 
     outbound = make_hysteria2_outbound(
         tag=tag, server=server, port=port, password=password,

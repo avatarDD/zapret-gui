@@ -382,9 +382,14 @@ class MihomoManager:
             return self._do_down(name)
 
     def restart(self, name: str) -> dict:
-        self.down(name)
-        time.sleep(0.5)
-        return self.up(name)
+        if not _valid_name(name):
+            return {"ok": False, "error": "Некорректное имя"}
+        # Держим лок через весь down→up, чтобы конкурентный up/down не
+        # вклинился в зазор (паритет с AWG/singbox).
+        with self._lock:
+            self._do_down(name)
+            time.sleep(0.5)
+            return self._do_up(name)
 
     def _do_up(self, name: str) -> dict:
         binary = self._binary()
@@ -438,6 +443,10 @@ class MihomoManager:
         except OSError as e:
             log_fh.close()
             return {"ok": False, "error": "spawn: %s" % e}
+
+        # Родителю log_fh больше не нужен (ребёнок получил dup) — иначе
+        # дескриптор течёт за каждый старт/рестарт.
+        log_fh.close()
 
         try:
             with open(pid_file, "w") as f:

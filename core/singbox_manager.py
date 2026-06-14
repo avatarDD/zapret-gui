@@ -491,10 +491,16 @@ class SingboxManager:
             return self._do_down(name)
 
     def restart(self, name: str) -> dict:
-        d = self.down(name)
-        # down может быть «не запущено» — это всё равно ok.
-        time.sleep(0.5)
-        return self.up(name)
+        if not _valid_name(name):
+            return {"ok": False, "error": "Некорректное имя"}
+        # Держим лок через весь down→up: иначе конкурентный up/down может
+        # вклиниться в зазор и оставить движок в полусостоянии (у AWG-
+        # менеджера restart уже атомарен — приводим к тому же).
+        with self._lock:
+            self._do_down(name)
+            # down может быть «не запущено» — это всё равно ok.
+            time.sleep(0.5)
+            return self._do_up(name)
 
     def _do_up(self, name: str) -> dict:
         binary = self._binary()
@@ -547,6 +553,11 @@ class SingboxManager:
         except OSError as e:
             log_fh.close()
             return {"ok": False, "error": "spawn: %s" % e}
+
+        # Родителю log_fh больше не нужен — ребёнок получил свой dup. Без
+        # close() дескриптор копился бы за каждый старт/рестарт в
+        # долгоживущем процессе GUI (утечка FD).
+        log_fh.close()
 
         # Запишем pid сразу — даже если процесс упадёт через секунду,
         # мы хотя бы узнаем об этом через is_running().
