@@ -186,6 +186,41 @@ def _iface_exists(ifname: str) -> bool:
         return False
 
 
+# Pre-population — оптимизация (dnsmasq добьёт set лениво по libc-запросам).
+# Ограничиваем число доменов и распараллеливаем резолвы: без этого
+# geosite-алиас (десятки тысяч доменов) под _lock делал бы по 2 блокирующих
+# DNS+subprocess на каждый домен и вешал routing-API на минуты.
+_PREPOP_MAX_DOMAINS = 500     # как и NDMS-путь; остальное — лениво
+_PREPOP_WORKERS = 8
+
+
+def _prepopulate_domains(domains, set_v4, set_v6, backend) -> list:
+    """Pre-populate v4+v6 set'ы для списка доменов ограниченным пулом.
+
+    `_prepopulate_set` независим (резолв + идемпотентные ipset/nft add без
+    общего состояния), поэтому вызовы безопасно идут параллельно — это
+    ограничивает суммарное время даже при медленном/глухом резолвере.
+    """
+    import concurrent.futures
+    tasks = []
+    for d in domains:
+        tasks.append((set_v4, d, "v4"))
+        tasks.append((set_v6, d, "v6"))
+    if not tasks:
+        return []
+    results = []
+    workers = min(_PREPOP_WORKERS, len(tasks))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_prepopulate_set, s, d, f, backend)
+                for (s, d, f) in tasks]
+        for fu in concurrent.futures.as_completed(futs):
+            try:
+                results.append(fu.result())
+            except Exception as e:
+                results.append({"ok": False, "added": 0, "error": str(e)})
+    return results
+
+
 def _prepopulate_set(set_name: str, domain: str, family: str,
                      backend) -> dict:
     """
@@ -602,17 +637,21 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
         # чтобы dnsmasq уже знал директиву (на случай гонки), а ТЕПЕРЬ
         # ещё и кладём IP сами через nft/ipset, не дожидаясь, пока кто-то
         # сделает резолв через libc.
-        prepop_results = []
         set_base_v4 = _set_name_for(rule.id, kind)
         set_base_v6 = set_base_v4 + "6"
         # Разворачиваем алиасы (geosite:) — без этого браузер с DoH
         # никогда не запросит youtube.com у dnsmasq, и pre-populate
         # этих доменов критичен для работы пути на не-Keenetic.
-        for domain in _expand_rule_domains(rule):
-            prepop_results.append(
-                _prepopulate_set(set_base_v4, domain, "v4", backend))
-            prepop_results.append(
-                _prepopulate_set(set_base_v6, domain, "v6", backend))
+        # Но кап + пул: иначе огромный алиас вешал бы apply под _lock.
+        prepop_domains = _expand_rule_domains(rule)
+        if len(prepop_domains) > _PREPOP_MAX_DOMAINS:
+            log.info("routing: pre-populate ограничен %d из %d доменов "
+                     "правила %s (остальное dnsmasq набьёт по запросам)"
+                     % (_PREPOP_MAX_DOMAINS, len(prepop_domains), rule.id),
+                     source="routing")
+            prepop_domains = prepop_domains[:_PREPOP_MAX_DOMAINS]
+        prepop_results = _prepopulate_domains(
+            prepop_domains, set_base_v4, set_base_v6, backend)
         prepop_added = sum(r.get("added", 0) for r in prepop_results)
 
         ok = bool(added) and not errors and dn_res.get("ok", True)

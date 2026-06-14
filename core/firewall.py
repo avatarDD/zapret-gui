@@ -964,7 +964,11 @@ class FirewallManager:
                     "{ type nat hook postrouting priority 100 ; }" % NFT_TABLE)
 
         # ─── postrouting (исходящий) ───
-        cmds.append("add rule inet %s postrouting %smeta mark and %s == %s return"
+        # EXCLUDE — это CONNMARK (ставится на conntrack), поэтому матчим
+        # `ct mark`, а не пакетный `meta mark` (иначе на пакетах без
+        # восстановленной метки исключённое соединение повторно попадёт в
+        # очередь — расхождение с iptables-путём, где стоит -m connmark).
+        cmds.append("add rule inet %s postrouting %sct mark and %s == %s return"
                     % (NFT_TABLE, oif, mark_excl_raw, mark_excl_raw))
         cmds.append("add rule inet %s postrouting %smeta mark and %s == %s return"
                     % (NFT_TABLE, oif, fwmark, fwmark))
@@ -984,7 +988,8 @@ class FirewallManager:
                         % (NFT_TABLE, oif, udp_ports, udp_pkt, qnum))
 
         # ─── prerouting (входящий/ответы) ───
-        cmds.append("add rule inet %s prerouting %smeta mark and %s == %s return"
+        # EXCLUDE — connmark (см. коммент в postrouting): матчим `ct mark`.
+        cmds.append("add rule inet %s prerouting %sct mark and %s == %s return"
                     % (NFT_TABLE, iif, mark_excl_raw, mark_excl_raw))
         cmds.append("add rule inet %s prerouting %smeta mark and %s == %s return"
                     % (NFT_TABLE, iif, fwmark, fwmark))

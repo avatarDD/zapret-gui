@@ -24,6 +24,7 @@ Backend используется ТОЛЬКО если детектор сказ
 config'е и руками не пересекался.
 """
 
+import ipaddress
 import re
 
 from core.log_buffer import log
@@ -556,13 +557,29 @@ def _sanitize_domains(domains) -> list:
 
 def _split_cidr(cidr: str):
     """
-    '10.0.0.0/24' -> ('10.0.0.0', '24'); IP без маски -> ('IP', '32').
+    '10.0.0.0/24' -> ('10.0.0.0', '255.255.255.0'); IP без маски ->
+    ('IP', '255.255.255.255').
+
+    Keenetic `ip route <network> <mask>` ожидает ДОТТЕД-маску, а не
+    префикс-длину — поэтому для IPv4 конвертируем `/N` в dotted (раньше
+    отдавали '24', и маршрут не устанавливался). IPv6 NDMS-путь не
+    применяет (вызывающий отбрасывает адреса с ':'), возвращаем как есть.
     Возвращает (net, mask) или ('', '') если не распарсилось.
     """
     s = (cidr or "").strip()
     if not s:
         return "", ""
-    if "/" in s:
+    if ":" in s:
         net, _, mask = s.partition("/")
-        return net.strip(), (mask or "32").strip()
-    return s, ("128" if ":" in s else "32")
+        return net.strip(), (mask or "128").strip()
+    try:
+        spec = s if "/" in s else s + "/32"
+        net = ipaddress.ip_network(spec, strict=False)
+        return str(net.network_address), str(net.netmask)
+    except ValueError:
+        # Не распарсилось как сеть — отдаём прежним способом, чтобы не
+        # ронять вызов (валидацию делает вызывающий).
+        if "/" in s:
+            n, _, m = s.partition("/")
+            return n.strip(), (m or "32").strip()
+        return s, "255.255.255.255"

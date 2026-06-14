@@ -606,7 +606,15 @@ def _emit_seq(seq: list, indent: int, out: list):
                 _emit_kv(k0, v0, indent + 2, out)
             else:
                 ks = _yaml_scalar(k0) if _needs_quote(str(k0)) else str(k0)
-                out.append("%s- %s: %s" % (pad, ks, _yaml_scalar(v0)))
+                # Пустой dict/list НЕЛЬЗЯ прогонять через _yaml_scalar — он
+                # вернул бы строку "{}"/"[]" (или закавычит её), исказив тип и
+                # ломая YAML для mihomo. Эмитим корректные пустые контейнеры.
+                if isinstance(v0, dict):
+                    out.append("%s- %s: {}" % (pad, ks))
+                elif isinstance(v0, list):
+                    out.append("%s- %s: []" % (pad, ks))
+                else:
+                    out.append("%s- %s: %s" % (pad, ks, _yaml_scalar(v0)))
             for k, v in keys[1:]:
                 _emit_kv(k, v, indent + 2, out)
         elif isinstance(item, dict):

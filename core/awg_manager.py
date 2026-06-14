@@ -866,11 +866,33 @@ class AwgManager:
         with self._lock:
             return self._do_down(name)
 
+    def _config_for_name(self, name: str) -> str:
+        """Вернуть имя КОНФИГА для `name`.
+
+        `name` может быть именем конфига (есть `<name>.conf` → вернём как
+        есть) либо именем реального интерфейса (`opkgtun0`) — тогда найдём
+        конфиг, чей интерфейс резолвится в него. Нужно watchdog'у:
+        `list_interfaces()` отдаёт ИМЯ ИНТЕРФЕЙСА, а `_do_up` ждёт ИМЯ
+        КОНФИГА (`<label>-<iface>.conf`); без резолва туннель опускался и
+        не поднимался обратно.
+        """
+        if os.path.isfile(self._config_path(name)):
+            return name
+        for cfg in self._all_config_names():
+            try:
+                if self._iface_for_name(cfg) == name:
+                    return cfg
+            except Exception:
+                continue
+        return name  # не нашли — прежнее поведение
+
     def restart(self, name: str) -> dict:
         with self._lock:
-            res_down = self._do_down(name)
+            # Принимаем и имя конфига, и имя интерфейса (как status()).
+            cfg_name = self._config_for_name(name)
+            res_down = self._do_down(cfg_name)
             time.sleep(0.3)
-            res_up = self._do_up(name)
+            res_up = self._do_up(cfg_name)
             return {
                 "ok":   res_up.get("ok", False),
                 "down": res_down,

@@ -42,6 +42,12 @@ RAW_BUFFER_SIZE = int((HISTORY_HOURS * 3600) / SAMPLE_INTERVAL_SEC) + 8
 # (мы лезем за peer-инфой в том же tick'е, что и за iface-счётчиками).
 PEER_HISTORY_MINUTES = 5
 PEER_BUFFER_SIZE = int((PEER_HISTORY_MINUTES * 60) / SAMPLE_INTERVAL_SEC) + 4
+# Кол-во точек peer-серии. Бакет (_series_from_samples) даёт точку только
+# если в нём ≥2 сэмпла, поэтому bucket_sec = window // points должен быть
+# ≥ 2×SAMPLE_INTERVAL_SEC. Иначе (как было при points=PEER_BUFFER_SIZE=14 →
+# bucket_sec=21с<30с) каждый бакет получает <2 сэмплов и серия ВСЕГДА пуста.
+PEER_SERIES_POINTS = max(1, (PEER_HISTORY_MINUTES * 60) //
+                         (2 * SAMPLE_INTERVAL_SEC))
 
 
 # ─────── per-iface буфер ───────
@@ -238,7 +244,7 @@ class TrafficSampler:
         for pk, raw in snapshot.items():
             series = _series_from_samples(raw,
                                           PEER_HISTORY_MINUTES * 60,
-                                          PEER_BUFFER_SIZE)
+                                          PEER_SERIES_POINTS)
             peers.append({"public_key": pk, "series": series})
         # Стабильный порядок — по pubkey
         peers.sort(key=lambda x: x["public_key"])
