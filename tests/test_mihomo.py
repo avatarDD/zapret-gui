@@ -192,6 +192,32 @@ class TestSelectAsset(unittest.TestCase):
         self.assertFalse(mi.select_asset(self.ASSETS, "")["ok"])
 
 
+from core.mihomo_detector import MihomoDetector
+
+
+class TestGvisorDetect(unittest.TestCase):
+    """Детект gvisor у бинаря mihomo (best-effort; страховка — фолбэк -t)."""
+
+    def _det(self):
+        return MihomoDetector()
+
+    def test_default_true_when_no_tags(self):
+        # Обычный вывод `mihomo -v` без строки тегов → считаем gvisor есть.
+        with mock.patch("core.mihomo_detector._cmd_out",
+                        return_value="Mihomo Meta v1.18.0 linux amd64 with go"):
+            self.assertTrue(self._det()._detect_gvisor("/bin/mihomo"))
+
+    def test_true_when_gvisor_mentioned(self):
+        with mock.patch("core.mihomo_detector._cmd_out",
+                        return_value="... Tags: with_gvisor,with_quic"):
+            self.assertTrue(self._det()._detect_gvisor("/bin/mihomo"))
+
+    def test_false_when_tags_without_gvisor(self):
+        with mock.patch("core.mihomo_detector._cmd_out",
+                        return_value="Tags: with_quic,with_utls"):
+            self.assertFalse(self._det()._detect_gvisor("/bin/mihomo"))
+
+
 class TestExtractGz(unittest.TestCase):
 
     def test_gunzip(self):
