@@ -188,16 +188,38 @@ def _find_top_key(lines: list, key: str):
 
 
 def _proxies_block_end(lines: list, start: int) -> int:
-    """Индекс конца блока `proxies:` — первый следующий ключ col 0."""
+    """
+    Индекс конца блока `proxies:` — первый следующий КЛЮЧ верхнего уровня
+    (col 0, вида `key:`). Элементы списка в col 0 (`- name: …` — именно так их
+    пишет pyyaml/`dump_yaml`) и комментарии блок НЕ заканчивают: иначе дозапись
+    в pyyaml-конфиг попадала бы между `proxies:` и первым узлом с чужим
+    отступом и ломала YAML (`expected <block end>, but found '-'`).
+    """
     end = len(lines)
     for j in range(start + 1, len(lines)):
         l = lines[j]
         if not l.strip():
             continue
-        if not l[0].isspace() and not l.lstrip().startswith("#"):
+        stripped = l.lstrip()
+        if (not l[0].isspace()
+                and not stripped.startswith("#")
+                and not stripped.startswith("- ")
+                and stripped != "-"):
             return j
         end = j + 1
     return end
+
+
+def _seq_item_indent(lines: list, start: int, end: int):
+    """Отступ элементов `-` блока (start, end) — 0 у pyyaml-стиля, 2 у
+    рукописного. None, если элементов нет (пустой/инлайновый блок)."""
+    for j in range(start + 1, end):
+        s = lines[j].strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("- ") or s == "-":
+            return len(lines[j]) - len(lines[j].lstrip(" "))
+    return None
 
 
 def append_proxies_text(text: str, new_proxies: list) -> str:
@@ -208,12 +230,11 @@ def append_proxies_text(text: str, new_proxies: list) -> str:
     """
     if not new_proxies:
         return text
-    item_lines = dump_seq(new_proxies, indent=2)
     had_nl = text.endswith("\n") or text == ""
     lines = text.splitlines()
     idx = _find_top_key(lines, "proxies")
     if idx is None:
-        block = ["proxies:"] + item_lines
+        block = ["proxies:"] + dump_seq(new_proxies, indent=2)
         base = "\n".join(lines)
         if base and not base.endswith("\n"):
             base += "\n"
@@ -227,6 +248,10 @@ def append_proxies_text(text: str, new_proxies: list) -> str:
     if inline in ("[]", "~", "null"):
         lines[idx] = "proxies:"
     end = _proxies_block_end(lines, idx)
+    # Отступ новых элементов = отступ существующих (col 0 у pyyaml/dump_yaml,
+    # 2 у рукописных конфигов). Смешение col-0 и indent-2 ломает YAML.
+    indent = _seq_item_indent(lines, idx, end)
+    item_lines = dump_seq(new_proxies, indent=2 if indent is None else indent)
     new_lines = lines[:end] + item_lines + lines[end:]
     out = "\n".join(new_lines)
     return out + "\n" if had_nl else out

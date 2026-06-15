@@ -256,6 +256,21 @@ class TestMutations(unittest.TestCase):
         back = parse_yaml(out)
         self.assertEqual([p["name"] for p in back["proxies"]], ["C"])
 
+    def test_append_into_pyyaml_col0_block(self):
+        # dump_yaml/pyyaml пишет элементы списка БЕЗ отступа (col-0 «- name»).
+        # Дозапись должна совпасть по отступу и дать валидный YAML, а не
+        # «expected <block end>, but found '-'».
+        base = dump_yaml({
+            "proxies": [{"name": "A", "type": "ss", "server": "1.1.1.1",
+                         "port": 1, "cipher": "aes-128-gcm", "password": "p"}],
+            "rules": ["MATCH,DIRECT"]})
+        out = mp.append_proxies_text(base, [
+            {"name": "B", "type": "ss", "server": "2.2.2.2", "port": 2,
+             "cipher": "aes-128-gcm", "password": "q"}])
+        back = parse_yaml(out)          # не должно бросить ParserError
+        self.assertEqual([p["name"] for p in back["proxies"]], ["A", "B"])
+        self.assertEqual(back["rules"], ["MATCH,DIRECT"])   # rules сохранены
+
     def test_enable_external_controller_text(self):
         out = mp.enable_external_controller_text(
             "mixed-port: 7890\nproxies:\n  - name: a\n",
