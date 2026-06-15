@@ -54,16 +54,18 @@ PRIVATE_CIDRS = [
     "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
 ]
 
-# fake-ip НЕ выдаём для локальных/служебных доменов: LAN-discovery, время
-# (NTP), connectivity-проба ОС, STUN — иначе ломаются. Домены прокси-серверов
+# fake-ip НЕ выдаём только для доменов, которым реально нужен НАСТОЯЩИЙ IP:
+# LAN-discovery, connectivity-проба ОС, NTP (синхронизация времени до туннеля),
+# STUN, спец-домен QQ-логина. Список держим МИНИМАЛЬНЫМ — широкие записи вроде
+# `+.qq.com` тут вредны: они исключили бы из fake-ip домен, который
+# пользователь, наоборот, хочет проксировать. Домены прокси-серверов
 # добавляются динамически в make_fakeip_dns().
 DEFAULT_FAKEIP_FILTER = [
     "*.lan", "*.localdomain", "*.local", "+.local", "+.home.arpa",
     "localhost.ptlogin2.qq.com",
     "+.pool.ntp.org", "time.*.com", "ntp.*.com",
     "+.msftconnecttest.com", "+.msftncsi.com",
-    "+.market.xiaomi.com", "+.qq.com",
-    "stun.*.*", "+.stun.*.*",
+    "stun.*.*",
 ]
 
 _IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
