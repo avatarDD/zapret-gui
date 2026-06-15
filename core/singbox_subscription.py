@@ -48,13 +48,30 @@ def _safe_tag(name: str, fallback: str = "out") -> str:
     return cleaned[:48] or fallback
 
 
+# Транспорты, которых НЕТ в sing-box (специфичны для Xray). Сервер, требующий
+# такой транспорт, sing-box обслужить не может — ссылку надо отбраковывать
+# сразу (как unsupported flow), иначе она молча превратится в «голый TCP» и
+# соединение не заведётся, засоряя пул «как бы рабочими» серверами.
+_XRAY_ONLY_TRANSPORTS = {"xhttp", "splithttp"}
+
+
 def _parse_query(qs: str) -> dict:
     """urlparse.parse_qs, но возвращает первую запись каждого ключа как str."""
     if not qs:
         return {}
     raw = urllib.parse.parse_qs(qs, keep_blank_values=True)
-    return {k.lower(): urllib.parse.unquote(v[0])
-            for k, v in raw.items() if v}
+    out = {}
+    for k, v in raw.items():
+        if not v:
+            continue
+        key = k.lower()
+        # Часть подписок HTML-экранирует разделители (`&` → `&amp;`), из-за
+        # чего ключи приходят как `amp;udp_relay_mode`/`amp;alpn`. Снимаем
+        # префикс, чтобы такие параметры не терялись (TUIC/Hysteria2 и т.п.).
+        if key.startswith("amp;"):
+            key = key[4:]
+        out[key] = urllib.parse.unquote(v[0])
+    return out
 
 
 def _b64_decode_padded(s: str) -> str:
@@ -115,12 +132,21 @@ def vless_to_outbound(uri: str) -> dict:
     # transport
     transport = None
     t_type = q.get("type", "tcp").lower()
+    if t_type in _XRAY_ONLY_TRANSPORTS:
+        return {"ok": False,
+                "error": "transport '%s' не поддерживается sing-box "
+                         "(Xray-only)" % t_type}
     if t_type == "ws":
         transport = {"type": "ws",
                      "path": q.get("path") or "/"}
         host_hdr = q.get("host")
         if host_hdr:
             transport["headers"] = {"Host": host_hdr}
+    elif t_type == "httpupgrade":
+        # sing-box-нативный транспорт (НЕ Xray xhttp). host — отдельное поле.
+        transport = {"type": "httpupgrade", "path": q.get("path") or "/"}
+        if q.get("host"):
+            transport["host"] = q.get("host")
     elif t_type == "grpc":
         transport = {"type": "grpc",
                      "service_name": q.get("servicename") or
@@ -238,10 +264,18 @@ def vmess_to_outbound(uri: str) -> dict:
     host_hdr = _s("host")
     path = _s("path")
     transport = None
+    if net in _XRAY_ONLY_TRANSPORTS:
+        return {"ok": False,
+                "error": "transport '%s' не поддерживается sing-box "
+                         "(Xray-only)" % net}
     if net == "ws":
         transport = {"type": "ws", "path": path or "/"}
         if host_hdr:
             transport["headers"] = {"Host": host_hdr}
+    elif net == "httpupgrade":
+        transport = {"type": "httpupgrade", "path": path or "/"}
+        if host_hdr:
+            transport["host"] = host_hdr
     elif net == "grpc":
         transport = {"type": "grpc", "service_name": path or ""}
     elif net in ("h2", "http"):
@@ -262,6 +296,12 @@ def vmess_to_outbound(uri: str) -> dict:
         alpn = _s("alpn")
         if alpn:
             tls["alpn"] = [a for a in alpn.split(",") if a]
+        # self-signed: некоторые ссылки несут флаг пропуска проверки TLS
+        # (ключ в JSON в разном регистре/написании).
+        low = {str(k).lower(): v for k, v in data.items()}
+        ins = low.get("allowinsecure") or low.get("skip-cert-verify")
+        if str(ins).strip().lower() in ("1", "true", "yes"):
+            tls["insecure"] = True
 
     outbound = make_vmess_outbound(
         tag=tag, server=server, port=port, uuid=uuid,
@@ -293,15 +333,40 @@ def trojan_to_outbound(uri: str) -> dict:
 
     transport = None
     t_type = q.get("type", "tcp").lower()
+    if t_type in _XRAY_ONLY_TRANSPORTS:
+        return {"ok": False,
+                "error": "transport '%s' не поддерживается sing-box "
+                         "(Xray-only)" % t_type}
     if t_type == "ws":
         transport = {"type": "ws", "path": q.get("path") or "/"}
         if q.get("host"):
             transport["headers"] = {"Host": q["host"]}
+    elif t_type == "httpupgrade":
+        transport = {"type": "httpupgrade", "path": q.get("path") or "/"}
+        if q.get("host"):
+            transport["host"] = q["host"]
+    elif t_type == "grpc":
+        transport = {"type": "grpc",
+                     "service_name": q.get("servicename") or
+                                     q.get("service") or ""}
+    elif (q.get("ws") or "").strip() in ("1", "true"):
+        # Trojan-Go-диалект: ws=1&wspath=/path вместо type=ws&path=.
+        transport = {"type": "ws",
+                     "path": q.get("wspath") or q.get("path") or "/"}
+        if q.get("host"):
+            transport["headers"] = {"Host": q["host"]}
 
     sni = q.get("sni") or q.get("peer") or ""
+    # allowInsecure=1 / insecure=1 — self-signed сертификат: без пропуска
+    # проверки TLS-рукопожатие к таким серверам падает. fp/alpn — uTLS-маскировка
+    # и согласование ALPN (как у vless).
+    insecure = (q.get("allowinsecure") or q.get("insecure")
+                or "").strip().lower() in ("1", "true", "yes", "on")
+    fp = q.get("fp", "")
+    alpn = [a for a in (q.get("alpn") or "").split(",") if a]
     outbound = make_trojan_outbound(
         tag=tag, server=server, port=port, password=password,
-        sni=sni, transport=transport)
+        sni=sni, insecure=insecure, alpn=alpn, fp=fp, transport=transport)
     return {"ok": True, "tag": tag, "outbound": outbound}
 
 
@@ -361,11 +426,28 @@ def ss_to_outbound(uri: str) -> dict:
                              % method}
         method = norm
 
+        # SIP003-плагин: ss://...@host:port?plugin=<name>;<opts>. Без него
+        # сервер с обфускацией не открывается (TCP есть, прокси нет).
+        plugin, plugin_opts = "", ""
+        if query:
+            raw_plugin = _parse_query(query).get("plugin") or ""
+            if raw_plugin:
+                name, _, opts = raw_plugin.partition(";")
+                plugin, plugin_opts = name.strip(), opts.strip()
+                if plugin == "simple-obfs":      # алиас → имя sing-box
+                    plugin = "obfs-local"
+                supported = {"obfs-local", "v2ray-plugin", "shadow-tls"}
+                if plugin not in supported:
+                    return {"ok": False,
+                            "error": "ss plugin '%s' не поддерживается "
+                                     "sing-box" % plugin}
+
         tag = _safe_tag(urllib.parse.unquote(frag or "")
                         or "ss-%s" % host)
         outbound = make_shadowsocks_outbound(
             tag=tag, server=host, port=port,
-            method=method, password=password)
+            method=method, password=password,
+            plugin=plugin, plugin_opts=plugin_opts)
         return {"ok": True, "tag": tag, "outbound": outbound}
     except Exception as e:
         return {"ok": False, "error": "ss parse: %s" % e}
@@ -401,9 +483,18 @@ def hysteria2_to_outbound(uri: str) -> dict:
     insecure = (q.get("insecure") or "").strip().lower() in (
         "1", "true", "yes", "on")
 
+    # Salamander-обфускация: без obfs-пароля сервер с obfs не отвечает.
+    obfs_type = (q.get("obfs") or "").strip().lower()
+    obfs_pw = q.get("obfs-password") or q.get("obfs_password") or ""
+    if obfs_type and obfs_type != "salamander":
+        return {"ok": False,
+                "error": "hysteria2 obfs '%s' не поддерживается sing-box "
+                         "(только salamander)" % obfs_type}
+
     outbound = make_hysteria2_outbound(
         tag=tag, server=server, port=port, password=password,
-        sni=sni, insecure=insecure)
+        sni=sni, insecure=insecure,
+        obfs_password=obfs_pw, obfs_type=obfs_type or "salamander")
     return {"ok": True, "tag": tag, "outbound": outbound}
 
 
@@ -435,10 +526,16 @@ def tuic_to_outbound(uri: str) -> dict:
     tag = _safe_tag(urllib.parse.unquote(p.fragment or "")
                     or "tuic-%s" % p.hostname)
     sni = q.get("sni") or ""
+    alpn = [a for a in (q.get("alpn") or "").split(",") if a]
+    insecure = (q.get("allow_insecure") or q.get("insecure")
+                or "").strip().lower() in ("1", "true", "yes", "on")
+    cc = (q.get("congestion_control") or q.get("congestion") or "").strip()
+    urm = (q.get("udp_relay_mode") or "").strip()
 
     outbound = make_tuic_outbound(
         tag=tag, server=p.hostname, port=p.port,
-        uuid=uuid, password=password, sni=sni)
+        uuid=uuid, password=password, sni=sni, alpn=alpn,
+        insecure=insecure, congestion_control=cc, udp_relay_mode=urm)
     return {"ok": True, "tag": tag, "outbound": outbound}
 
 
@@ -523,6 +620,11 @@ def _transport_params(tr: dict) -> dict:
     elif t_type == "grpc":
         if tr.get("service_name"):
             out["serviceName"] = tr["service_name"]
+    elif t_type == "httpupgrade":
+        if tr.get("path"):
+            out["path"] = tr["path"]
+        if tr.get("host"):
+            out["host"] = tr["host"]
     elif t_type in ("http", "h2"):
         if tr.get("path"):
             out["path"] = tr["path"]
@@ -616,6 +718,12 @@ def _trojan_to_uri(ob: dict) -> str:
         params["sni"] = tls["server_name"]
     if tls.get("insecure"):
         params["allowInsecure"] = "1"
+    fp = (tls.get("utls") or {}).get("fingerprint")
+    if fp:
+        params["fp"] = fp
+    if tls.get("alpn"):
+        params["alpn"] = ",".join(tls["alpn"]) if isinstance(
+            tls["alpn"], list) else tls["alpn"]
     return "trojan://%s@%s?%s#%s" % (
         _q(pwd), _fmt_hostport(server, port),
         _build_query(params), _frag(ob.get("tag")))
@@ -626,11 +734,17 @@ def _ss_to_uri(ob: dict) -> str:
     method, pwd = ob.get("method"), ob.get("password")
     if not (server and port and method):
         return ""
-    # SIP002: ss://base64(method:password)@host:port#tag
+    # SIP002: ss://base64(method:password)@host:port[?plugin=...]#tag
     userinfo = base64.b64encode(
         ("%s:%s" % (method, pwd or "")).encode("utf-8")).decode("ascii").rstrip("=")
-    return "ss://%s@%s#%s" % (
-        userinfo, _fmt_hostport(server, port), _frag(ob.get("tag")))
+    query = ""
+    if ob.get("plugin"):
+        pv = ob["plugin"]
+        if ob.get("plugin_opts"):
+            pv = "%s;%s" % (pv, ob["plugin_opts"])
+        query = "?" + _build_query({"plugin": pv})
+    return "ss://%s@%s%s#%s" % (
+        userinfo, _fmt_hostport(server, port), query, _frag(ob.get("tag")))
 
 
 def _hysteria2_to_uri(ob: dict) -> str:
@@ -643,6 +757,10 @@ def _hysteria2_to_uri(ob: dict) -> str:
         params["sni"] = tls["server_name"]
     if tls.get("insecure"):
         params["insecure"] = "1"
+    obfs = ob.get("obfs") or {}
+    if obfs.get("password"):
+        params["obfs"] = obfs.get("type") or "salamander"
+        params["obfs-password"] = obfs["password"]
     return "hysteria2://%s@%s?%s#%s" % (
         _q(pwd), _fmt_hostport(server, port),
         _build_query(params), _frag(ob.get("tag")))
@@ -656,6 +774,15 @@ def _tuic_to_uri(ob: dict) -> str:
     params = {}
     if tls.get("server_name"):
         params["sni"] = tls["server_name"]
+    if tls.get("insecure"):
+        params["allow_insecure"] = "1"
+    if tls.get("alpn"):
+        params["alpn"] = ",".join(tls["alpn"]) if isinstance(
+            tls["alpn"], list) else tls["alpn"]
+    if ob.get("congestion_control"):
+        params["congestion_control"] = ob["congestion_control"]
+    if ob.get("udp_relay_mode"):
+        params["udp_relay_mode"] = ob["udp_relay_mode"]
     userinfo = "%s:%s" % (_q(uuid), _q(ob.get("password") or ""))
     return "tuic://%s@%s?%s#%s" % (
         userinfo, _fmt_hostport(server, port),
