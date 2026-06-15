@@ -70,9 +70,34 @@ class MihomoDetector:
         if not path:
             path = _find_binary(list(BINARY_NAMES))
         if not path:
-            return {"installed": False, "path": "", "version": ""}
+            return {"installed": False, "path": "", "version": "",
+                    "has_gvisor": False}
         version = self._probe_version(path)
-        return {"installed": True, "path": path, "version": version}
+        return {"installed": True, "path": path, "version": version,
+                # has_gvisor: gvisor-стек нужен для надёжного доменного роутинга
+                # (system без auto-route не ловит TCP). У mihomo gvisor НЕ
+                # отдельный build-тег (как with_gvisor у sing-box), а штатная
+                # часть официальных сборок MetaCubeX/mihomo-linux-* — `mihomo -v`
+                # не печатает теги сборки, поэтому достоверно вытащить флаг
+                # нельзя. Считаем gvisor доступным (официальная сборка);
+                # реальная страховка от кастомной сборки без него — фолбэк
+                # стека через `mihomo -t` в core/mihomo_routing.
+                "has_gvisor": self._detect_gvisor(path)}
+
+    def _detect_gvisor(self, binary: str) -> bool:
+        """
+        Best-effort: gvisor у официальных сборок mihomo всегда есть. Если в
+        выводе версии вдруг встретится явное упоминание тегов без gvisor —
+        вернём False, иначе True. Точную проверку (приём `stack: gvisor`) делает
+        оркестратор маршрутизации через `mihomo -t` (фолбэк на system).
+        """
+        out = _cmd_out([binary, "-v"], timeout=3).lower()
+        if "gvisor" in out:
+            return True
+        # Явный список тегов без gvisor (на случай кастомных сборок).
+        if "tags:" in out or "features:" in out:
+            return "gvisor" in out
+        return True
 
     def _probe_version(self, binary: str) -> str:
         """`mihomo -v` → 'Mihomo Meta vX.Y.Z ...'."""
