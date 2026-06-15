@@ -212,6 +212,13 @@ class TestGvisorDetect(unittest.TestCase):
                         return_value="... Tags: with_gvisor,with_quic"):
             self.assertTrue(self._det()._detect_gvisor("/bin/mihomo"))
 
+    def test_true_on_real_mihomo_v_format(self):
+        # Реальный вывод `mihomo -v` (v1.19.x): отдельная строка «Use tags: …».
+        out = ("Mihomo Meta v1.19.27 linux amd64 with go1.26.4 ...\n"
+               "Use tags: with_gvisor")
+        with mock.patch("core.mihomo_detector._cmd_out", return_value=out):
+            self.assertTrue(self._det()._detect_gvisor("/bin/mihomo"))
+
     def test_false_when_tags_without_gvisor(self):
         with mock.patch("core.mihomo_detector._cmd_out",
                         return_value="Tags: with_quic,with_utls"):

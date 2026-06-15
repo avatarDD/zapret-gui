@@ -17,12 +17,12 @@ MetaCubeX/mihomo. Бинари публикуются как одиночные 
   - `select_asset()`     — выбор нужного .gz из списка ассетов релиза.
 
 gvisor: официальные сборки `mihomo-linux-<arch>-*.gz` (включая mips/mipsle-
-softfloat для Keenetic) собираются на чистом Go и ВКЛЮЧАЮТ gvisor-стек — это
-не отдельный build-тег (как `with_gvisor` у sing-box), а штатная часть бинаря.
-Поэтому `tun.stack: gvisor` доступен на всех арх-ассетах, которые мы ставим;
-отдельный «gvisor-вариант» качать не нужно. Если у пользователя кастомная
-сборка без gvisor — оркестратор маршрутизации откатится на `system` по
-результату `mihomo -t` (см. core/mihomo_routing).
+softfloat для Keenetic) идут с build-тегом `with_gvisor` — его видно в
+`mihomo -v` («Use tags: with_gvisor …», проверено на v1.19.x). Поэтому
+`tun.stack: gvisor` доступен на всех арх-ассетах, которые мы ставим; отдельный
+«gvisor-вариант» качать не нужно. Если у пользователя кастомная сборка без
+gvisor — оркестратор маршрутизации откатится на `system` по результату
+`mihomo -t` (см. core/mihomo_routing).
 """
 
 import json

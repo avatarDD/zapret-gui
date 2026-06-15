@@ -75,28 +75,28 @@ class MihomoDetector:
         version = self._probe_version(path)
         return {"installed": True, "path": path, "version": version,
                 # has_gvisor: gvisor-стек нужен для надёжного доменного роутинга
-                # (system без auto-route не ловит TCP). У mihomo gvisor НЕ
-                # отдельный build-тег (как with_gvisor у sing-box), а штатная
-                # часть официальных сборок MetaCubeX/mihomo-linux-* — `mihomo -v`
-                # не печатает теги сборки, поэтому достоверно вытащить флаг
-                # нельзя. Считаем gvisor доступным (официальная сборка);
-                # реальная страховка от кастомной сборки без него — фолбэк
-                # стека через `mihomo -t` в core/mihomo_routing.
+                # (system без auto-route не ловит TCP). `mihomo -v` печатает
+                # строку «Use tags: with_gvisor …» — её и парсим (см.
+                # _detect_gvisor). Официальные сборки MetaCubeX/mihomo-linux-*
+                # идут с with_gvisor; реальная страховка от кастомной сборки без
+                # него — фолбэк стека через `mihomo -t` в core/mihomo_routing.
                 "has_gvisor": self._detect_gvisor(path)}
 
     def _detect_gvisor(self, binary: str) -> bool:
         """
-        Best-effort: gvisor у официальных сборок mihomo всегда есть. Если в
-        выводе версии вдруг встретится явное упоминание тегов без gvisor —
-        вернём False, иначе True. Точную проверку (приём `stack: gvisor`) делает
-        оркестратор маршрутизации через `mihomo -t` (фолбэк на system).
+        `mihomo -v` печатает build-теги строкой «Use tags: with_gvisor …»
+        (проверено на v1.19.x). Ищем gvisor в выводе → True. Если строка тегов
+        есть, но gvisor в ней нет (кастомная сборка) → False; если тегов вовсе
+        не видно (нестандартный вывод) — считаем, что есть (официальная сборка).
+        Точную проверку (приём `stack: gvisor`) делает оркестратор маршрутизации
+        через `mihomo -t` (фолбэк на system), так что ложный True не опасен.
         """
         out = _cmd_out([binary, "-v"], timeout=3).lower()
         if "gvisor" in out:
             return True
-        # Явный список тегов без gvisor (на случай кастомных сборок).
+        # Строка тегов есть, но gvisor в ней нет — кастомная сборка без gvisor.
         if "tags:" in out or "features:" in out:
-            return "gvisor" in out
+            return False
         return True
 
     def _probe_version(self, binary: str) -> str:
