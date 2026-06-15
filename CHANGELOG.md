@@ -176,6 +176,48 @@
   Y», с нормализацией версии (`v1.18.0` == `1.18.0` == `1.18.0-1`) и
   бейджем «актуально / доступно обновление». Бэкенд не менялся
   (`/api/mihomo/{environment,version,install,install/status,uninstall}`).
+- **Слияние «AWG-правил» с глобальной «Маршрутизацией» (задача №4
+  роадмапа).** Раньше было ДВА раздела и два хранилища правил: глобальный
+  единый слой (`/api/unified/*`) и AWG-специфичный (`/api/routing/*`).
+  Теперь раздел маршрутизации один, а «AWG-правила» — отфильтрованный вид
+  того же движка, а не отдельная система.
+  - Модель `UnifiedRoute` расширена селекторами «устройства» (`devices[]`
+    — source IP/MAC/hostname) и «DSCP» (`dscp`/`dscp_self`) — единый слой
+    покрывает все 4 типа бывших AWG-правил (cidr/domain/device/dscp).
+    `core/unified/applier.py` раскладывает их в производные
+    `DeviceRoutingRule` (по одному на устройство) и `DscpRoutingRule` с
+    детерминированными id (`uni-<route>-dev-…` / `-dscp`).
+  - Новый `core/unified/migration.py` — legacy-правила из `routing.rules`
+    (не `uni-*`) идемпотентно заворачиваются в маршруты (`mig-<id>`);
+    авто-миграция на boot (`app.py`) + `GET /api/unified/legacy` +
+    `POST /api/unified/migrate`.
+  - UI: `routing_unified.js` — единственный раздел (фильтр «Через» +
+    поиск, окружение dnsmasq+NDMS, выбор устройств сети, DSCP-пресеты,
+    баннер миграции legacy-правил); `awg_routing.js` стал тонким адаптером
+    (та же страница с пресетом «Через: AWG», старые ссылки `#awg-routing`
+    продолжают работать). Ничего из прежнего функционала не потеряно.
+  - Тесты: `tests/test_unified_migration.py` (новый), расширены
+    test_unified_{model,applier}, test_api_unified.
+- **Запуск на обычном ПК / VPS с одной сетевой картой (задача №5
+  роадмапа).** Раньше вся логика подразумевала роутер (заворот форварда
+  LAN-клиентов через PREROUTING); на машине с единственной NIC ролей
+  WAN/LAN нет.
+  - Детект окружения: новый `core/network_env.py` (профиль `router`/`pc`,
+    `single_nic`, override `network.profile` — действует без рестарта) +
+    `GET /api/network/environment` + выбор профиля в Настройки→Интерфейсы.
+  - Локальный режим перехвата: `scope='self'` в
+    `core/singbox_transparent{,_nft}.py` — заворачивается ТОЛЬКО исходящий
+    трафик самой машины (OUTPUT), с защитой от петель (mark-RETURN движка,
+    `addrtype --dst-type LOCAL`, `conntrack --ctdir REPLY`,
+    bypass-сети/server_ips), DNS-hijack и IPv6-drop для self. API: `scope`
+    в `POST /api/singbox/transparent/apply` (персистится — переживает
+    ребут), `network` в `/transparent/status`.
+  - UI: селектор «Область» (LAN-клиенты / Эта машина) в singbox.js с
+    авто-предложением self на профиле pc; подсказки в routing_unified.js.
+    (mihomo/awg на ПК идут через unified-маршруты OUTPUT-mark + TUN —
+    отдельный transparent-режим им не нужен.)
+  - Тесты: `tests/test_network_env.py` (новый), расширены
+    test_singbox_transparent{,_nft}.py.
 - **Редактор стратегий «как IDE» (только nfqws2).** Поле args каждого профиля
   превратилось в код-редактор с подсветкой синтаксиса прямо при вводе,
   проверкой ошибок и контекстными подсказками — никакого legacy nfqws1
