@@ -72,18 +72,27 @@ HTTP_TIMEOUT = 30
 HTTP_RETRIES = 3
 HTTP_RETRY_BACKOFF = 2.0  # секунд между попытками (умножается на номер попытки)
 
-# AmneziaWG обфускация — диапазоны параметров
+# AmneziaWG обфускация — диапазоны параметров.
+#
+# ВАЖНО (совместимость с Cloudflare WARP): серверы WARP говорят на
+# ОБЫЧНОМ WireGuard и НЕ понимают AmneziaWG-обфускацию заголовков/
+# паддинга. Совместимы с ванильным WireGuard только junk-пакеты
+# (Jc/Jmin/Jmax) — это отдельные UDP-датаграммы перед рукопожатием,
+# которые сервер просто игнорирует. А вот:
+#   * S1..S4 (паддинг ВНУТРИ handshake-пакета) и
+#   * H1..H4 != 1/2/3/4 (подмена типа сообщения)
+# ломают разбор пакета на стороне Cloudflare → handshake не проходит
+# (проверено: против ванильного WG-пира handshake идёт ТОЛЬКО при
+# S1=S2=0 и H1..H4 = 1,2,3,4). Поэтому для WARP паддинг и заголовки
+# держим стандартными, а обфускацию даём через junk-пакеты.
 JC_MIN, JC_MAX  = 4, 12
 JMIN_VALUE      = 40
 JMAX_VALUE      = 70
-SX_MIN, SX_MAX  = 15, 100
-HX_MIN, HX_MAX  = 5, 0x7FFFFFFF
 
-# Источник: значения, которые нельзя ставить в S1/S2, чтобы суммарно
-# не совпасть с фиксированными размерами WireGuard-пакетов. Берём
-# значения, которые точно не пересекаются (handshake initiation = 148,
-# handshake response = 92, cookie reply = 64, transport min = 32).
-WG_FIXED_PACKET_SIZES = (32, 64, 92, 148)
+# Стандартные типы сообщений WireGuard (init/response/cookie/transport).
+# amneziawg-go использует их по умолчанию; для WARP оставляем как есть,
+# чтобы Cloudflare-пир (ванильный WireGuard) понимал рукопожатие.
+WG_STD_HEADERS = {"H1": 1, "H2": 2, "H3": 3, "H4": 4}
 
 
 # ───────────────────────── network helpers ──────────────────────────
@@ -220,33 +229,26 @@ def _request_json(method: str, url: str, body: dict = None,
 
 def generate_obfuscation_params() -> dict:
     """
-    Сгенерировать набор AmneziaWG-обфускации (Jc, Jmin, Jmax, S1, S2,
-    H1..H4). H1..H4 уникальны между собой.
+    Сгенерировать набор AmneziaWG-обфускации для Cloudflare WARP.
+
+    Только junk-пакеты (Jc/Jmin/Jmax) обфусцируют трафик, оставаясь
+    совместимыми с ванильным WireGuard-пиром Cloudflare. Паддинг
+    (S1=S2=0) и заголовки (H1..H4 = 1,2,3,4) держим стандартными —
+    иначе Cloudflare-сервер не распознает handshake и туннель не
+    поднимется (см. комментарий к константам выше).
     """
     rng = random.SystemRandom()
-
-    s_pool = [v for v in range(SX_MIN, SX_MAX + 1)
-              if v not in WG_FIXED_PACKET_SIZES]
-    s1 = rng.choice(s_pool)
-    s_pool2 = [v for v in s_pool if v != s1]
-    s2 = rng.choice(s_pool2)
-
-    # H1..H4 — четыре разных uint32 в [HX_MIN, HX_MAX]
-    h_set = set()
-    while len(h_set) < 4:
-        h_set.add(rng.randint(HX_MIN, HX_MAX))
-    h1, h2, h3, h4 = list(h_set)
 
     return {
         "Jc":   rng.randint(JC_MIN, JC_MAX),
         "Jmin": JMIN_VALUE,
         "Jmax": JMAX_VALUE,
-        "S1":   s1,
-        "S2":   s2,
-        "H1":   h1,
-        "H2":   h2,
-        "H3":   h3,
-        "H4":   h4,
+        # Паддинг handshake-пакетов выключен — ломает совместимость с
+        # ванильным WireGuard (Cloudflare).
+        "S1":   0,
+        "S2":   0,
+        # Стандартные типы сообщений — Cloudflare ожидает именно их.
+        **WG_STD_HEADERS,
     }
 
 

@@ -186,6 +186,24 @@ def _iface_exists(ifname: str) -> bool:
         return False
 
 
+def _iface_has_family(ifname: str, ip_fam: str) -> bool:
+    """
+    Есть ли у интерфейса глобальный адрес заданного семейства
+    (`ip_fam` = '-4' | '-6'). Нужно, чтобы не считать ошибкой
+    отсутствие v6-маршрута на чисто-v4 туннеле (типичный AWG/WARP
+    без IPv6): v4-туннель не может нести v6-трафик, и domain-правило
+    должно деградировать мягко (роутим то, что можем), а не падать.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(["ip", ip_fam, "-o", "addr", "show", "dev",
+                            ifname, "scope", "global"],
+                           capture_output=True, text=True, timeout=3)
+        return r.returncode == 0 and bool((r.stdout or "").strip())
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+
+
 # Pre-population — оптимизация (dnsmasq добьёт set лениво по libc-запросам).
 # Ограничиваем число доменов и распараллеливаем резолвы: без этого
 # geosite-алиас (десятки тысяч доменов) под _lock делал бы по 2 блокирующих
@@ -571,6 +589,16 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
 
             ip_fam = "-6" if fam == "v6" else "-4"
             if not _ensure_table_default(ifname, table, ip_fam):
+                # Туннель без адреса этого семейства (например, чисто-v4
+                # WARP без IPv6) физически не может нести такой трафик —
+                # это не ошибка правила: set уже создан (dnsmasq спокойно
+                # добавит в него A/AAAA), а v6-трафик просто пойдёт напрямую.
+                # Падаем только если адрес есть, а маршрут всё равно не лёг.
+                if not _iface_has_family(ifname, ip_fam):
+                    log.info("routing(domain): у %s нет адреса %s — leg %s"
+                             " пропущен (трафик пойдёт напрямую)"
+                             % (ifname, ip_fam, fam), source="routing")
+                    continue
                 errors.append("default-route v%s в table %d не создан"
                               % (fam[1:], table))
                 continue

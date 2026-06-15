@@ -216,5 +216,53 @@ class TestAwgHeaderRange(unittest.TestCase):
         self.assertTrue(self._errors_for("S1 = 1-2", "S1"))
 
 
+class TestSetconfZeroObfuscation(unittest.TestCase):
+    """
+    render_setconf не должен отдавать в `awg setconf` нулевую junk-
+    обфускацию (Jc/Jmin/Jmax) и нулевые заголовки (H1..H4): amneziawg-go
+    требует jc/jmin/jmax > 0 ("jc must be a positive value") и падает с
+    "Unable to modify interface: Invalid argument", а H*=0 ломает тип
+    сообщения. Семантика «все нули = обычный WireGuard» (docs.amnezia.org)
+    реализуется именно пропуском этих полей.
+    """
+
+    PRIV = "aP1xJU3a3lYwTzZyB7hN4mE8oQ2rWcKfIvCdEh6gXyo="
+
+    def _setconf(self, iface_extra):
+        cfg = {"interface": dict({"PrivateKey": self.PRIV}, **iface_extra),
+               "peers": []}
+        return render_setconf(cfg)
+
+    def test_all_zero_vanilla_omits_junk_and_headers(self):
+        sc = self._setconf({"Jc": 0, "Jmin": 0, "Jmax": 0,
+                            "S1": 0, "S2": 0,
+                            "H1": 0, "H2": 0, "H3": 0, "H4": 0})
+        low = sc.lower()
+        for k in ("jc", "jmin", "jmax", "h1", "h2", "h3", "h4"):
+            self.assertNotIn(k + " =", low,
+                             msg="%s=0 не должно уходить в setconf: %r" % (k, sc))
+        # S1/S2 = 0 корректны для демона (нулевой паддинг) — остаются
+        self.assertIn("s1 = 0", low)
+
+    def test_valid_junk_and_std_headers_preserved(self):
+        sc = self._setconf({"Jc": 4, "Jmin": 40, "Jmax": 70,
+                            "S1": 0, "S2": 0,
+                            "H1": 1, "H2": 2, "H3": 3, "H4": 4})
+        self.assertIn("Jc = 4", sc)
+        self.assertIn("Jmin = 40", sc)
+        self.assertIn("Jmax = 70", sc)
+        self.assertIn("H1 = 1", sc)
+        self.assertIn("H4 = 4", sc)
+
+    def test_partial_junk_dropped_atomically(self):
+        # неполный junk (jmax=0) невалиден для демона → группа целиком
+        # не уходит, чтобы setconf не упал на jmax=0.
+        sc = self._setconf({"Jc": 4, "Jmin": 40, "Jmax": 0})
+        low = sc.lower()
+        self.assertNotIn("jc =", low)
+        self.assertNotIn("jmin =", low)
+        self.assertNotIn("jmax =", low)
+
+
 if __name__ == "__main__":
     unittest.main()
