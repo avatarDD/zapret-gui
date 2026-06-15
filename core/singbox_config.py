@@ -992,27 +992,48 @@ def make_vmess_outbound(tag: str, server: str, port: int, uuid: str,
 
 
 def make_trojan_outbound(tag: str, server: str, port: int, password: str,
-                         *, sni: str = "",
+                         *, sni: str = "", insecure: bool = False,
+                         alpn=None, fp: str = "",
                          transport: dict = None) -> dict:
-    out = {"type": "trojan", "tag": tag,
-           "server": server, "server_port": int(port), "password": password}
+    tls: dict[str, Any] = {"enabled": True}
     if sni:
-        out["tls"] = {"enabled": True, "server_name": sni}
-    else:
-        out["tls"] = {"enabled": True, "insecure": True}
+        tls["server_name"] = sni
+    # allowInsecure=1 (self-signed сертификат) обязателен, иначе TLS-рукопожатие
+    # падает. Без SNI — почти всегда self-signed/raw, тоже пропускаем проверку
+    # (историческое поведение).
+    if insecure or not sni:
+        tls["insecure"] = True
+    if fp:
+        tls["utls"] = {"enabled": True, "fingerprint": fp}
+    alpn_list = [a for a in (alpn or []) if a]
+    if alpn_list:
+        tls["alpn"] = alpn_list
+    out = {"type": "trojan", "tag": tag,
+           "server": server, "server_port": int(port), "password": password,
+           "tls": tls}
     if transport:
         out["transport"] = transport
     return out
 
 
 def make_shadowsocks_outbound(tag: str, server: str, port: int,
-                              method: str, password: str) -> dict:
-    return {
+                              method: str, password: str,
+                              *, plugin: str = "",
+                              plugin_opts: str = "") -> dict:
+    out = {
         "type": "shadowsocks", "tag": tag,
         "server": server, "server_port": int(port),
         "method": normalize_ss_method(method) or method,
         "password": password,
     }
+    # SIP003-плагин (obfs-local / v2ray-plugin): сервер с плагином НЕ примет
+    # «голый» Shadowsocks — без plugin/plugin_opts соединение установится по
+    # TCP, но прокси работать не будет (рукопожатие плагина не пройдёт).
+    if plugin:
+        out["plugin"] = plugin
+        if plugin_opts:
+            out["plugin_opts"] = plugin_opts
+    return out
 
 
 # Методы Shadowsocks, которые принимает sing-box (только AEAD + 2022).
@@ -1047,23 +1068,34 @@ def normalize_ss_method(method: str) -> str:
 
 def make_hysteria2_outbound(tag: str, server: str, port: int,
                             password: str, *, sni: str = "",
-                            insecure: bool = False) -> dict:
+                            insecure: bool = False,
+                            obfs_password: str = "",
+                            obfs_type: str = "salamander") -> dict:
     tls_opts: dict[str, Any] = {"enabled": True}
     if sni:
         tls_opts["server_name"] = sni
     if insecure:
         tls_opts["insecure"] = True
-    return {
+    out = {
         "type": "hysteria2", "tag": tag,
         "server": server, "server_port": int(port),
         "password": password,
         "tls": tls_opts,
     }
+    # Salamander-обфускация: сервер с `obfs=salamander` НЕ примет соединение
+    # без совпадающего obfs-пароля (QUIC-рукопожатие не пройдёт — «ничего не
+    # открывается, хотя порт жив»). sing-box поддерживает только salamander.
+    if obfs_password:
+        out["obfs"] = {"type": (obfs_type or "salamander"),
+                       "password": obfs_password}
+    return out
 
 
 def make_tuic_outbound(tag: str, server: str, port: int,
                        uuid: str, password: str = "",
-                       *, sni: str = "") -> dict:
+                       *, sni: str = "", alpn=None, insecure: bool = False,
+                       congestion_control: str = "",
+                       udp_relay_mode: str = "") -> dict:
     out = {
         "type": "tuic", "tag": tag,
         "server": server, "server_port": int(port),
@@ -1071,9 +1103,23 @@ def make_tuic_outbound(tag: str, server: str, port: int,
     }
     if password:
         out["password"] = password
-    out["tls"] = {"enabled": True}
+    # congestion_control / udp_relay_mode часто заданы в ссылке и должны
+    # совпадать с сервером (иначе UDP-релей не работает или режется скорость).
+    if congestion_control:
+        out["congestion_control"] = congestion_control
+    if udp_relay_mode:
+        out["udp_relay_mode"] = udp_relay_mode
+    tls: dict[str, Any] = {"enabled": True}
     if sni:
-        out["tls"]["server_name"] = sni
+        tls["server_name"] = sni
+    if insecure:
+        tls["insecure"] = True
+    # TUIC поверх QUIC обычно требует ALPN h3 — без него многие серверы рвут
+    # рукопожатие («connection refused»/timeout, хотя UDP-порт открыт).
+    alpn_list = [a for a in (alpn or []) if a]
+    if alpn_list:
+        tls["alpn"] = alpn_list
+    out["tls"] = tls
     return out
 
 
