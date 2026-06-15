@@ -371,6 +371,43 @@ def _emit(lines: list, key: str, value):
 
 # ───────────────────────── filtered conf for `awg setconf` ──────────
 
+def _setconf_skip_fields(iface: dict) -> set:
+    """
+    Поля обфускации, которые НЕ нужно отдавать в `awg setconf`, потому
+    что их нулевое значение демон трактует иначе, чем «как обычный
+    WireGuard» (см. docs.amnezia.org: «все параметры = 0 → ванильный WG»):
+
+      * Jc/Jmin/Jmax — amneziawg-go требует ПОЛОЖИТЕЛЬНЫХ значений
+        ("jc must be a positive value"); явный 0 ⇒ setconf падает с
+        "Unable to modify interface: Invalid argument". 0 = «junk
+        выключен», поэтому группу пропускаем целиком, если хотя бы одно
+        из значений не положительное.
+      * H1..H4 = 0 — демон по умолчанию (когда заголовок не задан)
+        использует стандартные типы сообщений 1/2/3/4; явный 0 сломал
+        бы тип пакета. Поэтому H*=0 трактуем как «не задано» и опускаем.
+
+    S1..S4 = 0 — корректны (паддинг нулевой длины), демон их принимает,
+    поэтому НЕ трогаем.
+    """
+    skip = set()
+    junk_ok = True
+    for k in ("Jc", "Jmin", "Jmax"):
+        raw = iface.get(k)
+        if raw in ("", None):
+            continue
+        try:
+            if int(str(raw).strip()) <= 0:
+                junk_ok = False
+        except (TypeError, ValueError):
+            junk_ok = False
+    if not junk_ok:
+        skip.update(("Jc", "Jmin", "Jmax"))
+    for k in ("H1", "H2", "H3", "H4"):
+        if str(iface.get(k, "")).strip() == "0":
+            skip.add(k)
+    return skip
+
+
 def render_setconf(cfg: dict) -> str:
     """
     Отрендерить только те поля, которые принимает `awg setconf`:
@@ -381,8 +418,12 @@ def render_setconf(cfg: dict) -> str:
     iface = cfg.get("interface") or {}
     peers = cfg.get("peers") or []
 
+    skip = _setconf_skip_fields(iface)
+
     lines = ["[Interface]"]
     for key in WG_INTERFACE_FIELDS:
+        if key in skip:
+            continue
         if key in iface and iface[key] not in ("", None):
             _emit(lines, key, iface[key])
 

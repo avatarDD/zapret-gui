@@ -74,3 +74,56 @@ class TestNftDscpFragment(unittest.TestCase):
     def test_fragment_zero(self):
         self.assertEqual(dscp_rule.build_nft_dscp_fragment(0, 5),
                          "ip dscp 0x00 meta mark set 5")
+
+
+class TestNftDscpMatch(unittest.TestCase):
+    """
+    Регрессия идемпотентности nft-DSCP: nft нормализует и DSCP (0x2e→ef),
+    и метку (917→0x00000395), поэтому сравнение нашего текста фрагмента с
+    выводом nft НИКОГДА не совпадало → дубликаты копились на каждом apply,
+    а remove не находил правило. Сопоставление теперь семантическое.
+    """
+
+    def test_parse_nft_dscp_symbolic(self):
+        self.assertEqual(dscp_rule._parse_nft_dscp("ef"), 46)
+        self.assertEqual(dscp_rule._parse_nft_dscp("cs0"), 0)
+        self.assertEqual(dscp_rule._parse_nft_dscp("af41"), 34)
+
+    def test_parse_nft_dscp_numeric(self):
+        self.assertEqual(dscp_rule._parse_nft_dscp("0x2e"), 46)
+        self.assertEqual(dscp_rule._parse_nft_dscp("46"), 46)
+        self.assertIsNone(dscp_rule._parse_nft_dscp("garbage"))
+
+    def test_find_handles_matches_nft_canonical_form(self):
+        # как nft реально печатает наше правило (ef + hex-метка)
+        canned = (
+            "table inet awg_routing {\n"
+            "\tchain prerouting { # handle 1\n"
+            "\t\ttype filter hook prerouting priority mangle; policy accept;\n"
+            "\t\tip dscp ef meta mark set 0x00000395 # handle 11\n"
+            "\t\tip dscp cs1 meta mark set 0x00000395 # handle 12\n"
+            "\t}\n}\n"
+        )
+        orig = dscp_rule._run
+        dscp_rule._run = lambda *a, **k: (0, canned, "")
+        try:
+            # dscp=46 (ef), mark=917 (0x395) → находим handle 11, НЕ 12
+            handles = dscp_rule._find_nft_dscp_handles(
+                "awg_routing", "prerouting", 46, 917)
+            self.assertEqual(handles, ["11"])
+            # cs1 = dscp 8 → handle 12
+            self.assertEqual(
+                dscp_rule._find_nft_dscp_handles(
+                    "awg_routing", "prerouting", 8, 917),
+                ["12"])
+            # несуществующая метка → ничего
+            self.assertEqual(
+                dscp_rule._find_nft_dscp_handles(
+                    "awg_routing", "prerouting", 46, 100),
+                [])
+        finally:
+            dscp_rule._run = orig
+
+
+if __name__ == "__main__":
+    unittest.main()
