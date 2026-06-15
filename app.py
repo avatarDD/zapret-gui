@@ -562,6 +562,14 @@ def create_app(config_dir: str = None) -> Bottle:
     except Exception as e:
         log.warning("sing-box watchdog при boot: %s" % e, source="singbox")
 
+    # mihomo watchdog: то же, что у sing-box, но проба через external-controller
+    # mihomo. Ничего не делает, если mihomo.watchdog.enabled = false (дефолт).
+    try:
+        from core.mihomo_watchdog import get_watchdog as _mh_watchdog
+        _mh_watchdog().reconfigure()
+    except Exception as e:
+        log.warning("mihomo watchdog при boot: %s" % e, source="mihomo")
+
     # Healthcheck-демон (autocircular watchdog): ничего не делает, если
     # cfg.healthcheck.enabled = false (дефолт). Включается через GUI.
     try:

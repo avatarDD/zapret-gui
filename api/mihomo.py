@@ -29,11 +29,22 @@ REST API для mihomo (Clash.Meta). По структуре повторяет 
   POST   /api/mihomo/autostart/apply
 """
 
+import re
 import threading
 from bottle import request, response
 
 
 INSTALL_API_WAIT = 8
+
+
+def _str_list(v):
+    """Нормализовать вход формы в список строк: массив либо строка
+    (разделители — пробелы/запятые/переводы строк)."""
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    if isinstance(v, str):
+        return [s.strip() for s in re.split(r"[\s,]+", v) if s.strip()]
+    return []
 
 
 def _load_cfg(name):
@@ -516,6 +527,102 @@ def register(app):
             proxies = [p for p in proxies if str(p.get("name")) in ns]
         links = [u for u in (clash_proxy_to_uri(p) for p in proxies) if u]
         return {"ok": True, "text": "\n".join(links), "count": len(links)}
+
+    # ─────── маршрутизация (домены / устройства / весь трафик) ──────
+
+    @app.route("/api/mihomo/routing/options")
+    def mihomo_routing_options():
+        """Данные для формы маршрутизации: версия, gvisor, списки, конфиги."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.mihomo_routing import build_options
+        return build_options()
+
+    @app.route("/api/mihomo/routing/domain/build", method="POST")
+    def mihomo_routing_domain_build():
+        """Собрать+сохранить конфиг доменной маршрутизации (проверка mihomo -t).
+        body: name, proxy_link|proxy_config, hostlists[], lists[], domains[],
+        cidrs[], route_all, stack, mtu, reject_quic, group_type."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core.mihomo_routing import build_domain_route_and_save
+        res = build_domain_route_and_save(
+            name=(body.get("name") or "mihomo-domains"),
+            proxy_link=(body.get("proxy_link") or ""),
+            proxy_config=(body.get("proxy_config") or ""),
+            hostlists=_str_list(body.get("hostlists")),
+            lists=_str_list(body.get("lists")),
+            domains=_str_list(body.get("domains")),
+            cidrs=_str_list(body.get("cidrs")),
+            route_all=bool(body.get("route_all")),
+            stack=(body.get("stack") or ""),
+            mtu=int(body.get("mtu") or 1500),
+            reject_quic=bool(body.get("reject_quic")),
+            group_type=(body.get("group_type") or "select"),
+        )
+        if not res.get("ok"):
+            response.status = 400
+        return res
+
+    @app.route("/api/mihomo/routing/source/build", method="POST")
+    def mihomo_routing_source_build():
+        """Собрать+сохранить конфиг по устройствам / весь трафик (kernel-стек).
+        body: name, proxy_link|proxy_config, source_ips[], route_all, stack,
+        mtu, reject_quic, group_type."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        from core.mihomo_routing import build_source_route_and_save
+        res = build_source_route_and_save(
+            name=(body.get("name") or "mihomo-devices"),
+            proxy_link=(body.get("proxy_link") or ""),
+            proxy_config=(body.get("proxy_config") or ""),
+            source_ips=_str_list(body.get("source_ips")),
+            route_all=bool(body.get("route_all")),
+            stack=(body.get("stack") or ""),
+            mtu=int(body.get("mtu") or 1500),
+            reject_quic=bool(body.get("reject_quic")),
+            group_type=(body.get("group_type") or "select"),
+        )
+        if not res.get("ok"):
+            response.status = 400
+        return res
+
+    # ─────── watchdog (проверка соединения) ─────────────────────────
+
+    @app.route("/api/mihomo/watchdog")
+    def mihomo_watchdog_get():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.mihomo_watchdog import get_watchdog
+            return {"ok": True, "status": get_watchdog().get_status()}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/mihomo/watchdog", method="POST")
+    def mihomo_watchdog_set():
+        """Изменить настройки watchdog'а (любое подмножество полей)."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        try:
+            from core.mihomo_watchdog import set_settings, get_watchdog
+            new = set_settings(**{k: body.get(k) for k in (
+                "enabled", "check_interval_sec", "cooldown_sec",
+                "max_restarts_per_hour", "probe_target",
+                "probe_timeout_ms", "probe_fail_threshold") if k in body})
+            return {"ok": True, "status": get_watchdog().get_status(),
+                    "settings": new}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     # ─────── tester / traffic ──────────────────────────────────────
 
