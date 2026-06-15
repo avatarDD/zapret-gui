@@ -37,9 +37,17 @@ FAKEIP_RANGE = "198.18.0.1/16"
 # Имя TUN-устройства по умолчанию (≤15 символов — лимит Linux TUN).
 DEFAULT_TUN_DEVICE = "mihomo-tun"
 
-# Чистый резолвер для прямого трафика / резолва домена прокси-сервера. DoH по
-# IP-литералу: сам узел резолвить не нужно (петли нет), ответ без DPI-подмены.
-DEFAULT_DOH = "https://1.1.1.1/dns-query"
+# Чистый резолвер для прямого трафика / резолва домена прокси-сервера.
+# DoH задаём ПО ИМЕНИ ХОСТА (а не по IP-литералу): URL `https://1.1.1.1/...`
+# валит проверку TLS-сертификата («no alternative certificate subject name
+# matches 1.1.1.1») и резолвер мертвеет — проверено на железе. Имя хоста
+# (cloudflare-dns.com / dns.google) совпадает с SAN сертификата; сам хост
+# бутстрапится через default-nameserver (обычный UDP), петли нет. Блокируемые
+# (проксируемые) домены сюда НЕ попадают — их резолвит сам прокси (fake-ip),
+# поэтому nameserver обслуживает только прямой трафик и домен прокси-сервера.
+DEFAULT_DOH = "https://cloudflare-dns.com/dns-query"
+DEFAULT_DOH_SERVERS = ["https://cloudflare-dns.com/dns-query",
+                       "https://dns.google/dns-query"]
 DEFAULT_BOOTSTRAP = ["1.1.1.1", "8.8.8.8"]
 
 # Имя select-группы (через неё watchdog-проба и переключение узла) и inline
@@ -156,7 +164,7 @@ def make_tun(*, device: str = DEFAULT_TUN_DEVICE, stack: str = "gvisor",
     return tun
 
 
-def make_fakeip_dns(*, proxy_server_domains=None, doh: str = DEFAULT_DOH,
+def make_fakeip_dns(*, proxy_server_domains=None, doh=None,
                     extra_filter=None, ipv6: bool = False) -> dict:
     """
     Секция `dns` с enhanced-mode fake-ip.
@@ -165,8 +173,12 @@ def make_fakeip_dns(*, proxy_server_domains=None, doh: str = DEFAULT_DOH,
     доменным правилам в прокси, а РЕАЛЬНЫЙ резолв делает сам прокси-сервер
     (remote DNS) — без DPI-подмены провайдера. Прямой трафик резолвится через
     DoH (`nameserver`); домен самого прокси-сервера — через
-    `proxy-server-nameserver` напрямую (без петли) и исключён из fake-ip.
+    `proxy-server-nameserver` (чисто, без DPI-подмены) и исключён из fake-ip.
+
+    `doh` — список DoH-серверов (по имени хоста, см. DEFAULT_DOH); по умолчанию
+    cloudflare-dns.com + dns.google. Имена бутстрапятся через default-nameserver.
     """
+    servers = list(doh) if doh else list(DEFAULT_DOH_SERVERS)
     flt = list(DEFAULT_FAKEIP_FILTER)
     for d in (extra_filter or []):
         if d and d not in flt:
@@ -182,9 +194,11 @@ def make_fakeip_dns(*, proxy_server_domains=None, doh: str = DEFAULT_DOH,
         "enhanced-mode": "fake-ip",
         "fake-ip-range": FAKEIP_RANGE,
         "fake-ip-filter": flt,
+        # default-nameserver (обычный UDP) — резолвит ИМЕНА DoH-хостов и служит
+        # бутстрапом; только IP-литералы.
         "default-nameserver": list(DEFAULT_BOOTSTRAP),
-        "nameserver": [doh],
-        "proxy-server-nameserver": [doh],
+        "nameserver": servers,
+        "proxy-server-nameserver": servers,
     }
 
 

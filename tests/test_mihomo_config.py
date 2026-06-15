@@ -75,8 +75,14 @@ class TestFakeipDns(unittest.TestCase):
         self.assertFalse(dns["ipv6"])
         # домен прокси-сервера исключён из fake-ip (резолв напрямую, без петли)
         self.assertIn("vpn.example.com", dns["fake-ip-filter"])
-        self.assertEqual(dns["proxy-server-nameserver"], [mc.DEFAULT_DOH])
-        self.assertEqual(dns["nameserver"], [mc.DEFAULT_DOH])
+        # DoH — ПО ИМЕНИ ХОСТА (IP-литерал валит проверку TLS-сертификата),
+        # с обычным UDP-бутстрапом в default-nameserver.
+        self.assertEqual(dns["nameserver"], mc.DEFAULT_DOH_SERVERS)
+        self.assertEqual(dns["proxy-server-nameserver"], mc.DEFAULT_DOH_SERVERS)
+        self.assertTrue(all(s.startswith("https://") for s in dns["nameserver"]))
+        self.assertFalse(any("//1.1.1.1/" in s or "//8.8.8.8/" in s
+                             for s in dns["nameserver"]))   # не IP-литерал
+        self.assertEqual(dns["default-nameserver"], mc.DEFAULT_BOOTSTRAP)
 
 
 class TestDomainConfig(unittest.TestCase):

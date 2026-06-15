@@ -143,6 +143,13 @@ def controller_proxies(ep: dict) -> dict:
             groups.append({"name": nm,
                            "now": info.get("now") or "",
                            "all": info.get("all") or []})
+    # mihomo всегда добавляет встроенную группу GLOBAL (для mode: global). Когда
+    # у конфига есть СВОИ select-группы (наш routing-флоу создаёт «PROXY»),
+    # GLOBAL — шум: и показывать, и переключать надо именно пользовательскую
+    # группу, иначе смена узла в GLOBAL не повлияет на трафик, который правила
+    # шлют в «PROXY». Оставляем GLOBAL, только если других select-групп нет.
+    non_global = [g for g in groups if g["name"] != "GLOBAL"]
+    groups = non_global or groups
     active = groups[0]["now"] if groups else ""
     return {"ok": True, "active": active, "groups": groups}
 

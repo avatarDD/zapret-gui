@@ -170,6 +170,61 @@ class TestReadConfig(unittest.TestCase):
         self.assertEqual(ep2["port"], 9091)
 
 
+# ─────── controller (live external-controller) ───────
+
+class TestControllerProxies(unittest.TestCase):
+    """controller_proxies должен предпочитать пользовательскую группу
+    встроенной GLOBAL (иначе переключение узла не влияет на трафик)."""
+
+    EP = {"host": "127.0.0.1", "port": 9090, "secret": ""}
+
+    def _resp(self, payload):
+        import json
+        return (200, json.dumps(payload))
+
+    def test_prefers_user_group_over_global(self):
+        payload = {"proxies": {
+            "GLOBAL": {"type": "Selector", "now": "DIRECT",
+                       "all": ["PROXY", "srv-1", "DIRECT"]},
+            "PROXY":  {"type": "Selector", "now": "srv-1", "all": ["srv-1"]},
+            "srv-1":  {"type": "Trojan"},
+        }}
+        with mock.patch.object(mp, "_request", return_value=self._resp(payload)):
+            r = mp.controller_proxies(self.EP)
+        self.assertTrue(r["ok"])
+        names = [g["name"] for g in r["groups"]]
+        self.assertEqual(names, ["PROXY"])        # GLOBAL отфильтрован
+        self.assertEqual(r["active"], "srv-1")    # из PROXY, не GLOBAL
+
+    def test_keeps_global_when_only_group(self):
+        payload = {"proxies": {
+            "GLOBAL": {"type": "Selector", "now": "srv-1", "all": ["srv-1"]},
+            "srv-1":  {"type": "Trojan"},
+        }}
+        with mock.patch.object(mp, "_request", return_value=self._resp(payload)):
+            r = mp.controller_proxies(self.EP)
+        self.assertEqual([g["name"] for g in r["groups"]], ["GLOBAL"])
+
+    def test_activate_targets_user_group(self):
+        payload = {"proxies": {
+            "GLOBAL": {"type": "Selector", "now": "DIRECT",
+                       "all": ["PROXY", "srv-1", "DIRECT"]},
+            "PROXY":  {"type": "Selector", "now": "srv-1", "all": ["srv-1"]},
+        }}
+        calls = []
+
+        def fake_request(ep, path, method="GET", data=None, timeout=3.0):
+            if path == "/proxies":
+                return self._resp(payload)
+            calls.append((path, data))
+            return (204, "")
+        with mock.patch.object(mp, "_request", side_effect=fake_request):
+            r = mp.controller_activate(self.EP, "srv-1")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["group"], "PROXY")     # не GLOBAL
+        self.assertIn("/proxies/PROXY", calls[0][0])
+
+
 # ─────── мутации ───────
 
 class TestMutations(unittest.TestCase):
