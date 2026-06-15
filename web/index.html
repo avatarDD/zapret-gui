@@ -70,6 +70,12 @@
                     <input type="checkbox" onchange="Expert.set(this.checked)">
                     <span>эксперт</span>
                 </label>
+                <button type="button" class="help-btn" title="Что это?"
+                        onclick="Help.show('expert')"
+                        style="display:inline-flex; align-items:center; justify-content:center;
+                               width:18px; height:18px; border-radius:50%; border:1px solid var(--border);
+                               background:transparent; color:var(--text-secondary);
+                               font-size:12px; cursor:pointer; line-height:1; padding:0; flex:0 0 auto;">?</button>
                 <button id="theme-toggle" class="theme-toggle" title="Тема"
                         onclick="Theme.toggle()"></button>
             </div>
