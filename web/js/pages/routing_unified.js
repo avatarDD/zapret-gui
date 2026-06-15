@@ -74,7 +74,7 @@ const RoutingUnifiedPage = (() => {
                     <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center;">
                         <input type="checkbox" id="ru-monitor" onchange="RoutingUnifiedPage.toggleMonitor(this.checked)">
                         Мониторинг
-                    </label>
+                    </label>${typeof Help !== 'undefined' ? Help.button('monitoring') : ''}
                     <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.newRoute()">+ Маршрут</button>
                     <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.applyAll()">Применить все</button>
                     <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.refresh()">Обновить</button>
