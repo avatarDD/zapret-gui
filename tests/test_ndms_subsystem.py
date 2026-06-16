@@ -6,6 +6,7 @@ Unit-тесты для core/ndms/rci_client.py, ping_check.py, wg_discovery.py.
 
 import json
 import unittest
+import urllib.error
 from unittest import mock
 
 from core.ndms import rci_client, ping_check, wg_discovery
@@ -42,13 +43,23 @@ class TestScanErrorInStatus(unittest.TestCase):
 
 
 class TestClientRequestErrors(unittest.TestCase):
-    """Поведение HTTP-клиента при разных ошибках сети."""
+    """Поведение HTTP-клиента при недоступном RCI.
+
+    urlopen мокаем (URLError) — иначе на реальном Keenetic, где RCI слушает
+    на :79, эти тесты ловили бы живой ответ и падали (см. самодиагностику на
+    роутере). Тесты обязаны быть герметичными — без зависимости от того, что
+    на localhost:79 ничего не отвечает.
+    """
 
     def setUp(self):
         self.client = rci_client.NdmsRciClient()
+        self._refused = mock.patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("Connection refused"))
+        self._refused.start()
+        self.addCleanup(self._refused.stop)
 
     def test_connection_refused(self):
-        # На не-Keenetic localhost:79 — Connection refused
         ok, data, err = self.client._request("GET", path="show/version",
                                               timeout=1)
         self.assertFalse(ok)
@@ -61,7 +72,7 @@ class TestClientRequestErrors(unittest.TestCase):
         self.assertIn("error", r)
 
     def test_is_available_false_when_no_server(self):
-        # Свежий клиент, RCI недоступен — False.
+        # RCI недоступен (urlopen → URLError) — False.
         c = rci_client.NdmsRciClient()
         self.assertFalse(c.is_available())
 
