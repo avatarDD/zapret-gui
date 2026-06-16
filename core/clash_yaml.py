@@ -75,137 +75,197 @@ def _strip_yaml_comment(line: str) -> str:
     return line
 
 
+def _unquote(s: str) -> str:
+    """Снять кавычки с YAML-скаляра, вернув строку (для ключей dict)."""
+    s = s.strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        return s[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    if len(s) >= 2 and s[0] == "'" and s[-1] == "'":
+        return s[1:-1].replace("''", "'")
+    return s
+
+
+def _split_kv(s: str):
+    """
+    Разбить строку `key: value` на (key, value), уважая кавычки.
+    Разделитель — первый `:`, за которым идёт пробел/таб или конец строки
+    (так `127.0.0.1:9090` в значении не дробится). Ключ деквотируется.
+    Если строка не похожа на mapping — (None, None).
+    """
+    in_s = in_d = False
+    n = len(s)
+    for i, ch in enumerate(s):
+        if ch == "'" and not in_d:
+            in_s = not in_s
+        elif ch == '"' and not in_s:
+            in_d = not in_d
+        elif ch == ":" and not in_s and not in_d:
+            if i + 1 >= n or s[i + 1] in " \t":
+                return _unquote(s[:i]), s[i + 1:].strip()
+    return None, None
+
+
+def _split_flow_items(s: str) -> list:
+    """Разбить тело flow `{...}`/`[...]` по запятым верхнего уровня
+    (учитывая вложенные `{}`/`[]` и кавычки)."""
+    items, buf = [], []
+    depth = 0
+    in_s = in_d = False
+    for ch in s:
+        if ch == "'" and not in_d:
+            in_s = not in_s
+        elif ch == '"' and not in_s:
+            in_d = not in_d
+        if not in_s and not in_d:
+            if ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                items.append("".join(buf).strip())
+                buf = []
+                continue
+        buf.append(ch)
+    tail = "".join(buf).strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def _parse_flow(s: str):
+    """Разобрать flow-mapping `{k: v, ...}` или flow-seq `[a, b, ...]`."""
+    s = s.strip()
+    if s.startswith("{") and s.endswith("}"):
+        d = {}
+        for part in _split_flow_items(s[1:-1].strip()):
+            k, v = _split_kv(part)
+            if k is not None:
+                d[k] = _parse_value(v)
+        return d
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        return [_parse_value(p) for p in _split_flow_items(inner)] if inner \
+            else []
+    return _parse_scalar(s)
+
+
+def _parse_value(s: str):
+    """Значение справа от `:` или элемент flow-списка: scalar либо flow."""
+    s = s.strip()
+    if s[:1] in ("{", "["):
+        return _parse_flow(s)
+    return _parse_scalar(s)
+
+
 def _fallback_yaml_parser(text: str):
     """
-    Минимальный парсер clash-стиля YAML. Не претендует на
-    полноту — только то, что используют типичные подписки:
-      - корневой dict (key: value)
-      - вложенный list-of-dicts через 'key:\\n  - name: ...\\n    type: ...'
-      - простые scalar'ы (string / int / bool)
-      - вложенные dict'ы один уровень (`reality-opts:\\n      public-key: ...`)
+    Самописный парсер YAML-подмножества — когда pyyaml недоступен (типичная
+    Entware-сборка python на роутере). Покрывает всё, что эмитит `dump_yaml`,
+    и типовые clash-подписки:
 
-    Возвращает dict; на синтаксической нелепице кидает ValueError.
+      - mapping'и произвольной вложенности (`dns:`→`...`→`...`);
+      - block-последовательности `- item` со скалярами, mapping'ами и
+        вложенными списками (`rules:`, `payload:`, `proxy-groups[].proxies`);
+      - последовательности и на отступе ключа (стиль pyyaml), и с отступом
+        +2 (стиль нашего эмиттера);
+      - flow-структуры `{k: v, ...}` / `[a, b, ...]` (компактные подписки);
+      - пустые контейнеры `{}` / `[]`.
+
+    Прежняя версия теряла скалярные list-элементы (превращая `rules:` в
+    `[{}, {}, …]`), вложенные списки и flow-mapping'и — отсюда «битый»
+    round-trip на роутере без pyyaml. На пустом/нелепом вводе → {}.
     """
-    lines = text.splitlines()
-    root = {}
-
-    # Курсор: где мы сейчас сидим (для tracking вложенных list/dict)
-    state = {
-        "current_list_key": None,   # имя ключа, под которым идёт список
-        "current_list":     None,
-        "current_item":     None,
-        "current_item_indent": -1,
-        "current_subdict_key": None,
-        "current_subdict":     None,
-        "current_subdict_indent": -1,
-    }
-
-    def flush_item():
-        if state["current_item"] is not None:
-            state["current_list"].append(state["current_item"])
-            state["current_item"] = None
-            state["current_item_indent"] = -1
-        state["current_subdict_key"] = None
-        state["current_subdict"]     = None
-        state["current_subdict_indent"] = -1
-
-    for raw in lines:
-        # Срезаем `#`-комментарии, уважая кавычки (не портим ` #` в значениях).
-        line_no_comment = _strip_yaml_comment(raw)
-        if not line_no_comment.strip():
+    # Токенизируем в (indent, content), отбросив пустые строки/комментарии.
+    toks = []
+    for raw in text.splitlines():
+        no_comment = _strip_yaml_comment(raw)
+        if not no_comment.strip():
             continue
-
-        indent = len(line_no_comment) - len(line_no_comment.lstrip(" "))
-        stripped = line_no_comment.strip()
-
-        # Корневой ключ:
-        #   key:                  → начало вложенной структуры
-        #   key: value            → скаляр
-        if indent == 0 and not stripped.startswith("-"):
-            flush_item()
-            state["current_list_key"] = None
-            state["current_list"]     = None
-            m = re.match(r"^([\w\-]+)\s*:\s*(.*)$", stripped)
-            if not m:
-                continue
-            key, val = m.group(1), m.group(2)
-            if val == "":
-                # Возможно следующий блок — list или dict.
-                # Подготовим контейнер «либо list, либо dict» —
-                # решим по первому inner-элементу.
-                root[key] = None
-                state["current_list_key"] = key
-            else:
-                root[key] = _parse_scalar(val)
+        content = no_comment.strip()
+        if content in ("---", "..."):      # маркеры документа — игнор
             continue
+        indent = len(no_comment) - len(no_comment.lstrip(" "))
+        toks.append((indent, content))
 
-        # Элемент списка: `  - <key>: <value>` либо `  - <value>`
-        if stripped.startswith("- "):
-            inner = stripped[2:].strip()
-            if state["current_list_key"] is None:
-                # Список вне корневого ключа — игнорируем
+    if not toks:
+        return {}
+
+    pos = [0]
+
+    def _is_seq(content: str) -> bool:
+        return content == "-" or content.startswith("- ")
+
+    def parse_block(indent: int):
+        _, content = toks[pos[0]]
+        if _is_seq(content):
+            return parse_seq(toks[pos[0]][0])
+        return parse_map(indent)
+
+    def parse_map(indent: int) -> dict:
+        result: dict = {}
+        while pos[0] < len(toks):
+            cur_indent, content = toks[pos[0]]
+            if cur_indent != indent or _is_seq(content):
+                break
+            key, val = _split_kv(content)
+            if key is None:                 # не mapping-строка — пропускаем
+                pos[0] += 1
                 continue
-            if root.get(state["current_list_key"]) is None:
-                root[state["current_list_key"]] = []
-                state["current_list"] = root[state["current_list_key"]]
-            # Закрываем предыдущий item
-            flush_item()
-            state["current_item"] = {}
-            state["current_item_indent"] = indent
-            # Если inner — это `key: value`, тут же и кладём.
-            m = re.match(r"^([\w\-]+)\s*:\s*(.*)$", inner)
-            if m:
-                k, v = m.group(1), m.group(2)
-                if v == "":
-                    # Подготовим вложенный sub-dict (например reality-opts:)
-                    state["current_item"][k] = {}
-                    state["current_subdict_key"] = k
-                    state["current_subdict"]    = state["current_item"][k]
-                    state["current_subdict_indent"] = indent + 2
-                else:
-                    state["current_item"][k] = _parse_scalar(v)
-            else:
-                # Скалярный list element (редко в clash) — пока скипаем
-                pass
-            continue
-
-        # Поле внутри текущего item'а: `    key: value` или вложенный dict
-        if state["current_item"] is not None and indent > state["current_item_indent"]:
-            m = re.match(r"^([\w\-]+)\s*:\s*(.*)$", stripped)
-            if not m:
+            pos[0] += 1
+            if val != "":
+                result[key] = _parse_value(val)
                 continue
-            k, v = m.group(1), m.group(2)
+            # Пустое значение → вложенный блок глубже, либо seq на том же
+            # отступе (стиль pyyaml `key:\n- item`), иначе None.
+            child = None
+            if pos[0] < len(toks):
+                nxt_i, nxt_c = toks[pos[0]]
+                if nxt_i > indent:
+                    child = parse_block(nxt_i)
+                elif nxt_i == indent and _is_seq(nxt_c):
+                    child = parse_seq(nxt_i)
+            result[key] = child
+        return result
 
-            # Если мы внутри sub-dict (reality-opts → public-key, short-id):
-            if (state["current_subdict"] is not None
-                    and indent >= state["current_subdict_indent"]):
-                if v == "":
-                    # Вложенность глубже одного уровня — не поддерживаем.
-                    state["current_subdict"][k] = {}
-                else:
-                    state["current_subdict"][k] = _parse_scalar(v)
+    def parse_seq(indent: int) -> list:
+        result: list = []
+        while pos[0] < len(toks):
+            cur_indent, content = toks[pos[0]]
+            if cur_indent != indent or not _is_seq(content):
+                break
+            if content == "-":              # значение во вложенном блоке
+                pos[0] += 1
+                child = None
+                if pos[0] < len(toks) and toks[pos[0]][0] > indent:
+                    child = parse_block(toks[pos[0]][0])
+                result.append(child)
                 continue
+            rest = content[2:].strip()
+            if rest[:1] in ("{", "["):       # flow-элемент
+                result.append(_parse_flow(rest))
+                pos[0] += 1
+                continue
+            if rest[:1] in ('"', "'"):       # квотированный скаляр
+                result.append(_parse_scalar(rest))
+                pos[0] += 1
+                continue
+            key, _v = _split_kv(rest)
+            if key is None:                  # обычный скаляр (`- MATCH,PROXY`)
+                result.append(_parse_scalar(rest))
+                pos[0] += 1
+                continue
+            # Mapping-элемент `- key: val` (+ продолжение на отступе+2).
+            # Перепишем строку как обычный ключ и доверим parse_map собрать
+            # весь mapping элемента целиком.
+            item_indent = indent + 2
+            toks[pos[0]] = (item_indent, rest)
+            result.append(parse_map(item_indent))
+        return result
 
-            # Выход из sub-dict (отступ меньше → закрываем его)
-            if (state["current_subdict"] is not None
-                    and indent < state["current_subdict_indent"]):
-                state["current_subdict_key"] = None
-                state["current_subdict"]     = None
-                state["current_subdict_indent"] = -1
-
-            if v == "":
-                # Вложенный dict у item'а (например reality-opts:)
-                state["current_item"][k] = {}
-                state["current_subdict_key"] = k
-                state["current_subdict"]    = state["current_item"][k]
-                state["current_subdict_indent"] = indent + 2
-            else:
-                state["current_item"][k] = _parse_scalar(v)
-            continue
-
-    # Финальный flush
-    flush_item()
-    return root
+    root_indent = toks[0][0]
+    if _is_seq(toks[0][1]):                  # корень-список (нетипично)
+        return {}
+    return parse_map(root_indent)
 
 
 def _parse_scalar(s: str):
@@ -213,10 +273,10 @@ def _parse_scalar(s: str):
     s = s.strip()
     if not s:
         return ""
-    # Quoted strings
-    if (s.startswith('"') and s.endswith('"')) or \
-       (s.startswith("'") and s.endswith("'")):
-        return s[1:-1]
+    # Quoted strings (деквотируем с разэкранированием — пара к эмиттеру).
+    if len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or
+                        (s[0] == "'" and s[-1] == "'")):
+        return _unquote(s)
     # Bool
     if s.lower() in ("true", "yes", "on"):
         return True

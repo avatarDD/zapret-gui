@@ -58,7 +58,10 @@ class TestRoutingAPI(unittest.TestCase):
     # ─── /api/routing/ndms ───
 
     def test_ndms_status_not_keenetic(self):
-        r = self.client.get_json("/api/routing/ndms/status")
+        # Мокаем доступность: на реальном Keenetic RCI отвечает и available
+        # был бы True — тест же проверяет именно не-Keenetic ветку.
+        with mock.patch("core.ndms.is_ndms_available", return_value=False):
+            r = self.client.get_json("/api/routing/ndms/status")
         self.assertEqual(r["_status"], 200)
         self.assertEqual(r["ok"], True)
         # На не-Keenetic — available=False
