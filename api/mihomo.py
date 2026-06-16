@@ -540,8 +540,9 @@ def register(app):
     @app.route("/api/mihomo/routing/domain/build", method="POST")
     def mihomo_routing_domain_build():
         """Собрать+сохранить конфиг доменной маршрутизации (проверка mihomo -t).
-        body: name, proxy_link|proxy_config, hostlists[], lists[], domains[],
-        cidrs[], route_all, stack, mtu, reject_quic, group_type."""
+        body: name, proxy_link|proxy_config, hostlists[], lists[], ipsets[],
+        geosite[], geoip[], domains[], cidrs[], route_all, stack, mtu,
+        reject_quic, group_type. geosite→домены, geoip→CIDR (разворачиваются)."""
         response.content_type = "application/json; charset=utf-8"
         try:
             body = request.json or {}
@@ -554,6 +555,9 @@ def register(app):
             proxy_config=(body.get("proxy_config") or ""),
             hostlists=_str_list(body.get("hostlists")),
             lists=_str_list(body.get("lists")),
+            ipsets=_str_list(body.get("ipsets")),
+            geosite=_str_list(body.get("geosite")),
+            geoip=_str_list(body.get("geoip")),
             domains=_str_list(body.get("domains")),
             cidrs=_str_list(body.get("cidrs")),
             route_all=bool(body.get("route_all")),

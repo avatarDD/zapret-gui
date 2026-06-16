@@ -99,28 +99,84 @@ def _dedup_names(proxies: list) -> list:
 
 # ─────────────────────── lists / domains ───────────────────────
 
-def _collect_lists(hostlists=None, lists=None):
-    """Собрать домены (+ cidrs) из nfqws2-хостлистов и named-lists."""
-    domains: list = []
-    cidrs: list = []
+def _collect_targets(*, hostlists=None, lists=None, ipsets=None,
+                     geosite=None, geoip=None, domains=None, cidrs=None):
+    """
+    Свести ВСЕ источники проксируемых целей в (domains, cidrs, resolved,
+    failed). Покрывает все измерения маршрутизации:
+      - домены / доп. домены;
+      - nfqws2-хостлисты (hl) и именованные списки (домены + CIDR);
+      - ipset'ы (CIDR/IP);
+      - geosite (→ домены) и geoip (→ CIDR) — разворачиваем через общий
+        alias_resolver (тот же путь, что у OS-routing/sing-box/AWG), БЕЗ
+        зависимости от geo-баз mihomo: на роутере без geoip.dat правила всё
+        равно работают.
+
+    resolved/failed — для отчёта в UI (что развернулось, что нет — напр. geo
+    не скачалось без сети).
+    """
+    out_domains: list = []
+    out_cidrs: list = []
+    resolved: list = []
+    failed: list = []
+
+    # geosite/geoip + произвольные домены/CIDR — единым резолвером.
+    tokens = []
+    tokens += ["geosite:%s" % g for g in (geosite or []) if str(g).strip()]
+    tokens += ["geoip:%s" % g for g in (geoip or []) if str(g).strip()]
+    tokens += [str(d).strip() for d in (domains or []) if str(d).strip()]
+    tokens += [str(c).strip() for c in (cidrs or []) if str(c).strip()]
+    if tokens:
+        try:
+            from core.routing.alias_resolver import expand_domains
+            r = expand_domains(tokens)
+            out_domains += r.get("domains") or []
+            out_cidrs += r.get("cidrs") or []
+            resolved += r.get("aliases_resolved") or []
+            failed += r.get("aliases_failed") or []
+        except Exception as e:
+            log.warning("mihomo routing: expand_domains: %s" % e,
+                        source="mihomo")
+
     if hostlists:
         from core.hostlist_manager import get_hostlist_manager
         hm = get_hostlist_manager()
         for hl in hostlists:
             try:
-                domains += hm.get_hostlist(hl)
+                doms = hm.get_hostlist(hl) or []
+                out_domains += doms
+                resolved.append({"kind": "hostlist", "name": hl,
+                                 "count": len(doms)})
             except Exception:
-                pass
+                failed.append({"kind": "hostlist", "name": hl})
+
     if lists:
         from core import named_lists
         for lid in lists:
             try:
                 r = named_lists.resolve(lid)
-                domains += r.get("domains") or []
-                cidrs += r.get("cidrs") or []
+                d = r.get("domains") or []
+                c = r.get("cidrs") or []
+                out_domains += d
+                out_cidrs += c
+                resolved.append({"kind": "list", "name": lid,
+                                 "count": len(d) + len(c)})
             except Exception:
-                pass
-    return domains, cidrs
+                failed.append({"kind": "list", "name": lid})
+
+    if ipsets:
+        from core.ipset_manager import get_ipset_manager
+        im = get_ipset_manager()
+        for nm in ipsets:
+            try:
+                entries = im.get_ipset(nm) or []
+                out_cidrs += entries
+                resolved.append({"kind": "ipset", "name": nm,
+                                 "count": len(entries)})
+            except Exception:
+                failed.append({"kind": "ipset", "name": nm})
+
+    return out_domains, out_cidrs, resolved, failed
 
 
 # ─────────────────────── options for the form ───────────────────────
@@ -153,6 +209,27 @@ def build_options() -> dict:
     except Exception:
         pass
 
+    ipsets = []
+    try:
+        from core.ipset_manager import get_ipset_manager
+        im = get_ipset_manager()
+        for nm in im.list_names():
+            try:
+                ipsets.append({"name": nm, "count": len(im.get_ipset(nm) or [])})
+            except Exception:
+                ipsets.append({"name": nm, "count": 0})
+    except Exception:
+        pass
+
+    geosite_suggested, geoip_suggested = [], []
+    try:
+        from core.routing.alias_resolver import (
+            SUGGESTED_GEOSITE, SUGGESTED_GEOIP)
+        geosite_suggested = list(SUGGESTED_GEOSITE)
+        geoip_suggested = list(SUGGESTED_GEOIP)
+    except Exception:
+        pass
+
     try:
         configs = [c["name"] for c in get_mihomo_manager().list_configs()]
     except Exception:
@@ -173,6 +250,9 @@ def build_options() -> dict:
         "nft": nft,
         "hostlists": hostlists,
         "lists": named,
+        "ipsets": ipsets,
+        "geosite_suggested": geosite_suggested,
+        "geoip_suggested": geoip_suggested,
         "configs": configs,
         "default_stack": "gvisor" if det.get("has_gvisor", True) else "system",
         "fakeip_range": mc.FAKEIP_RANGE,
@@ -232,12 +312,18 @@ def _nft_backend() -> bool:
 
 def build_domain_route_and_save(*, name: str = "mihomo-domains",
                                 proxy_link: str = "", proxy_config: str = "",
-                                hostlists=None, lists=None, domains=None,
+                                hostlists=None, lists=None, ipsets=None,
+                                geosite=None, geoip=None, domains=None,
                                 cidrs=None, route_all: bool = False,
                                 stack: str = "", mtu: int = 1500,
                                 reject_quic: bool = False,
                                 group_type: str = "select") -> dict:
-    """Собрать и сохранить конфиг доменной маршрутизации (+ fake-ip)."""
+    """Собрать и сохранить конфиг доменной маршрутизации (+ fake-ip).
+
+    Цели берём из всех измерений: домены, hostlist'ы, именованные списки,
+    ipset'ы, geosite (→ домены) и geoip (→ CIDR). geosite/geoip разворачиваются
+    в домены/подсети (как у OS-routing/sing-box) — geo-базы mihomo не нужны.
+    """
     from core.mihomo_detector import get_mihomo_detector
     from core.mihomo_manager import get_mihomo_manager
     from core.proxy_tester import _free_port
@@ -248,16 +334,23 @@ def build_domain_route_and_save(*, name: str = "mihomo-domains",
         return pr
     proxies = pr["proxies"]
 
-    list_doms, list_cidrs = _collect_lists(hostlists, lists)
-    all_domains = list(domains or []) + list_doms
-    all_cidrs = [str(c).strip() for c in (list(cidrs or []) + list_cidrs)
-                 if str(c).strip()]
+    all_domains, all_cidrs, resolved, failed = _collect_targets(
+        hostlists=hostlists, lists=lists, ipsets=ipsets, geosite=geosite,
+        geoip=geoip, domains=domains, cidrs=cidrs)
     norm_doms = mc._norm_suffix_domains(all_domains)
+    all_cidrs = [str(c).strip() for c in all_cidrs if str(c).strip()]
 
     if not route_all and not norm_doms and not all_cidrs:
+        # Если просили geo/списки, но ничего не развернулось — внятная причина.
+        if failed:
+            return {"ok": False,
+                    "error": "не удалось развернуть выбранные списки/geo "
+                             "(нет сети?): %s"
+                             % ", ".join("%s:%s" % (f["kind"], f["name"])
+                                         for f in failed[:5])}
         return {"ok": False,
-                "error": "выберите списки/домены/подсети для проксирования "
-                         "или включите режим «весь трафик»"}
+                "error": "выберите списки/домены/подсети/geo для "
+                         "проксирования или включите режим «весь трафик»"}
 
     det = get_mihomo_detector().detect_binary()
     has_gvisor = det.get("has_gvisor", True)
@@ -289,6 +382,12 @@ def build_domain_route_and_save(*, name: str = "mihomo-domains",
         return {"ok": False, "error": save.get("error")}
 
     meta = picked["meta"]
+    warning = picked.get("warning") or ""
+    if failed:
+        note = ("часть geo/списков не развернулась (нет сети?): %s"
+                % ", ".join("%s:%s" % (f["kind"], f["name"])
+                            for f in failed[:5]))
+        warning = (warning + "; " + note) if warning else note
     log.info("mihomo routing: конфиг '%s' создан (домены=%d, подсети=%d, "
              "режим=%s, стек=%s, ruleset=%s, auto-redirect=%s)"
              % (name, len(norm_doms), len(all_cidrs),
@@ -301,7 +400,8 @@ def build_domain_route_and_save(*, name: str = "mihomo-domains",
         "cidrs": len(all_cidrs), "proxies": len(proxies),
         "controller_port": port, "auto_redirect": nft,
         "tun_device": mc.find_tun_device(candidates[0][0]),
-        "warning": picked.get("warning") or "",
+        "resolved": resolved, "failed": failed,
+        "warning": warning,
         "warnings": save.get("warnings") or [],
     }
 

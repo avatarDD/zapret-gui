@@ -37,12 +37,17 @@ class TestMihomoRoutingAPI(unittest.TestCase):
                         side_effect=_fake):
             r = self.client.post_json("/api/mihomo/routing/domain/build", {
                 "name": "d1", "proxy_link": "vless://x",
-                "hostlists": ["other"], "domains": "a.com, b.com",
+                "hostlists": ["other"], "ipsets": ["ipset-base"],
+                "geosite": "youtube, telegram", "geoip": "ru",
+                "domains": "a.com, b.com",
                 "route_all": False, "reject_quic": True})
         self.assertEqual(r["_status"], 200)
         self.assertTrue(r["ok"])
         self.assertEqual(captured["name"], "d1")
         self.assertEqual(captured["hostlists"], ["other"])
+        self.assertEqual(captured["ipsets"], ["ipset-base"])
+        self.assertEqual(captured["geosite"], ["youtube", "telegram"])  # str→list
+        self.assertEqual(captured["geoip"], ["ru"])
         self.assertEqual(captured["domains"], ["a.com", "b.com"])  # строка → list
         self.assertTrue(captured["reject_quic"])
 

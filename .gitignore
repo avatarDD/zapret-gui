@@ -14,3 +14,6 @@ dist/
 # Runtime state и бэкапы каталогов стратегий
 /catalogs/.direct.backup.*/
 /catalogs/.direct_update.json
+
+# Кэш развёрнутых geosite/geoip-алиасов (core/routing/alias_resolver) — runtime
+/data/aliases/

@@ -111,6 +111,24 @@ class TestVmess(unittest.TestCase):
         self.assertTrue(r["outbound"]["tls"]["insecure"])
 
 
+class TestMalformedUri(unittest.TestCase):
+    """Битая ссылка не должна ронять вызывающего (одна кривая ссылка в
+    подписке иначе валит весь импорт mihomo/sing-box)."""
+
+    def test_bad_port_returns_error_not_raises(self):
+        # `.port` у urllib бросает ValueError на мусорном порту.
+        r = uri_to_outbound("vless://uuid@host:2`bad?type=tcp#x")
+        self.assertFalse(r["ok"])
+        self.assertIn("error", r)
+
+    def test_garbage_uri(self):
+        r = uri_to_outbound("vmess://!!!not-base64!!!")
+        self.assertFalse(r["ok"])
+
+    def test_not_a_uri(self):
+        self.assertFalse(uri_to_outbound("just text")["ok"])
+
+
 class TestSafeTag(unittest.TestCase):
 
     def test_basic(self):

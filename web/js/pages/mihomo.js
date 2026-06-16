@@ -25,7 +25,8 @@ const MihomoPage = (() => {
     let domainRendered = false, domainBusy = false;
     let domainForm = {
         name: 'mihomo-domains', proxy_link: '', proxy_config: '',
-        route_all: false, hostlists: {}, lists: {}, domains: '', cidrs: '',
+        route_all: false, hostlists: {}, lists: {}, ipsets: {},
+        geosite: '', geoip: '', domains: '', cidrs: '',
         stack: '', mtu: 1500, reject_quic: false, group_type: 'select',
     };
     let sourceRendered = false, sourceBusy = false;
@@ -494,6 +495,16 @@ rules:
                 ${escapeHtml(l.name)} <span class="text-muted">(${l.domain_count})</span>
             </label>`).join('') || '<span class="text-muted" style="font-size:12px;">нет списков</span>';
 
+        const ipsetChecks = (o.ipsets || []).map(s => `
+            <label style="display:inline-flex; align-items:center; gap:5px; margin:2px 10px 2px 0; font-size:12px;">
+                <input type="checkbox" ${f.ipsets[s.name] ? 'checked' : ''}
+                       onchange="MihomoPage.toggleDomainIpset('${escapeAttr(s.name)}', this.checked)">
+                ${escapeHtml(s.name)} <span class="text-muted">(${s.count})</span>
+            </label>`).join('') || '<span class="text-muted" style="font-size:12px;">нет ipset\'ов</span>';
+
+        const geositeHint = (o.geosite_suggested || []).slice(0, 12).join(', ');
+        const geoipHint = (o.geoip_suggested || []).slice(0, 10).join(', ');
+
         body.innerHTML = `
             <p class="text-muted" style="font-size:12.5px; margin-top:0;">
                 Готовый конфиг mihomo, который заворачивает выбранные домены/списки
@@ -522,6 +533,22 @@ rules:
                     <div style="font-size:12px; margin-bottom:3px;">Именованные списки:</div>
                     <div>${namedChecks}</div>
                 </div>
+                <div>
+                    <div style="font-size:12px; margin-bottom:3px;">ipset'ы (IP/подсети):</div>
+                    <div>${ipsetChecks}</div>
+                </div>
+                <label style="font-size:12px;">GEOSITE (категории доменов, через запятую)
+                    <input type="text" value="${escapeAttr(f.geosite)}" style="width:100%; font-size:12px;"
+                           placeholder="${escapeAttr(geositeHint)}"
+                           oninput="MihomoPage.setDomain('geosite', this.value)">
+                    <span class="text-muted" style="font-size:11px;">разворачивается в домены (geo-базы mihomo не нужны)</span>
+                </label>
+                <label style="font-size:12px;">GEOIP (страны/коды, через запятую)
+                    <input type="text" value="${escapeAttr(f.geoip)}" style="width:100%; font-size:12px;"
+                           placeholder="${escapeAttr(geoipHint)}"
+                           oninput="MihomoPage.setDomain('geoip', this.value)">
+                    <span class="text-muted" style="font-size:11px;">разворачивается в CIDR (по IP-адресам)</span>
+                </label>
                 <label style="font-size:12px;">Доп. домены (по одному в строке)
                     <textarea rows="2" placeholder="example.com&#10;site.org" style="width:100%; font-size:12px;"
                               oninput="MihomoPage.setDomain('domains', this.value)">${escapeHtml(f.domains)}</textarea>
@@ -555,6 +582,7 @@ rules:
     }
     function toggleDomainHostlist(name, checked) { domainForm.hostlists[name] = !!checked; }
     function toggleDomainList(id, checked) { domainForm.lists[id] = !!checked; }
+    function toggleDomainIpset(name, checked) { domainForm.ipsets[name] = !!checked; }
 
     async function createDomainRouting() {
         if (domainBusy) return;
@@ -569,6 +597,8 @@ rules:
             route_all: f.route_all,
             hostlists: Object.keys(f.hostlists).filter(k => f.hostlists[k]),
             lists: Object.keys(f.lists).filter(k => f.lists[k]),
+            ipsets: Object.keys(f.ipsets).filter(k => f.ipsets[k]),
+            geosite: f.geosite, geoip: f.geoip,
             domains: f.domains, cidrs: f.cidrs,
             stack: f.stack, mtu: parseInt(f.mtu, 10) || 1500,
             reject_quic: f.reject_quic, group_type: f.group_type,
@@ -768,8 +798,8 @@ rules:
         render, destroy, refresh,
         up, down, restart, toggleAuto,
         newConfig, edit, closeEditor, save, validate, del,
-        setDomain, toggleDomainHostlist, toggleDomainList, createDomainRouting,
-        setSource, createSourceRouting,
+        setDomain, toggleDomainHostlist, toggleDomainList, toggleDomainIpset,
+        createDomainRouting, setSource, createSourceRouting,
         saveWatchdog,
     };
 })();

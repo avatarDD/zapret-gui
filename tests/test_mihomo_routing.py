@@ -85,19 +85,47 @@ class TestResolveProxies(unittest.TestCase):
         self.assertEqual(names, ["x", "x-2", "vless"])
 
 
-class TestCollectLists(unittest.TestCase):
+class TestCollectTargets(unittest.TestCase):
 
-    def test_hostlists_and_named(self):
+    def test_all_dimensions(self):
         hm = mock.MagicMock()
         hm.get_hostlist.return_value = ["a.com", "b.com"]
+        im = mock.MagicMock()
+        im.get_ipset.return_value = ["5.5.5.5", "6.6.6.0/24"]
+        # geosite→домены, geoip→CIDR, bare домен/cidr — через резолвер
+        expand = {"domains": ["site.com", "gh.io"], "cidrs": ["1.2.3.0/24"],
+                  "aliases_resolved": [{"kind": "geosite", "name": "github",
+                                        "count": 2}],
+                  "aliases_failed": []}
         with mock.patch("core.hostlist_manager.get_hostlist_manager",
                         return_value=hm), \
              mock.patch("core.named_lists.resolve",
                         return_value={"domains": ["c.com"],
-                                      "cidrs": ["9.9.9.0/24"]}):
-            doms, cidrs = mr._collect_lists(hostlists=["other"], lists=["id1"])
-        self.assertEqual(set(doms), {"a.com", "b.com", "c.com"})
-        self.assertEqual(cidrs, ["9.9.9.0/24"])
+                                      "cidrs": ["9.9.9.0/24"]}), \
+             mock.patch("core.ipset_manager.get_ipset_manager",
+                        return_value=im), \
+             mock.patch("core.routing.alias_resolver.expand_domains",
+                        return_value=expand):
+            doms, cidrs, resolved, failed = mr._collect_targets(
+                hostlists=["other"], lists=["id1"], ipsets=["ipset-base"],
+                geosite=["github"], geoip=["ru"], domains=["x.com"],
+                cidrs=["7.7.7.0/24"])
+        self.assertEqual(set(doms), {"a.com", "b.com", "c.com",
+                                     "site.com", "gh.io"})
+        self.assertEqual(set(cidrs),
+                         {"1.2.3.0/24", "9.9.9.0/24", "5.5.5.5", "6.6.6.0/24"})
+        kinds = {r["kind"] for r in resolved}
+        self.assertEqual(kinds, {"geosite", "hostlist", "list", "ipset"})
+        self.assertEqual(failed, [])
+
+    def test_geo_failure_reported(self):
+        with mock.patch("core.routing.alias_resolver.expand_domains",
+                        return_value={"domains": [], "cidrs": [],
+                                      "aliases_resolved": [],
+                                      "aliases_failed": [
+                                          {"kind": "geoip", "name": "zz"}]}):
+            doms, cidrs, resolved, failed = mr._collect_targets(geoip=["zz"])
+        self.assertEqual(failed, [{"kind": "geoip", "name": "zz"}])
 
 
 class TestBuildDomainRoute(unittest.TestCase):
