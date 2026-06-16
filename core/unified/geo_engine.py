@@ -134,15 +134,30 @@ def _inject_singbox(route, config_name, resolved) -> dict:
                 "reason": "в конфиге %s нет прокси-outbound для geo-маршрута"
                           % config_name}
 
+    # geosite/geoip как route-матчеры УДАЛЕНЫ в sing-box 1.12 (FATAL на старте).
+    # Разворачиваем их в домены/CIDR через alias_resolver — тот же путь, что у
+    # OS-routing и AWG, — и строим валидное правило domain_suffix/ip_cidr.
+    from core.routing.alias_resolver import expand_domains
+    tokens = list(resolved.get("domains") or [])
+    tokens += ["geosite:%s" % g for g in (resolved.get("geosite") or [])]
+    tokens += ["geoip:%s" % g for g in (resolved.get("geoip") or [])]
+    exp = expand_domains(tokens)
+    if not exp["domains"] and not exp["cidrs"]:
+        return {"ok": True, "skipped": True,
+                "reason": "geosite/geoip не удалось развернуть в домены/CIDR "
+                          "(нет сети/пустой список) — правило не добавлено"}
+    if exp.get("aliases_failed"):
+        log.warning("unified geo: не развернулись алиасы %s"
+                    % exp["aliases_failed"], source="unified")
+
     # Удаляем прежнее наше правило (по sidecar), затем добавляем новое.
     side = _sidecar()
     prev = side.get(route.id)
     if prev and prev.get("config") == config_name and prev.get("rule"):
         remove_route_rule(cfg, prev["rule"])
 
-    rule = build_geo_route_rule(
-        outbound, domains=resolved.get("domains"),
-        geosite=resolved.get("geosite"), geoip=resolved.get("geoip"))
+    rule = build_geo_route_rule(outbound, domains=exp["domains"],
+                                cidrs=exp["cidrs"])
     add_route_rule(cfg, rule, front=True)
 
     save = mgr.save_config(config_name, text=render_conf(cfg))
