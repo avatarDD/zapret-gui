@@ -564,7 +564,14 @@ def uri_to_outbound(uri: str) -> dict:
     if not h:
         return {"ok": False, "error":
                 "scheme '%s' не поддержан" % scheme}
-    return h(uri)
+    # Битый URI не должен ронять вызывающего: urllib `.port`/`.hostname`
+    # бросают ValueError на мусорном порту (напр. `host:2`+мусор`), а handler'ы
+    # парсят base64/JSON. Любую такую ошибку превращаем в чистый ok:False —
+    # иначе одна кривая ссылка в подписке валит весь импорт (mihomo/sing-box).
+    try:
+        return h(uri)
+    except Exception as e:
+        return {"ok": False, "error": "разбор ссылки: %s" % e}
 
 
 # ═══════════════════════════════════════════════════════════════
