@@ -5,7 +5,8 @@ Unit-тесты для core/awg_config.py — парсер .conf-файлов.
 
 import unittest
 
-from core.awg_config import parse_conf, validate, render_conf, render_setconf
+from core.awg_config import (parse_conf, validate, render_conf, render_setconf,
+                             ensure_persistent_keepalive)
 
 
 SIMPLE_CONF = """[Interface]
@@ -262,6 +263,46 @@ class TestSetconfZeroObfuscation(unittest.TestCase):
         self.assertNotIn("jc =", low)
         self.assertNotIn("jmin =", low)
         self.assertNotIn("jmax =", low)
+
+
+class TestEnsurePersistentKeepalive(unittest.TestCase):
+    """При создании/импорте конфигов проставляем PersistentKeepalive=25
+    каждому peer'у без него; явное значение (в т.ч. 0) не трогаем."""
+
+    def _peer(self, **extra):
+        p = {"PublicKey": "B5dN1RoG3Jp1A7vWcDjI5xqRsX9cQYTuVE2KAFAVqXk=",
+             "Endpoint": "vpn.example.com:51820", "AllowedIPs": "0.0.0.0/0"}
+        p.update(extra)
+        return {"interface": {"PrivateKey": "x"}, "peers": [p]}
+
+    def test_adds_when_missing(self):
+        cfg = self._peer()
+        self.assertTrue(ensure_persistent_keepalive(cfg))
+        self.assertEqual(cfg["peers"][0]["PersistentKeepalive"], 25)
+
+    def test_preserves_existing(self):
+        cfg = self._peer(PersistentKeepalive=15)
+        self.assertFalse(ensure_persistent_keepalive(cfg))
+        self.assertEqual(cfg["peers"][0]["PersistentKeepalive"], 15)
+
+    def test_does_not_override_explicit_zero(self):
+        # 0 = keepalive выключен пользователем — уважаем.
+        cfg = self._peer(PersistentKeepalive=0)
+        self.assertFalse(ensure_persistent_keepalive(cfg))
+        self.assertEqual(cfg["peers"][0]["PersistentKeepalive"], 0)
+
+    def test_multiple_peers(self):
+        cfg = self._peer()
+        cfg["peers"].append({"PublicKey": "k", "Endpoint": "h:1",
+                             "AllowedIPs": "::/0", "PersistentKeepalive": 10})
+        self.assertTrue(ensure_persistent_keepalive(cfg))
+        self.assertEqual(cfg["peers"][0]["PersistentKeepalive"], 25)
+        self.assertEqual(cfg["peers"][1]["PersistentKeepalive"], 10)
+
+    def test_rendered_conf_contains_line(self):
+        cfg = self._peer()
+        ensure_persistent_keepalive(cfg)
+        self.assertIn("PersistentKeepalive = 25", render_conf(cfg))
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ import threading
 import time
 
 from core.awg_config import (
+    ensure_persistent_keepalive,
     parse_conf,
     render_conf,
     render_setconf,
@@ -409,9 +410,18 @@ class AwgManager:
             raise ValueError("Нужно передать text или parsed")
 
         if text is None:
-            text = render_conf(parsed)
+            parsed = parsed or {}
         else:
             parsed = parse_conf(text)
+
+        # При создании/импорте проставляем PersistentKeepalive=25 каждому
+        # peer'у без него — без keepalive туннель «молча отваливается» за
+        # CGNAT/на мобильном (NAT-binding протухает). Если строку реально
+        # добавили в raw-конфиг — перерендерим, чтобы она попала в файл;
+        # иначе сохраняем текст пользователя как есть.
+        keepalive_added = ensure_persistent_keepalive(parsed)
+        if text is None or keepalive_added:
+            text = render_conf(parsed)
 
         errors = validate_cfg(parsed)
         if errors:
