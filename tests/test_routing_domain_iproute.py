@@ -115,5 +115,54 @@ class TestRemoveDomainViaIproute(unittest.TestCase):
         save.assert_called()
 
 
+class TestGeoExpansionAndStaticCidrs(unittest.TestCase):
+    """
+    geosite → домены, geoip → CIDR в interval-set (nft). Проверяем
+    разбор алиасов и раскладку geoip-CIDR по семействам одним набором
+    (без тысяч `ip rule`).
+    """
+
+    def test_expand_rule_splits_domains_and_cidrs(self):
+        rule = DomainRoutingRule(target_iface="awg0",
+                                 domains=["a.com", "geosite:x", "geoip:y"],
+                                 rule_id="u")
+        with mock.patch(
+            "core.routing.alias_resolver.expand_domains",
+            return_value={"domains": ["a.com", "z.com"],
+                          "cidrs": ["1.2.3.0/24", "2001:db8::/32"]}):
+            domains, cidrs = domain_rule._expand_rule(rule)
+        self.assertEqual(domains, ["a.com", "z.com"])
+        self.assertEqual(cidrs, ["1.2.3.0/24", "2001:db8::/32"])
+
+    def test_static_cidrs_go_to_nftset_by_family(self):
+        from core.routing import nftset_backend
+        cmds = []
+
+        def fake_run(args, **kw):
+            cmds.append(list(args))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            added = domain_rule._add_static_cidrs_to_sets(
+                ["1.2.3.0/24", "2001:db8::/32", "10.0.0.0/8"],
+                "set4", "set6", nftset_backend)
+        self.assertEqual(added, 3)
+        adds = [" ".join(c) for c in cmds if "add" in c and "element" in c]
+        v4 = [a for a in adds if "set4" in a][0]
+        v6 = [a for a in adds if "set6" in a][0]
+        self.assertIn("1.2.3.0/24", v4)
+        self.assertIn("10.0.0.0/8", v4)
+        self.assertIn("2001:db8::/32", v6)
+
+    def test_static_cidrs_skipped_on_ipset_backend(self):
+        from core.routing import ipset_backend
+        # ipset hash:ip не хранит сети — geoip-CIDR пропускаются (0 added).
+        with mock.patch("subprocess.run") as run:
+            added = domain_rule._add_static_cidrs_to_sets(
+                ["1.2.3.0/24"], "s4", "s6", ipset_backend)
+        self.assertEqual(added, 0)
+        run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

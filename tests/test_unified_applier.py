@@ -75,12 +75,40 @@ class TestApplyTunnel(unittest.TestCase):
         # cidr-правило не создаётся, а возможный старый — снимается (get_rule None → no remove)
         self.mgr.remove_rule.assert_not_called()
 
-    def test_geosite_skipped(self):
+    def test_geosite_geoip_folded_into_domain_rule_for_awg(self):
+        # Для AWG geosite/geoip больше НЕ пропускаются — заворачиваются в
+        # domain-rule: geosite→домены (dnsmasq+set), geoip→CIDR в interval-
+        # set того же набора. В domains правила должны появиться токены.
         r = UnifiedRoute(name="g", method="awg:awg0",
                          destination=Destination(domains=["a.com"],
-                                                  geosite=["google"]))
+                                                  geosite=["google"],
+                                                  geoip=["ru"]))
         res = apply_route(r)
-        self.assertTrue(res["skipped_selectors"])
+        self.assertTrue(res["ok"])
+        self.assertFalse(any("geosite" in s for s in res["skipped_selectors"]))
+        self.assertEqual(res["geo"].get("via"), "domain-set")
+        dom = next((c.args[0] for c in self.mgr.add_rule.call_args_list
+                    if c.args[0].id == _dom_rule_id(r.id)), None)
+        self.assertIsNotNone(dom)
+        self.assertIn("a.com", dom.domains)
+        self.assertIn("geosite:google", dom.domains)
+        self.assertIn("geoip:ru", dom.domains)
+
+    def test_geosite_not_folded_for_singbox(self):
+        # sing-box обрабатывает geo нативно через движок — в domain-rule
+        # geosite-токены НЕ добавляются (иначе geo поехал бы двумя путями).
+        with mock.patch("core.unified.applier._apply_geo",
+                        return_value={"ok": True, "applied": {}}):
+            r = UnifiedRoute(name="g", method="singbox:tun0",
+                             destination=Destination(domains=["a.com"],
+                                                      geosite=["google"]))
+            res = apply_route(r)
+        self.assertTrue(res["ok"])
+        dom = next((c.args[0] for c in self.mgr.add_rule.call_args_list
+                    if c.args[0].id == _dom_rule_id(r.id)), None)
+        self.assertIsNotNone(dom)
+        self.assertIn("a.com", dom.domains)
+        self.assertNotIn("geosite:google", dom.domains)
 
     def test_tunnel_creates_device_and_dscp_rules(self):
         r = _route("awg:awg0",
