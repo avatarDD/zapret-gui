@@ -250,7 +250,12 @@ class TestOfflineDownload(unittest.TestCase):
 class TestWorkdir(unittest.TestCase):
 
     def test_disk_free_positive(self):
-        self.assertGreater(bi.disk_free("/"), 0)
+        # `/` на реальном роутере — read-only squashfs (f_bavail=0), поэтому
+        # проверяем сам расчёт байт на замоканном statvfs, а не наличие места
+        # на rootfs хоста (герметично на любой платформе).
+        fake = mock.Mock(f_bavail=2048, f_frsize=4096)
+        with mock.patch("os.statvfs", return_value=fake):
+            self.assertEqual(bi.disk_free("/"), 2048 * 4096)
 
     def test_disk_free_nonexistent_walks_up(self):
         # Несуществующий путь → берём ближайшего существующего предка.

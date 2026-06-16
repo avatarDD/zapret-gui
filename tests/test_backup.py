@@ -138,19 +138,27 @@ class TestBackupApiRoundtrip(unittest.TestCase):
 
     def test_export_then_import(self):
         import json
-        # export → валидный бэкап нашего формата
-        status, body = self.client.get('/api/backup/export')
-        self.assertTrue(status.startswith('200'), status)
-        data = json.loads(body)
-        self.assertEqual(data['format'], bk.FORMAT)
-        self.assertIn('settings', data)
-        # summary
-        s = self.client.post_json('/api/backup/summary', data)
-        self.assertTrue(s['ok'])
-        self.assertTrue(s['summary']['has_settings'])
-        # import (только settings)
-        r = self.client.post_json('/api/backup/import',
-                                  {'backup': data, 'sections': ['settings']})
+        # Коллекторы движков и runtime-reconfigure мокаем: на реальном
+        # роутере они читают живые конфиги sing-box/mihomo/hostlist'ов и
+        # дёргают фоновые задачи (подписки/пул/мониторинг) — тест проверяет
+        # сквозной pipeline бэкапа (settings), а не состояние роутера.
+        with mock.patch.object(bk, "_collect_strategies", return_value=[]), \
+             mock.patch.object(bk, "_collect_engine_configs", return_value=[]), \
+             mock.patch.object(bk, "_collect_hostlists", return_value=[]), \
+             mock.patch.object(bk, "_reconfigure_runtime"):
+            # export → валидный бэкап нашего формата
+            status, body = self.client.get('/api/backup/export')
+            self.assertTrue(status.startswith('200'), status)
+            data = json.loads(body)
+            self.assertEqual(data['format'], bk.FORMAT)
+            self.assertIn('settings', data)
+            # summary
+            s = self.client.post_json('/api/backup/summary', data)
+            self.assertTrue(s['ok'])
+            self.assertTrue(s['summary']['has_settings'])
+            # import (только settings)
+            r = self.client.post_json('/api/backup/import',
+                                      {'backup': data, 'sections': ['settings']})
         self.assertTrue(r['ok'], r)
         self.assertIn('settings', r['restored'])
 
