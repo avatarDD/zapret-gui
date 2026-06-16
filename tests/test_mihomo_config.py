@@ -106,7 +106,11 @@ class TestDomainConfig(unittest.TestCase):
         self.assertIn("+.youtube.com", rp["payload"])
         rules = cfg["rules"]
         self.assertIn("RULE-SET,proxied,PROXY", rules)
-        self.assertIn("IP-CIDR,203.0.113.0/24,PROXY,no-resolve", rules)
+        # подсети — через ipcidr rule-provider (RULE-SET ... no-resolve)
+        ipp = cfg["rule-providers"][mc.DEFAULT_IP_RULESET]
+        self.assertEqual(ipp["behavior"], "ipcidr")
+        self.assertIn("203.0.113.0/24", ipp["payload"])
+        self.assertIn("RULE-SET,proxied-ip,PROXY,no-resolve", rules)
         self.assertEqual(rules[-1], "MATCH,DIRECT")
         # приватные подсети — направлены в DIRECT и ДО проксирующих правил
         self.assertTrue(any(r.startswith("IP-CIDR,192.168.0.0/16,DIRECT")
@@ -120,9 +124,26 @@ class TestDomainConfig(unittest.TestCase):
     def test_use_ruleset_false_inlines_domain_suffix(self):
         cfg = mc.build_domain_config(
             proxies=[_vless()], proxied_domains=["youtube.com"],
-            use_ruleset=False)
+            proxied_cidrs=["203.0.113.0/24"], use_ruleset=False)
         self.assertNotIn("rule-providers", cfg)
         self.assertIn("DOMAIN-SUFFIX,youtube.com,PROXY", cfg["rules"])
+        self.assertIn("IP-CIDR,203.0.113.0/24,PROXY,no-resolve", cfg["rules"])
+
+    def test_cidr_normalized_to_mask(self):
+        # голый IP → /32 в ipcidr-провайдере
+        cfg = mc.build_domain_config(proxies=[_vless()],
+                                     proxied_cidrs=["8.8.8.8", "2001:db8::1"])
+        payload = cfg["rule-providers"][mc.DEFAULT_IP_RULESET]["payload"]
+        self.assertIn("8.8.8.8/32", payload)
+        self.assertIn("2001:db8::1/128", payload)
+
+    def test_ipcidr_only_no_domains(self):
+        # только подсети (напр. geoip/ipset), без доменов
+        cfg = mc.build_domain_config(proxies=[_vless()],
+                                     proxied_cidrs=["203.0.113.0/24"])
+        self.assertIn(mc.DEFAULT_IP_RULESET, cfg["rule-providers"])
+        self.assertNotIn(mc.DEFAULT_RULESET, cfg["rule-providers"])
+        self.assertIn("RULE-SET,proxied-ip,PROXY,no-resolve", cfg["rules"])
 
     def test_route_all(self):
         cfg = mc.build_domain_config(proxies=[_vless()], route_all=True)

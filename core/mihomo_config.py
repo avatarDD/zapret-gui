@@ -51,9 +51,10 @@ DEFAULT_DOH_SERVERS = ["https://cloudflare-dns.com/dns-query",
 DEFAULT_BOOTSTRAP = ["1.1.1.1", "8.8.8.8"]
 
 # Имя select-группы (через неё watchdog-проба и переключение узла) и inline
-# rule-provider'а проксируемых доменов.
+# rule-provider'ов проксируемых доменов / подсетей.
 DEFAULT_GROUP = "PROXY"
 DEFAULT_RULESET = "proxied"
+DEFAULT_IP_RULESET = "proxied-ip"
 
 # Приватные/локальные подсети — всегда напрямую (LAN/роутер/loopback), иначе
 # при «весь трафик»/auto-route отвалится связь с самим роутером и LAN.
@@ -225,6 +226,14 @@ def make_domain_rule_provider(domains) -> dict:
     return {"type": "inline", "behavior": "domain", "payload": payload}
 
 
+def make_ipcidr_rule_provider(cidrs) -> dict:
+    """inline rule-provider (behavior: ipcidr) со списком проксируемых подсетей
+    (компактно для больших списков geoip/ipset). Голый IP → /32 или /128."""
+    payload = [_norm_src_cidr(str(c).strip())
+               for c in (cidrs or []) if str(c).strip()]
+    return {"type": "inline", "behavior": "ipcidr", "payload": payload}
+
+
 def private_direct_rules() -> list:
     """Правила «приватные/локальные подсети → DIRECT» (no-resolve — не
     провоцируем DNS на IP-правиле)."""
@@ -311,7 +320,8 @@ def build_domain_config(*, proxies, proxied_domains=None, proxied_cidrs=None,
         raise ValueError("нужен хотя бы один прокси")
 
     domains = _norm_suffix_domains(proxied_domains)
-    cidrs = [str(c).strip() for c in (proxied_cidrs or []) if str(c).strip()]
+    cidrs = [_norm_src_cidr(str(c).strip())
+             for c in (proxied_cidrs or []) if str(c).strip()]
 
     dns = make_fakeip_dns(proxy_server_domains=proxies)
     cfg = _base_config(proxies=proxies, group_name=group_name,
@@ -327,16 +337,27 @@ def build_domain_config(*, proxies, proxied_domains=None, proxied_cidrs=None,
     if route_all:
         rules.append("MATCH,%s" % group_name)
     else:
+        providers = {}
         if domains:
             if use_ruleset:
-                cfg["rule-providers"] = {
-                    ruleset_name: make_domain_rule_provider(domains)}
+                providers[ruleset_name] = make_domain_rule_provider(domains)
                 rules.append("RULE-SET,%s,%s" % (ruleset_name, group_name))
             else:
                 rules.extend("DOMAIN-SUFFIX,%s,%s" % (d, group_name)
                              for d in domains)
-        for c in cidrs:
-            rules.append("IP-CIDR,%s,%s,no-resolve" % (c, group_name))
+        if cidrs:
+            # Подсети (вкл. развёрнутые geoip/ipset) — через ipcidr
+            # rule-provider (компактно), либо отдельными IP-CIDR (fallback).
+            # no-resolve: не провоцируем DNS на IP-правиле.
+            if use_ruleset:
+                providers[DEFAULT_IP_RULESET] = make_ipcidr_rule_provider(cidrs)
+                rules.append("RULE-SET,%s,%s,no-resolve"
+                             % (DEFAULT_IP_RULESET, group_name))
+            else:
+                rules.extend("IP-CIDR,%s,%s,no-resolve" % (c, group_name)
+                             for c in cidrs)
+        if providers:
+            cfg["rule-providers"] = providers
         rules.append("MATCH,DIRECT")
 
     cfg["rules"] = rules
