@@ -12,22 +12,25 @@ from core.unified.model import UnifiedRoute, Destination
 class TestGeoRouteHelpers(unittest.TestCase):
 
     def test_build_rule(self):
+        # geosite/geoip-матчеры удалены в sing-box 1.12 → хелпер принимает уже
+        # развёрнутые домены/CIDR и эмитит ТОЛЬКО domain_suffix/ip_cidr.
         r = sc.build_geo_route_rule("PROXY", domains=["a.com"],
-                                    geosite=["google"], geoip=["ru"])
+                                    cidrs=["1.2.3.0/24"])
         self.assertEqual(r["outbound"], "PROXY")
         self.assertEqual(r["domain_suffix"], ["a.com"])
-        self.assertEqual(r["geosite"], ["google"])
-        self.assertEqual(r["geoip"], ["ru"])
-
-    def test_build_rule_only_geosite(self):
-        r = sc.build_geo_route_rule("P", geosite=["youtube"])
-        self.assertNotIn("domain_suffix", r)
+        self.assertEqual(r["ip_cidr"], ["1.2.3.0/24"])
+        # ключи удалённых матчеров не должны появляться никогда.
+        self.assertNotIn("geosite", r)
         self.assertNotIn("geoip", r)
-        self.assertEqual(r["geosite"], ["youtube"])
+
+    def test_build_rule_only_cidr(self):
+        r = sc.build_geo_route_rule("P", cidrs=["10.0.0.0/8"])
+        self.assertNotIn("domain_suffix", r)
+        self.assertEqual(r["ip_cidr"], ["10.0.0.0/8"])
 
     def test_add_remove_rule(self):
         cfg = {"outbounds": []}
-        rule = sc.build_geo_route_rule("P", geosite=["google"])
+        rule = sc.build_geo_route_rule("P", domains=["google.com"])
         sc.add_route_rule(cfg, rule)
         self.assertEqual(cfg["route"]["rules"][0], rule)
         self.assertTrue(sc.remove_route_rule(cfg, rule))
@@ -121,6 +124,56 @@ class TestApplyGeo(unittest.TestCase):
             res = geo_engine.apply_geo(r, "singbox:tun0")
         self.assertTrue(res["skipped"])
         self.assertIn("не найден", res["reason"])
+
+    def test_singbox_inject_resolves_geo_to_domain_ip(self):
+        # geosite/geoip разворачиваются в domain_suffix/ip_cidr; удалённых в
+        # sing-box 1.12 матчеров в сохранённом конфиге быть не должно.
+        r = self._route(dest={"geosite": ["google"], "geoip": ["ru"]},
+                        method="singbox:tun0")
+        cfg = {"outbounds": [{"type": "vless", "tag": "PROXY"}],
+               "route": {"rules": []}}
+        mgr = mock.Mock()
+        mgr.get_config.return_value = {"ok": True, "parsed": cfg}
+        saved = {}
+        mgr.save_config.side_effect = lambda name, text=None: (
+            saved.update(text=text) or {"ok": True})
+        mgr.is_running.return_value = False
+        with mock.patch("core.unified.geo_engine.locate_singbox_config",
+                        return_value="tun0"), \
+             mock.patch("core.singbox_manager.get_singbox_manager",
+                        return_value=mgr), \
+             mock.patch("core.routing.alias_resolver.expand_domains",
+                        return_value={"domains": ["google.com"],
+                                      "cidrs": ["1.0.0.0/8"],
+                                      "aliases_resolved": [],
+                                      "aliases_failed": []}):
+            res = geo_engine.apply_geo(r, "singbox:tun0")
+        self.assertTrue(res.get("applied"), msg=res)
+        self.assertIn("google.com", saved["text"])
+        self.assertIn("1.0.0.0/8", saved["text"])
+        self.assertNotIn("geosite", saved["text"])
+        self.assertNotIn('"geoip"', saved["text"])
+
+    def test_singbox_inject_skips_when_resolution_empty(self):
+        # Сеть недоступна / пустой результат → не добавляем правило-«ловушку»
+        # без матчеров (иначе завернули бы ВЕСЬ трафик).
+        r = self._route(dest={"geosite": ["google"]}, method="singbox:tun0")
+        cfg = {"outbounds": [{"type": "vless", "tag": "PROXY"}],
+               "route": {"rules": []}}
+        mgr = mock.Mock()
+        mgr.get_config.return_value = {"ok": True, "parsed": cfg}
+        with mock.patch("core.unified.geo_engine.locate_singbox_config",
+                        return_value="tun0"), \
+             mock.patch("core.singbox_manager.get_singbox_manager",
+                        return_value=mgr), \
+             mock.patch("core.routing.alias_resolver.expand_domains",
+                        return_value={"domains": [], "cidrs": [],
+                                      "aliases_resolved": [],
+                                      "aliases_failed": [{"kind": "geosite",
+                                                          "name": "google"}]}):
+            res = geo_engine.apply_geo(r, "singbox:tun0")
+        self.assertTrue(res.get("skipped"))
+        mgr.save_config.assert_not_called()
 
 
 if __name__ == "__main__":

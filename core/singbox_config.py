@@ -591,27 +591,25 @@ def make_routing_dns(*, proxy_tag: str = "proxy-out",
 
 
 def build_geo_route_rule(outbound_tag: str, *, domains=None,
-                         geosite=None, geoip=None) -> dict:
+                         cidrs=None) -> dict:
     """
-    Собрать route-правило sing-box, отправляющее заданные селекторы в
-    outbound `outbound_tag`. Используется единым слоем для geosite/geoip
-    (их iptables-routing развернуть не может — это нативные концепции
-    движка).
+    Собрать route-правило sing-box: домены (→ `domain_suffix`) и/или CIDR
+    (→ `ip_cidr`) → outbound `outbound_tag`.
 
-    Используем поля sing-box route rule:
-      domain_suffix / geosite / geoip → outbound.
-    Пустые селекторы не добавляются. Возвращает dict-правило.
+    ⚠️ Матчеры `geosite`/`geoip` в route-правилах УДАЛЕНЫ в sing-box 1.12
+    (deprecated с 1.8): конфиг с ними не стартует — FATAL «geosite/geoip
+    database is deprecated in sing-box 1.8.0 and removed in sing-box 1.12.0».
+    Поэтому geosite/geoip-селекторы единого слоя разворачиваются в домены/CIDR
+    (core/routing/alias_resolver) ДО вызова этого хелпера — здесь только
+    валидные на 1.12+ матчеры. Пустые селекторы не добавляются.
     """
     rule = {}
     doms = [str(d).strip().lower() for d in (domains or []) if str(d).strip()]
-    gs = [str(g).strip() for g in (geosite or []) if str(g).strip()]
-    gi = [str(g).strip() for g in (geoip or []) if str(g).strip()]
+    cs = [str(c).strip() for c in (cidrs or []) if str(c).strip()]
     if doms:
         rule["domain_suffix"] = doms
-    if gs:
-        rule["geosite"] = gs
-    if gi:
-        rule["geoip"] = gi
+    if cs:
+        rule["ip_cidr"] = cs
     rule["outbound"] = outbound_tag
     return rule
 
