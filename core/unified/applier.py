@@ -98,11 +98,29 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
     skipped = []
 
     if kind in ("awg", "singbox", "mihomo"):
-        res = _apply_tunnel(route, target, domains, cidrs)
-        # geosite/geoip — через конфиг движка (sing-box/mihomo), не iptables.
-        geo = _apply_geo(route, method)
-        if geo.get("skipped"):
-            skipped.append(geo.get("reason", "geosite/geoip пропущены"))
+        # sing-box умеет geosite/geoip нативно (geo_engine → route-правила
+        # движка с его geo-базой). Для AWG (и mihomo — у него нет YAML-
+        # эмиттера geo) заворачиваем geo через dnsmasq + ipset/nftset:
+        # geosite → домены, geoip → CIDR в interval-set — тот же путь, что
+        # у обычных доменов (domain_rule._expand_rule/_add_static_cidrs).
+        geo_native = (kind == "singbox")
+        tun_domains = list(domains)
+        if not geo_native and has_geo:
+            tun_domains += ["geosite:%s" % g
+                            for g in (resolved.get("geosite") or [])]
+            tun_domains += ["geoip:%s" % g
+                            for g in (resolved.get("geoip") or [])]
+        res = _apply_tunnel(route, target, tun_domains, cidrs)
+        if geo_native:
+            geo = _apply_geo(route, method)
+            if geo.get("skipped"):
+                skipped.append(geo.get("reason", "geosite/geoip пропущены"))
+        else:
+            # снять возможный прежний sing-box-инжект и не вводить в
+            # заблуждение «skipped» — geo уже в domain-rule выше.
+            _remove_geo(route)
+            geo = ({"ok": True, "via": "domain-set"} if has_geo
+                   else {"ok": True, "noop": True})
         res["method"] = method
         res["geo"] = geo
         res["skipped_selectors"] = skipped

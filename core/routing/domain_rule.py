@@ -118,24 +118,80 @@ def _all_domain_rules():
             if isinstance(r, DomainRoutingRule) and r.enabled]
 
 
-def _expand_rule_domains(rule):
+def _expand_rule(rule):
     """
-    Развернуть geosite:/geoip: алиасы в чистые домены/CIDR.
+    Развернуть geosite:/geoip: алиасы правила в (domains, cidrs).
 
-    Для dnsmasq-пути нас интересуют только домены (CIDR не работают
-    через dnsmasq-ipset-хук). Если в правиле встречается geoip: —
-    он логируется как «не поддержано», но правило не падает.
+    geosite → домены (маршрутизируются через dnsmasq + ipset/nftset),
+    geoip   → CIDR. CIDR кладём статически в тот же interval-set
+    (`_add_static_cidrs_to_sets`) — один mark-rule `ip daddr @set`
+    уже маршрутизирует и IP доменов, и geoip-сети. Это и есть
+    «ipset/nftset + cidr» путь для geoip, без тысяч отдельных `ip rule`.
     """
     from core.routing.alias_resolver import expand_domains as _ex
     expanded = _ex(rule.domains or [])
-    domains = expanded.get("domains") or []
-    if expanded.get("cidrs"):
-        log.warning(
-            "dnsmasq-backend: geoip: в правиле %s даёт %d CIDR — "
-            "dnsmasq их не поддерживает, см. NDMS-режим или CIDR-rule"
-            % (rule.id, len(expanded["cidrs"])),
-            source="routing")
-    return domains
+    return (expanded.get("domains") or [], expanded.get("cidrs") or [])
+
+
+def _expand_rule_domains(rule):
+    """Только домены (для dnsmasq-директив managed-файла)."""
+    return _expand_rule(rule)[0]
+
+
+# geoip в iproute-фолбэке (нет dnsmasq, напр. Keenetic с занятым :53):
+# CIDR кладём напрямую через `ip rule to <cidr>`, но с капом — иначе
+# geoip:ru (~22k сетей) забил бы policy-db десятками тысяч правил.
+_IPROUTE_GEOIP_MAX = 1000
+
+
+def _add_static_cidrs_to_sets(cidrs, set_v4, set_v6, backend) -> int:
+    """
+    Положить статические CIDR (из geoip:) в interval-set backend'а.
+
+    nftset держит сети нативно (`flags interval`) — один набор на тысячи
+    сетей, O(log n) на пакет. ipset hash:ip сети НЕ поддерживает —
+    там geoip-CIDR пропускаются (домены всё равно работают; для
+    полноценного geoip на таких системах нужен nftables).
+    """
+    import ipaddress
+    import subprocess
+    if not cidrs:
+        return 0
+    by_fam = {"v4": [], "v6": []}
+    for c in cidrs:
+        try:
+            net = ipaddress.ip_network(str(c).strip(), strict=False)
+        except (ValueError, TypeError):
+            continue
+        by_fam["v6" if net.version == 6 else "v4"].append(str(net))
+
+    if backend is not nftset_backend:
+        total = len(by_fam["v4"]) + len(by_fam["v6"])
+        if total:
+            log.info("routing: geoip-CIDR (%d) пропущены — ipset hash:ip не "
+                     "хранит сети; для geoip нужен nftables" % total,
+                     source="routing")
+        return 0
+
+    added = 0
+    for fam in ("v4", "v6"):
+        items = by_fam[fam]
+        if not items:
+            continue
+        sset = set_v6 if fam == "v6" else set_v4
+        for i in range(0, len(items), 500):  # батчами — длина argv
+            chunk = items[i:i + 500]
+            r = subprocess.run(
+                ["nft", "add", "element", "inet", nftset_backend.TABLE_NAME,
+                 sset, "{ %s }" % ", ".join(chunk)],
+                capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                added += len(chunk)
+            # overlap/«exists» при повторном apply — не ошибка
+    if added:
+        log.info("routing: geoip — добавлено %d CIDR в nft interval-set"
+                 % added, source="routing")
+    return added
 
 
 def _rebuild_managed_dnsmasq():
@@ -414,13 +470,28 @@ def _apply_domain_via_iproute(rule: DomainRoutingRule) -> dict:
                            " разрешатся и применятся при старте" % ifname}
 
     table = _table_id_for(ifname)
-    domains = _expand_rule_domains(rule)
-    if not domains:
+    domains, geoip_cidrs = _expand_rule(rule)
+    if not domains and not geoip_cidrs:
         return {"ok": False, "error": "после развёртки доменов не осталось"}
 
     added = []          # [[cidr, family], ...] для хранения/снятия
     errors = []
     resolved_total = 0
+
+    def _add_rule(cidr, family):
+        subprocess.run(["ip", family, "rule", "del", "to", cidr,
+                        "lookup", str(table)], capture_output=True, timeout=5)
+        r = subprocess.run(["ip", family, "rule", "add", "to", cidr,
+                            "lookup", str(table),
+                            "priority", str(FWMARK_PRIORITY)],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            added.append([cidr, family])
+            return True
+        if "File exists" not in (r.stderr or ""):
+            errors.append("ip rule add %s: %s" % (cidr, (r.stderr or "").strip()))
+        return False
+
     for domain in domains:
         for fam in ("v4", "v6"):
             ips = _resolve_ips(domain, fam)
@@ -432,19 +503,28 @@ def _apply_domain_via_iproute(rule: DomainRoutingRule) -> dict:
                 errors.append("default-route %s table %d" % (family, table))
                 continue
             for ip in ips:
-                cidr = ip + ("/128" if fam == "v6" else "/32")
-                subprocess.run(["ip", family, "rule", "del", "to", cidr,
-                                "lookup", str(table)],
-                               capture_output=True, timeout=5)
-                r = subprocess.run(["ip", family, "rule", "add", "to", cidr,
-                                    "lookup", str(table),
-                                    "priority", str(FWMARK_PRIORITY)],
-                                   capture_output=True, text=True, timeout=5)
-                if r.returncode == 0:
-                    added.append([cidr, family])
-                elif "File exists" not in (r.stderr or ""):
-                    errors.append("ip rule add %s: %s"
-                                  % (cidr, (r.stderr or "").strip()))
+                _add_rule(ip + ("/128" if fam == "v6" else "/32"), family)
+
+    # geoip: без dnsmasq/nft interval-set единственный путь — отдельные
+    # `ip rule` на каждую сеть. Это дорого, поэтому КАПИМ: иначе geoip:ru
+    # (~22k сетей) забил бы policy-db. Большие гео лучше гонять на nft-
+    # системе (там сети идут одним interval-set'ом).
+    if geoip_cidrs:
+        import ipaddress
+        if len(geoip_cidrs) > _IPROUTE_GEOIP_MAX:
+            errors.append("geoip: %d сетей > лимита %d для ip-route бэкенда "
+                          "(нужен nftables) — добавлено первые %d"
+                          % (len(geoip_cidrs), _IPROUTE_GEOIP_MAX,
+                             _IPROUTE_GEOIP_MAX))
+        for c in geoip_cidrs[:_IPROUTE_GEOIP_MAX]:
+            try:
+                net = ipaddress.ip_network(str(c).strip(), strict=False)
+            except (ValueError, TypeError):
+                continue
+            family = "-6" if net.version == 6 else "-4"
+            if not _ensure_table_default(ifname, table, family):
+                continue
+            _add_rule(str(net), family)
 
     if added:
         from core.routing import masquerade
@@ -682,11 +762,19 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             prepop_domains, set_base_v4, set_base_v6, backend)
         prepop_added = sum(r.get("added", 0) for r in prepop_results)
 
+        # geoip: — статические CIDR кладём прямо в interval-set. Тот же
+        # mark-rule `ip daddr @set` маршрутизирует их наравне с IP доменов,
+        # поэтому отдельных `ip rule` (как у CIDR-правил) не плодим.
+        _exp_domains, geoip_cidrs = _expand_rule(rule)
+        cidr_added = _add_static_cidrs_to_sets(
+            geoip_cidrs, set_base_v4, set_base_v6, backend)
+
         ok = bool(added) and not errors and dn_res.get("ok", True)
         log.info(
             "routing: domain-правило %s применено (iface=%s, %d записей,"
-            " %d ошибок, prepop=%d IP)"
-            % (rule.id, ifname, len(added), len(errors), prepop_added),
+            " %d ошибок, prepop=%d IP, geoip=%d CIDR)"
+            % (rule.id, ifname, len(added), len(errors), prepop_added,
+               cidr_added),
             source="routing",
         )
         return {
@@ -695,6 +783,7 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             "errors":  errors,
             "backend": kind,
             "dnsmasq": dn_res,
+            "geoip_cidrs_added": cidr_added,
             "prepop":  {"total_ips_added": prepop_added,
                         "per_domain": prepop_results},
         }

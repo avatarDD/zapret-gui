@@ -3,6 +3,24 @@
 ## Unreleased — Пул публичных серверов, тестер прокси, vmess, urltest-подписки
 
 ### Добавлено
+- **geosite/geoip-маршрутизация теперь работает и для AWG-туннелей**
+  (единый слой, `core/unified` + `core/routing/domain_rule.py`). Раньше
+  geosite/geoip в маршруте применялись ТОЛЬКО на движках (sing-box нативно
+  через geo-правила); для AWG (и mihomo) они молча пропускались с
+  сообщением «работают только с движком». Теперь для нетуннельных-движков:
+  - **geosite → домены** через тот же dnsmasq + ipset/nftset путь, что и
+    обычные доменные правила (резолв набивает set, трафик маркируется и
+    уходит в туннель);
+  - **geoip → CIDR в nftables interval-set** одним mark-правилом
+    (`ip daddr @set`) — БЕЗ тысяч отдельных `ip rule` (geoip:ru ≈ 22k
+    сетей легли бы намертво в policy-db). На системах без nft (ipset
+    hash:ip не хранит сети) geoip-CIDR в iproute-фолбэке капятся
+    (`_IPROUTE_GEOIP_MAX`) с предупреждением.
+  Проверено сквозь живой AWG-туннель: и geosite-домен, и geoip-CIDR
+  заворачивают трафик в туннель (LAN-клиент виден сервером под tunnel-IP).
+  sing-box по-прежнему использует нативный geo-движок (не дублируем).
+  Тесты: `test_unified_applier` (folding), `test_routing_domain_iproute`
+  (`TestGeoExpansionAndStaticCidrs`).
 - **Скачивание nfqws2 и обновлений zapret-gui через средство обхода +
   выбор версии** (по аналогии с sing-box / AmneziaWG / mihomo). Раньше и
   движок nfqws2 (bol-van/zapret2), и сам веб-интерфейс качались только
