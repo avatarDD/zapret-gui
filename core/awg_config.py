@@ -337,6 +337,36 @@ def render_conf(cfg: dict) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+# Стандартный keepalive (как у официальных WARP/WireGuard-клиентов).
+DEFAULT_PERSISTENT_KEEPALIVE = 25
+
+
+def ensure_persistent_keepalive(cfg: dict,
+                                default: int = DEFAULT_PERSISTENT_KEEPALIVE) -> bool:
+    """
+    Проставить `PersistentKeepalive` каждому [Peer], у которого он не задан.
+
+    Зачем: без keepalive NAT-binding на роутере/у провайдера протухает за
+    ~30–120с простоя — туннель «молча отваливается» (особенно за CGNAT и
+    на мобильном интернете), handshake не обновляется до первого исходящего
+    пакета. 25с — стандартное значение. Проставляется при создании/импорте
+    конфигов (`AwgManager.save_config`), чтобы свежие конфиги были живучими
+    из коробки. Явно заданное значение (в т.ч. `0` = выкл.) НЕ трогаем —
+    уважаем выбор пользователя.
+
+    Мутирует cfg на месте. Возвращает True, если что-то добавили.
+    """
+    cfg = cfg or {}
+    changed = False
+    for peer in (cfg.get("peers") or []):
+        if not isinstance(peer, dict):
+            continue
+        if peer.get("PersistentKeepalive") in (None, ""):
+            peer["PersistentKeepalive"] = int(default)
+            changed = True
+    return changed
+
+
 _AWG_V2_BLOB_SET = frozenset(AWG_V2_BLOB_FIELDS)
 
 

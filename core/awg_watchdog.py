@@ -326,6 +326,13 @@ class AwgWatchdog:
 
             self._maybe_restart(mgr, name, entry, settings, now)
 
+        # Воскрешение упавших интерфейсов: если включено авто-переподключение,
+        # а autostart-туннель (тот, что ДОЛЖЕН быть поднят) лежит — поднять
+        # его заново. Ловит случай, когда демон/интерфейс умер целиком (а не
+        # просто протух handshake): в list_interfaces его уже нет, обычная
+        # ветка рестарта не сработает.
+        self._resurrect_down_autostart(mgr, settings, now)
+
     def _maybe_restart(self, mgr, iface: str, status: dict,
                         settings: dict, now: float):
         """Принять решение по одному интерфейсу."""
@@ -414,6 +421,70 @@ class AwgWatchdog:
         # чтобы следующий тик ре-базировался, а не считал «откат» застоем.
         self._rx_state.pop(iface, None)
         history.append(now)
+
+    def _resurrect_down_autostart(self, mgr, settings: dict, now: float):
+        """
+        Поднять заново autostart-интерфейсы, которые сейчас лежат.
+
+        Гейтится autostart-флагом (а не «видели поднятым»), чтобы НЕ
+        воскрешать туннели, которые пользователь остановил сам: autostart =
+        явное «этот туннель должен быть поднят». Cooldown и rate-limit —
+        общие с рестартами (тот же _last_restart/_restart_log по имени),
+        поэтому конфиг, который не поднимается, не уходит в цикл.
+        """
+        try:
+            from core.awg_autostart_manager import get_awg_autostart_manager
+            wanted = get_awg_autostart_manager().get_enabled_interfaces()
+        except Exception as e:
+            log.warning("awg-watchdog: список autostart: %s" % e, source="awg")
+            return
+        if not wanted:
+            return
+
+        try:
+            existing = {c["name"] for c in mgr.list_configs()}
+        except Exception:
+            existing = set(wanted)
+
+        for name in wanted:
+            if name not in existing:
+                continue  # конфиг удалён — поднимать нечего
+            try:
+                if mgr.is_running(name):
+                    continue
+            except Exception:
+                continue
+
+            # Cooldown — не дёргаем чаще, чем туннелю нужно на подъём.
+            last = self._last_restart.get(name, 0)
+            if (now - last) < settings["cooldown_sec"]:
+                continue
+            # Rate limit — общий с рестартами: не больше N/час.
+            history = self._restart_log.setdefault(name, [])
+            history[:] = [ts for ts in history if (now - ts) < 3600]
+            if len(history) >= settings["max_restarts_per_hour"]:
+                log.warning(
+                    "awg-watchdog: %s (autostart) лежит, но лимит подъёмов"
+                    " исчерпан (%d/час) — конфиг не поднимается, проверьте его"
+                    % (name, settings["max_restarts_per_hour"]),
+                    source="awg")
+                continue
+
+            log.warning("awg-watchdog: %s (autostart) не поднят — поднимаю"
+                        % name, source="awg")
+            try:
+                r = mgr.up(name)
+            except Exception as e:
+                log.warning("awg-watchdog: up %s: %s" % (name, e), source="awg")
+                history.append(now)
+                self._last_restart[name] = now
+                continue
+            self._last_restart[name] = now
+            self._rx_state.pop(name, None)
+            history.append(now)
+            if not r.get("ok"):
+                log.warning("awg-watchdog: не удалось поднять %s: %s"
+                            % (name, r.get("message", "ошибка")), source="awg")
 
     # ─── status (для UI) ───
 

@@ -85,6 +85,22 @@ class TestAwgManagerCRUD(unittest.TestCase):
         self.assertTrue(os.path.isfile(
             os.path.join(self.platform.config_dir, "awg0.conf")))
 
+    def test_save_config_injects_keepalive(self):
+        # SAMPLE_CONF без PersistentKeepalive → save проставляет 25.
+        self.assertNotIn("PersistentKeepalive", SAMPLE_CONF)
+        self.mgr.save_config("awg0", text=SAMPLE_CONF)
+        saved = open(os.path.join(self.platform.config_dir,
+                                  "awg0.conf")).read()
+        self.assertIn("PersistentKeepalive = 25", saved)
+
+    def test_save_config_preserves_existing_keepalive(self):
+        conf = SAMPLE_CONF.rstrip() + "\nPersistentKeepalive = 15\n"
+        self.mgr.save_config("awg0", text=conf)
+        cfg = self.mgr.get_config("awg0")
+        self.assertEqual(
+            str(cfg["parsed"]["peers"][0].get("PersistentKeepalive")), "15")
+        self.assertNotIn("PersistentKeepalive = 25", cfg["text"])
+
     def test_save_invalid_name_raises(self):
         with self.assertRaises(ValueError):
             self.mgr.save_config("bad/name", text=SAMPLE_CONF)

@@ -132,6 +132,81 @@ class TestMaybeRestart(unittest.TestCase):
         mgr.restart.assert_not_called()
 
 
+class TestResurrectDownAutostart(unittest.TestCase):
+    """
+    Авто-переподключение поднимает заново упавший autostart-туннель.
+    Гейтится autostart-флагом — чужие/остановленные вручную не трогаем.
+    """
+
+    def _settings(self, **over):
+        base = {"cooldown_sec": 300, "max_restarts_per_hour": 6,
+                "enabled": True}
+        base.update(over)
+        return base
+
+    def _mgr(self, *, running, configs=("loc1",)):
+        mgr = mock.MagicMock()
+        mgr.is_running.return_value = running
+        mgr.list_configs.return_value = [{"name": n} for n in configs]
+        mgr.up.return_value = {"ok": True}
+        return mgr
+
+    def _patch_autostart(self, wanted):
+        am = mock.MagicMock()
+        am.get_enabled_interfaces.return_value = list(wanted)
+        return mock.patch(
+            "core.awg_autostart_manager.get_awg_autostart_manager",
+            return_value=am)
+
+    def test_resurrects_down_autostart(self):
+        wd = awg_watchdog.AwgWatchdog()
+        mgr = self._mgr(running=False)
+        with self._patch_autostart(["loc1"]):
+            wd._resurrect_down_autostart(mgr, self._settings(), time.time())
+        mgr.up.assert_called_once_with("loc1")
+
+    def test_skips_running_autostart(self):
+        wd = awg_watchdog.AwgWatchdog()
+        mgr = self._mgr(running=True)
+        with self._patch_autostart(["loc1"]):
+            wd._resurrect_down_autostart(mgr, self._settings(), time.time())
+        mgr.up.assert_not_called()
+
+    def test_skips_non_autostart(self):
+        # Туннель лежит, но autostart НЕ включён → не воскрешаем (мог быть
+        # остановлен пользователем).
+        wd = awg_watchdog.AwgWatchdog()
+        mgr = self._mgr(running=False)
+        with self._patch_autostart([]):
+            wd._resurrect_down_autostart(mgr, self._settings(), time.time())
+        mgr.up.assert_not_called()
+
+    def test_skips_deleted_config(self):
+        wd = awg_watchdog.AwgWatchdog()
+        mgr = self._mgr(running=False, configs=())   # конфиг удалён
+        with self._patch_autostart(["loc1"]):
+            wd._resurrect_down_autostart(mgr, self._settings(), time.time())
+        mgr.up.assert_not_called()
+
+    def test_cooldown_blocks_resurrect(self):
+        wd = awg_watchdog.AwgWatchdog()
+        now = time.time()
+        wd._last_restart["loc1"] = now - 60      # 60с назад, cooldown 300с
+        mgr = self._mgr(running=False)
+        with self._patch_autostart(["loc1"]):
+            wd._resurrect_down_autostart(mgr, self._settings(), now)
+        mgr.up.assert_not_called()
+
+    def test_rate_limit_blocks_resurrect(self):
+        wd = awg_watchdog.AwgWatchdog()
+        now = time.time()
+        wd._restart_log["loc1"] = [now - i * 10 for i in range(6)]  # 6/час
+        mgr = self._mgr(running=False)
+        with self._patch_autostart(["loc1"]):
+            wd._resurrect_down_autostart(mgr, self._settings(), now)
+        mgr.up.assert_not_called()
+
+
 class TestStatus(unittest.TestCase):
 
     def test_status_includes_required_fields(self):

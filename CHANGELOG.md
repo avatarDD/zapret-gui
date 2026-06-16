@@ -3,6 +3,26 @@
 ## Unreleased — Пул публичных серверов, тестер прокси, vmess, urltest-подписки
 
 ### Добавлено
+- **Авто-переподключение AWG теперь поднимает заново УПАВШИЙ интерфейс**
+  (`core/awg_watchdog.py`). Раньше watchdog следил только за «живыми»
+  туннелями (протухший handshake / rx-stall / проба) и игнорировал
+  упавшие: если демон/интерфейс умирал целиком, в `list_interfaces` его
+  уже не было, и watchdog его «забывал». Теперь при включённом
+  авто-переподключении watchdog на каждом тике проверяет и
+  **autostart**-туннели (те, что должны быть подняты): если такой лежит —
+  поднимает заново (`mgr.up`). Гейтится именно autostart-флагом, чтобы НЕ
+  воскрешать туннели, остановленные пользователем вручную; cooldown и
+  rate-limit — общие с рестартами (не уходит в цикл). Тесты —
+  `test_awg_watchdog.py::TestResurrectDownAutostart`.
+- **PersistentKeepalive = 25 проставляется новым AWG-конфигам автоматически**
+  (`core/awg_config.ensure_persistent_keepalive`, вызывается в
+  `AwgManager.save_config`). Покрывает все пути создания/импорта (ручной
+  ввод, генерация WARP, импорт WARP-/подписочных конфигов). Без keepalive
+  NAT-binding протухает за ~30–120с простоя и туннель «молча отваливается»
+  (особенно за CGNAT / на мобильном). Явно заданное значение (в т.ч. `0` =
+  выкл.) не трогаем; raw-текст без keepalive перерендеривается, с
+  keepalive — сохраняется как есть. Тесты — `test_awg_config.py::
+  TestEnsurePersistentKeepalive`, `test_awg_manager_lifecycle.py`.
 - **geosite/geoip-маршрутизация теперь работает и для AWG-туннелей**
   (единый слой, `core/unified` + `core/routing/domain_rule.py`). Раньше
   geosite/geoip в маршруте применялись ТОЛЬКО на движках (sing-box нативно

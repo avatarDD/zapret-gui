@@ -406,6 +406,9 @@ def build_config(account: dict, private_key: str,
         "PublicKey":  peer_pub,
         "AllowedIPs": ["0.0.0.0/0", "::/0"],
         "Endpoint":   "%s:%d" % (host, port),
+        # keepalive держит NAT-binding живым (за CGNAT/на мобильном без него
+        # WARP «молча отваливается» в простое).
+        "PersistentKeepalive": 25,
     }
 
     return {"interface": iface, "peers": [peer]}
