@@ -487,11 +487,16 @@ const AwgDashboardPage = (() => {
         if (d.binaries) {
             const fmtBin = (label, info) => {
                 if (!info) { lines.push(label + ': ?'); return; }
+                // Бэкенд шлёт объект {path, exists, broken, version, detail};
+                // строку-путь (устаревший формат) тоже поддержим.
+                if (typeof info === 'string') info = { path: info };
                 let state;
-                if (info.broken)      state = 'НЕ ЗАПУСКАЕТСЯ ✗ (несовместим/битый)';
+                if (info.broken)       state = 'НЕ ЗАПУСКАЕТСЯ ✗ (несовместим/битый)';
                 else if (!info.exists) state = 'не найден ✗';
                 else                   state = 'ok ✓';
-                lines.push(label + ': ' + (info.path || '?') + '  [' + state + ']');
+                lines.push(label + ': ' + (info.version || '?') +
+                           '  [' + state + ']');
+                lines.push('  path: ' + (info.path || '?'));
                 if (info.detail) lines.push('  → ' + info.detail);
             };
             fmtBin('awg', d.binaries.awg);
