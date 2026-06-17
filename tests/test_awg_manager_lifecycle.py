@@ -334,26 +334,54 @@ class TestAwgManagerDiagnosticsBinaries(unittest.TestCase):
         self.assertNotIn("amneziawg_go_version", bins)
 
 
-class TestSetconfIpacketHint(unittest.TestCase):
-    """`_setconf_has_ipackets` — детект signature-пакетов для подсказки
-    при провале setconf (частый «висяк» демона на WARP-конфигах с I1)."""
+class TestResolveEndpointIp(unittest.TestCase):
+    """`_resolve_endpoint_ip` — bounded-резолв Endpoint перед setconf.
 
-    def test_detects_i1(self):
-        text = ("[Interface]\nPrivateKey = x\nJc = 4\n"
-                "I1 = <b 0xdeadbeef>\n")
-        self.assertTrue(awg_manager._setconf_has_ipackets(text))
+    `awg setconf` резолвит хостнейм синхронно; если DNS роутера лежит
+    (resolv.conf → 127.0.0.1, dnsmasq down), setconf висит. Резолвим сами
+    с жёстким таймаутом: IP-литерал — мимо, имя — через getaddrinfo в
+    потоке, зависший резолвер — отдаём timed_out вместо вечного ожидания."""
 
-    def test_detects_i3_case_insensitive(self):
-        self.assertTrue(awg_manager._setconf_has_ipackets("i3 = <b 0x00>"))
+    def test_ipv4_literal_passthrough(self):
+        ip, timed_out = awg_manager._resolve_endpoint_ip("162.159.192.4")
+        self.assertEqual(ip, "162.159.192.4")
+        self.assertFalse(timed_out)
 
-    def test_no_ipackets(self):
-        text = ("[Interface]\nPrivateKey = x\nJc = 4\nJmin = 40\n"
-                "H1 = 1\nS1 = 0\n")
-        self.assertFalse(awg_manager._setconf_has_ipackets(text))
+    def test_ipv6_literal_passthrough(self):
+        ip, timed_out = awg_manager._resolve_endpoint_ip("2606:4700:d0::a29f:c004")
+        self.assertEqual(ip, "2606:4700:d0::a29f:c004")
+        self.assertFalse(timed_out)
 
-    def test_empty(self):
-        self.assertFalse(awg_manager._setconf_has_ipackets(""))
-        self.assertFalse(awg_manager._setconf_has_ipackets(None))
+    def test_prefers_ipv4(self):
+        import socket
+        fake = [
+            (socket.AF_INET6, socket.SOCK_DGRAM, 0, "", ("2606::1", 0, 0, 0)),
+            (socket.AF_INET,  socket.SOCK_DGRAM, 0, "", ("162.159.192.4", 0)),
+        ]
+        with mock.patch("socket.getaddrinfo", return_value=fake):
+            ip, timed_out = awg_manager._resolve_endpoint_ip("engage.example.com")
+        self.assertEqual(ip, "162.159.192.4")
+        self.assertFalse(timed_out)
+
+    def test_hard_timeout_on_stuck_resolver(self):
+        import socket, time
+        def _hang(*a, **k):
+            time.sleep(5)
+            return []
+        with mock.patch("socket.getaddrinfo", side_effect=_hang):
+            ip, timed_out = awg_manager._resolve_endpoint_ip(
+                "stuck.example.com", timeout=0.3)
+        self.assertIsNone(ip)
+        self.assertTrue(timed_out)
+
+    def test_unresolvable_name(self):
+        import socket
+        with mock.patch("socket.getaddrinfo",
+                        side_effect=socket.gaierror("nope")):
+            ip, timed_out = awg_manager._resolve_endpoint_ip(
+                "nope.invalid", timeout=2)
+        self.assertIsNone(ip)
+        self.assertFalse(timed_out)
 
 
 if __name__ == "__main__":
