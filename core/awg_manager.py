@@ -1314,8 +1314,17 @@ class AwgManager:
             rc, _out, err = _run([self._awg_bin(), "setconf", ifname, tmp_path],
                                  timeout=15)
             if rc != 0:
-                return {"ok": False, "message":
-                        "awg setconf %s: %s" % (ifname, err.strip())}
+                msg = "awg setconf %s: %s" % (ifname, err.strip())
+                # Самый частый «висяк»: setconf уходит в таймаут, когда демон
+                # не переваривает signature-пакеты I1–I5 (UAPI-запрос принят,
+                # но ответа нет). Для Cloudflare WARP (это ВАНИЛЬНЫЙ WireGuard)
+                # I1–I5 не нужны вовсе. Подсказываем, что именно убрать.
+                if _setconf_has_ipackets(setconf_text):
+                    msg += (" — демон не ответил на конфиг. В конфиге есть"
+                            " signature-пакеты I1–I5; если это Cloudflare WARP"
+                            " (обычный WireGuard), они не нужны и могут вешать"
+                            " amneziawg-go — попробуйте убрать I1 из конфига.")
+                return {"ok": False, "message": msg}
             return {"ok": True}
         finally:
             try:
@@ -1530,6 +1539,16 @@ _I1_SHOW_RE = re.compile(
     r"^\s*i1:\s*(?:<b\s+)?0x([0-9a-fA-F]+)>?\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
+
+# Строка вида `I1 = …` (любой из I1..I5) в отрендеренном setconf — нужна,
+# чтобы при провале setconf подсказать про signature-пакеты (см.
+# _apply_setconf): они — частая причина «висяка» демона на WARP-конфигах.
+_IPACKET_RE = re.compile(r"^\s*I[1-5]\s*=", re.MULTILINE | re.IGNORECASE)
+
+
+def _setconf_has_ipackets(setconf_text: str) -> bool:
+    """True, если в setconf-тексте есть хотя бы одно поле I1..I5."""
+    return bool(setconf_text and _IPACKET_RE.search(setconf_text))
 
 
 def _compute_i1_lengths(cfg_parsed: dict, awg_show: str) -> dict:

@@ -334,5 +334,27 @@ class TestAwgManagerDiagnosticsBinaries(unittest.TestCase):
         self.assertNotIn("amneziawg_go_version", bins)
 
 
+class TestSetconfIpacketHint(unittest.TestCase):
+    """`_setconf_has_ipackets` — детект signature-пакетов для подсказки
+    при провале setconf (частый «висяк» демона на WARP-конфигах с I1)."""
+
+    def test_detects_i1(self):
+        text = ("[Interface]\nPrivateKey = x\nJc = 4\n"
+                "I1 = <b 0xdeadbeef>\n")
+        self.assertTrue(awg_manager._setconf_has_ipackets(text))
+
+    def test_detects_i3_case_insensitive(self):
+        self.assertTrue(awg_manager._setconf_has_ipackets("i3 = <b 0x00>"))
+
+    def test_no_ipackets(self):
+        text = ("[Interface]\nPrivateKey = x\nJc = 4\nJmin = 40\n"
+                "H1 = 1\nS1 = 0\n")
+        self.assertFalse(awg_manager._setconf_has_ipackets(text))
+
+    def test_empty(self):
+        self.assertFalse(awg_manager._setconf_has_ipackets(""))
+        self.assertFalse(awg_manager._setconf_has_ipackets(None))
+
+
 if __name__ == "__main__":
     unittest.main()
