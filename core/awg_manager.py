@@ -670,20 +670,31 @@ class AwgManager:
         # Здоровье бинарников: после внешнего обновления awg частая
         # причина «demon не стартует / setconf падает с syntax error» —
         # несовместимая архитектура бинарника. Показываем это явно.
+        #
+        # ВАЖНО: фронт (awg_dashboard.fmtBin) ждёт ПО КАЖДОМУ бинарю объект
+        # {path, exists, broken, ok, detail, version}. Не перезаписывай этот
+        # dict плоскими строками-путями — иначе `info.exists` становится
+        # undefined и статус ВСЕГДА рендерится как «не найден ✗», даже когда
+        # бинарь на месте (ровно этот баг маскировал реальную причину в
+        # баг-репортах). Версии дописываем НИЖЕ внутрь этих же объектов.
         try:
             go_path  = self._amneziawg_go()
             awg_path = self._awg_bin()
-            # amneziawg-go НЕ пробуем `--version` (см. _do_up) — только
-            # сообщаем путь и существование. `awg` пробиваем полноценно.
+            # amneziawg-go НЕ пробуем `--version` через _probe_binary (форк
+            # wireguard-go может принять `--version` за имя интерфейса) —
+            # только наличие файла. `awg` пробиваем полноценно.
+            go_exists = bool(go_path and os.path.isfile(go_path))
             info["binaries"] = {
                 "amneziawg_go": {
                     "path": go_path,
-                    "exists": bool(go_path and os.path.isfile(go_path)),
+                    "exists": go_exists,
                     "broken": False,
-                    "ok": bool(go_path and os.path.isfile(go_path)),
+                    "ok": go_exists,
                     "detail": "",
+                    "version": "",
                 },
-                "awg": {"path": awg_path, **self._probe_binary(awg_path)},
+                "awg": {"path": awg_path, "version": "",
+                        **self._probe_binary(awg_path)},
             }
         except Exception as e:
             info["errors"].append("binary probe: %s" % e)
@@ -728,32 +739,34 @@ class AwgManager:
 
         # Версии бинарей — критичны для AmneziaWG-v2: если демон старый
         # и не понимает I1/S3/S4, обфускация не применяется и сервер
-        # дропает data-пакеты (handshake при этом проходит).
-        info["binaries"] = {
-            "amneziawg_go": self._amneziawg_go(),
-            "awg":          self._awg_bin(),
-            "awg_version":  "",
-            "amneziawg_go_version": "",
-        }
-        rc, out, _ = _run([self._awg_bin(), "--version"], timeout=3)
-        if rc == 0:
-            info["binaries"]["awg_version"] = (out or "").strip()
+        # дропает data-пакеты (handshake при этом проходит). Пишем версию
+        # ВНУТРЬ структурированных объектов выше (а не плоскими полями и не
+        # пересоздавая dict) — см. предупреждение там же.
+        awg_b = (info.get("binaries") or {}).get("awg")
+        go_b  = (info.get("binaries") or {}).get("amneziawg_go")
+        if isinstance(awg_b, dict):
+            rc, out, _ = _run([awg_b.get("path") or self._awg_bin(),
+                               "--version"], timeout=3)
+            if rc == 0:
+                awg_b["version"] = (out or "").strip()
         # amneziawg-go обычно `--version` в stderr и фолбэк через
         # подсчёт даты модификации бинаря, если флага нет.
-        rc, out, err = _run([self._amneziawg_go(), "--version"], timeout=3)
-        ver_out = (out or err or "").strip()
-        if ver_out and "unknown" not in ver_out.lower():
-            info["binaries"]["amneziawg_go_version"] = ver_out
-        else:
-            try:
-                import os as _os, datetime as _dt
-                st = _os.stat(self._amneziawg_go())
-                info["binaries"]["amneziawg_go_version"] = (
-                    "mtime=%s" % _dt.datetime.utcfromtimestamp(st.st_mtime)
-                    .strftime("%Y-%m-%d")
-                )
-            except OSError:
-                pass
+        if isinstance(go_b, dict):
+            go_path = go_b.get("path") or self._amneziawg_go()
+            rc, out, err = _run([go_path, "--version"], timeout=3)
+            ver_out = (out or err or "").strip()
+            if ver_out and "unknown" not in ver_out.lower():
+                go_b["version"] = ver_out
+            else:
+                try:
+                    import datetime as _dt
+                    st = os.stat(go_path)
+                    go_b["version"] = (
+                        "mtime=%s" % _dt.datetime.utcfromtimestamp(st.st_mtime)
+                        .strftime("%Y-%m-%d")
+                    )
+                except OSError:
+                    pass
 
         # Сырой текст файла-конфига с диска (с маскированным PrivateKey).
         # Часто оказывается, что на диске не то, что показано в редакторе

@@ -255,5 +255,84 @@ class TestIfaceForName(unittest.TestCase):
                              "never-existed")
 
 
+class TestAwgManagerDiagnosticsBinaries(unittest.TestCase):
+    """
+    Регрессия: diagnostics()["binaries"] должен отдавать ПО КАЖДОМУ
+    бинарю объект {path, exists, broken, version}, а не плоскую строку-путь.
+
+    Раньше второй блок в diagnostics() перезаписывал структурированный dict
+    плоскими путями + sibling-полями *_version, из-за чего фронт
+    (awg_dashboard.fmtBin) видел info.exists === undefined и ВСЕГДА печатал
+    «не найден ✗» с версией «?», даже когда бинарь на месте. Этот баг
+    маскировал реальную причину в баг-репортах.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="awg-diag-test-")
+        self.platform = FakePlatform(self.tmpdir)
+        self.mgr = awg_manager.AwgManager()
+
+        # Реальные файлы-бинари, чтобы os.path.isfile → True (exists).
+        self.awg_file = os.path.join(self.platform.binary_dir, "awg")
+        self.go_file  = os.path.join(self.platform.binary_dir, "amneziawg-go")
+        for f in (self.awg_file, self.go_file):
+            with open(f, "w") as fh:
+                fh.write("#!/bin/true\n")
+
+        self._patches = [
+            mock.patch.object(self.mgr, "_platform",
+                              return_value=self.platform),
+            mock.patch.object(self.mgr, "_config_dir",
+                              return_value=self.platform.config_dir),
+            mock.patch.object(self.mgr, "_run_dir",
+                              return_value=self.platform.run_dir),
+            mock.patch.object(self.mgr, "_scan_dirs",
+                              return_value=[self.platform.config_dir]),
+            mock.patch.object(self.mgr, "_awg_bin",
+                              return_value=self.awg_file),
+            mock.patch.object(self.mgr, "_amneziawg_go",
+                              return_value=self.go_file),
+            mock.patch.object(self.mgr, "_wg_interfaces",
+                              return_value=[]),
+        ]
+        for p in self._patches:
+            p.start()
+
+        # Сохраняем конфиг, чтобы get_config/render_setconf отработали.
+        self.mgr.save_config("awg0", text=SAMPLE_CONF)
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _fake_run(args, timeout=15, input_text=None, env=None):
+        # Любой `--version` → распознаваемая строка; всё прочее (ip/awg show
+        # и т.п.) — безобидный успех. Маркеров «битости» нет → broken=False.
+        if "--version" in args:
+            return 0, "TESTVER 1.2.3", ""
+        return 0, "", ""
+
+    def test_binaries_are_structured_objects_with_version(self):
+        with mock.patch.object(awg_manager, "_run", self._fake_run):
+            diag = self.mgr.diagnostics("awg0")
+
+        bins = diag["binaries"]
+        for key in ("awg", "amneziawg_go"):
+            entry = bins[key]
+            # Контракт фронта: объект, а не строка-путь.
+            self.assertIsInstance(entry, dict, "%s должен быть объектом" % key)
+            self.assertTrue(entry["exists"], "%s.exists должен быть True" % key)
+            self.assertFalse(entry["broken"])
+            self.assertEqual(entry["version"], "TESTVER 1.2.3")
+            self.assertTrue(entry["path"])
+
+        # Плоские sibling-поля версий не должны возвращаться (старый формат,
+        # который ломал фронт).
+        self.assertNotIn("awg_version", bins)
+        self.assertNotIn("amneziawg_go_version", bins)
+
+
 if __name__ == "__main__":
     unittest.main()
