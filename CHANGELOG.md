@@ -538,20 +538,35 @@
   deadlock демона (нет ответа вовсе), а не нехватку времени.
 
 ### Исправлено
-- **`awg setconf` больше не виснет на резолве хостнейм-Endpoint при
-  больном DNS роутера** (`core/awg_manager.py`: `_resolve_endpoint_ip` +
-  пред-резолв в `_do_up`). `awg setconf` резолвит `Endpoint` синхронно
-  (UAPI принимает только IP:port); если на роутере `/etc/resolv.conf` →
-  `127.0.0.1`, а dnsmasq лежит, резолвер блокирует и setconf висит до
-  таймаута, после чего интерфейс откатывается (немой «timeout» через 15 с —
-  ровно этот симптом ловили на WARP-конфигах с `Endpoint =
-  engage.cloudflareclient.com`, тогда как тот же конфиг с IP-эндпоинтом
-  поднимался мгновенно). Теперь перед `setconf` мы сами резолвим хостнейм в
-  IP в отдельном потоке с жёстким таймаутом (предпочитая IPv4) и
-  подставляем IP в то, что уходит демону (на диске конфиг остаётся с
-  хостнеймом). Если DNS недоступен — вместо 15-секундного «висяка» сразу
-  возвращаем понятную ошибку с указанием проверить dnsmasq/resolv.conf.
-  Тесты — `test_awg_manager_lifecycle.py::TestResolveEndpointIp`.
+- **dnsmasq не стартовал из-за ложного детекта nftset → ронял DNS и
+  domain-роутинг** (`core/routing/dnsmasq_integration.py`,
+  `core/routing/domain_rule.py`). `supports_nftset()` делал
+  `"nftset" in dnsmasq_output` — но сборка БЕЗ фичи печатает в «Compile
+  time options» токен `no-nftset` (содержит подстроку «nftset»), а запас
+  «версия ≥ 2.87» неверен: `nftset=`/`ipset=` — это компайл-тайм опции
+  (HAVE_NFTSET/HAVE_IPSET), а не версия. Из-за ложного «+» мы писали
+  `nftset=` в managed-файл, и dnsmasq 2.91 без HAVE_NFTSET падал на старте
+  («recompile with HAVE_NFTSET defined»). Теперь поддержку читаем точным
+  токен-матчем по compile-options (отдельно `nftset` и `ipset`), а тип set
+  выбираем только если его держат И dnsmasq, И система (`_choose_set_kind`);
+  если не держит ни одного — managed-файл пишется БЕЗ set-директив (не
+  роняем dnsmasq), domain-роутинг деградирует на iproute-фолбэк. Тесты —
+  `test_dnsmasq_nftset_detect.py`.
+- **`awg setconf` больше не виснет на хостнейм-Endpoint (пиннинг IPv4)**
+  (`core/awg_manager.py`: `_resolve_endpoint_ip` + пред-резолв в `_do_up`).
+  `awg setconf` резолвит `Endpoint` синхронно (UAPI принимает только
+  IP:port). На WARP-конфигах с `Endpoint = engage.cloudflareclient.com`
+  туннель висел до таймаута и откатывался, а тот же конфиг с IPv4-литералом
+  (`162.159.192.4:8886`) поднимался мгновенно — при том что имя на роутере
+  резолвится нормально (так что дело не в самом DNS). Вероятная причина:
+  хостнейм отдаёт и AAAA, а IPv6 в интернет на роутере мёртв (нет
+  v6-default-route, endpoint v6 `unreachable`), и туннель упирается в
+  недоступный IPv6-эндпоинт. Теперь перед `setconf` сами резолвим хостнейм
+  в IP, **предпочитая IPv4**, в отдельном потоке с жёстким таймаутом, и
+  подставляем результат в то, что уходит демону (на диске конфиг остаётся с
+  хостнеймом — перерезолвится при следующем `up`). Если резолвер недоступен
+  — вместо 15-секундного «висяка» сразу понятная ошибка. Тесты —
+  `test_awg_manager_lifecycle.py::TestResolveEndpointIp`.
 - **Диагностика AWG всегда показывала бинари как `? [не найден ✗]`**
   (`core/awg_manager.py::diagnostics` + `web/js/pages/awg_dashboard.js`).
   Бэкенд сперва собирал по каждому бинарю структурированный объект
