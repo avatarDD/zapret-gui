@@ -990,6 +990,36 @@ class AwgManager:
         time.sleep(0.2)
 
         # 2) применить через `awg setconf`
+        #
+        # Перед этим САМИ резолвим хостнейм-Endpoint'ы в IP, ПРЕДПОЧИТАЯ IPv4.
+        # Зачем: `awg setconf` резолвит Endpoint синхронно, и при хостнейме
+        # туннель может получить IPv6-адрес — а на роутере IPv6 в интернет
+        # часто мёртв (нет v6-default-route), из-за чего setconf/демон встаёт.
+        # Эмпирически тот же WARP-конфиг с `Endpoint = <hostname>` висел до
+        # таймаута, а с IPv4-литералом поднимался мгновенно. Резолвим в потоке
+        # с жёстким таймаутом (на случай реально недоступного резолвера) и
+        # подставляем IP только в то, что уходит демону — на диске конфиг
+        # остаётся с хостнеймом (перерезолвится при следующем `up`).
+        for peer in cfg.get("peers", []):
+            ep = (peer.get("Endpoint") or "").strip()
+            if not ep:
+                continue
+            host, port = _parse_endpoint_host(ep)
+            if not host or not port:
+                continue
+            ip, timed_out = _resolve_endpoint_ip(host)
+            if ip and ip != host:
+                peer["Endpoint"] = ("[%s]:%s" % (ip, port)) if ":" in ip \
+                    else ("%s:%s" % (ip, port))
+            elif not ip:
+                self._cleanup_iface(ifname)
+                why = ("резолвер не ответил вовремя" if timed_out
+                       else "имя не разрешается")
+                return {"ok": False, "message":
+                        "Не удалось зарезолвить Endpoint «%s» (%s). Проверьте"
+                        " DNS-резолвер роутера или укажите в Endpoint IP-адрес"
+                        " вместо хоста." % (host, why)}
+
         setconf_text = render_setconf(cfg)
         applied = self._apply_setconf(ifname, setconf_text)
         if not applied["ok"]:
@@ -1301,6 +1331,26 @@ class AwgManager:
 
         return out
 
+    def _setconf_timeout(self) -> int:
+        """
+        Таймаут `awg setconf`, секунды. Конфигурируемо
+        (`awg.setconf_timeout_sec`, по умолчанию 15): на слабом железе или с
+        тяжёлой обфускацией демон может отвечать дольше. Ограничиваем 5..120,
+        чтобы GUI не висел бесконечно при настоящем deadlock'е демона.
+
+        Замечание: применение полей через UAPI — операция на миллисекунды,
+        поэтому таймаут >15с почти всегда означает, что демон ЗАВИС (не
+        ответил вовсе), а не «не успел». Повышать имеет смысл лишь чтобы это
+        подтвердить или обойти редкий медленный старт на очень слабом CPU.
+        """
+        try:
+            from core.config_manager import get_config_manager
+            v = int(get_config_manager().get(
+                "awg", "setconf_timeout_sec", default=15) or 15)
+        except Exception:
+            v = 15
+        return max(5, min(v, 120))
+
     def _apply_setconf(self, ifname: str, setconf_text: str) -> dict:
         # пишем во временный файл (awg setconf хочет путь)
         import tempfile
@@ -1312,7 +1362,7 @@ class AwgManager:
         try:
             os.chmod(tmp_path, 0o600)
             rc, _out, err = _run([self._awg_bin(), "setconf", ifname, tmp_path],
-                                 timeout=15)
+                                 timeout=self._setconf_timeout())
             if rc != 0:
                 return {"ok": False, "message":
                         "awg setconf %s: %s" % (ifname, err.strip())}
@@ -1531,7 +1581,6 @@ _I1_SHOW_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
-
 def _compute_i1_lengths(cfg_parsed: dict, awg_show: str) -> dict:
     """
     Сравнить I1 на трёх уровнях:
@@ -1607,6 +1656,49 @@ def _resolve_host(host: str) -> list:
             seen.add(ip)
             out.append(ip)
     return out
+
+
+def _resolve_endpoint_ip(host: str, timeout: float = 6.0):
+    """
+    Зарезолвить хостнейм Endpoint в IP с ЖЁСТКИМ таймаутом.
+
+    `awg setconf` резолвит Endpoint СИНХРОННО (UAPI принимает только
+    IP:port). Если DNS роутера болен — классика: `/etc/resolv.conf` →
+    `127.0.0.1`, а dnsmasq лежит — системный резолвер блокирует, и setconf
+    висит на резолве до общего таймаута, после чего интерфейс откатывается
+    (немой «timeout»). Поэтому резолвим САМИ, в отдельном потоке с
+    join-таймаутом, чтобы гарантированно вернуть управление. Предпочитаем
+    IPv4 (на роутерах IPv6 часто нерабочий), фолбэк — IPv6.
+
+    Возвращает (ip|None, timed_out). Для IP-литерала — (host, False).
+    """
+    import socket as _s
+    if not host:
+        return None, False
+    for fam in (_s.AF_INET, _s.AF_INET6):
+        try:
+            _s.inet_pton(fam, host)
+            return host, False            # уже IP — резолв не нужен
+        except (OSError, ValueError):
+            pass
+    box = {}
+
+    def _do():
+        try:
+            infos = _s.getaddrinfo(host, None, type=_s.SOCK_DGRAM)
+            box["v4"] = next(
+                (i[4][0] for i in infos if i[0] == _s.AF_INET), None)
+            box["v6"] = next(
+                (i[4][0] for i in infos if i[0] == _s.AF_INET6), None)
+        except Exception:
+            box["err"] = True
+
+    th = threading.Thread(target=_do, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        return None, True                 # резолвер завис → таймаут
+    return (box.get("v4") or box.get("v6")), False
 
 
 def _as_list(v):

@@ -95,20 +95,36 @@ def _backend_for(prefer_nft: bool):
     return None
 
 
+def _choose_set_kind(dn):
+    """
+    Тип set, пригодный ОДНОВРЕМЕННО как dnsmasq-директива И как backend.
+
+    Возвращает 'nftset' | 'ipset' | ''. Только согласованные пары: если
+    dnsmasq пишет в set одного типа, а доступен backend другого — не
+    работает. КРИТИЧНО проверять именно поддержку dnsmasq (compile-time
+    HAVE_NFTSET/HAVE_IPSET): иначе мы пишем `nftset=`/`ipset=` в managed-
+    файл, а dnsmasq без этой фичи не стартует и роняет весь DNS.
+    """
+    if dn.supports_nftset() and nftset_backend.available():
+        return "nftset"
+    if dn.supports_ipset() and ipset_backend.available():
+        return "ipset"
+    return ""
+
+
 def _detect_backend():
     """
-    Подбираем бэкенд исходя из того, что поддерживает dnsmasq.
+    Подбираем бэкенд исходя из того, что поддерживает dnsmasq И система.
 
     Возвращает (backend_module, set_kind_str) или (None, '').
     """
     dn = dnsmasq_integration.DnsmasqIntegration()
-    supports_nftset = dn.supports_nftset()
-
-    backend = _backend_for(prefer_nft=supports_nftset)
-    if backend is None:
-        return None, ""
-    kind = "nftset" if backend is nftset_backend else "ipset"
-    return backend, kind
+    kind = _choose_set_kind(dn)
+    if kind == "nftset":
+        return nftset_backend, "nftset"
+    if kind == "ipset":
+        return ipset_backend, "ipset"
+    return None, ""
 
 
 def _all_domain_rules():
@@ -197,11 +213,19 @@ def _add_static_cidrs_to_sets(cidrs, set_v4, set_v6, backend) -> int:
 def _rebuild_managed_dnsmasq():
     """Перегенерить managed-файл по всем активным domain-правилам."""
     dn = dnsmasq_integration.DnsmasqIntegration()
-    supports_nftset = dn.supports_nftset()
-    set_kind = "nftset" if supports_nftset else "ipset"
+    set_kind = _choose_set_kind(dn)
 
     blocks = []
-    for r in _all_domain_rules():
+    # Если dnsmasq не умеет ни nftset, ни ipset (или нет соответствующего
+    # backend) — НЕ пишем set-директивы: иначе dnsmasq падает на старте
+    # («recompile with HAVE_NFTSET/IPSET defined») и роняет DNS. Managed-
+    # файл тогда пустой (только заголовок), а domain-роутинг держится на
+    # iproute-фолбэке (см. _detect_backend → None).
+    if not set_kind:
+        log.warning("dnsmasq собран без nftset и без ipset (или нет nft/ipset"
+                    " в системе) — managed-файл без set-директив, domain-"
+                    "роутинг через iproute-фолбэк", source="routing")
+    for r in (_all_domain_rules() if set_kind else []):
         domains = _expand_rule_domains(r)
         if not domains:
             continue

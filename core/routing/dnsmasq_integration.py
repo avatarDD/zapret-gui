@@ -175,23 +175,48 @@ class DnsmasqIntegration:
         m = re.search(r"version\s+([0-9]+\.[0-9]+)", out, re.I)
         return m.group(1) if m else ""
 
+    def _compile_options(self):
+        """
+        Множество compile-time опций из `dnsmasq --version` (lowercase).
+
+        dnsmasq печатает строку «Compile time options: IPv6 ... ipset
+        nftset ...»; ОТКЛЮЧЁННАЯ на сборке опция идёт с префиксом `no-`
+        (`no-nftset`, `no-ipset`). Возвращаем набор токенов, чтобы можно
+        было точно (а не подстрокой) проверить наличие фичи.
+        """
+        rc, out, _e = _run(["dnsmasq", "--version"], timeout=3)
+        if rc != 0 or not out:
+            return set()
+        opts = set()
+        for line in out.splitlines():
+            if "compile time options" in line.lower():
+                _, _, rest = line.partition(":")
+                for tok in re.split(r"[\s,]+", rest.strip().lower()):
+                    if tok:
+                        opts.add(tok)
+        return opts
+
     def supports_nftset(self):
         """
-        Директива nftset= появилась в dnsmasq 2.87. Проверяем через
-        --help dhcp (без рестарта) или версию.
+        Поддержка директивы `nftset=` — это КОМПАЙЛ-ТАЙМ фича
+        (HAVE_NFTSET), а НЕ просто версия. dnsmasq без неё отвергает
+        `nftset=` и НЕ стартует («recompile with HAVE_NFTSET defined»),
+        роняя весь DNS. Поэтому проверяем по «Compile time options»:
+        enabled = токен `nftset`, disabled = `no-nftset`.
+
+        (Старый код брал `"nftset" in output` — но это True и для
+        `no-nftset`; плюс версия >= 2.87 ≠ наличие HAVE_NFTSET. Из-за
+        ложного + мы писали `nftset=` в managed-файл, и dnsmasq падал.)
         """
-        rc, out, _e = _run(["dnsmasq", "--help", "dhcp"], timeout=3)
-        # В справке встречается строка про nftset
-        if rc == 0 and "nftset" in (out or "").lower():
-            return True
-        ver = self.get_version()
-        if not ver:
-            return False
-        try:
-            major, minor = ver.split(".", 1)
-            return (int(major), int(minor)) >= (2, 87)
-        except (ValueError, IndexError):
-            return False
+        return "nftset" in self._compile_options()
+
+    def supports_ipset(self):
+        """
+        Поддержка `ipset=` — тоже компайл-тайм (HAVE_IPSET). Та же логика,
+        что и у supports_nftset: токен `ipset` присутствует и это не
+        `no-ipset`.
+        """
+        return "ipset" in self._compile_options()
 
     def status(self):
         """Полный отчёт о состоянии dnsmasq на этой машине."""
@@ -212,6 +237,7 @@ class DnsmasqIntegration:
             "managed_file":     managed,
             "include_present":  include_present,
             "supports_nftset":  self.supports_nftset() if binary else False,
+            "supports_ipset":   self.supports_ipset() if binary else False,
         }
 
     # ─────── include management ───────
