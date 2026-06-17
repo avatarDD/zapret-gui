@@ -914,7 +914,7 @@ class StrategyScanner:
         lists_path = cfg.get("zapret", "lists_path",
                              default="/opt/zapret2/lists")
         bin_path = cfg.get("zapret", "bin_path",
-                           default="/opt/zapret2/bin")
+                           default="/opt/zapret2/files/fake")
         ipset_path = cfg.get("zapret", "ipset_path",
                              default="/opt/zapret2/ipset")
 

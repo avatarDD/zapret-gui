@@ -246,6 +246,42 @@ def _is_ipset_filename(name: str) -> bool:
     return False
 
 
+# IPv4/IPv6 (+ опциональный CIDR) — для content-детекции ipset-файлов,
+# имя которых не содержит "ipset" (напр. russia-youtube-rtmps.txt — список IP,
+# но подключается через --ipset=, значит обязан лежать в ipset/, а не lists/).
+_IP_LINE_RE = re.compile(
+    r"^(?:\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?"        # IPv4 [+/CIDR]
+    r"|[0-9A-Fa-f:]*:[0-9A-Fa-f:]+(?:/\d{1,3})?)$"     # IPv6 [+/CIDR]
+)
+
+
+def _content_is_ipset(path: str, sample: int = 40) -> bool:
+    """True, если файл — список IP/CIDR (а не доменов).
+
+    Эвристика по СОДЕРЖИМОМУ (дополняет имя-эвристику `_is_ipset_filename`):
+    среди первых `sample` непустых не-комментарных строк IP-строк строго больше,
+    чем доменных. Нужна, потому что апстрим/каталоги ссылаются на IP-листы с
+    «обычными» именами через --ipset= — без этого они уезжают в lists/ и nfqws2
+    падает с «cannot access ipset file» (см. winws2_*_game_filter).
+    """
+    ip = dom = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if _IP_LINE_RE.match(s):
+                    ip += 1
+                else:
+                    dom += 1
+                if ip + dom >= sample:
+                    break
+    except OSError:
+        return False
+    return ip > dom and ip > 0
+
+
 def _sync_lists_split(src_dir: str, lists_dst: str, ipset_dst: str):
     """
     Разнести содержимое import/lists/ по двум целевым директориям:
@@ -273,7 +309,10 @@ def _sync_lists_split(src_dir: str, lists_dst: str, ipset_dst: str):
         src = os.path.join(src_dir, name)
         if not os.path.isfile(src):
             continue
-        if _is_ipset_filename(name):
+        # ipset если ИМЯ говорит об этом ИЛИ содержимое — список IP/CIDR.
+        # Суперсет: файлы-домены остаются в lists/, IP-листы с «обычными»
+        # именами (russia-youtube-rtmps.txt) корректно уезжают в ipset/.
+        if _is_ipset_filename(name) or _content_is_ipset(src):
             stats, dst_dir = ipset_stats, ipset_dst
         else:
             stats, dst_dir = lists_stats, lists_dst

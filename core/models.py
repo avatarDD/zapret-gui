@@ -444,6 +444,49 @@ class StrategyScanReport:
 #  INI-каталог стратегий — модель записи
 # ═══════════════════════════════════════════════════════════
 
+def tokenize_args(text: str) -> list[str]:
+    """Разбить строку аргументов nfqws2 на список argv-токенов.
+
+    Разделитель — пробел, НО кавычки (``'``/``"``) группируют: пробел внутри
+    кавычек не разрывает токен. Сами символы кавычек СОХРАНЯЮТСЯ в токене —
+    это критично для inline-Lua в ``--lua-init=``/``--lua-desync=`` (одинарные
+    кавычки там — строковый литерал Lua: ``code='desync.x = 1'`` обязан остаться
+    одним токеном, иначе Lua упадёт).
+
+    Зачем нужно: каталоги (особенно конвертированные winws2-пресеты) кладут
+    несколько флагов в одну строку (``--lua-desync=...:strategy=1 --lua-desync=
+    ...:strategy=1`` — цепочка для одного слота circular). Без токенизации такая
+    строка уходит в nfqws2 ОДНИМ argv-токеном: для ``--filter-tcp=`` это hard-
+    ошибка «Invalid port filter», для ``--lua-desync=`` — тихая порча (значение
+    ``strategy=`` затягивает остаток строки). См. CatalogManager.
+    build_nfqws_args_from_entry и strategy_builder._parse_profile_args.
+
+    argv уходит в nfqws2 списком через subprocess (без shell), поэтому кавычки
+    доходят дословно — повторной интерпретации оболочкой нет.
+    """
+    if not text:
+        return []
+    result: list[str] = []
+    current = ""
+    in_quote = None
+    for char in text:
+        if char in ('"', "'") and in_quote is None:
+            in_quote = char
+            current += char
+        elif char == in_quote:
+            in_quote = None
+            current += char
+        elif char == " " and in_quote is None:
+            if current:
+                result.append(current)
+                current = ""
+        else:
+            current += char
+    if current:
+        result.append(current)
+    return result
+
+
 @dataclass
 class CatalogEntry:
     """
