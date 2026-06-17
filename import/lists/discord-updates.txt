@@ -1,0 +1,3 @@
+dl.discordapp.net
+updates.discord.com
+stable.dl2.discordapp.net

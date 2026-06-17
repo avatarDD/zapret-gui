@@ -52,7 +52,7 @@ import threading
 from typing import Any, Optional
 
 from core.log_buffer import log
-from core.models import CatalogEntry
+from core.models import CatalogEntry, tokenize_args
 
 
 # WinDivert-специфичные аргументы — фильтруются при парсинге
@@ -669,7 +669,14 @@ class CatalogManager:
         """
         Собрать аргументы nfqws2 из записи каталога.
 
-        Каждая строка args — это один аргумент (--lua-desync=...).
+        Каждая строка args токенизируется в отдельные argv-аргументы
+        (quote-aware), т.к. каталоги (особенно конвертированные winws2-пресеты)
+        кладут НЕСКОЛЬКО флагов в одну строку, напр. цепочку
+        ``--lua-desync=...:strategy=1 --lua-desync=...:strategy=1`` для одного
+        слота circular. Без токенизации такая строка ушла бы в nfqws2 ОДНИМ
+        argv-токеном (hard-ошибка «Invalid port filter» для --filter-tcp или
+        тихая порча для --lua-desync). Кавычки сохраняются — inline-Lua не рвём.
+
         Результат — плоский список строк для передачи в nfqws2.
 
         Args:
@@ -678,7 +685,10 @@ class CatalogManager:
         Returns:
             ['--lua-desync=fake:blob=...', '--lua-desync=multisplit:...']
         """
-        return entry.get_args_list()
+        out: list[str] = []
+        for line in entry.get_args_list():
+            out.extend(tokenize_args(line))
+        return out
 
     @staticmethod
     def resolve_paths_in_args(

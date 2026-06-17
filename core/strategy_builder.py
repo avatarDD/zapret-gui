@@ -444,35 +444,11 @@ class StrategyManager:
         argv уходит в nfqws2 через subprocess списком (без shell), поэтому
         кавычки доходят дословно — повторной интерпретации оболочкой нет.
         """
-        if not args_str:
-            return []
-
-        # Разбиваем по пробелам, не разрывая токен внутри кавычек; сами кавычки
-        # оставляем в токене (см. docstring — нужны для Lua-литералов).
-        result = []
-        current = ""
-        in_quote = None
-
-        for char in args_str:
-            if char in ('"', "'") and in_quote is None:
-                in_quote = char
-                current += char
-                continue
-            elif char == in_quote:
-                in_quote = None
-                current += char
-                continue
-            elif char == ' ' and in_quote is None:
-                if current:
-                    result.append(current)
-                    current = ""
-                continue
-            current += char
-
-        if current:
-            result.append(current)
-
-        return result
+        # Делегируем общей quote-aware токенизации (core.models.tokenize_args):
+        # каталоги (CatalogManager.build_nfqws_args_from_entry) и профили
+        # стратегий разбираются ОДНИМ и тем же протестированным кодом.
+        from core.models import tokenize_args
+        return tokenize_args(args_str)
 
     @staticmethod
     def _compute_list_flags() -> list:
