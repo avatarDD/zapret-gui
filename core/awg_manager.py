@@ -1301,6 +1301,26 @@ class AwgManager:
 
         return out
 
+    def _setconf_timeout(self) -> int:
+        """
+        Таймаут `awg setconf`, секунды. Конфигурируемо
+        (`awg.setconf_timeout_sec`, по умолчанию 15): на слабом железе или с
+        тяжёлой обфускацией демон может отвечать дольше. Ограничиваем 5..120,
+        чтобы GUI не висел бесконечно при настоящем deadlock'е демона.
+
+        Замечание: применение полей через UAPI — операция на миллисекунды,
+        поэтому таймаут >15с почти всегда означает, что демон ЗАВИС (не
+        ответил вовсе), а не «не успел». Повышать имеет смысл лишь чтобы это
+        подтвердить или обойти редкий медленный старт на очень слабом CPU.
+        """
+        try:
+            from core.config_manager import get_config_manager
+            v = int(get_config_manager().get(
+                "awg", "setconf_timeout_sec", default=15) or 15)
+        except Exception:
+            v = 15
+        return max(5, min(v, 120))
+
     def _apply_setconf(self, ifname: str, setconf_text: str) -> dict:
         # пишем во временный файл (awg setconf хочет путь)
         import tempfile
@@ -1312,7 +1332,7 @@ class AwgManager:
         try:
             os.chmod(tmp_path, 0o600)
             rc, _out, err = _run([self._awg_bin(), "setconf", ifname, tmp_path],
-                                 timeout=15)
+                                 timeout=self._setconf_timeout())
             if rc != 0:
                 msg = "awg setconf %s: %s" % (ifname, err.strip())
                 # Самый частый «висяк»: setconf уходит в таймаут, когда демон
