@@ -562,7 +562,7 @@ def register(app):
                 "probe_enabled", "probe_host", "probe_port",
                 "probe_timeout_sec", "probe_fail_threshold",
                 "rx_stall_enabled", "rx_stall_timeout_sec",
-                "rx_stall_min_tx_bytes") if k in body})
+                "rx_stall_min_tx_bytes", "rx_stall_min_rx_bytes") if k in body})
             return {"ok": True, "status": get_watchdog().get_status(),
                     "settings": new}
         except Exception as e:
