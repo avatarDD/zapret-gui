@@ -772,6 +772,22 @@ const AwgDashboardPage = (() => {
         // «Переподключать при плохом соединении» = watchdog + активная проба.
         const reconnectOn = !!(s.enabled && s.probe_enabled);
         const help = (typeof Help !== 'undefined') ? Help.button('watchdog') : '';
+        // Видно ли, что активная проба реально идёт через туннель. Если
+        // «cant_bind» — проба не может привязаться к интерфейсу (нет root/
+        // особенности платформы) и работает ТОЛЬКО пассивная защита.
+        const probeLast = (_wd && _wd.probe_last) || {};
+        const probeHuman = {
+            ok:        '✓ идёт через туннель',
+            fail:      '✗ не проходит → рестарт',
+            cant_bind: '⚠ не привязывается к туннелю — работает только пассивная защита (приём встал / handshake)',
+            off:       'выключена',
+        };
+        const probeKeys = Object.keys(probeLast);
+        const probeInfo = (reconnectOn && probeKeys.length)
+            ? `<p class="text-muted" style="font-size:12px; margin:8px 0 0;">Активная проба: ${
+                probeKeys.map(k => `${escapeHtml(k)} — ${probeHuman[probeLast[k]] || escapeHtml(String(probeLast[k]))}`).join('; ')
+              }</p>`
+            : '';
         box.innerHTML = `
             <div class="card-title">Авто-переподключение${help}</div>
             <label style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer;">
@@ -810,6 +826,7 @@ const AwgDashboardPage = (() => {
                 <div style="margin-top:8px;">
                     <button class="btn btn-ghost btn-sm" onclick="AwgDashboardPage.saveWatchdog()">Сохранить параметры</button>
                 </div>
+                ${probeInfo}
             </div>
         `;
     }

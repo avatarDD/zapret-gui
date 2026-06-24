@@ -60,35 +60,77 @@ DEFAULT_PROBE_FAIL_THRESHOLD = 2      # подряд неудач → реста
 # умолчанию: на простое (tx тоже стоит) не срабатывает, а keepalive-шум
 # отсекается порогом min_tx, поэтому ложных рестартов не даёт.
 DEFAULT_RX_STALL_ENABLED      = True
-DEFAULT_RX_STALL_TIMEOUT_SEC  = 120   # сек без единого принятого байта → рестарт
+DEFAULT_RX_STALL_TIMEOUT_SEC  = 120   # сек без значимого приёма → рестарт
 DEFAULT_RX_STALL_MIN_TX_BYTES = 4096  # столько надо отправить «в пустоту»,
                                       # чтобы это считалось застоем, а не
                                       # тишиной keepalive (~десятки байт/мин)
+# Порог «значимого» приёма. Раньше rx-stall сбрасывался на ЛЮБОЙ прирост rx —
+# и это его убивало: WireGuard в ответ на принятый data-пакет шлёт ПАССИВНЫЙ
+# keepalive (≤1 раз/10с), т.е. при живом forward-пути сервер капает нам
+# ~32 байта каждые 10с (≤~400 Б за 120с). Этого «шума» хватало, чтобы таймер
+# застоя сбрасывался вечно и детектор НИКОГДА не срабатывал, хотя реальные
+# данные не идут. Теперь приёмом-«живым» считаем только прирост > этого порога
+# (накопительно от базовой точки). 1 КБ заведомо выше keepalive-шума и заведомо
+# ниже скорости любого реального соединения (КБ/с), поэтому ни ложных
+# срабатываний на аплоаде (ACK'и идут килобайтами), ни пропусков застоя.
+DEFAULT_RX_STALL_MIN_RX_BYTES = 1024
+
+
+_SO_BINDTODEVICE = 25  # значение константы в Linux (в socket её может не быть)
 
 
 def probe_via_iface(host: str, port: int = 443, iface: str = "",
-                    timeout: float = 4.0) -> bool:
+                    timeout: float = 4.0):
     """
     TCP-проба host:port С ПРИВЯЗКОЙ к интерфейсу `iface` (через
-    SO_BINDTODEVICE) — пакет уходит именно через туннель. True, если
-    соединение установилось. Требует root (на роутере он есть); если
-    bind не удался — проба всё равно выполняется (но уже не гарантирует
-    маршрут через туннель).
+    SO_BINDTODEVICE) — пакет должен уйти именно через туннель.
+
+    Возвращает ТРИ состояния (это важно для корректности):
+      * True  — соединение установилось ЧЕРЕЗ туннель (привязка подтверждена);
+      * False — привязка подтверждена (или iface не задан), но соединиться
+                не удалось → честный отказ туннеля;
+      * None  — НЕ удалось подтвердить привязку сокета к туннелю
+                (нет root/CAP_NET_RAW, особенности платформы). Результат
+                недостоверен: проба ушла бы мимо туннеля по обычному WAN и
+                дала ложный «жив». В этом случае пробу НЕЛЬЗЯ трактовать ни
+                как успех, ни как провал — звонок обязан опереться на
+                пассивные детекторы.
+
+    Раньше функция молча глотала ошибку setsockopt и всё равно коннектилась —
+    при неудавшейся привязке это давало ложный «alive» (через WAN), и watchdog
+    НИКОГДА не перезапускал зависший туннель. Теперь привязку проверяем через
+    getsockopt: если она не применилась — отдаём None.
     """
     if not host:
-        return False
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        return None
+    family = socket.AF_INET6 if ":" in str(host) else socket.AF_INET
+    try:
+        s = socket.socket(family, socket.SOCK_STREAM)
+    except OSError:
+        return None
     try:
         s.settimeout(timeout)
         if iface:
+            # Привязываемся к интерфейсу и ПОДТВЕРЖДАЕМ, что привязка реально
+            # применилась (getsockopt возвращает имя устройства). Без этого
+            # на роутере без root проба ушла бы по WAN → ложный «жив».
             try:
-                s.setsockopt(socket.SOL_SOCKET, 25,  # SO_BINDTODEVICE
+                s.setsockopt(socket.SOL_SOCKET, _SO_BINDTODEVICE,
                              (iface + "\0").encode())
+            except (OSError, AttributeError, OverflowError):
+                return None
+            try:
+                got = s.getsockopt(socket.SOL_SOCKET, _SO_BINDTODEVICE, 256)
+                bound = got.split(b"\0", 1)[0].decode(errors="ignore")
             except (OSError, AttributeError):
-                pass
+                bound = ""
+            if bound != iface:
+                return None  # привязка не подтвердилась — недостоверно
         s.connect((host, int(port)))
         return True
     except OSError:
+        # Сюда попадаем только при подтверждённой привязке (или без iface) —
+        # значит это честный отказ соединения именно через туннель.
         return False
     finally:
         try:
@@ -98,27 +140,37 @@ def probe_via_iface(host: str, port: int = 443, iface: str = "",
 
 
 def eval_rx_stall(state, rx_bytes, tx_bytes, now: float, *,
-                  timeout: int, min_tx: int) -> tuple:
+                  timeout: int, min_tx: int, min_rx: int = 0) -> tuple:
     """
-    Пассивный детектор «приём встал»: туннель ШЛЁТ (tx растёт), но НИЧЕГО
-    не ПРИНИМАЕТ (rx стоит) дольше `timeout`, отправив при этом не меньше
-    `min_tx` байт «в пустоту». Это ровно картина зависания (handshake может
-    быть свежим, а data-пакеты сервер дропает).
+    Пассивный детектор «приём встал»: туннель ШЛЁТ (tx растёт), но не
+    ПРИНИМАЕТ ничего значимого (rx прирастает не больше `min_rx` от базовой
+    точки) дольше `timeout`, отправив при этом не меньше `min_tx` байт «в
+    пустоту». Это ровно картина зависания (handshake может быть свежим, а
+    data-пакеты сервер дропает / не доставляет).
 
     Чистая функция: состояние НЕ хранит, принимает и возвращает его явно
     (удобно для юнит-тестов). Возвращает (new_state, stalled: bool).
 
-      state — {"rx", "tx_at_rx", "rx_ts"} с прошлого замера или None.
+      state — {"rx", "tx_at_rx", "rx_ts"} базовой точки (последний значимый
+              приём) или None.
       now   — текущее время (сек).
+      min_rx — порог «значимого» приёма (байты). Прирост rx БОЛЬШЕ него от
+              базовой точки = туннель жив, ре-базируемся. По умолчанию 0 —
+              тогда поведение прежнее (любой прирост rx = жив). Watchdog
+              подаёт сюда rx_stall_min_rx_bytes (>0), чтобы пассивный
+              keepalive сервера (~32 Б / 10с) не считался «приёмом» и не
+              сбрасывал таймер застоя.
 
     Логика без ложных срабатываний:
       * первый замер или сброс счётчиков (после рестарта rx/tx обнуляются)
         — ре-базируемся, решения не принимаем;
-      * любой прирост rx → что-то приняли, туннель жив → сброс отсчёта;
-      * rx стоит → считаем, сколько отправили и сколько ждём С МОМЕНТА
-        последнего приёма; застой = (tx_since >= min_tx) И (age >= timeout).
-        На простое (tx тоже стоит) tx_since=0 < min_tx → не срабатывает;
-        keepalive-шум (десятки байт) ниже min_tx → тоже не срабатывает.
+      * прирост rx больше min_rx (накопительно от базы) → приняли реальные
+        данные, туннель жив → сброс отсчёта;
+      * иначе (rx стоит или капает ниже порога) → считаем, сколько отправили
+        и сколько ждём С МОМЕНТА базовой точки; застой = (tx_since >= min_tx)
+        И (age >= timeout). На простое (tx тоже стоит) tx_since=0 < min_tx →
+        не срабатывает; keepalive-шум (наш tx ниже min_tx, приём сервера ниже
+        min_rx) → тоже не срабатывает.
     """
     rx = int(rx_bytes or 0)
     tx = int(tx_bytes or 0)
@@ -127,12 +179,16 @@ def eval_rx_stall(state, rx_bytes, tx_bytes, now: float, *,
     # Первый замер / сброс счётчиков (rx или tx «откатились» — рестарт демона).
     if state is None or rx < prev_rx or tx < prev_tx_at_rx:
         return ({"rx": rx, "tx_at_rx": tx, "rx_ts": now}, False)
-    # Приняли новые байты — туннель жив, перезапускаем отсчёт от текущего tx.
-    if rx > prev_rx:
+    # Приняли ЗНАЧИМЫЙ объём (выше keepalive-шума) — туннель жив,
+    # перезапускаем отсчёт от текущего rx/tx. База НЕ двигается на мелком
+    # приросте, поэтому медленный keepalive-трикл копится против базы и
+    # рано или поздно либо превысит min_rx (тогда «жив»), либо застой
+    # сработает по tx/age — что и нужно.
+    if (rx - prev_rx) > max(0, min_rx):
         return ({"rx": rx, "tx_at_rx": tx, "rx_ts": now}, False)
-    # rx стоит: сохраняем точку последнего приёма (tx_at_rx/rx_ts), копим.
+    # Значимого приёма нет: сохраняем базовую точку (tx_at_rx/rx_ts), копим.
     rx_ts = float((state or {}).get("rx_ts", now))
-    new_state = {"rx": rx, "tx_at_rx": prev_tx_at_rx, "rx_ts": rx_ts}
+    new_state = {"rx": prev_rx, "tx_at_rx": prev_tx_at_rx, "rx_ts": rx_ts}
     tx_since = tx - prev_tx_at_rx
     age = now - rx_ts
     stalled = (tx_since >= max(0, min_tx)) and (age >= timeout)
@@ -207,6 +263,8 @@ def _get_settings() -> dict:
             "rx_stall_timeout_sec", DEFAULT_RX_STALL_TIMEOUT_SEC)),
         "rx_stall_min_tx_bytes":    int(wd.get(
             "rx_stall_min_tx_bytes", DEFAULT_RX_STALL_MIN_TX_BYTES)),
+        "rx_stall_min_rx_bytes":    int(wd.get(
+            "rx_stall_min_rx_bytes", DEFAULT_RX_STALL_MIN_RX_BYTES)),
     }
 
 
@@ -244,6 +302,12 @@ class AwgWatchdog:
         self._last_restart = {}
         # Счётчик подряд-неудачных проб: {iface: int}
         self._probe_fails  = {}
+        # Последний исход активной пробы (для UI/диагностики):
+        # {iface: "ok"|"fail"|"cant_bind"|"off"}
+        self._probe_last   = {}
+        # Интерфейсы, по которым уже предупредили, что пробу не привязать
+        # (чтобы не спамить лог каждые check_interval_sec).
+        self._probe_bind_warned = set()
         # Состояние пассивного rx-stall детектора: {iface: {rx, tx_at_rx, rx_ts}}
         self._rx_state     = {}
 
@@ -369,10 +433,17 @@ class AwgWatchdog:
                 timeout=settings.get("rx_stall_timeout_sec",
                                      DEFAULT_RX_STALL_TIMEOUT_SEC),
                 min_tx=settings.get("rx_stall_min_tx_bytes",
-                                    DEFAULT_RX_STALL_MIN_TX_BYTES))
+                                    DEFAULT_RX_STALL_MIN_TX_BYTES),
+                min_rx=settings.get("rx_stall_min_rx_bytes",
+                                    DEFAULT_RX_STALL_MIN_RX_BYTES))
             self._rx_state[iface] = new_rx_state
 
-        # Активная проба через туннель (если включена).
+        # Активная проба через туннель (если включена). Учитываем ТРИ исхода:
+        # ok=True (жив) сбрасывает счётчик; ok=False (отказ через туннель)
+        # инкрементит; ok=None (привязку к туннелю подтвердить не удалось)
+        # НЕ трогает счётчик — иначе ложный «жив» по WAN маскировал бы застой,
+        # а ложный «провал» давал бы лишние рестарты. В этом случае опираемся
+        # на пассивные детекторы и один раз предупреждаем.
         probe_enabled = bool(settings.get("probe_enabled", False))
         probe_fails = self._probe_fails.get(iface, 0)
         if probe_enabled:
@@ -380,8 +451,21 @@ class AwgWatchdog:
                 settings.get("probe_host", DEFAULT_PROBE_HOST),
                 settings.get("probe_port", DEFAULT_PROBE_PORT), iface,
                 settings.get("probe_timeout_sec", DEFAULT_PROBE_TIMEOUT_SEC))
-            probe_fails = 0 if ok else probe_fails + 1
-            self._probe_fails[iface] = probe_fails
+            if ok is None:
+                self._probe_last[iface] = "cant_bind"
+                if iface not in self._probe_bind_warned:
+                    self._probe_bind_warned.add(iface)
+                    log.warning(
+                        "awg-watchdog: %s — активную пробу не удалось привязать"
+                        " к туннелю (нет root/особенности платформы); полагаюсь"
+                        " на пассивный детектор «приём встал» и handshake-age."
+                        % iface, source="awg")
+            else:
+                probe_fails = 0 if ok else probe_fails + 1
+                self._probe_fails[iface] = probe_fails
+                self._probe_last[iface] = "ok" if ok else "fail"
+        else:
+            self._probe_last[iface] = "off"
 
         should, reason = decide_restart(
             handshake_age=age,
@@ -502,6 +586,11 @@ class AwgWatchdog:
             "running":  running,
             "settings": settings,
             "restarts_last_hour": history_view,
+            # Последний исход активной пробы по интерфейсам — чтобы в UI было
+            # видно, реально ли проба идёт через туннель ("ok"/"fail") или не
+            # может привязаться ("cant_bind", тогда работает только пассивная
+            # защита), либо выключена ("off").
+            "probe_last": dict(self._probe_last),
         }
 
 
