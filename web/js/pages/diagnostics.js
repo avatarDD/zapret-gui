@@ -16,6 +16,9 @@ const DiagnosticsPage = (() => {
     let firewallInfo = null;
     let conflictsInfo = null;
     let envConflicts = null;
+    let nfqueueDeps = null;        // статус модулей NFQUEUE + возможность починки
+    let nfqueueInstall = { running: false, progress: '', result: null };
+    let nfqueueInstallTimer = null;
 
     /* ──────── service icons (SVG) ──────── */
     const SVC_ICONS = {
@@ -212,6 +215,7 @@ const DiagnosticsPage = (() => {
         loadServices();
         loadSystemInfo();
         loadFirewall();
+        loadNfqueueDeps();
         loadConflicts();
         loadSelfcheckStatus();
     }
@@ -225,7 +229,10 @@ const DiagnosticsPage = (() => {
         firewallInfo = null;
         conflictsInfo = null;
         envConflicts = null;
+        nfqueueDeps = null;
+        nfqueueInstall = { running: false, progress: '', result: null };
         stopSelfcheckPoll();
+        stopNfqInstallPoll();
     }
 
     /* ═══════════════════ Самодиагностика ═══════════════════ */
@@ -392,6 +399,31 @@ const DiagnosticsPage = (() => {
             document.getElementById('diag-firewall').innerHTML =
                 '<div class="diag-error">Ошибка загрузки статуса firewall</div>';
         }
+    }
+
+    async function loadNfqueueDeps() {
+        // Статус модулей NFQUEUE (для блока починки в карточке Firewall).
+        // Тихо игнорируем ошибки — блок просто не покажется.
+        try {
+            const data = await API.get('/api/diagnostics/nfqueue-deps');
+            if (data && data.ok) {
+                nfqueueDeps = data.result;
+                renderFirewall();
+            }
+            // Подцепиться к уже идущей установке (например, после перезагрузки
+            // страницы во время установки).
+            const st = await API.get('/api/diagnostics/nfqueue-deps/install/status')
+                                 .catch(() => null);
+            if (st && st.running) {
+                nfqueueInstall.running = true;
+                nfqueueInstall.progress = st.progress || '…';
+                stopNfqInstallPoll();
+                nfqueueInstallTimer = setInterval(pollNfqueueInstall, 2000);
+                updateNfqInstallUi();
+            } else if (st && st.result && !nfqueueInstall.result) {
+                nfqueueInstall.result = st.result;
+            }
+        } catch (_) {}
     }
 
     async function loadConflicts() {
@@ -649,7 +681,84 @@ const DiagnosticsPage = (() => {
                 </div>
             </div>
             ${rulesHtml}
+            ${buildNfqueueRemediation()}
         `;
+    }
+
+    /* ── Блок починки NFQUEUE (модули ядра) ── */
+
+    function buildNfqueueRemediation() {
+        const d = nfqueueDeps;
+        if (!d) return '';
+        // Показываем только когда есть проблема: модуль NFQUEUE недоступен
+        // ЛИБО (на iptables) отсутствует цель NFQUEUE.
+        const problem = (d.nfqueue_available === false) ||
+                        (d.target_available === false);
+        if (!problem) return '';
+
+        const warnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2" width="18" height="18" style="flex:none">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>`;
+
+        let body;
+        if (d.can_auto_install) {
+            const running = nfqueueInstall.running;
+            body = `
+                <div class="text-muted" style="font-size:13px; margin-bottom:10px;">
+                    На OpenWrt модуль NFQUEUE (<code>nfnetlink_queue</code>) не входит
+                    в прошивку по умолчанию — без него nfqws2 завершается сразу после
+                    запуска (exit 1). Нажмите кнопку — нужные модули ядра поставятся
+                    автоматически (нужен интернет), консоль не требуется.
+                </div>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <button id="diag-nfq-install-btn" class="btn btn-primary btn-sm"
+                            onclick="DiagnosticsPage.installNfqueueDeps()" ${running ? 'disabled' : ''}>
+                        ${running ? 'Установка…' : 'Установить модули NFQUEUE'}
+                    </button>
+                    <span class="text-muted" id="diag-nfq-install-status" style="font-size:12px;">
+                        ${running ? _esc('Идёт установка: ' + (nfqueueInstall.progress || '…')) : ''}
+                    </span>
+                </div>
+                <div class="text-muted" style="font-size:11px; margin-top:8px;">
+                    Будет выполнено (${_esc(d.pkg_manager || '')}):
+                    <code>${_esc(d.install_command || '')}</code>
+                </div>`;
+        } else {
+            body = `
+                <div class="text-muted" style="font-size:13px;">
+                    ${_esc(d.reason || '')} ${_esc(d.instructions || '')}
+                </div>
+                ${d.install_command ? `<div class="text-muted" style="font-size:12px; margin-top:6px;">
+                    Команда: <code>${_esc(d.install_command)}</code></div>` : ''}`;
+        }
+
+        return `
+            <div class="diag-nfq-fix" style="margin-top:14px; padding:12px 14px; border:1px solid var(--warning); border-radius:8px;">
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                    ${warnIcon}
+                    <strong>Модуль NFQUEUE недоступен — обход не заработает</strong>
+                </div>
+                ${body}
+                <div id="diag-nfq-install-output">${buildNfqInstallOutput()}</div>
+            </div>`;
+    }
+
+    function buildNfqInstallOutput() {
+        const res = nfqueueInstall.result;
+        if (!res) return '';
+        // Показываем вывод установки только если она НЕ увенчалась полным
+        // успехом (успех = блок и так исчезнет после обновления доступности).
+        if (res.ok) return '';
+        const note = res.needs_reboot
+            ? '<div style="color:var(--warning); font-size:12px; margin:8px 0 4px;">Пакеты установлены, но NFQUEUE ещё не активен — обычно помогает перезагрузка роутера.</div>'
+            : (res.error || res.install_ok === false)
+                ? '<div style="color:var(--error); font-size:12px; margin:8px 0 4px;">Установка не удалась — см. вывод ниже и лог.</div>'
+                : '';
+        const out = res.output || res.error || '';
+        return note + (out
+            ? `<pre class="diag-manual-output" style="max-height:220px; overflow:auto; margin-top:6px;">${_esc(out)}</pre>`
+            : '');
     }
 
     /* ═══════════════════ Render: Конфликты ═══════════════════ */
@@ -817,8 +926,75 @@ const DiagnosticsPage = (() => {
         document.getElementById('diag-system-info').innerHTML = '<div class="diag-loading">Обновление…</div>';
         document.getElementById('diag-firewall').innerHTML = '<div class="diag-loading">Обновление…</div>';
         document.getElementById('diag-conflicts').innerHTML = '<div class="diag-loading">Обновление…</div>';
-        await Promise.all([loadSystemInfo(), loadFirewall(), loadConflicts()]);
+        await Promise.all([loadSystemInfo(), loadFirewall(), loadNfqueueDeps(), loadConflicts()]);
         if (typeof Toast !== 'undefined') Toast.show('Системная информация обновлена', 'success');
+    }
+
+    /* ═══════════════════ Установка модулей NFQUEUE ═══════════════════ */
+
+    function stopNfqInstallPoll() {
+        if (nfqueueInstallTimer) clearInterval(nfqueueInstallTimer);
+        nfqueueInstallTimer = null;
+    }
+
+    function updateNfqInstallUi() {
+        // Точечно (без полного re-render) обновляем кнопку и строку статуса,
+        // чтобы не мигало каждые 2с во время установки.
+        const btn = document.getElementById('diag-nfq-install-btn');
+        const st = document.getElementById('diag-nfq-install-status');
+        if (btn) {
+            btn.disabled = nfqueueInstall.running;
+            btn.textContent = nfqueueInstall.running ? 'Установка…' : 'Установить модули NFQUEUE';
+        }
+        if (st) st.textContent = nfqueueInstall.running
+            ? ('Идёт установка: ' + (nfqueueInstall.progress || '…')) : '';
+    }
+
+    async function installNfqueueDeps() {
+        if (nfqueueInstall.running) return;
+        const btn = document.getElementById('diag-nfq-install-btn');
+        try {
+            const r = await API.post('/api/diagnostics/nfqueue-deps/install', {});
+            if (!r || !r.ok) {
+                Toast.error((r && r.error) || 'Не удалось запустить установку');
+                return;
+            }
+            nfqueueInstall = { running: true, progress: 'запуск', result: null };
+            if (btn) btn.disabled = true;
+            updateNfqInstallUi();
+            stopNfqInstallPoll();
+            nfqueueInstallTimer = setInterval(pollNfqueueInstall, 2000);
+        } catch (e) {
+            Toast.error(e.message);
+        }
+    }
+
+    async function pollNfqueueInstall() {
+        try {
+            const s = await API.get('/api/diagnostics/nfqueue-deps/install/status');
+            if (s && s.running) {
+                nfqueueInstall.running = true;
+                nfqueueInstall.progress = s.progress || '…';
+                updateNfqInstallUi();
+                return;
+            }
+            stopNfqInstallPoll();
+            nfqueueInstall = { running: false, progress: '',
+                               result: (s && s.result) || null };
+            const res = nfqueueInstall.result;
+            // Обновляем доступность NFQUEUE и перерисовываем блок (при успехе он
+            // исчезнет — проблемы больше нет; при неудаче покажет вывод).
+            await Promise.all([loadFirewall(), loadNfqueueDeps()]);
+            if (res && res.ok) {
+                Toast.success('Модули NFQUEUE установлены — перезапустите обход, чтобы nfqws2 поднялся');
+            } else if (res && res.needs_reboot) {
+                Toast.show('Пакеты установлены, но NFQUEUE ещё не активен — нужна перезагрузка роутера', 'warning');
+            } else {
+                Toast.error('Не удалось установить модули NFQUEUE — см. лог и вывод');
+            }
+        } catch (_) {
+            stopNfqInstallPoll();
+        }
     }
 
     /* ═══════════════════ Ручные проверки ═══════════════════ */
@@ -915,5 +1091,6 @@ const DiagnosticsPage = (() => {
         manualHttp,
         manualDns,
         runSelfcheck,
+        installNfqueueDeps,
     };
 })();

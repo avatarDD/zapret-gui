@@ -52,7 +52,15 @@ detect_env() {
         INITD_DIR="/etc/init.d"
         INITD_SCRIPT="$INITD_DIR/zapret-gui"
         PID_FILE="/var/run/zapret-gui.pid"
-        PKG_CMD="opkg"
+        # OpenWrt 24.10+ перешёл с opkg на apk. Берём то, что реально есть:
+        # на 23.05 и раньше — opkg, на 24.10+/snapshot — apk.
+        if command -v opkg >/dev/null 2>&1; then
+            PKG_CMD="opkg"
+        elif command -v apk >/dev/null 2>&1; then
+            PKG_CMD="apk"
+        else
+            PKG_CMD="opkg"
+        fi
     else
         ENV_TYPE="generic"
         APP_DIR="/opt/share/zapret-gui"
@@ -128,7 +136,11 @@ detect_downloader() {
         DOWNLOAD_CMD="wget"
     else
         error "Ни curl, ни wget не найдены"
-        error "Установите: $PKG_CMD install curl"
+        if [ "$PKG_CMD" = "apk" ]; then
+            error "Установите: apk add curl"
+        else
+            error "Установите: ${PKG_CMD:-opkg} install curl"
+        fi
         exit 1
     fi
 }
@@ -150,7 +162,12 @@ OPKG_INSTALLED_LIST=""
 
 _opkg_install_pkg() {
     local pkg="$1"
-    $PKG_CMD install "$pkg" || { error "Не удалось установить $pkg"; exit 1; }
+    # apk использует `apk add`, opkg — `opkg install`.
+    if [ "$PKG_CMD" = "apk" ]; then
+        $PKG_CMD add "$pkg" || { error "Не удалось установить $pkg"; exit 1; }
+    else
+        $PKG_CMD install "$pkg" || { error "Не удалось установить $pkg"; exit 1; }
+    fi
     # Записываем пакет в список для последующего удаления
     if [ -n "$CONFIG_DIR" ]; then
         mkdir -p "$CONFIG_DIR" 2>/dev/null
@@ -168,8 +185,8 @@ check_deps() {
     else
         warn "python3 не найден"
         case "$PKG_CMD" in
-            opkg)
-                # Entware / OpenWrt
+            opkg|apk)
+                # Entware / OpenWrt (opkg на 23.05 и раньше, apk на 24.10+)
                 $PKG_CMD update 2>/dev/null || true
                 info "  Устанавливаем python3-light..."
                 _opkg_install_pkg python3-light
@@ -643,14 +660,17 @@ do_uninstall() {
     rm -f "$INITD_SCRIPT"
     ok "Init-скрипт удалён"
 
-    # Удалить пакеты, установленные через opkg
+    # Удалить пакеты, установленные через пакетный менеджер (opkg/apk)
     local opkg_list="$CONFIG_DIR/opkg_installed.list"
-    if [ "$PKG_CMD" = "opkg" ] && [ -f "$opkg_list" ]; then
-        info "Удаление пакетов, установленных через opkg..."
+    if { [ "$PKG_CMD" = "opkg" ] || [ "$PKG_CMD" = "apk" ]; } && [ -f "$opkg_list" ]; then
+        # apk удаляет через `apk del`, opkg — `opkg remove`.
+        local _rmverb="remove"
+        [ "$PKG_CMD" = "apk" ] && _rmverb="del"
+        info "Удаление пакетов, установленных через $PKG_CMD..."
         while IFS= read -r pkg; do
             [ -z "$pkg" ] && continue
-            info "  opkg remove $pkg"
-            $PKG_CMD remove "$pkg" 2>/dev/null && ok "  Удалён: $pkg" || warn "  Не удалось удалить: $pkg"
+            info "  $PKG_CMD $_rmverb $pkg"
+            $PKG_CMD $_rmverb "$pkg" 2>/dev/null && ok "  Удалён: $pkg" || warn "  Не удалось удалить: $pkg"
         done < "$opkg_list"
         rm -f "$opkg_list"
     fi
