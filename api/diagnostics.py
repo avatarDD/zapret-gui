@@ -12,6 +12,9 @@ API диагностики сети и системы.
   GET  /api/diagnostics/known-conflicts — конфликты окружения
                                           (getdomains/XKeen/podkop/Xray/…)
   GET  /api/diagnostics/firewall   — статус firewall
+  GET  /api/diagnostics/nfqueue-deps            — статус модулей NFQUEUE + починка
+  POST /api/diagnostics/nfqueue-deps/install    — поставить модули NFQUEUE (OpenWrt)
+  GET  /api/diagnostics/nfqueue-deps/install/status — прогресс установки
   GET  /api/diagnostics/system     — расширенная системная информация
   GET  /api/diagnostics/services   — список доступных сервисов
 
@@ -166,6 +169,39 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core.diagnostics import check_strategy_prerequisites
         return {"ok": True, "result": check_strategy_prerequisites()}
+
+    @app.route("/api/diagnostics/nfqueue-deps")
+    def api_diagnostics_nfqueue_deps():
+        """Статус модулей ядра NFQUEUE и возможность починки из GUI.
+
+        Даёт: платформу, системный пакетный менеджер (apk/opkg), тип firewall,
+        доступность NFQUEUE, список пакетов, готовую команду и флаг
+        can_auto_install (True только на настоящем OpenWrt).
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.kmod_manager import nfqueue_deps_status
+        return {"ok": True, "result": nfqueue_deps_status()}
+
+    @app.route("/api/diagnostics/nfqueue-deps/install", method="POST")
+    def api_diagnostics_nfqueue_deps_install():
+        """Установить модули ядра NFQUEUE в фоне (только OpenWrt).
+
+        Сервер повторно проверяет can_auto_install — на Keenetic/Entware/ПК
+        вернёт 409 с пояснением (там opkg модули ядра не ставит).
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.kmod_manager import install_async
+        r = install_async()
+        if not r.get("ok"):
+            response.status = 409
+        return r
+
+    @app.route("/api/diagnostics/nfqueue-deps/install/status")
+    def api_diagnostics_nfqueue_deps_install_status():
+        """Прогресс/результат фоновой установки модулей NFQUEUE."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.kmod_manager import install_status
+        return install_status()
 
     @app.route("/api/diagnostics/system")
     def api_diagnostics_system():

@@ -377,6 +377,7 @@ class NFQWSManager:
                         "(exit code: %d)" % rc,
                         source="nfqws"
                     )
+                    self._log_start_failure_hint()
                     self._cleanup()
                     return False
 
@@ -399,6 +400,30 @@ class NFQWSManager:
                 self._close_out_fds(out_fd, slave_fd)
                 log.error("Ошибка запуска nfqws2: %s" % e, source="nfqws")
                 return False
+
+    @staticmethod
+    def _log_start_failure_hint():
+        """Назвать вероятную причину мгновенного падения nfqws2.
+
+        Самая частая причина «завершился сразу (exit 1)» на OpenWrt —
+        недоступен модуль ядра NFQUEUE (nfnetlink_queue): без него nfqws2 не
+        может открыть очередь. Проверяем это и, если модуля нет, даём
+        конкретную команду установки / подсказку (на OpenWrt — можно одной
+        кнопкой из GUI, без консоли). Best-effort: любая ошибка тут не должна
+        мешать штатному завершению запуска.
+        """
+        try:
+            from core.diagnostics import _check_nfqueue_available
+            if _check_nfqueue_available():
+                return
+            from core.kmod_manager import nfqueue_fix_hint
+            hint = nfqueue_fix_hint()
+            log.error(
+                "Вероятная причина: ядру недоступен модуль NFQUEUE "
+                "(nfnetlink_queue). " + (hint.get("log_line") or ""),
+                source="nfqws")
+        except Exception:
+            pass
 
     @staticmethod
     def _close_out_fds(*fds):
