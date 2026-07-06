@@ -1328,18 +1328,36 @@ def check_strategy_prerequisites():
         "ipset_path": ipset_path, "ipset_exists": os.path.isdir(ipset_path),
     }
 
+    # Платформо-зависимая подсказка «как починить NFQUEUE» (команда пакетного
+    # менеджера / инструкция) — переиспользуем в issue ниже и в лог nfqws2.
+    try:
+        from core.kmod_manager import nfqueue_fix_hint
+        _nfq_fix = nfqueue_fix_hint()
+    except Exception:
+        _nfq_fix = None
+
+    def _with_fix(base_hint, issue):
+        """Дописать конкретную команду/подсказку и структурное поле fix."""
+        if _nfq_fix:
+            line = _nfq_fix.get("log_line") or ""
+            issue["hint"] = (base_hint + " " + line).strip() if line else base_hint
+            issue["fix"] = _nfq_fix
+        else:
+            issue["hint"] = base_hint
+        return issue
+
     # 5. NFQUEUE
     nfqueue_ok = _check_nfqueue_available()
     checks["nfqueue"] = {"available": nfqueue_ok}
     if not nfqueue_ok:
-        issues.append({
-            "id": "nfqueue_missing", "severity": "error",
-            "title": "Модуль NFQUEUE недоступен",
-            "detail": "Не найден nfnetlink_queue / xt_NFQUEUE",
-            "hint": "Без NFQUEUE ядро не передаёт пакеты в nfqws2. На роутере "
-                    "загрузите модули netfilter; в контейнере без netfilter "
-                    "сканирование смысла не имеет.",
-        })
+        issues.append(_with_fix(
+            "Без NFQUEUE ядро не передаёт пакеты в nfqws2 — nfqws2 завершается "
+            "сразу после запуска (exit 1).",
+            {
+                "id": "nfqueue_missing", "severity": "error",
+                "title": "Модуль NFQUEUE недоступен",
+                "detail": "Не найден nfnetlink_queue / xt_NFQUEUE",
+            }))
 
     # 5b. iptables-матчи/цель (issue #151). На Entware/Keenetic NFQUEUE-цель и
     #     матчи multiport / connbytes нередко вынесены в отдельные модули ядра,
@@ -1367,16 +1385,14 @@ def check_strategy_prerequisites():
             }
             checks["iptables_caps"] = caps
             if not caps["nfqueue"]:
-                issues.append({
-                    "id": "ipt_nfqueue_target_missing", "severity": "error",
-                    "title": "iptables: цель NFQUEUE недоступна",
-                    "detail": "iptables не знает target NFQUEUE "
-                              "(модуль ядра xt_NFQUEUE / nfnetlink_queue).",
-                    "hint": "Без неё пакеты не попадают в nfqws2 — обход не "
-                            "работает. Догрузите модуль ядра NFQUEUE (на "
-                            "Keenetic — соответствующий компонент netfilter) "
-                            "или перейдите на nftables.",
-                })
+                issues.append(_with_fix(
+                    "Без неё пакеты не попадают в nfqws2 — обход не работает.",
+                    {
+                        "id": "ipt_nfqueue_target_missing", "severity": "error",
+                        "title": "iptables: цель NFQUEUE недоступна",
+                        "detail": "iptables не знает target NFQUEUE "
+                                  "(модуль ядра xt_NFQUEUE / nfnetlink_queue).",
+                    }))
             else:
                 degraded = [n for n in ("multiport", "connbytes")
                             if not caps[n]]
