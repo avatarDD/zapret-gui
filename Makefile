@@ -4,7 +4,9 @@
 #
 # Использование:
 #   make ipk          — собрать ipk-пакет для Entware
-#   make openwrt-ipk  — собрать ipk-пакет для OpenWrt
+#   make openwrt-ipk  — собрать ipk-пакет для OpenWrt (старые, opkg)
+#   make openwrt-apk  — собрать apk-пакет для нового OpenWrt (24.10+/25.x,
+#                       apk-tools 3; передайте APK=apk.static при отсутствии apk)
 #   make release      — создать git-тег и запустить релиз
 #   make clean        — очистить артефакты сборки
 #   make lint         — проверка синтаксиса Python
@@ -48,7 +50,8 @@ EXCLUDE      := --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
 # Цели
 # ═══════════════════════════════════════════════════════════════
 
-.PHONY: all ipk openwrt-ipk clean _clean_build lint info help release tag
+.PHONY: all ipk openwrt-ipk openwrt-apk clean _clean_build lint info help release tag \
+        _prepare_apk_scripts _build_apk_openwrt
 
 all: ipk
 
@@ -57,7 +60,8 @@ help:
 	@echo "  Zapret Web-GUI — Makefile"
 	@echo "  ─────────────────────────"
 	@echo "  make ipk          — собрать ipk для Entware"
-	@echo "  make openwrt-ipk  — собрать ipk для OpenWrt"
+	@echo "  make openwrt-ipk  — собрать ipk для OpenWrt (старые, opkg)"
+	@echo "  make openwrt-apk  — собрать apk для нового OpenWrt (apk-tools 3; APK=apk.static)"
 	@echo "  make release VERSION=X.Y.Z — обновить версию, создать тег и запустить релиз"
 	@echo "  make clean        — очистить build/ и dist/"
 	@echo "  make lint         — проверка синтаксиса Python"
@@ -244,6 +248,62 @@ _build_ipk_openwrt:
 		./debian-binary ./control.tar.gz ./data.tar.gz
 
 	@echo "Сборка ipk (OpenWrt): OK"
+
+# ── Сборка apk для НОВОГО OpenWrt (24.10+/25.x, apk-tools 3) ──
+#
+# Новые OpenWrt перешли с opkg (.ipk) на apk (.apk, формат APKv3). Пакет
+# собирается той же командой `apk mkpkg`, что и штатный build-система OpenWrt
+# (include/package-pack.mk): маппинг сопровождающих скриптов postinst →
+# post-install, prerm → pre-deinstall; arch=noarch для arch-независимого пакета.
+#
+# Требуется apk-tools 3 (`apk mkpkg`). В PATH обычно нет — задайте APK=apk.static
+# (напр. из alpine:edge `apk add apk-tools-static`), как это делает CI. Файловое
+# дерево берём тем же `_prepare_data_openwrt`, что и для ipk — один источник.
+#
+# Старый OpenWrt/Entware/Keenetic по-прежнему обслуживаются целями ipk —
+# ничего не ломаем.
+APK          ?= apk
+FAKEROOT     ?=
+APK_VERSION  := $(PKG_VERSION)-r$(PKG_RELEASE)
+APK_SCRIPTS  := $(BUILD_DIR)/apk-scripts
+APK_OUT      := $(DIST_DIR)/$(PKG_NAME)_$(PKG_VERSION)-$(PKG_RELEASE)_openwrt.apk
+
+openwrt-apk: _clean_build _prepare_data_openwrt _prepare_apk_scripts _build_apk_openwrt
+	@echo ""
+	@echo "✓ OpenWrt apk собран: $(APK_OUT)"
+	@ls -lh $(APK_OUT)
+	@echo ""
+
+_prepare_apk_scripts:
+	@echo "── Подготовка apk-скриптов ──"
+	@mkdir -p $(APK_SCRIPTS)
+	# apk lifecycle: postinst → post-install, prerm → pre-deinstall
+	@cp packaging/openwrt/postinst $(APK_SCRIPTS)/post-install
+	@cp packaging/openwrt/prerm    $(APK_SCRIPTS)/pre-deinstall
+	@chmod 755 $(APK_SCRIPTS)/post-install $(APK_SCRIPTS)/pre-deinstall
+	@echo "Подготовка apk-скриптов: OK"
+
+_build_apk_openwrt:
+	@echo "── Сборка apk (OpenWrt) через '$(APK) mkpkg' ──"
+	@mkdir -p $(DIST_DIR)
+	@command -v $(APK) >/dev/null 2>&1 || { \
+		echo "ОШИБКА: '$(APK)' не найден. Нужен apk-tools 3 (apk mkpkg)."; \
+		echo "  Локально/CI: возьмите apk.static из alpine:edge и передайте APK=apk.static"; \
+		exit 1; }
+	SOURCE_DATE_EPOCH=0 $(FAKEROOT) $(APK) mkpkg \
+		--info "name:$(PKG_NAME)" \
+		--info "version:$(APK_VERSION)" \
+		--info "description:Web GUI for managing zapret2/nfqws2 DPI bypass tool" \
+		--info "arch:noarch" \
+		--info "origin:$(PKG_NAME)" \
+		--info "url:https://github.com/avatarDD/zapret-gui" \
+		--info "maintainer:avatarDD <https://github.com/avatarDD/zapret-gui>" \
+		--info "depends:python3-light" \
+		--script "post-install:$(APK_SCRIPTS)/post-install" \
+		--script "pre-deinstall:$(APK_SCRIPTS)/pre-deinstall" \
+		--files "$(DATA_DIR)" \
+		--output "$(APK_OUT)"
+	@echo "Сборка apk (OpenWrt): OK"
 
 # ── Очистка ───────────────────────────────────────────────────
 clean:

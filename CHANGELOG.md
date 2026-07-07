@@ -3,6 +3,20 @@
 ## Unreleased — Пул публичных серверов, тестер прокси, vmess, urltest-подписки
 
 ### Добавлено
+- **apk-пакет для нового OpenWrt (24.10+/25.x) в релизах** (`Makefile`,
+  `.github/workflows/release.yml`, `README.md`). Новые версии OpenWrt перешли
+  с opkg (`.ipk`) на apk (`.apk`, формат APKv3), и старый `.ipk` там не
+  ставится. Теперь релиз собирает **оба** формата:
+  - `zapret-gui-openwrt.ipk` — для OpenWrt ≤ 23.05 (opkg), как раньше;
+  - `zapret-gui-openwrt.apk` — для OpenWrt 24.10+/25.x
+    (`apk add --allow-untrusted ./zapret-gui-openwrt.apk`).
+  Совместимость со старыми OpenWrt, Keenetic/Entware (`.ipk`) и Linux
+  (`.tar.gz`) полностью сохранена — добавлен только новый артефакт.
+  `make openwrt-apk` собирает пакет той же командой `apk mkpkg`, что и штатная
+  build-система OpenWrt (`include/package-pack.mk`): маппинг сопровождающих
+  скриптов postinst→post-install, prerm→pre-deinstall, `arch:noarch`. В CI
+  пакет собирается внутри `alpine:edge` (`apk.static` из apk-tools 3, файлы
+  пакета — root:root).
 - **Установка модулей ядра NFQUEUE для OpenWrt — прямо из GUI, без консоли**
   (`core/kmod_manager.py`, `api/diagnostics.py`, `web/js/pages/diagnostics.js`).
   На стоковом OpenWrt модуль `nfnetlink_queue` в прошивку не входит — без него

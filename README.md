@@ -103,12 +103,24 @@ opkg install zapret-gui-entware.ipk
 /opt/etc/init.d/S99zapret-gui start
 ```
 
-**OpenWrt:**
+**OpenWrt (старые версии, ≤ 23.05 — opkg):**
 ```bash
 wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.ipk
 opkg install zapret-gui-openwrt.ipk
 /etc/init.d/zapret-gui start
 ```
+
+**OpenWrt (новые версии, 24.10+ / 25.x — apk):**
+```bash
+wget https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk
+apk add --allow-untrusted ./zapret-gui-openwrt.apk
+/etc/init.d/zapret-gui start
+```
+> Новые OpenWrt перешли с opkg на apk. Пакет `.apk` не подписан ключами
+> репозитория, поэтому нужен флаг `--allow-untrusted` (обычная практика для
+> локальных `.apk`), а имя файла — с `./`, чтобы apk взял именно файл, а не
+> искал пакет в репозитории. Не уверены, opkg у вас или apk? Проверьте:
+> `command -v apk || command -v opkg`.
 
 **Linux (tar.gz):**
 ```bash
