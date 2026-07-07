@@ -5,9 +5,11 @@
 # Версия берётся из тега — core/version.py синхронизируется автоматически.
 #
 # Артефакты релиза:
-#   zapret-gui-X.Y.Z-keenetic.ipk  — для Keenetic / Entware
-#   zapret-gui-X.Y.Z-openwrt.ipk   — для OpenWrt
-#   zapret-gui-X.Y.Z-linux.tar.gz  — универсальный архив для Linux
+#   zapret-gui-keenetic.ipk  — для Keenetic / Entware (opkg)
+#   zapret-gui-entware.ipk   — для роутеров с Entware (opkg)
+#   zapret-gui-openwrt.ipk   — для OpenWrt ≤23.05 (opkg)
+#   zapret-gui-openwrt.apk   — для нового OpenWrt 24.10+/25.x (apk-tools 3)
+#   zapret-gui-linux.tar.gz  — универсальный архив для Linux
 # ═══════════════════════════════════════════════════════════════
 
 name: Build & Release
@@ -97,6 +99,19 @@ jobs:
       - name: Build OpenWrt ipk
         run: make openwrt-ipk
 
+      # Новый OpenWrt (24.10+/25.x) ставит пакеты через apk (apk-tools 3),
+      # формат APKv3. Собираем той же командой `apk mkpkg`, что и штатная
+      # build-система OpenWrt. apk-tools 3 в ubuntu нет — берём apk.static из
+      # Alpine edge и собираем внутри контейнера (root → файлы пакета root:root).
+      - name: Build OpenWrt apk (apk-tools 3, via Alpine edge)
+        run: |
+          docker run --rm -v "$PWD":/work -w /work alpine:edge sh -eu -c '
+            apk add --no-cache apk-tools-static make python3 >/dev/null
+            make openwrt-apk APK=apk.static
+          '
+          echo "── Собранный apk ──"
+          ls -lh dist/*_openwrt.apk
+
       - name: Create Linux archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -124,6 +139,7 @@ jobs:
           cp "dist/${PKG_NAME}_${VERSION}-1_all.ipk"     "release-artifacts/${PKG_NAME}-keenetic.ipk"
           cp "dist/${PKG_NAME}_${VERSION}-1_all.ipk"     "release-artifacts/${PKG_NAME}-entware.ipk"
           cp "dist/${PKG_NAME}_${VERSION}-1_openwrt.ipk" "release-artifacts/${PKG_NAME}-openwrt.ipk"
+          cp "dist/${PKG_NAME}_${VERSION}-1_openwrt.apk" "release-artifacts/${PKG_NAME}-openwrt.apk"
           cp "/tmp/${PKG_NAME}-${VERSION}-linux.tar.gz"  "release-artifacts/${PKG_NAME}-linux.tar.gz"
 
           echo "── Артефакты релиза ──"
