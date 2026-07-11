@@ -218,8 +218,9 @@ Z2K_STATE_DIR = "/opt/etc/zapret-gui/state/autocircular"
 _LUA_DESYNC_FUNC_RE = re.compile(r"--lua-desync=([a-zA-Z0-9_]+)")
 _LUA_INIT_PATH_RE = re.compile(r"^--lua-init=@(.+)$")
 
-# Флаги nfqws2, аргумент которых — путь к ФАЙЛУ списка. zapret2 (в отличие от
-# zapret v1, где проверка была отключена) stat()-ит каждый такой файл ещё на
+# Флаги nfqws2, аргумент которых — путь к ФАЙЛУ списка. Апстрим-движок nfqws2
+# (bol-van/zapret2) — в отличие от прежней кодовой базы bol-van/zapret, где эта
+# проверка была закомментирована — stat()-ит каждый такой файл ещё на
 # этапе разбора опций: RegisterHostlist() → file_mod_time()/realpath()
 # (nfq2/hostlist.c). Если файла нет, nfqws2 печатает
 #   ERROR failed to register hostlist '<file>'
@@ -744,10 +745,11 @@ class NFQWSManager:
     def _ensure_list_files(argv: list) -> None:
         """Создать пустые файлы для отсутствующих --hostlist*/--ipset* из argv.
 
-        zapret2 на этапе разбора опций stat()-ит каждый файл-список
-        (RegisterHostlist → file_mod_time/realpath, nfq2/hostlist.c) и, если
-        файла нет, печатает «failed to register hostlist '<file>'» и падает с
-        кодом 1 (в отличие от zapret v1, где эта проверка отключена). Из-за
+        Движок nfqws2 (bol-van/zapret2) на этапе разбора опций stat()-ит
+        каждый файл-список (RegisterHostlist → file_mod_time/realpath,
+        nfq2/hostlist.c) и, если файла нет, печатает «failed to register
+        hostlist '<file>'» и падает с кодом 1 (в прежней апстрим-кодовой базе
+        bol-van/zapret эта проверка была отключена). Из-за
         одной битой ссылки не поднимается вся стратегия, а уже накатанные
         NFQUEUE-правила «чёрной дырой» роняют связь (в UI — «Сервер
         недоступен»). Пустой список nfqws2 принимает штатно, поэтому недостающие
