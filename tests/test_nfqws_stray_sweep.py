@@ -222,5 +222,107 @@ class TestDryRun(unittest.TestCase):
         self.assertIn("lua error", res["output"])
 
 
+class TestEnsureListFiles(unittest.TestCase):
+    """Отсутствующие --hostlist*/--ipset* файлы создаются пустыми.
+
+    Регрессия «Ошибка при добавлении стратегии»: zapret2 (в отличие от v1)
+    stat()-ит файлы-списки на этапе разбора опций и падает «failed to register
+    hostlist» с exit 1, если файла нет. Одна битая ссылка (ipset/
+    zapret-hosts-user.txt из чужого пресета, lists/netrogat.txt при
+    несовпадении base_path со старой установкой nfqws2) роняла всю стратегию,
+    а уже накатанные NFQUEUE-правила «чёрной дырой» рвали связь → «Сервер
+    недоступен». Файлы-списки должны молча дозаявляться пустыми.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.d = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def _p(self, *parts):
+        import os
+        return os.path.join(self.d, *parts)
+
+    def test_creates_missing_list_files_empty(self):
+        import os
+        hostlist = self._p("ipset", "zapret-hosts-user.txt")  # нет каталога
+        exclude = self._p("lists", "netrogat.txt")
+        auto = self._p("lists", "auto.txt")
+        ipset = self._p("ipset", "ip.txt")
+        argv = [
+            "/opt/zapret2/nfq2/nfqws2", "--qnum=300", "--filter-tcp=443",
+            "--hostlist=%s" % hostlist,
+            "--hostlist-exclude=%s" % exclude,
+            "--hostlist-auto=%s" % auto,
+            "--ipset=%s" % ipset,
+        ]
+        NFQWSManager._ensure_list_files(argv)
+        for p in (hostlist, exclude, auto, ipset):
+            self.assertTrue(os.path.isfile(p), "не создан: %s" % p)
+            self.assertEqual(os.path.getsize(p), 0, "не пустой: %s" % p)
+
+    def test_inline_and_debug_flags_are_not_files(self):
+        import os
+        debug_log = self._p("auto-debug.log")
+        argv = [
+            "/opt/zapret2/nfq2/nfqws2",
+            # inline-домены/ip — НЕ пути к файлам, трогать нельзя
+            "--hostlist-domains=youtube.com,google.com",
+            "--hostlist-exclude-domains=vk.com",
+            "--ipset-ip=1.2.3.4",
+            # debug-лог nfqws2 создаёт сам (LOG_APPEND) — не наша забота
+            "--hostlist-auto-debug=%s" % debug_log,
+        ]
+        NFQWSManager._ensure_list_files(argv)
+        self.assertFalse(os.path.exists(debug_log))
+        # каталог не засорён никакими файлами
+        self.assertEqual(os.listdir(self.d), [])
+
+    def test_existing_file_not_overwritten(self):
+        import os
+        exclude = self._p("netrogat.txt")
+        with open(exclude, "w") as f:
+            f.write("bank.example\n")
+        NFQWSManager._ensure_list_files(
+            ["/opt/zapret2/nfq2/nfqws2", "--hostlist-exclude=%s" % exclude])
+        with open(exclude) as f:
+            self.assertEqual(f.read(), "bank.example\n")
+
+    def test_create_failure_does_not_raise(self):
+        # read-only/битый путь: best-effort, исключение наружу не летит.
+        argv = ["/opt/zapret2/nfq2/nfqws2",
+                "--hostlist=%s" % self._p("netrogat.txt")]
+        with mock.patch("core.nfqws_manager.open",
+                        side_effect=OSError("read-only fs")):
+            NFQWSManager._ensure_list_files(argv)  # не должно бросить
+
+    def test_dry_run_creates_files_before_validation(self):
+        import os
+        missing = self._p("ipset", "zapret-hosts-user.txt")
+        cfg = mock.Mock()
+        cfg.get.return_value = "/opt/zapret2/nfq2/nfqws2"
+        completed = mock.Mock(returncode=0, stdout=b"ok")
+        with mock.patch.object(NFQWSManager, "_recover_pid"):
+            mgr = NFQWSManager()
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cfg), \
+             mock.patch("core.nfqws_manager.os.path.isfile",
+                        return_value=True), \
+             mock.patch("core.nfqws_manager.os.access", return_value=True), \
+             mock.patch.object(mgr, "compose_command",
+                               return_value=["/opt/zapret2/nfq2/nfqws2",
+                                             "--user=nobody",
+                                             "--hostlist=%s" % missing]), \
+             mock.patch("core.nfqws_manager.subprocess.run",
+                        return_value=completed):
+            res = mgr.dry_run(["--hostlist=%s" % missing])
+        self.assertTrue(res["ok"])
+        self.assertTrue(os.path.isfile(missing),
+                        "dry_run не создал недостающий hostlist")
+
+
 if __name__ == "__main__":
     unittest.main()
