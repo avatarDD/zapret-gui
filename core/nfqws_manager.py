@@ -218,6 +218,30 @@ Z2K_STATE_DIR = "/opt/etc/zapret-gui/state/autocircular"
 _LUA_DESYNC_FUNC_RE = re.compile(r"--lua-desync=([a-zA-Z0-9_]+)")
 _LUA_INIT_PATH_RE = re.compile(r"^--lua-init=@(.+)$")
 
+# Флаги nfqws2, аргумент которых — путь к ФАЙЛУ списка. Апстрим-движок nfqws2
+# (bol-van/zapret2) — в отличие от прежней кодовой базы bol-van/zapret, где эта
+# проверка была закомментирована — stat()-ит каждый такой файл ещё на
+# этапе разбора опций: RegisterHostlist() → file_mod_time()/realpath()
+# (nfq2/hostlist.c). Если файла нет, nfqws2 печатает
+#   ERROR failed to register hostlist '<file>'
+# и НЕМЕДЛЕННО завершается с кодом 1 (nfq2/nfqws.c). Достаточно одной битой
+# ссылки (например, ipset/zapret-hosts-user.txt из стороннего/старого пресета
+# или lists/netrogat.txt при несовпадении base_path со старой установкой),
+# чтобы вся стратегия не поднялась. А так как firewall-правила NFQUEUE к этому
+# моменту уже накатаны, трафик уходит в очередь, которую никто не слушает
+# («чёрная дыра») → рвётся в т.ч. связь браузер↔роутер и в UI загорается
+# «Сервер недоступен». Пустой файл nfqws2 принимает штатно (пустой список =
+# «без ограничений»), поэтому недостающие файлы достаточно создать пустыми.
+# Префиксы подобраны так, чтобы НЕ цеплять inline-варианты
+# (--hostlist-domains=, --ipset-ip=, --hostlist-auto-debug= и т.п.).
+_LIST_FILE_FLAGS = (
+    "--hostlist=",
+    "--hostlist-exclude=",
+    "--hostlist-auto=",
+    "--ipset=",
+    "--ipset-exclude=",
+)
+
 
 class NFQWSManager:
     """
@@ -291,6 +315,11 @@ class NFQWSManager:
             full_args = self.compose_command(strategy_args, binary=binary,
                                               cfg=cfg)
             self._last_args = strategy_args
+
+            # Гарантируем существование всех --hostlist*/--ipset* файлов из
+            # команды: иначе zapret2 падает «failed to register hostlist» с
+            # exit 1 ещё до открытия NFQUEUE (см. _ensure_list_files).
+            self._ensure_list_files(full_args)
 
             log.info("Запуск nfqws2...", source="nfqws")
             log.debug("Команда: %s" % " ".join(full_args), source="nfqws")
@@ -675,6 +704,12 @@ class NFQWSManager:
                 and a != "--dry-run"]
         argv.append("--intercept=0")
 
+        # Как и живой запуск, гарантируем наличие файлов-списков — иначе
+        # валидация (--intercept=0 тоже разбирает опции и регистрирует
+        # hostlist'ы) ложно упала бы «failed to register hostlist» на файлах,
+        # которые реальный start() всё равно создаёт (см. _ensure_list_files).
+        self._ensure_list_files(argv)
+
         try:
             proc = subprocess.run(
                 argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -705,6 +740,60 @@ class NFQWSManager:
         }
 
     # ─────────────────────── internal helpers ───────────────────────
+
+    @staticmethod
+    def _ensure_list_files(argv: list) -> None:
+        """Создать пустые файлы для отсутствующих --hostlist*/--ipset* из argv.
+
+        Движок nfqws2 (bol-van/zapret2) на этапе разбора опций stat()-ит
+        каждый файл-список (RegisterHostlist → file_mod_time/realpath,
+        nfq2/hostlist.c) и, если файла нет, печатает «failed to register
+        hostlist '<file>'» и падает с кодом 1 (в прежней апстрим-кодовой базе
+        bol-van/zapret эта проверка была отключена). Из-за
+        одной битой ссылки не поднимается вся стратегия, а уже накатанные
+        NFQUEUE-правила «чёрной дырой» роняют связь (в UI — «Сервер
+        недоступен»). Пустой список nfqws2 принимает штатно, поэтому недостающие
+        файлы просто создаём пустыми (см. _LIST_FILE_FLAGS).
+
+        Платформенно-нейтрально: трогаем ТОЛЬКО пути, на которые сама стратегия
+        ссылается и которых нет; пути/бинарь/firewall не меняем. Best-effort:
+        ошибку создания только логируем, запуск не блокируем — если файл
+        действительно не создать (read-only FS и т.п.), поведение остаётся
+        прежним (nfqws2 сам сообщит причину).
+        """
+        seen = set()
+        for arg in argv:
+            if not isinstance(arg, str):
+                continue
+            for flag in _LIST_FILE_FLAGS:
+                if arg.startswith(flag):
+                    path = arg[len(flag):]
+                    # Пустое значение или очередной флаг — не путь к файлу.
+                    if not path or path.startswith("-") or path in seen:
+                        break
+                    seen.add(path)
+                    if os.path.exists(path):
+                        break
+                    try:
+                        parent = os.path.dirname(path)
+                        if parent:
+                            os.makedirs(parent, exist_ok=True)
+                        # touch: создаём пустой файл, не трогая существующий.
+                        with open(path, "a"):
+                            pass
+                        log.warning(
+                            "Список '%s' отсутствовал — создан пустым "
+                            "(иначе nfqws2: failed to register hostlist → "
+                            "exit 1)" % path,
+                            source="nfqws",
+                        )
+                    except OSError as e:
+                        log.error(
+                            "Не удалось создать файл списка '%s': %s"
+                            % (path, e),
+                            source="nfqws",
+                        )
+                    break
 
     def _build_base_args(self, cfg) -> list:
         """Собрать базовые аргументы из конфигурации (--user/--fwmark/--qnum).
