@@ -956,9 +956,15 @@ class FirewallManager:
         def _iface(kw):
             if not all_wan:
                 return ""
-            if len(all_wan) == 1:
-                return "%s %s " % (kw, list(all_wan)[0])
-            return "%s { %s } " % (kw, ", ".join(sorted(all_wan)))
+            # Имена — строго в кавычках: имя, начинающееся с цифры
+            # (6in4-he_net, 6to4-wan, 6rd-*), nft-лексер без кавычек читает
+            # как число+строку → «syntax error, unexpected string» на каждом
+            # правиле. Кавычки доходят до nft как есть: команда уходит
+            # argv-списком без shell, nft склеивает аргументы и лексит заново.
+            quoted = ['"%s"' % i for i in sorted(all_wan)]
+            if len(quoted) == 1:
+                return "%s %s " % (kw, quoted[0])
+            return "%s { %s } " % (kw, ", ".join(quoted))
 
         oif = _iface("oifname")
         iif = _iface("iifname")
@@ -1033,8 +1039,20 @@ class FirewallManager:
         return ok
 
     def _remove_nftables(self) -> bool:
-        """Удалить таблицу nftables."""
+        """Удалить таблицу nftables. Отсутствие таблицы — не ошибка."""
         result = self._run_cmd(["nft", "delete", "table", "inet", NFT_TABLE])
+        if not result:
+            # delete падает и когда таблицы просто нет (первый запуск после
+            # ребута, прошлый apply не дошёл до конца) — снимать было нечего,
+            # не пугаем «Возможны проблемы при снятии правил».
+            try:
+                probe = subprocess.run(
+                    ["nft", "list", "table", "inet", NFT_TABLE],
+                    capture_output=True, text=True, timeout=5,
+                )
+                result = probe.returncode != 0
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
         self._rules_info = []
         return result
 

@@ -342,6 +342,41 @@ class TestNftablesRules(unittest.TestCase):
         self.assertNotIn("3478:3481", joined)
 
 
+class TestNftablesIfaceQuoting(unittest.TestCase):
+    """Регрессия: имя интерфейса, начинающееся с цифры (6in4-he_net,
+    6in4-route64 — туннели на OpenWrt), без кавычек ломает nft-лексер:
+    «Error: syntax error, unexpected string» на КАЖДОМ правиле с
+    oifname/iifname → обход не поднимается. nft принимает любое имя
+    строковым литералом в кавычках."""
+
+    @staticmethod
+    def _capture(wan4, wan6=None):
+        fw = FirewallManager()
+        captured = []
+        with mock.patch.object(
+                fw, "_run_cmd",
+                side_effect=lambda c: captured.append(" ".join(c)) or True):
+            fw._apply_nftables(
+                300, "80,443", "443", "0x40000000", 20, 5, wan4, wan6)
+        return [c for c in captured if "ifname" in c]
+
+    def test_digit_leading_ifaces_quoted_in_set(self):
+        rules = self._capture(["br-wan"], ["6in4-he_net", "6in4-route64"])
+        self.assertTrue(rules)
+        for c in rules:
+            self.assertIn('"6in4-he_net"', c)
+            self.assertIn('"6in4-route64"', c)
+            self.assertIn('"br-wan"', c)
+            # ни одного вхождения имени без открывающей кавычки
+            self.assertNotRegex(c, r'[^"]6in4-')
+
+    def test_single_iface_also_quoted(self):
+        rules = self._capture(["6in4-wan"])
+        self.assertTrue(rules)
+        for c in rules:
+            self.assertRegex(c, r'[oi]ifname "6in4-wan" ')
+
+
 class TestNftPortSet(unittest.TestCase):
 
     def test_converts_colon_to_dash(self):
