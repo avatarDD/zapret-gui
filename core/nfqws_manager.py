@@ -755,6 +755,10 @@ class NFQWSManager:
         недоступен»). Пустой список nfqws2 принимает штатно, поэтому недостающие
         файлы просто создаём пустыми (см. _LIST_FILE_FLAGS).
 
+        Существующие файлы не переписываем, но лечим mtime == 0 (Jan 1 1970):
+        для nfqws2 такой файл неотличим от отсутствующего — «cannot access
+        hostlist file» → exit 1 (см. _fix_epoch_mtime).
+
         Платформенно-нейтрально: трогаем ТОЛЬКО пути, на которые сама стратегия
         ссылается и которых нет; пути/бинарь/firewall не меняем. Best-effort:
         ошибку создания только логируем, запуск не блокируем — если файл
@@ -773,6 +777,7 @@ class NFQWSManager:
                         break
                     seen.add(path)
                     if os.path.exists(path):
+                        NFQWSManager._fix_epoch_mtime(path)
                         break
                     try:
                         parent = os.path.dirname(path)
@@ -794,6 +799,37 @@ class NFQWSManager:
                             source="nfqws",
                         )
                     break
+
+    @staticmethod
+    def _fix_epoch_mtime(path: str) -> None:
+        """Починить mtime == 0 (Jan 1 1970) у существующего файла-списка.
+
+        file_mod_time() движка nfqws2 возвращает st_mtime и использует 0 как
+        признак ошибки stat() (nfq2/files.c). Поэтому файл с mtime == 0 —
+        распакованный без сохранения времени или созданный до синхронизации
+        часов роутера (без RTC до NTP часы на эпохе) — nfqws2 считает
+        недоступным: «cannot access hostlist file '<file>'» → «failed to
+        register hostlist» → exit 1, хотя файл существует и читается.
+        Лечится touch'ем. Best-effort: ошибку только логируем.
+        """
+        try:
+            if os.stat(path).st_mtime > 0:
+                return
+            now = time.time()
+            if now <= 0:
+                now = 1.0
+            os.utime(path, (now, now))
+            log.warning(
+                "Список '%s' имел mtime=0 (Jan 1 1970) — nfqws2 считает "
+                "такой файл недоступным (cannot access hostlist file → "
+                "exit 1); время файла обновлено" % path,
+                source="nfqws",
+            )
+        except OSError as e:
+            log.error(
+                "Не удалось обновить mtime списка '%s': %s" % (path, e),
+                source="nfqws",
+            )
 
     def _build_base_args(self, cfg) -> list:
         """Собрать базовые аргументы из конфигурации (--user/--fwmark/--qnum).

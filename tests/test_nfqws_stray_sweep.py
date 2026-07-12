@@ -299,6 +299,44 @@ class TestEnsureListFiles(unittest.TestCase):
                         side_effect=OSError("read-only fs")):
             NFQWSManager._ensure_list_files(argv)  # не должно бросить
 
+    def test_epoch_mtime_healed_content_kept(self):
+        # Регрессия «cannot access hostlist file '<file>' при живом файле»:
+        # file_mod_time() nfqws2 трактует st_mtime == 0 (Jan 1 1970) как
+        # ошибку stat() → exit 1. Такой файл надо touch'нуть, не трогая
+        # содержимое.
+        import os
+        exclude = self._p("netrogat.txt")
+        with open(exclude, "w") as f:
+            f.write("bank.example\n")
+        os.utime(exclude, (0, 0))
+        NFQWSManager._ensure_list_files(
+            ["/opt/zapret2/nfq2/nfqws2", "--hostlist-exclude=%s" % exclude])
+        self.assertGreater(os.stat(exclude).st_mtime, 0)
+        with open(exclude) as f:
+            self.assertEqual(f.read(), "bank.example\n")
+
+    def test_normal_mtime_untouched(self):
+        import os
+        exclude = self._p("netrogat.txt")
+        with open(exclude, "w") as f:
+            f.write("x\n")
+        os.utime(exclude, (1234567890, 1234567890))
+        NFQWSManager._ensure_list_files(
+            ["/opt/zapret2/nfq2/nfqws2", "--hostlist-exclude=%s" % exclude])
+        self.assertEqual(int(os.stat(exclude).st_mtime), 1234567890)
+
+    def test_epoch_mtime_fix_failure_does_not_raise(self):
+        # utime может упасть (read-only FS) — best-effort, не роняем запуск.
+        import os
+        exclude = self._p("netrogat.txt")
+        open(exclude, "w").close()
+        os.utime(exclude, (0, 0))
+        with mock.patch("core.nfqws_manager.os.utime",
+                        side_effect=OSError("read-only fs")):
+            NFQWSManager._ensure_list_files(
+                ["/opt/zapret2/nfq2/nfqws2",
+                 "--hostlist-exclude=%s" % exclude])
+
     def test_dry_run_creates_files_before_validation(self):
         import os
         missing = self._p("ipset", "zapret-hosts-user.txt")
