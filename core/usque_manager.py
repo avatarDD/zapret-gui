@@ -211,6 +211,14 @@ class UsqueManager:
             with self._lock:
                 self._processes[iface] = proc
 
+            # Применяем оптимизации если low_latency
+            if low_latency:
+                try:
+                    from core.tunnel_optimizer import optimize_iface
+                    optimize_iface(iface, "balanced")
+                except Exception:
+                    pass
+
             log.info("usque: туннель %s запущен (pid=%d)" % (iface, proc.pid),
                      source="usque")
             return {"ok": True, "pid": proc.pid, "iface": iface}

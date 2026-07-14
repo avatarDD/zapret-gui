@@ -64,8 +64,6 @@ const Sidebar = (() => {
                     { id: 'usque-setup', label: 'Установка', icon: 'settings' },
                 ] },
                 { id: 'tgproxy', label: 'Telegram Tunnel', icon: 'awg' },
-                { id: 'tunnel-monitor', label: 'Мониторинг', icon: 'diagnostic' },
-                { id: 'tunnel-optimizer', label: 'Оптимизации', icon: 'settings' },
                 { id: 'opera-proxy', label: 'Opera Proxy', icon: 'globe' },
                 { id: 'singbox', label: 'sing-box', icon: 'awg', children: [
                     { id: 'singbox-configs', label: 'Конфиги',  icon: 'lua' },
@@ -76,6 +74,8 @@ const Sidebar = (() => {
                     { id: 'mihomo-proxies', label: 'Прокси',   icon: 'globe' },
                     { id: 'mihomo-setup',   label: 'Установка', icon: 'settings' },
                 ] },
+                { id: 'tunnel-monitor', label: 'Мониторинг', icon: 'diagnostic' },
+                { id: 'tunnel-optimizer', label: 'Оптимизации', icon: 'settings' },
             ]
         },
         {

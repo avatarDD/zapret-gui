@@ -281,9 +281,10 @@ class WarpInWarpManager:
                  "lookup", "main"],
                 capture_output=True, timeout=5)
 
-            # Оптимизации TCP для снижения latency
-            self._apply_tcp_tuning(self._inner_iface)
-            self._apply_tcp_tuning(self._outer_iface)
+            # Применяем оптимизации через tunnel_optimizer
+            from core.tunnel_optimizer import optimize_iface
+            optimize_iface(self._inner_iface, "balanced")
+            optimize_iface(self._outer_iface, "balanced")
 
             log.info("warp-in-warp: маршруты + оптимизации настроены",
                      source="warp_in_warp")
