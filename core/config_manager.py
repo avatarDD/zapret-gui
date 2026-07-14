@@ -261,6 +261,19 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # --- WARP-in-WARP ---
+    # Двойной туннель: MASQUE+MASQUE / MASQUE+AWG / AWG+MASQUE.
+    "warp_in_warp": {
+        "watchdog_enabled": False,
+    },
+
+    # --- Tunnel Optimizer ---
+    # Оптимизации TCP/MTU/BBR для снижения латентности туннелей.
+    "tunnel_optimizer": {
+        "enabled": False,
+        "profile": "balanced",  # low_latency | balanced | throughput
+    },
+
     # --- Auto-Remediation ---
     # Автоматический выбор метода обхода по DPI-классификации.
     "auto_remediation": {

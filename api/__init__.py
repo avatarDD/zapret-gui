@@ -47,6 +47,9 @@ def register_routes(app):
     from api.opera_proxy import register as reg_opera_proxy
     from api.update_checker import register as reg_update_checker
     from api.auto_remediation import register as reg_auto_remediation
+    from api.warp_in_warp import register as reg_warp_in_warp
+    from api.tunnel_monitor import register as reg_tunnel_monitor
+    from api.tunnel_optimizer import register as reg_tunnel_optimizer
 
     reg_status(app)
     reg_logs(app)
@@ -83,3 +86,7 @@ def register_routes(app):
     reg_opera_proxy(app)
     reg_update_checker(app)
     reg_auto_remediation(app)
+    reg_warp_in_warp(app)
+    reg_tunnel_monitor(app)
+    reg_tunnel_optimizer(app)
+    reg_tunnel_optimizer(app)

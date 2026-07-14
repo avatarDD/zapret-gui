@@ -87,3 +87,13 @@ def register(app):
                 cm.set("opera_proxy", f, data[f])
         cm.save()
         return {"ok": True}
+
+    @app.route("/api/opera-proxy/install", method="POST")
+    def opera_install():
+        from core.ext_binary_installer import install_binary_by_name
+        return install_binary_by_name("opera")
+
+    @app.route("/api/opera-proxy/uninstall", method="POST")
+    def opera_uninstall():
+        from core.ext_binary_installer import uninstall_binary
+        return uninstall_binary("opera")

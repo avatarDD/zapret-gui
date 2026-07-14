@@ -637,6 +637,33 @@ def create_app(config_dir: str = None) -> Bottle:
     except Exception as e:
         log.warning("mihomo watchdog при boot: %s" % e, source="mihomo")
 
+    # Tunnel Optimizer: применить оптимизации если включены.
+    try:
+        from core.config_manager import get_config_manager as _cfg_opt
+        _cfg_opt2 = _cfg_opt()
+        if _cfg_opt2.get("tunnel_optimizer", "enabled", default=False):
+            from core.tunnel_optimizer import optimize_all_tunnels
+            profile = _cfg_opt2.get("tunnel_optimizer", "profile", default="balanced")
+            optimize_all_tunnels(profile)
+            log.info("tunnel-optimizer: оптимизации применены (profile=%s)" % profile,
+                     source="optimizer")
+    except Exception as e:
+        log.warning("tunnel-optimizer при boot: %s" % e, source="optimizer")
+
+    # Tunnel Monitor: запустить сбор метрик туннелей.
+    try:
+        from core.tunnel_monitor import get_tunnel_monitor
+        get_tunnel_monitor().start()
+    except Exception as e:
+        log.warning("tunnel-monitor при boot: %s" % e, source="monitor")
+
+    # WARP-in-WARP watchdog: проверка двойных туннелей.
+    try:
+        from core.warp_in_warp_watchdog import get_warp_in_warp_watchdog
+        get_warp_in_warp_watchdog().reconfigure()
+    except Exception as e:
+        log.warning("warp-in-warp watchdog при boot: %s" % e, source="warp_in_warp")
+
     # Update Checker: запустить фоновую проверку обновлений если включена.
     try:
         from core.update_checker import get_update_checker

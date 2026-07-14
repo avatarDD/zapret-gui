@@ -99,3 +99,21 @@ def register(app):
         mgr = get_tgproxy_manager()
         data = json.loads(request.body.read()) if request.body else {}
         return mgr.select_engine(data.get("engine", "auto"))
+
+    @app.route("/api/tgproxy/install/<engine>", method="POST")
+    def tgproxy_install(engine):
+        from core.ext_binary_installer import install_binary_by_name
+        if engine == "teleproxy":
+            return install_binary_by_name("teleproxy")
+        elif engine == "mtproto":
+            return install_binary_by_name("tgproto")
+        return {"ok": False, "error": "Неизвестный движок: %s" % engine}
+
+    @app.route("/api/tgproxy/uninstall/<engine>", method="POST")
+    def tgproxy_uninstall(engine):
+        from core.ext_binary_installer import uninstall_binary
+        if engine == "teleproxy":
+            return uninstall_binary("teleproxy")
+        elif engine == "mtproto":
+            return uninstall_binary("tgproto")
+        return {"ok": False, "error": "Неизвестный движок: %s" % engine}

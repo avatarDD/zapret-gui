@@ -129,9 +129,9 @@ const OperaProxyPage = (() => {
                         <span class="status-dot status-error"></span>
                         <span>Не установлен</span>
                     </div>
-                    <p class="text-muted">Скачайте с
-                        <a href="https://github.com/Alexey71/opera-proxy/releases" target="_blank">
-                        GitHub</a> и поместите в /opt/usr/bin/opera-proxy</p>
+                    <button class="btn btn-primary btn-sm" onclick="OperaProxyPage.install()" style="margin-top:8px;">
+                        Установить opera-proxy
+                    </button>
                 `;
             }
         } catch (e) {
@@ -254,6 +254,21 @@ const OperaProxyPage = (() => {
         }
     }
 
+    async function install() {
+        Toast.info("Установка opera-proxy...");
+        try {
+            const res = await API.post("/api/opera-proxy/install");
+            if (res.ok) {
+                Toast.success("opera-proxy установлен: " + (res.version || ""));
+                await _refresh();
+            } else {
+                Toast.error(res.error || "Ошибка установки");
+            }
+        } catch (e) {
+            Toast.error("Ошибка: " + e.message);
+        }
+    }
+
     function _startPoll() {
         _pollTimer = setInterval(_refresh, POLL_MS);
     }
@@ -264,5 +279,5 @@ const OperaProxyPage = (() => {
         return d.innerHTML;
     }
 
-    return { render, destroy };
+    return { render, destroy, install };
 })();

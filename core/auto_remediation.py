@@ -147,9 +147,10 @@ class AutoRemediation:
                      % (domain, dpi_type, protocol, mode),
                      source="auto_remediation")
 
-            # Запускаем скан (неблокирующе)
-            scanner.start(target=domain, protocol=protocol, mode=mode)
-            return True, "Strategy scan запущен"
+            # Запускаем скан с DPI-фильтрацией (неблокирующе)
+            scanner.start(target=domain, protocol=protocol, mode=mode,
+                         dpi_type=dpi_type)
+            return True, "Strategy scan запущен (DPI: %s)" % dpi_type
 
         except Exception as e:
             return False, "Ошибка: %s" % str(e)

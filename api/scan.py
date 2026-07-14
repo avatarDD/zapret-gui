@@ -81,12 +81,16 @@ def register(app):
         if resume:
             start_index = scanner.get_resume_index()
 
+        # DPI-type фильтрация (опционально, из BlockCheck)
+        dpi_type = (body.get("dpi_type") or "").strip().lower()
+
         # Запускаем
         started = scanner.start(
             target=target,
             protocol=protocol,
             mode=mode,
             start_index=start_index,
+            dpi_type=dpi_type,
         )
 
         if not started:

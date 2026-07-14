@@ -98,22 +98,23 @@ const TgProxyPage = (() => {
             for (const [name, info] of Object.entries(engines)) {
                 const cls = info.installed ? "status-ok" : "status-off";
                 const text = info.installed ? "Установлен" : "Не найден";
-                const selectBtn = info.installed
+                const actionBtn = info.installed
                     ? `<button class="btn btn-sm" onclick="TgProxyPage.selectEngine('${esc(name)}')">Выбрать</button>`
-                    : "";
+                    : `<button class="btn btn-primary btn-sm" onclick="TgProxyPage.installEngine('${esc(name)}')">Установить</button>`;
                 html += `<tr>
                     <td>${esc(name)}</td>
                     <td><span class="status-dot ${cls}"></span> ${text}</td>
                     <td>${esc(info.version || "-")}</td>
-                    <td>${selectBtn}</td>
+                    <td>${actionBtn}</td>
                 </tr>`;
             }
             html += '</tbody></table>';
 
-            // Описание
+            // Описание режимов
             html += '<div class="detail-row text-muted" style="margin-top:12px">';
-            html += '<strong>teleproxy</strong> —最强 DPI resistance (fake-TLS, DRS, MSS clamp), только ARM64<br>';
-            html += '<strong>tg-mtproxy-client</strong> — Go, все архитектуры включая MIPS, требует VPS-релей';
+            html += '<strong>teleproxy</strong> — Direct-to-DC на роутере. nfqws2 обходит DPI. Без VPS. <em>Только ARM64.</em><br>';
+            html += '<strong>tg-mtproxy-client</strong> — Go-клиент. Все архитектуры (MIPS включительно).';
+            html += ' Relay: z2k community (по умолчанию), свой VPS, или Cloudflare Worker.';
             html += '</div>';
 
             el.innerHTML = html;
@@ -131,12 +132,17 @@ const TgProxyPage = (() => {
             el.innerHTML = `
                 <div class="form-grid">
                     <div class="form-group">
-                        <label>Движок</label>
+                        <label>Режим</label>
                         <select id="tgproxy-engine" class="form-control">
                             <option value="auto" ${cfg.engine === "auto" ? "selected" : ""}>Авто (по архитектуре)</option>
-                            <option value="teleproxy" ${cfg.engine === "teleproxy" ? "selected" : ""}>teleproxy (ARM64)</option>
-                            <option value="mtproto" ${cfg.engine === "mtproto" ? "selected" : ""}>tg-mtproxy-client</option>
+                            <option value="teleproxy" ${cfg.engine === "teleproxy" ? "selected" : ""}>teleproxy — Direct-to-DC (без VPS)</option>
+                            <option value="mtproto" ${cfg.engine === "mtproto" ? "selected" : ""}>tg-mtproxy-client (нужен relay)</option>
                         </select>
+                        <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                            teleproxy: работает на роутере, подключается напрямую к Telegram DC.
+                            nfqws2 обходит DPI. Без VPS.<br>
+                            tg-mtproxy-client: нужен relay сервер (VPS / Cloudflare Worker / локальный).
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Порт</label>
@@ -158,7 +164,12 @@ const TgProxyPage = (() => {
                     </div>
                     <div class="form-group">
                         <label>Tunnel URL (mtproto)</label>
-                        <input type="text" id="tgproxy-tunnel-url" class="form-control" value="${esc(cfg.tunnel_url || "")}" placeholder="wss://relay.example.com/ws">
+                        <input type="text" id="tgproxy-tunnel-url" class="form-control"
+                               value="${esc(cfg.tunnel_url || "")}"
+                               placeholder="wss://213.176.74.63.nip.io/ws">
+                        <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                            По умолчанию: z2k community relay (бесплатный). Можно заменить на свой VPS или Cloudflare Worker.
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Tunnel secret (mtproto)</label>
@@ -236,6 +247,21 @@ const TgProxyPage = (() => {
         }
     }
 
+    async function installEngine(name) {
+        Toast.info("Установка " + name + "...");
+        try {
+            const res = await API.post("/api/tgproxy/install/" + name);
+            if (res.ok) {
+                Toast.success(name + " установлен: " + (res.version || ""));
+                await _refresh();
+            } else {
+                Toast.error(res.error || "Ошибка установки");
+            }
+        } catch (e) {
+            Toast.error("Ошибка: " + e.message);
+        }
+    }
+
     function _startPoll() {
         _pollTimer = setInterval(_refresh, POLL_MS);
     }
@@ -246,5 +272,5 @@ const TgProxyPage = (() => {
         return d.innerHTML;
     }
 
-    return { render, destroy, selectEngine };
+    return { render, destroy, selectEngine, installEngine };
 })();

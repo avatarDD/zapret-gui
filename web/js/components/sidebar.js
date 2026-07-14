@@ -60,9 +60,12 @@ const Sidebar = (() => {
                     { id: 'awg-setup',   label: 'Установка', icon: 'settings' },
                 ] },
                 { id: 'usque', label: 'WARP/MASQUE', icon: 'awg', children: [
+                    { id: 'warp-in-warp', label: 'WARP-in-WARP', icon: 'awg' },
                     { id: 'usque-setup', label: 'Установка', icon: 'settings' },
                 ] },
                 { id: 'tgproxy', label: 'Telegram Tunnel', icon: 'awg' },
+                { id: 'tunnel-monitor', label: 'Мониторинг', icon: 'diagnostic' },
+                { id: 'tunnel-optimizer', label: 'Оптимизации', icon: 'settings' },
                 { id: 'opera-proxy', label: 'Opera Proxy', icon: 'globe' },
                 { id: 'singbox', label: 'sing-box', icon: 'awg', children: [
                     { id: 'singbox-configs', label: 'Конфиги',  icon: 'lua' },

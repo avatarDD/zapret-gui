@@ -1,10 +1,15 @@
 # core/tgproxy_manager.py
 """
-Менеджер Telegram MTProto Proxy (Variant C: teleproxy + tg-mtproxy-client).
+Менеджер Telegram MTProto Proxy.
 
-Два движка для разных архитектур:
-  teleproxy (C)     —最强 DPI resistance, только ARM64
-  tg-mtproxy-client (Go) — все архитектуры включая MIPS
+Два движка, оба работают "из коробки" на роутере:
+
+  teleproxy (C) — Direct-to-DC на роутере, nfqws2 обходит DPI.
+                  Без VPS. Только ARM64.
+
+  tg-mtproxy-client (Go) — Go-клиент + relay.
+                           relay: VPS, Cloudflare Worker, или локальный (LAN).
+                           Все архитектуры включая MIPS.
 
 Telegram DC CIDRs (общие для обоих):
   149.154.160.0/20
@@ -209,7 +214,12 @@ class TgProxyManager:
               secret: str = "", domain: str = "",
               tunnel_url: str = "", tunnel_secret: str = "",
               direct_dc: bool = True) -> dict:
-        """Запустить Telegram proxy."""
+        """Запустить Telegram proxy.
+
+        Два режима "из коробки" (без VPS):
+          teleproxy  — Direct-to-DC на роутере, nfqws2 обходит DPI
+          mtproto    — Go-клиент + локальный relay на роутере (LAN only)
+        """
         if self._is_running():
             return {"ok": False, "error": "Telegram proxy уже запущен"}
 
@@ -292,11 +302,19 @@ class TgProxyManager:
 
     def _start_mtproto(self, port: int, tunnel_url: str,
                        tunnel_secret: str) -> dict:
-        """Запустить tg-mtproxy-client."""
+        """Запустить tg-mtproxy-client.
+
+        Relay по умолчанию: wss://213.176.74.63.nip.io/ws (z2k community relay).
+        Можно заменить на свой VPS или Cloudflare Worker.
+        """
         detect = self._detect_mtproto()
         binary = detect.get("binary")
         if not binary:
             return {"ok": False, "error": "tg-mtproxy-client не найден"}
+
+        # Relay по умолчанию — z2k community relay (бесплатный, без VPS)
+        if not tunnel_url:
+            tunnel_url = "wss://213.176.74.63.nip.io/ws"
 
         if not tunnel_url:
             return {"ok": False, "error": "tunnel_url обязателен для mtproto"}

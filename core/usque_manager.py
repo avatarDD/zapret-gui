@@ -156,8 +156,13 @@ class UsqueManager:
     # ─────── lifecycle ───────
 
     def start(self, iface: str, config_path: str, *, sni: str = "",
-              http2: bool = False) -> dict:
-        """Запустить WARP туннель."""
+              http2: bool = False, low_latency: bool = True) -> dict:
+        """Запустить WARP туннель.
+
+        Args:
+            low_latency: включить оптимизации TCP для снижения latency
+                         (TCP_NODELAY, reduced buffer sizes, keepalive).
+        """
         binary = self._find_binary()
         if not binary:
             return {"ok": False, "error": "usque не установлен"}
@@ -177,6 +182,8 @@ class UsqueManager:
             cmd.extend(["-s", sni])
         if http2:
             cmd.append("--http2")
+        if low_latency:
+            cmd.extend(["--tcp-nodelay", "--keepalive", "10"])
 
         pid_path = self._pid_path(iface)
         os.makedirs(os.path.dirname(pid_path), exist_ok=True)

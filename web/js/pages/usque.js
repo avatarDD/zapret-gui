@@ -75,7 +75,9 @@ const UsquePage = (() => {
                         <span class="status-dot status-error"></span>
                         <span>Не установлен</span>
                     </div>
-                    <p class="text-muted">Установите usque-keenetic через pacman/opkg или страницу Установка.</p>
+                    <button class="btn btn-primary btn-sm" onclick="UsquePage.install()" style="margin-top:8px;">
+                        Установить usque
+                    </button>
                 `;
             }
         } catch (e) {
@@ -179,6 +181,21 @@ const UsquePage = (() => {
         }
     }
 
+    async function install() {
+        Toast.info("Установка usque...");
+        try {
+            const res = await API.post("/api/usque/install");
+            if (res.ok) {
+                Toast.success("usque установлен: " + (res.version || ""));
+                await _refresh();
+            } else {
+                Toast.error(res.error || "Ошибка установки");
+            }
+        } catch (e) {
+            Toast.error("Ошибка: " + e.message);
+        }
+    }
+
     function _startPoll() {
         _pollTimer = setInterval(_refresh, POLL_MS);
     }
@@ -189,5 +206,5 @@ const UsquePage = (() => {
         return d.innerHTML;
     }
 
-    return { render, destroy, start, stop, remove };
+    return { render, destroy, start, stop, remove, install };
 })();

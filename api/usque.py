@@ -137,3 +137,13 @@ def register(app):
             return {"ok": False, "error": str(e)}
 
         return {"ok": True}
+
+    @app.route("/api/usque/install", method="POST")
+    def usque_install():
+        from core.ext_binary_installer import install_binary_by_name
+        return install_binary_by_name("usque")
+
+    @app.route("/api/usque/uninstall", method="POST")
+    def usque_uninstall():
+        from core.ext_binary_installer import uninstall_binary
+        return uninstall_binary("usque")
