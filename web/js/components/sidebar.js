@@ -87,6 +87,7 @@ const Sidebar = (() => {
                 { id: 'blobs',     label: 'Блобы',        icon: 'blob' },
                 { id: 'lua',       label: 'Lua-скрипты',  icon: 'lua' },
                 { id: 'hosts',     label: 'Hosts',        icon: 'hosts' },
+                { id: 'dns-routing', label: 'Per-domain DNS', icon: 'globe' },
             ]
         },
         {

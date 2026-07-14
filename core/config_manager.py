@@ -274,6 +274,12 @@ DEFAULT_CONFIG = {
         "profile": "balanced",  # low_latency | balanced | throughput
     },
 
+    # --- Per-domain DNS Routing ---
+    # Кастомный DNS для конкретных хостов (обход DNS-подмены ISP).
+    "dns_routing": {
+        "rules": [],  # [{domain, dns, description, enabled}]
+    },
+
     # --- Auto-Remediation ---
     # Автоматический выбор метода обхода по DPI-классификации.
     "auto_remediation": {
