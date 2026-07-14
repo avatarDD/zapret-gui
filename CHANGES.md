@@ -2,9 +2,10 @@
 
 ## Summary
 
-This PR adds **5 new tunnel engines**, an **auto-remediation system**, a **unified update
-checker**, and **UX improvements** to zapret-gui. All changes are **additive and backward-
-compatible** — existing functionality is untouched, new features are disabled by default.
+This PR adds **3 new tunnel engines** (WARP/MASQUE, Telegram MTProto, Opera Proxy),
+an **auto-remediation system**, a **unified update checker**, and **UX improvements**
+to zapret-gui. All changes are **additive and backward-compatible** — existing
+functionality is untouched, new features are disabled by default.
 
 **15 files modified, 24 files created. Zero breaking changes.**
 
