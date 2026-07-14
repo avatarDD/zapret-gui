@@ -41,7 +41,7 @@ import time
 import uuid
 
 
-METHOD_KINDS = ("direct", "nfqws2", "awg", "singbox", "mihomo")
+METHOD_KINDS = ("direct", "nfqws2", "awg", "singbox", "mihomo", "warp")
 
 
 def parse_method(method: str) -> tuple:
@@ -63,7 +63,7 @@ def parse_method(method: str) -> tuple:
         kind, target = s.lower(), ""
     if kind not in METHOD_KINDS:
         raise ValueError("Неизвестный метод: %s" % method)
-    if kind in ("awg", "singbox", "mihomo") and not target:
+    if kind in ("awg", "singbox", "mihomo", "warp") and not target:
         raise ValueError("Метод %s требует интерфейс (%s:<iface>)"
                          % (kind, kind))
     return (kind, target)

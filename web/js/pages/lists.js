@@ -70,12 +70,48 @@ const ListsPage = (() => {
     function renderCurated() {
         const box = document.getElementById('lists-curated');
         if (!box) return;
-        const chips = (curated.presets || []).map(p => `
-            <button class="btn btn-ghost btn-sm" ${p.added||busy?'disabled':''}
-                    title="${escAttr(p.description||p.url)}"
-                    onclick="ListsPage.addPreset('${escAttr(p.url)}')">
-                ${p.added ? '✓ ' : '+ '}${esc(p.name)}
-            </button>`).join(' ');
+
+        // Группировка пресетов по category
+        const groups = {};
+        const CATEGORY_LABELS = {
+            services: 'Сервисы',
+            countries: 'Страны',
+            categories: 'Категории',
+        };
+        for (const p of (curated.presets || [])) {
+            const cat = p.category || 'other';
+            if (!groups[cat]) groups[cat] = [];
+            groups[cat].push(p);
+        }
+
+        // Порядок групп
+        const groupOrder = ['services', 'countries', 'categories', 'other'];
+        let groupsHtml = '';
+        for (const cat of groupOrder) {
+            const items = groups[cat];
+            if (!items || !items.length) continue;
+            const label = CATEGORY_LABELS[cat] || cat;
+            const chips = items.map(p => `
+                <span class="preset-chip" style="display:inline-flex;gap:2px;">
+                    <button class="btn btn-ghost btn-sm" ${p.added||busy?'disabled':''}
+                            title="${escAttr(p.description||p.url)}"
+                            onclick="ListsPage.addPreset('${escAttr(p.url)}')">
+                        ${p.added ? '✓ ' : '+ '}${esc(p.name)}
+                    </button>
+                    ${p.added ? `<button class="btn btn-ghost btn-sm" title="Добавить в маршрут"
+                            onclick="ListsPage.addPresetToRoute('${escAttr(p.url)}','${escAttr(p.name)}')"
+                            style="font-size:10px; padding:2px 6px;">→</button>` : ''}
+                </span>`).join(' ');
+            groupsHtml += `
+                <div style="margin-bottom:8px;">
+                    <div style="font-size:11px; font-weight:600; color:var(--text-muted);
+                                text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">
+                        ${esc(label)}
+                    </div>
+                    <div style="display:flex; flex-wrap:wrap; gap:6px;">${chips}</div>
+                </div>`;
+        }
+
         box.innerHTML = `
             <div class="card" style="margin-bottom:16px;">
                 <div class="card-title">Готовые списки (podkop-стиль)</div>
@@ -86,7 +122,7 @@ const ListsPage = (() => {
                     обновлении сохраняются; пустой ответ сервера не затирает
                     текущее содержимое.
                 </p>
-                <div style="display:flex; flex-wrap:wrap; gap:6px;">${chips}</div>
+                ${groupsHtml}
                 <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; align-items:center;">
                     <input id="lst-curated-url" class="form-control" style="flex:1; min-width:220px;"
                            placeholder="Свой URL списка доменов (raw .txt/.lst)"
@@ -371,6 +407,48 @@ const ListsPage = (() => {
         finally { busy = false; renderCurated(); }
     }
 
+    async function addPresetToRoute(url, name) {
+        busy = true; renderCurated();
+        try {
+            // 1. Добавляем пресет как named list (если ещё нет)
+            let listId = null;
+            const existing = lists.find(l => l.source_url === url);
+            if (existing) {
+                listId = existing.id;
+            } else {
+                const r = await API.post('/api/lists/curated', { url });
+                if (!r || !r.ok) {
+                    Toast.error((r && r.error) || 'Не удалось добавить список');
+                    return;
+                }
+                listId = r.id;
+                await refresh();
+            }
+
+            if (!listId) {
+                Toast.error('Не удалось определить list_id');
+                return;
+            }
+
+            // 2. Создаём маршрут через unified routing
+            const payload = {
+                name: 'Список: ' + (name || url.split('/').pop()),
+                method: 'nfqws2',
+                enabled: true,
+                destination: { list_ids: [listId] },
+            };
+            const r2 = await API.post('/api/unified/routes', payload);
+            if (r2 && r2.ok) {
+                Toast.success('Маршрут создан для ' + (name || 'списка'));
+            } else {
+                Toast.warning('Список добавлен, но маршрут не создан: ' +
+                    ((r2 && r2.error) || 'ошибка'));
+            }
+            await refresh();
+        } catch (e) { Toast.error(e.message); }
+        finally { busy = false; renderCurated(); }
+    }
+
     async function addCustomUrl() {
         const url = (curatedUrl || '').trim();
         if (!url) { Toast.error('Укажите URL'); return; }
@@ -409,6 +487,6 @@ const ListsPage = (() => {
 
     return { render, destroy, refresh, newList, edit, closeEditor, save, del,
              onCuratedUrl, onCuratedInterval, setTransport,
-             addPreset, addCustomUrl, refreshList, refreshAllManaged,
+             addPreset, addPresetToRoute, addCustomUrl, refreshList, refreshAllManaged,
              openRoute, closeRoute, createRoute };
 })();

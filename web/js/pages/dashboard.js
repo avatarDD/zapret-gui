@@ -87,6 +87,59 @@ const DashboardPage = (() => {
                 </div>
             </div>
 
+            <!-- VPN / Туннели -->
+            <h2 style="font-size:14px; color:var(--text-muted); margin:16px 0 8px; text-transform:uppercase; letter-spacing:0.5px;">VPN / Туннели</h2>
+            <div class="status-grid" id="vpn-grid">
+                <div class="status-card" id="card-warp" style="cursor:pointer;" onclick="window.location.hash='usque'">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">⚡</span>
+                        <span class="status-card-label">WARP/MASQUE</span>
+                    </div>
+                    <div class="status-card-value stopped" id="warp-status">—</div>
+                    <div class="status-card-detail" id="warp-detail"></div>
+                </div>
+
+                <div class="status-card" id="card-opera" style="cursor:pointer;" onclick="window.location.hash='opera-proxy'">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">🎭</span>
+                        <span class="status-card-label">Opera Proxy</span>
+                    </div>
+                    <div class="status-card-value stopped" id="opera-status">—</div>
+                    <div class="status-card-detail" id="opera-detail"></div>
+                </div>
+
+                <div class="status-card" id="card-telegram" style="cursor:pointer;" onclick="window.location.hash='tgproxy'">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">✈</span>
+                        <span class="status-card-label">Telegram</span>
+                    </div>
+                    <div class="status-card-value stopped" id="tg-status">—</div>
+                    <div class="status-card-detail" id="tg-detail"></div>
+                </div>
+            </div>
+
+            <!-- Мониторинг -->
+            <h2 style="font-size:14px; color:var(--text-muted); margin:16px 0 8px; text-transform:uppercase; letter-spacing:0.5px;">Мониторинг</h2>
+            <div class="status-grid" id="monitoring-grid">
+                <div class="status-card" id="card-block-detector" style="cursor:pointer;" onclick="window.location.hash='block-detector'">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">🔍</span>
+                        <span class="status-card-label">Block Detector</span>
+                    </div>
+                    <div class="status-card-value stopped" id="bd-status">—</div>
+                    <div class="status-card-detail" id="bd-detail"></div>
+                </div>
+
+                <div class="status-card" id="card-healthcheck" style="cursor:pointer;" onclick="window.location.hash='strategies'">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">💚</span>
+                        <span class="status-card-label">Healthcheck</span>
+                    </div>
+                    <div class="status-card-value stopped" id="hc-status">—</div>
+                    <div class="status-card-detail" id="hc-detail"></div>
+                </div>
+            </div>
+
             <!-- Быстрые действия -->
             <div class="card">
                 <div class="card-title">
@@ -149,9 +202,18 @@ const DashboardPage = (() => {
 
     async function fetchStatus() {
         try {
-            const data = await API.get('/api/status');
+            const [data, warp, opera, tg, bd, hc] = await Promise.all([
+                API.get('/api/status').catch(() => null),
+                API.get('/api/usque/configs').catch(() => null),
+                API.get('/api/opera-proxy/status').catch(() => null),
+                API.get('/api/tgproxy/status').catch(() => null),
+                API.get('/api/block-detector/status').catch(() => null),
+                API.get('/api/healthcheck/status').catch(() => null),
+            ]);
             lastData = data;
-            updateCards(data);
+            if (data) updateCards(data);
+            updateVpnCards(warp, opera, tg);
+            updateMonitoringCards(bd, hc);
         } catch (err) {
             document.getElementById('nfqws-status').textContent = 'Ошибка';
             document.getElementById('nfqws-status').className = 'status-card-value stopped';
@@ -232,6 +294,102 @@ const DashboardPage = (() => {
                 zapretVer.textContent = 'Не установлен';
                 zapretVer.style.color = 'var(--error)';
                 if (zapretDetail) zapretDetail.textContent = 'Нажмите для установки';
+            }
+        }
+    }
+
+    function updateVpnCards(warp, opera, tg) {
+        // WARP/MASQUE
+        const warpEl = document.getElementById('warp-status');
+        const warpDetail = document.getElementById('warp-detail');
+        if (warpEl) {
+            const configs = warp?.configs || [];
+            const active = configs.filter(c => c.active);
+            if (active.length > 0) {
+                warpEl.textContent = 'Подключён';
+                warpEl.className = 'status-card-value running';
+                if (warpDetail) warpDetail.textContent = active.map(c => c.iface).join(', ');
+            } else if (configs.length > 0) {
+                warpEl.textContent = 'Есть конфиги';
+                warpEl.className = 'status-card-value';
+                if (warpDetail) warpDetail.textContent = configs.length + ' профилей';
+            } else {
+                warpEl.textContent = 'Не настроен';
+                warpEl.className = 'status-card-value stopped';
+                if (warpDetail) warpDetail.textContent = '';
+            }
+        }
+
+        // Opera Proxy
+        const operaEl = document.getElementById('opera-status');
+        const operaDetail = document.getElementById('opera-detail');
+        if (operaEl) {
+            if (opera?.running) {
+                operaEl.textContent = 'Работает';
+                operaEl.className = 'status-card-value running';
+                if (operaDetail) operaDetail.textContent = 'PID ' + (opera.pid || '?');
+            } else {
+                operaEl.textContent = 'Остановлен';
+                operaEl.className = 'status-card-value stopped';
+                if (operaDetail) operaDetail.textContent = '';
+            }
+        }
+
+        // Telegram
+        const tgEl = document.getElementById('tg-status');
+        const tgDetail = document.getElementById('tg-detail');
+        if (tgEl) {
+            if (tg?.running) {
+                tgEl.textContent = 'Работает';
+                tgEl.className = 'status-card-value running';
+                if (tgDetail) tgDetail.textContent = tg.engine || '';
+            } else {
+                tgEl.textContent = 'Остановлен';
+                tgEl.className = 'status-card-value stopped';
+                if (tgDetail) tgDetail.textContent = '';
+            }
+        }
+    }
+
+    function updateMonitoringCards(bd, hc) {
+        // Block Detector
+        const bdEl = document.getElementById('bd-status');
+        const bdDetail = document.getElementById('bd-detail');
+        if (bdEl) {
+            if (bd?.running) {
+                const monitored = bd.monitored_count || 0;
+                const blocked = bd.blocked_count || 0;
+                bdEl.textContent = blocked > 0 ? `${blocked} заблок.` : 'Мониторинг';
+                bdEl.className = 'status-card-value' + (blocked > 0 ? ' stopped' : ' running');
+                if (bdDetail) bdDetail.textContent = `${monitored} отслеж.`;
+            } else {
+                bdEl.textContent = 'Выключен';
+                bdEl.className = 'status-card-value stopped';
+                if (bdDetail) bdDetail.textContent = '';
+            }
+        }
+
+        // Healthcheck
+        const hcEl = document.getElementById('hc-status');
+        const hcDetail = document.getElementById('hc-detail');
+        if (hcEl) {
+            if (hc?.running) {
+                hcEl.textContent = 'Активен';
+                hcEl.className = 'status-card-value running';
+                if (hcDetail) {
+                    const last = hc.last_check_summary;
+                    if (last?.results) {
+                        const ok = last.results.filter(r => r.ok).length;
+                        const total = last.results.length;
+                        hcDetail.textContent = `${ok}/${total} сервисов OK`;
+                    } else {
+                        hcDetail.textContent = 'Проверяет...';
+                    }
+                }
+            } else {
+                hcEl.textContent = 'Выключен';
+                hcEl.className = 'status-card-value stopped';
+                if (hcDetail) hcDetail.textContent = '';
             }
         }
     }

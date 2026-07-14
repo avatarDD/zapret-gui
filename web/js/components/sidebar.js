@@ -59,6 +59,11 @@ const Sidebar = (() => {
                     { id: 'awg-routing', label: 'AWG-правила', icon: 'globe' },
                     { id: 'awg-setup',   label: 'Установка', icon: 'settings' },
                 ] },
+                { id: 'usque', label: 'WARP/MASQUE', icon: 'awg', children: [
+                    { id: 'usque-setup', label: 'Установка', icon: 'settings' },
+                ] },
+                { id: 'tgproxy', label: 'Telegram Tunnel', icon: 'awg' },
+                { id: 'opera-proxy', label: 'Opera Proxy', icon: 'globe' },
                 { id: 'singbox', label: 'sing-box', icon: 'awg', children: [
                     { id: 'singbox-configs', label: 'Конфиги',  icon: 'lua' },
                     { id: 'singbox-proxies', label: 'Прокси',   icon: 'globe' },
@@ -85,12 +90,14 @@ const Sidebar = (() => {
             label: 'Диагностика',
             items: [
                 { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostic' },
+                { id: 'block-detector', label: 'Block Detector', icon: 'scan' },
                 { id: 'logs',        label: 'Логи',        icon: 'log' },
             ]
         },
         {
             label: 'Система',
             items: [
+                { id: 'updates',     label: 'Обновления',  icon: 'zapret' },
                 { id: 'zapret',      label: 'Zapret2 (установка)', icon: 'zapret' },
                 { id: 'autostart',   label: 'Автозапуск',  icon: 'autostart' },
                 { id: 'settings',    label: 'Настройки',   icon: 'settings' },

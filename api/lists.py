@@ -80,6 +80,10 @@ def register(app):
                     "interval_hours": max(1, int(body["interval_hours"]))})
             except (TypeError, ValueError):
                 pass
+        if r.get("ok") and "transport" in body:
+            # Per-list transport override ('' = глобальный, 'awg:wg0' и т.д.)
+            named_lists.update_fields(list_id, {
+                "transport": (body.get("transport") or "").strip()})
         if not r.get("ok"):
             response.status = 400 if "найден" not in r.get("error", "") else 404
         return r

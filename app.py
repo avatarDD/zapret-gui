@@ -265,6 +265,73 @@ def _apply_awg_autostart_on_boot():
     t.start()
 
 
+def _apply_usque_autostart_on_boot():
+    """
+    Поднять WARP/MASQUE туннели при старте GUI, если:
+      * usque.enabled = true
+      * usque.autostart = true
+      * есть конфиги для запуска
+
+    Запускается в фоновом потоке.
+    """
+    import threading
+    import time
+
+    def _do_apply():
+        try:
+            time.sleep(1.5)
+
+            from core.config_manager import get_config_manager
+            from core.log_buffer import log
+
+            cfg = get_config_manager()
+            if not cfg.get("usque", "enabled", default=False):
+                return
+            if not cfg.get("usque", "autostart", default=False):
+                return
+
+            from core.usque_manager import get_usque_manager
+            mgr = get_usque_manager()
+            env = mgr.detect()
+            if not env.get("installed"):
+                log.info("usque autostart: бинарник не установлен, пропуск",
+                         source="usque")
+                return
+
+            configs = mgr.list_configs()
+            if not configs:
+                log.info("usque autostart: нет конфигов, пропуск",
+                         source="usque")
+                return
+
+            sni = cfg.get("usque", "default_sni", default="")
+            http2 = cfg.get("usque", "http2_enable", default=False)
+
+            for c in configs:
+                if c.get("active"):
+                    log.info("usque: %s уже запущен, пропуск" % c["name"],
+                             source="usque")
+                    continue
+                log.info("usque autostart: запуск %s" % c["name"],
+                         source="usque")
+                result = mgr.start(c["iface"], c["path"],
+                                   sni=sni, http2=http2)
+                if not result.get("ok"):
+                    log.warning("usque autostart: %s — %s" % (
+                        c["name"], result.get("error", "ошибка")),
+                        source="usque")
+
+        except Exception as e:
+            try:
+                from core.log_buffer import log
+                log.error("usque autostart: %s" % e, source="usque")
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_do_apply, daemon=True, name="usque-autostart-boot")
+    t.start()
+
+
 def _run_awg_autostart_cli(args, stop: bool = False):
     """
     CLI-режим автозапуска AmneziaWG: вызывается init-скриптом.
@@ -569,6 +636,83 @@ def create_app(config_dir: str = None) -> Bottle:
         _mh_watchdog().reconfigure()
     except Exception as e:
         log.warning("mihomo watchdog при boot: %s" % e, source="mihomo")
+
+    # Update Checker: запустить фоновую проверку обновлений если включена.
+    try:
+        from core.update_checker import get_update_checker
+        get_update_checker().reconfigure()
+    except Exception as e:
+        log.warning("update-checker при boot: %s" % e, source="update_checker")
+
+    # Opera Proxy watchdog: авто-рестарт если процесс упал.
+    try:
+        from core.opera_proxy_watchdog import get_opera_proxy_watchdog
+        get_opera_proxy_watchdog().reconfigure()
+    except Exception as e:
+        log.warning("opera-proxy watchdog при boot: %s" % e, source="opera_proxy")
+
+    # Opera Proxy autostart: запустить если включён.
+    try:
+        from core.config_manager import get_config_manager as _cfg_op
+        _cfg_op2 = _cfg_op()
+        if _cfg_op2.get("opera_proxy", "enabled", default=False) and \
+           _cfg_op2.get("opera_proxy", "autostart", default=False):
+            from core.opera_proxy_manager import get_opera_proxy_manager
+            _opmgr = get_opera_proxy_manager()
+            if not _opmgr._is_running():
+                _opmgr.start(
+                    country=_cfg_op2.get("opera_proxy", "country", default="EU"),
+                    bind=_cfg_op2.get("opera_proxy", "bind", default="127.0.0.1:18080"),
+                    socks_mode=_cfg_op2.get("opera_proxy", "socks_mode", default=False),
+                )
+                log.info("opera-proxy: автозапуск при старте", source="opera_proxy")
+    except Exception as e:
+        log.warning("opera-proxy autostart при boot: %s" % e, source="opera_proxy")
+
+    # Telegram proxy autostart: запустить если включён.
+    try:
+        from core.config_manager import get_config_manager as _cfg_tg
+        _cfg_tg2 = _cfg_tg()
+        if _cfg_tg2.get("tgproxy", "enabled", default=False) and \
+           _cfg_tg2.get("tgproxy", "autostart", default=False):
+            from core.tgproxy_manager import get_tgproxy_manager
+            _tgmgr = get_tgproxy_manager()
+            if not _tgmgr._is_running():
+                _tgmgr.start(
+                    engine=_cfg_tg2.get("tgproxy", "engine", default="auto"),
+                    port=_cfg_tg2.get("tgproxy", "port", default=9443),
+                )
+                log.info("tgproxy: автозапуск при старте", source="tgproxy")
+    except Exception as e:
+        log.warning("tgproxy autostart при boot: %s" % e, source="tgproxy")
+
+    # Block Detector: запустить DNS-мониторинг если включён.
+    try:
+        from core.block_detector import get_block_detector
+        get_block_detector().start()
+    except Exception as e:
+        log.warning("block-detector при boot: %s" % e, source="block_detector")
+
+    # WARP/MASQUE watchdog: авто-рестарт если туннель упал.
+    try:
+        from core.usque_watchdog import get_usque_watchdog
+        get_usque_watchdog().reconfigure()
+    except Exception as e:
+        log.warning("usque watchdog при boot: %s" % e, source="usque")
+
+    # Telegram proxy watchdog: авто-рестарт если процесс упал.
+    try:
+        from core.tgproxy_watchdog import get_tgproxy_watchdog
+        get_tgproxy_watchdog().reconfigure()
+    except Exception as e:
+        log.warning("tgproxy watchdog при boot: %s" % e, source="tgproxy")
+
+    # WARP/MASQUE autostart: поднять usque-туннели при старте, если
+    # включён autostart и нет отдельного init.d-скрипта.
+    try:
+        _apply_usque_autostart_on_boot()
+    except Exception as e:
+        log.warning("usque autostart при boot: %s" % e, source="usque")
 
     # Healthcheck-демон (autocircular watchdog): ничего не делает, если
     # cfg.healthcheck.enabled = false (дефолт). Включается через GUI.

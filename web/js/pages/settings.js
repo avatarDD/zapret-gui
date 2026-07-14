@@ -176,6 +176,18 @@ const SettingsPage = (() => {
                 { key: 'interfaces.lan',   label: 'LAN (IFACE_LAN)',    type: 'text', placeholder: 'Авто-определение' },
             ]
         },
+        {
+            id: 'remediation',
+            label: 'Auto-Remediation',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+            fields: [
+                { key: 'auto_remediation.enabled', label: 'Включить Auto-Remediation', type: 'toggle',
+                  hint: 'Автоматический выбор метода обхода (zapret/tunnel/dns) по результатам BlockCheck.' },
+                { key: 'auto_remediation.tunnel_priority', label: 'Приоритет туннелей', type: 'tunnel_priority',
+                  hint: 'Порядок приоритета туннелей для auto-ремедиации. Первый доступный используется. Перетаскивайте для изменения порядка.',
+                  showIf: 'auto_remediation.enabled' },
+            ]
+        },
     ];
 
     // ══════════════════ Render ══════════════════
@@ -466,6 +478,23 @@ const SettingsPage = (() => {
                     </select>
                 `;
                 break;
+            case 'tunnel_priority':
+                const tunnels = Array.isArray(value) ? value : ['warp', 'awg', 'singbox', 'mihomo'];
+                const tunnelLabels = { warp: 'WARP/MASQUE', awg: 'AmneziaWG', singbox: 'sing-box', mihomo: 'mihomo', opera: 'Opera Proxy' };
+                inputHtml = `
+                    <div class="tunnel-priority-list" id="${id}">
+                        ${tunnels.map((t, i) => `
+                            <div class="tunnel-priority-item" draggable="true" data-idx="${i}" data-value="${t}">
+                                <span class="drag-handle" style="cursor:grab;">☰</span>
+                                <span style="flex:1;">${tunnelLabels[t] || t}</span>
+                                <button class="btn btn-ghost btn-sm" onclick="SettingsPage.moveTunnelPriority(${i}, -1)" ${i === 0 ? 'disabled' : ''}>↑</button>
+                                <button class="btn btn-ghost btn-sm" onclick="SettingsPage.moveTunnelPriority(${i}, 1)" ${i === tunnels.length - 1 ? 'disabled' : ''}>↓</button>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <input type="hidden" id="${id}-value" value='${JSON.stringify(tunnels)}'>
+                `;
+                break;
         }
 
         const hintHtml = field.hint
@@ -618,6 +647,23 @@ const SettingsPage = (() => {
     function updateSaveBar() {
         const bar = document.getElementById('settings-save-bar');
         if (bar) bar.classList.toggle('hidden', !hasUnsaved);
+    }
+
+    function moveTunnelPriority(idx, direction) {
+        const key = 'auto_remediation.tunnel_priority';
+        const hidden = document.getElementById('cfg-auto_remediation-tunnel_priority-value');
+        if (!hidden) return;
+        let arr = JSON.parse(hidden.value || '[]');
+        const newIdx = idx + direction;
+        if (newIdx < 0 || newIdx >= arr.length) return;
+        // Swap
+        [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+        hidden.value = JSON.stringify(arr);
+        setNestedValue(config, key, arr);
+        hasUnsaved = !deepEqual(config, originalConfig);
+        updateSaveBar();
+        // Re-render section
+        renderSectionForm();
     }
 
     // ══════════════════ Save / Discard ══════════════════
@@ -1095,5 +1141,6 @@ const SettingsPage = (() => {
         autoDetectRoles,
         clearRoles,
         toggleRole,
+        moveTunnelPriority,
     };
 })();

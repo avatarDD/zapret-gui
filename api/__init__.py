@@ -40,6 +40,13 @@ def register_routes(app):
     from api.unified import register as reg_unified
     from api.backup import register as reg_backup
     from api.healthcheck import register as reg_healthcheck
+    from api.usque import register as reg_usque
+    from api.tgproxy import register as reg_tgproxy
+    from api.block_detector import register as reg_block_detector
+    from api.geosite import register as reg_geosite
+    from api.opera_proxy import register as reg_opera_proxy
+    from api.update_checker import register as reg_update_checker
+    from api.auto_remediation import register as reg_auto_remediation
 
     reg_status(app)
     reg_logs(app)
@@ -69,3 +76,10 @@ def register_routes(app):
     reg_unified(app)
     reg_backup(app)
     reg_healthcheck(app)
+    reg_usque(app)
+    reg_tgproxy(app)
+    reg_block_detector(app)
+    reg_geosite(app)
+    reg_opera_proxy(app)
+    reg_update_checker(app)
+    reg_auto_remediation(app)
