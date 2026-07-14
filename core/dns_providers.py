@@ -52,9 +52,15 @@ DOH_PROVIDERS = [
     },
     {
         "id": "geohide",
-        "name": "GeoHide DNS",
-        "url": "https://dns-unfiltered.adguard.com/dns-query",
-        "ips": ["194.54.14.14"],
+        "name": "GeoHide DoH",
+        "url": "https://dns.geohide.ru:444/dns-query",
+        "ips": ["45.155.204.190", "37.230.192.51", "95.182.120.241"],
+    },
+    {
+        "id": "geohide-h3",
+        "name": "GeoHide HTTP/3",
+        "url": "h3://dns.geohide.ru:444",
+        "ips": ["45.155.204.190", "37.230.192.51", "95.182.120.241"],
     },
 ]
 
@@ -80,6 +86,13 @@ DOT_PROVIDERS = [
         "host": "dns.adguard.com",
         "port": 853,
         "ips": ["94.140.14.14"],
+    },
+    {
+        "id": "geohide-dot",
+        "name": "GeoHide DoT",
+        "host": "dns.geohide.ru",
+        "port": 853,
+        "ips": ["45.155.204.190", "37.230.192.51", "95.182.120.241"],
     },
 ]
 

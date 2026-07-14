@@ -30,6 +30,7 @@ DNS_SERVERS = {
     "quad9": {"doh": "https://dns.quad9.net/dns-query", "dot": "9.9.9.9:853", "ip": "9.9.9.9"},
     "yandex": {"doh": "https://dns.yandex.net/dns-query", "dot": "77.88.8.8:853", "ip": "77.88.8.8"},
     "comss": {"doh": "https://dns.comss.one/dns-query", "ip": "9.9.9.10"},
+    "geohide": {"doh": "https://dns.geohide.ru:444/dns-query", "dot": "dns.geohide.ru:853", "ip": "45.155.204.190"},
 }
 
 
