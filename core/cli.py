@@ -26,7 +26,8 @@ import sys
 
 
 # Подкоманды верхнего уровня, по которым app.py решает «это CLI, не web».
-COMMANDS = ("status", "nfqws", "strategy", "singbox", "mihomo")
+COMMANDS = ("status", "nfqws", "strategy", "singbox", "mihomo",
+            "usque", "tgproxy", "opera", "monitor", "updates", "dns-routing")
 
 
 def _p(msg=""):
@@ -216,6 +217,164 @@ def _cmd_mihomo(args) -> int:
     return 2
 
 
+# ─────────────────────── usque (WARP/MASQUE) ────────────────────────
+
+def _cmd_usque(args) -> int:
+    from core.usque_manager import get_usque_manager
+    mgr = get_usque_manager()
+    action = args.action
+    if action == "status":
+        env = mgr.detect()
+        if env.get("installed"):
+            _p("usque: установлен (%s, %s)" % (env.get("version", "?"), env.get("arch", "?")))
+        else:
+            _p("usque: не установлен")
+        configs = mgr.list_configs()
+        active = [c for c in configs if c.get("active")]
+        _p("конфигов: %d, активных: %s" % (len(configs), ", ".join(c["iface"] for c in active) if active else "—"))
+        return 0
+    if action == "start":
+        if not args.iface:
+            _p("Укажите интерфейс: zapret-gui usque start <iface>")
+            return 2
+        configs = mgr.list_configs()
+        target = next((c for c in configs if c["iface"] == args.iface), None)
+        if not target:
+            _p("✗ Интерфейс не найден: %s" % args.iface)
+            return 1
+        return _ok("usque start %s" % args.iface,
+                    mgr.start(args.iface, target["path"]))
+    if action == "stop":
+        if not args.iface:
+            _p("Укажите интерфейс: zapret-gui usque stop <iface>")
+            return 2
+        return _ok("usque stop %s" % args.iface, mgr.stop(args.iface))
+    _p("Неизвестное действие: %s" % action)
+    return 2
+
+
+# ─────────────────────── tgproxy (Telegram) ──────────────────────────
+
+def _cmd_tgproxy(args) -> int:
+    from core.tgproxy_manager import get_tgproxy_manager
+    mgr = get_tgproxy_manager()
+    action = args.action
+    if action == "status":
+        st = mgr.status()
+        _p("telegram: %s" % ("запущен (%s)" % st.get("engine", "?")
+                            if st.get("running") else "остановлен"))
+        if st.get("pid"):
+            _p("pid: %s" % st["pid"])
+        return 0
+    if action == "start":
+        return _ok("telegram start", mgr.start())
+    if action == "stop":
+        return _ok("telegram stop", mgr.stop())
+    _p("Неизвестное действие: %s" % action)
+    return 2
+
+
+# ─────────────────────── opera proxy ─────────────────────────────────
+
+def _cmd_opera(args) -> int:
+    from core.opera_proxy_manager import get_opera_proxy_manager
+    mgr = get_opera_proxy_manager()
+    action = args.action
+    if action == "status":
+        st = mgr.status()
+        _p("opera: %s" % ("запущен" if st.get("running") else "остановлен"))
+        if st.get("pid"):
+            _p("pid: %s" % st["pid"])
+        return 0
+    if action == "start":
+        return _ok("opera start", mgr.start())
+    if action == "stop":
+        return _ok("opera stop", mgr.stop())
+    _p("Неизвестное действие: %s" % action)
+    return 2
+
+
+# ─────────────────────── monitor (live metrics) ──────────────────────
+
+def _cmd_monitor(_args) -> int:
+    from core.tunnel_monitor import get_tunnel_monitor
+    monitor = get_tunnel_monitor()
+    metrics = monitor.get_metrics()
+    if not metrics:
+        _p("Нет активных туннелей")
+        return 0
+    _p("%-20s %12s %12s %12s %12s" % ("Интерфейс", "RX", "TX", "RX/s", "TX/s"))
+    _p("-" * 70)
+    for m in metrics:
+        rx = _fmt_bytes(m.get("rx_bytes", 0))
+        tx = _fmt_bytes(m.get("tx_bytes", 0))
+        rx_s = _fmt_speed(m.get("rx_speed", 0))
+        tx_s = _fmt_speed(m.get("tx_speed", 0))
+        _p("%-20s %12s %12s %12s %12s" % (m["iface"], rx, tx, rx_s, tx_s))
+    return 0
+
+
+def _fmt_bytes(b):
+    if b < 1024: return "%d B" % b
+    if b < 1024*1024: return "%.1f KB" % (b/1024)
+    if b < 1024*1024*1024: return "%.1f MB" % (b/(1024*1024))
+    return "%.2f GB" % (b/(1024*1024*1024))
+
+
+def _fmt_speed(bps):
+    if bps < 1024: return "%d B/s" % bps
+    if bps < 1024*1024: return "%.1f KB/s" % (bps/1024)
+    return "%.1f MB/s" % (bps/(1024*1024))
+
+
+# ─────────────────────── updates ─────────────────────────────────────
+
+def _cmd_updates(_args) -> int:
+    from core.update_checker import check_all
+    _p("Проверка обновлений...")
+    result = check_all()
+    results = result.get("results", [])
+    updates = [r for r in results if r.get("has_update")]
+    _p("")
+    _p("%-20s %-15s %-15s %s" % ("Компонент", "Установлена", "Последняя", "Статус"))
+    _p("-" * 70)
+    for r in results:
+        status = "← обновление" if r.get("has_update") else "OK"
+        _p("%-20s %-15s %-15s %s" % (
+            r.get("display_name", r.get("name", "?")),
+            r.get("current", "-") or "-",
+            r.get("latest", "-") or "-",
+            status))
+    _p("")
+    _p("Найдено обновлений: %d" % len(updates))
+    return 0 if not updates else 1
+
+
+# ─────────────────────── dns-routing ─────────────────────────────────
+
+def _cmd_dns_routing(args) -> int:
+    from core.dns_routing import get_dns_routing_manager
+    mgr = get_dns_routing_manager()
+    action = args.action
+    if action == "list":
+        rules = mgr.get_rules()
+        if not rules:
+            _p("Нет DNS-правил")
+            return 0
+        _p("%-30s %-20s %s" % ("Домен", "DNS", "Описание"))
+        _p("-" * 70)
+        for r in rules:
+            _p("%-30s %-20s %s" % (r.get("domain", "?"),
+                                   r.get("dns", "?"),
+                                   r.get("description", "")))
+        return 0
+    if action == "apply":
+        result = mgr.apply()
+        return _ok("dns-routing apply: %d правил" % result.get("applied", 0), result)
+    _p("Неизвестное действие: %s" % action)
+    return 2
+
+
 # ─────────────────────── entry ───────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -243,15 +402,37 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("action", choices=["list", "up", "down", "restart"])
     pm.add_argument("name", nargs="?", help="Имя конфига")
 
+    pu = sub.add_parser("usque", help="Управление WARP/MASQUE (usque)")
+    pu.add_argument("action", choices=["status", "start", "stop"])
+    pu.add_argument("iface", nargs="?", help="Интерфейс (opkgtun0)")
+
+    pt = sub.add_parser("tgproxy", help="Управление Telegram MTProto Proxy")
+    pt.add_argument("action", choices=["status", "start", "stop"])
+
+    po = sub.add_parser("opera", help="Управление Opera Proxy")
+    po.add_argument("action", choices=["status", "start", "stop"])
+
+    sub.add_parser("monitor", help="Live метрики туннелей")
+    sub.add_parser("updates", help="Проверка обновлений")
+
+    pdr = sub.add_parser("dns-routing", help="Per-domain DNS routing")
+    pdr.add_argument("action", choices=["list", "apply"])
+
     return p
 
 
 _DISPATCH = {
-    "status":   _cmd_status,
-    "nfqws":    _cmd_nfqws,
-    "strategy": _cmd_strategy,
-    "singbox":  _cmd_singbox,
-    "mihomo":   _cmd_mihomo,
+    "status":      _cmd_status,
+    "nfqws":       _cmd_nfqws,
+    "strategy":    _cmd_strategy,
+    "singbox":     _cmd_singbox,
+    "mihomo":      _cmd_mihomo,
+    "usque":       _cmd_usque,
+    "tgproxy":     _cmd_tgproxy,
+    "opera":       _cmd_opera,
+    "monitor":     _cmd_monitor,
+    "updates":     _cmd_updates,
+    "dns-routing": _cmd_dns_routing,
 }
 
 
