@@ -175,6 +175,58 @@ _opkg_install_pkg() {
     fi
 }
 
+# На Entware/OpenWrt интерпретатор Python разбит на пакеты: `python3-light`
+# содержит только ядро, а submodule'ы стандартной библиотеки (`urllib`,
+# `ssl`, ...) поставляются отдельными пакетами `python3-*`. Если пользователь
+# поставил лишь `python3-light`, GUI падает при старте с
+# `ModuleNotFoundError: No module named 'urllib'` (issue #231): и импорт
+# ассетов, и сам веб-сервер тянут urllib/ssl уже на этапе загрузки модулей.
+# Проверяем наличие критичных модулей и доставляем недостающие пакеты.
+ensure_python_stdlib() {
+    # Актуально только там, где Python разбит на submodule-пакеты.
+    [ "$PKG_CMD" = "opkg" ] || [ "$PKG_CMD" = "apk" ] || return 0
+
+    # module:package — имена пакетов в фидах opkg (Entware/OpenWrt≤23.05)
+    # и apk (OpenWrt 24.10+) совпадают.
+    #   urllib → python3-urllib   (загрузки, подписки, обновление каталогов)
+    #   ssl    → python3-openssl  (HTTPS: без него не стартует download_transport)
+    _PY_STDLIB_PAIRS="urllib:python3-urllib ssl:python3-openssl"
+
+    local missing="" pair mod pkg updated=0
+    for pair in $_PY_STDLIB_PAIRS; do
+        mod="${pair%%:*}"
+        pkg="${pair##*:}"
+        if python3 -c "import $mod" >/dev/null 2>&1; then
+            ok "python3 stdlib: $mod"
+        else
+            info "  Python-модуль '$mod' отсутствует → устанавливаем $pkg"
+            [ "$updated" = "0" ] && { $PKG_CMD update 2>/dev/null || true; updated=1; }
+            if [ "$PKG_CMD" = "apk" ]; then
+                $PKG_CMD add "$pkg" 2>/dev/null || warn "  Не удалось установить $pkg"
+            else
+                $PKG_CMD install "$pkg" 2>/dev/null || warn "  Не удалось установить $pkg"
+            fi
+            # Записываем для симметричного удаления при uninstall.
+            if [ -n "$CONFIG_DIR" ]; then
+                mkdir -p "$CONFIG_DIR" 2>/dev/null
+                echo "$pkg" >> "$CONFIG_DIR/opkg_installed.list"
+            fi
+            python3 -c "import $mod" >/dev/null 2>&1 && ok "python3 stdlib: $mod" \
+                || missing="$missing $mod:$pkg"
+        fi
+    done
+
+    # Без urllib/ssl веб-интерфейс не поднимется — предупреждаем явно.
+    if [ -n "$missing" ]; then
+        local _verb="install"; [ "$PKG_CMD" = "apk" ] && _verb="add"
+        warn "Не удалось обеспечить модули Python:$(echo "$missing" | sed 's/:[A-Za-z0-9._-]*//g')"
+        warn "Веб-интерфейс не запустится без них. Установите вручную:"
+        for pair in $missing; do
+            warn "  $PKG_CMD $_verb ${pair##*:}"
+        done
+    fi
+}
+
 check_deps() {
     info "Проверка зависимостей..."
 
@@ -223,6 +275,10 @@ check_deps() {
     else
         ok "bottle: будет использован встроенный (vendor/bottle.py)"
     fi
+
+    # Критичные submodule'ы stdlib (urllib/ssl) — на Entware/OpenWrt они
+    # НЕ входят в python3-light и ставятся отдельными пакетами (issue #231).
+    ensure_python_stdlib
 }
 
 # ── Установка из GitHub ───────────────────────────────────────
@@ -575,6 +631,13 @@ start() {
         echo "zapret-gui started (PID $(cat $PID_FILE))"
     else
         echo "FAILED to start zapret-gui"
+        # Показываем причину падения — иначе пользователь видит только
+        # «FAILED» без подсказки (напр. ModuleNotFoundError на Entware).
+        if [ -s "$LOG_FILE" ]; then
+            echo "--- последние строки $LOG_FILE ---"
+            tail -n 15 "$LOG_FILE"
+            echo "----------------------------------"
+        fi
         rm -f "$PID_FILE"
         return 1
     fi

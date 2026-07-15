@@ -604,6 +604,25 @@
   deadlock демона (нет ответа вовсе), а не нехватку времени.
 
 ### Исправлено
+- **Веб-интерфейс не запускался на Entware из-за неполной установки Python**
+  (`install.sh`, issue #231). На Entware/OpenWrt интерпретатор разбит на
+  пакеты: `python3-light` содержит только ядро, а submodule'ы стандартной
+  библиотеки (`urllib`, `ssl`, ...) поставляются отдельными пакетами
+  `python3-*`. Если у пользователя стоял лишь `python3-light`, установка
+  проходила, но и импорт ассетов, и сам веб-сервер падали уже на этапе
+  загрузки модулей: `ModuleNotFoundError: No module named 'urllib'`
+  (`catalog_updater.py` тянет `urllib` на верхнем уровне, `download_transport`
+  — `ssl`), и init-скрипт печатал лишь неинформативное `FAILED to start
+  zapret-gui`. Теперь `install.sh`:
+  - при проверке зависимостей на opkg/apk **пробует импортировать** критичные
+    модули (`urllib`, `ssl`) и доставляет недостающие пакеты
+    (`python3-urllib`, `python3-openssl`) — с `opkg update`/`apk add`,
+    записью в `opkg_installed.list` для симметричного удаления и повторной
+    проверкой; если пакет поставить не удалось (офлайн) — печатает точную
+    ручную команду вместо тихого падения при старте;
+  - Entware-init при неудачном старте показывает **последние строки лога
+    сервера** (`/tmp/zapret-gui-server.log`), чтобы причина (напр.
+    `ModuleNotFoundError`) была видна сразу, а не пряталась за «FAILED».
 - **dnsmasq не стартовал из-за ложного детекта nftset → ронял DNS и
   domain-роутинг** (`core/routing/dnsmasq_integration.py`,
   `core/routing/domain_rule.py`). `supports_nftset()` делал
