@@ -623,6 +623,34 @@
   - Entware-init при неудачном старте показывает **последние строки лога
     сервера** (`/tmp/zapret-gui-server.log`), чтобы причина (напр.
     `ModuleNotFoundError`) была видна сразу, а не пряталась за «FAILED».
+- **«Bottle не найден» на `python3-light`, хотя `vendor/bottle.py` на месте**
+  (`app.py`, `core/bottle_vendor.py`, `install.sh`, `packaging/*`,
+  `Makefile`, issue #231, продолжение). После установки `urllib`/`ssl`
+  пользователь всё равно упирался в `ОШИБКА: Bottle не найден (нет ни
+  системного, ни vendor/bottle.py)` — и переустановка не помогала. Причина:
+  встроенный `bottle.py` на верхнем уровне делает `from unicodedata import
+  normalize`, а `unicodedata` (C-расширение) **не входит в `python3-light`
+  и лежит в отдельном пакете `python3-codecs`** (проверено по фиду
+  bin.entware.net; это единственный недостающий модуль bottle помимо
+  `urllib`/`email`). Файл `vendor/bottle.py` при этом на диске есть, но
+  `import bottle` падает с `ModuleNotFoundError: No module named
+  'unicodedata'` — а `app.py` ловил ЛЮБОЙ `ImportError` и печатал
+  «нет vendor/bottle.py», уводя диагностику в сторону. Теперь:
+  - `app.py` различает «самого bottle нет» и «bottle есть, но не хватает
+    stdlib-модуля X» и печатает **точное имя модуля и пакет** для установки
+    (`opkg install python3-codecs` / `apk add …`), а не общее «Bottle не
+    найден»;
+  - `install.sh` после копирования файлов **реально импортирует** встроенный
+    bottle и, если не хватает модуля, доставляет нужный пакет по карте
+    `модуль→пакет` (`unicodedata`→`python3-codecs`, `ssl`/`hashlib`→
+    `python3-openssl`, …), а не по наивному `python3-<модуль>` (пакета
+    `python3-unicodedata` не существует);
+  - `.ipk`/`.apk` теперь объявляют зависимости `python3-urllib`,
+    `python3-openssl`, `python3-codecs`, `python3-email` (control-файлы и
+    `apk mkpkg --info depends`), поэтому opkg/apk доставляют их **сами** при
+    установке пакета;
+  - postinst и Entware-init (`check`) проверяют bottle **импортом**, а не
+    наличием файла, и при провале называют модуль и пакет.
 - **dnsmasq не стартовал из-за ложного детекта nftset → ронял DNS и
   domain-роутинг** (`core/routing/dnsmasq_integration.py`,
   `core/routing/domain_rule.py`). `supports_nftset()` делал
