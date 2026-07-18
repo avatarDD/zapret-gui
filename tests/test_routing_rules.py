@@ -197,5 +197,45 @@ class TestRuleFromDict(unittest.TestCase):
         self.assertEqual(r.id, "preserved-id")
 
 
+class TestNoUuidDependency(unittest.TestCase):
+    """
+    На Entware python3-light модуля uuid НЕТ (отдельный пакет
+    python3-uuid): `import uuid` на верхнем уровне валил всю цепочку
+    маршрутизации при добавлении маршрута и подъёме интерфейса
+    («No module named 'uuid'», HTTP 500). Генерация id идёт через
+    os.urandom — эти модули обязаны импортироваться без uuid.
+    """
+
+    MODULES = ("core.routing.rules", "core.unified.model",
+               "core.named_lists", "core.server_pool",
+               "core.subscription_manager")
+
+    def test_import_without_uuid(self):
+        import builtins
+        import importlib
+        import sys
+        from unittest import mock
+
+        real_import = builtins.__import__
+
+        def no_uuid(name, *args, **kwargs):
+            if name == "uuid" or name.startswith("uuid."):
+                raise ModuleNotFoundError("No module named 'uuid'")
+            return real_import(name, *args, **kwargs)
+
+        saved = {}
+        for m in ("uuid",) + self.MODULES:
+            if m in sys.modules:
+                saved[m] = sys.modules.pop(m)
+        try:
+            with mock.patch("builtins.__import__", side_effect=no_uuid):
+                for m in self.MODULES:
+                    importlib.import_module(m)
+        finally:
+            for m in self.MODULES:
+                sys.modules.pop(m, None)
+            sys.modules.update(saved)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,11 +29,11 @@ settings.json layout:
 """
 
 import json
+import os
 import threading
 import time
 import urllib.error
 import urllib.parse
-import uuid as _uuid
 
 from core.log_buffer import log
 
@@ -137,7 +137,8 @@ def add_subscription(name: str, url: str, *,
     if parsed.scheme not in ("http", "https"):
         return {"ok": False, "error": "URL должен быть http:// или https://"}
 
-    sid = "sub-" + _uuid.uuid4().hex[:8]
+    # os.urandom, а не uuid: на Entware python3-light без модуля uuid
+    sid = "sub-" + os.urandom(4).hex()
     with _lock:
         subs = _load_section()
         subs[sid] = {

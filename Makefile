@@ -298,7 +298,7 @@ _build_apk_openwrt:
 		--info "origin:$(PKG_NAME)" \
 		--info "url:https://github.com/avatarDD/zapret-gui" \
 		--info "maintainer:avatarDD <https://github.com/avatarDD/zapret-gui>" \
-		--info "depends:python3-light python3-urllib python3-openssl python3-codecs python3-email" \
+		--info "depends:python3-light python3-urllib python3-openssl python3-codecs python3-email python3-unittest" \
 		--script "post-install:$(APK_SCRIPTS)/post-install" \
 		--script "pre-deinstall:$(APK_SCRIPTS)/pre-deinstall" \
 		--files "$(DATA_DIR)" \

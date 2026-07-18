@@ -37,8 +37,8 @@
     помечает их как skipped для direct/nfqws2.
 """
 
+import os
 import time
-import uuid
 
 
 METHOD_KINDS = ("direct", "nfqws2", "awg", "singbox", "mihomo")
@@ -158,7 +158,8 @@ class UnifiedRoute:
                  monitor_enabled=False, failover_enabled=False,
                  probe_domain="", route_id="", created_at=0,
                  devices=None, dscp=None, dscp_self=False):
-        self.id = route_id or ("route-" + uuid.uuid4().hex[:8])
+        # os.urandom, а не uuid: на Entware python3-light без модуля uuid
+        self.id = route_id or ("route-" + os.urandom(4).hex())
         self.name = (name or "").strip() or self.id
         self.destination = (destination if isinstance(destination, Destination)
                             else Destination.from_dict(destination))

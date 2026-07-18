@@ -7,9 +7,9 @@
 """
 
 import ipaddress
+import os
 import re
 import time
-import uuid
 
 
 # Допустимые имена интерфейсов: то же ограничение, что и в awg_manager.
@@ -67,7 +67,8 @@ class RoutingRule:
         self.created_at   = int(created_at) if created_at else int(time.time())
 
     def _make_id(self) -> str:
-        return "%s-%s" % (self.type_name, uuid.uuid4().hex[:8])
+        # os.urandom, а не uuid: на Entware python3-light без модуля uuid
+        return "%s-%s" % (self.type_name, os.urandom(4).hex())
 
     def to_dict(self) -> dict:
         return {
