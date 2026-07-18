@@ -121,7 +121,8 @@ def check_python() -> dict:
         checks.append(_check(
             "модуль PyYAML", True,
             "нет — mihomo-функции работают, кроме удаления прокси "
-            "из таблицы (честный отказ)", level="warn"))
+            "из таблицы (Entware: opkg install python3-yaml)",
+            level="warn"))
 
     # stdlib-санити: на некоторых прошивках python собран без ssl/sqlite,
     # а Entware python3-light раскладывает часть stdlib по opkg-пакетам.
