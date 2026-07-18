@@ -649,6 +649,20 @@
   deadlock демона (нет ответа вовсе), а не нехватку времени.
 
 ### Исправлено
+- **«cannot import name 'save_config'» при включении DNS-перехвата — и
+  молчаливая потеря настроек DoH/автостарта sing-box**
+  (`core/config_manager.py`; отчёт с Keenetic). Докстринг
+  `config_manager` обещал модульную `save_config()`, но существовал
+  только метод `ConfigManager.save()`. На задокументированный API
+  купились три модуля: `dns_intercept.set_enabled` (ошибка в UI при
+  включении перехвата), `doh_resolver.set_settings` и
+  `singbox_autostart._save_settings` — у последних двух импорт стоял в
+  try/except, поэтому настройки DoH и автостарта sing-box **молча не
+  сохранялись** с самого появления этих модулей. Добавлена модульная
+  `save_config()` (делегирует глобальному менеджеру), докстринг
+  приведён к реальному API. Регрессионные тесты —
+  `test_dns_intercept.py::TestSetEnabled`,
+  `test_doh_resolver.py::TestSetSettingsSaves`.
 - **Доменное правило больше не исчезает молча, когда set-путь не
   сработал (Keenetic без xt_set)** (`core/routing/domain_rule.py`,
   `core/routing/doctor.py`; вычислено по выводу doctor пользователя:
