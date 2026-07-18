@@ -130,6 +130,10 @@ def check_python() -> dict:
             ("ssl", "TLS-пробы мониторинга, DoH, подписки", "fail"),
             ("socket", "вся сеть", "fail"),
             ("ipaddress", "разбор CIDR", "fail"),
+            ("logging", "без него не работает concurrent.futures: "
+                        "blockcheck, тестер прокси, обновление подписок; "
+                        "резолв доменов маршрутизации — медленнее "
+                        "(Entware: opkg install python3-logging)", "warn"),
             ("unittest", "юнит-тесты самодиагностики пропускаются "
                          "(Entware: opkg install python3-unittest)", "warn"),
             ("sqlite3", "не используется, но полезно знать", "warn")):

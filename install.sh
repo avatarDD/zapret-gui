@@ -224,11 +224,14 @@ ensure_python_stdlib() {
     # Опциональные: без них GUI работает, но часть функций деградирует.
     # Ставим сразу все — чтобы будущие фичи не упирались в урезанный
     # python3-light (наличие пакетов проверено по фиду bin.entware.net).
+    #   logging  → python3-logging  (без него не импортируется
+    #              concurrent.futures: blockcheck, тестер прокси, подписки,
+    #              параллельный резолв доменов маршрутизации)
     #   unittest → python3-unittest (юнит-тесты самодиагностики)
     #   uuid     → python3-uuid     (запас: стандартная генерация id)
     #   yaml     → python3-yaml    (PyYAML: round-trip правки mihomo-конфигов)
     #   sqlite3  → python3-sqlite3 (запас: локальные базы)
-    _PY_STDLIB_OPT_PAIRS="unittest:python3-unittest uuid:python3-uuid yaml:python3-yaml sqlite3:python3-sqlite3"
+    _PY_STDLIB_OPT_PAIRS="logging:python3-logging unittest:python3-unittest uuid:python3-uuid yaml:python3-yaml sqlite3:python3-sqlite3"
 
     local missing="" pair mod pkg
     for pair in $_PY_STDLIB_PAIRS $_PY_STDLIB_OPT_PAIRS; do

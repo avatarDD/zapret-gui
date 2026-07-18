@@ -299,7 +299,6 @@ def _prepopulate_domains(domains, set_v4, set_v6, backend) -> list:
     общего состояния), поэтому вызовы безопасно идут параллельно — это
     ограничивает суммарное время даже при медленном/глухом резолвере.
     """
-    import concurrent.futures
     tasks = []
     for d in domains:
         tasks.append((set_v4, d, "v4"))
@@ -307,6 +306,20 @@ def _prepopulate_domains(domains, set_v4, set_v6, backend) -> list:
     if not tasks:
         return []
     results = []
+    try:
+        import concurrent.futures
+    except ImportError:
+        # Entware python3-light без python3-logging: concurrent.futures
+        # тянет logging на верхнем уровне (_base.py) и не импортируется —
+        # «No module named 'logging'». Резолвим последовательно:
+        # медленнее, но работает (реальный отчёт с Keenetic — HTTP 500
+        # при сохранении маршрута).
+        for (s, d, f) in tasks:
+            try:
+                results.append(_prepopulate_set(s, d, f, backend))
+            except Exception as e:
+                results.append({"ok": False, "added": 0, "error": str(e)})
+        return results
     workers = min(_PREPOP_WORKERS, len(tasks))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_prepopulate_set, s, d, f, backend)
@@ -824,7 +837,13 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             # (масштабируется на большие hostlist'ы). Совсем без set-бэкенда —
             # прежний iproute-фолбэк: ip rule на каждый разрезолвленный IP.
             if _backend_for(prefer_nft=True) is not None:
-                return _apply_domain_via_sets(rule)
+                try:
+                    return _apply_domain_via_sets(rule)
+                except Exception as e:
+                    # Любой сбой set-пути не должен превращаться в HTTP 500
+                    # — откатываемся на проверенный iproute-фолбэк.
+                    log.warning("routing: set-путь без dnsmasq упал (%s) — "
+                                "фолбэк на ip-route" % e, source="routing")
             return _apply_domain_via_iproute(rule)
 
         backend, kind = _detect_backend()
@@ -1021,7 +1040,12 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
     # Set-путь без dnsmasq (Keenetic с ipset/nft) — симметрично apply.
     if rule.id in _sets_state_load():
         with _lock:
-            return _remove_domain_via_sets(rule)
+            try:
+                return _remove_domain_via_sets(rule)
+            except Exception as e:
+                log.warning("routing: снятие set-правила %s упало: %s"
+                            % (rule.id, e), source="routing")
+                return {"ok": False, "error": str(e)}
 
     with _lock:
         backend, kind = _detect_backend()
