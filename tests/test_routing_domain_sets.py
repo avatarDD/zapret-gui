@@ -172,6 +172,33 @@ class TestSetsPathFallbackToIproute(unittest.TestCase):
         f.assert_called_once()
         self.assertEqual(res.get("backend"), "iproute")
 
+    def test_apply_falls_back_on_sets_ok_false(self):
+        # Keenetic без xt_set: set-путь возвращает ok=False БЕЗ исключения.
+        # Раньше manager откатывал правило из storage («правил маршрутизации
+        # нет» в doctor при созданном маршруте) — теперь фолбэк на iproute.
+        rule = _rule()
+        with mock.patch.object(domain_rule, "_ndms_available",
+                               return_value=False), \
+             mock.patch.object(domain_rule, "_backend_for",
+                               return_value=ipset_backend), \
+             mock.patch.object(domain_rule, "_apply_domain_via_sets",
+                               return_value={"ok": False,
+                                             "errors": ["no xt_set"]}), \
+             mock.patch.object(domain_rule, "_remove_domain_via_sets",
+                               return_value={"ok": True}) as cleanup, \
+             mock.patch.object(domain_rule, "_apply_domain_via_iproute",
+                               return_value={"ok": True,
+                                             "backend": "iproute"}) as f, \
+             mock.patch("core.routing.dnsmasq_integration.DnsmasqIntegration") \
+                as Dn:
+            Dn.return_value.status.return_value = {"available": False,
+                                                   "running": False}
+            res = domain_rule.apply_domain_rule(rule)
+        f.assert_called_once()
+        cleanup.assert_called_once()
+        self.assertEqual(res.get("backend"), "iproute")
+        self.assertTrue(res.get("ok"))
+
     def test_remove_sets_crash_returns_error_not_raises(self):
         rule = _rule()
         with mock.patch.object(domain_rule, "_ndms_available",

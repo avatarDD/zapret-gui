@@ -610,6 +610,14 @@ def create_app(config_dir: str = None) -> Bottle:
     except Exception as e:
         log.warning("domain_refresh при boot: %s" % e, source="routing")
 
+    # Перехват DNS (:53 → наш прокси) для доменных правил без dnsmasq —
+    # opt-in со страницы «Маршрутизация»; восстанавливаем после ребута.
+    try:
+        from core.routing import dns_intercept
+        dns_intercept.apply_enabled_state()
+    except Exception as e:
+        log.warning("dns_intercept при boot: %s" % e, source="routing")
+
     return app
 
 
