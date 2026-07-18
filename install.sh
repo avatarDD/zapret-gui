@@ -222,8 +222,13 @@ ensure_python_stdlib() {
     #   ssl    → python3-openssl  (HTTPS: без него не стартует download_transport)
     _PY_STDLIB_PAIRS="urllib:python3-urllib ssl:python3-openssl"
     # Опциональные: без них GUI работает, но часть функций деградирует.
+    # Ставим сразу все — чтобы будущие фичи не упирались в урезанный
+    # python3-light (наличие пакетов проверено по фиду bin.entware.net).
     #   unittest → python3-unittest (юнит-тесты самодиагностики)
-    _PY_STDLIB_OPT_PAIRS="unittest:python3-unittest"
+    #   uuid     → python3-uuid     (запас: стандартная генерация id)
+    #   yaml     → python3-yaml    (PyYAML: round-trip правки mihomo-конфигов)
+    #   sqlite3  → python3-sqlite3 (запас: локальные базы)
+    _PY_STDLIB_OPT_PAIRS="unittest:python3-unittest uuid:python3-uuid yaml:python3-yaml sqlite3:python3-sqlite3"
 
     local missing="" pair mod pkg
     for pair in $_PY_STDLIB_PAIRS $_PY_STDLIB_OPT_PAIRS; do
@@ -244,7 +249,7 @@ ensure_python_stdlib() {
                 ok "python3 stdlib: $mod"
             else
                 case " $_PY_STDLIB_OPT_PAIRS " in
-                    *" $pair "*) warn "  Модуль '$mod' так и не появился — юнит-тесты самодиагностики будут пропускаться" ;;
+                    *" $pair "*) warn "  Модуль '$mod' так и не появился — часть функций будет недоступна (детали покажет самодиагностика)" ;;
                     *)           missing="$missing $mod:$pkg" ;;
                 esac
             fi

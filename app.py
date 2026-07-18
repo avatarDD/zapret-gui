@@ -601,6 +601,15 @@ def create_app(config_dir: str = None) -> Bottle:
     except Exception as e:
         log.warning("Healthcheck при boot: %s" % e, source="app")
 
+    # Фоновое обновление IP доменных правил без dnsmasq (типичный
+    # Keenetic): без него IP протухают при CDN-ротации и доменная
+    # маршрутизация «работает только с выбором устройства».
+    try:
+        from core.routing import domain_refresh
+        domain_refresh.ensure_started()
+    except Exception as e:
+        log.warning("domain_refresh при boot: %s" % e, source="routing")
+
     return app
 
 
