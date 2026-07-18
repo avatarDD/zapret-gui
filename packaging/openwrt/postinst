@@ -8,14 +8,9 @@ CONFIG_DIR="/etc/zapret-gui"
 
 echo "Zapret Web-GUI — установка (OpenWrt)"
 
-# Запоминаем, был ли запущен сервис, и аккуратно глушим его + любые
-# осиротевшие python-процессы. Иначе старый код продолжит крутиться в памяти,
-# держать порт 8080 и пользователь будет видеть предыдущую GUI_VERSION
-# даже после успешной установки нового IPK.
-WAS_RUNNING=""
-if /etc/init.d/zapret-gui running 2>/dev/null; then
-    WAS_RUNNING=1
-fi
+# Аккуратно глушим сервис + любые осиротевшие python-процессы. Иначе старый
+# код продолжит крутиться в памяти, держать порт 8080 и пользователь будет
+# видеть предыдущую GUI_VERSION даже после успешной установки нового IPK.
 /etc/init.d/zapret-gui stop >/dev/null 2>&1 || true
 if command -v pgrep >/dev/null 2>&1; then
     for pid in $(pgrep -f "python.* $APP_DIR/app.py" 2>/dev/null); do
@@ -77,13 +72,12 @@ elif [ ! -d "$APP_DIR/import" ]; then
     echo "  ⚠ $APP_DIR/import отсутствует — bundled-ассеты не импортированы"
 fi
 
-# Стартуем сервис, если он работал до установки.
-if [ -n "$WAS_RUNNING" ]; then
-    echo "  Запуск Zapret Web-GUI..."
-    /etc/init.d/zapret-gui start >/dev/null 2>&1 \
-        && echo "  ✓ Сервис запущен" \
-        || echo "  ⚠ Не удалось запустить"
-fi
+# Стартуем сервис: при обновлении — рестарт с новым кодом, при первой
+# установке — первый запуск (раньше приходилось стартовать руками).
+echo "  Запуск Zapret Web-GUI..."
+/etc/init.d/zapret-gui start >/dev/null 2>&1 \
+    && echo "  ✓ Сервис запущен" \
+    || echo "  ⚠ Не удалось запустить"
 
 # Bottle встроен в пакет (vendor/bottle.py). Наличия файла недостаточно:
 # bottle тянет `unicodedata` и др. submodule'ы, которых нет в python3-light

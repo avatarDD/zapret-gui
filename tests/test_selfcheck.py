@@ -62,6 +62,10 @@ class TestSections(unittest.TestCase):
         names = [c["name"] for c in sec["checks"]]
         self.assertIn("Python", names)
         self.assertIn("модуль bottle", names)
+        # unittest проверяется наравне с остальным stdlib: на Entware
+        # python3-light он в отдельном пакете, без него selfcheck
+        # пропускает прогон юнит-тестов.
+        self.assertIn("stdlib unittest", names)
         py = next(c for c in sec["checks"] if c["name"] == "Python")
         self.assertTrue(py["ok"])  # мы на >=3.8
 
@@ -102,6 +106,17 @@ class TestRunUnitTests(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertTrue(r["skipped_run"])
         self.assertIn("tests/", r["error"])
+
+    def test_missing_unittest_module(self):
+        # Entware python3-light без python3-unittest: не «FAILED», а
+        # честный пропуск с подсказкой, какой пакет доустановить.
+        from unittest import mock
+        with mock.patch.object(selfcheck.importlib.util, "find_spec",
+                               return_value=None):
+            r = selfcheck.run_unit_tests()
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["skipped_run"])
+        self.assertIn("python3-unittest", r["error"])
 
     def test_run_all_with_skipped_tests_not_failed(self):
         # Поставка без tests/ — не провал: итог зависит только от секций

@@ -741,6 +741,7 @@ class AwgInstaller:
         finally:
             with self._lock:
                 self._op_in_progress = False
+            self._refresh_detector()
 
     def install_local(self, go_path: str = None, tools_path: str = None,
                       target_dir: str = None) -> dict:
@@ -764,6 +765,7 @@ class AwgInstaller:
         finally:
             with self._lock:
                 self._op_in_progress = False
+            self._refresh_detector()
 
     def uninstall_binaries(self) -> dict:
         """
@@ -821,6 +823,16 @@ class AwgInstaller:
         finally:
             with self._lock:
                 self._op_in_progress = False
+            self._refresh_detector()
+
+    @staticmethod
+    def _refresh_detector():
+        # Кэш awg_detector живёт до рестарта процесса: без сброса selfcheck
+        # и /api/awg/environment показывают «не установлен» до перезагрузки.
+        try:
+            get_awg_detector().get_environment_report(force=True)
+        except Exception:
+            pass
 
     # ─────────────────── internals ────────────────────────────────
 

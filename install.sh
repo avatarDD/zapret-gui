@@ -221,9 +221,12 @@ ensure_python_stdlib() {
     #   urllib → python3-urllib   (загрузки, подписки, обновление каталогов)
     #   ssl    → python3-openssl  (HTTPS: без него не стартует download_transport)
     _PY_STDLIB_PAIRS="urllib:python3-urllib ssl:python3-openssl"
+    # Опциональные: без них GUI работает, но часть функций деградирует.
+    #   unittest → python3-unittest (юнит-тесты самодиагностики)
+    _PY_STDLIB_OPT_PAIRS="unittest:python3-unittest"
 
     local missing="" pair mod pkg
-    for pair in $_PY_STDLIB_PAIRS; do
+    for pair in $_PY_STDLIB_PAIRS $_PY_STDLIB_OPT_PAIRS; do
         mod="${pair%%:*}"
         pkg="${pair##*:}"
         if python3 -c "import $mod" >/dev/null 2>&1; then
@@ -237,8 +240,14 @@ ensure_python_stdlib() {
                 $PKG_CMD install "$pkg" 2>/dev/null || warn "  Не удалось установить $pkg"
             fi
             _record_installed_pkg "$pkg"
-            python3 -c "import $mod" >/dev/null 2>&1 && ok "python3 stdlib: $mod" \
-                || missing="$missing $mod:$pkg"
+            if python3 -c "import $mod" >/dev/null 2>&1; then
+                ok "python3 stdlib: $mod"
+            else
+                case " $_PY_STDLIB_OPT_PAIRS " in
+                    *" $pair "*) warn "  Модуль '$mod' так и не появился — юнит-тесты самодиагностики будут пропускаться" ;;
+                    *)           missing="$missing $mod:$pkg" ;;
+                esac
+            fi
         fi
     done
 

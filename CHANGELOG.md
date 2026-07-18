@@ -604,6 +604,48 @@
   deadlock демона (нет ответа вовсе), а не нехватку времени.
 
 ### Исправлено
+- **Маршрутизация падала с «No module named 'uuid'» (HTTP 500) на
+  `python3-light`** (`core/routing/rules.py`, `core/unified/model.py`,
+  `core/named_lists.py`, `core/server_pool.py`,
+  `core/subscription_manager.py`; отчёт с Keenetic 5.0.3, продолжение
+  issue #231). На Entware модуль `uuid` не входит в `python3-light`
+  (отдельный пакет `python3-uuid`), а `import uuid` стоял на верхнем
+  уровне модулей маршрутизации: добавление маршрута возвращало 500 /
+  «internal error», а подъём AWG-интерфейса писал в лог `routing apply
+  on up <iface>: No module named 'uuid'` — правила не применялись.
+  `uuid` использовался только для генерации коротких id
+  (`uuid4().hex[:8]`) — заменён на `os.urandom(4).hex()` (тот же формат
+  id), так что чинится обновлением GUI без доустановки пакетов.
+  Регрессионный тест — `test_routing_rules.py::TestNoUuidDependency`
+  (импорт всей цепочки при заблокированном `uuid`).
+- **Самодиагностика: юнит-тесты больше не «FAILED» из-за отсутствующего
+  `unittest`** (`core/selfcheck.py`, `packaging/*/control`, `Makefile`,
+  `install.sh`). На `python3-light` нет и `unittest` (пакет
+  `python3-unittest`): прогон падал с пугающим «тесты FAILED — No module
+  named unittest», хотя с кодом всё в порядке. Теперь: (1) selfcheck
+  проверяет `stdlib unittest` наравне с ssl/sqlite3 и при отсутствии
+  честно **пропускает** прогон с подсказкой `opkg install
+  python3-unittest` (warn, итог не роняется); (2) `.ipk`/`.apk`
+  объявляют `python3-unittest` в Depends, а `install.sh` доставляет его
+  как опциональный модуль — тесты самодиагностики работают из коробки.
+- **Свежеустановленный AmneziaWG числился «не установлен» до перезагрузки
+  роутера** (`core/awg_installer.py`, `core/selfcheck.py`). Отчёт
+  `awg_detector` кэшируется до рестарта процесса, и, в отличие от
+  sing-box/mihomo, установщик AWG кэш после установки/удаления не
+  сбрасывал: самодиагностика и `/api/awg/environment` продолжали
+  показывать «не установлен (раздел AWG → Установка)», хотя туннели уже
+  работали. Теперь установщик сбрасывает кэш детектора после
+  install/uninstall (как mihomo/sing-box), а самодиагностика всегда
+  пересканирует окружение AWG (`force=True`) — она для того и
+  существует, чтобы показывать текущее состояние.
+- **Веб-интерфейс теперь запускается сразу после установки `.ipk`/`.apk`,
+  а не только после обновления** (`packaging/entware/postinst`,
+  `packaging/openwrt/postinst`; отчёт с Keenetic 5.0.3). Postinst стартовал
+  сервис только если тот был запущен ДО установки (`WAS_RUNNING`) — при
+  первой установке пользователю приходилось запускать GUI руками
+  (init-скрипт срабатывал лишь после перезагрузки). Теперь сервис
+  стартует всегда: при обновлении — рестарт с новым кодом, при первой
+  установке — первый запуск.
 - **Веб-интерфейс не запускался на Entware из-за неполной установки Python**
   (`install.sh`, issue #231). На Entware/OpenWrt интерпретатор разбит на
   пакеты: `python3-light` содержит только ядро, а submodule'ы стандартной
