@@ -37,6 +37,7 @@
     помечает их как skipped для direct/nfqws2.
 """
 
+import ipaddress
 import os
 import time
 
@@ -119,6 +120,18 @@ class Destination:
                     from core.hostlist_manager import get_hostlist_manager
                     doms = get_hostlist_manager().get_hostlist(lid[3:]) or []
                     domains += [str(d) for d in doms]
+                    continue
+                # `ipl:<имя>` — IP-список zapret2 (ipset_manager,
+                # ipset-*.txt): готовые CIDR-подсети сервисов
+                # (Discord/YouTube/Cloudflare, ...). Маршрутизация по ним
+                # идёт CIDR-путём и НЕ зависит от DNS — на Keenetic без
+                # dnsmasq это самый надёжный способ destination-маршрута
+                # (домены ловят только IP, разрезолвленные роутером,
+                # и не видят ротацию CDN-поддоменов).
+                if isinstance(lid, str) and lid.startswith("ipl:"):
+                    from core.ipset_manager import get_ipset_manager
+                    entries = get_ipset_manager().get_ipset(lid[4:]) or []
+                    cidrs += _clean_cidrs(entries)
                     continue
                 from core.named_lists import resolve as _resolve_list
                 r = _resolve_list(lid)
@@ -273,6 +286,23 @@ def _clean_dscp(v):
     if not (0 <= n <= 63):
         raise ValueError("DSCP вне диапазона 0..63: %d" % n)
     return n
+
+
+def _clean_cidrs(entries) -> list:
+    """Оставить только валидные IP/CIDR: файлы ipset-*.txt правятся
+    руками и могут содержать мусор — одна кривая строка не должна
+    валить весь маршрут (CidrRoutingRule бросает ValueError)."""
+    out = []
+    for e in entries or []:
+        s = str(e or "").strip()
+        if not s:
+            continue
+        try:
+            ipaddress.ip_network(s, strict=False)
+        except ValueError:
+            continue
+        out.append(s)
+    return out
 
 
 def _clean_list(v, lower=False) -> list:
