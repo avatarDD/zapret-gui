@@ -149,6 +149,35 @@ def _ipset_test(set_name: str, ip: str) -> bool:
     return rc == 0
 
 
+def _probe_xt_set():
+    """
+    (ok, details): работает ли `iptables -m set` С ЯДРОМ (модуль xt_set).
+
+    Коварный случай Keenetic: userspace-ipset и ip_set в ядре есть
+    (наборы создаются), а матчер xt_set для iptables в прошивку не
+    собран — тогда mark-правила set-пути не встают и весь путь мёртв.
+    Проба в отдельной нигде не вызываемой цепочке — трафик не трогаем.
+    """
+    set_name = "awgr_doctor_probe"
+    chain = "AWGR_DOCTOR"
+    rc, _o, err = _run(["ipset", "create", set_name, "hash:ip", "-exist"])
+    if rc != 0:
+        return False, "ipset create: %s" % err.strip()
+    try:
+        _run(["iptables", "-t", "mangle", "-N", chain])
+        rc, _o, err = _run(["iptables", "-t", "mangle", "-A", chain,
+                            "-m", "set", "--match-set", set_name, "dst",
+                            "-j", "RETURN"])
+        if rc == 0:
+            return True, "работает — set-путь доступен"
+        return False, (err.strip() or "iptables -m set не работает") + \
+            " (нет xt_set в ядре? домены пойдут iproute-фолбэком)"
+    finally:
+        _run(["iptables", "-t", "mangle", "-F", chain])
+        _run(["iptables", "-t", "mangle", "-X", chain])
+        _run(["ipset", "destroy", set_name])
+
+
 # ─────────────────────── диагностика правил ─────────────────────────
 
 def _diagnose_domain_rule(rule, sets_state, iproute_state) -> list:
@@ -282,6 +311,9 @@ def diagnose() -> dict:
     env.append(_check("ipset", rc_ipset == 0))
     rc_ipt, _o, _e = _run(["iptables", "-V"], timeout=3)
     env.append(_check("iptables", rc_ipt == 0))
+    if rc_ipset == 0 and rc_ipt == 0:
+        xt_ok, xt_details = _probe_xt_set()
+        env.append(_check("iptables -m set (xt_set)", xt_ok, xt_details))
     try:
         from core.routing import dnsmasq_integration
         st = dnsmasq_integration.DnsmasqIntegration().status()
@@ -319,9 +351,72 @@ def diagnose() -> dict:
                                           "упала: %s" % e))
         rules_report.append(entry)
 
+    # Unified-маршруты: пользователь видит их, а работают — производные
+    # низкоуровневые правила. Если derived-правило отсутствует (apply
+    # вернул ошибку и manager откатил его из storage), маршрут «есть на
+    # странице», но маршрутизировать нечего — ровно случай «правил
+    # маршрутизации нет» при созданном маршруте.
+    unified_report = []
+    try:
+        from core.unified import storage as ustorage
+        from core.unified.applier import (_cidr_rule_id, _dev_rule_id,
+                                          _dom_rule_id, active_method)
+        from core.unified.model import parse_method
+        known = {r.id for r in storage.load_rules()}
+        for route in ustorage.load_routes():
+            entry = {"id": route.id, "name": route.name, "checks": []}
+            checks = entry["checks"]
+            if not route.enabled:
+                checks.append(_check("маршрут", True, "выключен"))
+                unified_report.append(entry)
+                continue
+            method = active_method(route)
+            entry["method"] = method
+            try:
+                kind, _target = parse_method(method)
+            except ValueError:
+                kind = ""
+            if kind not in ("awg", "singbox", "mihomo"):
+                checks.append(_check(
+                    "метод", True,
+                    "%s — производных правил не требует" % (method or "?")))
+                unified_report.append(entry)
+                continue
+            resolved = route.destination.resolve()
+            if resolved.get("domains"):
+                present = _dom_rule_id(route.id) in known
+                checks.append(_check(
+                    "производное domain-правило", present,
+                    "" if present else
+                    "НЕ создано — apply вернул ошибку и откатился "
+                    "(см. лог routing); маршрутизировать нечего"))
+            if resolved.get("cidrs"):
+                present = _cidr_rule_id(route.id) in known
+                checks.append(_check(
+                    "производное cidr-правило", present,
+                    "" if present else
+                    "НЕ создано — apply вернул ошибку и откатился "
+                    "(см. лог routing)"))
+            for dev in (route.devices or []):
+                present = _dev_rule_id(route.id, dev.get("ip", "")) in known
+                checks.append(_check(
+                    "device-правило %s" % dev.get("ip", "?"), present,
+                    "" if present else "НЕ создано"))
+            if not checks:
+                checks.append(_check(
+                    "назначение", False,
+                    "пустое (нет доменов/CIDR/устройств)"))
+            unified_report.append(entry)
+    except Exception as e:
+        unified_report.append({
+            "id": "unified", "name": "unified",
+            "checks": [_check("сверка unified", False, "упала: %s" % e)]})
+
     ok = all(c["ok"] for r in rules_report for c in r["checks"]) \
+        and all(c["ok"] for r in unified_report for c in r["checks"]) \
         and all(c["ok"] for c in env)
-    return {"ok": ok, "env": env, "rules": rules_report}
+    return {"ok": ok, "env": env, "rules": rules_report,
+            "unified": unified_report}
 
 
 def render_text(report: dict) -> str:
@@ -330,6 +425,14 @@ def render_text(report: dict) -> str:
         lines.append(" %s %s%s" % ("✓" if c["ok"] else "✗", c["name"],
                                    (" — " + c["details"])
                                    if c.get("details") else ""))
+    for r in report.get("unified", []):
+        lines.append("── маршрут %s (%s%s) ──"
+                     % (r.get("name") or r["id"], r["id"],
+                        (" · " + r["method"]) if r.get("method") else ""))
+        for c in r["checks"]:
+            lines.append(" %s %s%s" % ("✓" if c["ok"] else "✗", c["name"],
+                                       (" — " + c["details"])
+                                       if c.get("details") else ""))
     for r in report.get("rules", []):
         lines.append("── %s (%s → %s) ──"
                      % (r["id"], r["type"], r["iface"]))
@@ -338,7 +441,11 @@ def render_text(report: dict) -> str:
                                        (" — " + c["details"])
                                        if c.get("details") else ""))
     if not report.get("rules"):
-        lines.append("правил маршрутизации нет")
+        lines.append("низкоуровневых правил маршрутизации нет"
+                     + (" — а unified-маршруты есть: производные правила"
+                        " не создались (см. ✗ выше)"
+                        if any(not c["ok"] for r in report.get("unified", [])
+                               for c in r["checks"]) else ""))
     return "\n".join(lines)
 
 

@@ -519,6 +519,16 @@ def _start_refresher():
         domain_refresh.ensure_started()
     except Exception:
         pass
+    _sync_dns_intercept()
+
+
+def _sync_dns_intercept():
+    """Сбросить кэш правил DNS-перехватчика (набор доменов изменился)."""
+    try:
+        from core.routing import dns_intercept
+        dns_intercept.get_dns_intercept().sync_rules()
+    except Exception:
+        pass
 
 
 def _apply_domain_via_sets(rule: DomainRoutingRule) -> dict:
@@ -648,6 +658,7 @@ def _remove_domain_via_sets(rule: DomainRoutingRule) -> dict:
         masquerade.remove_if_unused(rule.target_iface, excluding_id=rule.id)
     except Exception:
         pass
+    _sync_dns_intercept()
     log.info("routing: domain-правило %s (%s без dnsmasq) снято"
              % (rule.id, kind), source="routing")
     return {"ok": True, "backend": kind, "removed": True}
@@ -786,6 +797,7 @@ def _remove_domain_via_iproute(rule: DomainRoutingRule) -> dict:
         masquerade.remove_if_unused(rule.target_iface, excluding_id=rule.id)
     except Exception:
         pass
+    _sync_dns_intercept()
     log.info("routing: domain-правило %s (ip-route) снято, %d маршрутов"
              % (rule.id, len(entries)), source="routing")
     return {"ok": True, "backend": "iproute", "removed": len(entries)}
@@ -838,7 +850,27 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             # прежний iproute-фолбэк: ip rule на каждый разрезолвленный IP.
             if _backend_for(prefer_nft=True) is not None:
                 try:
-                    return _apply_domain_via_sets(rule)
+                    res = _apply_domain_via_sets(rule)
+                    # ok=False БЕЗ deferred — set-путь не сработал (типовой
+                    # случай: в ядре Keenetic нет xt_set, и `iptables -m set`
+                    # не работает при живом userspace-ipset). Раньше такой
+                    # результат уходил в manager.add_rule → rollback: правило
+                    # ВЫКИДЫВАЛОСЬ из storage («правил маршрутизации нет» в
+                    # doctor). Фолбэк обязателен и здесь, не только при
+                    # исключении.
+                    if res.get("ok") or res.get("deferred"):
+                        return res
+                    log.warning("routing: set-путь без dnsmasq не сработал "
+                                "(%s) — фолбэк на ip-route"
+                                % ("; ".join(res.get("errors") or [])
+                                   or res.get("error", "?")),
+                                source="routing")
+                    # Снять полусозданные артефакты set-пути (state там
+                    # ещё не записан — чистим напрямую, best-effort).
+                    try:
+                        _remove_domain_via_sets(rule)
+                    except Exception:
+                        pass
                 except Exception as e:
                     # Любой сбой set-пути не должен превращаться в HTTP 500
                     # — откатываемся на проверенный iproute-фолбэк.

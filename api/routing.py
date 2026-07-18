@@ -320,6 +320,34 @@ def register(app):
             response.status = 500
             return {"ok": False, "error": str(e)}
 
+    @app.route("/api/routing/dns-intercept")
+    def routing_dns_intercept_status():
+        """Статус перехвата DNS (:53 → наш прокси) для доменных правил."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing.dns_intercept import get_dns_intercept
+            return {"ok": True, "status": get_dns_intercept().status()}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/dns-intercept", method="POST")
+    def routing_dns_intercept_set():
+        """body: {"enabled": bool} — включить/выключить перехват DNS."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        try:
+            from core.routing import dns_intercept
+            res = dns_intercept.set_enabled(bool(body.get("enabled")))
+            res["status"] = dns_intercept.get_dns_intercept().status()
+            return res
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
     @app.route("/api/routing/doctor")
     def routing_doctor():
         """Пошаговая диагностика цепочки маршрутизации (core/routing/doctor):
