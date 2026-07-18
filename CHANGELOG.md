@@ -604,6 +604,30 @@
   deadlock демона (нет ответа вовсе), а не нехватку времени.
 
 ### Исправлено
+- **HTTP 500 при сохранении маршрута на `python3-light`: у
+  `concurrent.futures` нет `logging`** (`core/routing/domain_rule.py`,
+  `packaging/*/control`, `Makefile`, `install.sh`, `core/selfcheck.py`;
+  отчёт с Keenetic 5.0.3, сразу после появления set-пути). В
+  `python3-light` (проверено по содержимому пакета Entware) есть
+  `concurrent/futures`, но НЕТ `logging` — он в отдельном пакете
+  `python3-logging`, а `concurrent/futures/_base.py` импортирует
+  `logging` на верхнем уровне. Поэтому `import concurrent.futures`
+  падает с «No module named 'logging'»: параллельный pre-populate
+  set-пути ронял сохранение маршрута в 500 (и та же мина лежит под
+  blockcheck, тестером прокси, обновлением подписок и connectivity-
+  матрицей — все импортируют `concurrent.futures`). Теперь:
+  - `_prepopulate_domains` при недоступном `concurrent.futures`
+    резолвит домены **последовательным фолбэком** — медленнее, но
+    работает вообще без доустановки пакетов (чинит уже установленные
+    GUI сразу после обновления кода);
+  - сбой set-пути больше не доходит до API: диспетчер ловит любое
+    исключение и откатывается на проверенный iproute-фолбэк (а снятие
+    set-правила возвращает структурную ошибку вместо 500);
+  - `python3-logging` добавлен в Depends `.ipk`/`.apk` и в опциональную
+    доставку `install.sh`; самодиагностика проверяет `stdlib logging`
+    и называет, что без него не работает (warn + подсказка пакета).
+  Тесты — `test_routing_domain_sets.py` (sequential-фолбэк, откат
+  диспетчера, remove без raise).
 - **Доменные маршруты (hostlist'ы) теперь работают на Keenetic и без
   выбора устройства** (`core/routing/domain_rule.py`,
   `core/routing/domain_refresh.py` — новый, `app.py`; отчёт с Keenetic

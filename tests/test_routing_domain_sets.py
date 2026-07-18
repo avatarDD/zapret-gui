@@ -129,6 +129,64 @@ class TestRemoveDomainViaSets(unittest.TestCase):
         self.assertEqual(res.get("backend"), "ipset")
 
 
+class TestPrepopulateWithoutConcurrentFutures(unittest.TestCase):
+    """
+    Entware python3-light без python3-logging: `import concurrent.futures`
+    падает («No module named 'logging'» из _base.py) — это давало HTTP 500
+    при сохранении маршрута. Prepopulate обязан отработать последовательным
+    фолбэком.
+    """
+
+    def test_sequential_fallback(self):
+        import sys
+        with mock.patch.dict(sys.modules, {"concurrent.futures": None}), \
+             mock.patch.object(domain_rule, "_prepopulate_set",
+                               return_value={"ok": True, "added": 1}) as pp:
+            results = domain_rule._prepopulate_domains(
+                ["example.com"], "s4", "s6", ipset_backend)
+        # v4 + v6 задачи выполнены последовательно
+        self.assertEqual(pp.call_count, 2)
+        self.assertEqual(sum(r.get("added", 0) for r in results), 2)
+
+
+class TestSetsPathFallbackToIproute(unittest.TestCase):
+
+    def test_apply_falls_back_on_sets_crash(self):
+        # Любое исключение set-пути не должно доходить до API (HTTP 500) —
+        # диспетчер откатывается на проверенный iproute-фолбэк.
+        rule = _rule()
+        with mock.patch.object(domain_rule, "_ndms_available",
+                               return_value=False), \
+             mock.patch.object(domain_rule, "_backend_for",
+                               return_value=ipset_backend), \
+             mock.patch.object(domain_rule, "_apply_domain_via_sets",
+                               side_effect=RuntimeError("boom")), \
+             mock.patch.object(domain_rule, "_apply_domain_via_iproute",
+                               return_value={"ok": True,
+                                             "backend": "iproute"}) as f, \
+             mock.patch("core.routing.dnsmasq_integration.DnsmasqIntegration") \
+                as Dn:
+            Dn.return_value.status.return_value = {"available": False,
+                                                   "running": False}
+            res = domain_rule.apply_domain_rule(rule)
+        f.assert_called_once()
+        self.assertEqual(res.get("backend"), "iproute")
+
+    def test_remove_sets_crash_returns_error_not_raises(self):
+        rule = _rule()
+        with mock.patch.object(domain_rule, "_ndms_available",
+                               return_value=False), \
+             mock.patch.object(domain_rule, "_iproute_state_load",
+                               return_value={}), \
+             mock.patch.object(domain_rule, "_sets_state_load",
+                               return_value={rule.id: "ipset"}), \
+             mock.patch.object(domain_rule, "_remove_domain_via_sets",
+                               side_effect=RuntimeError("boom")):
+            res = domain_rule.remove_domain_rule(rule)
+        self.assertFalse(res["ok"])
+        self.assertIn("boom", res["error"])
+
+
 class TestDomainRefresh(unittest.TestCase):
 
     def test_refresh_once_tops_up_sets_rules(self):
