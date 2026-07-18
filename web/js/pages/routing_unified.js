@@ -24,6 +24,7 @@ const RoutingUnifiedPage = (() => {
     let awgConfigs = [];      // /api/awg/configs (цели даже для лежащих туннелей)
     let namedLists = [];
     let hostLists = [];       // /api/hostlists — nfqws2-хостлисты (id `hl:имя`)
+    let ipLists = [];         // /api/ipsets — IP-списки zapret2 (id `ipl:имя`)
     let legacyRules = [];     // /api/unified/legacy — старый формат
     let dnsmasqInfo = null;   // /api/routing/dnsmasq/status
     let ndmsInfo = null;      // /api/routing/ndms/status
@@ -137,7 +138,7 @@ const RoutingUnifiedPage = (() => {
     async function loadAux() {
         try {
             const [ifResp, listResp, cfgResp, dnResp, ndmsResp, envResp,
-                   netResp, legResp, hlResp] =
+                   netResp, legResp, hlResp, iplResp] =
                 await Promise.all([
                     API.get('/api/routing/interfaces').catch(() => null),
                     API.get('/api/lists').catch(() => null),
@@ -148,6 +149,7 @@ const RoutingUnifiedPage = (() => {
                     API.get('/api/network/environment').catch(() => null),
                     API.get('/api/unified/legacy').catch(() => null),
                     API.get('/api/hostlists').catch(() => null),
+                    API.get('/api/ipsets').catch(() => null),
                 ]);
             interfaces  = (ifResp && ifResp.interfaces) || [];
             namedLists  = (listResp && listResp.lists) || [];
@@ -159,6 +161,16 @@ const RoutingUnifiedPage = (() => {
                 name: ((f.name || f.file || '') + ' (nfqws2'
                        + (f.count != null ? ', ' + f.count : '') + ')'),
             })).filter(x => x.id !== 'hl:');
+            // IP-списки zapret2 (ipset-*.txt) как назначение маршрута
+            // (id `ipl:имя`): готовые CIDR-подсети сервисов. Маршрут по
+            // ним не зависит от DNS — на Keenetic без dnsmasq это самый
+            // надёжный destination-путь (домены ловят лишь IP, которые
+            // разрезолвил роутер). Пустые файлы не показываем.
+            const iplFiles = (iplResp && iplResp.files) || [];
+            ipLists = iplFiles.filter(f => (f.count || 0) > 0).map(f => ({
+                id: 'ipl:' + (f.name || ''),
+                name: ((f.name || '') + ' (IP, ' + f.count + ')'),
+            })).filter(x => x.id !== 'ipl:');
             awgConfigs  = (cfgResp && cfgResp.configs) || [];
             dnsmasqInfo = dnResp || null;
             ndmsInfo    = ndmsResp || null;
@@ -582,7 +594,7 @@ const RoutingUnifiedPage = (() => {
         if (!editing) { box.innerHTML = ''; renderBanners(); return; }
         const e = editing;
         const d = e.destination || {};
-        const allLists = namedLists.concat(hostLists);
+        const allLists = namedLists.concat(hostLists, ipLists);
         const listChecks = allLists.map(l =>
             `<label class="text-muted" style="display:inline-flex; gap:4px; margin-right:12px; font-size:12px;">
                 <input type="checkbox" value="${escAttr(l.id)}"

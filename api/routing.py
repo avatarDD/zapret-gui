@@ -320,6 +320,20 @@ def register(app):
             response.status = 500
             return {"ok": False, "error": str(e)}
 
+    @app.route("/api/routing/doctor")
+    def routing_doctor():
+        """Пошаговая диагностика цепочки маршрутизации (core/routing/doctor):
+        по каждому правилу — где именно рвётся «правило есть, трафик мимо»."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing import doctor
+            report = doctor.diagnose()
+            report["text"] = doctor.render_text(report)
+            return report
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
     @app.route("/api/routing/dnsmasq/setup/plan")
     def routing_dnsmasq_setup_plan():
         """Что СДЕЛАЕТ кнопка «Настроить dnsmasq» — без побочек."""

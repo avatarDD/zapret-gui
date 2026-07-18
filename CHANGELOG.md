@@ -3,6 +3,30 @@
 ## Unreleased — Пул публичных серверов, тестер прокси, vmess, urltest-подписки
 
 ### Добавлено
+- **IP-списки zapret2 (ipset-*.txt) как назначение маршрута — `ipl:<имя>`**
+  (`core/unified/model.py`, `web/js/pages/routing_unified.js`; отчёт с
+  Keenetic: «без выбора устройства маршрутизация не работает»). Доменная
+  маршрутизация без dnsmasq принципиально ограничена: роутер видит только
+  IP, которые сам разрезолвил, а клиент ходит на ротацию CDN-поддоменов.
+  Маршрут по CIDR-подсетям сервиса от DNS не зависит вовсе — и готовые
+  списки подсетей (Discord, googlevideo, Cloudflare, Instagram, …) уже
+  лежат в поставке для nfqws2 (`/opt/zapret2/ipset/ipset-*.txt`). Теперь
+  они доступны и в маршрутизации: в редакторе маршрута рядом с
+  nfqws2-хостлистами выбираются IP-списки (id `ipl:<имя>`),
+  `Destination.resolve()` разворачивает их в CIDR через `ipset_manager`
+  (кривые строки файла отфильтровываются, а не валят весь маршрут).
+  Это рекомендуемый способ destination-only маршрута тяжёлых CDN-сервисов
+  на Keenetic. Тесты — `test_unified_model.py`.
+- **Routing doctor — пошаговая диагностика «правило есть, а трафик мимо»**
+  (`core/routing/doctor.py`, `api/routing.py`). По каждому включённому
+  правилу проверяется вся цепочка на живом устройстве: интерфейс поднят →
+  default-route в таблице → ipset существует и наполнен → mark-правила в
+  mangle стоят и **счётчики пакетов растут** → `ip rule fwmark` на месте →
+  masquerade повешен → контрольный резолв домена → IP в set'е →
+  `ip route get <ip> mark <mark>` ведёт в туннель. Первый ✗ в списке —
+  место обрыва. CLI работает даже без bottle:
+  `python3 -m core.routing.doctor` (`--json` — машиночитаемо), API —
+  `GET /api/routing/doctor`. Тесты — `test_routing_doctor.py`.
 - **apk-пакет для нового OpenWrt (24.10+/25.x) в релизах** (`Makefile`,
   `.github/workflows/release.yml`, `README.md`). Новые версии OpenWrt перешли
   с opkg (`.ipk`) на apk (`.apk`, формат APKv3), и старый `.ipk` там не

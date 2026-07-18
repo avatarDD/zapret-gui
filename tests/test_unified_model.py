@@ -80,6 +80,32 @@ class TestDestination(unittest.TestCase):
         self.assertIn("yt.com", r["domains"])
         self.assertIn("vk.com", r["domains"])
 
+    def test_resolve_with_ipset_list(self):
+        # list_id вида `ipl:<имя>` разворачивается через ipset_manager
+        # (IP-списки zapret2 → CIDR: destination-маршрут без DNS).
+        fake_im = mock.Mock()
+        fake_im.get_ipset.return_value = ["162.159.128.0/24", "1.2.3.4"]
+        with mock.patch("core.ipset_manager.get_ipset_manager",
+                        return_value=fake_im):
+            d = Destination(cidrs=["10.0.0.0/8"],
+                            list_ids=["ipl:ipset-discord"])
+            r = d.resolve()
+        fake_im.get_ipset.assert_called_once_with("ipset-discord")
+        self.assertIn("10.0.0.0/8", r["cidrs"])
+        self.assertIn("162.159.128.0/24", r["cidrs"])
+        self.assertIn("1.2.3.4", r["cidrs"])
+
+    def test_resolve_ipset_list_filters_garbage(self):
+        # Кривые строки из ipset-файла не должны валить маршрут
+        # (CidrRoutingRule бросает ValueError на невалидном CIDR).
+        fake_im = mock.Mock()
+        fake_im.get_ipset.return_value = ["1.2.3.0/24", "not-an-ip",
+                                          "", "999.1.1.1"]
+        with mock.patch("core.ipset_manager.get_ipset_manager",
+                        return_value=fake_im):
+            r = Destination(list_ids=["ipl:ipset-x"]).resolve()
+        self.assertEqual(r["cidrs"], ["1.2.3.0/24"])
+
     def test_empty(self):
         self.assertTrue(Destination().is_empty())
         self.assertFalse(Destination(domains=["a.com"]).is_empty())
