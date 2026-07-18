@@ -138,6 +138,36 @@ class TestHarvest(unittest.TestCase):
         self.assertEqual(di.stats["ips_added"], 0)
 
 
+class TestSetEnabled(unittest.TestCase):
+
+    def test_persists_flag_and_applies_state(self):
+        # Регрессия: `from core.config_manager import save_config` падал
+        # («cannot import name 'save_config'») — включение перехвата
+        # отдавало ошибку в UI. Теперь модульная save_config существует.
+        import core.config_manager as cmod
+        data = {}
+        cm = mock.Mock()
+        cm.load.return_value = data
+        with mock.patch.object(cmod, "get_config_manager",
+                               return_value=cm), \
+             mock.patch.object(cmod, "save_config") as save, \
+             mock.patch.object(dns_intercept, "apply_enabled_state",
+                               return_value={"ok": True}) as apply_state:
+            res = dns_intercept.set_enabled(True)
+        self.assertTrue(res.get("ok"), res)
+        self.assertTrue(data["routing"]["dns_intercept"]["enabled"])
+        save.assert_called_once()
+        apply_state.assert_called_once()
+
+    def test_module_save_config_exists(self):
+        import core.config_manager as cmod
+        fake = mock.Mock()
+        with mock.patch.object(cmod, "get_config_manager",
+                               return_value=fake):
+            cmod.save_config()
+        fake.save.assert_called_once()
+
+
 class TestProxyLoopback(unittest.TestCase):
     """Живой прогон: клиент → прокси → фейковый upstream → клиент."""
 

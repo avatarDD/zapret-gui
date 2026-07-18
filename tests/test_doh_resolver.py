@@ -50,6 +50,23 @@ class TestGetSettings(unittest.TestCase):
             self.assertFalse(s["enabled"])
 
 
+class TestSetSettingsSaves(unittest.TestCase):
+
+    def test_set_settings_persists(self):
+        # Регрессия: модульной save_config в config_manager не было —
+        # импорт внутри set_settings падал, except глотал ошибку и
+        # настройки DoH МОЛЧА не сохранялись. Теперь: мутация конфига
+        # + реальный вызов save_config.
+        cm = FakeConfigManager({"gui": {}})
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cm), \
+             mock.patch("core.config_manager.save_config") as save:
+            s = doh_resolver.set_settings(enabled=True)
+        self.assertTrue(cm.data["routing"]["doh"]["enabled"])
+        save.assert_called_once()
+        self.assertTrue(s["enabled"])
+
+
 class TestIsEnabled(unittest.TestCase):
 
     def test_off(self):
