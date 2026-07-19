@@ -35,6 +35,7 @@
 НИКАКИХ импортов bottle на уровне модуля — это принципиально.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -120,20 +121,28 @@ def check_python() -> dict:
         checks.append(_check(
             "модуль PyYAML", True,
             "нет — mihomo-функции работают, кроме удаления прокси "
-            "из таблицы (честный отказ)", level="warn"))
+            "из таблицы (Entware: opkg install python3-yaml)",
+            level="warn"))
 
-    # stdlib-санити: на некоторых прошивках python собран без ssl/sqlite.
-    for mod, why in (("ssl", "TLS-пробы мониторинга, DoH, подписки"),
-                     ("socket", "вся сеть"),
-                     ("ipaddress", "разбор CIDR"),
-                     ("sqlite3", "не используется, но полезно знать")):
+    # stdlib-санити: на некоторых прошивках python собран без ssl/sqlite,
+    # а Entware python3-light раскладывает часть stdlib по opkg-пакетам.
+    for mod, why, miss_lvl in (
+            ("ssl", "TLS-пробы мониторинга, DoH, подписки", "fail"),
+            ("socket", "вся сеть", "fail"),
+            ("ipaddress", "разбор CIDR", "fail"),
+            ("logging", "без него не работает concurrent.futures: "
+                        "blockcheck, тестер прокси, обновление подписок; "
+                        "резолв доменов маршрутизации — медленнее "
+                        "(Entware: opkg install python3-logging)", "warn"),
+            ("unittest", "юнит-тесты самодиагностики пропускаются "
+                         "(Entware: opkg install python3-unittest)", "warn"),
+            ("sqlite3", "не используется, но полезно знать", "warn")):
         try:
             __import__(mod)
             checks.append(_check("stdlib %s" % mod, True, "есть"))
         except ImportError:
-            lvl = "warn" if mod == "sqlite3" else "fail"
-            checks.append(_check("stdlib %s" % mod, mod == "sqlite3",
-                                 "ОТСУТСТВУЕТ — %s" % why, level=lvl))
+            checks.append(_check("stdlib %s" % mod, miss_lvl != "fail",
+                                 "ОТСУТСТВУЕТ — %s" % why, level=miss_lvl))
     return _section("python", "Python и модули", checks)
 
 
@@ -206,7 +215,9 @@ def check_engines() -> dict:
     # AWG
     try:
         from core.awg_detector import get_awg_detector
-        rep = get_awg_detector().get_environment_report()
+        # force: кэш детектора живёт до рестарта процесса — без force
+        # свежепоставленный AWG числился бы «не установлен» до перезагрузки.
+        rep = get_awg_detector().get_environment_report(force=True)
         existing = rep.get("existing") or {}
         plat = rep.get("platform") or {}
         tun = rep.get("tun") or {}
@@ -420,6 +431,13 @@ def run_unit_tests(pattern: str = "", timeout: int = TESTS_TIMEOUT) -> dict:
                 "error": "каталог tests/ не найден (%s) — "
                          "поставка без тестов, прогон пропущен; "
                          "обновление через install.sh вернёт их" % tests_dir}
+    # Подпроцесс запускается тем же sys.executable, так что проверка
+    # спека здесь честно предсказывает «No module named unittest» там
+    # (Entware python3-light без пакета python3-unittest).
+    if importlib.util.find_spec("unittest") is None:
+        return {"ok": False, "skipped_run": True,
+                "error": "модуль unittest отсутствует — прогон пропущен "
+                         "(Entware: opkg install python3-unittest)"}
     args = [sys.executable, "-m", "unittest", "discover",
             "-s", "tests", "-p", pattern or "test_*.py"]
     rc, out, err = _run(args, timeout=timeout, cwd=INSTALL_DIR)

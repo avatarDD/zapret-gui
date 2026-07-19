@@ -413,6 +413,24 @@ class FirewallManager:
     # ──────────────── auto-detect fw type ────────────────
 
     @staticmethod
+    def _iptables_is_nft_shim() -> bool:
+        """`iptables` — это compat-обёртка iptables-nft поверх nftables?
+
+        На современном OpenWrt (22+/24.10/25.x) и большинстве нынешних Linux
+        `iptables` — не legacy-бинарь, а шим `xtables-nft-multi`, пишущий в тот
+        же backend, которым нативно управляет `fw4`/nftables. `iptables --version`
+        печатает суффикс движка: `(nf_tables)` у шима, `(legacy)` у настоящего
+        iptables (Keenetic/Entware). Ошибку/таймаут трактуем как «не шим»
+        (безопаснее оставить iptables-путь для legacy-окружений).
+        """
+        try:
+            r = subprocess.run(["iptables", "--version"],
+                               capture_output=True, text=True, timeout=5)
+            return "nf_tables" in (r.stdout or "")
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return False
+
+    @staticmethod
     def _auto_detect() -> str:
         """Автоопределение: iptables vs nftables."""
         has_ipt = shutil.which("iptables") is not None
@@ -422,7 +440,14 @@ class FirewallManager:
             return "iptables"
         if has_nft and not has_ipt:
             return "nftables"
-        # Обе — предпочитаем iptables (совместимость с Keenetic/Entware)
+        # Обе есть. На legacy-окружении (Keenetic/Entware) `iptables` — настоящий
+        # iptables, предпочитаем его. Но если `iptables` — это лишь nft-шим
+        # (OpenWrt 22+/fw4), правила уходят в тот же nftables-backend, которым
+        # владеет fw4, и наш iptables-путь конфликтует/сбрасывается при reload
+        # firewall (issue #236: «хочет iptables, хотя есть nft»). В этом случае
+        # работаем нативно через nft.
+        if has_ipt and FirewallManager._iptables_is_nft_shim():
+            return "nftables"
         if has_ipt:
             return "iptables"
         if has_nft:
@@ -1078,7 +1103,11 @@ class FirewallManager:
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
                     line = line.strip()
-                    if line and not line.startswith("table") and line != "}":
+                    # Строку `table inet zapret_gui {` сохраняем: это
+                    # единственная строка вывода с именем таблицы, по ней
+                    # _rules_applied определяет «правила стоят» (issue #235:
+                    # без неё статус на nftables всегда «не активен»).
+                    if line and line != "}":
                         rules.append(line)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass

@@ -24,7 +24,7 @@ set -e
 
 REPO_URL="https://github.com/avatarDD/zapret-gui"
 BRANCH="${ZAPRET_GUI_BRANCH:-main}"
-VERSION="0.22.25"
+VERSION="0.22.34"
 
 GUI_PORT="${ZAPRET_GUI_PORT:-8080}"
 GUI_HOST="${ZAPRET_GUI_HOST:-0.0.0.0}"
@@ -160,6 +160,36 @@ download() {
 
 OPKG_INSTALLED_LIST=""
 
+# `opkg/apk update` дорого — выполняем один раз за запуск (шарим между
+# ensure_python_stdlib и ensure_bottle_deps).
+_STDLIB_UPDATED=0
+
+# opkg/apk-пакет Entware/OpenWrt для stdlib-модуля Python. У большинства
+# модулей имя пакета — `python3-<модуль>`, но у ряда C-расширений оно НЕ
+# совпадает: `unicodedata` → python3-codecs, `ssl`/`hashlib` → python3-openssl.
+# Карта проверена по фиду bin.entware.net (совпадает с OpenWrt). Имя модуля
+# может быть с точкой (`urllib.parse`) — берём верхний уровень.
+_py_stdlib_pkg() {
+    case "${1%%.*}" in
+        ssl|_ssl|hashlib|_hashlib)     echo "python3-openssl" ;;
+        unicodedata|_multibytecodec)   echo "python3-codecs" ;;
+        decimal|_decimal)              echo "python3-decimal" ;;
+        ctypes|_ctypes)                echo "python3-ctypes" ;;
+        lzma|_lzma)                    echo "python3-lzma" ;;
+        sqlite3|_sqlite3)              echo "python3-sqlite3" ;;
+        curses|_curses)                echo "python3-ncurses" ;;
+        readline)                      echo "python3-readline" ;;
+        *)                             echo "python3-${1%%.*}" ;;
+    esac
+}
+
+# Записать имя установленного пакета для симметричного удаления при uninstall.
+_record_installed_pkg() {
+    [ -n "$CONFIG_DIR" ] || return 0
+    mkdir -p "$CONFIG_DIR" 2>/dev/null
+    echo "$1" >> "$CONFIG_DIR/opkg_installed.list"
+}
+
 _opkg_install_pkg() {
     local pkg="$1"
     # apk использует `apk add`, opkg — `opkg install`.
@@ -172,6 +202,135 @@ _opkg_install_pkg() {
     if [ -n "$CONFIG_DIR" ]; then
         mkdir -p "$CONFIG_DIR" 2>/dev/null
         echo "$pkg" >> "$CONFIG_DIR/opkg_installed.list"
+    fi
+}
+
+# На Entware/OpenWrt интерпретатор Python разбит на пакеты: `python3-light`
+# содержит только ядро, а submodule'ы стандартной библиотеки (`urllib`,
+# `ssl`, ...) поставляются отдельными пакетами `python3-*`. Если пользователь
+# поставил лишь `python3-light`, GUI падает при старте с
+# `ModuleNotFoundError: No module named 'urllib'` (issue #231): и импорт
+# ассетов, и сам веб-сервер тянут urllib/ssl уже на этапе загрузки модулей.
+# Проверяем наличие критичных модулей и доставляем недостающие пакеты.
+ensure_python_stdlib() {
+    # Актуально только там, где Python разбит на submodule-пакеты.
+    [ "$PKG_CMD" = "opkg" ] || [ "$PKG_CMD" = "apk" ] || return 0
+
+    # module:package — имена пакетов в фидах opkg (Entware/OpenWrt≤23.05)
+    # и apk (OpenWrt 24.10+) совпадают.
+    #   urllib → python3-urllib   (загрузки, подписки, обновление каталогов)
+    #   ssl    → python3-openssl  (HTTPS: без него не стартует download_transport)
+    _PY_STDLIB_PAIRS="urllib:python3-urllib ssl:python3-openssl"
+    # Опциональные: без них GUI работает, но часть функций деградирует.
+    # Ставим сразу все — чтобы будущие фичи не упирались в урезанный
+    # python3-light (наличие пакетов проверено по фиду bin.entware.net).
+    #   logging  → python3-logging  (без него не импортируется
+    #              concurrent.futures: blockcheck, тестер прокси, подписки,
+    #              параллельный резолв доменов маршрутизации)
+    #   unittest → python3-unittest (юнит-тесты самодиагностики)
+    #   uuid     → python3-uuid     (запас: стандартная генерация id)
+    #   yaml     → python3-yaml    (PyYAML: round-trip правки mihomo-конфигов)
+    #   sqlite3  → python3-sqlite3 (запас: локальные базы)
+    _PY_STDLIB_OPT_PAIRS="logging:python3-logging unittest:python3-unittest uuid:python3-uuid yaml:python3-yaml sqlite3:python3-sqlite3"
+
+    local missing="" pair mod pkg
+    for pair in $_PY_STDLIB_PAIRS $_PY_STDLIB_OPT_PAIRS; do
+        mod="${pair%%:*}"
+        pkg="${pair##*:}"
+        if python3 -c "import $mod" >/dev/null 2>&1; then
+            ok "python3 stdlib: $mod"
+        else
+            info "  Python-модуль '$mod' отсутствует → устанавливаем $pkg"
+            [ "$_STDLIB_UPDATED" = "0" ] && { $PKG_CMD update 2>/dev/null || true; _STDLIB_UPDATED=1; }
+            if [ "$PKG_CMD" = "apk" ]; then
+                $PKG_CMD add "$pkg" 2>/dev/null || warn "  Не удалось установить $pkg"
+            else
+                $PKG_CMD install "$pkg" 2>/dev/null || warn "  Не удалось установить $pkg"
+            fi
+            _record_installed_pkg "$pkg"
+            if python3 -c "import $mod" >/dev/null 2>&1; then
+                ok "python3 stdlib: $mod"
+            else
+                case " $_PY_STDLIB_OPT_PAIRS " in
+                    *" $pair "*) warn "  Модуль '$mod' так и не появился — часть функций будет недоступна (детали покажет самодиагностика)" ;;
+                    *)           missing="$missing $mod:$pkg" ;;
+                esac
+            fi
+        fi
+    done
+
+    # Без urllib/ssl веб-интерфейс не поднимется — предупреждаем явно.
+    if [ -n "$missing" ]; then
+        local _verb="install"; [ "$PKG_CMD" = "apk" ] && _verb="add"
+        warn "Не удалось обеспечить модули Python:$(echo "$missing" | sed 's/:[A-Za-z0-9._-]*//g')"
+        warn "Веб-интерфейс не запустится без них. Установите вручную:"
+        for pair in $missing; do
+            warn "  $PKG_CMD $_verb ${pair##*:}"
+        done
+    fi
+}
+
+# Наличия файла vendor/bottle.py НЕ достаточно: на Entware/OpenWrt Python
+# разбит на пакеты, и bottle тянет submodule'ы (`unicodedata`, `email`, ...),
+# которых в python3-light может не быть. Тогда файл на месте, но `import
+# bottle` падает с ModuleNotFoundError по ЧУЖОМУ модулю, и сервер не
+# стартует — а сообщение выглядит как «Bottle не найден» (issue #231).
+# Поэтому реально ИМПОРТИРУЕМ встроенный bottle и доставляем то, чего не
+# хватает, по имени отсутствующего модуля.
+_bottle_missing_module() {
+    # Печатает имя недостающего модуля (или пусто, если bottle импортируется).
+    PYTHONPATH="$1" python3 - <<'PY' 2>/dev/null
+try:
+    import bottle  # noqa: F401
+except ModuleNotFoundError as e:
+    print(e.name or "")
+except ImportError as e:
+    print(getattr(e, "name", "") or "")
+PY
+}
+
+ensure_bottle_deps() {
+    local vendor_dir="$1"
+    [ -f "$vendor_dir/bottle.py" ] || return 0
+    # Системный bottle имеет приоритет — если он импортируется, vendored не нужен.
+    python3 -c "import bottle" >/dev/null 2>&1 && return 0
+
+    # На обычном Linux stdlib цельная — доставлять нечего, только предупредим.
+    if [ "$PKG_CMD" != "opkg" ] && [ "$PKG_CMD" != "apk" ]; then
+        [ -z "$(_bottle_missing_module "$vendor_dir")" ] \
+            || warn "Встроенный bottle не импортируется — проверьте установку Python"
+        return 0
+    fi
+
+    local attempt=0 mod pkg prev_mod=""
+    while [ "$attempt" -lt 12 ]; do
+        attempt=$((attempt + 1))
+        mod="$(_bottle_missing_module "$vendor_dir")"
+        [ -z "$mod" ] && { ok "python3: встроенный bottle импортируется"; return 0; }
+        # 'bottle' здесь не появится (файл проверен выше), но на всякий случай.
+        [ "$mod" = "bottle" ] && return 0
+        # Тот же модуль после установки — пакет не помог (неверный фид/имя):
+        # выходим, чтобы не ставить одно и то же по кругу.
+        [ "$mod" = "$prev_mod" ] && break
+        prev_mod="$mod"
+
+        pkg="$(_py_stdlib_pkg "$mod")"
+        info "  Bottle требует модуль '$mod' → устанавливаем $pkg"
+        [ "$_STDLIB_UPDATED" = "0" ] && { $PKG_CMD update 2>/dev/null || true; _STDLIB_UPDATED=1; }
+        if [ "$PKG_CMD" = "apk" ]; then
+            $PKG_CMD add "$pkg" 2>/dev/null || { warn "  Не удалось установить $pkg"; break; }
+        else
+            $PKG_CMD install "$pkg" 2>/dev/null || { warn "  Не удалось установить $pkg"; break; }
+        fi
+        _record_installed_pkg "$pkg"
+    done
+
+    # Финальная проверка — если всё ещё не импортируется, явно скажем что и как.
+    mod="$(_bottle_missing_module "$vendor_dir")"
+    if [ -n "$mod" ] && [ "$mod" != "bottle" ]; then
+        local _verb="install"; [ "$PKG_CMD" = "apk" ] && _verb="add"
+        warn "Встроенный bottle не импортируется: не хватает модуля Python '$mod'."
+        warn "Веб-интерфейс не запустится. Доустановите: $PKG_CMD $_verb $(_py_stdlib_pkg "$mod")"
     fi
 }
 
@@ -223,6 +382,10 @@ check_deps() {
     else
         ok "bottle: будет использован встроенный (vendor/bottle.py)"
     fi
+
+    # Критичные submodule'ы stdlib (urllib/ssl) — на Entware/OpenWrt они
+    # НЕ входят в python3-light и ставятся отдельными пакетами (issue #231).
+    ensure_python_stdlib
 }
 
 # ── Установка из GitHub ───────────────────────────────────────
@@ -342,6 +505,11 @@ install_from_github() {
             $SUDO cp -r "$src_dir/$dir" "$APP_DIR/"
         fi
     done
+
+    # Убеждаемся, что встроенный bottle реально импортируется на этой
+    # системе (на Entware/OpenWrt доставляем недостающие python3-*-пакеты).
+    # Файл vendor/bottle.py только что скопирован — проверяем именно его.
+    ensure_bottle_deps "$APP_DIR/vendor"
 
     # Создаём рабочие директории
     $SUDO mkdir -p "$APP_DIR/init.d"
@@ -575,6 +743,13 @@ start() {
         echo "zapret-gui started (PID $(cat $PID_FILE))"
     else
         echo "FAILED to start zapret-gui"
+        # Показываем причину падения — иначе пользователь видит только
+        # «FAILED» без подсказки (напр. ModuleNotFoundError на Entware).
+        if [ -s "$LOG_FILE" ]; then
+            echo "--- последние строки $LOG_FILE ---"
+            tail -n 15 "$LOG_FILE"
+            echo "----------------------------------"
+        fi
         rm -f "$PID_FILE"
         return 1
     fi

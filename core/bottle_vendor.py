@@ -64,3 +64,45 @@ def is_vendored(bottle_module) -> bool:
         return os.path.dirname(os.path.abspath(path)) == VENDOR_DIR
     except Exception:
         return False
+
+
+# На Entware/OpenWrt стандартная библиотека Python разбита на пакеты
+# (python3-light + отдельные python3-*). Для большинства модулей имя пакета —
+# `python3-<модуль>`, но у ряда C-расширений имя пакета НЕ совпадает с именем
+# модуля: например, `unicodedata` лежит в `python3-codecs`, а `ssl`/`hashlib`
+# — в `python3-openssl`. Именно `unicodedata` (bottle: `from unicodedata
+# import normalize`) отсутствует в python3-light и валит старт веб-сервера
+# (issue #231). Карта проверена по фиду bin.entware.net (совпадает с OpenWrt).
+_STDLIB_PKG_OVERRIDES = {
+    "ssl": "python3-openssl",
+    "_ssl": "python3-openssl",
+    "hashlib": "python3-openssl",
+    "_hashlib": "python3-openssl",
+    "unicodedata": "python3-codecs",
+    "_multibytecodec": "python3-codecs",
+    "decimal": "python3-decimal",
+    "_decimal": "python3-decimal",
+    "ctypes": "python3-ctypes",
+    "_ctypes": "python3-ctypes",
+    "lzma": "python3-lzma",
+    "_lzma": "python3-lzma",
+    "sqlite3": "python3-sqlite3",
+    "_sqlite3": "python3-sqlite3",
+    "curses": "python3-ncurses",
+    "_curses": "python3-ncurses",
+    "readline": "python3-readline",
+}
+
+
+def stdlib_pkg_for(module: str) -> str:
+    """opkg/apk-пакет Entware/OpenWrt для stdlib-модуля Python.
+
+    `email.utils` → `python3-email`, `urllib.parse` → `python3-urllib`,
+    `unicodedata` → `python3-codecs`, `ssl` → `python3-openssl`. Для
+    остальных модулей — `python3-<top-level>` (на Entware/OpenWrt так
+    называется большинство под-пакетов).
+    """
+    top = (module or "").split(".", 1)[0]
+    return _STDLIB_PKG_OVERRIDES.get(module) \
+        or _STDLIB_PKG_OVERRIDES.get(top) \
+        or ("python3-" + top if top else "")

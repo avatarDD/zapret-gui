@@ -24,8 +24,10 @@ const RoutingUnifiedPage = (() => {
     let awgConfigs = [];      // /api/awg/configs (цели даже для лежащих туннелей)
     let namedLists = [];
     let hostLists = [];       // /api/hostlists — nfqws2-хостлисты (id `hl:имя`)
+    let ipLists = [];         // /api/ipsets — IP-списки zapret2 (id `ipl:имя`)
     let legacyRules = [];     // /api/unified/legacy — старый формат
     let dnsmasqInfo = null;   // /api/routing/dnsmasq/status
+    let dnsIntInfo = null;    // /api/routing/dns-intercept (перехват :53)
     let ndmsInfo = null;      // /api/routing/ndms/status
     let environment = null;   // /api/awg/environment (платформа/firewall)
     let netEnv = null;        // /api/network/environment (роутер / ПК 1 NIC)
@@ -139,7 +141,7 @@ const RoutingUnifiedPage = (() => {
     async function loadAux() {
         try {
             const [ifResp, listResp, cfgResp, dnResp, ndmsResp, envResp,
-                   netResp, legResp, hlResp] =
+                   netResp, legResp, hlResp, iplResp] =
                 await Promise.all([
                     API.get('/api/routing/interfaces').catch(() => null),
                     API.get('/api/lists').catch(() => null),
@@ -150,7 +152,10 @@ const RoutingUnifiedPage = (() => {
                     API.get('/api/network/environment').catch(() => null),
                     API.get('/api/unified/legacy').catch(() => null),
                     API.get('/api/hostlists').catch(() => null),
+                    API.get('/api/ipsets').catch(() => null),
                 ]);
+            dnsIntInfo = await API.get('/api/routing/dns-intercept')
+                .catch(() => null);
             interfaces  = (ifResp && ifResp.interfaces) || [];
             namedLists  = (listResp && listResp.lists) || [];
             // nfqws2-хостлисты как выбираемые списки маршрутизации (id `hl:имя`).
@@ -161,6 +166,16 @@ const RoutingUnifiedPage = (() => {
                 name: ((f.name || f.file || '') + ' (nfqws2'
                        + (f.count != null ? ', ' + f.count : '') + ')'),
             })).filter(x => x.id !== 'hl:');
+            // IP-списки zapret2 (ipset-*.txt) как назначение маршрута
+            // (id `ipl:имя`): готовые CIDR-подсети сервисов. Маршрут по
+            // ним не зависит от DNS — на Keenetic без dnsmasq это самый
+            // надёжный destination-путь (домены ловят лишь IP, которые
+            // разрезолвил роутер). Пустые файлы не показываем.
+            const iplFiles = (iplResp && iplResp.files) || [];
+            ipLists = iplFiles.filter(f => (f.count || 0) > 0).map(f => ({
+                id: 'ipl:' + (f.name || ''),
+                name: ((f.name || '') + ' (IP, ' + f.count + ')'),
+            })).filter(x => x.id !== 'ipl:');
             awgConfigs  = (cfgResp && cfgResp.configs) || [];
             dnsmasqInfo = dnResp || null;
             ndmsInfo    = ndmsResp || null;
@@ -353,6 +368,27 @@ const RoutingUnifiedPage = (() => {
         </div>`;
     }
 
+    // Перехват DNS (:53 → встроенный прокси): даёт доменным маршрутам
+    // видеть ЖИВЫЕ запросы клиентов (включая CDN-поддомены) без dnsmasq.
+    // Показываем всегда, когда dnsmasq не обслуживает домены сам.
+    function dnsIntHtml() {
+        const st = (dnsIntInfo && dnsIntInfo.status) || null;
+        if (!st) return '';
+        const on = !!st.running;
+        const stats = st.stats || {};
+        const statsTxt = on
+            ? ` · запросов: ${stats.queries || 0}, совпало: ${stats.matched || 0}, IP добавлено: ${stats.ips_added || 0}`
+            : '';
+        return `<span class="text-muted">DNS-перехват:
+                <strong>${on ? 'включён (порт ' + esc(st.port) + ')' : 'выключен'}</strong>${statsTxt}
+            </span>
+            <button class="btn ${on ? 'btn-ghost' : 'btn-primary'} btn-sm"
+                    onclick="RoutingUnifiedPage.toggleDnsIntercept(${on ? 'false' : 'true'})"
+                    title="Перехватывать DNS-запросы LAN-клиентов (udp:53 → встроенный прокси поверх штатного резолвера). IP доменов из маршрутов попадают в маршрутизацию в момент запроса клиента — включая CDN-поддомены, как с dnsmasq. Клиенты с включённым DoH перехвату не видны.">
+                ${on ? 'Выключить DNS-перехват' : 'Включить DNS-перехват'}
+            </button>`;
+    }
+
     // Окружение domain-маршрутизации: NDMS (Keenetic-native) либо
     // dnsmasq+ipset/nftset. Компактная строка всегда; развёрнутое
     // предупреждение — когда доменные маршруты есть, а окружение не
@@ -401,14 +437,18 @@ const RoutingUnifiedPage = (() => {
             : '';
 
         if (ndmsActive) {
+            // NDMS dns-proxy работает только для НАТИВНЫХ интерфейсов
+            // Keenetic; доменные маршруты на наши userspace-туннели
+            // (AWG/WARP/sing-box) обслуживает DNS-перехват — показываем
+            // его тумблер и здесь.
             return `<div style="font-size:12px; margin-bottom:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <span style="color:#39c45e;">●</span>
                 <span class="text-muted">
                     Маршрутизация по доменам: <strong>Keenetic-native (NDMS
                     ${esc(ndmsInfo.version || '?')})</strong> — встроенный
-                    <code>dns-proxy route</code>, dnsmasq не нужен.
+                    <code>dns-proxy route</code> (для нативных интерфейсов).
                 </span>
-                ${platformLine}
+                ${dnsIntHtml()} ${platformLine}
             </div>`;
         }
         if (dnReady) {
@@ -426,9 +466,10 @@ const RoutingUnifiedPage = (() => {
         if (!needWarn) {
             return `<div style="font-size:12px; margin-bottom:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <span class="text-muted">○ Маршрутизация по доменам через
-                    туннель пока не настроена (понадобится dnsmasq) —
-                    CIDR/устройства/DSCP/nfqws2 работают и без него.</span>
-                ${setupButton} ${platformLine}
+                    туннель пока не настроена (понадобится dnsmasq или
+                    DNS-перехват) — CIDR/устройства/DSCP/nfqws2 работают
+                    и без него.</span>
+                ${dnsIntHtml()} ${setupButton} ${platformLine}
             </div>`;
         }
         const statusLine = `
@@ -439,10 +480,12 @@ const RoutingUnifiedPage = (() => {
               nft=<strong>${backends.nftset ? 'есть' : 'нет'}</strong>.
             </p>`;
         return `<div class="alert alert-warning" style="margin-bottom:12px;">
-            <div class="alert-title">Маршрутизация по доменам через туннель требует работающего dnsmasq</div>
+            <div class="alert-title">Маршрутизация по доменам через туннель требует dnsmasq или DNS-перехвата</div>
             ${dnsmasqExplanation(platformName)}
             ${statusLine}
-            ${setupButton} ${platformLine}
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                ${dnsIntHtml()} ${setupButton} ${platformLine}
+            </div>
         </div>`;
     }
 
@@ -584,7 +627,7 @@ const RoutingUnifiedPage = (() => {
         if (!editing) { box.innerHTML = ''; renderBanners(); return; }
         const e = editing;
         const d = e.destination || {};
-        const allLists = namedLists.concat(hostLists);
+        const allLists = namedLists.concat(hostLists, ipLists);
         const listChecks = allLists.map(l =>
             `<label class="text-muted" style="display:inline-flex; gap:4px; margin-right:12px; font-size:12px;">
                 <input type="checkbox" value="${escAttr(l.id)}"

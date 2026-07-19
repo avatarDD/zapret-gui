@@ -3,6 +3,51 @@
 ## Unreleased — Пул публичных серверов, тестер прокси, vmess, urltest-подписки
 
 ### Добавлено
+- **Перехват DNS (:53 → встроенный прокси) — доменные маршруты видят
+  живые запросы клиентов без dnsmasq** (`core/routing/dns_intercept.py`,
+  `api/routing.py`, `web/js/pages/routing_unified.js`, `app.py`; прямой
+  запрос пользователя с Keenetic: «перенаправлять запросы на :53 на свой
+  порт»). Без dnsmasq доменные правила ловили только IP, разрезолвленные
+  самим роутером, — ротация CDN-поддоменов (rr3---sn-*.googlevideo.com)
+  уходила мимо туннеля. Теперь opt-in кнопка «Включить DNS-перехват» на
+  странице «Маршрутизация»: iptables nat PREROUTING (цепочка
+  AWG_DNS_INT) заворачивает udp:53 LAN-клиентов (и адресованный роутеру,
+  и hardcoded 8.8.8.8) во встроенный UDP-прокси (threading + queue —
+  python3-light, без asyncio), который пересылает запрос штатному
+  резолверу (ndnsproxy) и, разбирая ответ (A/AAAA, компрессия имён),
+  кладёт IP доменов активных правил (suffix-match — поддомены
+  покрываются) в ipset правила или policy-db iproute-пути. Запросы
+  самого роутера идут через OUTPUT и не перехватываются — петли нет.
+  Failsafe: REDIRECT ставится только при живом прокси и снимается при
+  stop()/atexit/смерти цикла. Ограничение: клиенты с DoH перехвату не
+  видны (как и у dnsmasq). Состояние восстанавливается после ребута
+  (boot-hook), статистика (запросов/совпало/IP добавлено) — в UI и
+  `GET /api/routing/dns-intercept`. Тесты — `test_dns_intercept.py`
+  (парсер, harvest по бэкендам, живой UDP-прокси на loopback).
+- **IP-списки zapret2 (ipset-*.txt) как назначение маршрута — `ipl:<имя>`**
+  (`core/unified/model.py`, `web/js/pages/routing_unified.js`; отчёт с
+  Keenetic: «без выбора устройства маршрутизация не работает»). Доменная
+  маршрутизация без dnsmasq принципиально ограничена: роутер видит только
+  IP, которые сам разрезолвил, а клиент ходит на ротацию CDN-поддоменов.
+  Маршрут по CIDR-подсетям сервиса от DNS не зависит вовсе — и готовые
+  списки подсетей (Discord, googlevideo, Cloudflare, Instagram, …) уже
+  лежат в поставке для nfqws2 (`/opt/zapret2/ipset/ipset-*.txt`). Теперь
+  они доступны и в маршрутизации: в редакторе маршрута рядом с
+  nfqws2-хостлистами выбираются IP-списки (id `ipl:<имя>`),
+  `Destination.resolve()` разворачивает их в CIDR через `ipset_manager`
+  (кривые строки файла отфильтровываются, а не валят весь маршрут).
+  Это рекомендуемый способ destination-only маршрута тяжёлых CDN-сервисов
+  на Keenetic. Тесты — `test_unified_model.py`.
+- **Routing doctor — пошаговая диагностика «правило есть, а трафик мимо»**
+  (`core/routing/doctor.py`, `api/routing.py`). По каждому включённому
+  правилу проверяется вся цепочка на живом устройстве: интерфейс поднят →
+  default-route в таблице → ipset существует и наполнен → mark-правила в
+  mangle стоят и **счётчики пакетов растут** → `ip rule fwmark` на месте →
+  masquerade повешен → контрольный резолв домена → IP в set'е →
+  `ip route get <ip> mark <mark>` ведёт в туннель. Первый ✗ в списке —
+  место обрыва. CLI работает даже без bottle:
+  `python3 -m core.routing.doctor` (`--json` — машиночитаемо), API —
+  `GET /api/routing/doctor`. Тесты — `test_routing_doctor.py`.
 - **apk-пакет для нового OpenWrt (24.10+/25.x) в релизах** (`Makefile`,
   `.github/workflows/release.yml`, `README.md`). Новые версии OpenWrt перешли
   с opkg (`.ipk`) на apk (`.apk`, формат APKv3), и старый `.ipk` там не
@@ -604,6 +649,189 @@
   deadlock демона (нет ответа вовсе), а не нехватку времени.
 
 ### Исправлено
+- **«cannot import name 'save_config'» при включении DNS-перехвата — и
+  молчаливая потеря настроек DoH/автостарта sing-box**
+  (`core/config_manager.py`; отчёт с Keenetic). Докстринг
+  `config_manager` обещал модульную `save_config()`, но существовал
+  только метод `ConfigManager.save()`. На задокументированный API
+  купились три модуля: `dns_intercept.set_enabled` (ошибка в UI при
+  включении перехвата), `doh_resolver.set_settings` и
+  `singbox_autostart._save_settings` — у последних двух импорт стоял в
+  try/except, поэтому настройки DoH и автостарта sing-box **молча не
+  сохранялись** с самого появления этих модулей. Добавлена модульная
+  `save_config()` (делегирует глобальному менеджеру), докстринг
+  приведён к реальному API. Регрессионные тесты —
+  `test_dns_intercept.py::TestSetEnabled`,
+  `test_doh_resolver.py::TestSetSettingsSaves`.
+- **Доменное правило больше не исчезает молча, когда set-путь не
+  сработал (Keenetic без xt_set)** (`core/routing/domain_rule.py`,
+  `core/routing/doctor.py`; вычислено по выводу doctor пользователя:
+  «правил маршрутизации нет» при созданном маршруте). Если set-путь
+  возвращал `ok=False` без исключения (типовой случай: userspace-ipset
+  работает, а матчер `iptables -m set` в ядре прошивки отсутствует),
+  результат уходил в `manager.add_rule` → rollback: производное правило
+  ВЫКИДЫВАЛОСЬ из storage, маршрут оставался на странице пустышкой.
+  Теперь диспетчер при `ok=False` снимает полусозданные артефакты и
+  откатывается на проверенный iproute-фолбэк (как раньше — те самые
+  «106 маршрутов»). Doctor доработан, чтобы такое видеть: (1) сверяет
+  unified-маршруты с производными правилами — отсутствующее правило
+  показывается как ✗ «apply откатился», а не «правил нет»; (2) env-проба
+  `iptables -m set` (xt_set) в отдельной нигде не вызываемой цепочке —
+  сразу видно, доступен ли set-путь на этой прошивке. Тесты —
+  `test_routing_domain_sets.py::test_apply_falls_back_on_sets_ok_false`.
+- **HTTP 500 при сохранении маршрута на `python3-light`: у
+  `concurrent.futures` нет `logging`** (`core/routing/domain_rule.py`,
+  `packaging/*/control`, `Makefile`, `install.sh`, `core/selfcheck.py`;
+  отчёт с Keenetic 5.0.3, сразу после появления set-пути). В
+  `python3-light` (проверено по содержимому пакета Entware) есть
+  `concurrent/futures`, но НЕТ `logging` — он в отдельном пакете
+  `python3-logging`, а `concurrent/futures/_base.py` импортирует
+  `logging` на верхнем уровне. Поэтому `import concurrent.futures`
+  падает с «No module named 'logging'»: параллельный pre-populate
+  set-пути ронял сохранение маршрута в 500 (и та же мина лежит под
+  blockcheck, тестером прокси, обновлением подписок и connectivity-
+  матрицей — все импортируют `concurrent.futures`). Теперь:
+  - `_prepopulate_domains` при недоступном `concurrent.futures`
+    резолвит домены **последовательным фолбэком** — медленнее, но
+    работает вообще без доустановки пакетов (чинит уже установленные
+    GUI сразу после обновления кода);
+  - сбой set-пути больше не доходит до API: диспетчер ловит любое
+    исключение и откатывается на проверенный iproute-фолбэк (а снятие
+    set-правила возвращает структурную ошибку вместо 500);
+  - `python3-logging` добавлен в Depends `.ipk`/`.apk` и в опциональную
+    доставку `install.sh`; самодиагностика проверяет `stdlib logging`
+    и называет, что без него не работает (warn + подсказка пакета).
+  Тесты — `test_routing_domain_sets.py` (sequential-фолбэк, откат
+  диспетчера, remove без raise).
+- **Доменные маршруты (hostlist'ы) теперь работают на Keenetic и без
+  выбора устройства** (`core/routing/domain_rule.py`,
+  `core/routing/domain_refresh.py` — новый, `app.py`; отчёт с Keenetic
+  5.0.3: «без выбора устройства маршрутизация не работает»). На Keenetic
+  dnsmasq не поднять (53-й порт занят ndnsproxy), и доменные назначения
+  шли через iproute-фолбэк: каждый домен резолвился ОДИН раз при
+  применении, по `ip rule` на каждый IP. Для hostlist'ов это почти не
+  ловило реальный трафик: IP у CDN ротируются, большие списки резолвились
+  минутами и забивали policy-db тысячами линейных правил — работали
+  только device-правила («весь трафик устройства»). Теперь:
+  - **set-based путь без dnsmasq**: если в системе есть ipset или
+    nftables (на Keenetic ipset+iptables есть всегда), доменное правило
+    ведётся как в dnsmasq-пути — hash-set + mark-правило в mangle +
+    `ip rule fwmark` + masquerade, — только set наполняем сами: параллельный
+    резолв доменов при применении (кап 500, пул 8 потоков — как у
+    pre-populate). Масштабируется на большие hostlist'ы: один set вместо
+    тысяч `ip rule`;
+  - **фоновый рефрешер** (`routing.domain_refresh`, вкл. по умолчанию,
+    период 10 мин): периодически заново резолвит домены активных правил
+    и пополняет set'ы (и policy-db iproute-правил) новыми IP — маршрут
+    не «протухает» при CDN-ротации. Старые IP не удаляются (лишний IP в
+    туннеле безвреден, чистка рвала бы живые соединения). Поднимается
+    при старте GUI вместе с watchdog'ами;
+  - iproute-фолбэк (совсем без ipset/nft) ограничен 500 доменами за
+    проход (раньше большой hostlist резолвился минутами под lock) и тоже
+    обновляется рефрешером;
+  - в результате применения — честная note: живые DNS-запросы клиентов
+    мы не видим, поэтому ротацию поддоменов CDN
+    (`r3---sn-*.googlevideo.com`) без dnsmasq не поймать — для полного
+    покрытия сервиса нужны device-правила или CIDR-списки.
+  Тесты — `test_routing_domain_sets.py` (+ обновлён
+  `test_routing_domain_iproute.py`).
+- **`.ipk`/`.apk` теперь сразу ставят все опциональные python-модули**
+  (`packaging/*/control`, `Makefile`, `install.sh`, `core/selfcheck.py`).
+  По просьбе пользователя: чтобы будущие фичи не упирались в урезанный
+  `python3-light`, в Depends добавлены `python3-uuid`, `python3-yaml`
+  (PyYAML для mihomo), `python3-sqlite3` (наличие всех пакетов проверено
+  по фиду bin.entware.net); `install.sh` доставляет их как опциональные
+  (неудача — мягкое предупреждение, не срыв установки), подсказка
+  самодиагностики про PyYAML называет пакет `python3-yaml`.
+- **Маршрутизация падала с «No module named 'uuid'» (HTTP 500) на
+  `python3-light`** (`core/routing/rules.py`, `core/unified/model.py`,
+  `core/named_lists.py`, `core/server_pool.py`,
+  `core/subscription_manager.py`; отчёт с Keenetic 5.0.3, продолжение
+  issue #231). На Entware модуль `uuid` не входит в `python3-light`
+  (отдельный пакет `python3-uuid`), а `import uuid` стоял на верхнем
+  уровне модулей маршрутизации: добавление маршрута возвращало 500 /
+  «internal error», а подъём AWG-интерфейса писал в лог `routing apply
+  on up <iface>: No module named 'uuid'` — правила не применялись.
+  `uuid` использовался только для генерации коротких id
+  (`uuid4().hex[:8]`) — заменён на `os.urandom(4).hex()` (тот же формат
+  id), так что чинится обновлением GUI без доустановки пакетов.
+  Регрессионный тест — `test_routing_rules.py::TestNoUuidDependency`
+  (импорт всей цепочки при заблокированном `uuid`).
+- **Самодиагностика: юнит-тесты больше не «FAILED» из-за отсутствующего
+  `unittest`** (`core/selfcheck.py`, `packaging/*/control`, `Makefile`,
+  `install.sh`). На `python3-light` нет и `unittest` (пакет
+  `python3-unittest`): прогон падал с пугающим «тесты FAILED — No module
+  named unittest», хотя с кодом всё в порядке. Теперь: (1) selfcheck
+  проверяет `stdlib unittest` наравне с ssl/sqlite3 и при отсутствии
+  честно **пропускает** прогон с подсказкой `opkg install
+  python3-unittest` (warn, итог не роняется); (2) `.ipk`/`.apk`
+  объявляют `python3-unittest` в Depends, а `install.sh` доставляет его
+  как опциональный модуль — тесты самодиагностики работают из коробки.
+- **Свежеустановленный AmneziaWG числился «не установлен» до перезагрузки
+  роутера** (`core/awg_installer.py`, `core/selfcheck.py`). Отчёт
+  `awg_detector` кэшируется до рестарта процесса, и, в отличие от
+  sing-box/mihomo, установщик AWG кэш после установки/удаления не
+  сбрасывал: самодиагностика и `/api/awg/environment` продолжали
+  показывать «не установлен (раздел AWG → Установка)», хотя туннели уже
+  работали. Теперь установщик сбрасывает кэш детектора после
+  install/uninstall (как mihomo/sing-box), а самодиагностика всегда
+  пересканирует окружение AWG (`force=True`) — она для того и
+  существует, чтобы показывать текущее состояние.
+- **Веб-интерфейс теперь запускается сразу после установки `.ipk`/`.apk`,
+  а не только после обновления** (`packaging/entware/postinst`,
+  `packaging/openwrt/postinst`; отчёт с Keenetic 5.0.3). Postinst стартовал
+  сервис только если тот был запущен ДО установки (`WAS_RUNNING`) — при
+  первой установке пользователю приходилось запускать GUI руками
+  (init-скрипт срабатывал лишь после перезагрузки). Теперь сервис
+  стартует всегда: при обновлении — рестарт с новым кодом, при первой
+  установке — первый запуск.
+- **Веб-интерфейс не запускался на Entware из-за неполной установки Python**
+  (`install.sh`, issue #231). На Entware/OpenWrt интерпретатор разбит на
+  пакеты: `python3-light` содержит только ядро, а submodule'ы стандартной
+  библиотеки (`urllib`, `ssl`, ...) поставляются отдельными пакетами
+  `python3-*`. Если у пользователя стоял лишь `python3-light`, установка
+  проходила, но и импорт ассетов, и сам веб-сервер падали уже на этапе
+  загрузки модулей: `ModuleNotFoundError: No module named 'urllib'`
+  (`catalog_updater.py` тянет `urllib` на верхнем уровне, `download_transport`
+  — `ssl`), и init-скрипт печатал лишь неинформативное `FAILED to start
+  zapret-gui`. Теперь `install.sh`:
+  - при проверке зависимостей на opkg/apk **пробует импортировать** критичные
+    модули (`urllib`, `ssl`) и доставляет недостающие пакеты
+    (`python3-urllib`, `python3-openssl`) — с `opkg update`/`apk add`,
+    записью в `opkg_installed.list` для симметричного удаления и повторной
+    проверкой; если пакет поставить не удалось (офлайн) — печатает точную
+    ручную команду вместо тихого падения при старте;
+  - Entware-init при неудачном старте показывает **последние строки лога
+    сервера** (`/tmp/zapret-gui-server.log`), чтобы причина (напр.
+    `ModuleNotFoundError`) была видна сразу, а не пряталась за «FAILED».
+- **«Bottle не найден» на `python3-light`, хотя `vendor/bottle.py` на месте**
+  (`app.py`, `core/bottle_vendor.py`, `install.sh`, `packaging/*`,
+  `Makefile`, issue #231, продолжение). После установки `urllib`/`ssl`
+  пользователь всё равно упирался в `ОШИБКА: Bottle не найден (нет ни
+  системного, ни vendor/bottle.py)` — и переустановка не помогала. Причина:
+  встроенный `bottle.py` на верхнем уровне делает `from unicodedata import
+  normalize`, а `unicodedata` (C-расширение) **не входит в `python3-light`
+  и лежит в отдельном пакете `python3-codecs`** (проверено по фиду
+  bin.entware.net; это единственный недостающий модуль bottle помимо
+  `urllib`/`email`). Файл `vendor/bottle.py` при этом на диске есть, но
+  `import bottle` падает с `ModuleNotFoundError: No module named
+  'unicodedata'` — а `app.py` ловил ЛЮБОЙ `ImportError` и печатал
+  «нет vendor/bottle.py», уводя диагностику в сторону. Теперь:
+  - `app.py` различает «самого bottle нет» и «bottle есть, но не хватает
+    stdlib-модуля X» и печатает **точное имя модуля и пакет** для установки
+    (`opkg install python3-codecs` / `apk add …`), а не общее «Bottle не
+    найден»;
+  - `install.sh` после копирования файлов **реально импортирует** встроенный
+    bottle и, если не хватает модуля, доставляет нужный пакет по карте
+    `модуль→пакет` (`unicodedata`→`python3-codecs`, `ssl`/`hashlib`→
+    `python3-openssl`, …), а не по наивному `python3-<модуль>` (пакета
+    `python3-unicodedata` не существует);
+  - `.ipk`/`.apk` теперь объявляют зависимости `python3-urllib`,
+    `python3-openssl`, `python3-codecs`, `python3-email` (control-файлы и
+    `apk mkpkg --info depends`), поэтому opkg/apk доставляют их **сами** при
+    установке пакета;
+  - postinst и Entware-init (`check`) проверяют bottle **импортом**, а не
+    наличием файла, и при провале называют модуль и пакет.
 - **dnsmasq не стартовал из-за ложного детекта nftset → ронял DNS и
   domain-роутинг** (`core/routing/dnsmasq_integration.py`,
   `core/routing/domain_rule.py`). `supports_nftset()` делал

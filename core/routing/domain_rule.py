@@ -297,7 +297,6 @@ def _prepopulate_domains(domains, set_v4, set_v6, backend) -> list:
     общего состояния), поэтому вызовы безопасно идут параллельно — это
     ограничивает суммарное время даже при медленном/глухом резолвере.
     """
-    import concurrent.futures
     tasks = []
     for d in domains:
         tasks.append((set_v4, d, "v4"))
@@ -305,6 +304,20 @@ def _prepopulate_domains(domains, set_v4, set_v6, backend) -> list:
     if not tasks:
         return []
     results = []
+    try:
+        import concurrent.futures
+    except ImportError:
+        # Entware python3-light без python3-logging: concurrent.futures
+        # тянет logging на верхнем уровне (_base.py) и не импортируется —
+        # «No module named 'logging'». Резолвим последовательно:
+        # медленнее, но работает (реальный отчёт с Keenetic — HTTP 500
+        # при сохранении маршрута).
+        for (s, d, f) in tasks:
+            try:
+                results.append(_prepopulate_set(s, d, f, backend))
+            except Exception as e:
+                results.append({"ok": False, "added": 0, "error": str(e)})
+        return results
     workers = min(_PREPOP_WORKERS, len(tasks))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_prepopulate_set, s, d, f, backend)
@@ -470,6 +483,185 @@ def _iproute_state_save(state: dict) -> None:
                     source="routing")
 
 
+# Состояние set-based-без-dnsmasq пути: {rule_id: 'ipset'|'nftset'}.
+# По нему remove знает, что снимать, а domain_refresh — какие правила
+# пополнять собственным резолвом (dnsmasq за нас set не наполнит).
+def _sets_state_load() -> dict:
+    try:
+        from core.config_manager import get_config_manager
+        st = get_config_manager().get("routing", "domain_sets",
+                                      default={}) or {}
+        return st if isinstance(st, dict) else {}
+    except Exception:
+        return {}
+
+
+def _sets_state_save(state: dict) -> None:
+    try:
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        cm.set("routing", "domain_sets", state)
+        cm.save()
+    except Exception as e:
+        log.warning("routing: сохранение domain_sets: %s" % e,
+                    source="routing")
+
+
+def _start_refresher():
+    """Запустить фоновое обновление IP (best-effort, идемпотентно).
+
+    Немедленный проход не нужен: apply только что наполнил set/policy-db
+    свежим резолвом — рефрешер догонит по своему таймеру."""
+    try:
+        from core.routing import domain_refresh
+        domain_refresh.ensure_started()
+    except Exception:
+        pass
+    _sync_dns_intercept()
+
+
+def _sync_dns_intercept():
+    """Сбросить кэш правил DNS-перехватчика (набор доменов изменился)."""
+    try:
+        from core.routing import dns_intercept
+        dns_intercept.get_dns_intercept().sync_rules()
+    except Exception:
+        pass
+
+
+def _apply_domain_via_sets(rule: DomainRoutingRule) -> dict:
+    """
+    Доменное правило без dnsmasq, но с ipset/nftset и firewall (типичный
+    Keenetic: 53-й порт занят ndnsproxy, а ipset и iptables есть).
+
+    Механизм тот же, что в dnsmasq-пути (set + mark-правило в mangle +
+    `ip rule fwmark` + masquerade), только set наполняем МЫ: резолвим
+    домены при применении (`_prepopulate_domains`) и периодически
+    пополняем фоновым рефрешером (`core/routing/domain_refresh`) —
+    он заменяет dnsmasq, который наполнял бы set по живым DNS-запросам.
+
+    Против iproute-фолбэка: hash-set масштабируется на большие
+    hostlist'ы (вместо тысяч линейных `ip rule` в policy-db), IP не
+    протухают (рефрешер), geoip-CIDR на nft идут одним interval-set'ом.
+    Ограничение прежнее: живых DNS-запросов клиентов мы не видим, поэтому
+    ротацию поддоменов CDN (r3---sn-*.googlevideo.com) этим путём не
+    поймать — для полного покрытия сервиса нужны device-правила или CIDR.
+    """
+    backend = _backend_for(prefer_nft=True)
+    if backend is None:
+        return {"ok": False, "error": "нет ни nftables, ни ipset"}
+    kind = "nftset" if backend is nftset_backend else "ipset"
+
+    ifname = rule.target_iface
+    if not _iface_exists(ifname):
+        return {"ok": True, "deferred": True, "backend": kind,
+                "message": "Интерфейс %s ещё не поднят — правило"
+                           " применится при старте" % ifname}
+
+    table = _table_id_for(ifname)
+    mark = _mark_for(rule.id)
+    set_base = _set_name_for(rule.id, kind)
+
+    errors = []
+    added = []
+    for fam in ("v4", "v6"):
+        r1 = backend.create_set(set_base + ("6" if fam == "v6" else ""),
+                                family=fam)
+        if not r1.get("ok"):
+            errors.append("create_set %s: %s" % (fam, r1.get("error")))
+            continue
+        r2 = backend.setup_mark_rule(r1["name"], mark, family=fam)
+        if not r2.get("ok"):
+            errors.extend(r2.get("errors") or [r2.get("error", "?")])
+            continue
+        ip_fam = "-6" if fam == "v6" else "-4"
+        if not _ensure_table_default(ifname, table, ip_fam):
+            if not _iface_has_family(ifname, ip_fam):
+                log.info("routing(domain): у %s нет адреса %s — leg %s"
+                         " пропущен (трафик пойдёт напрямую)"
+                         % (ifname, ip_fam, fam), source="routing")
+                continue
+            errors.append("default-route %s в table %d не создан"
+                          % (ip_fam, table))
+            continue
+        r3 = backend.add_ip_rule_fwmark(mark, table, family=fam,
+                                        priority=FWMARK_PRIORITY)
+        if not r3.get("ok"):
+            errors.append("ip rule fwmark %s: %s" % (fam, r3.get("error")))
+            continue
+        from core.routing import masquerade
+        mq = masquerade.ensure_for_iface(ifname, families=(fam,))
+        if not mq.get("ok"):
+            errors.append("masquerade %s: %s" % (fam, mq.get("error")))
+            continue
+        added.append({"family": fam, "set": r1["name"],
+                      "mark": mark, "table": table})
+
+    # Наполняем set'ы прямо сейчас; дальше это делает рефрешер по таймеру.
+    prepop_domains, geoip_cidrs = _expand_rule(rule)
+    if len(prepop_domains) > _PREPOP_MAX_DOMAINS:
+        log.info("routing: pre-populate ограничен %d из %d доменов "
+                 "правила %s (остальные IP добавит фоновый рефрешер)"
+                 % (_PREPOP_MAX_DOMAINS, len(prepop_domains), rule.id),
+                 source="routing")
+        prepop_domains = prepop_domains[:_PREPOP_MAX_DOMAINS]
+    prepop_results = _prepopulate_domains(
+        prepop_domains, set_base, set_base + "6", backend)
+    prepop_added = sum(r.get("added", 0) for r in prepop_results)
+    cidr_added = _add_static_cidrs_to_sets(
+        geoip_cidrs, set_base, set_base + "6", backend)
+
+    state = _sets_state_load()
+    state[rule.id] = kind
+    _sets_state_save(state)
+    _start_refresher()
+
+    ok = bool(added) and not errors
+    log.info("routing: domain-правило %s применено через %s без dnsmasq"
+             " (iface=%s, %d записей, %d ошибок, prepop=%d IP, geoip=%d CIDR)"
+             % (rule.id, kind, ifname, len(added), len(errors),
+                prepop_added, cidr_added),
+             source="routing")
+    return {
+        "ok":      ok,
+        "backend": kind,
+        "added":   added,
+        "errors":  errors,
+        "geoip_cidrs_added": cidr_added,
+        "prepop":  {"total_ips_added": prepop_added,
+                    "per_domain": prepop_results},
+        "note": ("dnsmasq нет: IP доменов резолвятся при применении и "
+                 "обновляются фоново; живые DNS-запросы клиентов "
+                 "(поддомены CDN) этим путём не видны — для полного "
+                 "покрытия сервиса добавьте в маршрут устройства или "
+                 "CIDR-списки"),
+    }
+
+
+def _remove_domain_via_sets(rule: DomainRoutingRule) -> dict:
+    """Снять domain-правило, применённое set-путём без dnsmasq."""
+    state = _sets_state_load()
+    kind = state.pop(rule.id, "") or "ipset"
+    backend = nftset_backend if kind == "nftset" else ipset_backend
+    mark = _mark_for(rule.id)
+    table = _table_id_for(rule.target_iface)
+    for fam in ("v4", "v6"):
+        set_name = _set_name_for(rule.id, kind) + ("6" if fam == "v6" else "")
+        backend.del_ip_rule_fwmark(mark, table, family=fam)
+        backend.teardown_mark_rule(set_name, mark, family=fam)
+        backend.destroy_set(set_name)
+    _sets_state_save(state)
+    try:
+        from core.routing import masquerade
+        masquerade.remove_if_unused(rule.target_iface, excluding_id=rule.id)
+    except Exception:
+        pass
+    _sync_dns_intercept()
+    log.info("routing: domain-правило %s (%s без dnsmasq) снято"
+             % (rule.id, kind), source="routing")
+    return {"ok": True, "backend": kind, "removed": True}
+
+
 def _apply_domain_via_iproute(rule: DomainRoutingRule) -> dict:
     """
     Доменное правило для userspace-туннеля (singbox-tun / amneziawg / WARP):
@@ -499,6 +691,16 @@ def _apply_domain_via_iproute(rule: DomainRoutingRule) -> dict:
     added = []          # [[cidr, family], ...] для хранения/снятия
     errors = []
     resolved_total = 0
+
+    # Кап: у больших hostlist'ов последовательный резолв каждого домена
+    # (2 семейства) под _lock занял бы минуты и забил policy-db тысячами
+    # линейных `ip rule`. Остальные домены дорезолвит фоновый рефрешер.
+    if len(domains) > _PREPOP_MAX_DOMAINS:
+        log.info("routing: iproute-фолбэк ограничен %d из %d доменов "
+                 "правила %s (остальное добавит фоновый рефрешер)"
+                 % (_PREPOP_MAX_DOMAINS, len(domains), rule.id),
+                 source="routing")
+        domains = domains[:_PREPOP_MAX_DOMAINS]
 
     def _add_rule(cidr, family):
         subprocess.run(["ip", family, "rule", "del", "to", cidr,
@@ -556,6 +758,7 @@ def _apply_domain_via_iproute(rule: DomainRoutingRule) -> dict:
     state = _iproute_state_load()
     state[rule.id] = added
     _iproute_state_save(state)
+    _start_refresher()
 
     log.info("routing: domain-правило %s применено через ip-route (iface=%s,"
              " %d IP, %d ошибок)"
@@ -566,8 +769,10 @@ def _apply_domain_via_iproute(rule: DomainRoutingRule) -> dict:
         "iface": ifname,
         "ips_added": len(added),
         "errors": errors,
-        "note": ("домены разрешены в IP на момент применения; при смене IP"
-                 " (CDN) примените правило заново"),
+        "note": ("домены разрешены в IP на момент применения и обновляются"
+                 " фоново; живые DNS-запросы клиентов (поддомены CDN) этим"
+                 " путём не видны — для полного покрытия сервиса добавьте"
+                 " устройства или CIDR-списки"),
     }
 
 
@@ -590,6 +795,7 @@ def _remove_domain_via_iproute(rule: DomainRoutingRule) -> dict:
         masquerade.remove_if_unused(rule.target_iface, excluding_id=rule.id)
     except Exception:
         pass
+    _sync_dns_intercept()
     log.info("routing: domain-правило %s (ip-route) снято, %d маршрутов"
              % (rule.id, len(entries)), source="routing")
     return {"ok": True, "backend": "iproute", "removed": len(entries)}
@@ -635,10 +841,39 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
         dn_status = dn.status()
         if not (dn_status.get("available") and dn_status.get("running")):
             # dnsmasq нет/не запущен (типичный Keenetic: 53-й порт у ndnsproxy,
-            # а интерфейс userspace, т.е. NDMS-путь выше не подошёл). Доменное
-            # routing через ipset невозможно — резолвим домены и кладём IP в
-            # таблицу интерфейса напрямую (ip rule), как CIDR. Динамики при
-            # смене IP нет, но для большинства доменов работает.
+            # а интерфейс userspace, т.е. NDMS-путь выше не подошёл). Если в
+            # системе есть ipset/nftables — ведём правило через set + fwmark,
+            # наполняя set собственным резолвом с фоновым обновлением
+            # (масштабируется на большие hostlist'ы). Совсем без set-бэкенда —
+            # прежний iproute-фолбэк: ip rule на каждый разрезолвленный IP.
+            if _backend_for(prefer_nft=True) is not None:
+                try:
+                    res = _apply_domain_via_sets(rule)
+                    # ok=False БЕЗ deferred — set-путь не сработал (типовой
+                    # случай: в ядре Keenetic нет xt_set, и `iptables -m set`
+                    # не работает при живом userspace-ipset). Раньше такой
+                    # результат уходил в manager.add_rule → rollback: правило
+                    # ВЫКИДЫВАЛОСЬ из storage («правил маршрутизации нет» в
+                    # doctor). Фолбэк обязателен и здесь, не только при
+                    # исключении.
+                    if res.get("ok") or res.get("deferred"):
+                        return res
+                    log.warning("routing: set-путь без dnsmasq не сработал "
+                                "(%s) — фолбэк на ip-route"
+                                % ("; ".join(res.get("errors") or [])
+                                   or res.get("error", "?")),
+                                source="routing")
+                    # Снять полусозданные артефакты set-пути (state там
+                    # ещё не записан — чистим напрямую, best-effort).
+                    try:
+                        _remove_domain_via_sets(rule)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    # Любой сбой set-пути не должен превращаться в HTTP 500
+                    # — откатываемся на проверенный iproute-фолбэк.
+                    log.warning("routing: set-путь без dnsmasq упал (%s) — "
+                                "фолбэк на ip-route" % e, source="routing")
             return _apply_domain_via_iproute(rule)
 
         backend, kind = _detect_backend()
@@ -831,6 +1066,16 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
     # dnsmasq) — снимаем тем же путём.
     if rule.id in _iproute_state_load():
         return _remove_domain_via_iproute(rule)
+
+    # Set-путь без dnsmasq (Keenetic с ipset/nft) — симметрично apply.
+    if rule.id in _sets_state_load():
+        with _lock:
+            try:
+                return _remove_domain_via_sets(rule)
+            except Exception as e:
+                log.warning("routing: снятие set-правила %s упало: %s"
+                            % (rule.id, e), source="routing")
+                return {"ok": False, "error": str(e)}
 
     with _lock:
         backend, kind = _detect_backend()

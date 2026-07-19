@@ -28,10 +28,33 @@ try:
     # Поднимаем лимит тела запроса (дефолт 100 KB): импорт бэкапа и
     # крупные blob/конфиг-POST'ы могут быть больше.
     _bottle.BaseRequest.MEMFILE_MAX = 16 * 1024 * 1024
-except ImportError:
-    print("ОШИБКА: Bottle не найден (нет ни системного, ни vendor/bottle.py).")
-    print("  Копия проекта неполная? Переустановите zapret-gui")
-    print("  или поставьте вручную: opkg install python3-bottle / pip3 install bottle")
+except ImportError as e:
+    # Различаем два случая (issue #231):
+    #  1) самого bottle нет (неполная копия проекта);
+    #  2) bottle НА МЕСТЕ, но ему не хватает stdlib-модуля Python — на
+    #     Entware/OpenWrt стандартная библиотека разбита на пакеты, и в
+    #     python3-light может не быть, например, `unicodedata`. Тогда
+    #     файл vendor/bottle.py существует, но `import bottle` падает с
+    #     ModuleNotFoundError по ЧУЖОМУ модулю. Раньше это маскировалось
+    #     под «Bottle не найден», и переустановка не помогала.
+    missing = getattr(e, "name", None) or ""
+    have_vendor = False
+    try:
+        from core.bottle_vendor import vendored_bottle_path, stdlib_pkg_for
+        have_vendor = os.path.isfile(vendored_bottle_path())
+    except Exception:
+        stdlib_pkg_for = None
+
+    if missing and missing != "bottle" and (have_vendor or stdlib_pkg_for):
+        pkg = stdlib_pkg_for(missing) if stdlib_pkg_for else "python3-" + missing.split(".")[0]
+        print("ОШИБКА: Bottle установлен, но Python не может его загрузить —")
+        print("  не хватает модуля стандартной библиотеки: '%s'." % missing)
+        print("  На Entware/OpenWrt доустановите пакет и перезапустите:")
+        print("    opkg install %s   (или: apk add %s — OpenWrt 24.10+)" % (pkg, pkg))
+    else:
+        print("ОШИБКА: Bottle не найден (нет ни системного, ни vendor/bottle.py).")
+        print("  Копия проекта неполная? Переустановите zapret-gui")
+        print("  или поставьте вручную: opkg install python3-bottle / pip3 install bottle")
     sys.exit(1)
 
 
@@ -785,6 +808,23 @@ def create_app(config_dir: str = None) -> Bottle:
 
     t = threading.Thread(target=_background_boot_init, name="bg-boot-init", daemon=True)
     t.start()
+
+    # Фоновое обновление IP доменных правил без dnsmasq (типичный
+    # Keenetic): без него IP протухают при CDN-ротации и доменная
+    # маршрутизация «работает только с выбором устройства».
+    try:
+        from core.routing import domain_refresh
+        domain_refresh.ensure_started()
+    except Exception as e:
+        log.warning("domain_refresh при boot: %s" % e, source="routing")
+
+    # Перехват DNS (:53 → наш прокси) для доменных правил без dnsmasq —
+    # opt-in со страницы «Маршрутизация»; восстанавливаем после ребута.
+    try:
+        from core.routing import dns_intercept
+        dns_intercept.apply_enabled_state()
+    except Exception as e:
+        log.warning("dns_intercept при boot: %s" % e, source="routing")
 
     return app
 
