@@ -447,7 +447,9 @@ class StrategyScanReport:
 def tokenize_args(text: str) -> list[str]:
     """Разбить строку аргументов nfqws2 на список argv-токенов.
 
-    Разделитель — пробел, НО кавычки (``'``/``"``) группируют: пробел внутри
+    Разделитель — любой whitespace (пробел, таб, перевод строки: args
+    пользовательских стратегий приходят из многострочного textarea редактора),
+    НО кавычки (``'``/``"``) группируют: whitespace внутри
     кавычек не разрывает токен. Сами символы кавычек СОХРАНЯЮТСЯ в токене —
     это критично для inline-Lua в ``--lua-init=``/``--lua-desync=`` (одинарные
     кавычки там — строковый литерал Lua: ``code='desync.x = 1'`` обязан остаться
@@ -476,7 +478,7 @@ def tokenize_args(text: str) -> list[str]:
         elif char == in_quote:
             in_quote = None
             current += char
-        elif char == " " and in_quote is None:
+        elif char in " \t\r\n" and in_quote is None:
             if current:
                 result.append(current)
                 current = ""
