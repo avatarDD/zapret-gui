@@ -43,6 +43,15 @@ class TestAutoRemediation(unittest.TestCase):
     def setUp(self):
         self.remediation = ar.AutoRemediation()
 
+    class _Target:
+        def __init__(self, domain, dpi_classification):
+            self.domain = domain
+            self.dpi_classification = dpi_classification
+
+    class _Report:
+        def __init__(self, targets):
+            self.targets = targets
+
     def test_find_best_tunnel_empty(self):
         """Без конфигов — нет туннелей."""
         result = self.remediation._find_best_tunnel()
@@ -51,6 +60,26 @@ class TestAutoRemediation(unittest.TestCase):
     def test_get_results_empty(self):
         results = self.remediation.get_results()
         self.assertEqual(results, [])
+
+    @unittest.mock.patch("core.auto_remediation.AutoRemediation._apply_dns_fix")
+    def test_dry_run_does_not_modify_state(self, mock_dns_fix):
+        report = self._Report([self._Target("example.com", "dns_fake")])
+        res = self.remediation.run(report, auto_apply=True, dry_run=True)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["dry_run"])
+        self.assertFalse(res["auto_applied"])
+        self.assertEqual(res["results"][0]["applied"], False)
+        mock_dns_fix.assert_not_called()
+
+    @unittest.mock.patch("core.auto_remediation.AutoRemediation._apply_dns_fix")
+    def test_cooldown_blocks_repeat_apply(self, mock_dns_fix):
+        report = self._Report([self._Target("example.com", "dns_fake")])
+        self.remediation._remediation_history["example.com"] = 200
+        with unittest.mock.patch("time.time", return_value=1000):
+            res = self.remediation.run(report, auto_apply=True, dry_run=False)
+        self.assertTrue(res["ok"])
+        self.assertIn("недавно", res["results"][0]["details"])
+        mock_dns_fix.assert_not_called()
 
     @unittest.mock.patch("core.config_manager.get_config_manager")
     def test_get_remediation_actions_custom(self, mock_get_cfg):

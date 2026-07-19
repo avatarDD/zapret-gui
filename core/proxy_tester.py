@@ -300,7 +300,7 @@ def _e2e_delays(outbounds: list, target_url: str, timeout_ms: int,
     свой батч из ~40, остальные тестируются нормально.
 
     Если батч не стартовал — его серверы помечаются `engine_fail`, и
-    выше (test_outbounds) они откатываются к TCP-результату, а не
+    выше (run_outbound_tests) они откатываются к TCP-результату, а не
     считаются мёртвыми (иначе пул обнулялся бы целиком).
 
     Возвращает {tag: {ok, latency_ms|error[, engine_fail]}}.
@@ -473,11 +473,11 @@ def binary_has_clash_api(binary: str):
 
 # ─────── public API ───────
 
-def test_outbounds(outbounds: list, *, target: str = DEFAULT_TARGET,
-                   timeout_ms: int = _DEFAULT_E2E_MS,
-                   tcp_prefilter_enabled: bool = True,
-                   max_servers: int = _MAX_SERVERS,
-                   binary: str = None, progress_cb=None) -> dict:
+def run_outbound_tests(outbounds: list, *, target: str = DEFAULT_TARGET,
+                       timeout_ms: int = _DEFAULT_E2E_MS,
+                       tcp_prefilter_enabled: bool = True,
+                       max_servers: int = _MAX_SERVERS,
+                       binary: str = None, progress_cb=None) -> dict:
     """
     Протестировать список outbound'ов. Возвращает:
       {
@@ -648,7 +648,7 @@ class _TestJob:
 
         def _run():
             try:
-                res = test_outbounds(outbounds, progress_cb=_progress_cb, **kw)
+                res = run_outbound_tests(outbounds, progress_cb=_progress_cb, **kw)
             except Exception as e:
                 res = {"ok": False, "error": str(e)}
             with self._lock:

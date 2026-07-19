@@ -9,6 +9,7 @@ Unified Update Checker: проверка обновлений ВСЕХ бина�
   - AmneziaWG
   - GUI (zapret-gui)
   - usque (WARP/MASQUE)
+  - tg-ws-proxy-go (Telegram, основной)
   - tg-mtproxy-client (Telegram, MIPS)
   - opera-proxy
 
@@ -65,6 +66,8 @@ def check_all() -> dict:
 
     # usque (WARP)
     results.append(_check_usque())
+    # tg-ws-proxy-go
+    results.append(_check_tgwsproxy())
     # tg-mtproxy-client
     results.append(_check_tgproto())
     # opera-proxy
@@ -239,6 +242,28 @@ def _check_tgproto() -> dict:
         }
     except Exception as e:
         return {"name": "tgproto", "display_name": "tg-mtproxy-client",
+                "installed": False, "current": "", "latest": "",
+                "has_update": False, "error": str(e)}
+
+
+def _check_tgwsproxy() -> dict:
+    """Проверить tg-ws-proxy-go (основной Telegram-движок)."""
+    try:
+        from core.tgproxy_manager import get_tgwsproxy_manager
+        mgr = get_tgwsproxy_manager()
+        detect = mgr.detect()
+        latest = _github_latest("spatiumstas/tg-ws-proxy-go")
+        return {
+            "name": "tgwsproxy",
+            "display_name": "tg-ws-proxy-go",
+            "installed": detect.get("installed", False),
+            "current": detect.get("version", ""),
+            "latest": latest,
+            "has_update": bool(latest and detect.get("version") and
+                               latest != detect["version"]),
+        }
+    except Exception as e:
+        return {"name": "tgwsproxy", "display_name": "tg-ws-proxy-go",
                 "installed": False, "current": "", "latest": "",
                 "has_update": False, "error": str(e)}
 

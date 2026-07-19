@@ -22,6 +22,7 @@ settings.json (`awg.watchdog.enabled`) или API.
 Не запускаем поток на не-AWG платформах — модуль безопасен в import'е.
 """
 
+import os
 import socket
 import threading
 import time
@@ -35,6 +36,7 @@ from core.log_buffer import log
 _SETTINGS_TTL = 30.0
 _settings_cache: dict | None = None
 _settings_cache_ts: float = 0.0
+_settings_cache_key: tuple | None = None
 _settings_cache_lock = threading.Lock()
 
 # ─────── defaults ───────
@@ -237,16 +239,27 @@ def _get_settings() -> dict:
 
     Все поля опциональны — мы подсовываем разумные дефолты.
     """
-    global _settings_cache, _settings_cache_ts
+    global _settings_cache, _settings_cache_ts, _settings_cache_key
     now = time.monotonic()
-    with _settings_cache_lock:
-        if _settings_cache is not None and (now - _settings_cache_ts) < _SETTINGS_TTL:
-            return _settings_cache
     try:
         from core.config_manager import get_config_manager
-        cfg = get_config_manager().load()
+        cm = get_config_manager()
+        cfg_path = getattr(cm, "_config_path", "") or getattr(cm, "config_path", "")
+        cache_key = None
+        if cfg_path and os.path.exists(cfg_path):
+            try:
+                cache_key = (cfg_path, os.path.getmtime(cfg_path))
+            except OSError:
+                cache_key = (cfg_path, None)
+        if cache_key is not None:
+            with _settings_cache_lock:
+                if (_settings_cache is not None and _settings_cache_key == cache_key
+                        and (now - _settings_cache_ts) < _SETTINGS_TTL):
+                    return _settings_cache
+        cfg = cm.load()
     except Exception:
         cfg = {}
+        cache_key = None
     if not isinstance(cfg, dict):
         cfg = {}
     awg = cfg.get("awg") or {}
@@ -285,14 +298,16 @@ def _get_settings() -> dict:
     with _settings_cache_lock:
         _settings_cache = result
         _settings_cache_ts = now
+        _settings_cache_key = cache_key
     return result
 
 
 def _invalidate_settings_cache():
     """Сбросить кеш настроек — вызывается из set_settings() для немедленного применения."""
-    global _settings_cache
+    global _settings_cache, _settings_cache_key
     with _settings_cache_lock:
         _settings_cache = None
+        _settings_cache_key = None
 
 def set_settings(**kwargs) -> dict:
     """Обновить настройки watchdog'а (персистентно). Возвращает актуальные."""
