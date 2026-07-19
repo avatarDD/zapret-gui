@@ -15,6 +15,7 @@ Integration-тесты для Telegram Proxy API (/api/tgproxy/*).
 """
 
 import unittest
+from unittest import mock
 
 from tests._wsgi_client import WSGIClient, build_test_app
 
@@ -186,3 +187,21 @@ class TestTgproxyRouteViaTunnel(unittest.TestCase):
         r = self.client.delete_json(
             "/api/tgproxy/tgwsproxy/route-via-tunnel")
         self.assertEqual(r["_status"], 200)
+
+
+class TestMtprotoUpAPI(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = WSGIClient(build_test_app())
+
+    @mock.patch("core.tgproxy_manager.get_mtproxy_client_manager")
+    def test_mtproto_up_without_relay(self, mock_get_mgr):
+        mgr = mock.Mock()
+        mgr.start.return_value = {"ok": False, "error": "relay обязателен для mtproto-режима"}
+        mock_get_mgr.return_value = mgr
+        r = self.client.post_json("/api/tgproxy/mtproto/up", {"port": 1443})
+        self.assertEqual(r["_status"], 200)
+        self.assertFalse(r["ok"])
+        mgr.start.assert_called_once()
+        self.assertEqual(mgr.start.call_args.kwargs["relay"], "")

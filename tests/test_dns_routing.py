@@ -3,6 +3,8 @@
 
 import unittest
 from unittest import mock
+import tempfile
+import os
 
 from core import dns_routing as dr
 
@@ -125,6 +127,56 @@ class TestDnsRoutingManager(unittest.TestCase):
         ids = [s["id"] for s in servers]
         self.assertIn("cloudflare", ids)
         self.assertIn("geohide", ids)
+
+    @mock.patch("core.routing.dnsmasq_integration.DnsmasqIntegration")
+    def test_apply_adds_conf_file_and_reloads_dnsmasq(self, mock_dnsmasq_cls):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            main_conf = os.path.join(tmpdir, "dnsmasq.conf")
+            with open(main_conf, "w") as f:
+                f.write("# main config\n")
+
+            class FakeCM:
+                def get(self, *args, **kwargs):
+                    return tmpdir if args == ("zapret", "base_path") else [{"domain": "youtube.com", "dns": "cloudflare", "enabled": True}]
+
+            fake_dnsmasq = mock.Mock()
+            fake_dnsmasq.find_main_config.return_value = main_conf
+            mock_dnsmasq_cls.return_value = fake_dnsmasq
+            with mock.patch("core.config_manager.get_config_manager", return_value=FakeCM()):
+                res = self.mgr.apply()
+
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["applied"], 1)
+            self.assertTrue(os.path.isfile(res["file"]))
+            with open(main_conf, "r") as f:
+                text = f.read()
+            self.assertIn("conf-file=%s" % res["file"], text)
+            fake_dnsmasq.reload.assert_called_once()
+
+    @mock.patch("core.routing.dnsmasq_integration.DnsmasqIntegration")
+    def test_apply_is_idempotent(self, mock_dnsmasq_cls):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            main_conf = os.path.join(tmpdir, "dnsmasq.conf")
+            managed = os.path.join(tmpdir, "dns-routing.conf")
+            with open(main_conf, "w") as f:
+                f.write("# zapret-gui dns-routing managed include\nconf-file=%s\n" % managed)
+
+            class FakeCM:
+                def get(self, *args, **kwargs):
+                    if args == ("zapret", "base_path"):
+                        return tmpdir
+                    return [{"domain": "youtube.com", "dns": "cloudflare", "enabled": True}]
+
+            fake_dnsmasq = mock.Mock()
+            fake_dnsmasq.find_main_config.return_value = main_conf
+            mock_dnsmasq_cls.return_value = fake_dnsmasq
+            with mock.patch("core.config_manager.get_config_manager", return_value=FakeCM()):
+                res = self.mgr.apply()
+
+            self.assertTrue(res["ok"])
+            with open(main_conf, "r") as f:
+                text = f.read()
+            self.assertEqual(text.count("conf-file=%s" % managed), 1)
 
 
 if __name__ == "__main__":

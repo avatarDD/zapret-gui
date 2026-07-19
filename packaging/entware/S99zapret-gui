@@ -90,6 +90,14 @@ start() {
         return 0
     else
         echo "ОШИБКА: $DESC не удалось запустить. Смотрите $LOG_FILE"
+        # Показываем причину падения — иначе пользователь видит только
+        # «не удалось запустить» без подсказки (напр. не хватает модуля
+        # Python на Entware, issue #231).
+        if [ -s "$LOG_FILE" ]; then
+            echo "--- последние строки $LOG_FILE ---"
+            tail -n 15 "$LOG_FILE"
+            echo "----------------------------------"
+        fi
         rm -f "$PID_FILE"
         return 1
     fi
@@ -167,14 +175,35 @@ check() {
         OK=false
     fi
 
-    # Bottle: системный либо встроенный (vendor/)
+    # Bottle: системный либо встроенный (vendor/). Наличия файла мало —
+    # реально импортируем (issue #231: без python3-codecs bottle не
+    # грузится из-за unicodedata, а файл при этом на месте).
     if python3 -c "import bottle; print('  ✓ bottle', bottle.__version__, '(системный)')" 2>/dev/null; then
         true
-    elif [ -f "$APP_DIR/vendor/bottle.py" ]; then
-        echo "  ✓ bottle: встроенный (vendor/)"
-    else
+    elif [ ! -f "$APP_DIR/vendor/bottle.py" ]; then
         echo "  ✗ bottle не найден (ни системный, ни vendor/)"
         OK=false
+    else
+        _CHK_MISS=$(PYTHONPATH="$APP_DIR/vendor" python3 - <<'PY' 2>/dev/null
+try:
+    import bottle  # noqa: F401
+except ModuleNotFoundError as e:
+    print(e.name or "")
+except ImportError as e:
+    print(getattr(e, "name", "") or "")
+PY
+)
+        if [ -z "$_CHK_MISS" ]; then
+            echo "  ✓ bottle: встроенный (vendor/)"
+        else
+            _CHK_PKG="python3-${_CHK_MISS%%.*}"
+            case "${_CHK_MISS%%.*}" in
+                ssl|_ssl|hashlib|_hashlib)   _CHK_PKG="python3-openssl" ;;
+                unicodedata|_multibytecodec) _CHK_PKG="python3-codecs" ;;
+            esac
+            echo "  ✗ bottle на месте, но не хватает модуля '$_CHK_MISS' (opkg install $_CHK_PKG)"
+            OK=false
+        fi
     fi
 
     # App files

@@ -24,6 +24,11 @@ class TestOptimizeIface(unittest.TestCase):
         r = to.optimize_iface("", "balanced")
         self.assertFalse(r["ok"])
 
+    def test_optimize_iface_rejects_invalid_iface(self):
+        r = to.optimize_iface("../../tcp_rmem_max", "balanced")
+        self.assertFalse(r["ok"])
+        self.assertIn("Недопустимое имя интерфейса", r["error"])
+
     @mock.patch("subprocess.run")
     @mock.patch("os.path.isdir", return_value=True)
     @mock.patch("builtins.open", mock.mock_open())
@@ -32,6 +37,27 @@ class TestOptimizeIface(unittest.TestCase):
         r = to.optimize_iface("awg0", "low_latency")
         self.assertTrue(r["ok"])
         self.assertIn("mtu", r["applied"])
+
+    @mock.patch("core.tunnel_optimizer.optimize_iface")
+    def test_optimize_nested_tunnel_calculates_inner_mtu(self, mock_optimize_iface):
+        mock_optimize_iface.side_effect = [
+            {"ok": True, "mtu": 1420, "applied": ["mtu"], "errors": []},
+            {"ok": True, "mtu": 1340, "applied": ["mtu"], "errors": []},
+        ]
+        res = to.optimize_nested_tunnel("opkgtun0", "warp", "awg0", "awg", "balanced")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["inner"]["mtu"], 1350)
+        self.assertGreaterEqual(res["inner"]["mtu"], 576)
+
+    @mock.patch("core.tunnel_optimizer.optimize_iface")
+    def test_nested_tunnel_mtu_never_below_576(self, mock_optimize_iface):
+        mock_optimize_iface.side_effect = [
+            {"ok": True, "mtu": 600, "applied": ["mtu"], "errors": []},
+            {"ok": True, "mtu": 576, "applied": ["mtu"], "errors": []},
+        ]
+        res = to.optimize_nested_tunnel("opkgtun0", "warp", "awg0", "awg", "low_latency")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["inner"]["mtu"], 576)
 
 
 class TestOptimizeMtu(unittest.TestCase):

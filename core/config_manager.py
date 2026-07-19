@@ -7,11 +7,12 @@
 доступ к настройкам.
 
 Использование:
-    from core.config_manager import config, save_config
+    from core.config_manager import get_config_manager, save_config
 
-    zapret_base = config["zapret"]["base_path"]
-    config["gui"]["port"] = 8081
-    save_config()
+    cfg = get_config_manager().load()
+    zapret_base = cfg["zapret"]["base_path"]
+    cfg["gui"]["port"] = 8081
+    save_config()                # шорткат для get_config_manager().save()
 """
 
 import os
@@ -570,6 +571,19 @@ _config_manager = ConfigManager()
 def get_config_manager() -> ConfigManager:
     """Получить глобальный менеджер конфигурации."""
     return _config_manager
+
+
+def save_config() -> bool:
+    """Сохранить конфигурацию глобального менеджера.
+
+    Модульный шорткат, задокументированный в шапке файла. До его
+    появления `from core.config_manager import save_config` падал с
+    ImportError: doh_resolver и singbox_autostart молча теряли
+    настройки (import в try/except), а включение DNS-перехвата
+    отдавало ошибку в UI. Берём менеджер через get_config_manager() —
+    init_config() мог пересоздать глобальный экземпляр.
+    """
+    return get_config_manager().save()
 
 
 def init_config(config_dir: str = None) -> dict:

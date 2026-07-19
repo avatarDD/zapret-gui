@@ -8,14 +8,9 @@ CONFIG_DIR="/etc/zapret-gui"
 
 echo "Zapret Web-GUI — установка (OpenWrt)"
 
-# Запоминаем, был ли запущен сервис, и аккуратно глушим его + любые
-# осиротевшие python-процессы. Иначе старый код продолжит крутиться в памяти,
-# держать порт 8080 и пользователь будет видеть предыдущую GUI_VERSION
-# даже после успешной установки нового IPK.
-WAS_RUNNING=""
-if /etc/init.d/zapret-gui running 2>/dev/null; then
-    WAS_RUNNING=1
-fi
+# Аккуратно глушим сервис + любые осиротевшие python-процессы. Иначе старый
+# код продолжит крутиться в памяти, держать порт 8080 и пользователь будет
+# видеть предыдущую GUI_VERSION даже после успешной установки нового IPK.
 /etc/init.d/zapret-gui stop >/dev/null 2>&1 || true
 if command -v pgrep >/dev/null 2>&1; then
     for pid in $(pgrep -f "python.* $APP_DIR/app.py" 2>/dev/null); do
@@ -77,22 +72,47 @@ elif [ ! -d "$APP_DIR/import" ]; then
     echo "  ⚠ $APP_DIR/import отсутствует — bundled-ассеты не импортированы"
 fi
 
-# Стартуем сервис, если он работал до установки.
-if [ -n "$WAS_RUNNING" ]; then
-    echo "  Запуск Zapret Web-GUI..."
-    /etc/init.d/zapret-gui start >/dev/null 2>&1 \
-        && echo "  ✓ Сервис запущен" \
-        || echo "  ⚠ Не удалось запустить"
-fi
+# Стартуем сервис: при обновлении — рестарт с новым кодом, при первой
+# установке — первый запуск (раньше приходилось стартовать руками).
+echo "  Запуск Zapret Web-GUI..."
+/etc/init.d/zapret-gui start >/dev/null 2>&1 \
+    && echo "  ✓ Сервис запущен" \
+    || echo "  ⚠ Не удалось запустить"
 
-# Bottle встроен в пакет (vendor/bottle.py) — сетевая установка не
-# нужна. Системный python3-bottle, если стоит, имеет приоритет.
+# Bottle встроен в пакет (vendor/bottle.py). Наличия файла недостаточно:
+# bottle тянет `unicodedata` и др. submodule'ы, которых нет в python3-light
+# (issue #231). Недостающие пакеты (python3-codecs/urllib/openssl/email)
+# ставятся по Depends, но если импорт всё же падает — покажем причину.
+_bottle_missing_module() {
+    PYTHONPATH="$APP_DIR/vendor" python3 - <<'PY' 2>/dev/null
+try:
+    import bottle  # noqa: F401
+except ModuleNotFoundError as e:
+    print(e.name or "")
+except ImportError as e:
+    print(getattr(e, "name", "") or "")
+PY
+}
+_py_pkg_for() {
+    case "${1%%.*}" in
+        ssl|_ssl|hashlib|_hashlib)   echo "python3-openssl" ;;
+        unicodedata|_multibytecodec) echo "python3-codecs" ;;
+        *)                           echo "python3-${1%%.*}" ;;
+    esac
+}
 if python3 -c "import bottle" 2>/dev/null; then
     echo "  ✓ bottle: системный"
-elif [ -f "$APP_DIR/vendor/bottle.py" ]; then
-    echo "  ✓ bottle: встроенный (vendor/)"
-else
+elif [ ! -f "$APP_DIR/vendor/bottle.py" ]; then
     echo "  ⚠ bottle не найден (нет ни системного, ни $APP_DIR/vendor/bottle.py)"
+else
+    _MISS="$(_bottle_missing_module)"
+    if [ -z "$_MISS" ]; then
+        echo "  ✓ bottle: встроенный (vendor/)"
+    else
+        _ADD="opkg install"; command -v apk >/dev/null 2>&1 && _ADD="apk add"
+        echo "  ⚠ bottle на месте, но не хватает модуля Python '$_MISS'"
+        echo "    доустановите: $_ADD $(_py_pkg_for "$_MISS")"
+    fi
 fi
 
 echo ""

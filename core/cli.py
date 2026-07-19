@@ -256,11 +256,11 @@ def _cmd_usque(args) -> int:
 # ─────────────────────── tgproxy (Telegram) ──────────────────────────
 
 def _cmd_tgproxy(args) -> int:
-    from core.tgproxy_manager import get_tgproxy_manager
-    mgr = get_tgproxy_manager()
+    from core.tgproxy_manager import get_tgwsproxy_manager
+    mgr = get_tgwsproxy_manager()
     action = args.action
     if action == "status":
-        st = mgr.status()
+        st = mgr.get_status()
         _p("telegram: %s" % ("запущен (%s)" % st.get("engine", "?")
                             if st.get("running") else "остановлен"))
         if st.get("pid"):

@@ -47,7 +47,6 @@ import os
 import threading
 import time
 import urllib.parse
-import uuid as _uuid
 
 from core.log_buffer import log
 
@@ -207,7 +206,8 @@ def add_source(name: str, url: str, *, fmt: str = "auto",
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return {"ok": False, "error": "URL должен быть http:// или https://"}
-    sid = "src-" + _uuid.uuid4().hex[:8]
+    # os.urandom, а не uuid: на Entware python3-light без модуля uuid
+    sid = "src-" + os.urandom(4).hex()
     with _lock:
         pool = _load_pool()
         sources = pool.get("sources")
@@ -425,8 +425,8 @@ def refresh_pool(progress_cb=None) -> dict:
     tested = None
     if settings["health_filter"]:
         try:
-            from core.proxy_tester import test_outbounds
-            tested = test_outbounds(
+            from core.proxy_tester import run_outbound_tests
+            tested = run_outbound_tests(
                 aggregate, target=settings["target"],
                 max_servers=min(MAX_CAP, max(cap * 2, cap)),
                 progress_cb=lambda ph, d, t: _report("test", d, t))

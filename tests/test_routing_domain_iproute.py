@@ -62,10 +62,13 @@ class TestApplyDomainRuleRouting(unittest.TestCase):
     """apply_domain_rule выбирает ip-route путь для userspace-туннеля
     без dnsmasq (а не падает с ошибкой про dnsmasq)."""
 
-    def test_userspace_no_dnsmasq_goes_iproute(self):
+    def test_userspace_no_dnsmasq_no_sets_goes_iproute(self):
+        # Без dnsmasq И без ipset/nft — прежний iproute-фолбэк.
         rule = _rule()
         with mock.patch.object(domain_rule, "_ndms_available",
                                return_value=False), \
+             mock.patch.object(domain_rule, "_backend_for",
+                               return_value=None), \
              mock.patch.object(domain_rule, "_apply_domain_via_iproute",
                                return_value={"ok": True,
                                              "backend": "iproute"}) as f, \
@@ -76,6 +79,26 @@ class TestApplyDomainRuleRouting(unittest.TestCase):
             res = domain_rule.apply_domain_rule(rule)
         f.assert_called_once()
         self.assertEqual(res.get("backend"), "iproute")
+
+    def test_userspace_no_dnsmasq_with_sets_goes_sets(self):
+        # Без dnsmasq, но с ipset/nft — set-based путь (масштабируется
+        # и обновляется рефрешером), а не iproute.
+        from core.routing import ipset_backend
+        rule = _rule()
+        with mock.patch.object(domain_rule, "_ndms_available",
+                               return_value=False), \
+             mock.patch.object(domain_rule, "_backend_for",
+                               return_value=ipset_backend), \
+             mock.patch.object(domain_rule, "_apply_domain_via_sets",
+                               return_value={"ok": True,
+                                             "backend": "ipset"}) as f, \
+             mock.patch("core.routing.dnsmasq_integration.DnsmasqIntegration") \
+                as Dn:
+            Dn.return_value.status.return_value = {"available": False,
+                                                   "running": False}
+            res = domain_rule.apply_domain_rule(rule)
+        f.assert_called_once()
+        self.assertEqual(res.get("backend"), "ipset")
 
     def test_native_ndms_iface_uses_ndms(self):
         rule = DomainRoutingRule(target_iface="Wireguard0",

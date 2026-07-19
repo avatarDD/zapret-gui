@@ -22,7 +22,7 @@ from core.clash_yaml import (
     clash_proxy_to_uri, uri_to_clash_proxy,
 )
 from core import mihomo_proxies as mp
-from core.mihomo_proxy_tester import test_proxies
+from core.mihomo_proxy_tester import run_proxy_tests
 from core import mihomo_manager
 from core.mihomo_manager import _inject_log_level
 from core.mihomo_platform import MihomoPlatform
@@ -298,13 +298,13 @@ class TestMutations(unittest.TestCase):
 class TestTester(unittest.TestCase):
 
     def test_empty(self):
-        res = test_proxies([], binary=None)
+        res = run_proxy_tests([], binary=None)
         self.assertTrue(res["ok"])
         self.assertEqual(res["summary"]["total"], 0)
 
     def test_tcp_only_dead(self):
         # 127.0.0.1:1 — порт закрыт → connection refused (быстро) → мёртв.
-        res = test_proxies(
+        res = run_proxy_tests(
             [{"name": "dead", "type": "ss", "server": "127.0.0.1", "port": 1}],
             controller=None, binary=None)
         self.assertEqual(res["summary"]["total"], 1)
@@ -314,7 +314,7 @@ class TestTester(unittest.TestCase):
         self.assertEqual(row["stage"], "tcp")
 
     def test_filters_missing_server(self):
-        res = test_proxies([{"name": "x", "type": "ss"}], binary=None)
+        res = run_proxy_tests([{"name": "x", "type": "ss"}], binary=None)
         self.assertEqual(res["summary"]["total"], 0)
 
 
