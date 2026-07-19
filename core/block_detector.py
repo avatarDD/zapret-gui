@@ -242,14 +242,112 @@ class BlockDetector:
         return list(set(domains))[-50:]
 
     def _from_af_packet(self) -> list:
-        """AF_PACKET DNS-сниффинг (заглушка — требует root)."""
-        # MR-47: предупреждаем пользователя что источник DNS не найден
-        log.warning(
-            "block-detector: DNS source auto-detection failed — "
-            "AF_PACKET stub active. "
-            "Включите dnsmasq log-queries: добавьте 'log-queries' в /opt/etc/dnsmasq.conf",
-            source="block_detector")
-        return []
+        """AF_PACKET DNS-сниффинг для случаев, когда dnsmasq/adguard-log недоступны."""
+        try:
+            import select
+            import struct
+
+            ETH_P_ALL = 0x0003
+            sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
+            sock.setblocking(False)
+        except Exception as e:
+            log.warning("block-detector: AF_PACKET недоступен: %s" % e,
+                        source="block_detector")
+            return []
+
+        def _read_dns_name(buf: bytes, offset: int) -> tuple[str, int]:
+            labels = []
+            jumped = False
+            seen = set()
+            start = offset
+            while offset < len(buf):
+                ln = buf[offset]
+                if ln == 0:
+                    offset += 1
+                    break
+                if ln & 0xC0 == 0xC0:
+                    if offset + 1 >= len(buf):
+                        break
+                    ptr = ((ln & 0x3F) << 8) | buf[offset + 1]
+                    if ptr in seen:
+                        break
+                    seen.add(ptr)
+                    if not jumped:
+                        start = offset + 2
+                        jumped = True
+                    offset = ptr
+                    continue
+                offset += 1
+                label = buf[offset:offset + ln]
+                try:
+                    labels.append(label.decode("idna", errors="ignore"))
+                except Exception:
+                    labels.append(label.decode("utf-8", errors="ignore"))
+                offset += ln
+            return ".".join([p for p in labels if p]), (start if jumped else offset)
+
+        domains = []
+        deadline = time.time() + 1.0
+        try:
+            while time.time() < deadline and len(domains) < 50:
+                ready, _, _ = select.select([sock], [], [], 0.2)
+                if not ready:
+                    continue
+                packet = sock.recv(65535)
+                if len(packet) < 42:
+                    continue
+
+                eth_type = struct.unpack("!H", packet[12:14])[0]
+                if eth_type != 0x0800:
+                    continue
+
+                ip_start = 14
+                version_ihl = packet[ip_start]
+                if (version_ihl >> 4) != 4:
+                    continue
+                ihl = (version_ihl & 0x0F) * 4
+                if len(packet) < ip_start + ihl + 8:
+                    continue
+                proto = packet[ip_start + 9]
+                if proto != 17:
+                    continue
+
+                udp_start = ip_start + ihl
+                src_port, dst_port, udp_len = struct.unpack("!HHH", packet[udp_start:udp_start + 6])
+                if src_port != 53 and dst_port != 53:
+                    continue
+
+                dns = packet[udp_start + 8:]
+                if len(dns) < 12:
+                    continue
+                flags = struct.unpack("!H", dns[2:4])[0]
+                qr = (flags >> 15) & 1
+                # Нам интересны и запросы, и ответы: у провайдера может быть
+                # виден только ответ в перехвате, а имя домена всё равно нужно.
+                offset = 12
+                qdcount = struct.unpack("!H", dns[4:6])[0]
+                for _ in range(qdcount):
+                    name, offset = _read_dns_name(dns, offset)
+                    if not name:
+                        break
+                    if offset + 4 > len(dns):
+                        break
+                    offset += 4
+                    name = name.lower().strip(".")
+                    if name and "." in name and name not in domains:
+                        domains.append(name)
+                if qr == 1 and domains:
+                    continue
+        except Exception as e:
+            log.warning("block-detector: AF_PACKET sniff error: %s" % e,
+                        source="block_detector")
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+        return domains[-50:]
 
     # ─────── probing ───────
 

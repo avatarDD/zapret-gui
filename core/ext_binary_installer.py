@@ -126,10 +126,16 @@ def _parse_retry_after(headers) -> int:
     return 0
 
 
-def github_latest_release(repo: str) -> dict:
-    """Получить информацию о latest release."""
+def github_release(repo: str, tag: str = "") -> dict:
+    """Получить информацию о release.
+
+    Если tag пустой — берём latest, иначе фиксированный release/tags/<tag>.
+    """
     from core.binary_installer import resolve_url
-    url = "https://api.github.com/repos/%s/releases/latest" % repo
+    if tag:
+        url = "https://api.github.com/repos/%s/releases/tags/%s" % (repo, tag)
+    else:
+        url = "https://api.github.com/repos/%s/releases/latest" % repo
     url = resolve_url(url)
 
     # Токен авторизации из конфига github.token (опционально)
@@ -213,6 +219,11 @@ def github_latest_release(repo: str) -> dict:
     return {"error_detail": (
         "Не удалось получить данные с GitHub API после %d попыток" % max_attempts
     )}
+
+
+def github_latest_release(repo: str) -> dict:
+    """Совместимость со старыми тестами и моками."""
+    return github_release(repo)
 
 
 def github_download_url(repo: str, tag: str, filename: str) -> str:
@@ -312,52 +323,88 @@ def install_binary(source: str, dest: str) -> bool:
 BINARIES = {
     "tgwsproxy": {
         "repo": "spatiumstas/tg-ws-proxy-go",
-        "sha256": "",
+        "release_tag": "0.9.2",
         "install_kind": "package",
         "package_name": "tg-ws-proxy",
         "dest": "/opt/bin/tg-ws-proxy",
         "arch_map": {
-            "aarch64": "entware_aarch64-3.10.ipk",
-            "mipsel": "entware_mipsel-3.4.ipk",
-            "mips": "entware_mips-3.4.ipk",
-            "armv7": "entware_armv7-3.2.ipk",
+            "aarch64": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
+            "armv7": "tg-ws-proxy_0.9.2-1_entware_armv7-3.2.ipk",
+            "mips": "tg-ws-proxy_0.9.2-1_entware_mips-3.4.ipk",
+            "mipsel": "tg-ws-proxy_0.9.2-1_entware_mipsel-3.4.ipk",
+        },
+        "package_assets": {
+            "opkg": {
+                "aarch64": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
+                "armv7": "tg-ws-proxy_0.9.2-1_entware_armv7-3.2.ipk",
+                "mips": "tg-ws-proxy_0.9.2-1_entware_mips-3.4.ipk",
+                "mipsel": "tg-ws-proxy_0.9.2-1_entware_mipsel-3.4.ipk",
+            },
+            "apk": {
+                "aarch64": "tg-ws-proxy_0.9.2-r1_openwrt_aarch64_generic.apk",
+                "mips": "tg-ws-proxy_0.9.2-r1_openwrt_mips_24kc.apk",
+                "mipsel": "tg-ws-proxy_0.9.2-r1_openwrt_mipsel_24kc.apk",
+            },
+        },
+        "sha256_map": {
+            "opkg:aarch64": "9e8737f43ec7114ba904179f54908dd1d21a7bb9151f7b10a38207fda2bd9f50",
+            "opkg:armv7": "f2dae8651859032609e1c3914c488448ca8dee26fbf8294967c3c6c895137415",
+            "opkg:mips": "cc9420023d3dc18facbd6e7f4398002afe2ae6e4f2c67cd129adebd1b3c913f3",
+            "opkg:mipsel": "baea8552ec1b212e220177b712e959edc45c6f0a5c6ef42cfa0b8fadeb7e2850",
+            "apk:aarch64": "1516d79e73146a1886c2ad4348a54804fff2acc558fe2f4f2ab0e35500dc8925",
+            "apk:mips": "cc3dd05de4550ddc74246f9e626deaa6d695503b68d6510c6e024e50cf0e2b1a",
+            "apk:mipsel": "cd827276c1e8b09efdc8207ae3cc9615c4f19c82aee765dfcfa47af35107340e",
         },
     },
 
     "usque": {
         "repo": "side-effect-tm/usque-keenetic",
-        "sha256": "",
+        "release_tag": "v0.3.0",
         "dest": "/opt/usr/bin/usque",
         "arch_map": {
-            "aarch64": "usque-aarch64",
-            "mipsel": "usque-mipsel",
-            "mips": "usque-mips",
-            "armv7": "usque-armv7",
+            "aarch64": "usque-keenetic_0.3.0_aarch64-3.10.ipk",
+            "mipsel": "usque-keenetic_0.3.0_mipsel-3.4.ipk",
+            "mips": "usque-keenetic_0.3.0_mips-3.4.ipk",
+            "armv7": "usque-keenetic_0.3.0_all_entware.ipk",
+        },
+        "sha256_map": {
+            "aarch64": "9ff3072a6fb607d404cca65cbfef25d286723f9b76fce8c2d6fc2f9135580a55",
+            "mipsel": "300fa4b3d083636f1a8eeb8cd0ace1ecbbc68de58826831cb7b7426fc2b1aa79",
+            "mips": "8b89ea2656d9fa7fa877e4fc2b9f311fce77c95c7fc2fce4e701e8579733ec9a",
+            "armv7": "2ec8f7d1a40caaf16576567b6fc059877eb5b2fc627a08a8fb8d797d5f9ffb39",
         },
     },
 
     "tgproto": {
         "repo": "necronicle/z2k",
-        "sha256": "",
+        "release_tag": "z2k-classify-rolling",
         "dest": "/opt/sbin/tg-mtproxy-client",
         "arch_map": {
-            "aarch64": "tg-mtproxy-client-arm64",
             "mipsel": "tg-mtproxy-client-mipsel",
             "mips": "tg-mtproxy-client-mips",
-            "armv7": "tg-mtproxy-client-armv7",
-            "x86_64": "tg-mtproxy-client-amd64",
+            "x86_64": "z2k-classify-x86_64",
         },
-        # В z2k бинарники лежат в поддиректории builds/
-        "asset_prefix": "mtproxy-client/builds/",
+        "sha256_map": {
+            "mipsel": "77e32695a9324cee75e176d216df37883cb2711fe6caec30cae24f7c2a5bc32d",
+            "mips": "d582b74ba0f4638a9d2a6636ddf8408fceace0416758cd1fd0dcbdab0c5e0b96",
+            "x86_64": "6a8d10c1e42001a4e8e9570d114e6ac2b30b954c553c8970a4573d3fe21e3910",
+        },
     },
     "opera": {
         "repo": "Alexey71/opera-proxy",
-        "sha256": "",
+        "release_tag": "v1.27.0",
         "dest": "/opt/usr/bin/opera-proxy",
         "arch_map": {
-            "aarch64": "opera-proxy.linux.arm64",
-            "x86_64": "opera-proxy.linux.amd64",
-            "mipsel": "opera-proxy.linux.mipsel",
+            "aarch64": "opera-proxy.linux-arm64",
+            "x86_64": "opera-proxy.linux-amd64",
+            "mipsel": "opera-proxy.linux-mipsle",
+            "mips": "opera-proxy.linux-mips",
+        },
+        "sha256_map": {
+            "aarch64": "97e47545297ddceabb262833ed0424d5ec41176e3b63ed8180bdb8d629a626f2",
+            "x86_64": "06e0bc4597b61f75ba26632df64c876b9c5879c7fde17cf7ec0f8aa12c646fa0",
+            "mipsel": "ba1a04b463fabdb67debc033de9e60d8c9aa2bd2608e0b6068947db9a121fef0",
+            "mips": "49dc72173627a009384ace966c882c15b86d8254621f70b56f7771a1561be60a",
         },
     },
 }
@@ -372,12 +419,14 @@ def get_install_status(name: str) -> dict:
     if not cfg:
         return {"installed": False, "error": "Неизвестный бинарник: %s" % name}
 
+    install_kind = cfg.get("install_kind", "binary")
     arch = detect_arch()
-    if arch not in cfg["arch_map"]:
+    pkg_mgr = _package_manager() if install_kind == "package" else ""
+    asset_name = _resolve_asset_name(cfg, arch, pkg_mgr)
+    if not asset_name:
         return {"installed": False, "arch": arch,
                 "error": "Архитектура %s не поддерживается для %s" % (arch, name)}
 
-    install_kind = cfg.get("install_kind", "binary")
     if install_kind == "package":
         pkg = cfg.get("package_name", name)
         version = _pkg_version(pkg)
@@ -397,6 +446,24 @@ def get_install_status(name: str) -> dict:
         "version": version,
         "repo": cfg["repo"],
     }
+
+
+def _resolve_asset_name(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
+    """Получить asset для выбранного типа установки."""
+    if cfg.get("install_kind", "binary") == "package":
+        package_assets = cfg.get("package_assets", {}) or {}
+        if pkg_mgr and pkg_mgr in package_assets:
+            return (package_assets.get(pkg_mgr) or {}).get(arch, "")
+        return (package_assets.get("opkg") or {}).get(arch, "")
+    return (cfg.get("arch_map", {}) or {}).get(arch, "")
+
+
+def _expected_sha256(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
+    """Получить ожидаемый sha256 из встроенного манифеста."""
+    sha_map = cfg.get("sha256_map", {}) or {}
+    if pkg_mgr and "%s:%s" % (pkg_mgr, arch) in sha_map:
+        return sha_map["%s:%s" % (pkg_mgr, arch)]
+    return sha_map.get(arch, "")
 
 
 def _verify_downloaded_file(release: dict, asset_name: str, filepath: str) -> dict:
@@ -504,17 +571,18 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
         return {"ok": False, "error": "Неизвестный бинарник: %s" % name}
 
     arch = detect_arch()
-    if arch not in cfg["arch_map"]:
+
+    install_kind = cfg.get("install_kind", "binary")
+    pkg_mgr = _package_manager() if install_kind == "package" else ""
+    asset_name = _resolve_asset_name(cfg, arch, pkg_mgr)
+    if not asset_name:
         return {"ok": False, "error": "Архитектура %s не поддерживается" % arch}
 
-    asset_name = cfg["arch_map"][arch]
-    asset_prefix = cfg.get("asset_prefix", "")
-    install_kind = cfg.get("install_kind", "binary")
-
-    # 1. Получаем latest release
+    # 1. Получаем pinned release
     if progress_cb:
         progress_cb("fetch", 10, "Получение информации о релизе...")
-    release = github_latest_release(cfg["repo"])
+    release_tag = cfg.get("release_tag", "")
+    release = github_release(cfg["repo"], release_tag)
     if not release:
         return {"ok": False, "error": "Не удалось получить release с GitHub (сеть или DNS)"}
     if "error_detail" in release:
@@ -562,7 +630,6 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
         ]
     else:
         candidates = [
-            asset_prefix + asset_name,
             asset_name,
             asset_name + ".gz",
             asset_name + ".tar.gz",
@@ -622,18 +689,22 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
         if not v_res.get("ok"):
             return v_res
 
-        # MR-06: Проверка sha256 из конфига BINARIES
-        cfg_sha256 = cfg.get("sha256", "")
-        if cfg_sha256:
-            h = hashlib.sha256()
-            with open(tmp_path, "rb") as f:
-                while True:
-                    chunk = f.read(64 * 1024)
-                    if not chunk:
-                        break
-                    h.update(chunk)
-            if h.hexdigest().lower() != cfg_sha256.lower():
-                raise InstallError("SHA256 mismatch for %s" % name)
+        # MR-06: обязательная проверка sha256 из встроенного манифеста.
+        cfg_sha256 = _expected_sha256(cfg, arch, pkg_mgr)
+        if not cfg_sha256:
+            return {
+                "ok": False,
+                "error": "SHA256 для %s (%s) не задан в манифесте" % (name, arch),
+            }
+        h = hashlib.sha256()
+        with open(tmp_path, "rb") as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        if h.hexdigest().lower() != cfg_sha256.lower():
+            raise InstallError("SHA256 mismatch for %s" % name)
 
         if install_kind == "package":
             if progress_cb:

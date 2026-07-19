@@ -253,7 +253,7 @@ class TgWsProxyManager:
         cfg = _read_kv_conf(TGWSPROXY_CONFIG_FILE)
         secret_cfg = _read_kv_conf(TGWSPROXY_SECRET_FILE)
         return {
-            "host": cfg.get("HOST", "0.0.0.0"),
+            "host": cfg.get("HOST", "127.0.0.1"),
             "port": int(cfg.get("PORT") or 1443),
             "log_level": cfg.get("LOG_LEVEL", "0"),
             "dc_ip_default": cfg.get("DC_IP_DEFAULT", ""),
@@ -272,7 +272,7 @@ class TgWsProxyManager:
     def save_config(
         self,
         *,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 1443,
         dc_ip_default: str = "",
         dc_ip_default_pool: str = "",
@@ -532,7 +532,7 @@ MTPROXY_BIN_CANDIDATES = [
     "/opt/usr/bin/tg-mtproxy-client",
     "/opt/sbin/tg-mtproxy-client",
 ]
-MTPROXY_DEFAULT_RELAY = "wss://213.176.74.63.nip.io/ws"
+MTPROXY_DEFAULT_RELAY = ""
 MTPROXY_LOCAL_PORT = 1443
 
 
@@ -575,6 +575,10 @@ class MtProxyClientManager:
                     "error": "tg-mtproxy-client не найден (%s)"
                     % ", ".join(MTPROXY_BIN_CANDIDATES),
                 }
+
+            relay = (relay or "").strip()
+            if not relay:
+                return {"ok": False, "error": "relay обязателен для mtproto-режима"}
 
             secret = secret or secrets.token_hex(16)
 

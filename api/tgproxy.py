@@ -26,6 +26,7 @@ API управления обходом блокировки Telegram.
 """
 
 import re
+import socket
 
 from bottle import request
 
@@ -44,6 +45,24 @@ def _valid_domain_or_empty(v: str) -> bool:
     if not v:
         return True
     return bool(_DOMAIN_RE.match(v))
+
+
+def _lan_ip_fallback() -> str:
+    """Best-effort LAN IP для конфигурации tgwsproxy.
+
+    Не используем 0.0.0.0 как silent default bind: если IP определить не
+    удалось, отдаём loopback и пользователь должен явно выбрать адрес.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    return "127.0.0.1"
 
 
 def register(app):
@@ -120,7 +139,7 @@ def register(app):
             return {"ok": False, "error": "port вне диапазона 1-65535"}
 
         return mgr.save_config(
-            host=data.get("host", "0.0.0.0"),
+            host=(data.get("host") or "").strip() or _lan_ip_fallback(),
             port=port,
             dc_ip_default=data.get("dc_ip_default", ""),
             dc_ip_default_pool=data.get("dc_ip_default_pool", ""),
@@ -185,7 +204,6 @@ def register(app):
     @app.route("/api/tgproxy/mtproto/up", method="POST")
     def mtproto_up():
         from core.tgproxy_manager import (get_mtproxy_client_manager,
-                                          MTPROXY_DEFAULT_RELAY,
                                           MTPROXY_LOCAL_PORT)
         mgr = get_mtproxy_client_manager()
         data = request.json or {}
@@ -195,7 +213,7 @@ def register(app):
             return {"ok": False, "error": "port должен быть числом"}
         return mgr.start(
             port=port,
-            relay=data.get("relay", MTPROXY_DEFAULT_RELAY),
+            relay=(data.get("relay") or "").strip(),
             secret=data.get("secret", ""),
         )
 
