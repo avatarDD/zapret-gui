@@ -377,6 +377,77 @@ class TestNftablesIfaceQuoting(unittest.TestCase):
             self.assertRegex(c, r'[oi]ifname "6in4-wan" ')
 
 
+class TestAutoDetectFwType(unittest.TestCase):
+    """Регрессия issue #236: на OpenWrt (fw4) `iptables` — это шим iptables-nft
+    поверх nftables, поэтому при обеих доступных утилитах надо работать нативно
+    через nft, а не через iptables-путь (который конфликтует с fw4)."""
+
+    def _detect(self, has_ipt, has_nft, ipt_is_shim):
+        def which(name):
+            if name == "iptables":
+                return "/usr/sbin/iptables" if has_ipt else None
+            if name == "nft":
+                return "/usr/sbin/nft" if has_nft else None
+            return None
+
+        with mock.patch("core.firewall.shutil.which", side_effect=which), \
+                mock.patch.object(FirewallManager, "_iptables_is_nft_shim",
+                                  return_value=ipt_is_shim):
+            return FirewallManager._auto_detect()
+
+    def test_only_iptables(self):
+        self.assertEqual(self._detect(True, False, False), "iptables")
+
+    def test_only_nft(self):
+        self.assertEqual(self._detect(False, True, False), "nftables")
+
+    def test_both_legacy_iptables_prefers_iptables(self):
+        # Keenetic/Entware: настоящий iptables — оставляем iptables.
+        self.assertEqual(self._detect(True, True, False), "iptables")
+
+    def test_both_iptables_is_nft_shim_prefers_nft(self):
+        # OpenWrt 22+/fw4: iptables — шим → работаем через nft.
+        self.assertEqual(self._detect(True, True, True), "nftables")
+
+
+class TestNftablesStatusApplied(unittest.TestCase):
+    """Регрессия issue #235: на nftables статус всегда был «не активен».
+
+    _get_nftables_rules отбрасывал строку `table inet zapret_gui {` —
+    единственную с именем таблицы, — а _rules_applied ищет именно её.
+    Итог: правила стоят, GUI показывает «Firewall: не активен».
+    """
+
+    _NFT_OUTPUT = (
+        "table inet zapret_gui {\n"
+        "\tchain postrouting {\n"
+        "\t\ttype filter hook postrouting priority 150; policy accept;\n"
+        '\t\toifname "wan" ct mark and 0x20000000 == 0x20000000 return\n'
+        '\t\toifname "wan" tcp dport { 80, 443 } ct original packets 1-20 '
+        "queue num 300 bypass\n"
+        "\t}\n"
+        "}\n"
+    )
+
+    def _rules(self):
+        fw = FirewallManager()
+
+        class _R:
+            returncode = 0
+            stdout = TestNftablesStatusApplied._NFT_OUTPUT
+
+        with mock.patch("core.firewall.subprocess.run", return_value=_R()):
+            return fw, fw._get_nftables_rules()
+
+    def test_table_line_kept(self):
+        _fw, rules = self._rules()
+        self.assertTrue(any("zapret_gui" in r for r in rules))
+
+    def test_rules_applied_true(self):
+        fw, rules = self._rules()
+        self.assertTrue(fw._rules_applied(rules))
+
+
 class TestNftPortSet(unittest.TestCase):
 
     def test_converts_colon_to_dash(self):

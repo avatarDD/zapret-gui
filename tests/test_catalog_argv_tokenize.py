@@ -51,6 +51,28 @@ class TestTokenizeArgs(unittest.TestCase):
             ["--lua-desync=luaexec:code='desync.x = brandom(3)'"],
         )
 
+    def test_newline_separated_args_split(self):
+        # Регрессия issue #235: args пользовательской/merged-стратегии из
+        # многострочного textarea редактора разделены '\n'. Раньше перевод
+        # строки НЕ был разделителем → весь профиль уходил в nfqws2 одним
+        # argv-токеном → «Invalid port filter : 443» + эхо остатка построчно.
+        self.assertEqual(
+            tokenize_args("--filter-tcp=443\n--filter-l7=tls\n"
+                          "--payload=tls_client_hello\r\n"
+                          "--lua-desync=fake:blob=fake_default_tls"),
+            ["--filter-tcp=443", "--filter-l7=tls",
+             "--payload=tls_client_hello",
+             "--lua-desync=fake:blob=fake_default_tls"],
+        )
+
+    def test_newline_inside_quotes_kept(self):
+        # Перевод строки внутри кавычек (многострочный inline-Lua) — не
+        # разделитель, токен остаётся целым.
+        self.assertEqual(
+            tokenize_args("--lua-desync=luaexec:code='desync.x = 1\nreturn'"),
+            ["--lua-desync=luaexec:code='desync.x = 1\nreturn'"],
+        )
+
     def test_empty(self):
         self.assertEqual(tokenize_args(""), [])
         self.assertEqual(tokenize_args(None), [])
