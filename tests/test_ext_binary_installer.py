@@ -48,6 +48,12 @@ class TestBinaries(unittest.TestCase):
     def test_usque_has_mipsel(self):
         self.assertIn("mipsel", ebi.BINARIES["usque"]["arch_map"])
 
+    def test_tgwsproxy_package_config(self):
+        self.assertIn("tgwsproxy", ebi.BINARIES)
+        cfg = ebi.BINARIES["tgwsproxy"]
+        self.assertEqual(cfg.get("install_kind"), "package")
+        self.assertEqual(cfg.get("package_name"), "tg-ws-proxy")
+
 
 
 class TestGetInstallStatus(unittest.TestCase):
@@ -77,6 +83,14 @@ class TestGetInstallStatus(unittest.TestCase):
         self.assertFalse(status["installed"])
         self.assertIn("error", status)
 
+    @mock.patch.object(ebi, "detect_arch", return_value="aarch64")
+    @mock.patch.object(ebi, "_pkg_version", return_value="0.9.2")
+    def test_tgwsproxy_installed_from_package(self, mock_pkg_version, mock_arch):
+        status = ebi.get_install_status("tgwsproxy")
+        self.assertTrue(status["installed"])
+        self.assertEqual(status["version"], "0.9.2")
+        self.assertEqual(status["binary"], "/opt/etc/init.d/S99tg-ws-proxy")
+
 
 class TestGetVersion(unittest.TestCase):
     """Тесты _get_version."""
@@ -96,23 +110,23 @@ class TestGetVersion(unittest.TestCase):
 class TestInstallBinaryByName(unittest.TestCase):
     """Тесты install_binary_by_name."""
 
-    @mock.patch("core.ext_binary_installer.github_latest_release")
+    @mock.patch("core.ext_binary_installer.github_release")
     @mock.patch("core.ext_binary_installer._get_version")
     @mock.patch("os.path.isfile")
     @mock.patch("core.ext_binary_installer.detect_arch")
     def test_skips_download_if_versions_match(self, mock_arch, mock_isfile, mock_get_version, mock_release):
         mock_arch.return_value = "aarch64"
         mock_isfile.return_value = True
-        mock_get_version.return_value = "v1.2.3"
+        mock_get_version.return_value = "v0.3.0"
         mock_release.return_value = {
-            "tag_name": "v1.2.3",
+            "tag_name": "v0.3.0",
             "assets": []
         }
 
         res = ebi.install_binary_by_name("usque")
         self.assertTrue(res["ok"])
         self.assertEqual(res.get("noop"), True)
-        self.assertEqual(res["version"], "v1.2.3")
+        self.assertEqual(res["version"], "v0.3.0")
 
 
 if __name__ == "__main__":

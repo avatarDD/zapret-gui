@@ -1084,6 +1084,32 @@ const RoutingUnifiedPage = (() => {
         await refresh();
     }
 
+    async function toggleDnsIntercept(enable) {
+        if (enable) {
+            const ok = window.confirm(
+                'Включить перехват DNS?\n\n' +
+                'DNS-запросы клиентов (udp:53) будут проходить через ' +
+                'встроенный прокси zapret-gui поверх штатного резолвера. ' +
+                'IP доменов из маршрутов начнут попадать в маршрутизацию ' +
+                'в момент запроса клиента (включая CDN-поддомены).\n\n' +
+                'Если сервис zapret-gui будет остановлен штатно, перехват ' +
+                'снимется сам. Клиенты с включённым DoH перехвату не видны.' +
+                '\n\nПродолжить?');
+            if (!ok) return;
+        }
+        try {
+            const r = await API.post('/api/routing/dns-intercept',
+                                     { enabled: !!enable });
+            if (r && r.ok === false) throw new Error(r.error || 'не удалось');
+            Toast.success(enable ? 'DNS-перехват включён'
+                                 : 'DNS-перехват выключен');
+        } catch (e) { Toast.error(e.message); }
+        try {
+            dnsIntInfo = await API.get('/api/routing/dns-intercept');
+        } catch (_) { dnsIntInfo = null; }
+        renderBanners();
+    }
+
     // ─────── event delegation ───────
 
     function _bindEvents(container) {
@@ -1101,6 +1127,7 @@ const RoutingUnifiedPage = (() => {
                 case 'reapplyLowLevel': reapplyLowLevel(); break;
                 case 'runDnsmasqSetup': runDnsmasqSetup(); break;
                 case 'runDnsmasqRevert': runDnsmasqRevert(); break;
+                case 'toggleDnsIntercept': toggleDnsIntercept(el.checked); break;
                 case 'migrateLegacy': migrateLegacy(); break;
                 case 'closeEditor': closeEditor(); break;
                 case 'save': save(); break;
@@ -1162,6 +1189,6 @@ const RoutingUnifiedPage = (() => {
         addDevice, addDeviceManual, removeDevice,
         toggleDevPicker, refreshDevices, toggleDevicesAuto,
         migrateLegacy, deleteLegacy, reapplyLowLevel,
-        runDnsmasqSetup, runDnsmasqRevert,
+        runDnsmasqSetup, runDnsmasqRevert, toggleDnsIntercept,
     };
 })();
