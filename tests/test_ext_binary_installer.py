@@ -48,6 +48,12 @@ class TestBinaries(unittest.TestCase):
     def test_usque_has_mipsel(self):
         self.assertIn("mipsel", ebi.BINARIES["usque"]["arch_map"])
 
+    def test_tgwsproxy_package_config(self):
+        self.assertIn("tgwsproxy", ebi.BINARIES)
+        cfg = ebi.BINARIES["tgwsproxy"]
+        self.assertEqual(cfg.get("install_kind"), "package")
+        self.assertEqual(cfg.get("package_name"), "tg-ws-proxy")
+
 
 
 class TestGetInstallStatus(unittest.TestCase):
@@ -76,6 +82,14 @@ class TestGetInstallStatus(unittest.TestCase):
         status = ebi.get_install_status("nonexistent")
         self.assertFalse(status["installed"])
         self.assertIn("error", status)
+
+    @mock.patch.object(ebi, "detect_arch", return_value="aarch64")
+    @mock.patch.object(ebi, "_pkg_version", return_value="0.9.2")
+    def test_tgwsproxy_installed_from_package(self, mock_pkg_version, mock_arch):
+        status = ebi.get_install_status("tgwsproxy")
+        self.assertTrue(status["installed"])
+        self.assertEqual(status["version"], "0.9.2")
+        self.assertEqual(status["binary"], "/opt/etc/init.d/S99tg-ws-proxy")
 
 
 class TestGetVersion(unittest.TestCase):

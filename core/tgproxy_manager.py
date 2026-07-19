@@ -72,7 +72,10 @@ from core.log_buffer import log
 TGWSPROXY_CONFIG_DIR = "/opt/etc/tg-ws-proxy"
 TGWSPROXY_CONFIG_FILE = os.path.join(TGWSPROXY_CONFIG_DIR, "config.conf")
 TGWSPROXY_SECRET_FILE = os.path.join(TGWSPROXY_CONFIG_DIR, "secret.conf")
-TGWSPROXY_INITD = "/opt/etc/init.d/S99tg-ws-proxy"
+TGWSPROXY_INITD_CANDIDATES = [
+    "/opt/etc/init.d/S99tg-ws-proxy",
+    "/etc/init.d/S99tg-ws-proxy",
+]
 
 _DEFAULT_CFPROXY_DOMAINS_URL = (
     "https://raw.githubusercontent.com/Flowseal/tg-ws-proxy/main/"
@@ -103,6 +106,49 @@ _TGWSPROXY_CONFIG_KEYS = [
     "X_CF_DOMAIN",
     "X_CF_WORKER_DOMAIN",
 ]
+
+
+def _pkg_version(pkg_name: str) -> str:
+    """Версия установленного пакета tg-ws-proxy / tg-mtproxy-client.
+
+    Поддерживаем и opkg, и apk, потому что в разных прошивках пакеты
+    ставятся по-разному.
+    """
+    if not pkg_name:
+        return ""
+    for cmd, args in (
+        ("opkg", ["status", pkg_name]),
+        ("apk", ["info", "-v", pkg_name]),
+    ):
+        try:
+            proc = subprocess.run(
+                [cmd, *args], capture_output=True, text=True, timeout=5)
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode != 0 or not proc.stdout:
+            continue
+        if cmd == "opkg":
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("Version:"):
+                    return line.split(":", 1)[1].strip()
+        else:
+            # apk info -v pkg -> первая строка обычно начинается с
+            # "<pkg>-<version> ..."; берём хвост после имени пакета.
+            first = proc.stdout.splitlines()[0].strip()
+            prefix = pkg_name + "-"
+            if first.startswith(prefix):
+                return first[len(prefix):].split()[0].strip()
+            if first:
+                return first.split()[0]
+    return ""
+
+
+def _find_tgwsproxy_initd() -> str:
+    for path in TGWSPROXY_INITD_CANDIDATES:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return ""
 
 
 def _shell_quote_value(v: str) -> str:
@@ -193,12 +239,14 @@ class TgWsProxyManager:
     # ─────── detect / config ───────
 
     def detect(self) -> dict[str, Any]:
-        installed = os.path.isfile(TGWSPROXY_INITD) and os.access(
-            TGWSPROXY_INITD, os.X_OK
-        )
+        initd = _find_tgwsproxy_initd()
+        installed = bool(initd)
         return {
             "installed": installed,
+            "path": initd,
             "config_exists": os.path.isfile(TGWSPROXY_CONFIG_FILE),
+            "package": "tg-ws-proxy",
+            "version": _pkg_version("tg-ws-proxy") if installed else "",
         }
 
     def get_config(self) -> dict[str, Any]:
@@ -341,13 +389,14 @@ class TgWsProxyManager:
                 return {
                     "ok": False,
                     "error": "tg-ws-proxy-go не установлен (%s не найден)"
-                    % TGWSPROXY_INITD,
+                    % ", ".join(TGWSPROXY_INITD_CANDIDATES),
                 }
             if not det["config_exists"]:
                 return {"ok": False, "error": "Нет config.conf — сначала save_config()"}
 
+            initd = det.get("path") or _find_tgwsproxy_initd()
             r = subprocess.run(
-                [TGWSPROXY_INITD, "start"], capture_output=True, text=True, timeout=15
+                [initd, "start"], capture_output=True, text=True, timeout=15
             )
             if r.returncode != 0:
                 return {
@@ -374,8 +423,9 @@ class TgWsProxyManager:
             det = self.detect()
             if not det["installed"]:
                 return {"ok": True, "message": "не установлен"}
+            initd = det.get("path") or _find_tgwsproxy_initd()
             r = subprocess.run(
-                [TGWSPROXY_INITD, "stop"], capture_output=True, text=True, timeout=15
+                [initd, "stop"], capture_output=True, text=True, timeout=15
             )
             return {
                 "ok": r.returncode == 0,
@@ -398,8 +448,9 @@ class TgWsProxyManager:
 
         via_initd = False
         try:
+            initd = det.get("path") or _find_tgwsproxy_initd()
             r = subprocess.run(
-                [TGWSPROXY_INITD, "status"], capture_output=True, text=True, timeout=8
+                [initd, "status"], capture_output=True, text=True, timeout=8
             )
             out = (r.stdout or "").lower()
             via_initd = r.returncode == 0 and ("running" in out or "active" in out)
