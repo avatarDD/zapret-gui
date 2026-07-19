@@ -54,6 +54,34 @@ class TestBinaries(unittest.TestCase):
         self.assertEqual(cfg.get("install_kind"), "package")
         self.assertEqual(cfg.get("package_name"), "tg-ws-proxy")
 
+    def test_tgwsproxy_has_pinned_release_and_sha256(self):
+        cfg = ebi.BINARIES["tgwsproxy"]
+        self.assertEqual(cfg.get("release_tag"), "0.9.2")
+        self.assertIn("opkg:aarch64", cfg.get("sha256_map", {}))
+        self.assertIn("apk:aarch64", cfg.get("sha256_map", {}))
+
+    def test_tgwsproxy_asset_selection_for_package_manager(self):
+        cfg = ebi.BINARIES["tgwsproxy"]
+        self.assertEqual(
+            ebi._resolve_asset_name(cfg, "aarch64", "opkg"),
+            "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
+        )
+        self.assertEqual(
+            ebi._resolve_asset_name(cfg, "aarch64", "apk"),
+            "tg-ws-proxy_0.9.2-r1_openwrt_aarch64_generic.apk",
+        )
+
+    def test_expected_sha256_for_package_manager(self):
+        cfg = ebi.BINARIES["tgwsproxy"]
+        self.assertEqual(
+            ebi._expected_sha256(cfg, "aarch64", "opkg"),
+            "9e8737f43ec7114ba904179f54908dd1d21a7bb9151f7b10a38207fda2bd9f50",
+        )
+        self.assertEqual(
+            ebi._expected_sha256(cfg, "aarch64", "apk"),
+            "1516d79e73146a1886c2ad4348a54804fff2acc558fe2f4f2ab0e35500dc8925",
+        )
+
 
 
 class TestGetInstallStatus(unittest.TestCase):
@@ -127,6 +155,47 @@ class TestInstallBinaryByName(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res.get("noop"), True)
         self.assertEqual(res["version"], "v0.3.0")
+
+    @mock.patch("core.ext_binary_installer.github_release")
+    @mock.patch("core.ext_binary_installer._package_manager", return_value="opkg")
+    @mock.patch("core.ext_binary_installer._verify_downloaded_file", return_value={"ok": True})
+    @mock.patch("core.ext_binary_installer.download_file", return_value=True)
+    @mock.patch("core.ext_binary_installer.install_binary", return_value=True)
+    @mock.patch("subprocess.run")
+    @mock.patch("core.ext_binary_installer._pkg_version", return_value="")
+    @mock.patch("core.ext_binary_installer.detect_arch", return_value="aarch64")
+    def test_package_install_uses_pinned_release_and_sha(
+        self, mock_arch, mock_pkg_version, mock_subprocess_run, mock_install,
+        mock_download, mock_verify, mock_pkg_mgr, mock_release
+    ):
+        mock_subprocess_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        mock_release.return_value = {
+            "tag_name": "0.9.2",
+            "assets": [
+                {
+                    "name": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
+                    "browser_download_url": "https://example.invalid/tg-ws-proxy.ipk",
+                }
+            ],
+        }
+
+        with mock.patch("core.ext_binary_installer.tempfile.NamedTemporaryFile") as mtmp:
+            tmp = mock.Mock()
+            tmp.__enter__ = mock.Mock(return_value=tmp)
+            tmp.__exit__ = mock.Mock(return_value=False)
+            tmp.name = "/tmp/tgwsproxy.ipk"
+            mtmp.return_value = tmp
+            with mock.patch("core.ext_binary_installer.open", mock.mock_open(read_data=b"abc"), create=True):
+                # sha256 mismatch is not our concern here — just make sure the
+                # pinned release path is exercised without raising earlier errors.
+                with mock.patch("core.ext_binary_installer.hashlib.sha256") as mhash:
+                    h = mock.Mock()
+                    h.hexdigest.return_value = "9e8737f43ec7114ba904179f54908dd1d21a7bb9151f7b10a38207fda2bd9f50"
+                    mhash.return_value = h
+                    res = ebi.install_binary_by_name("tgwsproxy")
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["tag"], "0.9.2")
 
 
 if __name__ == "__main__":
