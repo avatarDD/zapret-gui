@@ -8,7 +8,6 @@ API-модуль для geosite/geoip импорта и DNS-провайдеро
   POST /api/geosite/import        — импорт категории как named list
 """
 
-import json
 import os
 
 from bottle import request
@@ -56,7 +55,7 @@ def register(app):
         cfg = get_config_manager()
         base = cfg.get("zapret", "base_path", default="/opt/zapret2")
 
-        data = json.loads(request.body.read()) if request.body else {}
+        data = request.json or {}
         category = (data.get("category") or "").strip()
         list_id = (data.get("list_id") or "").strip()
 

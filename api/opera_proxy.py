@@ -11,7 +11,6 @@ API-модуль управления Opera Proxy.
   PUT  /api/opera-proxy/config   — обновить настройки
 """
 
-import json
 
 from bottle import request
 
@@ -38,7 +37,7 @@ def register(app):
         mgr = get_opera_proxy_manager()
         cfg = get_config_manager()
 
-        data = json.loads(request.body.read()) if request.body else {}
+        data = request.json or {}
         return mgr.start(
             country=data.get("country",
                              cfg.get("opera_proxy", "country", default="EU")),
@@ -78,7 +77,7 @@ def register(app):
     def opera_config_put():
         from core.config_manager import get_config_manager
         cm = get_config_manager()
-        data = json.loads(request.body.read()) if request.body else {}
+        data = request.json or {}
 
         fields = ["country", "bind", "socks_mode", "proxy_bypass",
                   "fake_sni", "verbosity", "autostart"]

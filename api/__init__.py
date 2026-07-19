@@ -91,3 +91,7 @@ def register_routes(app):
     reg_tunnel_monitor(app)
     reg_tunnel_optimizer(app)
     reg_dns_routing(app)
+
+    # MR-56: добавить /api/v1/<path> aliases для всех /api/<path> маршрутов
+    from api.v1_compat import register_v1_aliases
+    register_v1_aliases(app)

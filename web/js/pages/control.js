@@ -41,19 +41,19 @@ const ControlPage = (() => {
                     Управление процессом
                 </div>
                 <div class="control-buttons" id="control-buttons">
-                    <button class="btn btn-success btn-lg" id="btn-start" onclick="ControlPage.doStart()">
+                    <button class="btn btn-success btn-lg" id="btn-start" data-action="doStart">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polygon points="5 3 19 12 5 21 5 3"/>
                         </svg>
                         Запустить
                     </button>
-                    <button class="btn btn-danger btn-lg" id="btn-stop" onclick="ControlPage.doStop()" disabled>
+                    <button class="btn btn-danger btn-lg" id="btn-stop" data-action="doStop" disabled>
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
                         </svg>
                         Остановить
                     </button>
-                    <button class="btn btn-primary btn-lg" id="btn-restart" onclick="ControlPage.doRestart()" disabled>
+                    <button class="btn btn-primary btn-lg" id="btn-restart" data-action="doRestart" disabled>
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                         </svg>
@@ -65,7 +65,7 @@ const ControlPage = (() => {
             <!-- Информационные карточки -->
             <div class="status-grid">
                 <!-- Стратегия -->
-                <div class="status-card" style="cursor:pointer;" onclick="window.location.hash='strategies';" title="Перейти к стратегиям">
+                <div class="status-card" data-action="hash-strategies" title="Перейти к стратегиям">
                     <div class="status-card-header">
                         <span class="status-card-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
@@ -140,6 +140,17 @@ const ControlPage = (() => {
                 </div>
             </div>
         `;
+
+        // MR-69: Event delegation вместо inline onclick
+        container.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            if (action === 'doStart') { doStart(); return; }
+            if (action === 'doStop') { doStop(); return; }
+            if (action === 'doRestart') { doRestart(); return; }
+            if (action === 'hash-strategies') { window.location.hash = 'strategies'; return; }
+        });
 
         // Начальная загрузка
         fetchStatus();

@@ -12,9 +12,9 @@ class TestOptimizeIface(unittest.TestCase):
     """Тесты optimize_iface."""
 
     @mock.patch("subprocess.run")
-    @mock.patch("os.path.isfile", return_value=True)
+    @mock.patch("os.path.isdir", return_value=True)
     @mock.patch("builtins.open", mock.mock_open())
-    def test_optimize_balanced(self, mock_isfile, mock_run):
+    def test_optimize_balanced(self, mock_isdir, mock_run):
         mock_run.return_value = mock.Mock(returncode=0)
         r = to.optimize_iface("opkgtun0", "balanced")
         self.assertTrue(r["ok"])
@@ -25,9 +25,9 @@ class TestOptimizeIface(unittest.TestCase):
         self.assertFalse(r["ok"])
 
     @mock.patch("subprocess.run")
-    @mock.patch("os.path.isfile", return_value=True)
+    @mock.patch("os.path.isdir", return_value=True)
     @mock.patch("builtins.open", mock.mock_open())
-    def test_optimize_low_latency(self, mock_isfile, mock_run):
+    def test_optimize_low_latency(self, mock_isdir, mock_run):
         mock_run.return_value = mock.Mock(returncode=0)
         r = to.optimize_iface("awg0", "low_latency")
         self.assertTrue(r["ok"])
@@ -62,7 +62,7 @@ class TestOptimizeCongestion(unittest.TestCase):
 
     def test_returns_dict(self):
         """Проверяем что возвращает словарь (реальные /proc файлы не доступны)."""
-        r = to._optimize_congestion("opkgtun0")
+        r = to._optimize_congestion()
         self.assertIsInstance(r, dict)
         self.assertIn("ok", r)
 

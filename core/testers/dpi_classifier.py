@@ -285,7 +285,7 @@ class DPIClassifier:
         # RST во время handshake уже классифицирован выше как TLS_DPI (там TCP
         # связь устанавливается). Чистый timeout НЕ считаем IP-блоком — он
         # неоднозначен (DPI silent-drop тоже даёт timeout).
-        ip_block_codes = {"TCP_REFUSED", "HOST_UNREACH", "NET_UNREACH"}
+        ip_block_codes = {"TCP_REFUSED", "HOST_UNREACH", "NET_UNREACH", "TIMEOUT", "TCP_TIMEOUT"}
         if tls_relevant and not tls_ok and tls_fails and all(
             t.error in ip_block_codes for t in tls_fails
         ):

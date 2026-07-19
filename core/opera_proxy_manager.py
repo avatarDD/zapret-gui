@@ -120,6 +120,12 @@ class OperaProxyManager:
             with self._lock:
                 self._process = proc
 
+            try:
+                from core.opera_proxy_watchdog import get_opera_proxy_watchdog
+                get_opera_proxy_watchdog().reset()
+            except Exception:
+                pass
+
             log.info("opera-proxy: запущен (country=%s, bind=%s)"
                      % (country, bind), source="opera_proxy")
             return {"ok": True, "pid": proc.pid, "bind": bind,
@@ -142,6 +148,10 @@ class OperaProxyManager:
             except Exception:
                 try:
                     proc.kill()
+                    try:
+                        proc.wait(timeout=1)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 

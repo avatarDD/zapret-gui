@@ -9,6 +9,9 @@ const OperaProxyPage = (() => {
     let _pollTimer = null;
     const POLL_MS = 3000;
 
+    let _visibilityHandler = null;
+    let _inFlight = false;
+
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -65,20 +68,37 @@ const OperaProxyPage = (() => {
             </div>
         `;
 
-        document.getElementById("opera-btn-up").onclick = _start;
-        document.getElementById("opera-btn-down").onclick = _stop;
-        document.getElementById("opera-btn-refresh").onclick = _refresh;
+        // MR-69: addEventListener вместо onclick
+        document.getElementById("opera-btn-up").addEventListener("click", _start);
+        document.getElementById("opera-btn-down").addEventListener("click", _stop);
+        document.getElementById("opera-btn-refresh").addEventListener("click", _refresh);
+
+        _visibilityHandler = () => {
+            if (document.hidden) _stopPoll();
+            else _startPoll();
+        };
+        document.addEventListener("visibilitychange", _visibilityHandler);
 
         await _refresh();
         _startPoll();
     }
 
     function destroy() {
-        if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+        _stopPoll();
+        if (_visibilityHandler) {
+            document.removeEventListener("visibilitychange", _visibilityHandler);
+            _visibilityHandler = null;
+        }
     }
 
     async function _refresh() {
-        await Promise.all([_loadStatus(), _loadDetect(), _loadConfig()]);
+        if (_inFlight || document.hidden) return;
+        _inFlight = true;
+        try {
+            await Promise.all([_loadStatus(), _loadDetect(), _loadConfig()]);
+        } finally {
+            _inFlight = false;
+        }
     }
 
     async function _loadStatus() {
@@ -129,10 +149,11 @@ const OperaProxyPage = (() => {
                         <span class="status-dot status-error"></span>
                         <span>Не установлен</span>
                     </div>
-                    <button class="btn btn-primary btn-sm" onclick="OperaProxyPage.install()" style="margin-top:8px;">
+                    <button class="btn btn-primary btn-sm" id="opera-btn-install" style="margin-top:8px;">
                         Установить opera-proxy
                     </button>
                 `;
+                document.getElementById("opera-btn-install")?.addEventListener("click", install);
             }
         } catch (e) {
             const el = document.getElementById("opera-detect");
@@ -202,25 +223,67 @@ const OperaProxyPage = (() => {
                 </div>
                 <button class="btn btn-primary" id="opera-btn-save">Сохранить</button>
             `;
-            document.getElementById("opera-btn-save").onclick = _saveConfig;
+            document.getElementById("opera-btn-save").addEventListener("click", _saveConfig);
         } catch (e) {
             const el = document.getElementById("opera-config");
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
         }
     }
 
+    /** MR-111: Валидация port range */
+    function _validatePort(val) {
+        const p = parseInt(val, 10);
+        if (isNaN(p) || p < 1 || p > 65535) return "Порт должен быть от 1 до 65535";
+        return "";
+    }
+
+    /** MR-111: Валидация bind address (host:port) */
+    function _validateBind(val) {
+        if (!val) return "Bind address обязателен";
+        const parts = val.split(":");
+        if (parts.length !== 2) return "Формат: host:port";
+        const portErr = _validatePort(parts[1]);
+        if (portErr) return portErr;
+        return "";
+    }
+
+    /** MR-111: Валидация домена / SNI */
+    function _validateDomain(val) {
+        if (!val) return "";
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(val)) {
+            return "Некорректный домен";
+        }
+        return "";
+    }
+
     async function _saveConfig() {
         try {
+            // MR-111: Client-side validation
+            const bind = document.getElementById("opera-bind").value;
+            const bindErr = _validateBind(bind);
+            if (bindErr) {
+                Toast.error("Bind: " + bindErr);
+                return;
+            }
+
+            const country = document.getElementById("opera-country").value;
+            const sni = document.getElementById("opera-sni").value;
+            const sniErr = _validateDomain(sni);
+            if (sniErr) {
+                Toast.error("Fake SNI: " + sniErr);
+                return;
+            }
+
             await API.put("/api/opera-proxy/config", {
-                country: document.getElementById("opera-country").value,
-                bind: document.getElementById("opera-bind").value,
+                country: country,
+                bind: bind,
                 socks_mode: document.getElementById("opera-socks").checked,
                 proxy_bypass: document.getElementById("opera-bypass").value,
-                fake_sni: document.getElementById("opera-sni").value,
+                fake_sni: sni,
                 verbosity: parseInt(document.getElementById("opera-verbosity").value) || 20,
                 autostart: document.getElementById("opera-autostart").checked,
             });
-            Toast.success("Настройки сохранены");
+            Toast.success(_t("settings_saved"));
         } catch (e) {
             Toast.error("Ошибка: " + e.message);
         }
@@ -270,7 +333,16 @@ const OperaProxyPage = (() => {
     }
 
     function _startPoll() {
-        _pollTimer = setInterval(_refresh, POLL_MS);
+        if (!_pollTimer) {
+            _pollTimer = setInterval(_refresh, POLL_MS);
+        }
+    }
+
+    function _stopPoll() {
+        if (_pollTimer) {
+            clearInterval(_pollTimer);
+            _pollTimer = null;
+        }
     }
 
     function esc(s) {

@@ -45,13 +45,17 @@ const UpdateCheckerPage = (() => {
     }
 
     async function _check() {
-        const el = document.getElementById("uc-results");
+        const btn = document.getElementById("uc-btn-check");
+        const el  = document.getElementById("uc-results");
+        if (btn) { btn.disabled = true; btn.textContent = "Проверка..."; }
         if (el) el.innerHTML = `<div class="text-muted"><span class="spinner" style="width:14px;height:14px;border-width:2px;"></span> Проверка...</div>`;
         try {
             const data = await API.post("/api/updates/check");
             _renderResults(data);
         } catch (e) {
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = "Проверить обновления"; }
         }
     }
 

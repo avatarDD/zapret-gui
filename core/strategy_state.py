@@ -46,6 +46,10 @@ LOCK_SUFFIX = ".lock"
 # держим то же значение, чтобы протоколы совпадали байт-в-байт.
 LOCK_STALE_SEC = 10
 
+_last_clear_time = 0.0
+_MIN_CLEAR_INTERVAL = 60.0
+_pending_clear_hosts = set()
+
 # Тот же заголовок, который пишет z2k-state-persist.lua — чтобы наш rewrite
 # не отличался для глаз и для merge'а в Lua.
 _HEADER_LINES = (
@@ -54,7 +58,7 @@ _HEADER_LINES = (
 )
 
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 
 def get_state_dir() -> str:
@@ -223,25 +227,13 @@ def get_summary() -> dict:
 
 
 def _rewrite_locked(path: str, entries: list):
-    """Записать entries в path атомарно (tmp + rename) под уже взятым flock'ом.
-
-    Так же, как делает z2k-state-persist.lua write_state() — без пути.
-    """
+    """Записать entries в path атомарно под уже взятым flock'ом."""
+    from core.safe_io import atomic_write_text
     try:
-        os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
-    except OSError:
-        pass
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(_serialize(entries))
-        os.rename(tmp, path)
-    finally:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
+        atomic_write_text(path, _serialize(entries))
+    except Exception as e:
+        log.error("strategy_state._rewrite_locked: %s — %s" % (path, e),
+                  source="strategy")
 
 
 def _filter_entries(entries: list, *, host=None, key=None) -> list:
@@ -285,12 +277,72 @@ def clear_all() -> dict:
         return {"ok": True, "removed": removed}
 
 
-def clear_host(host: str) -> dict:
+def clear_hosts(hosts: list, flush: bool = True) -> dict:
+    """Удалить все записи по списку хостов.
+    Возвращает словарь {host: removed_count} для переданных хостов.
+    """
+    if not hosts:
+        return {}
+
+    hosts_normalized = {h.lower().rstrip(".") for h in hosts if h}
+    if not hosts_normalized:
+        return {}
+
+    with _lock:
+        _pending_clear_hosts.update(hosts_normalized)
+
+        result_map = {}
+        for h in hosts_normalized:
+            result_map[h] = 0
+
+        for path in _candidate_files():
+            if not os.path.isfile(path):
+                continue
+            try:
+                entries = _read_one(path)
+                for e in entries:
+                    eh = e["host"].lower().rstrip(".")
+                    if eh in result_map:
+                        result_map[eh] += 1
+            except Exception:
+                pass
+
+        if flush:
+            flush_clear_hosts(force=True)
+
+        return result_map
+
+
+def clear_host(host: str, flush: bool = True) -> dict:
     """Удалить все записи по конкретному хосту (всех category-key'ов)."""
     if not host:
         return {"ok": False, "error": "пустой host"}
-    host = host.lower().rstrip(".")
+    res = clear_hosts([host], flush=flush)
+    host_norm = host.lower().rstrip(".")
+    removed = res.get(host_norm, 0)
+    return {"ok": True, "removed": removed, "host": host}
+
+
+def flush_clear_hosts(force: bool = False) -> int:
+    """Применить все отложенные сбросы хостов и записать их на диск.
+
+    Если force=True, то записывает мгновенно, игнорируя debounce по времени.
+    """
+    global _last_clear_time
     with _lock:
+        if not _pending_clear_hosts:
+            return 0
+
+        now = time.time()
+        if not force and (now - _last_clear_time < _MIN_CLEAR_INTERVAL):
+            log.info("strategy_state.flush_clear_hosts: запись на диск отложена по debounce (отложено: %d)"
+                     % len(_pending_clear_hosts), source="strategy")
+            return 0
+
+        to_clear = list(_pending_clear_hosts)
+        _pending_clear_hosts.clear()
+        _last_clear_time = now
+
         removed = 0
         for path in _candidate_files():
             if not os.path.isfile(path):
@@ -299,23 +351,22 @@ def clear_host(host: str) -> dict:
             try:
                 lockfile = _acquire_lock(path)
                 if lockfile is None:
-                    log.warning("strategy_state.clear_host: lock занят, "
+                    log.warning("strategy_state.flush_clear_hosts: lock занят, "
                                 "пропускаем %s" % path, source="strategy")
                     continue
-                # Читаем именно из этого файла (без merge), чтобы не
-                # размазывать удаление по обоим кандидатам.
                 entries = _read_one(path)
-                kept = _filter_entries(entries, host=host)
+                kept = [e for e in entries if e["host"].lower().rstrip(".") not in to_clear]
                 _rewrite_locked(path, kept)
                 removed += len(entries) - len(kept)
             except OSError as e:
-                log.error("strategy_state.clear_host: %s — %s" % (path, e),
+                log.error("strategy_state.flush_clear_hosts: %s — %s" % (path, e),
                           source="strategy")
             finally:
                 _release_lock(lockfile)
-        log.info("Сброшен autocircular-state для host=%s (удалено: %d)"
-                 % (host, removed), source="strategy")
-        return {"ok": True, "removed": removed, "host": host}
+
+        log.info("Сброшен autocircular-state для хостов %s (удалено: %d)"
+                 % (", ".join(to_clear), removed), source="strategy")
+        return removed
 
 
 def clear_key(key: str) -> dict:

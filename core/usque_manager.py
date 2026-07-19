@@ -163,6 +163,9 @@ class UsqueManager:
             low_latency: включить оптимизации TCP для снижения latency
                          (TCP_NODELAY, reduced buffer sizes, keepalive).
         """
+        if not _VALID_IFACE_RE.match(iface):
+            return {"ok": False, "error": "Неверное имя интерфейса: %s" % iface}
+
         binary = self._find_binary()
         if not binary:
             return {"ok": False, "error": "usque не установлен"}
@@ -170,64 +173,69 @@ class UsqueManager:
         if not os.path.isfile(config_path):
             return {"ok": False, "error": "Конфиг не найден: %s" % config_path}
 
-        if self._is_running(iface):
-            return {"ok": False, "error": "Туннель %s уже запущен" % iface}
+        # MR-13: Берем lock вокруг всего start() чтобы избежать race condition
+        # когда два конкурентных запроса проходят проверку is_running и спавнят процессы
+        with self._lock:
+            if self._is_running(iface):
+                return {"ok": False, "error": "Туннель %s уже запущен" % iface}
 
-        # Строим команду
-        cmd = [binary, "nativetun",
-               "--config", config_path,
-               "--interface-name", iface,
-               "--no-iproute2"]
-        if sni:
-            cmd.extend(["-s", sni])
-        if http2:
-            cmd.append("--http2")
-        if low_latency:
-            cmd.extend(["--tcp-nodelay", "--keepalive", "10"])
-
-        pid_path = self._pid_path(iface)
-        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
-
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True)
-
-            # Ждём создания TUN-интерфейса (до 5s)
-            for _ in range(50):
-                time.sleep(0.1)
-                if self._check_iface_up(iface):
-                    break
-
-            # Сохраняем PID
-            try:
-                with open(pid_path, "w") as f:
-                    f.write(str(proc.pid))
-            except Exception:
-                pass
-
-            with self._lock:
-                self._processes[iface] = proc
-
-            # Применяем оптимизации если low_latency
+            # Строим команду
+            cmd = [binary, "nativetun",
+                   "--config", config_path,
+                   "--interface-name", iface,
+                   "--no-iproute2"]
+            if sni:
+                cmd.extend(["-s", sni])
+            if http2:
+                cmd.append("--http2")
             if low_latency:
+                cmd.extend(["--tcp-nodelay", "--keepalive", "10"])
+
+            pid_path = self._pid_path(iface)
+            os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True)
+
+                # Ждём создания TUN-интерфейса (до 5s)
+                for _ in range(50):
+                    time.sleep(0.1)
+                    if self._check_iface_up(iface):
+                        break
+
+                # Сохраняем PID
                 try:
-                    from core.tunnel_optimizer import optimize_iface
-                    optimize_iface(iface, "balanced")
+                    with open(pid_path, "w") as f:
+                        f.write(str(proc.pid))
                 except Exception:
                     pass
 
-            log.info("usque: туннель %s запущен (pid=%d)" % (iface, proc.pid),
-                     source="usque")
-            return {"ok": True, "pid": proc.pid, "iface": iface}
+                self._processes[iface] = proc
 
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+                # Применяем оптимизации если low_latency
+                if low_latency:
+                    try:
+                        from core.tunnel_optimizer import optimize_iface
+                        optimize_iface(iface, "balanced")
+                    except Exception:
+                        pass
+
+                log.info("usque: туннель %s запущен (pid=%d)" % (iface, proc.pid),
+                         source="usque")
+                return {"ok": True, "pid": proc.pid, "iface": iface}
+
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
 
     def stop(self, iface: str) -> dict:
         """Остановить WARP туннель."""
+        if not _VALID_IFACE_RE.match(iface):
+            return {"ok": False, "error": "Неверное имя интерфейса: %s" % iface}
+
         pid_path = self._pid_path(iface)
         pid = self._read_pid(pid_path)
 
@@ -238,19 +246,56 @@ class UsqueManager:
 
         if proc and proc.poll() is None:
             try:
-                proc.send_signal(signal.SIGTERM)
+                # MR-14: Убиваем всю группу процессов (т.к. start_new_session=True)
+                if hasattr(os, "killpg"):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    except Exception:
+                        proc.send_signal(signal.SIGTERM)
+                else:
+                    proc.send_signal(signal.SIGTERM)
                 proc.wait(timeout=3)
             except Exception:
                 try:
-                    proc.kill()
+                    if hasattr(os, "killpg"):
+                        try:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except Exception:
+                            proc.kill()
+                    else:
+                        proc.kill()
+                    try:
+                        proc.wait(timeout=1)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         elif pid:
             # Fallback: kill по PID
             try:
-                os.kill(pid, signal.SIGTERM)
-                time.sleep(0.5)
-                os.kill(pid, signal.SIGKILL)
+                if hasattr(os, "killpg"):
+                    try:
+                        os.killpg(pid, signal.SIGTERM)
+                    except Exception:
+                        os.kill(pid, signal.SIGTERM)
+                else:
+                    os.kill(pid, signal.SIGTERM)
+
+                # MR-25: Ждем завершения с помощью poll-loop до 3с
+                for _ in range(30):
+                    time.sleep(0.1)
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                else:
+                    if hasattr(os, "killpg"):
+                        try:
+                            os.killpg(pid, signal.SIGKILL)
+                        except Exception:
+                            os.kill(pid, signal.SIGKILL)
+                    else:
+                        os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             except Exception:
@@ -260,6 +305,13 @@ class UsqueManager:
         try:
             if os.path.isfile(pid_path):
                 os.remove(pid_path)
+        except Exception:
+            pass
+
+        # MR-05: Восстанавливаем системные defaults, если нет других активных туннелей
+        try:
+            from core.tunnel_optimizer import restore_system_defaults
+            restore_system_defaults(only_if_idle=True)
         except Exception:
             pass
 
@@ -295,12 +347,19 @@ class UsqueManager:
         return False
 
     def _check_iface_up(self, iface: str) -> bool:
-        """Проверить, поднят ли интерфейс."""
+        """Проверить, поднят ли интерфейс.
+
+        MR-126: читаем /sys/class/net вместо subprocess ip link show,
+        чтобы исключить лишние fork/exec при каждой проверке (до 50 раз
+        в течение 5 с. после старта туннеля).
+        """
+        operstate = "/sys/class/net/%s/operstate" % iface
         try:
-            r = subprocess.run(["ip", "link", "show", iface],
-                               capture_output=True, timeout=2)
-            return r.returncode == 0 and "UP" in (r.stdout or "")
-        except Exception:
+            with open(operstate) as f:
+                state = f.read().strip()
+            return state in ("up", "unknown")
+        except OSError:
+            # /sys недоступен (тест/не-Linux) — ничего не знаем, считаем поднят
             return False
 
     def _pid_path(self, iface: str) -> str:

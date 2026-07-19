@@ -105,6 +105,20 @@ class TestDnsRoutingManager(unittest.TestCase):
     def test_resolve_server_ip(self):
         self.assertEqual(self.mgr._resolve_server("8.8.8.8"), "8.8.8.8")
 
+    def test_resolve_server_doh_url_known(self):
+        self.assertEqual(self.mgr._resolve_server("https://dns.google/dns-query"), "8.8.8.8")
+        self.assertEqual(self.mgr._resolve_server("https://1.1.1.1/dns-query"), "1.1.1.1")
+
+    @mock.patch("socket.gethostbyname")
+    def test_resolve_server_doh_url_custom(self, mock_gethost):
+        mock_gethost.return_value = "9.9.9.9"
+        self.assertEqual(self.mgr._resolve_server("https://dns.custom.com/dns-query"), "9.9.9.9")
+        mock_gethost.assert_called_once_with("dns.custom.com")
+
+    def test_resolve_server_doh_url_custom_ip_host(self):
+        # Если хост в DoH URL уже является IP
+        self.assertEqual(self.mgr._resolve_server("https://9.9.9.9/dns-query"), "9.9.9.9")
+
     def test_get_available_servers(self):
         servers = self.mgr.get_available_servers()
         self.assertGreater(len(servers), 0)

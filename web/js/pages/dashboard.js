@@ -71,7 +71,7 @@ const DashboardPage = (() => {
                     <div class="status-card-detail" id="system-detail"></div>
                 </div>
 
-                <div class="status-card" id="card-zapret-ver" style="cursor: pointer;" onclick="window.location.hash='zapret'">
+                <div class="status-card" id="card-zapret-ver" data-action="hash-zapret">
                     <div class="status-card-header">
                         <span class="status-card-icon">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
@@ -90,27 +90,39 @@ const DashboardPage = (() => {
             <!-- VPN / Туннели -->
             <h2 style="font-size:14px; color:var(--text-muted); margin:16px 0 8px; text-transform:uppercase; letter-spacing:0.5px;">VPN / Туннели</h2>
             <div class="status-grid" id="vpn-grid">
-                <div class="status-card" id="card-warp" style="cursor:pointer;" onclick="window.location.hash='usque'">
+                <div class="status-card" id="card-warp" data-action="hash-usque">
                     <div class="status-card-header">
-                        <span class="status-card-icon">⚡</span>
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                            </svg>
+                        </span>
                         <span class="status-card-label">WARP/MASQUE</span>
                     </div>
                     <div class="status-card-value stopped" id="warp-status">—</div>
                     <div class="status-card-detail" id="warp-detail"></div>
                 </div>
 
-                <div class="status-card" id="card-opera" style="cursor:pointer;" onclick="window.location.hash='opera-proxy'">
+                <div class="status-card" id="card-opera" data-action="hash-opera-proxy">
                     <div class="status-card-header">
-                        <span class="status-card-icon">🎭</span>
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                            </svg>
+                        </span>
                         <span class="status-card-label">Opera Proxy</span>
                     </div>
                     <div class="status-card-value stopped" id="opera-status">—</div>
                     <div class="status-card-detail" id="opera-detail"></div>
                 </div>
 
-                <div class="status-card" id="card-telegram" style="cursor:pointer;" onclick="window.location.hash='tgproxy'">
+                <div class="status-card" id="card-telegram" data-action="hash-tgproxy">
                     <div class="status-card-header">
-                        <span class="status-card-icon">✈</span>
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                            </svg>
+                        </span>
                         <span class="status-card-label">Telegram</span>
                     </div>
                     <div class="status-card-value stopped" id="tg-status">—</div>
@@ -121,18 +133,26 @@ const DashboardPage = (() => {
             <!-- Мониторинг -->
             <h2 style="font-size:14px; color:var(--text-muted); margin:16px 0 8px; text-transform:uppercase; letter-spacing:0.5px;">Мониторинг</h2>
             <div class="status-grid" id="monitoring-grid">
-                <div class="status-card" id="card-block-detector" style="cursor:pointer;" onclick="window.location.hash='block-detector'">
+                <div class="status-card" id="card-block-detector" data-action="hash-block-detector">
                     <div class="status-card-header">
-                        <span class="status-card-icon">🔍</span>
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                            </svg>
+                        </span>
                         <span class="status-card-label">Block Detector</span>
                     </div>
                     <div class="status-card-value stopped" id="bd-status">—</div>
                     <div class="status-card-detail" id="bd-detail"></div>
                 </div>
 
-                <div class="status-card" id="card-healthcheck" style="cursor:pointer;" onclick="window.location.hash='strategies'">
+                <div class="status-card" id="card-healthcheck" data-action="hash-strategies">
                     <div class="status-card-header">
-                        <span class="status-card-icon">💚</span>
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+                            </svg>
+                        </span>
                         <span class="status-card-label">Healthcheck</span>
                     </div>
                     <div class="status-card-value stopped" id="hc-status">—</div>
@@ -150,19 +170,19 @@ const DashboardPage = (() => {
                     Быстрые действия
                 </div>
                 <div class="actions-row" id="quick-actions">
-                    <button class="btn btn-ghost" id="dash-btn-start" onclick="DashboardPage.quickStart()">
+                    <button class="btn btn-ghost" id="dash-btn-start" data-action="quickStart">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polygon points="5 3 19 12 5 21 5 3"/>
                         </svg>
                         Запустить
                     </button>
-                    <button class="btn btn-ghost" id="dash-btn-stop" onclick="DashboardPage.quickStop()" disabled>
+                    <button class="btn btn-ghost" id="dash-btn-stop" data-action="quickStop" disabled>
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
                         </svg>
                         Остановить
                     </button>
-                    <button class="btn btn-ghost" id="dash-btn-restart" onclick="DashboardPage.quickRestart()" disabled>
+                    <button class="btn btn-ghost" id="dash-btn-restart" data-action="quickRestart" disabled>
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                         </svg>
@@ -193,31 +213,33 @@ const DashboardPage = (() => {
         `;
 
         // Первая загрузка
-        fetchStatus();
-        fetchRecentLogs();
+        refreshDashboard();
 
         // Polling
         startPolling();
+        bindEvents();
     }
 
-    async function fetchStatus() {
+    async function refreshDashboard() {
         try {
-            const [data, warp, opera, tg, bd, hc] = await Promise.all([
-                API.get('/api/status').catch(() => null),
-                API.get('/api/usque/configs').catch(() => null),
-                API.get('/api/opera-proxy/status').catch(() => null),
-                API.get('/api/tgproxy/status').catch(() => null),
-                API.get('/api/block-detector/status').catch(() => null),
-                API.get('/api/healthcheck/status').catch(() => null),
-            ]);
-            lastData = data;
-            if (data) updateCards(data);
-            updateVpnCards(warp, opera, tg);
-            updateMonitoringCards(bd, hc);
+            const res = await API.get('/api/dashboard/status');
+            if (res.ok) {
+                lastData = res.status;
+                if (res.status) updateCards(res.status);
+                updateVpnCards(res.warp, res.opera, res.tgproxy);
+                updateMonitoringCards(res.block_detector, res.healthcheck);
+                renderLogs(res.logs || []);
+            }
         } catch (err) {
-            document.getElementById('nfqws-status').textContent = 'Ошибка';
-            document.getElementById('nfqws-status').className = 'status-card-value stopped';
-            document.getElementById('nfqws-detail').textContent = err.message;
+            const statusEl = document.getElementById('nfqws-status');
+            if (statusEl) {
+                statusEl.textContent = 'Ошибка';
+                statusEl.className = 'status-card-value stopped';
+            }
+            const detailEl = document.getElementById('nfqws-detail');
+            if (detailEl) {
+                detailEl.textContent = err.message;
+            }
         }
     }
 
@@ -232,7 +254,7 @@ const DashboardPage = (() => {
             dot.className = `status-dot ${running ? 'running' : 'stopped'}`;
         }
         if (status) {
-            status.textContent = running ? 'Работает' : 'Остановлен';
+            status.textContent = running ? _t('status_running') : _t('status_stopped');
             status.className = `status-card-value ${running ? 'running' : 'stopped'}`;
         }
         if (detail) {
@@ -248,143 +270,151 @@ const DashboardPage = (() => {
 
         // Кнопки быстрых действий
         if (!isActionPending) {
-            const btnStart = document.getElementById('dash-btn-start');
-            const btnStop = document.getElementById('dash-btn-stop');
-            const btnRestart = document.getElementById('dash-btn-restart');
-            if (btnStart) btnStart.disabled = running;
-            if (btnStop) btnStop.disabled = !running;
-            if (btnRestart) btnRestart.disabled = !running;
+            ['dash-btn-start', 'dash-btn-stop', 'dash-btn-restart'].forEach(id => {
+                const b = document.getElementById(id);
+                if (!b) return;
+                if (id === 'dash-btn-start') b.disabled = running;
+                else b.disabled = !running;
+            });
         }
 
         // Стратегия
-        const stratName = document.getElementById('strategy-name');
-        if (stratName) {
-            stratName.textContent = data.strategy?.name || 'Не выбрана';
+        const stName = document.getElementById('strategy-name');
+        const stDetail = document.getElementById('strategy-detail');
+        if (stName) stName.textContent = data.strategy?.name || 'Не выбрана';
+        if (stDetail) {
+            stDetail.textContent = data.strategy?.id ? `ID: ${data.strategy.id}` : '';
         }
 
         // Автозапуск
-        const autoStatus = document.getElementById('autostart-status');
-        if (autoStatus) {
-            const enabled = data.autostart?.enabled;
-            autoStatus.textContent = enabled ? 'Включён' : 'Выключен';
-            autoStatus.className = `status-card-value ${enabled ? 'running' : ''}`;
+        const asVal = document.getElementById('autostart-status');
+        const asDetail = document.getElementById('autostart-detail');
+        if (asVal) {
+            const asOk = data.autostart?.enabled;
+            asVal.textContent = asOk ? 'Включен' : 'Выключен';
+            asVal.className = `status-card-value ${asOk ? 'running' : 'stopped'}`;
+        }
+        if (asDetail) {
+            const hasHook = data.autostart?.script_installed;
+            asDetail.textContent = hasHook ? 'Служба установлена' : 'Служба не активна';
         }
 
         // Система
-        const sysInfo = document.getElementById('system-info');
+        const sysVal = document.getElementById('system-info');
         const sysDetail = document.getElementById('system-detail');
-        if (sysInfo && data.system) {
-            sysInfo.textContent = data.system.hostname || '—';
-            const parts = [];
-            if (data.system.platform) parts.push(data.system.platform);
-            if (data.system.uptime_human) parts.push(`uptime ${data.system.uptime_human}`);
-            if (data.system.ram?.used_percent) parts.push(`RAM ${data.system.ram.used_percent}%`);
-            if (sysDetail) sysDetail.textContent = parts.join(' · ');
+        if (sysVal && data.system) {
+            sysVal.textContent = data.system.platform || 'Linux';
+            sysVal.style.fontSize = '16px';
+        }
+        if (sysDetail && data.system) {
+            const model = data.system.model || '';
+            const cpu = data.system.cpu_load !== undefined ? `CPU: ${data.system.cpu_load}%` : '';
+            sysDetail.textContent = [model, cpu].filter(Boolean).join(' · ');
         }
 
         // zapret2 версия
-        const zapretVer = document.getElementById('zapret-ver-value');
-        const zapretDetail = document.getElementById('zapret-ver-detail');
-        if (zapretVer) {
-            if (data.zapret?.installed) {
-                zapretVer.textContent = data.zapret.version || 'установлен';
-                zapretVer.style.color = 'var(--success)';
-                if (zapretDetail) zapretDetail.textContent = 'Нажмите для управления';
-            } else {
-                zapretVer.textContent = 'Не установлен';
-                zapretVer.style.color = 'var(--error)';
-                if (zapretDetail) zapretDetail.textContent = 'Нажмите для установки';
-            }
+        const zVal = document.getElementById('zapret-ver-value');
+        const zDetail = document.getElementById('zapret-ver-detail');
+        if (zVal) {
+            zVal.textContent = data.zapret?.version || 'Не установлен';
+        }
+        if (zDetail) {
+            zDetail.textContent = `GUI: ${data.gui_version || '—'}`;
+        }
+    }
+
+    /** MR-131: Показать/скрыть карточку службы в зависимости от статуса */
+    function _toggleCard(cardId, hasContent) {
+        const card = document.getElementById(cardId);
+        if (!card) return;
+        if (hasContent) {
+            card.classList.remove('hidden');
+        } else {
+            card.classList.add('hidden');
         }
     }
 
     function updateVpnCards(warp, opera, tg) {
-        // WARP/MASQUE
+        // warp
         const warpEl = document.getElementById('warp-status');
         const warpDetail = document.getElementById('warp-detail');
+        const warpInstalled = Array.isArray(warp) && warp.length > 0;
         if (warpEl) {
-            const configs = warp?.configs || [];
-            const active = configs.filter(c => c.active);
-            if (active.length > 0) {
-                warpEl.textContent = 'Подключён';
-                warpEl.className = 'status-card-value running';
-                if (warpDetail) warpDetail.textContent = active.map(c => c.iface).join(', ');
-            } else if (configs.length > 0) {
-                warpEl.textContent = 'Есть конфиги';
-                warpEl.className = 'status-card-value';
-                if (warpDetail) warpDetail.textContent = configs.length + ' профилей';
-            } else {
-                warpEl.textContent = 'Не настроен';
-                warpEl.className = 'status-card-value stopped';
-                if (warpDetail) warpDetail.textContent = '';
+            const active = warpInstalled && warp.some(c => c.active);
+            warpEl.textContent = active ? _t('status_running') : _t('status_stopped');
+            warpEl.className = `status-card-value ${active ? 'running' : 'stopped'}`;
+            if (warpDetail) {
+                if (active) {
+                    const c = warp.find(c => c.active);
+                    warpDetail.textContent = `${c.name || 'warp'} (${c.iface || '?'})`;
+                } else {
+                    warpDetail.textContent = '';
+                }
             }
         }
+        // MR-131: скрыть карточку WARP если не установлен
+        _toggleCard('card-warp', warpInstalled);
 
-        // Opera Proxy
+        // opera
         const operaEl = document.getElementById('opera-status');
         const operaDetail = document.getElementById('opera-detail');
+        const operaInstalled = opera && (opera.installed || opera.running !== undefined);
         if (operaEl) {
-            if (opera?.running) {
-                operaEl.textContent = 'Работает';
-                operaEl.className = 'status-card-value running';
-                if (operaDetail) operaDetail.textContent = 'PID ' + (opera.pid || '?');
-            } else {
-                operaEl.textContent = 'Остановлен';
-                operaEl.className = 'status-card-value stopped';
-                if (operaDetail) operaDetail.textContent = '';
+            const active = opera && opera.running;
+            operaEl.textContent = active ? _t('status_running') : _t('status_stopped');
+            operaEl.className = `status-card-value ${active ? 'running' : 'stopped'}`;
+            if (operaDetail) {
+                operaDetail.textContent = active ? `Port: ${opera.port || '18080'}` : '';
             }
         }
+        // MR-131: скрыть если не установлен
+        _toggleCard('card-opera', operaInstalled);
 
-        // Telegram
+        // telegram
         const tgEl = document.getElementById('tg-status');
         const tgDetail = document.getElementById('tg-detail');
+        const tgInstalled = tg && (tg.installed || tg.running !== undefined);
         if (tgEl) {
-            if (tg?.running) {
-                tgEl.textContent = 'Работает';
-                tgEl.className = 'status-card-value running';
-                if (tgDetail) tgDetail.textContent = tg.engine || '';
-            } else {
-                tgEl.textContent = 'Остановлен';
-                tgEl.className = 'status-card-value stopped';
-                if (tgDetail) tgDetail.textContent = '';
+            const active = tg && tg.running;
+            tgEl.textContent = active ? _t('status_running') : _t('status_stopped');
+            tgEl.className = `status-card-value ${active ? 'running' : 'stopped'}`;
+            if (tgDetail) {
+                tgDetail.textContent = active ? `Engine: ${tg.engine || '?'}` : '';
             }
         }
+        // MR-131: скрыть если не установлен
+        _toggleCard('card-telegram', tgInstalled);
     }
 
     function updateMonitoringCards(bd, hc) {
-        // Block Detector
+        // block detector
         const bdEl = document.getElementById('bd-status');
         const bdDetail = document.getElementById('bd-detail');
+        const bdInstalled = bd && (bd.running !== undefined || bd.monitored_count !== undefined);
         if (bdEl) {
-            if (bd?.running) {
-                const monitored = bd.monitored_count || 0;
-                const blocked = bd.blocked_count || 0;
-                bdEl.textContent = blocked > 0 ? `${blocked} заблок.` : 'Мониторинг';
-                bdEl.className = 'status-card-value' + (blocked > 0 ? ' stopped' : ' running');
-                if (bdDetail) bdDetail.textContent = `${monitored} отслеж.`;
-            } else {
-                bdEl.textContent = 'Выключен';
-                bdEl.className = 'status-card-value stopped';
-                if (bdDetail) bdDetail.textContent = '';
+            const active = bd && bd.running;
+            bdEl.textContent = active ? 'Активен' : 'Выключен';
+            bdEl.className = `status-card-value ${active ? 'running' : 'stopped'}`;
+            if (bdDetail) {
+                bdDetail.textContent = active ? `Под наблюдением: ${bd.monitored_count || 0}` : '';
             }
         }
+        // MR-131: скрыть если не установлен
+        _toggleCard('card-block-detector', bdInstalled);
 
-        // Healthcheck
+        // healthcheck
         const hcEl = document.getElementById('hc-status');
         const hcDetail = document.getElementById('hc-detail');
+        const hcInstalled = hc && (hc.enabled !== undefined || hc.settings !== undefined);
         if (hcEl) {
-            if (hc?.running) {
-                hcEl.textContent = 'Активен';
+            const active = hc && hc.enabled;
+            if (active) {
+                const running = hc.running;
+                hcEl.textContent = running ? 'Активен' : 'В ожидании';
                 hcEl.className = 'status-card-value running';
                 if (hcDetail) {
-                    const last = hc.last_check_summary;
-                    if (last?.results) {
-                        const ok = last.results.filter(r => r.ok).length;
-                        const total = last.results.length;
-                        hcDetail.textContent = `${ok}/${total} сервисов OK`;
-                    } else {
-                        hcDetail.textContent = 'Проверяет...';
-                    }
+                    const failStr = hc.consecutive_failures ? ` (Сбоев: ${hc.consecutive_failures})` : '';
+                    hcDetail.textContent = `Интервал: ${hc.settings?.interval_min || 0}м${failStr}`;
                 }
             } else {
                 hcEl.textContent = 'Выключен';
@@ -392,15 +422,8 @@ const DashboardPage = (() => {
                 if (hcDetail) hcDetail.textContent = '';
             }
         }
-    }
-
-    async function fetchRecentLogs() {
-        try {
-            const data = await API.get('/api/logs?n=15');
-            renderLogs(data.entries || []);
-        } catch {
-            // Тихо игнорируем
-        }
+        // MR-131: скрыть если не настроен
+        _toggleCard('card-healthcheck', hcInstalled);
     }
 
     function renderLogs(entries) {
@@ -462,8 +485,7 @@ const DashboardPage = (() => {
         } finally {
             if (btn) btn.innerHTML = origHtml;
             isActionPending = false;
-            fetchStatus();
-            fetchRecentLogs();
+            refreshDashboard();
         }
     }
 
@@ -475,10 +497,11 @@ const DashboardPage = (() => {
 
     function startPolling() {
         stopPolling();
-        pollTimer = setInterval(() => {
-            fetchStatus();
-            fetchRecentLogs();
-        }, 3000);
+        if (!document.hidden) {
+            pollTimer = setInterval(() => {
+                refreshDashboard();
+            }, 3000);
+        }
     }
 
     function stopPolling() {
@@ -488,8 +511,39 @@ const DashboardPage = (() => {
         }
     }
 
+    function onVisibilityChange() {
+        if (document.hidden) {
+            stopPolling();
+        } else {
+            requestAnimationFrame(() => {
+                refreshDashboard();
+                startPolling();
+            });
+        }
+    }
+
+    function bindEvents() {
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        // MR-69: Event delegation вместо inline onclick
+        document.querySelector('.content')?.addEventListener('click', (e) => {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+            const a = el.dataset.action;
+            if (a === 'quickStart') { quickAction('start'); return; }
+            if (a === 'quickStop') { quickAction('stop'); return; }
+            if (a === 'quickRestart') { quickAction('restart'); return; }
+            if (a === 'hash-zapret') { window.location.hash = 'zapret'; return; }
+            if (a === 'hash-usque') { window.location.hash = 'usque'; return; }
+            if (a === 'hash-opera-proxy') { window.location.hash = 'opera-proxy'; return; }
+            if (a === 'hash-tgproxy') { window.location.hash = 'tgproxy'; return; }
+            if (a === 'hash-block-detector') { window.location.hash = 'block-detector'; return; }
+            if (a === 'hash-strategies') { window.location.hash = 'strategies'; return; }
+        });
+    }
+
     function destroy() {
         stopPolling();
+        document.removeEventListener('visibilitychange', onVisibilityChange);
     }
 
     return {

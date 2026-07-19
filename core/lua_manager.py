@@ -433,6 +433,10 @@ def _check_with_luac(luac_path, content):
     except subprocess.TimeoutExpired:
         try:
             p.kill()
+            try:
+                p.wait(timeout=1)
+            except Exception:
+                pass
         except Exception:
             pass
         return {
@@ -469,6 +473,10 @@ def _check_with_lua(lua_path, content):
     except subprocess.TimeoutExpired:
         try:
             p.kill()
+            try:
+                p.wait(timeout=1)
+            except Exception:
+                pass
         except Exception:
             pass
         return {

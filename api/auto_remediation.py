@@ -6,9 +6,11 @@ API-модуль Auto-Remediation.
   POST /api/remediation/run     — запустить по отчёту BlockCheck
   POST /api/remediation/apply   — запустить с auto_apply=true
   GET  /api/remediation/results — последние результаты
+
+Query-параметры:
+  ?dry_run=true   — preview: вернуть planned_actions без применения
 """
 
-import json
 
 from bottle import request
 
@@ -28,10 +30,13 @@ def register(app):
         if not report:
             return {"ok": False, "error": "Сначала запустите BlockCheck"}
 
-        data = json.loads(request.body.read()) if request.body else {}
+        data = request.json or {}
         auto_apply = data.get("auto_apply", False)
+        dry_run = request.query.get("dry_run", "").lower() in ("true", "1", "yes")
 
-        return get_auto_remediation().run(report, auto_apply=auto_apply)
+        return get_auto_remediation().run(report,
+                                         auto_apply=auto_apply,
+                                         dry_run=dry_run)
 
     @app.route("/api/remediation/apply", method="POST")
     def remediation_apply():
@@ -43,9 +48,13 @@ def register(app):
         if not report:
             return {"ok": False, "error": "Сначала запустите BlockCheck"}
 
-        return get_auto_remediation().run(report, auto_apply=True)
+        dry_run = request.query.get("dry_run", "").lower() in ("true", "1", "yes")
+        return get_auto_remediation().run(report,
+                                         auto_apply=True,
+                                         dry_run=dry_run)
 
     @app.route("/api/remediation/results", method="GET")
     def remediation_results():
         from core.auto_remediation import get_auto_remediation
         return {"ok": True, "results": get_auto_remediation().get_results()}
+

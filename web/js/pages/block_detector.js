@@ -9,6 +9,9 @@ const BlockDetectorPage = (() => {
     let _pollTimer = null;
     const POLL_MS = 5000;
 
+    let _visibilityHandler = null;
+    let _inFlight = false;
+
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -61,16 +64,32 @@ const BlockDetectorPage = (() => {
         document.getElementById("bd-btn-stop").onclick = _stop;
         document.getElementById("bd-btn-refresh").onclick = _refresh;
 
+        _visibilityHandler = () => {
+            if (document.hidden) _stopPoll();
+            else _startPoll();
+        };
+        document.addEventListener("visibilitychange", _visibilityHandler);
+
         await _refresh();
         _startPoll();
     }
 
     function destroy() {
-        if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+        _stopPoll();
+        if (_visibilityHandler) {
+            document.removeEventListener("visibilitychange", _visibilityHandler);
+            _visibilityHandler = null;
+        }
     }
 
     async function _refresh() {
-        await Promise.all([_loadStatus(), _loadResults()]);
+        if (_inFlight || document.hidden) return;
+        _inFlight = true;
+        try {
+            await Promise.all([_loadStatus(), _loadResults()]);
+        } finally {
+            _inFlight = false;
+        }
     }
 
     async function _loadStatus() {
@@ -165,15 +184,24 @@ const BlockDetectorPage = (() => {
     }
 
     function _startPoll() {
-        _pollTimer = setInterval(_refresh, POLL_MS);
+        if (!_pollTimer) {
+            _pollTimer = setInterval(_refresh, POLL_MS);
+        }
+    }
+
+    function _stopPoll() {
+        if (_pollTimer) {
+            clearInterval(_pollTimer);
+            _pollTimer = null;
+        }
     }
 
     function _timeAgo(ts) {
         const diff = Math.floor(Date.now() / 1000) - ts;
-        if (diff < 60) return diff + "s назад";
-        if (diff < 3600) return Math.floor(diff / 60) + "m назад";
-        if (diff < 86400) return Math.floor(diff / 3600) + "h назад";
-        return Math.floor(diff / 86400) + "d назад";
+        if (diff < 60) return _t("seconds_ago", { diff });
+        if (diff < 3600) return _t("minutes_ago", { diff: Math.floor(diff / 60) });
+        if (diff < 86400) return _t("hours_ago", { diff: Math.floor(diff / 3600) });
+        return _t("days_ago", { diff: Math.floor(diff / 86400) });
     }
 
     function esc(s) {

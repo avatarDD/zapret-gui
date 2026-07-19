@@ -10,7 +10,6 @@ API-модуль Block Detector (DNS-мониторинг + автообнару
   POST /api/block-detector/stop     — остановить
 """
 
-import json
 
 from bottle import request
 
@@ -32,11 +31,36 @@ def register(app):
 
     @app.route("/api/block-detector/probe", method="POST")
     def bd_probe():
+        import re
+        import socket
+        import ipaddress
         from core.block_detector import get_block_detector
-        data = json.loads(request.body.read()) if request.body else {}
+        data = request.json or {}
         domain = (data.get("domain") or "").strip()
         if not domain:
             return {"ok": False, "error": "domain обязателен"}
+
+        # MR-62: валидация hostname — предотвращаем SSRF
+        # без этого роутер используется как internal-port scanner / TLS-fingerprint oracle
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}[a-zA-Z0-9]$', domain):
+            return {"ok": False, "error": "Невалидный домен"}
+
+        # Резолвим и проверяем resolved IPs против RFC-1918/loopback
+        try:
+            addrs = socket.getaddrinfo(domain, 443, proto=socket.IPPROTO_TCP)
+            for _fam, _type, _proto, _cn, sockaddr in addrs:
+                ip_str = sockaddr[0]
+                try:
+                    ip = ipaddress.ip_address(ip_str)
+                    if ip.is_private or ip.is_loopback or ip.is_link_local:
+                        log.warning("block-detector probe: SSRF blocked — %s → %s" % (domain, ip_str),
+                                    source="block_detector")
+                        return {"ok": False, "error": "Домен резолвится во внутренний IP — запрос отклонён"}
+                except ValueError:
+                    pass
+        except Exception:
+            pass  # getaddrinfo failure — пусть probe_now обработает сам
+
         return get_block_detector().probe_now(domain)
 
     @app.route("/api/block-detector/start", method="POST")

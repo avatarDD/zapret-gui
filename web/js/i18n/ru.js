@@ -1,0 +1,26 @@
+const i18n_ru = {
+    "warp_masque": "WARP / MASQUE",
+    "warp_registered": "WARP-сессия зарегистрирована",
+    "delete_config_confirm": "Удалить конфиг \"{name}\"?",
+    "status_running": "работает",
+    "status_stopped": "остановлен",
+    "status_active": "активен",
+    "status_inactive": "неактивен",
+    "settings_saved": "Настройки сохранены",
+    "seconds_ago": "{diff} сек назад",
+    "minutes_ago": "{diff} мин назад",
+    "hours_ago": "{diff} ч назад",
+    "days_ago": "{diff} дн назад",
+
+    "error.page_not_found": "Страница не найдена",
+    "error.generic": "Произошла ошибка",
+    "common.loading": "Загрузка...",
+    "common.yes": "Да",
+    "common.no": "Нет",
+    "common.save": "Сохранить",
+    "common.cancel": "Отмена",
+    "common.delete": "Удалить",
+    "common.confirm_delete": "Вы уверены?",
+    "page.not_found_title": "404",
+    "page.not_found_message": "Страница не найдена"
+};

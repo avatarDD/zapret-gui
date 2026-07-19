@@ -9,7 +9,6 @@ Unified Update Checker: проверка обновлений ВСЕХ бина�
   - AmneziaWG
   - GUI (zapret-gui)
   - usque (WARP/MASQUE)
-  - teleproxy (Telegram, ARM64)
   - tg-mtproxy-client (Telegram, MIPS)
   - opera-proxy
 
@@ -17,8 +16,10 @@ Unified Update Checker: проверка обновлений ВСЕХ бина�
 Последние результаты кешируются в RAM.
 """
 
+import json
 import threading
 import time
+import urllib.request
 
 from core.log_buffer import log
 
@@ -30,6 +31,11 @@ DEFAULT_CHECK_INTERVAL_HOURS = 24
 _results = {}
 _results_lock = threading.Lock()
 _last_check = 0
+# MR-96: кеш последних успешных версий по репо — не затирается при ошибках GitHub
+_last_known_latest = {}
+_last_known_lock = threading.Lock()
+# MR-96: флаг — был ли хоть один успешный GitHub API запрос за последний check_all() цикл
+_github_any_success = False
 
 
 def check_all() -> dict:
@@ -37,8 +43,9 @@ def check_all() -> dict:
     Проверить обновления для всех бинарников.
     Возвращает {ok, results: [{name, installed, current, latest, has_update, ...}], ...}
     """
-    global _results, _last_check
+    global _results, _last_check, _github_any_success
 
+    _github_any_success = False
     results = []
 
     # zapret2
@@ -58,13 +65,8 @@ def check_all() -> dict:
 
     # usque (WARP)
     results.append(_check_usque())
-
-    # teleproxy
-    results.append(_check_teleproxy())
-
     # tg-mtproxy-client
     results.append(_check_tgproto())
-
     # opera-proxy
     results.append(_check_opera())
 
@@ -219,39 +221,6 @@ def _check_usque() -> dict:
                 "has_update": False, "error": str(e)}
 
 
-def _check_teleproxy() -> dict:
-    """Проверить teleproxy."""
-    try:
-        import os
-        binary = ""
-        for p in ["/opt/usr/bin/teleproxy", "/opt/bin/teleproxy",
-                  "/usr/local/bin/teleproxy"]:
-            if os.path.isfile(p):
-                binary = p
-                break
-        current = ""
-        if binary:
-            import subprocess
-            r = subprocess.run([binary, "--version"],
-                               capture_output=True, text=True, timeout=5)
-            out = (r.stdout or r.stderr or "").strip()
-            current = out[:30] if out else ""
-
-        latest = _github_latest("teleproxy/teleproxy")
-        return {
-            "name": "teleproxy",
-            "display_name": "teleproxy (Telegram, ARM64)",
-            "installed": bool(binary),
-            "current": current,
-            "latest": latest,
-            "has_update": bool(latest and current and latest != current),
-        }
-    except Exception as e:
-        return {"name": "teleproxy", "display_name": "teleproxy",
-                "installed": False, "current": "", "latest": "",
-                "has_update": False, "error": str(e)}
-
-
 def _check_tgproto() -> dict:
     """Проверить tg-mtproxy-client."""
     try:
@@ -265,7 +234,8 @@ def _check_tgproto() -> dict:
             "installed": detect.get("installed", False),
             "current": detect.get("version", ""),
             "latest": latest,
-            "has_update": False,  # z2k не имеет семантических версий
+            "has_update": bool(latest and detect.get("version") and
+                               latest != detect["version"]),
         }
     except Exception as e:
         return {"name": "tgproto", "display_name": "tg-mtproxy-client",
@@ -296,19 +266,29 @@ def _check_opera() -> dict:
 
 
 def _github_latest(repo: str) -> str:
-    """Получить/latest tag из GitHub releases."""
+    """Получить/latest tag из GitHub releases.
+
+    MR-96: при сетевой ошибке возвращает последнее известное значение
+    (из _last_known_latest) вместо пустой строки, чтобы не затирать кеш.
+    """
+    global _last_known_latest, _github_any_success
+    url = "https://api.github.com/repos/%s/releases/latest" % repo
+    req = urllib.request.Request(url, headers={"User-Agent": "zapret-gui/1.0"})
     try:
-        import subprocess
-        r = subprocess.run(
-            ["curl", "-s", "--max-time", "10",
-             "https://api.github.com/repos/%s/releases/latest" % repo],
-            capture_output=True, text=True, timeout=15)
-        import json
-        data = json.loads(r.stdout or "{}")
-        tag = data.get("tag_name", "")
-        return tag.lstrip("v") if tag else ""
+        with urllib.request.urlopen(req, timeout=10.0) as r:
+            body = r.read().decode("utf-8", "replace")
+            data = json.loads(body or "{}")
+            tag = data.get("tag_name", "")
+            result = tag.lstrip("v") if tag else ""
+            if result:
+                with _last_known_lock:
+                    _last_known_latest[repo] = result
+                _github_any_success = True
+            return result
     except Exception:
-        return ""
+        # MR-96: при ошибке возвращаем последнее известное значение
+        with _last_known_lock:
+            return _last_known_latest.get(repo, "")
 
 
 # ─────── background checker ───────
@@ -320,6 +300,7 @@ class UpdateCheckerDaemon:
         self._lock = threading.Lock()
         self._thread = None
         self._stop_evt = threading.Event()
+        self._stale_check = False
 
     def reconfigure(self):
         from core.config_manager import get_config_manager
@@ -349,6 +330,10 @@ class UpdateCheckerDaemon:
             log.info("update-checker: остановлен", source="update_checker")
 
     def _run_loop(self):
+        # Даём роутеру 60 секунд на инициализацию сетевых интерфейсов
+        if self._stop_evt.wait(60.0):
+            return
+
         while not self._stop_evt.is_set():
             try:
                 from core.config_manager import get_config_manager
@@ -356,18 +341,27 @@ class UpdateCheckerDaemon:
                 interval_h = cfg.get("update_checker", "interval_hours",
                                      default=DEFAULT_CHECK_INTERVAL_HOURS)
                 result = check_all()
+                # MR-96: если ни один GitHub API запрос не удался — данные устарели
+                with self._lock:
+                    self._stale_check = not _github_any_success
                 updates = result.get("updates_count", 0)
                 if updates:
                     log.info("update-checker: найдено %d обновлений" % updates,
                              source="update_checker")
             except Exception as e:
+                with self._lock:
+                    self._stale_check = True
                 log.warning("update-checker: %s" % e, source="update_checker")
             self._stop_evt.wait(interval_h * 3600)
 
     def get_status(self):
         with self._lock:
             running = self._thread is not None and self._thread.is_alive()
-        return {"running": running}
+            stale_check = self._stale_check
+        status = {"running": running, "stale_check": stale_check}
+        if stale_check:
+            status["warning"] = "⚠️ Невозможно проверить обновления"
+        return status
 
 
 _checker = None

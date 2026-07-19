@@ -50,6 +50,10 @@ class OperaProxyWatchdog:
         self._restart_times = []
         self._last_restart = 0
 
+    def reset(self):
+        """Сбросить счетчик ошибок (вызывается при внешнем старте)."""
+        self._fail_count = 0
+
     def reconfigure(self):
         """Перечитать конфиг и запустить/остановить watchdog."""
         from core.config_manager import get_config_manager
@@ -132,7 +136,7 @@ class OperaProxyWatchdog:
         log.info("opera-proxy-watchdog: рестарт Opera Proxy", source="opera_proxy")
 
         mgr.stop()
-        time.sleep(1)
+        self._stop_evt.wait(1.0)
 
         from core.config_manager import get_config_manager
         cfg = get_config_manager()

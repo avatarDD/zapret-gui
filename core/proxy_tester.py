@@ -415,6 +415,10 @@ def _e2e_batch(outbounds: list, target_url: str, timeout_ms: int,
             except Exception:
                 try:
                     popen.kill()
+                    try:
+                        popen.wait(timeout=1)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         if err_f is not None:

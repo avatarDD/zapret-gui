@@ -8,6 +8,9 @@ const TunnelMonitorPage = (() => {
     let _pollTimer = null;
     const POLL_MS = 5000;
 
+    let _visibilityHandler = null;
+    let _inFlight = false;
+
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -25,21 +28,35 @@ const TunnelMonitorPage = (() => {
             <div id="tm-charts"></div>
         `;
 
+        _visibilityHandler = () => {
+            if (document.hidden) _stopPoll();
+            else _startPoll();
+        };
+        document.addEventListener("visibilitychange", _visibilityHandler);
+
         await _refresh();
         _startPoll();
     }
 
     function destroy() {
-        if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+        _stopPoll();
+        if (_visibilityHandler) {
+            document.removeEventListener("visibilitychange", _visibilityHandler);
+            _visibilityHandler = null;
+        }
     }
 
     async function _refresh() {
+        if (_inFlight || document.hidden) return;
+        _inFlight = true;
         try {
             const data = await API.get("/api/monitor/metrics");
             _renderCharts(data.metrics || []);
         } catch (e) {
             const el = document.getElementById("tm-charts");
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+        } finally {
+            _inFlight = false;
         }
     }
 
@@ -152,7 +169,7 @@ const TunnelMonitorPage = (() => {
         }).join(' ');
 
         return `
-            <svg width="${width}" height="${height}" style="display:block;">
+            <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" width="100%" height="${height}" style="display:block;">
                 <polyline points="${rxPoints}" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0.8"/>
                 <polyline points="${txPoints}" fill="none" stroke="#f97316" stroke-width="1.5" opacity="0.8"/>
             </svg>
@@ -176,7 +193,16 @@ const TunnelMonitorPage = (() => {
     }
 
     function _startPoll() {
-        _pollTimer = setInterval(_refresh, POLL_MS);
+        if (!_pollTimer) {
+            _pollTimer = setInterval(_refresh, POLL_MS);
+        }
+    }
+
+    function _stopPoll() {
+        if (_pollTimer) {
+            clearInterval(_pollTimer);
+            _pollTimer = null;
+        }
     }
 
     function esc(s) {

@@ -17,6 +17,7 @@
 import os
 import json
 import copy
+import secrets
 import threading
 from core.log_buffer import log
 from core.safe_io import atomic_write_json
@@ -51,12 +52,12 @@ DEFAULT_CONFIG = {
 
     # --- Настройки Web-GUI ---
     "gui": {
-        "host": "0.0.0.0",
+        "host": "127.0.0.1",
         "port": 8080,
         "debug": False,
-        "auth_enabled": False,
+        "auth_enabled": True,
         "auth_user": "admin",
-        "auth_password": "",
+        "auth_password": "admin",
         # Доверенные cross-origin источники для CORS (по умолчанию пусто —
         # разрешён только same-origin; `*` НЕ используется). Пример:
         # ["https://my.dashboard.example"].
@@ -69,9 +70,9 @@ DEFAULT_CONFIG = {
         # Расширенный набор портов (паритет с nfqws2-keenetic): помимо HTTP/
         # HTTPS — Cloudflare alt-порты (2053/2083/2087/2096/8443), Telegram
         # MTProto (5222), а по UDP — QUIC (443), STUN/TURN, WireGuard-диапазоны
-        # и Discord voice (49152:65535).
+        # и Discord voice (50000:65535).
         "ports_tcp": "80,443,2053,2083,2087,2096,5222,8443",
-        "ports_udp": "443,3478:3481,5349,19294:19344,49152:65535",
+        "ports_udp": "443,3478:3481,5349,19294:19344,50000:65535",
         "tcp_pkt_out": 20,
         "tcp_pkt_in": 10,
         "udp_pkt_out": 5,
@@ -312,18 +313,14 @@ DEFAULT_CONFIG = {
         "installed_arch": "",
     },
 
-    # --- Telegram MTProto Proxy (teleproxy / tg-mtproxy-client) ---
-    # Два движка для разных архитектур:
-    #   teleproxy (C)     —最强 DPI resistance, только ARM64
-    #   tg-mtproxy-client — Go, все архитектуры включая MIPS
+    # --- Telegram MTProto Proxy (tgwsproxy / mtproto) ---
+    # Два движка:
+    #   tgwsproxy — tg-ws-proxy-go, основной
+    #   mtproto   — tg-mtproxy-client, резервный
     "tgproxy": {
         "enabled": False,
-        "engine": "auto",  # auto | teleproxy | mtproto
+        "engine": "tgwsproxy",  # tgwsproxy | mtproto
         "port": 9443,
-        # teleproxy-specific
-        "teleproxy_secret": "",
-        "teleproxy_domain": "",  # fake-TLS домен (напр. "www.google.com")
-        "teleproxy_direct_dc": True,
         # mtproto-specific (tg-mtproxy-client)
         "tunnel_url": "",     # WSS relay URL
         "tunnel_secret": "",
@@ -403,6 +400,14 @@ class ConfigManager:
                 if first_load:
                     log.info("Конфигурация не найдена, создаём с дефолтами",
                              source="config")
+                # Генерация случайного пароля при первом создании конфига
+                self._config["gui"]["auth_password"] = secrets.token_hex(8)
+                if first_load:
+                    log.warning(
+                        f"Сгенерирован пароль администратора: "
+                        f"{self._config['gui']['auth_password']}",
+                        source="config"
+                    )
                 self._save_locked()
 
             self._loaded = True

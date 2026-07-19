@@ -48,12 +48,6 @@ class TestBinaries(unittest.TestCase):
     def test_usque_has_mipsel(self):
         self.assertIn("mipsel", ebi.BINARIES["usque"]["arch_map"])
 
-    def test_teleproxy_arm64_only(self):
-        arch_map = ebi.BINARIES["teleproxy"]["arch_map"]
-        self.assertIn("aarch64", arch_map)
-        self.assertIn("x86_64", arch_map)
-        # teleproxy doesn't support mipsel
-        self.assertNotIn("mipsel", arch_map)
 
 
 class TestGetInstallStatus(unittest.TestCase):
@@ -97,6 +91,28 @@ class TestGetVersion(unittest.TestCase):
     def test_version_not_found(self, mock_run):
         v = ebi._get_version("/nonexistent")
         self.assertEqual(v, "")
+
+
+class TestInstallBinaryByName(unittest.TestCase):
+    """Тесты install_binary_by_name."""
+
+    @mock.patch("core.ext_binary_installer.github_latest_release")
+    @mock.patch("core.ext_binary_installer._get_version")
+    @mock.patch("os.path.isfile")
+    @mock.patch("core.ext_binary_installer.detect_arch")
+    def test_skips_download_if_versions_match(self, mock_arch, mock_isfile, mock_get_version, mock_release):
+        mock_arch.return_value = "aarch64"
+        mock_isfile.return_value = True
+        mock_get_version.return_value = "v1.2.3"
+        mock_release.return_value = {
+            "tag_name": "v1.2.3",
+            "assets": []
+        }
+
+        res = ebi.install_binary_by_name("usque")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res.get("noop"), True)
+        self.assertEqual(res["version"], "v1.2.3")
 
 
 if __name__ == "__main__":

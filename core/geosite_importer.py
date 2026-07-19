@@ -125,36 +125,84 @@ def _read_field(data: bytes, offset: int) -> tuple:
         return field_number, wire_type, None, len(data)
 
 
-def _parse_protobuf_geosite(path: str) -> dict:
-    """Parse geosite.dat protobuf."""
-    with open(path, "rb") as f:
-        data = f.read()
-
-    result = {}
-    offset = 0
-    while offset < len(data):
-        fn, wt, val, offset = _read_field(data, offset)
-        if fn is None:
+def _read_varint_from_file(f) -> int:
+    """Read a varint from a file stream."""
+    result = 0
+    shift = 0
+    while True:
+        b_bytes = f.read(1)
+        if not b_bytes:
+            raise EOFError()
+        b = b_bytes[0]
+        result |= (b & 0x7F) << shift
+        if not (b & 0x80):
             break
-        if fn == 1 and wt == 2 and isinstance(val, bytes):
-            # Entry message
-            category = ""
-            domains = []
-            eo = 0
-            while eo < len(val):
-                efn, ewt, eval_, eo = _read_field(val, eo)
-                if efn is None:
-                    break
-                if efn == 1 and ewt == 2:
-                    # country_code or tag
-                    category = eval_.decode("utf-8", errors="replace")
-                elif efn == 2 and ewt == 2:
-                    # domain entry
-                    domain = _parse_domain_entry(eval_)
-                    if domain:
-                        domains.append(domain)
-            if category and domains:
-                result[category] = domains
+        shift += 7
+    return result
+
+
+def _read_field_from_file(f) -> tuple:
+    """Read a protobuf field from a file stream."""
+    try:
+        tag = _read_varint_from_file(f)
+    except EOFError:
+        return None, None, None
+    field_number = tag >> 3
+    wire_type = tag & 0x07
+
+    try:
+        if wire_type == 0:  # varint
+            value = _read_varint_from_file(f)
+            return field_number, wire_type, value
+        elif wire_type == 2:  # length-delimited
+            length = _read_varint_from_file(f)
+            value = f.read(length)
+            if len(value) != length:
+                return None, None, None
+            return field_number, wire_type, value
+        elif wire_type == 5:  # 32-bit
+            data = f.read(4)
+            if len(data) != 4:
+                return None, None, None
+            value = struct.unpack("<I", data)[0]
+            return field_number, wire_type, value
+        elif wire_type == 1:  # 64-bit
+            data = f.read(8)
+            if len(data) != 8:
+                return None, None, None
+            value = struct.unpack("<Q", data)[0]
+            return field_number, wire_type, value
+        else:
+            return None, None, None
+    except (EOFError, IOError, struct.error):
+        return None, None, None
+
+
+def _parse_protobuf_geosite(path: str) -> dict:
+    """Parse geosite.dat protobuf streaming from file."""
+    result = {}
+    with open(path, "rb") as f:
+        while True:
+            fn, wt, val = _read_field_from_file(f)
+            if fn is None:
+                break
+            if fn == 1 and wt == 2 and isinstance(val, bytes):
+                # Entry message
+                category = ""
+                domains = []
+                eo = 0
+                while eo < len(val):
+                    efn, ewt, eval_, eo = _read_field(val, eo)
+                    if efn is None:
+                        break
+                    if efn == 1 and ewt == 2:
+                        category = eval_.decode("utf-8", errors="replace")
+                    elif efn == 2 and ewt == 2:
+                        domain = _parse_domain_entry(eval_)
+                        if domain:
+                            domains.append(domain)
+                if category and domains:
+                    result[category] = domains
     return result
 
 
@@ -178,33 +226,30 @@ def _parse_domain_entry(data: bytes) -> str:
 
 
 def _parse_protobuf_geoip(path: str) -> dict:
-    """Parse geoip.dat protobuf."""
-    with open(path, "rb") as f:
-        data = f.read()
-
+    """Parse geoip.dat protobuf streaming from file."""
     result = {}
-    offset = 0
-    while offset < len(data):
-        fn, wt, val, offset = _read_field(data, offset)
-        if fn is None:
-            break
-        if fn == 1 and wt == 2 and isinstance(val, bytes):
-            # Entry message
-            country = ""
-            cidrs = []
-            eo = 0
-            while eo < len(val):
-                efn, ewt, eval_, eo = _read_field(val, eo)
-                if efn is None:
-                    break
-                if efn == 1 and ewt == 2:
-                    country = eval_.decode("utf-8", errors="replace")
-                elif efn == 2 and ewt == 2:
-                    cidr = _parse_cidr_entry(eval_)
-                    if cidr:
-                        cidrs.append(cidr)
-            if country and cidrs:
-                result[country] = cidrs
+    with open(path, "rb") as f:
+        while True:
+            fn, wt, val = _read_field_from_file(f)
+            if fn is None:
+                break
+            if fn == 1 and wt == 2 and isinstance(val, bytes):
+                # Entry message
+                country = ""
+                cidrs = []
+                eo = 0
+                while eo < len(val):
+                    efn, ewt, eval_, eo = _read_field(val, eo)
+                    if efn is None:
+                        break
+                    if efn == 1 and ewt == 2:
+                        country = eval_.decode("utf-8", errors="replace")
+                    elif efn == 2 and ewt == 2:
+                        cidr = _parse_cidr_entry(eval_)
+                        if cidr:
+                            cidrs.append(cidr)
+                if country and cidrs:
+                    result[country] = cidrs
     return result
 
 

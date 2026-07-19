@@ -130,6 +130,25 @@ const Sidebar = (() => {
         sidebar.classList.toggle('open', open);
         const burger = document.getElementById('mobile-burger');
         if (burger) burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+        // MR-116: Focus trap — при открытии мобильного меню устанавливаем inert на контент
+        const mainContent = document.getElementById('content');
+        if (mainContent) {
+            mainContent.inert = open;
+        }
+
+        // MR-116: перемещаем фокус на первый фокусируемый элемент сайдбара при открытии
+        if (open) {
+            const firstFocusable = sidebar.querySelector(
+                'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            );
+            if (firstFocusable) {
+                setTimeout(() => firstFocusable.focus(), 100);
+            }
+        } else if (burger) {
+            // При закрытии возвращаем фокус на бургер
+            burger.focus();
+        }
     }
 
     function _navigate(pageId) {
@@ -271,6 +290,23 @@ const Sidebar = (() => {
                 && sidebar.classList.contains('open')) {
                 _setOpen(false);
             }
+
+            // MR-116: Focus trap внутри мобильного сайдбара
+            if (e.key === 'Tab' && _isMobile() && sidebar.classList.contains('open')) {
+                const focusable = sidebar.querySelectorAll(
+                    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+                );
+                if (focusable.length === 0) return;
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
         });
 
         // Страховка: клик вне sidebar на мобильных закрывает его
@@ -282,6 +318,26 @@ const Sidebar = (() => {
                 _setOpen(false);
             }
         });
+
+        // MR-69: Sidebar footer — привязка событий через addEventListener
+        const footer = sidebar.querySelector('.sidebar-footer');
+        if (footer) {
+            footer.addEventListener('change', (e) => {
+                if (e.target.dataset.action === 'toggle-expert') {
+                    Expert.set(e.target.checked);
+                }
+            });
+            footer.addEventListener('click', (e) => {
+                const btn = e.target.closest('[data-action]');
+                if (!btn) return;
+                const action = btn.dataset.action;
+                if (action === 'show-help') Help.show('expert');
+                else if (action === 'toggle-lang') {
+                    i18n.setLanguage(i18n.getLanguage() === 'ru' ? 'en' : 'ru');
+                }
+                else if (action === 'toggle-theme') Theme.toggle();
+            });
+        }
     }
 
     return { render, setCurrentPage, initMobileToggle };

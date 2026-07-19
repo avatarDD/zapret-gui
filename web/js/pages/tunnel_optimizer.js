@@ -122,7 +122,8 @@ const TunnelOptimizerPage = (() => {
                     <option value="balanced" selected>Balanced (общий)</option>
                     <option value="throughput">Throughput (загрузки)</option>
                 </select>
-                <button class="btn btn-primary" onclick="TunnelOptimizerPage.applyAll()">Применить ко всем туннелям</button>
+                <button class="btn btn-primary" id="opt-apply-btn"
+                        onclick="TunnelOptimizerPage.applyAll()">Применить ко всем туннелям</button>
             </div>
             <p class="text-muted" style="font-size:12px; margin-top:8px;">
                 Оптимизации применяются к интерфейсам: opkgtun*, awg*, tun*, meta*
@@ -142,18 +143,22 @@ const TunnelOptimizerPage = (() => {
 
     async function applyAll() {
         const profile = document.getElementById("opt-profile-select")?.value || "balanced";
+        const btn = document.getElementById("opt-apply-btn");
+        if (btn) { btn.disabled = true; btn.textContent = "Применение..."; }
         try {
-            const res = await API.post("/api/optimizer/apply", { profile });
+            const res = await API.post("/api/optimizer/optimize-all", { profile });
             if (res.ok) {
                 const applied = Object.values(res.results || {})
                     .flatMap(r => r.applied || []);
-                Toast.success("Оптимизации применены: " + applied.join(", "));
+                Toast.success("Оптимизации применены: " + (applied.join(", ") || "нет активных туннелей"));
                 await _loadStatus();
             } else {
-                Toast.error("Ошибка");
+                Toast.error("Ошибка: " + (res.error || "неизвестная"));
             }
         } catch (e) {
             Toast.error("Ошибка: " + e.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = "Применить ко всем туннелям"; }
         }
     }
 

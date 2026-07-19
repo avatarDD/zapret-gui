@@ -12,6 +12,8 @@ Block Detector: DNS-мониторинг + автообнаружение бло
   - Auto-add to named list (опционально)
 """
 
+from __future__ import annotations
+
 import os
 import re
 import socket
@@ -20,6 +22,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from typing import Any
 
 from core.log_buffer import log
 
@@ -50,8 +53,12 @@ class BlockDetector:
         self._stop_evt = threading.Event()
         self._monitored = {}  # domain -> {first_seen, last_checked, block_code}
         self._whitelist = set()
+        self._ssl_context = None
+        # MR-62: per-IP rate-limit
+        self._request_counts: dict[str, list[float]] = {}
+        self._req_counter = 0
 
-    def start(self):
+    def start(self) -> None:
         """Запустить фоновый мониторинг."""
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
@@ -70,7 +77,7 @@ class BlockDetector:
             self._thread = t
             log.info("block-detector: запущен", source="block_detector")
 
-    def stop(self):
+    def stop(self) -> None:
         """Остановить мониторинг."""
         with self._lock:
             if not self._thread:
@@ -89,19 +96,28 @@ class BlockDetector:
             except Exception as e:
                 log.warning("block-detector tick: %s" % e,
                             source="block_detector")
-            self._stop_evt.wait(60)  # базовый интервал 60s
+            # MR-30: использовать настраиваемый interval вместо хардкода 60s
+            self._stop_evt.wait(interval)
 
     def _tick(self):
         """Основной цикл: собрать DNS + пронировать."""
         # Собираем домены из DNS-источника
         new_domains = self._collect_dns_queries()
-        for d in new_domains:
-            if d not in self._monitored and d not in self._whitelist:
-                self._monitored[d] = {
-                    "first_seen": int(time.time()),
-                    "last_checked": 0,
-                    "block_code": "unknown",
-                }
+        with self._lock:
+            for d in new_domains:
+                if d not in self._monitored and d not in self._whitelist:
+                    self._monitored[d] = {
+                        "first_seen": int(time.time()),
+                        "last_checked": 0,
+                        "block_code": "unknown",
+                    }
+
+            # MR-18: Ограничиваем размер self._monitored до 1000 доменов (FIFO)
+            MAX_MONITORED = 2000
+            if len(self._monitored) > MAX_MONITORED:
+                sorted_keys = sorted(self._monitored.keys(), key=lambda k: self._monitored[k]["first_seen"])
+                for k in sorted_keys[:len(self._monitored) - MAX_MONITORED]:
+                    self._monitored.pop(k, None)
 
         # Пронируем домены которые давно не проверялись
         now = int(time.time())
@@ -109,18 +125,40 @@ class BlockDetector:
         cfg = get_config_manager()
         timeout = cfg.get("block_detector", "probe_timeout", default=5)
 
-        for domain, info in list(self._monitored.items()):
-            if (now - info["last_checked"]) < 3600:  # раз в час
-                continue
-            result = self._probe(domain, timeout)
-            info["last_checked"] = now
-            info["block_code"] = result
+        with self._lock:
+            monitored_snapshot = list(self._monitored.items())
 
-            if result != "ok":
-                log.info("block-detector: %s → %s (%s)" % (
-                    domain, result, BLOCK_CODES.get(result, result)),
-                    source="block_detector")
-                self._maybe_auto_add(domain, result)
+        to_probe = []
+        for domain, info in monitored_snapshot:
+            if (now - info["last_checked"]) >= 3600:  # раз в час
+                to_probe.append(domain)
+
+        # MR-97: Параллельный опрос через ThreadPoolExecutor
+        if to_probe:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            max_workers = min(5, len(to_probe))
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="block-detector-probe") as executor:
+                future_to_domain = {
+                    executor.submit(self._probe, domain, timeout): domain
+                    for domain in to_probe
+                }
+                for future in as_completed(future_to_domain):
+                    domain = future_to_domain[future]
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        result = "unknown"
+
+                    with self._lock:
+                        if domain in self._monitored:
+                            self._monitored[domain]["last_checked"] = int(time.time())
+                            self._monitored[domain]["block_code"] = result
+
+                    if result != "ok":
+                        log.info("block-detector: %s → %s (%s)" % (
+                            domain, result, BLOCK_CODES.get(result, result)),
+                            source="block_detector")
+                        self._maybe_auto_add(domain, result)
 
     def _collect_dns_queries(self) -> list:
         """Собрать уникальные домены из DNS-источника."""
@@ -157,11 +195,13 @@ class BlockDetector:
             log_path = "/var/log/dnsmasq.log"
             if not os.path.isfile(log_path):
                 return []
-            # Читаем последние 10KB
+            # MR-48: после seek в середину файла пропускаем первую половинчатую строку
             with open(log_path, "rb") as f:
                 f.seek(0, 2)
                 size = f.tell()
                 f.seek(max(0, size - 10240))
+                if f.tell() > 0:
+                    f.readline()  # пропустить possibly-truncated first line
                 data = f.read().decode("utf-8", errors="replace")
             # Парсим: "reply <domain> is <ip>"
             for line in data.splitlines():
@@ -203,8 +243,12 @@ class BlockDetector:
 
     def _from_af_packet(self) -> list:
         """AF_PACKET DNS-сниффинг (заглушка — требует root)."""
-        # Полная реализация требует scapy/netfilter_queue
-        # Пока возвращаем пустой список
+        # MR-47: предупреждаем пользователя что источник DNS не найден
+        log.warning(
+            "block-detector: DNS source auto-detection failed — "
+            "AF_PACKET stub active. "
+            "Включите dnsmasq log-queries: добавьте 'log-queries' в /opt/etc/dnsmasq.conf",
+            source="block_detector")
         return []
 
     # ─────── probing ───────
@@ -228,23 +272,24 @@ class BlockDetector:
         except (socket.timeout, OSError):
             return "tcp_timeout"
 
-        # Stage 3: TLS handshake
+        # Stage 3 & 4: TLS handshake + HTTP — socket закрываем в finally (MR-29)
+        tls = None
         try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            tls = ctx.wrap_socket(sock, server_hostname=domain)
+            if self._ssl_context is None:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                self._ssl_context = ctx
+            tls = self._ssl_context.wrap_socket(sock, server_hostname=domain)
             # Stage 4: HTTP read
             tls.sendall(b"HEAD / HTTP/1.1\r\nHost: %s\r\n\r\n" % domain.encode())
             data = tls.recv(4096)
-            tls.close()
             if len(data) < 100:
                 return "http_cutoff"
             if b"200" in data or b"301" in data or b"302" in data:
                 return "ok"
-            return "ok"  # есть ответ — считаем доступным
-        except ssl.SSLCertVerificationError:
-            return "tls_rst"
+            # MR-46: любой другой ответ (403 geo-block, 451 legal, 521) → http_cutoff
+            return "http_cutoff"
         except (ssl.SSLError, OSError) as e:
             err = str(e).lower()
             if "rst" in err or "reset" in err:
@@ -254,6 +299,15 @@ class BlockDetector:
             return "tls_garbage"
         except Exception:
             return "unknown"
+        finally:
+            # MR-29: гарантируем закрытие сокета на всех путях выхода
+            try:
+                if tls:
+                    tls.close()
+                else:
+                    sock.close()
+            except Exception:
+                pass
 
     # ─────── auto-add ───────
 
@@ -288,17 +342,21 @@ class BlockDetector:
         """Статус детектора."""
         with self._lock:
             running = self._thread is not None and self._thread.is_alive()
+            monitored_count = len(self._monitored)
+            blocked_count = sum(1 for v in self._monitored.values()
+                                 if v["block_code"] != "ok")
         return {
             "running": running,
-            "monitored_count": len(self._monitored),
-            "blocked_count": sum(1 for v in self._monitored.values()
-                                 if v["block_code"] != "ok"),
+            "monitored_count": monitored_count,
+            "blocked_count": blocked_count,
         }
 
-    def get_results(self) -> list:
+    def get_results(self) -> list[dict[str, Any]]:
         """Результаты проверок."""
+        with self._lock:
+            items = list(self._monitored.items())
         out = []
-        for domain, info in sorted(self._monitored.items(),
+        for domain, info in sorted(items,
                                     key=lambda x: x[1]["last_checked"],
                                     reverse=True):
             out.append({
@@ -310,9 +368,45 @@ class BlockDetector:
             })
         return out[:200]
 
-    def probe_now(self, domain: str) -> dict:
+    def _is_rate_limited(self, client_ip: str) -> bool:
+        """MR-62: проверить per-IP rate-limit (10 запросов/60с)."""
+        if not client_ip or client_ip in ("127.0.0.1", "::1", "localhost"):
+            return False
+        now = time.monotonic()
+        cutoff = now - 60.0
+        with self._lock:
+            self._req_counter += 1
+            counts = self._request_counts.setdefault(client_ip, [])
+            counts[:] = [t for t in counts if t > cutoff]
+            if len(counts) >= 10:
+                return True
+            counts.append(now)
+            if self._req_counter % 10 == 0:
+                for ip in list(self._request_counts.keys()):
+                    self._request_counts[ip] = [t for t in self._request_counts[ip] if t > cutoff]
+                    if not self._request_counts[ip]:
+                        del self._request_counts[ip]
+        return False
+
+    def probe_now(self, domain: str, client_ip: str = "") -> dict[str, Any]:
         """Пронировать домен прямо сейчас."""
-        result = self._probe(domain, timeout=5)
+        # MR-62: per-IP rate-limit
+        if self._is_rate_limited(client_ip):
+            return {
+                "domain": domain,
+                "block_code": "throttled",
+                "block_desc": "Too Many Requests",
+            }
+        # MR-98: запускаем пробу в ThreadPoolExecutor с жестким таймаутом 2.5с
+        # чтобы гарантированно не блокировать Bottle-воркер API надолго
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self._probe, domain, 2)
+            try:
+                result = future.result(timeout=2.5)
+            except Exception:
+                result = "tcp_timeout"
+
         return {
             "domain": domain,
             "block_code": result,

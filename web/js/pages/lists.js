@@ -17,6 +17,52 @@ const ListsPage = (() => {
     let busy = false;
     let interfaces = [];      // из /api/routing/interfaces (туннели)
     let routeFor = null;      // {listId, listName} — открыт пикер «в маршрут»
+    let _eventAbort = null;
+
+    function _bindEvents(container) {
+        if (_eventAbort) _eventAbort.abort();
+        _eventAbort = new AbortController();
+        const signal = _eventAbort.signal;
+
+        container.addEventListener('click', e => {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            switch (action) {
+                case 'new-list': newList(); break;
+                case 'refresh-all-managed': refreshAllManaged(); break;
+                case 'refresh': refresh(); break;
+                case 'add-preset': addPreset(btn.dataset.url); break;
+                case 'add-preset-to-route': addPresetToRoute(btn.dataset.url, btn.dataset.name); break;
+                case 'add-custom-url': addCustomUrl(); break;
+                case 'refresh-list': refreshList(btn.dataset.id); break;
+                case 'open-route': openRoute(btn.dataset.id, btn.dataset.name); break;
+                case 'edit': edit(btn.dataset.id); break;
+                case 'del': del(btn.dataset.id); break;
+                case 'close-editor': closeEditor(); break;
+                case 'save': save(); break;
+                case 'close-route': closeRoute(); break;
+                case 'create-route': createRoute(); break;
+            }
+        }, { signal });
+
+        container.addEventListener('input', e => {
+            const action = e.target.dataset.action;
+            if (!action) return;
+            switch (action) {
+                case 'curated-url-input': onCuratedUrl(e.target.value); break;
+            }
+        }, { signal });
+
+        container.addEventListener('change', e => {
+            const action = e.target.dataset.action;
+            if (!action) return;
+            switch (action) {
+                case 'curated-interval-change': onCuratedInterval(e.target.value); break;
+                case 'set-transport': setTransport(e.target.value); break;
+            }
+        }, { signal });
+    }
 
     function render(container) {
         container.innerHTML = `
@@ -30,9 +76,9 @@ const ListsPage = (() => {
                     </p>
                 </div>
                 <div style="display:flex; gap:8px;">
-                    <button class="btn btn-ghost btn-sm" onclick="ListsPage.newList()">+ Список</button>
-                    <button class="btn btn-ghost btn-sm" onclick="ListsPage.refreshAllManaged()">↻ Обновить списки</button>
-                    <button class="btn btn-ghost btn-sm" onclick="ListsPage.refresh()">Обновить</button>
+                    <button class="btn btn-ghost btn-sm" data-action="new-list">+ Список</button>
+                    <button class="btn btn-ghost btn-sm" data-action="refresh-all-managed">↻ Обновить списки</button>
+                    <button class="btn btn-ghost btn-sm" data-action="refresh">Обновить</button>
                 </div>
             </div>
             <div id="lists-curated"></div>
@@ -42,6 +88,7 @@ const ListsPage = (() => {
                 <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
             </div>
         `;
+        _bindEvents(container);
         refresh();
     }
     function destroy() {}
@@ -95,11 +142,11 @@ const ListsPage = (() => {
                 <span class="preset-chip" style="display:inline-flex;gap:2px;">
                     <button class="btn btn-ghost btn-sm" ${p.added||busy?'disabled':''}
                             title="${escAttr(p.description||p.url)}"
-                            onclick="ListsPage.addPreset('${escAttr(p.url)}')">
+                            data-action="add-preset" data-url="${escAttr(p.url)}">
                         ${p.added ? '✓ ' : '+ '}${esc(p.name)}
                     </button>
                     ${p.added ? `<button class="btn btn-ghost btn-sm" title="Добавить в маршрут"
-                            onclick="ListsPage.addPresetToRoute('${escAttr(p.url)}','${escAttr(p.name)}')"
+                            data-action="add-preset-to-route" data-url="${escAttr(p.url)}" data-name="${escAttr(p.name)}"
                             style="font-size:10px; padding:2px 6px;">→</button>` : ''}
                 </span>`).join(' ');
             groupsHtml += `
@@ -127,20 +174,20 @@ const ListsPage = (() => {
                     <input id="lst-curated-url" class="form-control" style="flex:1; min-width:220px;"
                            placeholder="Свой URL списка доменов (raw .txt/.lst)"
                            value="${escAttr(curatedUrl)}"
-                           oninput="ListsPage.onCuratedUrl(this.value)">
+                           data-action="curated-url-input">
                     <input id="lst-curated-interval" type="number" min="1" step="1"
                            class="form-control" style="width:80px;"
                            title="Интервал автообновления, часов"
                            value="${curatedInterval}"
-                           onchange="ListsPage.onCuratedInterval(this.value)">
+                           data-action="curated-interval-change">
                     <span class="text-muted" style="font-size:11px;">ч</span>
                     <button class="btn btn-primary btn-sm" ${busy?'disabled':''}
-                            onclick="ListsPage.addCustomUrl()">Добавить URL</button>
+                            data-action="add-custom-url">Добавить URL</button>
                 </div>
                 <div style="display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap;">
                     <label class="text-muted" style="font-size:12px;">Качать через:</label>
                     <select class="form-control" style="max-width:300px;"
-                            onchange="ListsPage.setTransport(this.value)">
+                            data-action="set-transport">
                         ${TransportSelect.optionsHtml(transports, curated.transport)}
                     </select>
                     <span class="text-muted" style="font-size:11px;">
@@ -186,11 +233,11 @@ const ListsPage = (() => {
                     <td>${esc(l.description || '')}</td>
                     <td style="text-align:right;">
                         ${managed ? `<button class="btn btn-ghost btn-sm" title="Обновить из источника"
-                            onclick="ListsPage.refreshList('${esc(l.id)}')">↻</button>` : ''}
+                            data-action="refresh-list" data-id="${esc(l.id)}">↻</button>` : ''}
                         <button class="btn btn-ghost btn-sm" title="Создать маршрут для этого списка"
-                            onclick="ListsPage.openRoute('${esc(l.id)}', '${escAttr(l.name)}')">→ Маршрут</button>
-                        <button class="btn btn-ghost btn-sm" onclick="ListsPage.edit('${esc(l.id)}')">Ред.</button>
-                        <button class="btn btn-ghost btn-sm" onclick="ListsPage.del('${esc(l.id)}')">✕</button>
+                            data-action="open-route" data-id="${esc(l.id)}" data-name="${escAttr(l.name)}">→ Маршрут</button>
+                        <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${esc(l.id)}">Ред.</button>
+                        <button class="btn btn-ghost btn-sm" data-action="del" data-id="${esc(l.id)}">✕</button>
                     </td>
                 </tr>`; }).join('')}
             </tbody></table></div>`;
@@ -204,7 +251,7 @@ const ListsPage = (() => {
             <div class="card" style="margin-bottom:16px;">
                 <div style="display:flex; justify-content:space-between;">
                     <div class="card-title">${editing.isNew ? 'Новый список' : 'Редактирование'}</div>
-                    <button class="btn btn-ghost btn-sm" onclick="ListsPage.closeEditor()">Закрыть</button>
+                    <button class="btn btn-ghost btn-sm" data-action="close-editor">Закрыть</button>
                 </div>
                 <div style="display:grid; grid-template-columns:120px 1fr; gap:8px 12px; margin-top:8px;">
                     <label class="text-muted" style="padding-top:6px;">Имя</label>
@@ -230,7 +277,7 @@ const ListsPage = (() => {
                               style="width:100%; min-height:220px; font-family:monospace; font-size:12px;">${esc(editing.text)}</textarea>
                 </div>
                 <div style="margin-top:10px;">
-                    <button class="btn btn-primary btn-sm" onclick="ListsPage.save()">Сохранить</button>
+                    <button class="btn btn-primary btn-sm" data-action="save">Сохранить</button>
                 </div>
             </div>`;
     }
@@ -329,7 +376,7 @@ const ListsPage = (() => {
             <div class="card" style="margin-bottom:16px; border:1px solid var(--accent,#39c45e);">
                 <div style="display:flex; justify-content:space-between;">
                     <div class="card-title">Маршрут для списка «${esc(routeFor.listName)}»</div>
-                    <button class="btn btn-ghost btn-sm" onclick="ListsPage.closeRoute()">Закрыть</button>
+                    <button class="btn btn-ghost btn-sm" data-action="close-route">Закрыть</button>
                 </div>
                 <p class="text-muted" style="font-size:12px; margin:6px 0;">
                     Создаст правило в «Маршрутизации»: домены/CIDR этого списка
@@ -341,7 +388,7 @@ const ListsPage = (() => {
                     <label class="text-muted">Метод:</label>
                     <select id="lst-route-method" class="form-control" style="max-width:320px;">${methodOptions()}</select>
                     <button class="btn btn-primary btn-sm" ${busy?'disabled':''}
-                            onclick="ListsPage.createRoute()">Создать маршрут</button>
+                            data-action="create-route">Создать маршрут</button>
                 </div>
             </div>`;
     }

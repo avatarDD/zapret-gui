@@ -13,7 +13,6 @@ API-модуль управления WARP/MASQUE (usque).
   POST /api/usque/configs/<name>/remove
 """
 
-import json
 import os
 
 from bottle import request
@@ -59,13 +58,28 @@ def register(app):
 
     @app.route("/api/usque/register", method="POST")
     def usque_register():
+        import re
         from core.usque_manager import get_usque_manager
         mgr = get_usque_manager()
-        data = json.loads(request.body.read()) if request.body else {}
+        data = request.json or {}
         config_name = data.get("name", "warp-default")
+
+        # MR-08: валидация config_name против path-traversal → root RCE
+        # config_name="../../etc/init.d/S99evil" → usque пишет .conf туда
+        # → S99* автозапускается при буте → RCE
+        if not re.match(r"^[A-Za-z0-9_-]{1,64}$", config_name):
+            return {"ok": False, "error": "Недопустимое имя конфига (только a-z A-Z 0-9 _ -)"}
+
         config_dir = mgr._config_dir()
         os.makedirs(config_dir, exist_ok=True)
         config_path = os.path.join(config_dir, "%s.conf" % config_name)
+
+        # Дополнительная проверка через realpath (защита от symlink-атак)
+        real_config_dir = os.path.realpath(config_dir)
+        real_config_path = os.path.realpath(config_path)
+        if not real_config_path.startswith(real_config_dir + os.sep):
+            return {"ok": False, "error": "path traversal denied"}
+
         return mgr.register(config_path)
 
     @app.route("/api/usque/configs", method="GET")
@@ -138,10 +152,38 @@ def register(app):
 
         return {"ok": True}
 
+    @app.route("/api/usque/environment/refresh", method="POST")
+    def usque_environment_refresh():
+        return usque_environment()
+
+    @app.route("/api/usque/install/status", method="GET")
+    def usque_install_status():
+        from core.ext_binary_installer import get_operation_status
+        return {"ok": True, "progress": get_operation_status("usque")}
+
     @app.route("/api/usque/install", method="POST")
     def usque_install():
-        from core.ext_binary_installer import install_binary_by_name
-        return install_binary_by_name("usque")
+        import threading
+        from core.ext_binary_installer import install_binary_by_name, _operation_status
+
+        name = "usque"
+        _operation_status[name] = {"status": "starting", "progress": 0, "message": "Запуск установки..."}
+
+        def _cb(stage, pct, label):
+            _operation_status[name] = {"status": stage, "progress": pct, "message": label}
+
+        def _run():
+            try:
+                res = install_binary_by_name(name, progress_cb=_cb)
+                if res.get("ok"):
+                    _operation_status[name] = {"status": "done", "progress": 100, "message": "Установка завершена"}
+                else:
+                    _operation_status[name] = {"status": "error", "progress": 0, "message": res.get("error", "Ошибка")}
+            except Exception as e:
+                _operation_status[name] = {"status": "error", "progress": 0, "message": str(e)}
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "progress": _operation_status[name]}
 
     @app.route("/api/usque/uninstall", method="POST")
     def usque_uninstall():

@@ -36,6 +36,7 @@ const RoutingUnifiedPage = (() => {
     let monitorRunning = false;
     let editing = null;
     let pollTimer = null;
+    let _eventsBound = false;
 
     // Фильтр «Через»: '' | 'direct' | 'nfqws2' | kind ('awg'|'singbox'|
     // 'mihomo') | точный метод ('awg:awg0'). Задаётся фильтр-баром,
@@ -72,12 +73,12 @@ const RoutingUnifiedPage = (() => {
                 </div>
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                     <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center;">
-                        <input type="checkbox" id="ru-monitor" onchange="RoutingUnifiedPage.toggleMonitor(this.checked)">
+                        <input type="checkbox" id="ru-monitor" data-action="toggleMonitor">
                         Мониторинг
                     </label>${typeof Help !== 'undefined' ? Help.button('monitoring') : ''}
-                    <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.newRoute()">+ Маршрут</button>
-                    <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.applyAll()">Применить все</button>
-                    <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.refresh()">Обновить</button>
+                    <button class="btn btn-ghost btn-sm" data-action="newRoute">+ Маршрут</button>
+                    <button class="btn btn-ghost btn-sm" data-action="applyAll">Применить все</button>
+                    <button class="btn btn-ghost btn-sm" data-action="refresh">Обновить</button>
                 </div>
             </div>
             <div id="ru-banners"></div>
@@ -87,7 +88,7 @@ const RoutingUnifiedPage = (() => {
                     <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center;">
                         Через:
                         <select id="ru-via" class="form-control" style="max-width:240px;"
-                                onchange="RoutingUnifiedPage.setVia(this.value)"></select>
+                                data-action="setVia"></select>
                     </label>
                     <div class="list-ui-search" style="flex:0 0 220px; min-width:160px;">
                         <svg class="list-ui-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -95,7 +96,7 @@ const RoutingUnifiedPage = (() => {
                         </svg>
                         <input type="text" class="form-input list-ui-search-input" id="ru-search"
                                placeholder="Поиск по маршрутам..." spellcheck="false" autocomplete="off"
-                               oninput="RoutingUnifiedPage.setSearch(this.value)">
+                               data-action="setSearch">
                     </div>
                     <span class="text-muted" style="font-size:12px;" id="ru-count"></span>
                 </div>
@@ -108,12 +109,13 @@ const RoutingUnifiedPage = (() => {
                     <a href="#strategies" style="text-decoration:underline;">Стратегии</a> ·
                     <a href="#scan" style="text-decoration:underline;">Подбор стратегий</a> ·
                     <a href="#lists" style="text-decoration:underline;">Списки</a></span>
-                <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.reapplyLowLevel()"
+                <button class="btn btn-ghost btn-sm" data-action="reapplyLowLevel"
                         title="Снять и заново применить все низкоуровневые правила (ip rule/ipset), включая производные единого слоя">
                     Переприменить низкоуровневые правила
                 </button>
             </div>
         `;
+        _bindEvents(container);
         loadAux().then(refresh);
         pollTimer = setInterval(refreshStatus, 7000);
     }
@@ -330,7 +332,7 @@ const RoutingUnifiedPage = (() => {
                 <code>${esc(what)}</code> → <strong>${esc(r.target_iface)}</strong>
                 ${r.description ? `<span class="text-muted">(${esc(r.description)})</span>` : ''}
                 <button class="btn btn-ghost btn-sm expert-only" title="Удалить без переноса"
-                        onclick="RoutingUnifiedPage.deleteLegacy('${escAttr(r.id)}')">✕</button>
+                        data-action="deleteLegacy" data-id="${escAttr(r.id)}">✕</button>
             </li>`;
         }).join('');
         const more = legacyRules.length > 6
@@ -345,7 +347,7 @@ const RoutingUnifiedPage = (() => {
                 Перенос также выполняется автоматически при перезапуске GUI.
             </p>
             <ul style="font-size:12px; margin:6px 0 8px 18px; padding:0;">${summary}${more}</ul>
-            <button class="btn btn-primary btn-sm" onclick="RoutingUnifiedPage.migrateLegacy()">
+            <button class="btn btn-primary btn-sm" data-action="migrateLegacy">
                 Перенести в единый слой
             </button>
         </div>`;
@@ -385,14 +387,14 @@ const RoutingUnifiedPage = (() => {
             dnsmasqInfo.auto_setup_plan && dnsmasqInfo.auto_setup_plan.applicable);
         const setupButton = (needsSetup || setupPlanHasSteps)
             ? `<button class="btn ${needWarn ? 'btn-primary' : 'btn-ghost'} btn-sm"
-                       onclick="RoutingUnifiedPage.runDnsmasqSetup()">
+                       data-action="runDnsmasqSetup">
                    ${needsSetup ? 'Настроить dnsmasq автоматически'
                                 : 'Применить обновления dnsmasq-конфига'}
                </button>`
             : '';
         const revertButton = setupApplied && dnReady
             ? `<button class="btn btn-ghost btn-sm"
-                       onclick="RoutingUnifiedPage.runDnsmasqRevert()"
+                       data-action="runDnsmasqRevert"
                        title="Откатить изменения: вернуть systemd-resolved на :53 и остановить dnsmasq">
                    Откатить настройку dnsmasq
                </button>`
@@ -535,7 +537,7 @@ const RoutingUnifiedPage = (() => {
             : '<span class="text-muted">○</span>';
         const scanBtn = st.suggest_scan
             ? `<button class="btn btn-ghost btn-sm" title="${escAttr(st.suggest_reason||'')}"
-                       onclick="RoutingUnifiedPage.scan('${esc(r.id)}')">Подобрать</button>`
+                       data-action="scan" data-id="${esc(r.id)}">Подобрать</button>`
             : '';
         return `<tr>
             <td>${enabledDot} <strong>${esc(r.name)}</strong>
@@ -548,9 +550,9 @@ const RoutingUnifiedPage = (() => {
             <td style="color:${rateColor};">${rate}</td>
             <td style="text-align:right;">
                 ${scanBtn}
-                <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.apply('${esc(r.id)}')">Применить</button>
-                <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.edit('${esc(r.id)}')">Ред.</button>
-                <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.del('${esc(r.id)}')">✕</button>
+                <button class="btn btn-ghost btn-sm" data-action="apply" data-id="${esc(r.id)}">Применить</button>
+                <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${esc(r.id)}">Ред.</button>
+                <button class="btn btn-ghost btn-sm" data-action="del" data-id="${esc(r.id)}">✕</button>
             </td>
         </tr>`;
     }
@@ -601,7 +603,7 @@ const RoutingUnifiedPage = (() => {
             <div class="card" style="margin-bottom:16px;">
                 <div style="display:flex; justify-content:space-between;">
                     <div class="card-title">${e.id ? 'Редактирование маршрута' : 'Новый маршрут'}</div>
-                    <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.closeEditor()">Закрыть</button>
+                    <button class="btn btn-ghost btn-sm" data-action="closeEditor">Закрыть</button>
                 </div>
                 <div style="display:grid; grid-template-columns:150px 1fr; gap:8px 12px; margin-top:8px; align-items:start;">
                     <label class="text-muted" style="padding-top:6px;">Имя</label>
@@ -638,7 +640,7 @@ const RoutingUnifiedPage = (() => {
                         <input type="number" min="0" max="63" id="ru-dscp" class="form-control"
                                style="max-width:100px;" value="${escAttr(dscpVal)}" placeholder="—">
                         <select class="form-control" style="max-width:220px;"
-                                onchange="document.getElementById('ru-dscp').value=this.value;">
+                                data-action="setDscpPreset">
                             ${dscpPresets.map(([v, l]) =>
                                 `<option value="${v}" ${dscpVal === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
                         </select>
@@ -681,7 +683,7 @@ const RoutingUnifiedPage = (() => {
                     ? Expert.noteHtml('Тонкая настройка (DSCP, fallback-методы, probe-домен) скрыта')
                     : ''}
                 <div style="margin-top:12px;">
-                    <button class="btn btn-primary btn-sm" onclick="RoutingUnifiedPage.save()">Сохранить</button>
+                    <button class="btn btn-primary btn-sm" data-action="save">Сохранить</button>
                 </div>
             </div>`;
         renderDevicesBox();
@@ -739,7 +741,7 @@ const RoutingUnifiedPage = (() => {
                          border-radius:12px; padding:2px 8px; margin:2px; font-size:12px;">
                 <span style="font-family:monospace;">${esc(x.ip)}</span>
                 ${x.hostname ? `<span class="text-muted">${esc(x.hostname)}</span>` : ''}
-                <a href="javascript:void(0)" onclick="RoutingUnifiedPage.removeDevice('${escAttr(x.ip)}')"
+                <a href="javascript:void(0)" data-action="removeDevice" data-ip="${escAttr(x.ip)}"
                    style="text-decoration:none;">✕</a>
             </span>`).join('')
             || '<span class="text-muted" style="font-size:12px;">не выбраны</span>';
@@ -772,10 +774,10 @@ const RoutingUnifiedPage = (() => {
                         let action;
                         if (inRoute) {
                             action = `<button class="btn btn-ghost btn-sm"
-                                onclick="RoutingUnifiedPage.removeDevice('${escAttr(dv.ip)}')">Убрать</button>`;
+                                data-action="removeDevice" data-ip="${escAttr(dv.ip)}">Убрать</button>`;
                         } else {
                             action = `<button class="btn btn-ghost btn-sm"
-                                onclick="RoutingUnifiedPage.addDevice('${escAttr(dv.ip)}','${escAttr(dv.mac || '')}','${escAttr(dv.hostname || '')}')">+ В маршрут</button>`
+                                data-action="addDevice" data-ip="${escAttr(dv.ip)}" data-mac="${escAttr(dv.mac || '')}" data-hostname="${escAttr(dv.hostname || '')}">+ В маршрут</button>`
                                 + (used ? `<div class="text-muted" style="font-size:10px;">в «${esc(used)}»</div>` : '');
                         }
                         return `<tr>
@@ -794,14 +796,14 @@ const RoutingUnifiedPage = (() => {
             <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:6px;">
                 <input type="text" id="ru-dev-manual" class="form-control" style="max-width:200px;"
                        placeholder="IP вручную: 192.168.1.50">
-                <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.addDeviceManual()">Добавить</button>
-                <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.toggleDevPicker()">
+                <button class="btn btn-ghost btn-sm" data-action="addDeviceManual">Добавить</button>
+                <button class="btn btn-ghost btn-sm" data-action="toggleDevPicker">
                     ${devPickerOpen ? 'Скрыть устройства сети' : 'Выбрать из сети…'}</button>
                 ${devPickerOpen ? `
-                    <button class="btn btn-ghost btn-sm" onclick="RoutingUnifiedPage.refreshDevices()">Обновить список</button>
+                    <button class="btn btn-ghost btn-sm" data-action="refreshDevices">Обновить список</button>
                     <label class="text-muted" style="font-size:12px; display:flex; gap:4px; align-items:center;">
                         <input type="checkbox" ${devAutoRefresh ? 'checked' : ''}
-                               onchange="RoutingUnifiedPage.toggleDevicesAuto(this.checked)">
+                               data-action="toggleDevicesAuto">
                         автообновление
                     </label>` : ''}
             </div>
@@ -1082,14 +1084,72 @@ const RoutingUnifiedPage = (() => {
         await refresh();
     }
 
+    // ─────── event delegation ───────
+
+    function _bindEvents(container) {
+        if (_eventsBound) return;
+        _eventsBound = true;
+
+        container.addEventListener('click', (e) => {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+            const action = el.dataset.action;
+            switch (action) {
+                case 'newRoute': newRoute(); break;
+                case 'applyAll': applyAll(); break;
+                case 'refresh': refresh(); break;
+                case 'reapplyLowLevel': reapplyLowLevel(); break;
+                case 'runDnsmasqSetup': runDnsmasqSetup(); break;
+                case 'runDnsmasqRevert': runDnsmasqRevert(); break;
+                case 'migrateLegacy': migrateLegacy(); break;
+                case 'closeEditor': closeEditor(); break;
+                case 'save': save(); break;
+                case 'addDeviceManual': addDeviceManual(); break;
+                case 'toggleDevPicker': toggleDevPicker(); break;
+                case 'refreshDevices': refreshDevices(); break;
+                case 'apply': apply(el.dataset.id); break;
+                case 'edit': edit(el.dataset.id); break;
+                case 'del': del(el.dataset.id); break;
+                case 'scan': scan(el.dataset.id); break;
+                case 'deleteLegacy': deleteLegacy(el.dataset.id); break;
+                case 'removeDevice': removeDevice(el.dataset.ip); break;
+                case 'addDevice': addDevice(el.dataset.ip, el.dataset.mac, el.dataset.hostname); break;
+            }
+        });
+
+        container.addEventListener('change', (e) => {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+            const action = el.dataset.action;
+            switch (action) {
+                case 'toggleMonitor': toggleMonitor(el.checked); break;
+                case 'setVia': setVia(el.value); break;
+                case 'toggleDevicesAuto': toggleDevicesAuto(el.checked); break;
+                case 'setDscpPreset':
+                    const dscpInput = document.getElementById('ru-dscp');
+                    if (dscpInput) dscpInput.value = el.value;
+                    break;
+            }
+        });
+
+        container.addEventListener('input', (e) => {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+            const action = el.dataset.action;
+            switch (action) {
+                case 'setSearch': setSearch(el.value); break;
+            }
+        });
+    }
+
     // ─────── helpers ───────
 
     function esc(s) {
         return String(s == null ? '' : s)
             .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
-    // Экранирует и кавычки — пригодно для value="" и для строк внутри
-    // inline-onclick (hostname устройства может содержать апостроф).
+    // Экранирует и кавычки — пригодно для value="" и для data-* атрибутов
+    // (hostname устройства может содержать апостроф).
     function escAttr(s) {
         return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }

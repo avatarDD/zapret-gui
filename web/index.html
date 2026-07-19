@@ -8,18 +8,15 @@
     <meta name="theme-color" content="#0f1117">
     <title>Zapret GUI</title>
     <!-- Применяем тему до отрисовки, чтобы не было «вспышки» тёмного. -->
-    <script>
-      try {
-        var _t = localStorage.getItem('zapret-gui-theme');
-        document.documentElement.setAttribute(
-          'data-theme', (_t === 'light' || _t === 'dark') ? _t : 'dark');
-      } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
-    </script>
+    <script src="/js/utils/theme-init.js"></script>
     <link rel="icon" href="/img/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/css/style.css">
     <link rel="stylesheet" href="/css/blockcheck_scan.css">
 </head>
 <body>
+    <!-- MR-105: Skip-link для keyboard users — первый фокусируемый элемент -->
+    <a href="#content" class="skip-link">Перейти к содержимому</a>
+
     <div id="app">
         <!-- Мобильная шапка: бургер + название раздела (видна только на ≤768px) -->
         <header id="mobile-topbar" class="mobile-topbar">
@@ -67,17 +64,19 @@
                 <div class="sidebar-version" id="sidebar-version">...</div>
                 <label class="expert-toggle" id="expert-toggle"
                        title="Режим эксперта — показать расширенные настройки во всех разделах">
-                    <input type="checkbox" onchange="Expert.set(this.checked)">
+                    <input type="checkbox" data-action="toggle-expert">
                     <span>эксперт</span>
                 </label>
                 <button type="button" class="help-btn" title="Что это?"
-                        onclick="Help.show('expert')"
+                        data-action="show-help"
                         style="display:inline-flex; align-items:center; justify-content:center;
                                width:18px; height:18px; border-radius:50%; border:1px solid var(--border);
                                background:transparent; color:var(--text-secondary);
                                font-size:12px; cursor:pointer; line-height:1; padding:0; flex:0 0 auto;">?</button>
+                <button id="lang-toggle" class="lang-toggle" title="Язык / Language"
+                        data-action="toggle-lang">RU</button>
                 <button id="theme-toggle" class="theme-toggle" title="Тема"
-                        onclick="Theme.toggle()"></button>
+                        data-action="toggle-theme"></button>
             </div>
         </nav>
 
@@ -105,6 +104,9 @@
     <div id="modal-overlay" class="modal-overlay hidden"></div>
 
     <!-- JS модули -->
+    <script src="/js/i18n/ru.js"></script>
+    <script src="/js/i18n/en.js"></script>
+    <script src="/js/utils/i18n.js"></script>
     <script src="/js/api.js"></script>
     <script src="/js/utils/debounce.js"></script>
     <script src="/js/utils/nfqws2_spec.js"></script>
@@ -113,6 +115,7 @@
     <script src="/js/utils/lua_syntax.js"></script>
     <script src="/js/utils/autocomplete.js"></script>
     <script src="/js/components/toast.js"></script>
+    <script src="/js/components/confirm.js"></script>
     <script src="/js/components/theme.js"></script>
     <script src="/js/components/expert.js"></script>
     <script src="/js/components/sidebar.js"></script>

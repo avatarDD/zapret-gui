@@ -222,8 +222,8 @@ class TestIsLocalUrl(unittest.TestCase):
         self.assertTrue(bi.is_local_url("/tmp/a.tar.gz"))
 
     def test_local_path_of(self):
-        self.assertEqual(bi.local_path_of("file:///tmp/a"), "/tmp/a")
-        self.assertEqual(bi.local_path_of("/tmp/b"), "/tmp/b")
+        self.assertEqual(os.path.normpath(bi.local_path_of("file:///tmp/a")), os.path.normpath("/tmp/a"))
+        self.assertEqual(os.path.normpath(bi.local_path_of("/tmp/b")), os.path.normpath("/tmp/b"))
 
 
 class TestOfflineDownload(unittest.TestCase):
@@ -249,6 +249,7 @@ class TestOfflineDownload(unittest.TestCase):
 
 class TestWorkdir(unittest.TestCase):
 
+    @unittest.skipUnless(hasattr(os, "statvfs"), "requires os.statvfs")
     def test_disk_free_positive(self):
         # `/` на реальном роутере — read-only squashfs (f_bavail=0), поэтому
         # проверяем сам расчёт байт на замоканном statvfs, а не наличие места
@@ -257,6 +258,7 @@ class TestWorkdir(unittest.TestCase):
         with mock.patch("os.statvfs", return_value=fake):
             self.assertEqual(bi.disk_free("/"), 2048 * 4096)
 
+    @unittest.skipUnless(hasattr(os, "statvfs"), "requires os.statvfs")
     def test_disk_free_nonexistent_walks_up(self):
         # Несуществующий путь → берём ближайшего существующего предка.
         self.assertGreaterEqual(bi.disk_free("/nonexistent/deep/path"), 0)

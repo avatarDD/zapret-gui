@@ -344,6 +344,7 @@ class HealthcheckDaemon:
                 global_outage = (total >= 2)
 
         # ── Фаза 2: решение о сбросе (по-сервисно, с учётом streak) ──
+        any_resets = False
         for entry in results:
             name = entry["service"]
             if entry["ok"]:
@@ -363,21 +364,15 @@ class HealthcheckDaemon:
             if auto_reset and self._fail_streak[name] >= threshold:
                 for host in entry["hosts"]:
                     try:
-                        res = strategy_state.clear_host(host)
+                        res = strategy_state.clear_host(host, flush=False)
                         removed = (res or {}).get("removed", 0)
-                        if removed > 0:
-                            entry["hosts_reset"].append(
-                                {"host": host, "removed": removed})
+                        entry["hosts_reset"].append(
+                            {"host": host, "removed": removed})
+                        any_resets = True
                     except Exception as e:
                         log.warning("Healthcheck reset %s: %s" % (host, e),
                                     source="healthcheck")
-                # SIGHUP nfqws2 — чтобы Lua перечитал хостлисты и не
-                # перезаписал state из своего in-RAM кэша до того, как
-                # circular подберёт новую стратегию.
-                try:
-                    strategy_state.reload_nfqws()
-                except Exception:
-                    pass
+
                 log.warning(
                     "Healthcheck: %s провален %d раз подряд → сбросили "
                     "state по %d хостам" % (
@@ -388,6 +383,19 @@ class HealthcheckDaemon:
                 # circular должен успеть подобрать.
                 self._fail_streak[name] = 0
                 entry["fail_streak"] = 0
+
+        if any_resets:
+            try:
+                strategy_state.flush_clear_hosts()
+            except Exception as e:
+                log.warning("Healthcheck flush failed: %s" % e,
+                            source="healthcheck")
+            # SIGHUP nfqws2 — чтобы Lua перечитал хостлисты и не
+            # перезаписал state из своего in-RAM кэша.
+            try:
+                strategy_state.reload_nfqws()
+            except Exception:
+                pass
 
         # Убираем служебное поле hosts из результата (в API не нужно).
         for entry in results:

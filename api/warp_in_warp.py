@@ -9,7 +9,6 @@ API-модуль WARP-in-WARP (MASQUE-based).
   POST /api/warp-in-warp/down    — остановка
 """
 
-import json
 
 from bottle import request
 
@@ -30,7 +29,7 @@ def register(app):
     @app.route("/api/warp-in-warp/up", method="POST")
     def wiw_up():
         from core.warp_in_warp import get_warp_in_warp_manager
-        data = json.loads(request.body.read()) if request.body else {}
+        data = request.json or {}
         return get_warp_in_warp_manager().start(
             mode=data.get("mode", "masque_masque"),
             outer_sni=data.get("outer_sni", ""),

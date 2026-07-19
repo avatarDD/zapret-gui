@@ -15,8 +15,12 @@ Live мониторинг туннелей: графики трафика, laten
 Метрики хранятся в ring buffer (последние N точек).
 """
 
+from __future__ import annotations
+
 import os
 import re
+import socket
+from typing import Any
 import subprocess
 import threading
 import time
@@ -31,6 +35,9 @@ DEFAULT_COLLECT_INTERVAL = 5
 # Максимум точек в истории (при 5s интервале = 12 минут)
 MAX_HISTORY = 144
 
+# MR-76: grace period при старте мониторинга (секунды)
+GRACE_PERIOD_SECONDS = 60
+
 
 class TunnelMonitor:
     """Сбор метрик со всех туннельных интерфейсов."""
@@ -41,12 +48,18 @@ class TunnelMonitor:
         self._stop_evt = threading.Event()
         self._history = {}  # iface -> deque[(ts, rx_bytes, tx_bytes)]
         self._last_values = {}  # iface -> (rx, tx) для calculation
+        self._start_monotonic = None  # MR-76: time.monotonic() при старте
 
-    def start(self):
-        """Запустить фоновый сбор метрик."""
+    def start(self, recovery: bool = False) -> None:
+        """Запустить фоновый сбор метрик.
+
+        recovery=True — пропустить grace period (auto-recovery после сбоя).
+        """
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return
+            if not recovery:
+                self._start_monotonic = time.monotonic()
             self._stop_evt.clear()
             t = threading.Thread(target=self._run_loop,
                                  name="tunnel-monitor", daemon=True)
@@ -54,13 +67,14 @@ class TunnelMonitor:
             self._thread = t
             log.info("tunnel-monitor: запущен", source="monitor")
 
-    def stop(self):
+    def stop(self) -> None:
         """Остановить сбор метрик."""
         with self._lock:
             if not self._thread:
                 return
             self._stop_evt.set()
             self._thread = None
+            self._start_monotonic = None
             log.info("tunnel-monitor: остановлен", source="monitor")
 
     def _run_loop(self):
@@ -85,6 +99,12 @@ class TunnelMonitor:
                 if iface not in self._history:
                     self._history[iface] = deque(maxlen=MAX_HISTORY)
                 self._history[iface].append((now, rx, tx))
+
+        # MR-76: Очищаем историю старых интерфейсов
+        with self._lock:
+            for iface in list(self._history.keys()):
+                if iface not in interfaces:
+                    self._history.pop(iface, None)
 
     def _discover_interfaces(self) -> list:
         """Найти все туннельные интерфейсы."""
@@ -173,6 +193,10 @@ class TunnelMonitor:
 
         return list(ifaces)
 
+    def discover_interfaces(self) -> list[str]:
+        """Найти все туннельные интерфейсы (публичный API)."""
+        return self._discover_interfaces()
+
     def _read_counters(self, iface: str) -> tuple:
         """Прочитать RX/TX байты интерфейса.
 
@@ -217,22 +241,57 @@ class TunnelMonitor:
             pass
         return 0, 0
 
+    def _count_connections_proc(self, port: int) -> int:
+        """Подсчитать количество соединений в состоянии ESTABLISHED (01) на/с указанного порта."""
+        count = 0
+        port_hex = "%04X" % port
+        for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r") as f:
+                    next(f)  # Пропускаем заголовок
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) < 4:
+                            continue
+                        state = parts[3]
+                        if state != "01":  # Только ESTABLISHED
+                            continue
+                        lport = parts[1].split(":")[-1]
+                        rport = parts[2].split(":")[-1]
+                        if lport == port_hex or rport == port_hex:
+                            count += 1
+            except Exception:
+                pass
+        return count
+
+    def _count_connections(self, port: int) -> int:
+        # 1. Попытка прочитать из /proc/net/tcp
+        if os.path.isfile("/proc/net/tcp"):
+            return self._count_connections_proc(port)
+        
+        # 2. Fallback на ss
+        try:
+            port_str = str(port)
+            r = subprocess.run(
+                ["ss", "-tn", "state", "established",
+                 "( dport = :%s or sport = :%s )" % (port_str, port_str)],
+                capture_output=True, text=True, timeout=2)
+            return max(0, len((r.stdout or "").strip().splitlines()) - 1)
+        except Exception:
+            return 0
+
     def _read_opera_stats(self) -> tuple:
         """Эмулировать метрики opera-proxy через счётчик соединений."""
         try:
             # Проверяем что порт слушает
-            import socket
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(0.5)
             result = s.connect_ex(("127.0.0.1", 18080))
             s.close()
             if result == 0:
-                # Порт слушает — считаем активные соединения
-                r = subprocess.run(
-                    ["ss", "-tn", "state", "established",
-                     "( dport = :18080 or sport = :18080 )"],
-                    capture_output=True, text=True, timeout=2)
-                conns = len((r.stdout or "").strip().splitlines()) - 1
+                conns = self._count_connections(18080)
                 return max(0, conns * 1024), max(0, conns * 512)
         except Exception:
             pass
@@ -241,64 +300,74 @@ class TunnelMonitor:
     def _read_tgproxy_stats(self) -> tuple:
         """Эмулировать метрики telegram proxy."""
         try:
-            r = subprocess.run(
-                ["ss", "-tn", "state", "established",
-                 "( dport = :9443 or sport = :9443 )"],
-                capture_output=True, text=True, timeout=2)
-            conns = len((r.stdout or "").strip().splitlines()) - 1
+            conns = self._count_connections(9443)
             return max(0, conns * 1024), max(0, conns * 512)
         except Exception:
             pass
         return 0, 0
 
-    def get_metrics(self) -> list:
+    # MR-76: grace period — первые GRACE_PERIOD_SECONDS после старта
+    #         не срабатывают auto-recovery и алерты
+    def is_in_grace_period(self) -> bool:
+        with self._lock:
+            if self._start_monotonic is None:
+                return False
+            return time.monotonic() - self._start_monotonic < GRACE_PERIOD_SECONDS
+
+    def get_metrics(self) -> list[dict[str, Any]]:
         """Получить метрики со всеми вычислениями."""
         now = time.time()
         result = []
 
         with self._lock:
-            for iface, history in self._history.items():
-                if not history:
-                    continue
+            # Делаем shallow copy истории, чтобы освободить lock как можно быстрее
+            history_snapshot = {iface: list(history) for iface, history in self._history.items()}
 
-                # Текущие значения
-                last_ts, last_rx, last_tx = history[-1]
+        for iface, history in history_snapshot.items():
+            if not history:
+                continue
 
-                # Скорость (bytes/s) за последние 5 секунд
-                rx_speed = 0
-                tx_speed = 0
-                if len(history) >= 2:
-                    prev_ts, prev_rx, prev_tx = history[-2]
-                    dt = last_ts - prev_ts
-                    if dt > 0:
-                        rx_speed = max(0, (last_rx - prev_rx) / dt)
-                        tx_speed = max(0, (last_tx - prev_tx) / dt)
+            # Текущие значения
+            last_ts, last_rx, last_tx = history[-1]
 
-                # Средняя скорость за 1 минуту
-                rx_avg = 0
-                tx_avg = 0
-                minute_ago = now - 60
-                recent = [(ts, rx, tx) for ts, rx, tx in history
-                          if ts >= minute_ago]
-                if len(recent) >= 2:
-                    dt = recent[-1][0] - recent[0][0]
-                    if dt > 0:
-                        rx_avg = (recent[-1][1] - recent[0][1]) / dt
-                        tx_avg = (recent[-1][2] - recent[0][2]) / dt
+            # Скорость (bytes/s) за последние 5 секунд
+            rx_speed = 0
+            tx_speed = 0
+            if len(history) >= 2:
+                prev_ts, prev_rx, prev_tx = history[-2]
+                dt = last_ts - prev_ts
+                if dt > 0:
+                    rx_speed = max(0, (last_rx - prev_rx) / dt)
+                    tx_speed = max(0, (last_tx - prev_tx) / dt)
 
-                # История для графика (упрощённая)
-                chart = [(int(ts), rx, tx) for ts, rx, tx in history]
+            # Средняя скорость за 1 минуту
+            rx_avg = 0
+            tx_avg = 0
+            minute_ago = now - 60
+            recent = [(ts, rx, tx) for ts, rx, tx in history
+                      if ts >= minute_ago]
+            if len(recent) >= 2:
+                dt = recent[-1][0] - recent[0][0]
+                if dt > 0:
+                    rx_avg = (recent[-1][1] - recent[0][1]) / dt
+                    tx_avg = (recent[-1][2] - recent[0][2]) / dt
 
-                result.append({
-                    "iface": iface,
-                    "rx_bytes": last_rx,
-                    "tx_bytes": last_tx,
-                    "rx_speed": rx_speed,
-                    "tx_speed": tx_speed,
-                    "rx_avg_1m": rx_avg,
-                    "tx_avg_1m": tx_avg,
-                    "chart": chart,
-                })
+            # MR-136: ограничиваем историю для графика — клиент использует
+            # только последние 60 точек, отдаём 120 с запасом (~10 минут
+            # при интервале 5с). Без ограничения payload рос бесконечно.
+            CHART_LIMIT = 120
+            chart = [(int(ts), rx, tx) for ts, rx, tx in history[-CHART_LIMIT:]]
+
+            result.append({
+                "iface": iface,
+                "rx_bytes": last_rx,
+                "tx_bytes": last_tx,
+                "rx_speed": rx_speed,
+                "tx_speed": tx_speed,
+                "rx_avg_1m": rx_avg,
+                "tx_avg_1m": tx_avg,
+                "chart": chart,
+            })
 
         return result
 
@@ -306,9 +375,12 @@ class TunnelMonitor:
         """Статус монитора."""
         with self._lock:
             running = self._thread is not None and self._thread.is_alive()
+            grace = self._start_monotonic is not None and \
+                    time.monotonic() - self._start_monotonic < GRACE_PERIOD_SECONDS
         return {
             "running": running,
             "interfaces": len(self._history),
+            "grace_period": grace,
         }
 
 

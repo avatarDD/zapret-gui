@@ -170,7 +170,7 @@ class UsqueWatchdog:
                  source="usque")
 
         mgr.stop(iface)
-        time.sleep(1)
+        self._stop_evt.wait(1.0)
 
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
