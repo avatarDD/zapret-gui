@@ -46,6 +46,73 @@ class TestGetSettings(unittest.TestCase):
             self.assertEqual(s["handshake_timeout_sec"], 600)
             self.assertEqual(s["check_interval_sec"], 60)
 
+    def test_uses_cache_by_mtime(self):
+        awg_watchdog._invalidate_settings_cache()
+
+        class FakeCM:
+            _config_path = "/tmp/awg-settings.json"
+            def __init__(self):
+                self.load_calls = 0
+            def load(self):
+                self.load_calls += 1
+                return {"awg": {"watchdog": {"enabled": True}}}
+
+        fake_cm = FakeCM()
+        with mock.patch("core.config_manager.get_config_manager", return_value=fake_cm):
+            with mock.patch("os.path.exists", return_value=True), \
+                 mock.patch("os.path.getmtime", return_value=100.0), \
+                 mock.patch("time.monotonic", side_effect=[10.0, 11.0]):
+                s1 = awg_watchdog._get_settings()
+                s2 = awg_watchdog._get_settings()
+
+        self.assertTrue(s1["enabled"])
+        self.assertIs(s1, s2)
+        self.assertEqual(fake_cm.load_calls, 1)
+
+    def test_refreshes_on_mtime_change(self):
+        awg_watchdog._invalidate_settings_cache()
+
+        class FakeCM:
+            _config_path = "/tmp/awg-settings.json"
+            def __init__(self):
+                self.load_calls = 0
+            def load(self):
+                self.load_calls += 1
+                return {"awg": {"watchdog": {"enabled": True}}}
+
+        fake_cm = FakeCM()
+        mtimes = iter([100.0, 101.0])
+        with mock.patch("core.config_manager.get_config_manager", return_value=fake_cm):
+            with mock.patch("os.path.exists", return_value=True), \
+                 mock.patch("os.path.getmtime", side_effect=lambda *_: next(mtimes)), \
+                 mock.patch("time.monotonic", side_effect=[10.0, 11.0]):
+                awg_watchdog._get_settings()
+                awg_watchdog._get_settings()
+
+        self.assertEqual(fake_cm.load_calls, 2)
+
+    def test_invalidate_settings_cache_clears_cache(self):
+        awg_watchdog._invalidate_settings_cache()
+
+        class FakeCM:
+            _config_path = "/tmp/awg-settings.json"
+            def __init__(self):
+                self.load_calls = 0
+            def load(self):
+                self.load_calls += 1
+                return {"awg": {"watchdog": {"enabled": True}}}
+
+        fake_cm = FakeCM()
+        with mock.patch("core.config_manager.get_config_manager", return_value=fake_cm):
+            with mock.patch("os.path.exists", return_value=True), \
+                 mock.patch("os.path.getmtime", return_value=100.0), \
+                 mock.patch("time.monotonic", side_effect=[10.0, 11.0, 12.0]):
+                awg_watchdog._get_settings()
+                awg_watchdog._invalidate_settings_cache()
+                awg_watchdog._get_settings()
+
+        self.assertEqual(fake_cm.load_calls, 2)
+
 
 class TestMaybeRestart(unittest.TestCase):
     """Pure-логика принятия решения о рестарте."""

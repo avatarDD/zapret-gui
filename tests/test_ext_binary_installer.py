@@ -138,6 +138,45 @@ class TestInstallBinaryByName(unittest.TestCase):
     """Тесты install_binary_by_name."""
 
     @mock.patch("core.ext_binary_installer.github_release")
+    @mock.patch("core.ext_binary_installer._package_manager", return_value="opkg")
+    @mock.patch("core.ext_binary_installer._verify_downloaded_file", return_value={"ok": True})
+    @mock.patch("core.ext_binary_installer.download_file", return_value=True)
+    @mock.patch("core.ext_binary_installer.install_binary", return_value=True)
+    @mock.patch("subprocess.run")
+    @mock.patch("core.ext_binary_installer._pkg_version", return_value="")
+    @mock.patch("core.ext_binary_installer.detect_arch", return_value="aarch64")
+    def test_release_tag_is_used_not_latest(
+        self, mock_arch, mock_pkg_version, mock_subprocess_run, mock_install,
+        mock_download, mock_verify, mock_pkg_mgr, mock_release
+    ):
+        mock_subprocess_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        mock_release.return_value = {
+            "tag_name": "0.9.2",
+            "assets": [
+                {
+                    "name": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
+                    "browser_download_url": "https://example.invalid/tg-ws-proxy.ipk",
+                }
+            ],
+        }
+
+        with mock.patch("core.ext_binary_installer.tempfile.NamedTemporaryFile") as mtmp:
+            tmp = mock.Mock()
+            tmp.__enter__ = mock.Mock(return_value=tmp)
+            tmp.__exit__ = mock.Mock(return_value=False)
+            tmp.name = "/tmp/tgwsproxy.ipk"
+            mtmp.return_value = tmp
+            with mock.patch("core.ext_binary_installer.open", mock.mock_open(read_data=b"abc"), create=True):
+                with mock.patch("core.ext_binary_installer.hashlib.sha256") as mhash:
+                    h = mock.Mock()
+                    h.hexdigest.return_value = "9e8737f43ec7114ba904179f54908dd1d21a7bb9151f7b10a38207fda2bd9f50"
+                    mhash.return_value = h
+                    res = ebi.install_binary_by_name("tgwsproxy")
+
+        self.assertTrue(res["ok"])
+        mock_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go", "0.9.2")
+
+    @mock.patch("core.ext_binary_installer.github_release")
     @mock.patch("core.ext_binary_installer._get_version")
     @mock.patch("os.path.isfile")
     @mock.patch("core.ext_binary_installer.detect_arch")
@@ -195,6 +234,141 @@ class TestInstallBinaryByName(unittest.TestCase):
 
         self.assertTrue(res["ok"])
         self.assertEqual(res["tag"], "0.9.2")
+
+    @mock.patch("core.ext_binary_installer.github_release")
+    @mock.patch("core.ext_binary_installer._package_manager", return_value="opkg")
+    @mock.patch("core.ext_binary_installer._verify_downloaded_file", return_value={"ok": True})
+    @mock.patch("core.ext_binary_installer.download_file", return_value=True)
+    @mock.patch("core.ext_binary_installer.install_binary", return_value=True)
+    @mock.patch("subprocess.run")
+    @mock.patch("core.ext_binary_installer._pkg_version", return_value="")
+    @mock.patch("core.ext_binary_installer.detect_arch", return_value="aarch64")
+    def test_sha256_missing_fails_closed(
+        self, mock_arch, mock_pkg_version, mock_subprocess_run, mock_install,
+        mock_download, mock_verify, mock_pkg_mgr, mock_release
+    ):
+        mock_subprocess_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        mock_release.return_value = {
+            "tag_name": "0.9.2",
+            "assets": [
+                {
+                    "name": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
+                    "browser_download_url": "https://example.invalid/tg-ws-proxy.ipk",
+                }
+            ],
+        }
+        with mock.patch("core.ext_binary_installer._expected_sha256", return_value=""):
+            with mock.patch("core.ext_binary_installer.tempfile.NamedTemporaryFile") as mtmp:
+                tmp = mock.Mock()
+                tmp.__enter__ = mock.Mock(return_value=tmp)
+                tmp.__exit__ = mock.Mock(return_value=False)
+                tmp.name = "/tmp/tgwsproxy.ipk"
+                mtmp.return_value = tmp
+                res = ebi.install_binary_by_name("tgwsproxy")
+        self.assertFalse(res["ok"])
+        self.assertIn("SHA256", res["error"])
+
+    @mock.patch("core.ext_binary_installer.github_release")
+    @mock.patch("core.ext_binary_installer._package_manager", return_value="opkg")
+    @mock.patch("core.ext_binary_installer._verify_downloaded_file", return_value={"ok": True})
+    @mock.patch("core.ext_binary_installer.download_file", return_value=True)
+    @mock.patch("core.ext_binary_installer.install_binary", return_value=True)
+    @mock.patch("subprocess.run")
+    @mock.patch("core.ext_binary_installer._pkg_version", return_value="")
+    @mock.patch("core.ext_binary_installer.detect_arch", return_value="aarch64")
+    def test_sha256_mismatch_fails(
+        self, mock_arch, mock_pkg_version, mock_subprocess_run, mock_install,
+        mock_download, mock_verify, mock_pkg_mgr, mock_release
+    ):
+        mock_subprocess_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        mock_release.return_value = {
+            "tag_name": "0.9.2",
+            "assets": [
+                {
+                    "name": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
+                    "browser_download_url": "https://example.invalid/tg-ws-proxy.ipk",
+                }
+            ],
+        }
+        with mock.patch("core.ext_binary_installer._expected_sha256",
+                        return_value="ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"):
+            with mock.patch("core.ext_binary_installer.tempfile.NamedTemporaryFile") as mtmp:
+                tmp = mock.Mock()
+                tmp.__enter__ = mock.Mock(return_value=tmp)
+                tmp.__exit__ = mock.Mock(return_value=False)
+                tmp.name = "/tmp/tgwsproxy.ipk"
+                mtmp.return_value = tmp
+                with mock.patch("core.ext_binary_installer.open", mock.mock_open(read_data=b"abc"), create=True):
+                    with mock.patch("core.ext_binary_installer.hashlib.sha256") as mhash:
+                        h = mock.Mock()
+                        h.hexdigest.return_value = "0000000000000000000000000000000000000000000000000000000000000000"
+                        mhash.return_value = h
+                        with self.assertRaises(ebi.InstallError):
+                            ebi.install_binary_by_name("tgwsproxy")
+
+    @mock.patch("core.ext_binary_installer.github_release")
+    @mock.patch("core.ext_binary_installer._package_manager", return_value="opkg")
+    @mock.patch("core.ext_binary_installer._verify_downloaded_file", return_value={"ok": True})
+    @mock.patch("core.ext_binary_installer.download_file", return_value=True)
+    @mock.patch("core.ext_binary_installer.install_binary", return_value=True)
+    @mock.patch("subprocess.run")
+    @mock.patch("core.ext_binary_installer._pkg_version", return_value="")
+    @mock.patch("core.ext_binary_installer.detect_arch", return_value="riscv64")
+    def test_unsupported_arch_fails(
+        self, mock_arch, mock_pkg_version, mock_subprocess_run, mock_install,
+        mock_download, mock_verify, mock_pkg_mgr, mock_release
+    ):
+        mock_subprocess_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        res = ebi.install_binary_by_name("tgwsproxy")
+        self.assertFalse(res["ok"])
+        self.assertIn("не поддерживается", res["error"])
+
+    @mock.patch("core.ext_binary_installer.github_release",
+                return_value={"error_detail": "GitHub API HTTP error 403"})
+    @mock.patch("core.ext_binary_installer.detect_arch", return_value="aarch64")
+    def test_release_api_error_fails(self, mock_arch, mock_release):
+        res = ebi.install_binary_by_name("usque")
+        self.assertFalse(res["ok"])
+        self.assertIn("GitHub API", res["error"])
+
+    @mock.patch("core.ext_binary_installer.github_release")
+    @mock.patch("core.ext_binary_installer._package_manager", return_value="")
+    @mock.patch("core.ext_binary_installer._verify_downloaded_file", return_value={"ok": True})
+    @mock.patch("core.ext_binary_installer.download_file", return_value=True)
+    @mock.patch("core.ext_binary_installer.install_binary", return_value=True)
+    @mock.patch("subprocess.run")
+    @mock.patch("core.ext_binary_installer._pkg_version", return_value="")
+    @mock.patch("core.ext_binary_installer.detect_arch", return_value="aarch64")
+    def test_package_install_requires_pkg_manager(
+        self, mock_arch, mock_pkg_version, mock_subprocess_run, mock_install,
+        mock_download, mock_verify, mock_pkg_mgr, mock_release
+    ):
+        mock_subprocess_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        mock_release.return_value = {
+            "tag_name": "0.9.2",
+            "assets": [
+                {
+                    "name": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
+                    "browser_download_url": "https://example.invalid/tg-ws-proxy.ipk",
+                }
+            ],
+        }
+        with mock.patch("core.ext_binary_installer._expected_sha256",
+                        return_value="9e8737f43ec7114ba904179f54908dd1d21a7bb9151f7b10a38207fda2bd9f50"):
+            with mock.patch("core.ext_binary_installer.tempfile.NamedTemporaryFile") as mtmp:
+                tmp = mock.Mock()
+                tmp.__enter__ = mock.Mock(return_value=tmp)
+                tmp.__exit__ = mock.Mock(return_value=False)
+                tmp.name = "/tmp/tgwsproxy.ipk"
+                mtmp.return_value = tmp
+                with mock.patch("core.ext_binary_installer.open", mock.mock_open(read_data=b"abc"), create=True):
+                    with mock.patch("core.ext_binary_installer.hashlib.sha256") as mhash:
+                        h = mock.Mock()
+                        h.hexdigest.return_value = "9e8737f43ec7114ba904179f54908dd1d21a7bb9151f7b10a38207fda2bd9f50"
+                        mhash.return_value = h
+                        res = ebi.install_binary_by_name("tgwsproxy")
+        self.assertFalse(res["ok"])
+        self.assertIn("Не найден opkg/apk", res["error"])
 
 
 if __name__ == "__main__":
