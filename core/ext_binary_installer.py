@@ -676,6 +676,8 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
     with tempfile.NamedTemporaryFile(delete=False, suffix=url_suffix) as tmp:
         tmp_path = tmp.name
 
+    pkg_mgr = _package_manager() if install_kind == "package" else ""
+
     try:
         if not download_file(download_url, tmp_path):
             return {"ok": False, "error": "Не удалось скачать %s" % asset_name}

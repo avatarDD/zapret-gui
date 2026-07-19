@@ -83,7 +83,6 @@ class TestBinaries(unittest.TestCase):
         )
 
 
-
 class TestGetInstallStatus(unittest.TestCase):
     """Тесты get_install_status."""
 
