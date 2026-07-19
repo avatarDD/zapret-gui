@@ -13,6 +13,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -34,6 +35,44 @@ _operation_status = {}
 def get_operation_status(name: str) -> dict:
     """Получить статус текущей операции (установки)."""
     return _operation_status.get(name, {"status": "idle", "progress": 0, "message": ""})
+
+
+def _pkg_version(pkg_name: str) -> str:
+    """Версия установленного пакета через opkg/apk."""
+    if not pkg_name:
+        return ""
+    for cmd, args in (
+        ("opkg", ["status", pkg_name]),
+        ("apk", ["info", "-v", pkg_name]),
+    ):
+        try:
+            proc = subprocess.run(
+                [cmd, *args], capture_output=True, text=True, timeout=5)
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode != 0 or not proc.stdout:
+            continue
+        if cmd == "opkg":
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("Version:"):
+                    return line.split(":", 1)[1].strip()
+        else:
+            prefix = pkg_name + "-"
+            first = proc.stdout.splitlines()[0].strip()
+            if first.startswith(prefix):
+                return first[len(prefix):].split()[0].strip()
+            if first:
+                return first.split()[0]
+    return ""
+
+
+def _package_manager() -> str:
+    """Найти пакетный менеджер хоста."""
+    for cmd in ("opkg", "apk"):
+        if shutil.which(cmd):
+            return cmd
+    return ""
 
 
 # ─────── Архитектуры ───────
@@ -271,6 +310,20 @@ def install_binary(source: str, dest: str) -> bool:
 
 # Конфигурация каждого бинарника
 BINARIES = {
+    "tgwsproxy": {
+        "repo": "spatiumstas/tg-ws-proxy-go",
+        "sha256": "",
+        "install_kind": "package",
+        "package_name": "tg-ws-proxy",
+        "dest": "/opt/bin/tg-ws-proxy",
+        "arch_map": {
+            "aarch64": "entware_aarch64-3.10.ipk",
+            "mipsel": "entware_mipsel-3.4.ipk",
+            "mips": "entware_mips-3.4.ipk",
+            "armv7": "entware_armv7-3.2.ipk",
+        },
+    },
+
     "usque": {
         "repo": "side-effect-tm/usque-keenetic",
         "sha256": "",
@@ -324,12 +377,18 @@ def get_install_status(name: str) -> dict:
         return {"installed": False, "arch": arch,
                 "error": "Архитектура %s не поддерживается для %s" % (arch, name)}
 
-    binary = cfg["dest"]
-    installed = os.path.isfile(binary) and os.access(binary, os.X_OK)
-
-    version = ""
-    if installed:
-        version = _get_version(binary)
+    install_kind = cfg.get("install_kind", "binary")
+    if install_kind == "package":
+        pkg = cfg.get("package_name", name)
+        version = _pkg_version(pkg)
+        installed = bool(version) or os.path.isfile("/opt/etc/init.d/S99tg-ws-proxy")
+        binary = "/opt/etc/init.d/S99tg-ws-proxy"
+    else:
+        binary = cfg["dest"]
+        installed = os.path.isfile(binary) and os.access(binary, os.X_OK)
+        version = ""
+        if installed:
+            version = _get_version(binary)
 
     return {
         "installed": installed,
@@ -434,7 +493,7 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
     Установить бинарник по имени.
 
     Args:
-        name: "usque" | "tgproto" | "opera"
+        name: "tgwsproxy" | "usque" | "tgproto" | "opera"
         progress_cb: callback(stage, pct, label) для UI
 
     Returns:
@@ -450,6 +509,7 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
 
     asset_name = cfg["arch_map"][arch]
     asset_prefix = cfg.get("asset_prefix", "")
+    install_kind = cfg.get("install_kind", "binary")
 
     # 1. Получаем latest release
     if progress_cb:
@@ -465,8 +525,19 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
         return {"ok": False, "error": "Release без tag"}
 
     # Проверка версии: если установленный бинарник уже имеет ту же версию, что и tag
-    dest_path = cfg["dest"]
-    if os.path.isfile(dest_path):
+    dest_path = cfg.get("dest", "")
+    package_name = cfg.get("package_name", "")
+    if install_kind == "package":
+        current_version = _pkg_version(package_name)
+        if current_version:
+            cv_norm = current_version.strip().lstrip("vV")
+            tag_norm = tag.strip().lstrip("vV")
+            if cv_norm == tag_norm:
+                log.info("install_binary_by_name: %s version %s is already up to date" % (name, tag), source="ext_installer")
+                if progress_cb:
+                    progress_cb("install", 100, "Уже установлена актуальная версия %s" % tag)
+                return {"ok": True, "binary": dest_path or package_name, "version": tag, "noop": True}
+    elif os.path.isfile(dest_path):
         current_version = _get_version(dest_path)
         if current_version:
             # Нормализуем обе версии (удаляем начальные v/V)
@@ -483,25 +554,43 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
         progress_cb("download", 30, "Скачивание %s..." % asset_name)
 
     # Пробуем разные варианты имени файла
-    candidates = [
-        asset_prefix + asset_name,
-        asset_name,
-        asset_name + ".gz",
-        asset_name + ".tar.gz",
-    ]
+    if install_kind == "package":
+        candidates = [
+            "tg-ws-proxy_%s-1_%s" % (tag, asset_name),
+            "tg-ws-proxy_%s_%s" % (tag, asset_name),
+            "tg-ws-proxy_%s" % tag,
+        ]
+    else:
+        candidates = [
+            asset_prefix + asset_name,
+            asset_name,
+            asset_name + ".gz",
+            asset_name + ".tar.gz",
+        ]
 
     download_url = ""
     downloaded_asset_name = ""
-    for c in candidates:
-        url = github_download_url(cfg["repo"], tag, c)
-        # Проверяем существует ли asset в release
-        for asset in release.get("assets", []):
-            if asset.get("name") == c:
-                download_url = asset.get("browser_download_url", url)
-                downloaded_asset_name = c
+    assets = release.get("assets", []) or []
+    if install_kind == "package":
+        for asset in assets:
+            aname = asset.get("name", "")
+            if not aname.startswith("tg-ws-proxy_%s" % tag):
+                continue
+            if aname.endswith(asset_name):
+                download_url = asset.get("browser_download_url", "")
+                downloaded_asset_name = aname
                 break
-        if download_url:
-            break
+    else:
+        for c in candidates:
+            url = github_download_url(cfg["repo"], tag, c)
+            # Проверяем существует ли asset в release
+            for asset in assets:
+                if asset.get("name") == c:
+                    download_url = asset.get("browser_download_url", url)
+                    downloaded_asset_name = c
+                    break
+            if download_url:
+                break
 
     if not download_url:
         # Fallback: пробуем напрямую
@@ -519,6 +608,8 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
         url_suffix = ".bin"
     with tempfile.NamedTemporaryFile(delete=False, suffix=url_suffix) as tmp:
         tmp_path = tmp.name
+
+    pkg_mgr = _package_manager() if install_kind == "package" else ""
 
     try:
         if not download_file(download_url, tmp_path):
@@ -543,6 +634,30 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
                     h.update(chunk)
             if h.hexdigest().lower() != cfg_sha256.lower():
                 raise InstallError("SHA256 mismatch for %s" % name)
+
+        if install_kind == "package":
+            if progress_cb:
+                progress_cb("install", 70, "Установка пакета...")
+            if not pkg_mgr:
+                return {"ok": False, "error": "Не найден opkg/apk для установки пакета"}
+            if pkg_mgr == "apk":
+                install_cmd = [pkg_mgr, "add", "--allow-untrusted"]
+            else:
+                install_cmd = [pkg_mgr, "install"]
+            install_cmd.append(tmp_path)
+            if pkg_mgr == "opkg":
+                install_cmd.insert(2, "--force-reinstall")
+            proc = subprocess.run(install_cmd, capture_output=True, text=True, timeout=600)
+            if proc.returncode != 0:
+                return {
+                    "ok": False,
+                    "error": "Установка пакета не удалась: %s"
+                             % ((proc.stderr or proc.stdout or "").strip()),
+                }
+            if progress_cb:
+                progress_cb("done", 100, "Установлено: %s" % tag)
+            version = _pkg_version(package_name) or tag
+            return {"ok": True, "binary": dest_path or package_name, "version": version, "tag": tag}
 
         # 4. Распаковываем если нужно
         if progress_cb:

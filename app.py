@@ -768,13 +768,6 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception as e:
             log.warning("usque watchdog при boot: %s" % e, source="usque")
 
-        # Telegram proxy watchdog: авто-рестарт если процесс упал.
-        try:
-            from core.tgproxy_watchdog import get_tgproxy_watchdog
-            get_tgproxy_watchdog().reconfigure()
-        except Exception as e:
-            log.warning("tgproxy watchdog при boot: %s" % e, source="tgproxy")
-
         # WARP/MASQUE autostart: поднять usque-туннели при старте, если
         # включён autostart и нет отдельного init.d-скрипта.
         try:

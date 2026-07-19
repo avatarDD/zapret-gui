@@ -76,27 +76,10 @@ def _read_pid(path: str):
 def _pid_alive(pid: int) -> bool:
     if not pid:
         return False
-    alive = False
     try:
         os.kill(pid, 0)
-        alive = True
     except (ProcessLookupError, OSError):
-        if os.path.exists("/proc/%d" % pid):
-            alive = True
-    
-    if not alive:
-        return False
-
-    try:
-        with open("/proc/%d/cmdline" % pid, "rb") as f:
-            raw = f.read()
-        if raw:
-            argv0 = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
-            name = os.path.basename(argv0)
-            return any(k in name.lower() for k in ("awg", "amneziawg", "wg"))
-    except (IOError, OSError):
-        pass
-    
+        return os.path.exists("/proc/%d" % pid)
     return True
 
 

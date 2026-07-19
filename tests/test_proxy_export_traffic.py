@@ -20,7 +20,7 @@ from core.singbox_config import (
     make_clash_api, ensure_clash_api, clash_api_endpoint, plan_activation,
     is_x25519_key, outbound_key_problem,
 )
-from core.proxy_tester import test_outbounds
+from core.proxy_tester import run_outbound_tests
 import core.proxy_traffic as ptmod
 
 # валидный 32-байтный x25519-ключ в base64url-без-паддинга (как pbk в ссылках)
@@ -225,7 +225,7 @@ class TestTesterSkipsBrokenKeys(unittest.TestCase):
                "tls": {"enabled": True,
                        "reality": {"enabled": True, "public_key": ""}}}
         # binary="" → фаза e2e не запускается; TCP отключаем → детерминизм.
-        res = test_outbounds([good, bad], tcp_prefilter_enabled=False,
+        res = run_outbound_tests([good, bad], tcp_prefilter_enabled=False,
                              binary="")
         by = {r["tag"]: r for r in res["results"]}
         self.assertTrue(by["bad"].get("invalid"))
