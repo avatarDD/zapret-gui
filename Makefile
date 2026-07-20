@@ -50,7 +50,7 @@ EXCLUDE      := --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
 # Цели
 # ═══════════════════════════════════════════════════════════════
 
-.PHONY: all ipk openwrt-ipk openwrt-apk clean _clean_build lint info help release tag \
+.PHONY: all ipk openwrt-ipk openwrt-apk clean _clean_build lint bundle info help release tag \
         _prepare_apk_scripts _build_apk_openwrt
 
 all: ipk
@@ -66,6 +66,7 @@ help:
 	@echo "  make clean        — очистить build/ и dist/"
 	@echo "  make lint         — проверка синтаксиса Python"
 	@echo "  make info         — информация о пакете"
+	@echo "  make bundle       — собрать минифицированные бандлы CSS/JS (MR-119)"
 	@echo ""
 
 # ── Информация ────────────────────────────────────────────────
@@ -312,6 +313,16 @@ clean:
 	@find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 	@find . -name '*.pyc' -delete 2>/dev/null || true
 	@echo "Очистка: OK"
+
+# ── Bundle (MR-119) ──────────────────────────────────────────
+bundle:
+	@echo "── Сборка минифицированных бандлов CSS/JS ──"
+	@python3 tools/bundle.py
+	@echo ""
+	@echo "✓ Бандлы собраны:"
+	@echo "  web/dist/bundle.css"
+	@echo "  web/dist/bundle.js"
+	@echo ""
 
 # ── Lint ──────────────────────────────────────────────────────
 lint:

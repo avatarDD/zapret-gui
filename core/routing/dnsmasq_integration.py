@@ -370,10 +370,22 @@ class DnsmasqIntegration:
             lines.append("")
 
         text = "\n".join(lines).rstrip() + "\n"
+        # MR-24: Атомарная запись во избежание повреждения файла при сбоях питания/uninstall/OOM
+        tmp_managed = managed + ".tmp"
         try:
-            with open(managed, "w") as f:
+            with open(tmp_managed, "w", encoding="utf-8") as f:
                 f.write(text)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp_managed, managed)
         except (IOError, OSError) as e:
+            try:
+                os.remove(tmp_managed)
+            except OSError:
+                pass
             return {"ok": False, "error": "Запись %s: %s" % (managed, e)}
         return {"ok": True, "managed_file": managed, "bytes": len(text)}
 

@@ -18,6 +18,7 @@
 import os
 import json
 import copy
+import secrets
 import threading
 from core.log_buffer import log
 from core.safe_io import atomic_write_json
@@ -52,12 +53,17 @@ DEFAULT_CONFIG = {
 
     # --- Настройки Web-GUI ---
     "gui": {
-        "host": "0.0.0.0",
+        "host": "127.0.0.1",
         "port": 8080,
         "debug": False,
+        # Аутентификация выключена по умолчанию (совместимо с прежним UX
+        # zapret-gui). Дефолтный bind — 127.0.0.1, поэтому без явной
+        # публикации на LAN доступ и так только с самого роутера. Для
+        # доступа по сети рекомендуется включить auth_enabled + задать
+        # непустой auth_password.
         "auth_enabled": False,
         "auth_user": "admin",
-        "auth_password": "",
+        "auth_password": "admin",
         # Доверенные cross-origin источники для CORS (по умолчанию пусто —
         # разрешён только same-origin; `*` НЕ используется). Пример:
         # ["https://my.dashboard.example"].
@@ -70,9 +76,9 @@ DEFAULT_CONFIG = {
         # Расширенный набор портов (паритет с nfqws2-keenetic): помимо HTTP/
         # HTTPS — Cloudflare alt-порты (2053/2083/2087/2096/8443), Telegram
         # MTProto (5222), а по UDP — QUIC (443), STUN/TURN, WireGuard-диапазоны
-        # и Discord voice (49152:65535).
+        # и Discord voice (50000:65535).
         "ports_tcp": "80,443,2053,2083,2087,2096,5222,8443",
-        "ports_udp": "443,3478:3481,5349,19294:19344,49152:65535",
+        "ports_udp": "443,3478:3481,5349,19294:19344,50000:65535",
         "tcp_pkt_out": 20,
         "tcp_pkt_in": 10,
         "udp_pkt_out": 5,
@@ -237,6 +243,111 @@ DEFAULT_CONFIG = {
         # Сколько последних результатов хранить в памяти (ring buffer).
         "history_size": 50,
     },
+
+    # --- WARP/MASQUE (usque-keenetic) ---
+    # Управление Cloudflare WARP через usque (MASQUE-протокол).
+    # Usque тянется как бинарник из side-effect-tm/usque-keenetic —
+    # по аналогии с sing-box из SagerNet/sing-box.
+    "usque": {
+        "enabled": False,
+        "autostart": False,
+        # SNI-маскировка: WARP-трафик маскируется под этот домен.
+        # По умолчанию ozon.ru — крупный российский e-commerce.
+        "default_sni": "ozon.ru",
+        "http2_enable": False,
+        # Метаданные установленного бинарника (заполняется при установке).
+        "installed_tag": "",
+        "installed_arch": "",
+        "installed_at": 0,
+        # Watchdog: проверка доступности туннеля.
+        "watchdog": {
+            "enabled": False,
+            "interval_sec": 60,
+            "probe_host": "1.1.1.1",
+            "probe_port": 443,
+        },
+    },
+
+    # --- WARP-in-WARP ---
+    # Двойной туннель: MASQUE+MASQUE / MASQUE+AWG / AWG+MASQUE.
+    "warp_in_warp": {
+        "watchdog_enabled": False,
+    },
+
+    # --- Tunnel Optimizer ---
+    # Оптимизации TCP/MTU/BBR для снижения латентности туннелей.
+    "tunnel_optimizer": {
+        "enabled": False,
+        "profile": "balanced",  # low_latency | balanced | throughput
+    },
+
+    # --- Per-domain DNS Routing ---
+    # Кастомный DNS для конкретных хостов (обход DNS-подмены ISP).
+    "dns_routing": {
+        "rules": [],  # [{domain, dns, description, enabled}]
+    },
+
+    # --- Auto-Remediation ---
+    # Автоматический выбор метода обхода по DPI-классификации.
+    "auto_remediation": {
+        "enabled": False,
+        # Приоритет туннелей для remediation при "ip_block"/"full_block".
+        # Первый доступный используется. Порядок = приоритет (сверху вниз).
+        "tunnel_priority": ["warp", "awg", "opera", "singbox", "mihomo"],
+    },
+
+    # --- Update Checker (Unified) ---
+    # Фоновая проверка обновлений всех бинарников.
+    "update_checker": {
+        "enabled": False,
+        "interval_hours": 24,
+    },
+
+    # --- Opera Proxy (Alexey71/opera-proxy) ---
+    # Standalone Opera VPN клиент: HTTP/SOCKS5 прокси через SurfEasy.
+    # Бинарник тянется из Alexey71/opera-proxy — по аналогии с sing-box.
+    "opera_proxy": {
+        "enabled": False,
+        "autostart": False,
+        "country": "EU",  # EU | AS | AM
+        "bind": "127.0.0.1:18080",
+        "socks_mode": False,  # HTTP proxy по умолчанию
+        "proxy_bypass": "",   # домены-исключения
+        "fake_sni": "",       # SNI-маскировка
+        "verbosity": 20,      # 10=debug, 20=info, 30=warn, 40=error
+        "installed_tag": "",
+        "installed_arch": "",
+    },
+
+    # --- Telegram MTProto Proxy (tgwsproxy / mtproto) ---
+    # Два движка:
+    #   tgwsproxy — tg-ws-proxy-go, основной
+    #   mtproto   — tg-mtproxy-client, резервный
+    "tgproxy": {
+        "enabled": False,
+        "engine": "tgwsproxy",  # tgwsproxy | mtproto
+        "port": 9443,
+        # mtproto-specific (tg-mtproxy-client)
+        "tunnel_url": "",     # WSS relay URL
+        "tunnel_secret": "",
+        "max_conns": 1024,
+        # common
+        "verbose": False,
+        "autostart": False,
+    },
+
+    # --- Block Detector (DNS-мониторинг + автообнаружение блокировок) ---
+    # Мониторит DNS-запросы клиентов, пронирует новые домены,
+    # автодобавляет заблокированные в named lists.
+    "block_detector": {
+        "enabled": False,
+        "dns_source": "auto",  # auto | af_packet | dnsmasq_log | adguard_log
+        "probe_timeout": 5,
+        "auto_add_enabled": False,
+        "auto_add_list_id": "",  # целевой named list для автодобавления
+        "whitelist": [],        # домены-исключения
+        "interval_sec": 300,
+    },
 }
 
 
@@ -295,6 +406,14 @@ class ConfigManager:
                 if first_load:
                     log.info("Конфигурация не найдена, создаём с дефолтами",
                              source="config")
+                # Генерация случайного пароля при первом создании конфига
+                self._config["gui"]["auth_password"] = secrets.token_hex(8)
+                if first_load:
+                    log.warning(
+                        f"Сгенерирован пароль администратора: "
+                        f"{self._config['gui']['auth_password']}",
+                        source="config"
+                    )
                 self._save_locked()
 
             self._loaded = True

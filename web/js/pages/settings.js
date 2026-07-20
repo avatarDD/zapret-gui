@@ -176,6 +176,18 @@ const SettingsPage = (() => {
                 { key: 'interfaces.lan',   label: 'LAN (IFACE_LAN)',    type: 'text', placeholder: 'Авто-определение' },
             ]
         },
+        {
+            id: 'remediation',
+            label: 'Auto-Remediation',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+            fields: [
+                { key: 'auto_remediation.enabled', label: 'Включить Auto-Remediation', type: 'toggle',
+                  hint: 'Автоматический выбор метода обхода (zapret/tunnel/dns) по результатам BlockCheck.' },
+                { key: 'auto_remediation.tunnel_priority', label: 'Приоритет туннелей', type: 'tunnel_priority',
+                  hint: 'Порядок приоритета туннелей для auto-ремедиации. Первый доступный используется. Перетаскивайте для изменения порядка.',
+                  showIf: 'auto_remediation.enabled' },
+            ]
+        },
     ];
 
     // ══════════════════ Render ══════════════════
@@ -188,7 +200,7 @@ const SettingsPage = (() => {
                     <p class="page-description">Конфигурация Web-GUI и параметры nfqws2</p>
                 </div>
                 <div class="settings-header-actions">
-                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.exportConfig()" title="Экспортировать конфигурацию">
+                    <button class="btn btn-ghost btn-sm" data-action="export" title="Экспортировать конфигурацию">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                             <polyline points="17 8 12 3 7 8"/>
@@ -196,7 +208,7 @@ const SettingsPage = (() => {
                         </svg>
                         <span class="btn-label-desktop">Экспорт</span>
                     </button>
-                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.importConfig()" title="Импортировать конфигурацию">
+                    <button class="btn btn-ghost btn-sm" data-action="import" title="Импортировать конфигурацию">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                             <polyline points="7 10 12 15 17 10"/>
@@ -224,8 +236,8 @@ const SettingsPage = (() => {
                     <div class="settings-save-bar hidden" id="settings-save-bar">
                         <span class="settings-save-text">Есть несохранённые изменения</span>
                         <div class="settings-save-btns">
-                            <button class="btn btn-ghost btn-sm" onclick="SettingsPage.discardChanges()">Отменить</button>
-                            <button class="btn btn-success btn-sm" onclick="SettingsPage.saveConfig()">
+                            <button class="btn btn-ghost btn-sm" data-action="discard">Отменить</button>
+                            <button class="btn btn-success btn-sm" data-action="save">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
                                     <polyline points="17 21 17 13 7 13 7 21"/>
@@ -244,7 +256,7 @@ const SettingsPage = (() => {
                                     <div class="settings-action-title">Сбросить к дефолтам</div>
                                     <div class="settings-action-desc">Восстановить все настройки по умолчанию</div>
                                 </div>
-                                <button class="btn btn-danger btn-sm" onclick="SettingsPage.resetConfig()">Сбросить</button>
+                                <button class="btn btn-danger btn-sm" data-action="reset">Сбросить</button>
                             </div>
                         </div>
                     </div>
@@ -277,17 +289,18 @@ const SettingsPage = (() => {
                 </div>
             </div>
 
-            <input type="file" id="settings-import-file" accept=".json" style="display:none" onchange="SettingsPage.handleImportFile(this)">
+            <input type="file" id="settings-import-file" accept=".json" style="display:none" data-action="handleImportFile">
         `;
 
         loadConfig();
         loadSystemInfo();
+        _bindEvents(container);
     }
 
     function renderSectionNav() {
         return SECTIONS.map(s => `
             <div class="settings-nav-item ${s.id === activeSection ? 'active' : ''}"
-                 data-section="${s.id}" onclick="SettingsPage.switchSection('${s.id}')">
+                 data-section="${s.id}" data-action="switchSection">
                 <span class="settings-nav-icon">${s.icon}</span>
                 <span class="settings-nav-label">${s.label}</span>
             </div>
@@ -368,11 +381,11 @@ const SettingsPage = (() => {
                         Восстановить и параметры Web-GUI (адрес/порт/авторизация)
                         — иначе они останутся текущими
                     </label>
-                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.pickBackupFile()">
+                    <button class="btn btn-ghost btn-sm" data-action="pickBackupFile">
                         Выбрать файл бэкапа…
                     </button>
                     <input type="file" id="backup-restore-file" accept=".json"
-                           style="display:none" onchange="SettingsPage.handleBackupFile(this)">
+                           style="display:none" data-action="handleBackupFile">
                 </div>
             </div>
         `;
@@ -391,7 +404,7 @@ const SettingsPage = (() => {
                             Кликните на бейджи WAN / WAN6 / LAN для назначения роли. Соответствует IFACE_WAN, IFACE_WAN6, IFACE_LAN в конфиге zapret2.
                         </div>
                     </div>
-                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.refreshInterfaces()" title="Обновить список">
+                    <button class="btn btn-ghost btn-sm" data-action="refreshInterfaces" title="Обновить список">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <polyline points="23 4 23 10 17 10"/>
                             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -399,13 +412,13 @@ const SettingsPage = (() => {
                     </button>
                 </div>
                 <div style="display:flex; gap:8px; margin: 8px 0 10px;">
-                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.autoDetectRoles()" title="Определить WAN/WAN6/LAN по таблице маршрутов">
+                    <button class="btn btn-ghost btn-sm" data-action="autoDetectRoles" title="Определить WAN/WAN6/LAN по таблице маршрутов">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                         </svg>
                         Определить автоматически
                     </button>
-                    <button class="btn btn-ghost btn-sm" onclick="SettingsPage.clearRoles()" title="Сбросить все назначения ролей">
+                    <button class="btn btn-ghost btn-sm" data-action="clearRoles" title="Сбросить все назначения ролей">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                         </svg>
@@ -433,7 +446,7 @@ const SettingsPage = (() => {
                     <input type="${field.type}" class="form-input" id="${id}"
                            value="${escapeAttr(value || '')}"
                            placeholder="${field.placeholder || ''}"
-                           onchange="SettingsPage.onFieldChange('${field.key}', this.value)">
+                           data-action="fieldChange" data-key="${field.key}">
                 `;
                 break;
             case 'number':
@@ -443,14 +456,14 @@ const SettingsPage = (() => {
                            placeholder="${field.placeholder || ''}"
                            ${field.min !== undefined ? 'min="' + field.min + '"' : ''}
                            ${field.max !== undefined ? 'max="' + field.max + '"' : ''}
-                           onchange="SettingsPage.onFieldChange('${field.key}', this.valueAsNumber || parseInt(this.value))">
+                           data-action="fieldChange" data-key="${field.key}" data-field-type="number">
                 `;
                 break;
             case 'toggle':
                 inputHtml = `
                     <label class="settings-toggle" for="${id}">
                         <input type="checkbox" id="${id}" ${value ? 'checked' : ''}
-                               onchange="SettingsPage.onFieldChange('${field.key}', this.checked)">
+                               data-action="fieldChange" data-key="${field.key}" data-field-type="toggle">
                         <span class="settings-toggle-slider"></span>
                         <span class="settings-toggle-label">${value ? 'Вкл' : 'Выкл'}</span>
                     </label>
@@ -459,11 +472,28 @@ const SettingsPage = (() => {
             case 'select':
                 inputHtml = `
                     <select class="form-input form-select" id="${id}"
-                            onchange="SettingsPage.onFieldChange('${field.key}', this.value)">
+                            data-action="fieldChange" data-key="${field.key}">
                         ${(field.options || []).map(o =>
                             `<option value="${o.value}" ${o.value === String(value) ? 'selected' : ''}>${o.label}</option>`
                         ).join('')}
                     </select>
+                `;
+                break;
+            case 'tunnel_priority':
+                const tunnels = Array.isArray(value) ? value : ['warp', 'awg', 'singbox', 'mihomo'];
+                const tunnelLabels = { warp: 'WARP/MASQUE', awg: 'AmneziaWG', singbox: 'sing-box', mihomo: 'mihomo', opera: 'Opera Proxy' };
+                inputHtml = `
+                    <div class="tunnel-priority-list" id="${id}">
+                        ${tunnels.map((t, i) => `
+                            <div class="tunnel-priority-item" draggable="true" data-idx="${i}" data-value="${t}">
+                                <span class="drag-handle" style="cursor:grab;">☰</span>
+                                <span style="flex:1;">${tunnelLabels[t] || t}</span>
+                                <button class="btn btn-ghost btn-sm" data-action="moveTunnel" data-idx="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
+                                <button class="btn btn-ghost btn-sm" data-action="moveTunnel" data-idx="${i}" data-dir="1" ${i === tunnels.length - 1 ? 'disabled' : ''}>↓</button>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <input type="hidden" id="${id}-value" value='${JSON.stringify(tunnels)}'>
                 `;
                 break;
         }
@@ -618,6 +648,23 @@ const SettingsPage = (() => {
     function updateSaveBar() {
         const bar = document.getElementById('settings-save-bar');
         if (bar) bar.classList.toggle('hidden', !hasUnsaved);
+    }
+
+    function moveTunnelPriority(idx, direction) {
+        const key = 'auto_remediation.tunnel_priority';
+        const hidden = document.getElementById('cfg-auto_remediation-tunnel_priority-value');
+        if (!hidden) return;
+        let arr = JSON.parse(hidden.value || '[]');
+        const newIdx = idx + direction;
+        if (newIdx < 0 || newIdx >= arr.length) return;
+        // Swap
+        [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+        hidden.value = JSON.stringify(arr);
+        setNestedValue(config, key, arr);
+        hasUnsaved = !deepEqual(config, originalConfig);
+        updateSaveBar();
+        // Re-render section
+        renderSectionForm();
     }
 
     // ══════════════════ Save / Discard ══════════════════
@@ -963,7 +1010,7 @@ const SettingsPage = (() => {
                 else ifaces = lanList;
 
                 const active = ifaces.includes(name);
-                return `<span onclick="SettingsPage.toggleRole('${name}', '${role}')" style="
+                return `<span data-action="toggleRole" data-iface="${name}" data-role="${role}" style="
                     display:inline-block; font-size:10px; font-weight:700;
                     padding: 2px 8px; border-radius: 4px; cursor: pointer;
                     user-select: none; transition: all 0.15s;
@@ -1066,6 +1113,65 @@ const SettingsPage = (() => {
             .replace(/>/g, '&gt;');
     }
 
+    // ══════════════════ Event Delegation ══════════════════
+
+    function _bindEvents(container) {
+        container.addEventListener('click', (e) => {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+
+            switch (el.dataset.action) {
+                case 'export': exportConfig(); break;
+                case 'import': importConfig(); break;
+                case 'discard': discardChanges(); break;
+                case 'save': saveConfig(); break;
+                case 'reset': resetConfig(); break;
+                case 'pickBackupFile': pickBackupFile(); break;
+                case 'refreshInterfaces': refreshInterfaces(); break;
+                case 'autoDetectRoles': autoDetectRoles(); break;
+                case 'clearRoles': clearRoles(); break;
+                case 'switchSection': switchSection(el.dataset.section); break;
+                case 'moveTunnel': {
+                    const idx = parseInt(el.dataset.idx, 10);
+                    const dir = parseInt(el.dataset.dir, 10);
+                    if (!isNaN(idx) && !isNaN(dir)) moveTunnelPriority(idx, dir);
+                    break;
+                }
+                case 'toggleRole': {
+                    const iface = el.dataset.iface;
+                    const role = el.dataset.role;
+                    if (iface && role) toggleRole(iface, role);
+                    break;
+                }
+            }
+        });
+
+        container.addEventListener('change', (e) => {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+
+            switch (el.dataset.action) {
+                case 'handleImportFile': handleImportFile(el); break;
+                case 'handleBackupFile': handleBackupFile(el); break;
+                case 'fieldChange': {
+                    const key = el.dataset.key;
+                    if (!key) break;
+                    const fieldType = el.dataset.fieldType;
+                    let value;
+                    if (fieldType === 'toggle') {
+                        value = el.checked;
+                    } else if (fieldType === 'number') {
+                        value = el.valueAsNumber || parseInt(el.value, 10);
+                    } else {
+                        value = el.value;
+                    }
+                    onFieldChange(key, value);
+                    break;
+                }
+            }
+        });
+    }
+
     // ══════════════════ Destroy ══════════════════
 
     function destroy() {
@@ -1081,19 +1187,5 @@ const SettingsPage = (() => {
     return {
         render,
         destroy,
-        switchSection,
-        onFieldChange,
-        saveConfig,
-        discardChanges,
-        resetConfig,
-        exportConfig,
-        importConfig,
-        handleImportFile,
-        pickBackupFile,
-        handleBackupFile,
-        refreshInterfaces,
-        autoDetectRoles,
-        clearRoles,
-        toggleRole,
     };
 })();

@@ -99,6 +99,7 @@ MANGLE_PRE = "SBT_TP_PRE"      # mangle PREROUTING: tproxy forward
 MANGLE_OUT = "SBT_TP_OUT"      # mangle OUTPUT: tproxy для self (через DIVERT/mark)
 MANGLE_DIV = "SBT_TP_DIV"      # mangle: пометка уже-established tproxy-сокетов
 FILTER_V6OUT = "SBT_V6_OUT"    # filter OUTPUT: anti-leak IPv6 локального режима
+FILTER_V6FWD = "SBT_V6_FWD"    # filter FORWARD: anti-leak IPv6 forward-режима
 
 # Области перехвата: forward — трафик LAN-клиентов (роутер, как раньше),
 # self — только исходящий трафик самой машины (ПК/VPS, локальный режим).
@@ -107,6 +108,22 @@ SCOPES = ("forward", "self")
 # fwmark и таблица для TPROXY (как в большинстве sing-box/xray мануалов).
 DEFAULT_TPROXY_MARK = 1
 DEFAULT_TPROXY_TABLE = 100
+
+def get_tproxy_mark() -> int:
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        return int(cfg.get("tproxy", "mark", default=1))
+    except Exception:
+        return 1
+
+def get_tproxy_table() -> int:
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        return int(cfg.get("tproxy", "table", default=100))
+    except Exception:
+        return 100
 
 # Сети, которые НИКОГДА не заворачиваем (приватные + спец-назначения).
 # Иначе завернём сам прокси-трафик движка к серверу и получим петлю.
@@ -406,9 +423,14 @@ def build_ipv6_block_rules(scope: str = "forward",
         out.append(["ip6tables", "-t", "filter", "-A", FILTER_V6OUT,
                     "-j", "DROP"])
         return out
-    return [
-        ["ip6tables", "-A", "FORWARD", "-j", "DROP"],
-    ]
+
+    out = []
+    for net in DEFAULT_BYPASS_V6:
+        out.append(["ip6tables", "-t", "filter", "-A", FILTER_V6FWD,
+                    "-d", net, "-j", "RETURN"])
+    out.append(["ip6tables", "-t", "filter", "-A", FILTER_V6FWD,
+                "-j", "DROP"])
+    return out
 
 
 def build_dns_hijack_rules(*, family: str = "v4",
@@ -654,6 +676,11 @@ def apply(*, mode: str,
              умолчанию); 'self' — локальный режим: только исходящий
              трафик самой машины (ПК/VPS с одной NIC, без LAN-ролей).
     """
+    if mark == 1:
+        mark = get_tproxy_mark()
+    if table == 100:
+        table = get_tproxy_table()
+
     if mode not in ("redirect", "tproxy", "hybrid", "dns-only"):
         return {"ok": False, "error": "Неизвестный режим: %s" % mode}
     if scope not in SCOPES:
@@ -792,10 +819,11 @@ def apply(*, mode: str,
                     _exec(argv)
                 _ensure_jump("v6", "filter", "OUTPUT", FILTER_V6OUT)
             else:
-                for argv in build_ipv6_block_rules():
-                    # Идемпотентно: сначала -D, потом -A.
-                    _run([argv[0], "-D"] + argv[2:])
+                _ensure_chain("v6", "filter", FILTER_V6FWD)
+                _flush_chain("v6", "filter", FILTER_V6FWD)
+                for argv in build_ipv6_block_rules(scope="forward", mark=mark):
                     _exec(argv)
+                _ensure_jump("v6", "filter", "FORWARD", FILTER_V6FWD)
 
     ok = not errors
     if ok:
@@ -819,6 +847,11 @@ def remove(*, mark: int = DEFAULT_TPROXY_MARK,
     Снимаем на ОБОИХ бэкендах (если присутствуют) — на случай, если
     режим применялся одним, а снимается в другой конфигурации.
     """
+    if mark == 1:
+        mark = get_tproxy_mark()
+    if table == 100:
+        table = get_tproxy_table()
+
     from core import singbox_transparent_nft as nft
     if nft.available():
         nft.remove(mark=mark, table=table, families=families)
@@ -837,18 +870,13 @@ def remove(*, mark: int = DEFAULT_TPROXY_MARK,
         _del_jump(family, "mangle", "OUTPUT", MANGLE_OUT)
         _del_chain(family, "mangle", MANGLE_PRE)
         _del_chain(family, "mangle", MANGLE_OUT)
-        # filter (anti-leak IPv6 локального режима)
+        # filter (anti-leak IPv6)
         if family == "v6":
             _del_jump(family, "filter", "OUTPUT", FILTER_V6OUT)
             _del_chain(family, "filter", FILTER_V6OUT)
+            _del_jump(family, "filter", "FORWARD", FILTER_V6FWD)
+            _del_chain(family, "filter", FILTER_V6FWD)
         _del_tproxy_route(family, mark, table)
-    # Снять возможный IPv6-block.
-    if available("v6"):
-        for argv in build_ipv6_block_rules():
-            for _ in range(4):
-                rc, _o, _e = _run([argv[0], "-D"] + argv[2:])
-                if rc != 0:
-                    break
     log.info("singbox transparent: правила сняты", source="singbox")
     return {"ok": True}
 

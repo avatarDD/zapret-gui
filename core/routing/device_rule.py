@@ -60,10 +60,8 @@ def _iface_exists(ifname: str) -> bool:
 
 def _table_id_for(ifname: str) -> int:
     """Тот же алгоритм, что и в manager.table_id_for / awg_manager."""
-    h = 0
-    for ch in ifname:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return 100 + (h % 900)
+    from core.routing.manager import table_id_for
+    return table_id_for(ifname)
 
 
 def _detect_family_and_normalize(ip: str):

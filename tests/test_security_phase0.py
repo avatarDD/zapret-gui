@@ -231,6 +231,11 @@ class _AppTestBase(unittest.TestCase):
             cfg.set("gui", "auth_enabled", True)
             cfg.set("gui", "auth_user", "admin")
             cfg.set("gui", "auth_password", "s3cret")
+            # Persist so any background config reload keeps auth enabled
+            # (mirrors production, where settings.json holds these values).
+            # Without this the tmp settings.json keeps the default
+            # auth_enabled=False and a reload can race the in-memory set.
+            cfg.save()
 
     def tearDown(self):
         cm_mod._config_manager = self._saved_cm  # восстановить глобальный

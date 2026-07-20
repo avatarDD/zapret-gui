@@ -425,8 +425,8 @@ def refresh_pool(progress_cb=None) -> dict:
     tested = None
     if settings["health_filter"]:
         try:
-            from core.proxy_tester import test_outbounds
-            tested = test_outbounds(
+            from core.proxy_tester import run_outbound_tests
+            tested = run_outbound_tests(
                 aggregate, target=settings["target"],
                 max_servers=min(MAX_CAP, max(cap * 2, cap)),
                 progress_cb=lambda ph, d, t: _report("test", d, t))

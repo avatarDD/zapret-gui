@@ -119,6 +119,102 @@ def _detect_interface_roles(interfaces, addr_map):
 
 def register(app):
 
+    @app.route("/api/dashboard/status")
+    def api_dashboard_status():
+        """Объединенный статус для Dashboard: nfqws, system, warp, opera, tgproxy, block_detector, healthcheck, logs."""
+        response.content_type = "application/json; charset=utf-8"
+
+        from core.config_manager import get_config_manager
+        from core.system_info import get_system_info
+        from core.nfqws_manager import get_nfqws_manager
+        from core.firewall import get_firewall_manager
+        from core.autostart_manager import get_autostart_manager
+        from core.zapret_installer import get_zapret_installer
+        from core.version import GUI_VERSION
+
+        cfg = get_config_manager()
+        mgr = get_nfqws_manager()
+        fw = get_firewall_manager()
+        am = get_autostart_manager()
+        inst = get_zapret_installer()
+        zapret_version = inst.get_installed_version()
+
+        status_data = {
+            "nfqws": mgr.get_status(),
+            "firewall": fw.get_status(),
+            "strategy": {
+                "id": cfg.get("strategy", "current_id"),
+                "name": cfg.get("strategy", "current_name") or "Не выбрана",
+            },
+            "autostart": am.get_status(),
+            "system": get_system_info(),
+            "zapret": {
+                "installed": zapret_version["installed"],
+                "version": zapret_version["version"],
+            },
+            "gui_version": GUI_VERSION,
+            "timestamp": time.time(),
+        }
+
+        # 2. Статус WARP/MASQUE (usque)
+        warp_configs = []
+        try:
+            from core.usque_manager import get_usque_manager
+            warp_configs = get_usque_manager().list_configs()
+        except Exception:
+            pass
+
+        # 3. Статус Opera Proxy
+        opera_status = {}
+        try:
+            from core.opera_proxy_manager import get_opera_proxy_manager
+            opera_status = get_opera_proxy_manager().status()
+        except Exception:
+            pass
+
+        # 4. Статус Telegram Proxy
+        tg_status = {}
+        try:
+            from core.tgproxy_manager import get_active_engine_status
+            tg_status = get_active_engine_status()
+        except Exception:
+            pass
+
+        # 5. Статус Block Detector
+        bd_status = {}
+        try:
+            from core.block_detector import get_block_detector
+            bd_status = get_block_detector().get_status()
+        except Exception:
+            pass
+
+        # 6. Статус Healthcheck
+        hc_status = {}
+        try:
+            from core.healthcheck import get_healthcheck
+            hc_status = get_healthcheck().get_status()
+        except Exception:
+            pass
+
+        # 7. Последние логи (15 записей)
+        logs_data = []
+        try:
+            from core.log_buffer import get_log_buffer
+            logs_data = get_log_buffer().get_last(15)
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "status": status_data,
+            "warp": warp_configs,
+            "opera": opera_status,
+            "tgproxy": tg_status,
+            "block_detector": bd_status,
+            "healthcheck": hc_status,
+            "logs": logs_data,
+        }
+
     @app.route("/api/status")
     def api_status():
         """Общий статус системы: nfqws, firewall, стратегия, система."""

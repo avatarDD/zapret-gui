@@ -59,6 +59,12 @@ const Sidebar = (() => {
                     { id: 'awg-routing', label: 'AWG-правила', icon: 'globe' },
                     { id: 'awg-setup',   label: 'Установка', icon: 'settings' },
                 ] },
+                { id: 'usque', label: 'WARP/MASQUE', icon: 'awg', children: [
+                    { id: 'warp-in-warp', label: 'WARP-in-WARP', icon: 'awg' },
+                    { id: 'usque-setup', label: 'Установка', icon: 'settings' },
+                ] },
+                { id: 'tgproxy', label: 'Telegram Tunnel', icon: 'awg' },
+                { id: 'opera-proxy', label: 'Opera Proxy', icon: 'globe' },
                 { id: 'singbox', label: 'sing-box', icon: 'awg', children: [
                     { id: 'singbox-configs', label: 'Конфиги',  icon: 'lua' },
                     { id: 'singbox-proxies', label: 'Прокси',   icon: 'globe' },
@@ -68,6 +74,8 @@ const Sidebar = (() => {
                     { id: 'mihomo-proxies', label: 'Прокси',   icon: 'globe' },
                     { id: 'mihomo-setup',   label: 'Установка', icon: 'settings' },
                 ] },
+                { id: 'tunnel-monitor', label: 'Мониторинг', icon: 'diagnostic' },
+                { id: 'tunnel-optimizer', label: 'Оптимизации', icon: 'settings' },
             ]
         },
         {
@@ -79,18 +87,21 @@ const Sidebar = (() => {
                 { id: 'blobs',     label: 'Блобы',        icon: 'blob' },
                 { id: 'lua',       label: 'Lua-скрипты',  icon: 'lua' },
                 { id: 'hosts',     label: 'Hosts',        icon: 'hosts' },
+                { id: 'dns-routing', label: 'Per-domain DNS', icon: 'globe' },
             ]
         },
         {
             label: 'Диагностика',
             items: [
                 { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostic' },
+                { id: 'block-detector', label: 'Block Detector', icon: 'scan' },
                 { id: 'logs',        label: 'Логи',        icon: 'log' },
             ]
         },
         {
             label: 'Система',
             items: [
+                { id: 'updates',     label: 'Обновления',  icon: 'zapret' },
                 { id: 'zapret',      label: 'Zapret2 (установка)', icon: 'zapret' },
                 { id: 'autostart',   label: 'Автозапуск',  icon: 'autostart' },
                 { id: 'settings',    label: 'Настройки',   icon: 'settings' },
@@ -119,6 +130,25 @@ const Sidebar = (() => {
         sidebar.classList.toggle('open', open);
         const burger = document.getElementById('mobile-burger');
         if (burger) burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+        // MR-116: Focus trap — при открытии мобильного меню устанавливаем inert на контент
+        const mainContent = document.getElementById('content');
+        if (mainContent) {
+            mainContent.inert = open;
+        }
+
+        // MR-116: перемещаем фокус на первый фокусируемый элемент сайдбара при открытии
+        if (open) {
+            const firstFocusable = sidebar.querySelector(
+                'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            );
+            if (firstFocusable) {
+                setTimeout(() => firstFocusable.focus(), 100);
+            }
+        } else if (burger) {
+            // При закрытии возвращаем фокус на бургер
+            burger.focus();
+        }
     }
 
     function _navigate(pageId) {
@@ -260,6 +290,23 @@ const Sidebar = (() => {
                 && sidebar.classList.contains('open')) {
                 _setOpen(false);
             }
+
+            // MR-116: Focus trap внутри мобильного сайдбара
+            if (e.key === 'Tab' && _isMobile() && sidebar.classList.contains('open')) {
+                const focusable = sidebar.querySelectorAll(
+                    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+                );
+                if (focusable.length === 0) return;
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
         });
 
         // Страховка: клик вне sidebar на мобильных закрывает его
@@ -271,6 +318,26 @@ const Sidebar = (() => {
                 _setOpen(false);
             }
         });
+
+        // MR-69: Sidebar footer — привязка событий через addEventListener
+        const footer = sidebar.querySelector('.sidebar-footer');
+        if (footer) {
+            footer.addEventListener('change', (e) => {
+                if (e.target.dataset.action === 'toggle-expert') {
+                    Expert.set(e.target.checked);
+                }
+            });
+            footer.addEventListener('click', (e) => {
+                const btn = e.target.closest('[data-action]');
+                if (!btn) return;
+                const action = btn.dataset.action;
+                if (action === 'show-help') Help.show('expert');
+                else if (action === 'toggle-lang') {
+                    i18n.setLanguage(i18n.getLanguage() === 'ru' ? 'en' : 'ru');
+                }
+                else if (action === 'toggle-theme') Theme.toggle();
+            });
+        }
     }
 
     return { render, setCurrentPage, initMobileToggle };

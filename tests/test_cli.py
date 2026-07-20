@@ -68,6 +68,35 @@ class TestRun(unittest.TestCase):
         self.assertEqual(rc, 0)
         fake.up.assert_called_once_with("vpn")
 
+    def test_run_tgproxy_status(self):
+        fake = mock.Mock()
+        fake.get_status.return_value = {"running": False, "engine": "tgwsproxy"}
+        with mock.patch("core.config_manager.init_config"), \
+             mock.patch("core.tgproxy_manager.get_tgwsproxy_manager",
+                        return_value=fake):
+            rc = cli.run(["tgproxy", "status"])
+        self.assertEqual(rc, 0)
+        fake.get_status.assert_called_once()
+
+    def test_run_dns_routing_list(self):
+        fake = mock.Mock()
+        fake.get_rules.return_value = [{"domain": "example.com", "dns": "cloudflare", "description": ""}]
+        with mock.patch("core.config_manager.init_config"), \
+             mock.patch("core.dns_routing.get_dns_routing_manager",
+                        return_value=fake):
+            rc = cli.run(["dns-routing", "list"])
+        self.assertEqual(rc, 0)
+        fake.get_rules.assert_called_once()
+
+    def test_run_updates(self):
+        fake = mock.Mock()
+        fake.return_value = None
+        with mock.patch("core.config_manager.init_config"), \
+             mock.patch("core.update_checker.check_all",
+                        return_value={"results": [{"name": "gui", "current": "1.0", "latest": "1.1", "has_update": True}]}):
+            rc = cli.run(["updates"])
+        self.assertEqual(rc, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

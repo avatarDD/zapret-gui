@@ -97,7 +97,9 @@ def is_local_url(url: str) -> bool:
 def local_path_of(url: str) -> str:
     """Превратить file:// или локальный путь в обычный путь ФС."""
     if url.startswith("file://"):
-        return urllib.parse.urlparse(url).path
+        import urllib.request
+        # Убираем file:// prefix
+        return urllib.request.url2pathname(url[7:])
     return url
 
 
@@ -227,26 +229,41 @@ def _download_once(url, dest_path, progress_cb, label,
                    opener=None) -> dict:
     """Один проход — выбрасывает исключения для outer retry-loop."""
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
-    with _http_open(url, timeout=timeout, opener=opener) as resp:
-        total = resp.getheader("Content-Length")
-        total = int(total) if total and total.isdigit() else 0
-        downloaded = 0
-        with open(dest_path, "wb") as f:
-            while True:
-                chunk = resp.read(DEFAULT_CHUNK_SIZE)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-                if progress_cb:
-                    if total > 0:
-                        pct = progress_from + int(
-                            (progress_to - progress_from) * downloaded / total)
-                    else:
-                        pct = (progress_from + progress_to) // 2
-                    progress_cb("downloading", pct,
-                                "Загрузка %s (%s)" %
-                                (label, _human_size(downloaded)))
+    part_path = dest_path + ".part"
+    try:
+        with _http_open(url, timeout=timeout, opener=opener) as resp:
+            total = resp.getheader("Content-Length")
+            total = int(total) if total and total.isdigit() else 0
+            downloaded = 0
+            with open(part_path, "wb") as f:
+                while True:
+                    chunk = resp.read(DEFAULT_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_cb:
+                        if total > 0:
+                            pct = progress_from + int(
+                                (progress_to - progress_from) * downloaded / total)
+                        else:
+                            pct = (progress_from + progress_to) // 2
+                        progress_cb("downloading", pct,
+                                    "Загрузка %s (%s)" %
+                                    (label, _human_size(downloaded)))
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass
+            os.rename(part_path, dest_path)
+    except Exception:
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
+        raise
     return {"ok": True, "path": dest_path, "size": downloaded, "error": ""}
 
 

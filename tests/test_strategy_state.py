@@ -250,9 +250,9 @@ class TestEnvOverride(unittest.TestCase):
         prev = os.environ.get("Z2K_STATE_DIR_OVERRIDE")
         try:
             os.environ["Z2K_STATE_DIR_OVERRIDE"] = "/custom/state"
-            self.assertEqual(strategy_state.get_state_dir(), "/custom/state")
+            self.assertEqual(os.path.normpath(strategy_state.get_state_dir()), os.path.normpath("/custom/state"))
             self.assertEqual(
-                strategy_state.get_state_file(), "/custom/state/state.tsv")
+                os.path.normpath(strategy_state.get_state_file()), os.path.normpath("/custom/state/state.tsv"))
         finally:
             if prev is None:
                 os.environ.pop("Z2K_STATE_DIR_OVERRIDE", None)
@@ -264,8 +264,8 @@ class TestEnvOverride(unittest.TestCase):
         prev = os.environ.pop("Z2K_STATE_DIR_OVERRIDE", None)
         try:
             self.assertEqual(
-                strategy_state.get_state_dir(),
-                strategy_state.DEFAULT_STATE_DIR)
+                os.path.normpath(strategy_state.get_state_dir()),
+                os.path.normpath(strategy_state.DEFAULT_STATE_DIR))
         finally:
             if prev is not None:
                 os.environ["Z2K_STATE_DIR_OVERRIDE"] = prev

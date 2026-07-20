@@ -88,13 +88,28 @@ def _read_pid(path: str):
 def _pid_alive(pid: int) -> bool:
     if not pid:
         return False
+    alive = False
     try:
         os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return os.path.exists("/proc/%d" % pid)
-    except OSError:
+        alive = True
+    except (ProcessLookupError, OSError):
+        if os.path.exists("/proc/%d" % pid):
+            alive = True
+    
+    if not alive:
         return False
+
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            raw = f.read()
+        if raw:
+            argv0 = raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+            name = os.path.basename(argv0)
+            return any(k in name.lower() for k in ("mihomo", "clash"))
+    except (IOError, OSError):
+        pass
+    
+    return True
 
 
 # ─────── lightweight config validation ───────
@@ -128,6 +143,7 @@ class MihomoManager:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._processes = {}
 
     def _platform(self):
         return detect_mihomo_platform()
@@ -164,14 +180,34 @@ class MihomoManager:
                 mtime = int(os.path.getmtime(full))
             except OSError:
                 size, mtime = 0, 0
+            tun_iface = ""
+            try:
+                tun_iface = self._detect_mihomo_tun_iface(full)
+            except Exception:
+                pass
             out.append({
                 "name":    name,
                 "path":    full,
                 "size":    size,
                 "mtime":   mtime,
                 "running": self.is_running(name),
+                "tun_iface": tun_iface,
             })
         return out
+
+    def _detect_mihomo_tun_iface(self, config_path: str) -> str:
+        try:
+            from core.clash_yaml import parse_yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                text = f.read()
+            data = parse_yaml(text)
+            if isinstance(data, dict):
+                tun = data.get("tun", {})
+                if isinstance(tun, dict) and tun.get("enable"):
+                    return tun.get("device") or tun.get("name") or "utun"
+        except Exception:
+            pass
+        return ""
 
     def get_config(self, name: str) -> dict:
         if not _valid_name(name):
@@ -466,6 +502,7 @@ class MihomoManager:
         log.info("mihomo: запущен '%s' (pid=%d)%s" % (
             name, popen.pid, " [debug]" if debug_used else ""),
                  source="mihomo")
+        self._processes[name] = popen
         return {"ok": True, "pid": popen.pid, "config": config,
                 "log_path": log_file, "debug": debug_used}
 
@@ -478,18 +515,50 @@ class MihomoManager:
         if not pid:
             return {"ok": True, "noop": True, "message": "Процесс не найден"}
         try:
-            os.kill(pid, signal.SIGTERM)
+            if hasattr(os, "killpg"):
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except Exception:
+                    os.kill(pid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError, OSError):
             pass
-        for _ in range(50):
-            if not _pid_alive(pid):
-                break
-            time.sleep(0.1)
+
+        # MR-93: Ждём завершения процесса через wait() объекта popen, если он есть
+        popen = self._processes.get(name)
+        if popen and popen.pid == pid:
+            try:
+                popen.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            for _ in range(50):
+                if not _pid_alive(pid):
+                    break
+                time.sleep(0.1)
+
         if _pid_alive(pid):
             try:
-                os.kill(pid, signal.SIGKILL)
+                if hasattr(os, "killpg"):
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except Exception:
+                        os.kill(pid, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+
+            if popen and popen.pid == pid:
+                try:
+                    popen.wait(timeout=1.0)
+                except Exception:
+                    pass
+
+        if name in self._processes:
+            del self._processes[name]
+
         try:
             os.remove(pid_file)
         except OSError:

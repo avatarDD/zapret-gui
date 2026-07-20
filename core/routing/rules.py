@@ -10,6 +10,10 @@ import ipaddress
 import os
 import re
 import time
+# MR-36: Приоритет по умолчанию для правил маршрутизации.
+# 10000 находится в диапазоне 0-32767, но выше системных правил (0-9999),
+# чтобы не конфликтовать с ними.
+DEFAULT_PRIORITY = 10000
 
 
 # Допустимые имена интерфейсов: то же ограничение, что и в awg_manager.
@@ -63,7 +67,7 @@ class RoutingRule:
         self.target_iface = target_iface
         self.description  = (description or "").strip()
         self.enabled      = bool(enabled)
-        self.priority     = int(priority) if priority else 0
+        self.priority     = int(priority) if priority else DEFAULT_PRIORITY
         self.created_at   = int(created_at) if created_at else int(time.time())
 
     def _make_id(self) -> str:
@@ -242,7 +246,7 @@ def rule_from_dict(d: dict) -> RoutingRule:
         target_iface=d.get("target_iface") or "",
         description=d.get("description") or "",
         enabled=bool(d.get("enabled", True)),
-        priority=int(d.get("priority") or 0),
+        priority=int(d.get("priority") or DEFAULT_PRIORITY),
         created_at=int(d.get("created_at") or 0),
     )
 

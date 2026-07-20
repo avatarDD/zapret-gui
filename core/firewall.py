@@ -867,31 +867,35 @@ class FirewallManager:
 
     def _remove_ipt_family(self, ipt_cmd) -> bool:
         """Удалить правила одного семейства из всех наших цепочек."""
+        ok = True
         for table, chain in self._IPT_CHAINS:
-            self._remove_ipt_chain(ipt_cmd, table, chain)
+            if not self._remove_ipt_chain(ipt_cmd, table, chain):
+                ok = False
         # Снести именованные цепочки персистентного режима, если остались.
         for table, hook, name in self._IPT_NAMED_CHAINS:
-            self._remove_ipt_named_chain(ipt_cmd, table, hook, name)
-        return True
+            if not self._remove_ipt_named_chain(ipt_cmd, table, hook, name):
+                ok = False
+        return ok
 
-    def _remove_ipt_named_chain(self, ipt_cmd, table, hook, name) -> None:
+    def _remove_ipt_named_chain(self, ipt_cmd, table, hook, name) -> bool:
         """Отцепить и удалить именованную цепочку nfqws_* (best-effort).
 
         Тихо выходим, если цепочки нет (обычный случай в GUI-режиме без
         reapply) — чтобы не сыпать предупреждениями на каждый stop.
         """
         if not shutil.which(ipt_cmd):
-            return
+            return True
         try:
             exists = subprocess.run(
                 [ipt_cmd, "-w", "-t", table, "-L", name, "-n"],
                 capture_output=True, text=True, timeout=5,
             ).returncode == 0
         except (subprocess.TimeoutExpired, OSError):
-            return
+            return False
         if not exists:
-            return
+            return True
 
+        ok = True
         # Снять переходы из hook-цепочки (могут быть дубли).
         for _ in range(10):
             r = subprocess.run(
@@ -900,13 +904,18 @@ class FirewallManager:
             )
             if r.returncode != 0:
                 break
-            self._run_cmd([ipt_cmd, "-t", table, "-D", hook, "-j", name])
+            if not self._run_cmd([ipt_cmd, "-t", table, "-D", hook, "-j", name]):
+                ok = False
         # Очистить и удалить саму цепочку.
-        self._run_cmd([ipt_cmd, "-t", table, "-F", name])
-        self._run_cmd([ipt_cmd, "-t", table, "-X", name])
+        if not self._run_cmd([ipt_cmd, "-t", table, "-F", name]):
+            ok = False
+        if not self._run_cmd([ipt_cmd, "-t", table, "-X", name]):
+            ok = False
+        return ok
 
-    def _remove_ipt_chain(self, ipt_cmd, table, chain) -> None:
+    def _remove_ipt_chain(self, ipt_cmd, table, chain) -> bool:
         """Удалить все правила с комментарием IPT_COMMENT из одной цепочки."""
+        ok = True
         for _ in range(20):
             found = False
             try:
@@ -922,16 +931,18 @@ class FirewallManager:
                     if IPT_COMMENT in line:
                         parts = line.split()
                         if parts and parts[0].isdigit():
-                            self._run_cmd([
+                            if not self._run_cmd([
                                 ipt_cmd, "-t", table,
                                 "-D", chain, parts[0]
-                            ])
+                            ]):
+                                ok = False
                             found = True
             except Exception:
-                break
+                return False
 
             if not found:
                 break
+        return ok
 
     def _get_iptables_rules(self) -> list:
         """Получить текущие NFQUEUE-правила iptables + ip6tables."""

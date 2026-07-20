@@ -149,7 +149,7 @@ def resolve(list_id: str) -> dict:
 
 
 def create(name: str, *, description: str = "",
-           entries=None, source_url: str = "") -> dict:
+           entries=None, source_url: str = "", transport: str = "") -> dict:
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "Пустое имя"}
@@ -164,6 +164,7 @@ def create(name: str, *, description: str = "",
         "domains": parsed["domains"],
         "cidrs": parsed["cidrs"],
         "source_url": (source_url or "").strip(),
+        "transport": (transport or "").strip(),
         "created_at": now,
         "updated_at": now,
     }

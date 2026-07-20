@@ -78,21 +78,21 @@ const AutostartPage = (() => {
                         <div style="font-size: 12px; color: var(--text-secondary);">Пересоздать скрипт или просмотреть его содержимое</div>
                     </div>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                        <button class="btn btn-ghost btn-sm" onclick="AutostartPage.regenerate()" id="btn-regenerate">
+                        <button class="btn btn-ghost btn-sm" data-action="regenerate" id="btn-regenerate">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <polyline points="23 4 23 10 17 10"/>
                                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                             </svg>
                             Пересоздать
                         </button>
-                        <button class="btn btn-ghost btn-sm" onclick="AutostartPage.showScript()">
+                        <button class="btn btn-ghost btn-sm" data-action="showScript">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                                 <polyline points="14 2 14 8 20 8"/>
                             </svg>
                             Просмотр скрипта
                         </button>
-                        <button class="btn btn-ghost btn-sm" onclick="AutostartPage.showPreview()">
+                        <button class="btn btn-ghost btn-sm" data-action="showPreview">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
                             </svg>
@@ -114,11 +114,11 @@ const AutostartPage = (() => {
             </div>
 
             <!-- Модальное окно просмотра скрипта -->
-            <div class="modal-backdrop hidden" id="script-modal" onclick="AutostartPage.closeModal(event)">
-                <div class="modal-content modal-lg" onclick="event.stopPropagation()">
+            <div class="modal-backdrop hidden" id="script-modal" data-action="closeModal">
+                <div class="modal-content modal-lg" data-action="stopPropagation">
                     <div class="modal-header">
                         <h3 id="script-modal-title">Скрипт автозапуска</h3>
-                        <button class="btn btn-ghost btn-sm" onclick="AutostartPage.closeModal()" style="margin-left:auto;">
+                        <button class="btn btn-ghost btn-sm" data-action="closeModal" style="margin-left:auto;">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
                                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                             </svg>
@@ -126,7 +126,7 @@ const AutostartPage = (() => {
                     </div>
                     <div class="modal-body" style="padding: 0;">
                         <div style="position: relative;">
-                            <button class="btn btn-ghost btn-sm" onclick="AutostartPage.copyScript()"
+                            <button class="btn btn-ghost btn-sm" data-action="copyScript"
                                     style="position: absolute; top: 8px; right: 8px; z-index: 2;">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
@@ -152,6 +152,24 @@ const AutostartPage = (() => {
                 </div>
             </div>
         `;
+
+        // MR-69: Event delegation вместо inline onclick
+        container.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            if (action === 'regenerate') { regenerate(); return; }
+            if (action === 'showScript') { showScript(); return; }
+            if (action === 'showPreview') { showPreview(); return; }
+            if (action === 'closeModal') { closeModal(e); return; }
+            if (action === 'copyScript') { copyScript(); return; }
+            if (action === 'stopPropagation') { e.stopPropagation(); return; }
+        });
+
+        // MR-69: Toggle checkbox onchange → addEventListener
+        document.getElementById('autostart-checkbox')?.addEventListener('change', function() {
+            toggleAutostart(this.checked);
+        });
 
         loadStatus();
         startPoll();

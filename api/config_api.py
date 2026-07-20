@@ -72,6 +72,16 @@ def register(app):
             except Exception:
                 pass
 
+        # Настройки tunnel_optimizer применяем «вживую»:
+        if "tunnel_optimizer" in updated:
+            try:
+                opt_cfg = body.get("tunnel_optimizer") or {}
+                if not opt_cfg.get("enabled"):
+                    from core.tunnel_optimizer import restore_system_defaults
+                    restore_system_defaults()
+            except Exception:
+                pass
+
         # Если поменяли host/port в gui — переписываем systemd unit,
         # чтобы он не подсовывал свои --host/--port из времени установки.
         # Без этого изменение порта в UI не применяется к реальному
@@ -122,9 +132,26 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
 
         from core.config_manager import get_config_manager
+        import copy, json as _json
 
         cfg = get_config_manager()
-        return {"ok": True, "json": cfg.export_json()}
+        include_secrets = request.query.get("include_secrets", "false").lower() == "true"
+
+        if include_secrets:
+            return {"ok": True, "json": cfg.export_json()}
+
+        # MR-60: маскируем чувствительные данные в экспорте
+        # POST /api/config/export раньше возвращал auth_password + AWG private keys plaintext
+        data = cfg.get_all()
+        if "gui" in data and data["gui"].get("auth_password"):
+            data["gui"]["auth_password"] = "***"
+        # Маскируем приватные ключи AWG-конфигов
+        for section_key in ("awg", "usque", "tgproxy"):
+            sec = data.get(section_key, {})
+            for field in ("private_key", "secret", "tunnel_secret"):
+                if sec.get(field):
+                    sec[field] = "***"
+        return {"ok": True, "json": _json.dumps(data, indent=2, ensure_ascii=False)}
 
     @app.post("/api/config/import")
     def api_config_import():
