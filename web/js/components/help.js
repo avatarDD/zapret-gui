@@ -1038,5 +1038,45 @@ const Help = (() => {
               'GitHub при каждом заходе.',
     });
 
+    register('usque-install', {
+        title: 'Установка usque (WARP/MASQUE)',
+        body: 'Эта страница ставит/обновляет бинарник <b>usque</b> — клиент ' +
+              'Cloudflare WARP по протоколу MASQUE. Бинарник тянется из ' +
+              'GitHub-релиза с <b>проверкой SHA256</b> (или ставится из ' +
+              'загруженного файла).<br><br>' +
+              'Карточка «Окружение» показывает <b>платформу</b> ' +
+              '(keenetic/openwrt/linux), <b>firewall</b>-бэкенд ' +
+              '(iptables/nftables) и наличие <b>TUN</b>. Для WARP нужен ' +
+              'TUN-интерфейс: если TUN «недоступен», доустановите ' +
+              'TUN-компонент (модуль ядра <code>tun</code> / ' +
+              '<code>/dev/net/tun</code>).<br><br>' +
+              'После установки перейдите на «WARP/MASQUE», зарегистрируйте ' +
+              'WARP-сессию и поднимите туннель (подробнее — «?» там).',
+        examples: [
+            { label: 'Порядок',
+              code: '1. Установить usque (эта страница)\n2. WARP/MASQUE → Регистрация → ▶\n3. Маршрутизация → warp:opkgtun0' },
+        ],
+    });
+
+    register('remediation', {
+        title: 'Auto-Remediation — авто-выбор метода обхода',
+        body: 'После BlockCheck определяет <b>тип DPI-блокировки</b> для ' +
+              'каждого домена и сам подбирает метод обхода:<br>' +
+              '• <b>TLS-DPI</b> → подбор/запуск стратегии nfqws2;<br>' +
+              '• <b>IP-блок</b> → туннель по настраиваемому приоритету ' +
+              '(WARP/AWG/Opera/sing-box/mihomo);<br>' +
+              '• <b>подмена DNS</b> → DoH/hosts.<br><br>' +
+              'Приоритет туннелей задаётся тут же (первый доступный ' +
+              'используется). По умолчанию <b>выключено</b> — ничего не ' +
+              'применяется, пока не включите. Есть <b>dry-run</b> ' +
+              '(<code>/api/remediation/apply?dry_run=true</code>) — показать ' +
+              'план без применения. Перед применением туннель проверяется ' +
+              'на работоспособность.',
+        examples: [
+            { label: 'Приоритет туннелей',
+              code: 'warp → awg → opera → singbox → mihomo' },
+        ],
+    });
+
     return { register, button, show, close, topics };
 })();

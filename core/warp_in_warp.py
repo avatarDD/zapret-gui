@@ -302,10 +302,26 @@ class WarpInWarpManager:
                 awg_available = True
                 break
 
+        # Платформа / firewall / TUN — свойства хоста (общий детектор).
+        platform_kind = ""
+        firewall_backend = ""
+        tun_available = False
+        try:
+            from core.awg_detector import get_awg_detector
+            plat = get_awg_detector().detect_platform().as_dict()
+            platform_kind = plat.get("kind") or plat.get("name") or ""
+            firewall_backend = plat.get("firewall_backend", "")
+            tun_available = bool(plat.get("tun_available"))
+        except Exception:
+            pass
+
         return {
             "usque_installed": usque_env.get("installed", False),
             "awg_available": awg_available,
             "arch": usque_env.get("arch", ""),
+            "platform": platform_kind,
+            "firewall_backend": firewall_backend,
+            "tun_available": tun_available,
         }
 
     def get_status(self) -> dict[str, Any]:

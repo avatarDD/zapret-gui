@@ -10,6 +10,7 @@ const UsqueSetupPage = SetupUI.create({
     backHash: 'warp-in-warp',
     backLabel: '← WARP-in-WARP',
     apiBase: '/api/usque',
+    helpTopic: 'usque-install',
     binaryLabel: 'usque',
     fetchManifest: false,
     latestLabel: 'В релизе',

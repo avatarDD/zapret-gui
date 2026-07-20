@@ -17,6 +17,10 @@
 const TgProxyPage = (() => {
     let _visibilityHandler = null;
     let _inFlight = false;
+    // Были не объявлены → _startPoll() бросал ReferenceError и ломал
+    // хвост render() (и поллинг статуса).
+    let _pollTimer = null;
+    const POLL_MS = 3000;
 
     async function render(container) {
         container.innerHTML = `
@@ -122,6 +126,42 @@ const TgProxyPage = (() => {
         </div>`;
     }
 
+    // ─────────────────────────── установка tgwsproxy ───────────────────────────
+
+    async function _installTgws(ev) {
+        const btn = ev && ev.currentTarget;
+        const prog = document.getElementById("tgws-install-progress");
+        if (btn) { btn.disabled = true; btn.textContent = "Установка..."; }
+        try {
+            await API.post("/api/tgproxy/install");
+        } catch (e) {
+            if (prog) prog.innerHTML = `<span class="text-error">Ошибка запуска: ${esc(String(e))}</span>`;
+            if (btn) { btn.disabled = false; btn.textContent = "Установить tg-ws-proxy"; }
+            return;
+        }
+        const poll = async () => {
+            let st = null;
+            try { st = await API.get("/api/tgproxy/install/status"); } catch (_) {}
+            const p = (st && st.progress) || {};
+            if (prog) {
+                prog.textContent = (p.message || p.status || "")
+                    + (p.progress ? ` (${p.progress}%)` : "");
+            }
+            if (p.status === "done") {
+                if (typeof Toast !== "undefined") Toast.show("tg-ws-proxy установлен", "success");
+                _refresh();
+                return;
+            }
+            if (p.status === "error") {
+                if (prog) prog.innerHTML = `<span class="text-error">${esc(p.message || "Ошибка установки")}</span>`;
+                if (btn) { btn.disabled = false; btn.textContent = "Повторить установку"; }
+                return;
+            }
+            setTimeout(poll, 1200);
+        };
+        setTimeout(poll, 1000);
+    }
+
     // ─────────────────────────── tgwsproxy: конфиг ───────────────────────────
 
     async function _loadTgwsproxyConfig() {
@@ -130,11 +170,17 @@ const TgProxyPage = (() => {
         try {
             const det = await API.get("/api/tgproxy/detect");
             if (!det.tgwsproxy || !det.tgwsproxy.installed) {
-                el.innerHTML = `<div class="text-muted">
-                    tg-ws-proxy-go не установлен на роутере (пакет opkg
-                    <code>tg-ws-proxy</code>). Установите через Entware
-                    package manager, затем обновите страницу.
-                </div>`;
+                el.innerHTML = `<div class="text-muted" style="margin-bottom:10px;">
+                    tg-ws-proxy-go не установлен (пакет <code>tg-ws-proxy</code>).
+                    Установите его прямо отсюда — бинарник тянется из
+                    GitHub-релиза с проверкой SHA256.
+                </div>
+                <button class="btn btn-primary" id="tgws-btn-install" type="button">
+                    Установить tg-ws-proxy
+                </button>
+                <div id="tgws-install-progress" style="margin-top:10px; font-size:12px;"></div>`;
+                const ib = document.getElementById("tgws-btn-install");
+                if (ib) ib.addEventListener("click", _installTgws);
                 return;
             }
 
