@@ -210,6 +210,12 @@ def _restore_route(dst_ip: str, via_iface: str, v6: bool,
         _unpin_route(dst_ip, via_iface, v6)
 
 
+def _routes_cover(pinned: list, v4: Optional[str], v6: Optional[str]) -> bool:
+    """Whether every resolved endpoint family has a pinned route."""
+    values = {entry[0] for entry in pinned}
+    return (not v4 or v4 in values) and (not v6 or v6 in values)
+
+
 def _unpin_route(dst_ip: str, via_iface: str, v6: bool = False) -> None:
     if not dst_ip:
         return
@@ -442,6 +448,12 @@ class WarpInWarpManager:
                 ok, previous = _pin_route_owned(v6, outer_iface, v6=True)
                 if ok:
                     pinned.append((v6, outer_iface, True, previous))
+            if not _routes_cover(pinned, v4, v6):
+                for dst, via, v6f, previous in pinned:
+                    _restore_route(dst, via, v6f, previous)
+                mgr.stop(outer_iface)
+                return {"ok": False,
+                        "error": "Не удалось закрепить endpoint inner через outer"}
         else:
             log.warning(
                 "warp-in-warp: inner_endpoint_host не задан — маршрут "
@@ -522,6 +534,12 @@ class WarpInWarpManager:
             ok, previous = _pin_route_owned(v6, outer_iface, v6=True)
             if ok:
                 pinned.append((v6, outer_iface, True, previous))
+        if not _routes_cover(pinned, v4, v6):
+            for dst, via, v6f, previous in pinned:
+                _restore_route(dst, via, v6f, previous)
+            usque_mgr.stop(outer_iface)
+            return {"ok": False,
+                    "error": "Не удалось закрепить endpoint AWG через outer MASQUE"}
 
         # AwgManager.up() принимает ИМЯ конфига; интерфейсом станет само
         # это имя (см. AwgManager._do_up: ifname = name).
@@ -596,6 +614,13 @@ class WarpInWarpManager:
                 ok, previous = _pin_route_owned(v6, outer_iface, v6=True)
                 if ok:
                     pinned.append((v6, outer_iface, True, previous))
+            if not _routes_cover(pinned, v4, v6):
+                for dst, via, v6f, previous in pinned:
+                    _restore_route(dst, via, v6f, previous)
+                if not outer_was_up:
+                    awg_mgr.down(outer_iface)
+                return {"ok": False,
+                        "error": "Не удалось закрепить endpoint inner MASQUE через AWG"}
         except (ValueError, FileNotFoundError) as e:
             if not outer_was_up:
                 awg_mgr.down(outer_iface)
