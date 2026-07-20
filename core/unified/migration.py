@@ -72,17 +72,33 @@ def _singbox_tun_ifaces() -> set:
     return names
 
 
+def _warp_ifaces() -> set:
+    """Имена TUN-интерфейсов usque (WARP/MASQUE)."""
+    names = set()
+    try:
+        from core.usque_manager import get_usque_manager
+        mgr = get_usque_manager()
+        for cfg in mgr.list_configs():
+            iface = cfg.get("iface", "")
+            if iface:
+                names.add(iface)
+    except Exception:
+        pass
+    return names
+
+
 def method_for_iface(iface: str, singbox_ifaces=None) -> str:
     """
     Подобрать method-токен для целевого интерфейса legacy-правила.
-    sing-box-tun → singbox:<iface>; всё остальное (наши AWG, нативные
-    NDMS WG и пр.) → awg:<iface> — раскладка в ядре одинаковая, бэкенд
-    routing выбирает NDMS/ip-rule по имени iface сам.
+    sing-box-tun → singbox:<iface>; usque (WARP) → warp:<iface>;
+    всё остальное (наши AWG, нативные NDMS WG и пр.) → awg:<iface>.
     """
     sb = (singbox_ifaces if singbox_ifaces is not None
           else _singbox_tun_ifaces())
     if iface in sb:
         return "singbox:%s" % iface
+    if iface in _warp_ifaces():
+        return "warp:%s" % iface
     return "awg:%s" % iface
 
 

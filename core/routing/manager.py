@@ -48,16 +48,50 @@ def _run(args, timeout=10):
 
 def table_id_for(ifname: str) -> int:
     """
-    Стабильный id таблицы из имени интерфейса (100..999).
-
-    ВАЖНО: тот же алгоритм, что и в core/awg_manager.py:_table_id_for —
-    чтобы default-route, добавленный AwgManager при AllowedIPs=0/0,
-    лежал в той же таблице, к которой будут адресовать наши ip rule.
+    Стабильный и коллизионно-безопасный id таблицы из имени интерфейса (100..999).
+    Сохраняет соответствие в config settings.json для избежания коллизий.
     """
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        table_map = cfg.get("routing", "table_map", default={}) or {}
+        if not isinstance(table_map, dict):
+            table_map = {}
+    except Exception:
+        table_map = {}
+
+    if ifname in table_map:
+        return int(table_map[ifname])
+
+    # Считаем хэш
     h = 0
     for ch in ifname:
         h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return 100 + (h % 900)
+    candidate = 100 + (h % 900)
+
+    # Список уже занятых ID
+    used_ids = set(int(val) for val in table_map.values())
+
+    # Если кандидат свободен, берем его
+    if candidate not in used_ids:
+        allocated = candidate
+    else:
+        # Иначе ищем первый свободный ID начиная со 100
+        allocated = 100
+        while allocated in used_ids and allocated < 1000:
+            allocated += 1
+        if allocated >= 1000:
+            allocated = candidate
+
+    # Сохраняем в конфиг
+    try:
+        table_map[ifname] = allocated
+        cfg.set("routing", "table_map", table_map)
+        cfg.save()
+    except Exception:
+        pass
+
+    return allocated
 
 
 def _iface_exists(ifname: str) -> bool:
@@ -151,11 +185,9 @@ def _is_ndms_native_iface(ifname: str) -> bool:
 class RoutingManager:
     """Применение/откат правил routing. Тонкий слой над ip(8)."""
 
-    # Базовый приоритет для наших ip rule (между fwmark-rule и main).
-    # main-таблица = 32766; suppress_prefixlength fwmark-rule, который
-    # ставит wg-quick / awg_manager._add_default_via — обычно >= 32760.
-    # Берём 1000 + offset, чтобы наши правила отрабатывали раньше main.
-    BASE_PRIORITY = 10000
+    # Приоритет для ip rule берётся из rule.priority (DEFAULT_PRIORITY=10000).
+    # 10000 — между fwmark-rule (>=32760) и main (32766), выше системных
+    # правил (0-9999).
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -347,31 +379,65 @@ class RoutingManager:
     def remove_all_for_iface(self, ifname: str) -> dict:
         """Снять все правила интерфейса (не удаляя их из хранилища)."""
         results = []
-        for rule in self.list_rules():
-            if rule.target_iface != ifname:
-                continue
-            results.append({
-                "id":     rule.id,
-                "type":   rule.type_name,
-                "result": self._remove(rule),
-            })
+        with self._lock:
+            for rule in self.list_rules():
+                if rule.target_iface != ifname:
+                    continue
+                results.append({
+                    "id":     rule.id,
+                    "type":   rule.type_name,
+                    "result": self._remove(rule),
+                })
         return {"ok": True, "iface": ifname, "removed": results}
 
     def reapply_all(self) -> dict:
         """
         Снять и заново применить все правила. Полезно после ручных
         изменений в системе или при отладке.
+
+        MR-41: Батчевый подход — сначала снять все, потом применить все.
+        Это минимизирует окно без правил и убирает interleaving.
         """
         results = []
-        for rule in self.list_rules():
-            self._remove(rule)
-            if rule.enabled:
-                results.append({
-                    "id":     rule.id,
-                    "type":   rule.type_name,
-                    "result": self._apply(rule),
-                })
-        return {"ok": True, "applied": results}
+        errors = []
+        with self._lock:
+            rules = list(self.list_rules())
+            # Phase 1: Снять все правила
+            for rule in rules:
+                try:
+                    self._remove(rule)
+                except Exception as e:
+                    errors.append("remove %s: %s" % (rule.id, e))
+            # Phase 2: Применить все включённые правила
+            for rule in rules:
+                if rule.enabled:
+                    try:
+                        res = self._apply(rule)
+                        results.append({
+                            "id":     rule.id,
+                            "type":   rule.type_name,
+                            "result": res,
+                        })
+                    except Exception as e:
+                        errors.append("apply %s: %s" % (rule.id, e))
+                        results.append({
+                            "id":     rule.id,
+                            "type":   rule.type_name,
+                            "result": {"ok": False, "error": str(e)},
+                        })
+        return {"ok": not errors, "applied": results, "errors": errors}
+
+    def remove_all(self) -> dict:
+        """Снять абсолютно все правила маршрутизации."""
+        removed = []
+        with self._lock:
+            for rule in self.list_rules():
+                try:
+                    self._remove(rule)
+                    removed.append(rule.id)
+                except Exception:
+                    pass
+        return {"ok": True, "removed": removed}
 
     # ─────────── CIDR backend ───────────
 
@@ -419,13 +485,16 @@ class RoutingManager:
                               % (table, family))
                 continue
 
+            priority = rule.priority
+
             # Сначала чистим возможный дубликат, чтобы apply был идемпотентным
             _run(["ip", family, "rule", "del", "to", cidr,
-                  "lookup", str(table)])
+                  "lookup", str(table),
+                  "priority", str(priority)])
 
             rc, _o, err = _run(["ip", family, "rule", "add", "to", cidr,
                                 "lookup", str(table),
-                                "priority", str(self.BASE_PRIORITY)])
+                                "priority", str(priority)])
             if rc != 0:
                 errors.append("ip rule add to %s: %s" % (cidr, err.strip()))
                 continue
@@ -477,8 +546,10 @@ class RoutingManager:
             if rule.ip_version != "auto" and fam != rule.ip_version:
                 continue
             family = "-6" if fam == "v6" else "-4"
+            priority = rule.priority
             rc, _o, _e = _run(["ip", family, "rule", "del", "to", cidr,
-                               "lookup", str(table)])
+                               "lookup", str(table),
+                               "priority", str(priority)])
             if rc == 0:
                 removed.append({"family": family, "cidr": cidr})
 

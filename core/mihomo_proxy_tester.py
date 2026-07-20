@@ -207,6 +207,10 @@ def _throwaway_batch(proxies: list, target_url: str, timeout_ms: int,
             except Exception:
                 try:
                     popen.kill()
+                    try:
+                        popen.wait(timeout=1)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         if err_f is not None:
@@ -220,9 +224,9 @@ def _throwaway_batch(proxies: list, target_url: str, timeout_ms: int,
 
 # ─────── public ───────
 
-def test_proxies(proxies: list, *, target: str = "cloudflare",
-                 timeout_ms: int = 5000, controller: dict = None,
-                 binary: str = None, progress_cb=None) -> dict:
+def run_proxy_tests(proxies: list, *, target: str = "cloudflare",
+                    timeout_ms: int = 5000, controller: dict = None,
+                    binary: str = None, progress_cb=None) -> dict:
     """
     Протестировать clash-proxy dict'ы. Результат как у proxy_tester:
       {"ok", "target", "engine_used", "results": [{tag, server, port,
@@ -334,7 +338,7 @@ class _MihomoTestJob:
 
         def _run():
             try:
-                res = test_proxies(proxies, progress_cb=_cb, **kw)
+                res = run_proxy_tests(proxies, progress_cb=_cb, **kw)
             except Exception as e:
                 res = {"ok": False, "error": str(e)}
             with self._lock:

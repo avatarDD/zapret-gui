@@ -97,9 +97,9 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
     has_src = bool(route.devices) or route.dscp is not None
     skipped = []
 
-    if kind in ("awg", "singbox", "mihomo"):
+    if kind in ("awg", "singbox", "mihomo", "warp"):
         # sing-box умеет geosite/geoip нативно (geo_engine → route-правила
-        # движка с его geo-базой). Для AWG (и mihomo — у него нет YAML-
+        # движка с его geo-базой). Для AWG/warp (и mihomo — у него нет YAML-
         # эмиттера geo) заворачиваем geo через dnsmasq + ipset/nftset:
         # geosite → домены, geoip → CIDR в interval-set — тот же путь, что
         # у обычных доменов (domain_rule._expand_rule/_add_static_cidrs).

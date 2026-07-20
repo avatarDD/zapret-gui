@@ -110,5 +110,39 @@ class TestChooseSetKind(unittest.TestCase):
                 domain_rule._choose_set_kind(self._dn(True, True)), "")
 
 
+class TestWriteManagedFile(unittest.TestCase):
+    """Тесты атомарной записи managed-файла dnsmasq."""
+
+    def test_write_managed_file(self):
+        import tempfile
+        import os
+
+        dn = di.DnsmasqIntegration()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            main_conf = os.path.join(tmp_dir, "dnsmasq.conf")
+            managed_file = os.path.join(tmp_dir, "managed.conf")
+
+            with mock.patch.object(dn, "find_main_config", return_value=main_conf), \
+                 mock.patch.object(dn, "managed_file_path", return_value=managed_file):
+                
+                blocks = [
+                    {
+                        "rule_id": "test_rule",
+                        "set_kind": "ipset",
+                        "set_name": "zapret_test",
+                        "domains": ["google.com", "youtube.com"]
+                    }
+                ]
+                res = dn.write_managed_file(blocks)
+                self.assertTrue(res["ok"])
+                self.assertTrue(os.path.exists(managed_file))
+                self.assertFalse(os.path.exists(managed_file + ".tmp"))
+
+                # Проверяем содержимое
+                with open(managed_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.assertIn("ipset=/google.com/youtube.com/zapret_test,zapret_test6", content)
+
+
 if __name__ == "__main__":
     unittest.main()

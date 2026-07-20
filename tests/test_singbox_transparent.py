@@ -130,7 +130,7 @@ class TestIpv6Block(unittest.TestCase):
         rules = tp.build_ipv6_block_rules()
         flat = _flat(rules)
         self.assertTrue(all(r.startswith("ip6tables") for r in flat))
-        self.assertTrue(any("FORWARD -j DROP" in r for r in flat))
+        self.assertTrue(any("SBT_V6_FWD -j DROP" in r for r in flat))
 
 
 class TestTransparentInbounds(unittest.TestCase):
@@ -768,7 +768,10 @@ class TestSelfScopeIpv6Block(unittest.TestCase):
 
     def test_forward_scope_unchanged(self):
         rules = tp.build_ipv6_block_rules()
-        self.assertEqual(rules, [["ip6tables", "-A", "FORWARD", "-j", "DROP"]])
+        flat = _flat(rules)
+        self.assertTrue(all(tp.FILTER_V6FWD in r for r in flat))
+        self.assertTrue(any("::1/128 -j RETURN" in r for r in flat))
+        self.assertEqual(flat[-1].split()[-2:], ["-j", "DROP"])
 
     def test_self_scope_output_chain_with_guards(self):
         rules = tp.build_ipv6_block_rules(scope="self", mark=1)

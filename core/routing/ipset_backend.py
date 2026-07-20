@@ -72,7 +72,7 @@ def create_set(name: str, family: str = "v4") -> dict:
         return {"ok": True, "created": False, "name": name}
 
     rc, _o, err = _run(["ipset", "create", name, "hash:ip",
-                        "family", fam, "hashsize", "1024", "timeout", "0"])
+                        "family", fam, "hashsize", "1024", "maxelem", "1048576", "timeout", "0"])
     if rc != 0 and "already exists" not in (err or ""):
         return {"ok": False, "error": err.strip(), "name": name}
     return {"ok": True, "created": True, "name": name}

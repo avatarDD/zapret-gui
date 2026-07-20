@@ -51,36 +51,80 @@ _BASE = "https://raw.githubusercontent.com/itdoginfo/allow-domains/main"
 # Курируемые пресеты (community-списки доменов). Пользователь добавляет
 # одним кликом; список редактируемый — можно добавить свой URL.
 CURATED_PRESETS = [
-    {
-        "name": "Россия — вся заблокировка (inside)",
-        "url": _BASE + "/Russia/inside-raw.lst",
-        "description": "Сводный список ресурсов, заблокированных внутри РФ "
-                       "(itdoginfo/allow-domains).",
-    },
+    # ─── Сервисы ───
     {
         "name": "YouTube",
         "url": _BASE + "/Services/youtube.lst",
         "description": "Домены YouTube / googlevideo.",
+        "category": "services",
     },
     {
         "name": "Meta (Instagram/Facebook)",
         "url": _BASE + "/Services/meta.lst",
         "description": "Домены Meta: Instagram, Facebook, WhatsApp.",
+        "category": "services",
     },
     {
         "name": "Twitter / X",
         "url": _BASE + "/Services/twitter.lst",
         "description": "Домены X (бывш. Twitter).",
+        "category": "services",
     },
     {
         "name": "Discord",
         "url": _BASE + "/Services/discord.lst",
         "description": "Домены Discord (включая voice/CDN).",
+        "category": "services",
     },
     {
         "name": "Telegram",
         "url": _BASE + "/Services/telegram.lst",
         "description": "Домены Telegram.",
+        "category": "services",
+    },
+    {
+        "name": "TikTok",
+        "url": _BASE + "/Services/tiktok.lst",
+        "description": "Домены TikTok.",
+        "category": "services",
+    },
+    {
+        "name": "Netflix",
+        "url": _BASE + "/Services/netflix.lst",
+        "description": "Домены Netflix.",
+        "category": "services",
+    },
+    {
+        "name": "Cloudflare CDN",
+        "url": _BASE + "/Services/cloudflare.lst",
+        "description": "Домены Cloudflare CDN.",
+        "category": "services",
+    },
+    {
+        "name": "Google Meet",
+        "url": _BASE + "/Services/google-meet.lst",
+        "description": "Домены Google Meet.",
+        "category": "services",
+    },
+    # ─── Страны ───
+    {
+        "name": "Россия — вся заблокировка (inside)",
+        "url": _BASE + "/Russia/inside-raw.lst",
+        "description": "Сводный список ресурсов, заблокированных внутри РФ "
+                       "(itdoginfo/allow-domains).",
+        "category": "countries",
+    },
+    {
+        "name": "Россия — за рубежом (outside)",
+        "url": _BASE + "/Russia/outside-raw.lst",
+        "description": "Российские сервисы для доступа из-за рубежа.",
+        "category": "countries",
+    },
+    {
+        "name": "Украина — внутри (inside)",
+        "url": _BASE + "/Ukraine/inside-raw.lst",
+        "description": "Заблокированные в Украине ресурсы.",
+        "category": "countries",
     },
 ]
 
@@ -128,6 +172,52 @@ def presets() -> list:
     return [dict(p, added=(p["url"] in existing)) for p in CURATED_PRESETS]
 
 
+def is_safe_url(url: str) -> bool:
+    """Проверка URL на безопасность против SSRF."""
+    import re
+    import socket
+    import ipaddress
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+
+        # Защита от инъекций управляющих символов в хост
+        if any(c in host for c in "\r\n\t /\\#?@"):
+            return False
+
+        # Проверка формата хоста
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}[a-zA-Z0-9]$", host):
+            return False
+
+        # Если хост является IP-адресом напрямую
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return False
+        except ValueError:
+            pass
+
+        # Проверка резолвинга на приватные диапазоны IP
+        try:
+            addrinfo = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+            for family, _, _, _, sockaddr in addrinfo:
+                ip_str = sockaddr[0]
+                ip = ipaddress.ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_link_local:
+                    return False
+        except Exception:
+            pass
+
+        return True
+    except Exception:
+        return False
+
+
 def add_from_url(url: str, *, name: str = "", description: str = "",
                  interval_hours: int = DEFAULT_INTERVAL_HOURS,
                  refresh_now: bool = True) -> dict:
@@ -136,8 +226,9 @@ def add_from_url(url: str, *, name: str = "", description: str = "",
     Имя по умолчанию берём из URL.
     """
     url = (url or "").strip()
-    if not url.startswith("http://") and not url.startswith("https://"):
-        return {"ok": False, "error": "URL должен быть http:// или https://"}
+    # MR-63: Защита от SSRF
+    if not is_safe_url(url):
+        return {"ok": False, "error": "Недопустимый или небезопасный URL (SSRF block)"}
 
     # Дедуп по source_url.
     for it in named_lists.list_all():
@@ -241,8 +332,13 @@ def refresh_one(list_id: str) -> dict:
     if not url:
         return {"ok": False, "error": "У списка нет source_url"}
 
+    # Per-list transport: если у списка задан свой транспорт — используем его,
+    # иначе — глобальный lists.transport.
+    list_transport = (item.get("transport") or "").strip()
+    transport = list_transport if list_transport else get_transport()
+
     try:
-        text = _fetch(url, transport=get_transport())
+        text = _fetch(url, transport=transport)
     except RuntimeError as e:
         named_lists.update_fields(list_id, {
             "last_refresh": int(time.time()),

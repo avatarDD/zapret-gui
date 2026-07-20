@@ -120,8 +120,26 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
     cidr_errors = []
     for cidr in expanded_cidrs:
         net, mask = _split_cidr(cidr)
-        if not net or ":" in net:
-            # IPv6 пока не поддерживаем для NDMS-static-route
+        if not net:
+            continue
+        if ":" in net:
+            # MR-34: IPv6 не поддерживается NDMS-native — fallback на ip-rule
+            try:
+                from core.routing.manager import RoutingManager
+                v6_rule = CidrRoutingRule(
+                    target_iface=rule.target_iface,
+                    cidrs=[cidr],
+                    rule_id=rule.id,
+                    description=rule.description,
+                    priority=getattr(rule, "priority", 0),
+                )
+                result = RoutingManager()._apply_cidr(v6_rule)
+                if result.get("ok"):
+                    cidr_added += 1
+                else:
+                    cidr_errors.append("IPv6 fallback %s: %s" % (cidr, result.get("error", "?")))
+            except Exception as e:
+                cidr_errors.append("IPv6 fallback error: %s" % e)
             continue
         r = cmd.add_static_route(
             network=net, mask=str(mask),
@@ -254,9 +272,24 @@ def apply_cidr_rule(rule: CidrRoutingRule) -> dict:
             errors.append("Не разобрался с CIDR %s" % cidr)
             continue
         if ":" in net:
-            # NDMS-`ip route` — IPv4. Для IPv6 у Keenetic'а другая
-            # команда (`ipv6 route`), пока не поддерживаем.
-            errors.append("IPv6 пока не поддержан NDMS-backend'ом: %s" % cidr)
+            # MR-34: IPv6 не поддерживается NDMS-native — fallback на ip-rule
+            try:
+                from core.routing.manager import RoutingManager
+                v6_cidr = "%s/%s" % (net, mask)
+                v6_rule = CidrRoutingRule(
+                    target_iface=rule.target_iface,
+                    cidrs=[v6_cidr],
+                    rule_id=rule.id,
+                    description=rule.description,
+                    priority=rule.priority,
+                )
+                result = RoutingManager()._apply_cidr(v6_rule)
+                if result.get("ok"):
+                    added.append({"network": net, "mask": mask, "backend": "iprule-v6"})
+                else:
+                    errors.append("IPv6 fallback: %s" % result.get("error", "?"))
+            except Exception as e:
+                errors.append("IPv6 fallback error: %s" % e)
             continue
 
         r = cmd.add_static_route(

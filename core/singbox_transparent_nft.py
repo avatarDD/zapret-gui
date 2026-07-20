@@ -217,6 +217,19 @@ def build_ipv6_block_fragment() -> str:
     return "meta nfproto ipv6 drop"
 
 
+def build_ipv6_forward_block_fragments() -> list:
+    """
+    Anti-leak: дроп форвард-IPv6, когда проксируем только v4 (иначе
+    IPv6-клиенты ходят мимо туннеля). Исключения: IPv4, локальные и
+    ULA/Link-local адреса (не глушим локалку).
+    """
+    return [
+        "meta nfproto ipv4 return",
+        "ip6 daddr %s return" % _bypass_set("v6", []),
+        "meta nfproto ipv6 drop",
+    ]
+
+
 def build_ipv6_self_block_fragments(mark: int = DEFAULT_TPROXY_MARK) -> list:
     """
     Anti-leak IPv6 локального режима: на ПК FORWARD пуст — глушим
@@ -370,10 +383,11 @@ def apply(*, mode: str,
                     errors.append("out6: %s" % e.strip())
         else:
             _chain("fwd6", "{ type filter hook forward priority 0; policy accept; }")
-            rc, _o, e = _run(_nft_add_rule("fwd6", build_ipv6_block_fragment()))
-            rule_count += 1
-            if rc != 0:
-                errors.append("fwd6: %s" % e.strip())
+            for fr in build_ipv6_forward_block_fragments():
+                rc, _o, e = _run(_nft_add_rule("fwd6", fr))
+                rule_count += 1
+                if rc != 0:
+                    errors.append("fwd6: %s" % e.strip())
 
     ok = not errors
     if ok:

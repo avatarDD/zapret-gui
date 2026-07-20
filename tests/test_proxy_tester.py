@@ -106,7 +106,7 @@ class TestTestOutboundsNoBinary(unittest.TestCase):
     def test_no_binary_no_prefilter(self):
         obs = [{"type": "vless", "tag": "a", "server": "1.1.1.1",
                 "server_port": 443, "uuid": "u"}]
-        res = pt.test_outbounds(obs, tcp_prefilter_enabled=False, binary="")
+        res = pt.run_outbound_tests(obs, tcp_prefilter_enabled=False, binary="")
         self.assertTrue(res["ok"])
         self.assertFalse(res["engine_used"])
         self.assertEqual(res["summary"]["total"], 1)
@@ -114,7 +114,7 @@ class TestTestOutboundsNoBinary(unittest.TestCase):
         self.assertEqual(res["results"][0]["stage"], "tcp")
 
     def test_empty(self):
-        res = pt.test_outbounds([], binary="")
+        res = pt.run_outbound_tests([], binary="")
         self.assertTrue(res["ok"])
         self.assertEqual(res["summary"]["total"], 0)
 
@@ -126,7 +126,7 @@ class TestTestOutboundsNoBinary(unittest.TestCase):
                {"type": "vless", "tag": "b", "server": "192.0.2.2",
                 "server_port": 1, "uuid": "u"}]
         calls = []
-        pt.test_outbounds(obs, binary="",
+        pt.run_outbound_tests(obs, binary="",
                           progress_cb=lambda ph, d, t: calls.append((ph, d, t)))
         self.assertTrue(calls)
         # последний tcp-колбэк — done == total == 2
@@ -165,13 +165,13 @@ class TestUdpProtoPrefilter(unittest.TestCase):
         m.assert_called_once()
         self.assertEqual(res.get("v"), (False, None))
 
-    def test_hysteria2_not_dead_in_test_outbounds(self):
+    def test_hysteria2_not_dead_in_run_outbound_tests(self):
         # Регресс: hysteria2 не помечается «мёртвым» TCP-фазой (была причина
         # ложного «дохлая» у hysteria2/tuic).
         obs = [{"type": "hysteria2", "tag": "h", "server": "192.0.2.1",
                 "server_port": 8449, "password": "p",
                 "tls": {"enabled": True, "server_name": "sni.example"}}]
-        res = pt.test_outbounds(obs, binary="")   # без движка → только фаза 1
+        res = pt.run_outbound_tests(obs, binary="")   # без движка → только фаза 1
         self.assertTrue(res["ok"])
         row = res["results"][0]
         self.assertTrue(row["alive"])
@@ -226,7 +226,7 @@ class TestSkipE2EWithoutClashApi(unittest.TestCase):
              mock.patch.object(pt, "binary_has_clash_api",
                                return_value=False), \
              mock.patch.object(pt, "_e2e_delays") as e2e:
-            res = pt.test_outbounds(obs, binary="/opt/sing-box")
+            res = pt.run_outbound_tests(obs, binary="/opt/sing-box")
         e2e.assert_not_called()              # движок не поднимали
         self.assertFalse(res["engine_used"])
         self.assertTrue(res["ok"])
@@ -243,7 +243,7 @@ class TestSkipE2EWithoutClashApi(unittest.TestCase):
              mock.patch.object(pt, "_e2e_delays",
                                return_value={"a": {"ok": True,
                                                    "latency_ms": 99}}) as e2e:
-            res = pt.test_outbounds(obs, binary="/opt/sing-box")
+            res = pt.run_outbound_tests(obs, binary="/opt/sing-box")
         e2e.assert_called_once()
         self.assertTrue(res["engine_used"])
         self.assertEqual(res["results"][0]["stage"], "e2e")

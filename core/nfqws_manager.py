@@ -25,6 +25,10 @@ import time
 from core.log_buffer import log
 
 # PID-файл, управляемый GUI
+_WAN_CACHE = {}
+_WAN_CACHE_TS = {}
+_WAN_CACHE_TTL = 10.0  # 10 секунд TTL
+
 PID_FILE = "/var/run/zapret-gui-nfqws.pid"
 
 # ─────────────────────── Lua scripts injection ──────────────────────
@@ -884,9 +888,18 @@ class NFQWSManager:
             val = val.strip()
         if val:
             return val.split()
+
+        now = time.time()
+        if role in _WAN_CACHE and (now - _WAN_CACHE_TS.get(role, 0)) < _WAN_CACHE_TTL:
+            return _WAN_CACHE[role]
+
         from core.firewall import _detect_wan_from_routes, _detect_wan6_from_routes
-        return _detect_wan6_from_routes() if role == "wan6" \
+        res = _detect_wan6_from_routes() if role == "wan6" \
             else _detect_wan_from_routes()
+
+        _WAN_CACHE[role] = res
+        _WAN_CACHE_TS[role] = now
+        return res
 
     @staticmethod
     def _build_lua_init_args(strategy_args: list, lua_path: str) -> list:

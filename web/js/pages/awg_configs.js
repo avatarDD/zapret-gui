@@ -24,10 +24,10 @@ const AwgConfigsPage = (() => {
                     <p class="page-description">Создание, редактирование и импорт .conf-файлов.</p>
                 </div>
                 <div style="display: flex; gap: 8px;">
-                    <button class="btn btn-ghost btn-sm" onclick="window.location.hash='awg'">
+                    <button class="btn btn-ghost btn-sm" data-action="hash-awg">
                         ← Туннели
                     </button>
-                    <button class="btn btn-primary btn-sm" onclick="AwgConfigsPage.startCreate()">
+                    <button class="btn btn-primary btn-sm" data-action="startCreate">
                         + Новый
                     </button>
                 </div>
@@ -48,19 +48,18 @@ const AwgConfigsPage = (() => {
                         <span id="awg-cfg-editor-title">Выберите конфиг или создайте новый</span>
                         <div id="awg-cfg-editor-actions" style="display: none; gap: 6px;">
                             <input type="file" id="awg-cfg-file-input" accept=".conf,text/plain"
-                                   style="display:none;" onchange="AwgConfigsPage.importFile(event)"/>
-                            <button class="btn btn-ghost btn-sm"
-                                    onclick="document.getElementById('awg-cfg-file-input').click()">
+                                   style="display:none;" data-action="importFile"/>
+                            <button class="btn btn-ghost btn-sm" data-action="importClick">
                                 Импорт
                             </button>
-                            <button class="btn btn-ghost btn-sm" onclick="AwgConfigsPage.exportCurrent()">
+                            <button class="btn btn-ghost btn-sm" data-action="exportCurrent">
                                 Экспорт
                             </button>
-                            <button class="btn btn-ghost btn-sm" onclick="AwgConfigsPage.generateKeypair()">
+                            <button class="btn btn-ghost btn-sm" data-action="generateKeypair">
                                 Новые ключи
                             </button>
                             <button class="btn btn-ghost btn-sm text-danger"
-                                    onclick="AwgConfigsPage.deleteCurrent()" id="awg-cfg-delete-btn">
+                                    data-action="deleteCurrent" id="awg-cfg-delete-btn">
                                 Удалить
                             </button>
                         </div>
@@ -69,8 +68,7 @@ const AwgConfigsPage = (() => {
                     <div id="awg-cfg-name-row" style="display:none; margin-top: 8px;">
                         <label class="form-label">Имя конфига</label>
                         <input type="text" class="form-input" id="awg-cfg-name"
-                               placeholder="например: awg0"
-                               oninput="AwgConfigsPage.onNameInput()"/>
+                               placeholder="например: awg0"/>
                         <div class="text-muted" style="font-size: 12px; margin-top: 4px;">
                             До 15 символов: латиница, цифры, '_', '-', '.'.
                         </div>
@@ -83,17 +81,16 @@ const AwgConfigsPage = (() => {
                                      border-radius: 4px; background: var(--bg-secondary);
                                      color: var(--text-primary); display: none;"
                               spellcheck="false"
-                              oninput="AwgConfigsPage.onEditorInput()"
                               placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.0.0.2/32&#10;DNS = 1.1.1.1&#10;Jc = 4&#10;Jmin = 40&#10;Jmax = 70&#10;...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;AllowedIPs = 0.0.0.0/0&#10;Endpoint = host:port"></textarea>
 
                     <div id="awg-cfg-errors" style="margin-top: 8px;"></div>
 
                     <div id="awg-cfg-save-row" style="display:none; margin-top: 10px;
                                                        display: none; gap: 8px;">
-                        <button class="btn btn-primary btn-sm" onclick="AwgConfigsPage.save()">
+                        <button class="btn btn-primary btn-sm" data-action="save">
                             Сохранить
                         </button>
-                        <button class="btn btn-ghost btn-sm" onclick="AwgConfigsPage.cancelEdit()">
+                        <button class="btn btn-ghost btn-sm" data-action="cancelEdit">
                             Отмена
                         </button>
                         <span class="text-muted" id="awg-cfg-status" style="margin-left: 12px;"></span>
@@ -101,6 +98,27 @@ const AwgConfigsPage = (() => {
                 </div>
             </div>
         `;
+
+        // MR-69: Event delegation вместо inline onclick
+        container.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            if (action === 'hash-awg') { window.location.hash = 'awg'; return; }
+            if (action === 'startCreate') { startCreate(); return; }
+            if (action === 'importClick') { document.getElementById('awg-cfg-file-input')?.click(); return; }
+            if (action === 'exportCurrent') { exportCurrent(); return; }
+            if (action === 'generateKeypair') { generateKeypair(); return; }
+            if (action === 'deleteCurrent') { deleteCurrent(); return; }
+            if (action === 'save') { save(); return; }
+            if (action === 'cancelEdit') { cancelEdit(); return; }
+            if (action === 'openConfig') { openConfig(btn.dataset.name); return; }
+        });
+
+        // MR-69: oninput → addEventListener
+        document.getElementById('awg-cfg-name')?.addEventListener('input', onNameInput);
+        document.getElementById('awg-cfg-editor')?.addEventListener('input', onEditorInput);
+        document.getElementById('awg-cfg-file-input')?.addEventListener('change', importFile);
 
         loadConfigs().then(() => {
             // Поддержка #awg-configs?edit=<name>
@@ -138,9 +156,9 @@ const AwgConfigsPage = (() => {
         }
         list.innerHTML = configs.map(c => `
             <div class="list-item ${c.name === currentName ? 'active' : ''}"
+                 data-action="openConfig" data-name="${escapeAttr(c.name)}"
                  style="padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--border);
-                        ${c.name === currentName ? 'background: var(--bg-active);' : ''}"
-                 onclick="AwgConfigsPage.openConfig('${escapeAttr(c.name)}')">
+                        ${c.name === currentName ? 'background: var(--bg-active);' : ''}">
                 <div style="display:flex; justify-content: space-between; align-items: center;">
                     <strong style="font-family: monospace;">${escapeHtml(c.name)}</strong>
                     ${c.active

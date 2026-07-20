@@ -65,13 +65,7 @@ BODY_PROBE_MIN_BYTES = 65_536   # Минимум для прохождения 1
 NFQWS_CRASH_RETRIES = 2
 NFQWS_CRASH_BACKOFF = 1.0       # пауза между попытками
 
-# Tmp hostlist для приёмов (basic/advanced/direct), обогащённый доменами
-# цели. nfqws2 матчит SNI/Host строго по записям; без них десинк
-# не применяется к трафику цели и проба всегда падает.
-TMP_HOSTLIST_PATH = "/tmp/zapret-gui-scan-target.txt"
-
-# Resume state
-RESUME_FILE = "/tmp/zapret-gui-scan-resume.json"
+# Scan status
 
 # Scan status
 STATUS_IDLE = "idle"
@@ -153,6 +147,7 @@ class StrategyScanner:
         protocol: str = "tcp",
         mode: str = "quick",
         start_index: int = 0,
+        dpi_type: str = "",
         callback: Optional[Callable] = None,
     ) -> bool:
         """
@@ -163,6 +158,8 @@ class StrategyScanner:
             protocol:    'tcp' или 'udp'.
             mode:        'quick' (~30), 'standard' (~80), 'full' (все).
             start_index: Индекс для resume (0 = начало).
+            dpi_type:    Тип DPI-блокировки (из BlockCheck). Фильтрует
+                         релевантные стратегии.
             callback:    Опциональный callable(event_type, data).
 
         Returns:
@@ -192,6 +189,7 @@ class StrategyScanner:
             self._protocol = protocol.strip().lower() or "tcp"
             self._mode = mode.strip().lower() or "quick"
             self._start_index = max(0, int(start_index))
+            self._dpi_type = dpi_type.strip().lower() if dpi_type else ""
             self._callback = callback
 
         log.info(
@@ -279,7 +277,8 @@ class StrategyScanner:
 
     def get_working_strategies(self) -> list[dict[str, Any]]:
         """Получить список работающих стратегий."""
-        return [r.to_dict() for r in self._results if r.success]
+        with self._lock:
+            return [r.to_dict() for r in self._results if r.success]
 
     def get_resume_index(self) -> int:
         """Получить индекс для resume из сохранённого состояния."""
@@ -297,7 +296,8 @@ class StrategyScanner:
         Returns:
             True если стратегия применена.
         """
-        working = [r for r in self._results if r.success]
+        with self._lock:
+            working = [r for r in self._results if r.success]
         if index < 0 or index >= len(working):
             log.error(
                 "Неверный индекс стратегии: %d (доступно: %d)"
@@ -319,9 +319,15 @@ class StrategyScanner:
         Returns:
             True если стратегия применена.
         """
-        for r in self._results:
-            if r.success and r.strategy_id == strategy_id:
-                return self._apply_probe_result(r)
+        probe_result = None
+        with self._lock:
+            for r in self._results:
+                if r.success and r.strategy_id == strategy_id:
+                    probe_result = r
+                    break
+
+        if probe_result:
+            return self._apply_probe_result(probe_result)
 
         log.error(
             "Стратегия не найдена или не рабочая: %s" % strategy_id,
@@ -466,8 +472,18 @@ class StrategyScanner:
                         source="scanner",
                     )
 
-                # Сохраняем resume-state
-                self._save_resume_state(actual_idx + 1)
+                # MR-85: Сохраняем resume-state с throttle (каждые 5 стратегий или каждые 10s)
+                save_idx = actual_idx + 1
+                if not hasattr(self, '_last_save_time'):
+                    self._last_save_time = 0
+                    self._save_counter = 0
+                self._save_counter += 1
+                now = time.time()
+                if (self._save_counter % 5 == 0
+                        or (now - self._last_save_time) >= 10
+                        or actual_idx >= total - 1):
+                    self._save_resume_state(save_idx)
+                    self._last_save_time = now
 
                 # Пауза между стратегиями
                 if not self._cancelled and idx < len(strategies) - 1:
@@ -650,6 +666,16 @@ class StrategyScanner:
                 log.warning("Генератор стратегий недоступен: %s" % e,
                             source="scanner")
 
+        # DPI-type фильтрация: оставляем только релевантные стратегии
+        if self._dpi_type:
+            before_count = len(entries)
+            entries = self._filter_by_dpi(entries, self._dpi_type)
+            log.info(
+                "DPI-фильтрация (%s): %d → %d стратегий"
+                % (self._dpi_type, before_count, len(entries)),
+                source="scanner",
+            )
+
         # Сортировка: full presets вперёд, recommended вторыми, внутри
         # группы — от простых стратегий к сложным (blockcheckw rank).
         from core.strategy_generator import complexity_key
@@ -677,6 +703,138 @@ class StrategyScanner:
             )
 
         return entries
+
+    def _filter_by_dpi(self, entries: list, dpi_type: str) -> list:
+        """
+        Отфильтровать стратегии по типу DPI-блокировки.
+
+        Оставляет только те стратегии, которые релевантны для
+        конкретного типа блокировки. Ускоряет скан в 5-10 раз.
+        """
+        if not dpi_type:
+            return entries
+
+        # Маппинг DPI-типа → ключевые слова в аргументах стратегии
+        # Если стратегия содержит хотя бы одно ключевое слово — она релевантна
+        DPI_FILTERS = {
+            # TLS DPI — нужен fake + split/disorder для TLS ClientHello
+            "tls_dpi": {
+                "must_have": ["filter-l7=tls", "tls_client_hello"],
+                "good": ["fake", "split", "disorder", "fakedsplit",
+                         "multisplit", "multidisorder", "seqovl"],
+                "bad": ["filter-l7=quic", "quic_initial"],
+            },
+            # ClientHello DPI — нужен multisplit по позициям (размер-based)
+            "clienthello_dpi": {
+                "must_have": ["filter-l7=tls", "tls_client_hello"],
+                "good": ["multisplit", "pos=", "seqovl", "split"],
+                "bad": ["filter-l7=quic"],
+            },
+            # TCP Reset — нужен desync с fooling (tcp_md5, badsum, ttl)
+            "tcp_reset": {
+                "must_have": ["filter-l7=tls"],
+                "good": ["fake", "fool=", "tcp_md5", "badsum", "ip_ttl",
+                         "autottl", "tcp_ack"],
+                "bad": [],
+            },
+            # QUIC blocked — нужны QUIC-стратегии
+            "quic_block": {
+                "must_have": ["filter-l7=quic", "quic_initial"],
+                "good": ["udplen", "fake", "quic"],
+                "bad": ["filter-l7=tls"],
+            },
+            # HTTP inject — нужны HTTP-стратегии
+            "http_inject": {
+                "must_have": ["filter-l7=http", "http_req"],
+                "good": ["http_methodeol", "domcase", "hostcase", "split"],
+                "bad": ["filter-l7=tls"],
+            },
+            # ISP page — HTTP + TLS
+            "isp_page": {
+                "must_have": [],
+                "good": ["fake", "split", "disorder"],
+                "bad": [],
+            },
+            # TLS MITM — сложный, пробуем всё
+            "tls_mitm": {
+                "must_have": [],
+                "good": ["fake", "split", "disorder", "fool"],
+                "bad": [],
+            },
+            # TCP 16-20KB — split с seqovl
+            "tcp_16_20": {
+                "must_have": ["filter-l7=tls"],
+                "good": ["split", "seqovl", "multisplit"],
+                "bad": [],
+            },
+            # STUN block — UDP
+            "stun_block": {
+                "must_have": ["filter-udp"],
+                "good": ["fake", "udplen"],
+                "bad": [],
+            },
+            # Throttled — split + fake
+            "throttled": {
+                "must_have": [],
+                "good": ["fake", "split", "disorder"],
+                "bad": [],
+            },
+            # DNS fake — не нужен nfqws2, нужен DoH
+            "dns_fake": {
+                "must_have": [],
+                "good": [],
+                "bad": [],
+                "skip": True,  # Пропускаем — nfqws2 не поможет
+            },
+            # IP block — нужен туннель
+            "ip_block": {
+                "must_have": [],
+                "good": [],
+                "bad": [],
+                "skip": True,
+            },
+            # Full block — нужен туннель
+            "full_block": {
+                "must_have": [],
+                "good": [],
+                "bad": [],
+                "skip": True,
+            },
+        }
+
+        f = DPI_FILTERS.get(dpi_type)
+        if not f:
+            return entries  # Неизвестный тип — не фильтруем
+
+        if f.get("skip"):
+            return []  # nfqws2 не поможет
+
+        must_have = set(f.get("must_have", []))
+        good = set(f.get("good", []))
+        bad = set(f.get("bad", []))
+
+        filtered = []
+        for e in entries:
+            args_str = e.args.lower()
+            args_list = [a.lower() for a in e.get_args_list()]
+
+            # Проверяем must_have — если есть ограничение, стратегия
+            # должна содержать хотя бы одно ключевое слово
+            if must_have and not any(kw in args_str for kw in must_have):
+                # MR-11: разрешаем "trick"-стратегии (basic/direct/builtin, или чистый сплит/disorder/oob без desync)
+                is_trick = e.level in ("basic", "direct", "builtin") or (
+                    any(kw in args_str for kw in ("split", "disorder", "oob")) and "desync" not in args_str
+                )
+                if not is_trick:
+                    continue
+
+            # Проверяем bad — исключаем нерелевантные
+            if bad and any(kw in args_str for kw in bad):
+                continue
+
+            filtered.append(e)
+
+        return filtered
 
     # ─────────────────── Probe one strategy ───────────────────
 
@@ -1602,24 +1760,50 @@ class StrategyScanner:
 
     # ─────────────────── Resume state ───────────────────
 
+    def _resume_file_path(self) -> str:
+        try:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            custom = cfg.get("scan", "resume_file_path", default=None)
+            if custom:
+                return custom
+        except Exception:
+            pass
+        import tempfile
+        return os.path.join(tempfile.gettempdir(), "zapret-gui-scan-resume.json")
+
+    def _tmp_hostlist_path(self) -> str:
+        try:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            custom = cfg.get("scan", "tmp_hostlist_path", default=None)
+            if custom:
+                return custom
+        except Exception:
+            pass
+        import tempfile
+        return os.path.join(tempfile.gettempdir(), "zapret-gui-scan-target.txt")
+
     def _save_resume_state(self, next_index: int) -> None:
-        """Сохранить позицию для resume в /tmp/."""
-        state = {
-            "target": self._target,
-            "protocol": self._protocol,
-            "mode": self._mode,
-            "next_index": next_index,
-            "timestamp": time.time(),
-            "working_count": len(
-                [r for r in self._results if r.success]
-            ),
-        }
+        """Сохранить позицию для resume."""
+        resume_file = self._resume_file_path()
+        with self._lock:
+            state = {
+                "target": self._target,
+                "protocol": self._protocol,
+                "mode": self._mode,
+                "next_index": next_index,
+                "timestamp": time.time(),
+                "working_count": len(
+                    [r for r in self._results if r.success]
+                ),
+            }
 
         try:
-            with open(RESUME_FILE, "w", encoding="utf-8") as f:
+            with open(resume_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False)
         except (IOError, OSError):
-            pass  # /tmp/ может быть недоступен — не критично
+            pass  # tmp может быть недоступен — не критично
 
     def _load_resume_state(self) -> int:
         """
@@ -1628,10 +1812,11 @@ class StrategyScanner:
         Returns:
             Индекс следующей стратегии (0 если нет данных).
         """
+        resume_file = self._resume_file_path()
         try:
-            if not os.path.exists(RESUME_FILE):
+            if not os.path.exists(resume_file):
                 return 0
-            with open(RESUME_FILE, "r", encoding="utf-8") as f:
+            with open(resume_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
             return int(state.get("next_index", 0))
         except (IOError, OSError, json.JSONDecodeError, ValueError):
@@ -1639,9 +1824,10 @@ class StrategyScanner:
 
     def _remove_resume_state(self) -> None:
         """Удалить файл resume state."""
+        resume_file = self._resume_file_path()
         try:
-            if os.path.exists(RESUME_FILE):
-                os.remove(RESUME_FILE)
+            if os.path.exists(resume_file):
+                os.remove(resume_file)
         except OSError:
             pass
 
@@ -1654,31 +1840,32 @@ class StrategyScanner:
         baseline_accessible: bool,
     ) -> None:
         """Сформировать итоговый отчёт."""
-        working = [r for r in self._results if r.success]
+        with self._lock:
+            working = [r for r in self._results if r.success]
 
-        # Лучшая = максимальный score (success_rate × kbps/latency).
-        # Это надёжнее, чем просто latency: latency низкий бывает у
-        # «псевдо-успехов», у которых body обрывается на 16-20 KB.
-        best: Optional[StrategyProbeResult] = None
-        if working:
-            best = max(working, key=lambda r: r.score)
+            # Лучшая = максимальный score (success_rate × kbps/latency).
+            # Это надёжнее, чем просто latency: latency низкий бывает у
+            # «псевдо-успехов», у которых body обрывается на 16-20 KB.
+            best: Optional[StrategyProbeResult] = None
+            if working:
+                best = max(working, key=lambda r: r.score)
 
-        # Сортируем self._results по score (для UI)
-        self._results.sort(key=lambda r: r.score, reverse=True)
+            # Сортируем self._results по score (для UI)
+            self._results.sort(key=lambda r: r.score, reverse=True)
 
-        self._report = StrategyScanReport(
-            target=self._target,
-            protocol=self._protocol,
-            mode=self._mode,
-            results=list(self._results),
-            best_strategy=best,
-            total_tested=len(self._results),
-            total_available=self._total + self._start_index,
-            started_at=started_at,
-            finished_at=finished_at,
-            cancelled=self._cancelled,
-            baseline_accessible=baseline_accessible,
-        )
+            self._report = StrategyScanReport(
+                target=self._target,
+                protocol=self._protocol,
+                mode=self._mode,
+                results=list(self._results),
+                best_strategy=best,
+                total_tested=len(self._results),
+                total_available=self._total + self._start_index,
+                started_at=started_at,
+                finished_at=finished_at,
+                cancelled=self._cancelled,
+                baseline_accessible=baseline_accessible,
+            )
 
     # ─────────────────── Apply strategy ───────────────────
 
@@ -1804,12 +1991,13 @@ class StrategyScanner:
     ) -> list[str]:
         """Заменить ссылку на TMP_HOSTLIST_PATH на постоянный файл.
 
-        При сканировании trick'ам подсовывается /tmp/...target.txt, который
+        При сканировании trick'ам подсовывается временный target.txt, который
         удаляется в finally. Чтобы применённая стратегия пережила перезапуск
         nfqws2, копируем содержимое в lists_path/zapret-gui-target-<key>.txt
         и переписываем --hostlist=… на этот путь.
         """
-        if not any(a.endswith(TMP_HOSTLIST_PATH) for a in args):
+        tmp_hostlist = self._tmp_hostlist_path()
+        if not any(a.endswith(tmp_hostlist) for a in args):
             return args
 
         from core.config_manager import get_config_manager
@@ -1837,7 +2025,7 @@ class StrategyScanner:
             return args
 
         return [
-            ("--hostlist=%s" % permanent) if a == ("--hostlist=%s" % TMP_HOSTLIST_PATH)
+            ("--hostlist=%s" % permanent) if a == ("--hostlist=%s" % tmp_hostlist)
             else a
             for a in args
         ]
@@ -1896,11 +2084,12 @@ class StrategyScanner:
             self._tmp_hostlist = None
             return
 
+        tmp_hostlist = self._tmp_hostlist_path()
         try:
-            with open(TMP_HOSTLIST_PATH, "w", encoding="utf-8") as f:
+            with open(tmp_hostlist, "w", encoding="utf-8") as f:
                 for d in domains:
                     f.write(d.strip() + "\n")
-            self._tmp_hostlist = TMP_HOSTLIST_PATH
+            self._tmp_hostlist = tmp_hostlist
         except OSError as e:
             log.warning(
                 "Не удалось создать временный hostlist: %s" % e,

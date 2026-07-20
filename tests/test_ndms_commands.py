@@ -91,10 +91,11 @@ class TestIsNotFoundError(unittest.TestCase):
     def test_matches_common_phrases(self):
         self.assertTrue(_is_not_found_error("Not Found"))
         self.assertTrue(_is_not_found_error("no such object"))
-        self.assertTrue(_is_not_found_error("HTTP 404"))
         self.assertTrue(_is_not_found_error("Object doesn't exist"))
 
     def test_no_match_other_errors(self):
+        self.assertFalse(_is_not_found_error("HTTP 404"))
+        self.assertFalse(_is_not_found_error("unknown command"))
         self.assertFalse(_is_not_found_error("Permission denied"))
         self.assertFalse(_is_not_found_error("Internal error"))
         self.assertFalse(_is_not_found_error(""))

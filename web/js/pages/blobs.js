@@ -28,13 +28,13 @@ const BlobsPage = (() => {
                     <p class="page-description">Бинарные данные для fake-пакетов nfqws2</p>
                 </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                    <button class="btn btn-ghost" onclick="BlobsPage.openGenerate()">
+                    <button class="btn btn-ghost" data-action="openGenerate">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
                         </svg>
                         Сгенерировать
                     </button>
-                    <button class="btn btn-primary" onclick="BlobsPage.openCreate()">
+                    <button class="btn btn-primary" data-action="openCreate">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                         </svg>
@@ -57,7 +57,7 @@ const BlobsPage = (() => {
                         </svg>
                         Все блобы
                     </span>
-                    <button class="btn btn-ghost btn-sm" onclick="BlobsPage.refresh()" title="Обновить">
+                    <button class="btn btn-ghost btn-sm" data-action="refresh" title="Обновить">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <polyline points="23 4 23 10 17 10"/>
                             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -106,7 +106,7 @@ const BlobsPage = (() => {
                 <div class="modal-content modal-lg">
                     <div class="modal-header">
                         <h3 class="modal-title" id="blob-view-title">Просмотр блоба</h3>
-                        <button class="modal-close" onclick="BlobsPage.closeView()">&times;</button>
+                        <button class="modal-close" data-action="closeView">&times;</button>
                     </div>
                     <div class="modal-body" id="blob-view-body">
                         <div class="text-muted" style="text-align:center; padding:24px;">Загрузка...</div>
@@ -119,7 +119,7 @@ const BlobsPage = (() => {
                 <div class="modal-content modal-lg">
                     <div class="modal-header">
                         <h3 class="modal-title">Создать блоб</h3>
-                        <button class="modal-close" onclick="BlobsPage.closeCreate()">&times;</button>
+                        <button class="modal-close" data-action="closeCreate">&times;</button>
                     </div>
                     <div class="modal-body">
                         <div class="form-group">
@@ -138,8 +138,8 @@ const BlobsPage = (() => {
                             <span class="form-hint">Форматы: "16 03 01", "160301", "16:03:01", "0x16 0x03"</span>
                         </div>
                         <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
-                            <button class="btn btn-ghost" onclick="BlobsPage.closeCreate()">Отмена</button>
-                            <button class="btn btn-primary" id="blob-create-btn" onclick="BlobsPage.doCreate()">
+                            <button class="btn btn-ghost" data-action="closeCreate">Отмена</button>
+                            <button class="btn btn-primary" id="blob-create-btn" data-action="doCreate">
                                 Создать
                             </button>
                         </div>
@@ -152,7 +152,7 @@ const BlobsPage = (() => {
                 <div class="modal-content modal-lg">
                     <div class="modal-header">
                         <h3 class="modal-title">Генератор fake-блоба</h3>
-                        <button class="modal-close" onclick="BlobsPage.closeGenerate()">&times;</button>
+                        <button class="modal-close" data-action="closeGenerate">&times;</button>
                     </div>
                     <div class="modal-body">
                         <div style="display:flex; gap:12px; flex-wrap:wrap;">
@@ -178,16 +178,16 @@ const BlobsPage = (() => {
                         </div>
                         <div class="asn-presets" style="margin-bottom:12px;">
                             <span class="form-hint">Быстрый выбор:</span>
-                            <button class="btn-chip" onclick="BlobsPage.setGenDomain('youtube.com')">YouTube</button>
-                            <button class="btn-chip" onclick="BlobsPage.setGenDomain('discord.com')">Discord</button>
-                            <button class="btn-chip" onclick="BlobsPage.setGenDomain('t.me')">Telegram</button>
-                            <button class="btn-chip" onclick="BlobsPage.setGenDomain('instagram.com')">Instagram</button>
-                            <button class="btn-chip" onclick="BlobsPage.setGenDomain('x.com')">X/Twitter</button>
-                            <button class="btn-chip" onclick="BlobsPage.setGenDomain('chatgpt.com')">ChatGPT</button>
+                            <button class="btn-chip" data-action="setGenDomain" data-domain="youtube.com">YouTube</button>
+                            <button class="btn-chip" data-action="setGenDomain" data-domain="discord.com">Discord</button>
+                            <button class="btn-chip" data-action="setGenDomain" data-domain="t.me">Telegram</button>
+                            <button class="btn-chip" data-action="setGenDomain" data-domain="instagram.com">Instagram</button>
+                            <button class="btn-chip" data-action="setGenDomain" data-domain="x.com">X/Twitter</button>
+                            <button class="btn-chip" data-action="setGenDomain" data-domain="chatgpt.com">ChatGPT</button>
                         </div>
                         <div style="display:flex; gap:8px; justify-content:flex-end;">
-                            <button class="btn btn-ghost" onclick="BlobsPage.closeGenerate()">Отмена</button>
-                            <button class="btn btn-primary" id="blob-gen-btn" onclick="BlobsPage.doGenerate()">
+                            <button class="btn btn-ghost" data-action="closeGenerate">Отмена</button>
+                            <button class="btn btn-primary" id="blob-gen-btn" data-action="doGenerate">
                                 <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
                                 </svg>
@@ -212,7 +212,7 @@ const BlobsPage = (() => {
                 <div class="modal-content modal-lg">
                     <div class="modal-header">
                         <h3 class="modal-title" id="blob-edit-title">Редактировать блоб</h3>
-                        <button class="modal-close" onclick="BlobsPage.closeEdit()">&times;</button>
+                        <button class="modal-close" data-action="closeEdit">&times;</button>
                     </div>
                     <div class="modal-body">
                         <div class="form-group">
@@ -223,8 +223,8 @@ const BlobsPage = (() => {
                             <span class="form-hint">Редактируйте hex-данные. Пробелы, двоеточия, переносы допустимы.</span>
                         </div>
                         <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
-                            <button class="btn btn-ghost" onclick="BlobsPage.closeEdit()">Отмена</button>
-                            <button class="btn btn-primary" id="blob-edit-btn" onclick="BlobsPage.doEdit()">
+                            <button class="btn btn-ghost" data-action="closeEdit">Отмена</button>
+                            <button class="btn btn-primary" id="blob-edit-btn" data-action="doEdit">
                                 Сохранить
                             </button>
                         </div>
@@ -232,6 +232,14 @@ const BlobsPage = (() => {
                 </div>
             </div>
         `;
+
+        container.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            if (action === 'delete') deleteBlob(btn.dataset.name);
+            if (action === 'copy-hex') copyHex(btn.dataset.target);
+        });
 
         loadData();
     }
@@ -376,20 +384,20 @@ const BlobsPage = (() => {
                         <span class="blob-badge ${badgeClass}">${badgeText}</span>
                     </div>
                     <div class="blob-col-actions">
-                        <button class="btn btn-ghost btn-sm" onclick="BlobsPage.viewBlob('${escapeHtml(b.name)}')" title="Просмотр hex">
+                        <button class="btn btn-ghost btn-sm" data-action="viewBlob" data-name="${escapeHtml(b.name)}" title="Просмотр hex">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                                 <circle cx="12" cy="12" r="3"/>
                             </svg>
                         </button>
-                        <button class="btn btn-ghost btn-sm" onclick="BlobsPage.editBlob('${escapeHtml(b.name)}')" title="Редактировать">
+                        <button class="btn btn-ghost btn-sm" data-action="editBlob" data-name="${escapeHtml(b.name)}" title="Редактировать">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                             </svg>
                         </button>
                         ${!b.is_builtin ? `
-                            <button class="btn btn-ghost btn-sm" onclick="BlobsPage.deleteBlob('${escapeHtml(b.name)}')" title="Удалить" style="color:var(--error);">
+                            <button class="btn btn-ghost btn-sm" data-action="delete" data-name="${escapeHtml(b.name)}" title="Удалить" style="color:var(--error);">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <polyline points="3 6 5 6 21 6"/>
                                     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -475,7 +483,7 @@ const BlobsPage = (() => {
                 <div class="form-group">
                     <div class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
                         <span>Hex-дамп</span>
-                        <button class="btn btn-ghost btn-sm" onclick="BlobsPage.copyHex('view')" title="Копировать hex">
+                        <button class="btn btn-ghost btn-sm" data-action="copy-hex" data-target="view" title="Копировать hex">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
                                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>

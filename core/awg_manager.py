@@ -78,12 +78,9 @@ def _pid_alive(pid: int) -> bool:
         return False
     try:
         os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return pid > 0 and isinstance(pid, int) and \
-               os.path.exists("/proc/%d" % pid)
-    except OSError:
-        return False
+    except (ProcessLookupError, OSError):
+        return os.path.exists("/proc/%d" % pid)
+    return True
 
 
 _AWG_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,15}$")
@@ -432,8 +429,11 @@ class AwgManager:
             raise FileExistsError(name)
 
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            f.write(text)
+        # MR-16: атомарная запись (tmpfile → fsync → os.replace) вместо plain open()
+        # plain open() тратирует файл до завершения — при ENOSPC/потере питания
+        # оставит пустой/частичный .conf, и при следующем буте awg up упадёт
+        from core.safe_io import atomic_write_text
+        atomic_write_text(path, text)
         try:
             os.chmod(path, 0o600)
         except OSError:
@@ -968,11 +968,68 @@ class AwgManager:
                     % (awg_health["detail"] or "exec error",
                        self._binary_help_suffix())}
 
-        rc, _out, err = _run([bin_go, ifname], timeout=15,
-                             env=self._amneziawg_go_env())
-        if rc != 0:
-            msg = "Не удалось запустить amneziawg-go: %s" % err.strip()
-            low = (err or "").lower()
+        sock = "/var/run/wireguard/%s.sock" % ifname
+        if os.path.exists(sock):
+            try:
+                os.remove(sock)
+            except OSError:
+                pass
+
+        success = False
+        last_err = ""
+
+        for attempt in (1, 2):
+            log.info("Запуск amneziawg-go для %s, попытка %d" % (ifname, attempt), source="awg_manager")
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    [bin_go, ifname],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=self._amneziawg_go_env(),
+                    start_new_session=True
+                )
+            except Exception as e:
+                last_err = str(e)
+                log.error("Popen exception: %s" % e, source="awg_manager")
+                continue
+
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if os.path.exists(sock):
+                    success = True
+                    break
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+
+            if success:
+                break
+
+            log.warning("amneziawg-go для %s не поднял сокет за 3с" % ifname, source="awg_manager")
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=1.0)
+            except Exception:
+                pass
+
+            pid = _pgrep_first([bin_go, ifname]) or _pgrep_first(["amneziawg-go", ifname])
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+            if proc.poll() is not None:
+                _, err = proc.communicate()
+                last_err = (err or b"").decode("utf-8", errors="replace").strip()
+            else:
+                last_err = "timeout: сокет не появился"
+
+        if not success:
+            msg = "Не удалось запустить amneziawg-go: %s" % (last_err or "timeout")
+            low = last_err.lower()
             if any(m in low for m in self._BROKEN_BIN_MARKERS):
                 msg += "." + self._binary_help_suffix()
             return {"ok": False, "message": msg}
@@ -985,9 +1042,6 @@ class AwgManager:
                     f.write(str(pid))
             except (IOError, OSError):
                 pass
-
-        # Дать сокету подняться
-        time.sleep(0.2)
 
         # 2) применить через `awg setconf`
         #
@@ -1161,10 +1215,8 @@ class AwgManager:
 
     def _table_id_for(self, ifname: str) -> int:
         """Стабильный id таблицы из имени интерфейса (100..999)."""
-        h = 0
-        for ch in ifname:
-            h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-        return 100 + (h % 900)
+        from core.routing.manager import table_id_for
+        return table_id_for(ifname)
 
     def _collect_routing_state(self) -> dict:
         """
@@ -1355,12 +1407,11 @@ class AwgManager:
         # пишем во временный файл (awg setconf хочет путь)
         import tempfile
         with tempfile.NamedTemporaryFile(
-            "w", delete=False, prefix="awg-setconf-", suffix=".conf"
+            "w", delete=False, dir=self._run_dir(), prefix="awg-setconf-", suffix=".conf"
         ) as tf:
             tf.write(setconf_text)
             tmp_path = tf.name
         try:
-            os.chmod(tmp_path, 0o600)
             rc, _out, err = _run([self._awg_bin(), "setconf", ifname, tmp_path],
                                  timeout=self._setconf_timeout())
             if rc != 0:
@@ -1540,16 +1591,20 @@ class AwgManager:
                 "[%s %s] хук пропущен (awg.allow_hooks=false): %s"
                 % (label, ifname, cmd), source="awg_manager")
             return
-        log.info("[%s %s] $ %s" % (label, ifname, cmd), source="awg_manager")
+        # MR-20: shell=False + shlex.split — предотвращаем RCE через shell-метасимволы
+        # в PostUp/PostDown из публичных WireGuard-подписок (cmd="iptables ... ; curl ...")
+        # Повышаем уровень до WARNING для visibility при запуске хука
+        log.warning("[%s %s] HOOK EXEC: $ %s" % (label, ifname, cmd), source="awg_manager")
         try:
-            r = subprocess.run(cmd, shell=True, capture_output=True,
+            cmd_list = shlex.split(cmd)
+            r = subprocess.run(cmd_list, shell=False, capture_output=True,
                                text=True, timeout=30)
             if r.returncode != 0:
                 log.warning("[%s %s] rc=%d: %s" % (label, ifname,
                                                    r.returncode,
                                                    (r.stderr or "").strip()),
                             source="awg_manager")
-        except (OSError, subprocess.TimeoutExpired) as e:
+        except (OSError, subprocess.TimeoutExpired, ValueError) as e:
             log.warning("[%s %s] %s" % (label, ifname, e), source="awg_manager")
 
 

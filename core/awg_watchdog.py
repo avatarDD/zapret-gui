@@ -22,12 +22,22 @@ settings.json (`awg.watchdog.enabled`) или API.
 Не запускаем поток на не-AWG платформах — модуль безопасен в import'е.
 """
 
+import os
 import socket
 import threading
 import time
 
 from core.log_buffer import log
 
+
+# ─────── settings TTL cache (MR-78) ───────
+# Читаем settings.json не чаще раза в 30 секунд вместо каждого тика watchdog'а,
+# чтобы не нагружать flash-память при check_interval_sec = 30.
+_SETTINGS_TTL = 30.0
+_settings_cache: dict | None = None
+_settings_cache_ts: float = 0.0
+_settings_cache_key: tuple | None = None
+_settings_cache_lock = threading.Lock()
 
 # ─────── defaults ───────
 
@@ -224,20 +234,39 @@ def _get_settings() -> dict:
     """
     Прочитать настройки watchdog'а из settings.json (`awg.watchdog`).
 
+    MR-78: результат кешируется на _SETTINGS_TTL секунд чтобы не читать
+    flash-файл на каждой итерации watchdog-цикла.
+
     Все поля опциональны — мы подсовываем разумные дефолты.
     """
+    global _settings_cache, _settings_cache_ts, _settings_cache_key
+    now = time.monotonic()
     try:
         from core.config_manager import get_config_manager
-        cfg = get_config_manager().load()
+        cm = get_config_manager()
+        cfg_path = getattr(cm, "_config_path", "") or getattr(cm, "config_path", "")
+        cache_key = None
+        if cfg_path and os.path.exists(cfg_path):
+            try:
+                cache_key = (cfg_path, os.path.getmtime(cfg_path))
+            except OSError:
+                cache_key = (cfg_path, None)
+        if cache_key is not None:
+            with _settings_cache_lock:
+                if (_settings_cache is not None and _settings_cache_key == cache_key
+                        and (now - _settings_cache_ts) < _SETTINGS_TTL):
+                    return _settings_cache
+        cfg = cm.load()
     except Exception:
         cfg = {}
+        cache_key = None
     if not isinstance(cfg, dict):
         cfg = {}
     awg = cfg.get("awg") or {}
     wd = awg.get("watchdog") or {}
     if not isinstance(wd, dict):
         wd = {}
-    return {
+    result = {
         "enabled":                  bool(wd.get("enabled", False)),
         "handshake_timeout_sec":    int(wd.get(
             "handshake_timeout_sec", DEFAULT_HANDSHAKE_TIMEOUT_SEC)),
@@ -266,7 +295,19 @@ def _get_settings() -> dict:
         "rx_stall_min_rx_bytes":    int(wd.get(
             "rx_stall_min_rx_bytes", DEFAULT_RX_STALL_MIN_RX_BYTES)),
     }
+    with _settings_cache_lock:
+        _settings_cache = result
+        _settings_cache_ts = now
+        _settings_cache_key = cache_key
+    return result
 
+
+def _invalidate_settings_cache():
+    """Сбросить кеш настроек — вызывается из set_settings() для немедленного применения."""
+    global _settings_cache, _settings_cache_key
+    with _settings_cache_lock:
+        _settings_cache = None
+        _settings_cache_key = None
 
 def set_settings(**kwargs) -> dict:
     """Обновить настройки watchdog'а (персистентно). Возвращает актуальные."""
@@ -280,6 +321,9 @@ def set_settings(**kwargs) -> dict:
         cm.save()
     except Exception as e:
         log.warning("awg_watchdog: save settings: %s" % e, source="awg")
+
+    # Сбрасываем TTL-кеш, чтобы новые настройки применились немедленно
+    _invalidate_settings_cache()
 
     # При смене enabled-флага дёрнем синглтон, чтобы он стартанул/
     # остановил поток.
@@ -310,6 +354,8 @@ class AwgWatchdog:
         self._probe_bind_warned = set()
         # Состояние пассивного rx-stall детектора: {iface: {rx, tx_at_rx, rx_ts}}
         self._rx_state     = {}
+        # iface'ы, для которых рестарт уже запущен в фоновом потоке
+        self._restart_inflight: set = set()
 
     # ─── lifecycle ───
 
@@ -479,32 +525,49 @@ class AwgWatchdog:
             return
 
         # Rate limit: не больше N рестартов в час.
-        history = self._restart_log.setdefault(iface, [])
-        history[:] = [ts for ts in history if (now - ts) < 3600]
-        if len(history) >= settings["max_restarts_per_hour"]:
-            log.warning(
-                "awg-watchdog: %s — %s, но лимит рестартов исчерпан"
-                " (%d/час). Туннель нездоров — рассмотрите смену"
-                " конфига/прокси или метод nfqws2 (failover в"
-                " «Маршрутизации»)."
-                % (iface, reason, settings["max_restarts_per_hour"]),
-                source="awg")
-            return
-
-        log.warning("awg-watchdog: %s — %s; рестартую" % (iface, reason),
+        # MR-28: mutations за self._lock чтобы get_status() не ловил RuntimeError
+        with self._lock:
+            history = self._restart_log.setdefault(iface, [])
+            history[:] = [ts for ts in history if (now - ts) < 3600]
+            if len(history) >= settings["max_restarts_per_hour"]:
+                log.warning(
+                    "awg-watchdog: %s — %s, но лимит рестартов исчерпан"
+                    " (%d/час). Туннель нездоров — рассмотрите смену"
+                    " конфига/прокси или метод nfqws2 (failover в"
+                    " «Маршрутизации»)."
+                    % (iface, reason, settings["max_restarts_per_hour"]),
                     source="awg")
-        try:
-            mgr.restart(iface)
-        except Exception as e:
-            log.warning("awg-watchdog: restart %s: %s" % (iface, e),
+                return
+
+            # Защита от double-enqueue: если рестарт уже идёт — пропускаем.
+            if iface in self._restart_inflight:
+                log.info("awg-watchdog: %s — рестарт уже выполняется, пропускаем" % iface,
+                         source="awg")
+                return
+
+            log.warning("awg-watchdog: %s — %s; запускаю рестарт в фоне" % (iface, reason),
                         source="awg")
-            return
-        self._last_restart[iface] = now
-        self._probe_fails[iface] = 0
-        # После рестарта счётчики обнулятся — забываем прошлый rx-snapshot,
-        # чтобы следующий тик ре-базировался, а не считал «откат» застоем.
-        self._rx_state.pop(iface, None)
-        history.append(now)
+            history.append(now)
+            self._restart_inflight.add(iface)
+
+        def _do_restart():
+            try:
+                mgr.restart(iface)
+                with self._lock:
+                    self._last_restart[iface] = now
+                    self._probe_fails[iface] = 0
+                    self._rx_state.pop(iface, None)
+            except Exception as e:
+                log.warning("awg-watchdog: restart %s: %s" % (iface, e),
+                            source="awg")
+            finally:
+                with self._lock:
+                    self._restart_inflight.discard(iface)
+
+        t = threading.Thread(target=_do_restart,
+                             name="awg-restart-%s" % iface,
+                             daemon=True)
+        t.start()
 
     def _resurrect_down_autostart(self, mgr, settings: dict, now: float):
         """
@@ -544,41 +607,59 @@ class AwgWatchdog:
             if (now - last) < settings["cooldown_sec"]:
                 continue
             # Rate limit — общий с рестартами: не больше N/час.
-            history = self._restart_log.setdefault(name, [])
-            history[:] = [ts for ts in history if (now - ts) < 3600]
-            if len(history) >= settings["max_restarts_per_hour"]:
-                log.warning(
-                    "awg-watchdog: %s (autostart) лежит, но лимит подъёмов"
-                    " исчерпан (%d/час) — конфиг не поднимается, проверьте его"
-                    % (name, settings["max_restarts_per_hour"]),
-                    source="awg")
-                continue
+            # MR-28: mutations за self._lock чтобы get_status() не ловил RuntimeError
+            with self._lock:
+                history = self._restart_log.setdefault(name, [])
+                history[:] = [ts for ts in history if (now - ts) < 3600]
+                if len(history) >= settings["max_restarts_per_hour"]:
+                    log.warning(
+                        "awg-watchdog: %s (autostart) лежит, но лимит подъёмов"
+                        " исчерпан (%d/час) — конфиг не поднимается, проверьте его"
+                        % (name, settings["max_restarts_per_hour"]),
+                        source="awg")
+                    continue
 
-            log.warning("awg-watchdog: %s (autostart) не поднят — поднимаю"
-                        % name, source="awg")
+                log.warning("awg-watchdog: %s (autostart) не поднят — поднимаю"
+                            % name, source="awg")
             try:
                 r = mgr.up(name)
             except Exception as e:
                 log.warning("awg-watchdog: up %s: %s" % (name, e), source="awg")
-                history.append(now)
-                self._last_restart[name] = now
+                with self._lock:
+                    history.append(now)
+                    self._last_restart[name] = now
                 continue
-            self._last_restart[name] = now
-            self._rx_state.pop(name, None)
-            history.append(now)
+            with self._lock:
+                self._last_restart[name] = now
+                self._rx_state.pop(name, None)
+                history.append(now)
             if not r.get("ok"):
                 log.warning("awg-watchdog: не удалось поднять %s: %s"
                             % (name, r.get("message", "ошибка")), source="awg")
+
+    def _cleanup_restart_log(self, now: float):
+        """Очистить старые таймстампы (>1 часа) и удалить пустые логи интерфейсов."""
+        to_delete = []
+        for k, v in list(self._restart_log.items()):
+            cleaned = [ts for ts in v if (now - ts) < 3600]
+            if not cleaned:
+                to_delete.append(k)
+            else:
+                self._restart_log[k] = cleaned
+        for k in to_delete:
+            self._restart_log.pop(k, None)
 
     # ─── status (для UI) ───
 
     def get_status(self) -> dict:
         settings = _get_settings()
+        now = time.time()
         with self._lock:
+            self._cleanup_restart_log(now)
             running = (self._thread is not None and
                        self._thread.is_alive())
             history_view = {
-                k: len([ts for ts in v if (time.time() - ts) < 3600])
+                k: len(v)
                 for k, v in self._restart_log.items()
             }
         return {

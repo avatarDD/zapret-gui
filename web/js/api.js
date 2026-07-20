@@ -10,10 +10,23 @@ const API = (() => {
     const BASE = '';  // Тот же origin
 
     async function request(method, path, body = null) {
+        // MR-91: таймаут запроса 15с через AbortSignal.timeout / AbortController fallback
+        let signal;
+        let timeoutId;
+
+        if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+            signal = AbortSignal.timeout(15000);
+        } else {
+            const controller = new AbortController();
+            timeoutId = setTimeout(() => controller.abort(), 15000);
+            signal = controller.signal;
+        }
+
         const opts = {
             method,
             headers: { 'Content-Type': 'application/json' },
             cache: 'no-store',
+            signal,
         };
 
         if (body !== null && method !== 'GET') {
@@ -22,6 +35,7 @@ const API = (() => {
 
         try {
             const resp = await fetch(BASE + path, opts);
+            clearTimeout(timeoutId);
             const data = await resp.json();
 
             if (!resp.ok) {
@@ -34,6 +48,10 @@ const API = (() => {
 
             return data;
         } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') {
+                throw new Error('Превышено время ожидания запроса (таймаут 15с)');
+            }
             if (err.name === 'TypeError') {
                 // Сетевая ошибка (сервер недоступен)
                 throw new Error('Сервер недоступен');
