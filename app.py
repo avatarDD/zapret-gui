@@ -536,9 +536,14 @@ def create_app(config_dir: str = None) -> Bottle:
             response.headers["Pragma"] = "no-cache"
 
         # Content-Security-Policy (MR-123): базовая защита.
-        #   script-src 'self' (без unsafe-inline) — все скрипты загружаются
-        #     отдельными файлами; inline-обработчики (onclick/onchange) в
-        #     index.html должны быть мигрированы на addEventListener.
+        #   script-src 'self' 'unsafe-inline' — скрипты грузятся отдельными
+        #     файлами, НО весь UI построен на inline-обработчиках
+        #     (onclick/onchange/oninput, ~380 мест). Без 'unsafe-inline' CSP
+        #     блокирует их и ломает переключение вкладок/страниц и кнопки во
+        #     всём интерфейсе. 'unsafe-inline' обязателен, пока обработчики не
+        #     мигрированы на addEventListener целиком; остальные директивы
+        #     (connect-src/frame-ancestors/form-action/object-src) при этом
+        #     сохраняют защиту.
         #   style-src 'self' 'unsafe-inline' — CSS-файлы с сервера + динамические
         #     стили от JS (theme toggle, UI-состояния).
         #   img-src 'self' data: — favicon/SVG-иконки + data: для emoji→SVG.
@@ -547,8 +552,10 @@ def create_app(config_dir: str = None) -> Bottle:
         if not request.path.startswith("/api/"):
             response.headers["Content-Security-Policy"] = \
                 "default-src 'self'; " \
-                "script-src 'self'; " \
+                "script-src 'self' 'unsafe-inline'; " \
                 "style-src 'self' 'unsafe-inline'; " \
+                "object-src 'none'; " \
+                "base-uri 'self'; " \
                 "img-src 'self' data:; " \
                 "connect-src 'self'; " \
                 "frame-ancestors 'none'; " \

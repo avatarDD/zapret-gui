@@ -11,7 +11,7 @@ const TunnelOptimizerPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>Оптимизации туннелей</h1>
+                <h1>Оптимизации туннелей${typeof Help !== 'undefined' ? Help.button('tunnel-optimizer') : ''}</h1>
                 <span class="page-subtitle">MTU/PMTU, безопасные TCP/QUIC buffers, BBR и полный restore</span>
             </div>
 
@@ -88,11 +88,10 @@ const TunnelOptimizerPage = (() => {
             };
             for (const [key, label] of Object.entries(fields)) {
                 const val = _status[key] || "—";
-                const isGood = _isGoodValue(key, val);
                 html += `<tr>
                     <td>${label}</td>
                     <td><code>${esc(val)}</code></td>
-                    <td>${isGood ? '<span style="color:var(--success);">✅</span>' : '<span style="color:var(--warning);">⚠️</span>'}</td>
+                    <td>${_statusMark(key, _status)}</td>
                 </tr>`;
             }
             html += '</tbody></table>';
@@ -103,11 +102,23 @@ const TunnelOptimizerPage = (() => {
         }
     }
 
-    function _isGoodValue(key, val) {
-        if (key === "tcp_congestion_control") return val.includes("bbr");
-        if (key === "tcp_fastopen") return val === "3" || val === "1" || val === "2";
-        if (key === "tcp_keepalive_time") return parseInt(val) >= 30;
-        return true;
+    // Индикатор состояния строки. Для congestion control учитываем, что
+    // BBR может быть НЕдоступен в ядре роутера — тогда cubic это норма, а
+    // не проблема (⚠️ вводило в заблуждение). Остальные строки —
+    // информационные (оптимизатор их намеренно не форсит), поэтому нейтральны.
+    function _statusMark(key, status) {
+        const OK = '<span style="color:var(--success);" title="активно">✅</span>';
+        const NEUTRAL = '<span class="text-muted" title="информационно">—</span>';
+        if (key === "tcp_congestion_control") {
+            const val = String(status[key] || "");
+            if (val.includes("bbr")) return OK;
+            const avail = String(status.available_cc || "");
+            if (avail.includes("bbr")) {
+                return '<span style="color:var(--warning);" title="BBR доступен — примените профиль оптимизации, чтобы включить его">⚠️</span>';
+            }
+            return '<span class="text-muted" title="BBR недоступен в этом ядре; cubic — нормальный дефолт, менять не требуется">ℹ️</span>';
+        }
+        return NEUTRAL;
     }
 
     async function _renderProfile() {

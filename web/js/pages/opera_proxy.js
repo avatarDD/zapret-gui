@@ -15,7 +15,7 @@ const OperaProxyPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>Opera Proxy</h1>
+                <h1>Opera Proxy${typeof Help !== 'undefined' ? Help.button('opera') : ''}</h1>
                 <span class="page-subtitle">Бесплатный HTTP/SOCKS5 прокси через SurfEasy VPN</span>
             </div>
 

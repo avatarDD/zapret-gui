@@ -14,7 +14,7 @@ const WarpInWarpPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>WARP-in-WARP (MASQUE)</h1>
+                <h1>WARP-in-WARP (MASQUE)${typeof Help !== 'undefined' ? Help.button('warp-in-warp') : ''}</h1>
                 <span class="page-subtitle">Двойной туннель для максимального обхода DPI</span>
             </div>
 
@@ -167,6 +167,11 @@ const WarpInWarpPage = (() => {
                     AmneziaWG: ${d.awg_available ? "Доступен" : "Не найден"}
                 </div>
                 <div class="detail-row">Архитектура: <code>${esc(d.arch || "?")}</code></div>
+                <div class="detail-row">Платформа: <code>${esc(d.platform || "?")}</code></div>
+                <div class="detail-row">Firewall: <code>${esc(d.firewall_backend || "unknown")}</code></div>
+                <div class="detail-row">TUN: ${d.tun_available
+                    ? '<span style="color:#39c45e;">доступен</span>'
+                    : '<span style="color:#e58;">недоступен</span>'}</div>
             `;
         } catch (e) {
             const el = document.getElementById("wiw-detect");

@@ -125,7 +125,7 @@ const SetupUI = (() => {
             container.innerHTML = `
                 <div class="page-header">
                     <div>
-                        <h1 class="page-title">${esc(opts.title)}</h1>
+                        <h1 class="page-title">${esc(opts.title)}${opts.helpTopic && typeof Help !== 'undefined' ? Help.button(opts.helpTopic) : ''}</h1>
                         <p class="page-description">${opts.description || ''}</p>
                     </div>
                     <div style="display:flex; gap:8px;">

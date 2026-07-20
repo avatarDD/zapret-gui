@@ -14,7 +14,7 @@ const TunnelMonitorPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>Мониторинг туннелей</h1>
+                <h1>Мониторинг туннелей${typeof Help !== 'undefined' ? Help.button('tunnel-monitor') : ''}</h1>
                 <span class="page-subtitle">Live графики трафика, latency, throughput</span>
             </div>
 

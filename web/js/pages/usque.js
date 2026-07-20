@@ -14,7 +14,7 @@ const UsquePage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>${_t('warp_masque')}</h1>
+                <h1>${_t('warp_masque')}${typeof Help !== 'undefined' ? Help.button('usque') : ''}</h1>
                 <span class="page-subtitle">Cloudflare WARP через usque-keenetic</span>
             </div>
 

@@ -84,6 +84,46 @@ def register(app):
             "mtproto": get_mtproxy_client_manager().detect(),
         }
 
+    # ─────────────────────────── установка ───────────────────────────
+
+    @app.route("/api/tgproxy/install/status", method="GET")
+    def tgproxy_install_status():
+        from core.ext_binary_installer import get_operation_status
+        return {"ok": True, "progress": get_operation_status("tgwsproxy")}
+
+    @app.route("/api/tgproxy/install", method="POST")
+    def tgproxy_install():
+        # Ставит пакет tg-ws-proxy (основной движок) из GitHub-релиза с
+        # проверкой SHA256 — по той же схеме, что и usque. Асинхронно,
+        # прогресс — через /api/tgproxy/install/status.
+        import threading
+        from core.ext_binary_installer import (install_binary_by_name,
+                                               _operation_status)
+
+        name = "tgwsproxy"
+        _operation_status[name] = {"status": "starting", "progress": 0,
+                                   "message": "Запуск установки..."}
+
+        def _cb(stage, pct, label):
+            _operation_status[name] = {"status": stage, "progress": pct,
+                                       "message": label}
+
+        def _run():
+            try:
+                res = install_binary_by_name(name, progress_cb=_cb)
+                if res.get("ok"):
+                    _operation_status[name] = {"status": "done", "progress": 100,
+                                               "message": "Установка завершена"}
+                else:
+                    _operation_status[name] = {"status": "error", "progress": 0,
+                                               "message": res.get("error", "Ошибка")}
+            except Exception as e:
+                _operation_status[name] = {"status": "error", "progress": 0,
+                                           "message": str(e)}
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "progress": _operation_status[name]}
+
     # ─────────────────────────── tgwsproxy ───────────────────────────
 
     @app.route("/api/tgproxy/tgwsproxy/config", method="GET")

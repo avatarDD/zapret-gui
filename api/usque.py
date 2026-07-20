@@ -40,6 +40,22 @@ def register(app):
             pass
 
         env["opkg_available"] = opkg_available
+
+        # Платформа / TUN / firewall для карточки «Окружение» (SetupUI).
+        # Свойства хоста (kind/firewall/TUN) не специфичны для AWG —
+        # переиспользуем общий детектор платформы.
+        try:
+            from core.awg_detector import get_awg_detector
+            plat = get_awg_detector().detect_platform().as_dict()
+            # binary_dir у usque свой — поправим косметику (expert-only).
+            plat["binary_dir"] = (os.path.dirname(env["binary"])
+                                  if env.get("binary") else "/opt/usr/bin")
+            env["platform"] = plat
+            env["tun"] = {"available": bool(plat.get("tun_available"))}
+        except Exception as e:
+            env.setdefault("platform", {})
+            env.setdefault("tun", {"available": False})
+            env["platform_error"] = str(e)
         return env
 
     @app.route("/api/usque/version", method="GET")

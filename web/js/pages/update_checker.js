@@ -11,7 +11,7 @@ const UpdateCheckerPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <div>
-                    <h1>Обновления</h1>
+                    <h1>Обновления${typeof Help !== 'undefined' ? Help.button('updates') : ''}</h1>
                     <span class="page-subtitle">Проверка всех бинарников</span>
                 </div>
                 <div style="display:flex;gap:8px;">
