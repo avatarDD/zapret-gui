@@ -56,6 +56,8 @@ class TestTgproxyStatusDetect(unittest.TestCase):
         self.assertIn("port", cfg)
         self.assertIn("fake_tls_domain", cfg)
         self.assertIn("cf_domain", cfg)
+        self.assertIn("secret_configured", cfg)
+        self.assertNotIn("secret", cfg)
 
     def test_tgwsproxy_connect_info(self):
         """GET /api/tgproxy/tgwsproxy/connect-info — 200."""
@@ -149,6 +151,22 @@ class TestTgproxyConfigPut(unittest.TestCase):
         })
         self.assertEqual(r["_status"], 200)
         self.assertIs(r.get("ok"), False)
+
+    def test_put_hybrid_profile(self):
+        r = self.client.put_json("/api/tgproxy/tgwsproxy/config", {
+            "mode": "hybrid",
+            "pool_size": 1,
+            "max_conns": 32,
+            "buf_kb": 32,
+        })
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r.get("ok"))
+
+    def test_rotate_secret_requires_explicit_confirmation(self):
+        r = self.client.post_json(
+            "/api/tgproxy/tgwsproxy/secret/rotate", {"confirm": False})
+        self.assertEqual(r["_status"], 200)
+        self.assertFalse(r.get("ok"))
 
 
 class TestTgproxyRouteViaTunnel(unittest.TestCase):

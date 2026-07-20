@@ -238,12 +238,14 @@ def _cmd_usque(args) -> int:
             _p("Укажите интерфейс: zapret-gui usque start <iface>")
             return 2
         configs = mgr.list_configs()
-        target = next((c for c in configs if c["iface"] == args.iface), None)
+        target = next((c for c in configs if c.get("iface") == args.iface
+                       or c.get("name") == args.iface), None)
         if not target:
             _p("✗ Интерфейс не найден: %s" % args.iface)
             return 1
-        return _ok("usque start %s" % args.iface,
-                    mgr.start(args.iface, target["path"]))
+        iface = target.get("iface") or mgr.allocate_iface("opkgtun")
+        return _ok("usque start %s" % iface,
+                    mgr.start(iface, target["path"]))
     if action == "stop":
         if not args.iface:
             _p("Укажите интерфейс: zapret-gui usque stop <iface>")

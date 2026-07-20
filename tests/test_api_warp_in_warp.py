@@ -81,6 +81,23 @@ class TestWarpInWarpApi(unittest.TestCase):
         self.assertIs(r.get("ok"), False)
         self.assertIn("error", r)
 
+    def test_up_masque_masque_requires_endpoint(self):
+        r = self.client.post_json("/api/warp-in-warp/up", {
+            "mode": "masque_masque",
+            "outer_config": "/tmp/outer.conf",
+            "inner_config": "/tmp/inner.conf",
+        })
+        self.assertFalse(r.get("ok"))
+        self.assertIn("inner_endpoint_host", r.get("error", ""))
+
+    def test_up_rejects_h2_inside_h2(self):
+        r = self.client.post_json("/api/warp-in-warp/up", {
+            "mode": "masque_masque",
+            "transport_profile": "restricted",
+        })
+        self.assertFalse(r.get("ok"))
+        self.assertIn("H2 внутри H2", r.get("error", ""))
+
     def test_up_masque_awg_missing_configs(self):
         """POST /api/warp-in-warp/up с mode=masque_awg без конфигов — ошибка."""
         r = self.client.post_json("/api/warp-in-warp/up",

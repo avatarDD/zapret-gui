@@ -169,6 +169,9 @@ class UsqueWatchdog:
         log.info("usque-watchdog: рестарт %s (%s)" % (iface, name),
                  source="usque")
 
+        target = next((c for c in mgr.list_configs()
+                       if c.get("iface") == iface or c.get("name") == name), None)
+        config_path = target.get("path") if target else ""
         mgr.stop(iface)
         self._stop_evt.wait(1.0)
 
@@ -176,11 +179,12 @@ class UsqueWatchdog:
         cfg = get_config_manager()
         sni = cfg.get("usque", "default_sni", default="")
         http2 = cfg.get("usque", "http2_enable", default=False)
-
-        configs = mgr.list_configs()
-        target = next((c for c in configs if c["iface"] == iface), None)
-        if target:
-            mgr.start(iface, target["path"], sni=sni, http2=http2)
+        profile = "restricted" if http2 else cfg.get(
+            "usque", "transport_profile", default="auto")
+        if config_path:
+            new_iface = iface or mgr.allocate_iface("opkgtun")
+            mgr.start(new_iface, config_path, sni=sni,
+                      transport_profile=profile)
 
         self._last_restart[iface] = now
         self._restart_times.append(now)

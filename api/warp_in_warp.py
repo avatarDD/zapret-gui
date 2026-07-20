@@ -39,6 +39,7 @@ def register(app):
                 inner_config=data.get("inner_config", ""),
                 awg_conf=data.get("awg_conf", ""),
                 inner_endpoint_host=data.get("inner_endpoint_host", ""),
+                transport_profile=data.get("transport_profile", "performance"),
             )
         except Exception as e:
             return {"ok": False, "error": "Ошибка запуска WARP-in-WARP: %s" % e}

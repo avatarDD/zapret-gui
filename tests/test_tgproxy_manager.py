@@ -11,6 +11,42 @@ class TestTgWsProxyManager(unittest.TestCase):
     def setUp(self):
         self.mgr = tm.TgWsProxyManager()
 
+    @mock.patch("core.tgproxy_manager._read_kv_conf")
+    @mock.patch("core.tgproxy_manager._write_kv_conf")
+    @mock.patch("core.tgproxy_manager.os.makedirs")
+    @mock.patch("core.tgproxy_manager.os.chmod")
+    def test_save_preserves_existing_secret_and_masks_result(
+        self, _chmod, _makedirs, write_conf, read_conf
+    ):
+        secret = "0123456789abcdef0123456789abcdef"
+        read_conf.return_value = {"SECRET": secret}
+        result = self.mgr.save_config(mode="direct")
+        self.assertTrue(result["ok"])
+        self.assertNotIn("secret", result)
+        self.assertTrue(result["secret_configured"])
+        secret_values = write_conf.call_args_list[1].args[1]
+        self.assertEqual(secret_values["SECRET"], secret)
+
+    @mock.patch("core.tgproxy_manager._read_kv_conf", return_value={})
+    @mock.patch("core.tgproxy_manager._write_kv_conf")
+    @mock.patch("core.tgproxy_manager.os.makedirs")
+    @mock.patch("core.tgproxy_manager.os.chmod")
+    def test_hybrid_and_resource_profile_generate_validated_flags(
+        self, _chmod, _makedirs, write_conf, _read_conf
+    ):
+        result = self.mgr.save_config(
+            mode="hybrid", pool_size=1, max_conns=32, buf_kb=32)
+        self.assertTrue(result["ok"])
+        values = write_conf.call_args_list[0].args[1]
+        self.assertIn("--cfproxy-priority=false", values["EXTRA_ARGS"])
+        self.assertIn("--pool-size=1", values["EXTRA_ARGS"])
+        self.assertIn("--max-conns=32", values["EXTRA_ARGS"])
+
+    def test_extra_args_uses_strict_whitelist(self):
+        result = self.mgr.save_config(extra_args="--secret=bad")
+        self.assertFalse(result["ok"])
+        self.assertIn("Недопустимый", result["error"])
+
     @mock.patch("core.tgproxy_manager._find_tgwsproxy_initd", return_value="/opt/etc/init.d/S99tg-ws-proxy")
     @mock.patch("core.tgproxy_manager._pkg_version", return_value="0.9.2")
     def test_detect_prefers_package_and_initd(self, mock_pkg_version, mock_find_initd):

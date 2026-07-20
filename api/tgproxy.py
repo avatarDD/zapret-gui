@@ -18,6 +18,7 @@ API управления обходом блокировки Telegram.
   POST /api/tgproxy/tgwsproxy/up
   POST /api/tgproxy/tgwsproxy/down
   POST /api/tgproxy/tgwsproxy/restart
+  POST /api/tgproxy/tgwsproxy/secret/rotate
   GET  /api/tgproxy/tgwsproxy/connect-info    — tg://proxy ссылка
 
   POST /api/tgproxy/mtproto/up
@@ -93,6 +94,7 @@ def register(app):
         # запроса — фронтенд получает его отдельно через connect-info,
         # где он и так неизбежно нужен для tg://proxy ссылки.
         cfg = dict(cfg)
+        cfg["secret_configured"] = bool(cfg.get("secret"))
         cfg.pop("secret", None)
 
         # Текущий активный маршрут "Telegram DC через WARP-туннель"
@@ -123,7 +125,7 @@ def register(app):
         cf_worker_domain = (data.get("cf_worker_domain") or "").strip()
         fake_tls_domain = (data.get("fake_tls_domain") or "").strip()
         mode = (data.get("mode") or "direct").strip()
-        if mode not in ("direct", "cfdomain", "tunnel"):
+        if mode not in ("direct", "cfcommunity", "cfdomain", "hybrid", "tunnel"):
             return {"ok": False, "error": "Неизвестный режим: %s" % mode}
 
         for label, val in (("cf_domain", cf_domain),
@@ -157,7 +159,19 @@ def register(app):
             secret=data.get("secret", ""),
             log_level=str(data.get("log_level", "0")),
             mode=mode,
+            pool_size=data.get("pool_size", 2),
+            max_conns=data.get("max_conns", 64),
+            buf_kb=data.get("buf_kb", 64),
+            no_cfproxy_domain_refresh=bool(
+                data.get("no_cfproxy_domain_refresh", False)),
         )
+
+    @app.route("/api/tgproxy/tgwsproxy/secret/rotate", method="POST")
+    def tgwsproxy_secret_rotate():
+        from core.tgproxy_manager import get_tgwsproxy_manager
+        data = request.json or {}
+        return get_tgwsproxy_manager().rotate_secret(
+            confirm=data.get("confirm") is True)
 
     @app.route("/api/tgproxy/tgwsproxy/up", method="POST")
     def tgwsproxy_up():

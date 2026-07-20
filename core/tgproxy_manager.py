@@ -56,6 +56,7 @@ _register_cf_domain_for_nfqws ниже).
 """
 
 import os
+import ipaddress
 import re
 import secrets
 import shlex
@@ -63,6 +64,8 @@ import socket
 import subprocess
 import threading
 import time
+import tempfile
+from urllib.parse import urlparse
 from typing import Any
 
 from core.log_buffer import log
@@ -112,7 +115,21 @@ _TGWSPROXY_CONFIG_KEYS = [
     "X_CF_DOMAIN",
     "X_CF_WORKER_DOMAIN",
     "X_MODE",
+    "X_POOL_SIZE",
+    "X_MAX_CONNS",
+    "X_BUF_KB",
+    "X_NO_CFPROXY_DOMAIN_REFRESH",
 ]
+
+_ALLOWED_USER_EXTRA_FLAGS = {
+    "--v",
+    "--log-file",
+    "--log-max-mb",
+    "--log-backups",
+    "--pprof-listen",
+    "--no-cfproxy-domain-refresh",
+}
+_HOST_RE = re.compile(r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$")
 
 
 def _pkg_version(pkg_name: str) -> str:
@@ -167,6 +184,11 @@ def _config_dir_for(initd: str = "") -> str:
     for path in TGWSPROXY_CONFIG_DIR_CANDIDATES:
         if os.path.isfile(os.path.join(path, "config.conf")):
             return path
+    if not initd:
+        # Development/test host without an installed package: keep writes out
+        # of read-only /opt. Installed Entware/OpenWrt services always take
+        # the explicit branches above.
+        return os.path.join(tempfile.gettempdir(), "zapret-gui", "tg-ws-proxy")
     return TGWSPROXY_CONFIG_DIR
 
 
@@ -188,9 +210,54 @@ def _write_kv_conf(path: str, values: dict[str, str], keys_order: list[str]) -> 
         v = values.get(k, "")
         lines.append("%s=%s" % (k, _shell_quote_value(v)))
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write("\n".join(lines) + "\n")
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def _valid_host(value: str) -> bool:
+    value = str(value or "").strip()
+    if value in ("0.0.0.0", "::"):
+        return True
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return bool(_HOST_RE.match(value))
+
+
+def _valid_http_url(value: str) -> bool:
+    value = str(value or "").strip()
+    if not value:
+        return True
+    try:
+        u = urlparse(value)
+        return u.scheme in ("http", "https") and bool(u.hostname)
+    except ValueError:
+        return False
+
+
+def _valid_ip_pool(value: str) -> bool:
+    values = [v.strip() for v in str(value or "").split(",") if v.strip()]
+    try:
+        return all(ipaddress.ip_address(v) for v in values)
+    except ValueError:
+        return False
+
+
+def _validate_user_extra(parts: list[str]) -> str:
+    for part in parts:
+        name = part.split("=", 1)[0]
+        if name not in _ALLOWED_USER_EXTRA_FLAGS:
+            return "Недопустимый extra_args флаг: %s" % name
+    return ""
 
 
 def _read_kv_conf(path: str) -> dict[str, str]:
@@ -274,6 +341,10 @@ class TgWsProxyManager:
             "config_dir": _directory,
             "package": "tg-ws-proxy",
             "version": _pkg_version("tg-ws-proxy") if installed else "",
+            "upstream_tls_verified": False,
+            "upstream_tls_warning": (
+                "Текущий upstream tg-ws-proxy-go использует InsecureSkipVerify; "
+                "исправление требует нового upstream-бинарника"),
         }
 
     def get_config(self) -> dict[str, Any]:
@@ -281,9 +352,15 @@ class TgWsProxyManager:
         _directory, config_file, secret_file = _config_paths(initd)
         cfg = _read_kv_conf(config_file)
         secret_cfg = _read_kv_conf(secret_file)
+        def _cfg_int(key: str, default: int) -> int:
+            try:
+                return int(cfg.get(key) or default)
+            except (TypeError, ValueError):
+                return default
+
         return {
             "host": cfg.get("HOST", "0.0.0.0"),
-            "port": int(cfg.get("PORT") or 1443),
+            "port": _cfg_int("PORT", 1443),
             "log_level": cfg.get("LOG_LEVEL", "0"),
             "dc_ip_default": cfg.get("DC_IP_DEFAULT", "149.154.167.220"),
             "dc_ip_default_pool": cfg.get("DC_IP_DEFAULT_POOL", ""),
@@ -296,7 +373,13 @@ class TgWsProxyManager:
             ),
             "extra_args": cfg.get("EXTRA_ARGS", ""),
             "mode": cfg.get("X_MODE", "direct"),
+            "pool_size": _cfg_int("X_POOL_SIZE", 2),
+            "max_conns": _cfg_int("X_MAX_CONNS", 64),
+            "buf_kb": _cfg_int("X_BUF_KB", 64),
+            "no_cfproxy_domain_refresh": (
+                cfg.get("X_NO_CFPROXY_DOMAIN_REFRESH", "0") == "1"),
             "secret": secret_cfg.get("SECRET", ""),
+            "upstream_tls_verified": False,
         }
 
     def save_config(
@@ -304,7 +387,7 @@ class TgWsProxyManager:
         *,
         host: str = "127.0.0.1",
         port: int = 1443,
-        dc_ip_default: str = "",
+        dc_ip_default: str = "149.154.167.220",
         dc_ip_default_pool: str = "",
         fake_tls_domain: str = "",
         cf_domain: str = "",
@@ -315,20 +398,20 @@ class TgWsProxyManager:
         secret: str = "",
         log_level: str = "0",
         mode: str = "direct",
+        pool_size: int = 2,
+        max_conns: int = 64,
+        buf_kb: int = 64,
+        no_cfproxy_domain_refresh: bool = False,
     ) -> dict[str, Any]:
         """Сохранить config.conf/secret.conf.
 
         cf_domain / cf_worker_domain — свой домен под CF-прокси (обычный
         Cloudflare CDN, "оранжевое облако") / CF-Worker соответственно.
-        Точные имена CLI-флагов для них у конкретной версии бинарника
-        стоит свериться через `tg-ws-proxy-go --help` — здесь они
-        передаются через EXTRA_ARGS, а не как отдельные первоклассные
-        поля config.conf, потому что я не могу подтвердить их точное
-        название без доступа к самому бинарнику; ниже — наиболее
-        вероятные по документации проекта имена, ПРОВЕРЬТЕ перед
-        продакшн-использованием.
+        CLI-флаги подтверждены по upstream parseFlags: пользовательский
+        extra_args ограничен whitelist, а сетевые режимы/pool/max-conns
+        формируются только из валидированных полей.
         """
-        if mode not in ("direct", "cfdomain", "tunnel"):
+        if mode not in ("direct", "cfcommunity", "cfdomain", "hybrid", "tunnel"):
             return {"ok": False, "error": "Неизвестный режим tg-ws-proxy: %s" % mode}
 
         initd = _find_tgwsproxy_initd()
@@ -339,6 +422,19 @@ class TgWsProxyManager:
             secret = existing or secrets.token_hex(16)
         if not re.match(r"^[0-9a-fA-F]{32}$", secret):
             return {"ok": False, "error": "secret должен содержать 32 hex-символа"}
+
+        try:
+            pool_size = int(pool_size)
+            max_conns = int(max_conns)
+            buf_kb = int(buf_kb)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "pool_size/max_conns/buf_kb должны быть числами"}
+        if not (0 <= pool_size <= 16):
+            return {"ok": False, "error": "pool_size вне диапазона 0-16"}
+        if not (1 <= max_conns <= 512):
+            return {"ok": False, "error": "max_conns вне диапазона 1-512"}
+        if not (4 <= buf_kb <= 1024):
+            return {"ok": False, "error": "buf_kb вне диапазона 4-1024"}
 
         for label, value in (("host", host), ("dc_ip_default", dc_ip_default),
                              ("dc_ip_default_pool", dc_ip_default_pool),
@@ -358,6 +454,21 @@ class TgWsProxyManager:
             return {"ok": False, "error": "Некорректные host/port"}
         if not (1 <= port <= 65535):
             return {"ok": False, "error": "port вне диапазона 1-65535"}
+        if not _valid_host(host):
+            return {"ok": False, "error": "Некорректный host"}
+        try:
+            if dc_ip_default and not ipaddress.ip_address(str(dc_ip_default).strip()):
+                return {"ok": False, "error": "Некорректный dc_ip_default"}
+        except ValueError:
+            return {"ok": False, "error": "Некорректный dc_ip_default"}
+        if dc_ip_default_pool and not _valid_ip_pool(dc_ip_default_pool):
+            return {"ok": False, "error": "Некорректный dc_ip_default_pool"}
+        if not _valid_http_url(cfproxy_domains_url):
+            return {"ok": False, "error": "Некорректный cfproxy_domains_url"}
+        if mode == "cfdomain" and not (cf_domain or cf_worker_domain):
+            return {"ok": False, "error": "Для custom Cloudflare укажите домен или Worker"}
+        if cf_domain and cf_worker_domain:
+            return {"ok": False, "error": "Укажите только один CF-домен или Worker"}
 
         extra = (extra_args or "").strip()
         if any(ch in extra for ch in "$`;&|<>\n\r"):
@@ -368,12 +479,24 @@ class TgWsProxyManager:
             return {"ok": False, "error": "Некорректный extra_args: %s" % e}
         if any(not p.startswith("--") for p in extra_parts):
             return {"ok": False, "error": "extra_args должен содержать только CLI-флаги"}
+        extra_error = _validate_user_extra(extra_parts)
+        if extra_error:
+            return {"ok": False, "error": extra_error}
         if mode in ("direct", "tunnel"):
             extra_parts.append("--no-cfproxy")
+        elif mode == "hybrid":
+            extra_parts.append("--cfproxy-priority=false")
         if cf_domain:
             extra_parts += ["--cfproxy-domain=%s" % cf_domain]
         if cf_worker_domain:
             extra_parts += ["--cfproxy-worker-domain=%s" % cf_worker_domain]
+        extra_parts += [
+            "--pool-size=%d" % pool_size,
+            "--max-conns=%d" % max_conns,
+            "--buf-kb=%d" % buf_kb,
+        ]
+        if no_cfproxy_domain_refresh:
+            extra_parts.append("--no-cfproxy-domain-refresh")
         extra = " ".join(shlex.quote(p) for p in extra_parts)
 
         os.makedirs(config_dir, exist_ok=True)
@@ -395,6 +518,10 @@ class TgWsProxyManager:
                 "X_CF_DOMAIN": cf_domain,
                 "X_CF_WORKER_DOMAIN": cf_worker_domain,
                 "X_MODE": mode,
+                "X_POOL_SIZE": str(pool_size),
+                "X_MAX_CONNS": str(max_conns),
+                "X_BUF_KB": str(buf_kb),
+                "X_NO_CFPROXY_DOMAIN_REFRESH": "1" if no_cfproxy_domain_refresh else "0",
             },
             _TGWSPROXY_CONFIG_KEYS,
         )
@@ -409,7 +536,41 @@ class TgWsProxyManager:
         if active_cf_domain:
             self._register_cf_domain_for_nfqws(active_cf_domain)
 
-        return {"ok": True, "secret": secret}
+        return {"ok": True, "secret_configured": True}
+
+    def rotate_secret(self, confirm: bool = False) -> dict[str, Any]:
+        """Explicitly rotate the MTProto secret; ordinary saves never do it."""
+        if not confirm:
+            return {"ok": False,
+                    "error": "Подтвердите ротацию: существующие Telegram-ссылки перестанут работать"}
+        cfg = self.get_config()
+        was_running = self.get_status().get("running", False)
+        if was_running:
+            self.stop()
+        result = self.save_config(
+            host=cfg.get("host", "127.0.0.1"),
+            port=cfg.get("port", 1443),
+            dc_ip_default=cfg.get("dc_ip_default", "149.154.167.220"),
+            dc_ip_default_pool=cfg.get("dc_ip_default_pool", ""),
+            fake_tls_domain=cfg.get("fake_tls_domain", ""),
+            cf_domain=cfg.get("cf_domain", ""),
+            cf_worker_domain=cfg.get("cf_worker_domain", ""),
+            cfproxy_domains=cfg.get("cfproxy_domains", ""),
+            cfproxy_domains_url=cfg.get("cfproxy_domains_url", ""),
+            extra_args="",
+            secret=secrets.token_hex(16),
+            log_level=cfg.get("log_level", "0"),
+            mode=cfg.get("mode", "direct"),
+            pool_size=cfg.get("pool_size", 2),
+            max_conns=cfg.get("max_conns", 64),
+            buf_kb=cfg.get("buf_kb", 64),
+            no_cfproxy_domain_refresh=cfg.get("no_cfproxy_domain_refresh", False),
+        )
+        if result.get("ok") and was_running:
+            restart = self.start()
+            if not restart.get("ok"):
+                result["warning"] = "secret сменён, но сервис не перезапустился: %s" % restart.get("error")
+        return result
 
     # ─────── nfqws2 hook (best-effort, см. docstring файла) ───────
 
@@ -539,6 +700,7 @@ class TgWsProxyManager:
             "running": via_initd or port_open,
             "port": cfg.get("port"),
             "host": cfg.get("host"),
+            "upstream_tls_verified": False,
         }
 
     def _port_listening(self, port: int, host: str = "") -> bool:
@@ -549,9 +711,17 @@ class TgWsProxyManager:
             targets.append("127.0.0.1")
         for target in targets:
             try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    family = (socket.AF_INET6 if
+                              ipaddress.ip_address(target).version == 6
+                              else socket.AF_INET)
+                except ValueError:
+                    family = socket.AF_INET
+                s = socket.socket(family, socket.SOCK_STREAM)
                 s.settimeout(1.0)
-                r = s.connect_ex((target, int(port)))
+                address = ((target, int(port), 0, 0) if
+                           family == socket.AF_INET6 else (target, int(port)))
+                r = s.connect_ex(address)
                 s.close()
                 if r == 0:
                     return True

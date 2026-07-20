@@ -101,5 +101,25 @@ class TestGetOptimizationStatus(unittest.TestCase):
         self.assertIsInstance(status, dict)
 
 
+class TestPmtuProbe(unittest.TestCase):
+    @mock.patch("core.tunnel_optimizer._which", return_value=True)
+    @mock.patch("core.tunnel_optimizer.subprocess.run")
+    def test_probe_pmtu_binary_searches_dataplane(self, run, _which):
+        def result(cmd, **_kwargs):
+            payload = int(cmd[cmd.index("-s") + 1])
+            # IPv4 payload + 28 bytes succeeds through MTU 1400.
+            return mock.Mock(returncode=0 if payload + 28 <= 1400 else 1,
+                             stdout="", stderr="")
+        run.side_effect = result
+        res = to.probe_pmtu("opkgtun0", "1.1.1.1", 1280, 1500)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["pmtu"], 1400)
+        self.assertTrue(res["ipv6_safe"])
+
+    def test_probe_pmtu_rejects_hostname(self):
+        res = to.probe_pmtu("opkgtun0", "example.com")
+        self.assertFalse(res["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

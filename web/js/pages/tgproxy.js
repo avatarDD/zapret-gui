@@ -144,19 +144,21 @@ const TgProxyPage = (() => {
             ]);
             const cfg = (cfgRes && cfgRes.config) || {};
             const tunnels = (tunnelsRes && tunnelsRes.tunnels) || [];
+            const configuredPoolSize = Number.isFinite(Number(cfg.pool_size)) ? Number(cfg.pool_size) : 2;
 
             // Режим выхода к Telegram DC определяем по текущему конфигу:
             // если задан cf_domain/cf_worker_domain — режим "cfdomain";
             // если нет и есть активный маршрут через туннель — "tunnel"
             // (сам факт наличия активного маршрута узнаём отдельным
             // полем route_via_tunnel, которое отдаёт бэкенд); иначе —
-            // "direct". Три режима взаимоисключающие: если задан
+            // "direct". Режимы взаимоисключающие: если задан
             // CF-домен, исходящее соединение идёт на IP Cloudflare, а
             // не на IP датацентра Telegram — маршрут через WARP-туннель
             // (он матчит именно IP датацентра) в этом случае просто ни
             // на что не влияет, поэтому сочетать их бессмысленно.
             const hasCf = !!(cfg.cf_domain || cfg.cf_worker_domain);
-            const currentMode = (cfg.mode === "direct" || cfg.mode === "tunnel" || cfg.mode === "cfdomain")
+            const allowedModes = ["direct", "cfcommunity", "cfdomain", "hybrid", "tunnel"];
+            const currentMode = allowedModes.includes(cfg.mode)
                 ? cfg.mode
                 : (hasCf ? "cfdomain" : (cfg.route_via_tunnel ? "tunnel" : "direct"));
 
@@ -184,9 +186,9 @@ const TgProxyPage = (() => {
                                value="${esc(cfg.fake_tls_domain || "")}"
                                placeholder="www.google.com">
                         <div class="text-muted" style="font-size:11px; margin-top:4px;">
-                            Если задан — соединение к прокси маскируется под TLS 1.3
-                            к этому домену (режим ee). Оставьте пустым для обычного
-                            режима (dd). Действует независимо от режима ниже.
+                            Это fake-TLS только для входящего соединения Telegram-клиента
+                            к локальному proxy (режим ee). Он не меняет TLS fingerprint
+                            исходящего WSS-соединения роутера до Telegram/Cloudflare.
                         </div>
                     </div>
 
@@ -207,15 +209,34 @@ const TgProxyPage = (() => {
                             Прямое подключение
                         </label>
                         <label class="radio-option">
+                            <input type="radio" name="tgws-mode" value="cfcommunity"
+                                   ${currentMode === "cfcommunity" ? "checked" : ""}>
+                            Cloudflare community
+                        </label>
+                        <label class="radio-option">
                             <input type="radio" name="tgws-mode" value="cfdomain"
                                    ${currentMode === "cfdomain" ? "checked" : ""}>
-                            Через Cloudflare CDN (CF-домен / CF-Worker)
+                            Cloudflare custom domain / Worker
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="tgws-mode" value="hybrid"
+                                   ${currentMode === "hybrid" ? "checked" : ""}>
+                            Hybrid: Direct, затем Cloudflare fallback
                         </label>
                         <label class="radio-option">
                             <input type="radio" name="tgws-mode" value="tunnel"
                                    ${currentMode === "tunnel" ? "checked" : ""}>
                             Через существующий WARP-туннель (AWG+WARP / MASQUE+WARP)
                         </label>
+                    </div>
+                </div>
+
+                <div id="tgws-mode-cfcommunity" class="mode-panel"
+                     style="display:${currentMode === "cfcommunity" ? "block" : "none"}">
+                    <div class="alert alert-warning" style="font-size:12px;">
+                        Используется публичный community pool. Для постоянной эксплуатации
+                        предпочтительнее собственный CF-домен: общий pool может быть
+                        перегружен или заблокирован.
                     </div>
                 </div>
 
@@ -228,6 +249,14 @@ const TgProxyPage = (() => {
                     </div>
                 </div>
 
+                <div id="tgws-mode-hybrid" class="mode-panel"
+                     style="display:${currentMode === "hybrid" ? "block" : "none"}">
+                    <div class="text-muted" style="font-size:12px;">
+                        Сначала прямое соединение с Telegram DC, затем Cloudflare community
+                        fallback. Передаётся <code>--cfproxy-priority=false</code>.
+                    </div>
+                </div>
+
                 <div id="tgws-mode-cfdomain" class="mode-panel"
                      style="display:${currentMode === "cfdomain" ? "block" : "none"}">
                     <div class="form-grid">
@@ -237,11 +266,9 @@ const TgProxyPage = (() => {
                                    value="${esc(cfg.cf_domain || "")}"
                                    placeholder="proxy.мойдомен.ру">
                             <div class="text-muted" style="font-size:11px; margin-top:4px;">
-                                Не обязательно — без этого поля используется общий
-                                community-домен из
-                                <code>${esc(cfg.cfproxy_domains_url || "")}</code>.
-                                Задайте свой домен, если community-домен станет
-                                нестабильным. Требует домен, добавленный в
+                                Для custom-режима обязательно заполните это поле
+                                либо Worker справа. Community pool вынесен в
+                                отдельный режим. Требует домен, добавленный в
                                 Cloudflare с включённым проксированием (см.
                                 <a href="https://github.com/Flowseal/tg-ws-proxy/blob/main/docs/CfProxy.md"
                                    target="_blank" rel="noopener">CfProxy.md</a>).
@@ -261,6 +288,33 @@ const TgProxyPage = (() => {
                             </div>
                         </div>
                     </div>
+                </div>
+
+                <div class="form-grid" style="margin-top:16px;">
+                    <div class="form-group">
+                        <label>Профиль соединений</label>
+                        <select id="tgws-resource-profile" class="form-control">
+                            <option value="stealth" ${configuredPoolSize <= 1 ? "selected" : ""}>Low memory/stealth</option>
+                            <option value="balanced" ${configuredPoolSize === 2 ? "selected" : ""}>Balanced</option>
+                            <option value="latency" ${configuredPoolSize >= 4 ? "selected" : ""}>Low latency</option>
+                        </select>
+                        <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                            Stealth: pool 1/max 32; Balanced: 2/64; Low latency: 4/128.
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Состояние secret</label>
+                        <div>${cfg.secret_configured ? "Настроен" : "Будет создан при сохранении"}</div>
+                        <button class="btn btn-danger btn-sm" id="tgws-btn-rotate-secret" type="button">
+                            Сменить secret
+                        </button>
+                    </div>
+                </div>
+
+                <div class="alert alert-warning" style="font-size:12px; margin-top:12px;">
+                    Текущий upstream tg-ws-proxy-go использует
+                    <code>InsecureSkipVerify</code> для исходящего WSS. GUI не скрывает
+                    это ограничение: строгая TLS-проверка требует обновлённого upstream-бинарника.
                 </div>
 
                 <div id="tgws-mode-tunnel" class="mode-panel"
@@ -303,6 +357,8 @@ const TgProxyPage = (() => {
                 "click", () => _tgwsAction("down"));
             document.getElementById("tgws-btn-restart").addEventListener(
                 "click", () => _tgwsAction("restart"));
+            document.getElementById("tgws-btn-rotate-secret").addEventListener(
+                "click", _rotateSecret);
 
             await _loadTgwsproxyConnectInfo();
         } catch (e) {
@@ -312,7 +368,7 @@ const TgProxyPage = (() => {
 
     function _onModeChange(ev) {
         const mode = ev.target.value;
-        ["direct", "cfdomain", "tunnel"].forEach(m => {
+        ["direct", "cfcommunity", "cfdomain", "hybrid", "tunnel"].forEach(m => {
             const panel = document.getElementById(`tgws-mode-${m}`);
             if (panel) panel.style.display = (m === mode) ? "block" : "none";
         });
@@ -323,6 +379,13 @@ const TgProxyPage = (() => {
         const port = parseInt(document.getElementById("tgws-port").value, 10) || 1443;
         const fakeTls = document.getElementById("tgws-fake-tls").value.trim();
         const dcIp = document.getElementById("tgws-dc-ip").value.trim();
+        const resourceProfile = document.getElementById("tgws-resource-profile")?.value || "balanced";
+        const resourceProfiles = {
+            stealth: { pool_size: 1, max_conns: 32, buf_kb: 32 },
+            balanced: { pool_size: 2, max_conns: 64, buf_kb: 64 },
+            latency: { pool_size: 4, max_conns: 128, buf_kb: 128 },
+        };
+        const resources = resourceProfiles[resourceProfile] || resourceProfiles.balanced;
 
         let cfDomain = "", cfWorker = "";
         if (mode === "cfdomain") {
@@ -348,6 +411,7 @@ const TgProxyPage = (() => {
                 cf_domain: cfDomain, cf_worker_domain: cfWorker,
                 dc_ip_default: dcIp,
                 mode,
+                ...resources,
             });
             if (!res.ok) {
                 Toast.error(res.error || "Ошибка сохранения");
@@ -378,6 +442,21 @@ const TgProxyPage = (() => {
                     (cfDomain ? " — домен добавлен в nfqws2" : ""));
             }
             await _refresh();
+        } catch (e) {
+            Toast.error("Ошибка: " + e.message);
+        }
+    }
+
+    async function _rotateSecret() {
+        if (!confirm("Сменить secret? Все ранее выданные Telegram proxy links перестанут работать.")) return;
+        try {
+            const res = await API.post("/api/tgproxy/tgwsproxy/secret/rotate", { confirm: true });
+            if (res.ok) {
+                Toast.success("Secret сменён. Скопируйте новую ссылку подключения.");
+                await _refresh();
+            } else {
+                Toast.error(res.error || "Не удалось сменить secret");
+            }
         } catch (e) {
             Toast.error("Ошибка: " + e.message);
         }

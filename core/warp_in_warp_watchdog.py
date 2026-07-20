@@ -33,6 +33,7 @@ Watchdog для WARP-in-WARP: проверяет оба туннеля и пер
 """
 
 import socket
+import ssl
 import threading
 import time
 from typing import Any
@@ -46,31 +47,100 @@ _DEFAULT_COOLDOWN_SEC = 180
 _DEFAULT_MAX_RESTARTS = 4
 
 
+def _bind_to_iface(sock: socket.socket, inner_iface: str) -> bool | None:
+    if not inner_iface:
+        return False
+    try:
+        sock.setsockopt(
+            socket.SOL_SOCKET,
+            25,  # SO_BINDTODEVICE
+            (inner_iface + "\0").encode(),
+        )
+        return True
+    except (OSError, AttributeError):
+        # A default-route probe is not a valid W-I-W health signal.
+        return None
+
+
 def _probe_through_wiw(
     inner_iface: str, host: str = "1.1.1.1", port: int = 443, timeout: float = 5.0
-) -> bool:
+) -> bool | None:
     """TCP-проба через inner интерфейс WARP-in-WARP."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
-        if inner_iface:
-            try:
-                s.setsockopt(
-                    socket.SOL_SOCKET,
-                    25,  # SO_BINDTODEVICE
-                    (inner_iface + "\0").encode(),
-                )
-            except (OSError, AttributeError):
-                # A probe through the default route is not a valid health
-                # signal for WARP-in-WARP. Fail closed instead of reporting
-                # a false healthy tunnel.
-                s.close()
-                return False
+        bound = _bind_to_iface(s, inner_iface)
+        if bound is not True:
+            s.close()
+            return None
         s.connect((host, int(port)))
         s.close()
         return True
     except Exception:
         return False
+
+
+def _http_probe_through_wiw(inner_iface: str, host: str = "one.one.one.one",
+                            timeout: float = 5.0) -> bool | None:
+    """HTTPS probe bound to inner; returns None if binding is impossible."""
+    raw = None
+    tls_sock = None
+    try:
+        infos = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+        if not infos:
+            return False
+        addr = infos[0][4]
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.settimeout(timeout)
+        if _bind_to_iface(raw, inner_iface) is not True:
+            return None
+        raw.connect(addr)
+        ctx = ssl.create_default_context()
+        tls_sock = ctx.wrap_socket(raw, server_hostname=host)
+        tls_sock.settimeout(timeout)
+        tls_sock.sendall(("HEAD /cdn-cgi/trace HTTP/1.1\r\n"
+                          "Host: %s\r\nConnection: close\r\n\r\n") % host.encode().decode())
+        return tls_sock.recv(64).startswith(b"HTTP/")
+    except Exception:
+        return False
+    finally:
+        for s in (tls_sock, raw):
+            try:
+                if s:
+                    s.close()
+            except Exception:
+                pass
+
+
+def _external_ip_probe(inner_iface: str, timeout: float = 5.0) -> bool | None:
+    """Verify that a HTTPS request made through inner reaches an IP service."""
+    raw = None
+    tls_sock = None
+    host = "api.ipify.org"
+    try:
+        infos = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+        if not infos:
+            return False
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.settimeout(timeout)
+        if _bind_to_iface(raw, inner_iface) is not True:
+            return None
+        raw.connect(infos[0][4])
+        tls_sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+        tls_sock.settimeout(timeout)
+        tls_sock.sendall(("GET / HTTP/1.1\r\nHost: %s\r\n"
+                          "Connection: close\r\n\r\n") % host.encode().decode())
+        data = tls_sock.recv(512)
+        return bool(data and b"HTTP/" in data)
+    except Exception:
+        return False
+    finally:
+        for s in (tls_sock, raw):
+            try:
+                if s:
+                    s.close()
+            except Exception:
+                pass
 
 
 class WarpInWarpWatchdog:
@@ -83,6 +153,7 @@ class WarpInWarpWatchdog:
         self._fail_count = 0
         self._restart_times = []
         self._last_restart = 0
+        self._last_health = "unknown"
 
     def reconfigure(self) -> None:
         """Перечитать конфиг и запустить/остановить watchdog."""
@@ -152,6 +223,7 @@ class WarpInWarpWatchdog:
         # previous code treated inactive as "nothing to do" and never
         # recovered a crashed layer.
         if not status.get("active"):
+            self._last_health = "unhealthy"
             self._fail_count += 1
             if self._fail_count >= _DEFAULT_CONSECUTIVE_FAILURES:
                 self._do_restart(mgr)
@@ -159,13 +231,29 @@ class WarpInWarpWatchdog:
 
         inner_iface = status.get("inner_iface", "")
         if not inner_iface:
+            self._last_health = "unknown"
             return
 
-        result = _probe_through_wiw(inner_iface)
+        if not status.get("route_ok", True):
+            result = False
+        else:
+            tcp_results = [_probe_through_wiw(inner_iface, host)
+                           for host in ("1.1.1.1", "1.0.0.1")]
+            http_result = _http_probe_through_wiw(inner_iface)
+            external_result = _external_ip_probe(inner_iface)
+            if None in tcp_results or http_result is None or external_result is None:
+                self._last_health = "unknown"
+                result = None
+            else:
+                result = (any(tcp_results) and bool(http_result)
+                          and bool(external_result))
 
         if result:
+            self._last_health = "healthy"
             self._fail_count = 0
         else:
+            if result is False:
+                self._last_health = "unhealthy"
             self._fail_count += 1
             if self._fail_count >= _DEFAULT_CONSECUTIVE_FAILURES:
                 self._do_restart(mgr)
@@ -222,6 +310,7 @@ class WarpInWarpWatchdog:
             inner_config=last_params.get("inner_config", ""),
             awg_conf=last_params.get("awg_conf", ""),
             inner_endpoint_host=last_params.get("inner_endpoint_host", ""),
+            transport_profile=last_params.get("transport_profile", "auto"),
         )
 
         if result.get("ok"):
@@ -245,6 +334,7 @@ class WarpInWarpWatchdog:
         return {
             "running": running,
             "fail_count": self._fail_count,
+            "health": self._last_health,
             "recent_restarts": len(
                 [t for t in self._restart_times if (time.time() - t) < 3600]
             ),

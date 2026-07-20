@@ -12,7 +12,7 @@ const TunnelOptimizerPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <h1>Оптимизации туннелей</h1>
-                <span class="page-subtitle">MTU, безопасные TCP buffers, BBR</span>
+                <span class="page-subtitle">MTU/PMTU, безопасные TCP/QUIC buffers, BBR и полный restore</span>
             </div>
 
             <div class="card-grid">
@@ -50,8 +50,9 @@ const TunnelOptimizerPage = (() => {
                             <tbody>
                                 <tr><td>MTU</td><td>1280</td><td>1420</td><td>1420</td></tr>
                                 <tr><td>TCP buffers</td><td>не уменьшаются</td><td>минимум 1 MB</td><td>минимум 4 MB</td></tr>
-                                <tr><td>BBR</td><td colspan="3">✅ Включён (все профили)</td></tr>
-                                <tr><td>TCP Fast Open</td><td colspan="3">⚠️ только если поддержан приложением</td></tr>
+                                <tr><td>QUIC/UDP ceiling</td><td colspan="3">до 8 MB для WARP/QUIC, только повышение</td></tr>
+                                <tr><td>BBR</td><td colspan="3">Только TCP-соединения, создаваемые/завершаемые роутером</td></tr>
+                                <tr><td>TCP Fast Open</td><td colspan="3">не меняется: требуется поддержка приложения</td></tr>
                                 <tr><td>TCP_NODELAY</td><td colspan="3">⚠️ задаётся приложением</td></tr>
                                 <tr><td>Keepalive</td><td colspan="3">не меняется глобально</td></tr>
                                 <tr><td>Лучше для</td><td>Gaming, VoIP</td><td>Общий случай</td><td>Загрузки</td></tr>
@@ -122,6 +123,8 @@ const TunnelOptimizerPage = (() => {
                 </select>
                 <button class="btn btn-primary" id="opt-apply-btn"
                         onclick="TunnelOptimizerPage.applyAll()">Применить ко всем туннелям</button>
+                <button class="btn btn-danger" id="opt-restore-btn"
+                        onclick="TunnelOptimizerPage.restoreAll()">Полностью восстановить</button>
             </div>
             <p class="text-muted" style="font-size:12px; margin-top:8px;">
                 Оптимизации применяются к интерфейсам: opkgtun*, awg*, tun*, meta*
@@ -131,7 +134,21 @@ const TunnelOptimizerPage = (() => {
         const applyEl = document.getElementById("opt-apply");
         if (applyEl) {
             applyEl.innerHTML = `
-                <div class="text-muted" style="font-size:12px;">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Интерфейс для PMTU-проверки</label>
+                        <input id="opt-pmtu-iface" class="form-control" placeholder="opkgtun0">
+                    </div>
+                    <div class="form-group">
+                        <label>IP назначения</label>
+                        <input id="opt-pmtu-host" class="form-control" value="1.1.1.1">
+                    </div>
+                </div>
+                <button class="btn" style="margin-top:8px;" onclick="TunnelOptimizerPage.probePmtu()">
+                    Проверить dataplane PMTU
+                </button>
+                <div id="opt-pmtu-result" class="text-muted" style="font-size:12px; margin-top:8px;"></div>
+                <div class="text-muted" style="font-size:12px; margin-top:12px;">
                     Или применить к конкретному интерфейсу через API:<br>
                     <code>POST /api/optimizer/optimize {"iface":"opkgtun0","profile":"low_latency"}</code>
                 </div>
@@ -160,11 +177,45 @@ const TunnelOptimizerPage = (() => {
         }
     }
 
+    async function restoreAll() {
+        if (!confirm("Восстановить сохранённые sysctl, MTU, qdisc и удалить MSS-правила optimizer?")) return;
+        const btn = document.getElementById("opt-restore-btn");
+        if (btn) btn.disabled = true;
+        try {
+            const res = await API.post("/api/optimizer/restore");
+            if (res.ok) Toast.success("Сетевые настройки восстановлены");
+            else Toast.error((res.errors || [res.error || "Ошибка восстановления"]).join("; "));
+            await _loadStatus();
+        } catch (e) {
+            Toast.error("Ошибка: " + e.message);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    async function probePmtu() {
+        const iface = document.getElementById("opt-pmtu-iface")?.value.trim() || "";
+        const host = document.getElementById("opt-pmtu-host")?.value.trim() || "1.1.1.1";
+        const el = document.getElementById("opt-pmtu-result");
+        if (!iface) { Toast.error("Укажите интерфейс"); return; }
+        if (el) el.textContent = "Проверка...";
+        try {
+            const res = await API.post("/api/optimizer/probe-pmtu", { iface, host });
+            if (res.ok) {
+                if (el) el.textContent = `PMTU: ${res.pmtu}; IPv6 minimum: ${res.ipv6_safe ? "OK" : "нет"}`;
+            } else {
+                if (el) el.textContent = res.error || "PMTU определить не удалось";
+            }
+        } catch (e) {
+            if (el) el.textContent = "Ошибка: " + e.message;
+        }
+    }
+
     function esc(s) {
         const d = document.createElement("div");
         d.textContent = s;
         return d.innerHTML;
     }
 
-    return { render, destroy, applyAll };
+    return { render, destroy, applyAll, restoreAll, probePmtu };
 })();

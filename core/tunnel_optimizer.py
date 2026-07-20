@@ -47,6 +47,7 @@ import os
 import subprocess
 import time
 import re
+import ipaddress
 
 from core.log_buffer import log
 
@@ -82,7 +83,7 @@ def _backup_and_set(path: str, value: str) -> bool:
     """Считывает текущее значение из path, сохраняет его в defaults (если ещё нет) и записывает новое."""
     if not os.path.isfile(path):
         return False
-    
+
     try:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
@@ -113,6 +114,49 @@ def _backup_and_set(path: str, value: str) -> bool:
         return False
 
 
+def _backup_iface_mtu(iface: str, mtu: int | None) -> None:
+    if mtu is None:
+        return
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        values = cfg.get("tunnel_optimizer", "mtu_defaults", default={}) or {}
+        if iface not in values:
+            values[iface] = int(mtu)
+            cfg.set("tunnel_optimizer", "mtu_defaults", values)
+            cfg.save()
+    except Exception:
+        pass
+
+
+def _remember_qdisc(iface: str, kind: str) -> None:
+    if not kind:
+        return
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        values = cfg.get("tunnel_optimizer", "qdisc_defaults", default={}) or {}
+        if iface not in values:
+            values[iface] = kind
+            cfg.set("tunnel_optimizer", "qdisc_defaults", values)
+            cfg.save()
+    except Exception:
+        pass
+
+
+def _remember_mss_iface(iface: str) -> None:
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        values = cfg.get("tunnel_optimizer", "mss_ifaces", default=[]) or []
+        if iface not in values:
+            values.append(iface)
+            cfg.set("tunnel_optimizer", "mss_ifaces", values)
+            cfg.save()
+    except Exception:
+        pass
+
+
 def restore_system_defaults(only_if_idle: bool = False) -> dict:
     """Восстановить заводские системные TCP/MTU настройки из бэкапа."""
     if only_if_idle:
@@ -133,7 +177,7 @@ def restore_system_defaults(only_if_idle: bool = False) -> dict:
         defaults = {}
 
     if not defaults or not isinstance(defaults, dict):
-        return {"ok": True, "note": "Нет сохранённых значений для восстановления"}
+        defaults = {}
 
     restored = []
     errors = []
@@ -147,9 +191,54 @@ def restore_system_defaults(only_if_idle: bool = False) -> dict:
             except Exception as e:
                 errors.append("%s: %s" % (path, e))
 
+    # MTU/qdisc/firewall state is outside /proc/sys and must be restored
+    # explicitly. Missing tools are reported but never turn an otherwise
+    # successful sysctl restore into a destructive operation.
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        mtu_defaults = cfg.get("tunnel_optimizer", "mtu_defaults", default={}) or {}
+        for iface, value in mtu_defaults.items():
+            if not re.match(r"^[a-zA-Z0-9_-]{1,15}$", str(iface)):
+                continue
+            r = subprocess.run(["ip", "link", "set", str(iface), "mtu", str(value)],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                restored.append("mtu:%s" % iface)
+            else:
+                errors.append("mtu:%s: %s" % (iface, (r.stderr or "").strip()))
+
+        qdisc_defaults = cfg.get("tunnel_optimizer", "qdisc_defaults", default={}) or {}
+        for iface, qdisc in qdisc_defaults.items():
+            if not re.match(r"^[a-zA-Z0-9_-]{1,15}$", str(iface)):
+                continue
+            kind = str(qdisc).split()[0] if qdisc else ""
+            if kind and _which("tc"):
+                r = subprocess.run(["tc", "qdisc", "replace", "dev", str(iface),
+                                    "root", kind], capture_output=True, text=True,
+                                   timeout=5)
+                if r.returncode == 0:
+                    restored.append("qdisc:%s" % iface)
+                else:
+                    errors.append("qdisc:%s: %s" % (iface, (r.stderr or "").strip()))
+            elif kind:
+                errors.append("qdisc:%s: tc недоступен" % iface)
+
+        for iface in (cfg.get("tunnel_optimizer", "mss_ifaces", default=[]) or []):
+            mss_result = _remove_mss_clamp(str(iface))
+            if mss_result.get("ok"):
+                restored.append("mss:%s" % iface)
+            else:
+                errors.append("mss:%s: %s" % (iface, mss_result.get("error", "")))
+    except Exception as e:
+        errors.append("network restore: %s" % e)
+
     if not errors:
         try:
             cfg.set("tunnel_optimizer", "defaults", {})
+            cfg.set("tunnel_optimizer", "mtu_defaults", {})
+            cfg.set("tunnel_optimizer", "qdisc_defaults", {})
+            cfg.set("tunnel_optimizer", "mss_ifaces", [])
             cfg.save()
         except Exception:
             pass
@@ -163,7 +252,8 @@ def restore_system_defaults(only_if_idle: bool = False) -> dict:
 # ─────────────────────────── Interface Tuning ───────────────────────────
 
 def optimize_iface(iface: str, profile: str = "balanced",
-                   mtu_override: int = None, apply_global: bool = True) -> dict:
+                   mtu_override: int = None, apply_global: bool = True,
+                   transport_kind: str = "") -> dict:
     """
     Применить оптимизации к интерфейсу.
 
@@ -198,7 +288,11 @@ def optimize_iface(iface: str, profile: str = "balanced",
     mtu = r.get("mtu")
 
     if apply_global:
-        r = _optimize_congestion()
+        tuning = ensure_global_tcp_tuning(
+            profile, quic=(transport_kind == "warp"))
+        applied.extend(tuning.get("applied", []))
+        errors.extend("global: %s" % e for e in tuning.get("errors", []))
+        r = _optimize_congestion(_detect_egress_iface())
         if r.get("ok"):
             applied.append("bbr")
         else:
@@ -227,7 +321,8 @@ def optimize_nested_tunnel(outer_iface: str, outer_kind: str,
     """Оптимизация для вложенных туннелей (WARP-in-WARP и подобных):
     MTU внутреннего = MTU внешнего минус overhead протокола внешнего.
     outer_kind/inner_kind — "awg" | "warp" | "singbox" | "mihomo"."""
-    outer_result = optimize_iface(outer_iface, profile, apply_global=True)
+    outer_result = optimize_iface(outer_iface, profile, apply_global=True,
+                                  transport_kind=outer_kind)
     outer_mtu = outer_result.get("mtu") or MTU_PROFILES.get(profile, 1420)
 
     overhead = TUNNEL_OVERHEAD_BYTES.get(outer_kind, _DEFAULT_OVERHEAD)
@@ -254,7 +349,7 @@ def optimize_nested_tunnel(outer_iface: str, outer_kind: str,
         }
 
     inner_result = optimize_iface(inner_iface, profile, mtu_override=inner_mtu,
-                                  apply_global=False)
+                                  apply_global=False, transport_kind=inner_kind)
 
     return {
         "ok": bool(outer_result.get("ok") and inner_result.get("ok")),
@@ -280,9 +375,11 @@ def _optimize_mtu(iface: str, profile: str, mtu_override: int = None) -> dict:
     target_mtu = mtu_override if mtu_override is not None else MTU_PROFILES.get(
         profile, 1420)
 
+    current_mtu = _read_iface_mtu(iface)
+    _backup_iface_mtu(iface, current_mtu)
+
     # MR-45: проверяем текущий MTU, если не задан явный override
     if mtu_override is None:
-        current_mtu = _read_iface_mtu(iface)
         if current_mtu is not None and current_mtu < target_mtu:
             log.info(
                 "tunnel_optimizer: MTU интерфейса %s (%d) < профильного (%d) — "
@@ -321,15 +418,72 @@ def _read_iface_mtu(iface: str):
     return None
 
 
+def probe_pmtu(iface: str, host: str = "1.1.1.1",
+               minimum: int = 1280, maximum: int = 1500) -> dict:
+    """Binary-search a no-fragment dataplane MTU through an interface."""
+    if not re.match(r"^[a-zA-Z0-9_-]{1,15}$", str(iface or "")):
+        return {"ok": False, "error": "Недопустимое имя интерфейса"}
+    try:
+        addr = ipaddress.ip_address(str(host).strip())
+    except ValueError:
+        return {"ok": False, "error": "PMTU host должен быть IP-адресом"}
+    if not _which("ping"):
+        return {"ok": False, "error": "ping недоступен"}
+    minimum = max(1280, int(minimum))
+    maximum = min(9000, max(minimum, int(maximum)))
+    overhead = 48 if addr.version == 6 else 28
+    family = "-6" if addr.version == 6 else "-4"
+    lo, hi = minimum, maximum
+    successful = None
+    tested = []
+    while lo <= hi:
+        mtu = (lo + hi) // 2
+        payload = max(0, mtu - overhead)
+        cmd = ["ping", family, "-I", iface, "-c", "1", "-W", "2",
+               "-M", "do", "-s", str(payload), str(addr)]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=4)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return {"ok": False, "error": str(e), "tested": tested}
+        passed = r.returncode == 0
+        tested.append({"mtu": mtu, "ok": passed})
+        if passed:
+            successful = mtu
+            lo = mtu + 1
+        else:
+            hi = mtu - 1
+    if successful is None:
+        return {"ok": False, "error": "dataplane не проходит даже при MTU 1280",
+                "tested": tested}
+    return {"ok": True, "iface": iface, "host": str(addr),
+            "pmtu": successful, "tested": tested,
+            "ipv6_safe": successful >= 1280}
+
+
 # ─────────────────────────── BBR + fq ───────────────────────────
 
-def _optimize_congestion() -> dict:
-    """BBR — глобальная настройка."""
+def _detect_egress_iface() -> str:
+    try:
+        r = subprocess.run(["ip", "-4", "route", "get", "1.1.1.1"],
+                           capture_output=True, text=True, timeout=5)
+        output = r.stdout if isinstance(r.stdout, str) else ""
+        words = output.split()
+        if r.returncode == 0 and "dev" in words:
+            iface = words[words.index("dev") + 1]
+            if re.match(r"^[a-zA-Z0-9_-]{1,15}$", iface):
+                return iface
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        pass
+    return ""
+
+
+def _optimize_congestion(egress_iface: str = "") -> dict:
+    """BBR for TCP sockets created/terminated by the router itself."""
     try:
         cc_path = "/proc/sys/net/ipv4/tcp_congestion_control"
         current = _read_sysctl(cc_path)
         if current == "bbr":
-            _ensure_fq_qdisc()
+            _ensure_fq_qdisc(egress_iface)
             return {"ok": True, "note": "BBR уже активен"}
 
         try:
@@ -351,28 +505,52 @@ def _optimize_congestion() -> dict:
             return {"ok": False, "error":
                     "ядро не приняло bbr (осталось: %s)" % actual}
 
-        _ensure_fq_qdisc()
+        _ensure_fq_qdisc(egress_iface)
         return {"ok": True, "congestion": "bbr"}
     except (OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "error": str(e)}
 
 
-def _ensure_fq_qdisc():
-    """BBR требует fq-пейсинг для полноценного раскрытия потенциала."""
+def _ensure_fq_qdisc(egress_iface: str = "") -> dict:
+    """Apply fq to the actual physical egress when supported."""
     try:
         path = "/proc/sys/net/core/default_qdisc"
         current = _read_sysctl(path)
         if current != "fq":
             _write_sysctl(path, "fq")
-    except OSError as e:
+        if not egress_iface:
+            return {"ok": True, "note": "egress неизвестен; изменён только default_qdisc"}
+        if not _which("tc"):
+            return {"ok": False, "error": "tc недоступен"}
+        show = subprocess.run(["tc", "qdisc", "show", "dev", egress_iface],
+                              capture_output=True, text=True, timeout=5)
+        if show.returncode != 0:
+            return {"ok": False, "error": (show.stderr or "").strip()}
+        line = next((x.strip() for x in (show.stdout or "").splitlines()
+                     if " root " in (" " + x + " ")), "")
+        if not line or "noqueue" in line:
+            return {"ok": True, "note": "qdisc noqueue/не поддерживается"}
+        words = line.split()
+        kind = words[1] if len(words) > 1 and words[0] == "qdisc" else ""
+        if kind == "fq":
+            return {"ok": True, "note": "fq уже активен"}
+        _remember_qdisc(egress_iface, kind)
+        setq = subprocess.run(["tc", "qdisc", "replace", "dev", egress_iface,
+                               "root", "fq"], capture_output=True, text=True,
+                              timeout=5)
+        if setq.returncode != 0:
+            return {"ok": False, "error": (setq.stderr or "").strip()}
+        return {"ok": True, "iface": egress_iface}
+    except (OSError, subprocess.TimeoutExpired) as e:
         log.warning("tunnel_optimizer: default_qdisc=fq: %s" % e,
                     source="optimizer")
+        return {"ok": False, "error": str(e)}
 
 
 # ─────────────────────────── MSS clamping ───────────────────────────
 
 def _apply_mss_clamp(iface: str) -> dict:
-    """iptables/nft TCPMSS --clamp-mss-to-pmtu — устойчивый способ избежать фрагментации."""
+    """Bidirectional IPv4/IPv6 MSS clamp in an owned nftables chain."""
     comment = "tunnel_optimizer:%s" % iface
     has_nft = _which("nft")
     has_iptables = _which("iptables")
@@ -382,46 +560,89 @@ def _apply_mss_clamp(iface: str) -> dict:
 
     try:
         if has_nft:
-            check = subprocess.run(
-                ["nft", "list", "chain", "inet", "filter", "FORWARD"],
+            table = "zapret_gui_optimizer"
+            chain = "mss_" + re.sub(r"[^a-zA-Z0-9_]", "_", iface)
+            exists = subprocess.run(
+                ["nft", "list", "chain", "inet", table, chain],
                 capture_output=True, text=True, timeout=5)
-            if check.returncode != 0:
-                # This project must not assume that a distribution has an
-                # inet/filter/FORWARD chain. Fall back to iptables or skip.
-                has_nft = False
-                if not has_iptables:
-                    return {"ok": True, "note": "nft FORWARD chain отсутствует; пропуск"}
-            else:
-                if comment in (check.stdout or ""):
-                    return {"ok": True, "note": "уже применено (nft)"}
-                r = subprocess.run(
-                    ["nft", "add", "rule", "inet", "filter", "FORWARD",
-                     "oifname", iface, "tcp", "flags", "syn", "tcp", "option",
-                     "maxseg", "size", "set", "rt", "mtu",
-                     "comment", '"%s"' % comment],
-                    capture_output=True, text=True, timeout=5)
-                if r.returncode != 0:
-                    return {"ok": False, "error": (r.stderr or "").strip()}
-                return {"ok": True}
+            if exists.returncode == 0:
+                _remember_mss_iface(iface)
+                return {"ok": True, "note": "уже применено (nft)"}
+            subprocess.run(["nft", "add", "table", "inet", table],
+                           capture_output=True, text=True, timeout=5)
+            create = subprocess.run(
+                ["nft", "add", "chain", "inet", table, chain,
+                 "{ type filter hook forward priority 0; policy accept; }"],
+                capture_output=True, text=True, timeout=5)
+            if create.returncode == 0:
+                for direction in ("oifname", "iifname"):
+                    rule = subprocess.run(
+                        ["nft", "add", "rule", "inet", table, chain,
+                         direction, '"%s"' % iface, "tcp", "flags", "syn", "tcp", "option",
+                         "maxseg", "size", "set", "rt", "mtu",
+                         "comment", '"%s"' % comment],
+                        capture_output=True, text=True, timeout=5)
+                    if rule.returncode != 0:
+                        subprocess.run(["nft", "delete", "chain", "inet", table, chain],
+                                       capture_output=True, timeout=5)
+                        return {"ok": False, "error": (rule.stderr or "").strip()}
+                _remember_mss_iface(iface)
+                return {"ok": True, "backend": "nft"}
+            has_nft = False
         if has_iptables:
-            check = subprocess.run(
-                ["iptables", "-t", "mangle", "-C", "FORWARD",
-                 "-o", iface, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
-                 "-j", "TCPMSS", "--clamp-mss-to-pmtu",
-                 "-m", "comment", "--comment", comment],
-                capture_output=True, timeout=5)
-            if check.returncode == 0:
-                return {"ok": True, "note": "уже применено (iptables)"}
-            r = subprocess.run(
-                ["iptables", "-t", "mangle", "-A", "FORWARD",
-                 "-o", iface, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
-                 "-j", "TCPMSS", "--clamp-mss-to-pmtu",
-                 "-m", "comment", "--comment", comment],
-                capture_output=True, text=True, timeout=5)
-            if r.returncode != 0:
-                return {"ok": False, "error": (r.stderr or "").strip()}
-            return {"ok": True}
+            applied = 0
+            for binary in ("iptables", "ip6tables"):
+                if not _which(binary):
+                    continue
+                for flag in ("-o", "-i"):
+                    spec = [binary, "-t", "mangle", "FORWARD", flag, iface,
+                            "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
+                            "-j", "TCPMSS", "--clamp-mss-to-pmtu",
+                            "-m", "comment", "--comment", comment]
+                    check = subprocess.run(spec[:3] + ["-C"] + spec[3:],
+                                           capture_output=True, timeout=5)
+                    if check.returncode == 0:
+                        applied += 1
+                        continue
+                    add = subprocess.run(spec[:3] + ["-A"] + spec[3:],
+                                         capture_output=True, text=True, timeout=5)
+                    if add.returncode == 0:
+                        applied += 1
+            if applied:
+                _remember_mss_iface(iface)
+                return {"ok": True, "backend": "iptables", "rules": applied}
+            return {"ok": False, "error": "не удалось создать MSS clamp"}
         return {"ok": True, "note": "MSS clamp недоступен; пропуск"}
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _remove_mss_clamp(iface: str) -> dict:
+    """Remove only rules/chains owned by this optimizer."""
+    if not re.match(r"^[a-zA-Z0-9_-]{1,15}$", iface):
+        return {"ok": False, "error": "недопустимый iface"}
+    errors = []
+    try:
+        if _which("nft"):
+            table = "zapret_gui_optimizer"
+            chain = "mss_" + re.sub(r"[^a-zA-Z0-9_]", "_", iface)
+            subprocess.run(["nft", "flush", "chain", "inet", table, chain],
+                           capture_output=True, timeout=5)
+            r = subprocess.run(["nft", "delete", "chain", "inet", table, chain],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode not in (0, 1):
+                errors.append((r.stderr or "").strip())
+        comment = "tunnel_optimizer:%s" % iface
+        for binary in ("iptables", "ip6tables"):
+            if not _which(binary):
+                continue
+            for flag in ("-o", "-i"):
+                spec = [binary, "-t", "mangle", "-D", "FORWARD", flag, iface,
+                        "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
+                        "-j", "TCPMSS", "--clamp-mss-to-pmtu",
+                        "-m", "comment", "--comment", comment]
+                subprocess.run(spec, capture_output=True, timeout=5)
+        return {"ok": not errors, "errors": errors}
     except (OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "error": str(e)}
 
@@ -436,7 +657,7 @@ def _which(binname: str) -> bool:
 
 # ─────────────────────────── Глобальный TCP-tuning ───────────────────
 
-def ensure_global_tcp_tuning(profile: str = "balanced") -> dict:
+def ensure_global_tcp_tuning(profile: str = "balanced", quic: bool = False) -> dict:
     """Безопасно поднять глобальные TCP buffers.
 
     Existing values are never lowered: small global maxima harm unrelated
@@ -451,7 +672,14 @@ def ensure_global_tcp_tuning(profile: str = "balanced") -> dict:
         "balanced": (1048576, 1048576),
         "throughput": (4194304, 4194304),
     }.get(profile, (1048576, 1048576))
-    rmem_max, wmem_max = buf
+    tcp_rmem, tcp_wmem = buf
+    rmem_max, wmem_max = tcp_rmem, tcp_wmem
+    if quic:
+        # quic-go recommends ~7.5 MiB UDP maxima. net.core maxima are
+        # shared ceilings, so only raise them; never lower existing values.
+        quic_floor = 8 * 1024 * 1024
+        rmem_max = max(rmem_max, quic_floor)
+        wmem_max = max(wmem_max, quic_floor)
 
     for path, value in [
         ("/proc/sys/net/core/rmem_max", str(rmem_max)),
@@ -463,8 +691,8 @@ def ensure_global_tcp_tuning(profile: str = "balanced") -> dict:
             errors.append(os.path.basename(path))
 
     for path, minimum in [
-        ("/proc/sys/net/ipv4/tcp_rmem", rmem_max),
-        ("/proc/sys/net/ipv4/tcp_wmem", wmem_max),
+        ("/proc/sys/net/ipv4/tcp_rmem", tcp_rmem),
+        ("/proc/sys/net/ipv4/tcp_wmem", tcp_wmem),
     ]:
         current = _read_sysctl(path)
         try:
@@ -478,11 +706,11 @@ def ensure_global_tcp_tuning(profile: str = "balanced") -> dict:
         else:
             errors.append(os.path.basename(path))
 
-    # TCP Fast Open
-    if _write_sysctl("/proc/sys/net/ipv4/tcp_fastopen", "3"):
-        applied.append("tcp_fastopen")
-    else:
-        errors.append("tcp_fastopen")
+    if quic:
+        applied.append("udp_quic_buffer_floor")
+
+    # TCP Fast Open is intentionally not changed here: it only helps when
+    # the application enables the relevant socket options.
 
     log.info("tunnel_optimizer: глобальный TCP-tuning — применено: %s"
              % ", ".join(applied), source="optimizer")
@@ -526,13 +754,22 @@ def optimize_all_tunnels(profile: str = "balanced") -> dict:
     monitor = get_tunnel_monitor()
     interfaces = monitor.discover_interfaces()
 
-    global_result = ensure_global_tcp_tuning(profile)
+    has_quic = any(str(i).startswith("opkgtun") for i in interfaces)
+    buffer_result = ensure_global_tcp_tuning(profile, quic=has_quic)
+    bbr_result = _optimize_congestion(_detect_egress_iface())
+    global_result = {
+        "ok": bool(buffer_result.get("ok") and bbr_result.get("ok")),
+        "buffers": buffer_result,
+        "bbr": bbr_result,
+    }
 
     results = {}
     for iface in interfaces:
         if iface.startswith("__"):
             continue
-        results[iface] = optimize_iface(iface, profile, apply_global=False)
+        kind = "warp" if iface.startswith("opkgtun") else ""
+        results[iface] = optimize_iface(
+            iface, profile, apply_global=False, transport_kind=kind)
 
     return {"ok": bool(global_result.get("ok") and all(
         r.get("ok") for r in results.values())),

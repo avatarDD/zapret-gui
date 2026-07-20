@@ -71,12 +71,13 @@ claude-sonnet-5_review_zapretgui_pass2.md):
    usque (это решает сам бинарник usque-keenetic по данным из своего
    session-файла) — поэтому для режима masque_masque закрепление
    маршрута выполняется только если явно передан
-   `inner_endpoint_host` (см. параметры start()); если он не передан,
-   функция явно логирует ограничение вместо того, чтобы делать вид,
-   что что-то настроено (как это было в оригинале).
+   `inner_endpoint_host` (см. параметры start()); для режимов, где inner
+   — MASQUE, адрес обязателен: без него запуск отклоняется, а не делает
+   вид, что handshake будет идти через outer.
 """
 
 import ipaddress
+import os
 import shlex
 import socket
 import subprocess
@@ -190,13 +191,24 @@ def _route_snapshot(dst_ip: str, v6: bool = False) -> str:
     return out.strip() if rc == 0 else ""
 
 
+def _route_get(dst_ip: str, v6: bool = False) -> str:
+    """Return the kernel's effective route for an endpoint."""
+    fam = "-6" if v6 else "-4"
+    rc, out, _err = _run(["ip", fam, "route", "get", dst_ip])
+    return out.strip() if rc == 0 else ""
+
+
 def _pin_route_owned(dst_ip: str, via_iface: str,
                      v6: bool = False) -> tuple[bool, str]:
     """Pin an endpoint and return the pre-existing route for restoration."""
     previous = _route_snapshot(dst_ip, v6)
     if previous and (" dev %s" % via_iface) in previous:
-        return True, previous
-    return _pin_route(dst_ip, via_iface, v6), previous
+        effective = _route_get(dst_ip, v6)
+        return (" dev %s" % via_iface) in effective, previous
+    if not _pin_route(dst_ip, via_iface, v6):
+        return False, previous
+    effective = _route_get(dst_ip, v6)
+    return (" dev %s" % via_iface) in effective, previous
 
 
 def _restore_route(dst_ip: str, via_iface: str, v6: bool,
@@ -318,15 +330,32 @@ class WarpInWarpManager:
 
         outer_running = self._iface_running(outer_iface, mode, side="outer")
         inner_running = self._iface_running(inner_iface, mode, side="inner")
+        route_ok = self._routes_healthy(mode)
+        active = bool(mode) and outer_running and inner_running and route_ok
 
         return {
-            "active": bool(mode) and outer_running and inner_running,
+            "active": active,
+            "health": "healthy" if active else ("unknown" if mode else "stopped"),
             "mode": mode,
             "outer_iface": outer_iface if outer_running else "",
             "inner_iface": inner_iface if inner_running else "",
             "outer_running": outer_running,
             "inner_running": inner_running,
+            "route_ok": route_ok,
+            "experimental": mode == "masque_masque",
         }
+
+    def _routes_healthy(self, mode: str) -> bool:
+        """Verify every pinned endpoint still resolves through its owner iface."""
+        if not mode:
+            return True
+        if mode == "masque_masque" and not self._pinned_routes:
+            return False
+        for dst, via, v6, _previous in self._pinned_routes:
+            effective = _route_get(dst, v6)
+            if not effective or (" dev %s" % via) not in effective:
+                return False
+        return True
 
     def _iface_running(self, iface: str, mode: str, side: str) -> bool:
         """Проверить, активен ли интерфейс."""
@@ -340,11 +369,13 @@ class WarpInWarpManager:
             if is_awg_side:
                 from core.awg_manager import get_awg_manager
 
-                return get_awg_manager().is_running(iface)
+                return (get_awg_manager().is_running(iface)
+                        and os.path.exists("/sys/class/net/%s" % iface))
             else:
                 from core.usque_manager import get_usque_manager
 
-                return bool(get_usque_manager().status(iface).get("running"))
+                st = get_usque_manager().status(iface)
+                return bool(st.get("running") and st.get("iface_exists", True))
         except Exception:
             return False
 
@@ -359,6 +390,7 @@ class WarpInWarpManager:
         inner_config: str = "",
         awg_conf: str = "",
         inner_endpoint_host: str = "",
+        transport_profile: str = "performance",
     ) -> dict[str, Any]:
         """
         Запустить WARP-in-WARP (MASQUE-based).
@@ -368,16 +400,24 @@ class WarpInWarpManager:
         awg_conf — ИМЯ уже сохранённого AWG-конфига (не путь и не
             содержимое) — используется в masque_awg (inner) и
             awg_masque (outer).
-        inner_endpoint_host — опционально: хост/IP, на который реально
+        inner_endpoint_host — хост/IP, на который реально
             стучится inner usque-туннель (например, известный
-            MASQUE-relay). Нужен только для режима masque_masque, чтобы
+            MASQUE-relay). Нужен для masque_masque и awg_masque, чтобы
             закрепить его /32-маршрут через outer — без этого параметра
-            для masque_masque маршрутизация между двумя MASQUE-туннелями
-            не настраивается автоматически (см. docstring файла).
+            для masque_masque запуск отклоняется, если адрес не задан.
+        transport_profile — performance (H3/QUIC), restricted (H2/TCP)
+            или auto (H3 с fallback на H2).
         """
         with self._lock:
-            if self._get_status_locked().get("active"):
-                return {"ok": False, "error": "WARP-in-WARP уже запущен"}
+            if transport_profile not in ("performance", "restricted", "auto"):
+                return {"ok": False, "error": "Неизвестный transport_profile: %s" % transport_profile}
+            if mode == "masque_masque" and transport_profile == "restricted":
+                return {"ok": False,
+                        "error": "H2 внутри H2 запрещён: выберите performance или auto"}
+            current = self._get_status_locked()
+            if current.get("mode"):
+                return {"ok": False,
+                        "error": "WARP-in-WARP уже запущен или деградировал; сначала остановите его"}
 
             if mode == "masque_masque":
                 result = self._start_masque_masque(
@@ -386,11 +426,15 @@ class WarpInWarpManager:
                     outer_config,
                     inner_config,
                     inner_endpoint_host,
+                    transport_profile,
                 )
             elif mode == "masque_awg":
-                result = self._start_masque_awg(outer_sni, outer_config, awg_conf)
+                result = self._start_masque_awg(outer_sni, outer_config, awg_conf,
+                                                transport_profile)
             elif mode == "awg_masque":
-                result = self._start_awg_masque(awg_conf, inner_sni, inner_config)
+                result = self._start_awg_masque(awg_conf, inner_sni, inner_config,
+                                                inner_endpoint_host,
+                                                transport_profile)
             else:
                 return {"ok": False, "error": "Неизвестный режим: %s" % mode}
 
@@ -404,6 +448,7 @@ class WarpInWarpManager:
                         "inner_config": inner_config,
                         "awg_conf": awg_conf,
                         "inner_endpoint_host": inner_endpoint_host,
+                        "transport_profile": transport_profile,
                     }
                 )
             return result
@@ -415,6 +460,7 @@ class WarpInWarpManager:
         outer_config: str,
         inner_config: str,
         inner_endpoint_host: str,
+        transport_profile: str,
     ) -> dict[str, Any]:
         """MASQUE + MASQUE: оба туннеля через usque."""
         from core.usque_manager import get_usque_manager
@@ -426,17 +472,23 @@ class WarpInWarpManager:
         if not inner_config:
             return {"ok": False, "error": "Нужен inner usque конфиг"}
 
-        outer_iface = "opkgtun100"
-        inner_iface = "opkgtun101"
+        outer_iface = mgr.allocate_iface("opkgtun")
+        inner_iface = mgr.allocate_iface("opkgtun", reserved={outer_iface})
+        if not outer_iface or not inner_iface:
+            return {"ok": False, "error": "Не удалось выделить имена MASQUE-интерфейсов"}
 
-        result = mgr.start(outer_iface, outer_config, sni=outer_sni)
+        if not inner_endpoint_host:
+            return {"ok": False,
+                    "error": "Для MASQUE+MASQUE обязателен inner_endpoint_host"}
+
+        result = mgr.start(outer_iface, outer_config, sni=outer_sni,
+                           transport_profile=transport_profile,
+                           apply_optimizer=False)
         if not result.get("ok"):
             return {"ok": False, "error": "Outer: %s" % result.get("error")}
 
-        # /32-маршрут inner-endpoint через outer — только если явно
-        # передан хост. Без него намеренно ничего не закрепляем (см.
-        # docstring файла) — оставлять фиктивный `ip rule` как раньше
-        # хуже, чем честно ничего не делать.
+        # /32-маршрут inner-endpoint через outer обязателен: без него
+        # handshake inner может уйти через обычный WAN.
         pinned = []
         if inner_endpoint_host:
             v4, v6 = _resolve_host(inner_endpoint_host)
@@ -454,15 +506,12 @@ class WarpInWarpManager:
                 mgr.stop(outer_iface)
                 return {"ok": False,
                         "error": "Не удалось закрепить endpoint inner через outer"}
-        else:
-            log.warning(
-                "warp-in-warp: inner_endpoint_host не задан — маршрут "
-                "inner-туннеля через outer НЕ закреплён, порядок default "
-                "route между двумя MASQUE-сессиями не гарантирован",
-                source="warp_in_warp",
-            )
-
-        result = mgr.start(inner_iface, inner_config, sni=inner_sni)
+        inner_profile = ("performance" if
+                         result.get("transport_profile") == "restricted"
+                         else transport_profile)
+        result = mgr.start(inner_iface, inner_config, sni=inner_sni,
+                           transport_profile=inner_profile,
+                           apply_optimizer=False)
         if not result.get("ok"):
             for dst, via, v6, previous in pinned:
                 _restore_route(dst, via, v6, previous)
@@ -486,10 +535,13 @@ class WarpInWarpManager:
             "mode": "masque_masque",
             "outer": outer_iface,
             "inner": inner_iface,
+            "transport_profile": transport_profile,
+            "experimental": True,
         }
 
     def _start_masque_awg(
-        self, outer_sni: str, outer_config: str, awg_conf: str
+        self, outer_sni: str, outer_config: str, awg_conf: str,
+        transport_profile: str
     ) -> dict[str, Any]:
         """MASQUE + AWG: внешний MASQUE (usque), внутренний AmneziaWG."""
         from core.usque_manager import get_usque_manager
@@ -520,8 +572,12 @@ class WarpInWarpManager:
                 "error": "Не удалось резолвить endpoint AWG-конфига (%s)" % host,
             }
 
-        outer_iface = "opkgtun100"
-        result = usque_mgr.start(outer_iface, outer_config, sni=outer_sni)
+        outer_iface = usque_mgr.allocate_iface("opkgtun")
+        if not outer_iface:
+            return {"ok": False, "error": "Не удалось выделить MASQUE-интерфейс"}
+        result = usque_mgr.start(outer_iface, outer_config, sni=outer_sni,
+                                 transport_profile=transport_profile,
+                                 apply_optimizer=False)
         if not result.get("ok"):
             return {"ok": False, "error": "Outer MASQUE: %s" % result.get("error")}
 
@@ -573,10 +629,13 @@ class WarpInWarpManager:
             "mode": "masque_awg",
             "outer": outer_iface,
             "inner": inner_iface,
+            "transport_profile": transport_profile,
         }
 
     def _start_awg_masque(
-        self, awg_conf: str, inner_sni: str, inner_config: str
+        self, awg_conf: str, inner_sni: str, inner_config: str,
+        inner_endpoint_host: str,
+        transport_profile: str
     ) -> dict[str, Any]:
         """AWG + MASQUE: внешний AmneziaWG, внутренний MASQUE (usque)."""
         from core.usque_manager import get_usque_manager
@@ -589,6 +648,14 @@ class WarpInWarpManager:
             return {"ok": False, "error": "Нужно указать имя AWG-конфига для outer"}
         if not inner_config:
             return {"ok": False, "error": "Нужен inner usque конфиг"}
+        if not inner_endpoint_host:
+            return {"ok": False,
+                    "error": "Для AWG+MASQUE обязателен endpoint inner MASQUE"}
+
+        v4, v6 = _resolve_host(inner_endpoint_host)
+        if not v4 and not v6:
+            return {"ok": False,
+                    "error": "Не удалось резолвить endpoint inner MASQUE"}
 
         outer_iface = awg_conf
         outer_was_up = awg_mgr.is_running(outer_iface)
@@ -599,35 +666,35 @@ class WarpInWarpManager:
                 "error": "Outer AWG: %s" % result.get("message", "ошибка"),
             }
 
-        # For AWG outer, the usque endpoint must be pinned to the AWG
-        # interface. Without this, usque may handshake through the default
-        # WAN route and the two layers are not actually nested.
+        # The *inner MASQUE* endpoint (not the outer AWG server endpoint)
+        # must be pinned through the already-running AWG interface.
         pinned = []
-        try:
-            host, _port = _read_awg_endpoint(awg_conf)
-            v4, v6 = _resolve_host(host)
-            if v4:
-                ok, previous = _pin_route_owned(v4, outer_iface, v6=False)
-                if ok:
-                    pinned.append((v4, outer_iface, False, previous))
-            if v6:
-                ok, previous = _pin_route_owned(v6, outer_iface, v6=True)
-                if ok:
-                    pinned.append((v6, outer_iface, True, previous))
-            if not _routes_cover(pinned, v4, v6):
-                for dst, via, v6f, previous in pinned:
-                    _restore_route(dst, via, v6f, previous)
-                if not outer_was_up:
-                    awg_mgr.down(outer_iface)
-                return {"ok": False,
-                        "error": "Не удалось закрепить endpoint inner MASQUE через AWG"}
-        except (ValueError, FileNotFoundError) as e:
+        if v4:
+            ok, previous = _pin_route_owned(v4, outer_iface, v6=False)
+            if ok:
+                pinned.append((v4, outer_iface, False, previous))
+        if v6:
+            ok, previous = _pin_route_owned(v6, outer_iface, v6=True)
+            if ok:
+                pinned.append((v6, outer_iface, True, previous))
+        if not _routes_cover(pinned, v4, v6):
+            for dst, via, v6f, previous in pinned:
+                _restore_route(dst, via, v6f, previous)
             if not outer_was_up:
                 awg_mgr.down(outer_iface)
-            return {"ok": False, "error": "Inner endpoint AWG: %s" % e}
+            return {"ok": False,
+                    "error": "Не удалось закрепить endpoint inner MASQUE через AWG"}
 
-        inner_iface = "opkgtun101"
-        result = usque_mgr.start(inner_iface, inner_config, sni=inner_sni)
+        inner_iface = usque_mgr.allocate_iface("opkgtun", reserved={outer_iface})
+        if not inner_iface:
+            for dst, via, v6f, previous in pinned:
+                _restore_route(dst, via, v6f, previous)
+            if not outer_was_up:
+                awg_mgr.down(outer_iface)
+            return {"ok": False, "error": "Не удалось выделить MASQUE-интерфейс"}
+        result = usque_mgr.start(inner_iface, inner_config, sni=inner_sni,
+                                 transport_profile=transport_profile,
+                                 apply_optimizer=False)
         if not result.get("ok"):
             for dst, via, v6f, previous in pinned:
                 _restore_route(dst, via, v6f, previous)
@@ -654,6 +721,7 @@ class WarpInWarpManager:
             "mode": "awg_masque",
             "outer": outer_iface,
             "inner": inner_iface,
+            "transport_profile": transport_profile,
         }
 
     def _apply_optimizations(self, outer_iface: str, inner_iface: str,
@@ -763,43 +831,3 @@ def get_warp_in_warp_manager() -> WarpInWarpManager:
             if _instance is None:
                 _instance = WarpInWarpManager()
     return _instance
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Что ещё нужно поправить СНАРУЖИ этого файла, чтобы всё заработало
-# целиком (не относится к самому warp_in_warp.py, но без этого
-# masque_awg/awg_masque по-прежнему не будут доступны из GUI):
-#
-# 1. web/js/pages/warp_in_warp.js — сейчас выпадающие списки outer/inner
-#    заполняются ИСКЛЮЧИТЕЛЬНО usque-конфигами (`GET /api/usque/configs`),
-#    с комментарием в коде "AWG добавим позже". Для masque_awg/awg_masque
-#    нужен отдельный `<select>`, заполняемый из `GET /api/awg/configs`
-#    (или как называется существующий эндпоинт списка AWG-конфигов), и
-#    именно ЕГО значение (имя конфига) нужно отправлять как `awg_conf` —
-#    сейчас туда подставляется значение usque-селектора
-#    (`awg_conf: mode === "awg_masque" ? outerConfig : ""`), что
-#    гарантированно не совпадает с AWG-конфигом ни по формату, ни по
-#    содержимому.
-#
-# 2. api/warp_in_warp.py — тело `wiw_up()` сейчас без try/except; учитывая,
-#    что `start()` в этой версии сам всё чистит при частичном сбое,
-#    обёртка на API-уровне не обязательна, но не помешает как последний
-#    рубеж (на случай неожиданного исключения в самих usque_manager/
-#    awg_manager, вне контроля этого файла):
-#
-#      def wiw_up():
-#          try:
-#              ...
-#              return mgr.start(...)
-#          except Exception as e:
-#              return {"ok": False, "error": str(e)}
-#
-# 3. Для режима masque_masque рекомендуется добавить в GUI необязательное
-#    поле "Известный endpoint inner-сессии" (host или IP), которое пойдёт
-#    в новый параметр `inner_endpoint_host` — без него маршрутизация
-#    между двумя MASQUE-сессиями не настраивается автоматически (см.
-#    комментарий в начале файла и в _start_masque_masque). Если в
-#    session-файле usque такой адрес не хранится в читаемом виде — этот
-#    пункт стоит обсудить отдельно с тем, кто знает формат usque-сессий,
-#    прежде чем полагаться на автоматическое закрепление маршрута.
-# ──────────────────────────────────────────────────────────────────────

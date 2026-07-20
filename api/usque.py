@@ -102,8 +102,13 @@ def register(app):
 
         sni = cfg.get("usque", "default_sni", default="")
         http2 = cfg.get("usque", "http2_enable", default=False)
-        return mgr.start(target["iface"], target["path"],
-                         sni=sni, http2=http2)
+        iface = target.get("iface") or mgr.allocate_iface("opkgtun")
+        if not iface:
+            return {"ok": False, "error": "Не удалось выделить интерфейс usque"}
+        profile = "restricted" if http2 else cfg.get(
+            "usque", "transport_profile", default="performance")
+        return mgr.start(iface, target["path"],
+                         sni=sni, transport_profile=profile)
 
     @app.route("/api/usque/configs/<name>/down", method="POST")
     def usque_config_down(name):
@@ -115,6 +120,8 @@ def register(app):
         if not target:
             return {"ok": False, "error": "Конфиг '%s' не найден" % name}
 
+        if not target.get("iface"):
+            return {"ok": True, "message": "уже остановлен"}
         return mgr.stop(target["iface"])
 
     @app.route("/api/usque/configs/<name>/status", method="GET")
@@ -127,6 +134,9 @@ def register(app):
         if not target:
             return {"ok": False, "error": "Конфиг '%s' не найден" % name}
 
+        if not target.get("iface"):
+            return {"running": False, "iface": "", "pid": None,
+                    "iface_exists": False, "diagnostic": ""}
         return mgr.status(target["iface"])
 
     @app.route("/api/usque/configs/<name>/remove", method="POST")

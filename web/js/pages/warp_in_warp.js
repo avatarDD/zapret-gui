@@ -246,6 +246,19 @@ const WarpInWarpPage = (() => {
                         </div>
                     </div>
                     <div class="form-group">
+                        <label>Транспорт usque</label>
+                        <select id="wiw-transport-profile" class="form-control">
+                            <option value="performance" selected>Performance — H3/QUIC</option>
+                            <option value="restricted">Restricted network — H2/TCP:443</option>
+                            <option value="auto">Auto — H3, затем H2 при подтверждённом сбое</option>
+                        </select>
+                        <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                            H2 внутри H2 запрещён. MASQUE + MASQUE остаётся экспериментальным:
+                            двойной слой увеличивает задержку и не делает внешний трафик
+                            невидимым для DPI.
+                        </div>
+                    </div>
+                    <div class="form-group">
                         <label>Outer SNI (маскировка)</label>
                         <!-- MR-109: убран хардкод ozon.ru -->
                         <input type="text" id="wiw-outer-sni" class="form-control"
@@ -280,7 +293,7 @@ const WarpInWarpPage = (() => {
                         <input type="text" id="wiw-inner-endpoint" class="form-control"
                                placeholder="IP или hostname MASQUE endpoint">
                         <div class="text-muted" style="font-size:11px; margin-top:4px;">
-                            Для MASQUE+MASQUE нужен адрес endpoint, чтобы handshake inner прошёл через outer.
+                            Нужен, когда inner-туннель — MASQUE, чтобы его handshake гарантированно прошёл через outer.
                         </div>
                     </div>
                 </div>
@@ -348,7 +361,7 @@ const WarpInWarpPage = (() => {
         if (awgConfigGroup) {
             awgConfigGroup.style.display = (mode === "masque_awg" || mode === "awg_masque") ? "" : "none";
         }
-        if (endpointGroup) endpointGroup.style.display = mode === "masque_masque" ? "" : "none";
+        if (endpointGroup) endpointGroup.style.display = (mode === "masque_masque" || mode === "awg_masque") ? "" : "none";
         // MR-130: показываем подсказку для выбранного режима
         document.querySelectorAll(".mode-hint").forEach(el => {
             el.style.display = el.dataset.mode === mode ? "" : "none";
@@ -363,6 +376,7 @@ const WarpInWarpPage = (() => {
         const innerConfig = document.getElementById("wiw-inner-config")?.value || "";
         const awgConfig = document.getElementById("wiw-awg-config")?.value || "";
         const innerEndpointHost = document.getElementById("wiw-inner-endpoint")?.value.trim() || "";
+        const transportProfile = document.getElementById("wiw-transport-profile")?.value || "performance";
 
         if (mode !== "awg_masque" && !outerConfig) {
             Toast.error("Выберите outer конфиг");
@@ -376,7 +390,7 @@ const WarpInWarpPage = (() => {
             Toast.error("Выберите AWG конфиг");
             return;
         }
-        if (mode === "masque_masque" && !innerEndpointHost) {
+        if ((mode === "masque_masque" || mode === "awg_masque") && !innerEndpointHost) {
             Toast.error("Укажите endpoint inner-сессии для безопасной маршрутизации");
             return;
         }
@@ -388,6 +402,7 @@ const WarpInWarpPage = (() => {
                 outer_config: outerConfig, inner_config: innerConfig,
                 awg_conf: awgConfig,
                 inner_endpoint_host: innerEndpointHost,
+                transport_profile: transportProfile,
             });
             if (res.ok) {
                 Toast.success("WARP-in-WARP запущен (" + res.mode + ")");

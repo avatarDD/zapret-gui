@@ -14,16 +14,20 @@ Usque тянется как бинарник из side-effect-tm/usque-keenetic 
 """
 
 import os
+import io
 import re
 import signal
 import subprocess
 import threading
 import time
+from collections import deque
 
 from core.log_buffer import log
 
 
 _VALID_IFACE_RE = re.compile(r"^[a-zA-Z0-9_-]{1,15}$")
+_IFACE_PREFIX_RE = re.compile(r"^[a-zA-Z0-9_-]{1,12}$")
+_MAX_DIAGNOSTIC_LINES = 40
 
 
 class UsqueManager:
@@ -35,6 +39,9 @@ class UsqueManager:
         # occurred with threading.Lock().
         self._lock = threading.RLock()
         self._processes = {}  # iface -> subprocess.Popen
+        self._config_by_iface = {}
+        self._stderr = {}  # iface -> deque[str]
+        self._stderr_threads = {}
         self._pid_dir = "/opt/var/run"
 
     # ─────── detect ───────
@@ -154,16 +161,61 @@ class UsqueManager:
                             return line.split("=", 1)[1].strip().strip('"')
             except Exception:
                 pass
-        # Fallback: opkgtun0
-        return "opkgtun0"
+        # No fixed fallback: an unknown interface must not be shown as active.
+        return ""
+
+    def allocate_iface(self, prefix: str = "opkgtun", reserved=None) -> str:
+        """Allocate a free interface name without relying on fixed W-I-W names."""
+        prefix = str(prefix or "opkgtun")[:12]
+        if not _IFACE_PREFIX_RE.match(prefix):
+            prefix = "opkgtun"
+        reserved = set(reserved or ())
+        with self._lock:
+            used = set(self._processes) | reserved
+            try:
+                used.update(os.listdir("/sys/class/net"))
+            except OSError:
+                pass
+            for n in range(0, 1000):
+                name = "%s%d" % (prefix, n)
+                if len(name) > 15:
+                    continue
+                pid_path = self._pid_path(name)
+                if name not in used and not os.path.exists(pid_path):
+                    return name
+        return ""
+
+    def _capture_stderr(self, iface: str, stream) -> None:
+        if not isinstance(stream, (io.TextIOBase, io.BufferedIOBase)):
+            return
+        buf = self._stderr.setdefault(iface, deque(maxlen=_MAX_DIAGNOSTIC_LINES))
+        try:
+            for line in iter(stream.readline, ""):
+                line = (line or "").rstrip()
+                if line:
+                    buf.append(line[-400:])
+        except Exception:
+            pass
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    def _diagnostic(self, iface: str) -> str:
+        lines = list(self._stderr.get(iface) or ())
+        return "\n".join(lines[-8:])
 
     # ─────── lifecycle ───────
 
     def start(self, iface: str, config_path: str, *, sni: str = "",
-              http2: bool = False, low_latency: bool = True) -> dict:
+              http2: bool = False, transport_profile: str = "performance",
+              low_latency: bool = True, apply_optimizer: bool = True) -> dict:
         """Запустить WARP туннель.
 
         Args:
+            transport_profile: performance (H3/QUIC), restricted (H2/TCP)
+                или auto (H3 с fallback на H2 при подтверждённом сбое).
             low_latency: включить безопасный keepalive usque. TCP_NODELAY
                          не является параметром usque CLI, а глобальные
                          buffer sysctl здесь намеренно не меняются.
@@ -177,6 +229,10 @@ class UsqueManager:
 
         if not os.path.isfile(config_path):
             return {"ok": False, "error": "Конфиг не найден: %s" % config_path}
+        if transport_profile not in ("performance", "restricted", "auto"):
+            return {"ok": False, "error": "Неизвестный transport_profile: %s" % transport_profile}
+        if http2:
+            transport_profile = "restricted"
 
         # MR-13: Берем lock вокруг всего start() чтобы избежать race condition
         # когда два конкурентных запроса проходят проверку is_running и спавнят процессы
@@ -184,14 +240,15 @@ class UsqueManager:
             if self._is_running(iface):
                 return {"ok": False, "error": "Туннель %s уже запущен" % iface}
 
-            # Строим команду
+            # Строим команду. H3/QUIC — default usque; --http2 только для
+            # restricted-профиля, чтобы случайно не запускать H2 внутри H2.
             cmd = [binary, "nativetun",
                    "--config", config_path,
                    "--interface-name", iface,
                    "--no-iproute2"]
             if sni:
                 cmd.extend(["-s", sni])
-            if http2:
+            if transport_profile == "restricted":
                 cmd.append("--http2")
             if low_latency:
                 # usque 4.x exposes --keepalive-period; there is no
@@ -205,8 +262,20 @@ class UsqueManager:
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
                     start_new_session=True)
+
+                self._stderr[iface] = deque(maxlen=_MAX_DIAGNOSTIC_LINES)
+                reader = threading.Thread(
+                    target=self._capture_stderr,
+                    args=(iface, proc.stderr),
+                    name="usque-stderr-%s" % iface,
+                    daemon=True,
+                )
+                self._stderr_threads[iface] = reader
+                reader.start()
 
                 # Ждём создания TUN-интерфейса (до 5s)
                 iface_up = False
@@ -218,6 +287,9 @@ class UsqueManager:
                     if proc.poll() is not None:
                         break
 
+                # A TUN may appear just before the process exits (for
+                # example when the binary rejects a newly unsupported flag),
+                # so do one final poll before reporting success.
                 if proc.poll() is not None or not iface_up:
                     rc = proc.poll()
                     try:
@@ -225,10 +297,31 @@ class UsqueManager:
                         proc.wait(timeout=1)
                     except Exception:
                         pass
+                    try:
+                        reader.join(timeout=0.25)
+                    except Exception:
+                        pass
+                    diagnostic = self._diagnostic(iface)
+                    if transport_profile == "auto":
+                        # Auto is deliberately fail-closed: only a confirmed
+                        # H3 process/interface failure triggers one H2 retry.
+                        fallback = self.start(
+                            iface,
+                            config_path,
+                            sni=sni,
+                            transport_profile="restricted",
+                            low_latency=low_latency,
+                            apply_optimizer=apply_optimizer,
+                        )
+                        fallback["fallback_from"] = "performance"
+                        if diagnostic and not fallback.get("diagnostic"):
+                            fallback["diagnostic"] = diagnostic
+                        return fallback
                     return {
                         "ok": False,
                         "error": "usque не создал интерфейс %s (rc=%s)"
                         % (iface, rc),
+                        "diagnostic": diagnostic,
                     }
 
                 # Сохраняем PID
@@ -239,21 +332,30 @@ class UsqueManager:
                     pass
 
                 self._processes[iface] = proc
+                self._config_by_iface[iface] = config_path
+                try:
+                    with open(config_path + ".run", "w") as f:
+                        f.write('IFACE="%s"\nPID="%s"\n' % (iface, proc.pid))
+                    os.chmod(config_path + ".run", 0o600)
+                except OSError:
+                    pass
 
                 # Применяем оптимизации если low_latency
-                if low_latency:
+                if low_latency and apply_optimizer:
                     try:
                         from core.tunnel_optimizer import optimize_iface
-                        optimize_iface(iface, "balanced")
+                        optimize_iface(iface, "balanced", transport_kind="warp")
                     except Exception:
                         pass
 
                 log.info("usque: туннель %s запущен (pid=%d)" % (iface, proc.pid),
                          source="usque")
-                return {"ok": True, "pid": proc.pid, "iface": iface}
+                return {"ok": True, "pid": proc.pid, "iface": iface,
+                        "transport_profile": transport_profile}
 
             except Exception as e:
-                return {"ok": False, "error": str(e)}
+                return {"ok": False, "error": str(e),
+                        "diagnostic": self._diagnostic(iface)}
 
     def stop(self, iface: str) -> dict:
         """Остановить WARP туннель."""
@@ -267,6 +369,7 @@ class UsqueManager:
         proc = None
         with self._lock:
             proc = self._processes.pop(iface, None)
+            config_path = self._config_by_iface.pop(iface, None)
 
         if proc and proc.poll() is None:
             try:
@@ -331,6 +434,15 @@ class UsqueManager:
                 os.remove(pid_path)
         except Exception:
             pass
+        if config_path:
+            try:
+                run_path = config_path + ".run"
+                if os.path.isfile(run_path):
+                    os.remove(run_path)
+            except OSError:
+                pass
+
+        self._stderr_threads.pop(iface, None)
 
         # MR-05: Восстанавливаем системные defaults, если нет других активных туннелей
         try:
@@ -348,9 +460,14 @@ class UsqueManager:
         pid = self._read_pid(self._pid_path(iface))
         return {
             "running": running,
+            "iface_exists": self._iface_exists(iface),
             "iface": iface,
             "pid": pid,
+            "diagnostic": self._diagnostic(iface),
         }
+
+    def _iface_exists(self, iface: str) -> bool:
+        return os.path.exists("/sys/class/net/%s" % iface)
 
     def _is_running(self, iface: str) -> bool:
         """Проверить, работает ли процесс."""
