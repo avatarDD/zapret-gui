@@ -1037,8 +1037,24 @@ class AwgManager:
                 last_err = "timeout: сокет не появился"
 
         if not success:
-            msg = "Не удалось запустить amneziawg-go: %s" % (last_err or "timeout")
             low = last_err.lower()
+            # Ядро с нативной поддержкой AmneziaWG: amneziawg-go сам
+            # отказывается стартовать ("first class support ... not required").
+            # userspace-демон тут в принципе не поднимется — не сваливаем на
+            # пользователя сырой вывод, а объясняем ситуацию и даём варианты.
+            if ("first class support" in low
+                    or ("not required" in low and "amneziawg" in low)):
+                return {"ok": False, "message":
+                        "Ядро роутера поддерживает AmneziaWG нативно "
+                        "(kernel-модуль), поэтому userspace-демон amneziawg-go "
+                        "запускаться отказывается — это не ошибка конфига. "
+                        "GUI сейчас умеет только userspace-режим (amneziawg-go). "
+                        "Варианты: поднимать туннель kernel-инструментами "
+                        "(awg-quick) вне GUI; временно использовать WARP/MASQUE "
+                        "или sing-box; либо поставить сборку amneziawg-go без "
+                        "kernel-проверки. Нативная (kernel-module) поддержка "
+                        "AmneziaWG в GUI — в планах."}
+            msg = "Не удалось запустить amneziawg-go: %s" % (last_err or "timeout")
             if any(m in low for m in self._BROKEN_BIN_MARKERS):
                 msg += "." + self._binary_help_suffix()
             return {"ok": False, "message": msg}
