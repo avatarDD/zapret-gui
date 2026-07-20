@@ -11,7 +11,7 @@ const TunnelOptimizerPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>Оптимизации туннелей</h1>
+                <h1>Оптимизации туннелей${typeof Help !== 'undefined' ? Help.button('tunnel-optimizer') : ''}</h1>
                 <span class="page-subtitle">MTU/PMTU, безопасные TCP/QUIC buffers, BBR и полный restore</span>
             </div>
 

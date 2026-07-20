@@ -21,7 +21,7 @@ const TgProxyPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>Telegram Tunnel</h1>
+                <h1>Telegram Tunnel${typeof Help !== 'undefined' ? Help.button('tgproxy') : ''}</h1>
                 <span class="page-subtitle">tg-ws-proxy-go (основной) / tg-mtproxy-client (резерв)</span>
             </div>
 

@@ -14,7 +14,7 @@ const WarpInWarpPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>WARP-in-WARP (MASQUE)</h1>
+                <h1>WARP-in-WARP (MASQUE)${typeof Help !== 'undefined' ? Help.button('warp-in-warp') : ''}</h1>
                 <span class="page-subtitle">Двойной туннель для максимального обхода DPI</span>
             </div>
 

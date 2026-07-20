@@ -15,7 +15,7 @@ const BlockDetectorPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>Block Detector</h1>
+                <h1>Block Detector${typeof Help !== 'undefined' ? Help.button('block-detector') : ''}</h1>
                 <span class="page-subtitle">DNS-мониторинг + автообнаружение блокировок</span>
             </div>
 

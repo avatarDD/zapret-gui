@@ -11,7 +11,7 @@ const DnsRoutingPage = (() => {
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>Per-domain DNS</h1>
+                <h1>Per-domain DNS${typeof Help !== 'undefined' ? Help.button('dns-routing') : ''}</h1>
                 <span class="page-subtitle">Кастомный DNS для конкретных хостов</span>
             </div>
 
