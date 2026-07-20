@@ -197,12 +197,21 @@ class AwgManager:
 
     def _config_dir(self):
         d = self._platform().config_dir
-        os.makedirs(d, exist_ok=True)
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            # Read-only status/GET operations must still be able to report
+            # "config not found" instead of turning into HTTP 500. Writes
+            # will fail explicitly at their own boundary.
+            pass
         return d
 
     def _run_dir(self):
         d = self._platform().run_dir
-        os.makedirs(d, exist_ok=True)
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
         return d
 
     def _scan_dirs(self) -> list:
