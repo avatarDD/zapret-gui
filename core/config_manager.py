@@ -56,7 +56,12 @@ DEFAULT_CONFIG = {
         "host": "127.0.0.1",
         "port": 8080,
         "debug": False,
-        "auth_enabled": True,
+        # Аутентификация выключена по умолчанию (совместимо с прежним UX
+        # zapret-gui). Дефолтный bind — 127.0.0.1, поэтому без явной
+        # публикации на LAN доступ и так только с самого роутера. Для
+        # доступа по сети рекомендуется включить auth_enabled + задать
+        # непустой auth_password.
+        "auth_enabled": False,
         "auth_user": "admin",
         "auth_password": "admin",
         # Доверенные cross-origin источники для CORS (по умолчанию пусто —
