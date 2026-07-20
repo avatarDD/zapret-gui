@@ -54,7 +54,9 @@ from core.log_buffer import log
 MTU_PROFILES = {
     "low_latency": 1280,
     "balanced": 1420,
-    "throughput": 1500,
+    # 1500 is not safe for a generic tunnel and can black-hole packets.
+    # Use measured PMTU before selecting a larger value.
+    "throughput": 1420,
 }
 
 # Консервативная оценка overhead протокола внешнего туннеля — сколько
@@ -161,7 +163,7 @@ def restore_system_defaults(only_if_idle: bool = False) -> dict:
 # ─────────────────────────── Interface Tuning ───────────────────────────
 
 def optimize_iface(iface: str, profile: str = "balanced",
-                   mtu_override: int = None) -> dict:
+                   mtu_override: int = None, apply_global: bool = True) -> dict:
     """
     Применить оптимизации к интерфейсу.
 
@@ -176,6 +178,8 @@ def optimize_iface(iface: str, profile: str = "balanced",
     """
     if not iface:
         return {"ok": False, "error": "Не указан интерфейс"}
+    if profile not in MTU_PROFILES:
+        return {"ok": False, "error": "Неизвестный профиль: %s" % profile}
 
     # Валидация имени интерфейса против path-traversal
     if not re.match(r"^[a-zA-Z0-9_-]{1,15}$", iface):
@@ -193,11 +197,12 @@ def optimize_iface(iface: str, profile: str = "balanced",
         errors.append("mtu: %s" % r.get("error", ""))
     mtu = r.get("mtu")
 
-    r = _optimize_congestion()
-    if r.get("ok"):
-        applied.append("bbr")
-    else:
-        errors.append("bbr: %s" % r.get("error", ""))
+    if apply_global:
+        r = _optimize_congestion()
+        if r.get("ok"):
+            applied.append("bbr")
+        else:
+            errors.append("bbr: %s" % r.get("error", ""))
 
     r = _apply_mss_clamp(iface)
     if r.get("ok"):
@@ -210,7 +215,10 @@ def optimize_iface(iface: str, profile: str = "balanced",
              (" | ошибки: %s" % "; ".join(errors)) if errors else ""),
              source="optimizer")
 
-    return {"ok": True, "mtu": mtu, "applied": applied, "errors": errors}
+    # A missing optional capability (BBR or firewall MSS clamp) should not
+    # turn a successful MTU operation into a hard failure. Callers still get
+    # the per-step errors and can present them in the UI.
+    return {"ok": bool(applied), "mtu": mtu, "applied": applied, "errors": errors}
 
 
 def optimize_nested_tunnel(outer_iface: str, outer_kind: str,
@@ -219,26 +227,37 @@ def optimize_nested_tunnel(outer_iface: str, outer_kind: str,
     """Оптимизация для вложенных туннелей (WARP-in-WARP и подобных):
     MTU внутреннего = MTU внешнего минус overhead протокола внешнего.
     outer_kind/inner_kind — "awg" | "warp" | "singbox" | "mihomo"."""
-    outer_result = optimize_iface(outer_iface, profile)
+    outer_result = optimize_iface(outer_iface, profile, apply_global=True)
     outer_mtu = outer_result.get("mtu") or MTU_PROFILES.get(profile, 1420)
 
     overhead = TUNNEL_OVERHEAD_BYTES.get(outer_kind, _DEFAULT_OVERHEAD)
     inner_mtu = outer_mtu - overhead
 
-    if inner_mtu < 576:
-        # 576 — минимальный гарантированный MTU для IPv4 (RFC 791).
+    if inner_mtu < 1280:
+        # IP proxying must retain IPv6's 1280-byte minimum. A smaller value
+        # is not a valid nested-tunnel recommendation; report it instead of
+        # silently forcing 576 and breaking IPv6.
         log.warning(
             "tunnel_optimizer: расчётный MTU внутреннего интерфейса "
             "%s слишком мал (%d) — outer_mtu=%d, overhead(%s)=%d. "
             "Проверьте профиль или overhead вручную."
             % (inner_iface, inner_mtu, outer_mtu, outer_kind, overhead),
             source="optimizer")
-        inner_mtu = 576
+        return {
+            "ok": False,
+            "error": "outer MTU %d недостаточен для %s-in-%s (нужно >=1280)"
+                     % (outer_mtu, inner_kind, outer_kind),
+            "outer": {"iface": outer_iface, "mtu": outer_mtu,
+                      "applied": outer_result.get("applied", [])},
+            "inner": {"iface": inner_iface, "mtu": None, "applied": []},
+            "overhead_used": overhead,
+        }
 
-    inner_result = optimize_iface(inner_iface, profile, mtu_override=inner_mtu)
+    inner_result = optimize_iface(inner_iface, profile, mtu_override=inner_mtu,
+                                  apply_global=False)
 
     return {
-        "ok": True,
+        "ok": bool(outer_result.get("ok") and inner_result.get("ok")),
         "outer": {"iface": outer_iface, "mtu": outer_mtu,
                   "applied": outer_result.get("applied", [])},
         "inner": {"iface": inner_iface, "mtu": inner_mtu,
@@ -356,24 +375,35 @@ def _apply_mss_clamp(iface: str) -> dict:
     """iptables/nft TCPMSS --clamp-mss-to-pmtu — устойчивый способ избежать фрагментации."""
     comment = "tunnel_optimizer:%s" % iface
     has_nft = _which("nft")
+    has_iptables = _which("iptables")
+
+    if not has_nft and not has_iptables:
+        return {"ok": True, "note": "nft/iptables не установлены; пропуск"}
 
     try:
         if has_nft:
             check = subprocess.run(
                 ["nft", "list", "chain", "inet", "filter", "FORWARD"],
                 capture_output=True, text=True, timeout=5)
-            if comment in (check.stdout or ""):
-                return {"ok": True, "note": "уже применено (nft)"}
-            r = subprocess.run(
-                ["nft", "add", "rule", "inet", "filter", "FORWARD",
-                 "oifname", iface, "tcp", "flags", "syn", "tcp", "option",
-                 "maxseg", "size", "set", "rt", "mtu",
-                 "comment", '"%s"' % comment],
-                capture_output=True, text=True, timeout=5)
-            if r.returncode != 0:
-                return {"ok": False, "error": (r.stderr or "").strip()}
-            return {"ok": True}
-        else:
+            if check.returncode != 0:
+                # This project must not assume that a distribution has an
+                # inet/filter/FORWARD chain. Fall back to iptables or skip.
+                has_nft = False
+                if not has_iptables:
+                    return {"ok": True, "note": "nft FORWARD chain отсутствует; пропуск"}
+            else:
+                if comment in (check.stdout or ""):
+                    return {"ok": True, "note": "уже применено (nft)"}
+                r = subprocess.run(
+                    ["nft", "add", "rule", "inet", "filter", "FORWARD",
+                     "oifname", iface, "tcp", "flags", "syn", "tcp", "option",
+                     "maxseg", "size", "set", "rt", "mtu",
+                     "comment", '"%s"' % comment],
+                    capture_output=True, text=True, timeout=5)
+                if r.returncode != 0:
+                    return {"ok": False, "error": (r.stderr or "").strip()}
+                return {"ok": True}
+        if has_iptables:
             check = subprocess.run(
                 ["iptables", "-t", "mangle", "-C", "FORWARD",
                  "-o", iface, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
@@ -391,6 +421,7 @@ def _apply_mss_clamp(iface: str) -> dict:
             if r.returncode != 0:
                 return {"ok": False, "error": (r.stderr or "").strip()}
             return {"ok": True}
+        return {"ok": True, "note": "MSS clamp недоступен; пропуск"}
     except (OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "error": str(e)}
 
@@ -406,25 +437,43 @@ def _which(binname: str) -> bool:
 # ─────────────────────────── Глобальный TCP-tuning ───────────────────
 
 def ensure_global_tcp_tuning(profile: str = "balanced") -> dict:
-    """TCP-буферы, Fast Open, keepalive — все глобальные настройки."""
+    """Безопасно поднять глобальные TCP buffers.
+
+    Existing values are never lowered: small global maxima harm unrelated
+    traffic and can cap throughput below the tunnel's BDP. Keepalive remains
+    an application-level choice and is intentionally not changed here.
+    """
     applied = []
     errors = []
 
     buf = {
-        "low_latency": (65536, 65536),
-        "balanced": (131072, 131072),
-        "throughput": (262144, 262144),
-    }.get(profile, (131072, 131072))
+        "low_latency": (262144, 262144),
+        "balanced": (1048576, 1048576),
+        "throughput": (4194304, 4194304),
+    }.get(profile, (1048576, 1048576))
     rmem_max, wmem_max = buf
 
     for path, value in [
         ("/proc/sys/net/core/rmem_max", str(rmem_max)),
         ("/proc/sys/net/core/wmem_max", str(wmem_max)),
-        # tcp_rmem/tcp_wmem — тройка "min default max"
-        ("/proc/sys/net/ipv4/tcp_rmem", "4096 %d %d" % (rmem_max // 2, rmem_max)),
-        ("/proc/sys/net/ipv4/tcp_wmem", "4096 %d %d" % (wmem_max // 2, wmem_max)),
     ]:
-        if _write_sysctl(path, value):
+        if _ensure_sysctl_min(path, int(value)):
+            applied.append(os.path.basename(path))
+        else:
+            errors.append(os.path.basename(path))
+
+    for path, minimum in [
+        ("/proc/sys/net/ipv4/tcp_rmem", rmem_max),
+        ("/proc/sys/net/ipv4/tcp_wmem", wmem_max),
+    ]:
+        current = _read_sysctl(path)
+        try:
+            current_max = int(current.split()[-1]) if current else 0
+        except (ValueError, AttributeError):
+            current_max = 0
+        if current_max >= minimum:
+            applied.append(os.path.basename(path))
+        elif _write_sysctl(path, "4096 %d %d" % (minimum // 2, minimum)):
             applied.append(os.path.basename(path))
         else:
             errors.append(os.path.basename(path))
@@ -434,17 +483,6 @@ def ensure_global_tcp_tuning(profile: str = "balanced") -> dict:
         applied.append("tcp_fastopen")
     else:
         errors.append("tcp_fastopen")
-
-    # Keepalive
-    for path, value in [
-        ("/proc/sys/net/ipv4/tcp_keepalive_time", "10"),
-        ("/proc/sys/net/ipv4/tcp_keepalive_intvl", "5"),
-        ("/proc/sys/net/ipv4/tcp_keepalive_probes", "3"),
-    ]:
-        if _write_sysctl(path, value):
-            applied.append(os.path.basename(path))
-        else:
-            errors.append(os.path.basename(path))
 
     log.info("tunnel_optimizer: глобальный TCP-tuning — применено: %s"
              % ", ".join(applied), source="optimizer")
@@ -469,6 +507,17 @@ def _write_sysctl(path: str, value: str) -> bool:
     return _backup_and_set(path, value)
 
 
+def _ensure_sysctl_min(path: str, minimum: int) -> bool:
+    """Raise a numeric sysctl only when it is below minimum."""
+    current = _read_sysctl(path)
+    try:
+        if current is not None and int(current) >= minimum:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return _write_sysctl(path, str(minimum))
+
+
 # ─────────────────────────── Batch / Status ───────────────────────
 
 def optimize_all_tunnels(profile: str = "balanced") -> dict:
@@ -477,15 +526,17 @@ def optimize_all_tunnels(profile: str = "balanced") -> dict:
     monitor = get_tunnel_monitor()
     interfaces = monitor.discover_interfaces()
 
-    ensure_global_tcp_tuning(profile)
+    global_result = ensure_global_tcp_tuning(profile)
 
     results = {}
     for iface in interfaces:
         if iface.startswith("__"):
             continue
-        results[iface] = optimize_iface(iface, profile)
+        results[iface] = optimize_iface(iface, profile, apply_global=False)
 
-    return {"ok": True, "results": results}
+    return {"ok": bool(global_result.get("ok") and all(
+        r.get("ok") for r in results.values())),
+            "global": global_result, "results": results}
 
 
 def get_optimization_status() -> dict:

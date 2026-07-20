@@ -64,9 +64,9 @@ const WarpInWarpPage = (() => {
                             <div>Интернет</div>
                         </div>
                         <div class="text-muted" style="font-size:11px; margin-top:8px;">
-                            <strong>MASQUE+MASQUE:</strong> оба TCP:443 (разные регионы/SNI)<br>
-                            <strong>MASQUE+AWG:</strong> внешний TCP:443, внутренний UDP<br>
-                            <strong>AWG+MASQUE:</strong> внешний UDP, внутренний TCP:443
+                            <strong>MASQUE+MASQUE:</strong> оба WARP-слоя (H3/QUIC по умолчанию)<br>
+                            <strong>MASQUE+AWG:</strong> внешний MASQUE, внутренний UDP<br>
+                            <strong>AWG+MASQUE:</strong> внешний UDP, внутренний MASQUE
                         </div>
                     </div>
                 </div>
@@ -210,15 +210,15 @@ const WarpInWarpPage = (() => {
                         <label>Режим</label>
                         <select id="wiw-mode" class="form-control">
                             <option value="masque_masque" ${canMasqueMasque ? "" : "disabled"}
-                                title="Рекомендуется: оба туннеля MASQUE (TCP:443) — лучшая маскировка от DPI. Внешний через CF-домен, внутренний через WARP. SNI выбираются разные.">
+                                title="Двойной MASQUE. По умолчанию usque использует H3/QUIC; H2/TCP можно включить в профиле usque.">
                                 MASQUE + MASQUE (двойной usque)
                             </option>
                             <option value="masque_awg" ${canMasqueAwg ? "" : "disabled"}
-                                title="Внешний MASQUE (TCP:443) маскирует трафик, внутренний AmneziaWG (UDP) обеспечивает шифрование WireGuard. Хорош если нужен WG поверх маскировки.">
+                                title="Внешний MASQUE маскирует трафик, внутренний AmneziaWG обеспечивает шифрование WireGuard.">
                                 MASQUE + AWG (usque → AmneziaWG)
                             </option>
                             <option value="awg_masque" ${canMasqueAwg ? "" : "disabled"}
-                                title="Внешний AmneziaWG (UDP) + внутренний MASQUE (TCP:443). Используйте если WARP-in-WARP стандартной конфигурации блокируется провайдером.">
+                                title="Внешний AmneziaWG (UDP) + внутренний MASQUE. Используйте только если это действительно нужно: второй слой повышает latency.">
                                 AWG + MASQUE (AmneziaWG → usque)
                             </option>
                             <option value="awg_awg" disabled
@@ -228,17 +228,16 @@ const WarpInWarpPage = (() => {
                         </select>
                         <div class="text-muted" style="font-size:11px; margin-top:4px;">
                             <span class="mode-hint" data-mode="masque_masque" style="display:none;">
-                                ✅ <strong>MASQUE+MASQUE:</strong> Оба туннеля используют TCP:443.
-                                Внешний маскируется под обычный HTTPS к Cloudflare. Внутренний —
-                                второй слой WARP. Рекомендуется для максимальной скрытности.
+                                ✅ <strong>MASQUE+MASQUE:</strong> по умолчанию H3/QUIC; режим H2/TCP:443
+                                задаётся в конфиге usque. Второй слой не гарантирует невидимость для DPI.
                             </span>
                             <span class="mode-hint" data-mode="masque_awg" style="display:none;">
-                                🔒 <strong>MASQUE+AWG:</strong> Внешний MASQUE (TCP:443) + внутренний
+                                🔒 <strong>MASQUE+AWG:</strong> Внешний MASQUE + внутренний
                                 AmneziaWG (UDP). Даёт сочетание маскировки трафика и WG-шифрования.
                             </span>
                             <span class="mode-hint" data-mode="awg_masque" style="display:none;">
                                 🔄 <strong>AWG+MASQUE:</strong> Внешний AmneziaWG (UDP) + внутренний
-                                MASQUE (TCP:443). Альтернатива если MASQUE блокируется на уровне протокола.
+                                MASQUE. Альтернатива при проблемах с внешним MASQUE.
                             </span>
                             <span class="mode-hint" data-mode="awg_awg" style="display:none;">
                                 ℹ️ <strong>AWG+AWG:</strong> Двойной AmneziaWG. Доступен на странице
@@ -250,7 +249,7 @@ const WarpInWarpPage = (() => {
                         <label>Outer SNI (маскировка)</label>
                         <!-- MR-109: убран хардкод ozon.ru -->
                         <input type="text" id="wiw-outer-sni" class="form-control"
-                               placeholder="например: ozon.ru" value="">
+                               placeholder="например: zt-masque.cloudflareclient.com" value="">
                     </div>
                     <div class="form-group" id="wiw-inner-sni-group">
                         <label>Inner SNI (MASQUE+MASQUE)</label>
@@ -258,17 +257,31 @@ const WarpInWarpPage = (() => {
                         <input type="text" id="wiw-inner-sni" class="form-control"
                                placeholder="например: www.google.com" value="">
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="wiw-outer-config-group">
                         <label>Outer конфиг (usque)</label>
                         <select id="wiw-outer-config" class="form-control">
                             <option value="">— загрузка...</option>
                         </select>
                     </div>
                     <div class="form-group" id="wiw-inner-config-group">
-                        <label>Inner конфиг (usque/AWG)</label>
+                        <label>Inner конфиг (usque)</label>
                         <select id="wiw-inner-config" class="form-control">
                             <option value="">— загрузка...</option>
                         </select>
+                    </div>
+                    <div class="form-group" id="wiw-awg-config-group" style="display:none;">
+                        <label>AWG конфиг</label>
+                        <select id="wiw-awg-config" class="form-control">
+                            <option value="">— загрузка...</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="wiw-endpoint-group">
+                        <label>Endpoint inner-сессии (для маршрутизации)</label>
+                        <input type="text" id="wiw-inner-endpoint" class="form-control"
+                               placeholder="IP или hostname MASQUE endpoint">
+                        <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                            Для MASQUE+MASQUE нужен адрес endpoint, чтобы handshake inner прошёл через outer.
+                        </div>
                     </div>
                 </div>
             `;
@@ -288,19 +301,25 @@ const WarpInWarpPage = (() => {
 
     async function _loadConfigLists() {
         try {
-            // Usque configs
-            const usqueData = await API.get("/api/usque/configs");
+            // Usque and AWG configs are different namespaces. Do not pass a
+            // usque path as an AWG config name.
+            const [usqueData, awgData] = await Promise.all([
+                API.get("/api/usque/configs"),
+                API.get("/api/awg/configs").catch(() => ({ configs: [] })),
+            ]);
             const usqueConfigs = (usqueData.configs || []).map(c =>
                 `<option value="${esc(c.path)}">${esc(c.name)}</option>`
+            ).join("");
+            const awgConfigs = (awgData.configs || []).map(c =>
+                `<option value="${esc(c.name)}">${esc(c.name)}</option>`
             ).join("");
 
             const outerSel = document.getElementById("wiw-outer-config");
             const innerSel = document.getElementById("wiw-inner-config");
             if (outerSel) outerSel.innerHTML = `<option value="">— выберите outer —</option>${usqueConfigs}`;
             if (innerSel) innerSel.innerHTML = `<option value="">— выберите inner —</option>${usqueConfigs}`;
-
-            // Если режим masque_awg — показываем AWG конфиги для inner
-            // Пока оставляем usque конфиги, AWG добавим позже
+            const awgSel = document.getElementById("wiw-awg-config");
+            if (awgSel) awgSel.innerHTML = `<option value="">— выберите AWG —</option>${awgConfigs}`;
         } catch (e) {
             // Тихо
         }
@@ -310,6 +329,10 @@ const WarpInWarpPage = (() => {
         const mode = document.getElementById("wiw-mode")?.value;
         const innerSniGroup = document.getElementById("wiw-inner-sni-group");
         const outerSniGroup = document.getElementById("wiw-outer-sni")?.parentElement;
+        const innerConfigGroup = document.getElementById("wiw-inner-config-group");
+        const awgConfigGroup = document.getElementById("wiw-awg-config-group");
+        const outerConfigGroup = document.getElementById("wiw-outer-config-group");
+        const endpointGroup = document.getElementById("wiw-endpoint-group");
         // Inner SNI показываем только для masque_masque и awg_masque
         if (innerSniGroup) {
             innerSniGroup.style.display = (mode === "masque_masque" || mode === "awg_masque") ? "" : "none";
@@ -318,6 +341,14 @@ const WarpInWarpPage = (() => {
         if (outerSniGroup) {
             outerSniGroup.style.display = (mode === "masque_masque" || mode === "masque_awg") ? "" : "none";
         }
+        if (innerConfigGroup) {
+            innerConfigGroup.style.display = (mode === "masque_masque" || mode === "awg_masque") ? "" : "none";
+        }
+        if (outerConfigGroup) outerConfigGroup.style.display = mode === "awg_masque" ? "none" : "";
+        if (awgConfigGroup) {
+            awgConfigGroup.style.display = (mode === "masque_awg" || mode === "awg_masque") ? "" : "none";
+        }
+        if (endpointGroup) endpointGroup.style.display = mode === "masque_masque" ? "" : "none";
         // MR-130: показываем подсказку для выбранного режима
         document.querySelectorAll(".mode-hint").forEach(el => {
             el.style.display = el.dataset.mode === mode ? "" : "none";
@@ -330,13 +361,23 @@ const WarpInWarpPage = (() => {
         const innerSni = document.getElementById("wiw-inner-sni")?.value || "";
         const outerConfig = document.getElementById("wiw-outer-config")?.value || "";
         const innerConfig = document.getElementById("wiw-inner-config")?.value || "";
+        const awgConfig = document.getElementById("wiw-awg-config")?.value || "";
+        const innerEndpointHost = document.getElementById("wiw-inner-endpoint")?.value.trim() || "";
 
-        if (!outerConfig) {
+        if (mode !== "awg_masque" && !outerConfig) {
             Toast.error("Выберите outer конфиг");
             return;
         }
         if ((mode === "masque_masque" || mode === "awg_masque") && !innerConfig) {
             Toast.error("Выберите inner конфиг");
+            return;
+        }
+        if ((mode === "masque_awg" || mode === "awg_masque") && !awgConfig) {
+            Toast.error("Выберите AWG конфиг");
+            return;
+        }
+        if (mode === "masque_masque" && !innerEndpointHost) {
+            Toast.error("Укажите endpoint inner-сессии для безопасной маршрутизации");
             return;
         }
 
@@ -345,7 +386,8 @@ const WarpInWarpPage = (() => {
             const res = await API.post("/api/warp-in-warp/up", {
                 mode, outer_sni: outerSni, inner_sni: innerSni,
                 outer_config: outerConfig, inner_config: innerConfig,
-                awg_conf: mode === "awg_masque" ? outerConfig : "",
+                awg_conf: awgConfig,
+                inner_endpoint_host: innerEndpointHost,
             });
             if (res.ok) {
                 Toast.success("WARP-in-WARP запущен (" + res.mode + ")");

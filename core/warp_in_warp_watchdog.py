@@ -61,7 +61,11 @@ def _probe_through_wiw(
                     (inner_iface + "\0").encode(),
                 )
             except (OSError, AttributeError):
-                pass
+                # A probe through the default route is not a valid health
+                # signal for WARP-in-WARP. Fail closed instead of reporting
+                # a false healthy tunnel.
+                s.close()
+                return False
         s.connect((host, int(port)))
         s.close()
         return True
@@ -139,8 +143,18 @@ class WarpInWarpWatchdog:
         mgr = get_warp_in_warp_manager()
 
         status = mgr.get_status()
-        if not status.get("active"):
+        if not status.get("mode"):
             self._fail_count = 0
+            return
+
+        # If either layer died, restart immediately after the normal
+        # consecutive-failure policy instead of returning forever. The
+        # previous code treated inactive as "nothing to do" and never
+        # recovered a crashed layer.
+        if not status.get("active"):
+            self._fail_count += 1
+            if self._fail_count >= _DEFAULT_CONSECUTIVE_FAILURES:
+                self._do_restart(mgr)
             return
 
         inner_iface = status.get("inner_iface", "")

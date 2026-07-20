@@ -156,8 +156,9 @@ const TgProxyPage = (() => {
             // (он матчит именно IP датацентра) в этом случае просто ни
             // на что не влияет, поэтому сочетать их бессмысленно.
             const hasCf = !!(cfg.cf_domain || cfg.cf_worker_domain);
-            const currentMode = hasCf ? "cfdomain"
-                              : (cfg.route_via_tunnel ? "tunnel" : "direct");
+            const currentMode = (cfg.mode === "direct" || cfg.mode === "tunnel" || cfg.mode === "cfdomain")
+                ? cfg.mode
+                : (hasCf ? "cfdomain" : (cfg.route_via_tunnel ? "tunnel" : "direct"));
 
             const tunnelOptions = tunnels.length
                 ? tunnels.map(t => `<option value="${esc(t.kind)}::${esc(t.iface)}"
@@ -346,6 +347,7 @@ const TgProxyPage = (() => {
                 port, fake_tls_domain: fakeTls,
                 cf_domain: cfDomain, cf_worker_domain: cfWorker,
                 dc_ip_default: dcIp,
+                mode,
             });
             if (!res.ok) {
                 Toast.error(res.error || "Ошибка сохранения");

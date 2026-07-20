@@ -54,10 +54,9 @@ def _lan_ip_fallback() -> str:
     удалось, отдаём loopback и пользователь должен явно выбрать адрес.
     """
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("10.255.255.255", 1))
-        ip = s.getsockname()[0]
-        s.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            ip = s.getsockname()[0]
         if ip and not ip.startswith("127."):
             return ip
     except OSError:
@@ -123,6 +122,9 @@ def register(app):
         cf_domain = (data.get("cf_domain") or "").strip()
         cf_worker_domain = (data.get("cf_worker_domain") or "").strip()
         fake_tls_domain = (data.get("fake_tls_domain") or "").strip()
+        mode = (data.get("mode") or "direct").strip()
+        if mode not in ("direct", "cfdomain", "tunnel"):
+            return {"ok": False, "error": "Неизвестный режим: %s" % mode}
 
         for label, val in (("cf_domain", cf_domain),
                            ("cf_worker_domain", cf_worker_domain),
@@ -138,10 +140,13 @@ def register(app):
         if not (1 <= port <= 65535):
             return {"ok": False, "error": "port вне диапазона 1-65535"}
 
+        host = (data.get("host") or "").strip() or _lan_ip_fallback()
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in host):
+            return {"ok": False, "error": "Недопустимый host"}
         return mgr.save_config(
-            host=(data.get("host") or "").strip() or _lan_ip_fallback(),
+            host=host,
             port=port,
-            dc_ip_default=data.get("dc_ip_default", ""),
+            dc_ip_default=data.get("dc_ip_default", "149.154.167.220"),
             dc_ip_default_pool=data.get("dc_ip_default_pool", ""),
             fake_tls_domain=fake_tls_domain,
             cf_domain=cf_domain,
@@ -151,6 +156,7 @@ def register(app):
             extra_args=data.get("extra_args", ""),
             secret=data.get("secret", ""),
             log_level=str(data.get("log_level", "0")),
+            mode=mode,
         )
 
     @app.route("/api/tgproxy/tgwsproxy/up", method="POST")

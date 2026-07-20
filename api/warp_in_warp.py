@@ -28,16 +28,20 @@ def register(app):
 
     @app.route("/api/warp-in-warp/up", method="POST")
     def wiw_up():
-        from core.warp_in_warp import get_warp_in_warp_manager
-        data = request.json or {}
-        return get_warp_in_warp_manager().start(
-            mode=data.get("mode", "masque_masque"),
-            outer_sni=data.get("outer_sni", ""),
-            inner_sni=data.get("inner_sni", ""),
-            outer_config=data.get("outer_config", ""),
-            inner_config=data.get("inner_config", ""),
-            awg_conf=data.get("awg_conf", ""),
-        )
+        try:
+            from core.warp_in_warp import get_warp_in_warp_manager
+            data = request.json or {}
+            return get_warp_in_warp_manager().start(
+                mode=data.get("mode", "masque_masque"),
+                outer_sni=data.get("outer_sni", ""),
+                inner_sni=data.get("inner_sni", ""),
+                outer_config=data.get("outer_config", ""),
+                inner_config=data.get("inner_config", ""),
+                awg_conf=data.get("awg_conf", ""),
+                inner_endpoint_host=data.get("inner_endpoint_host", ""),
+            )
+        except Exception as e:
+            return {"ok": False, "error": "Ошибка запуска WARP-in-WARP: %s" % e}
 
     @app.route("/api/warp-in-warp/down", method="POST")
     def wiw_down():

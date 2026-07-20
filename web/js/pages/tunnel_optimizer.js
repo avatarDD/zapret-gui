@@ -1,7 +1,7 @@
 /**
  * tunnel_optimizer.js — Оптимизации латентности туннелей.
  *
- * MTU, TCP buffers, BBR, Fast Open, Nagle, keepalive.
+ * MTU, safe TCP buffer floors and optional BBR.
  * Три профиля: low_latency, balanced, throughput.
  */
 
@@ -12,7 +12,7 @@ const TunnelOptimizerPage = (() => {
         container.innerHTML = `
             <div class="page-header">
                 <h1>Оптимизации туннелей</h1>
-                <span class="page-subtitle">MTU, TCP buffers, BBR, Fast Open, Nagle</span>
+                <span class="page-subtitle">MTU, безопасные TCP buffers, BBR</span>
             </div>
 
             <div class="card-grid">
@@ -48,12 +48,12 @@ const TunnelOptimizerPage = (() => {
                                 <th>throughput</th>
                             </tr></thead>
                             <tbody>
-                                <tr><td>MTU</td><td>1280</td><td>1420</td><td>1500</td></tr>
-                                <tr><td>TCP buffers</td><td>64 KB</td><td>128 KB</td><td>256 KB</td></tr>
+                                <tr><td>MTU</td><td>1280</td><td>1420</td><td>1420</td></tr>
+                                <tr><td>TCP buffers</td><td>не уменьшаются</td><td>минимум 1 MB</td><td>минимум 4 MB</td></tr>
                                 <tr><td>BBR</td><td colspan="3">✅ Включён (все профили)</td></tr>
-                                <tr><td>TCP Fast Open</td><td colspan="3">✅ Включён (все профили)</td></tr>
-                                <tr><td>TCP_NODELAY</td><td colspan="3">✅ Включён (все профили)</td></tr>
-                                <tr><td>Keepalive</td><td colspan="3">10s (все профили)</td></tr>
+                                <tr><td>TCP Fast Open</td><td colspan="3">⚠️ только если поддержан приложением</td></tr>
+                                <tr><td>TCP_NODELAY</td><td colspan="3">⚠️ задаётся приложением</td></tr>
+                                <tr><td>Keepalive</td><td colspan="3">не меняется глобально</td></tr>
                                 <tr><td>Лучше для</td><td>Gaming, VoIP</td><td>Общий случай</td><td>Загрузки</td></tr>
                             </tbody>
                         </table>
@@ -74,7 +74,7 @@ const TunnelOptimizerPage = (() => {
     async function _loadStatus() {
         try {
             const data = await API.get("/api/optimizer/status");
-            _status = data.status || {};
+            _status = data.status || data || {};
             const el = document.getElementById("opt-status");
             if (!el) return;
 
@@ -82,7 +82,6 @@ const TunnelOptimizerPage = (() => {
             const fields = {
                 "tcp_congestion_control": "Congestion control",
                 "tcp_fastopen": "TCP Fast Open",
-                "tcp_nodelay": "TCP_NODELAY",
                 "tcp_keepalive_time": "Keepalive time (s)",
                 "available_cc": "Доступные CC",
             };
@@ -106,8 +105,7 @@ const TunnelOptimizerPage = (() => {
     function _isGoodValue(key, val) {
         if (key === "tcp_congestion_control") return val.includes("bbr");
         if (key === "tcp_fastopen") return val === "3" || val === "1" || val === "2";
-        if (key === "tcp_nodelay") return val === "1";
-        if (key === "tcp_keepalive_time") return parseInt(val) <= 30;
+        if (key === "tcp_keepalive_time") return parseInt(val) >= 30;
         return true;
     }
 
@@ -135,7 +133,7 @@ const TunnelOptimizerPage = (() => {
             applyEl.innerHTML = `
                 <div class="text-muted" style="font-size:12px;">
                     Или применить к конкретному интерфейсу через API:<br>
-                    <code>POST /api/optimizer/apply/opkgtun0 {"profile":"low_latency"}</code>
+                    <code>POST /api/optimizer/optimize {"iface":"opkgtun0","profile":"low_latency"}</code>
                 </div>
             `;
         }

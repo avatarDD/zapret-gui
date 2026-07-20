@@ -8,7 +8,8 @@ Usque тянется как бинарник из side-effect-tm/usque-keenetic 
 
 Лайфцикл:
   1. Регистрация сессии: usque register --accept-tos --config <path>
-  2. Запуск туннеля: usque nativetun --config <session> --interface-name <iface> --no-iproute2
+    2. Запуск туннеля: usque nativetun --config <session> --interface-name <iface> --no-iproute2
+       (по желанию --http2 для H2/TCP и --keepalive-period 10s)
   3. TUN-интерфейс создаётся через ndmc (Keenetic CLI) или ip (Linux)
 """
 
@@ -29,7 +30,10 @@ class UsqueManager:
     """Singleton-менеджер WARP/MASQUE туннелей."""
 
     def __init__(self):
-        self._lock = threading.Lock()
+        # start() calls _is_running() while holding the lifecycle lock.
+        # A re-entrant lock avoids the deterministic self-deadlock that
+        # occurred with threading.Lock().
+        self._lock = threading.RLock()
         self._processes = {}  # iface -> subprocess.Popen
         self._pid_dir = "/opt/var/run"
 
@@ -160,8 +164,9 @@ class UsqueManager:
         """Запустить WARP туннель.
 
         Args:
-            low_latency: включить оптимизации TCP для снижения latency
-                         (TCP_NODELAY, reduced buffer sizes, keepalive).
+            low_latency: включить безопасный keepalive usque. TCP_NODELAY
+                         не является параметром usque CLI, а глобальные
+                         buffer sysctl здесь намеренно не меняются.
         """
         if not _VALID_IFACE_RE.match(iface):
             return {"ok": False, "error": "Неверное имя интерфейса: %s" % iface}
@@ -189,7 +194,9 @@ class UsqueManager:
             if http2:
                 cmd.append("--http2")
             if low_latency:
-                cmd.extend(["--tcp-nodelay", "--keepalive", "10"])
+                # usque 4.x exposes --keepalive-period; there is no
+                # --tcp-nodelay or --keepalive CLI flag.
+                cmd.extend(["--keepalive-period", "10s"])
 
             pid_path = self._pid_path(iface)
             os.makedirs(os.path.dirname(pid_path), exist_ok=True)
@@ -202,10 +209,27 @@ class UsqueManager:
                     start_new_session=True)
 
                 # Ждём создания TUN-интерфейса (до 5s)
+                iface_up = False
                 for _ in range(50):
                     time.sleep(0.1)
                     if self._check_iface_up(iface):
+                        iface_up = True
                         break
+                    if proc.poll() is not None:
+                        break
+
+                if proc.poll() is not None or not iface_up:
+                    rc = proc.poll()
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1)
+                    except Exception:
+                        pass
+                    return {
+                        "ok": False,
+                        "error": "usque не создал интерфейс %s (rc=%s)"
+                        % (iface, rc),
+                    }
 
                 # Сохраняем PID
                 try:

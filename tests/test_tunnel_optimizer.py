@@ -56,8 +56,8 @@ class TestOptimizeIface(unittest.TestCase):
             {"ok": True, "mtu": 576, "applied": ["mtu"], "errors": []},
         ]
         res = to.optimize_nested_tunnel("opkgtun0", "warp", "awg0", "awg", "low_latency")
-        self.assertTrue(res["ok"])
-        self.assertEqual(res["inner"]["mtu"], 576)
+        self.assertFalse(res["ok"])
+        self.assertIsNone(res["inner"]["mtu"])
 
 
 class TestOptimizeMtu(unittest.TestCase):
@@ -80,7 +80,7 @@ class TestOptimizeMtu(unittest.TestCase):
     def test_mtu_throughput(self, mock_run):
         mock_run.return_value = mock.Mock(returncode=0)
         r = to._optimize_mtu("opkgtun0", "throughput")
-        self.assertEqual(r["mtu"], 1500)
+        self.assertEqual(r["mtu"], 1420)
 
 
 class TestOptimizeCongestion(unittest.TestCase):

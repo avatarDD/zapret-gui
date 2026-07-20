@@ -56,6 +56,7 @@ _register_cf_domain_for_nfqws ниже).
 """
 
 import os
+import re
 import secrets
 import shlex
 import socket
@@ -70,11 +71,16 @@ from core.log_buffer import log
 # ─────────────────────────── tg-ws-proxy-go ───────────────────────────
 
 TGWSPROXY_CONFIG_DIR = "/opt/etc/tg-ws-proxy"
+TGWSPROXY_CONFIG_DIR_CANDIDATES = [
+    "/opt/etc/tg-ws-proxy",  # Entware
+    "/etc/tg-ws-proxy",     # OpenWrt package
+]
 TGWSPROXY_CONFIG_FILE = os.path.join(TGWSPROXY_CONFIG_DIR, "config.conf")
 TGWSPROXY_SECRET_FILE = os.path.join(TGWSPROXY_CONFIG_DIR, "secret.conf")
 TGWSPROXY_INITD_CANDIDATES = [
     "/opt/etc/init.d/S99tg-ws-proxy",
     "/etc/init.d/S99tg-ws-proxy",
+    "/etc/init.d/tg-ws-proxy",
 ]
 
 _DEFAULT_CFPROXY_DOMAINS_URL = (
@@ -105,6 +111,7 @@ _TGWSPROXY_CONFIG_KEYS = [
     "EXTRA_ARGS",
     "X_CF_DOMAIN",
     "X_CF_WORKER_DOMAIN",
+    "X_MODE",
 ]
 
 
@@ -151,9 +158,28 @@ def _find_tgwsproxy_initd() -> str:
     return ""
 
 
+def _config_dir_for(initd: str = "") -> str:
+    """Return the config directory matching the installed package layout."""
+    if initd.startswith("/etc/"):
+        return "/etc/tg-ws-proxy"
+    if initd.startswith("/opt/"):
+        return "/opt/etc/tg-ws-proxy"
+    for path in TGWSPROXY_CONFIG_DIR_CANDIDATES:
+        if os.path.isfile(os.path.join(path, "config.conf")):
+            return path
+    return TGWSPROXY_CONFIG_DIR
+
+
+def _config_paths(initd: str = "") -> tuple[str, str, str]:
+    directory = _config_dir_for(initd)
+    return (directory, os.path.join(directory, "config.conf"),
+            os.path.join(directory, "secret.conf"))
+
+
 def _shell_quote_value(v: str) -> str:
-    v = str(v or "")
-    return '"%s"' % v.replace("\\", "\\\\").replace('"', '\\"')
+    # config.conf is sourced by the init script. Single-quote every value
+    # and reject control characters before this point.
+    return shlex.quote(str(v or ""))
 
 
 def _write_kv_conf(path: str, values: dict[str, str], keys_order: list[str]) -> None:
@@ -196,10 +222,9 @@ def _lan_ip() -> str:
     код должен позволить пользователю ввести адрес вручную, а не
     полагаться слепо на пустую строку."""
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("10.255.255.255", 1))
-        ip = s.getsockname()[0]
-        s.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            ip = s.getsockname()[0]
         if ip and not ip.startswith("127."):
             return ip
     except OSError:
@@ -241,22 +266,26 @@ class TgWsProxyManager:
     def detect(self) -> dict[str, Any]:
         initd = _find_tgwsproxy_initd()
         installed = bool(initd)
+        _directory, config_file, _secret_file = _config_paths(initd)
         return {
             "installed": installed,
             "path": initd,
-            "config_exists": os.path.isfile(TGWSPROXY_CONFIG_FILE),
+            "config_exists": os.path.isfile(config_file),
+            "config_dir": _directory,
             "package": "tg-ws-proxy",
             "version": _pkg_version("tg-ws-proxy") if installed else "",
         }
 
     def get_config(self) -> dict[str, Any]:
-        cfg = _read_kv_conf(TGWSPROXY_CONFIG_FILE)
-        secret_cfg = _read_kv_conf(TGWSPROXY_SECRET_FILE)
+        initd = _find_tgwsproxy_initd()
+        _directory, config_file, secret_file = _config_paths(initd)
+        cfg = _read_kv_conf(config_file)
+        secret_cfg = _read_kv_conf(secret_file)
         return {
-            "host": cfg.get("HOST", "127.0.0.1"),
+            "host": cfg.get("HOST", "0.0.0.0"),
             "port": int(cfg.get("PORT") or 1443),
             "log_level": cfg.get("LOG_LEVEL", "0"),
-            "dc_ip_default": cfg.get("DC_IP_DEFAULT", ""),
+            "dc_ip_default": cfg.get("DC_IP_DEFAULT", "149.154.167.220"),
             "dc_ip_default_pool": cfg.get("DC_IP_DEFAULT_POOL", ""),
             "fake_tls_domain": cfg.get("FAKE_TLS_DOMAIN", ""),
             "cf_domain": cfg.get("X_CF_DOMAIN", ""),
@@ -266,6 +295,7 @@ class TgWsProxyManager:
                 "CFPROXY_DOMAINS_URL", _DEFAULT_CFPROXY_DOMAINS_URL
             ),
             "extra_args": cfg.get("EXTRA_ARGS", ""),
+            "mode": cfg.get("X_MODE", "direct"),
             "secret": secret_cfg.get("SECRET", ""),
         }
 
@@ -284,6 +314,7 @@ class TgWsProxyManager:
         extra_args: str = "",
         secret: str = "",
         log_level: str = "0",
+        mode: str = "direct",
     ) -> dict[str, Any]:
         """Сохранить config.conf/secret.conf.
 
@@ -297,21 +328,58 @@ class TgWsProxyManager:
         вероятные по документации проекта имена, ПРОВЕРЬТЕ перед
         продакшн-использованием.
         """
+        if mode not in ("direct", "cfdomain", "tunnel"):
+            return {"ok": False, "error": "Неизвестный режим tg-ws-proxy: %s" % mode}
+
+        initd = _find_tgwsproxy_initd()
+        config_dir, config_file, secret_file = _config_paths(initd)
         if not secret:
-            secret = secrets.token_hex(16)  # 32 hex chars
+            # Saving unrelated settings must not rotate a live Telegram link.
+            existing = _read_kv_conf(secret_file).get("SECRET", "")
+            secret = existing or secrets.token_hex(16)
+        if not re.match(r"^[0-9a-fA-F]{32}$", secret):
+            return {"ok": False, "error": "secret должен содержать 32 hex-символа"}
+
+        for label, value in (("host", host), ("dc_ip_default", dc_ip_default),
+                             ("dc_ip_default_pool", dc_ip_default_pool),
+                             ("fake_tls_domain", fake_tls_domain),
+                             ("cf_domain", cf_domain),
+                             ("cf_worker_domain", cf_worker_domain),
+                             ("cfproxy_domains", cfproxy_domains),
+                             ("cfproxy_domains_url", cfproxy_domains_url),
+                             ("extra_args", extra_args)):
+            if any(ord(ch) < 32 or ord(ch) == 127 for ch in str(value or "")):
+                return {"ok": False, "error": "Недопустимые управляющие символы: %s" % label}
+
+        try:
+            host = str(host or "0.0.0.0").strip()
+            port = int(port)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Некорректные host/port"}
+        if not (1 <= port <= 65535):
+            return {"ok": False, "error": "port вне диапазона 1-65535"}
 
         extra = (extra_args or "").strip()
-        extra_parts = shlex.split(extra) if extra else []
+        if any(ch in extra for ch in "$`;&|<>\n\r"):
+            return {"ok": False, "error": "extra_args содержит запрещённые shell-символы"}
+        try:
+            extra_parts = shlex.split(extra) if extra else []
+        except ValueError as e:
+            return {"ok": False, "error": "Некорректный extra_args: %s" % e}
+        if any(not p.startswith("--") for p in extra_parts):
+            return {"ok": False, "error": "extra_args должен содержать только CLI-флаги"}
+        if mode in ("direct", "tunnel"):
+            extra_parts.append("--no-cfproxy")
         if cf_domain:
             extra_parts += ["--cfproxy-domain=%s" % cf_domain]
         if cf_worker_domain:
             extra_parts += ["--cfproxy-worker-domain=%s" % cf_worker_domain]
         extra = " ".join(shlex.quote(p) for p in extra_parts)
 
-        os.makedirs(TGWSPROXY_CONFIG_DIR, exist_ok=True)
+        os.makedirs(config_dir, exist_ok=True)
 
         _write_kv_conf(
-            TGWSPROXY_CONFIG_FILE,
+            config_file,
             {
                 "HOST": host,
                 "PORT": str(int(port)),
@@ -326,13 +394,14 @@ class TgWsProxyManager:
                 "EXTRA_ARGS": extra,
                 "X_CF_DOMAIN": cf_domain,
                 "X_CF_WORKER_DOMAIN": cf_worker_domain,
+                "X_MODE": mode,
             },
             _TGWSPROXY_CONFIG_KEYS,
         )
 
-        _write_kv_conf(TGWSPROXY_SECRET_FILE, {"SECRET": secret}, ["SECRET"])
+        _write_kv_conf(secret_file, {"SECRET": secret}, ["SECRET"])
         try:
-            os.chmod(TGWSPROXY_SECRET_FILE, 0o600)
+            os.chmod(secret_file, 0o600)
         except OSError:
             pass
 
@@ -453,7 +522,9 @@ class TgWsProxyManager:
                 [initd, "status"], capture_output=True, text=True, timeout=8
             )
             out = (r.stdout or "").lower()
-            via_initd = r.returncode == 0 and ("running" in out or "active" in out)
+            via_initd = r.returncode == 0 and (
+                "running" in out or "active" in out or "alive" in out
+            )
         except (subprocess.TimeoutExpired, OSError):
             pass
 
@@ -461,7 +532,7 @@ class TgWsProxyManager:
         # в init.d-статусе других сервисов: не доверять единственному
         # источнику истины.
         cfg = self.get_config()
-        port_open = self._port_listening(cfg.get("port", 1443))
+        port_open = self._port_listening(cfg.get("port", 1443), cfg.get("host", ""))
 
         return {
             "installed": True,
@@ -470,15 +541,23 @@ class TgWsProxyManager:
             "host": cfg.get("host"),
         }
 
-    def _port_listening(self, port: int) -> bool:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1.0)
-            r = s.connect_ex(("127.0.0.1", int(port)))
-            s.close()
-            return r == 0
-        except OSError:
-            return False
+    def _port_listening(self, port: int, host: str = "") -> bool:
+        # Probe the configured bind address and loopback for 0.0.0.0. A
+        # service bound to a LAN address is not required to listen on lo.
+        targets = [host] if host and host not in ("0.0.0.0", "::") else ["127.0.0.1"]
+        if host and host not in targets and host not in ("0.0.0.0", "::"):
+            targets.append("127.0.0.1")
+        for target in targets:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1.0)
+                r = s.connect_ex((target, int(port)))
+                s.close()
+                if r == 0:
+                    return True
+            except OSError:
+                continue
+        return False
 
     def get_connect_info(self) -> dict[str, Any]:
         """tg://proxy ссылка для GUI (показать/сгенерировать QR)."""

@@ -3,7 +3,8 @@
 WARP-in-WARP для MASQUE: двойной туннель через usque-keenetic и/или AWG.
 
 Три режима (плюс AWG+AWG, реализованный отдельно в core/awg_warp_in_warp.py):
-  masque_masque — оба туннеля через usque (TCP:443, разные сессии/регионы)
+  masque_masque — оба туннеля через usque (H3/QUIC по умолчанию;
+                    H2/TCP:443 — отдельный профиль)
   masque_awg    — внешний MASQUE (usque), внутренний AmneziaWG
   awg_masque    — внешний AmneziaWG, внутренний MASQUE (usque)
 
@@ -76,6 +77,7 @@ claude-sonnet-5_review_zapretgui_pass2.md):
 """
 
 import ipaddress
+import shlex
 import socket
 import subprocess
 import threading
@@ -180,6 +182,34 @@ def _pin_route(dst_ip: str, via_iface: str, v6: bool = False) -> bool:
     return True
 
 
+def _route_snapshot(dst_ip: str, v6: bool = False) -> str:
+    fam = "-6" if v6 else "-4"
+    mask = "/128" if v6 else "/32"
+    rc, out, _err = _run(["ip", fam, "route", "show", "exact",
+                           dst_ip + mask])
+    return out.strip() if rc == 0 else ""
+
+
+def _pin_route_owned(dst_ip: str, via_iface: str,
+                     v6: bool = False) -> tuple[bool, str]:
+    """Pin an endpoint and return the pre-existing route for restoration."""
+    previous = _route_snapshot(dst_ip, v6)
+    if previous and (" dev %s" % via_iface) in previous:
+        return True, previous
+    return _pin_route(dst_ip, via_iface, v6), previous
+
+
+def _restore_route(dst_ip: str, via_iface: str, v6: bool,
+                   previous: str) -> None:
+    if previous:
+        line = previous.splitlines()[0].strip()
+        words = shlex.split(line)
+        fam = "-6" if v6 else "-4"
+        _run(["ip", fam, "route", "replace", *words])
+    else:
+        _unpin_route(dst_ip, via_iface, v6)
+
+
 def _unpin_route(dst_ip: str, via_iface: str, v6: bool = False) -> None:
     if not dst_ip:
         return
@@ -235,7 +265,9 @@ class WarpInWarpManager:
         self._inner_iface = ""
         self._mode = ""
         # какие /32-маршруты мы закрепили сами, чтобы снять их же при stop()
-        self._pinned_routes = []  # list[(dst_ip, via_iface, v6_bool)]
+        self._pinned_routes = []  # list[(dst_ip, via_iface, v6_bool, previous)]
+        self._owned_awg_outer = False
+        self._owned_awg_inner = False
 
     def detect(self) -> dict[str, Any]:
         """Проверить доступность компонентов."""
@@ -402,10 +434,14 @@ class WarpInWarpManager:
         pinned = []
         if inner_endpoint_host:
             v4, v6 = _resolve_host(inner_endpoint_host)
-            if v4 and _pin_route(v4, outer_iface, v6=False):
-                pinned.append((v4, outer_iface, False))
-            if v6 and _pin_route(v6, outer_iface, v6=True):
-                pinned.append((v6, outer_iface, True))
+            if v4:
+                ok, previous = _pin_route_owned(v4, outer_iface, v6=False)
+                if ok:
+                    pinned.append((v4, outer_iface, False, previous))
+            if v6:
+                ok, previous = _pin_route_owned(v6, outer_iface, v6=True)
+                if ok:
+                    pinned.append((v6, outer_iface, True, previous))
         else:
             log.warning(
                 "warp-in-warp: inner_endpoint_host не задан — маршрут "
@@ -416,8 +452,8 @@ class WarpInWarpManager:
 
         result = mgr.start(inner_iface, inner_config, sni=inner_sni)
         if not result.get("ok"):
-            for dst, via, v6 in pinned:
-                _unpin_route(dst, via, v6)
+            for dst, via, v6, previous in pinned:
+                _restore_route(dst, via, v6, previous)
             mgr.stop(outer_iface)
             return {"ok": False, "error": "Inner: %s" % result.get("error")}
 
@@ -426,7 +462,7 @@ class WarpInWarpManager:
         self._mode = "masque_masque"
         self._pinned_routes = pinned
 
-        self._apply_optimizations(outer_iface, inner_iface)
+        self._apply_optimizations(outer_iface, inner_iface, "warp", "warp")
 
         log.success(
             "warp-in-warp: MASQUE+MASQUE запущен (%s → %s)"
@@ -478,17 +514,22 @@ class WarpInWarpManager:
             return {"ok": False, "error": "Outer MASQUE: %s" % result.get("error")}
 
         pinned = []
-        if v4 and _pin_route(v4, outer_iface, v6=False):
-            pinned.append((v4, outer_iface, False))
-        if v6 and _pin_route(v6, outer_iface, v6=True):
-            pinned.append((v6, outer_iface, True))
+        if v4:
+            ok, previous = _pin_route_owned(v4, outer_iface, v6=False)
+            if ok:
+                pinned.append((v4, outer_iface, False, previous))
+        if v6:
+            ok, previous = _pin_route_owned(v6, outer_iface, v6=True)
+            if ok:
+                pinned.append((v6, outer_iface, True, previous))
 
         # AwgManager.up() принимает ИМЯ конфига; интерфейсом станет само
         # это имя (см. AwgManager._do_up: ifname = name).
-        result = awg_mgr.up(awg_conf)
+        inner_was_up = awg_mgr.is_running(awg_conf)
+        result = {"ok": True} if inner_was_up else awg_mgr.up(awg_conf)
         if not result.get("ok"):
-            for dst, via, v6f in pinned:
-                _unpin_route(dst, via, v6f)
+            for dst, via, v6f, previous in pinned:
+                _restore_route(dst, via, v6f, previous)
             usque_mgr.stop(outer_iface)
             return {
                 "ok": False,
@@ -500,8 +541,10 @@ class WarpInWarpManager:
         self._inner_iface = inner_iface
         self._mode = "masque_awg"
         self._pinned_routes = pinned
+        self._owned_awg_inner = not inner_was_up
+        self._owned_awg_outer = False
 
-        self._apply_optimizations(outer_iface, inner_iface)
+        self._apply_optimizations(outer_iface, inner_iface, "warp", "awg")
 
         log.success(
             "warp-in-warp: MASQUE+AWG запущен (%s → %s)" % (inner_iface, outer_iface),
@@ -538,9 +581,31 @@ class WarpInWarpManager:
                 "error": "Outer AWG: %s" % result.get("message", "ошибка"),
             }
 
+        # For AWG outer, the usque endpoint must be pinned to the AWG
+        # interface. Without this, usque may handshake through the default
+        # WAN route and the two layers are not actually nested.
+        pinned = []
+        try:
+            host, _port = _read_awg_endpoint(awg_conf)
+            v4, v6 = _resolve_host(host)
+            if v4:
+                ok, previous = _pin_route_owned(v4, outer_iface, v6=False)
+                if ok:
+                    pinned.append((v4, outer_iface, False, previous))
+            if v6:
+                ok, previous = _pin_route_owned(v6, outer_iface, v6=True)
+                if ok:
+                    pinned.append((v6, outer_iface, True, previous))
+        except (ValueError, FileNotFoundError) as e:
+            if not outer_was_up:
+                awg_mgr.down(outer_iface)
+            return {"ok": False, "error": "Inner endpoint AWG: %s" % e}
+
         inner_iface = "opkgtun101"
         result = usque_mgr.start(inner_iface, inner_config, sni=inner_sni)
         if not result.get("ok"):
+            for dst, via, v6f, previous in pinned:
+                _restore_route(dst, via, v6f, previous)
             if not outer_was_up:
                 awg_mgr.down(outer_iface)
             return {"ok": False, "error": "Inner MASQUE: %s" % result.get("error")}
@@ -548,9 +613,12 @@ class WarpInWarpManager:
         self._outer_iface = outer_iface
         self._inner_iface = inner_iface
         self._mode = "awg_masque"
-        self._pinned_routes = []  # inner (usque) сам решает, куда стучаться
 
-        self._apply_optimizations(outer_iface, inner_iface)
+        self._pinned_routes = pinned
+        self._owned_awg_outer = not outer_was_up
+        self._owned_awg_inner = False
+
+        self._apply_optimizations(outer_iface, inner_iface, "awg", "warp")
 
         log.success(
             "warp-in-warp: AWG+MASQUE запущен (%s → %s)" % (inner_iface, outer_iface),
@@ -563,14 +631,19 @@ class WarpInWarpManager:
             "inner": inner_iface,
         }
 
-    def _apply_optimizations(self, outer_iface: str, inner_iface: str) -> None:
+    def _apply_optimizations(self, outer_iface: str, inner_iface: str,
+                             outer_kind: str, inner_kind: str) -> None:
         try:
-            from core.tunnel_optimizer import optimize_iface
+            from core.tunnel_optimizer import optimize_nested_tunnel
 
-            optimize_iface(inner_iface, "balanced")
-            optimize_iface(outer_iface, "balanced")
+            result = optimize_nested_tunnel(
+                outer_iface, outer_kind, inner_iface, inner_kind, "balanced")
+            if not result.get("ok"):
+                log.warning("warp-in-warp: nested optimization failed: %s"
+                            % result.get("errors", result), source="warp_in_warp")
         except Exception as e:
-            log.warning("warp-in-warp: optimize_iface: %s" % e, source="warp_in_warp")
+            log.warning("warp-in-warp: nested optimization: %s" % e,
+                        source="warp_in_warp")
 
     # ─────────────────────────── stop ───────────────────────────
 
@@ -590,7 +663,8 @@ class WarpInWarpManager:
                 try:
                     from core.awg_manager import get_awg_manager
 
-                    get_awg_manager().down(inner_iface)
+                    if self._owned_awg_inner:
+                        get_awg_manager().down(inner_iface)
                 except Exception as e:
                     log.warning(
                         "warp-in-warp stop inner(awg): %s" % e, source="warp_in_warp"
@@ -606,15 +680,16 @@ class WarpInWarpManager:
                     )
 
             # маршруты
-            for dst, via, v6 in pinned:
-                _unpin_route(dst, via, v6)
+            for dst, via, v6, previous in pinned:
+                _restore_route(dst, via, v6, previous)
 
             # outer
             if mode == "awg_masque":
                 try:
                     from core.awg_manager import get_awg_manager
 
-                    get_awg_manager().down(outer_iface)
+                    if self._owned_awg_outer:
+                        get_awg_manager().down(outer_iface)
                 except Exception as e:
                     log.warning(
                         "warp-in-warp stop outer(awg): %s" % e, source="warp_in_warp"
@@ -633,6 +708,8 @@ class WarpInWarpManager:
             self._inner_iface = ""
             self._mode = ""
             self._pinned_routes = []
+            self._owned_awg_outer = False
+            self._owned_awg_inner = False
 
         _clear_last_start()
 

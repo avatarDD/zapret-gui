@@ -22,17 +22,21 @@ def register(app):
 
     @app.route("/api/optimizer/optimize", method="POST")
     def optimizer_optimize():
-        from core.tunnel_optimizer import optimize_iface
+        from core.tunnel_optimizer import optimize_iface, MTU_PROFILES
         data = request.json or {}
         iface = data.get("iface", "")
         profile = data.get("profile", "balanced")
         if not iface:
             return {"ok": False, "error": "Не указан iface"}
+        if profile not in MTU_PROFILES:
+            return {"ok": False, "error": "Неизвестный профиль: %s" % profile}
         return optimize_iface(iface, profile)
 
     @app.route("/api/optimizer/optimize-all", method="POST")
     def optimizer_optimize_all():
-        from core.tunnel_optimizer import optimize_all_tunnels
+        from core.tunnel_optimizer import optimize_all_tunnels, MTU_PROFILES
         data = request.json or {}
         profile = data.get("profile", "balanced")
+        if profile not in MTU_PROFILES:
+            return {"ok": False, "error": "Неизвестный профиль: %s" % profile}
         return optimize_all_tunnels(profile)
