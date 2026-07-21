@@ -1,0 +1,200 @@
+# ═══════════════════════════════════════════════════════════════
+# dev-release.yml — Сборка НЕСТАБИЛЬНЫХ dev-релизов (для отладки)
+#
+# Отдельный канал от стабильных релизов. НЕ ТРОГАЕТ release.yml и
+# сборку основных релизов. Живёт только в ветке Development.
+#
+# Что делает:
+#   • собирает ipk-пакеты из кода ветки Development (нестабильный код);
+#   • публикует их как GitHub **Pre-release** (пометка "Pre-release",
+#     не попадает в "Latest release") с предупреждением о нестабильности.
+#
+# Как запустить dev-сборку:
+#   1) По тегу (основной способ, работает всегда):
+#        git checkout Development
+#        git tag dev-<метка>        # напр.  dev-20260721   или  dev-awg-fix
+#        git push origin dev-<метка>
+#   2) Вручную (кнопка "Run workflow" в Actions) — доступна, только если
+#      этот workflow есть в default-ветке репозитория. См. README ниже.
+#
+# Артефакты dev-релиза (ipk для роутера):
+#   zapret-gui-keenetic-dev.ipk  — Keenetic / Entware (opkg)
+#   zapret-gui-entware-dev.ipk   — Entware (opkg)
+#   zapret-gui-openwrt-dev.ipk   — OpenWrt ≤23.05 (opkg)
+# ═══════════════════════════════════════════════════════════════
+
+name: Dev Build (unstable)
+
+on:
+  push:
+    tags:
+      - 'dev-*'
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'Метка dev-сборки (напр. awg-fix). Необязательно.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  PKG_NAME: zapret-gui
+
+jobs:
+  # ── 1. Проверка синтаксиса ───────────────────────────────────
+  lint:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check Python syntax (AST)
+        run: |
+          echo "── Проверка синтаксиса Python ──"
+          errors=0
+          for f in $(find . -name '*.py' -not -path './.git/*' -not -path './build/*' -not -path './dist/*'); do
+            if ! python3 -c "import ast; ast.parse(open('$f').read())" 2>/dev/null; then
+              echo "ОШИБКА: $f"
+              python3 -c "import py_compile; py_compile.compile('$f', doraise=True)" 2>&1 || true
+              errors=$((errors + 1))
+            fi
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "Найдено ошибок: $errors"
+            exit 1
+          fi
+          echo "✓ Все Python файлы корректны"
+
+  # ── 2. Сборка dev ipk-пакетов ────────────────────────────────
+  build:
+    name: Build dev packages
+    runs-on: ubuntu-latest
+    needs: lint
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dev_tag: ${{ steps.version.outputs.dev_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: sudo apt-get install -y build-essential make tar
+
+      # Версия dev-сборки: <базовая версия из core/version.py>-dev.<штамп>.
+      # Штамп делает версию уникальной/монотонной, чтобы opkg корректно
+      # обновлял пакет на роутере при каждой новой отладочной сборке.
+      - name: Compute dev version
+        id: version
+        run: |
+          BASE=$(python3 -c "exec(open('core/version.py').read()); print(GUI_VERSION)")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            RAW="${GITHUB_REF_NAME#dev-}"
+            DEV_TAG="${GITHUB_REF_NAME}"
+          else
+            RAW="$(date -u +%Y%m%d.%H%M)-g$(git rev-parse --short HEAD)"
+            LABEL="${{ github.event.inputs.label }}"
+            [ -n "$LABEL" ] && RAW="${RAW}-${LABEL}"
+            DEV_TAG="dev-${RAW}"
+          fi
+          # Санитизация: в версии пакета допускаем только [A-Za-z0-9.]
+          SAFE="$(printf '%s' "$RAW" | tr -c 'A-Za-z0-9.' '.')"
+          VERSION="${BASE}-dev.${SAFE}"
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "dev_tag=$DEV_TAG"   >> "$GITHUB_OUTPUT"
+          echo "Базовая версия: $BASE → dev-версия: $VERSION (тег релиза: $DEV_TAG)"
+
+      - name: Sync core/version.py to dev version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/GUI_VERSION = .*/GUI_VERSION = \"$VERSION\"/" core/version.py
+          echo "✓ core/version.py → $VERSION"
+
+      # Собираем только ipk-форматы — они нужны для отладки на роутере.
+      # apk (OpenWrt 24.10+) и linux tar.gz в dev-канале не собираем ради скорости.
+      - name: Build Keenetic / Entware ipk
+        run: make ipk
+
+      - name: Build OpenWrt ipk
+        run: make openwrt-ipk
+
+      - name: Stage dev artifacts
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p release-artifacts
+          cp "dist/${PKG_NAME}_${VERSION}-1_all.ipk"     "release-artifacts/${PKG_NAME}-keenetic-dev.ipk"
+          cp "dist/${PKG_NAME}_${VERSION}-1_all.ipk"     "release-artifacts/${PKG_NAME}-entware-dev.ipk"
+          cp "dist/${PKG_NAME}_${VERSION}-1_openwrt.ipk" "release-artifacts/${PKG_NAME}-openwrt-dev.ipk"
+          echo "── Артефакты dev-релиза ──"
+          ls -lh release-artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-packages
+          retention-days: 7
+          path: release-artifacts/
+
+  # ── 3. Публикация dev pre-release ────────────────────────────
+  release:
+    name: Publish dev pre-release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dev-packages
+          path: ./artifacts
+
+      - name: Write release notes (warning banner)
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          COMMIT="${GITHUB_SHA:0:7}"
+          cat > /tmp/dev_notes.md <<EOF
+          > ## ⚠️ НЕСТАБИЛЬНЫЙ DEV-РЕЛИЗ — только для тестирования и отладки
+          >
+          > Это **отладочная сборка** из ветки \`Development\`. Часть функций
+          > может **не работать или работать некорректно**.
+          >
+          > 👉 **Для повседневного использования устанавливайте стабильные
+          > релизы** (без пометки \`Pre-release\`).
+
+          **Версия:** \`$VERSION\`
+          **Коммит:** \`$COMMIT\` (ветка \`Development\`)
+
+          ### Установка на роутер (Keenetic / Entware)
+          \`\`\`sh
+          opkg install zapret-gui-keenetic-dev.ipk
+          \`\`\`
+          Файлы \`*-dev.ipk\` прикреплены к этому релизу ниже.
+          EOF
+          echo "── Release notes ──"; cat /tmp/dev_notes.md
+
+      - name: Create dev pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.dev_tag }}
+          target_commitish: ${{ github.sha }}
+          name: "Zapret Web-GUI DEV ${{ needs.build.outputs.version }}"
+          body_path: /tmp/dev_notes.md
+          draft: false
+          prerelease: true
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
