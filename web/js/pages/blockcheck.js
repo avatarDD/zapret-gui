@@ -655,7 +655,9 @@ const BlockcheckPage = (() => {
         if (!out) return;
         out.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:6px 0;">🛰 Трассировка... (до ~40с)</div>';
         try {
-            const res = await API.post('/api/blockcheck/traceroute', { host: domain });
+            // Traceroute синхронный и может идти до ~45с — свой таймаут выше
+            // дефолтных 15с, иначе фронт оборвёт легитимную трассировку.
+            const res = await API.post('/api/blockcheck/traceroute', { host: domain }, { timeout: 60000 });
             if (!res.ok || !res.result) { out.innerHTML = `<div class="bc-trace-err">Ошибка: ${escapeHtml(res.error || 'нет данных')}</div>`; return; }
             out.innerHTML = renderTrace(res.result);
         } catch (err) {

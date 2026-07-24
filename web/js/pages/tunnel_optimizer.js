@@ -211,7 +211,8 @@ const TunnelOptimizerPage = (() => {
         if (!iface) { Toast.error("Укажите интерфейс"); return; }
         if (el) el.textContent = "Проверка...";
         try {
-            const res = await API.post("/api/optimizer/probe-pmtu", { iface, host });
+            // PMTU — бинарный поиск пингами (до ~30с на iputils): свой таймаут.
+            const res = await API.post("/api/optimizer/probe-pmtu", { iface, host }, { timeout: 60000 });
             if (res.ok) {
                 if (el) el.textContent = `PMTU: ${res.pmtu}; IPv6 minimum: ${res.ipv6_safe ? "OK" : "нет"}`;
             } else {
