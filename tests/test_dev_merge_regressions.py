@@ -165,9 +165,10 @@ class TestConcurrentFuturesFallback(unittest.TestCase):
 
 
 class TestAwgDaemonization(unittest.TestCase):
-    """amneziawg-go демонизируется: родитель выходит с rc==0, а UAPI-сокет
-    поднимает фоновый демон чуть позже. Старт НЕ должен считать выход родителя
-    ошибкой и убивать поднявшийся демон (регрессия, ронявшая AWG на Keenetic)."""
+    """Готовность интерфейса проверяется через `awg show <iface>` (rc==0), а
+    НЕ по пути /var/run/wireguard/<if>.sock (на Keenetic он в другом месте) и
+    не по выходу процесса. amneziawg-go может работать в FOREGROUND (poll()==
+    None) — это норма, его нельзя убивать. Регрессия ронявшая AWG на Keenetic."""
 
     def setUp(self):
         import tempfile
@@ -258,18 +259,12 @@ class TestAwgDaemonization(unittest.TestCase):
             def wait(self_inner, timeout=None):
                 return 1
 
-        real_exists = os.path.exists
-
-        def no_sock_exists(p):
-            if str(p).endswith(".sock"):
-                return False
-            return real_exists(p)
-
+        # `awg show` возвращает НЕнулевой код (интерфейс не готов), процесс
+        # вышел с rc!=0 → честная ошибка старта, без зависания.
         with mock.patch.object(self.am.subprocess, "Popen",
                                return_value=FailProc()), \
-             mock.patch.object(self.am.os.path, "exists",
-                               side_effect=no_sock_exists), \
-             mock.patch.object(self.am, "_run", return_value=(0, "", "")), \
+             mock.patch.object(self.am, "_run",
+                               return_value=(1, "", "Unable to access interface")), \
              mock.patch.object(self.am, "_pgrep_first", return_value=0):
             res = self.mgr.up("awg0")
         self.assertFalse(res.get("ok"))
