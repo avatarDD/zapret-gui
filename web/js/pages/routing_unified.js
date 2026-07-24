@@ -126,6 +126,10 @@ const RoutingUnifiedPage = (() => {
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = null;
         stopDevicesAuto();
+        // Роутер заменяет #page-container свежим узлом при следующем
+        // переходе, поэтому делегированный слушатель теряется — сбрасываем
+        // guard, чтобы render() привязал его заново к новому контейнеру.
+        _eventsBound = false;
     }
 
     function _viaFromHash() {

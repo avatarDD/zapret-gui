@@ -113,10 +113,24 @@ const App = (() => {
         // Обновляем sidebar
         Sidebar.setCurrentPage(pageId);
 
-        // Рендерим страницу
-        const container = document.getElementById('page-container');
-        if (container && currentPage) {
-            container.innerHTML = '';
+        // Рендерим страницу.
+        // Заменяем #page-container свежим клоном (без детей и без
+        // слушателей): страницы вешают делегированные click-обработчики
+        // на переданный container в render() и не снимают в destroy(), а
+        // #page-container — ПОСТОЯННЫЙ элемент. Без замены обработчики
+        // накапливались бы между переходами (двойные действия) и срабатывали
+        // бы на чужих страницах (совпадающие data-action → напр. удаление
+        // маршрута дёргало и удаление списка). Клон сохраняет id/class →
+        // CSS не меняется. Свежий узел уничтожает всё, что навесил render().
+        const oldContainer = document.getElementById('page-container');
+        if (oldContainer && currentPage) {
+            let container = oldContainer;
+            if (oldContainer.parentNode) {
+                container = oldContainer.cloneNode(false);
+                oldContainer.parentNode.replaceChild(container, oldContainer);
+            } else {
+                container.innerHTML = '';
+            }
             currentPage.render(container);
         }
     }

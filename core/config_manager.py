@@ -537,6 +537,9 @@ class ConfigManager:
         with self._lock:
             return json.dumps(self._config, indent=2, ensure_ascii=False)
 
+    # Маркер, которым api/config_api маскирует секреты в экспорте (MR-60).
+    _MASK = "***"
+
     def import_json(self, json_str: str) -> bool:
         """Импортировать конфигурацию из JSON-строки."""
         try:
@@ -545,6 +548,13 @@ class ConfigManager:
                 raise ValueError("Конфигурация должна быть JSON-объектом")
 
             with self._lock:
+                # Экспорт по умолчанию маскирует секреты (gui.auth_password,
+                # awg/usque/tgproxy.{private_key,secret,tunnel_secret}) как
+                # "***". Без обработки import записал бы "***" дословно →
+                # пароль GUI = "***" (лок-аут), секреты обнулены. Заменяем
+                # маску текущим значением по тому же пути (сохраняем рабочие
+                # секреты); если текущего нет — ключ отбрасываем.
+                self._strip_masked(data, self._config)
                 self._config = copy.deepcopy(DEFAULT_CONFIG)
                 self._deep_merge(self._config, data)
                 self._save_locked()
@@ -554,6 +564,25 @@ class ConfigManager:
         except (json.JSONDecodeError, ValueError) as e:
             log.error(f"Ошибка импорта конфигурации: {e}", source="config")
             return False
+
+    @staticmethod
+    def _strip_masked(override: dict, current) -> None:
+        """Убрать маску "***" из импортируемых данных (in-place).
+
+        Значение-маска заменяется текущим значением по тому же пути; если
+        текущего нет (или оно тоже маска) — ключ удаляется, чтобы «***» не
+        попал в конфиг.
+        """
+        cur = current if isinstance(current, dict) else {}
+        for key in list(override.keys()):
+            val = override[key]
+            if isinstance(val, dict):
+                ConfigManager._strip_masked(val, cur.get(key))
+            elif val == ConfigManager._MASK:
+                if key in cur and cur[key] != ConfigManager._MASK:
+                    override[key] = cur[key]
+                else:
+                    del override[key]
 
     @staticmethod
     def _deep_merge(base: dict, override: dict):

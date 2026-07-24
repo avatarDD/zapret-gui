@@ -472,6 +472,27 @@ class AwgManager:
         # Fallback — есть в `wg show interfaces`
         return iface in self._wg_interfaces()
 
+    @staticmethod
+    def _create_kernel_iface(ifname: str) -> bool:
+        """Создать AmneziaWG-интерфейс через нативный kernel-модуль.
+
+        Нужно, когда у ядра есть первоклассная поддержка AmneziaWG
+        (amneziawg-linux-kernel-module) и amneziawg-go отказывается стартовать
+        в userspace («Running amneziawg-go is not required because this kernel
+        has first class support for AmneziaWG»). После создания интерфейса
+        штатные `awg setconf` + `ip …` работают с ним так же, как с userspace.
+        Возвращает True, если интерфейс существует после вызова.
+        """
+        if os.path.exists("/sys/class/net/%s" % ifname):
+            return True
+        rc, _out, err = _run(["ip", "link", "add", "dev", ifname,
+                              "type", "amneziawg"], timeout=5)
+        if rc == 0 or os.path.exists("/sys/class/net/%s" % ifname):
+            return True
+        log.warning("kernel amneziawg iface %s не создан: %s"
+                    % (ifname, (err or "").strip()), source="awg_manager")
+        return False
+
     def _iface_for_name(self, name: str) -> str:
         """
         Найти имя реально работающего интерфейса для конфига `name`.
@@ -1037,11 +1058,26 @@ class AwgManager:
                 last_err = "timeout: сокет не появился"
 
         if not success:
-            msg = "Не удалось запустить amneziawg-go: %s" % (last_err or "timeout")
-            low = last_err.lower()
-            if any(m in low for m in self._BROKEN_BIN_MARKERS):
-                msg += "." + self._binary_help_suffix()
-            return {"ok": False, "message": msg}
+            low = (last_err or "").lower()
+            # amneziawg-go отказался стартовать в userspace, потому что у ядра
+            # есть нативная поддержка AmneziaWG (amneziawg-linux-kernel-module):
+            # «…is not required because this kernel has first class support…».
+            # userspace-сокет /var/run/wireguard/<if>.sock не появится никогда.
+            # Раньше (main) успех определялся по процессу и путь проходил;
+            # проверка по сокету это сломала. Создаём интерфейс через kernel-
+            # модуль — дальше setconf/ip работают с ним штатно.
+            if ("first class support" in low or "is not required" in low
+                    or "kernel module" in low) \
+                    and self._create_kernel_iface(ifname):
+                log.info("amneziawg-go: ядро с нативной поддержкой AmneziaWG —"
+                         " используем kernel-модуль для %s" % ifname,
+                         source="awg_manager")
+                success = True
+            else:
+                msg = "Не удалось запустить amneziawg-go: %s" % (last_err or "timeout")
+                if any(m in low for m in self._BROKEN_BIN_MARKERS):
+                    msg += "." + self._binary_help_suffix()
+                return {"ok": False, "message": msg}
 
         # PID amneziawg-go попробуем найти через pgrep
         pid = _pgrep_first([bin_go, ifname]) or _pgrep_first(["amneziawg-go", ifname])

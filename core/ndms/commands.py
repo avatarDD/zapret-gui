@@ -604,6 +604,10 @@ def _is_not_found_error(err: str) -> bool:
     if not err:
         return False
     low = err.lower()
+    # Только текстовые маркеры «объект отсутствует» (Keenetic RCI отдаёт их
+    # с HTTP 200). "HTTP 404"/"unknown" НЕ включаем намеренно: 404 означает
+    # проблему самого RCI-эндпоинта, а "unknown" слишком широк («unknown
+    # command») — их маскировка под успех спрятала бы реальные ошибки.
     return any(token in low for token in (
         "not found", "no such", "doesn't exist", "does not exist"))
 

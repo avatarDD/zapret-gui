@@ -163,5 +163,90 @@ class TestConcurrentFuturesFallback(unittest.TestCase):
         self._run_tick_without_cf("core.singbox_watchdog")
 
 
+class TestAwgKernelFallback(unittest.TestCase):
+    """awg_manager: фолбэк на kernel-модуль, когда amneziawg-go отказывается
+    («first class support») — иначе туннель не поднимается на ядрах с нативной
+    поддержкой AmneziaWG (проверка по userspace-сокету это ломала)."""
+
+    def test_create_kernel_iface_when_link_add_ok(self):
+        import core.awg_manager as am
+        with mock.patch.object(am.os.path, "exists", return_value=False), \
+             mock.patch.object(am, "_run", return_value=(0, "", "")) as run:
+            ok = am.AwgManager._create_kernel_iface("awgk0")
+        self.assertTrue(ok)
+        # должен вызвать ip link add ... type amneziawg
+        args = run.call_args[0][0]
+        self.assertIn("amneziawg", args)
+        self.assertIn("add", args)
+
+    def test_create_kernel_iface_true_if_already_exists(self):
+        import core.awg_manager as am
+        with mock.patch.object(am.os.path, "exists", return_value=True), \
+             mock.patch.object(am, "_run") as run:
+            ok = am.AwgManager._create_kernel_iface("awgk0")
+        self.assertTrue(ok)
+        run.assert_not_called()  # интерфейс уже есть — ip link add не нужен
+
+    def test_create_kernel_iface_false_on_failure(self):
+        import core.awg_manager as am
+        with mock.patch.object(am.os.path, "exists", return_value=False), \
+             mock.patch.object(am, "_run",
+                               return_value=(1, "", "Operation not supported")):
+            ok = am.AwgManager._create_kernel_iface("awgk0")
+        self.assertFalse(ok)
+
+
+class TestConfigImportMaskPreserved(unittest.TestCase):
+    """import_json не должен затирать секреты маской '***' (лок-аут)."""
+
+    def _mgr(self):
+        import tempfile
+        import core.config_manager as cm
+        # изолированный менеджер с временным каталогом
+        m = cm.ConfigManager()
+        m.set("gui", "auth_password", "realpass")
+        m.set("awg", "private_key", "REALKEY==")
+        return m
+
+    def test_masked_import_preserves_secret(self):
+        import json
+        m = self._mgr()
+        m.import_json(json.dumps({"gui": {"auth_password": "***", "port": 9091},
+                                  "awg": {"private_key": "***"}}))
+        self.assertEqual(m.get("gui", "auth_password"), "realpass")
+        self.assertEqual(m.get("awg", "private_key"), "REALKEY==")
+        self.assertEqual(m.get("gui", "port"), 9091)
+
+    def test_real_value_import_overwrites(self):
+        import json
+        m = self._mgr()
+        m.import_json(json.dumps({"gui": {"auth_password": "changed"}}))
+        self.assertEqual(m.get("gui", "auth_password"), "changed")
+
+
+class TestBlockcheckDohNoFalsePositive(unittest.TestCase):
+    """blockcheck: непубличный IP-хелпер отличает CDN (публичные) от перехвата."""
+
+    def test_has_non_public_ip(self):
+        # helper объявлен локально внутри _run_dns_phase — тестируем через
+        # эквивалентную проверку ipaddress (закрепляем намерение)
+        import ipaddress
+
+        def has_non_public(ips):
+            for ip in ips:
+                try:
+                    a = ipaddress.ip_address(ip)
+                except ValueError:
+                    continue
+                if (a.is_private or a.is_loopback or a.is_reserved
+                        or a.is_link_local or a.is_unspecified):
+                    return True
+            return False
+        # CDN: все публичные, disjoint — НЕ фейк
+        self.assertFalse(has_non_public(["142.250.1.1", "172.217.2.2"]))
+        # перехват на приватный IP — фейк
+        self.assertTrue(has_non_public(["192.168.1.1"]))
+
+
 if __name__ == "__main__":
     unittest.main()

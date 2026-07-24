@@ -184,7 +184,7 @@ const SettingsPage = (() => {
                 { key: 'auto_remediation.enabled', label: 'Включить Auto-Remediation', type: 'toggle',
                   hint: 'Автоматический выбор метода обхода (zapret/tunnel/dns) по результатам BlockCheck.' },
                 { key: 'auto_remediation.tunnel_priority', label: 'Приоритет туннелей', type: 'tunnel_priority',
-                  hint: 'Порядок приоритета туннелей для auto-ремедиации. Первый доступный используется. Перетаскивайте для изменения порядка.',
+                  hint: 'Порядок приоритета туннелей для auto-ремедиации. Первый доступный используется. Меняйте порядок кнопками ↑/↓.',
                   showIf: 'auto_remediation.enabled' },
             ]
         },
@@ -485,8 +485,8 @@ const SettingsPage = (() => {
                 inputHtml = `
                     <div class="tunnel-priority-list" id="${id}">
                         ${tunnels.map((t, i) => `
-                            <div class="tunnel-priority-item" draggable="true" data-idx="${i}" data-value="${t}">
-                                <span class="drag-handle" style="cursor:grab;">☰</span>
+                            <div class="tunnel-priority-item" data-idx="${i}" data-value="${t}">
+                                <span class="drag-handle" style="cursor:default;">☰</span>
                                 <span style="flex:1;">${tunnelLabels[t] || t}</span>
                                 <button class="btn btn-ghost btn-sm" data-action="moveTunnel" data-idx="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
                                 <button class="btn btn-ghost btn-sm" data-action="moveTunnel" data-idx="${i}" data-dir="1" ${i === tunnels.length - 1 ? 'disabled' : ''}>↓</button>

@@ -564,6 +564,20 @@ class BlockcheckRunner:
                     pass
             return []
 
+        def _has_non_public_ip(ips: list) -> bool:
+            """Есть ли среди IP непубличный (private/loopback/reserved/
+            link-local/unspecified) — сильный признак DNS-перехвата."""
+            import ipaddress
+            for ip in ips:
+                try:
+                    a = ipaddress.ip_address(str(ip).strip())
+                except ValueError:
+                    continue
+                if (a.is_private or a.is_loopback or a.is_reserved
+                        or a.is_link_local or a.is_unspecified):
+                    return True
+            return False
+
         total = len(domains)
         for idx, domain in enumerate(domains):
             if self._is_cancelled:
@@ -591,14 +605,20 @@ class BlockcheckRunner:
             if ok and resolved_ips and all(ip in local_ips for ip in resolved_ips):
                 is_dns_fake = True
 
-            # 2. Если есть IP, сравниваем с DoH
+            # 2. Если есть IP, сравниваем с DoH — но флажим фейк ТОЛЬКО когда
+            #    среди системных IP есть непубличный (private/reserved). Иначе
+            #    CDN/geo-балансировка (Google/Akamai/Cloudflare) штатно даёт
+            #    непересекающиеся ПУБЛИЧНЫЕ наборы IP у локального резолвера и
+            #    DoH → ложный «DNS Spoofing». Реальный ISP-перехват уводит на
+            #    свой IP (часто private-блокстраница), что и ловим здесь.
             if ok and resolved_ips and not is_dns_fake:
                 try:
                     doh_ips = _check_doh(domain)
                     if doh_ips:
                         sys_set = set(resolved_ips)
                         doh_set = set(doh_ips)
-                        if sys_set.is_disjoint(doh_set):
+                        if sys_set.is_disjoint(doh_set) and \
+                                _has_non_public_ip(resolved_ips):
                             is_dns_fake = True
                 except Exception:
                     pass

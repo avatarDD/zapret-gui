@@ -522,28 +522,35 @@ const DashboardPage = (() => {
         }
     }
 
+    // Именованный обработчик — чтобы снять его в destroy(). Dashboard вешает
+    // делегацию на .content (родитель #page-container, который роутер НЕ
+    // заменяет), поэтому без removeEventListener слушатели накапливались бы
+    // на каждый заход на страницу.
+    function onContentClick(e) {
+        const el = e.target.closest('[data-action]');
+        if (!el) return;
+        const a = el.dataset.action;
+        if (a === 'quickStart') { quickAction('start'); return; }
+        if (a === 'quickStop') { quickAction('stop'); return; }
+        if (a === 'quickRestart') { quickAction('restart'); return; }
+        if (a === 'hash-zapret') { window.location.hash = 'zapret'; return; }
+        if (a === 'hash-usque') { window.location.hash = 'usque'; return; }
+        if (a === 'hash-opera-proxy') { window.location.hash = 'opera-proxy'; return; }
+        if (a === 'hash-tgproxy') { window.location.hash = 'tgproxy'; return; }
+        if (a === 'hash-block-detector') { window.location.hash = 'block-detector'; return; }
+        if (a === 'hash-strategies') { window.location.hash = 'strategies'; return; }
+    }
+
     function bindEvents() {
         document.addEventListener('visibilitychange', onVisibilityChange);
         // MR-69: Event delegation вместо inline onclick
-        document.querySelector('.content')?.addEventListener('click', (e) => {
-            const el = e.target.closest('[data-action]');
-            if (!el) return;
-            const a = el.dataset.action;
-            if (a === 'quickStart') { quickAction('start'); return; }
-            if (a === 'quickStop') { quickAction('stop'); return; }
-            if (a === 'quickRestart') { quickAction('restart'); return; }
-            if (a === 'hash-zapret') { window.location.hash = 'zapret'; return; }
-            if (a === 'hash-usque') { window.location.hash = 'usque'; return; }
-            if (a === 'hash-opera-proxy') { window.location.hash = 'opera-proxy'; return; }
-            if (a === 'hash-tgproxy') { window.location.hash = 'tgproxy'; return; }
-            if (a === 'hash-block-detector') { window.location.hash = 'block-detector'; return; }
-            if (a === 'hash-strategies') { window.location.hash = 'strategies'; return; }
-        });
+        document.querySelector('.content')?.addEventListener('click', onContentClick);
     }
 
     function destroy() {
         stopPolling();
         document.removeEventListener('visibilitychange', onVisibilityChange);
+        document.querySelector('.content')?.removeEventListener('click', onContentClick);
     }
 
     return {
