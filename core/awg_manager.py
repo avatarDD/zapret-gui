@@ -977,111 +977,18 @@ class AwgManager:
                     % (awg_health["detail"] or "exec error",
                        self._binary_help_suffix())}
 
-        sock = "/var/run/wireguard/%s.sock" % ifname
-        if os.path.exists(sock):
-            try:
-                os.remove(sock)
-            except OSError:
-                pass
-
-        success = False
-        last_err = ""
-        awg_bin = self._awg_bin()
-        err_path = os.path.join(self._run_dir(), "awg-%s.stderr" % ifname)
-
-        for attempt in (1, 2):
-            log.info("Запуск amneziawg-go для %s, попытка %d" % (ifname, attempt), source="awg_manager")
-            proc = None
-            # stderr → файл, НЕ PIPE: amneziawg-go демонизируется, и потомок-
-            # демон держал бы pipe открытым (communicate/read заблокировались
-            # бы навсегда), а невыбранный PIPE на success-пути мог бы
-            # переполниться и подвесить демон. Причину ошибки читаем из файла.
-            try:
-                ef = open(err_path, "wb")
-            except Exception:
-                ef = None
-            try:
-                proc = subprocess.Popen(
-                    [bin_go, ifname],
-                    stdout=subprocess.DEVNULL,
-                    stderr=(ef or subprocess.DEVNULL),
-                    env=self._amneziawg_go_env(),
-                    start_new_session=True
-                )
-            except Exception as e:
-                last_err = str(e)
-                log.error("Popen exception: %s" % e, source="awg_manager")
-                if ef:
-                    try:
-                        ef.close()
-                    except Exception:
-                        pass
-                continue
-            if ef:
-                try:
-                    ef.close()  # родитель больше не пишет; демон держит свою копию fd
-                except Exception:
-                    pass
-
-            # Готовность проверяем через `awg show <iface>` (rc==0 = UAPI-сокет
-            # демона доступен — ровно то, что нужно `awg setconf`), а НЕ по
-            # пути /var/run/wireguard/<if>.sock. На Keenetic сокет лежит в
-            # ДРУГОМ месте: проверка по пути давала «не поднял сокет за 8с»,
-            # хотя `awg show` уже работал и интерфейс был поднят. К тому же
-            # amneziawg-go может работать в FOREGROUND (proc.poll()==None) —
-            # это НОРМА: сам процесс и есть демон, его НЕ убиваем. Демонизацию
-            # (родитель вышел rc==0) тоже переживаем — просто ждём готовности.
-            # Ошибка — только НЕнулевой код выхода. Окно 15с (как таймаут в
-            # main); медленный MIPS успевает.
-            deadline = time.time() + 15.0
-            failed_rc = None
-            while time.time() < deadline:
-                if _run([awg_bin, "show", ifname], timeout=3)[0] == 0:
-                    success = True
-                    break
-                rc = proc.poll()
-                if rc is not None and rc != 0:
-                    failed_rc = rc
-                    break
-                time.sleep(0.25)
-
-            if success:
-                break
-
-            log.warning("amneziawg-go для %s: интерфейс не готов за 15с (rc=%s)"
-                        % (ifname, failed_rc), source="awg_manager")
-            try:
-                with open(err_path, "r", encoding="utf-8", errors="replace") as rf:
-                    txt = rf.read().strip()
-                if txt:
-                    last_err = txt
-            except Exception:
-                pass
-            # готовность не подтверждена — это НЕ рабочий демон, гасим родителя
-            # (если жив) и любой осиротевший процесс.
-            try:
-                if proc.poll() is None:
-                    proc.kill()
-                    proc.wait(timeout=1.0)
-            except Exception:
-                pass
-            pid = _pgrep_first([bin_go, ifname]) or _pgrep_first(["amneziawg-go", ifname])
-            if pid:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
-            if not last_err:
-                last_err = "timeout: интерфейс не готов"
-
-        try:
-            os.remove(err_path)
-        except OSError:
-            pass
-
-        if not success:
-            low = (last_err or "").lower()
-            msg = "Не удалось запустить amneziawg-go: %s" % (last_err or "timeout")
+        # Запуск amneziawg-go. Восстановлена простая логика main (v0.22.34),
+        # проверенная на реальных Keenetic: amneziawg-go демонизируется —
+        # родитель форкает фоновый демон и выходит с кодом 0, `_run` это
+        # ловит быстро. Ошибка — только НЕнулевой код. НЕ проверяем путь
+        # UAPI-сокета: на Keenetic он лежит не в /var/run/wireguard/, из-за
+        # чего socket-polling из Development ложно истекал таймаутом и убивал
+        # уже поднятый демон (регрессия, ронявшая AWG).
+        rc, _out, err = _run([bin_go, ifname], timeout=15,
+                             env=self._amneziawg_go_env())
+        if rc != 0:
+            msg = "Не удалось запустить amneziawg-go: %s" % err.strip()
+            low = (err or "").lower()
             if any(m in low for m in self._BROKEN_BIN_MARKERS):
                 msg += "." + self._binary_help_suffix()
             return {"ok": False, "message": msg}
@@ -1094,6 +1001,9 @@ class AwgManager:
                     f.write(str(pid))
             except (IOError, OSError):
                 pass
+
+        # Дать сокету подняться
+        time.sleep(0.2)
 
         # 2) применить через `awg setconf`
         #
