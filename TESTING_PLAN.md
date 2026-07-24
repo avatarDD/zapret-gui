@@ -135,6 +135,10 @@
 | 20 | MED | core/block_detector.py | `concurrent.futures` без fallback + возможный NameError `interval` в `_run_loop` | ✅ fixed |
 | 21 | LOW | core/usque_watchdog.py | `interval_sec` игнорировался (хардкод 60) | ✅ fixed |
 | 22 | LOW | core/geosite_importer.py | `list_categories` звал не тот парсер (`endswith("geosite")`) | ✅ fixed |
+| 23 | MED | core/tunnel_optimizer.py | `probe_pmtu` использует `ping -M do` (нет в busybox) → на Keenetic ложное «dataplane не проходит» | ✅ fixed (детект DF + понятное сообщение) |
+| 24 | HIGH | web/js/api.js | глобальный таймаут 15с рвал длинные синхронные запросы (traceroute до 45с, PMTU) → Deep Trace ломался | ✅ fixed (per-request timeout) |
+| 25 | MED | web/js/api.js | `AbortSignal.timeout()` бросает `TimeoutError`, а не `AbortError` → сообщение о таймауте не показывалось на совр. браузерах | ✅ fixed |
+| 26 | LOW | web/js/pages/usque.js | преждевременный toast «установлен» (opkg-установка в фоне) | ✅ fixed (поллинг статуса) |
 
 Регресс-тесты: `tests/test_dev_merge_regressions.py` (13 тестов).
 
