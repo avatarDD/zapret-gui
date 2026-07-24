@@ -1024,7 +1024,12 @@ class AwgManager:
                 log.error("Popen exception: %s" % e, source="awg_manager")
                 continue
 
-            deadline = time.time() + 3.0
+            # Окно 8с (ранний выход по сокету/выходу процесса). 3с было мало
+            # для медленных MIPS-роутеров под нагрузкой → ложные фейлы старта
+            # (в main демон ждали до 15с). Успешный старт ловится за доли
+            # секунды, длинное окно тратится только при реально медленном
+            # форке демона.
+            deadline = time.time() + 8.0
             while time.time() < deadline:
                 if os.path.exists(sock):
                     success = True
@@ -1036,7 +1041,7 @@ class AwgManager:
             if success:
                 break
 
-            log.warning("amneziawg-go для %s не поднял сокет за 3с" % ifname, source="awg_manager")
+            log.warning("amneziawg-go для %s не поднял сокет за 8с" % ifname, source="awg_manager")
             try:
                 if proc.poll() is None:
                     proc.kill()

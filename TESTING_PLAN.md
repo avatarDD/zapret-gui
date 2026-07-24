@@ -139,8 +139,21 @@
 | 24 | HIGH | web/js/api.js | глобальный таймаут 15с рвал длинные синхронные запросы (traceroute до 45с, PMTU) → Deep Trace ломался | ✅ fixed (per-request timeout) |
 | 25 | MED | web/js/api.js | `AbortSignal.timeout()` бросает `TimeoutError`, а не `AbortError` → сообщение о таймауте не показывалось на совр. браузерах | ✅ fixed |
 | 26 | LOW | web/js/pages/usque.js | преждевременный toast «установлен» (opkg-установка в фоне) | ✅ fixed (поллинг статуса) |
+| 27 | HIGH | web/js/app.js + pages | утечка делегированных click-слушателей на постоянном `#page-container` → двойные действия + межстраничные срабатывания (напр. удаление маршрута дёргало удаление списка) | ✅ fixed (роутер клонирует контейнер; routing сбрасывает guard; dashboard снимает слушатель) |
+| 28 | HIGH | core/awg_manager.py | AWG не поднимался на ядре с нативным модулем AmneziaWG («amneziawg-go is not required… first class support») — проверка «сокет за 3с» проваливалась | ✅ fixed (фолбэк на kernel-модуль `ip link add type amneziawg`) |
+| 29 | HIGH | core/config_manager.py | backup/restore: экспорт маскирует секреты `***`, импорт писал их дословно → пароль GUI = `***` (лок-аут) | ✅ fixed (import сохраняет текущие секреты вместо маски) |
+| 30 | MED | core/blockcheck.py | DoH-сравнение давало ложный DNS_FAKE на CDN/geo-доменах | ✅ fixed (фейк только при непубличном IP среди системных) |
+| 31 | MED | core/testers/dpi_classifier.py | `TIMEOUT`/`TCP_TIMEOUT` добавлены в IP_BLOCK вопреки комментарию → обходимый nfqws silent-drop классифицировался как «нужен туннель» | ✅ fixed (revert — timeout не IP_BLOCK) |
+| 32 | LOW | core/awg_manager.py | окно ожидания сокета 3с → ложные фейлы старта на медленных MIPS | ✅ fixed (8с, ранний выход по сокету) |
+| 33 | LOW | web/js/pages/settings.js | рекламировался нерабочий drag-n-drop приоритета туннелей | ✅ fixed (убран афорданс; работают ↑/↓) |
 
-Регресс-тесты: `tests/test_dev_merge_regressions.py` (13 тестов).
+### Осознанно НЕ менялось (намеренное поведение, не баг)
+- `core/ndms/commands.py` — исключение `HTTP 404`/`unknown` из not-found: намеренно (Keenetic отдаёт «no such» с HTTP 200; закреплено тестом). Уточнён комментарий.
+- `core/list_updater.py is_safe_url` — блокировка LAN-URL: намеренная защита от SSRF (MR-63); откат вернул бы уязвимость.
+- `core/awg_manager.py` PostUp/PostDown через `shlex.split`+`shell=False`: намеренное закрытие RCE (MR-20).
+- `core/strategy_state.py` debounce авто-сброса: безвредно (интервал healthcheck ≥60с).
+
+Регресс-тесты: `tests/test_dev_merge_regressions.py` (19 тестов).
 
 ---
 
