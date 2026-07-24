@@ -6,6 +6,7 @@
 Development и не покрытому существующими тестами.
 """
 
+import os
 import unittest
 from unittest import mock
 
@@ -163,37 +164,117 @@ class TestConcurrentFuturesFallback(unittest.TestCase):
         self._run_tick_without_cf("core.singbox_watchdog")
 
 
-class TestAwgKernelFallback(unittest.TestCase):
-    """awg_manager: фолбэк на kernel-модуль, когда amneziawg-go отказывается
-    («first class support») — иначе туннель не поднимается на ядрах с нативной
-    поддержкой AmneziaWG (проверка по userspace-сокету это ломала)."""
+class TestAwgDaemonization(unittest.TestCase):
+    """amneziawg-go демонизируется: родитель выходит с rc==0, а UAPI-сокет
+    поднимает фоновый демон чуть позже. Старт НЕ должен считать выход родителя
+    ошибкой и убивать поднявшийся демон (регрессия, ронявшая AWG на Keenetic)."""
 
-    def test_create_kernel_iface_when_link_add_ok(self):
+    def setUp(self):
+        import tempfile
+        from tests.test_awg_manager_lifecycle import FakePlatform, SAMPLE_CONF
         import core.awg_manager as am
-        with mock.patch.object(am.os.path, "exists", return_value=False), \
-             mock.patch.object(am, "_run", return_value=(0, "", "")) as run:
-            ok = am.AwgManager._create_kernel_iface("awgk0")
-        self.assertTrue(ok)
-        # должен вызвать ip link add ... type amneziawg
-        args = run.call_args[0][0]
-        self.assertIn("amneziawg", args)
-        self.assertIn("add", args)
+        self.am = am
+        self.tmpdir = tempfile.mkdtemp(prefix="awg-daemon-test-")
+        self.platform = FakePlatform(self.tmpdir)
+        self.mgr = am.AwgManager()
+        go = os.path.join(self.platform.binary_dir, "amneziawg-go")
+        awgb = os.path.join(self.platform.binary_dir, "awg")
+        for f in (go, awgb):
+            with open(f, "w") as fh:
+                fh.write("#!/bin/true\n")
+        self._patches = [
+            mock.patch.object(self.mgr, "_platform", return_value=self.platform),
+            mock.patch.object(self.mgr, "_config_dir",
+                              return_value=self.platform.config_dir),
+            mock.patch.object(self.mgr, "_run_dir",
+                              return_value=self.platform.run_dir),
+            mock.patch.object(self.mgr, "_scan_dirs",
+                              return_value=[self.platform.config_dir]),
+            mock.patch.object(self.mgr, "_awg_bin", return_value=awgb),
+            mock.patch.object(self.mgr, "_amneziawg_go", return_value=go),
+            mock.patch.object(self.mgr, "_wg_interfaces", return_value=[]),
+            mock.patch.object(self.mgr, "_probe_binary",
+                              return_value={"broken": False, "detail": ""}),
+            mock.patch.object(self.mgr, "_apply_setconf",
+                              return_value={"ok": True}),
+        ]
+        for p in self._patches:
+            p.start()
+        self.mgr.save_config("awg0", text=SAMPLE_CONF)
 
-    def test_create_kernel_iface_true_if_already_exists(self):
-        import core.awg_manager as am
-        with mock.patch.object(am.os.path, "exists", return_value=True), \
-             mock.patch.object(am, "_run") as run:
-            ok = am.AwgManager._create_kernel_iface("awgk0")
-        self.assertTrue(ok)
-        run.assert_not_called()  # интерфейс уже есть — ip link add не нужен
+    def tearDown(self):
+        import shutil
+        for p in self._patches:
+            p.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_create_kernel_iface_false_on_failure(self):
-        import core.awg_manager as am
-        with mock.patch.object(am.os.path, "exists", return_value=False), \
-             mock.patch.object(am, "_run",
-                               return_value=(1, "", "Operation not supported")):
-            ok = am.AwgManager._create_kernel_iface("awgk0")
-        self.assertFalse(ok)
+    def test_daemonized_parent_exit_is_success(self):
+        killed = {"v": False}
+
+        class FakeProc:
+            def poll(self_inner):
+                return 0  # родитель вышел с rc==0 (демонизация)
+
+            def kill(self_inner):
+                killed["v"] = True
+
+            def wait(self_inner, timeout=None):
+                return 0
+
+        real_exists = os.path.exists
+
+        def fake_exists(p):
+            if str(p).endswith(".sock"):
+                return True  # сокет поднял фоновый демон
+            return real_exists(p)
+
+        with mock.patch.object(self.am.subprocess, "Popen",
+                               return_value=FakeProc()), \
+             mock.patch.object(self.am.os.path, "exists",
+                               side_effect=fake_exists), \
+             mock.patch.object(self.am, "_run", return_value=(0, "", "")), \
+             mock.patch.object(self.am, "_pgrep_first", return_value=4242), \
+             mock.patch.object(self.am, "_resolve_endpoint_ip",
+                               return_value=("162.159.192.4", False)), \
+             mock.patch("core.routing.applier.apply_all_on_interface_up",
+                        return_value=None):
+            res = self.mgr.up("awg0")
+
+        self.assertNotIn("Не удалось запустить amneziawg-go",
+                         res.get("message", ""))
+        self.assertFalse(killed["v"], "рабочий демон не должен убиваться")
+        self.assertTrue(res.get("ok"), res)
+
+    def test_nonzero_exit_no_socket_is_error(self):
+        # Родитель вышел с ошибкой (rc!=0), сокет не появился → честная ошибка,
+        # без зависания (stderr читаем из файла, а не блокирующегося pipe).
+        class FailProc:
+            def poll(self_inner):
+                return 1
+
+            def kill(self_inner):
+                pass
+
+            def wait(self_inner, timeout=None):
+                return 1
+
+        real_exists = os.path.exists
+
+        def no_sock_exists(p):
+            if str(p).endswith(".sock"):
+                return False
+            return real_exists(p)
+
+        with mock.patch.object(self.am.subprocess, "Popen",
+                               return_value=FailProc()), \
+             mock.patch.object(self.am.os.path, "exists",
+                               side_effect=no_sock_exists), \
+             mock.patch.object(self.am, "_run", return_value=(0, "", "")), \
+             mock.patch.object(self.am, "_pgrep_first", return_value=0):
+            res = self.mgr.up("awg0")
+        self.assertFalse(res.get("ok"))
+        self.assertIn("Не удалось запустить amneziawg-go",
+                      res.get("message", ""))
 
 
 class TestConfigImportMaskPreserved(unittest.TestCase):

@@ -472,27 +472,6 @@ class AwgManager:
         # Fallback — есть в `wg show interfaces`
         return iface in self._wg_interfaces()
 
-    @staticmethod
-    def _create_kernel_iface(ifname: str) -> bool:
-        """Создать AmneziaWG-интерфейс через нативный kernel-модуль.
-
-        Нужно, когда у ядра есть первоклассная поддержка AmneziaWG
-        (amneziawg-linux-kernel-module) и amneziawg-go отказывается стартовать
-        в userspace («Running amneziawg-go is not required because this kernel
-        has first class support for AmneziaWG»). После создания интерфейса
-        штатные `awg setconf` + `ip …` работают с ним так же, как с userspace.
-        Возвращает True, если интерфейс существует после вызова.
-        """
-        if os.path.exists("/sys/class/net/%s" % ifname):
-            return True
-        rc, _out, err = _run(["ip", "link", "add", "dev", ifname,
-                              "type", "amneziawg"], timeout=5)
-        if rc == 0 or os.path.exists("/sys/class/net/%s" % ifname):
-            return True
-        log.warning("kernel amneziawg iface %s не создан: %s"
-                    % (ifname, (err or "").strip()), source="awg_manager")
-        return False
-
     def _iface_for_name(self, name: str) -> str:
         """
         Найти имя реально работающего интерфейса для конфига `name`.
@@ -1007,82 +986,103 @@ class AwgManager:
 
         success = False
         last_err = ""
+        err_path = os.path.join(self._run_dir(), "awg-%s.stderr" % ifname)
 
         for attempt in (1, 2):
             log.info("Запуск amneziawg-go для %s, попытка %d" % (ifname, attempt), source="awg_manager")
             proc = None
+            # stderr → файл, НЕ PIPE: amneziawg-go демонизируется, и потомок-
+            # демон держал бы pipe открытым (communicate/read заблокировались
+            # бы навсегда), а невыбранный PIPE на success-пути мог бы
+            # переполниться и подвесить демон. Причину ошибки читаем из файла.
+            try:
+                ef = open(err_path, "wb")
+            except Exception:
+                ef = None
             try:
                 proc = subprocess.Popen(
                     [bin_go, ifname],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=(ef or subprocess.DEVNULL),
                     env=self._amneziawg_go_env(),
                     start_new_session=True
                 )
             except Exception as e:
                 last_err = str(e)
                 log.error("Popen exception: %s" % e, source="awg_manager")
+                if ef:
+                    try:
+                        ef.close()
+                    except Exception:
+                        pass
                 continue
+            if ef:
+                try:
+                    ef.close()  # родитель больше не пишет; демон держит свою копию fd
+                except Exception:
+                    pass
 
-            # Окно 8с (ранний выход по сокету/выходу процесса). 3с было мало
-            # для медленных MIPS-роутеров под нагрузкой → ложные фейлы старта
-            # (в main демон ждали до 15с). Успешный старт ловится за доли
-            # секунды, длинное окно тратится только при реально медленном
-            # форке демона.
+            # amneziawg-go ДЕМОНИЗИРУЕТСЯ: родитель форкает фоновый демон и
+            # выходит с кодом 0 (обычно ~50 мс), а UAPI-сокет
+            # /var/run/wireguard/<if>.sock поднимает уже сам демон чуть позже.
+            # Поэтому выход родителя с rc==0 — НЕ ошибка: продолжаем ждать
+            # сокет; ошибка только при НЕнулевом коде. Предупреждение «…first
+            # class support…» (нативный WireGuard в ядре Keenetic) — advisory:
+            # демон всё равно поднимает userspace-интерфейс. Раньше break по
+            # любому proc.poll()!=None ронял старт — код находил уже поднятый
+            # демон и убивал его SIGKILL (регрессия относительно main, где
+            # успех определялся по rc==0). Окно 8с — для медленных MIPS.
             deadline = time.time() + 8.0
+            failed_rc = None
             while time.time() < deadline:
                 if os.path.exists(sock):
                     success = True
                     break
-                if proc.poll() is not None:
+                rc = proc.poll()
+                if rc is not None and rc != 0:
+                    failed_rc = rc
                     break
                 time.sleep(0.05)
 
             if success:
                 break
 
-            log.warning("amneziawg-go для %s не поднял сокет за 8с" % ifname, source="awg_manager")
+            log.warning("amneziawg-go для %s не поднял UAPI-сокет за 8с (rc=%s)"
+                        % (ifname, failed_rc), source="awg_manager")
+            try:
+                with open(err_path, "r", encoding="utf-8", errors="replace") as rf:
+                    txt = rf.read().strip()
+                if txt:
+                    last_err = txt
+            except Exception:
+                pass
+            # прибиваем родителя, если жив, и любой осиротевший демон
             try:
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=1.0)
             except Exception:
                 pass
-
             pid = _pgrep_first([bin_go, ifname]) or _pgrep_first(["amneziawg-go", ifname])
             if pid:
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except OSError:
                     pass
-
-            if proc.poll() is not None:
-                _, err = proc.communicate()
-                last_err = (err or b"").decode("utf-8", errors="replace").strip()
-            else:
+            if not last_err:
                 last_err = "timeout: сокет не появился"
+
+        try:
+            os.remove(err_path)
+        except OSError:
+            pass
 
         if not success:
             low = (last_err or "").lower()
-            # amneziawg-go отказался стартовать в userspace, потому что у ядра
-            # есть нативная поддержка AmneziaWG (amneziawg-linux-kernel-module):
-            # «…is not required because this kernel has first class support…».
-            # userspace-сокет /var/run/wireguard/<if>.sock не появится никогда.
-            # Раньше (main) успех определялся по процессу и путь проходил;
-            # проверка по сокету это сломала. Создаём интерфейс через kernel-
-            # модуль — дальше setconf/ip работают с ним штатно.
-            if ("first class support" in low or "is not required" in low
-                    or "kernel module" in low) \
-                    and self._create_kernel_iface(ifname):
-                log.info("amneziawg-go: ядро с нативной поддержкой AmneziaWG —"
-                         " используем kernel-модуль для %s" % ifname,
-                         source="awg_manager")
-                success = True
-            else:
-                msg = "Не удалось запустить amneziawg-go: %s" % (last_err or "timeout")
-                if any(m in low for m in self._BROKEN_BIN_MARKERS):
-                    msg += "." + self._binary_help_suffix()
-                return {"ok": False, "message": msg}
+            msg = "Не удалось запустить amneziawg-go: %s" % (last_err or "timeout")
+            if any(m in low for m in self._BROKEN_BIN_MARKERS):
+                msg += "." + self._binary_help_suffix()
+            return {"ok": False, "message": msg}
 
         # PID amneziawg-go попробуем найти через pgrep
         pid = _pgrep_first([bin_go, ifname]) or _pgrep_first(["amneziawg-go", ifname])
