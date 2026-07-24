@@ -121,14 +121,19 @@ def _remove_dnsmasq_integration():
                 os.remove(managed_path)
                 _log("dnsmasq: managed-файл удалён: %s" % managed_path)
                 
-            # 3. Чистим dnsmasq.conf от include
+            # 3. Чистим dnsmasq.conf от include'ов (awg-routing И dns-routing).
+            #    dns_routing.apply() дописывает свой маркер
+            #    "# zapret-gui dns-routing managed include" + conf-file=; без
+            #    его снятия оставшийся conf-file= указывает на удалённый файл
+            #    и dnsmasq падает при reload → DNS ломается после удаления.
+            DNS_ROUTING_MARKER = "# zapret-gui dns-routing managed include"
             if os.path.isfile(main_conf):
                 with open(main_conf, "r") as f:
                     lines = f.readlines()
                 new_lines = []
                 skip = False
                 for line in lines:
-                    if INCLUDE_MARKER in line:
+                    if INCLUDE_MARKER in line or DNS_ROUTING_MARKER in line:
                         skip = True
                         continue
                     if skip and line.strip().startswith("conf-file="):
@@ -138,6 +143,19 @@ def _remove_dnsmasq_integration():
                 with open(main_conf, "w") as f:
                     f.writelines(new_lines)
                 _log("dnsmasq: include удалён из %s" % main_conf)
+
+            # Удаляем сам managed-файл dns-routing (<base>/lists/dns-routing.conf).
+            # base вычисляем так же, как dns_routing.apply().
+            try:
+                from core.config_manager import get_config_manager
+                base = get_config_manager().get("zapret", "base_path",
+                                                default="/opt/zapret2")
+                dns_routing_conf = os.path.join(base, "lists", "dns-routing.conf")
+                if os.path.isfile(dns_routing_conf):
+                    os.remove(dns_routing_conf)
+                    _log("dnsmasq: dns-routing.conf удалён")
+            except Exception:
+                pass
                 
                 # Перезапускаем или перезагружаем dnsmasq
                 dns.reload()

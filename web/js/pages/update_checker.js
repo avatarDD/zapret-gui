@@ -37,11 +37,16 @@ const UpdateCheckerPage = (() => {
         `;
 
         document.getElementById("uc-btn-check").onclick = _check;
+        // Показываем ранее закешированные результаты сразу при открытии.
+        try {
+            const cached = await API.get("/api/updates");
+            if (cached && (cached.results || []).length) _renderResults(cached);
+        } catch (_) {}
         await _loadDaemon();
     }
 
     function destroy() {
-        if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+        if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
     }
 
     async function _check() {
@@ -50,13 +55,47 @@ const UpdateCheckerPage = (() => {
         if (btn) { btn.disabled = true; btn.textContent = "Проверка..."; }
         if (el) el.innerHTML = `<div class="text-muted"><span class="spinner" style="width:14px;height:14px;border-width:2px;"></span> Проверка...</div>`;
         try {
-            const data = await API.post("/api/updates/check");
-            _renderResults(data);
+            // POST /check запускает проверку в фоне (не возвращает результаты),
+            // затем поллим статус до завершения и читаем кеш /api/updates.
+            await API.post("/api/updates/check");
+            await _pollUntilDone();
         } catch (e) {
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
-        } finally {
             if (btn) { btn.disabled = false; btn.textContent = "Проверить обновления"; }
         }
+    }
+
+    // Поллинг статуса до checking=false, затем рендер кешированных результатов.
+    function _pollUntilDone() {
+        const btn = document.getElementById("uc-btn-check");
+        const started = Date.now();
+        const MAX_MS = 90000;  // защита от вечного ожидания
+        return new Promise((resolve) => {
+            async function tick() {
+                let checking = false;
+                try {
+                    const st = await API.get("/api/updates/status");
+                    checking = !!st.checking;
+                } catch (_) { checking = false; }
+
+                if (!checking || (Date.now() - started) > MAX_MS) {
+                    _pollTimer = null;
+                    try {
+                        const data = await API.get("/api/updates");
+                        _renderResults(data);
+                    } catch (e) {
+                        const el = document.getElementById("uc-results");
+                        if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+                    }
+                    if (btn) { btn.disabled = false; btn.textContent = "Проверить обновления"; }
+                    resolve();
+                    return;
+                }
+                _pollTimer = setTimeout(tick, 2000);
+            }
+            // первый опрос — с небольшой задержкой, дать фоновой проверке стартовать
+            _pollTimer = setTimeout(tick, 1500);
+        });
     }
 
     function _renderResults(data) {

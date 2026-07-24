@@ -44,7 +44,7 @@ def parse_geoip(path: str) -> dict:
 
 def list_categories(path: str) -> list:
     """Список категорий в geosite/geoip файле."""
-    data = parse_geosite(path) if path.endswith("geosite") else parse_geoip(path)
+    data = parse_geosite(path) if "geosite" in path else parse_geoip(path)
     return sorted(data.keys())
 
 
@@ -219,8 +219,11 @@ def _parse_domain_entry(data: bytes) -> str:
             typ = val
         elif fn == 2 and wt == 2:
             domain = val.decode("utf-8", errors="replace")
-    # type 1 = plain, 2 = regex, 3 = domain, 4 = full
-    if typ in (1, 3, 4) and domain:
+    # v2ray/v2fly Domain.Type enum: 0=Plain, 1=Regex, 2=Domain(RootDomain), 3=Full.
+    # Импортируем как записи hostlist только доменные типы (Plain/Domain/Full);
+    # Regex(1) — это паттерн, а не домен, его пропускаем. Domain(2) — ~99%
+    # реальных записей geosite.dat, раньше ошибочно отбрасывался.
+    if typ in (0, 2, 3) and domain:
         return domain.lower()
     return ""
 

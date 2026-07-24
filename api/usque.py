@@ -56,6 +56,18 @@ def register(app):
             env.setdefault("platform", {})
             env.setdefault("tun", {"available": False})
             env["platform_error"] = str(e)
+
+        # SetupUI (usque_setup.js) ждёт binary как объект {installed, version,
+        # path}, а не строку-путь — иначе страница установки всегда показывает
+        # «не установлен». Плоские installed/version/arch сохраняем: их читает
+        # основная страница usque.js. binary_dir выше вычислен по строке-пути.
+        bin_path = env.get("binary") if isinstance(env.get("binary"), str) else ""
+        env["binary"] = {
+            "installed": bool(env.get("installed")),
+            "version": env.get("version", ""),
+            "path": bin_path,
+        }
+        env["ready"] = bool(env.get("installed"))
         return env
 
     @app.route("/api/usque/version", method="GET")
@@ -65,10 +77,29 @@ def register(app):
         mgr = get_usque_manager()
         env = mgr.detect()
         cfg = get_config_manager()
+        installed_ver = env.get("version", "")
+        # latest = закреплённый release_tag из BINARIES (та версия, которую
+        # ставит GUI). SetupUI показывает его как «В релизе» и сравнивает с
+        # установленной. Без вложенного installed/latest страница установки
+        # не детектит ни версию, ни доступность обновления.
+        latest_tag, latest_ver = "", ""
+        try:
+            from core.ext_binary_installer import BINARIES
+            latest_tag = BINARIES.get("usque", {}).get("release_tag", "")
+            latest_ver = latest_tag.lstrip("v")
+        except Exception:
+            pass
+        has_update = bool(latest_ver and installed_ver
+                          and latest_ver != installed_ver)
         return {
-            "installed": env["installed"],
-            "version": env["version"],
-            "arch": env["arch"],
+            "ok": True,
+            "installed": {
+                "installed": bool(env.get("installed")),
+                "version": installed_ver,
+                "arch": env.get("arch", ""),
+            },
+            "latest": {"tag": latest_tag, "version": latest_ver},
+            "has_update": has_update,
             "installed_tag": cfg.get("usque", "installed_tag", default=""),
         }
 

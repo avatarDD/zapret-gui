@@ -360,6 +360,12 @@ BINARIES = {
     "usque": {
         "repo": "side-effect-tm/usque-keenetic",
         "release_tag": "v0.3.0",
+        # usque-keenetic распространяется как Entware .ipk — ставим через opkg,
+        # а не копированием сырого бинарника (иначе в /opt/usr/bin/usque ляжет
+        # неисполняемый ar-архив и usque не запустится). package_assets нет —
+        # _resolve_asset_name падёт обратно на arch_map (полные имена .ipk).
+        "install_kind": "package",
+        "package_name": "usque-keenetic",
         "dest": "/opt/usr/bin/usque",
         "arch_map": {
             "aarch64": "usque-keenetic_0.3.0_aarch64-3.10.ipk",
@@ -452,9 +458,13 @@ def _resolve_asset_name(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
     """Получить asset для выбранного типа установки."""
     if cfg.get("install_kind", "binary") == "package":
         package_assets = cfg.get("package_assets", {}) or {}
-        if pkg_mgr and pkg_mgr in package_assets:
-            return (package_assets.get(pkg_mgr) or {}).get(arch, "")
-        return (package_assets.get("opkg") or {}).get(arch, "")
+        if package_assets:
+            if pkg_mgr and pkg_mgr in package_assets:
+                return (package_assets.get(pkg_mgr) or {}).get(arch, "")
+            return (package_assets.get("opkg") or {}).get(arch, "")
+        # Пакеты без раздельного package_assets (usque): единый набор .ipk
+        # по архитектурам лежит в arch_map — используем его.
+        return (cfg.get("arch_map", {}) or {}).get(arch, "")
     return (cfg.get("arch_map", {}) or {}).get(arch, "")
 
 
@@ -623,11 +633,11 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
 
     # Пробуем разные варианты имени файла
     if install_kind == "package":
-        candidates = [
-            "tg-ws-proxy_%s-1_%s" % (tag, asset_name),
-            "tg-ws-proxy_%s_%s" % (tag, asset_name),
-            "tg-ws-proxy_%s" % tag,
-        ]
+        # asset_name из _resolve_asset_name — уже полное имя пакета
+        # (напр. usque-keenetic_0.3.0_aarch64-3.10.ipk или
+        # tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk). Прямое имя —
+        # надёжный кандидат для fallback-загрузки.
+        candidates = [asset_name]
     else:
         candidates = [
             asset_name,
@@ -639,11 +649,11 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
     downloaded_asset_name = ""
     assets = release.get("assets", []) or []
     if install_kind == "package":
+        # Матчим ассет по полному имени пакета (или суффиксу) — обобщённо
+        # для любого пакета, не только tg-ws-proxy.
         for asset in assets:
             aname = asset.get("name", "")
-            if not aname.startswith("tg-ws-proxy_%s" % tag):
-                continue
-            if aname.endswith(asset_name):
+            if aname == asset_name or (asset_name and aname.endswith(asset_name)):
                 download_url = asset.get("browser_download_url", "")
                 downloaded_asset_name = aname
                 break

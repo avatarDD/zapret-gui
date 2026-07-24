@@ -300,7 +300,7 @@ class AutoRemediation:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
         priority = cfg.get("auto_remediation", "tunnel_priority",
-                           default=["warp", "awg", "opera", "singbox", "mihomo"])
+                           default=["warp", "awg", "singbox", "mihomo"])
 
         for name in priority:
             target = self._detect_tunnel(name)
@@ -336,14 +336,11 @@ class AutoRemediation:
                 for c in mgr.list_configs():
                     if c.get("running"):
                         return c.get("tun_iface", "meta")
-            elif name == "opera":
-                from core.opera_proxy_manager import get_opera_proxy_manager
-                mgr = get_opera_proxy_manager()
-                if mgr._is_running():
-                    from core.config_manager import get_config_manager
-                    cfg = get_config_manager()
-                    return cfg.get("opera_proxy", "bind",
-                                   default="127.0.0.1:18080")
+            # opera-proxy — локальный HTTP/SOCKS-прокси, а не прозрачный
+            # CIDR-метод unified-слоя (METHOD_KINDS без "opera"). Как цель
+            # авто-ремедиации не годится: UnifiedRoute(method="opera:...")
+            # бросил бы ValueError. Приложения используют его через явную
+            # HTTP-proxy настройку, не через policy-routing.
         except Exception:
             pass
         return ""

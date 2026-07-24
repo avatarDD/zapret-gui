@@ -757,8 +757,12 @@ def optimize_all_tunnels(profile: str = "balanced") -> dict:
     has_quic = any(str(i).startswith("opkgtun") for i in interfaces)
     buffer_result = ensure_global_tcp_tuning(profile, quic=has_quic)
     bbr_result = _optimize_congestion(_detect_egress_iface())
+    # BBR — best-effort: на ядрах Keenetic/Entware модуль часто не собран.
+    # Успех оптимизации не должен зависеть от него (иначе GUI показывает
+    # «Ошибка», хотя MTU/буферы/MSS реально применены). Согласовано с
+    # optimize_iface(), где ok = bool(applied) без учёта BBR.
     global_result = {
-        "ok": bool(buffer_result.get("ok") and bbr_result.get("ok")),
+        "ok": bool(buffer_result.get("ok")),
         "buffers": buffer_result,
         "bbr": bbr_result,
     }

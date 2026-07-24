@@ -177,13 +177,13 @@ class TestInstallBinaryByName(unittest.TestCase):
         mock_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go", "0.9.2")
 
     @mock.patch("core.ext_binary_installer.github_release")
-    @mock.patch("core.ext_binary_installer._get_version")
-    @mock.patch("os.path.isfile")
+    @mock.patch("core.ext_binary_installer._pkg_version")
     @mock.patch("core.ext_binary_installer.detect_arch")
-    def test_skips_download_if_versions_match(self, mock_arch, mock_isfile, mock_get_version, mock_release):
+    def test_skips_download_if_versions_match(self, mock_arch, mock_pkg_version, mock_release):
+        # usque ставится как Entware-пакет (install_kind=package): проверка
+        # «уже актуально» идёт через opkg (_pkg_version), а не _get_version.
         mock_arch.return_value = "aarch64"
-        mock_isfile.return_value = True
-        mock_get_version.return_value = "v0.3.0"
+        mock_pkg_version.return_value = "0.3.0"
         mock_release.return_value = {
             "tag_name": "v0.3.0",
             "assets": []

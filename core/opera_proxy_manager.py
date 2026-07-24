@@ -120,6 +120,20 @@ class OperaProxyManager:
             with self._lock:
                 self._process = proc
 
+            # Дренаж stdout в фоне: opera-proxy при verbosity<=20 логирует
+            # каждое соединение. Без вычитывания OS-буфер пайпа (~64 КБ)
+            # переполняется, child блокируется на write() и перестаёт
+            # форвардить трафик («прокси завис»). Пишем в никуда.
+            def _drain(pipe):
+                try:
+                    for _ in iter(lambda: pipe.read(4096), b""):
+                        pass
+                except Exception:
+                    pass
+            t = threading.Thread(target=_drain, args=(proc.stdout,),
+                                 daemon=True, name="opera-proxy-drain")
+            t.start()
+
             try:
                 from core.opera_proxy_watchdog import get_opera_proxy_watchdog
                 get_opera_proxy_watchdog().reset()

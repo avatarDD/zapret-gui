@@ -175,9 +175,8 @@ class TunnelMonitor:
 
         # Telegram proxy (не TUN-интерфейс)
         try:
-            from core.tgproxy_manager import get_tgproxy_manager
-            mgr = get_tgproxy_manager()
-            if mgr._is_running():
+            from core.tgproxy_manager import get_active_engine_status
+            if get_active_engine_status().get("any_running"):
                 ifaces.add("__tgproxy__")
         except Exception:
             pass
@@ -227,16 +226,28 @@ class TunnelMonitor:
         return None, None
 
     def _read_nfqws_stats(self) -> tuple:
-        """Прочитать статистику nfqws из /proc/net/netfilter/nfnetlink_queue."""
+        """Прочитать статистику nfqws из /proc/net/netfilter/nfnetlink_queue.
+
+        Колонки файла: queue_num peer_portid queue_total copy_mode copy_range
+        queue_dropped user_dropped id_sequence 1. Счётчиков байт и разбиения
+        rx/tx здесь нет — единственная монотонная метрика активности это
+        id_sequence (parts[7], число пакетов, прошедших через очередь).
+        Возвращаем её как «tx»-счётчик (пакеты/сек после дельты); rx=0.
+        queue_num берём из конфига, а не хардкодим 300 (он настраиваемый).
+        """
+        try:
+            from core.config_manager import get_config_manager
+            qnum = str(int(get_config_manager().get(
+                "nfqws", "queue_num", default=300)))
+        except Exception:
+            qnum = "300"
         try:
             with open("/proc/net/netfilter/nfnetlink_queue") as f:
                 for line in f:
                     parts = line.split()
-                    if len(parts) >= 5 and parts[0] == "300":  # queue 300
-                        # bytes_global, pkts_global
-                        rx = int(parts[3]) if len(parts) > 3 else 0
-                        tx = int(parts[4]) if len(parts) > 4 else 0
-                        return rx, tx
+                    if len(parts) >= 8 and parts[0] == qnum:
+                        pkts = int(parts[7])  # id_sequence — монотонный счётчик
+                        return 0, pkts
         except Exception:
             pass
         return 0, 0

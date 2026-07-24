@@ -227,9 +227,9 @@ def _check_usque() -> dict:
 def _check_tgproto() -> dict:
     """Проверить tg-mtproxy-client."""
     try:
-        from core.tgproxy_manager import get_tgproxy_manager
-        mgr = get_tgproxy_manager()
-        detect = mgr._detect_mtproto()
+        from core.tgproxy_manager import get_mtproxy_client_manager
+        mgr = get_mtproxy_client_manager()
+        detect = mgr.detect()
         latest = _github_latest("necronicle/z2k")
         return {
             "name": "tgproto",
@@ -326,6 +326,7 @@ class UpdateCheckerDaemon:
         self._thread = None
         self._stop_evt = threading.Event()
         self._stale_check = False
+        self._checking = False  # идёт ли сейчас check_all() (для UI-поллинга)
 
     def reconfigure(self):
         from core.config_manager import get_config_manager
@@ -365,7 +366,13 @@ class UpdateCheckerDaemon:
                 cfg = get_config_manager()
                 interval_h = cfg.get("update_checker", "interval_hours",
                                      default=DEFAULT_CHECK_INTERVAL_HOURS)
-                result = check_all()
+                with self._lock:
+                    self._checking = True
+                try:
+                    result = check_all()
+                finally:
+                    with self._lock:
+                        self._checking = False
                 # MR-96: если ни один GitHub API запрос не удался — данные устарели
                 with self._lock:
                     self._stale_check = not _github_any_success
@@ -379,11 +386,45 @@ class UpdateCheckerDaemon:
                 log.warning("update-checker: %s" % e, source="update_checker")
             self._stop_evt.wait(interval_h * 3600)
 
+    def check_now(self) -> bool:
+        """Разовая немедленная проверка в фоне (для кнопки в UI).
+
+        Не зависит от расписания демона и его 60s-инициализации, но
+        уважает in-flight guard (MR-58): параллельные check_all() спавнят
+        18+ curl и упираются в GitHub rate-limit 60 req/h.
+
+        Возвращает True, если проверка запущена; False — если уже идёт.
+        """
+        with self._lock:
+            if self._checking:
+                return False
+            self._checking = True
+
+        def _run():
+            try:
+                check_all()
+                with self._lock:
+                    self._stale_check = not _github_any_success
+            except Exception as e:
+                with self._lock:
+                    self._stale_check = True
+                log.warning("update-checker check_now: %s" % e,
+                            source="update_checker")
+            finally:
+                with self._lock:
+                    self._checking = False
+
+        threading.Thread(target=_run, daemon=True,
+                         name="update-check-now").start()
+        return True
+
     def get_status(self):
         with self._lock:
             running = self._thread is not None and self._thread.is_alive()
             stale_check = self._stale_check
-        status = {"running": running, "stale_check": stale_check}
+            checking = self._checking
+        status = {"running": running, "stale_check": stale_check,
+                  "checking": checking}
         if stale_check:
             status["warning"] = "⚠️ Невозможно проверить обновления"
         return status

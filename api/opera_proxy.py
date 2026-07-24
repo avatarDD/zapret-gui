@@ -38,7 +38,7 @@ def register(app):
         cfg = get_config_manager()
 
         data = request.json or {}
-        return mgr.start(
+        result = mgr.start(
             country=data.get("country",
                              cfg.get("opera_proxy", "country", default="EU")),
             bind=data.get("bind",
@@ -52,11 +52,33 @@ def register(app):
             verbosity=data.get("verbosity",
                                cfg.get("opera_proxy", "verbosity", default=20)),
         )
+        # enabled отражает «opera должна работать». Без его выставления
+        # boot-автозапуск и watchdog (оба гейтятся enabled) были мертвы —
+        # флаг нигде не писался. Ставим при успешном старте.
+        if result.get("ok"):
+            cfg.set("opera_proxy", "enabled", True)
+            cfg.save()
+            try:
+                from core.opera_proxy_watchdog import get_opera_proxy_watchdog
+                get_opera_proxy_watchdog().reconfigure()
+            except Exception:
+                pass
+        return result
 
     @app.route("/api/opera-proxy/down", method="POST")
     def opera_down():
         from core.opera_proxy_manager import get_opera_proxy_manager
-        return get_opera_proxy_manager().stop()
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        cfg.set("opera_proxy", "enabled", False)
+        cfg.save()
+        result = get_opera_proxy_manager().stop()
+        try:
+            from core.opera_proxy_watchdog import get_opera_proxy_watchdog
+            get_opera_proxy_watchdog().reconfigure()
+        except Exception:
+            pass
+        return result
 
     @app.route("/api/opera-proxy/config", method="GET")
     def opera_config_get():
@@ -85,6 +107,12 @@ def register(app):
             if f in data:
                 cm.set("opera_proxy", f, data[f])
         cm.save()
+        # Тумблер autostart влияет на watchdog — применяем сразу, без ребута.
+        try:
+            from core.opera_proxy_watchdog import get_opera_proxy_watchdog
+            get_opera_proxy_watchdog().reconfigure()
+        except Exception:
+            pass
         return {"ok": True}
 
     @app.route("/api/opera-proxy/install", method="POST")

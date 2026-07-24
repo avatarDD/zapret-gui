@@ -89,6 +89,9 @@ class BlockDetector:
     def _run_loop(self):
         from core.config_manager import get_config_manager
         while not self._stop_evt.is_set():
+            interval = 300  # дефолт до чтения конфига: иначе исключение в
+                            # try оставит interval неопределённым → NameError
+                            # в wait() ниже убил бы поток детектора.
             try:
                 cfg = get_config_manager()
                 interval = cfg.get("block_detector", "interval_sec", default=300)
@@ -135,30 +138,43 @@ class BlockDetector:
 
         # MR-97: Параллельный опрос через ThreadPoolExecutor
         if to_probe:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            max_workers = min(5, len(to_probe))
-            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="block-detector-probe") as executor:
-                future_to_domain = {
-                    executor.submit(self._probe, domain, timeout): domain
-                    for domain in to_probe
-                }
-                for future in as_completed(future_to_domain):
-                    domain = future_to_domain[future]
+            def _handle(domain, result):
+                with self._lock:
+                    if domain in self._monitored:
+                        self._monitored[domain]["last_checked"] = int(time.time())
+                        self._monitored[domain]["block_code"] = result
+                if result != "ok":
+                    log.info("block-detector: %s → %s (%s)" % (
+                        domain, result, BLOCK_CODES.get(result, result)),
+                        source="block_detector")
+                    self._maybe_auto_add(domain, result)
+
+            # Entware python3-light без python3-logging: concurrent.futures
+            # не импортируется — опрашиваем последовательно (медленнее, но
+            # детектор работает, а не молча простаивает).
+            try:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+            except ImportError:
+                for domain in to_probe:
                     try:
-                        result = future.result()
-                    except Exception as e:
+                        result = self._probe(domain, timeout)
+                    except Exception:
                         result = "unknown"
-
-                    with self._lock:
-                        if domain in self._monitored:
-                            self._monitored[domain]["last_checked"] = int(time.time())
-                            self._monitored[domain]["block_code"] = result
-
-                    if result != "ok":
-                        log.info("block-detector: %s → %s (%s)" % (
-                            domain, result, BLOCK_CODES.get(result, result)),
-                            source="block_detector")
-                        self._maybe_auto_add(domain, result)
+                    _handle(domain, result)
+            else:
+                max_workers = min(5, len(to_probe))
+                with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="block-detector-probe") as executor:
+                    future_to_domain = {
+                        executor.submit(self._probe, domain, timeout): domain
+                        for domain in to_probe
+                    }
+                    for future in as_completed(future_to_domain):
+                        domain = future_to_domain[future]
+                        try:
+                            result = future.result()
+                        except Exception:
+                            result = "unknown"
+                        _handle(domain, result)
 
     def _collect_dns_queries(self) -> list:
         """Собрать уникальные домены из DNS-источника."""
@@ -496,14 +512,23 @@ class BlockDetector:
                 "block_desc": "Too Many Requests",
             }
         # MR-98: запускаем пробу в ThreadPoolExecutor с жестким таймаутом 2.5с
-        # чтобы гарантированно не блокировать Bottle-воркер API надолго
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self._probe, domain, 2)
+        # чтобы гарантированно не блокировать Bottle-воркер API надолго.
+        # На python3-light без python3-logging concurrent.futures недоступен —
+        # тогда полагаемся на внутренние таймауты _probe (без hard-timeout).
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+        except ImportError:
             try:
-                result = future.result(timeout=2.5)
+                result = self._probe(domain, 2)
             except Exception:
                 result = "tcp_timeout"
+        else:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._probe, domain, 2)
+                try:
+                    result = future.result(timeout=2.5)
+                except Exception:
+                    result = "tcp_timeout"
 
         return {
             "domain": domain,

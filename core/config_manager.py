@@ -293,7 +293,9 @@ DEFAULT_CONFIG = {
         "enabled": False,
         # Приоритет туннелей для remediation при "ip_block"/"full_block".
         # Первый доступный используется. Порядок = приоритет (сверху вниз).
-        "tunnel_priority": ["warp", "awg", "opera", "singbox", "mihomo"],
+        # Только прозрачные CIDR-методы unified-слоя (METHOD_KINDS): opera-proxy
+        # сюда не входит — это локальный HTTP/SOCKS-прокси, не метод routing'а.
+        "tunnel_priority": ["warp", "awg", "singbox", "mihomo"],
     },
 
     # --- Update Checker (Unified) ---

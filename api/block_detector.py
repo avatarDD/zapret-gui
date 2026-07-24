@@ -61,16 +61,32 @@ def register(app):
         except Exception:
             pass  # getaddrinfo failure — пусть probe_now обработает сам
 
-        return get_block_detector().probe_now(domain)
+        # MR-62: пробрасываем client_ip для per-IP rate-limit (иначе лимит
+        # 10 req/60s — мёртвый код: probe_now("") никогда не лимитируется).
+        client_ip = request.remote_addr or ""
+        return get_block_detector().probe_now(domain, client_ip=client_ip)
 
     @app.route("/api/block-detector/start", method="POST")
     def bd_start():
         from core.block_detector import get_block_detector
-        get_block_detector().start()
-        return {"ok": True}
+        from core.config_manager import get_config_manager
+        # Ручной запуск — явное действие пользователя. start() гейтится на
+        # block_detector.enabled (по умолчанию False), поэтому без включения
+        # флага кнопка была тихим no-op. Включаем и сохраняем — тогда старт
+        # переживает ребут (boot-автозапуск в app.py тоже гейтится enabled).
+        cfg = get_config_manager()
+        cfg.set("block_detector", "enabled", True)
+        cfg.save()
+        det = get_block_detector()
+        det.start()
+        return {"ok": True, "running": det.get_status().get("running", False)}
 
     @app.route("/api/block-detector/stop", method="POST")
     def bd_stop():
         from core.block_detector import get_block_detector
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        cfg.set("block_detector", "enabled", False)
+        cfg.save()
         get_block_detector().stop()
-        return {"ok": True}
+        return {"ok": True, "running": False}

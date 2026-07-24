@@ -336,7 +336,15 @@ def _apply_usque_autostart_on_boot():
                     continue
                 log.info("usque autostart: запуск %s" % c["name"],
                          source="usque")
-                result = mgr.start(c["iface"], c["path"],
+                # list_configs() отдаёт iface="" для конфигов без .run-файла;
+                # start("") упал бы на валидации имени. Аллоцируем так же,
+                # как API-путь usque_config_up (api/usque.py).
+                iface = c.get("iface") or mgr.allocate_iface("opkgtun")
+                if not iface:
+                    log.warning("usque autostart: %s — не удалось выделить"
+                                " интерфейс" % c["name"], source="usque")
+                    continue
+                result = mgr.start(iface, c.get("path"),
                                    sni=sni, http2=http2)
                 if not result.get("ok"):
                     log.warning("usque autostart: %s — %s" % (
@@ -965,9 +973,9 @@ def _graceful_shutdown(log=None):
         ("healthcheck",          "core.healthcheck",          "get_healthcheck",     "stop"),
         ("mihomo_watchdog",      "core.mihomo_watchdog",      "get_watchdog",        "_stop"),
         ("singbox_watchdog",     "core.singbox_watchdog",     "get_watchdog",        "_stop"),
-        ("opera_proxy_watchdog", "core.opera_proxy_watchdog", "get_watchdog",        "_stop"),
-        ("usque_watchdog",       "core.usque_watchdog",       "get_watchdog",        "_stop"),
-        ("warp_in_warp_watchdog","core.warp_in_warp_watchdog","get_watchdog",        "_stop"),
+        ("opera_proxy_watchdog", "core.opera_proxy_watchdog", "get_opera_proxy_watchdog", "_stop"),
+        ("usque_watchdog",       "core.usque_watchdog",       "get_usque_watchdog",       "_stop"),
+        ("warp_in_warp_watchdog","core.warp_in_warp_watchdog","get_warp_in_warp_watchdog","_stop"),
         ("tunnel_monitor",       "core.tunnel_monitor",       "get_tunnel_monitor",  "stop"),
         ("update_checker",       "core.update_checker",       "get_update_checker",  "_stop"),
         ("list_updater",         "core.list_updater",         "get_updater",         "_stop"),

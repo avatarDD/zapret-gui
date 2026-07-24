@@ -194,7 +194,6 @@ class MihomoWatchdog:
             return
 
         now = time.time()
-        from concurrent.futures import ThreadPoolExecutor
 
         def check_one(entry):
             name = (entry or {}).get("name", "")
@@ -209,6 +208,17 @@ class MihomoWatchdog:
             except Exception as e:
                 log.warning("mihomo-watchdog: %s: %s" % (name, e),
                             source="mihomo")
+
+        # Entware python3-light без python3-logging: concurrent.futures
+        # тянет logging на верхнем уровне (_base.py) и не импортируется —
+        # «No module named 'logging'». Без fallback watchdog молча ничего
+        # не делал бы на таких системах (в main цикл был последовательным).
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+        except ImportError:
+            for entry in configs:
+                check_one(entry)
+            return
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             executor.map(check_one, configs)

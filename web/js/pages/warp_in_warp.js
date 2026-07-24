@@ -9,9 +9,14 @@ const WarpInWarpPage = (() => {
     let _pollTimer = null;
     let _visibilityHandler = null;
     let _inFlight = false;
+    // Сигнатура состояния формы настройки: пока она не меняется, форму НЕ
+    // перестраиваем на каждом поллинге (иначе ввод пользователя — режим,
+    // SNI, endpoint, выбор конфигов — стирался бы каждые 3 секунды).
+    let _configSig = null;
     const POLL_MS = 3000;
 
     async function render(container) {
+        _configSig = null;  // свежая страница — форму построить заново
         container.innerHTML = `
             <div class="page-header">
                 <h1>WARP-in-WARP (MASQUE)${typeof Help !== 'undefined' ? Help.button('warp-in-warp') : ''}</h1>
@@ -186,6 +191,14 @@ const WarpInWarpPage = (() => {
             if (!detect) detect = await API.get("/api/warp-in-warp/detect");
             const el = document.getElementById("wiw-config");
             if (!el) return;
+
+            // Перестраиваем форму только при смене состояния (active,
+            // доступность usque/awg). Иначе поллинг затирал бы ввод.
+            const sig = [!!st.active, !!detect.usque_installed,
+                         !!detect.awg_available].join("|");
+            if (sig === _configSig && el.dataset.rendered === "1") return;
+            _configSig = sig;
+            el.dataset.rendered = "1";
 
             if (st.active) {
                 el.innerHTML = `

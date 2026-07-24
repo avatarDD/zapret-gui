@@ -99,7 +99,7 @@ def _http_probe_through_wiw(inner_iface: str, host: str = "one.one.one.one",
         tls_sock = ctx.wrap_socket(raw, server_hostname=host)
         tls_sock.settimeout(timeout)
         tls_sock.sendall(("HEAD /cdn-cgi/trace HTTP/1.1\r\n"
-                          "Host: %s\r\nConnection: close\r\n\r\n") % host.encode().decode())
+                          "Host: %s\r\nConnection: close\r\n\r\n" % host).encode())
         return tls_sock.recv(64).startswith(b"HTTP/")
     except Exception:
         return False
@@ -129,7 +129,7 @@ def _external_ip_probe(inner_iface: str, timeout: float = 5.0) -> bool | None:
         tls_sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
         tls_sock.settimeout(timeout)
         tls_sock.sendall(("GET / HTTP/1.1\r\nHost: %s\r\n"
-                          "Connection: close\r\n\r\n") % host.encode().decode())
+                          "Connection: close\r\n\r\n" % host).encode())
         data = tls_sock.recv(512)
         return bool(data and b"HTTP/" in data)
     except Exception:

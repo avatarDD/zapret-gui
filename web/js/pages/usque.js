@@ -88,7 +88,7 @@ const UsquePage = (() => {
                         <span class="status-dot status-ok"></span>
                         <span>Установлен: <strong>${esc(env.version || "?")}</strong></span>
                     </div>
-                    <div class="detail-row">Бинарник: <code>${esc(env.binary)}</code></div>
+                    <div class="detail-row">Бинарник: <code>${esc((env.binary && env.binary.path) || "")}</code></div>
                     <div class="detail-row">Архитектура: <code>${esc(env.arch)}</code></div>
                 `;
             } else {

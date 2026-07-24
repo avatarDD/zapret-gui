@@ -104,6 +104,7 @@ class UsqueWatchdog:
     def _run_loop(self):
         from core.config_manager import get_config_manager
         while not self._stop_evt.is_set():
+            interval = _DEFAULT_CHECK_INTERVAL
             try:
                 cfg = get_config_manager()
                 interval = cfg.get("usque", "watchdog", "interval_sec",
@@ -111,7 +112,8 @@ class UsqueWatchdog:
                 self._tick()
             except Exception as e:
                 log.warning("usque-watchdog tick: %s" % e, source="usque")
-            self._stop_evt.wait(_DEFAULT_CHECK_INTERVAL)
+            # Учитываем настроенный interval_sec, а не хардкод.
+            self._stop_evt.wait(interval)
 
     def _tick(self):
         from core.usque_manager import get_usque_manager
