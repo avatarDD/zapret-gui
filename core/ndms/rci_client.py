@@ -19,8 +19,34 @@ import json
 import threading
 import urllib.error
 import urllib.request
+import subprocess
+import re
 
 from core.log_buffer import log
+
+
+def _run_ndmq(path_or_json: str) -> tuple[bool, dict|list|None, str]:
+    try:
+        arg = path_or_json.strip()
+        if not (arg.startswith("{") or arg.startswith("[")):
+            arg = arg.replace("/", " ")
+
+        r = subprocess.run(["ndmq", "-p", arg], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout:
+            try:
+                data = json.loads(r.stdout)
+                return True, data, ""
+            except json.JSONDecodeError:
+                return True, {"raw": r.stdout}, ""
+
+        if not (path_or_json.strip().startswith("{") or path_or_json.strip().startswith("[")):
+            r = subprocess.run(["ndmc", "-c", arg], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0 and r.stdout:
+                return True, {"raw": r.stdout}, ""
+
+        return False, None, f"CLI command failed: {r.stderr}"
+    except Exception as e:
+        return False, None, str(e)
 
 
 DEFAULT_BASE_URL = "http://localhost:79/rci"
@@ -35,6 +61,9 @@ class NdmsRciClient:
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
         self.timeout  = float(timeout) if timeout else DEFAULT_TIMEOUT
         self._lock      = threading.Lock()
+        # MR-51: сериализуем POST-мутации, чтобы параллельные API-вызовы
+        # не переплетали payload'ы на стороне NDMS.
+        self._post_lock = threading.Lock()
         self._available = None   # тернарный кэш: None | True | False
         self._version_cache = ""
 
@@ -89,9 +118,19 @@ class NdmsRciClient:
                 data = None
             return False, data, "HTTP %s" % e.code
         except urllib.error.URLError as e:
-            return False, None, "URLError: %s" % e.reason
+            payload_str = json.dumps(payload) if payload is not None else ""
+            arg = payload_str if payload_str else path
+            ok, data, err = _run_ndmq(arg)
+            if ok:
+                return True, data, ""
+            return False, None, "URLError: %s (CLI fallback failed: %s)" % (e.reason, err)
         except (OSError, TimeoutError) as e:
-            return False, None, "OSError: %s" % e
+            payload_str = json.dumps(payload) if payload is not None else ""
+            arg = payload_str if payload_str else path
+            ok, data, err = _run_ndmq(arg)
+            if ok:
+                return True, data, ""
+            return False, None, "OSError: %s (CLI fallback failed: %s)" % (e, err)
 
     def get(self, path: str, timeout: float = 0):
         """GET <base>/<path>. Возвращает разобранный JSON или None."""
@@ -104,8 +143,12 @@ class NdmsRciClient:
             ok:   bool
             data: ответ NDMS (как пришёл)
             error: строка с описанием ошибки (если ok=False)
+
+        MR-51: мьютекс _post_lock сериализует мутации, чтобы
+        параллельные API-вызовы не переплетали payload'ы NDMS.
         """
-        ok, data, err = self._request("POST", payload=payload, timeout=timeout)
+        with self._post_lock:
+            ok, data, err = self._request("POST", payload=payload, timeout=timeout)
         if ok:
             # NDMS обычно возвращает массив объектов со статусами вида
             # [{"status": [{"status": "ok", "message": "..."}]}].
@@ -121,10 +164,7 @@ class NdmsRciClient:
     def is_available(self, force: bool = False) -> bool:
         """
         Доступен ли RCI прямо сейчас.
-
         Кэшируется до перезапуска. Принудительный re-probe — force=True.
-        Делаем быстрый GET /rci/show/version: на Keenetic'е возвращается
-        JSON с полями title/sandbox/etc.
         """
         with self._lock:
             if self._available is not None and not force:
@@ -132,22 +172,37 @@ class NdmsRciClient:
 
             ok, data, _err = self._request(
                 "GET", path="show/version", timeout=PROBE_TIMEOUT)
+
+            if not ok or not isinstance(data, dict):
+                ok_cli, data_cli, _ = _run_ndmq("show version")
+                if ok_cli:
+                    data = data_cli
+                    ok = True
+
             if not ok or not isinstance(data, dict):
                 self._available = False
                 return False
 
-            # Минимальная валидация ответа: должна быть какая-то
-            # содержательная инфа (title/release/sandbox/ndm).
-            has_marker = any(k in data for k in (
-                "title", "release", "sandbox", "ndm",
-                "build", "version", "architecture"))
-            self._available = bool(has_marker)
+            if isinstance(data, dict) and "raw" in data:
+                raw = data["raw"] or ""
+                has_marker = any(k in raw.lower() for k in (
+                    "version", "title", "release", "sandbox", "ndm"))
+                self._available = bool(has_marker)
+                if self._available:
+                    m = re.search(r"(?:title|version):\s*([\d\w.\-]+)", raw, re.I)
+                    self._version_cache = m.group(1) if m else "CLI version"
+            else:
+                has_marker = any(k in data for k in (
+                    "title", "release", "sandbox", "ndm",
+                    "build", "version", "architecture"))
+                self._available = bool(has_marker)
+                if self._available:
+                    self._version_cache = (
+                        str(data.get("title") or data.get("release") or
+                            data.get("version") or "")
+                    )
+
             if self._available:
-                # Запомним строку версии для логов и UI
-                self._version_cache = (
-                    str(data.get("title") or data.get("release") or
-                        data.get("version") or "")
-                )
                 log.info("NDMS RCI доступен (%s)" %
                          (self._version_cache or "?"),
                          source="ndms")

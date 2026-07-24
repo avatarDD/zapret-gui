@@ -67,10 +67,8 @@ _lock = threading.Lock()
 
 def _table_id_for(ifname: str) -> int:
     """Совпадает с RoutingManager.table_id_for / awg_manager._table_id_for."""
-    h = 0
-    for ch in ifname:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return 100 + (h % 900)
+    from core.routing.manager import table_id_for
+    return table_id_for(ifname)
 
 
 def _mark_for(rule_id: str) -> int:

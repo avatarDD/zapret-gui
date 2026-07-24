@@ -538,8 +538,45 @@ class BlockcheckRunner:
         domains: list[str],
         report: BlockcheckReport,
     ) -> None:
-        """DNS-проверка через существующий core.diagnostics.check_dns()."""
+        """DNS-проверка через существующий core.diagnostics.check_dns() + DoH-валидация."""
         from core.diagnostics import check_dns
+        import urllib.request
+
+        def _check_doh(domain: str) -> list[str]:
+            urls = [
+                f"https://cloudflare-dns.com/dns-query?name={domain}&type=A",
+                f"https://dns.google/dns-query?name={domain}&type=A"
+            ]
+            for url in urls:
+                try:
+                    req = urllib.request.Request(
+                        url, headers={"Accept": "application/dns-json"}
+                    )
+                    with urllib.request.urlopen(req, timeout=2.0) as response:
+                        data = json.loads(response.read().decode())
+                        ips = []
+                        for ans in data.get("Answer", []):
+                            if ans.get("type") == 1:  # A record
+                                ips.append(ans.get("data"))
+                        if ips:
+                            return ips
+                except Exception:
+                    pass
+            return []
+
+        def _has_non_public_ip(ips: list) -> bool:
+            """Есть ли среди IP непубличный (private/loopback/reserved/
+            link-local/unspecified) — сильный признак DNS-перехвата."""
+            import ipaddress
+            for ip in ips:
+                try:
+                    a = ipaddress.ip_address(str(ip).strip())
+                except ValueError:
+                    continue
+                if (a.is_private or a.is_loopback or a.is_reserved
+                        or a.is_link_local or a.is_unspecified):
+                    return True
+            return False
 
         total = len(domains)
         for idx, domain in enumerate(domains):
@@ -561,8 +598,37 @@ class BlockcheckRunner:
             error_str = dns_result.get("error", "") or ""
             response_time = dns_result.get("response_time")
 
+            is_dns_fake = False
+            local_ips = {"127.0.0.1", "0.0.0.0", "::1", "::"}
+
+            # 1. Если все IP локальные/loopback — явный DNS_FAKE
+            if ok and resolved_ips and all(ip in local_ips for ip in resolved_ips):
+                is_dns_fake = True
+
+            # 2. Если есть IP, сравниваем с DoH — но флажим фейк ТОЛЬКО когда
+            #    среди системных IP есть непубличный (private/reserved). Иначе
+            #    CDN/geo-балансировка (Google/Akamai/Cloudflare) штатно даёт
+            #    непересекающиеся ПУБЛИЧНЫЕ наборы IP у локального резолвера и
+            #    DoH → ложный «DNS Spoofing». Реальный ISP-перехват уводит на
+            #    свой IP (часто private-блокстраница), что и ловим здесь.
+            if ok and resolved_ips and not is_dns_fake:
+                try:
+                    doh_ips = _check_doh(domain)
+                    if doh_ips:
+                        sys_set = set(resolved_ips)
+                        doh_set = set(doh_ips)
+                        if sys_set.is_disjoint(doh_set) and \
+                                _has_non_public_ip(resolved_ips):
+                            is_dns_fake = True
+                except Exception:
+                    pass
+
             # Создаём SingleTestResult
-            if ok and resolved_ips:
+            if is_dns_fake:
+                status = TestStatus.FAILED.value
+                details = f"DNS Spoofing detected: system={resolved_ips}"
+                error_code = "DNS_FAKE"
+            elif ok and resolved_ips:
                 status = TestStatus.SUCCESS.value
                 details = f"Resolved: {', '.join(str(ip) for ip in resolved_ips[:3])}"
                 error_code = ""
@@ -1244,22 +1310,23 @@ class BlockcheckRunner:
         if not classifications:
             return DPIClassification.NONE.value
 
-        # Приоритет: TLS_DPI > ISP_PAGE > IP_BLOCK > FULL_BLOCK > остальные.
+        # Приоритет: TLS_DPI > ISP_PAGE > остальные сигнатуры > IP_BLOCK > FULL_BLOCK > DNS_FAKE.
         # IP_BLOCK и FULL_BLOCK — «обход не поможет, нужен туннель»; ставим
-        # их после явных DPI-сигнатур, но как значимый итог.
+        # их после явных DPI-сигнатур, так как если есть явный сброс TCP,
+        # блокировка является L4/L7-блокировкой DPI, которую можно обойти.
         priority = [
             DPIClassification.TLS_DPI.value,
             DPIClassification.TLS_MITM.value,
             DPIClassification.CLIENTHELLO_DPI.value,
             DPIClassification.ISP_PAGE.value,
             DPIClassification.HTTP_INJECT.value,
-            DPIClassification.IP_BLOCK.value,
-            DPIClassification.FULL_BLOCK.value,
             DPIClassification.TCP_RESET.value,
             DPIClassification.TCP_16_20.value,
             DPIClassification.THROTTLED.value,
             DPIClassification.QUIC_BLOCK.value,
             DPIClassification.STUN_BLOCK.value,
+            DPIClassification.IP_BLOCK.value,
+            DPIClassification.FULL_BLOCK.value,
             DPIClassification.DNS_FAKE.value,
         ]
         for p in priority:

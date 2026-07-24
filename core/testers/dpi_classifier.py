@@ -284,7 +284,9 @@ class DPIClassifier:
         # локальный обход (zapret) тут бесполезен, нужен туннель.
         # RST во время handshake уже классифицирован выше как TLS_DPI (там TCP
         # связь устанавливается). Чистый timeout НЕ считаем IP-блоком — он
-        # неоднозначен (DPI silent-drop тоже даёт timeout).
+        # неоднозначен (DPI silent-drop тоже даёт timeout, а он ОБХОДИТСЯ
+        # nfqws). Пометив TIMEOUT как IP_BLOCK, мы бы уводили пользователя от
+        # рабочего локального обхода к ненужному туннелю — поэтому не включаем.
         ip_block_codes = {"TCP_REFUSED", "HOST_UNREACH", "NET_UNREACH"}
         if tls_relevant and not tls_ok and tls_fails and all(
             t.error in ip_block_codes for t in tls_fails

@@ -42,7 +42,7 @@ const StrategiesPage = (() => {
                     <p class="page-description">Управление стратегиями desync для nfqws2</p>
                 </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                    <button class="btn btn-ghost" id="strat-update-btn" onclick="StrategiesPage.updateCatalog()" title="Обновить каталог стратегий из youtubediscord/zapret">
+                    <button class="btn btn-ghost" id="strat-update-btn" data-action="updateCatalog" title="Обновить каталог стратегий из youtubediscord/zapret">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="23 4 23 10 17 10"/>
                             <polyline points="1 20 1 14 7 14"/>
@@ -51,14 +51,14 @@ const StrategiesPage = (() => {
                         </svg>
                         <span id="strat-update-btn-label">Обновить стратегии</span>
                     </button>
-                    <button class="btn btn-ghost" onclick="StrategiesPage.pasteStrategyFromClipboard()" title="Вставить стратегию из буфера обмена (или Ctrl+V на странице) — откроется создание новой стратегии с профилями из буфера">
+                    <button class="btn btn-ghost" data-action="pasteStrategyFromClipboard" title="Вставить стратегию из буфера обмена (или Ctrl+V на странице) — откроется создание новой стратегии с профилями из буфера">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
                             <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
                         </svg>
                         Вставить из буфера
                     </button>
-                    <button class="btn btn-primary" onclick="StrategiesPage.openCreate()">
+                    <button class="btn btn-primary" data-action="openCreate">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                         </svg>
@@ -93,10 +93,10 @@ const StrategiesPage = (() => {
                     </span>
                     <span style="display:flex; align-items:center; gap:12px;">
                         <label class="toggle-label" id="nfqws-debug-label" style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:400; color:var(--text-muted); cursor:pointer;" title="Режим отладки nfqws2 (--debug): пер-пакетный лог в журнал — грузятся ли lua, объявлены ли блобы, матчится ли пакет цели, какие desync применяются. Применяется сразу (если nfqws2 запущен — перезапустится).">
-                            <input type="checkbox" id="nfqws-debug-toggle" onchange="StrategiesPage.toggleDebug(this.checked)">
+                            <input type="checkbox" id="nfqws-debug-toggle" data-action="toggleDebug">
                             🐞 Отладка nfqws2
                         </label>
-                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.openLogs()" title="Открыть журнал (логи nfqws2) — там виден пер-пакетный вывод при включённой отладке" style="font-size:12px; font-weight:400;">
+                        <button class="btn btn-ghost btn-sm" data-action="openLogs" title="Открыть журнал (логи nfqws2) — там виден пер-пакетный вывод при включённой отладке" style="font-size:12px; font-weight:400;">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px;">
                                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                                 <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
@@ -123,16 +123,16 @@ const StrategiesPage = (() => {
                     </span>
                     <span style="display:flex; align-items:center; gap:8px;">
                         <label class="toggle-label" style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;" title="Когда включено, демон каждые N минут проверяет YouTube/Discord/Telegram и при N провалах подряд сбрасывает выученную circular-стратегию (чтобы nfqws2 переподобрал её для затронутого домена).">
-                            <input type="checkbox" id="healthcheck-toggle" onchange="StrategiesPage.toggleHealthcheck(this.checked)">
+                            <input type="checkbox" id="healthcheck-toggle" data-action="toggleHealthcheck">
                             <span id="healthcheck-toggle-label">Включить</span>
                         </label>
-                        <button class="btn btn-ghost btn-sm" id="healthcheck-run-btn" onclick="StrategiesPage.runHealthcheckNow()" title="Прогнать проверку прямо сейчас (без ожидания таймера). Проверка идёт ~10–30 сек.">
+                        <button class="btn btn-ghost btn-sm" id="healthcheck-run-btn" data-action="runHealthcheckNow" title="Прогнать проверку прямо сейчас (без ожидания таймера). Проверка идёт ~10–30 сек.">
                             <svg class="btn-icon" id="healthcheck-run-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <polygon points="5 3 19 12 5 21 5 3"/>
                             </svg>
                             <span id="healthcheck-run-label">Проверить сейчас</span>
                         </button>
-                        <button class="btn btn-ghost btn-sm" id="healthcheck-cfg-btn" onclick="StrategiesPage.toggleHealthcheckSettings()" title="Настроить: какие сайты проверять, контрольный сайт, пороги">
+                        <button class="btn btn-ghost btn-sm" id="healthcheck-cfg-btn" data-action="toggleHealthcheckSettings" title="Настроить: какие сайты проверять, контрольный сайт, пороги">
                             <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <circle cx="12" cy="12" r="3"/>
                                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -169,14 +169,14 @@ const StrategiesPage = (() => {
                         <span class="text-muted" style="font-size:12px; font-weight:400;">circular подобрал и закрепил</span>
                     </span>
                     <span style="display:flex; align-items:center; gap:8px;">
-                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.refreshState()" title="Обновить из файла state.tsv">
+                        <button class="btn btn-ghost btn-sm" data-action="refreshState" title="Обновить из файла state.tsv">
                             <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
                                 <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/>
                                 <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>
                             </svg>
                         </button>
-                        <button class="btn btn-danger btn-sm" onclick="StrategiesPage.clearAllState()" title="Сбросить все выученные стратегии. После сброса circular переберёт стратегии заново для каждого нового потока.">
+                        <button class="btn btn-danger btn-sm" data-action="clearAllState" title="Сбросить все выученные стратегии. После сброса circular переберёт стратегии заново для каждого нового потока.">
                             <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <polyline points="3 6 5 6 21 6"/>
                                 <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/>
@@ -206,7 +206,7 @@ const StrategiesPage = (() => {
                 <div class="modal-content modal-lg">
                     <div class="modal-header">
                         <h3 class="modal-title" id="modal-title">Создать стратегию</h3>
-                        <button class="modal-close" onclick="StrategiesPage.closeModal()">&times;</button>
+                        <button class="modal-close" data-action="closeModal">&times;</button>
                     </div>
                     <div class="modal-body" id="modal-body">
                         <!-- Заполняется динамически -->
@@ -219,7 +219,7 @@ const StrategiesPage = (() => {
                 <div class="modal-content modal-lg">
                     <div class="modal-header">
                         <h3 class="modal-title">Превью команды nfqws2</h3>
-                        <button class="modal-close" onclick="StrategiesPage.closePreview()">&times;</button>
+                        <button class="modal-close" data-action="closePreview">&times;</button>
                     </div>
                     <div class="modal-body">
                         <div class="log-viewer nfq-resizable" id="preview-command" style="height:340px; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.6; padding:16px;">
@@ -227,14 +227,14 @@ const StrategiesPage = (() => {
                         </div>
                         <div id="preview-validation" style="display:none; margin-top:12px;"></div>
                         <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
-                            <button class="btn btn-primary" id="preview-validate-btn" onclick="StrategiesPage.validatePreview()" title="Проверить стратегию через nfqws2 --intercept=0 (грузит lua-init, без поднятия NFQUEUE и трафика)">
+                            <button class="btn btn-primary" id="preview-validate-btn" data-action="validatePreview" title="Проверить стратегию через nfqws2 --intercept=0 (грузит lua-init, без поднятия NFQUEUE и трафика)">
                                 <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <path d="M9 11l3 3L22 4"/>
                                     <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
                                 </svg>
                                 Проверить
                             </button>
-                            <button class="btn btn-ghost" onclick="StrategiesPage.copyPreview()">
+                            <button class="btn btn-ghost" data-action="copyPreview">
                                 <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                                     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -258,6 +258,100 @@ const StrategiesPage = (() => {
         renderBulkBar();
         // Если пришли сюда из blockcheck2-бейджа — открыть редактор с приёмом.
         consumePendingPrefill();
+        // Делегирование обработчиков:data-action → методы StrategiesPage.
+        _bindEvents(container);
+    }
+
+    // ══════════════════ Event delegation ══════════════════
+
+    function _bindEvents(container) {
+        // click delegation
+        container.addEventListener('click', (e) => {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+            const action = el.dataset.action;
+
+            // Strategy ID: from closest card [data-id] or explicit data-strategy-id
+            const card = el.closest('[data-id]');
+            const sid = card ? card.dataset.id : el.dataset.strategyId;
+
+            // Profile index: from closest .profile-editor-item or explicit data-index
+            const profileItem = el.closest('.profile-editor-item');
+            const pidx = profileItem != null
+                ? parseInt(profileItem.dataset.index, 10)
+                : (el.dataset.index != null ? parseInt(el.dataset.index, 10) : null);
+
+            switch (action) {
+                case 'updateCatalog': updateCatalog(); break;
+                case 'pasteStrategyFromClipboard': pasteStrategyFromClipboard(); break;
+                case 'openCreate': openCreate(); break;
+                case 'openLogs': openLogs(); break;
+                case 'runHealthcheckNow': runHealthcheckNow(); break;
+                case 'toggleHealthcheckSettings':
+                    e.preventDefault();
+                    toggleHealthcheckSettings();
+                    break;
+                case 'refreshState': refreshState(); break;
+                case 'clearAllState': clearAllState(); break;
+                case 'closeModal': closeModal(); break;
+                case 'closePreview': closePreview(); break;
+                case 'validatePreview': validatePreview(); break;
+                case 'copyPreview': copyPreview(); break;
+                case 'showPreview': showPreview(sid); break;
+                case 'toggleSelect': {
+                    e.stopPropagation();
+                    const cb = el.querySelector('.strategy-select') || el;
+                    const checked = !!cb.checked;
+                    if (checked) selectedIds.add(sid); else selectedIds.delete(sid);
+                    if (card) card.classList.toggle('selected', checked);
+                    renderBulkBar();
+                    break;
+                }
+                case 'toggleFavorite': toggleFavorite(sid); break;
+                case 'applyStrategy': applyStrategy(sid); break;
+                case 'copyStrategyToClipboard': copyStrategyToClipboard(sid); break;
+                case 'openEdit': openEdit(sid); break;
+                case 'deleteStrategy': deleteStrategy(sid); break;
+                case 'duplicateStrategy': duplicateStrategy(sid); break;
+                case 'saveHealthcheckSettings': saveHealthcheckSettings(); break;
+                case 'addProfile': addProfile(); break;
+                case 'editorPreview': editorPreview(); break;
+                case 'saveEditor': saveEditor(); break;
+                case 'removeProfile': removeProfile(pidx); break;
+                case 'mergeSelected': mergeSelected(); break;
+                case 'clearSelection': clearSelection(); break;
+                case 'showCircularStrategies': showCircularStrategies(); break;
+                case 'jumpToDiag':
+                    jumpToDiag(
+                        parseInt(el.dataset.idx, 10),
+                        parseInt(el.dataset.start, 10),
+                        parseInt(el.dataset.end, 10)
+                    );
+                    break;
+            }
+        });
+
+        // change delegation (checkboxes, inputs, selects, textareas)
+        container.addEventListener('change', (e) => {
+            const el = e.target.closest('[data-action]');
+            if (!el) return;
+            const action = el.dataset.action;
+
+            const profileItem = el.closest('.profile-editor-item');
+            const pidx = profileItem != null
+                ? parseInt(profileItem.dataset.index, 10)
+                : (el.dataset.index != null ? parseInt(el.dataset.index, 10) : null);
+
+            switch (action) {
+                case 'toggleDebug': toggleDebug(e.target.checked); break;
+                case 'toggleHealthcheck': toggleHealthcheck(e.target.checked); break;
+                case 'toggleProfile': toggleProfile(pidx, e.target.checked); break;
+                case 'updateProfileName': updateProfileName(pidx, e.target.value); break;
+                case 'insertFilter': insertFilter(pidx, e.target); break;
+                case 'insertHostlist': insertHostlist(pidx, e.target); break;
+                case 'updateProfileArgs': updateProfileArgs(pidx, e.target.value); break;
+            }
+        });
     }
 
     // ══════════════════ Healthcheck (autocircular watchdog) ══════════════════
@@ -322,7 +416,7 @@ const StrategiesPage = (() => {
                 <b>не сбрасывались</b>. ${ctlNote}
                 <div style="margin-top:4px;">Если у вас <b>реально</b> бывает, что все сайты заблокированы
                 одновременно — задайте «контрольный сайт» в
-                <a href="#" onclick="StrategiesPage.toggleHealthcheckSettings(); return false;">настройках</a>
+                <a href="#" data-action="toggleHealthcheckSettings">настройках</a>
                 (тогда при живой связи сброс будет срабатывать) или отключите
                 там же «защиту от обвала».</div>
             </div>`;
@@ -594,8 +688,8 @@ const StrategiesPage = (() => {
                 </div>
 
                 <div style="display:flex; gap:8px;">
-                    <button class="btn btn-primary btn-sm" onclick="StrategiesPage.saveHealthcheckSettings()">Сохранить</button>
-                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.toggleHealthcheckSettings()">Отмена</button>
+                    <button class="btn btn-primary btn-sm" data-action="saveHealthcheckSettings">Сохранить</button>
+                    <button class="btn btn-ghost btn-sm" data-action="toggleHealthcheckSettings">Отмена</button>
                 </div>
             </div>
         `;
@@ -656,6 +750,17 @@ const StrategiesPage = (() => {
                 return;
             }
             body.innerHTML = renderStateTable(entries, summary);
+
+            body.querySelectorAll(".action-clear-key").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    clearKeyState(e.currentTarget.getAttribute("data-key"));
+                });
+            });
+            body.querySelectorAll(".action-clear-host").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    clearHostState(e.currentTarget.getAttribute("data-host"));
+                });
+            });
         } catch (_e) {
             body.innerHTML = emptyStateHtml();
         }
@@ -676,7 +781,7 @@ const StrategiesPage = (() => {
                     <li>Открывайте заблокированные сайты — здесь начнут появляться
                         выученные стратегии по доменам.</li>
                 </ol>
-                <button class="btn btn-primary btn-sm" onclick="StrategiesPage.showCircularStrategies()">
+                <button class="btn btn-primary btn-sm" data-action="showCircularStrategies">
                     <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                         <polyline points="23 4 23 10 17 10"/>
                         <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -711,7 +816,7 @@ const StrategiesPage = (() => {
             const keys = Object.keys(byKey);
             if (keys.length === 0) return '';
             const parts = keys.map(k =>
-                `<button class="badge badge-ghost" onclick="StrategiesPage.clearKeyState('${escapeHtml(k)}')" title="Сбросить категорию ${escapeHtml(k)} (${byKey[k]} записей)">${escapeHtml(k)} × ${byKey[k]}</button>`
+                `<button class="badge badge-ghost action-clear-key" data-key="${escapeHtml(k)}" title="Сбросить категорию ${escapeHtml(k)} (${byKey[k]} записей)">${escapeHtml(k)} × ${byKey[k]}</button>`
             );
             return `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">${parts.join(' ')}</div>`;
         };
@@ -722,7 +827,7 @@ const StrategiesPage = (() => {
                 <td style="text-align:center;"><strong>#${e.strategy}</strong></td>
                 <td class="text-muted" style="font-size:12px;">${escapeHtml(fmtTs(e.ts))}</td>
                 <td style="text-align:right;">
-                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.clearHostState('${escapeHtml(e.host)}')" title="Сбросить выученную стратегию для ${escapeHtml(e.host)} — circular переберёт заново.">
+                    <button class="btn btn-ghost btn-sm action-clear-host" data-host="${escapeHtml(e.host)}" title="Сбросить выученную стратегию для ${escapeHtml(e.host)} — circular переберёт заново.">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
                             <polyline points="3 6 5 6 21 6"/>
                             <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/>
@@ -1032,7 +1137,7 @@ const StrategiesPage = (() => {
                     <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">${escapeHtml(active.description || '')}</div>
                 </div>
                 <div style="margin-left:auto; display:flex; gap:6px;">
-                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.showPreview('${active.id}')" title="Превью команды">
+                    <button class="btn btn-ghost btn-sm" data-action="showPreview" data-strategy-id="${active.id}" title="Превью команды">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                             <polyline points="14 2 14 8 20 8"/>
@@ -1132,10 +1237,10 @@ const StrategiesPage = (() => {
         }).join('');
 
         return `
-            <div class="strategy-card compact${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}" data-id="${s.id}" data-list-ui-card>
+            <div class="strategy-card compact${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}" data-id="${escapeAttr(s.id)}" data-list-ui-card>
                 <div class="strategy-card-header">
-                    <label class="strategy-select-label" title="Выделить для объединения с другими стратегиями" onclick="event.stopPropagation();">
-                        <input type="checkbox" class="strategy-select"${isSelected ? ' checked' : ''} onclick="StrategiesPage.toggleSelect(event, '${escapeAttr(s.id)}')">
+                    <label class="strategy-select-label" title="Выделить для объединения с другими стратегиями" data-action="toggleSelect">
+                        <input type="checkbox" class="strategy-select"${isSelected ? ' checked' : ''}>
                     </label>
                     <div class="strategy-card-info">
                         <div class="strategy-card-name">
@@ -1146,7 +1251,7 @@ const StrategiesPage = (() => {
                         </div>
                         ${s.description ? `<div class="strategy-card-desc">${escapeHtml(s.description)}</div>` : ''}
                     </div>
-                    <button class="btn-icon-only fav-btn${isFav ? ' active' : ''}" onclick="StrategiesPage.toggleFavorite('${s.id}')" title="${isFav ? 'Убрать из избранного' : 'В избранное'}">
+                    <button class="btn-icon-only fav-btn${isFav ? ' active' : ''}" data-action="toggleFavorite" title="${isFav ? 'Убрать из избранного' : 'В избранное'}">
                         <svg viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" width="18" height="18">
                             <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
                         </svg>
@@ -1155,7 +1260,7 @@ const StrategiesPage = (() => {
                 <div class="strategy-card-profiles">${profileBadges}</div>
                 <div class="strategy-card-args-wrap">${argsBlocks}</div>
                 <div class="strategy-card-actions">
-                    <button class="btn btn-primary btn-sm" onclick="StrategiesPage.applyStrategy('${s.id}')"${isActive ? ' disabled' : ''}>
+                    <button class="btn btn-primary btn-sm" data-action="applyStrategy"${isActive ? ' disabled' : ''}>
                         ${isActive ? '✓ Активна' : 'Применить'}
                     </button>
                     <button class="strategy-card-toggle" data-list-ui-toggle title="Развернуть/свернуть подробности">
@@ -1164,13 +1269,13 @@ const StrategiesPage = (() => {
                         </svg>
                         Подробнее
                     </button>
-                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.showPreview('${s.id}')" title="Превью команды">
+                    <button class="btn btn-ghost btn-sm" data-action="showPreview" title="Превью команды">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
                         </svg>
                         Превью
                     </button>
-                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.copyStrategyToClipboard('${s.id}')" title="Скопировать стратегию со всеми профилями (через --new) в буфер обмена">
+                    <button class="btn btn-ghost btn-sm" data-action="copyStrategyToClipboard" title="Скопировать стратегию со всеми профилями (через --new) в буфер обмена">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -1178,20 +1283,20 @@ const StrategiesPage = (() => {
                         В буфер
                     </button>
                     ${!isBuiltin ? `
-                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.openEdit('${s.id}')" title="Редактировать">
+                        <button class="btn btn-ghost btn-sm" data-action="openEdit" title="Редактировать">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                             </svg>
                         </button>
-                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.deleteStrategy('${s.id}')" title="Удалить" style="color:var(--error);">
+                        <button class="btn btn-ghost btn-sm" data-action="deleteStrategy" title="Удалить" style="color:var(--error);">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <polyline points="3 6 5 6 21 6"/>
                                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                             </svg>
                         </button>
                     ` : `
-                        <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.duplicateStrategy('${s.id}')" title="Копировать как пользовательскую">
+                        <button class="btn btn-ghost btn-sm" data-action="duplicateStrategy" title="Копировать как пользовательскую">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -1453,7 +1558,7 @@ const StrategiesPage = (() => {
               <div class="form-group">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     <label class="form-label" style="margin-bottom:0;">Профили</label>
-                    <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.addProfile()">
+                    <button class="btn btn-ghost btn-sm" data-action="addProfile">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                         </svg>
@@ -1466,7 +1571,7 @@ const StrategiesPage = (() => {
               </div>
 
               <div class="form-group" style="margin-top:16px;">
-                <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.editorPreview()">
+                <button class="btn btn-ghost btn-sm" data-action="editorPreview">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                         <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
                     </svg>
@@ -1476,8 +1581,8 @@ const StrategiesPage = (() => {
               </div>
 
               <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
-                <button class="btn btn-ghost" onclick="StrategiesPage.closeModal()">Отмена</button>
-                <button class="btn btn-primary" onclick="StrategiesPage.saveEditor()">
+                <button class="btn btn-ghost" data-action="closeModal">Отмена</button>
+                <button class="btn btn-primary" data-action="saveEditor">
                     ${isCreate ? 'Создать' : 'Сохранить'}
                 </button>
               </div>
@@ -1499,12 +1604,12 @@ const StrategiesPage = (() => {
             <div class="profile-editor-item" data-index="${index}">
                 <div class="profile-editor-header">
                     <label class="toggle-label" style="flex:1; display:flex; align-items:center; gap:8px;">
-                        <input type="checkbox" class="profile-toggle" ${enabled ? 'checked' : ''} onchange="StrategiesPage.toggleProfile(${index}, this.checked)">
-                        <input type="text" class="form-input form-input-sm" value="${escapeHtml(profile.name || profile.id)}" placeholder="Имя профиля" onchange="StrategiesPage.updateProfileName(${index}, this.value)" style="flex:1; max-width:260px;">
+                        <input type="checkbox" class="profile-toggle" ${enabled ? 'checked' : ''} data-action="toggleProfile" data-index="${index}">
+                        <input type="text" class="form-input form-input-sm" value="${escapeHtml(profile.name || profile.id)}" placeholder="Имя профиля" data-action="updateProfileName" data-index="${index}" style="flex:1; max-width:260px;">
                     </label>
                     <div style="display:flex; align-items:center; gap:6px;">
                         <select class="form-input form-input-sm profile-filter-picker" data-index="${index}"
-                                onchange="StrategiesPage.insertFilter(${index}, this)"
+                                data-action="insertFilter" data-index="${index}"
                                 title="Вставить --filter-* + --payload в начало профиля (порт/протокол)"
                                 style="max-width:150px;">
                             <option value="">+ фильтр…</option>
@@ -1513,13 +1618,13 @@ const StrategiesPage = (() => {
                             <option value="quic443">UDP 443 · QUIC</option>
                         </select>
                         <select class="form-input form-input-sm profile-hostlist-picker" data-index="${index}"
-                                onchange="StrategiesPage.insertHostlist(${index}, this)"
+                                data-action="insertHostlist" data-index="${index}"
                                 title="Вставить --hostlist=<файл> в аргументы профиля"
                                 style="max-width:200px;">
                             <option value="">+ hostlist…</option>
                             ${hostlistOptions}
                         </select>
-                        <button class="btn-icon-only" onclick="StrategiesPage.removeProfile(${index})" title="Удалить профиль" style="color:var(--error); opacity:0.7;">
+                        <button class="btn-icon-only" data-action="removeProfile" data-index="${index}" title="Удалить профиль" style="color:var(--error); opacity:0.7;">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                             </svg>
@@ -1528,7 +1633,7 @@ const StrategiesPage = (() => {
                 </div>
                 <div class="profile-args-wrap nfq-editor" data-index="${index}">
                     <pre class="nfq-editor-pre" aria-hidden="true"></pre>
-                    <textarea class="form-textarea profile-args nfq-editor-ta" rows="3" wrap="off" spellcheck="false" placeholder="--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls" onchange="StrategiesPage.updateProfileArgs(${index}, this.value)">${escapeHtml(profile.args || '')}</textarea>
+                    <textarea class="form-textarea profile-args nfq-editor-ta" rows="3" wrap="off" spellcheck="false" placeholder="--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls" data-action="updateProfileArgs" data-index="${index}">${escapeHtml(profile.args || '')}</textarea>
                     <span class="profile-args-hint">Ctrl+Space</span>
                 </div>
                 <div class="profile-hint-msg" id="profile-hint-${index}">${renderProfileHint(profile.args || '')}</div>
@@ -2039,7 +2144,7 @@ const StrategiesPage = (() => {
         const sorted = diags.slice().sort((a, b) => (order[a.severity] - order[b.severity]) || (a.start - b.start));
         const rows = sorted.map(d => {
             const jump = (!d.structural && d.end > d.start)
-                ? ' onclick="StrategiesPage.jumpToDiag(' + idx + ',' + d.start + ',' + d.end + ')" style="cursor:pointer;"'
+                ? ' data-action="jumpToDiag" data-idx="' + idx + '" data-start="' + d.start + '" data-end="' + d.end + '" style="cursor:pointer;"'
                 : '';
             return '<div class="nfq-diag-row nfq-diag-' + d.severity + '"' + jump + '>'
                 + '<span class="nfq-diag-ico">' + icon[d.severity] + '</span>'
@@ -2227,7 +2332,7 @@ const StrategiesPage = (() => {
         bar.style.display = 'flex';
         bar.innerHTML = `
             <span class="strat-bulkbar-count">Выбрано: <b>${n}</b></span>
-            <button class="btn btn-primary btn-sm" onclick="StrategiesPage.mergeSelected()"
+            <button class="btn btn-primary btn-sm" data-action="mergeSelected"
                     ${canMerge ? '' : 'disabled'}
                     title="${canMerge ? 'Объединить выбранные стратегии в одну (профили сложатся)' : 'Выберите минимум 2 стратегии'}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px;">
@@ -2236,7 +2341,7 @@ const StrategiesPage = (() => {
                 </svg>
                 Объединить
             </button>
-            <button class="btn btn-ghost btn-sm" onclick="StrategiesPage.clearSelection()">Снять выделение</button>
+            <button class="btn btn-ghost btn-sm" data-action="clearSelection">Снять выделение</button>
         `;
     }
 

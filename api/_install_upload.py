@@ -17,9 +17,29 @@ from bottle import request, response
 
 def _save_upload(upload, workdir: str, fallback_name: str) -> str:
     """Сохранить bottle FileUpload в workdir, вернуть путь."""
+    import re
     raw = getattr(upload, "raw_filename", "") or upload.filename or ""
+    # MR-64: санитизация имени файла (только безопасные символы)
     name = os.path.basename(raw).replace("/", "_").replace("\\", "_")
+    name = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
     name = name or fallback_name
+
+    # MR-64: вайтлист разрешенных расширений
+    allowed_extensions = (".bin", ".tar.gz", ".tgz", ".zip", ".ipk", ".conf", ".toml")
+    if not any(name.lower().endswith(ext) for ext in allowed_extensions):
+        raise ValueError("Недопустимое расширение файла. Разрешены: %s" % ", ".join(allowed_extensions))
+
+    # MR-64: ограничение размера файла (64 MB)
+    try:
+        upload.file.seek(0, 2)
+        size = upload.file.tell()
+        upload.file.seek(0)
+        max_size = 64 * 1024 * 1024  # 64 MB
+        if size > max_size:
+            raise ValueError("Размер файла превышает лимит в 64 MB (размер: %.1f MB)" % (size / (1024 * 1024)))
+    except (AttributeError, OSError):
+        pass
+
     dst = os.path.join(workdir, name)
     upload.save(dst, overwrite=True)
     return dst

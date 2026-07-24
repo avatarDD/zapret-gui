@@ -50,10 +50,8 @@ def _run(args, timeout=10):
 
 
 def _table_id_for(ifname: str) -> int:
-    h = 0
-    for ch in ifname:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return 100 + (h % 900)
+    from core.routing.manager import table_id_for
+    return table_id_for(ifname)
 
 
 def _iface_exists(ifname: str) -> bool:

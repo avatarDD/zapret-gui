@@ -146,7 +146,7 @@ def create_set(name: str, family: str = "v4") -> dict:
         return {"ok": True, "created": False, "name": name}
 
     rc, _o, err = _run(["nft", "add", "set", "inet", TABLE_NAME, name,
-                        "{ type %s; flags interval; auto-merge; }" % typ])
+                        "{ type %s; flags interval; auto-merge; size 1048576; }" % typ])
     if rc != 0 and "exists" not in (err or "").lower():
         return {"ok": False, "error": err.strip(), "name": name}
     return {"ok": True, "created": True, "name": name}

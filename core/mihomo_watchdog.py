@@ -194,22 +194,40 @@ class MihomoWatchdog:
             return
 
         now = time.time()
-        for entry in configs:
+
+        def check_one(entry):
             name = (entry or {}).get("name", "")
             if not name:
-                continue
+                return
             try:
                 if not mgr.is_running(name):
-                    self._probe_fails.pop(name, None)
-                    continue
+                    with self._lock:
+                        self._probe_fails.pop(name, None)
+                    return
                 self._maybe_restart(mgr, name, settings, now)
             except Exception as e:
                 log.warning("mihomo-watchdog: %s: %s" % (name, e),
                             source="mihomo")
 
+        # Entware python3-light без python3-logging: concurrent.futures
+        # тянет logging на верхнем уровне (_base.py) и не импортируется —
+        # «No module named 'logging'». Без fallback watchdog молча ничего
+        # не делал бы на таких системах (в main цикл был последовательным).
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+        except ImportError:
+            for entry in configs:
+                check_one(entry)
+            return
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            executor.map(check_one, configs)
+
     def _maybe_restart(self, mgr, name: str, settings: dict, now: float):
         # Cooldown — даём прокси установиться после рестарта.
-        if (now - self._last_restart.get(name, 0)) < settings["cooldown_sec"]:
+        with self._lock:
+            last_restart_time = self._last_restart.get(name, 0)
+        if (now - last_restart_time) < settings["cooldown_sec"]:
             return
 
         from core.clash_yaml import parse_yaml
@@ -231,9 +249,10 @@ class MihomoWatchdog:
             return
 
         ok = probe_proxy(ep, group, resolve_target(settings["probe_target"]),
-                         settings["probe_timeout_ms"])
-        fails = 0 if ok else self._probe_fails.get(name, 0) + 1
-        self._probe_fails[name] = fails
+                          settings["probe_timeout_ms"])
+        with self._lock:
+            fails = 0 if ok else self._probe_fails.get(name, 0) + 1
+            self._probe_fails[name] = fails
 
         should, reason = decide_restart(
             probe_fails=fails,
@@ -242,9 +261,12 @@ class MihomoWatchdog:
             return
 
         # Rate limit.
-        history = self._restart_log.setdefault(name, [])
-        history[:] = [ts for ts in history if (now - ts) < 3600]
-        if len(history) >= settings["max_restarts_per_hour"]:
+        with self._lock:
+            history = self._restart_log.setdefault(name, [])
+            history[:] = [ts for ts in history if (now - ts) < 3600]
+            num_restarts = len(history)
+
+        if num_restarts >= settings["max_restarts_per_hour"]:
             log.warning(
                 "mihomo-watchdog: %s — %s, но лимит рестартов исчерпан"
                 " (%d/час). Прокси нездоров — смените сервер/подписку."
@@ -260,18 +282,21 @@ class MihomoWatchdog:
             log.warning("mihomo-watchdog: restart %s: %s" % (name, e),
                         source="mihomo")
             return
-        self._last_restart[name] = now
-        self._probe_fails[name] = 0
-        history.append(now)
+        with self._lock:
+            self._last_restart[name] = now
+            self._probe_fails[name] = 0
+            self._restart_log.setdefault(name, []).append(now)
 
     # ─── status (для UI) ───
 
     def get_status(self) -> dict:
         settings = _get_settings()
+        now = time.time()
         with self._lock:
+            self._cleanup_restart_log(now)
             running = (self._thread is not None and self._thread.is_alive())
             history_view = {
-                k: len([ts for ts in v if (time.time() - ts) < 3600])
+                k: len(v)
                 for k, v in self._restart_log.items()
             }
         return {
@@ -280,6 +305,18 @@ class MihomoWatchdog:
             "settings": settings,
             "restarts_last_hour": history_view,
         }
+
+    def _cleanup_restart_log(self, now: float):
+        """Очистить старые таймстампы (>1 часа) и удалить пустые логи интерфейсов."""
+        to_delete = []
+        for k, v in list(self._restart_log.items()):
+            cleaned = [ts for ts in v if (now - ts) < 3600]
+            if not cleaned:
+                to_delete.append(k)
+            else:
+                self._restart_log[k] = cleaned
+        for k in to_delete:
+            self._restart_log.pop(k, None)
 
 
 # ─────── singleton ───────

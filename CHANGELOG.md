@@ -1,8 +1,68 @@
 # Changelog
 
-## Unreleased — Пул публичных серверов, тестер прокси, vmess, urltest-подписки
+## v0.23.0 — Расширенные туннели: WARP/MASQUE, Telegram, Opera, WARP-in-WARP, авто-ремедиация (+ пул серверов и тестер прокси)
 
 ### Добавлено
+
+> Блок «Расширенные туннели» ниже — вклад [@AlexZander85](https://github.com/AlexZander85)
+> (PR [#246](https://github.com/avatarDD/zapret-gui/pull/246), ранее #230/#245).
+> Все новые подсистемы **выключены по умолчанию** и обратно совместимы.
+
+- **WARP/MASQUE-туннель (usque-keenetic)** — Cloudflare WARP поверх
+  протокола MASQUE на порту 443, маскируется под обычный HTTPS (устойчив
+  к DPI). Автоустановка бинарника, watchdog, autostart, оптимизации
+  латентности. (`core/usque_manager.py`, `core/usque_watchdog.py`,
+  `api/usque.py`, `web/js/pages/usque*.js`)
+- **WARP-in-WARP — двойной туннель, 4 режима** (AWG+AWG, MASQUE+MASQUE,
+  MASQUE+AWG, AWG+MASQUE): внешний слой маскирует внутренний. Закрепление
+  endpoint внутреннего туннеля через внешний, fail-closed при сбое
+  маршрута, watchdog двойного туннеля. (`core/warp_in_warp.py`,
+  `core/warp_in_warp_watchdog.py`, `api/warp_in_warp.py`)
+- **Telegram-туннель без VPS** — основной движок tg-ws-proxy-go
+  (Entware/OpenWrt-пакет) + резервный tg-mtproxy-client (relay задаётся
+  явно, listener на 127.0.0.1). Прозрачная маршрутизация Telegram DC
+  включается только по явному действию. (`core/tgproxy_manager.py`,
+  `core/tgproxy_watchdog.py`, `api/tgproxy.py`)
+- **Opera Proxy** — zero-config HTTP/SOCKS5 через SurfEasy VPN, выбор
+  региона, watchdog. (`core/opera_proxy_manager.py`,
+  `core/opera_proxy_watchdog.py`, `api/opera_proxy.py`)
+- **Auto-Remediation** — по типу DPI-блокировки автоматически выбирается
+  метод обхода: TLS-DPI → скан стратегий nfqws2, IP-блок → туннель по
+  настраиваемому приоритету, DNS-подмена → DoH/hosts. Есть dry-run.
+  (`core/auto_remediation.py`, `api/auto_remediation.py`)
+- **Block Detector** — мониторинг DNS-запросов клиентов + 4-стадийная
+  проба (DNS → TCP → TLS → HTTP) + опциональное автодобавление
+  заблокированных доменов в списки. (`core/block_detector.py`,
+  `api/block_detector.py`)
+- **Per-domain DNS routing** — свой DoH/DoT/IP-резолвер для конкретных
+  доменов (обход DNS-подмены ISP): генерирует `server=/domain/ip` для
+  dnsmasq, подключает managed-include и перечитывает dnsmasq; строгая
+  валидация доменов от инъекций. (`core/dns_routing.py`,
+  `core/dns_providers.py`, `api/dns_routing.py`)
+- **DPI-фильтрация стратегий** — сканер стратегий отбирает только
+  релевантные типу блокировки стратегии (ускорение скана в 5–10 раз).
+  (`core/strategy_scanner.py`)
+- **Live-мониторинг и оптимизатор туннелей** — графики rx/tx/скорости по
+  всем интерфейсам; MTU/MSS-clamp/BBR+fq с бэкапом и полным восстановлением
+  системных настроек. (`core/tunnel_monitor.py`, `core/tunnel_optimizer.py`)
+- **Единый checker обновлений** — проверка версий всех бинарников одним
+  запросом (без авто-установки). (`core/update_checker.py`)
+- **Безопасная установка внешних бинарников** — pinned release-теги +
+  обязательная проверка SHA256 (fail-closed) до `chmod`/запуска, атомарная
+  докачка, защита от path traversal при распаковке. (`core/ext_binary_installer.py`)
+- **CLI для новых функций** — `usque`, `tgproxy`, `opera`, `monitor`,
+  `updates`, `dns-routing`. (`core/cli.py`)
+
+### Изменено
+- **Хардненинг дефолтов Web-GUI:** для новой установки bind по умолчанию
+  `127.0.0.1` (раньше `0.0.0.0`). HTTP-аутентификация остаётся **выключенной
+  по умолчанию** (совместимо с прежним UX) и включается одним флагом
+  `gui.auth_enabled` + непустой `auth_password`. Существующие установки не
+  затрагиваются: deep-merge сохраняет ранее записанные `gui.host` и
+  `gui.auth_enabled`, поэтому апдейт не требует пароль и не отбирает
+  LAN-доступ. (`core/config_manager.py`)
+
+### Прочее из этого релиза
 - **Перехват DNS (:53 → встроенный прокси) — доменные маршруты видят
   живые запросы клиентов без dnsmasq** (`core/routing/dns_intercept.py`,
   `api/routing.py`, `web/js/pages/routing_unified.js`, `app.py`; прямой

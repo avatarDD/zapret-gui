@@ -458,6 +458,69 @@ class NdmsCommands:
         """`system configuration save` — сохранить настройки в startup."""
         return self.client.save_running_config()
 
+    # ════════════════════════════════════════════════════════════
+    # Транзакционные операции (MR-23)
+    # ════════════════════════════════════════════════════════════
+
+    def apply_domain_route(self, group_name: str, domains: list,
+                           interface: str, description: str = "") -> dict:
+        """Создать/обновить FQDN-группу и привязать её к интерфейсу.
+
+        MR-23: операция транзакционная — если назначение dns-proxy route
+        не удалось, созданная FQDN-группа откатывается (удаляется).
+
+        Args:
+            group_name:  имя FQDN-группы (может быть make_owned_name()-output)
+            domains:     список доменов для маршрутизации
+            interface:   целевой интерфейс (например «Wireguard0»)
+            description: опциональное описание группы
+
+        Returns:
+            {«ok»: bool, «error»?: str, «rolled_back»?: bool}
+        """
+        # Шаг 1: создать/обновить FQDN-группу
+        r1 = self.upsert_fqdn_group(
+            group_name,
+            include=domains,
+            description=description,
+        )
+        if not r1.get("ok"):
+            return {"ok": False,
+                    "error": "upsert_fqdn_group: %s" % r1.get("error", "?")}
+
+        # Шаг 2: назначить dns-proxy route
+        r2 = self.set_dns_proxy_route(group_name, interface)
+        if not r2.get("ok"):
+            # Rollback: удаляем группу, которую только что создали
+            try:
+                self.delete_fqdn_group(group_name)
+            except Exception:
+                pass
+            log.warning(
+                "NDMS apply_domain_route: rollback %s (route failed: %s)"
+                % (group_name, r2.get("error")),
+                source="ndms")
+            return {"ok": False,
+                    "error": "set_dns_proxy_route: %s" % r2.get("error", "?"),
+                    "rolled_back": True}
+
+        return {"ok": True}
+
+    def remove_domain_route(self, group_name: str, interface: str) -> dict:
+        """Симметрично удалить dns-proxy route и FQDN-группу.
+
+        Каждый шаг — идемпотентен (not-found трактуется как успех).
+        Возвращает {«ok»: bool, «errors»: [str]}.
+        """
+        errors = []
+        r1 = self.delete_dns_proxy_route(group_name, interface)
+        if not r1.get("ok"):
+            errors.append("delete_dns_proxy_route: %s" % r1.get("error", "?"))
+        r2 = self.delete_fqdn_group(group_name)
+        if not r2.get("ok"):
+            errors.append("delete_fqdn_group: %s" % r2.get("error", "?"))
+        return {"ok": not errors, "errors": errors}
+
 
 # ─────── helpers ───────
 
@@ -541,9 +604,12 @@ def _is_not_found_error(err: str) -> bool:
     if not err:
         return False
     low = err.lower()
+    # Только текстовые маркеры «объект отсутствует» (Keenetic RCI отдаёт их
+    # с HTTP 200). "HTTP 404"/"unknown" НЕ включаем намеренно: 404 означает
+    # проблему самого RCI-эндпоинта, а "unknown" слишком широк («unknown
+    # command») — их маскировка под успех спрятала бы реальные ошибки.
     return any(token in low for token in (
-        "not found", "no such", "doesn't exist", "does not exist",
-        "unknown", "404"))
+        "not found", "no such", "doesn't exist", "does not exist"))
 
 
 # ─────── singleton ───────

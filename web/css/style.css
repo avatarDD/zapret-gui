@@ -13,7 +13,8 @@
     /* Цвета текста */
     --text-primary:   #e4e6eb;
     --text-secondary: #8b8fa3;
-    --text-muted:     #565a6e;
+    /* MR-104: повышен контраст muted text до 4.6:1 на тёмной теме */
+    --text-muted:     #7a7f96;
     --text-heading:   #f0f1f5;
 
     /* Акцентные цвета */
@@ -71,7 +72,8 @@
 
     --text-primary:   #1d2230;
     --text-secondary: #545b6e;
-    --text-muted:     #8990a1;
+    /* MR-104: повышен контраст muted text до 4.6:1 на светлой теме */
+    --text-muted:     #6a7184;
     --text-heading:   #0f1320;
 
     --accent:         #2f7de1;
@@ -101,6 +103,27 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+}
+.lang-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+.lang-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
 }
 .theme-toggle {
     display: inline-flex;
@@ -636,9 +659,22 @@ input:focus, textarea:focus, select:focus {
 .btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn-lg { padding: 10px 20px; font-size: 14px; }
 
+/* MR-102: WCAG 2.5.8 touch targets — увеличены для pointer: coarse */
+@media (pointer: coarse) {
+    .btn { min-height: 44px; }
+    .btn-sm { min-height: 40px; }
+    .btn-lg { min-height: 48px; }
+}
+
 .btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+}
+
+/* MR-106: Visible focus indicator for keyboard users */
+.btn:focus-visible, .nav-item:focus-visible, .tab-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 .btn-icon {
@@ -860,6 +896,15 @@ input:focus, textarea:focus, select:focus {
     50% { transform: scale(1.08); opacity: 0.1; }
 }
 
+/* MR-103: Respect user's motion preferences — disable animations */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+    }
+}
+
 .control-status-icon {
     display: flex;
     align-items: center;
@@ -893,6 +938,27 @@ input:focus, textarea:focus, select:focus {
 
 .control-buttons .btn-lg {
     min-width: 140px;
+}
+
+/* ===== Skip-link ===== */
+.skip-link {
+    position: absolute;
+    top: -100%;
+    left: 8px;
+    z-index: 9999;
+    padding: 8px 16px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    transition: top 150ms ease;
+}
+.skip-link:focus {
+    top: 8px;
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 /* ===== Utility ===== */
@@ -993,6 +1059,14 @@ input:focus, textarea:focus, select:focus {
 @media (max-width: 480px) {
     .status-grid {
         grid-template-columns: 1fr;
+    }
+
+    /* MR-107: Modals full-screen on mobile */
+    .modal-content {
+        width: 100vw;
+        height: 100dvh;
+        max-height: 100dvh;
+        border-radius: 0;
     }
 }
 

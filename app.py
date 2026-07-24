@@ -254,7 +254,6 @@ def _apply_awg_autostart_on_boot():
         try:
             time.sleep(1.2)
 
-            from core.config_manager import get_config_manager
             from core.awg_autostart_manager import get_awg_autostart_manager
             from core.log_buffer import log
 
@@ -285,6 +284,81 @@ def _apply_awg_autostart_on_boot():
                 pass
 
     t = threading.Thread(target=_do_apply, daemon=True, name="awg-autostart-boot")
+    t.start()
+
+
+def _apply_usque_autostart_on_boot():
+    """
+    Поднять WARP/MASQUE туннели при старте GUI, если:
+      * usque.enabled = true
+      * usque.autostart = true
+      * есть конфиги для запуска
+
+    Запускается в фоновом потоке.
+    """
+    import threading
+    import time
+
+    def _do_apply():
+        try:
+            time.sleep(1.5)
+
+            from core.config_manager import get_config_manager
+            from core.log_buffer import log
+
+            cfg = get_config_manager()
+            if not cfg.get("usque", "enabled", default=False):
+                return
+            if not cfg.get("usque", "autostart", default=False):
+                return
+
+            from core.usque_manager import get_usque_manager
+            mgr = get_usque_manager()
+            env = mgr.detect()
+            if not env.get("installed"):
+                log.info("usque autostart: бинарник не установлен, пропуск",
+                         source="usque")
+                return
+
+            configs = mgr.list_configs()
+            if not configs:
+                log.info("usque autostart: нет конфигов, пропуск",
+                         source="usque")
+                return
+
+            sni = cfg.get("usque", "default_sni", default="")
+            http2 = cfg.get("usque", "http2_enable", default=False)
+
+            for c in configs:
+                if c.get("active"):
+                    log.info("usque: %s уже запущен, пропуск" % c["name"],
+                             source="usque")
+                    continue
+                log.info("usque autostart: запуск %s" % c["name"],
+                         source="usque")
+                # list_configs() отдаёт iface="" для конфигов без .run-файла;
+                # start("") упал бы на валидации имени. Аллоцируем так же,
+                # как API-путь usque_config_up (api/usque.py).
+                iface = c.get("iface") or mgr.allocate_iface("opkgtun")
+                if not iface:
+                    log.warning("usque autostart: %s — не удалось выделить"
+                                " интерфейс" % c["name"], source="usque")
+                    continue
+                result = mgr.start(iface, c.get("path"),
+                                   sni=sni, http2=http2)
+                if not result.get("ok"):
+                    log.warning("usque autostart: %s — %s" % (
+                        c["name"], result.get("error", "ошибка")),
+                        source="usque")
+
+        except Exception as e:
+            try:
+                from core.log_buffer import log
+                log.error("usque autostart: %s" % e, source="usque")
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_do_apply, daemon=True, name="usque-autostart-boot")
     t.start()
 
 
@@ -372,7 +446,7 @@ def create_app(config_dir: str = None) -> Bottle:
     from core.config_manager import init_config, get_config_manager
     from core.log_buffer import log
 
-    cfg_data = init_config(config_dir)
+    init_config(config_dir)
     cfg = get_config_manager()
 
     # Персистентный лог критичных событий (переживает перезагрузку) —
@@ -469,6 +543,38 @@ def create_app(config_dir: str = None) -> Bottle:
                 "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
 
+        # Content-Security-Policy (MR-123): базовая защита.
+        #   script-src 'self' 'unsafe-inline' — скрипты грузятся отдельными
+        #     файлами, НО весь UI построен на inline-обработчиках
+        #     (onclick/onchange/oninput, ~380 мест). Без 'unsafe-inline' CSP
+        #     блокирует их и ломает переключение вкладок/страниц и кнопки во
+        #     всём интерфейсе. 'unsafe-inline' обязателен, пока обработчики не
+        #     мигрированы на addEventListener целиком; остальные директивы
+        #     (connect-src/frame-ancestors/form-action/object-src) при этом
+        #     сохраняют защиту.
+        #   style-src 'self' 'unsafe-inline' — CSS-файлы с сервера + динамические
+        #     стили от JS (theme toggle, UI-состояния).
+        #   img-src 'self' data: — favicon/SVG-иконки + data: для emoji→SVG.
+        #   frame-ancestors 'none' — запрет встраивания в iframe (clickjacking).
+        #   form-action 'self' — формы только на свой же API.
+        if not request.path.startswith("/api/"):
+            response.headers["Content-Security-Policy"] = \
+                "default-src 'self'; " \
+                "script-src 'self' 'unsafe-inline'; " \
+                "style-src 'self' 'unsafe-inline'; " \
+                "object-src 'none'; " \
+                "base-uri 'self'; " \
+                "img-src 'self' data:; " \
+                "connect-src 'self'; " \
+                "frame-ancestors 'none'; " \
+                "form-action 'self';"
+            # X-Frame-Options (legacy, для старых браузеров)
+            response.headers["X-Frame-Options"] = "DENY"
+            # X-Content-Type-Options: запрет MIME-sniffing
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            # Referrer-Policy: не утекать URL с /api/ через Referer
+            response.headers["Referrer-Policy"] = "same-origin"
+
     @app.route("/api/<path:path>", method="OPTIONS")
     def options_handler(path):
         return {}
@@ -519,87 +625,204 @@ def create_app(config_dir: str = None) -> Bottle:
             response.content_type = "application/json; charset=utf-8"
             msg = str(error.body) if hasattr(error, 'body') else "Внутренняя ошибка сервера"
             return '{"ok": false, "error": "%s"}' % msg.replace('"', '\\"')
-        return '<h1>Внутренняя ошибка сервера</h1><p>%s</p>' % str(error)
+        import html
+        return '<h1>Внутренняя ошибка сервера</h1><p>%s</p>' % html.escape(str(error))
 
-    log.success("Web-GUI инициализирован", source="app")
+    # MR-66: 405 Method Not Allowed — JSON вместо HTML
+    @app.error(405)
+    def error405(error):
+        response.content_type = "application/json; charset=utf-8"
+        return '{"ok": false, "error": "method not allowed"}'
 
-    # Автоприменение сохранённой стратегии при старте
-    # (для платформ без отдельного nfqws2-init: Ubuntu/systemd и пр.)
-    _apply_saved_strategy_on_boot()
+    # MR-127: переносим всю boot-инициализацию в фоновый поток,
+    # чтобы не блокировать старт веб-сервера и API-запросы.
+    import threading
 
-    # Миграция legacy-правил selective routing в единый слой —
-    # ДО автоподъёма AWG, чтобы iface-up хук применял уже только
-    # производные uni-* правила (no-op, когда legacy-правил нет).
-    try:
-        from core.unified import migration as _uni_migration
-        _uni_migration.migrate_on_boot()
-    except Exception:
-        pass
+    def _background_boot_init():
+        # Автоприменение сохранённой стратегии при старте
+        # (для платформ без отдельного nfqws2-init: Ubuntu/systemd и пр.)
+        try:
+            _apply_saved_strategy_on_boot()
+        except Exception:
+            pass
 
-    # Автоподъём AWG-интерфейсов при старте GUI (если init-скрипт не
-    # установлен — иначе он сам справится при загрузке системы).
-    _apply_awg_autostart_on_boot()
+        # Миграция legacy-правил selective routing в единый слой —
+        # ДО автоподъёма AWG, чтобы iface-up хук применял уже только
+        # производные uni-* правила (no-op, когда legacy-правил нет).
+        try:
+            from core.unified import migration as _uni_migration
+            _uni_migration.migrate_on_boot()
+        except Exception:
+            pass
 
-    # Поднять фоновый мониторинг единого слоя, если есть маршруты с
-    # включённым мониторингом/автопереключением (переживает рестарт GUI).
-    try:
-        from core.unified import monitor as _uni_monitor
-        _uni_monitor.autostart_if_needed()
-    except Exception:
-        pass
+        # Автоподъём AWG-интерфейсов при старте GUI (если init-скрипт не
+        # установлен — иначе он сам справится при загрузке системы).
+        try:
+            _apply_awg_autostart_on_boot()
+        except Exception:
+            pass
 
-    # Поднять фоновые обновлятели подписок и пула серверов, если они
-    # настроены — чтобы автообновление по таймеру переживало рестарт GUI.
-    try:
-        from core.subscription_manager import get_refresher
-        get_refresher().reconfigure()
-    except Exception:
-        pass
-    try:
-        from core.server_pool import get_pool_refresher
-        get_pool_refresher().reconfigure()
-    except Exception:
-        pass
-    try:
-        from core.list_updater import get_list_refresher
-        get_list_refresher().reconfigure()
-    except Exception:
-        pass
+        # Поднять фоновый мониторинг единого слоя, если есть маршруты с
+        # включённым мониторингом/автопереключением (переживает рестарт GUI).
+        try:
+            from core.unified import monitor as _uni_monitor
+            _uni_monitor.autostart_if_needed()
+        except Exception:
+            pass
 
-    # AWG-watchdog: автоперезапуск «зависших» туннелей (handshake устарел
-    # ИЛИ приём встал). Поднимаем при старте GUI, чтобы защита работала
-    # автономно после ребута роутера, а не только когда открыта страница
-    # AWG. Ничего не делает, если awg.watchdog.enabled = false (дефолт).
-    try:
-        from core.awg_watchdog import get_watchdog
-        get_watchdog().reconfigure()
-    except Exception as e:
-        log.warning("AWG-watchdog при boot: %s" % e, source="awg")
+        # Поднять фоновые обновлятели подписок и пула серверов, если они
+        # настроены — чтобы автообновление по таймеру переживало рестарт GUI.
+        try:
+            from core.subscription_manager import get_refresher
+            get_refresher().reconfigure()
+        except Exception:
+            pass
+        try:
+            from core.server_pool import get_pool_refresher
+            get_pool_refresher().reconfigure()
+        except Exception:
+            pass
+        try:
+            from core.list_updater import get_list_refresher
+            get_list_refresher().reconfigure()
+        except Exception:
+            pass
 
-    # sing-box watchdog: авто-перезапуск инстанса, если прокси «завис»
-    # (проба через Clash API не проходит). Ничего не делает, если
-    # singbox.watchdog.enabled = false (дефолт).
-    try:
-        from core.singbox_watchdog import get_watchdog as _sb_watchdog
-        _sb_watchdog().reconfigure()
-    except Exception as e:
-        log.warning("sing-box watchdog при boot: %s" % e, source="singbox")
+        # AWG-watchdog: автоперезапуск «зависших» туннелей (handshake устарел
+        # ИЛИ приём встал). Поднимаем при старте GUI, чтобы защита работала
+        # автономно после ребута роутера, а не только когда открыта страница
+        # AWG. Ничего не делает, если awg.watchdog.enabled = false (дефолт).
+        try:
+            from core.awg_watchdog import get_watchdog
+            get_watchdog().reconfigure()
+        except Exception as e:
+            log.warning("AWG-watchdog при boot: %s" % e, source="awg")
 
-    # mihomo watchdog: то же, что у sing-box, но проба через external-controller
-    # mihomo. Ничего не делает, если mihomo.watchdog.enabled = false (дефолт).
-    try:
-        from core.mihomo_watchdog import get_watchdog as _mh_watchdog
-        _mh_watchdog().reconfigure()
-    except Exception as e:
-        log.warning("mihomo watchdog при boot: %s" % e, source="mihomo")
+        # sing-box watchdog: авто-перезапуск инстанса, если прокси «завис»
+        # (проба через Clash API не проходит). Ничего не делает, если
+        # singbox.watchdog.enabled = false (дефолт).
+        try:
+            from core.singbox_watchdog import get_watchdog as _sb_watchdog
+            _sb_watchdog().reconfigure()
+        except Exception as e:
+            log.warning("sing-box watchdog при boot: %s" % e, source="singbox")
 
-    # Healthcheck-демон (autocircular watchdog): ничего не делает, если
-    # cfg.healthcheck.enabled = false (дефолт). Включается через GUI.
-    try:
-        from core.healthcheck import get_healthcheck
-        get_healthcheck().start()
-    except Exception as e:
-        log.warning("Healthcheck при boot: %s" % e, source="app")
+        # mihomo watchdog: то же, что у sing-box, но проба через external-controller
+        # mihomo. Ничего не делает, если mihomo.watchdog.enabled = false (дефолт).
+        try:
+            from core.mihomo_watchdog import get_watchdog as _mh_watchdog
+            _mh_watchdog().reconfigure()
+        except Exception as e:
+            log.warning("mihomo watchdog при boot: %s" % e, source="mihomo")
+
+        # Tunnel Optimizer: применить оптимизации если включены.
+        try:
+            from core.config_manager import get_config_manager as _cfg_opt
+            _cfg_opt2 = _cfg_opt()
+            if _cfg_opt2.get("tunnel_optimizer", "enabled", default=False):
+                from core.tunnel_optimizer import optimize_all_tunnels
+                profile = _cfg_opt2.get("tunnel_optimizer", "profile", default="balanced")
+                optimize_all_tunnels(profile)
+                log.info("tunnel-optimizer: оптимизации применены (profile=%s)" % profile,
+                         source="optimizer")
+        except Exception as e:
+            log.warning("tunnel-optimizer при boot: %s" % e, source="optimizer")
+
+        # Tunnel Monitor: запустить сбор метрик туннелей.
+        try:
+            from core.tunnel_monitor import get_tunnel_monitor
+            get_tunnel_monitor().start()
+        except Exception as e:
+            log.warning("tunnel-monitor при boot: %s" % e, source="monitor")
+
+        # WARP-in-WARP watchdog: проверка двойных туннелей.
+        try:
+            from core.warp_in_warp_watchdog import get_warp_in_warp_watchdog
+            get_warp_in_warp_watchdog().reconfigure()
+        except Exception as e:
+            log.warning("warp-in-warp watchdog при boot: %s" % e, source="warp_in_warp")
+
+        # Update Checker: запустить фоновую проверку обновлений если включена.
+        try:
+            from core.update_checker import get_update_checker
+            get_update_checker().reconfigure()
+        except Exception as e:
+            log.warning("update-checker при boot: %s" % e, source="update_checker")
+
+        # Opera Proxy watchdog: авто-рестарт если процесс упал.
+        try:
+            from core.opera_proxy_watchdog import get_opera_proxy_watchdog
+            get_opera_proxy_watchdog().reconfigure()
+        except Exception as e:
+            log.warning("opera-proxy watchdog при boot: %s" % e, source="opera_proxy")
+
+        # Opera Proxy autostart: запустить если включён.
+        try:
+            from core.config_manager import get_config_manager as _cfg_op
+            _cfg_op2 = _cfg_op()
+            if _cfg_op2.get("opera_proxy", "enabled", default=False) and \
+               _cfg_op2.get("opera_proxy", "autostart", default=False):
+                from core.opera_proxy_manager import get_opera_proxy_manager
+                _opmgr = get_opera_proxy_manager()
+                if not _opmgr._is_running():
+                    _opmgr.start(
+                        country=_cfg_op2.get("opera_proxy", "country", default="EU"),
+                        bind=_cfg_op2.get("opera_proxy", "bind", default="127.0.0.1:18080"),
+                        socks_mode=_cfg_op2.get("opera_proxy", "socks_mode", default=False),
+                    )
+                    log.info("opera-proxy: автозапуск при старте", source="opera_proxy")
+        except Exception as e:
+            log.warning("opera-proxy autostart при boot: %s" % e, source="opera_proxy")
+
+        # Telegram proxy autostart: запустить если включён.
+        # Используем tg-ws-proxy-go (основной движок) через его init.d-скрипт.
+        # Для mtproto (резервный) автозапуск не делаем — он поднимается вручную.
+        try:
+            from core.config_manager import get_config_manager as _cfg_tg
+            _cfg_tg2 = _cfg_tg()
+            if _cfg_tg2.get("tgproxy", "enabled", default=False) and \
+               _cfg_tg2.get("tgproxy", "autostart", default=False):
+                from core.tgproxy_manager import get_tgwsproxy_manager
+                _tgmgr = get_tgwsproxy_manager()
+                st = _tgmgr.get_status()
+                if not st.get("running"):
+                    _tgmgr.start()
+                    log.info("tgproxy: автозапуск tg-ws-proxy-go при старте",
+                             source="tgproxy")
+        except Exception as e:
+            log.warning("tgproxy autostart при boot: %s" % e, source="tgproxy")
+
+        # Block Detector: запустить DNS-мониторинг если включён.
+        try:
+            from core.block_detector import get_block_detector
+            get_block_detector().start()
+        except Exception as e:
+            log.warning("block-detector при boot: %s" % e, source="block_detector")
+
+        # WARP/MASQUE watchdog: авто-рестарт если туннель упал.
+        try:
+            from core.usque_watchdog import get_usque_watchdog
+            get_usque_watchdog().reconfigure()
+        except Exception as e:
+            log.warning("usque watchdog при boot: %s" % e, source="usque")
+
+        # WARP/MASQUE autostart: поднять usque-туннели при старте, если
+        # включён autostart и нет отдельного init.d-скрипта.
+        try:
+            _apply_usque_autostart_on_boot()
+        except Exception as e:
+            log.warning("usque autostart при boot: %s" % e, source="usque")
+
+        # Healthcheck-демон (autocircular watchdog): ничего не делает, если
+        # cfg.healthcheck.enabled = false (дефолт). Включается через GUI.
+        try:
+            from core.healthcheck import get_healthcheck
+            get_healthcheck().start()
+        except Exception as e:
+            log.warning("Healthcheck при boot: %s" % e, source="app")
+
+    t = threading.Thread(target=_background_boot_init, name="bg-boot-init", daemon=True)
+    t.start()
 
     # Фоновое обновление IP доменных правил без dnsmasq (типичный
     # Keenetic): без него IP протухают при CDN-ротации и доменная
@@ -709,7 +932,7 @@ def main():
 
     cfg = get_config_manager()
 
-    host = args.host or cfg.get("gui", "host", default="0.0.0.0")
+    host = args.host or cfg.get("gui", "host", default="127.0.0.1")
     port = args.port or cfg.get("gui", "port", default=8080)
     debug = args.debug or cfg.get("gui", "debug", default=False)
 
@@ -732,7 +955,62 @@ def main():
     except Exception as e:
         log.error(f"Ошибка сервера: {e}", source="app")
         sys.exit(1)
+    finally:
+        _graceful_shutdown(log)
+
+
+def _graceful_shutdown(log=None):
+    """
+    MR-129: Завершить все фоновые watchdog-сервисы перед выходом.
+
+    Вызывается при SIGTERM/SIGINT, а также из main() через finally.
+    Использует try/except на каждый сервис, чтобы падение одного не
+    прерывало остановку остальных.
+    """
+    _stops = [
+        ("awg_watchdog",         "core.awg_watchdog",         "get_watchdog",        "_stop"),
+        ("block_detector",       "core.block_detector",       "get_block_detector",  "stop"),
+        ("healthcheck",          "core.healthcheck",          "get_healthcheck",     "stop"),
+        ("mihomo_watchdog",      "core.mihomo_watchdog",      "get_watchdog",        "_stop"),
+        ("singbox_watchdog",     "core.singbox_watchdog",     "get_watchdog",        "_stop"),
+        ("opera_proxy_watchdog", "core.opera_proxy_watchdog", "get_opera_proxy_watchdog", "_stop"),
+        ("usque_watchdog",       "core.usque_watchdog",       "get_usque_watchdog",       "_stop"),
+        ("warp_in_warp_watchdog","core.warp_in_warp_watchdog","get_warp_in_warp_watchdog","_stop"),
+        ("tunnel_monitor",       "core.tunnel_monitor",       "get_tunnel_monitor",  "stop"),
+        ("update_checker",       "core.update_checker",       "get_update_checker",  "_stop"),
+        ("list_updater",         "core.list_updater",         "get_updater",         "_stop"),
+        ("subscription_manager", "core.subscription_manager", "get_refresher",       "_stop"),
+        ("server_pool",          "core.server_pool",          "get_pool",            "_stop"),
+        ("strategy_scanner",     "core.strategy_scanner",     "get_strategy_scanner","stop"),
+    ]
+
+    for name, module_path, factory_fn, stop_method in _stops:
+        try:
+            mod = sys.modules.get(module_path)
+            if mod is None:
+                continue  # Модуль ещё не загружался — нечего останавливать
+            factory = getattr(mod, factory_fn, None)
+            if factory is None:
+                continue
+            obj = factory()
+            stopper = getattr(obj, stop_method, None)
+            if callable(stopper):
+                stopper()
+                if log:
+                    log.info("graceful_shutdown: %s stopped" % name, source="app")
+        except Exception as exc:
+            if log:
+                log.warning("graceful_shutdown: %s: %s" % (name, exc), source="app")
 
 
 if __name__ == "__main__":
+    import signal as _signal
+
+    def _sigterm_handler(signum, frame):
+        from core.log_buffer import log as _log
+        _log.info("Получен SIGTERM, завершение...", source="app")
+        _graceful_shutdown(_log)
+        sys.exit(0)
+
+    _signal.signal(_signal.SIGTERM, _sigterm_handler)
     main()

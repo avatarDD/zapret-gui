@@ -88,6 +88,7 @@ class LogBuffer:
     def __init__(self, max_entries: int = MAX_ENTRIES, file_path: str = LOG_FILE_PATH):
         self._buffer = deque(maxlen=max_entries)
         self._lock = threading.Lock()
+        self._file_lock = threading.Lock()  # MR-17: лок для файловых операций (запись, ротация)
         self._file_path = file_path
         self._file_enabled = True
         self._listeners = []  # Callbacks для SSE
@@ -236,51 +237,50 @@ class LogBuffer:
         path = self._persist_path
         if not path:
             return
-        try:
-            d = os.path.dirname(path)
-            if d and not os.path.isdir(d):
-                os.makedirs(d, exist_ok=True)
-            # Ротация по размеру: оставляем последнюю половину.
-            if os.path.exists(path) and os.path.getsize(path) > self._persist_max:
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        lines = f.readlines()
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.writelines(lines[len(lines) // 2:])
-                except (OSError, IOError):
-                    pass
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(entry.format_line() + "\n")
-        except (OSError, IOError):
-            # Путь недоступен — отключаем, чтобы не долбить вхолостую.
-            self._persist_enabled = False
+        with self._file_lock:
+            try:
+                d = os.path.dirname(path)
+                if d and not os.path.isdir(d):
+                    os.makedirs(d, exist_ok=True)
+                # Ротация по размеру: оставляем последнюю половину.
+                if os.path.exists(path) and os.path.getsize(path) > self._persist_max:
+                    self._rotate_file_locked(path)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(entry.format_line() + "\n")
+            except (OSError, IOError):
+                # Путь недоступен — отключаем, чтобы не долбить вхолостую.
+                self._persist_enabled = False
 
     def _write_to_file(self, entry: LogEntry):
         """Записать в файл с ротацией по размеру."""
-        try:
-            # Проверяем размер и ротируем если нужно
-            if os.path.exists(self._file_path):
-                size = os.path.getsize(self._file_path)
-                if size > MAX_FILE_SIZE:
-                    self._rotate_file()
+        with self._file_lock:
+            try:
+                # Проверяем размер и ротируем если нужно
+                if os.path.exists(self._file_path) and os.path.getsize(self._file_path) > MAX_FILE_SIZE:
+                    self._rotate_file_locked(self._file_path)
 
-            with open(self._file_path, "a", encoding="utf-8") as f:
-                f.write(entry.format_line() + "\n")
-        except (OSError, IOError):
-            # /tmp/ может быть недоступен — не критично
-            self._file_enabled = False
+                with open(self._file_path, "a", encoding="utf-8") as f:
+                    f.write(entry.format_line() + "\n")
+            except (OSError, IOError):
+                # /tmp/ может быть недоступен — не критично
+                self._file_enabled = False
 
-    def _rotate_file(self):
-        """Ротация: оставляем последнюю половину файла."""
+    def _rotate_file_locked(self, filepath: str):
+        """Атомарная ротация: оставляем последнюю половину файла."""
+        tmp = filepath + ".tmp"
         try:
-            with open(self._file_path, "r", encoding="utf-8") as f:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
-            # Оставляем последнюю половину строк
             half = len(lines) // 2
-            with open(self._file_path, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.writelines(lines[half:])
+            os.replace(tmp, filepath)  # атомарно на POSIX
         except (OSError, IOError):
-            pass
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
 
 
 class Logger:

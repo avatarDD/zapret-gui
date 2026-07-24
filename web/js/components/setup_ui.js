@@ -45,6 +45,11 @@ const SetupUI = (() => {
     }
     function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
 
+    // MR-120: используем общий Confirm.show() вместо локального _showConfirmModal
+    function _showConfirmModal(title, htmlMessage) {
+        return Confirm.show(title, htmlMessage, { danger: true, confirmLabel: "Удалить" });
+    }
+
     /** Карточка «Окружение» — платформа / TUN / firewall. */
     function environmentCardHtml(env) {
         const platform = (env && env.platform) || {};
@@ -120,7 +125,7 @@ const SetupUI = (() => {
             container.innerHTML = `
                 <div class="page-header">
                     <div>
-                        <h1 class="page-title">${esc(opts.title)}</h1>
+                        <h1 class="page-title">${esc(opts.title)}${opts.helpTopic && typeof Help !== 'undefined' ? Help.button(opts.helpTopic) : ''}</h1>
                         <p class="page-description">${opts.description || ''}</p>
                     </div>
                     <div style="display:flex; gap:8px;">
@@ -405,7 +410,12 @@ const SetupUI = (() => {
         }
 
         async function uninstall() {
-            if (!confirm(`Удалить ${opts.binaryLabel}?`)) return;
+            const confirmed = await _showConfirmModal(
+                `Удаление ${opts.binaryLabel}`,
+                `Вы уверены, что хотите удалить бинарник <strong>${opts.binaryLabel}</strong>?<br><br>` +
+                `<span style="color:var(--text-error, #ff5370); font-weight:bold;">Внимание:</span> это действие приведёт к остановке всех связанных с ним туннелей.`
+            );
+            if (!confirmed) return;
             try {
                 const r = await API.post(`${opts.apiBase}/uninstall`);
                 if (r && r.ok) {

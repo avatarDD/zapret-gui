@@ -1,0 +1,26 @@
+const i18n_en = {
+    "warp_masque": "WARP / MASQUE",
+    "warp_registered": "WARP session registered",
+    "delete_config_confirm": "Delete config \"{name}\"?",
+    "status_running": "running",
+    "status_stopped": "stopped",
+    "status_active": "active",
+    "status_inactive": "inactive",
+    "settings_saved": "Settings saved",
+    "seconds_ago": "{diff}s ago",
+    "minutes_ago": "{diff}m ago",
+    "hours_ago": "{diff}h ago",
+    "days_ago": "{diff}d ago",
+
+    "error.page_not_found": "Page not found",
+    "error.generic": "An error occurred",
+    "common.loading": "Loading...",
+    "common.yes": "Yes",
+    "common.no": "No",
+    "common.save": "Save",
+    "common.cancel": "Cancel",
+    "common.delete": "Delete",
+    "common.confirm_delete": "Are you sure?",
+    "page.not_found_title": "404",
+    "page.not_found_message": "Page not found"
+};
