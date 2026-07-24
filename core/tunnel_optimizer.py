@@ -418,6 +418,37 @@ def _read_iface_mtu(iface: str):
     return None
 
 
+_ping_df_supported = None  # кэш: поддерживает ли ping флаг -M do (DF-бит)
+
+
+def _ping_supports_df() -> bool:
+    """Поддерживает ли системный ping `-M do` (DF-бит).
+
+    iputils-ping — да; busybox ping (Keenetic/Entware по умолчанию) — НЕТ,
+    он не знает опцию -M и падает с usage/ошибкой. Без DF-бита PMTU-проба
+    бессмысленна (пакеты фрагментируются), поэтому честнее сообщить об
+    отсутствии поддержки, чем возвращать ложное «dataplane не проходит».
+    """
+    global _ping_df_supported
+    if _ping_df_supported is not None:
+        return _ping_df_supported
+    try:
+        r = subprocess.run(
+            ["ping", "-M", "do", "-c", "1", "-W", "1", "-s", "56", "127.0.0.1"],
+            capture_output=True, text=True, timeout=4)
+        if r.returncode == 0:
+            _ping_df_supported = True
+        else:
+            low = ((r.stderr or "") + (r.stdout or "")).lower()
+            # busybox печатает usage/«unrecognized option» и не шлёт пакеты
+            _ping_df_supported = not any(
+                k in low for k in ("unrecognized", "invalid option",
+                                   "bad option", "busybox", "usage:", "bad opt"))
+    except Exception:
+        _ping_df_supported = False
+    return _ping_df_supported
+
+
 def probe_pmtu(iface: str, host: str = "1.1.1.1",
                minimum: int = 1280, maximum: int = 1500) -> dict:
     """Binary-search a no-fragment dataplane MTU through an interface."""
@@ -429,6 +460,10 @@ def probe_pmtu(iface: str, host: str = "1.1.1.1",
         return {"ok": False, "error": "PMTU host должен быть IP-адресом"}
     if not _which("ping"):
         return {"ok": False, "error": "ping недоступен"}
+    if not _ping_supports_df():
+        return {"ok": False, "error": "PMTU-проба требует iputils-ping: "
+                "busybox ping (Keenetic/Entware) не поддерживает -M do (DF-бит). "
+                "Установите: opkg install iputils-ping"}
     minimum = max(1280, int(minimum))
     maximum = min(9000, max(minimum, int(maximum)))
     overhead = 48 if addr.version == 6 else 28

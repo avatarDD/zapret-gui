@@ -301,13 +301,36 @@ const UsquePage = (() => {
     async function install() {
         Toast.info("Установка usque...");
         try {
+            // /install запускает установку в фоне и сразу отдаёт progress.
+            // Поллим /install/status до завершения — иначе toast «установлен»
+            // показывался бы до того, как opkg реально скачал и поставил пакет.
             const res = await API.post("/api/usque/install");
-            if (res.ok) {
-                Toast.success("usque установлен: " + (res.version || ""));
-                await _refresh();
-            } else {
+            if (!res.ok) {
                 Toast.error(res.error || "Ошибка установки");
+                return;
             }
+            const started = Date.now();
+            const MAX_MS = 120000;
+            while (Date.now() - started < MAX_MS) {
+                await new Promise(r => setTimeout(r, 1500));
+                let st;
+                try {
+                    st = await API.get("/api/usque/install/status");
+                } catch (_) { continue; }
+                const p = (st && st.progress) || {};
+                if (p.status === "done") {
+                    Toast.success("usque установлен");
+                    await _refresh();
+                    return;
+                }
+                if (p.status === "error") {
+                    Toast.error(p.message || "Ошибка установки");
+                    await _refresh();
+                    return;
+                }
+            }
+            Toast.error("Установка не завершилась вовремя — проверьте статус");
+            await _refresh();
         } catch (e) {
             Toast.error("Ошибка: " + e.message);
         }
