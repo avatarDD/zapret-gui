@@ -164,11 +164,12 @@ class TestConcurrentFuturesFallback(unittest.TestCase):
         self._run_tick_without_cf("core.singbox_watchdog")
 
 
-class TestAwgDaemonization(unittest.TestCase):
-    """Готовность интерфейса проверяется через `awg show <iface>` (rc==0), а
-    НЕ по пути /var/run/wireguard/<if>.sock (на Keenetic он в другом месте) и
-    не по выходу процесса. amneziawg-go может работать в FOREGROUND (poll()==
-    None) — это норма, его нельзя убивать. Регрессия ронявшая AWG на Keenetic."""
+class TestAwgStart(unittest.TestCase):
+    """Логика старта amneziawg-go восстановлена как в main (v0.22.34):
+    `_run([bin_go, ifname], timeout=15)` (демон форкается, родитель выходит
+    rc==0), проверка кода, БЕЗ проверки пути UAPI-сокета. socket-polling из
+    Development на Keenetic ложно истекал таймаутом (сокет в другом месте) и
+    убивал уже поднятый демон — регрессия, ронявшая AWG."""
 
     def setUp(self):
         import tempfile
@@ -209,62 +210,22 @@ class TestAwgDaemonization(unittest.TestCase):
             p.stop()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_daemonized_parent_exit_is_success(self):
-        killed = {"v": False}
-
-        class FakeProc:
-            def poll(self_inner):
-                return 0  # родитель вышел с rc==0 (демонизация)
-
-            def kill(self_inner):
-                killed["v"] = True
-
-            def wait(self_inner, timeout=None):
-                return 0
-
-        real_exists = os.path.exists
-
-        def fake_exists(p):
-            if str(p).endswith(".sock"):
-                return True  # сокет поднял фоновый демон
-            return real_exists(p)
-
-        with mock.patch.object(self.am.subprocess, "Popen",
-                               return_value=FakeProc()), \
-             mock.patch.object(self.am.os.path, "exists",
-                               side_effect=fake_exists), \
-             mock.patch.object(self.am, "_run", return_value=(0, "", "")), \
+    def test_start_ok_when_go_exits_zero(self):
+        # amneziawg-go форкает демон, родитель выходит rc==0 → старт успешен.
+        # Никакой проверки пути сокета (как в main).
+        with mock.patch.object(self.am, "_run", return_value=(0, "", "")), \
              mock.patch.object(self.am, "_pgrep_first", return_value=4242), \
              mock.patch.object(self.am, "_resolve_endpoint_ip",
                                return_value=("162.159.192.4", False)), \
              mock.patch("core.routing.applier.apply_all_on_interface_up",
                         return_value=None):
             res = self.mgr.up("awg0")
-
-        self.assertNotIn("Не удалось запустить amneziawg-go",
-                         res.get("message", ""))
-        self.assertFalse(killed["v"], "рабочий демон не должен убиваться")
         self.assertTrue(res.get("ok"), res)
 
-    def test_nonzero_exit_no_socket_is_error(self):
-        # Родитель вышел с ошибкой (rc!=0), сокет не появился → честная ошибка,
-        # без зависания (stderr читаем из файла, а не блокирующегося pipe).
-        class FailProc:
-            def poll(self_inner):
-                return 1
-
-            def kill(self_inner):
-                pass
-
-            def wait(self_inner, timeout=None):
-                return 1
-
-        # `awg show` возвращает НЕнулевой код (интерфейс не готов), процесс
-        # вышел с rc!=0 → честная ошибка старта, без зависания.
-        with mock.patch.object(self.am.subprocess, "Popen",
-                               return_value=FailProc()), \
-             mock.patch.object(self.am, "_run",
-                               return_value=(1, "", "Unable to access interface")), \
+    def test_start_error_when_go_exits_nonzero(self):
+        # Ненулевой код amneziawg-go (напр. битый бинарь) → честная ошибка.
+        with mock.patch.object(self.am, "_run",
+                               return_value=(1, "", "exec format error")), \
              mock.patch.object(self.am, "_pgrep_first", return_value=0):
             res = self.mgr.up("awg0")
         self.assertFalse(res.get("ok"))
