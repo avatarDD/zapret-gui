@@ -196,7 +196,8 @@ class GuiUpdater:
                                        "Попробуйте позже.")
                 raise RuntimeError("GitHub API вернул HTTP %d" % e.code)
             except (URLError, OSError, ValueError) as e:
-                raise RuntimeError("Нет доступа к GitHub: %s" % e)
+                from core.binary_installer import github_unreachable_message
+                raise RuntimeError(github_unreachable_message(e))
 
             if not isinstance(data, list) or not data:
                 break
@@ -810,7 +811,8 @@ class GuiUpdater:
                                     "Попробуйте позже.")
                 raise Exception("GitHub API вернул HTTP %d" % e.code)
             except URLError as e:
-                raise Exception("Нет доступа к GitHub: %s" % e.reason)
+                from core.binary_installer import github_unreachable_message
+                raise Exception(github_unreachable_message(e))
             except json.JSONDecodeError:
                 raise Exception("Ошибка разбора ответа GitHub API")
 

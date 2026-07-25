@@ -63,6 +63,86 @@ def proxy_rows(cfg: dict) -> list:
     return rows
 
 
+def provider_rows(cfg: dict) -> list:
+    """
+    Подписки из секции `proxy-providers` — как строки для таблицы.
+
+    Узлы такой подписки в конфиге НЕ лежат: mihomo сам скачивает их по
+    url в рантайме. Поэтому таблица прокси, которая читает только
+    `proxies:`, оставалась пустой, и это выглядело как «подписка не
+    работает», хотя конфиг корректный (issue #248). Показываем сами
+    провайдеры, чтобы было видно: подписка распознана.
+    """
+    if not isinstance(cfg, dict):
+        return []
+    rows = []
+    providers = cfg.get("proxy-providers")
+    if not isinstance(providers, dict):
+        return []
+    for name, p in providers.items():
+        if not isinstance(p, dict):
+            continue
+        url = str(p.get("url") or "")
+        rows.append({
+            "name": str(name),
+            "type": str(p.get("type") or ""),
+            # URL подписки — это секрет (в нём токен доступа), поэтому в
+            # таблицу отдаём только хост.
+            "url_host": _url_host(url),
+            "has_url": bool(url),
+            "path": str(p.get("path") or ""),
+            "interval": p.get("interval"),
+        })
+    return rows
+
+
+def _url_host(url: str) -> str:
+    try:
+        import urllib.parse
+        return urllib.parse.urlparse(url).hostname or ""
+    except Exception:
+        return ""
+
+
+def controller_provider_proxies(ep: dict) -> dict:
+    """
+    Узлы, реально загруженные из proxy-providers, у ЗАПУЩЕННОГО инстанса.
+
+    Clash API: GET /providers/proxies → {"providers": {name: {..., proxies:
+    [{name, type, ...}]}}}. Единственный способ увидеть узлы подписки —
+    спросить сам движок: в конфиге их нет.
+    """
+    st, body = _request(ep, "/providers/proxies")
+    if st != 200 or not body:
+        return {"ok": False, "error": "controller HTTP %s" % st}
+    try:
+        data = json.loads(body)
+    except ValueError as e:
+        return {"ok": False, "error": "bad json: %s" % e}
+    providers = data.get("providers") if isinstance(data, dict) else None
+    if not isinstance(providers, dict):
+        return {"ok": False, "error": "no providers in response"}
+    out = []
+    for nm, info in providers.items():
+        if not isinstance(info, dict):
+            continue
+        proxies = info.get("proxies")
+        if not isinstance(proxies, list):
+            proxies = []
+        out.append({
+            "name": str(nm),
+            "vehicle": str(info.get("vehicleType") or ""),
+            "updated_at": str(info.get("updatedAt") or ""),
+            "count": len(proxies),
+            "proxies": [
+                {"name": str(p.get("name") or ""),
+                 "type": str(p.get("type") or "")}
+                for p in proxies if isinstance(p, dict)
+            ][:200],
+        })
+    return {"ok": True, "providers": out}
+
+
 def select_group_names(cfg: dict) -> list:
     """Имена proxy-groups типа select (через них переключают активный)."""
     out = []

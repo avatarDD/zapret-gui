@@ -1,0 +1,38 @@
+# Переводы строк.
+#
+# Все shell-скрипты и init-скрипты ОБЯЗАНЫ иметь LF. При клонировании на
+# Windows с core.autocrlf=true git иначе выдаёт файлы с CRLF, и после
+# копирования на роутер `./install.sh` падает с
+#   -sh: ./install.sh: not found        (busybox)
+#   bad interpreter: No such file or directory
+# — ядро пытается запустить интерпретатор "/bin/sh\r", которого нет.
+# Ровно этот симптом описан в issue #249.
+*.sh            text eol=lf
+*.bash          text eol=lf
+install.sh      text eol=lf
+uninstall.sh    text eol=lf
+
+# Python и конфиги тоже держим в LF: часть из них уезжает на роутер
+# как есть (init-скрипты генерируются, но шаблоны лежат здесь).
+*.py            text eol=lf
+*.json          text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.conf          text eol=lf
+*.lua           text eol=lf
+Makefile        text eol=lf
+
+# Веб-ресурсы — тоже LF, чтобы diff не шумел между платформами.
+*.js            text eol=lf
+*.css           text eol=lf
+*.html          text eol=lf
+*.md            text eol=lf
+
+# Бинарники не трогаем.
+*.ipk           binary
+*.tar.gz        binary
+*.gz            binary
+*.png           binary
+*.jpg           binary
+*.ico           binary
+*.bin           binary
