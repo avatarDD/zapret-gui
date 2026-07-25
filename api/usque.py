@@ -133,6 +133,124 @@ def register(app):
 
         return mgr.register(config_path)
 
+    # ─────── настройки ───────
+    #
+    # До появления этих эндпоинтов usque.enabled / usque.autostart /
+    # usque.watchdog.* нельзя было выставить из GUI вообще, хотя именно от
+    # них зависят автоподъём туннеля после перезагрузки
+    # (_apply_usque_autostart_on_boot требует enabled И autostart) и
+    # сторожевой перезапуск. Оба по умолчанию false — то есть обещанные в
+    # справке автозапуск и watchdog были недостижимы.
+
+    _TRANSPORT_PROFILES = ("performance", "restricted", "auto")
+
+    def _usque_settings_payload(cfg):
+        wd = cfg.get("usque", "watchdog", default={}) or {}
+        return {
+            "enabled": bool(cfg.get("usque", "enabled", default=False)),
+            "autostart": bool(cfg.get("usque", "autostart", default=False)),
+            "default_sni": cfg.get("usque", "default_sni", default="") or "",
+            "transport_profile": cfg.get("usque", "transport_profile",
+                                         default="performance"),
+            "http2_enable": bool(cfg.get("usque", "http2_enable",
+                                         default=False)),
+            "watchdog": {
+                "enabled": bool(wd.get("enabled", False)),
+                "interval_sec": int(wd.get("interval_sec", 60) or 60),
+                "probe_host": wd.get("probe_host", "1.1.1.1") or "1.1.1.1",
+                "probe_port": int(wd.get("probe_port", 443) or 443),
+            },
+        }
+
+    @app.route("/api/usque/settings", method="GET")
+    def usque_settings_get():
+        from core.config_manager import get_config_manager
+        return {"ok": True, "settings": _usque_settings_payload(
+            get_config_manager())}
+
+    @app.route("/api/usque/settings", method="POST")
+    def usque_settings_set():
+        import re as _re
+        from core.config_manager import get_config_manager
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        cfg = get_config_manager()
+
+        for key in ("enabled", "autostart", "http2_enable"):
+            if key in body:
+                cfg.set("usque", key, bool(body[key]))
+
+        if "transport_profile" in body:
+            prof = str(body.get("transport_profile") or "").strip()
+            if prof not in _TRANSPORT_PROFILES:
+                return {"ok": False,
+                        "error": "transport_profile: допустимы %s"
+                                 % ", ".join(_TRANSPORT_PROFILES)}
+            cfg.set("usque", "transport_profile", prof)
+
+        if "default_sni" in body:
+            sni = str(body.get("default_sni") or "").strip()
+            # Пустая строка = «не маскировать». Иначе — доменное имя:
+            # оно уходит в usque как `-s <sni>`, мусор там бесполезен.
+            if sni and not _re.match(
+                    r"^(?=.{1,253}$)[A-Za-z0-9]"
+                    r"(?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?"
+                    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)+$",
+                    sni):
+                return {"ok": False,
+                        "error": "SNI должен быть доменным именем"
+                                 " (например ozon.ru) или пустым"}
+            cfg.set("usque", "default_sni", sni)
+
+        wd = body.get("watchdog")
+        if isinstance(wd, dict):
+            if "enabled" in wd:
+                cfg.set("usque", "watchdog", "enabled", bool(wd["enabled"]))
+            if "interval_sec" in wd:
+                try:
+                    iv = int(wd["interval_sec"])
+                except (TypeError, ValueError):
+                    return {"ok": False,
+                            "error": "interval_sec должен быть числом"}
+                cfg.set("usque", "watchdog", "interval_sec",
+                        max(10, min(iv, 3600)))
+            if "probe_host" in wd:
+                cfg.set("usque", "watchdog", "probe_host",
+                        str(wd["probe_host"] or "").strip() or "1.1.1.1")
+            if "probe_port" in wd:
+                try:
+                    port = int(wd["probe_port"])
+                except (TypeError, ValueError):
+                    return {"ok": False,
+                            "error": "probe_port должен быть числом"}
+                if not 1 <= port <= 65535:
+                    return {"ok": False,
+                            "error": "probe_port вне диапазона 1..65535"}
+                cfg.set("usque", "watchdog", "probe_port", port)
+
+        cfg.save()
+
+        # Watchdog сам решит, запускаться ему или останавливаться:
+        # он смотрит и usque.enabled, и usque.watchdog.enabled.
+        try:
+            from core.usque_watchdog import get_usque_watchdog
+            get_usque_watchdog().reconfigure()
+        except Exception as e:
+            log.warning("usque settings: watchdog reconfigure: %s" % e,
+                        source="usque")
+
+        return {"ok": True, "settings": _usque_settings_payload(cfg)}
+
+    @app.route("/api/usque/watchdog/status", method="GET")
+    def usque_watchdog_status():
+        try:
+            from core.usque_watchdog import get_usque_watchdog
+            return {"ok": True, "status": get_usque_watchdog().get_status()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     @app.route("/api/usque/configs", method="GET")
     def usque_configs():
         from core.usque_manager import get_usque_manager

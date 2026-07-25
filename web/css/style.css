@@ -4929,3 +4929,51 @@ body.expert-mode .expert-note { display: none !important; }
 }
 .expert-toggle:hover { color: var(--text-primary); }
 .expert-toggle input { cursor: pointer; }
+
+/* ===== Индикаторы состояния (usque / warp-in-warp / opera-proxy) =====
+   Страницы расширенных туннелей размечают точку статуса как
+   .status-dot.status-ok|status-error|status-off, но правил под эти
+   модификаторы не было — точка рисовалась без заливки, то есть
+   пользователь вообще не видел индикатор. */
+.status-dot.status-ok {
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+}
+.status-dot.status-error { background: var(--error); }
+.status-dot.status-off { background: var(--text-muted); }
+
+/* ===== Страница WARP/MASQUE (usque) ===== */
+.usque-steps {
+    margin: 0;
+    padding-left: 18px;
+    list-style: none;
+    line-height: 1.7;
+}
+.usque-steps li {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+}
+.usque-step-mark {
+    color: var(--text-muted);
+    font-weight: 700;
+    width: 14px;
+    flex-shrink: 0;
+}
+.usque-steps li.usque-step-done .usque-step-mark { color: var(--success); }
+.usque-steps li.usque-step-done .usque-step-text { color: var(--text-muted); }
+
+.usque-diagnostic {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    line-height: 1.5;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+}
