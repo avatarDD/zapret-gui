@@ -67,11 +67,20 @@ const UsquePage = (() => {
                     <div class="card-title">Действия</div>
                     <div class="card-body">
                         <button class="btn btn-primary" id="usque-btn-register">Зарегистрировать WARP</button>
+                        <button class="btn" id="usque-btn-import">Импортировать конфиг</button>
                         <button class="btn" id="usque-btn-refresh">Обновить</button>
                         <div class="form-hint" style="margin-top:8px;">
                             Регистрация создаёт профиль с ключами вашей WARP-сессии
                             в <code>/opt/etc/zapret-gui/usque/</code>. Можно завести несколько
                             профилей, но одновременно обычно нужен один.
+                        </div>
+                        <div class="form-hint" style="margin-top:6px;">
+                            <strong>Конфиг AmneziaWG сюда не подойдёт.</strong> usque —
+                            клиент MASQUE (HTTP/3), а не WireGuard: у них разные
+                            протоколы и разные ключи (X25519 против ECDSA P-256),
+                            поэтому пересобрать <code>.conf</code> в сессию usque нельзя.
+                            Импорт принимает только готовый <code>config.json</code>
+                            самого usque — например, с другого устройства.
                         </div>
                     </div>
                 </div>
@@ -87,6 +96,7 @@ const UsquePage = (() => {
 
         // MR-69: addEventListener вместо onclick
         document.getElementById("usque-btn-register").addEventListener("click", _register);
+        document.getElementById("usque-btn-import").addEventListener("click", _import);
         document.getElementById("usque-btn-refresh").addEventListener("click", _refresh);
 
         // MR-90: Отслеживание видимости страницы для управления опросом
@@ -648,6 +658,80 @@ const UsquePage = (() => {
                 Toast.error("Ошибка: " + e.message);
             }
         });
+    }
+
+    /** Импорт готового usque-конфига (config.json), НЕ AWG. */
+    function _import() {
+        const old = document.getElementById("usque-import-overlay");
+        if (old) old.remove();
+        const overlay = document.createElement("div");
+        overlay.id = "usque-import-overlay";
+        overlay.className = "modal-overlay";
+        overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.5);"
+            + "display:flex; align-items:center; justify-content:center; z-index:1000;";
+        overlay.innerHTML = `
+            <div class="modal-content" style="background:var(--bg-card,#1a1d28); padding:24px;
+                 border-radius:8px; width:92%; max-width:560px; max-height:85vh; overflow:auto;">
+                <div style="font-weight:bold; font-size:1.1rem; margin-bottom:8px;">
+                    Импорт конфига usque
+                </div>
+                <div class="form-hint" style="margin-bottom:12px;">
+                    Вставьте содержимое <code>config.json</code> от usque — например,
+                    с другого роутера или компьютера, где сессия уже
+                    зарегистрирована. Файл <code>.conf</code> от AmneziaWG/WireGuard
+                    не подойдёт: это другой протокол и другие ключи.
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="usq-imp-name">Имя профиля</label>
+                    <input type="text" id="usq-imp-name" class="form-control"
+                           style="width:100%; box-sizing:border-box;"
+                           value="warp-imported" placeholder="warp-imported">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="usq-imp-text">Содержимое config.json</label>
+                    <textarea id="usq-imp-text" class="form-control" rows="10"
+                              style="font-family:monospace; font-size:12px;
+                                     width:100%; box-sizing:border-box; resize:vertical;"
+                              placeholder='{ "private_key": "...", "access_token": "...", "id": "..." }'></textarea>
+                    <div id="usq-imp-error" class="text-error" style="font-size:12px; margin-top:6px; display:none;"></div>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:8px;">
+                    <button class="btn" id="usq-imp-cancel">Отмена</button>
+                    <button class="btn btn-primary" id="usq-imp-ok">Импортировать</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        overlay.addEventListener("click", (e) => {
+            if (e.target === overlay) overlay.remove();
+        });
+        document.getElementById("usq-imp-cancel")
+            .addEventListener("click", () => overlay.remove());
+        document.getElementById("usq-imp-ok").addEventListener("click", async () => {
+            const errEl = document.getElementById("usq-imp-error");
+            const name = document.getElementById("usq-imp-name").value.trim();
+            const text = document.getElementById("usq-imp-text").value;
+            errEl.style.display = "none";
+            if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+                errEl.textContent = "Имя: только латиница, цифры, _ и - (1-64)";
+                errEl.style.display = "block";
+                return;
+            }
+            try {
+                const r = await API.post("/api/usque/configs/import", { name, text });
+                if (r && r.ok) {
+                    overlay.remove();
+                    Toast.success(`Конфиг ${name} импортирован`);
+                    await _refresh();
+                } else {
+                    errEl.textContent = (r && r.error) || "Не удалось импортировать";
+                    errEl.style.display = "block";
+                }
+            } catch (e) {
+                errEl.textContent = "Ошибка: " + e.message;
+                errEl.style.display = "block";
+            }
+        });
+        document.getElementById("usq-imp-text").focus();
     }
 
     async function start(name) {
