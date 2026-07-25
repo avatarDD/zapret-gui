@@ -180,6 +180,36 @@ def register(app):
         except Exception:
             pass
 
+        # 4b. Основные VPN-движки: AmneziaWG, sing-box, mihomo.
+        # Их не было в дашборде вообще — при поднятом AWG-туннеле раздел
+        # «VPN / Туннели» оставался пустым, хотя это главные движки.
+        # Отдаём компактно: сколько профилей и сколько из них активно.
+        def _engine_summary(loader, active_key):
+            try:
+                configs = loader() or []
+            except Exception:
+                return {"available": False, "total": 0, "active": 0,
+                        "names": []}
+            active = [c for c in configs
+                      if isinstance(c, dict) and c.get(active_key)]
+            return {
+                "available": True,
+                "total": len(configs),
+                "active": len(active),
+                "names": [c.get("iface") or c.get("name") or ""
+                          for c in active][:3],
+            }
+
+        awg_status = _engine_summary(
+            lambda: __import__("core.awg_manager", fromlist=["x"])
+            .get_awg_manager().list_configs(), "active")
+        singbox_status = _engine_summary(
+            lambda: __import__("core.singbox_manager", fromlist=["x"])
+            .get_singbox_manager().list_configs(), "running")
+        mihomo_status = _engine_summary(
+            lambda: __import__("core.mihomo_manager", fromlist=["x"])
+            .get_mihomo_manager().list_configs(), "running")
+
         # 5. Статус Block Detector
         bd_status = {}
         try:
@@ -210,6 +240,9 @@ def register(app):
             "warp": warp_configs,
             "opera": opera_status,
             "tgproxy": tg_status,
+            "awg": awg_status,
+            "singbox": singbox_status,
+            "mihomo": mihomo_status,
             "block_detector": bd_status,
             "healthcheck": hc_status,
             "logs": logs_data,
