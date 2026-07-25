@@ -89,7 +89,11 @@ def detect_arch() -> str:
         if "mipsel" in m:
             return "mipsel"
         if "mips" in m:
-            return "mips"
+            # `uname -m` на mips возвращает "mips" для обоих порядков байт;
+            # у массовых Keenetic (MT7621) это little-endian. Endianness
+            # надёжно даёт только байт-порядок работающего интерпретатора.
+            import sys
+            return "mipsel" if sys.byteorder == "little" else "mips"
         if "armv7" in m or "armhf" in m:
             return "armv7"
     except Exception:
@@ -327,6 +331,9 @@ BINARIES = {
         "install_kind": "package",
         "package_name": "tg-ws-proxy",
         "dest": "/opt/bin/tg-ws-proxy",
+        # Пакет кладёт init-скрипт — он же маркер установки для
+        # get_install_status (бинарник может лежать не в dest).
+        "status_file": "/opt/etc/init.d/S99tg-ws-proxy",
         "arch_map": {
             "aarch64": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
             "armv7": "tg-ws-proxy_0.9.2-1_entware_armv7-3.2.ipk",
@@ -436,8 +443,12 @@ def get_install_status(name: str) -> dict:
     if install_kind == "package":
         pkg = cfg.get("package_name", name)
         version = _pkg_version(pkg)
-        installed = bool(version) or os.path.isfile("/opt/etc/init.d/S99tg-ws-proxy")
-        binary = "/opt/etc/init.d/S99tg-ws-proxy"
+        # status_file — платформенный маркер установки пакета (init-скрипт
+        # у tg-ws-proxy); для остальных пакетов (usque) — сам бинарник dest.
+        status_file = cfg.get("status_file") or cfg.get("dest", "")
+        installed = bool(version) or (
+            bool(status_file) and os.path.isfile(status_file))
+        binary = status_file
     else:
         binary = cfg["dest"]
         installed = os.path.isfile(binary) and os.access(binary, os.X_OK)
@@ -804,11 +815,27 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
 
 
 def uninstall_binary(name: str) -> dict:
-    """Удалить бинарник."""
+    """Удалить бинарник (или пакет, если ставился пакетным менеджером)."""
     cfg = BINARIES.get(name)
     if not cfg:
         return {"ok": False, "error": "Неизвестный бинарник"}
     try:
+        if cfg.get("install_kind", "binary") == "package":
+            # Установлено через opkg/apk — удалять надо пакетом, иначе база
+            # пакетов продолжит считать его установленным и повторная
+            # установка завершится noop («уже актуально») без бинарника.
+            pkg = cfg.get("package_name", name)
+            pkg_mgr = _package_manager()
+            if pkg_mgr and _pkg_version(pkg):
+                cmd = ([pkg_mgr, "remove", pkg] if pkg_mgr == "opkg"
+                       else [pkg_mgr, "del", pkg])
+                proc = subprocess.run(cmd, capture_output=True, text=True,
+                                      timeout=300)
+                if proc.returncode != 0:
+                    return {"ok": False,
+                            "error": "Удаление пакета не удалось: %s"
+                                     % ((proc.stderr or proc.stdout
+                                         or "").strip())}
         if os.path.isfile(cfg["dest"]):
             os.unlink(cfg["dest"])
         return {"ok": True}
