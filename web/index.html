@@ -73,6 +73,17 @@
                                width:18px; height:18px; border-radius:50%; border:1px solid var(--border);
                                background:transparent; color:var(--text-secondary);
                                font-size:12px; cursor:pointer; line-height:1; padding:0; flex:0 0 auto;">?</button>
+                <button type="button" id="selfcheck-toggle" class="selfcheck-toggle"
+                        title="Самодиагностика — проверить зависимости, движки и конфигурацию"
+                        aria-label="Самодиагностика"
+                        data-action="run-selfcheck">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                         stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                         stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                        <polyline points="9 12 11 14 15 10"></polyline>
+                    </svg>
+                </button>
                 <button id="lang-toggle" class="lang-toggle" title="Язык / Language"
                         data-action="toggle-lang">RU</button>
                 <button id="theme-toggle" class="theme-toggle" title="Тема"

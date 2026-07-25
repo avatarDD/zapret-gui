@@ -336,8 +336,42 @@ const Sidebar = (() => {
                     i18n.setLanguage(i18n.getLanguage() === 'ru' ? 'en' : 'ru');
                 }
                 else if (action === 'toggle-theme') Theme.toggle();
+                else if (action === 'run-selfcheck') _runSelfcheck();
             });
         }
+    }
+
+    /**
+     * Дубль кнопки самодиагностики из футера.
+     *
+     * Уводим на страницу «Диагностика» и запускаем прогон там: результаты
+     * (секции, счётчики, хвост тестов) показывать всё равно негде, кроме
+     * этой страницы, а тихий фоновый запуск из футера выглядел бы как
+     * «кнопка ничего не сделала».
+     */
+    function _runSelfcheck() {
+        const alreadyThere = (location.hash || '').replace(/^#/, '')
+            .split('?')[0] === 'diagnostics';
+        if (!alreadyThere) location.hash = 'diagnostics';
+        // Ждём монтирования страницы: до него DiagnosticsPage.render ещё
+        // не создал кнопку и обработчики.
+        const started = Date.now();
+        (function waitAndRun() {
+            const ready = typeof DiagnosticsPage !== 'undefined'
+                && document.getElementById('diag-selfcheck-run');
+            if (ready) {
+                try {
+                    DiagnosticsPage.runSelfcheck();
+                } catch (e) {
+                    if (typeof Toast !== 'undefined') {
+                        Toast.error('Не удалось запустить самодиагностику: '
+                                    + e.message);
+                    }
+                }
+                return;
+            }
+            if (Date.now() - started < 5000) setTimeout(waitAndRun, 100);
+        })();
     }
 
     return { render, setCurrentPage, initMobileToggle };
