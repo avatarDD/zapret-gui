@@ -566,76 +566,99 @@ const DiagnosticsPage = (() => {
             ).join(' ');
         }
 
-        el.innerHTML = `
-            <div class="diag-info-grid">
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Хост</span>
-                    <span class="diag-info-value">${_esc(si.hostname || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Платформа</span>
-                    <span class="diag-info-value">${_esc(si.platform || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Ядро</span>
-                    <span class="diag-info-value">${_esc(si.kernel || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Архитектура</span>
-                    <span class="diag-info-value">${_esc(si.arch || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Uptime</span>
-                    <span class="diag-info-value">${_esc(si.uptime_human || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">RAM</span>
-                    <span class="diag-info-value">
-                        ${ram.total_mb ? ram.total_mb + ' MB' : '—'}
-                        ${ram.used_percent ? ' <span class="diag-ram-bar"><span class="diag-ram-fill" style="width:' + ram.used_percent + '%;background:' + (ram.used_percent > 80 ? 'var(--error)' : ram.used_percent > 60 ? 'var(--warning)' : 'var(--success)') + '"></span></span> ' + ram.used_percent + '%' : ''}
-                    </span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Load Average</span>
-                    <span class="diag-info-value">${_esc(si.load_avg || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">WAN IP</span>
-                    <span class="diag-info-value">${_esc(si.wan_ip || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Default Gateway</span>
-                    <span class="diag-info-value">${_esc(si.default_gateway || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">DNS серверы</span>
-                    <span class="diag-info-value">${si.dns_servers && si.dns_servers.length ? si.dns_servers.map(d => _esc(d)).join(', ') : '—'}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Python</span>
-                    <span class="diag-info-value">${_esc(si.python_version || '—')}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">Entware</span>
-                    <span class="diag-info-value">${si.entware_installed ? '<span style="color:var(--success)">Установлен</span>' : '<span style="color:var(--text-muted)">Нет</span>'}</span>
-                </div>
-                <div class="diag-info-item">
-                    <span class="diag-info-label">nfqws2</span>
-                    <span class="diag-info-value">
-                        ${si.nfqws_binary_exists
-                            ? '<span style="color:var(--success)">Найден</span>' + (si.nfqws_version ? ' · v' + _esc(si.nfqws_version) : '')
-                            : '<span style="color:var(--error)">Не найден</span>'
-                        }
-                    </span>
-                </div>
-            </div>
-            ${interfacesHtml ? `
-                <div class="diag-interfaces-section">
-                    <div class="diag-info-label" style="margin-bottom:6px">Сетевые интерфейсы</div>
-                    <div class="diag-iface-list">${interfacesHtml}</div>
-                </div>
-            ` : ''}
-        `;
+        // Плоский список из 13 разнородных пунктов читался плохо: факты о
+        // железе, о сети и о наших компонентах шли вперемешку. Разбиваем
+        // на смысловые группы.
+        const item = (label, value, title) =>
+            `<div class="diag-info-item"${title ? ` title="${_esc(title)}"` : ''}>
+                <span class="diag-info-label">${_esc(label)}</span>
+                <span class="diag-info-value">${value}</span>
+            </div>`;
+        const group = (title, itemsHtml) =>
+            `<div class="diag-info-group">
+                <div class="diag-info-group-title">${_esc(title)}</div>
+                <div class="diag-info-grid">${itemsHtml}</div>
+            </div>`;
+        const bar = (pct) => {
+            const color = pct > 90 ? 'var(--error)'
+                        : pct > 75 ? 'var(--warning)' : 'var(--success)';
+            return `<span class="diag-ram-bar"><span class="diag-ram-fill"
+                     style="width:${pct}%;background:${color}"></span></span> ${pct}%`;
+        };
+
+        // ── Ресурсы ──
+        // Показываем не только «сколько всего», но и сколько СВОБОДНО:
+        // на роутере важно именно это (нехватка ОЗУ роняет движки, а
+        // забитая флешка ломает установку и сохранение конфигов).
+        let ramValue = '—';
+        if (ram.total_mb) {
+            const freeMb = (ram.available_mb != null) ? ram.available_mb : ram.free_mb;
+            // Компактно «свободно / всего»: длинная фраза в узкой колонке
+            // переносилась на три строки и ломала сетку.
+            ramValue = (freeMb != null
+                        ? `${freeMb} / ${ram.total_mb} MB`
+                        : `${ram.total_mb} MB`)
+                     // Именно `!= null`: при 0% старая проверка на
+                     // истинность прятала шкалу целиком.
+                     + (ram.used_percent != null ? ' ' + bar(ram.used_percent) : '');
+        }
+        // Путь — только в подсказке: в подписи он вылезал за колонку и
+        // выдавливал значение за край карточки.
+        const disksHtml = (si.disks || []).map(d =>
+            item(d.label === 'конфиг' ? 'Диск (конфиг)' : `Диск ${d.label}`,
+                 `${d.free_mb} / ${d.total_mb} MB ${bar(d.used_percent)}`,
+                 `${d.path} — свободно ${d.free_mb} MB из ${d.total_mb} MB`)).join('');
+
+        // ── Сеть ──
+        const noIp = si.tools && si.tools.ip === false;
+        const dash = (v) => (v ? _esc(v) : '<span class="text-muted">—</span>');
+        const netNote = noIp
+            ? `<div class="form-hint" style="color:var(--warning); margin-top:6px;">
+                   Утилита <code>ip</code> не найдена — адреса, шлюз и список
+                   интерфейсов определить нечем. Поставьте <code>iproute2</code>.
+               </div>`
+            : '';
+
+        el.innerHTML =
+            group('Система',
+                item('Хост', dash(si.hostname))
+                + item('Платформа', dash(si.platform))
+                + item('Ядро', dash(si.kernel))
+                + item('Архитектура', dash(si.arch))
+                + item('Время работы', dash(si.uptime_human))
+                + item('Python', dash(si.python_version)))
+            + group('Ресурсы',
+                item('Оперативная память', ramValue)
+                + item('Средняя нагрузка', dash(si.load_avg),
+                       'Среднее число процессов в очереди за 1, 5 и 15 минут')
+                + disksHtml)
+            + group('Сеть',
+                item('Исходящий адрес', dash(si.wan_ip),
+                     'Адрес нашего интерфейса, с которого уходит трафик в '
+                     + 'интернет (ip route get 8.8.8.8). За NAT/CGNAT он серый '
+                     + 'и не совпадает с публичным IP')
+                + item('Шлюз по умолчанию', dash(si.default_gateway))
+                + item('DNS-серверы',
+                       (si.dns_servers && si.dns_servers.length)
+                           ? si.dns_servers.map(d => _esc(d)).join(', ')
+                           : '<span class="text-muted">—</span>',
+                       'Из /etc/resolv.conf — то, чем резолвит сам роутер'))
+            + (interfacesHtml
+                ? `<div class="diag-interfaces-section">
+                       <div class="diag-info-label" style="margin-bottom:6px">Сетевые интерфейсы</div>
+                       <div class="diag-iface-list">${interfacesHtml}</div>
+                   </div>`
+                : '')
+            + netNote
+            + group('Компоненты',
+                item('Entware', si.entware_installed
+                        ? '<span style="color:var(--success)">установлен</span>'
+                        : '<span class="text-muted">нет</span>')
+                + item('nfqws2', si.nfqws_binary_exists
+                        ? '<span style="color:var(--success)">найден</span>'
+                          + (si.nfqws_version ? ' · v' + _esc(si.nfqws_version) : '')
+                        : '<span style="color:var(--error)">не найден</span>',
+                       si.nfqws_binary_path || ''));
     }
 
     /* ═══════════════════ Render: Firewall ═══════════════════ */
@@ -769,7 +792,14 @@ const DiagnosticsPage = (() => {
         if (!el) return;
         const ci = conflictsInfo;
         const env = envConflicts;
-        if (!ci && !env) return;
+        if (!ci && !env) {
+            // Оба запроса не дошли — раньше здесь оставалось «Загрузка...»
+            // навсегда, и было непонятно, проверка идёт или отвалилась.
+            el.innerHTML = `<div class="text-muted">
+                Не удалось получить данные о конфликтах — попробуйте «Обновить».
+            </div>`;
+            return;
+        }
 
         let html = '';
 
@@ -792,12 +822,19 @@ const DiagnosticsPage = (() => {
                                 <code class="diag-conflict-cmd">${_esc(c.cmdline)}</code>
                             </div>
                         `).join('')}
+                    </div>
+                    <div class="form-hint" style="margin-top:6px;">
+                        Два процесса на одной очереди NFQUEUE обрабатывают пакеты
+                        по очереди и мешают друг другу: стратегия работает через
+                        раз или не работает вовсе. Обычно это второй установщик
+                        zapret (свой init-скрипт) — остановите его, либо разведите
+                        номера очередей.
                     </div>`;
             } else {
                 html += `
                     <div class="diag-no-conflicts">
                         <span class="diag-dot diag-dot-ok"></span>
-                        Нет сторонних процессов nfqws/tpws.
+                        Посторонних процессов nfqws/tpws нет — очередь NFQUEUE наша.
                     </div>`;
             }
         }
@@ -814,22 +851,44 @@ const DiagnosticsPage = (() => {
                         Сторонние системы обхода/маршрутизации (могут конфликтовать с единым слоем и прозрачным проксированием):
                     </div>
                     <div class="diag-conflicts-list">
-                        ${env.warnings.map(w => `
+                        ${env.warnings.map(w => {
+                            // severity приходит с бэкенда, но раньше не
+                            // использовался: критичное и просто «замечено»
+                            // выглядели одинаково.
+                            const sev = String(w.severity || '').toLowerCase();
+                            const badge = sev === 'error' || sev === 'critical'
+                                ? '<span class="badge badge-error">конфликт</span>'
+                                : (sev === 'warning' || sev === 'warn'
+                                    ? '<span class="badge badge-warning">возможен конфликт</span>'
+                                    : '<span class="badge">замечено</span>');
+                            return `
                             <div class="diag-conflict-item" style="flex-direction:column; align-items:flex-start; gap:4px;">
-                                <div><strong>${_esc(w.title)}</strong>
-                                    <span class="text-muted" style="font-size:11px;">${_esc(w.detail)}</span></div>
-                                <div class="text-muted" style="font-size:12px;">${_esc(w.hint)}</div>
-                            </div>
-                        `).join('')}
+                                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                    ${badge}<strong>${_esc(w.title)}</strong>
+                                </div>
+                                ${w.detail ? `<div class="text-muted" style="font-size:11px;">${_esc(w.detail)}</div>` : ''}
+                                ${w.hint ? `<div style="font-size:12px;">${_esc(w.hint)}</div>` : ''}
+                            </div>`;
+                        }).join('')}
                     </div>`;
             } else {
                 html += `
                     <div class="diag-no-conflicts" style="margin-top:12px;">
                         <span class="diag-dot diag-dot-ok"></span>
-                        Сторонних систем обхода (getdomains/XKeen/podkop/Xray) не найдено.
+                        Сторонних систем обхода (getdomains, XKeen, podkop, Xray,
+                        redsocks) не найдено.
                     </div>`;
             }
         }
+
+        html += `
+            <div class="form-hint" style="margin-top:10px;">
+                Здесь ищутся два вида помех: посторонние процессы
+                <code>nfqws</code>/<code>tpws</code> на той же очереди NFQUEUE и
+                установленные рядом системы обхода — они переписывают те же
+                правила firewall и маршрутизации, что и мы. Пусто в обоих
+                блоках — значит, наш слой ни с чем не делит систему.
+            </div>`;
 
         el.innerHTML = html;
     }

@@ -1077,8 +1077,60 @@ def get_system_diagnostics():
     import sys
     info["python_version"] = sys.version.split()[0]
 
+    # Свободное место. На роутере переполненная флешка — штатная причина
+    # «не ставится/не сохраняется»: конфиги, бинари и логи живут в /opt,
+    # а места там обычно единицы гигабайт.
+    info["disks"] = _get_disk_usage()
+
+    # Наличие утилит, от которых зависят поля выше. Без `ip` не будет ни
+    # интерфейсов, ни шлюза, ни исходящего адреса — и раньше это выглядело
+    # как «всё пусто», без единого намёка на причину.
+    info["tools"] = {
+        "ip": bool(shutil.which("ip")),
+        "iptables": bool(shutil.which("iptables")),
+        "nft": bool(shutil.which("nft")),
+        "ipset": bool(shutil.which("ipset")),
+        "dnsmasq": bool(shutil.which("dnsmasq")),
+    }
+
     _cache_set(cache_key, info)
     return info
+
+
+def _get_disk_usage() -> list:
+    """Свободное место на разделах, где живут наши файлы."""
+    from core.platform_dirs import config_dir
+
+    out, seen = [], set()
+    candidates = [
+        ("конфиг", config_dir()),
+        ("/opt", "/opt"),
+        ("/tmp", "/tmp"),
+    ]
+    for label, path in candidates:
+        if not path or not os.path.isdir(path):
+            continue
+        try:
+            st = os.statvfs(path)
+        except OSError:
+            continue
+        # Один раздел показываем один раз: /opt и конфиг обычно совпадают.
+        key = (st.f_blocks, st.f_bsize, st.f_fsid)
+        if key in seen:
+            continue
+        seen.add(key)
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        if total <= 0:
+            continue
+        out.append({
+            "label": label,
+            "path": path,
+            "total_mb": int(total / (1024 * 1024)),
+            "free_mb": int(free / (1024 * 1024)),
+            "used_percent": int(round((total - free) * 100.0 / total)),
+        })
+    return out
 
 
 def _get_dns_servers():
