@@ -38,20 +38,14 @@ def register(app):
         cfg = get_config_manager()
 
         data = request.json or {}
-        result = mgr.start(
-            country=data.get("country",
-                             cfg.get("opera_proxy", "country", default="EU")),
-            bind=data.get("bind",
-                          cfg.get("opera_proxy", "bind", default="127.0.0.1:18080")),
-            socks_mode=data.get("socks_mode",
-                                cfg.get("opera_proxy", "socks_mode", default=False)),
-            proxy_bypass=data.get("proxy_bypass",
-                                  cfg.get("opera_proxy", "proxy_bypass", default="")),
-            fake_sni=data.get("fake_sni",
-                              cfg.get("opera_proxy", "fake_sni", default="")),
-            verbosity=data.get("verbosity",
-                               cfg.get("opera_proxy", "verbosity", default=20)),
-        )
+        # База — сохранённые настройки, поверх — то, что явно передали в
+        # запросе. Один источник с автозапуском и watchdog'ом.
+        from core.opera_proxy_manager import start_kwargs_from_config
+        kwargs = start_kwargs_from_config(cfg)
+        for key in list(kwargs):
+            if key in data:
+                kwargs[key] = data[key]
+        result = mgr.start(**kwargs)
         # enabled отражает «opera должна работать». Без его выставления
         # boot-автозапуск и watchdog (оба гейтятся enabled) были мертвы —
         # флаг нигде не писался. Ставим при успешном старте.

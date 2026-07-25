@@ -70,6 +70,9 @@ const OperaProxyPage = (() => {
 
         // MR-69: addEventListener вместо onclick
         document.getElementById("opera-btn-up").addEventListener("click", _start);
+        // До ответа детекта считаем, что бинарника нет: лучше на миг
+        // недоступная кнопка, чем клик, который гарантированно провалится.
+        _setStartEnabled(false);
         document.getElementById("opera-btn-down").addEventListener("click", _stop);
         document.getElementById("opera-btn-refresh").addEventListener("click", _refresh);
 
@@ -121,11 +124,23 @@ const OperaProxyPage = (() => {
         }
     }
 
+    function _setStartEnabled(enabled) {
+        const btn = document.getElementById("opera-btn-up");
+        if (!btn) return;
+        btn.disabled = !enabled;
+        btn.title = enabled
+            ? ""
+            : "Сначала установите opera-proxy — кнопка ниже, в блоке «Окружение»";
+    }
+
     async function _loadDetect() {
         try {
             const d = await API.get("/api/opera-proxy/detect");
             const el = document.getElementById("opera-detect");
             if (!el) return;
+            // Без бинарника «Запустить» может только упасть — гасим кнопку
+            // и объясняем причину прямо на ней.
+            _setStartEnabled(!!d.installed);
             if (d.installed) {
                 let html = `
                     <div class="status-row">

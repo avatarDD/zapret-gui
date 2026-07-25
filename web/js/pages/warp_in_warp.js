@@ -81,6 +81,9 @@ const WarpInWarpPage = (() => {
         document.getElementById("wiw-btn-up").addEventListener("click", _start);
         document.getElementById("wiw-btn-down").addEventListener("click", _stop);
         document.getElementById("wiw-btn-refresh").addEventListener("click", _refresh);
+        // До ответа детекта кнопка «Поднять» недоступна: без usque она
+        // может только упасть.
+        _setStartEnabled(false);
 
         _visibilityHandler = () => {
             if (document.hidden) _stopPoll();
@@ -155,11 +158,23 @@ const WarpInWarpPage = (() => {
         }
     }
 
+    function _setStartEnabled(enabled) {
+        const btn = document.getElementById("wiw-btn-up");
+        if (!btn) return;
+        btn.disabled = !enabled;
+        btn.title = enabled
+            ? ""
+            : "Сначала установите usque на странице WARP/MASQUE — без него двойной туннель не поднять";
+    }
+
     async function _loadDetect(d) {
         try {
             if (!d) d = await API.get("/api/warp-in-warp/detect");
             const el = document.getElementById("wiw-detect");
             if (!el) return;
+            // Любой режим двойного туннеля требует usque: без него
+            // «Поднять» гарантированно провалится.
+            _setStartEnabled(!!d.usque_installed);
             const usqueCls = d.usque_installed ? "status-ok" : "status-off";
             const awgCls = d.awg_available ? "status-ok" : "status-off";
             el.innerHTML = `

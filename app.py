@@ -767,14 +767,14 @@ def create_app(config_dir: str = None) -> Bottle:
             _cfg_op2 = _cfg_op()
             if _cfg_op2.get("opera_proxy", "enabled", default=False) and \
                _cfg_op2.get("opera_proxy", "autostart", default=False):
-                from core.opera_proxy_manager import get_opera_proxy_manager
+                from core.opera_proxy_manager import (
+                    get_opera_proxy_manager, start_kwargs_from_config)
                 _opmgr = get_opera_proxy_manager()
                 if not _opmgr._is_running():
-                    _opmgr.start(
-                        country=_cfg_op2.get("opera_proxy", "country", default="EU"),
-                        bind=_cfg_op2.get("opera_proxy", "bind", default="127.0.0.1:18080"),
-                        socks_mode=_cfg_op2.get("opera_proxy", "socks_mode", default=False),
-                    )
+                    # Полный набор из конфига: раньше здесь передавались
+                    # только country/bind/socks_mode, и после перезагрузки
+                    # прокси поднимался без fake_sni/proxy_bypass/verbosity.
+                    _opmgr.start(**start_kwargs_from_config(_cfg_op2))
                     log.info("opera-proxy: автозапуск при старте", source="opera_proxy")
         except Exception as e:
             log.warning("opera-proxy autostart при boot: %s" % e, source="opera_proxy")
