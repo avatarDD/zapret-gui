@@ -10,6 +10,7 @@ Integration-тесты для WARP-in-WARP API (/api/warp-in-warp/*).
 """
 
 import unittest
+from unittest import mock
 
 from tests._wsgi_client import WSGIClient, build_test_app
 
@@ -111,3 +112,43 @@ class TestWarpInWarpApi(unittest.TestCase):
                                    {"mode": "awg_masque"})
         self.assertEqual(r["_status"], 200)
         self.assertIs(r.get("ok"), False)
+
+
+class TestWarpInWarpArch(unittest.TestCase):
+    """Архитектура — свойство ХОСТА, а не установленного usque.
+
+    Регрессия: arch читался из usque_manager.detect(), то есть из
+    `file <бинарник usque>`. Пока usque не установлен, поле пустое, и GUI
+    показывал «Архитектура: ?» на исправной системе. Плюс `file` на
+    Keenetic/Entware обычно отсутствует — прочерк выходил и с
+    установленным usque.
+    """
+
+    def test_arch_resolved_without_usque(self):
+        from core.warp_in_warp import get_warp_in_warp_manager
+        fake = mock.Mock()
+        fake.detect.return_value = {"installed": False, "binary": "",
+                                    "version": "", "arch": ""}
+        with mock.patch("core.usque_manager.get_usque_manager",
+                        return_value=fake):
+            d = get_warp_in_warp_manager().detect()
+        self.assertFalse(d["usque_installed"])
+        self.assertTrue(d["arch"], "архитектура должна определяться без usque")
+
+    def test_arch_uses_host_detector(self):
+        from core.warp_in_warp import get_warp_in_warp_manager
+        fake_usque = mock.Mock()
+        fake_usque.detect.return_value = {"installed": False, "arch": ""}
+        det = mock.Mock()
+        det.detect_platform.return_value.as_dict.return_value = {
+            "kind": "keenetic", "firewall_backend": "iptables",
+            "tun_available": True}
+        det.detect_architecture.return_value = {
+            "artifact_arch": "mipsel-softfloat", "uname_m": "mips"}
+        with mock.patch("core.usque_manager.get_usque_manager",
+                        return_value=fake_usque), \
+             mock.patch("core.awg_detector.get_awg_detector",
+                        return_value=det):
+            d = get_warp_in_warp_manager().detect()
+        self.assertEqual(d["arch"], "mipsel-softfloat")
+        self.assertEqual(d["platform"], "keenetic")

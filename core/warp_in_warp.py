@@ -340,23 +340,38 @@ class WarpInWarpManager:
                 awg_available = True
                 break
 
-        # Платформа / firewall / TUN — свойства хоста (общий детектор).
+        # Платформа / firewall / TUN / архитектура — свойства ХОСТА,
+        # поэтому берутся из общего детектора.
+        #
+        # Раньше arch читался из usque_env, то есть определялся по
+        # `file <бинарник usque>`. Пока usque не установлен, поле пустое —
+        # в GUI показывалось «Архитектура: ?» на совершенно исправной
+        # системе. Плюс `file` есть далеко не везде: на Keenetic/Entware
+        # его обычно нет, так что и с установленным usque выходил прочерк.
         platform_kind = ""
         firewall_backend = ""
         tun_available = False
+        arch = ""
         try:
             from core.awg_detector import get_awg_detector
-            plat = get_awg_detector().detect_platform().as_dict()
+            det = get_awg_detector()
+            plat = det.detect_platform().as_dict()
             platform_kind = plat.get("kind") or plat.get("name") or ""
             firewall_backend = plat.get("firewall_backend", "")
             tun_available = bool(plat.get("tun_available"))
+            arch_info = det.detect_architecture() or {}
+            arch = (arch_info.get("artifact_arch")
+                    or arch_info.get("opkg_arch")
+                    or arch_info.get("uname_m") or "")
         except Exception:
             pass
+        if not arch:
+            arch = usque_env.get("arch", "")   # последний шанс
 
         return {
             "usque_installed": usque_env.get("installed", False),
             "awg_available": awg_available,
-            "arch": usque_env.get("arch", ""),
+            "arch": arch,
             "platform": platform_kind,
             "firewall_backend": firewall_backend,
             "tun_available": tun_available,
