@@ -282,6 +282,152 @@ def check_engines() -> dict:
     return _section("engines", "Движки", checks)
 
 
+def check_extra_engines() -> dict:
+    """
+    Дополнительные движки/программы: WARP/MASQUE (usque), двойной туннель
+    WARP-in-WARP, Telegram-прокси, Opera Proxy.
+
+    Они ставятся отдельными бинарниками и до этой секции в самодиагностику
+    не попадали — «не работает WARP» приходилось выяснять вручную. Здесь
+    проверяем ровно то, что определяет работоспособность: наличие и
+    запускаемость бинарника, согласованность настроек (включён ли
+    автозапуск/watchdog, есть ли профили) и живость процессов.
+
+    Ни один чек не валит самодиагностику из-за того, что компонент просто
+    не установлен — это штатная ситуация, уровень info.
+    """
+    checks = []
+
+    # ─── usque (WARP/MASQUE) ───
+    usque_installed = False
+    try:
+        from core.usque_manager import get_usque_manager
+        mgr = get_usque_manager()
+        env = mgr.detect()
+        usque_installed = bool(env.get("installed"))
+        if usque_installed:
+            checks.append(_check(
+                "usque (WARP/MASQUE)", True,
+                "%s · %s · арх: %s" % (env.get("version") or "?",
+                                       env.get("binary") or "",
+                                       env.get("arch") or "?")))
+            configs = mgr.list_configs()
+            active = [c for c in configs if c.get("active")]
+            if configs:
+                checks.append(_check(
+                    "usque: профили", True,
+                    "%d шт., активных %d%s"
+                    % (len(configs), len(active),
+                       (" (%s)" % ", ".join(
+                           c.get("iface") or c.get("name", "?")
+                           for c in active)) if active else ""),
+                    level="ok" if active else "info"))
+            else:
+                checks.append(_check(
+                    "usque: профили", True,
+                    "нет — зарегистрируйте WARP-сессию на странице"
+                    " «WARP/MASQUE»", level="info"))
+        else:
+            checks.append(_check(
+                "usque (WARP/MASQUE)", True,
+                "не установлен (раздел WARP/MASQUE → Установка)",
+                level="info"))
+    except Exception as e:
+        checks.append(_check("usque (WARP/MASQUE)", True,
+                             "детект упал: %s" % e, level="warn"))
+
+    # Настройки usque: автозапуск без общего выключателя не сработает —
+    # _apply_usque_autostart_on_boot требует ОБА флага.
+    try:
+        from core.config_manager import get_config_manager
+        cm = get_config_manager()
+        enabled = bool(cm.get("usque", "enabled", default=False))
+        autostart = bool(cm.get("usque", "autostart", default=False))
+        wd_on = bool((cm.get("usque", "watchdog", default={}) or {})
+                     .get("enabled", False))
+        if autostart and not enabled:
+            checks.append(_check(
+                "usque: автозапуск", False,
+                "включён autostart, но выключено фоновое управление"
+                " (usque.enabled) — после перезагрузки туннель НЕ поднимется",
+                level="warn"))
+        elif usque_installed:
+            checks.append(_check(
+                "usque: автозапуск", True,
+                "автозапуск %s, watchdog %s"
+                % ("вкл" if autostart else "выкл",
+                   "вкл" if wd_on else "выкл"), level="info"))
+        if wd_on and not enabled:
+            checks.append(_check(
+                "usque: watchdog", False,
+                "watchdog включён, но выключено фоновое управление"
+                " (usque.enabled) — перезапуск не работает", level="warn"))
+    except Exception as e:
+        checks.append(_check("usque: настройки", True,
+                             "проверка упала: %s" % e, level="warn"))
+
+    # ─── WARP-in-WARP (двойной туннель) ───
+    try:
+        from core.warp_in_warp import get_warp_in_warp_manager
+        st = get_warp_in_warp_manager().get_status() or {}
+        if st.get("active"):
+            checks.append(_check(
+                "WARP-in-WARP", True,
+                "поднят (%s): внешний %s, внутренний %s"
+                % (st.get("mode") or "?", st.get("outer_iface") or "?",
+                   st.get("inner_iface") or "?")))
+        elif st.get("mode"):
+            # Режим задан, но связка не здорова — это уже проблема,
+            # а не «просто выключено».
+            checks.append(_check(
+                "WARP-in-WARP", False,
+                "режим %s, но туннели не подняты (внешний: %s, внутренний:"
+                " %s, маршрут: %s)"
+                % (st.get("mode"),
+                   "да" if st.get("outer_running") else "нет",
+                   "да" if st.get("inner_running") else "нет",
+                   "ок" if st.get("route_ok") else "нет"),
+                level="warn"))
+        else:
+            checks.append(_check("WARP-in-WARP", True, "не настроен",
+                                 level="info"))
+    except Exception as e:
+        checks.append(_check("WARP-in-WARP", True,
+                             "статус недоступен: %s" % e, level="info"))
+
+    # ─── Telegram-прокси ───
+    try:
+        from core.tgproxy_manager import get_tgwsproxy_manager
+        d = get_tgwsproxy_manager().detect() or {}
+        if d.get("installed"):
+            checks.append(_check(
+                "Telegram-прокси (tg-ws-proxy)", True,
+                "%s · %s" % (d.get("version") or "?", d.get("path") or "")))
+        else:
+            checks.append(_check("Telegram-прокси (tg-ws-proxy)", True,
+                                 "не установлен", level="info"))
+    except Exception as e:
+        checks.append(_check("Telegram-прокси (tg-ws-proxy)", True,
+                             "детект упал: %s" % e, level="warn"))
+
+    # ─── Opera Proxy ───
+    try:
+        from core.opera_proxy_manager import get_opera_proxy_manager
+        d = get_opera_proxy_manager().detect() or {}
+        if d.get("installed"):
+            checks.append(_check(
+                "Opera Proxy", True,
+                "%s · %s" % (d.get("version") or "?", d.get("binary") or "")))
+        else:
+            checks.append(_check("Opera Proxy", True, "не установлен",
+                                 level="info"))
+    except Exception as e:
+        checks.append(_check("Opera Proxy", True, "детект упал: %s" % e,
+                             level="warn"))
+
+    return _section("extra_engines", "Доп. движки и прокси", checks)
+
+
 def check_config() -> dict:
     checks = []
     try:
@@ -473,7 +619,7 @@ def run_all(include_tests: bool = True, tests_pattern: str = "",
 
     sections = []
     steps = [check_python, check_system_tools, check_engines,
-             check_config, check_network]
+             check_extra_engines, check_config, check_network]
     for fn in steps:
         if progress_cb:
             progress_cb(fn.__name__)
