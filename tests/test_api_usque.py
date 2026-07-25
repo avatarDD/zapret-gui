@@ -207,5 +207,62 @@ class TestUsqueDebugMode(_IsolatedConfig):
         self.assertIn("строка 49", r["log"])
         mgr._stderr.pop("opkgtun7", None)
 
+
+class TestUsqueImport(_IsolatedConfig):
+    """Импорт готового usque-конфига.
+
+    Сессию usque НЕЛЬЗЯ собрать из .conf AmneziaWG: это MASQUE поверх
+    HTTP/3, а не WireGuard, и ключи разных алгоритмов (X25519 против
+    ECDSA P-256). Апстрим прямо заявляет «no support for WireGuard».
+    Поэтому импорт принимает только родной config.json, а на AWG-конфиг
+    обязан отвечать понятным объяснением, а не «невалидный JSON».
+    """
+
+    AWG_CONF = (
+        "[Interface]\n"
+        "PrivateKey = 4FU5KJ7mCnBSJcaPZxqacRHm52OsFcYLkZ4k+LQOE0w=\n"
+        "Address = 172.16.0.2/32\n"
+        "Jc = 4\n\n"
+        "[Peer]\n"
+        "PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\n"
+        "Endpoint = engage.cloudflareclient.com:1014\n"
+    )
+    GOOD = ('{"private_key": "MHcCAQEE", "access_token": "tok",'
+            ' "id": "dev-1", "ipv4": "172.16.0.2"}')
+
+    def test_awg_conf_rejected_with_explanation(self):
+        r = self.client.post_json("/api/usque/configs/import",
+                                  {"name": "fromawg", "text": self.AWG_CONF})
+        self.assertFalse(r["ok"])
+        self.assertIn("AmneziaWG", r["error"])
+
+    def test_json_without_usque_fields_rejected(self):
+        r = self.client.post_json("/api/usque/configs/import",
+                                  {"name": "bad", "text": '{"foo": 1}'})
+        self.assertFalse(r["ok"])
+        for field in ("private_key", "access_token", "id"):
+            self.assertIn(field, r["error"])
+
+    def test_valid_config_imported_and_listed(self):
+        r = self.client.post_json("/api/usque/configs/import",
+                                  {"name": "imported-ok", "text": self.GOOD})
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["path"].endswith("imported-ok.json"))
+        names = [c["name"] for c in
+                 self.client.get_json("/api/usque/configs")["configs"]]
+        self.assertIn("imported-ok", names)
+
+    def test_duplicate_name_rejected(self):
+        self.client.post_json("/api/usque/configs/import",
+                              {"name": "dup", "text": self.GOOD})
+        again = self.client.post_json("/api/usque/configs/import",
+                                      {"name": "dup", "text": self.GOOD})
+        self.assertFalse(again["ok"])
+
+    def test_name_traversal_rejected(self):
+        r = self.client.post_json("/api/usque/configs/import",
+                                  {"name": "../../evil", "text": self.GOOD})
+        self.assertFalse(r["ok"])
+
 if __name__ == "__main__":
     unittest.main()

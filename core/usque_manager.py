@@ -120,17 +120,34 @@ class UsqueManager:
 
     # ─────── session management ───────
 
-    def register(self, config_path: str) -> dict:
-        """Зарегистрировать новую WARP-сессию."""
+    def register(self, config_path: str, device_name: str = "",
+                 team_token: str = "") -> dict:
+        """Зарегистрировать новую WARP-сессию.
+
+        device_name → `-n`: под этим именем устройство видно в аккаунте
+        Cloudflare; без него все туннели выглядят одинаково.
+        team_token  → `--jwt`: регистрация в ZeroTrust вместо обычного WARP.
+
+        Замечание про AmneziaWG: сессию usque НЕЛЬЗЯ собрать из .conf
+        AWG/WireGuard. Это разные протоколы (MASQUE поверх HTTP/3 против
+        WireGuard) и разные ключи: у WireGuard X25519, у usque — ECDSA на
+        кривой P-256. Апстрим (Diniboy1123/usque) прямо пишет «no support
+        for WireGuard». Единственный путь получить сессию — регистрация
+        здесь либо импорт готового usque-конфига (import_config).
+        """
         binary = self._find_binary()
         if not binary:
             return {"ok": False, "error": "usque не установлен"}
 
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        cmd = [binary, "register", "--accept-tos", "--config", config_path]
+        if device_name:
+            cmd.extend(["-n", device_name])
+        if team_token:
+            cmd.extend(["--jwt", team_token])
         try:
             r = subprocess.run(
-                [binary, "register", "--accept-tos", "--config", config_path],
-                capture_output=True, text=True, timeout=30)
+                cmd, capture_output=True, text=True, timeout=30)
             if r.returncode != 0:
                 return {"ok": False, "error": r.stderr or r.stdout or "ошибка регистрации"}
             return {"ok": True, "config_path": config_path}
@@ -139,6 +156,66 @@ class UsqueManager:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    # Поля, которые usque кладёт в свой config.json (см. README апстрима).
+    # private_key — ECDSA P-256 в DER/base64, access_token+id — учётка
+    # устройства. Ими и отличаем настоящий usque-конфиг от чужого файла.
+    _USQUE_REQUIRED = ("private_key", "access_token", "id")
+    _USQUE_KNOWN = _USQUE_REQUIRED + (
+        "endpoint_v4", "endpoint_v6", "endpoint_pub_key", "license",
+        "ipv4", "ipv6",
+    )
+
+    def import_config(self, name: str, text: str) -> dict:
+        """
+        Сохранить ГОТОВЫЙ usque-конфиг (JSON), полученный извне.
+
+        Это единственный способ «принести» сессию со стороны: собрать её
+        из AWG/WireGuard-конфига нельзя — разные протоколы и разные ключи
+        (X25519 против ECDSA P-256), апстрим WireGuard не поддерживает.
+        """
+        import json as _json
+
+        if not re.match(r"^[A-Za-z0-9_-]{1,64}$", name or ""):
+            return {"ok": False,
+                    "error": "Недопустимое имя (только a-z A-Z 0-9 _ -)"}
+        if not (text or "").strip():
+            return {"ok": False, "error": "Пустой файл"}
+        try:
+            data = _json.loads(text)
+        except ValueError as e:
+            return {"ok": False,
+                    "error": "Это не JSON-конфиг usque: %s. Конфиг AmneziaWG"
+                             " (.conf) сюда не подойдёт — usque говорит по"
+                             " MASQUE, а не по WireGuard." % e}
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "Ожидается JSON-объект"}
+        missing = [k for k in self._USQUE_REQUIRED if not data.get(k)]
+        if missing:
+            return {"ok": False,
+                    "error": "В конфиге нет обязательных полей usque: %s"
+                             % ", ".join(missing)}
+
+        config_dir = self._config_dir()
+        os.makedirs(config_dir, exist_ok=True)
+        path = os.path.join(config_dir, "%s.json" % name)
+        real_dir = os.path.realpath(config_dir)
+        if not os.path.realpath(path).startswith(real_dir + os.sep):
+            return {"ok": False, "error": "path traversal denied"}
+        if os.path.exists(path):
+            return {"ok": False, "error": "Конфиг '%s' уже существует" % name}
+
+        try:
+            from core.safe_io import atomic_write_text
+            atomic_write_text(path, _json.dumps(data, indent=2) + "\n")
+            os.chmod(path, 0o600)
+        except OSError as e:
+            return {"ok": False, "error": "Запись %s: %s" % (path, e)}
+
+        unknown = [k for k in data if k not in self._USQUE_KNOWN]
+        log.info("usque: импортирован конфиг %s" % name, source="usque")
+        return {"ok": True, "name": name, "path": path,
+                "unknown_fields": unknown}
+
     def list_configs(self) -> list:
         """Список доступных конфигов/сессий."""
         config_dir = self._config_dir()
@@ -146,7 +223,10 @@ class UsqueManager:
             return []
         out = []
         for fn in sorted(os.listdir(config_dir)):
-            if fn.endswith(".conf") or fn.endswith(".toml"):
+            # .json — родной формат usque (по умолчанию config.json).
+            # Раньше он не показывался, поэтому готовый usque-конфиг,
+            # принесённый со стороны, GUI просто не видел.
+            if fn.endswith((".conf", ".toml", ".json")):
                 path = os.path.join(config_dir, fn)
                 name = fn.rsplit(".", 1)[0]
                 iface = self._detect_iface_for_config(path)

@@ -131,7 +131,32 @@ def register(app):
         if not real_config_path.startswith(real_config_dir + os.sep):
             return {"ok": False, "error": "path traversal denied"}
 
-        return mgr.register(config_path)
+        device_name = str(data.get("device_name") or "").strip()[:64]
+        if device_name and not re.match(r"^[\w .:-]{1,64}$", device_name,
+                                        re.UNICODE):
+            return {"ok": False, "error": "Недопустимое имя устройства"}
+        team_token = str(data.get("team_token") or "").strip()
+        return mgr.register(config_path, device_name=device_name,
+                            team_token=team_token)
+
+    @app.route("/api/usque/configs/import", method="POST")
+    def usque_config_import():
+        """
+        Импорт ГОТОВОГО usque-конфига (JSON).
+
+        Конфиги AmneziaWG сюда не подходят и подойти не могут: usque —
+        клиент MASQUE (HTTP/3), а не WireGuard, и ключи у них разных
+        алгоритмов. Понятное сообщение об этом отдаёт import_config().
+        """
+        import re as _re
+        from core.usque_manager import get_usque_manager
+        data = request.json or {}
+        name = str(data.get("name") or "").strip()
+        if not _re.match(r"^[A-Za-z0-9_-]{1,64}$", name):
+            return {"ok": False,
+                    "error": "Недопустимое имя конфига (только a-z A-Z 0-9 _ -)"}
+        return get_usque_manager().import_config(name,
+                                                 str(data.get("text") or ""))
 
     # ─────── настройки ───────
     #
