@@ -90,6 +90,24 @@ def _valid_iface_name(name: str) -> bool:
     return bool(name) and bool(_AWG_NAME_RE.match(name))
 
 
+def _is_native_ndms_iface(name: str) -> bool:
+    """
+    Нативный WireGuard самого Keenetic (`Wireguard0..N`)?
+
+    Такими интерфейсами владеет прошивка (NDMS): `ip link delete` по ним
+    уносит интерфейс из ядра, а NDMS продолжает считать туннель поднятым —
+    у пользователя молча умирает штатный VPN до перезагрузки/пересоздания
+    подключения. Дашборд показывает их в общем списке (list_interfaces),
+    поэтому кнопки Stop/Restart и прямые вызовы API обязаны их отклонять.
+    На не-Keenetic платформах всегда False без сетевых запросов.
+    """
+    try:
+        from core.ndms.wg_discovery import is_native_wg
+        return bool(is_native_wg(name))
+    except Exception:
+        return False
+
+
 # ───────────────────────── manager ───────────────────────────────────
 
 class AwgManager:
@@ -935,6 +953,11 @@ class AwgManager:
         if not _valid_iface_name(name):
             return {"ok": False, "message": "Недопустимое имя"}
 
+        if _is_native_ndms_iface(name):
+            return {"ok": False, "message":
+                    "%s — нативный WireGuard Keenetic (управляется прошивкой)."
+                    " Поднимайте его в веб-интерфейсе роутера." % name}
+
         path = self._config_path(name)
         if not os.path.isfile(path):
             return {"ok": False, "message": "Конфиг %s не найден" % name}
@@ -1393,6 +1416,16 @@ class AwgManager:
         # `opkgtun0` (поднят внешним скриптом), down должен идти по
         # реальному имени, иначе `ip link delete` ничего не найдёт.
         ifname = self._iface_for_name(name)
+
+        # Нативные Keenetic-WG (Wireguard0..N) сносить нельзя: `ip link
+        # delete` уносит интерфейс из ядра, а NDMS продолжает считать
+        # туннель активным. Проверяем и имя запроса, и разрезолвленное.
+        for candidate in (name, ifname):
+            if candidate and _is_native_ndms_iface(candidate):
+                return {"ok": False, "message":
+                        "%s — нативный WireGuard Keenetic (управляется"
+                        " прошивкой). Останавливайте его в веб-интерфейсе"
+                        " роутера, иначе NDMS потеряет туннель." % candidate}
 
         # PreDown / PostDown
         path = self._config_path(name)
