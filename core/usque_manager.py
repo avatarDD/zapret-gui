@@ -102,6 +102,13 @@ class UsqueManager:
             return ""
 
     def _get_arch(self, binary: str) -> str:
+        """Архитектура бинарника, а при невозможности — архитектура хоста.
+
+        `file` на Entware/busybox обычно НЕ установлен, поэтому раньше
+        поле почти всегда оставалось пустым и GUI показывал
+        «Архитектура: ?». Архитектура хоста здесь — корректный ответ:
+        бинарник заведомо ставился под неё.
+        """
         try:
             r = subprocess.run(["file", binary],
                                capture_output=True, text=True, timeout=5)
@@ -116,7 +123,13 @@ class UsqueManager:
                 return "armv7"
         except Exception:
             pass
-        return ""
+        try:
+            from core.awg_detector import get_awg_detector
+            info = get_awg_detector().detect_architecture() or {}
+            return (info.get("artifact_arch") or info.get("opkg_arch")
+                    or info.get("uname_m") or "")
+        except Exception:
+            return ""
 
     # ─────── session management ───────
 

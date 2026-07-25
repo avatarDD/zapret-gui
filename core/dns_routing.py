@@ -218,6 +218,29 @@ class DnsRoutingManager:
             from core.routing.dnsmasq_integration import DnsmasqIntegration
             dnsmasq = DnsmasqIntegration()
             main_conf = dnsmasq.find_main_config()
+            if not main_conf:
+                # dnsmasq не найден — файл с правилами записан, но включить
+                # его некому. Раньше здесь молча возвращался успех
+                # («Применено N правил»), хотя ни одно правило не работало.
+                # На Keenetic это ЧАСТЫЙ случай: :53 занят ndnproxy, а
+                # dnsmasq из Entware может быть не установлен.
+                log.warning(
+                    "dns_routing: dnsmasq не найден — %d правил записаны в %s,"
+                    " но не применены" % (len(lines), dns_file),
+                    source="dns_routing")
+                return {
+                    "ok": False,
+                    "applied": 0,
+                    "written": len(lines),
+                    "file": dns_file,
+                    "dnsmasq_found": False,
+                    "error": "dnsmasq не найден: правила сохранены в %s, но"
+                             " применить их некому. Per-domain DNS работает"
+                             " только через dnsmasq — установите его"
+                             " (на Keenetic: opkg install dnsmasq-full) либо"
+                             " используйте доменные правила на странице"
+                             " «Маршрутизация»." % dns_file,
+                }
             if main_conf:
                 marker = "# zapret-gui dns-routing managed include"
                 has_include = False
@@ -241,7 +264,8 @@ class DnsRoutingManager:
 
             log.info("dns_routing: применено %d правил → %s" % (len(lines), dns_file),
                      source="dns_routing")
-            return {"ok": True, "applied": len(lines), "file": dns_file}
+            return {"ok": True, "applied": len(lines), "file": dns_file,
+                    "dnsmasq_found": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 

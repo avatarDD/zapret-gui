@@ -7,6 +7,20 @@
 const UpdateCheckerPage = (() => {
     let _pollTimer = null;
 
+    // Куда вести за установкой/обновлением каждого компонента.
+    // Имена — те же, что отдаёт /api/updates (см. core/update_checker).
+    const _PAGES = {
+        "zapret2":   "zapret",
+        "gui":       "zapret",        // обновление GUI живёт там же
+        "awg":       "awg-setup",
+        "singbox":   "singbox-setup",
+        "mihomo":    "mihomo-setup",
+        "usque":     "usque-setup",
+        "tgwsproxy": "tgproxy",
+        "tgproto":   "tgproxy",
+        "opera":     "opera-proxy",
+    };
+
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
@@ -126,6 +140,18 @@ const UpdateCheckerPage = (() => {
         for (const r of results) {
             const installedCls = r.installed ? "status-ok" : "status-off";
             const updateCls = r.has_update ? "status-warning" : "";
+            // Установка/обновление у каждого компонента своя (со своим
+            // прогрессом и проверкой SHA256), поэтому ведём на его
+            // страницу, а не дублируем инсталлятор здесь. Раньше строка
+            // сообщала «← доступно» и на этом всё — куда идти дальше,
+            // пользователь должен был догадываться сам.
+            const page = _PAGES[r.name] || "";
+            const action = page
+                ? `<button class="btn btn-sm ${r.has_update ? "btn-primary" : ""}"
+                           data-page="${esc(page)}">
+                       ${r.has_update ? "Обновить" : (r.installed ? "Открыть" : "Установить")}
+                   </button>`
+                : "";
             html += `<tr>
                 <td><strong>${esc(r.display_name || r.name)}</strong></td>
                 <td><span class="status-dot ${installedCls}"></span> ${r.installed ? "Да" : "Нет"}</td>
@@ -133,6 +159,7 @@ const UpdateCheckerPage = (() => {
                 <td><code class="${updateCls}">${esc(r.latest || "-")}</code></td>
                 <td>${r.has_update ? '<span style="color:var(--warning);font-weight:600;">← доступно</span>' : ""}
                     ${r.error ? '<span class="text-error" title="' + esc(r.error) + '">⚠</span>' : ""}
+                    ${action}
                 </td>
             </tr>`;
         }
@@ -144,6 +171,11 @@ const UpdateCheckerPage = (() => {
         }
 
         el.innerHTML = html;
+        el.querySelectorAll("button[data-page]").forEach(b => {
+            b.addEventListener("click", (e) => {
+                window.location.hash = e.currentTarget.getAttribute("data-page");
+            });
+        });
     }
 
     async function _loadDaemon() {
@@ -151,19 +183,79 @@ const UpdateCheckerPage = (() => {
             const st = await API.get("/api/updates/status");
             const el = document.getElementById("uc-daemon");
             if (!el) return;
+            // Интервал и флаг включения читаем из настроек: раньше в
+            // тексте стояло жёсткое «раз в 24 часа», а включить/выключить
+            // проверку из GUI было нечем — ручки /start и /stop
+            // существовали, но ни одна кнопка их не вызывала.
+            let enabled = false, interval = 24;
+            try {
+                const cfg = await API.get("/api/config");
+                const uc = (cfg && cfg.config && cfg.config.update_checker) || {};
+                enabled = !!uc.enabled;
+                interval = uc.interval_hours || 24;
+            } catch (_) { /* останемся на значениях по умолчанию */ }
+
             const cls = st.running ? "status-ok" : "status-off";
             el.innerHTML = `
                 <div class="status-row">
                     <span class="status-dot ${cls}"></span>
                     <span>${st.running ? "Фоновая проверка активна" : "Фоновая проверка выключена"}</span>
                 </div>
-                <p class="text-muted" style="font-size:12px;margin-top:8px;">
-                    Фоновая проверка запускается раз в 24 часа и логирует найденные обновления.
-                </p>
+                ${st.stale_check ? `<div class="form-hint" style="color:var(--warning);">
+                    Последняя проверка не удалась — показаны данные с прошлого раза.
+                    Проверьте доступ к api.github.com.
+                </div>` : ""}
+
+                <div class="form-group" style="margin-top:12px;">
+                    <label class="form-label" style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" id="uc-enabled" ${enabled ? "checked" : ""}>
+                        Проверять обновления в фоне
+                    </label>
+                    <div class="form-hint">
+                        GUI сам сходит за версиями по расписанию и запишет находки
+                        в лог. Ничего не устанавливает — обновление вы запускаете
+                        сами кнопкой в таблице выше.
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="uc-interval">Интервал, часов</label>
+                    <input type="number" id="uc-interval" class="form-control"
+                           min="1" max="720" value="${esc(String(interval))}"
+                           style="max-width:140px;">
+                    <div class="form-hint">
+                        Минимум 1 час. Один проход — около девяти обращений к API
+                        GitHub, а без токена там лимит 60 запросов в час, поэтому
+                        чаще смысла нет.
+                    </div>
+                </div>
+
+                <button class="btn btn-primary btn-sm" id="uc-save">Сохранить</button>
             `;
+            document.getElementById("uc-save").addEventListener("click", _saveDaemon);
         } catch (e) {
             const el = document.getElementById("uc-daemon");
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+        }
+    }
+
+    async function _saveDaemon() {
+        const enabled = document.getElementById("uc-enabled").checked;
+        let interval = parseInt(document.getElementById("uc-interval").value, 10);
+        if (!Number.isFinite(interval) || interval < 1) interval = 24;
+        if (interval > 720) interval = 720;
+        try {
+            await API.put("/api/config",
+                          { update_checker: { enabled, interval_hours: interval } });
+            // Демон читает конфиг только на старте цикла, поэтому явно
+            // переводим его в нужное состояние.
+            await API.post(enabled ? "/api/updates/start" : "/api/updates/stop");
+            Toast.success(enabled
+                ? `Фоновая проверка включена, раз в ${interval} ч`
+                : "Фоновая проверка выключена");
+            await _loadDaemon();
+        } catch (e) {
+            Toast.error("Ошибка: " + e.message);
         }
     }
 
