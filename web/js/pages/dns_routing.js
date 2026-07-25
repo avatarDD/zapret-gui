@@ -196,6 +196,20 @@ const DnsRoutingPage = (() => {
             const res = await API.post("/api/dns-routing/apply");
             if (res.ok) {
                 Toast.success("Применено " + (res.applied || 0) + " правил → " + (res.file || "dnsmasq"));
+            } else if (res.dnsmasq_found === false) {
+                // Отдельная ветка: правила записаны, но включить их некому.
+                // Сообщение длинное, поэтому показываем его и в карточке —
+                // toast пропадёт, а причина должна остаться на виду.
+                Toast.error("dnsmasq не найден — правила не применены");
+                const box = document.getElementById("dns-rules");
+                if (box) {
+                    const warn = document.createElement("div");
+                    warn.className = "form-hint";
+                    warn.style.color = "var(--warning)";
+                    warn.style.marginTop = "8px";
+                    warn.textContent = res.error || "";
+                    box.appendChild(warn);
+                }
             } else {
                 Toast.error(res.error || "Ошибка");
             }

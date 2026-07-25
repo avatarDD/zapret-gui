@@ -459,11 +459,40 @@ class BlockDetector:
             monitored_count = len(self._monitored)
             blocked_count = sum(1 for v in self._monitored.values()
                                  if v["block_code"] != "ok")
+        # Источник доменов важен для понимания «почему отслеживается 0»:
+        # детектор не берёт домены из списка, а подсматривает живые
+        # DNS-запросы. Если ни dnsmasq-лога, ни AdGuard нет, остаётся
+        # AF_PACKET — он требует root и raw-сокетов и доступен не везде.
+        source = ""
+        source_ok = False
+        try:
+            source = self._get_dns_source()
+            if source == "dnsmasq_log":
+                source_ok = os.path.isfile("/var/log/dnsmasq.log")
+            elif source == "adguard_log":
+                source_ok = os.path.isdir("/opt/etc/AdGuardHome")
+            else:
+                source_ok = self._af_packet_available()
+        except Exception:
+            pass
+
         return {
             "running": running,
             "monitored_count": monitored_count,
             "blocked_count": blocked_count,
+            "dns_source": source,
+            "dns_source_available": source_ok,
         }
+
+    def _af_packet_available(self) -> bool:
+        """Можно ли открыть AF_PACKET-сокет (нужен root)."""
+        try:
+            s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,
+                              socket.htons(0x0003))
+            s.close()
+            return True
+        except Exception:
+            return False
 
     def get_results(self) -> list[dict[str, Any]]:
         """Результаты проверок."""

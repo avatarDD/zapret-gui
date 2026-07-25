@@ -99,6 +99,31 @@ const BlockDetectorPage = (() => {
             if (!el) return;
             const cls = st.running ? "status-ok" : "status-off";
             const text = st.running ? "Работает" : "Остановлен";
+            // Детектор не берёт домены из списка — он подсматривает живые
+            // DNS-запросы. Без этой подписи «отслеживается 0» выглядело как
+            // поломка, хотя чаще всего источник просто недоступен.
+            const NAMES = {
+                dnsmasq_log: "лог dnsmasq (/var/log/dnsmasq.log)",
+                adguard_log: "лог AdGuard Home",
+                af_packet:   "перехват DNS-пакетов (AF_PACKET)",
+            };
+            function _sourceHtml(s) {
+                if (!s.dns_source) return "";
+                const name = NAMES[s.dns_source] || s.dns_source;
+                if (s.dns_source_available) {
+                    return `<div class="form-hint" style="margin-top:6px;">
+                        Источник доменов: ${name}. Список наполняется сам, по мере
+                        того как клиенты обращаются к сайтам — сразу после запуска
+                        он пуст, это нормально.
+                    </div>`;
+                }
+                return `<div class="form-hint" style="margin-top:6px; color:var(--warning);">
+                    Источник доменов недоступен: ${name}. Мониторинг запустится,
+                    но список так и останется пустым. Нужен либо dnsmasq с
+                    включённым логом запросов, либо AdGuard Home, либо запуск
+                    GUI от root (для перехвата пакетов).
+                </div>`;
+            }
             el.innerHTML = `
                 <div class="status-row">
                     <span class="status-dot ${cls}"></span>
@@ -106,6 +131,7 @@ const BlockDetectorPage = (() => {
                 </div>
                 <div class="detail-row">Отслеживается доменов: <strong>${st.monitored_count || 0}</strong></div>
                 <div class="detail-row">Заблокировано: <strong>${st.blocked_count || 0}</strong></div>
+                ${_sourceHtml(st)}
             `;
         } catch (e) {
             const el = document.getElementById("bd-status");
