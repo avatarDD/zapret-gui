@@ -269,6 +269,44 @@ def _clear_last_start() -> None:
     _save_last_start({})
 
 
+# Runtime-состояние живого двойного туннеля.
+#
+# Отдельно от last_start: там лежат ПАРАМЕТРЫ запуска (режим, SNI, конфиги),
+# а здесь — что реально поднято (интерфейсы и закреплённые маршруты с их
+# прежним состоянием). Без персистентности всё это жило только в памяти
+# процесса, поэтому после перезапуска GUI туннели продолжали работать, а
+# менеджер считал, что ничего не поднято: get_status() показывал
+# «неактивен», а «Опустить» отвечал «уже остановлен» и НЕ снимал ни
+# туннели, ни маршруты — убрать их можно было только вручную.
+
+def _save_runtime(state: dict[str, Any]) -> None:
+    try:
+        from core.config_manager import get_config_manager
+
+        cfg = get_config_manager()
+        cfg.set("warp_in_warp", "runtime", state)
+        cfg.save()
+    except Exception as e:
+        log.warning(
+            "warp-in-warp: не удалось сохранить runtime: %s" % e,
+            source="warp_in_warp",
+        )
+
+
+def _load_runtime() -> dict:
+    try:
+        from core.config_manager import get_config_manager
+
+        cfg = get_config_manager()
+        return cfg.get("warp_in_warp", "runtime", default={}) or {}
+    except Exception:
+        return {}
+
+
+def _clear_runtime() -> None:
+    _save_runtime({})
+
+
 # ─────────────────────────── manager ───────────────────────────────
 
 
@@ -330,6 +368,39 @@ class WarpInWarpManager:
         with self._lock:
             return self._get_status_locked()
 
+    def _restore_runtime_locked(self) -> None:
+        """Поднять состояние из настроек, если процесс GUI перезапускали.
+
+        Вызывается там, где нас спрашивают о живом туннеле. Проверку
+        «действительно ли он ещё жив» делает вызывающий код
+        (_iface_running / _routes_healthy) — мы лишь возвращаем себе знание
+        о том, что поднимали."""
+        if self._mode:
+            return
+        state = _load_runtime()
+        if not state.get("mode"):
+            return
+        self._mode = state.get("mode", "")
+        self._outer_iface = state.get("outer_iface", "")
+        self._inner_iface = state.get("inner_iface", "")
+        self._owned_awg_outer = bool(state.get("owned_awg_outer"))
+        self._owned_awg_inner = bool(state.get("owned_awg_inner"))
+        self._pinned_routes = [
+            (r[0], r[1], bool(r[2]), r[3])
+            for r in (state.get("pinned_routes") or [])
+            if isinstance(r, (list, tuple)) and len(r) == 4
+        ]
+
+    def _runtime_snapshot(self) -> dict[str, Any]:
+        return {
+            "mode": self._mode,
+            "outer_iface": self._outer_iface,
+            "inner_iface": self._inner_iface,
+            "owned_awg_outer": self._owned_awg_outer,
+            "owned_awg_inner": self._owned_awg_inner,
+            "pinned_routes": [list(r) for r in self._pinned_routes],
+        }
+
     def _get_status_locked(self) -> dict[str, Any]:
         """То же самое, но без захвата self._lock — для вызова из мест,
         которые уже держат self._lock (например, start()). self._lock —
@@ -338,6 +409,7 @@ class WarpInWarpManager:
         так и произошло при первом прогоне smoke-теста этого файла —
         start() дергал self.get_status() изнутри своего же `with
         self._lock:`."""
+        self._restore_runtime_locked()
         mode, outer_iface, inner_iface = (
             self._mode,
             self._outer_iface,
@@ -455,6 +527,10 @@ class WarpInWarpManager:
                 return {"ok": False, "error": "Неизвестный режим: %s" % mode}
 
             if result.get("ok"):
+                # Что реально поднято — чтобы stop()/status() пережили
+                # перезапуск GUI (иначе туннели и закреплённые маршруты
+                # остались бы висеть, а менеджер считал бы, что всё снято).
+                _save_runtime(self._runtime_snapshot())
                 _save_last_start(
                     {
                         "mode": mode,
@@ -759,6 +835,9 @@ class WarpInWarpManager:
     def stop(self) -> dict[str, Any]:
         """Остановить WARP-in-WARP."""
         with self._lock:
+            # Состояние могло остаться только в настройках — например, GUI
+            # перезапускали, а туннели продолжают работать.
+            self._restore_runtime_locked()
             mode = self._mode
             outer_iface = self._outer_iface
             inner_iface = self._inner_iface
@@ -820,6 +899,7 @@ class WarpInWarpManager:
             self._owned_awg_outer = False
             self._owned_awg_inner = False
 
+        _clear_runtime()
         _clear_last_start()
 
         # MR-05: Восстанавливаем системные defaults, если нет других активных туннелей

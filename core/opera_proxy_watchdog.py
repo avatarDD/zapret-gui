@@ -70,8 +70,12 @@ class OperaProxyWatchdog:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return
-            self._stop_evt.clear()
-            t = threading.Thread(target=self._run_loop,
+            # Своё событие на каждый запуск: _stop() не дожидается потока, а
+            # общий флаг следующий _start() сбрасывал — старый цикл
+            # просыпался и начинал перезапускать прокси параллельно с новым.
+            stop_evt = threading.Event()
+            self._stop_evt = stop_evt
+            t = threading.Thread(target=self._run_loop, args=(stop_evt,),
                                  name="opera-proxy-watchdog", daemon=True)
             t.start()
             self._thread = t
@@ -85,14 +89,16 @@ class OperaProxyWatchdog:
             self._thread = None
             log.info("opera-proxy-watchdog: остановлен", source="opera_proxy")
 
-    def _run_loop(self):
-        while not self._stop_evt.is_set():
+    def _run_loop(self, stop_evt=None):
+        if stop_evt is None:
+            stop_evt = self._stop_evt
+        while not stop_evt.is_set():
             try:
                 self._tick()
             except Exception as e:
                 log.warning("opera-proxy-watchdog tick: %s" % e,
                             source="opera_proxy")
-            self._stop_evt.wait(_DEFAULT_CHECK_INTERVAL)
+            stop_evt.wait(_DEFAULT_CHECK_INTERVAL)
 
     def _tick(self):
         from core.opera_proxy_manager import get_opera_proxy_manager
@@ -138,16 +144,10 @@ class OperaProxyWatchdog:
         mgr.stop()
         self._stop_evt.wait(1.0)
 
-        from core.config_manager import get_config_manager
-        cfg = get_config_manager()
-
-        result = mgr.start(
-            country=cfg.get("opera_proxy", "country", default="EU"),
-            bind=cfg.get("opera_proxy", "bind", default="127.0.0.1:18080"),
-            socks_mode=cfg.get("opera_proxy", "socks_mode", default=False),
-            proxy_bypass=cfg.get("opera_proxy", "proxy_bypass", default=""),
-            fake_sni=cfg.get("opera_proxy", "fake_sni", default=""),
-        )
+        # Тот же набор параметров, что у API и автозапуска (здесь терялся
+        # verbosity).
+        from core.opera_proxy_manager import start_kwargs_from_config
+        result = mgr.start(**start_kwargs_from_config())
 
         if not result.get("ok"):
             log.warning("opera-proxy-watchdog: рестарт не удался: %s"
