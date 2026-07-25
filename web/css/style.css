@@ -102,7 +102,13 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    /* Иконок в футере стало больше (эксперт, справка, самодиагностика,
+       язык, тема): при gap:8px строка не влезала в ширину сайдбара и
+       последняя кнопка обрезалась. 6px хватает, чтобы уместиться в один
+       ряд; wrap оставлен страховкой на случай другого языка/шрифта. */
+    gap: 6px;
+    flex-wrap: wrap;
+    row-gap: 8px;
 }
 .lang-toggle {
     display: inline-flex;
@@ -125,6 +131,29 @@
     border-color: var(--border-hover);
     background: var(--bg-card-hover);
 }
+/* Дубль кнопки самодиагностики в футере сайдбара — та же геометрия,
+   что у соседних иконок языка/темы, иначе строка футера «разъезжается». */
+.selfcheck-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0;
+    transition: var(--transition);
+}
+.selfcheck-toggle:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+}
+
 .theme-toggle {
     display: inline-flex;
     align-items: center;
@@ -373,6 +402,11 @@ input:focus, textarea:focus, select:focus {
 .sidebar-version {
     font-size: 11px;
     color: var(--text-muted);
+    /* Своя строка: пять управляющих элементов футера (эксперт, справка,
+       самодиагностика, язык, тема) вместе с подписью версии не влезают в
+       ширину сайдбара, и последняя кнопка обрезалась. Версия — подпись,
+       а не кнопка, поэтому уезжает наверх, а элементы остаются в один ряд. */
+    flex: 1 0 100%;
 }
 
 /* ===== Мобильная шапка (бургер-меню) ===== */

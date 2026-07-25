@@ -116,6 +116,47 @@ const DashboardPage = (() => {
                     <div class="status-card-detail" id="opera-detail"></div>
                 </div>
 
+                <div class="status-card" id="card-awg" data-action="hash-awg-dashboard">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                            </svg>
+                        </span>
+                        <span class="status-card-label">AmneziaWG</span>
+                    </div>
+                    <div class="status-card-value stopped" id="awg-status">—</div>
+                    <div class="status-card-detail" id="awg-detail"></div>
+                </div>
+
+                <div class="status-card" id="card-singbox" data-action="hash-singbox">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                                <path d="M3 9h18M9 21V9"/>
+                            </svg>
+                        </span>
+                        <span class="status-card-label">sing-box</span>
+                    </div>
+                    <div class="status-card-value stopped" id="singbox-status">—</div>
+                    <div class="status-card-detail" id="singbox-detail"></div>
+                </div>
+
+                <div class="status-card" id="card-mihomo" data-action="hash-mihomo">
+                    <div class="status-card-header">
+                        <span class="status-card-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                                <circle cx="12" cy="12" r="3"/>
+                                <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
+                            </svg>
+                        </span>
+                        <span class="status-card-label">mihomo</span>
+                    </div>
+                    <div class="status-card-value stopped" id="mihomo-status">—</div>
+                    <div class="status-card-detail" id="mihomo-detail"></div>
+                </div>
+
                 <div class="status-card" id="card-telegram" data-action="hash-tgproxy">
                     <div class="status-card-header">
                         <span class="status-card-icon">
@@ -227,6 +268,8 @@ const DashboardPage = (() => {
                 lastData = res.status;
                 if (res.status) updateCards(res.status);
                 updateVpnCards(res.warp, res.opera, res.tgproxy);
+                updateEngineCards({awg: res.awg, singbox: res.singbox,
+                                   mihomo: res.mihomo});
                 updateMonitoringCards(res.block_detector, res.healthcheck);
                 renderLogs(res.logs || []);
             }
@@ -356,9 +399,15 @@ const DashboardPage = (() => {
         _toggleCard('card-warp', warpInstalled);
 
         // opera
+        // `status()` всегда отдаёт ключ running (пусть и false) и НЕ отдаёт
+        // installed, поэтому прежнее `opera.running !== undefined` было
+        // всегда истинным и карточка не скрывалась никогда — вопреки
+        // задумке MR-131. Считаем установленным по явному признаку:
+        // installed, живой pid или запущенность.
         const operaEl = document.getElementById('opera-status');
         const operaDetail = document.getElementById('opera-detail');
-        const operaInstalled = opera && (opera.installed || opera.running !== undefined);
+        const operaInstalled = !!(opera && (opera.installed || opera.running
+                                            || opera.pid));
         if (operaEl) {
             const active = opera && opera.running;
             operaEl.textContent = active ? _t('status_running') : _t('status_stopped');
@@ -371,19 +420,71 @@ const DashboardPage = (() => {
         _toggleCard('card-opera', operaInstalled);
 
         // telegram
+        // get_active_engine_status() отдаёт ВЛОЖЕННУЮ структуру
+        // {tgwsproxy:{running,installed}, mtproto:{running,...}, any_running},
+        // а читались плоские tg.running/tg.installed — их там нет никогда.
+        // Итог: карточка не показывалась даже при работающем прокси.
         const tgEl = document.getElementById('tg-status');
         const tgDetail = document.getElementById('tg-detail');
-        const tgInstalled = tg && (tg.installed || tg.running !== undefined);
+        const tgWs = (tg && tg.tgwsproxy) || {};
+        const tgMt = (tg && tg.mtproto) || {};
+        const tgInstalled = !!(tg && (tg.any_running || tgWs.installed
+                                      || tgWs.running || tgMt.running));
         if (tgEl) {
-            const active = tg && tg.running;
+            const active = !!(tg && (tg.any_running || tgWs.running
+                                     || tgMt.running));
             tgEl.textContent = active ? _t('status_running') : _t('status_stopped');
             tgEl.className = `status-card-value ${active ? 'running' : 'stopped'}`;
             if (tgDetail) {
-                tgDetail.textContent = active ? `Engine: ${tg.engine || '?'}` : '';
+                const engine = tgWs.running ? 'tg-ws-proxy'
+                             : (tgMt.running ? 'mtproto' : '');
+                tgDetail.textContent = active && engine ? `Движок: ${engine}` : '';
             }
         }
         // MR-131: скрыть если не установлен
         _toggleCard('card-telegram', tgInstalled);
+    }
+
+    /**
+     * Карточки основных движков (AmneziaWG, sing-box, mihomo).
+     *
+     * Раньше их на дашборде не было вовсе: у пользователя с поднятым
+     * AWG-туннелем раздел «VPN / Туннели» выглядел пустым, хотя это
+     * главный движок. Карточка показывается, когда у движка есть хотя бы
+     * один профиль — иначе прячем, чтобы не забивать обзор.
+     */
+    function updateEngineCards(engines) {
+        const items = [
+            ['awg', 'card-awg', 'awg-status', 'awg-detail', engines.awg],
+            ['singbox', 'card-singbox', 'singbox-status', 'singbox-detail',
+             engines.singbox],
+            ['mihomo', 'card-mihomo', 'mihomo-status', 'mihomo-detail',
+             engines.mihomo],
+        ];
+        for (const [, cardId, valId, detId, data] of items) {
+            const st = data || {};
+            const total = st.total || 0;
+            const active = st.active || 0;
+            const valEl = document.getElementById(valId);
+            const detEl = document.getElementById(detId);
+            if (valEl) {
+                valEl.textContent = active
+                    ? _t('status_running') : _t('status_stopped');
+                valEl.className = `status-card-value ${active ? 'running' : 'stopped'}`;
+            }
+            if (detEl) {
+                if (active) {
+                    const names = (st.names || []).filter(Boolean);
+                    detEl.textContent = names.length
+                        ? `${active} из ${total}: ${names.join(', ')}`
+                        : `${active} из ${total}`;
+                } else {
+                    detEl.textContent = total
+                        ? `профилей: ${total}` : '';
+                }
+            }
+            _toggleCard(cardId, total > 0);
+        }
     }
 
     function updateMonitoringCards(bd, hc) {
@@ -537,6 +638,9 @@ const DashboardPage = (() => {
         if (a === 'hash-usque') { window.location.hash = 'usque'; return; }
         if (a === 'hash-opera-proxy') { window.location.hash = 'opera-proxy'; return; }
         if (a === 'hash-tgproxy') { window.location.hash = 'tgproxy'; return; }
+        if (a === 'hash-awg-dashboard') { window.location.hash = 'awg'; return; }
+        if (a === 'hash-singbox') { window.location.hash = 'singbox'; return; }
+        if (a === 'hash-mihomo') { window.location.hash = 'mihomo'; return; }
         if (a === 'hash-block-detector') { window.location.hash = 'block-detector'; return; }
         if (a === 'hash-strategies') { window.location.hash = 'strategies'; return; }
     }

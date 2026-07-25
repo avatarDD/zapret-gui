@@ -28,6 +28,25 @@ from core.log_buffer import log
 # Интервал проверки по умолчанию (часы)
 DEFAULT_CHECK_INTERVAL_HOURS = 24
 
+# Минимум между проверками. Один check_all() — это ~9 обращений к GitHub
+# API, а неавторизованный лимит там 60 запросов в час. При interval_hours=0
+# (значение приходит из общего /api/config без всякой валидации) `wait(0)`
+# возвращался мгновенно и цикл сваливался в непрерывный опрос GitHub —
+# мгновенный бан по rate-limit и бесполезная нагрузка на роутер.
+MIN_CHECK_INTERVAL_HOURS = 1
+MAX_CHECK_INTERVAL_HOURS = 24 * 30
+
+
+def _sane_interval_hours(value) -> float:
+    """Интервал в разумных пределах; мусор → значение по умолчанию."""
+    try:
+        hours = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_CHECK_INTERVAL_HOURS
+    if hours != hours:                      # NaN
+        return DEFAULT_CHECK_INTERVAL_HOURS
+    return max(MIN_CHECK_INTERVAL_HOURS, min(hours, MAX_CHECK_INTERVAL_HOURS))
+
 # Кешированные результаты
 _results = {}
 _results_lock = threading.Lock()
@@ -340,8 +359,16 @@ class UpdateCheckerDaemon:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return
-            self._stop_evt.clear()
-            t = threading.Thread(target=self._run_loop,
+            # Своё событие на каждый запуск. С общим получалась гонка:
+            # _stop() выставлял флаг, но не дожидался потока, а следующий
+            # _start() сразу его сбрасывал — старый цикл просыпался с уже
+            # чистым флагом и работал рядом с новым. Каждый цикл делает
+            # ~9 запросов к GitHub API, лимит которого 60 в час, поэтому
+            # дубль быстро упирался в rate-limit. Через API это
+            # достижимо парой кликов: /api/updates/stop → /start.
+            stop_evt = threading.Event()
+            self._stop_evt = stop_evt
+            t = threading.Thread(target=self._run_loop, args=(stop_evt,),
                                  name="update-checker", daemon=True)
             t.start()
             self._thread = t
@@ -355,17 +382,23 @@ class UpdateCheckerDaemon:
             self._thread = None
             log.info("update-checker: остановлен", source="update_checker")
 
-    def _run_loop(self):
+    def _run_loop(self, stop_evt=None):
+        if stop_evt is None:
+            stop_evt = self._stop_evt
         # Даём роутеру 60 секунд на инициализацию сетевых интерфейсов
-        if self._stop_evt.wait(60.0):
+        if stop_evt.wait(60.0):
             return
 
-        while not self._stop_evt.is_set():
+        while not stop_evt.is_set():
+            # Значение по умолчанию до try: иначе падение на чтении
+            # конфига оставило бы interval_h неопределённым.
+            interval_h = DEFAULT_CHECK_INTERVAL_HOURS
             try:
                 from core.config_manager import get_config_manager
                 cfg = get_config_manager()
-                interval_h = cfg.get("update_checker", "interval_hours",
-                                     default=DEFAULT_CHECK_INTERVAL_HOURS)
+                interval_h = _sane_interval_hours(
+                    cfg.get("update_checker", "interval_hours",
+                            default=DEFAULT_CHECK_INTERVAL_HOURS))
                 with self._lock:
                     self._checking = True
                 try:
@@ -384,7 +417,7 @@ class UpdateCheckerDaemon:
                 with self._lock:
                     self._stale_check = True
                 log.warning("update-checker: %s" % e, source="update_checker")
-            self._stop_evt.wait(interval_h * 3600)
+            stop_evt.wait(interval_h * 3600)
 
     def check_now(self) -> bool:
         """Разовая немедленная проверка в фоне (для кнопки в UI).
