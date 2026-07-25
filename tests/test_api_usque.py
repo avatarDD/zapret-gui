@@ -40,7 +40,6 @@ class _IsolatedConfig(unittest.TestCase):
 
 
 class TestUsqueSettings(_IsolatedConfig):
-    pass
 
     def _get(self):
         r = self.client.get_json("/api/usque/settings")
@@ -161,6 +160,52 @@ class TestUsqueConfigsApi(_IsolatedConfig):
         self.assertIn("installed", r["binary"])
         self.assertIn("ready", r)
 
+
+
+class TestUsqueDebugMode(_IsolatedConfig):
+    """Режим отладки: тумблер + чтение лога."""
+
+    def test_debug_toggle_roundtrip(self):
+        off = self.client.get_json("/api/usque/debug")
+        self.assertTrue(off["ok"])
+        self.assertIs(off["enabled"], False)
+
+        on = self.client.post_json("/api/usque/debug", {"enabled": True})
+        self.assertIs(on["enabled"], True)
+        self.assertIs(self.client.get_json("/api/usque/debug")["enabled"], True)
+
+        self.client.post_json("/api/usque/debug", {"enabled": False})
+
+    def test_debug_changes_buffer_depth(self):
+        from core.usque_manager import get_usque_manager, _MAX_DIAGNOSTIC_LINES, _MAX_DEBUG_LINES
+        mgr = get_usque_manager()
+        self.client.post_json("/api/usque/debug", {"enabled": False})
+        self.assertEqual(mgr._buf_size(), _MAX_DIAGNOSTIC_LINES)
+        self.client.post_json("/api/usque/debug", {"enabled": True})
+        self.assertEqual(mgr._buf_size(), _MAX_DEBUG_LINES)
+        self.client.post_json("/api/usque/debug", {"enabled": False})
+
+    def test_log_of_unknown_config_errors(self):
+        r = self.client.get_json("/api/usque/configs/nosuch/log")
+        self.assertFalse(r["ok"])
+
+    def test_read_log_rejects_bad_iface(self):
+        from core.usque_manager import get_usque_manager
+        r = get_usque_manager().read_log("../etc/passwd")
+        self.assertFalse(r["ok"])
+
+    def test_read_log_returns_tail(self):
+        from core.usque_manager import get_usque_manager
+        from collections import deque
+        mgr = get_usque_manager()
+        mgr._stderr["opkgtun7"] = deque(
+            ["строка %d" % i for i in range(50)], maxlen=500)
+        r = mgr.read_log("opkgtun7", lines=10)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["captured"], 50)
+        self.assertEqual(len(r["log"].splitlines()), 10)
+        self.assertIn("строка 49", r["log"])
+        mgr._stderr.pop("opkgtun7", None)
 
 if __name__ == "__main__":
     unittest.main()

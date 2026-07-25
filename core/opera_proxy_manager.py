@@ -17,8 +17,27 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 
 from core.log_buffer import log
+
+
+# Хвост вывода opera-proxy. Держим в ОЗУ (не файл): на роутере лишняя
+# запись на флешку ни к чему, а для разбора «почему прокси не отвечает»
+# хватает последних строк. В обычном режиме буфер короткий, в режиме
+# отладки — длинный.
+_MAX_LOG_LINES = 60
+_MAX_DEBUG_LOG_LINES = 600
+
+
+def debug_enabled() -> bool:
+    """Включён ли режим отладки Opera Proxy (opera_proxy.debug_log)."""
+    try:
+        from core.config_manager import get_config_manager
+        return bool(get_config_manager().get("opera_proxy", "debug_log",
+                                             default=False))
+    except Exception:
+        return False
 
 
 def start_kwargs_from_config(cfg=None) -> dict:
@@ -51,6 +70,7 @@ class OperaProxyManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._process = None
+        self._log = deque(maxlen=_MAX_LOG_LINES)
 
     # ─────── pid-файл ───────
     #
@@ -191,11 +211,31 @@ class OperaProxyManager:
             # Дренаж stdout в фоне: opera-proxy при verbosity<=20 логирует
             # каждое соединение. Без вычитывания OS-буфер пайпа (~64 КБ)
             # переполняется, child блокируется на write() и перестаёт
-            # форвардить трафик («прокси завис»). Пишем в никуда.
+            # форвардить трафик («прокси завис»).
+            #
+            # Раньше вывод уходил в никуда, поэтому выбранный в GUI уровень
+            # Debug (10) не давал НИЧЕГО: логи некуда было посмотреть.
+            # Теперь копим хвост в кольцевом буфере — читать его при этом
+            # обязательно так же непрерывно, иначе вернётся зависание.
+            with self._lock:
+                self._log = deque(maxlen=(_MAX_DEBUG_LOG_LINES
+                                          if debug_enabled()
+                                          else _MAX_LOG_LINES))
+                buf = self._log
+
             def _drain(pipe):
                 try:
-                    for _ in iter(lambda: pipe.read(4096), b""):
-                        pass
+                    tail = b""
+                    for chunk in iter(lambda: pipe.read(4096), b""):
+                        tail += chunk
+                        *ready, tail = tail.split(b"\n")
+                        for raw in ready:
+                            line = raw.decode("utf-8", "replace").rstrip()
+                            if line:
+                                buf.append(line[-400:])
+                        if len(tail) > 8192:      # строка без перевода
+                            buf.append(tail.decode("utf-8", "replace")[-400:])
+                            tail = b""
                 except Exception:
                     pass
             t = threading.Thread(target=_drain, args=(proc.stdout,),
@@ -271,6 +311,21 @@ class OperaProxyManager:
         return {
             "running": running,
             "pid": pid if running else None,
+        }
+
+    def read_log(self, lines: int = 200) -> dict:
+        """Хвост вывода opera-proxy для кнопки «Лог» в GUI."""
+        with self._lock:
+            buf = list(self._log)
+        try:
+            lines = max(1, min(int(lines), _MAX_DEBUG_LOG_LINES))
+        except (TypeError, ValueError):
+            lines = 200
+        return {
+            "ok": True,
+            "debug": debug_enabled(),
+            "captured": len(buf),
+            "log": "\n".join(buf[-lines:]),
         }
 
     def _is_running(self) -> bool:

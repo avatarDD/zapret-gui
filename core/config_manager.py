@@ -255,6 +255,9 @@ DEFAULT_CONFIG = {
         # По умолчанию ozon.ru — крупный российский e-commerce.
         "default_sni": "ozon.ru",
         "http2_enable": False,
+        # Режим отладки: держать длинный хвост вывода usque в памяти
+        # (обычно 40 строк, в отладке 500) и показывать его в GUI.
+        "debug_log": False,
         # Метаданные установленного бинарника (заполняется при установке).
         "installed_tag": "",
         "installed_arch": "",
@@ -317,6 +320,11 @@ DEFAULT_CONFIG = {
         "proxy_bypass": "",   # домены-исключения
         "fake_sni": "",       # SNI-маскировка
         "verbosity": 20,      # 10=debug, 20=info, 30=warn, 40=error
+        # Режим отладки: копить длинный хвост вывода opera-proxy в памяти
+        # (обычно 60 строк, в отладке 600) и показывать его в GUI. Раньше
+        # вывод сливался в никуда, поэтому verbosity=Debug(10) не давал
+        # ничего — логи некуда было посмотреть.
+        "debug_log": False,
         "installed_tag": "",
         "installed_arch": "",
     },

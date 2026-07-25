@@ -28,6 +28,20 @@ from core.log_buffer import log
 _VALID_IFACE_RE = re.compile(r"^[a-zA-Z0-9_-]{1,15}$")
 _IFACE_PREFIX_RE = re.compile(r"^[a-zA-Z0-9_-]{1,12}$")
 _MAX_DIAGNOSTIC_LINES = 40
+# В режиме отладки держим заметно более длинный хвост: 40 строк хватает
+# на «почему не поднялся», но не на «почему отваливается через час».
+# Буфер в ОЗУ, а не файл: на роутере лишняя запись на флешку ни к чему.
+_MAX_DEBUG_LINES = 500
+
+
+def debug_enabled() -> bool:
+    """Включён ли режим отладки usque (usque.debug_log)."""
+    try:
+        from core.config_manager import get_config_manager
+        return bool(get_config_manager().get("usque", "debug_log",
+                                             default=False))
+    except Exception:
+        return False
 
 
 class UsqueManager:
@@ -185,10 +199,13 @@ class UsqueManager:
                     return name
         return ""
 
+    def _buf_size(self) -> int:
+        return _MAX_DEBUG_LINES if debug_enabled() else _MAX_DIAGNOSTIC_LINES
+
     def _capture_stderr(self, iface: str, stream) -> None:
         if not isinstance(stream, (io.TextIOBase, io.BufferedIOBase)):
             return
-        buf = self._stderr.setdefault(iface, deque(maxlen=_MAX_DIAGNOSTIC_LINES))
+        buf = self._stderr.setdefault(iface, deque(maxlen=self._buf_size()))
         try:
             for line in iter(stream.readline, ""):
                 line = (line or "").rstrip()
@@ -205,6 +222,30 @@ class UsqueManager:
     def _diagnostic(self, iface: str) -> str:
         lines = list(self._stderr.get(iface) or ())
         return "\n".join(lines[-8:])
+
+    def read_log(self, iface: str, lines: int = 200) -> dict:
+        """Хвост вывода usque по интерфейсу (для кнопки «Лог» в GUI).
+
+        Раньше наружу отдавались только последние 8 строк в поле
+        `diagnostic` — этого хватает на «не поднялся», но не на разбор
+        обрывов. Полный буфер держится в памяти; его глубина зависит от
+        режима отладки.
+        """
+        if not _VALID_IFACE_RE.match(iface or ""):
+            return {"ok": False, "error": "Неверное имя интерфейса"}
+        buf = list(self._stderr.get(iface) or ())
+        try:
+            lines = max(1, min(int(lines), _MAX_DEBUG_LINES))
+        except (TypeError, ValueError):
+            lines = 200
+        return {
+            "ok": True,
+            "iface": iface,
+            "debug": debug_enabled(),
+            "captured": len(buf),
+            "capacity": self._buf_size(),
+            "log": "\n".join(buf[-lines:]),
+        }
 
     # ─────── lifecycle ───────
 
@@ -267,7 +308,7 @@ class UsqueManager:
                     bufsize=1,
                     start_new_session=True)
 
-                self._stderr[iface] = deque(maxlen=_MAX_DIAGNOSTIC_LINES)
+                self._stderr[iface] = deque(maxlen=self._buf_size())
                 reader = threading.Thread(
                     target=self._capture_stderr,
                     args=(iface, proc.stderr),

@@ -47,6 +47,20 @@ const OperaProxyPage = (() => {
                         <button class="btn btn-primary" id="opera-btn-up">Запустить</button>
                         <button class="btn btn-danger" id="opera-btn-down">Остановить</button>
                         <button class="btn" id="opera-btn-refresh">Обновить</button>
+                        <button class="btn" id="opera-btn-log">Лог</button>
+                        <label style="display:inline-flex; align-items:center; gap:6px;
+                                      margin-left:12px; font-size:12px; cursor:pointer;"
+                               title="Хранить длинный хвост вывода opera-proxy (600 строк вместо 60)">
+                            <input type="checkbox" id="opera-debug"> режим отладки
+                        </label>
+                        <div class="form-hint" style="margin-top:8px;">
+                            Логи прокси видны по кнопке «Лог». Подробные строки
+                            появятся, только если в настройках выбран
+                            <strong>Verbosity = Debug (10)</strong> — уровень задаёт
+                            сам opera-proxy, а режим отладки лишь увеличивает
+                            хранимый хвост.
+                        </div>
+                        <div id="opera-log-box"></div>
                     </div>
                 </div>
             </div>
@@ -73,6 +87,9 @@ const OperaProxyPage = (() => {
         // До ответа детекта считаем, что бинарника нет: лучше на миг
         // недоступная кнопка, чем клик, который гарантированно провалится.
         _setStartEnabled(false);
+        document.getElementById("opera-btn-log").addEventListener("click", _loadLog);
+        document.getElementById("opera-debug").addEventListener("change", _setDebug);
+        _loadDebugFlag();
         document.getElementById("opera-btn-down").addEventListener("click", _stop);
         document.getElementById("opera-btn-refresh").addEventListener("click", _refresh);
 
@@ -121,6 +138,53 @@ const OperaProxyPage = (() => {
         } catch (e) {
             const el = document.getElementById("opera-status");
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+        }
+    }
+
+    async function _loadDebugFlag() {
+        try {
+            const r = await API.get("/api/opera-proxy/debug");
+            const el = document.getElementById("opera-debug");
+            if (el) el.checked = !!(r && r.enabled);
+        } catch (_) { /* необязательно */ }
+    }
+
+    async function _setDebug(e) {
+        try {
+            const r = await API.post("/api/opera-proxy/debug",
+                                     { enabled: e.target.checked });
+            if (r && r.ok) {
+                Toast.success(r.note || "Сохранено");
+            } else {
+                Toast.error((r && r.error) || "Не удалось сохранить");
+            }
+        } catch (err) {
+            Toast.error("Ошибка: " + err.message);
+        }
+    }
+
+    async function _loadLog() {
+        const box = document.getElementById("opera-log-box");
+        if (!box) return;
+        box.innerHTML = '<div class="form-hint">Загрузка лога…</div>';
+        try {
+            const r = await API.get("/api/opera-proxy/log?lines=300");
+            const text = (r && r.log || "").trim();
+            if (!text) {
+                box.innerHTML = `<div class="form-hint">
+                    Буфер пуст. Прокси либо не запускался в этом сеансе GUI,
+                    либо ничего не вывел — при Verbosity = Silent (60) это норма.
+                </div>`;
+                return;
+            }
+            box.innerHTML = `
+                <pre class="usque-diagnostic">${esc(text)}</pre>
+                <div class="form-hint">Строк в буфере: ${r.captured || 0}.
+                    ${r.debug ? "Режим отладки включён."
+                              : "Включите режим отладки, чтобы буфер хранил больше строк."}
+                </div>`;
+        } catch (e) {
+            box.innerHTML = `<div class="text-error">${esc(String(e))}</div>`;
         }
     }
 
