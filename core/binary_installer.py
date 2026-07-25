@@ -581,13 +581,38 @@ def install_binary(src_path: str, dest_path: str,
 def _replace_now(src_path: str, dest_path: str,
                  backup_warning: str = "") -> dict:
     try:
-        # os.replace требует чтобы src и dest были на одной FS.
-        # На разных FS используем shutil.move (он переключится на
-        # copy+unlink).
+        # os.replace требует, чтобы src и dest были на одной ФС.
+        # На разных ФС НЕЛЬЗЯ звать shutil.move напрямую: он делает
+        # copy+unlink, то есть открывает целевой путь на запись — а если
+        # обновляемый бинарь сейчас запущен (sing-box/mihomo/usque), ядро
+        # вернёт ETXTBSY «Text file busy» и установка упадёт. Это реальный
+        # сценарий на Keenetic: /tmp — tmpfs в ОЗУ, /opt — флешка, и
+        # workbase() выбирает каталог по свободному месту, так что
+        # межфайловый случай вполне возможен.
+        #
+        # Поэтому сначала копируем рядом с целью (та же ФС), а потом
+        # атомарно подменяем через rename: он заменяет ссылку в каталоге,
+        # не трогая inode работающего процесса.
         try:
             os.replace(src_path, dest_path)
         except OSError:
-            shutil.move(src_path, dest_path)
+            staged = "%s.new-%d" % (dest_path, os.getpid())
+            try:
+                shutil.copy2(src_path, staged)
+                chmod_executable(staged)
+                os.replace(staged, dest_path)
+            except OSError:
+                try:
+                    if os.path.exists(staged):
+                        os.unlink(staged)
+                except OSError:
+                    pass
+                raise
+            else:
+                try:
+                    os.unlink(src_path)
+                except OSError:
+                    pass
         if not chmod_executable(dest_path):
             return {"ok": True, "warning": "chmod +x failed",
                     "dest": dest_path,
