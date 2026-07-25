@@ -299,11 +299,25 @@ const MihomoProxiesPage = (() => {
             и вставьте clash-YAML, либо вставьте ссылки сюда (Ctrl+V).
         </div></div>`,
 
-        emptyItemsHtml: (st) => `<div class="card"><div class="text-muted">
-            В конфиге «${esc(st.configName)}» нет прокси. Вставьте ссылки
-            (Ctrl+V / кнопка «Вставить») или добавьте их в YAML на странице
-            «Инстансы».
-        </div></div>`,
+        emptyItemsHtml: (st) => {
+            // При подписке (proxy-providers) совет «вставьте ссылки»
+            // неверен и сбивает с толку: узлов в конфиге и не должно
+            // быть, их приносит сам mihomo (issue #248).
+            if ((st.extra.providers || []).length) {
+                return `<div class="card"><div class="text-muted">
+                    В конфиге «${esc(st.configName)}» узлы приходят из подписки
+                    (<code>proxy-providers</code>) — вручную добавлять ничего не
+                    нужно. Список появится здесь, когда конфиг запущен и у него
+                    есть <code>external-controller</code>; если он пуст —
+                    смотрите «Показать лог», скачал ли mihomo подписку.
+                </div></div>`;
+            }
+            return `<div class="card"><div class="text-muted">
+                В конфиге «${esc(st.configName)}» нет прокси. Вставьте ссылки
+                (Ctrl+V / кнопка «Вставить») или добавьте их в YAML на странице
+                «Инстансы».
+            </div></div>`;
+        },
 
         extraMethods: { enableController, toggleDebug, toggleLog },
     });
