@@ -29,13 +29,17 @@ def register(app):
         mgr = get_usque_manager()
         env = mgr.detect()
 
-        # Проверяем наличие usque-keenetic в opkg (для установки)
+        # Проверяем наличие usque-keenetic в opkg (для установки).
+        # `opkg info <неизвестный-пакет>` завершается с кодом 0 и пустым
+        # выводом, поэтому по коду возврата судить нельзя — нужен
+        # непосредственно заголовок "Package:" в stdout.
         opkg_available = False
         try:
             import subprocess
             r = subprocess.run(["opkg", "info", "usque-keenetic"],
                                capture_output=True, text=True, timeout=5)
-            opkg_available = r.returncode == 0
+            opkg_available = (r.returncode == 0
+                              and "package:" in (r.stdout or "").lower())
         except Exception:
             pass
 
