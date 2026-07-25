@@ -715,7 +715,8 @@ def _fetch_json(url: str) -> dict:
             )
         raise Exception("GitHub API вернул HTTP %d" % e.code)
     except URLError as e:
-        raise Exception("Нет доступа к GitHub: %s" % e.reason)
+        from core.binary_installer import github_unreachable_message
+        raise Exception(github_unreachable_message(e))
     except json.JSONDecodeError:
         raise Exception("Ошибка разбора ответа GitHub API")
 

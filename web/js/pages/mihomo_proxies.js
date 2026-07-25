@@ -137,20 +137,40 @@ const MihomoProxiesPage = (() => {
                     extra: { hasController: false, controllerLive: false, selectGroups: [] },
                 };
             }
+            // Узлы подписки (proxy-providers) в конфиге не лежат — их
+            // скачивает сам mihomo. Пока инстанс запущен и доступен
+            // external-controller, показываем их наравне с обычными
+            // (issue #248: иначе таблица пуста и подписка выглядит
+            // нерабочей, хотя конфиг корректный).
+            const fromProviders = [];
+            for (const prov of (r.provider_live || [])) {
+                for (const p of (prov.proxies || [])) {
+                    fromProviders.push({
+                        id: p.name,
+                        type: p.type,
+                        address: `подписка: ${prov.name}`,
+                        raw: { name: p.name, type: p.type, provider: prov.name },
+                    });
+                }
+            }
+            const own = (r.proxies || []).map(p => ({
+                id: p.name,
+                type: p.type,
+                address: (p.server != null ? String(p.server) : '')
+                         + (p.port != null && p.port !== '' ? ':' + p.port : ''),
+                raw: p,
+            }));
+            const seen = new Set(own.map(i => i.id));
             return {
-                items: (r.proxies || []).map(p => ({
-                    id: p.name,
-                    type: p.type,
-                    address: (p.server != null ? String(p.server) : '')
-                             + (p.port != null && p.port !== '' ? ':' + p.port : ''),
-                    raw: p,
-                })),
+                items: own.concat(fromProviders.filter(i => !seen.has(i.id))),
                 activeId: r.active || '',
                 running: !!r.running,
                 extra: {
                     hasController: !!r.controller,
                     controllerLive: !!r.controller_live,
                     selectGroups: r.select_groups || [],
+                    providers: r.providers || [],
+                    providerLive: r.provider_live || [],
                 },
             };
         },
@@ -202,7 +222,42 @@ const MihomoProxiesPage = (() => {
 
         bannersHtml: (st) => {
             const ex = st.extra;
-            if (ex.hasController && (ex.controllerLive || !st.running)) return '';
+            // Подписки proxy-providers: их узлы не лежат в конфиге, их
+            // качает сам mihomo. Без этой плашки таблица выглядела пустой
+            // и подписка казалась нерабочей (issue #248).
+            let providersBanner = '';
+            const provs = ex.providers || [];
+            if (provs.length) {
+                const live = (ex.providerLive || [])
+                    .reduce((n, p) => n + (p.count || 0), 0);
+                const list = provs.map(p =>
+                    `<li><strong>${esc(p.name)}</strong>`
+                    + (p.type ? ` · ${esc(p.type)}` : '')
+                    + (p.url_host ? ` · ${esc(p.url_host)}` : '')
+                    + (p.interval ? ` · обновление раз в ${esc(String(p.interval))} с` : '')
+                    + `</li>`).join('');
+                const tail = live
+                    ? `Из них сейчас загружено узлов: <strong>${live}</strong> —
+                       они показаны в таблице ниже.`
+                    : (st.running
+                        ? `Узлы пока не загружены. Обычно это значит, что mihomo не смог
+                           скачать подписку (нет сети, неверный URL или требуется свой
+                           User-Agent) — посмотрите «Лог».`
+                        : `Узлы появятся после запуска конфига: их скачивает сам mihomo,
+                           в файле конфига их нет.`)
+                    + (ex.hasController ? '' :
+                       ` Чтобы видеть узлы подписки, нужен <code>external-controller</code> —
+                         кнопка ниже.`);
+                providersBanner = `
+                    <div class="alert" style="margin-top:10px; font-size:12px;">
+                        <div>Подписки (<code>proxy-providers</code>) в этом конфиге:</div>
+                        <ul style="margin:6px 0 6px 18px;">${list}</ul>
+                        <div>${tail}</div>
+                    </div>`;
+            }
+            if (ex.hasController && (ex.controllerLive || !st.running)) {
+                return providersBanner;
+            }
             if (!ex.hasController) {
                 return `
                     <div class="alert alert-warning" style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
@@ -215,14 +270,14 @@ const MihomoProxiesPage = (() => {
                                 onclick="MihomoProxiesPage.enableController()">
                             Включить управление и учёт трафика
                         </button>
-                    </div>`;
+                    </div>` + providersBanner;
             }
             // есть controller, но running и не отвечает
             return `
                 <div class="alert alert-warning" style="margin-top:10px; font-size:12px;">
                     external-controller настроен, но не отвечает. Проверьте порт/secret
                     и что конфиг перезапущен после изменения.
-                </div>`;
+                </div>` + providersBanner;
         },
 
         panelsHtml: (st) => {
@@ -244,11 +299,25 @@ const MihomoProxiesPage = (() => {
             и вставьте clash-YAML, либо вставьте ссылки сюда (Ctrl+V).
         </div></div>`,
 
-        emptyItemsHtml: (st) => `<div class="card"><div class="text-muted">
-            В конфиге «${esc(st.configName)}» нет прокси. Вставьте ссылки
-            (Ctrl+V / кнопка «Вставить») или добавьте их в YAML на странице
-            «Инстансы».
-        </div></div>`,
+        emptyItemsHtml: (st) => {
+            // При подписке (proxy-providers) совет «вставьте ссылки»
+            // неверен и сбивает с толку: узлов в конфиге и не должно
+            // быть, их приносит сам mihomo (issue #248).
+            if ((st.extra.providers || []).length) {
+                return `<div class="card"><div class="text-muted">
+                    В конфиге «${esc(st.configName)}» узлы приходят из подписки
+                    (<code>proxy-providers</code>) — вручную добавлять ничего не
+                    нужно. Список появится здесь, когда конфиг запущен и у него
+                    есть <code>external-controller</code>; если он пуст —
+                    смотрите «Показать лог», скачал ли mihomo подписку.
+                </div></div>`;
+            }
+            return `<div class="card"><div class="text-muted">
+                В конфиге «${esc(st.configName)}» нет прокси. Вставьте ссылки
+                (Ctrl+V / кнопка «Вставить») или добавьте их в YAML на странице
+                «Инстансы».
+            </div></div>`;
+        },
 
         extraMethods: { enableController, toggleDebug, toggleLog },
     });

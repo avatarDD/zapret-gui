@@ -330,16 +330,24 @@ def register(app):
         running = mgr.is_running(name)
         ep = mp.external_controller_endpoint(cfg or {})
         active, groups, controller_live = "", [], False
+        provider_live = []
         if running and ep:
             live = mp.controller_proxies(ep)
             if live.get("ok"):
                 controller_live = True
                 active = live.get("active") or ""
                 groups = live.get("groups") or []
+            # Узлы из proxy-providers существуют только в рантайме —
+            # спрашиваем их у самого движка (issue #248).
+            pl = mp.controller_provider_proxies(ep)
+            if pl.get("ok"):
+                provider_live = pl.get("providers") or []
         return {"ok": True, "proxies": mp.proxy_rows(cfg or {}),
                 "active": active, "groups": groups, "running": running,
                 "controller": ep is not None,
                 "controller_live": controller_live,
+                "providers": mp.provider_rows(cfg or {}),
+                "provider_live": provider_live,
                 "select_groups": mp.select_group_names(cfg or {})}
 
     @app.route("/api/mihomo/configs/<name>/activate", method="POST")

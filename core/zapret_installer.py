@@ -243,7 +243,8 @@ class ZapretInstaller:
                                % (tag, e.code))
             return result
         except (URLError, OSError, ValueError) as e:
-            result["error"] = "Нет доступа к GitHub: %s" % e
+            from core.binary_installer import github_unreachable_message
+            result["error"] = github_unreachable_message(e)
             return result
 
         if not isinstance(data, dict) or not data.get("tag_name"):
@@ -708,7 +709,8 @@ class ZapretInstaller:
                 )
             raise Exception("GitHub API вернул HTTP %d" % e.code)
         except URLError as e:
-            raise Exception("Нет доступа к GitHub: %s" % e.reason)
+            from core.binary_installer import github_unreachable_message
+            raise Exception(github_unreachable_message(e))
         except (ValueError, json.JSONDecodeError):
             raise Exception("Ошибка разбора ответа GitHub API")
 

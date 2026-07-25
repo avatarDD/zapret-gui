@@ -123,6 +123,42 @@ def resolve_url(url: str, mirror: str = None) -> str:
     return mirror.rstrip("/") + "/" + url
 
 
+def github_unreachable_message(exc, what: str = "GitHub") -> str:
+    """
+    Понятное сообщение, когда до GitHub не достучались.
+
+    Голый текст исключения (например «_ssl.c:989: The handshake operation
+    timed out», issue #254) не подсказывает пользователю ровным счётом
+    ничего, хотя обходные пути в GUI уже есть. У российских провайдеров
+    GitHub часто режется по TLS — рукопожатие просто не завершается.
+    Поэтому к причине добавляем, что делать.
+    """
+    reason = getattr(exc, "reason", None) or exc
+    text = str(reason).strip() or exc.__class__.__name__
+    low = text.lower()
+    if "handshake" in low or "timed out" in low or "timeout" in low:
+        cause = ("похоже, соединение с GitHub блокируется или сильно"
+                 " замедляется провайдером — TLS-рукопожатие не завершилось")
+    elif "name or service not known" in low or "getaddrinfo" in low \
+            or "temporary failure in name resolution" in low:
+        cause = "не резолвится адрес — проверьте DNS на роутере"
+    elif "certificate" in low:
+        cause = ("не проверяется TLS-сертификат — возможна подмена"
+                 " или сбились часы на роутере")
+    else:
+        cause = "нет связи"
+    mirror = _configured_mirror()
+    if mirror:
+        advice = ("Настроено зеркало %s — проверьте, что оно доступно."
+                  % mirror)
+    else:
+        advice = ("Что можно сделать: указать зеркало в «Настройках» "
+                  "(install.mirror) либо поднять любой туннель (AmneziaWG, "
+                  "sing-box, mihomo, WARP) и повторить — загрузки умеют "
+                  "идти через него.")
+    return "Нет доступа к %s: %s (%s). %s" % (what, text, cause, advice)
+
+
 # ─────── http ───────
 
 def _http_open(url: str, accept: str = "application/octet-stream",
