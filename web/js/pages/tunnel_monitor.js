@@ -50,14 +50,53 @@ const TunnelMonitorPage = (() => {
         if (_inFlight || document.hidden) return;
         _inFlight = true;
         try {
-            const data = await API.get("/api/monitor/metrics");
+            // Статус запрашивался нигде: карточка «Статус» так и висела на
+            // «Загрузка...» навсегда — в #tm-status никто не писал.
+            const [data, status] = await Promise.all([
+                API.get("/api/monitor/metrics"),
+                API.get("/api/monitor/status").catch(() => null),
+            ]);
+            _renderStatus(status);
             _renderCharts(data.metrics || []);
         } catch (e) {
             const el = document.getElementById("tm-charts");
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+            const st = document.getElementById("tm-status");
+            if (st) st.innerHTML = `<div class="text-error">Статус недоступен: ${esc(String(e))}</div>`;
         } finally {
             _inFlight = false;
         }
+    }
+
+    function _renderStatus(status) {
+        const el = document.getElementById("tm-status");
+        if (!el) return;
+        if (!status) {
+            el.innerHTML = `<span class="text-muted">Статус монитора недоступен</span>`;
+            return;
+        }
+        const running = !!status.running;
+        const ifaces = status.interfaces || 0;
+        // grace_period — первые секунды после старта, пока не набралось
+        // двух замеров и скорости считать не из чего. Без пояснения
+        // пустые графики в этот момент выглядят как поломка.
+        const grace = status.grace_period
+            ? `<div class="form-hint">Идёт первичный замер — скорости появятся
+                   через несколько секунд.</div>`
+            : '';
+        el.innerHTML = `
+            <div class="status-row">
+                <span class="status-dot ${running ? 'status-ok' : 'status-off'}"></span>
+                <span>Сбор метрик: <strong>${running ? 'идёт' : 'остановлен'}</strong></span>
+            </div>
+            <div class="detail-row">Интерфейсов под наблюдением: <strong>${ifaces}</strong></div>
+            ${grace}
+            ${running ? '' : `<div class="form-hint">
+                Монитор не запущен — графики обновляться не будут.
+                Он стартует автоматически вместе с GUI; если этого не
+                произошло, проверьте логи.
+            </div>`}
+        `;
     }
 
     function _renderCharts(metrics) {
