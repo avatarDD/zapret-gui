@@ -346,16 +346,24 @@ class DnsmasqIntegration:
                 fam   = blk.get("nft_family") or "inet"
                 table = blk.get("nft_table") or "awg_routing"
                 name  = blk.get("set_name") or ""
-                # dnsmasq directive: nftset=/dom1/dom2/<spec>/<spec>...
+                # dnsmasq directive: nftset=/dom1/dom2/<spec>[,<spec>...]
                 # Каждый <spec> = family#table#set. У нас два set'а: v4 и v6
                 # (имя v6 = v4 + "6"). Если перечислять только v4-set, dnsmasq
                 # NIKAGDA не запишет AAAA-IP в v6-set (и весь IPv6-трафик
                 # пользователя через AWG не пойдёт — браузеры предпочитают v6).
                 # Поэтому всегда эмитим оба set'а в одной директиве.
+                #
+                # Разделитель set'ов — ЗАПЯТАЯ (как у ipset=), а слэш делит
+                # ДОМЕНЫ: man dnsmasq,
+                #   --nftset=/<domain>[/<domain>...]/<spec>[,<spec>...]
+                # Со слэшем dnsmasq принимал `inet#table#set` за ещё один
+                # домен и писал только в v6-set — IPv4 к проксируемым доменам
+                # шёл мимо туннеля (маскировалось pre-population'ом до первой
+                # смены IP у CDN).
                 joined = "/".join(doms)
                 spec_v4 = "%s#%s#%s" % (fam, table, name)
                 spec_v6 = "%s#%s#%s6" % (fam, table, name)
-                lines.append("nftset=/%s/%s/%s" %
+                lines.append("nftset=/%s/%s,%s" %
                              (joined, spec_v4, spec_v6))
             else:  # ipset
                 name = blk.get("set_name") or ""
