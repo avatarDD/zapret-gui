@@ -109,6 +109,35 @@ def register(app):
             pass
         return {"ok": True}
 
+    @app.route("/api/opera-proxy/debug", method="GET")
+    def opera_debug_get():
+        from core.opera_proxy_manager import debug_enabled
+        return {"ok": True, "enabled": debug_enabled()}
+
+    @app.route("/api/opera-proxy/debug", method="POST")
+    def opera_debug_set():
+        from core.config_manager import get_config_manager
+        from core.opera_proxy_manager import debug_enabled
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        cfg = get_config_manager()
+        cfg.set("opera_proxy", "debug_log", bool(body.get("enabled")))
+        cfg.save()
+        return {"ok": True, "enabled": debug_enabled(),
+                "note": "Глубина буфера меняется при следующем запуске;"
+                        " для подробных строк выберите Verbosity = Debug (10)"}
+
+    @app.route("/api/opera-proxy/log", method="GET")
+    def opera_log():
+        from core.opera_proxy_manager import get_opera_proxy_manager
+        try:
+            lines = int(request.query.get("lines") or 200)
+        except (TypeError, ValueError):
+            lines = 200
+        return get_opera_proxy_manager().read_log(lines=lines)
+
     @app.route("/api/opera-proxy/install", method="POST")
     def opera_install():
         from core.ext_binary_installer import install_binary_by_name

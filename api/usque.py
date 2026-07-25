@@ -243,6 +243,43 @@ def register(app):
 
         return {"ok": True, "settings": _usque_settings_payload(cfg)}
 
+    @app.route("/api/usque/debug", method="GET")
+    def usque_debug_get():
+        from core.usque_manager import debug_enabled
+        return {"ok": True, "enabled": debug_enabled()}
+
+    @app.route("/api/usque/debug", method="POST")
+    def usque_debug_set():
+        from core.config_manager import get_config_manager
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        cfg = get_config_manager()
+        cfg.set("usque", "debug_log", bool(body.get("enabled")))
+        cfg.save()
+        from core.usque_manager import debug_enabled
+        return {"ok": True, "enabled": debug_enabled(),
+                "note": "Глубина буфера меняется при следующем запуске"
+                        " туннеля"}
+
+    @app.route("/api/usque/configs/<name>/log", method="GET")
+    def usque_config_log(name):
+        from core.usque_manager import get_usque_manager
+        mgr = get_usque_manager()
+        target = next((c for c in mgr.list_configs()
+                       if c["name"] == name), None)
+        if not target:
+            return {"ok": False, "error": "Конфиг '%s' не найден" % name}
+        if not target.get("iface"):
+            return {"ok": True, "iface": "", "log": "", "captured": 0,
+                    "message": "Туннель не запускался в этом сеансе GUI"}
+        try:
+            lines = int(request.query.get("lines") or 200)
+        except (TypeError, ValueError):
+            lines = 200
+        return mgr.read_log(target["iface"], lines=lines)
+
     @app.route("/api/usque/watchdog/status", method="GET")
     def usque_watchdog_status():
         try:

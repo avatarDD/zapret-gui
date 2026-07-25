@@ -16,6 +16,7 @@ const UsquePage = (() => {
     // и без этого набора раскрытая панель «Подробнее» захлопывалась бы
     // сама через пару секунд.
     const _expanded = new Set();
+    let _debugOn = false;
 
     async function render(container) {
         container.innerHTML = `
@@ -341,7 +342,45 @@ const UsquePage = (() => {
                            проверьте доступ в интернет и переключите транспорт на
                            «Restricted» в настройках ниже.
                        </div>`}
+                <div style="margin-top:8px;">
+                    <button class="btn btn-sm action-log" data-name="${esc(name)}">Полный лог</button>
+                </div>
+                <div class="usque-log-box" data-for="${esc(name)}"></div>
             `;
+            box.querySelector(".action-log")?.addEventListener("click", () => {
+                _loadLog(name);
+            });
+        } catch (e) {
+            box.innerHTML = `<div class="text-error">${esc(String(e))}</div>`;
+        }
+    }
+
+    async function _loadLog(name) {
+        const box = document.querySelector(
+            `.usque-log-box[data-for="${CSS.escape(name)}"]`);
+        if (!box) return;
+        box.innerHTML = '<div class="form-hint">Загрузка лога…</div>';
+        try {
+            const r = await API.get(
+                `/api/usque/configs/${encodeURIComponent(name)}/log?lines=300`);
+            if (r && r.ok === false) {
+                box.innerHTML = `<div class="text-error">${esc(r.error || "Ошибка")}</div>`;
+                return;
+            }
+            const text = (r.log || "").trim();
+            if (!text) {
+                box.innerHTML = `<div class="form-hint">
+                    ${esc(r.message || "Буфер пуст — usque ничего не выводил.")}
+                </div>`;
+                return;
+            }
+            box.innerHTML = `
+                <pre class="usque-diagnostic">${esc(text)}</pre>
+                <div class="form-hint">
+                    Строк в буфере: ${r.captured || 0} из ${r.capacity || "?"}.
+                    ${r.debug ? "Режим отладки включён."
+                              : "Включите режим отладки в настройках, чтобы буфер хранил больше строк."}
+                </div>`;
         } catch (e) {
             box.innerHTML = `<div class="text-error">${esc(String(e))}</div>`;
         }
@@ -435,6 +474,10 @@ const UsquePage = (() => {
         try {
             const r = await API.get("/api/usque/settings");
             s = (r && r.settings) || {};
+            try {
+                const d = await API.get("/api/usque/debug");
+                _debugOn = !!(d && d.enabled);
+            } catch (_) { /* необязательно */ }
         } catch (e) {
             el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
             return;
@@ -532,6 +575,22 @@ const UsquePage = (() => {
                 </div>
             </div>
 
+            <hr style="border:none; border-top:1px solid var(--border); margin:16px 0;">
+
+            <div class="form-group">
+                <label class="form-label" style="display:flex; align-items:center; gap:8px;">
+                    <input type="checkbox" id="usq-debug" ${_debugOn ? "checked" : ""}>
+                    Режим отладки
+                </label>
+                <div class="form-hint">
+                    Хранить длинный хвост вывода usque (500 строк вместо 40) —
+                    он виден по кнопке «Лог» у туннеля. Нужен, когда туннель
+                    поднимается, но через какое-то время отваливается: в
+                    коротком буфере причина уже затирается. Новая глубина
+                    применяется со следующего запуска туннеля.
+                </div>
+            </div>
+
             <button class="btn btn-primary" id="usq-save">Сохранить настройки</button>
         `;
         document.getElementById("usq-save").addEventListener("click", _saveSettings);
@@ -553,6 +612,13 @@ const UsquePage = (() => {
             },
         };
         try {
+            // Отладка живёт отдельной ручкой (её читают и менеджер, и
+            // страница туннелей), поэтому сохраняем её первой.
+            const dbg = document.getElementById("usq-debug").checked;
+            if (dbg !== _debugOn) {
+                await API.post("/api/usque/debug", { enabled: dbg });
+                _debugOn = dbg;
+            }
             const r = await API.post("/api/usque/settings", payload);
             if (r && r.ok) {
                 Toast.success("Настройки сохранены");
