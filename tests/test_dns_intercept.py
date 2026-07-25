@@ -148,6 +148,7 @@ class TestSetEnabled(unittest.TestCase):
         data = {}
         cm = mock.Mock()
         cm.load.return_value = data
+        cm.current.return_value = data
         with mock.patch.object(cmod, "get_config_manager",
                                return_value=cm), \
              mock.patch.object(cmod, "save_config") as save, \

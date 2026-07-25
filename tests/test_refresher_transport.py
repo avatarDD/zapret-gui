@@ -29,6 +29,12 @@ class FakeCM:
     def load(self):
         return self.data
 
+
+    def current(self):
+        # Продакшен читает конфиг через current() — он, в отличие
+        # от load(), не перечитывает файл и не теряет несохранённые
+        # изменения.
+        return self.load()
     def get(self, *keys, default=None):
         value = self.data
         for k in keys:

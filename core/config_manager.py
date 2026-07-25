@@ -9,7 +9,7 @@
 Использование:
     from core.config_manager import get_config_manager, save_config
 
-    cfg = get_config_manager().load()
+    cfg = get_config_manager().current()
     zapret_base = cfg["zapret"]["base_path"]
     cfg["gui"]["port"] = 8081
     save_config()                # шорткат для get_config_manager().save()
@@ -419,6 +419,26 @@ class ConfigManager:
                 self._save_locked()
 
             self._loaded = True
+            return self._config
+
+    def current(self) -> dict:
+        """
+        Текущая конфигурация БЕЗ повторного чтения с диска.
+
+        `load()` пересобирает `_config` с нуля (дефолты + файл) и тем самым
+        ТЕРЯЕТ все несохранённые изменения. Но многие модули зовут его как
+        обычный геттер («дай весь конфиг») — в том числе из фоновых потоков
+        (watchdog'и, автозапуск, refresher'ы пула и подписок). Такой тик,
+        попавший между `cfg.set(...)` и `cfg.save()`, молча откатывал правку
+        пользователя, а последующий `save()` ещё и записывал откат на диск.
+
+        Возвращаем ЖИВОЙ словарь — как это делает `load()`, — чтобы места,
+        которые мутируют конфиг на месте и потом зовут `save()`, работали
+        без изменений. Если конфиг ещё ни разу не грузили — грузим.
+        """
+        if not self._loaded:
+            return self.load()
+        with self._lock:
             return self._config
 
     def _migrate_legacy_paths(self) -> bool:

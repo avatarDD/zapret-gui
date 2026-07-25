@@ -165,6 +165,9 @@ class TestSingboxAutostartSettings(unittest.TestCase):
         class FakeMgr:
             def __init__(self): self.data = {"version": 1}
             def load(self): return self.data
+            # Продакшен читает конфиг через current(): он, в отличие от
+            # load(), не перечитывает файл и не теряет несохранённые правки.
+            def current(self): return self.data
         self.fake = FakeMgr()
         self._p1 = mock.patch("core.config_manager.get_config_manager",
                                return_value=self.fake)

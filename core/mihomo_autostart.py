@@ -22,7 +22,7 @@ _lock = threading.Lock()
 def _load_settings() -> dict:
     try:
         from core.config_manager import get_config_manager
-        cfg = get_config_manager().load() or {}
+        cfg = get_config_manager().current() or {}
     except Exception:
         return {}
     m = cfg.get("mihomo") or {}
@@ -37,7 +37,7 @@ def _save_settings(section: dict):
                     source="mihomo")
         return
     mgr = get_config_manager()
-    cfg = mgr.load() or {}
+    cfg = mgr.current() or {}
     if not isinstance(cfg, dict):
         cfg = {}
     cfg["mihomo"] = section

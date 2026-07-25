@@ -105,7 +105,7 @@ _lock = threading.Lock()
 def _load_pool() -> dict:
     try:
         from core.config_manager import get_config_manager
-        cfg = get_config_manager().load() or {}
+        cfg = get_config_manager().current() or {}
     except Exception:
         return {}
     sb = cfg.get("singbox") or {}
@@ -123,9 +123,9 @@ def _save_pool(pool: dict):
                     source="singbox")
         return
     cm = get_config_manager()
-    # ВАЖНО: не делаем `cm.load() or {}` — пустой (но валидный) dict
+    # ВАЖНО: не делаем `cm.current() or {}` — пустой (но валидный) dict
     # ложноотрицателен и оторвал бы нас от живого _config.
-    cfg = cm.load()
+    cfg = cm.current()
     if not isinstance(cfg, dict):
         cfg = {}
     cfg.setdefault("singbox", {})["pool"] = pool

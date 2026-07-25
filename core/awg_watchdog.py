@@ -256,7 +256,7 @@ def _get_settings() -> dict:
                 if (_settings_cache is not None and _settings_cache_key == cache_key
                         and (now - _settings_cache_ts) < _SETTINGS_TTL):
                     return _settings_cache
-        cfg = cm.load()
+        cfg = cm.current()
     except Exception:
         cfg = {}
         cache_key = None
