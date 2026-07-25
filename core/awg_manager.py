@@ -83,11 +83,64 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _pid_cmdline(pid: int) -> str:
+    """Командная строка процесса из /proc (пробелы вместо \\0). '' — если нет."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            return f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+    except (IOError, OSError, ValueError):
+        return ""
+
+
+def _pid_is_our_daemon(pid: int, ifname: str = "") -> bool:
+    """
+    Принадлежит ли PID нашему amneziawg-go (а не постороннему процессу).
+
+    На Keenetic run_dir — `/opt/var/run/awg`, то есть на постоянном
+    носителе: pid-файлы переживают перезагрузку. После ребута тот же PID
+    почти наверняка занят чужим процессом, и без этой проверки
+    `is_running()` возвращал бы True (автозапуск молча не поднимал
+    туннель — «уже поднят»), а `_cleanup_iface` слал бы SIGTERM/SIGKILL
+    постороннему процессу от root.
+
+    Если /proc недоступен (не-Linux, песочница) — не мешаем: True.
+    """
+    if not _pid_alive(pid):
+        return False
+    cmd = _pid_cmdline(pid)
+    if not cmd:
+        return True
+    low = cmd.lower()
+    if "amneziawg-go" in low or "wireguard-go" in low:
+        return True
+    # Демон мог быть запущен как `<путь>/awg-go <iface>` — сверяем по
+    # имени интерфейса рядом с любым awg-подобным бинарём.
+    return bool(ifname) and ("awg" in low and ifname.lower() in low.split())
+
+
 _AWG_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,15}$")
 
 
 def _valid_iface_name(name: str) -> bool:
     return bool(name) and bool(_AWG_NAME_RE.match(name))
+
+
+def _is_native_ndms_iface(name: str) -> bool:
+    """
+    Нативный WireGuard самого Keenetic (`Wireguard0..N`)?
+
+    Такими интерфейсами владеет прошивка (NDMS): `ip link delete` по ним
+    уносит интерфейс из ядра, а NDMS продолжает считать туннель поднятым —
+    у пользователя молча умирает штатный VPN до перезагрузки/пересоздания
+    подключения. Дашборд показывает их в общем списке (list_interfaces),
+    поэтому кнопки Stop/Restart и прямые вызовы API обязаны их отклонять.
+    На не-Keenetic платформах всегда False без сетевых запросов.
+    """
+    try:
+        from core.ndms.wg_discovery import is_native_wg
+        return bool(is_native_wg(name))
+    except Exception:
+        return False
 
 
 # ───────────────────────── manager ───────────────────────────────────
@@ -467,7 +520,10 @@ class AwgManager:
 
     def is_running(self, iface: str) -> bool:
         pid = _read_pid(self._pid_path(iface))
-        if pid and _pid_alive(pid):
+        # PID засчитываем, только если он реально принадлежит нашему демону:
+        # pid-файл на Keenetic переживает перезагрузку, и «живой» чужой PID
+        # выдавал бы туннель за поднятый (автозапуск молча ничего не делал).
+        if pid and _pid_is_our_daemon(pid, iface):
             return True
         # Fallback — есть в `wg show interfaces`
         return iface in self._wg_interfaces()
@@ -935,6 +991,11 @@ class AwgManager:
         if not _valid_iface_name(name):
             return {"ok": False, "message": "Недопустимое имя"}
 
+        if _is_native_ndms_iface(name):
+            return {"ok": False, "message":
+                    "%s — нативный WireGuard Keenetic (управляется прошивкой)."
+                    " Поднимайте его в веб-интерфейсе роутера." % name}
+
         path = self._config_path(name)
         if not os.path.isfile(path):
             return {"ok": False, "message": "Конфиг %s не найден" % name}
@@ -1394,6 +1455,16 @@ class AwgManager:
         # реальному имени, иначе `ip link delete` ничего не найдёт.
         ifname = self._iface_for_name(name)
 
+        # Нативные Keenetic-WG (Wireguard0..N) сносить нельзя: `ip link
+        # delete` уносит интерфейс из ядра, а NDMS продолжает считать
+        # туннель активным. Проверяем и имя запроса, и разрезолвленное.
+        for candidate in (name, ifname):
+            if candidate and _is_native_ndms_iface(candidate):
+                return {"ok": False, "message":
+                        "%s — нативный WireGuard Keenetic (управляется"
+                        " прошивкой). Останавливайте его в веб-интерфейсе"
+                        " роутера, иначе NDMS потеряет туннель." % candidate}
+
         # PreDown / PostDown
         path = self._config_path(name)
         cfg = None
@@ -1455,7 +1526,9 @@ class AwgManager:
     def _cleanup_iface(self, ifname: str):
         pid_path = self._pid_path(ifname)
         pid = _read_pid(pid_path)
-        if pid and _pid_alive(pid):
+        # Убиваем ТОЛЬКО свой демон: после перезагрузки в pid-файле лежит
+        # PID, который система уже отдала постороннему процессу.
+        if pid and _pid_is_our_daemon(pid, ifname):
             try:
                 os.kill(pid, signal.SIGTERM)
             except OSError:

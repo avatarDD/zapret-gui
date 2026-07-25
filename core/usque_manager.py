@@ -397,8 +397,10 @@ class UsqueManager:
                         pass
                 except Exception:
                     pass
-        elif pid:
-            # Fallback: kill по PID
+        elif pid and self._pid_is_usque(pid):
+            # Fallback: kill по PID. Только если PID действительно наш —
+            # иначе после перезагрузки (pid-файл в /opt переживает ребут)
+            # killpg снёс бы группу постороннего процесса от root.
             try:
                 if hasattr(os, "killpg"):
                     try:
@@ -434,11 +436,13 @@ class UsqueManager:
                 os.remove(pid_path)
         except Exception:
             pass
-        if config_path:
+        # Убираем .run-файл. config_path известен, только если туннель
+        # поднимали в этом же процессе GUI; после рестарта GUI его нет —
+        # тогда ищем .run по имени интерфейса, иначе list_configs()
+        # продолжал бы показывать конфиг привязанным к мёртвому iface.
+        for run_path in self._run_files_for_iface(iface, config_path):
             try:
-                run_path = config_path + ".run"
-                if os.path.isfile(run_path):
-                    os.remove(run_path)
+                os.remove(run_path)
             except OSError:
                 pass
 
@@ -480,12 +484,52 @@ class UsqueManager:
         if pid:
             try:
                 os.kill(pid, 0)
-                return True
+                # PID жив — но наш ли это процесс? _pid_dir = /opt/var/run
+                # лежит на постоянном носителе, pid-файлы переживают
+                # перезагрузку, и тот же PID почти наверняка занят чужим
+                # процессом: туннель считался бы поднятым (старт
+                # отклонялся бы как «уже запущен»), а stop() убивал бы
+                # целую группу постороннего процесса.
+                return self._pid_is_usque(pid)
             except ProcessLookupError:
                 pass
             except PermissionError:
                 return True  # есть процесс, нет прав на kill
         return False
+
+    def _run_files_for_iface(self, iface: str, config_path: str = None) -> list:
+        """Пути .run-файлов, относящихся к интерфейсу."""
+        out = []
+        if config_path:
+            out.append(config_path + ".run")
+        config_dir = self._config_dir()
+        try:
+            names = os.listdir(config_dir)
+        except OSError:
+            return [p for p in out if os.path.isfile(p)]
+        for fn in names:
+            if not fn.endswith(".run"):
+                continue
+            path = os.path.join(config_dir, fn)
+            if path in out:
+                continue
+            try:
+                with open(path) as f:
+                    body = f.read()
+            except OSError:
+                continue
+            if ('IFACE="%s"' % iface) in body:
+                out.append(path)
+        return [p for p in out if os.path.isfile(p)]
+
+    def _pid_is_usque(self, pid: int) -> bool:
+        """Принадлежит ли PID процессу usque. /proc недоступен → доверяем."""
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except (IOError, OSError, ValueError):
+            return True
+        return "usque" in cmd.lower() if cmd.strip() else True
 
     def _check_iface_up(self, iface: str) -> bool:
         """Проверить, поднят ли интерфейс.

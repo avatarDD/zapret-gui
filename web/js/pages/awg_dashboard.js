@@ -186,7 +186,13 @@ const AwgDashboardPage = (() => {
             cards.push(renderTunnelCard(c, ifaceData));
         });
         orphanIfaces.forEach(i => {
-            cards.push(renderTunnelCard({ name: i.name, active: i.active, orphan: true }, i));
+            // native/source=ndms — нативный WireGuard самой прошивки
+            // Keenetic. Управлять им через ip/awg нельзя (NDMS потеряет
+            // туннель), поэтому карточка идёт без кнопок управления.
+            cards.push(renderTunnelCard({
+                name: i.name, active: i.active, orphan: true,
+                native: !!(i.native || i.source === 'ndms'),
+            }, i));
         });
         wrap.innerHTML = cards.join('');
 
@@ -322,7 +328,12 @@ const AwgDashboardPage = (() => {
                     <div style="display:flex; gap: 12px; align-items: center;">
                         ${autoToggle}
                         <div style="display:flex; gap: 6px;">
-                            ${active
+                            ${cfg.native
+                                ? `<span class="text-muted" style="font-size:12px;"
+                                         title="Туннель создан прошивкой Keenetic — управление в веб-интерфейсе роутера">
+                                       управляется прошивкой
+                                   </span>`
+                                : (active
                                 ? `<button class="btn btn-ghost btn-sm" ${inUse?'disabled':''}
                                            onclick="AwgDashboardPage.restart('${escapeAttr(cfg.name)}')">Restart</button>
                                    <button class="btn btn-ghost btn-sm" ${inUse?'disabled':''}
@@ -330,7 +341,7 @@ const AwgDashboardPage = (() => {
                                 : (cfg.orphan
                                     ? ''
                                     : `<button class="btn btn-primary btn-sm" ${inUse?'disabled':''}
-                                               onclick="AwgDashboardPage.up('${escapeAttr(cfg.name)}')">Start</button>`)
+                                               onclick="AwgDashboardPage.up('${escapeAttr(cfg.name)}')">Start</button>`))
                             }
                             <button class="btn btn-ghost btn-sm"
                                     title="Снимок awg show + ip rule/route + последние логи — для диагностики проблем с маршрутизацией"

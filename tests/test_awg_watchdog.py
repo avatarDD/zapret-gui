@@ -19,6 +19,12 @@ class FakeConfigManager:
         return self.data
 
 
+
+    def current(self):
+        # Продакшен читает конфиг через current() — он, в отличие
+        # от load(), не перечитывает файл и не теряет несохранённые
+        # изменения.
+        return self.load()
 class TestGetSettings(unittest.TestCase):
 
     def test_defaults(self):
@@ -57,6 +63,12 @@ class TestGetSettings(unittest.TestCase):
                 self.load_calls += 1
                 return {"awg": {"watchdog": {"enabled": True}}}
 
+
+            def current(self):
+                # Продакшен читает конфиг через current() — он, в отличие
+                # от load(), не перечитывает файл и не теряет несохранённые
+                # изменения.
+                return self.load()
         fake_cm = FakeCM()
         with mock.patch("core.config_manager.get_config_manager", return_value=fake_cm):
             with mock.patch("os.path.exists", return_value=True), \
@@ -80,6 +92,12 @@ class TestGetSettings(unittest.TestCase):
                 self.load_calls += 1
                 return {"awg": {"watchdog": {"enabled": True}}}
 
+
+            def current(self):
+                # Продакшен читает конфиг через current() — он, в отличие
+                # от load(), не перечитывает файл и не теряет несохранённые
+                # изменения.
+                return self.load()
         fake_cm = FakeCM()
         mtimes = iter([100.0, 101.0])
         with mock.patch("core.config_manager.get_config_manager", return_value=fake_cm):
@@ -102,6 +120,12 @@ class TestGetSettings(unittest.TestCase):
                 self.load_calls += 1
                 return {"awg": {"watchdog": {"enabled": True}}}
 
+
+            def current(self):
+                # Продакшен читает конфиг через current() — он, в отличие
+                # от load(), не перечитывает файл и не теряет несохранённые
+                # изменения.
+                return self.load()
         fake_cm = FakeCM()
         with mock.patch("core.config_manager.get_config_manager", return_value=fake_cm):
             with mock.patch("os.path.exists", return_value=True), \

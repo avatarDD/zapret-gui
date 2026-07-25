@@ -52,7 +52,7 @@ _lock = threading.Lock()
 def _load_section() -> dict:
     try:
         from core.config_manager import get_config_manager
-        cfg = get_config_manager().load() or {}
+        cfg = get_config_manager().current() or {}
     except Exception:
         return {}
     sb = cfg.get("singbox") or {}
@@ -72,9 +72,9 @@ def _save_section(subs: dict):
                     source="singbox")
         return
     cm = get_config_manager()
-    # Не `cm.load() or {}`: пустой валидный dict ложноотрицателен и
+    # Не `cm.current() or {}`: пустой валидный dict ложноотрицателен и
     # оторвал бы нас от живого _config.
-    cfg = cm.load()
+    cfg = cm.current()
     if not isinstance(cfg, dict):
         cfg = {}
     cfg.setdefault("singbox", {})["subscriptions"] = subs

@@ -632,6 +632,12 @@ class SingboxManager:
             # найти по `pgrep -f sing-box.*<config>`.
             pid = self._find_pid_by_config(name)
         if not pid:
+            # Процесса нет — но REDIRECT :53 мог остаться от упавшего
+            # инстанса (OOM/внешний kill). Тогда весь LAN сидит без DNS:
+            # запросы уходят на dns-in порт, где уже никто не слушает.
+            # Снимаем перехват и на этом пути тоже.
+            if self._config_dns_in_port(name):
+                self._remove_dns_capture()
             return {"ok": True, "noop": True,
                     "message": "Процесс не найден"}
 

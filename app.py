@@ -328,6 +328,11 @@ def _apply_usque_autostart_on_boot():
 
             sni = cfg.get("usque", "default_sni", default="")
             http2 = cfg.get("usque", "http2_enable", default=False)
+            # Тот же выбор транспорта, что и в API-пути usque_config_up:
+            # иначе после перезагрузки туннель игнорирует настройку
+            # usque.transport_profile (restricted/auto) и стартует на H3.
+            profile = "restricted" if http2 else cfg.get(
+                "usque", "transport_profile", default="performance")
 
             for c in configs:
                 if c.get("active"):
@@ -345,7 +350,7 @@ def _apply_usque_autostart_on_boot():
                                 " интерфейс" % c["name"], source="usque")
                     continue
                 result = mgr.start(iface, c.get("path"),
-                                   sni=sni, http2=http2)
+                                   sni=sni, transport_profile=profile)
                 if not result.get("ok"):
                     log.warning("usque autostart: %s — %s" % (
                         c["name"], result.get("error", "ошибка")),

@@ -881,6 +881,20 @@ def remove(*, mark: int = DEFAULT_TPROXY_MARK,
     return {"ok": True}
 
 
+def _dns_capture_owner_running() -> bool:
+    """Запущен ли sing-box-инстанс с inbound'ом `dns-in` (владелец dns-only)."""
+    try:
+        from core.singbox_manager import get_singbox_manager
+        mgr = get_singbox_manager()
+        for c in mgr.list_configs():
+            if c.get("running") and mgr._config_dns_in_port(c.get("name", "")):
+                return True
+    except Exception:
+        # Не смогли выяснить — не блокируем восстановление правил.
+        return True
+    return False
+
+
 def reapply_saved() -> dict:
     """
     Переприменить прозрачное проксирование из сохранённых настроек
@@ -898,6 +912,13 @@ def reapply_saved() -> dict:
         saved = {}
     if not saved or not saved.get("mode"):
         return {"ok": True, "noop": True}
+    if saved.get("mode") == "dns-only" and not _dns_capture_owner_running():
+        # dns-only живёт ровно пока запущен FakeIP-конфиг, который его
+        # поставил. Если после перезагрузки этот конфиг не в автозапуске,
+        # REDIRECT :53 ушёл бы на порт, где никто не слушает — весь LAN
+        # остался бы без DNS. Перехват вернёт `_apply_dns_capture` при
+        # старте конфига из GUI/автозапуска.
+        return {"ok": True, "noop": True, "skipped": "dns-in не запущен"}
     params = dict(saved)
     params["families"] = tuple(params.get("families") or ["v4"])
     # Отбрасываем неизвестные ключи на случай старого формата.

@@ -136,6 +136,32 @@ class TestDnsmasqIpsetV6(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_nftset_directive_separates_sets_with_comma(self):
+        # man dnsmasq: --nftset=/<domain>[/<domain>...]/<spec>[,<spec>...]
+        # Слэш разделяет ДОМЕНЫ. Со слэшем между спеками dnsmasq принимал
+        # `inet#awg_routing#awg_r1` за домен и писал только в v6-set —
+        # IPv4-трафик к проксируемым доменам шёл мимо туннеля.
+        from core.routing import dnsmasq_integration as di
+        mgr = di.DnsmasqIntegration()
+        tmp = tempfile.mkdtemp()
+        try:
+            managed = os.path.join(tmp, "managed.conf")
+            with mock.patch.object(mgr, "managed_file_path",
+                                   return_value=managed):
+                res = mgr.write_managed_file([{
+                    "rule_id": "r1", "set_kind": "nftset",
+                    "set_name": "awg_r1", "nft_family": "inet",
+                    "nft_table": "awg_routing",
+                    "domains": ["example.com", "sub.example.com"],
+                }])
+            self.assertTrue(res.get("ok"), res)
+            text = open(managed, encoding="utf-8").read()
+            self.assertIn(
+                "nftset=/example.com/sub.example.com/"
+                "inet#awg_routing#awg_r1,inet#awg_routing#awg_r16", text)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 # ════════════════════════════════════════════════════════════
 # #29 — find_confdir выбирает существующую/записываемую директорию

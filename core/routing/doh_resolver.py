@@ -76,7 +76,7 @@ def _get_settings() -> dict:
     """
     try:
         from core.config_manager import get_config_manager
-        cfg = get_config_manager().load()
+        cfg = get_config_manager().current()
     except Exception:
         cfg = {}
     if not isinstance(cfg, dict):
@@ -107,7 +107,7 @@ def set_settings(enabled: bool = None, providers=None,
                         source="routing")
             return _get_settings()
 
-        cfg = get_config_manager().load()
+        cfg = get_config_manager().current()
         if not isinstance(cfg, dict):
             cfg = {}
         cfg.setdefault("routing", {}).setdefault("doh", {})

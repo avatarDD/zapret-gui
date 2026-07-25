@@ -19,6 +19,12 @@ class FakeConfigManager:
         return self.data
 
 
+
+    def current(self):
+        # Продакшен читает конфиг через current() — он, в отличие
+        # от load(), не перечитывает файл и не теряет несохранённые
+        # изменения.
+        return self.load()
 class TestGetSettings(unittest.TestCase):
 
     def test_defaults(self):

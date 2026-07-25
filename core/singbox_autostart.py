@@ -34,7 +34,7 @@ _lock = threading.Lock()
 def _load_settings() -> dict:
     try:
         from core.config_manager import get_config_manager
-        cfg = get_config_manager().load() or {}
+        cfg = get_config_manager().current() or {}
     except Exception:
         return {}
     sb = cfg.get("singbox") or {}
@@ -48,7 +48,7 @@ def _save_settings(singbox_section: dict):
         log.warning("singbox_autostart: settings unavailable: %s" % e,
                     source="singbox")
         return
-    cfg = get_config_manager().load() or {}
+    cfg = get_config_manager().current() or {}
     if not isinstance(cfg, dict):
         cfg = {}
     cfg["singbox"] = singbox_section

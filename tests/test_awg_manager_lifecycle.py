@@ -183,15 +183,45 @@ class TestAwgManagerIsRunning(unittest.TestCase):
                                 return_value=["awg0", "wg1"]):
             self.assertTrue(self.mgr.is_running("awg0"))
 
-    def test_running_via_pid_file(self):
-        # Создаём pid-файл с PID текущего процесса (заведомо живой).
-        pid_file = self.mgr._pid_path("awg0")
+    def _write_pid(self, iface, pid):
+        pid_file = self.mgr._pid_path(iface)
         os.makedirs(os.path.dirname(pid_file), exist_ok=True)
         with open(pid_file, "w") as f:
-            f.write(str(os.getpid()))
-        with mock.patch.object(self.mgr, "_wg_interfaces",
-                                return_value=[]):
-            self.assertTrue(self.mgr.is_running("awg0"))
+            f.write(str(pid))
+
+    def test_running_via_pid_file(self):
+        # Живой PID, чей cmdline — наш демон.
+        self._write_pid("awg0", os.getpid())
+        with mock.patch.object(awg_manager, "_pid_cmdline",
+                               return_value="/opt/usr/sbin/amneziawg-go awg0"):
+            with mock.patch.object(self.mgr, "_wg_interfaces",
+                                    return_value=[]):
+                self.assertTrue(self.mgr.is_running("awg0"))
+
+    def test_stale_pid_of_foreign_process_is_not_running(self):
+        # На Keenetic run_dir лежит в /opt (переживает перезагрузку): после
+        # ребута тот же PID занят посторонним процессом. Он не должен
+        # выдавать туннель за поднятый — иначе автозапуск молча
+        # не поднимает интерфейс («уже поднят»).
+        self._write_pid("awg0", os.getpid())
+        with mock.patch.object(awg_manager, "_pid_cmdline",
+                               return_value="/usr/sbin/ndnproxy -c /etc/ndn.conf"):
+            with mock.patch.object(self.mgr, "_wg_interfaces",
+                                    return_value=[]):
+                self.assertFalse(self.mgr.is_running("awg0"))
+
+    def test_cleanup_does_not_kill_foreign_pid(self):
+        # _cleanup_iface не должен слать сигналы чужому процессу.
+        self._write_pid("awg0", os.getpid())
+        with mock.patch.object(awg_manager, "_pid_cmdline",
+                               return_value="/usr/sbin/ndnproxy"):
+            with mock.patch("os.kill") as mkill:
+                self.mgr._cleanup_iface("awg0")
+                # Сигнал 0 — это лишь проба «жив ли PID», она безобидна.
+                # Настоящих сигналов (SIGTERM/SIGKILL) быть не должно.
+                sent = [c.args[1] for c in mkill.call_args_list
+                        if len(c.args) > 1 and c.args[1] != 0]
+                self.assertEqual(sent, [])
 
 
 class TestWgInterfacesParser(unittest.TestCase):

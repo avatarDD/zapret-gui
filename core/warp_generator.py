@@ -323,16 +323,38 @@ def _extract_endpoint(account: dict) -> tuple:
         ep = (peers[0] or {}).get("endpoint") or {}
         host_v4 = ep.get("v4") or ""
         host    = ep.get("host") or host_v4
-        if host and ":" in host and not host.startswith("["):
+        if host and host.startswith("["):
+            # "[v6]:port" — снимаем скобки, порт берём после "]".
+            rb = host.find("]")
+            if rb > 0:
+                h = host[1:rb]
+                tail = host[rb + 1:]
+                port = _valid_port(tail[1:]) if tail.startswith(":") else 0
+                if h:
+                    return h, port or DEFAULT_WARP_ENDPOINT_PORT
+        elif host and ":" in host:
             # endpoint в виде "host:port"
             h, _, p = host.rpartition(":")
-            try:
-                return h, int(p)
-            except ValueError:
-                pass
+            # Cloudflare отдаёт в endpoint.v4/v6 порт-плейсхолдер `0`
+            # ("162.159.192.1:0"). Если поля `host` нет и мы упали на v4,
+            # такой порт ушёл бы в конфиг и туннель не поднялся бы.
+            port = _valid_port(p)
+            if h and port:
+                return h, port
+            if h:
+                return h, DEFAULT_WARP_ENDPOINT_PORT
         if host:
             return host, DEFAULT_WARP_ENDPOINT_PORT
     return DEFAULT_WARP_ENDPOINT_HOST, DEFAULT_WARP_ENDPOINT_PORT
+
+
+def _valid_port(value) -> int:
+    """Порт 1..65535 или 0, если значение мусорное/плейсхолдер."""
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+    return port if 1 <= port <= 65535 else 0
 
 
 def _extract_peer_pubkey(account: dict) -> str:

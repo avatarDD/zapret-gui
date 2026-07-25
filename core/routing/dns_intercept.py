@@ -464,7 +464,7 @@ def set_enabled(enabled: bool) -> dict:
     """Сохранить флаг в настройках и привести состояние (start/stop)."""
     try:
         from core.config_manager import get_config_manager, save_config
-        cfg = get_config_manager().load()
+        cfg = get_config_manager().current()
         if not isinstance(cfg, dict):
             cfg = {}
         cfg.setdefault("routing", {}).setdefault("dns_intercept", {})

@@ -93,7 +93,7 @@ def _get_settings() -> dict:
     """Настройки watchdog'а из settings.json (`singbox.watchdog`)."""
     try:
         from core.config_manager import get_config_manager
-        cfg = get_config_manager().load()
+        cfg = get_config_manager().current()
     except Exception:
         cfg = {}
     if not isinstance(cfg, dict):
