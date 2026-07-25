@@ -10,12 +10,41 @@ const UsquePage = (() => {
 
     let _visibilityHandler = null;
     let _inFlight = false;
+    let _settingsLoaded = false;
+    const _state = { installed: false, configs: [] };
+    // Какие туннели раскрыты. Таблица перерисовывается каждые POLL_MS,
+    // и без этого набора раскрытая панель «Подробнее» захлопывалась бы
+    // сама через пару секунд.
+    const _expanded = new Set();
 
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
                 <h1>${_t('warp_masque')}${typeof Help !== 'undefined' ? Help.button('usque') : ''}</h1>
-                <span class="page-subtitle">Cloudflare WARP через usque-keenetic</span>
+                <span class="page-subtitle">Бесплатный Cloudflare WARP по протоколу MASQUE
+                    (HTTP/3 поверх QUIC, порт 443) — трафик выглядит как обычный HTTPS</span>
+            </div>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title">С чего начать</div>
+                    <div class="card-body">
+                        <ol id="usque-steps" class="usque-steps">
+                            <li data-step="install"><span class="usque-step-mark">•</span>
+                                <span class="usque-step-text">Установить бинарник usque</span></li>
+                            <li data-step="register"><span class="usque-step-mark">•</span>
+                                <span class="usque-step-text">Зарегистрировать WARP-сессию —
+                                    аккаунт создаётся бесплатно, без логина и оплаты</span></li>
+                            <li data-step="start"><span class="usque-step-mark">•</span>
+                                <span class="usque-step-text">Запустить туннель — появится
+                                    сетевой интерфейс <code>opkgtun0</code></span></li>
+                            <li data-step="route"><span class="usque-step-mark">•</span>
+                                <span class="usque-step-text">Направить нужный трафик в туннель на
+                                    странице <a href="#routing">Маршрутизация</a>: сам по себе
+                                    поднятый туннель ничего не перенаправляет</span></li>
+                        </ol>
+                    </div>
+                </div>
             </div>
 
             <div class="card-grid" id="usque-env-card">
@@ -27,7 +56,7 @@ const UsquePage = (() => {
 
             <div class="card-grid" id="usque-configs-card">
                 <div class="card">
-                    <div class="card-title">Конфиги</div>
+                    <div class="card-title">Туннели</div>
                     <div class="card-body" id="usque-configs">Загрузка...</div>
                 </div>
             </div>
@@ -38,7 +67,19 @@ const UsquePage = (() => {
                     <div class="card-body">
                         <button class="btn btn-primary" id="usque-btn-register">Зарегистрировать WARP</button>
                         <button class="btn" id="usque-btn-refresh">Обновить</button>
+                        <div class="form-hint" style="margin-top:8px;">
+                            Регистрация создаёт профиль с ключами вашей WARP-сессии
+                            в <code>/opt/etc/zapret-gui/usque/</code>. Можно завести несколько
+                            профилей, но одновременно обычно нужен один.
+                        </div>
                     </div>
+                </div>
+            </div>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title">Настройки</div>
+                    <div class="card-body" id="usque-settings">Загрузка...</div>
                 </div>
             </div>
         `;
@@ -72,16 +113,44 @@ const UsquePage = (() => {
         _inFlight = true;
         try {
             await Promise.all([_loadEnv(), _loadConfigs()]);
+            // Настройки не поллим: форма перерисовалась бы под курсором
+            // и затирала бы недовведённое значение. Грузим один раз.
+            if (!_settingsLoaded) await _loadSettings();
+            _renderSteps();
         } finally {
             _inFlight = false;
         }
     }
 
+    /** Отметить пройденные шаги по фактическому состоянию. */
+    function _renderSteps() {
+        const done = {
+            install: _state.installed,
+            register: _state.configs.length > 0,
+            start: _state.configs.some(c => c.active),
+            route: false,   // знает только страница маршрутизации
+        };
+        document.querySelectorAll("#usque-steps li").forEach(li => {
+            const step = li.getAttribute("data-step");
+            const mark = li.querySelector(".usque-step-mark");
+            if (!mark) return;
+            if (done[step]) {
+                mark.textContent = "✓";
+                li.classList.add("usque-step-done");
+            } else {
+                mark.textContent = "•";
+                li.classList.remove("usque-step-done");
+            }
+        });
+    }
+
     async function _loadEnv() {
         try {
             const env = await API.get("/api/usque/environment");
+            _state.installed = !!env.installed;
             const el = document.getElementById("usque-env");
             if (!el) return;
+            const tunOk = !!(env.tun && env.tun.available);
             if (env.installed) {
                 el.innerHTML = `
                     <div class="status-row">
@@ -89,13 +158,31 @@ const UsquePage = (() => {
                         <span>Установлен: <strong>${esc(env.version || "?")}</strong></span>
                     </div>
                     <div class="detail-row">Бинарник: <code>${esc((env.binary && env.binary.path) || "")}</code></div>
-                    <div class="detail-row">Архитектура: <code>${esc(env.arch)}</code></div>
+                    <div class="detail-row">Архитектура: <code>${esc(env.arch || "?")}</code></div>
+                    <div class="detail-row">
+                        Поддержка TUN:
+                        ${tunOk
+                            ? '<span class="status-dot status-ok"></span> есть'
+                            : '<span class="status-dot status-error"></span> не найдена'}
+                    </div>
+                    ${tunOk ? '' : `<div class="form-hint">
+                        Без устройства <code>/dev/net/tun</code> туннель не поднимется.
+                        На Keenetic модуль обычно даёт пакет <code>kmod-tun</code>.
+                    </div>`}
+                    <div style="margin-top:10px;">
+                        <a class="btn btn-sm" href="#usque-setup">Установка и обновление</a>
+                    </div>
                 `;
             } else {
                 el.innerHTML = `
                     <div class="status-row">
                         <span class="status-dot status-error"></span>
                         <span>Не установлен</span>
+                    </div>
+                    <div class="form-hint" style="margin-top:6px;">
+                        usque — это клиент Cloudflare WARP. Бинарник скачивается
+                        с GitHub-релизов проекта usque-keenetic, целостность
+                        проверяется по SHA256.
                     </div>
                     <button class="btn btn-primary btn-sm" id="usque-install-btn" style="margin-top:8px;">
                         Установить usque
@@ -115,12 +202,19 @@ const UsquePage = (() => {
             const el = document.getElementById("usque-configs");
             if (!el) return;
             const configs = data.configs || [];
+            _state.configs = configs;
             if (!configs.length) {
-                el.innerHTML = `<p class="text-muted">Нет конфигов. Нажмите "Зарегистрировать WARP" для создания.</p>`;
+                el.innerHTML = `
+                    <p class="text-muted">Туннелей пока нет.</p>
+                    <div class="form-hint">
+                        Нажмите «Зарегистрировать WARP» ниже — GUI создаст бесплатную
+                        WARP-сессию у Cloudflare и сохранит её как профиль.
+                        Ничего вводить не нужно, только имя профиля.
+                    </div>`;
                 return;
             }
             let html = '<table class="table"><thead><tr>';
-            html += '<th>Имя</th><th>Интерфейс</th><th>Статус</th><th>Действия</th>';
+            html += '<th>Профиль</th><th>Интерфейс</th><th>Статус</th><th>Действия</th>';
             html += '</tr></thead><tbody>';
             for (const c of configs) {
                 const statusCls = c.active ? "status-ok" : "status-off";
@@ -128,17 +222,49 @@ const UsquePage = (() => {
                 const toggleBtn = c.active
                     ? `<button class="btn btn-danger btn-sm action-stop" data-name="${esc(c.name)}">Стоп</button>`
                     : `<button class="btn btn-primary btn-sm action-start" data-name="${esc(c.name)}">Старт</button>`;
+                // Интерфейс известен только у поднятого туннеля: его имя
+                // выделяется при старте, поэтому у остановленного профиля
+                // прочерк — это норма, а не ошибка.
+                const ifaceCell = c.iface
+                    ? `<code>${esc(c.iface)}</code>`
+                    : '<span class="text-muted" title="Имя выделяется при запуске">—</span>';
                 html += `<tr>
                     <td>${esc(c.name)}</td>
-                    <td><code>${esc(c.iface)}</code></td>
+                    <td>${ifaceCell}</td>
                     <td><span class="status-dot ${statusCls}"></span> ${statusText}</td>
                     <td>${toggleBtn}
+                        <button class="btn btn-sm action-details" data-name="${esc(c.name)}">Подробнее</button>
                         <button class="btn btn-sm action-remove" data-name="${esc(c.name)}">Удалить</button>
                     </td>
+                </tr>
+                <tr class="usque-details-row" data-for="${esc(c.name)}" style="display:none;">
+                    <td colspan="4"><div class="usque-details" data-for="${esc(c.name)}">Загрузка…</div></td>
                 </tr>`;
             }
             html += '</tbody></table>';
+            if (configs.some(c => c.active)) {
+                html += `<div class="form-hint" style="margin-top:8px;">
+                    Туннель поднят, но трафик в него пойдёт только после правила на странице
+                    <a href="#routing">Маршрутизация</a> — выберите там метод
+                    <code>warp:${esc(configs.find(c => c.active).iface || 'opkgtun0')}</code>.
+                </div>`;
+            }
             el.innerHTML = html;
+
+            el.querySelectorAll(".action-details").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    _toggleDetails(e.currentTarget.getAttribute("data-name"));
+                });
+            });
+
+            // Восстановить панели, раскрытые до перерисовки.
+            for (const name of Array.from(_expanded)) {
+                if (configs.some(c => c.name === name)) {
+                    _renderDetails(name);
+                } else {
+                    _expanded.delete(name);   // профиль удалили
+                }
+            }
 
             // Навешиваем события безопасности через addEventListener
             el.querySelectorAll(".action-stop").forEach(btn => {
@@ -159,6 +285,65 @@ const UsquePage = (() => {
         } catch (e) {
             const el = document.getElementById("usque-configs");
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+        }
+    }
+
+    /**
+     * Раскрыть/свернуть подробности туннеля.
+     *
+     * `diagnostic` — хвост stderr самого usque. Раньше API его отдавал, но
+     * UI нигде не показывал, и пользователь при неудачном старте видел
+     * только «Ошибка запуска» без причины.
+     */
+    function _toggleDetails(name) {
+        if (_expanded.has(name)) {
+            _expanded.delete(name);
+            const row = document.querySelector(
+                `.usque-details-row[data-for="${CSS.escape(name)}"]`);
+            if (row) row.style.display = "none";
+            return;
+        }
+        _expanded.add(name);
+        _renderDetails(name);
+    }
+
+    async function _renderDetails(name) {
+        const row = document.querySelector(
+            `.usque-details-row[data-for="${CSS.escape(name)}"]`);
+        if (!row) return;
+        row.style.display = "";
+        const box = row.querySelector(".usque-details");
+        try {
+            const st = await API.get(
+                `/api/usque/configs/${encodeURIComponent(name)}/status`);
+            if (st && st.ok === false) {
+                box.innerHTML = `<div class="text-error">${esc(st.error || "Ошибка")}</div>`;
+                return;
+            }
+            const diag = (st.diagnostic || "").trim();
+            box.innerHTML = `
+                <div class="detail-row">Процесс: ${st.running
+                    ? '<span class="status-dot status-ok"></span> запущен'
+                    : '<span class="status-dot status-off"></span> не запущен'}
+                    ${st.pid ? ` (PID <code>${esc(String(st.pid))}</code>)` : ""}</div>
+                <div class="detail-row">Интерфейс <code>${esc(st.iface || "—")}</code>:
+                    ${st.iface_exists ? "существует" : "отсутствует"}</div>
+                ${diag
+                    ? `<div style="margin-top:8px;">
+                           <div class="form-label">Последние сообщения usque</div>
+                           <pre class="usque-diagnostic">${esc(diag)}</pre>
+                           <div class="form-hint">Это вывод самого usque — по нему видно,
+                               почему туннель не поднялся (нет сети, отвергнута сессия,
+                               занят интерфейс).</div>
+                       </div>`
+                    : `<div class="form-hint" style="margin-top:8px;">
+                           Сообщений от usque нет. Если туннель не поднимается —
+                           проверьте доступ в интернет и переключите транспорт на
+                           «Restricted» в настройках ниже.
+                       </div>`}
+            `;
+        } catch (e) {
+            box.innerHTML = `<div class="text-error">${esc(String(e))}</div>`;
         }
     }
 
@@ -188,8 +373,13 @@ const UsquePage = (() => {
 
         content.innerHTML = `
             <div style="font-weight:bold; font-size:1.1rem; margin-bottom:12px; color:var(--text-main, #e1e4ea);">${esc(title)}</div>
+            <div style="font-size:12px; color:var(--text-muted, #8b90a0); margin-bottom:10px;">
+                Имя профиля — только для вас, оно станет именем файла сессии.
+                Например <code>warp-default</code> или <code>warp-backup</code>.
+                Латиница, цифры, <code>_</code> и <code>-</code>.
+            </div>
             <div style="margin-bottom:16px;">
-                <input type="text" id="prompt-modal-input" class="form-input" 
+                <input type="text" id="prompt-modal-input" class="form-input"
                        value="${esc(defaultValue)}" placeholder="${esc(placeholder)}"
                        style="width:100%; box-sizing:border-box; padding:8px; border-radius:4px; border:1px solid var(--border, #2d313f); background:var(--bg-input, #0f111a); color:var(--text-main, #e1e4ea);" />
                 <div id="prompt-modal-error" style="color:var(--text-error, #ff5370); font-size:0.85rem; margin-top:4px; display:none;"></div>
@@ -238,10 +428,149 @@ const UsquePage = (() => {
         };
     }
 
+    async function _loadSettings() {
+        const el = document.getElementById("usque-settings");
+        if (!el) return;
+        let s;
+        try {
+            const r = await API.get("/api/usque/settings");
+            s = (r && r.settings) || {};
+        } catch (e) {
+            el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+            return;
+        }
+        const wd = s.watchdog || {};
+        const sel = (v, val) => (v === val ? " selected" : "");
+        el.innerHTML = `
+            <div class="form-group">
+                <label class="form-label" style="display:flex; align-items:center; gap:8px;">
+                    <input type="checkbox" id="usq-enabled" ${s.enabled ? "checked" : ""}>
+                    Разрешить фоновое управление туннелем
+                </label>
+                <div class="form-hint">
+                    Общий выключатель для автозапуска и watchdog. Кнопки «Старт»/«Стоп»
+                    работают и без него — он нужен, только чтобы GUI трогал туннель сам.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" style="display:flex; align-items:center; gap:8px;">
+                    <input type="checkbox" id="usq-autostart" ${s.autostart ? "checked" : ""}>
+                    Поднимать туннель после перезагрузки роутера
+                </label>
+                <div class="form-hint">
+                    Работает только вместе с галкой выше. Поднимаются все профили,
+                    которые на момент загрузки не запущены.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="usq-transport">Транспорт</label>
+                <select id="usq-transport" class="form-control">
+                    <option value="performance"${sel(s.transport_profile, "performance")}>
+                        Performance — HTTP/3 поверх QUIC (быстрее, по умолчанию)</option>
+                    <option value="restricted"${sel(s.transport_profile, "restricted")}>
+                        Restricted — HTTP/2 поверх TCP:443 (когда QUIC режут)</option>
+                    <option value="auto"${sel(s.transport_profile, "auto")}>
+                        Auto — сначала H3, при подтверждённом сбое одна попытка H2</option>
+                </select>
+                <div class="form-hint">
+                    Многие провайдеры и мобильные операторы режут UDP/QUIC — тогда
+                    Performance молча не поднимается. Признак: туннель не стартует,
+                    а в «Подробнее» нет внятной ошибки. Лечится переключением
+                    на Restricted.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="usq-sni">SNI для маскировки</label>
+                <input type="text" id="usq-sni" class="form-control"
+                       value="${esc(s.default_sni || "")}" placeholder="например: ozon.ru">
+                <div class="form-hint">
+                    Имя, которое видит DPI в TLS-рукопожатии. Пусто — не подменять.
+                    Осмысленно указывать крупный сайт, к которому обращения не выглядят
+                    подозрительно: <code>ozon.ru</code>, <code>www.google.com</code>.
+                    Только доменное имя, без <code>https://</code> и путей.
+                </div>
+            </div>
+
+            <hr style="border:none; border-top:1px solid var(--border); margin:16px 0;">
+
+            <div class="form-group">
+                <label class="form-label" style="display:flex; align-items:center; gap:8px;">
+                    <input type="checkbox" id="usq-wd-enabled" ${wd.enabled ? "checked" : ""}>
+                    Watchdog: перезапускать туннель, если он перестал отвечать
+                </label>
+                <div class="form-hint">
+                    Раз в N секунд GUI пробует TCP-соединение через туннель. Три неудачи
+                    подряд — перезапуск, затем пауза 2 минуты. Не чаще 6 перезапусков в час.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="usq-wd-interval">Интервал проверки, секунд</label>
+                <input type="number" id="usq-wd-interval" class="form-control"
+                       min="10" max="3600" value="${esc(String(wd.interval_sec || 60))}">
+                <div class="form-hint">
+                    По умолчанию 60. Меньше 10 не даст выставить: частые пробы
+                    нагружают слабый роутер и ничего не улучшают.
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Куда стучаться при проверке</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="text" id="usq-wd-host" class="form-control" style="flex:2;"
+                           value="${esc(wd.probe_host || "1.1.1.1")}" placeholder="1.1.1.1">
+                    <input type="number" id="usq-wd-port" class="form-control" style="flex:1;"
+                           min="1" max="65535" value="${esc(String(wd.probe_port || 443))}">
+                </div>
+                <div class="form-hint">
+                    Адрес и порт, доступные снаружи. По умолчанию <code>1.1.1.1:443</code>.
+                    Указывайте IP, а не домен: проба идёт через туннель напрямую,
+                    без резолва.
+                </div>
+            </div>
+
+            <button class="btn btn-primary" id="usq-save">Сохранить настройки</button>
+        `;
+        document.getElementById("usq-save").addEventListener("click", _saveSettings);
+        _settingsLoaded = true;
+    }
+
+    async function _saveSettings() {
+        const val = (id) => document.getElementById(id);
+        const payload = {
+            enabled: val("usq-enabled").checked,
+            autostart: val("usq-autostart").checked,
+            transport_profile: val("usq-transport").value,
+            default_sni: val("usq-sni").value.trim(),
+            watchdog: {
+                enabled: val("usq-wd-enabled").checked,
+                interval_sec: parseInt(val("usq-wd-interval").value, 10) || 60,
+                probe_host: val("usq-wd-host").value.trim() || "1.1.1.1",
+                probe_port: parseInt(val("usq-wd-port").value, 10) || 443,
+            },
+        };
+        try {
+            const r = await API.post("/api/usque/settings", payload);
+            if (r && r.ok) {
+                Toast.success("Настройки сохранены");
+                _settingsLoaded = false;
+                await _loadSettings();
+            } else {
+                Toast.error((r && r.error) || "Не удалось сохранить");
+            }
+        } catch (e) {
+            Toast.error("Ошибка: " + e.message);
+        }
+    }
+
     async function _register() {
         // MR-100: Используем наш кастомный prompt-modal вместо native prompt()
-        _showPromptModal("Имя конфига:", "warp-default", "Имя новой сессии", async (name) => {
+        _showPromptModal("Новый WARP-профиль", "warp-default", "warp-default", async (name) => {
             try {
+                Toast.info("Регистрируем сессию у Cloudflare…");
                 const res = await API.post("/api/usque/register", { name });
                 if (res.ok) {
                     Toast.success(_t("warp_registered"));

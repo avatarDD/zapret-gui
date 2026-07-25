@@ -90,8 +90,9 @@ const DiagnosticsPage = (() => {
                 <p class="text-muted" style="font-size:13px; margin:6px 0 10px;">
                     Полная проверка прямо на этом устройстве: зависимости
                     (python-модули, системные утилиты), движки
-                    (zapret2/AWG/sing-box/mihomo), конфигурация и прогон
-                    юнит-тестов. Все результаты пишутся в
+                    (zapret2/AWG/sing-box/mihomo), доп. туннели и прокси
+                    (WARP/MASQUE, WARP-in-WARP, Telegram, Opera),
+                    конфигурация и прогон юнит-тестов. Все результаты пишутся в
                     <a href="#logs" style="text-decoration:underline;">лог</a>
                     (предупреждения — и в сохранённый лог).
                 </p>

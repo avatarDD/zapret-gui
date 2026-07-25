@@ -84,7 +84,14 @@ class TestSections(unittest.TestCase):
         res = selfcheck.run_all(include_tests=False)
         self.assertIn("sections", res)
         self.assertIsNone(res["tests"])
-        self.assertEqual(len(res["sections"]), 5)
+        # Проверяем СОСТАВ, а не количество: раньше здесь стояло
+        # `len(...) == 5`, и любая новая секция роняла тест, ничего не
+        # говоря о том, что именно сломалось.
+        names = [s["name"] for s in res["sections"]]
+        for expected in ("python", "tools", "engines",
+                         "extra_engines", "config", "network"):
+            self.assertIn(expected, names)
+        self.assertEqual(len(names), len(set(names)), "дубли секций")
         self.assertIn("summary", res)
         # ok согласован с количеством fail-чеков
         self.assertEqual(res["ok"], res["summary"]["fail"] == 0)
