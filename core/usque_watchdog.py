@@ -86,8 +86,14 @@ class UsqueWatchdog:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return
-            self._stop_evt.clear()
-            t = threading.Thread(target=self._run_loop,
+            # Своё событие на каждый запуск. С общим на всех получалась
+            # гонка: _stop() выставлял флаг, но не дожидался потока, а
+            # следующий _start() сразу его сбрасывал — старый цикл
+            # просыпался с уже чистым флагом и продолжал работать рядом
+            # с новым (двойные пробы и рестарты одного туннеля).
+            stop_evt = threading.Event()
+            self._stop_evt = stop_evt
+            t = threading.Thread(target=self._run_loop, args=(stop_evt,),
                                  name="usque-watchdog", daemon=True)
             t.start()
             self._thread = t
@@ -101,9 +107,11 @@ class UsqueWatchdog:
             self._thread = None
             log.info("usque-watchdog: остановлен", source="usque")
 
-    def _run_loop(self):
+    def _run_loop(self, stop_evt=None):
         from core.config_manager import get_config_manager
-        while not self._stop_evt.is_set():
+        if stop_evt is None:
+            stop_evt = self._stop_evt
+        while not stop_evt.is_set():
             interval = _DEFAULT_CHECK_INTERVAL
             try:
                 cfg = get_config_manager()
@@ -113,7 +121,7 @@ class UsqueWatchdog:
             except Exception as e:
                 log.warning("usque-watchdog tick: %s" % e, source="usque")
             # Учитываем настроенный interval_sec, а не хардкод.
-            self._stop_evt.wait(interval)
+            stop_evt.wait(interval)
 
     def _tick(self):
         from core.usque_manager import get_usque_manager
@@ -185,8 +193,17 @@ class UsqueWatchdog:
             "usque", "transport_profile", default="auto")
         if config_path:
             new_iface = iface or mgr.allocate_iface("opkgtun")
-            mgr.start(new_iface, config_path, sni=sni,
-                      transport_profile=profile)
+            res = mgr.start(new_iface, config_path, sni=sni,
+                            transport_profile=profile)
+            if not res.get("ok"):
+                # Без этого туннель молча оставался лежать: stop() уже
+                # прошёл, а причина неудачного старта нигде не видна.
+                log.warning("usque-watchdog: %s не поднялся после рестарта: %s"
+                            % (new_iface, res.get("error", "неизвестно")),
+                            source="usque")
+        else:
+            log.warning("usque-watchdog: конфиг для %s не найден — туннель"
+                        " остановлен и не поднят" % iface, source="usque")
 
         self._last_restart[iface] = now
         self._restart_times.append(now)
