@@ -2,6 +2,7 @@
 """Тесты детекции конфликтов окружения (core/diagnostics.evaluate_conflicts)."""
 
 import unittest
+from unittest import mock
 
 from core.diagnostics import evaluate_conflicts, _KNOWN_TOOL_MARKERS
 
@@ -50,3 +51,61 @@ class TestEvaluateConflicts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSystemInfoExtras(unittest.TestCase):
+    """Диски и наличие утилит в «Системной информации».
+
+    Раньше при отсутствии `ip` поля адресов/шлюза/интерфейсов молча
+    оставались пустыми, и было непонятно — так и надо или что-то сломано.
+    А свободного места не показывалось вовсе, хотя забитая флешка на
+    роутере — штатная причина «не ставится / не сохраняется».
+    """
+
+    def test_disk_usage_shape(self):
+        from core.diagnostics import _get_disk_usage
+        disks = _get_disk_usage()
+        self.assertIsInstance(disks, list)
+        for d in disks:
+            for key in ("label", "path", "total_mb", "free_mb", "used_percent"):
+                self.assertIn(key, d)
+            self.assertGreater(d["total_mb"], 0)
+            self.assertGreaterEqual(d["used_percent"], 0)
+            self.assertLessEqual(d["used_percent"], 100)
+            self.assertLessEqual(d["free_mb"], d["total_mb"])
+
+    def test_disk_usage_deduplicates_same_filesystem(self):
+        # /opt и каталог конфига обычно на одном разделе — не дублируем.
+        from core.diagnostics import _get_disk_usage
+        disks = _get_disk_usage()
+        paths = [d["path"] for d in disks]
+        self.assertEqual(len(paths), len(set(paths)))
+
+
+class TestWanIpValue(unittest.TestCase):
+    """`wan_ip` — это локальный src-адрес, и он не должен нести оформление."""
+
+    def test_returns_empty_string_when_unavailable(self):
+        from core.system_info import _get_wan_ip
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError):
+            self.assertEqual(_get_wan_ip(), "")
+
+    def test_no_dash_placeholder_in_data(self):
+        # Раньше возвращался символ «—» — оформление в данных, из-за чего
+        # его нельзя было отличить от реального значения.
+        from core.system_info import _get_wan_ip
+        with mock.patch("subprocess.run", side_effect=OSError):
+            self.assertNotIn("—", _get_wan_ip())
+
+    def test_parses_src_from_ip_route(self):
+        from core.system_info import _get_wan_ip
+        out = mock.Mock(returncode=0,
+                        stdout="8.8.8.8 via 192.168.1.1 dev eth0 src 192.168.1.50 uid 0")
+        with mock.patch("subprocess.run", return_value=out):
+            self.assertEqual(_get_wan_ip(), "192.168.1.50")
+
+    def test_truncated_output_does_not_crash(self):
+        from core.system_info import _get_wan_ip
+        out = mock.Mock(returncode=0, stdout="8.8.8.8 dev eth0 src")
+        with mock.patch("subprocess.run", return_value=out):
+            self.assertEqual(_get_wan_ip(), "")

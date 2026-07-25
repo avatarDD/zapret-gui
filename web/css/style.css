@@ -5011,3 +5011,20 @@ body.expert-mode .expert-note { display: none !important; }
     border-radius: 4px;
     color: var(--text-secondary);
 }
+
+/* ===== Диагностика: группы в «Системной информации» =====
+   Плоский список из десятка разнородных пунктов (железо, сеть, наши
+   компоненты вперемешку) читался плохо — разбиваем на смысловые блоки. */
+.diag-info-group + .diag-info-group {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+.diag-info-group-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}

@@ -127,17 +127,28 @@ def _get_load_average() -> str:
 
 
 def _get_wan_ip() -> str:
-    """Попробовать определить WAN IP."""
+    """
+    Локальный адрес, с которого уходит трафик в интернет.
+
+    Это `src` из `ip route get 8.8.8.8`, то есть адрес НАШЕГО исходящего
+    интерфейса, а не публичный IP: за NAT/CGNAT он будет серым. В UI
+    подписан соответственно.
+
+    Возвращает пустую строку, когда определить не удалось (нет `ip`, нет
+    маршрута). Раньше здесь возвращался символ «—» — оформление в данных,
+    из-за чего его нельзя было отличить от реального значения.
+    """
     try:
         result = subprocess.run(
             ["ip", "route", "get", "8.8.8.8"],
             capture_output=True, text=True, timeout=3
         )
         if result.returncode == 0:
-            for part in result.stdout.split():
-                if part == "src":
-                    idx = result.stdout.split().index("src")
-                    return result.stdout.split()[idx + 1]
-    except (subprocess.TimeoutExpired, FileNotFoundError, IndexError):
+            parts = result.stdout.split()
+            if "src" in parts:
+                idx = parts.index("src")
+                if idx + 1 < len(parts):
+                    return parts[idx + 1]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
-    return "—"
+    return ""
