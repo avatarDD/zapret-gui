@@ -479,9 +479,14 @@ class StrategyScanner:
                     self._save_counter = 0
                 self._save_counter += 1
                 now = time.time()
+                # Последняя стратегия ЭТОГО прогона: idx нумерует срез
+                # `strategies` (при resume он уже обрезан по _start_index),
+                # поэтому сравнивать надо с len(strategies), а не с
+                # self._total/actual_idx — иначе при resume условие
+                # срабатывало бы на каждой итерации (issue #266).
                 if (self._save_counter % 5 == 0
                         or (now - self._last_save_time) >= 10
-                        or actual_idx >= total - 1):
+                        or idx >= len(strategies) - 1):
                     self._save_resume_state(save_idx)
                     self._last_save_time = now
 

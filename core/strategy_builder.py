@@ -506,12 +506,29 @@ class StrategyManager:
     def _inject_list_flags(args: list, list_flags: list) -> list:
         """Вставить флаги списков в профиль (после --filter-*, перед --payload).
 
-        Если профиль уже содержит какой-либо --hostlist*/--ipset* — не трогаем
-        (полные winws2-пресеты несут свои списки).
+        Если профиль уже содержит какой-либо --hostlist*/--ipset* (полные
+        winws2-пресеты несут свои списки), то include/auto-флаги НЕ
+        подмешиваем — сужать чужой отбор нельзя, а --hostlist-auto вообще
+        сменил бы логику выбора профиля.
+
+        НО предохранитель ``--hostlist-exclude=netrogat.txt`` доезжает и туда.
+        Раньше он молча терялся на любом профиле со своим списком, и
+        пользовательские исключения (aliexpress.ru, банки, …) не действовали
+        на пресетах — issue #265. Профиль со СВОИМ ``--hostlist-exclude``
+        оставляем как есть: он уже управляет исключениями сам.
         """
-        for a in args:
-            if a.startswith("--hostlist") or a.startswith("--ipset"):
-                return args  # профиль сам задаёт списки
+        has_own_lists = any(
+            a.startswith("--hostlist") or a.startswith("--ipset")
+            for a in args
+        )
+        if has_own_lists:
+            if any(a.startswith("--hostlist-exclude") for a in args):
+                return args  # профиль сам задаёт исключения
+            list_flags = [
+                f for f in list_flags if f.startswith("--hostlist-exclude=")
+            ]
+            if not list_flags:
+                return args
 
         insert_pos = 0
         for i, a in enumerate(args):
