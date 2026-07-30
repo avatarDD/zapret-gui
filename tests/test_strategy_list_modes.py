@@ -67,12 +67,40 @@ class TestListFlagModes(unittest.TestCase):
         self.assertEqual(self._flags("none"), [])
 
     # ── _inject_list_flags ──
-    def test_inject_respects_existing_hostlist(self):
+    def test_inject_keeps_exclude_with_existing_hostlist(self):
+        # issue #265: у профиля со своим include-списком предохранитель
+        # netrogat раньше терялся целиком — исключения не действовали.
         args = ["--filter-tcp=443", "--hostlist=/x/custom.txt",
                 "--lua-desync=multisplit"]
         out = self.sm._inject_list_flags(
             args, ["--hostlist-exclude=/y/netrogat.txt"])
-        self.assertEqual(out, args)  # не трогаем — профиль сам задал список
+        self.assertIn("--hostlist-exclude=/y/netrogat.txt", out)
+        self.assertIn("--hostlist=/x/custom.txt", out)   # свой список цел
+        self.assertEqual(len(out), len(args) + 1)
+
+    def test_inject_does_not_narrow_existing_hostlist(self):
+        # include/auto-флаги в чужой отбор не лезут — только exclude.
+        args = ["--filter-tcp=443", "--hostlist=/x/custom.txt",
+                "--lua-desync=multisplit"]
+        out = self.sm._inject_list_flags(
+            args, ["--hostlist-auto=/y/auto.txt",
+                   "--hostlist-exclude=/y/netrogat.txt"])
+        self.assertNotIn("--hostlist-auto=/y/auto.txt", out)
+        self.assertIn("--hostlist-exclude=/y/netrogat.txt", out)
+
+    def test_inject_respects_own_exclude(self):
+        # Профиль сам управляет исключениями — не трогаем.
+        args = ["--filter-tcp=443", "--hostlist-exclude=/x/mine.txt",
+                "--lua-desync=multisplit"]
+        out = self.sm._inject_list_flags(
+            args, ["--hostlist-exclude=/y/netrogat.txt"])
+        self.assertEqual(out, args)
+
+    def test_inject_skips_ipset_only_profile_without_exclude_flag(self):
+        # ipset-режим отдаёт пустой список флагов → профиль не меняется.
+        args = ["--filter-udp=443", "--ipset=/x/ipset-youtube.txt",
+                "--lua-desync=fake"]
+        self.assertEqual(self.sm._inject_list_flags(args, []), args)
 
     def test_inject_after_filter(self):
         args = ["--filter-tcp=443", "--lua-desync=multisplit"]

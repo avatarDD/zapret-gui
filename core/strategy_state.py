@@ -421,20 +421,14 @@ def reload_nfqws() -> dict:
     нашего clear_*() Lua не написала обратно из своего in-RAM состояния,
     мы шлём SIGHUP — это nfqws2 интерпретирует как «перечитать хостлисты
     и сбросить кэши». state.tsv Lua заново подхватит при следующей записи.
+
+    Поиск PID делегирован core.nfqws_reload (PID-файлы + скан /proc): GUI
+    запускает nfqws2 без --daemon, и PID-файла может не быть вовсе.
     """
-    pid_files = (
-        "/var/run/zapret-gui-nfqws.pid",
-        "/var/run/zapret-nfqws.pid",
-    )
-    for pf in pid_files:
-        try:
-            with open(pf, "r") as f:
-                pid = int((f.read() or "0").strip())
-            if pid > 0:
-                os.kill(pid, 1)  # SIGHUP
-                log.info("SIGHUP → nfqws2 PID %d (reload state)" % pid,
-                         source="strategy")
-                return {"ok": True, "pid": pid}
-        except (OSError, ValueError):
-            continue
-    return {"ok": False, "error": "nfqws2 не запущен"}
+    from core.nfqws_reload import reload_lists
+
+    result = reload_lists("reload state")
+    pids = result.get("pids") or []
+    if pids:
+        return {"ok": True, "pid": pids[0], "pids": pids}
+    return {"ok": False, "error": result.get("error") or "nfqws2 не запущен"}

@@ -388,6 +388,17 @@ class IPSetManager:
                     f.write("\n".join(clean) + "\n" if clean else "")
 
             log.info(f"Сохранён {name}.txt ({len(clean)} записей)", source="ipsets")
+
+            # См. core/nfqws_reload: ipset-файлы, как и хостлисты, читаются
+            # nfqws2 один раз при старте — правка вступает в силу только
+            # после SIGHUP (issue #265).
+            try:
+                from core.nfqws_reload import reload_lists
+                reload_lists("%s.txt" % name)
+            except Exception as e:
+                log.debug(f"SIGHUP после записи {name}.txt не удался: {e}",
+                          source="ipsets")
+
             return True
         except Exception as e:
             log.error(f"Ошибка записи {name}.txt: {e}", source="ipsets")

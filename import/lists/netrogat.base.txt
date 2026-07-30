@@ -74,6 +74,7 @@ ozonusercontent.com
 wildberries.ru
 wb.ru
 wbbasket.ru
+aliexpress.ru
 
 # --- Контент / медиа / прочее ---
 deepl.com

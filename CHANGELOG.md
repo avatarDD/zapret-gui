@@ -53,6 +53,33 @@
 - **CLI для новых функций** — `usque`, `tgproxy`, `opera`, `monitor`,
   `updates`, `dns-routing`. (`core/cli.py`)
 
+### Исправлено
+- **Списки применялись только после перезапуска обхода**
+  ([#265](https://github.com/avatarDD/zapret-gui/issues/265)). nfqws2 держит
+  хостлисты и ipset-ы в памяти и перечитывает их только по SIGHUP, а GUI
+  сигнал не слал — из-за этого домен, добавленный в «Исключения»
+  (`netrogat.txt`), продолжал ломаться десинком. Теперь запись любого списка
+  доменов/IP сопровождается SIGHUP всем живым nfqws2 (PID-файлы + скан
+  `/proc`, т.к. GUI поднимает движок без `--daemon`).
+  (`core/nfqws_reload.py`, `core/hostlist_manager.py`, `core/ipset_manager.py`,
+  `core/strategy_state.py`)
+- **Исключения терялись на пресетах со своими списками**
+  ([#265](https://github.com/avatarDD/zapret-gui/issues/265)). Профиль,
+  который сам несёт `--hostlist=` (полные winws2-пресеты), полностью
+  пропускал подмешивание флагов — вместе с предохранителем
+  `--hostlist-exclude=netrogat.txt`. Теперь exclude доезжает и туда, а
+  include/auto-флаги по-прежнему не лезут в чужой отбор.
+  (`core/strategy_builder.py`)
+- **`aliexpress.ru` добавлен в дефолтные исключения** — ломался десинком с
+  `ERR_TLS13_DOWNGRADE_DETECTED` ([#265](https://github.com/avatarDD/zapret-gui/issues/265)).
+  (`core/hostlist_manager.py`, `import/lists/netrogat*.txt`)
+- **Сканер стратегий падал в самом начале с `name 'total' is not defined`**
+  ([#266](https://github.com/avatarDD/zapret-gui/issues/266)). Опечатка в
+  throttle-условии сохранения resume-state роняла весь цикл подбора.
+  Добавлен статический сторож на обращения к несуществующим именам —
+  `make lint` (`ast.parse`) такой класс ошибок не ловит.
+  (`core/strategy_scanner.py`, `tests/test_no_undefined_names.py`)
+
 ### Изменено
 - **Хардненинг дефолтов Web-GUI:** для новой установки bind по умолчанию
   `127.0.0.1` (раньше `0.0.0.0`). HTTP-аутентификация остаётся **выключенной

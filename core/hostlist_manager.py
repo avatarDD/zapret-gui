@@ -125,6 +125,8 @@ DEFAULT_NETROGAT = [
     "wildberries.ru",
     "wb.ru",
     "wbbasket.ru",
+    # issue #265: ломался десинком (ERR_TLS13_DOWNGRADE_DETECTED)
+    "aliexpress.ru",
     # Контент / медиа / прочее
     "deepl.com",
     "ixbt.com",
@@ -407,6 +409,17 @@ class HostlistManager:
                     f.write("\n".join(clean) + "\n" if clean else "")
 
             log.info(f"Сохранён {name}.txt ({len(clean)} доменов)", source="hostlists")
+
+            # nfqws2 держит хостлисты в памяти и перечитывает их только по
+            # SIGHUP. Без этого правка списка (в т.ч. исключений netrogat)
+            # не действовала до перезапуска обхода — issue #265.
+            try:
+                from core.nfqws_reload import reload_lists
+                reload_lists("%s.txt" % name)
+            except Exception as e:
+                log.debug(f"SIGHUP после записи {name}.txt не удался: {e}",
+                          source="hostlists")
+
             return True
         except Exception as e:
             log.error(f"Ошибка записи {name}.txt: {e}", source="hostlists")
