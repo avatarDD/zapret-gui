@@ -43,6 +43,7 @@ from core.ndms.wg_discovery import (
 )
 from core.ndms.ping_check import (
     get_native_wg_status,
+    invalidate_status_cache,
     should_delegate_monitoring,
 )
 
@@ -55,5 +56,6 @@ __all__ = [
     "list_native_wg_interfaces",
     "is_native_wg",
     "get_native_wg_status",
+    "invalidate_status_cache",
     "should_delegate_monitoring",
 ]

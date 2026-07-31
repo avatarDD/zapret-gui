@@ -9,6 +9,8 @@ REST API единого слоя маршрутизации (core/unified).
   DELETE /api/unified/routes/<id>
   POST   /api/unified/routes/<id>/apply   — применить один
   POST   /api/unified/apply-all
+  POST   /api/unified/reapply             — переприменить всё + сбросить
+                                            «левые» артефакты в ядре
   GET    /api/unified/status              — сводка (успешность/метод/подсказки)
   POST   /api/unified/monitor             — {enabled, interval}
   POST   /api/unified/routes/<id>/scan    — подбор стратегии (nfqws2)
@@ -89,6 +91,16 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core.unified import manager
         return manager.apply_all()
+
+    @app.route("/api/unified/reapply", method="POST")
+    def unified_reapply():
+        response.content_type = "application/json; charset=utf-8"
+        from core.unified import manager
+        try:
+            return manager.reapply_all()
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
 
     @app.route("/api/unified/status")
     def unified_status():

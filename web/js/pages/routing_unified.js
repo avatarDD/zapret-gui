@@ -80,6 +80,14 @@ const RoutingUnifiedPage = (() => {
                     </label>${typeof Help !== 'undefined' ? Help.button('monitoring') : ''}
                     <button class="btn btn-ghost btn-sm" data-action="newRoute">+ Маршрут</button>
                     <button class="btn btn-ghost btn-sm" data-action="applyAll">Применить все</button>
+                    <button class="btn btn-ghost btn-sm" data-action="reapplyAll"
+                            title="Переприменить все маршруты заново и снять из ядра
+                                   правила/наборы, за которыми уже не стоит ни одного
+                                   маршрута. Пригодится, когда туннелю поменяли
+                                   AllowedIPs или он переподнялся, а маршрутизация
+                                   осталась в старом состоянии.">
+                        Переприменить и сбросить лишнее
+                    </button>
                     <button class="btn btn-ghost btn-sm" data-action="refresh">Обновить</button>
                 </div>
             </div>
@@ -114,6 +122,10 @@ const RoutingUnifiedPage = (() => {
                 <button class="btn btn-ghost btn-sm" data-action="reapplyLowLevel"
                         title="Снять и заново применить все низкоуровневые правила (ip rule/ipset), включая производные единого слоя">
                     Переприменить низкоуровневые правила
+                </button>
+                <button class="btn btn-ghost btn-sm" data-action="previewSweep"
+                        title="Показать, что снял бы «сброс лишнего», ничего не меняя">
+                    Что лишнего в ядре?
                 </button>
             </div>
         `;
@@ -1044,6 +1056,62 @@ const RoutingUnifiedPage = (() => {
         await refresh();
     }
 
+    /**
+     * Полное переприменение: sweep «левых» артефактов ядра → applyAll →
+     * legacy-правила → пинок рефрешеру IP. Ручной способ привести систему
+     * в соответствие с тем, что показано на странице, когда туннель
+     * переподняли (или ему поменяли AllowedIPs), а маршрутизация осталась
+     * в старом состоянии.
+     */
+    async function reapplyAll() {
+        const btn = document.querySelector('[data-action="reapplyAll"]');
+        if (btn) { btn.disabled = true; btn.textContent = 'Переприменяю...'; }
+        try {
+            const r = await API.post('/api/unified/reapply');
+            const swept = (r && r.sweep && r.sweep.total) || 0;
+            const errs = []
+                .concat((r && r.sweep && r.sweep.errors) || [])
+                .concat((r && r.legacy && r.legacy.errors) || []);
+            if (r && r.ok) {
+                Toast.success(swept
+                    ? `Маршруты переприменены, сброшено лишнего: ${swept}`
+                    : 'Маршруты переприменены, лишнего в ядре не нашлось');
+            } else {
+                Toast.error('Переприменено с ошибками: '
+                            + (errs.join('; ') || (r && r.error) || '?'));
+            }
+        } catch (e) { Toast.error(e.message); }
+        finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Переприменить и сбросить лишнее';
+            }
+            await refresh();
+        }
+    }
+
+    /** Dry-run того же sweep: только показать находки. */
+    async function previewSweep() {
+        try {
+            const r = await API.get('/api/routing/sweep');
+            if (!r || !r.ok) {
+                Toast.error((r && r.error) || 'ошибка');
+                return;
+            }
+            const lines = []
+                .concat((r.ip_rules || []).map(x => 'ip rule: ' + x))
+                .concat((r.sets || []).map(x => 'набор: ' + x))
+                .concat((r.tables || []).map(x => 'таблица: ' + x));
+            if (!lines.length) {
+                Toast.success('Лишнего в ядре нет — всё соответствует маршрутам');
+                return;
+            }
+            alert('Артефакты без единого стоящего за ними маршрута '
+                  + `(${lines.length}):\n\n` + lines.join('\n')
+                  + '\n\nСнимет кнопка «Переприменить и сбросить лишнее».');
+        } catch (e) { Toast.error(e.message); }
+    }
+
     async function reapplyLowLevel() {
         try {
             const r = await API.post('/api/routing/apply');
@@ -1171,6 +1239,8 @@ const RoutingUnifiedPage = (() => {
                 case 'newRoute': newRoute(); break;
                 case 'applyAll': applyAll(); break;
                 case 'refresh': refresh(); break;
+                case 'reapplyAll': reapplyAll(); break;
+                case 'previewSweep': previewSweep(); break;
                 case 'reapplyLowLevel': reapplyLowLevel(); break;
                 case 'runDnsmasqSetup': runDnsmasqSetup(); break;
                 case 'runDnsmasqRevert': runDnsmasqRevert(); break;
@@ -1235,6 +1305,7 @@ const RoutingUnifiedPage = (() => {
         addDevice, addDeviceManual, removeDevice,
         toggleDevPicker, refreshDevices, toggleDevicesAuto,
         migrateLegacy, deleteLegacy, reapplyLowLevel,
+        reapplyAll, previewSweep,
         runDnsmasqSetup, runDnsmasqRevert, toggleDnsIntercept,
     };
 })();

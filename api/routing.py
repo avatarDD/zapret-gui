@@ -10,6 +10,11 @@ REST API для selective routing.
   PUT    /api/routing/rules/<id>          — обновить правило
   DELETE /api/routing/rules/<id>          — удалить правило
   POST   /api/routing/apply               — переприменить все правила
+  GET    /api/routing/sweep               — что бы снял «сброс левых»
+                                              (dry-run, ничего не меняет)
+  POST   /api/routing/sweep               — снять артефакты в ядре, за
+                                              которыми не стоит ни одного
+                                              правила
 
   GET    /api/routing/dnsmasq/status      — есть ли dnsmasq, версия,
                                               путь к конфигу, поддержка
@@ -71,8 +76,10 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         try:
             from core.ndms import is_ndms_available
+            from core.ndms.ping_check import invalidate_status_cache
             from core.ndms.wg_discovery import invalidate_cache
             invalidate_cache()
+            invalidate_status_cache()
             avail = is_ndms_available(force=True)
             return {"ok": True, "available": avail}
         except Exception as e:
@@ -496,6 +503,27 @@ def register(app):
         from core.routing import get_routing_manager
         try:
             return get_routing_manager().reapply_all()
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/sweep")
+    def routing_sweep_preview():
+        """Dry-run: что снял бы «сброс левых». Ничего не меняет."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.routing import sweeper
+        try:
+            return sweeper.sweep(dry_run=True)
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/sweep", method="POST")
+    def routing_sweep():
+        response.content_type = "application/json; charset=utf-8"
+        from core.routing import sweeper
+        try:
+            return sweeper.sweep()
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}

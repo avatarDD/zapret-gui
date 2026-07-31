@@ -28,20 +28,58 @@ Keenetic-механизм `ping-check`.
 Все вызовы безопасны на не-Keenetic — возвращают {"available": False}.
 """
 
+import threading
+import time
+
 from core.log_buffer import log
 
 
-def get_native_wg_status(name: str) -> dict:
+# Короткий TTL-кэш состояния. Статус нативных туннелей спрашивают со
+# всех сторон сразу — дашборд, traffic-sampler, watchdog, — и каждый
+# запрос это RCI-обращение к NDMS, то есть сессия на
+# /var/run/ndm.core.socket и пара строк в системном логе роутера.
+# 5 секунд достаточно, чтобы схлопнуть дубли одного «тика», и заведомо
+# короче самого частого потребителя (traffic-sampler, 30с).
+_STATUS_TTL = 5
+_status_lock  = threading.Lock()
+_status_cache = {}      # name → (unix_ts, dict)
+
+
+def invalidate_status_cache(name: str = ""):
+    """Сбросить кэш состояния (после up/down конкретного или всех)."""
+    with _status_lock:
+        if name:
+            _status_cache.pop(name, None)
+        else:
+            _status_cache.clear()
+
+
+def get_native_wg_status(name: str, force: bool = False) -> dict:
     """
     Состояние нативного WG-туннеля по NDMS.
 
     Возвращает unified dict (см. модуль). Если RCI недоступен или
     интерфейс не найден — {"available": False, "name": name}.
+    Результат кэшируется на _STATUS_TTL секунд; `force=True` —
+    спросить NDMS заново.
     """
     base = {"available": False, "name": name, "source": "ndms"}
     if not name:
         return base
 
+    if not force:
+        with _status_lock:
+            hit = _status_cache.get(name)
+        if hit and (time.time() - hit[0]) < _STATUS_TTL:
+            return dict(hit[1])
+
+    status = _fetch_native_wg_status(name, base)
+    with _status_lock:
+        _status_cache[name] = (time.time(), status)
+    return dict(status)
+
+
+def _fetch_native_wg_status(name: str, base: dict) -> dict:
     try:
         from core.ndms import is_ndms_available, get_ndms_commands
         if not is_ndms_available():
