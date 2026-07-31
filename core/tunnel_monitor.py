@@ -294,15 +294,21 @@ class TunnelMonitor:
             return 0
 
     def _read_opera_stats(self) -> tuple:
-        """Эмулировать метрики opera-proxy через счётчик соединений."""
+        """
+        Эмулировать метрики opera-proxy через счётчик соединений.
+
+        Порт берём из настроек: раньше было захардкожено 18080, и при
+        любом другом bind монитор показывал нули на работающем прокси.
+        """
         try:
-            # Проверяем что порт слушает
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.5)
-            result = s.connect_ex(("127.0.0.1", 18080))
-            s.close()
-            if result == 0:
-                conns = self._count_connections(18080)
+            from core.config_manager import get_config_manager
+            from core.opera_proxy_manager import parse_bind
+            from core.opera_proxy_watchdog import probe_proxy
+            bind = get_config_manager().get("opera_proxy", "bind",
+                                            default="127.0.0.1:18080")
+            _host, port = parse_bind(bind)
+            if probe_proxy(bind, timeout=0.5):
+                conns = self._count_connections(port)
                 return max(0, conns * 1024), max(0, conns * 512)
         except Exception:
             pass

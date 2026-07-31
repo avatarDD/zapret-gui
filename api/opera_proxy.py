@@ -3,18 +3,28 @@
 API-модуль управления Opera Proxy.
 
 Эндпоинты:
-  GET  /api/opera-proxy/status   — статус (running, pid)
-  GET  /api/opera-proxy/detect   — обнаружение binary, страны
-  POST /api/opera-proxy/up       — запуск
-  POST /api/opera-proxy/down     — остановка
-  GET  /api/opera-proxy/config   — текущие настройки
-  PUT  /api/opera-proxy/config   — обновить настройки
+  GET  /api/opera-proxy/status    — статус (running, pid, listening)
+  GET  /api/opera-proxy/detect    — обнаружение binary (дёшево, из кэша)
+  GET  /api/opera-proxy/countries — список стран (сетевой запрос!)
+  POST /api/opera-proxy/up        — запуск
+  POST /api/opera-proxy/down      — остановка
+  GET  /api/opera-proxy/config    — текущие настройки
+  PUT  /api/opera-proxy/config    — обновить настройки
 """
 
 
-from bottle import request
+from bottle import request, response
 
 from core.log_buffer import log
+
+
+def _body() -> dict:
+    """Тело запроса. Кривой JSON не должен превращаться в HTTP 500."""
+    try:
+        data = request.json
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def register(app):
@@ -30,6 +40,21 @@ def register(app):
         from core.opera_proxy_manager import get_opera_proxy_manager
         return get_opera_proxy_manager().detect()
 
+    @app.route("/api/opera-proxy/countries", method="GET")
+    def opera_countries():
+        """
+        Список стран Opera VPN.
+
+        Отдельно от detect(), потому что `-list-countries` — сетевая
+        операция: opera-proxy регистрирует анонимный аккаунт и устройство
+        в API SurfEasy. Раньше она висела внутри detect(), который GUI
+        дёргал каждые 3 секунды опросом статуса.
+        """
+        from core.opera_proxy_manager import get_opera_proxy_manager
+        refresh = str(request.query.get("refresh") or "").lower() \
+            in ("1", "true", "yes")
+        return get_opera_proxy_manager().list_countries(refresh=refresh)
+
     @app.route("/api/opera-proxy/up", method="POST")
     def opera_up():
         from core.opera_proxy_manager import get_opera_proxy_manager
@@ -37,14 +62,19 @@ def register(app):
         mgr = get_opera_proxy_manager()
         cfg = get_config_manager()
 
-        data = request.json or {}
+        data = _body()
         # База — сохранённые настройки, поверх — то, что явно передали в
         # запросе. Один источник с автозапуском и watchdog'ом.
-        from core.opera_proxy_manager import start_kwargs_from_config
+        from core.opera_proxy_manager import (start_kwargs_from_config,
+                                              validate_settings)
         kwargs = start_kwargs_from_config(cfg)
-        for key in list(kwargs):
-            if key in data:
-                kwargs[key] = data[key]
+        try:
+            overrides = validate_settings(
+                {k: v for k, v in data.items() if k in kwargs})
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        kwargs.update(overrides)
         result = mgr.start(**kwargs)
         # enabled отражает «opera должна работать». Без его выставления
         # boot-автозапуск и watchdog (оба гейтятся enabled) были мертвы —
@@ -92,14 +122,22 @@ def register(app):
     @app.route("/api/opera-proxy/config", method="PUT")
     def opera_config_put():
         from core.config_manager import get_config_manager
+        from core.opera_proxy_manager import validate_settings
         cm = get_config_manager()
-        data = request.json or {}
+        data = _body()
 
         fields = ["country", "bind", "socks_mode", "proxy_bypass",
                   "fake_sni", "verbosity", "autostart"]
-        for f in fields:
-            if f in data:
-                cm.set("opera_proxy", f, data[f])
+        # Валидация до записи: негодный bind в settings.json оборачивался
+        # невнятным падением при старте и вечным рестарт-циклом watchdog'а.
+        try:
+            clean = validate_settings(
+                {f: data[f] for f in fields if f in data})
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        for f, value in clean.items():
+            cm.set("opera_proxy", f, value)
         cm.save()
         # Тумблер autostart влияет на watchdog — применяем сразу, без ребута.
         try:
@@ -118,10 +156,7 @@ def register(app):
     def opera_debug_set():
         from core.config_manager import get_config_manager
         from core.opera_proxy_manager import debug_enabled
-        try:
-            body = request.json or {}
-        except Exception:
-            body = {}
+        body = _body()
         cfg = get_config_manager()
         cfg.set("opera_proxy", "debug_log", bool(body.get("enabled")))
         cfg.save()

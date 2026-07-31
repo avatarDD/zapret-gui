@@ -49,6 +49,7 @@ Python/Bottle-бэкенд. Работает как на роутере с ~20 �
   - [Обход DPI: Управление, Стратегии, Подбор, BlockCheck](#обход-dpi-nfqws2)
   - [Маршрутизация (единый слой)](#маршрутизация-единый-слой)
   - [AmneziaWG](#amneziawg)
+  - [Opera Proxy](#opera-proxy)
   - [sing-box](#sing-box)
   - [mihomo](#mihomo)
   - [Списки, домены, IP, блобы, Lua, hosts](#списки-и-данные)
@@ -297,6 +298,53 @@ desync), чтобы блокировка по SNI/домену не срабат
 - **Routing** — selective routing в туннель по: CIDR, доменам (через
   dnsmasq+ipset/nftset), устройствам (по IP/MAC), **DSCP-меткам (QoS)**.
 
+### Opera Proxy
+
+Локальный **HTTP/SOCKS5-прокси через Opera VPN (SurfEasy)** — бесплатный
+запасной канал на случай, когда своего сервера и подписки нет. Аккаунт не
+нужен и настраивать нечего: клиент сам регистрирует анонимное устройство в
+API SurfEasy, от вас — только регион (**EU / AS / AM**) и кнопка
+«Запустить».
+
+- **Статус** — PID, фактический bind и отдельный признак «порт отвечает»:
+  живой процесс ещё не значит рабочий прокси (клиент может крутиться, не
+  сумев зарегистрироваться в API).
+- **Bind** — по умолчанию `127.0.0.1:18080`, то есть прокси виден только
+  самому роутеру. Чтобы отдать его в LAN — `0.0.0.0:18080` (порт станет
+  доступен всей локальной сети, ставьте осознанно). IPv6 — в скобках:
+  `[::1]:18080`.
+- **Режим** — HTTP-прокси (по умолчанию) или **SOCKS5**.
+- **Proxy bypass** — что не заворачивать в прокси: `*.local,192.168.0.0/16`.
+- **Fake SNI** — маскировка SNI при обращении к инфраструктуре SurfEasy.
+- **Verbosity** (10 Debug … 60 Silent), «режим отладки» и кнопка
+  **«Лог»** — хвост вывода клиента хранится в памяти (60 строк, в отладке
+  600) и включает причину неудачного старта, например занятый порт.
+- **«Автозапуск и watchdog»** — одна галка: и подъём после перезагрузки, и
+  перезапуск, если процесс упал либо перестал принимать соединения.
+- **«Обновить список стран»** — отдельная кнопка, а не автообновление:
+  каждый такой запрос — это новая регистрация устройства в API SurfEasy.
+
+Настройки применяются при следующем запуске: после «Сохранить» —
+«Остановить» → «Запустить».
+
+Opera Proxy — **локальный прокси, а не метод единого слоя
+маршрутизации**: прозрачно трафик он не заворачивает. Пропишите
+`127.0.0.1:18080` в браузере/приложении либо направьте трафик на этот порт
+через redsocks/tproxy.
+
+> Это чужая VPN-инфраструктура Opera с бесплатным анонимным доступом:
+> скорость и доступность не гарантированы, а для чувствительного трафика
+> лучше свой сервер (sing-box / AmneziaWG).
+
+**Бинарник.** Ставится кнопкой «Установить opera-proxy» прямо на странице:
+GUI качает готовую сборку `opera-proxy` из GitHub Releases репозитория
+[Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (тег
+закреплён — `v1.27.0`), проверяет **sha256** до `chmod` и кладёт в
+`/opt/usr/bin/opera-proxy`. Есть сборки для **aarch64, x86_64, mipsel и
+mips**; на других архитектурах установка откажет с явным сообщением. Выход
+новых версий отслеживает раздел «Обновления». Наружу сам клиент ходит в
+API SurfEasy (`api2.sec-tunnel.com`) и на прокси-узлы `*.sec-tunnel.com`.
+
 ### sing-box
 
 ![sing-box — конфиги, подписки, пул](docs/img/singbox-configs.png)
@@ -449,6 +497,7 @@ zapret-gui nfqws {start|stop|restart|status}
 zapret-gui strategy {list|apply <id>}
 zapret-gui singbox {list|up|down|restart <name>}
 zapret-gui mihomo  {list|up|down|restart <name>}
+zapret-gui opera   {status|start|stop}  # Opera Proxy: настройки берутся из GUI
 ```
 
 Из клона репозитория — напрямую: `python3 app.py status`.
@@ -509,6 +558,8 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 | **mihomo** (Clash.Meta) | [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) (Releases) | mihomo → установка |
 | **amneziawg-go / -tools** | сборка в наших Releases (тег `awg-bin-vX`) | AmneziaWG → Setup |
 | **Cloudflare WARP** | `api.cloudflareclient.com` | AmneziaWG → WARP (нативная генерация) |
+| **opera-proxy** | [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (Releases, закреплённый тег + sha256) | Opera Proxy → «Установить opera-proxy» |
+| **Opera VPN (SurfEasy)** | `api2.sec-tunnel.com` + узлы `*.sec-tunnel.com` | Opera Proxy — регистрация устройства, список стран, сам трафик |
 | **Курируемые списки доменов** | [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) | Списки → Готовые списки |
 | **Публичные серверы (пул)** | [Epodonios/v2ray-configs](https://github.com/Epodonios/v2ray-configs), [ebrasha/free-v2ray-public-list](https://github.com/ebrasha/free-v2ray-public-list), [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia), [kort0881/vpn-vless-configs-russia](https://github.com/kort0881/vpn-vless-configs-russia) | sing-box → Пул серверов (пресеты) |
 | **Проба тестера** | `cp.cloudflare.com` / `aws.amazon.com` / `www.gstatic.com` (generate_204) | sing-box → Тест серверов |
@@ -553,6 +604,9 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
   [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo),
   [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go)
   — движки туннелей.
+- [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (MIT) —
+  standalone-клиент Opera VPN (SurfEasy); GUI ставит его готовые сборки и
+  управляет ими на странице «Opera Proxy».
 - [Bottle](https://bottlepy.org/) — микро-фреймворк бэкенда.
 
 ---

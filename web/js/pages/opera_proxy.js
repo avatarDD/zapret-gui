@@ -11,6 +11,10 @@ const OperaProxyPage = (() => {
 
     let _visibilityHandler = null;
     let _inFlight = false;
+    // Форма настроек рисуется один раз. Раньше её перерисовывал каждый
+    // тик опроса (3 с) — набранный текст и фокус улетали прямо во время
+    // ввода, а «Сохранить» отправлял то, что успел вернуть сервер.
+    let _configRendered = false;
 
     async function render(container) {
         container.innerHTML = `
@@ -91,7 +95,7 @@ const OperaProxyPage = (() => {
         document.getElementById("opera-debug").addEventListener("change", _setDebug);
         _loadDebugFlag();
         document.getElementById("opera-btn-down").addEventListener("click", _stop);
-        document.getElementById("opera-btn-refresh").addEventListener("click", _refresh);
+        document.getElementById("opera-btn-refresh").addEventListener("click", _refreshAll);
 
         _visibilityHandler = () => {
             if (document.hidden) _stopPoll();
@@ -99,18 +103,27 @@ const OperaProxyPage = (() => {
         };
         document.addEventListener("visibilitychange", _visibilityHandler);
 
+        _configRendered = false;
         await _refresh();
         _startPoll();
     }
 
     function destroy() {
         _stopPoll();
+        _configRendered = false;
         if (_visibilityHandler) {
             document.removeEventListener("visibilitychange", _visibilityHandler);
             _visibilityHandler = null;
         }
     }
 
+    /** Кнопка «Обновить»: перечитать и перерисовать в том числе форму. */
+    async function _refreshAll() {
+        _configRendered = false;
+        await _refresh();
+    }
+
+    /** Полное обновление — по кнопке и при открытии страницы. */
     async function _refresh() {
         if (_inFlight || document.hidden) return;
         _inFlight = true;
@@ -121,19 +134,46 @@ const OperaProxyPage = (() => {
         }
     }
 
+    /**
+     * Тик опроса — только статус.
+     *
+     * detect() и config по таймеру не дёргаем: detect на бэкенде
+     * запускал `-list-countries`, а это регистрация устройства в API
+     * SurfEasy — каждые 3 секунды.
+     */
+    async function _tick() {
+        if (_inFlight || document.hidden) return;
+        _inFlight = true;
+        try {
+            await _loadStatus();
+        } finally {
+            _inFlight = false;
+        }
+    }
+
     async function _loadStatus() {
         try {
             const st = await API.get("/api/opera-proxy/status");
             const el = document.getElementById("opera-status");
             if (!el) return;
-            const cls = st.running ? "status-ok" : "status-off";
-            const text = st.running ? "Работает" : "Остановлен";
+            // «Процесс жив» ≠ «прокси работает»: opera-proxy крутится и
+            // не приняв конфигурацию от SurfEasy. Показываем оба факта.
+            let cls = "status-off", text = "Остановлен";
+            if (st.running) {
+                const listening = st.listening !== false;
+                cls = listening ? "status-ok" : "status-error";
+                text = listening ? "Работает" : "Запущен, но порт не отвечает";
+            }
             el.innerHTML = `
                 <div class="status-row">
                     <span class="status-dot ${cls}"></span>
                     <span>${text}</span>
                     ${st.pid ? `<span class="text-muted">PID ${st.pid}</span>` : ""}
+                    ${st.bind ? `<span class="text-muted">${esc(st.bind)}</span>` : ""}
                 </div>
+                ${st.running && st.listening === false ? `
+                <div class="form-hint">Процесс жив, но соединение на
+                    ${esc(st.bind || "")} не принимается — смотрите «Лог».</div>` : ""}
             `;
         } catch (e) {
             const el = document.getElementById("opera-status");
@@ -213,15 +253,9 @@ const OperaProxyPage = (() => {
                     </div>
                     <div class="detail-row">Бинарник: <code>${esc(d.binary)}</code></div>
                 `;
-                const countries = d.countries || [];
-                if (countries.length) {
-                    html += '<div class="detail-row">Страны: ';
-                    html += countries.map(c =>
-                        `<span class="badge">${esc(c.code)}</span> ${esc(c.name)}`
-                    ).join(', ');
-                    html += '</div>';
-                }
+                html += _countriesHtml(d.countries || []);
                 el.innerHTML = html;
+                _bindCountriesButton();
             } else {
                 el.innerHTML = `
                     <div class="status-row">
@@ -240,7 +274,58 @@ const OperaProxyPage = (() => {
         }
     }
 
+    /** Список стран: тянется отдельной кнопкой (это сетевой запрос). */
+    function _countriesHtml(countries) {
+        let html = '<div class="detail-row" id="opera-countries">Страны: ';
+        if (countries.length) {
+            html += countries.map(c =>
+                `<span class="badge">${esc(c.code)}</span> ${esc(c.name)}`
+            ).join(', ');
+        } else {
+            html += '<span class="text-muted">не запрашивались</span>';
+        }
+        html += `</div>
+            <button class="btn btn-sm" id="opera-btn-countries" style="margin-top:6px;"
+                    title="Запрос идёт в API SurfEasy и занимает несколько секунд">
+                Обновить список стран
+            </button>`;
+        return html;
+    }
+
+    function _bindCountriesButton() {
+        document.getElementById("opera-btn-countries")
+            ?.addEventListener("click", _loadCountries);
+    }
+
+    async function _loadCountries() {
+        const btn = document.getElementById("opera-btn-countries");
+        const box = document.getElementById("opera-countries");
+        if (btn) { btn.disabled = true; btn.textContent = "Запрос…"; }
+        try {
+            // Две регистрации в API SurfEasy — дефолтных 15с фронту мало.
+            const r = await API.get("/api/opera-proxy/countries?refresh=1",
+                                    { timeout: 45000 });
+            const countries = (r && r.countries) || [];
+            if (box) {
+                box.innerHTML = "Страны: " + (countries.length
+                    ? countries.map(c =>
+                        `<span class="badge">${esc(c.code)}</span> ${esc(c.name)}`
+                      ).join(', ')
+                    : `<span class="text-muted">${esc(r && r.error
+                        || "список пуст")}</span>`);
+            }
+            if (r && r.error) Toast.error(r.error);
+        } catch (e) {
+            Toast.error("Ошибка: " + e.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = "Обновить список стран"; }
+        }
+    }
+
     async function _loadConfig() {
+        // Форма — единственное место, где пользователь что-то печатает.
+        // Перерисовываем только если её ещё нет: иначе затираем ввод.
+        if (_configRendered && document.getElementById("opera-bind")) return;
         try {
             const cfg = await API.get("/api/opera-proxy/config");
             const el = document.getElementById("opera-config");
@@ -258,6 +343,8 @@ const OperaProxyPage = (() => {
                             <option value="EU" ${cfg.country === "EU" ? "selected" : ""}>EU (Европа)</option>
                             <option value="AS" ${cfg.country === "AS" ? "selected" : ""}>AS (Азия)</option>
                             <option value="AM" ${cfg.country === "AM" ? "selected" : ""}>AM (Америка)</option>
+                            ${["EU", "AS", "AM"].includes(cfg.country) || !cfg.country ? ""
+                              : `<option value="${esc(cfg.country)}" selected>${esc(cfg.country)}</option>`}
                         </select>
                     </div>
                     <div class="form-group">
@@ -296,13 +383,20 @@ const OperaProxyPage = (() => {
                     <div class="form-group">
                         <label>
                             <input type="checkbox" id="opera-autostart" ${cfg.autostart ? "checked" : ""}>
-                            Автозапуск
+                            Автозапуск и watchdog
                         </label>
                     </div>
                 </div>
                 <button class="btn btn-primary" id="opera-btn-save">Сохранить</button>
+                <div class="form-hint" style="margin-top:8px;">
+                    Настройки применяются при следующем запуске: после
+                    «Сохранить» нажмите «Остановить» → «Запустить».
+                    Галка включает и подъём после перезагрузки, и
+                    перезапуск прокси при падении.
+                </div>
             `;
             document.getElementById("opera-btn-save").addEventListener("click", _saveConfig);
+            _configRendered = true;
         } catch (e) {
             const el = document.getElementById("opera-config");
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
@@ -316,14 +410,27 @@ const OperaProxyPage = (() => {
         return "";
     }
 
-    /** MR-111: Валидация bind address (host:port) */
+    /**
+     * MR-111: Валидация bind address (host:port).
+     * IPv6 — в скобках (`[::1]:18080`), как и требует бэкенд: раньше
+     * такой адрес форма отвергала, хотя opera-proxy его принимает.
+     */
     function _validateBind(val) {
-        if (!val) return "Bind address обязателен";
-        const parts = val.split(":");
-        if (parts.length !== 2) return "Формат: host:port";
-        const portErr = _validatePort(parts[1]);
-        if (portErr) return portErr;
-        return "";
+        const s = (val || "").trim();
+        if (!s) return "Bind address обязателен";
+        let port;
+        if (s.startsWith("[")) {
+            const close = s.indexOf("]");
+            if (close < 0 || s[close + 1] !== ":") return "Формат: [IPv6]:port";
+            if (close === 1) return "Не указан хост";
+            port = s.slice(close + 2);
+        } else {
+            const parts = s.split(":");
+            if (parts.length !== 2) return "Формат: host:port (IPv6 — в скобках)";
+            if (!parts[0]) return "Не указан хост";
+            port = parts[1];
+        }
+        return _validatePort(port);
     }
 
     /** MR-111: Валидация домена / SNI */
@@ -362,6 +469,8 @@ const OperaProxyPage = (() => {
                 verbosity: parseInt(document.getElementById("opera-verbosity").value) || 20,
                 autostart: document.getElementById("opera-autostart").checked,
             });
+            const bindEl = document.getElementById("opera-bind-display");
+            if (bindEl) bindEl.textContent = bind;
             Toast.success(_t("settings_saved"));
         } catch (e) {
             Toast.error("Ошибка: " + e.message);
@@ -413,7 +522,7 @@ const OperaProxyPage = (() => {
 
     function _startPoll() {
         if (!_pollTimer) {
-            _pollTimer = setInterval(_refresh, POLL_MS);
+            _pollTimer = setInterval(_tick, POLL_MS);
         }
     }
 

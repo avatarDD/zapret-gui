@@ -26,13 +26,27 @@ _DEFAULT_COOLDOWN_SEC = 120
 _DEFAULT_MAX_RESTARTS = 6
 
 
-def _probe_proxy(bind_addr: str, timeout: float = 3.0) -> bool:
-    """TCP-проба: проверяем что прокси слушает на bind-адресе."""
+def probe_proxy(bind_addr: str, timeout: float = 3.0) -> bool:
+    """
+    TCP-проба: проверяем что прокси слушает на bind-адресе.
+
+    Раньше проба была захардкожена под IPv4 (`rsplit(":", 1)` +
+    AF_INET), поэтому при bind вида `[::1]:18080` она ВСЕГДА возвращала
+    False и watchdog бесконечно перезапускал полностью исправный прокси.
+    Wildcard-адреса (0.0.0.0 / ::) стучимся в loopback: сам wildcard —
+    не адрес назначения.
+    """
+    from core.opera_proxy_manager import parse_bind
     try:
-        host, port = bind_addr.rsplit(":", 1)
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(timeout)
-        s.connect((host, int(port)))
+        host, port = parse_bind(bind_addr)
+    except ValueError:
+        return False
+    if host in ("0.0.0.0", "*"):
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
         s.close()
         return True
     except Exception:
@@ -101,7 +115,18 @@ class OperaProxyWatchdog:
             stop_evt.wait(_DEFAULT_CHECK_INTERVAL)
 
     def _tick(self):
-        from core.opera_proxy_manager import get_opera_proxy_manager
+        from core.opera_proxy_manager import get_opera_proxy_manager, parse_bind
+        from core.config_manager import get_config_manager
+
+        cfg = get_config_manager()
+        # Конфиг могли поменять из другой вкладки/через API — сверяемся на
+        # каждом тике, иначе watchdog поднимал бы прокси, который
+        # пользователь только что выключил.
+        if not cfg.get("opera_proxy", "enabled", default=False) or \
+           not cfg.get("opera_proxy", "autostart", default=False):
+            self._stop()
+            return
+
         mgr = get_opera_proxy_manager()
 
         if not mgr._is_running():
@@ -112,11 +137,18 @@ class OperaProxyWatchdog:
             return
 
         # Процесс жив — проверяем что прокси слушает
-        from core.config_manager import get_config_manager
-        cfg = get_config_manager()
         bind = cfg.get("opera_proxy", "bind", default="127.0.0.1:18080")
+        try:
+            parse_bind(bind)
+        except ValueError as e:
+            # Негодный bind пробой не проверить: раньше это давало вечный
+            # цикл «проба не прошла → рестарт → прокси не стартует».
+            log.warning("opera-proxy-watchdog: %s — проба пропущена"
+                        % e, source="opera_proxy")
+            self._fail_count = 0
+            return
 
-        if _probe_proxy(bind):
+        if probe_proxy(bind):
             self._fail_count = 0  # всё ок
         else:
             self._fail_count += 1

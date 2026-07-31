@@ -82,8 +82,10 @@
       `api/warp_in_warp.py`, `web/js/pages/warp_in_warp.js`
 
 ### Кластер D — Opera proxy
-- [ ] `core/opera_proxy_manager.py`, `core/opera_proxy_watchdog.py`,
+- [x] `core/opera_proxy_manager.py`, `core/opera_proxy_watchdog.py`,
       `api/opera_proxy.py`, `web/js/pages/opera_proxy.js`
+      (дефекты 34–41; регресс-тесты `tests/test_opera_proxy.py` — 46 шт.,
+      включая сквозной прогон трафика через CONNECT-прокси)
 
 ### Кластер E — Tunnel monitor + optimizer
 - [ ] `core/tunnel_monitor.py`, `core/tunnel_optimizer.py` (794),
@@ -146,6 +148,14 @@
 | 31 | MED | core/testers/dpi_classifier.py | `TIMEOUT`/`TCP_TIMEOUT` добавлены в IP_BLOCK вопреки комментарию → обходимый nfqws silent-drop классифицировался как «нужен туннель» | ✅ fixed (revert — timeout не IP_BLOCK) |
 | 32 | LOW | core/awg_manager.py | окно ожидания сокета 3с → ложные фейлы старта на медленных MIPS | ✅ fixed (8с, ранний выход по сокету) |
 | 33 | LOW | web/js/pages/settings.js | рекламировался нерабочий drag-n-drop приоритета туннелей | ✅ fixed (убран афорданс; работают ↑/↓) |
+| 34 | HIGH | core/opera_proxy_manager.py + web/js/pages/opera_proxy.js | `detect()` запускал `-list-countries`, а это анонимная регистрация + регистрация устройства в API SurfEasy; страница дёргала detect каждые 3с поллингом → регистрация устройства каждые 3 секунды (+2 форка на тик) | ✅ fixed (страны — по кнопке и из кэша, версия кэшируется по mtime; поллинг тянет только статус) |
+| 35 | HIGH | core/opera_proxy_watchdog.py | проба `rsplit(":",1)` + `AF_INET`: при bind `[::1]:18080` всегда False → watchdog по кругу перезапускал исправный прокси; при bind без порта — то же самое | ✅ fixed (общий `parse_bind`, IPv6/wildcard, негодный bind = пропуск пробы) |
+| 36 | MED | api/opera_proxy.py | PUT /config без валидации: `bind: "не-адрес"`, `verbosity: "abc"` уезжали в settings.json, а всплывали usage-дампом Go-бинарника при старте | ✅ fixed (validate_settings + HTTP 400) |
+| 37 | MED | web/js/pages/opera_proxy.js | форма настроек перерисовывалась каждые 3с → затирала ввод (тот же класс, что #9 в warp_in_warp) | ✅ fixed (рендер один раз, как в usque.js) |
+| 38 | MED | core/tunnel_monitor.py | `_read_opera_stats` с хардкодом порта 18080 → при своём bind монитор показывал нули на работающем прокси | ✅ fixed (порт из настроек) |
+| 39 | MED | core/cli.py | `zapret-gui opera start` стартовал с дефолтами (EU, 127.0.0.1:18080), игнорируя сохранённые настройки, и не выставлял `enabled` | ✅ fixed (start_kwargs_from_config + enabled, как в API) |
+| 40 | LOW | core/opera_proxy_manager.py | вывод упавшего на старте процесса нигде не оседал — кнопка «Лог» показывала хвост прошлого удачного запуска | ✅ fixed (буфер заводится до Popen, причина падения пишется в него) |
+| 41 | LOW | core/opera_proxy_manager.py | статус «Работает» при живом процессе, который не слушает порт (не смог зарегистрироваться в API) | ✅ fixed (`listening` в status, отдельная подпись в GUI и CLI) |
 
 ### Осознанно НЕ менялось (намеренное поведение, не баг)
 - `core/ndms/commands.py` — исключение `HTTP 404`/`unknown` из not-found: намеренно (Keenetic отдаёт «no such» с HTTP 200; закреплено тестом). Уточнён комментарий.

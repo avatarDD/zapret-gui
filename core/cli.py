@@ -279,21 +279,46 @@ def _cmd_tgproxy(args) -> int:
 # ─────────────────────── opera proxy ─────────────────────────────────
 
 def _cmd_opera(args) -> int:
-    from core.opera_proxy_manager import get_opera_proxy_manager
+    from core.opera_proxy_manager import (get_opera_proxy_manager,
+                                          start_kwargs_from_config)
     mgr = get_opera_proxy_manager()
     action = args.action
     if action == "status":
         st = mgr.status()
         _p("opera: %s" % ("запущен" if st.get("running") else "остановлен"))
+        if st.get("bind"):
+            _p("bind: %s%s" % (st["bind"],
+                               "" if st.get("listening", True)
+                               else " (порт не отвечает)"))
         if st.get("pid"):
             _p("pid: %s" % st["pid"])
         return 0
     if action == "start":
-        return _ok("opera start", mgr.start())
+        # Настройки берём из конфига — как GUI, автозапуск и watchdog.
+        # Раньше CLI стартовал с дефолтами (EU, 127.0.0.1:18080) и молча
+        # игнорировал сохранённые страну, bind, SOCKS-режим и fake-SNI.
+        result = mgr.start(**start_kwargs_from_config())
+        if result.get("ok"):
+            _set_opera_enabled(True)
+        return _ok("opera start", result)
     if action == "stop":
+        _set_opera_enabled(False)
         return _ok("opera stop", mgr.stop())
     _p("Неизвестное действие: %s" % action)
     return 2
+
+
+def _set_opera_enabled(enabled: bool) -> None:
+    """Флаг «opera должна работать» — его читают boot-автозапуск и watchdog."""
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        cfg.set("opera_proxy", "enabled", enabled)
+        cfg.save()
+        from core.opera_proxy_watchdog import get_opera_proxy_watchdog
+        get_opera_proxy_watchdog().reconfigure()
+    except Exception:
+        pass
 
 
 # ─────────────────────── monitor (live metrics) ──────────────────────

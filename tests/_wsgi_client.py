@@ -58,7 +58,10 @@ class WSGIClient:
     def _call(self, method: str, path: str, *,
               body: bytes = None,
               content_type: str = ""):
-        env = make_environ(method, path,
+        # Query-string отделяем сами: в PATH_INFO он превращался в часть
+        # пути, и запрос вида "/api/x?y=1" молча отдавал 404.
+        path, _, query = path.partition("?")
+        env = make_environ(method, path, query=query,
                            body=body, content_type=content_type)
         result = {"status": "", "headers": []}
 
