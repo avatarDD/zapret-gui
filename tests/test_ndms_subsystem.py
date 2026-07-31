@@ -147,6 +147,15 @@ class TestPingCheckHelpers(unittest.TestCase):
 
 class TestNativeWgStatus(unittest.TestCase):
 
+    def setUp(self):
+        # get_native_wg_status кэширует ответ на _STATUS_TTL секунд
+        # (иначе каждый опрос статуса — сессия к NDMS и две строки в
+        # системном логе роутера). Тесты используют одно имя интерфейса,
+        # поэтому кэш между ними надо сбрасывать.
+        ping_check.invalidate_status_cache()
+
+    tearDown = setUp
+
     def test_unavailable_when_no_ndms(self):
         with mock.patch("core.ndms.is_ndms_available", return_value=False):
             r = ping_check.get_native_wg_status("Wireguard0")
@@ -176,6 +185,37 @@ class TestNativeWgStatus(unittest.TestCase):
         self.assertEqual(r["last_handshake"], 1700000000)
         self.assertEqual(r["rx_bytes"], 1024)
         self.assertEqual(r["tx_bytes"], 2048)
+
+    def test_repeat_call_served_from_cache(self):
+        """Второй опрос подряд не идёт в NDMS — иначе лог роутера
+        забивается сессиями ndm.core.socket."""
+        with mock.patch("core.ndms.is_ndms_available", return_value=True), \
+             mock.patch("core.ndms.get_ndms_commands") as m_cmd:
+            m_cmd.return_value.show_interface.return_value = {"state": "up"}
+            first  = ping_check.get_native_wg_status("Wireguard0")
+            second = ping_check.get_native_wg_status("Wireguard0")
+            self.assertEqual(
+                m_cmd.return_value.show_interface.call_count, 1)
+        self.assertEqual(first, second)
+
+    def test_force_bypasses_cache(self):
+        with mock.patch("core.ndms.is_ndms_available", return_value=True), \
+             mock.patch("core.ndms.get_ndms_commands") as m_cmd:
+            m_cmd.return_value.show_interface.return_value = {"state": "up"}
+            ping_check.get_native_wg_status("Wireguard0")
+            ping_check.get_native_wg_status("Wireguard0", force=True)
+            self.assertEqual(
+                m_cmd.return_value.show_interface.call_count, 2)
+
+    def test_cached_dict_is_not_shared(self):
+        """Вызывающий не должен уметь испортить кэш мутацией ответа."""
+        with mock.patch("core.ndms.is_ndms_available", return_value=True), \
+             mock.patch("core.ndms.get_ndms_commands") as m_cmd:
+            m_cmd.return_value.show_interface.return_value = {"state": "up"}
+            first = ping_check.get_native_wg_status("Wireguard0")
+            first["active"] = "испорчено"
+            second = ping_check.get_native_wg_status("Wireguard0")
+        self.assertTrue(second["active"])
 
 
 class TestShouldDelegateMonitoring(unittest.TestCase):

@@ -76,8 +76,10 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         try:
             from core.ndms import is_ndms_available
+            from core.ndms.ping_check import invalidate_status_cache
             from core.ndms.wg_discovery import invalidate_cache
             invalidate_cache()
+            invalidate_status_cache()
             avail = is_ndms_available(force=True)
             return {"ok": True, "available": avail}
         except Exception as e:

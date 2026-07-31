@@ -75,6 +75,18 @@ class AwgDetector:
     def __init__(self):
         self._lock = threading.Lock()
         self._cache = None
+        # Платформа и версия прошивки в пределах процесса не меняются, а
+        # их детект на Keenetic стоит запуска `ndmc` (см. _is_keenetic /
+        # detect_keenos_version). Без кэша каждый is_ndms_available()
+        # плодил сессию на /var/run/ndm.core.socket, и системный лог
+        # роутера заполнялся парами «Core::Server: started Session … /
+        # Core::Session: client disconnected» каждые несколько секунд.
+        # Лок отдельный: _lock уже удерживается get_environment_report(),
+        # который сам зовёт detect_platform() из _build_report().
+        self._plat_lock    = threading.Lock()
+        self._platform     = None
+        self._keenetic     = None
+        self._keenos_ver   = None
 
     # ── публичный API ─────────────────────────────────────────────
 
@@ -87,22 +99,42 @@ class AwgDetector:
             if self._cache is not None and not force:
                 return self._cache
             try:
+                if force:
+                    # Пере-детект окружения должен переспросить и
+                    # платформу — иначе «Обновить» не увидит, что
+                    # пользователь только что доставил ndmc/прошивку.
+                    self.detect_platform(force=True)
                 self._cache = self._build_report()
             except Exception as e:
                 log.error(f"Ошибка при сборе отчёта: {e}", source="awg_detector")
                 self._cache = {"ok": False, "error": str(e)}
             return self._cache
 
-    def detect_platform(self) -> AwgPlatform:
-        """Вернуть экземпляр AwgPlatform для текущей системы."""
-        if self._is_keenetic():
-            ver = self.detect_keenos_version()
+    def detect_platform(self, force: bool = False) -> AwgPlatform:
+        """
+        Вернуть экземпляр AwgPlatform для текущей системы.
+
+        Результат кэшируется на время жизни процесса: платформа не
+        меняется, а её детект на Keenetic стоит запуска `ndmc` —
+        см. комментарий в __init__. `force=True` — перепроверить.
+        """
+        with self._plat_lock:
+            if self._platform is not None and not force:
+                return self._platform
+        platform = self._detect_platform_uncached(force=force)
+        with self._plat_lock:
+            self._platform = platform
+        return platform
+
+    def _detect_platform_uncached(self, force: bool = False) -> AwgPlatform:
+        if self._is_keenetic(force=force):
+            ver = self.detect_keenos_version(force=force)
             return KeeneticPlatform(keenos_version=ver)
         if self._is_openwrt():
             return OpenWrtPlatform()
         return GenericLinuxPlatform()
 
-    def detect_keenos_version(self):
+    def detect_keenos_version(self, force: bool = False):
         """
         Пытается определить версию KeenOS.
         Возвращает строку вида '5.0.3' или '' если не Keenetic.
@@ -115,7 +147,20 @@ class AwgDetector:
              поле `"title"` или `"version"`.
           3) /proc/version — строка с "Keenetic X.Y.Z".
           4) /etc/openwrt_release — у Keenetic с OpenWrt-основой.
+
+        Результат кэшируется: источники 1-2 запускают `ndmc`/`ndmq`, а
+        каждый их запуск — сессия на /var/run/ndm.core.socket и пара
+        строк в системном логе роутера.
         """
+        with self._plat_lock:
+            if self._keenos_ver is not None and not force:
+                return self._keenos_ver
+        ver = self._detect_keenos_version_uncached()
+        with self._plat_lock:
+            self._keenos_ver = ver
+        return ver
+
+    def _detect_keenos_version_uncached(self):
         # 1) ndmc -c "show version" — текстовый YAML-формат:
         #      title: 5.0.3
         #      ndw4:
@@ -388,7 +433,22 @@ class AwgDetector:
             "blockers": [i["id"] for i in blockers],
         }
 
-    def _is_keenetic(self):
+    def _is_keenetic(self, force: bool = False):
+        """
+        Keenetic ли это. Кэшируется — проба `ndmc --help` стоит сессии
+        на /var/run/ndm.core.socket (и двух строк в логе роутера), а на
+        Keenetic'ах, где /proc/version не содержит «keenetic», именно
+        она и срабатывает.
+        """
+        with self._plat_lock:
+            if self._keenetic is not None and not force:
+                return self._keenetic
+        result = self._is_keenetic_uncached()
+        with self._plat_lock:
+            self._keenetic = result
+        return result
+
+    def _is_keenetic_uncached(self):
         pv = _read_file("/proc/version").lower()
         if "keenetic" in pv:
             return True

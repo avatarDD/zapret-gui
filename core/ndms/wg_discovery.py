@@ -52,6 +52,15 @@ def list_native_wg_interfaces(force: bool = False) -> list:
     """
     global _cache_data, _cache_at
 
+    # Свежий кэш отдаём ДО probe доступности: is_ndms_available() —
+    # не бесплатный вызов (детект платформы + RCI), а зовут нас с
+    # каждым опросом статуса интерфейсов. Проверять «мы вообще на
+    # Keenetic?» ради данных, которые уже лежат рядом, незачем.
+    with _cache_lock:
+        now = time.time()
+        if not force and _cache_data is not None and (now - _cache_at) < _CACHE_TTL:
+            return list(_cache_data)
+
     # Быстрый отказ для не-Keenetic.
     try:
         from core.ndms import is_ndms_available
