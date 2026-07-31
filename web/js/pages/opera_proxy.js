@@ -254,8 +254,19 @@ const OperaProxyPage = (() => {
                     <div class="detail-row">Бинарник: <code>${esc(d.binary)}</code></div>
                 `;
                 html += _countriesHtml(d.countries || []);
+                // Кнопка обновления нужна именно установленным: ставится
+                // последний релиз апстрима, а раньше с этой страницы можно
+                // было только установить «с нуля» — «Обновления» показывали
+                // новую версию, а поставить её было нечем.
+                html += `
+                    <button class="btn btn-sm" id="opera-btn-update" style="margin-top:6px;"
+                            title="Скачать последний релиз Alexey71/opera-proxy">
+                        Обновить до последней версии
+                    </button>`;
                 el.innerHTML = html;
                 _bindCountriesButton();
+                document.getElementById("opera-btn-update")
+                    ?.addEventListener("click", install);
             } else {
                 el.innerHTML = `
                     <div class="status-row">
@@ -506,11 +517,34 @@ const OperaProxyPage = (() => {
     }
 
     async function install() {
-        Toast.info("Установка opera-proxy...");
+        Toast.info("Установка opera-proxy (последний релиз)...");
         try {
-            const res = await API.post("/api/opera-proxy/install");
+            // Ставится последний релиз апстрима, поэтому установка может
+            // занять больше дефолтных 15с (обращение к GitHub + скачивание
+            // ~8 МБ на медленном канале роутера).
+            const res = await API.post("/api/opera-proxy/install", null,
+                                       { timeout: 180000 });
             if (res.ok) {
-                Toast.success("opera-proxy установлен: " + (res.version || ""));
+                Toast.success(res.noop
+                    ? "Уже актуальная версия: " + (res.version || "")
+                    : "opera-proxy установлен: " + (res.version || ""));
+                // Версия новее известной нам: апстрим не публикует файл
+                // контрольных сумм, значит хэш сверить было не с чем.
+                if (res.sha256_verified === false) {
+                    Toast.info("Версия " + (res.tag || "") + " новее известной — "
+                             + "sha256 не сверялся (скачано с GitHub по HTTPS)");
+                }
+                // Файл заменён, но работающий процесс остался на старой
+                // версии — иначе непонятно, почему статус её и показывает.
+                if (!res.noop) {
+                    try {
+                        const st = await API.get("/api/opera-proxy/status");
+                        if (st && st.running) {
+                            Toast.info("Перезапустите прокси, чтобы применить "
+                                     + "новую версию");
+                        }
+                    } catch (_) { /* необязательно */ }
+                }
                 await _refresh();
             } else {
                 Toast.error(res.error || "Ошибка установки");

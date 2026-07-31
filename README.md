@@ -336,14 +336,24 @@ Opera Proxy — **локальный прокси, а не метод едино
 > скорость и доступность не гарантированы, а для чувствительного трафика
 > лучше свой сервер (sing-box / AmneziaWG).
 
-**Бинарник.** Ставится кнопкой «Установить opera-proxy» прямо на странице:
-GUI качает готовую сборку `opera-proxy` из GitHub Releases репозитория
-[Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (тег
-закреплён — `v1.27.0`), проверяет **sha256** до `chmod` и кладёт в
-`/opt/usr/bin/opera-proxy`. Есть сборки для **aarch64, x86_64, mipsel и
-mips**; на других архитектурах установка откажет с явным сообщением. Выход
-новых версий отслеживает раздел «Обновления». Наружу сам клиент ходит в
-API SurfEasy (`api2.sec-tunnel.com`) и на прокси-узлы `*.sec-tunnel.com`.
+**Бинарник.** Ставится кнопками «Установить opera-proxy» / «Обновить до
+последней версии» прямо на странице: GUI берёт **последний релиз**
+[Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy)
+(`/releases/latest`, апстрим выпускает версии раз в 1–2 недели), качает
+готовую сборку и кладёт её в `/opt/usr/bin/opera-proxy`. Есть сборки для
+**aarch64, x86_64, mipsel и mips**; на других архитектурах установка
+откажет с явным сообщением. Если версия уже стоит — скачивания не будет
+(«уже актуальная версия»). Выход новых версий отслеживает раздел
+«Обновления». Наружу сам клиент ходит в API SurfEasy
+(`api2.sec-tunnel.com`) и на прокси-узлы `*.sec-tunnel.com`.
+
+> **Про проверку целостности.** Для известной нам версии (`v1.28.0`) в
+> манифест зашит sha256 каждой сборки — не совпал, установка прерывается
+> (fail-closed, как у остальных бинарников). Для более новой версии
+> фиксированного хэша быть не может, а файл контрольных сумм апстрим не
+> публикует, поэтому целостность держится на HTTPS к GitHub — GUI прямо
+> сообщает об этом после установки и пишет в лог. Нужна только строгая
+> проверка — ставьте `v1.28.0` вручную и не жмите «Обновить».
 
 ### sing-box
 
@@ -558,7 +568,7 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 | **mihomo** (Clash.Meta) | [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) (Releases) | mihomo → установка |
 | **amneziawg-go / -tools** | сборка в наших Releases (тег `awg-bin-vX`) | AmneziaWG → Setup |
 | **Cloudflare WARP** | `api.cloudflareclient.com` | AmneziaWG → WARP (нативная генерация) |
-| **opera-proxy** | [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (Releases, закреплённый тег + sha256) | Opera Proxy → «Установить opera-proxy» |
+| **opera-proxy** | [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Opera Proxy → «Установить» / «Обновить до последней версии» |
 | **Opera VPN (SurfEasy)** | `api2.sec-tunnel.com` + узлы `*.sec-tunnel.com` | Opera Proxy — регистрация устройства, список стран, сам трафик |
 | **Курируемые списки доменов** | [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) | Списки → Готовые списки |
 | **Публичные серверы (пул)** | [Epodonios/v2ray-configs](https://github.com/Epodonios/v2ray-configs), [ebrasha/free-v2ray-public-list](https://github.com/ebrasha/free-v2ray-public-list), [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia), [kort0881/vpn-vless-configs-russia](https://github.com/kort0881/vpn-vless-configs-russia) | sing-box → Пул серверов (пресеты) |

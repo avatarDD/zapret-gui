@@ -70,7 +70,7 @@ STUB_SRC = textwrap.dedent(
         sys.exit(2)
 
     if args.version:
-        print("v1.27.0")
+        print("v1.28.0")
         sys.exit(0)
 
     if args.list_countries:
@@ -324,7 +324,7 @@ class TestDetect(_OperaBase):
         """
         d = self.mgr.detect()
         self.assertTrue(d["installed"])
-        self.assertEqual(d["version"], "v1.27.0")
+        self.assertEqual(d["version"], "v1.28.0")
         self.assertEqual(d["countries"], [])
         self.assertEqual([c for c in self.calls() if "list-countries" in c], [])
 
