@@ -403,9 +403,17 @@ BINARIES = {
             "x86_64": "6a8d10c1e42001a4e8e9570d114e6ac2b30b954c553c8970a4573d3fe21e3910",
         },
     },
+    # opera-proxy обновляется часто (в апстриме релиз раз в 1–2 недели), а
+    # закреплённый тег означал бы, что «Обновления» показывают новую версию,
+    # а кнопка «Установить» молча ставит старую. Поэтому здесь release_tag
+    # пуст — ставим ПОСЛЕДНИЙ релиз; sha256_map относится к known-good
+    # версии pinned_tag: совпал тег — проверка фиксированного хэша
+    # (fail-closed, как у остальных), тег новее — см. allow_unpinned.
     "opera": {
         "repo": "Alexey71/opera-proxy",
-        "release_tag": "v1.27.0",
+        "release_tag": "",
+        "pinned_tag": "v1.28.0",
+        "allow_unpinned": True,
         "dest": "/opt/usr/bin/opera-proxy",
         "arch_map": {
             "aarch64": "opera-proxy.linux-arm64",
@@ -413,14 +421,22 @@ BINARIES = {
             "mipsel": "opera-proxy.linux-mipsle",
             "mips": "opera-proxy.linux-mips",
         },
+        # sha256 сборок v1.28.0 (посчитаны с релизных URL; процедура
+        # сверена — хэши v1.27.0, посчитанные так же, совпали с прежним
+        # манифестом).
         "sha256_map": {
-            "aarch64": "97e47545297ddceabb262833ed0424d5ec41176e3b63ed8180bdb8d629a626f2",
-            "x86_64": "06e0bc4597b61f75ba26632df64c876b9c5879c7fde17cf7ec0f8aa12c646fa0",
-            "mipsel": "ba1a04b463fabdb67debc033de9e60d8c9aa2bd2608e0b6068947db9a121fef0",
-            "mips": "49dc72173627a009384ace966c882c15b86d8254621f70b56f7771a1561be60a",
+            "aarch64": "9f34d6bcd0c12ccc9a1e13cf5fa630098d6c52cf8b68d9e7e1c17a58f04a9e94",
+            "x86_64": "19cdb8f80dfae56cb0be2c5a2e228f48a7ab2a6a0d382bdef29a7afe7e918227",
+            "mipsel": "179826987cd1861836b21bf49dc1674e9efb94c142fb4a2bcc2599f909ec1f41",
+            "mips": "3c0a1dab4fefd95b3c232e3df81bbb9bbb7a191e6a3e5a6da7adb567df52edcf",
         },
     },
 }
+
+
+def _same_tag(a: str, b: str) -> bool:
+    """Сравнение тегов без учёта ведущего v/V (`v1.28.0` == `1.28.0`)."""
+    return (a or "").strip().lstrip("vV") == (b or "").strip().lstrip("vV")
 
 # TODO: add sha256 from verified release assets for WARP binaries
 # (warp, wgcf, warp-go, masque-client, awg)
@@ -711,21 +727,41 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
             return v_res
 
         # MR-06: обязательная проверка sha256 из встроенного манифеста.
+        #
+        # Манифестный хэш относится к конкретной версии, поэтому он
+        # применим, только если поставили именно её: pinned_tag (или
+        # release_tag, если тег закреплён). Для бинарников, которые
+        # ставятся «последним релизом» (allow_unpinned), хэша более новой
+        # версии в манифесте физически быть не может — там опираемся на
+        # файл контрольных сумм релиза, если апстрим его публикует.
         cfg_sha256 = _expected_sha256(cfg, arch, pkg_mgr)
-        if not cfg_sha256:
+        pinned_tag = cfg.get("pinned_tag") or cfg.get("release_tag") or ""
+        is_pinned_version = not pinned_tag or _same_tag(tag, pinned_tag)
+        sha256_pinned = bool(cfg_sha256) and is_pinned_version
+
+        if sha256_pinned:
+            h = hashlib.sha256()
+            with open(tmp_path, "rb") as f:
+                while True:
+                    chunk = f.read(64 * 1024)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+            if h.hexdigest().lower() != cfg_sha256.lower():
+                raise InstallError("SHA256 mismatch for %s" % name)
+        elif not cfg.get("allow_unpinned"):
             return {
                 "ok": False,
                 "error": "SHA256 для %s (%s) не задан в манифесте" % (name, arch),
             }
-        h = hashlib.sha256()
-        with open(tmp_path, "rb") as f:
-            while True:
-                chunk = f.read(64 * 1024)
-                if not chunk:
-                    break
-                h.update(chunk)
-        if h.hexdigest().lower() != cfg_sha256.lower():
-            raise InstallError("SHA256 mismatch for %s" % name)
+        elif v_res.get("skipped"):
+            # Ставим версию новее известной, а апстрим не публикует
+            # контрольные суммы: целостность держится только на HTTPS к
+            # GitHub. Не молчим об этом — пишем в лог и отдаём в ответе.
+            log.warning(
+                "ext_installer: %s %s новее известной %s, файла контрольных "
+                "сумм в релизе нет — sha256 не сверялся"
+                % (name, tag, pinned_tag), source="ext_installer")
 
         if install_kind == "package":
             if progress_cb:
@@ -801,8 +837,14 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
         log.info("ext_installer: %s установлен (%s, %s)"
                  % (name, tag, version), source="ext_installer")
 
+        # sha256_verified: сверяли ли хэш вообще — по манифесту или по
+        # файлу контрольных сумм релиза. GUI показывает это пользователю,
+        # чтобы «проверено» не подразумевалось по умолчанию.
         return {"ok": True, "binary": cfg["dest"], "version": version,
-                "tag": tag}
+                "tag": tag,
+                "sha256_verified": bool(sha256_pinned or
+                                        not v_res.get("skipped")),
+                "sha256_pinned": bool(sha256_pinned)}
 
     finally:
         # Очистка
