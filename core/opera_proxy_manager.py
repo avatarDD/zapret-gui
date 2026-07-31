@@ -29,6 +29,60 @@ from core.log_buffer import log
 _MAX_LOG_LINES = 60
 _MAX_DEBUG_LOG_LINES = 600
 
+# `-list-countries` — НЕ локальная операция: opera-proxy для неё делает
+# анонимную регистрацию и регистрацию устройства в API SurfEasy. Дёргать
+# её на каждый detect() нельзя (страница GUI опрашивает статус раз в 3 с —
+# это была бы регистрация устройства каждые 3 секунды), поэтому список
+# стран берётся из кэша и обновляется только по явному запросу.
+#
+# _COUNTRIES_MIN_REFRESH_SEC — минимальный интервал между реальными
+# обращениями к API: защита от «нажал кнопку три раза» и от параллельных
+# запросов из нескольких вкладок GUI.
+_COUNTRIES_MIN_REFRESH_SEC = 60
+# Собственный таймаут бинарника на сетевую операцию — 10 с, а регистраций
+# две, поэтому 5 с (как было) не хватало почти никогда.
+_COUNTRIES_TIMEOUT = 30
+
+_VERBOSITY_MIN = 0
+_VERBOSITY_MAX = 60
+
+
+def parse_bind(bind) -> tuple:
+    """
+    Разобрать bind-адрес в (host, port).
+
+    Поддерживает IPv4 (`127.0.0.1:18080`), имя хоста и IPv6 в скобках
+    (`[::1]:18080`). Кидает ValueError с человекочитаемой причиной —
+    единая точка разбора для API-валидации, watchdog-пробы и
+    tunnel-monitor, которые раньше расходились (watchdog делал
+    `rsplit(":", 1)` и на IPv6 вечно считал прокси мёртвым).
+    """
+    s = str(bind or "").strip()
+    if not s:
+        return _bind_error("адрес не задан")
+    if s.startswith("["):
+        host, sep, rest = s[1:].partition("]")
+        if not sep or not rest.startswith(":"):
+            return _bind_error("ожидается [адрес]:порт")
+        port = rest[1:]
+    else:
+        if s.count(":") != 1:
+            return _bind_error("ожидается host:порт (IPv6 — в скобках)")
+        host, _, port = s.partition(":")
+    host = host.strip()
+    if not host:
+        return _bind_error("не указан хост")
+    if not port.isdigit():
+        return _bind_error("порт должен быть числом")
+    port_n = int(port)
+    if not (1 <= port_n <= 65535):
+        return _bind_error("порт должен быть от 1 до 65535")
+    return host, port_n
+
+
+def _bind_error(reason: str):
+    raise ValueError("Некорректный bind: %s" % reason)
+
 
 def debug_enabled() -> bool:
     """Включён ли режим отладки Opera Proxy (opera_proxy.debug_log)."""
@@ -38,6 +92,89 @@ def debug_enabled() -> bool:
                                              default=False))
     except Exception:
         return False
+
+
+def _as_bool(value, field: str) -> bool:
+    """Мягкое приведение к bool: GUI шлёт JSON-bool, curl — строки."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in ("1", "true", "yes", "on"):
+            return True
+        if low in ("0", "false", "no", "off", ""):
+            return False
+    raise ValueError("%s: ожидается true/false" % field)
+
+
+def validate_settings(data: dict) -> dict:
+    """
+    Проверить и нормализовать настройки opera-proxy.
+
+    Возвращает словарь только из переданных ключей (для частичного
+    PUT). Кидает ValueError с текстом для пользователя.
+
+    Нужна, потому что без неё в settings.json попадал любой мусор
+    (`bind: "не-адрес"`, `verbosity: "abc"`), а узнавал об этом
+    пользователь лишь по невнятному «opera-proxy завершился: usage: …»
+    при следующем запуске — и по вечному рестарт-циклу watchdog'а.
+    """
+    clean = {}
+
+    if "country" in data:
+        country = str(data["country"] or "").strip().upper()
+        if not country:
+            raise ValueError("Страна не задана")
+        if not country.isalnum() or len(country) > 8:
+            raise ValueError("Некорректный код страны: %s" % country)
+        clean["country"] = country
+
+    if "bind" in data:
+        host, port = parse_bind(data["bind"])
+        clean["bind"] = ("[%s]:%d" % (host, port)) if ":" in host \
+            else "%s:%d" % (host, port)
+
+    for field in ("socks_mode", "autostart", "enabled", "debug_log"):
+        if field in data:
+            clean[field] = _as_bool(data[field], field)
+
+    if "proxy_bypass" in data:
+        bypass = str(data["proxy_bypass"] or "").strip()
+        if len(bypass) > 2048:
+            raise ValueError("Слишком длинный proxy bypass")
+        # Список через запятую: пробелы вокруг элементов терпим и
+        # вычищаем — «a.com, b.com» пользователь наберёт скорее, чем
+        # «a.com,b.com», а opera-proxy пробел внутри значения не поймёт.
+        bypass = ",".join(part.strip() for part in bypass.split(",")
+                          if part.strip())
+        if any(ch.isspace() for ch in bypass):
+            raise ValueError("Proxy bypass: пробелы внутри записи недопустимы")
+        clean["proxy_bypass"] = bypass
+
+    if "fake_sni" in data:
+        sni = str(data["fake_sni"] or "").strip()
+        if sni:
+            if len(sni) > 253 or not all(
+                    ch.isalnum() or ch in ".-_" for ch in sni):
+                raise ValueError("Некорректный Fake SNI: %s" % sni)
+        clean["fake_sni"] = sni
+
+    if "verbosity" in data:
+        value = data["verbosity"]
+        if isinstance(value, bool) or isinstance(value, float):
+            raise ValueError("Verbosity: ожидается целое число")
+        try:
+            verbosity = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError("Verbosity: ожидается целое число")
+        if not (_VERBOSITY_MIN <= verbosity <= _VERBOSITY_MAX):
+            raise ValueError("Verbosity: допустимо %d..%d"
+                             % (_VERBOSITY_MIN, _VERBOSITY_MAX))
+        clean["verbosity"] = verbosity
+
+    return clean
 
 
 def start_kwargs_from_config(cfg=None) -> dict:
@@ -71,6 +208,15 @@ class OperaProxyManager:
         self._lock = threading.Lock()
         self._process = None
         self._log = deque(maxlen=_MAX_LOG_LINES)
+        self._running_bind = ""           # bind реально запущенного процесса
+        # Кэш detect(): и версия, и список стран стоят fork'а (а страны —
+        # ещё и двух регистраций в API SurfEasy), а detect() зовут статус-
+        # поллинг GUI, selfcheck и update-checker.
+        self._version_cache = {}          # stat-ключ бинарника → версия
+        self._countries = []
+        self._countries_ts = 0.0
+        self._countries_error = ""
+        self._countries_lock = threading.Lock()
 
     # ─────── pid-файл ───────
     #
@@ -117,19 +263,73 @@ class OperaProxyManager:
 
     # ─────── detect ───────
 
-    def detect(self) -> dict:
-        """Обнаружить opera-proxy binary."""
+    def detect(self, refresh_countries: bool = False) -> dict:
+        """
+        Обнаружить opera-proxy binary.
+
+        Дешёвая операция: версия берётся из кэша по mtime/размеру файла,
+        список стран — из кэша (сетевой запрос делается только при
+        refresh_countries=True либо через list_countries()).
+        """
         binary = self._find_binary()
         if not binary:
-            return {"installed": False, "binary": "", "version": ""}
+            return {"installed": False, "binary": "", "version": "",
+                    "countries": []}
         version = self._get_version(binary)
-        countries = self._list_countries(binary)
+        countries_info = self.list_countries(refresh=refresh_countries)
         return {
             "installed": True,
             "binary": binary,
             "version": version,
-            "countries": countries,
+            "countries": countries_info["countries"],
+            "countries_cached": countries_info["cached"],
+            "countries_error": countries_info["error"],
         }
+
+    def list_countries(self, refresh: bool = False) -> dict:
+        """
+        Список стран Opera VPN.
+
+        Без refresh отдаёт кэш (возможно пустой) и НИЧЕГО не запускает:
+        `-list-countries` каждый раз регистрирует новое устройство в API
+        SurfEasy, а detect() зовётся из статус-поллинга GUI.
+        """
+        now = time.time()
+        with self._lock:
+            cached = list(self._countries)
+            age = now - self._countries_ts if self._countries_ts else None
+            error = self._countries_error
+        fresh = bool(self._countries_ts) and \
+            (now - self._countries_ts) < _COUNTRIES_MIN_REFRESH_SEC
+        if not refresh or fresh:
+            return {"ok": True, "countries": cached, "cached": True,
+                    "age_sec": int(age) if age is not None else None,
+                    "error": "" if cached else error}
+
+        binary = self._find_binary()
+        if not binary:
+            return {"ok": False, "countries": cached, "cached": True,
+                    "age_sec": int(age) if age is not None else None,
+                    "error": "opera-proxy не найден"}
+
+        # Двойной клик по «Обновить страны» не должен порождать две
+        # параллельные регистрации устройства.
+        if not self._countries_lock.acquire(blocking=False):
+            return {"ok": True, "countries": cached, "cached": True,
+                    "age_sec": int(age) if age is not None else None,
+                    "error": "", "busy": True}
+        try:
+            countries, error = self._fetch_countries(binary)
+            with self._lock:
+                if countries:
+                    self._countries = countries
+                    self._countries_ts = time.time()
+                self._countries_error = error
+            return {"ok": not error, "countries": countries or cached,
+                    "cached": False, "age_sec": 0 if countries else None,
+                    "error": error}
+        finally:
+            self._countries_lock.release()
 
     def _find_binary(self) -> str:
         candidates = [
@@ -144,26 +344,51 @@ class OperaProxyManager:
         return ""
 
     def _get_version(self, binary: str) -> str:
+        """Версия бинарника. Кэш по mtime/размеру — переустановку видим."""
+        try:
+            st = os.stat(binary)
+            key = (binary, int(st.st_mtime), st.st_size)
+        except OSError:
+            key = (binary, 0, 0)
+        cached = self._version_cache.get(key)
+        if cached is not None:
+            return cached
         try:
             r = subprocess.run([binary, "-version"],
                                capture_output=True, text=True, timeout=5)
-            return (r.stdout or r.stderr or "").strip()[:50]
+            version = (r.stdout or r.stderr or "").strip()[:50]
         except Exception:
             return ""
+        # Кэшируем только удачный ответ, иначе временный сбой залипнет.
+        if version:
+            self._version_cache = {key: version}
+        return version
 
-    def _list_countries(self, binary: str) -> list:
+    def _fetch_countries(self, binary: str) -> tuple:
+        """Сходить в API SurfEasy за списком стран. Возвращает (list, error)."""
         try:
             r = subprocess.run([binary, "-list-countries"],
-                               capture_output=True, text=True, timeout=5)
-            countries = []
-            for line in (r.stdout or "").splitlines():
-                line = line.strip()
-                if "," in line and not line.startswith("country"):
-                    code, name = line.split(",", 1)
-                    countries.append({"code": code.strip(), "name": name.strip()})
-            return countries
-        except Exception:
-            return []
+                               capture_output=True, text=True,
+                               timeout=_COUNTRIES_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return [], ("opera-proxy не ответил за %ds — нет доступа к API "
+                        "SurfEasy?" % _COUNTRIES_TIMEOUT)
+        except Exception as e:
+            return [], str(e)
+
+        countries = []
+        for line in (r.stdout or "").splitlines():
+            line = line.strip()
+            if "," in line and not line.startswith("country"):
+                code, name = line.split(",", 1)
+                code = code.strip()
+                if code:
+                    countries.append({"code": code, "name": name.strip()})
+        if countries:
+            return countries, ""
+        err = (r.stderr or r.stdout or "").strip().splitlines()
+        return [], (err[-1][:200] if err
+                    else "opera-proxy вернул пустой список стран")
 
     # ─────── lifecycle ───────
 
@@ -178,6 +403,24 @@ class OperaProxyManager:
         if not binary:
             return {"ok": False, "error": "opera-proxy не найден"}
 
+        # Настройки могли приехать из старого settings.json (валидации
+        # раньше не было) — проверяем перед запуском, иначе пользователь
+        # получит невнятный usage-дамп от Go-бинарника.
+        try:
+            clean = validate_settings({
+                "country": country, "bind": bind, "socks_mode": socks_mode,
+                "proxy_bypass": proxy_bypass, "fake_sni": fake_sni,
+                "verbosity": verbosity,
+            })
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        country = clean["country"]
+        bind = clean["bind"]
+        socks_mode = clean["socks_mode"]
+        proxy_bypass = clean["proxy_bypass"]
+        fake_sni = clean["fake_sni"]
+        verbosity = clean["verbosity"]
+
         cmd = [binary, "-country", country, "-bind-address", bind]
         if socks_mode:
             cmd.append("-socks-mode")
@@ -187,6 +430,16 @@ class OperaProxyManager:
             cmd.extend(["-fake-SNI", fake_sni])
         cmd.extend(["-verbosity", str(verbosity)])
 
+        # Буфер заводим ДО запуска: иначе вывод упавшего на старте процесса
+        # («порт занят») нигде не оседал, и кнопка «Лог» показывала хвост
+        # прошлого, удачного запуска — ровно в тот момент, когда лог нужен.
+        with self._lock:
+            self._log = deque(maxlen=(_MAX_DEBUG_LOG_LINES
+                                      if debug_enabled()
+                                      else _MAX_LOG_LINES))
+            buf = self._log
+        buf.append("$ %s" % " ".join(cmd))
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -194,18 +447,33 @@ class OperaProxyManager:
                 stderr=subprocess.STDOUT,
                 start_new_session=True)
 
-            # Ждём запуска (до 5s)
+            # Ждём запуска (1s): типичные мгновенные падения — занятый порт
+            # и негодные аргументы.
             time.sleep(1)
             if proc.poll() is not None:
                 out = ""
                 try:
-                    out = proc.stdout.read(4096).decode("utf-8", errors="replace")
+                    out = proc.stdout.read(65536).decode("utf-8", errors="replace")
                 except Exception:
                     pass
-                return {"ok": False, "error": "opera-proxy завершился: %s" % out[:200]}
+                finally:
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
+                for line in out.splitlines():
+                    if line.strip():
+                        buf.append(line.rstrip()[-400:])
+                buf.append("opera-proxy завершился, код %s" % proc.returncode)
+                reason = " ".join(out.split())[:200] or ("код %s" % proc.returncode)
+                log.warning("opera-proxy: не запустился (%s)" % reason,
+                            source="opera_proxy")
+                return {"ok": False,
+                        "error": "opera-proxy завершился: %s" % reason}
 
             with self._lock:
                 self._process = proc
+                self._running_bind = bind
             self._write_pid(proc.pid)
 
             # Дренаж stdout в фоне: opera-proxy при verbosity<=20 логирует
@@ -217,12 +485,6 @@ class OperaProxyManager:
             # Debug (10) не давал НИЧЕГО: логи некуда было посмотреть.
             # Теперь копим хвост в кольцевом буфере — читать его при этом
             # обязательно так же непрерывно, иначе вернётся зависание.
-            with self._lock:
-                self._log = deque(maxlen=(_MAX_DEBUG_LOG_LINES
-                                          if debug_enabled()
-                                          else _MAX_LOG_LINES))
-                buf = self._log
-
             def _drain(pipe):
                 try:
                     tail = b""
@@ -238,6 +500,13 @@ class OperaProxyManager:
                             tail = b""
                 except Exception:
                     pass
+                finally:
+                    # Процесс мог умереть — закрываем свой конец пайпа, иначе
+                    # каждый цикл старт/стоп подтекает файловым дескриптором.
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
             t = threading.Thread(target=_drain, args=(proc.stdout,),
                                  daemon=True, name="opera-proxy-drain")
             t.start()
@@ -262,6 +531,7 @@ class OperaProxyManager:
         with self._lock:
             proc = self._process
             self._process = None
+            self._running_bind = ""
 
         if proc and proc.poll() is None:
             try:
@@ -299,19 +569,43 @@ class OperaProxyManager:
         log.info("opera-proxy: остановлен", source="opera_proxy")
         return {"ok": True}
 
-    def status(self) -> dict:
-        """Статус opera-proxy."""
+    def status(self, probe: bool = True) -> dict:
+        """
+        Статус opera-proxy.
+
+        `listening` — реально ли принимается соединение на bind-адресе:
+        живой процесс ещё не значит рабочий прокси (opera-proxy может
+        крутиться, не сумев зарегистрироваться в API SurfEasy), а
+        пользователь видел «Работает» и не понимал, почему трафик не идёт.
+        """
         running = self._is_running()
         pid = None
         with self._lock:
             if self._process:
                 pid = self._process.pid
+            bind = self._running_bind
         if pid is None:
             pid = self._read_pid()      # пережил перезапуск GUI
-        return {
+
+        if not bind:
+            # Процесс пережил перезапуск GUI — фактический bind неизвестен,
+            # берём настроенный.
+            try:
+                from core.config_manager import get_config_manager
+                bind = get_config_manager().get("opera_proxy", "bind",
+                                                default="127.0.0.1:18080")
+            except Exception:
+                bind = ""
+
+        result = {
             "running": running,
             "pid": pid if running else None,
+            "bind": bind,
         }
+        if running and probe and bind:
+            from core.opera_proxy_watchdog import probe_proxy
+            result["listening"] = probe_proxy(bind, timeout=0.7)
+        return result
 
     def read_log(self, lines: int = 200) -> dict:
         """Хвост вывода opera-proxy для кнопки «Лог» в GUI."""
