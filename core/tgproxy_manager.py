@@ -893,7 +893,21 @@ class MtProxyClientManager:
 
     def detect(self) -> dict[str, Any]:
         bin_path = _find_mtproxy_binary()
-        return {"installed": bool(bin_path), "path": bin_path}
+        # Версию НЕ спрашиваем у бинарника: у tg-mtproxy-client нет
+        # `--version`, и попытка его запросить просто запускает прокси
+        # (ext_binary_installer._get_version перебирает флаги вслепую).
+        # detect() дёргается на каждый рендер страницы и на каждую
+        # проверку обновлений — берём тег, записанный установщиком.
+        version = ""
+        if bin_path:
+            try:
+                from core.config_manager import get_config_manager
+                version = get_config_manager().get(
+                    "tgproxy", "mtproto_installed_tag", default="") or ""
+            except Exception:
+                version = ""
+        return {"installed": bool(bin_path), "path": bin_path,
+                "version": version}
 
     def start(
         self,

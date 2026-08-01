@@ -530,6 +530,31 @@ input:focus, textarea:focus, select:focus {
     border-color: var(--border-hover);
 }
 
+/* Карточка, на которую привели по deep-link (#page?focus=…): на странице
+   их несколько, и без подсветки непонятно, к какой из них относилась
+   нажатая на другой странице кнопка. */
+.card-focused {
+    border-color: var(--accent);
+    animation: card-focus-pulse 2.5s ease-out;
+}
+
+@keyframes card-focus-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.45); }
+    70%  { box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}
+
+/* Строка «пакет / версия / кнопка обновления» над настройками движка. */
+.pkg-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
 .card-title {
     font-size: 13px;
     font-weight: 500;

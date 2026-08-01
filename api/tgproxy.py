@@ -30,6 +30,11 @@ API управления обходом блокировки Telegram.
   POST /api/tgproxy/mtproto/up                — relay из тела или конфига
   POST /api/tgproxy/mtproto/down
   GET  /api/tgproxy/mtproto/connect-info
+
+  POST /api/tgproxy/install                   — установить/обновить движок
+  GET  /api/tgproxy/install/status            — прогресс установки
+    Обе ручки принимают engine=tgwsproxy|mtproto; без него — tgwsproxy
+    (так их звал старый фронтенд).
 """
 
 import re
@@ -45,6 +50,46 @@ from bottle import request
 # пользователю сразу, а не после записи битого конфига.
 _DOMAIN_RE = re.compile(
     r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))+$")
+
+
+# Движок GUI → имя в манифесте core/ext_binary_installer.BINARIES.
+# Имена не совпадают исторически: в GUI резервный движок зовётся
+# "mtproto" (по имени панели), в манифесте — "tgproto" (по репозиторию).
+_ENGINE_INSTALLERS = {
+    "tgwsproxy": "tgwsproxy",
+    "mtproto": "tgproto",
+}
+_ENGINE_BY_INSTALLER = {v: k for k, v in _ENGINE_INSTALLERS.items()}
+
+
+def _installer_for(engine) -> str:
+    """Имя в BINARIES по значению engine из запроса ("" — неизвестный).
+
+    Пустой engine — это старый фронтенд, который ручку не параметризовал;
+    для него сохраняем прежнее поведение (основной движок).
+    """
+    engine = (engine or "tgwsproxy").strip()
+    return _ENGINE_INSTALLERS.get(engine, "")
+
+
+def _remember_installed_tag(engine: str, res: dict) -> None:
+    """Записать тег установленного tg-mtproxy-client в настройки.
+
+    У бинарника нет `--version`, спросить его после установки не у кого —
+    а «Обновления» без версии не могут сказать, есть ли обновление. Тег
+    известен ровно здесь, в момент установки.
+    """
+    if engine != "mtproto":
+        return
+    tag = (res.get("tag") or res.get("version") or "").strip()
+    if not tag:
+        return
+    try:
+        from core.config_manager import get_config_manager, save_config
+        get_config_manager().set("tgproxy", "mtproto_installed_tag", tag)
+        save_config()
+    except Exception:
+        pass
 
 
 def _valid_domain_or_empty(v: str) -> bool:
@@ -85,28 +130,64 @@ def register(app):
     def tgproxy_detect():
         from core.tgproxy_manager import (get_tgwsproxy_manager,
                                           get_mtproxy_client_manager)
-        return {
+        from core.ext_binary_installer import get_installability
+
+        out = {
             "tgwsproxy": get_tgwsproxy_manager().detect(),
             "mtproto": get_mtproxy_client_manager().detect(),
         }
+        # Можно ли ВООБЩЕ поставить движок на этой машине. У
+        # tg-mtproxy-client в манифесте есть сборки только под mips/
+        # mipsel/x86_64 — на aarch64-Keenetic кнопка «Установить» падала
+        # бы всегда, поэтому GUI должен знать об этом заранее.
+        for engine, installer in _ENGINE_INSTALLERS.items():
+            info = get_installability(installer)
+            out.setdefault(engine, {}).update({
+                "installable": info["installable"],
+                "arch": info["arch"],
+                "supported_archs": info["supported_archs"],
+            })
+        return out
 
     # ─────────────────────────── установка ───────────────────────────
 
     @app.route("/api/tgproxy/install/status", method="GET")
     def tgproxy_install_status():
         from core.ext_binary_installer import get_operation_status
-        return {"ok": True, "progress": get_operation_status("tgwsproxy")}
+        installer = _installer_for(request.query.get("engine"))
+        if not installer:
+            return {"ok": False, "error": "Неизвестный движок"}
+        return {"ok": True, "engine": _ENGINE_BY_INSTALLER[installer],
+                "progress": get_operation_status(installer)}
 
     @app.route("/api/tgproxy/install", method="POST")
     def tgproxy_install():
-        # Ставит пакет tg-ws-proxy (основной движок) из GitHub-релиза —
-        # ПОСЛЕДНИЙ релиз, sha256 сверяется с манифестом для известной
-        # версии. Асинхронно, прогресс — через /api/tgproxy/install/status.
+        # Ставит движок из GitHub-релиза — ПОСЛЕДНИЙ релиз, sha256
+        # сверяется с манифестом для известной версии. Асинхронно,
+        # прогресс — через /api/tgproxy/install/status?engine=...
+        #
+        # engine выбирает, ЧТО ставить. Раньше ручка знала только про
+        # tg-ws-proxy, поэтому у резервного tg-mtproxy-client в GUI не
+        # было кнопки установки вовсе, хотя манифест для него в
+        # ext_binary_installer уже лежал (issue #272).
         import threading
         from core.ext_binary_installer import (install_binary_by_name,
                                                _operation_status)
 
-        name = "tgwsproxy"
+        body = request.json or {}
+        engine_arg = body.get("engine") or request.query.get("engine")
+        name = _installer_for(engine_arg)
+        if not name:
+            return {"ok": False, "error": "Неизвестный движок: %s" % engine_arg}
+        engine = _ENGINE_BY_INSTALLER[name]
+
+        # Второй POST во время работы установщика поднял бы второй поток
+        # на тот же dest, а _operation_status у них общий — статусы
+        # затирали бы друг друга. Отдаём текущий прогресс.
+        cur = _operation_status.get(name) or {}
+        if cur.get("status") not in (None, "", "idle", "done", "error"):
+            return {"ok": True, "engine": engine, "progress": cur}
+
         _operation_status[name] = {"status": "starting", "progress": 0,
                                    "message": "Запуск установки..."}
 
@@ -118,6 +199,7 @@ def register(app):
             try:
                 res = install_binary_by_name(name, progress_cb=_cb)
                 if res.get("ok"):
+                    _remember_installed_tag(engine, res)
                     # Версию и признак сверки хэша тащим в статус: у
                     # «последнего релиза» пользователь должен видеть, что
                     # именно приехало и сверялся ли хэш.
@@ -139,7 +221,8 @@ def register(app):
                                            "message": str(e)}
 
         threading.Thread(target=_run, daemon=True).start()
-        return {"ok": True, "progress": _operation_status[name]}
+        return {"ok": True, "engine": engine,
+                "progress": _operation_status[name]}
 
     # ─────────────────────────── tgwsproxy ───────────────────────────
 

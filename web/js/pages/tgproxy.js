@@ -37,7 +37,7 @@ const TgProxyPage = (() => {
             </div>
 
             <div class="card-grid">
-                <div class="card">
+                <div class="card" id="card-tgwsproxy">
                     <div class="card-title">tg-ws-proxy-go — настройки</div>
                     <div class="card-body" id="tgwsproxy-config">Загрузка...</div>
                 </div>
@@ -51,7 +51,7 @@ const TgProxyPage = (() => {
             </div>
 
             <div class="card-grid">
-                <div class="card">
+                <div class="card" id="card-mtproto">
                     <div class="card-title">tg-mtproxy-client (резервный)</div>
                     <div class="card-body" id="mtproto-panel">Загрузка...</div>
                 </div>
@@ -65,7 +65,22 @@ const TgProxyPage = (() => {
         document.addEventListener("visibilitychange", _visibilityHandler);
 
         await _refresh();
+        _focusRequestedCard();
         _startPoll();
+    }
+
+    // Со страницы «Обновления» сюда приходят с #tgproxy?focus=<движок>:
+    // на странице две карточки, и раньше пользователь, нажавший
+    // «Обновить» напротив tg-mtproxy-client, попадал на её верх — то
+    // есть на панель ДРУГОГО движка (issue #272).
+    function _focusRequestedCard() {
+        const m = (window.location.hash || "").match(/focus=([a-z]+)/i);
+        if (!m) return;
+        const card = document.getElementById("card-" + m[1].toLowerCase());
+        if (!card) return;
+        card.scrollIntoView({ behavior: "smooth", block: "start" });
+        card.classList.add("card-focused");
+        setTimeout(() => card.classList.remove("card-focused"), 2500);
     }
 
     function destroy() {
@@ -139,23 +154,55 @@ const TgProxyPage = (() => {
         </div>`;
     }
 
-    // ─────────────────────────── установка tgwsproxy ───────────────────────────
+    // ─────────────────────────── установка движков ───────────────────────────
 
-    async function _installTgws(ev) {
+    // Оба движка ставит одна ручка — /api/tgproxy/install?engine=…
+    // Раньше она была захардкожена под tgwsproxy, а у резервного
+    // tg-mtproxy-client кнопки установки не было вовсе: «Обновления»
+    // предлагали «Установить», вели сюда, и здесь ставить было нечем
+    // (issue #272).
+    const _ENGINES = {
+        tgwsproxy: { pkg: "tg-ws-proxy", progressId: "tgws-install-progress" },
+        mtproto:   { pkg: "tg-mtproxy-client", progressId: "mtp-install-progress" },
+    };
+
+    async function _installEngine(ev) {
         const btn = ev && ev.currentTarget;
-        const prog = document.getElementById("tgws-install-progress");
-        const label = (btn && btn.dataset.label) || "Установить tg-ws-proxy";
+        const engine = (btn && btn.dataset.engine) || "tgwsproxy";
+        const meta = _ENGINES[engine] || _ENGINES.tgwsproxy;
+        const prog = document.getElementById(meta.progressId);
+        const label = (btn && btn.dataset.label) || ("Установить " + meta.pkg);
+        const fail = (msg) => {
+            if (prog) prog.innerHTML = `<span class="text-error">${esc(msg)}</span>`;
+            if (btn) { btn.disabled = false; btn.textContent = label; }
+        };
+
         if (btn) { btn.disabled = true; btn.textContent = "Установка..."; }
         try {
-            await API.post("/api/tgproxy/install");
+            // Ручка отвечает 200 и на отказ (ok:false) — без этой проверки
+            // поллер крутился бы вечно вокруг статуса, который никто не
+            // менял.
+            const res = await API.post("/api/tgproxy/install", { engine });
+            if (res && res.ok === false) {
+                fail(res.error || "Не удалось запустить установку");
+                return;
+            }
         } catch (e) {
-            if (prog) prog.innerHTML = `<span class="text-error">Ошибка запуска: ${esc(String(e))}</span>`;
-            if (btn) { btn.disabled = false; btn.textContent = label; }
+            fail("Ошибка запуска: " + String(e));
             return;
         }
+
+        // Страховка от зависшего статуса (перезапуск GUI во время
+        // установки): не поллим бесконечно.
+        const started = Date.now();
+        const MAX_MS = 10 * 60 * 1000;
+
         const poll = async () => {
             let st = null;
-            try { st = await API.get("/api/tgproxy/install/status"); } catch (_) {}
+            try {
+                st = await API.get("/api/tgproxy/install/status?engine="
+                                   + encodeURIComponent(engine));
+            } catch (_) {}
             const p = (st && st.progress) || {};
             if (prog) {
                 prog.textContent = (p.message || p.status || "")
@@ -164,7 +211,7 @@ const TgProxyPage = (() => {
             if (p.status === "done") {
                 Toast.success(p.noop
                     ? "Уже актуальная версия: " + (p.version || "")
-                    : "tg-ws-proxy установлен: " + (p.version || ""));
+                    : meta.pkg + " установлен: " + (p.version || ""));
                 // Ставится последний релиз: если приехала версия новее
                 // известной нам, сверять хэш было не с чем — не молчим.
                 if (p.sha256_verified === false) {
@@ -179,9 +226,44 @@ const TgProxyPage = (() => {
                 if (btn) { btn.disabled = false; btn.textContent = "Повторить установку"; }
                 return;
             }
+            if (Date.now() - started > MAX_MS) {
+                fail("Установка не ответила за 10 минут — проверьте лог GUI");
+                return;
+            }
             setTimeout(poll, 1200);
         };
         setTimeout(poll, 1000);
+    }
+
+    // Строка «пакет / версия / Обновить» — одинаковая у обоих движков.
+    function _packageRow(engine, det) {
+        const meta = _ENGINES[engine];
+        const label = engine === "tgwsproxy"
+            ? "Обновить до последней версии" : "Обновить";
+        return `
+            <div class="pkg-row">
+                <span class="text-muted" style="font-size:12px;">
+                    Пакет <code>${esc(meta.pkg)}</code>${det.version
+                        ? ", версия " + esc(det.version) : ""}
+                </span>
+                <button class="btn btn-sm" id="${esc(engine)}-btn-install" type="button"
+                        data-engine="${esc(engine)}"
+                        data-label="${esc(label)}">${esc(label)}</button>
+            </div>
+            <div id="${esc(meta.progressId)}" style="margin-top:8px; font-size:12px;"></div>
+        `;
+    }
+
+    // Нет сборки под архитектуру роутера — честно говорим об этом
+    // вместо кнопки, которая гарантированно упадёт.
+    function _unsupportedArchNote(det) {
+        return `<div class="alert alert-warning" style="font-size:12px;">
+            Для архитектуры <code>${esc(det.arch || "неизвестно")}</code> сборки нет.
+            ${(det.supported_archs || []).length
+                ? "В релизах апстрима есть только: <code>"
+                  + esc((det.supported_archs || []).join(", ")) + "</code>."
+                : ""}
+        </div>`;
     }
 
     // ─────────────────────────── tgwsproxy: конфиг ───────────────────────────
@@ -193,19 +275,22 @@ const TgProxyPage = (() => {
             const det = prefetchedDetect || await API.get("/api/tgproxy/detect");
             if (det._error) throw det._error;
             if (!det.tgwsproxy || !det.tgwsproxy.installed) {
+                const d = det.tgwsproxy || {};
                 el.innerHTML = `<div class="text-muted" style="margin-bottom:10px;">
                     tg-ws-proxy-go не установлен (пакет <code>tg-ws-proxy</code>).
                     Установите его прямо отсюда — берётся последний релиз
                     из GitHub, sha256 сверяется с манифестом для известной
                     версии.
                 </div>
-                <button class="btn btn-primary" id="tgws-btn-install" type="button"
+                ${d.installable === false ? _unsupportedArchNote(d) : `
+                <button class="btn btn-primary" id="tgwsproxy-btn-install" type="button"
+                        data-engine="tgwsproxy"
                         data-label="Установить tg-ws-proxy">
                     Установить tg-ws-proxy
-                </button>
+                </button>`}
                 <div id="tgws-install-progress" style="margin-top:10px; font-size:12px;"></div>`;
-                const ib = document.getElementById("tgws-btn-install");
-                if (ib) ib.addEventListener("click", _installTgws);
+                const ib = document.getElementById("tgwsproxy-btn-install");
+                if (ib) ib.addEventListener("click", _installEngine);
                 return;
             }
 
@@ -246,6 +331,8 @@ const TgProxyPage = (() => {
                 : `<option value="">Нет доступных туннелей</option>`;
 
             el.innerHTML = `
+                ${_packageRow("tgwsproxy", det.tgwsproxy)}
+
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Адрес прослушивания (bind)</label>
@@ -447,19 +534,6 @@ const TgProxyPage = (() => {
                     процесс их не перечитывает — после «Сохранить» нажмите
                     «Перезапустить».
                 </div>
-
-                <div style="margin-top:14px; display:flex; gap:8px;
-                            align-items:center; flex-wrap:wrap;">
-                    <span class="text-muted" style="font-size:12px;">
-                        Пакет <code>tg-ws-proxy</code>${det.tgwsproxy.version
-                            ? ", версия " + esc(det.tgwsproxy.version) : ""}
-                    </span>
-                    <button class="btn btn-sm" id="tgws-btn-install" type="button"
-                            data-label="Обновить до последней версии">
-                        Обновить до последней версии
-                    </button>
-                </div>
-                <div id="tgws-install-progress" style="margin-top:8px; font-size:12px;"></div>
             `;
 
             document.querySelectorAll('input[name="tgws-mode"]').forEach(r => {
@@ -477,8 +551,8 @@ const TgProxyPage = (() => {
                 "click", _rotateSecret);
             const autoBox = document.getElementById("tgws-autostart");
             if (autoBox) autoBox.addEventListener("change", _toggleAutostart);
-            const updBtn = document.getElementById("tgws-btn-install");
-            if (updBtn) updBtn.addEventListener("click", _installTgws);
+            const updBtn = document.getElementById("tgwsproxy-btn-install");
+            if (updBtn) updBtn.addEventListener("click", _installEngine);
 
             await _loadTgwsproxyConnectInfo();
         } catch (e) {
@@ -653,8 +727,28 @@ const TgProxyPage = (() => {
         try {
             const det = prefetchedDetect || await API.get("/api/tgproxy/detect");
             if (det._error) throw det._error;
-            if (!det.mtproto || !det.mtproto.installed) {
-                el.innerHTML = `<div class="text-muted">tg-mtproxy-client не найден на роутере.</div>`;
+            const mdet = det.mtproto || {};
+            if (!mdet.installed) {
+                // Раньше здесь была только строчка «не найден на роутере»
+                // — без единого способа его поставить, хотя «Обновления»
+                // предлагали «Установить» и вели ровно сюда (issue #272).
+                el.innerHTML = `
+                    <div class="text-muted" style="margin-bottom:10px;">
+                        tg-mtproxy-client не установлен. Это <strong>резервный</strong>
+                        движок: нужен, только если tg-ws-proxy-go вместе с
+                        Cloudflare-фоллбэком перестал работать целиком.
+                        Для работы ему нужен адрес community-relay — без
+                        него запускать нечего.
+                    </div>
+                    ${mdet.installable === false ? _unsupportedArchNote(mdet) : `
+                    <button class="btn btn-primary" id="mtproto-btn-install" type="button"
+                            data-engine="mtproto"
+                            data-label="Установить tg-mtproxy-client">
+                        Установить tg-mtproxy-client
+                    </button>`}
+                    <div id="mtp-install-progress" style="margin-top:10px; font-size:12px;"></div>`;
+                const ib = document.getElementById("mtproto-btn-install");
+                if (ib) ib.addEventListener("click", _installEngine);
                 return;
             }
             const st = prefetchedStatus || await API.get("/api/tgproxy/status");
@@ -677,6 +771,8 @@ const TgProxyPage = (() => {
             // релея запускать нечего. Раньше поля не было вовсе, и
             // кнопка «Запустить» всегда возвращала «relay обязателен».
             el.innerHTML = `
+                ${_packageRow("mtproto", mdet)}
+
                 <div class="text-muted" style="margin-bottom:8px;">
                     Резервный вариант через community-relay. Использовать, если
                     tg-ws-proxy-go (включая Cloudflare-фоллбэк) перестал работать
@@ -703,6 +799,8 @@ const TgProxyPage = (() => {
             `;
             document.getElementById("mtp-btn-toggle").addEventListener(
                 "click", () => _mtprotoToggle(running));
+            const mUpd = document.getElementById("mtproto-btn-install");
+            if (mUpd) mUpd.addEventListener("click", _installEngine);
         } catch (e) {
             el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
         }

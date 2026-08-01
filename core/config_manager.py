@@ -341,6 +341,10 @@ DEFAULT_CONFIG = {
         "tunnel_url": "",     # WSS relay URL
         "tunnel_secret": "",
         "max_conns": 1024,
+        # Тег релиза, из которого поставлен tg-mtproxy-client. Спросить
+        # версию у самого бинарника нельзя — у него нет `--version`, и
+        # попытка его запустить просто поднимает прокси.
+        "mtproto_installed_tag": "",
         # common
         "verbose": False,
         "autostart": False,
