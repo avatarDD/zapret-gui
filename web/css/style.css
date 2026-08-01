@@ -5028,3 +5028,60 @@ body.expert-mode .expert-note { display: none !important; }
     color: var(--text-muted);
     margin-bottom: 6px;
 }
+
+/* ===== Страница Telegram Tunnel (tgproxy) =====
+   Разметка страницы опиралась на классы, правил под которые в проекте
+   не было: переключатель режима выхода на DC рисовался сплошной
+   строкой без отбивок, панель выбранного режима сливалась с формой, а
+   ссылка tg://proxy шла вплотную к кнопке «Копировать». */
+.radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+}
+.radio-option,
+.checkbox-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+.radio-option:hover,
+.checkbox-option:hover { color: var(--text-primary); }
+.radio-option input,
+.checkbox-option input { cursor: pointer; flex-shrink: 0; }
+
+.mode-panel {
+    margin-top: 10px;
+    padding: 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.connect-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+.connect-link code {
+    flex: 1 1 260px;
+    min-width: 0;
+    padding: 6px 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+    word-break: break-all;
+}

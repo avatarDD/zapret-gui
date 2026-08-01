@@ -1,0 +1,436 @@
+---
+name: telegram-tunnel
+description: >-
+  Полный справочник по Telegram Tunnel в проекте zapret-gui (роутеры Keenetic на
+  Entware / OpenWrt): локальный MTProto-прокси tg-ws-proxy-go (основной движок,
+  пакет tg-ws-proxy + init.d S99tg-ws-proxy) и резервный tg-mtproxy-client.
+  Использовать при любых задачах о: config.conf/secret.conf и том, какие
+  переменные реально читает init.d, CLI-флагах бинарника (--host/--port/--secret/
+  --cfproxy-domain/--cfproxy-worker-domain/--no-cfproxy/--cfproxy-priority/
+  --pool-size/--max-conns/--buf-kb/--dc-ip-default*/--fake-tls-domain/-v),
+  режимах выхода на датацентр (direct / cfcommunity / cfdomain / hybrid /
+  tunnel), ссылке tg://proxy и формате секрета (dd/ee + fake-TLS), ротации
+  секрета, маршрутизации CIDR датацентров Telegram через AWG+WARP или
+  MASQUE+WARP через единый слой, авто-регистрации CF-домена под nfqws2,
+  установке пакета (GitHub-релиз, .ipk/.apk, sha256, opkg/apk), автозапуске и
+  диагностике «прокси не поднимается / ссылка не работает / лога нет / обход
+  работает через раз». Источник истины — spatiumstas/tg-ws-proxy-go (форк
+  Flowseal/tg-ws-proxy), привязка — наш код core/tgproxy_manager.py,
+  api/tgproxy.py, web/js/pages/tgproxy.js, core/ext_binary_installer.py.
+---
+
+# Telegram Tunnel — справочник для zapret-gui
+
+Единый источник истины о том, **как работает обход блокировки Telegram** в
+`zapret-gui` и что именно можно менять, не сломав рабочую конфигурацию у
+пользователей. Читать перед тем, как трогать `config.conf`, набор CLI-флагов,
+режимы выхода на датацентр, ссылку `tg://proxy` или маршрутизацию DC-подсетей.
+
+Источники истины (в порядке убывания авторитета):
+
+1. **[spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go)**
+   — то, что мы реально ставим и запускаем. Ключевые файлы:
+   `src/config.go` (полный список флагов — **единственный** достоверный
+   источник имён), `src/constants.go` (дефолты, таймауты, IP датацентров),
+   `files/common/etc/tg-ws-proxy/config.conf` (набор переменных),
+   `files/entware/etc/init.d/S99tg-ws-proxy` (**как переменные превращаются в
+   argv** — важнее README).
+2. **[Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy)** —
+   апстрим-апстрим (Windows-версия): `docs/CfProxy.md`, `docs/CfWorker.md`,
+   community-пул доменов `.github/cfproxy-domains.txt`.
+3. **Наш код** — `core/tgproxy_manager.py` (менеджеры обоих движков, конфиг,
+   ссылка, DC-маршруты), `api/tgproxy.py` (REST), `web/js/pages/tgproxy.js`
+   (страница), `core/ext_binary_installer.py` (`BINARIES["tgwsproxy"]`),
+   `app.py` (автозапуск при boot), `core/config_manager.py` (секция `tgproxy`).
+
+> ⚠️ **Главное, что ломается молча:** мы не запускаем бинарник сами — мы пишем
+> `config.conf` и дёргаем чужой init.d. Любое поле, которого нет в списке
+> переменных init.d, **не делает ничего**, хотя в GUI выглядит как настройка.
+> Так уже было с `LOG_LEVEL` (§4.3).
+
+---
+
+## 1. Что это вообще и зачем
+
+**Проблема.** У части провайдеров Telegram режется **по диапазону IP
+датацентров**, а не только по сигнатуре протокола. Против этого не помогает ни
+fake-TLS, ни десинхронизация nfqws2: они меняют содержимое потока, но пакет
+всё равно летит на заблокированный адрес.
+
+**Решение tg-ws-proxy-go.** На роутере поднимается **локальный MTProto-прокси**.
+Приложение Telegram подключается к нему по обычной ссылке `tg://proxy` (то есть
+считает его прокси-сервером), а наружу соединение уходит **не TCP-коннектом на
+IP датацентра, а WSS-соединением** — через домены Telegram, а при их
+недоступности через **Cloudflare** (обычный CDN-домен или Worker). Для
+провайдера это TLS к Cloudflare, а не к диапазону Telegram.
+
+**VPS не нужен.** Сервер (движок) и клиент (приложение) — в одной домашней сети,
+трафик между ними не покидает LAN, белый IP не требуется.
+
+**Почему не teleproxy.** Его Direct-to-DC режим по конструкции коннектится на
+настоящий IP датацентра — то есть ровно туда, куда нельзя. Осознанное решение,
+зафиксировано в docstring `core/tgproxy_manager.py`, не «забыли добавить».
+
+Два движка:
+
+| Движок | Что это | Роль |
+|--------|---------|------|
+| **tgwsproxy** | `tg-ws-proxy-go`, ставится **пакетом** (opkg/apk), свой init.d, свой PID-файл и лог | **Основной** |
+| **mtproto** | `tg-mtproxy-client`, голый Go-бинарник, relay-based, управляем через `subprocess.Popen` | **Резерв** на случай отказа всей инфраструктуры Cloudflare (у tgwsproxy это общая точка отказа) |
+
+Одновременно должен работать **только один**: это две разные ссылки
+`tg://proxy`, приложение использует одну.
+
+---
+
+## 2. Цепочка соединения (что происходит на самом деле)
+
+```
+Telegram (телефон/десктоп)
+   │  tg://proxy?server=<LAN-IP роутера>&port=1443&secret=dd…/ee…
+   │  обычный MTProto с обфускацией
+   ▼
+tg-ws-proxy-go на роутере            ← слушает HOST:PORT
+   │  1. читает DC ID из обфусцированного init-пакета
+   │  2. держит пул WS-соединений (--pool-size на каждый DC)
+   ▼
+WSS к инфраструктуре Telegram
+   │  если прилетает 302 → фоллбэк:
+   ├─► CfProxy: WSS к Cloudflare-домену (свой / community-пул / Worker)
+   └─► прямой TCP к IP датацентра (--dc-ip-default / --dc-ip)
+```
+
+Данные идут **в том же зашифрованном виде** — прокси не расшифровывает MTProto,
+он меняет только транспорт и адрес назначения.
+
+Дефолтные IP датацентров зашиты в `src/constants.go`:
+DC1 `149.154.175.50`, DC2 `149.154.167.51`, DC3 `149.154.175.100`,
+DC4 `149.154.167.91`, DC5 `149.154.171.5`, DC203 `91.105.192.100`.
+`defaultCFProxyDomain = "pclead.co.uk"`, `defaultMaxConns = 256`.
+
+Важные таймауты (оттуда же, пригодятся при объяснении «почему отвалилось через
+минуту»): `wsPoolMaxAge 120s`, `ioIdleTimeout 5m`, `dcFailCooldown 60s`,
+`ipFailCooldown 1h`, `frontingCooldown 30m`, `dcBlacklistTTL 10m`,
+`cfProxyFailCooldown 1m`, обновление списка CF-доменов раз в час.
+
+---
+
+## 3. CLI-флаги (сверено с `src/config.go`)
+
+Go-шный `flag` понимает и `-flag`, и `--flag`; повторный флаг — побеждает
+последний (это важно, см. §4.2).
+
+| Флаг | Тип | Дефолт | Смысл |
+|------|-----|--------|-------|
+| `-host` | string | `127.0.0.1` | адрес прослушивания |
+| `-port` | int | `1443` | порт |
+| `-secret` | string | — | MTProto secret, 32 hex |
+| `-gen-secret` | bool | false | сгенерировать секрет и выйти |
+| `-print-link` | bool | false | напечатать `tg://` ссылку и выйти |
+| `-v` | bool | false | verbose |
+| `-log-file` | string | — | путь к логу |
+| `-log-max-mb` | float | 5 | ротация лога |
+| `-log-backups` | int | 0 | сколько ротаций хранить |
+| `-buf-kb` | int | 64 | размер сокет-буфера |
+| `-pool-size` | int | 4 | размер WS-пула **на каждый DC** |
+| `-max-conns` | int | 256 | максимум клиентских сессий |
+| `-fake-tls-domain` | string | — | включить Fake TLS (ee-секрет) с этим доменом |
+| `-cfproxy-domain` | string | `pclead.co.uk` | свой домен за Cloudflare CDN |
+| `-cfproxy-domains` | string | — | пул CF-доменов через запятую |
+| `-cfproxy-worker-domain` | string | — | домен(ы) CF-Worker через запятую |
+| `-cfproxy-domains-url` | string | — | URL со списком CF-доменов |
+| `-no-cfproxy` | bool | false | выключить CF-фоллбэк совсем |
+| `-cfproxy-priority` | bool | **true** | пробовать cfproxy **до** TCP-фоллбэка |
+| `-no-cfproxy-domain-refresh` | bool | false | не обновлять список доменов по URL |
+| `-dc-ip-default` | string | `149.154.167.220` | IP для всех неявных DC |
+| `-dc-ip-default-pool` | string | — | пул IP через запятую |
+| `-dc-ip` | repeat | — | `DC:IP`, можно повторять |
+| `-dc-ip-pool` | repeat | — | `DC:IP1,IP2`, можно повторять |
+| `-pprof-listen` | string | — | адрес pprof |
+
+---
+
+## 4. config.conf → argv: что init.d реально делает
+
+### 4.1. Переменные, которые читает init.d
+
+`files/common/etc/tg-ws-proxy/config.conf` (дефолты апстрима):
+
+```sh
+HOST=0.0.0.0
+PORT=1443
+DC_IP_DEFAULT=149.154.167.220
+DC_IP_DEFAULT_POOL=""
+FAKE_TLS_DOMAIN=""
+CFPROXY_DOMAINS=""
+CFPROXY_DOMAINS_URL="https://raw.githubusercontent.com/Flowseal/tg-ws-proxy/main/.github/cfproxy-domains.txt"
+CFPROXY_WORKER_DOMAINS=""
+EXTRA_ARGS=""
+```
+
+`SECRET` лежит **отдельно** в `secret.conf` (у нас — права `0600`).
+
+### 4.2. Как строится командная строка
+
+```sh
+set -- --host "$HOST" --port "$PORT" --secret "$SECRET" \
+       --dc-ip-default "$DC_IP_DEFAULT" --dc-ip-default-pool "$DC_IP_DEFAULT_POOL"
+[ -n "$CFPROXY_DOMAINS" ]        && set -- "$@" --cfproxy-domains "$CFPROXY_DOMAINS"
+[ -n "$CFPROXY_DOMAINS_URL" ]    && set -- "$@" --cfproxy-domains-url "$CFPROXY_DOMAINS_URL"
+[ -n "$CFPROXY_WORKER_DOMAINS" ] && set -- "$@" --cfproxy-worker-domain "$CFPROXY_WORKER_DOMAINS"
+[ -n "$FAKE_TLS_DOMAIN" ]        && set -- "$@" --fake-tls-domain "$FAKE_TLS_DOMAIN"
+[ -n "$EXTRA_ARGS" ]             && set -- "$@" $EXTRA_ARGS
+case " $EXTRA_ARGS " in *" -v "*) set -- "$@" --log-file "$LOGFILE" ;; esac
+```
+
+Три следствия, на которые опирается наш код:
+
+- **`EXTRA_ARGS` идёт последним** → всё, что мы туда кладём, перекрывает
+  собранное выше. Именно поэтому `--cfproxy-domain` (для которого переменной в
+  `config.conf` нет вообще) передаётся только так.
+- **`config.conf` шеллом `source`-ится** → значения обязаны быть в кавычках, а
+  управляющие символы отсекаться до записи. У нас: `_shell_quote_value()` =
+  `shlex.quote` на каждое значение + отдельная проверка на `< 32 / 127` и на
+  `$`\`` ; & | < >` в `extra_args`.
+- **`EXTRA_ARGS` подставляется без кавычек** (`$EXTRA_ARGS`, намеренно — чтобы
+  шелл разбил на слова) → значение внутри флага не должно содержать пробелов.
+
+### 4.3. LOG_LEVEL — мёртвая переменная (важно)
+
+`LOG_LEVEL` **не читает никто**: ни init.d, ни бинарник (флага такого нет).
+Verbose включается флагом `-v` в `EXTRA_ARGS`, и **обязательно с одним
+дефисом**: init.d ищет `*" -v "*`, а `--v` под шаблон не попадает — бинарник
+его поймёт, но `--log-file` дописан не будет и **лога не появится**.
+
+Поэтому `save_config()` сам добавляет `-v` в `EXTRA_ARGS`, когда `log_level`
+не в `("", "0", "off", "false")`. Ключ `LOG_LEVEL` мы продолжаем писать только
+как учётное поле GUI.
+
+### 4.4. Наши собственные `X_`-поля
+
+Шелл молча игнорирует незнакомые переменные, чем мы и пользуемся: `X_CF_DOMAIN`,
+`X_CF_WORKER_DOMAIN`, `X_MODE`, `X_POOL_SIZE`, `X_MAX_CONNS`, `X_BUF_KB`,
+`X_NO_CFPROXY_DOMAIN_REFRESH`, `X_EXTRA_ARGS` — **источник истины для GUI**,
+`EXTRA_ARGS` — то, что реально уходит бинарнику.
+
+Зачем `X_EXTRA_ARGS` отдельно: в `EXTRA_ARGS` лежит **смесь** пользовательских
+флагов и сгенерированных нами (`--no-cfproxy`, `--pool-size=…`). Отдавать эту
+смесь наружу как `extra_args` нельзя — `GET config` → `PUT config` тем же телом
+падал бы на whitelist (`Недопустимый extra_args флаг: --no-cfproxy`).
+`get_config()` возвращает пользовательскую часть в `extra_args`, а полную
+строку — в `extra_args_effective` (только для показа).
+
+Whitelist пользовательских флагов (`_ALLOWED_USER_EXTRA_FLAGS`): `--v`,
+`--log-file`, `--log-max-mb`, `--log-backups`, `--pprof-listen`,
+`--no-cfproxy-domain-refresh`. Всё остальное — либо генерируем сами из
+валидированных полей, либо запрещаем: `--secret` из `extra_args` не должен
+уметь перетереть секрет.
+
+---
+
+## 5. Режимы выхода на датацентр (наш слой)
+
+`X_MODE` — наша абстракция, у апстрима её нет. Маппинг в флаги (`save_config`):
+
+| Режим (GUI) | `X_MODE` | Что добавляется в `EXTRA_ARGS` |
+|-------------|----------|-------------------------------|
+| Прямое подключение | `direct` | `--no-cfproxy` |
+| Cloudflare community | `cfcommunity` | ничего (дефолт бинарника: cfproxy включён, приоритетен) |
+| Cloudflare custom domain / Worker | `cfdomain` | `--cfproxy-domain=<dom>` **или** `--cfproxy-worker-domain=<dom>` |
+| Hybrid | `hybrid` | `--cfproxy-priority=false` (сначала прямое, потом CF) |
+| Через WARP-туннель | `tunnel` | `--no-cfproxy` + маршрут DC-подсетей в туннель (§8) |
+
+Всегда добавляются `--pool-size` / `--max-conns` / `--buf-kb` из профиля
+ресурсов (stealth 1/32/32 · balanced 2/64/64 · low latency 4/128/128).
+
+Инварианты:
+
+- `cf_domain` и `cf_worker_domain` **взаимоисключающие** — ошибка, если заданы
+  оба.
+- `cfdomain` без домена — ошибка.
+- Режимы `cfdomain` и `tunnel` бессмысленно сочетать: при CF-домене исходящее
+  соединение идёт на IP Cloudflare, а маршрут туннеля матчит IP Telegram —
+  просто ни на что не влияет.
+- Легаси-конфиг без `X_MODE` (написан руками или старым GUI): `get_config()`
+  выводит режим по наличию CF-домена, а не отдаёт «direct» вслепую.
+
+---
+
+## 6. Ссылка `tg://proxy` и секрет
+
+Формат секрета — публичная конвенция MTProxy, не наша выдумка:
+
+```
+dd + <32 hex>                       → обычный secure-режим
+ee + <32 hex> + hex(fake_tls_domain) → fake-TLS (ee), SNI-фронтинг
+```
+
+`_build_proxy_link(host, port, secret_hex, fake_tls_domain)` собирает
+`tg://proxy?server=…&port=…&secret=…`.
+
+Про host в ссылке: если `HOST` = `0.0.0.0`, в ссылку подставляется LAN-адрес
+роутера (`_lan_ip()` — UDP-сокет на `10.255.255.255`, ничего не отправляет).
+Не определился — пользователь вводит адрес сам; молча подсовывать `127.0.0.1`
+нельзя, по такой ссылке телефон не подключится.
+
+**Fake-TLS домен** маскирует ТОЛЬКО входящее соединение клиента к роутеру
+(режим `ee`). Он никак не влияет на TLS-фингерпринт исходящего WSS до
+Telegram/Cloudflare — на странице это написано прямым текстом, не убирать.
+
+**Ротация секрета** (`rotate_secret`) требует `confirm=True`: все выданные
+ссылки мгновенно перестают работать. Обычное сохранение настроек секрет **не
+трогает** — если `secret` пустой, берётся существующий из `secret.conf`.
+
+---
+
+## 7. Установка и детект
+
+`BINARIES["tgwsproxy"]` в `core/ext_binary_installer.py`:
+
+- репозиторий `spatiumstas/tg-ws-proxy-go`, **закреплённый** тег `0.9.2`
+  (не «последний релиз»);
+- `install_kind: "package"` — качаем **пакет**, а не бинарник:
+  Entware `.ipk` (aarch64, armv7, mips, mipsel) → `opkg --force-reinstall
+  install <file>`; OpenWrt `.apk` (aarch64, mips, mipsel) → `apk add
+  --allow-untrusted <file>`;
+- sha256 каждой сборки зашит в `sha256_map` с ключами `opkg:<arch>` /
+  `apk:<arch>`; **fail-closed** — нет хэша или не совпал, установка не идёт
+  (`allow_unpinned` для этого пакета не выставлен);
+- маркер установки — `status_file` = init.d-скрипт, а не `dest`: бинарник
+  пакет кладёт куда хочет.
+
+Детект в менеджере (`_find_tgwsproxy_initd`) — по исполняемому init.d:
+`/opt/etc/init.d/S99tg-ws-proxy` (Entware), `/etc/init.d/tg-ws-proxy` и
+`/etc/init.d/S99tg-ws-proxy` (OpenWrt). Каталог конфига выбирается **по тому
+же признаку**: `/opt/…` → `/opt/etc/tg-ws-proxy`, `/etc/…` →
+`/etc/tg-ws-proxy`; на dev-хосте без пакета — временный каталог, чтобы не
+писать в read-only `/opt`.
+
+**Управляем только через init.d** (`start`/`stop`/`status`). Не пытаться
+демонизировать процесс самим: пакет уже ведёт PID-файл и лог, вторая
+демонизация рассинхронизирует PID и сломает рестарты.
+
+`start()` не верит коду возврата `init.d start` (тот возвращается сразу после
+форка): спит секунду и проверяет фактическое состояние. `_status_locked()` тоже
+не полагается на один сигнал — `init.d status` **плюс** независимая TCP-проба
+порта.
+
+---
+
+## 8. Маршрутизация датацентров Telegram через WARP-туннель
+
+Альтернатива CF-домену: пустить трафик к DC через **уже поднятый** AWG+WARP или
+MASQUE(usque)+WARP. Делается штатным единым слоем (`core.unified`), а не
+новоделом: `save_route({... "method": "warp:<iface>" | "awg:<iface>"})` →
+`applier._apply_tunnel()` → `CidrRoutingRule`.
+
+- `_DC_ROUTE_ID = "tgproxy-telegram-dc-via-tunnel"` — фиксированный id, маршрут
+  ровно один и он **пересоздаётся**, а не плодится.
+- `TELEGRAM_DC_CIDRS` — выгрузка `core.telegram.org/resources/cidr.txt`, тот же
+  источник, что у `import/lists/ipset-telegram.txt` (тест сверяет их
+  автоматически). IPv6-диапазоны сознательно не берём: на IPv4-только туннеле
+  `ip -6 rule` не на что вешать, и маршрут отчитался бы ошибкой целиком.
+- `list_available_warp_tunnels()` отдаёт `{kind, iface, label, running}`.
+  **Имя AWG-конфига ≠ имя интерфейса**: `awg0-opkgtun0.conf` живёт на
+  `opkgtun0`. Брать `cfg["iface"]`, иначе `ip rule` вешается на
+  несуществующий интерфейс и правило навсегда остаётся `deferred`.
+- Имя интерфейса приходит с клиента и уходит в argv `ip` — валидируется
+  регуляркой.
+- Снятие маршрута идемпотентно: «маршрута нет» — это уже нужное состояние.
+
+> Честное предупреждение в GUI: WARP-туннель и общий VPN — **одна и та же
+> инфраструктура**. Упадёт WARP — исчезнет и обход Telegram. CF-домен от
+> состояния вашего туннеля не зависит. Не убирать этот текст.
+
+---
+
+## 9. Интеграция с nfqws2
+
+nfqws2 поверх tgwsproxy — **вторая независимая линия защиты** на случай, если
+провайдер научится фингерпринтить сам WSS-хендшейк к Cloudflare. Не замена
+CF-фоллбэку.
+
+Практически: домен, через который идёт CF-прокси, должен попасть в hostlist,
+который обрабатывает nfqws2. Для **явно заданного** `cf_domain` /
+`cf_worker_domain` мы это делаем сами —
+`_register_cf_domain_for_nfqws()` заводит маршрут единого слоя с методом
+`nfqws2` и **фиксированным** id `_CF_DOMAIN_ROUTE_ID`. Убрали домен — маршрут
+снимается (`_unregister_cf_domain_for_nfqws`).
+
+Для **community-пула так делать нельзя**: домен выбирает сам бинарник во время
+работы, заранее он неизвестен — обещать обратное было бы дезинформацией.
+
+---
+
+## 10. Резервный движок tg-mtproxy-client
+
+Голый бинарник (`/opt/usr/bin/tg-mtproxy-client`, `/opt/sbin/…`), через GUI не
+ставится. Запуск: `--listen <host>:<port> --tunnel-url <relay> --tunnel-secret
+<hex>`.
+
+Инварианты, каждый из которых — оплаченный урок:
+
+- `stdout/stderr = DEVNULL`. С `PIPE` без чтения пайп переполняется и процесс
+  виснет на `write()`.
+- После `kill()` **обязателен** `wait()` — иначе зомби.
+- **Слушать надо тот адрес, который печатается в ссылке.** Раньше процесс
+  слушал `127.0.0.1`, а `get_connect_info()` отдавал LAN-адрес — по такой
+  ссылке подключиться было невозможно в принципе.
+- `relay` обязателен и проверяется на схему (`ws/wss/http/https`); берётся из
+  тела запроса, иначе из `tgproxy.tunnel_url` в настройках, и сохраняется туда
+  после удачного запуска.
+
+---
+
+## 11. Автозапуск
+
+`app.py` при старте поднимает tg-ws-proxy-go, если включены **оба** флага:
+`tgproxy.enabled` **и** `tgproxy.autostart` (`core/config_manager.py`, секция
+`tgproxy`). Выставляются одним переключателем через
+`PUT /api/tgproxy/autostart` — он пишет оба ключа сразу. Для резервного движка
+автозапуска нет: он поднимается руками.
+
+---
+
+## 12. Диагностика
+
+| Симптом | Куда смотреть |
+|---------|---------------|
+| «init.d вернул успех, но процесс не поднялся» | `start()` уже это проверяет. Смотреть лог пакета: `/opt/var/log/` (Entware) или `/var/log/`. Лога нет вообще — см. §4.3, нужен именно `-v` |
+| Лога нет, хотя verbose включён | В `EXTRA_ARGS` попал `--v` вместо `-v` — init.d дописывает `--log-file` только по `*" -v "*` |
+| Статус «запущен», но клиент не подключается | Проверить `HOST`: прокси на `127.0.0.1` виден только роутеру. Ссылка ведёт на LAN-адрес — адреса должны совпадать |
+| Ссылка не открывается / «неверный секрет» | `ee`-ссылка требует непустого `FAKE_TLS_DOMAIN`; сменили secret — все старые ссылки мертвы |
+| Настройки сохранились, но ничего не изменилось | Работающий процесс `config.conf` не перечитывает — нужен «Перезапустить» |
+| Работает через раз / часть чатов не грузится | Режим `direct` при блокировке по диапазону IP. Переключить на CF-домен или hybrid; проверить, что список DC-подсетей полный (§8) |
+| Обход отвалился одновременно с VPN | Режим `tunnel`: общий failure domain с WARP (§8) |
+| `Недопустимый extra_args флаг: --no-cfproxy` | Кто-то шлёт обратно `extra_args_effective` вместо `extra_args` (§4.4) |
+| Порт занят | `MTPROXY_LOCAL_PORT` и дефолтный порт tgwsproxy — оба `1443`. Два движка одновременно поднимать не надо |
+
+---
+
+## 13. Инварианты — что не ломать
+
+1. **Не добавлять флаг, которого нет в `src/config.go`.** Go-шный `flag` при
+   неизвестном флаге печатает usage и **завершает процесс** — прокси просто не
+   поднимется.
+2. **Не добавлять переменную в `config.conf` в надежде, что её прочитают.**
+   Читаются ровно те, что перечислены в §4.1; всё остальное — либо `X_`-поле
+   для GUI, либо мусор.
+3. **`PUT /api/tgproxy/tgwsproxy/config` — частичное обновление.** Страница
+   шлёт неполное тело; поля, которых нет в запросе, обязаны сохранять текущее
+   значение. Иначе каждое «Сохранить» сбрасывает `HOST`, `LOG_LEVEL`,
+   `DC_IP_DEFAULT_POOL` и свой `CFPROXY_DOMAINS_URL` в дефолты.
+4. **Обычное сохранение не ротирует секрет.** Ротация — только явным
+   `POST /secret/rotate` с `confirm: true`.
+5. **`secret` не отдаётся в `GET /config`** (только `secret_configured`); в
+   открытом виде он неизбежно нужен лишь в `connect-info` для ссылки.
+   `secret.conf` — `0600`.
+6. **Маршруты единого слоя, которые мы создаём автоматически, обязаны иметь
+   фиксированный id.** Без него `UnifiedRoute` генерирует новый `route-<rand>`
+   на каждое сохранение, и маршруты копятся дубликатами.
+7. **Значения из полей ввода не подставлять в inline `onclick="…('${x}')"`** —
+   только `data`-атрибуты + `addEventListener`: `esc()` защищает от разрыва
+   HTML, но не от разрыва JS-строки внутри HTML-атрибута.
+8. **Не обещать в UI то, чего движок не делает.** `InsecureSkipVerify` в
+   исходящем WSS у апстрима — есть, и предупреждение об этом на странице
+   остаётся, пока не появится обновлённый бинарник.

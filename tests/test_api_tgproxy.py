@@ -168,6 +168,75 @@ class TestTgproxyConfigPut(unittest.TestCase):
         self.assertEqual(r["_status"], 200)
         self.assertFalse(r.get("ok"))
 
+    def test_put_keeps_fields_absent_from_body(self):
+        """PUT — частичное обновление. Страница шлёт только часть полей;
+        раньше остальные молча уезжали в дефолты (HOST, LOG_LEVEL,
+        DC_IP_DEFAULT_POOL, свой CFPROXY_DOMAINS_URL)."""
+        first = self.client.put_json("/api/tgproxy/tgwsproxy/config", {
+            "host": "192.168.10.1",
+            "port": 1443,
+            "log_level": "2",
+            "dc_ip_default_pool": "149.154.167.220,149.154.175.50",
+            "cfproxy_domains_url": "https://example.org/pool.txt",
+            "mode": "direct",
+        })
+        self.assertTrue(first.get("ok"), first)
+
+        # Тело ровно такое, какое шлёт страница при «Сохранить».
+        second = self.client.put_json("/api/tgproxy/tgwsproxy/config", {
+            "port": 1443, "fake_tls_domain": "",
+            "cf_domain": "", "cf_worker_domain": "",
+            "dc_ip_default": "149.154.167.220", "mode": "direct",
+            "pool_size": 2, "max_conns": 64, "buf_kb": 64,
+        })
+        self.assertTrue(second.get("ok"), second)
+
+        cfg = self.client.get_json("/api/tgproxy/tgwsproxy/config")["config"]
+        self.assertEqual(cfg["host"], "192.168.10.1")
+        self.assertEqual(cfg["log_level"], "2")
+        self.assertEqual(cfg["dc_ip_default_pool"],
+                         "149.154.167.220,149.154.175.50")
+        self.assertEqual(cfg["cfproxy_domains_url"],
+                         "https://example.org/pool.txt")
+
+    def test_get_put_config_round_trip(self):
+        """GET → PUT тем же телом не должен падать на extra_args."""
+        cfg = self.client.get_json("/api/tgproxy/tgwsproxy/config")["config"]
+        r = self.client.put_json("/api/tgproxy/tgwsproxy/config", cfg)
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r.get("ok"), r)
+
+
+class TestTgproxyAutostart(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = WSGIClient(build_test_app())
+
+    def test_autostart_toggle_round_trip(self):
+        """app.py поднимает прокси при загрузке по tgproxy.enabled +
+        tgproxy.autostart — выставить их было нечем."""
+        try:
+            r = self.client.put_json("/api/tgproxy/autostart",
+                                     {"autostart": True})
+            self.assertEqual(r["_status"], 200)
+            self.assertTrue(r.get("ok"), r)
+            self.assertIs(
+                self.client.get_json("/api/tgproxy/autostart")["autostart"],
+                True)
+
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            self.assertTrue(cfg.get("tgproxy", "enabled"))
+            self.assertTrue(cfg.get("tgproxy", "autostart"))
+        finally:
+            self.client.put_json("/api/tgproxy/autostart", {"autostart": False})
+
+    def test_autostart_requires_field(self):
+        r = self.client.put_json("/api/tgproxy/autostart", {})
+        self.assertEqual(r["_status"], 200)
+        self.assertIs(r.get("ok"), False)
+
 
 class TestTgproxyRouteViaTunnel(unittest.TestCase):
 

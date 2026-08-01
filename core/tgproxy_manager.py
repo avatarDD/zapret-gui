@@ -98,10 +98,28 @@ _DEFAULT_CFPROXY_DOMAINS_URL = (
 # пакета (unknown-переменные шелл просто игнорирует), это наши
 # собственные учётные поля. Без них get_config() не мог бы честно
 # вернуть обратно то, что было сохранено: реальное поведение бинарника
-# управляется через EXTRA_ARGS (--cf-domain=.../--cf-worker-domain=...),
-# а распарсить их обратно из EXTRA_ARGS ненадёжно (могут быть смешаны с
-# другими ручными флагами пользователя). Отдельные X_-поля — источник
-# истины для GUI, EXTRA_ARGS — то, что реально передаётся бинарнику.
+# управляется через EXTRA_ARGS (--cfproxy-domain=... /
+# --cfproxy-worker-domain=...), а распарсить их обратно из EXTRA_ARGS
+# ненадёжно (могут быть смешаны с другими ручными флагами
+# пользователя). Отдельные X_-поля — источник истины для GUI,
+# EXTRA_ARGS — то, что реально передаётся бинарнику.
+#
+# X_EXTRA_ARGS — по той же причине: в EXTRA_ARGS лежит СМЕСЬ
+# пользовательских флагов и тех, что мы сами собрали из mode/профиля
+# ресурсов (--no-cfproxy, --pool-size=…). Отдавать эту смесь как
+# `extra_args` было нельзя: GET config → PUT config тем же телом падал
+# с «Недопустимый extra_args флаг: --no-cfproxy» (whitelist знает
+# только пользовательские флаги). Пользовательская часть хранится
+# отдельно и именно она возвращается в get_config()["extra_args"].
+#
+# Набор ключей сверен с upstream (files/common/etc/tg-ws-proxy/config.conf
+# и files/*/etc/init.d/S99tg-ws-proxy в spatiumstas/tg-ws-proxy-go):
+# init.d читает HOST, PORT, SECRET, DC_IP_DEFAULT, DC_IP_DEFAULT_POOL,
+# CFPROXY_DOMAINS, CFPROXY_DOMAINS_URL, CFPROXY_WORKER_DOMAINS,
+# FAKE_TLS_DOMAIN и EXTRA_ARGS (последний дописывается в конец
+# командной строки, поэтому наши флаги перекрывают всё, что собрано
+# выше). LOG_LEVEL там НЕ читается — это наше поле, verbose включается
+# флагом `-v` в EXTRA_ARGS (см. save_config).
 _TGWSPROXY_CONFIG_KEYS = [
     "HOST",
     "PORT",
@@ -111,6 +129,7 @@ _TGWSPROXY_CONFIG_KEYS = [
     "FAKE_TLS_DOMAIN",
     "CFPROXY_DOMAINS",
     "CFPROXY_DOMAINS_URL",
+    "CFPROXY_WORKER_DOMAINS",
     "EXTRA_ARGS",
     "X_CF_DOMAIN",
     "X_CF_WORKER_DOMAIN",
@@ -119,7 +138,15 @@ _TGWSPROXY_CONFIG_KEYS = [
     "X_MAX_CONNS",
     "X_BUF_KB",
     "X_NO_CFPROXY_DOMAIN_REFRESH",
+    "X_EXTRA_ARGS",
 ]
+
+_TGWSPROXY_MODES = ("direct", "cfcommunity", "cfdomain", "hybrid", "tunnel")
+
+# Фиксированный id авто-маршрута «CF-домен tg-ws-proxy → nfqws2» в едином
+# слое: маршрут ровно один и он пересоздаётся (а не плодится) при каждом
+# сохранении конфига.
+_CF_DOMAIN_ROUTE_ID = "tgproxy-cf-domain-nfqws2"
 
 _ALLOWED_USER_EXTRA_FLAGS = {
     "--v",
@@ -358,6 +385,16 @@ class TgWsProxyManager:
             except (TypeError, ValueError):
                 return default
 
+        cf_domain = cfg.get("X_CF_DOMAIN", "")
+        cf_worker_domain = cfg.get("X_CF_WORKER_DOMAIN", "")
+        # X_MODE появился позже самого config.conf: у конфига, записанного
+        # прежней версией GUI (или вручную), его нет. Отдавать в этом
+        # случае "direct" — врать: если задан CF-домен, выход идёт через
+        # Cloudflare, и GUI показывал бы не тот выбранный режим.
+        mode = cfg.get("X_MODE", "")
+        if mode not in _TGWSPROXY_MODES:
+            mode = "cfdomain" if (cf_domain or cf_worker_domain) else "direct"
+
         return {
             "host": cfg.get("HOST", "0.0.0.0"),
             "port": _cfg_int("PORT", 1443),
@@ -365,14 +402,19 @@ class TgWsProxyManager:
             "dc_ip_default": cfg.get("DC_IP_DEFAULT", "149.154.167.220"),
             "dc_ip_default_pool": cfg.get("DC_IP_DEFAULT_POOL", ""),
             "fake_tls_domain": cfg.get("FAKE_TLS_DOMAIN", ""),
-            "cf_domain": cfg.get("X_CF_DOMAIN", ""),
-            "cf_worker_domain": cfg.get("X_CF_WORKER_DOMAIN", ""),
+            "cf_domain": cf_domain,
+            "cf_worker_domain": cf_worker_domain,
             "cfproxy_domains": cfg.get("CFPROXY_DOMAINS", ""),
             "cfproxy_domains_url": cfg.get(
                 "CFPROXY_DOMAINS_URL", _DEFAULT_CFPROXY_DOMAINS_URL
             ),
-            "extra_args": cfg.get("EXTRA_ARGS", ""),
-            "mode": cfg.get("X_MODE", "direct"),
+            # Только пользовательская часть — её и принимает save_config()
+            # обратно (см. комментарий у _TGWSPROXY_CONFIG_KEYS).
+            "extra_args": cfg.get("X_EXTRA_ARGS", ""),
+            # Полная строка, которая реально уходит бинарнику — для
+            # диагностики в GUI/логах; на вход save_config() не годится.
+            "extra_args_effective": cfg.get("EXTRA_ARGS", ""),
+            "mode": mode,
             "pool_size": _cfg_int("X_POOL_SIZE", 2),
             "max_conns": _cfg_int("X_MAX_CONNS", 64),
             "buf_kb": _cfg_int("X_BUF_KB", 64),
@@ -411,7 +453,7 @@ class TgWsProxyManager:
         extra_args ограничен whitelist, а сетевые режимы/pool/max-conns
         формируются только из валидированных полей.
         """
-        if mode not in ("direct", "cfcommunity", "cfdomain", "hybrid", "tunnel"):
+        if mode not in _TGWSPROXY_MODES:
             return {"ok": False, "error": "Неизвестный режим tg-ws-proxy: %s" % mode}
 
         initd = _find_tgwsproxy_initd()
@@ -482,6 +524,15 @@ class TgWsProxyManager:
         extra_error = _validate_user_extra(extra_parts)
         if extra_error:
             return {"ok": False, "error": extra_error}
+        user_extra = " ".join(shlex.quote(p) for p in extra_parts)
+        # Verbose. LOG_LEVEL из config.conf init.d-скрипт не читает
+        # вообще (сверено с upstream) — само по себе это поле не давало
+        # ничего. Реальный тумблер — `-v` в EXTRA_ARGS, причём именно с
+        # ОДНИМ дефисом: init.d включает запись в лог-файл по
+        # `case " $EXTRA_ARGS " in *" -v "*)`, и `--v` под этот шаблон не
+        # попадает (бинарник-то его понимает, а лог-файл не появляется).
+        if str(log_level or "0").strip().lower() not in ("", "0", "off", "false"):
+            extra_parts.append("-v")
         if mode in ("direct", "tunnel"):
             extra_parts.append("--no-cfproxy")
         elif mode == "hybrid":
@@ -514,6 +565,12 @@ class TgWsProxyManager:
                 "CFPROXY_DOMAINS_URL": (
                     cfproxy_domains_url or _DEFAULT_CFPROXY_DOMAINS_URL
                 ),
+                # Родное поле upstream-конфига под тот же
+                # --cfproxy-worker-domain, что мы дублируем в EXTRA_ARGS:
+                # значение одно и то же (конфликта нет, EXTRA_ARGS идёт
+                # последним), но правка config.conf руками теперь не
+                # разъезжается с тем, что показывает GUI.
+                "CFPROXY_WORKER_DOMAINS": cf_worker_domain,
                 "EXTRA_ARGS": extra,
                 "X_CF_DOMAIN": cf_domain,
                 "X_CF_WORKER_DOMAIN": cf_worker_domain,
@@ -522,6 +579,7 @@ class TgWsProxyManager:
                 "X_MAX_CONNS": str(max_conns),
                 "X_BUF_KB": str(buf_kb),
                 "X_NO_CFPROXY_DOMAIN_REFRESH": "1" if no_cfproxy_domain_refresh else "0",
+                "X_EXTRA_ARGS": user_extra,
             },
             _TGWSPROXY_CONFIG_KEYS,
         )
@@ -535,6 +593,11 @@ class TgWsProxyManager:
         active_cf_domain = cf_domain or cf_worker_domain
         if active_cf_domain:
             self._register_cf_domain_for_nfqws(active_cf_domain)
+        else:
+            # Ушли с cfdomain-режима (или сменили домен на пустой) —
+            # снимаем авто-маршрут, иначе nfqws2 продолжал бы обрабатывать
+            # домен, которого в конфиге уже нет.
+            self._unregister_cf_domain_for_nfqws()
 
         return {"ok": True, "secret_configured": True}
 
@@ -557,7 +620,9 @@ class TgWsProxyManager:
             cf_worker_domain=cfg.get("cf_worker_domain", ""),
             cfproxy_domains=cfg.get("cfproxy_domains", ""),
             cfproxy_domains_url=cfg.get("cfproxy_domains_url", ""),
-            extra_args="",
+            # Пользовательская часть флагов (X_EXTRA_ARGS) — ротация
+            # секрета не должна их терять.
+            extra_args=cfg.get("extra_args", ""),
             secret=secrets.token_hex(16),
             log_level=cfg.get("log_level", "0"),
             mode=cfg.get("mode", "direct"),
@@ -579,12 +644,19 @@ class TgWsProxyManager:
         core.unified.manager (реальный, проверенный API этого проекта —
         не выдуманный). Только для явно указанного пользователем
         домена — для дефолтного community-пула это не делается (см.
-        docstring файла, почему)."""
+        docstring файла, почему).
+
+        id маршрута фиксирован: без него UnifiedRoute генерировал новый
+        `route-<rand>` на КАЖДОЕ сохранение конфига, и в единый слой
+        сыпались дубликаты «tg-ws-proxy CF-домен (авто)» — по одному на
+        каждое нажатие «Сохранить», включая маршруты на давно убранные
+        домены."""
         try:
             from core.unified import manager as unified_manager
 
             result = unified_manager.save_route(
                 {
+                    "id": _CF_DOMAIN_ROUTE_ID,
                     "name": "tg-ws-proxy CF-домен (авто)",
                     "destination": {"domains": [domain]},
                     "method": "nfqws2",
@@ -610,6 +682,21 @@ class TgWsProxyManager:
                 source="tgproxy",
             )
 
+    def _unregister_cf_domain_for_nfqws(self) -> None:
+        """Снять авто-маршрут CF-домена (его больше нет в конфиге)."""
+        try:
+            from core.unified import manager as unified_manager
+
+            if unified_manager.get_route(_CF_DOMAIN_ROUTE_ID) is None:
+                return
+            result = unified_manager.delete_route(_CF_DOMAIN_ROUTE_ID)
+            if result.get("ok"):
+                log.info("tg-ws-proxy: авто-маршрут CF-домена под nfqws2 снят",
+                         source="tgproxy")
+        except Exception as e:
+            log.warning("tg-ws-proxy: снятие авто-маршрута CF-домена: %s" % e,
+                        source="tgproxy")
+
     # ─────── start / stop / status через init.d ───────
 
     def start(self) -> dict[str, Any]:
@@ -622,7 +709,9 @@ class TgWsProxyManager:
                     % ", ".join(TGWSPROXY_INITD_CANDIDATES),
                 }
             if not det["config_exists"]:
-                return {"ok": False, "error": "Нет config.conf — сначала save_config()"}
+                return {"ok": False,
+                        "error": "Нет config.conf — сначала сохраните "
+                                 "настройки tg-ws-proxy"}
 
             initd = det.get("path") or _find_tgwsproxy_initd()
             r = subprocess.run(
@@ -704,11 +793,10 @@ class TgWsProxyManager:
         }
 
     def _port_listening(self, port: int, host: str = "") -> bool:
-        # Probe the configured bind address and loopback for 0.0.0.0. A
-        # service bound to a LAN address is not required to listen on lo.
+        # Probe the configured bind address; for a wildcard bind probe
+        # loopback. A service bound to a LAN address is not required to
+        # listen on lo, so loopback is not a fallback for that case.
         targets = [host] if host and host not in ("0.0.0.0", "::") else ["127.0.0.1"]
-        if host and host not in targets and host not in ("0.0.0.0", "::"):
-            targets.append("127.0.0.1")
         for target in targets:
             try:
                 try:
@@ -801,6 +889,7 @@ class MtProxyClientManager:
         self._secret = ""
         self._port = MTPROXY_LOCAL_PORT
         self._relay = MTPROXY_DEFAULT_RELAY
+        self._host = ""
 
     def detect(self) -> dict[str, Any]:
         bin_path = _find_mtproxy_binary()
@@ -812,6 +901,7 @@ class MtProxyClientManager:
         port: int = MTPROXY_LOCAL_PORT,
         relay: str = MTPROXY_DEFAULT_RELAY,
         secret: str = "",
+        host: str = "",
     ) -> dict[str, Any]:
         with self._lock:
             if self._proc and self._proc.poll() is None:
@@ -828,13 +918,37 @@ class MtProxyClientManager:
             relay = (relay or "").strip()
             if not relay:
                 return {"ok": False, "error": "relay обязателен для mtproto-режима"}
+            relay_scheme = urlparse(relay).scheme
+            if relay_scheme not in ("ws", "wss", "http", "https"):
+                return {"ok": False,
+                        "error": "relay должен быть URL ws://, wss://, "
+                                 "http:// или https://"}
 
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "Некорректный port"}
+            if not (1 <= port <= 65535):
+                return {"ok": False, "error": "port вне диапазона 1-65535"}
+
+            if secret and not re.match(r"^[0-9a-fA-F]{32}$", secret):
+                return {"ok": False,
+                        "error": "secret должен содержать 32 hex-символа"}
             secret = secret or secrets.token_hex(16)
+
+            # Слушать по умолчанию на LAN-адресе роутера, а не на
+            # 127.0.0.1: телефон подключается по ссылке tg://proxy из той
+            # же сети, а get_connect_info() и раньше выдавал LAN-адрес —
+            # то есть ссылка вела на адрес, который процесс не слушал, и
+            # резервный движок был нерабочим по построению.
+            host = (host or "").strip() or _lan_ip() or "127.0.0.1"
+            if not _valid_host(host):
+                return {"ok": False, "error": "Некорректный host"}
 
             args = [
                 bin_path,
                 "--listen",
-                "127.0.0.1:%d" % port,
+                "%s:%d" % (host, port),
                 "--tunnel-url",
                 relay,
                 "--tunnel-secret",
@@ -862,11 +976,13 @@ class MtProxyClientManager:
             self._secret = secret
             self._port = port
             self._relay = relay
+            self._host = host
             log.success(
-                "tg-mtproxy-client: запущен (relay=%s, port=%d)" % (relay, port),
+                "tg-mtproxy-client: запущен (relay=%s, %s:%d)"
+                % (relay, host, port),
                 source="tgproxy",
             )
-            return {"ok": True, "secret": secret, "port": port}
+            return {"ok": True, "secret": secret, "port": port, "host": host}
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
@@ -896,6 +1012,7 @@ class MtProxyClientManager:
             return {
                 "running": running,
                 "port": self._port if running else None,
+                "host": self._host if running else None,
                 "relay": self._relay if running else None,
             }
 
@@ -903,7 +1020,8 @@ class MtProxyClientManager:
         with self._lock:
             if not (self._proc and self._proc.poll() is None):
                 return {"link": "", "error": "не запущен"}
-            host = _lan_ip() or "127.0.0.1"
+            # Ровно тот адрес, на котором процесс реально слушает.
+            host = self._host or _lan_ip() or "127.0.0.1"
             link = _build_proxy_link(host, self._port, self._secret)
             return {"link": link, "host": host, "port": self._port}
 
@@ -953,14 +1071,27 @@ CidrRoutingRule — тот же зрелый механизм маршрутиз
 одновременно (это два разных failure domain у Cloudflare).
 """
 
+# Источник — https://core.telegram.org/resources/cidr.txt (та же
+# выгрузка, что лежит в import/lists/ipset-telegram.txt). Раньше здесь
+# не хватало 91.105.192.0/23 и 185.76.151.0/24: часть сессий уходила
+# мимо туннеля, и обход выглядел «через раз».
+#
+# IPv6-диапазоны Telegram (2001:b28::/…, 2a0a:f280::/32) сознательно НЕ
+# добавлены: CidrRoutingRule развернул бы их в `ip -6 rule`, а на
+# IPv4-только туннеле (типичный WARP/AWG-профиль без IPv6 в AllowedIPs)
+# default-route в таблице для v6 не создаётся — маршрут целиком
+# отчитался бы ошибкой. Telegram работает по IPv4, если IPv6 у клиента
+# не маршрутизируется.
 TELEGRAM_DC_CIDRS = [
     "149.154.160.0/20",
+    "91.105.192.0/23",
     "91.108.4.0/22",
     "91.108.8.0/22",
     "91.108.12.0/22",
     "91.108.16.0/22",
     "91.108.20.0/22",
     "91.108.56.0/22",
+    "185.76.151.0/24",
 ]
 
 _DC_ROUTE_ID = "tgproxy-telegram-dc-via-tunnel"
@@ -1001,12 +1132,19 @@ def list_available_warp_tunnels() -> list[dict[str, Any]]:
             name = cfg.get("name", "")
             if not name:
                 continue
+            # Имя конфига ≠ имя интерфейса: `awg0-opkgtun0.conf` живёт на
+            # интерфейсе `opkgtun0`. Маршрут строится по ИНТЕРФЕЙСУ —
+            # раньше сюда уходило имя файла, и `ip rule` вешался на
+            # несуществующий iface (правило навсегда оставалось
+            # deferred), а «запущен/не запущен» определялось по нему же.
+            iface = cfg.get("iface") or name
             out.append(
                 {
                     "kind": "awg",
-                    "iface": name,
-                    "label": "AWG: %s" % name,
-                    "running": bool(amgr.is_running(name)),
+                    "iface": iface,
+                    "label": ("AWG: %s" % name if iface == name
+                              else "AWG: %s (%s)" % (name, iface)),
+                    "running": bool(cfg.get("active") or amgr.is_running(iface)),
                 }
             )
     except Exception as e:
@@ -1021,8 +1159,13 @@ def route_telegram_dc_via_tunnel(kind: str, iface: str) -> dict[str, Any]:
     для AmneziaWG)."""
     if kind not in ("warp", "awg"):
         return {"ok": False, "error": "kind должен быть 'warp' или 'awg'"}
+    iface = (iface or "").strip()
     if not iface:
         return {"ok": False, "error": "Не указан интерфейс туннеля"}
+    # Имя интерфейса приходит с клиента и уходит в argv `ip rule` —
+    # держим его в рамках того, что вообще может быть именем iface.
+    if not re.match(r"^[A-Za-z0-9_.@-]{1,15}$", iface):
+        return {"ok": False, "error": "Некорректное имя интерфейса: %s" % iface}
 
     try:
         from core.unified import manager as unified_manager
@@ -1053,6 +1196,11 @@ def unroute_telegram_dc_via_tunnel() -> dict[str, Any]:
     try:
         from core.unified import manager as unified_manager
 
+        # Идемпотентно: «маршрута нет» — это уже нужное состояние, а не
+        # ошибка. GUI дёргает снятие при каждом сохранении не-tunnel
+        # режима, и ok:False там означал бы ложную ошибку.
+        if unified_manager.get_route(_DC_ROUTE_ID) is None:
+            return {"ok": True, "noop": True}
         return unified_manager.delete_route(_DC_ROUTE_ID)
     except Exception as e:
         return {"ok": False, "error": str(e)}

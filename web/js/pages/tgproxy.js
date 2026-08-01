@@ -80,7 +80,19 @@ const TgProxyPage = (() => {
         if (_inFlight || document.hidden) return;
         _inFlight = true;
         try {
-            await Promise.all([_loadStatusDirect(), _loadTgwsproxyConfig(), _loadMtprotoPanel()]);
+            // /status и /detect нужны сразу трём панелям — тянем по
+            // одному разу и раздаём. Раньше полный refresh делал два
+            // запроса /detect и два /status; на роутере каждый из них —
+            // это subprocess к init.d и TCP-проба порта.
+            const [st, det] = await Promise.all([
+                API.get("/api/tgproxy/status").catch(e => ({ _error: e })),
+                API.get("/api/tgproxy/detect").catch(e => ({ _error: e })),
+            ]);
+            await Promise.all([
+                _loadStatusDirect(st),
+                _loadTgwsproxyConfig(det),
+                _loadMtprotoPanel(det, st),
+            ]);
         } finally {
             _inFlight = false;
         }
@@ -88,11 +100,12 @@ const TgProxyPage = (() => {
 
     // ─────────────────────────── статус ───────────────────────────
 
-    async function _loadStatusDirect() {
+    async function _loadStatusDirect(prefetched) {
         const el = document.getElementById("tgproxy-status");
         if (!el) return;
         try {
-            const st = await API.get("/api/tgproxy/status");
+            const st = prefetched || await API.get("/api/tgproxy/status");
+            if (st._error) throw st._error;
             const rows = [
                 _statusRow("tg-ws-proxy-go", st.tgwsproxy),
                 _statusRow("tg-mtproxy-client", st.mtproto),
@@ -164,11 +177,12 @@ const TgProxyPage = (() => {
 
     // ─────────────────────────── tgwsproxy: конфиг ───────────────────────────
 
-    async function _loadTgwsproxyConfig() {
+    async function _loadTgwsproxyConfig(prefetchedDetect) {
         const el = document.getElementById("tgwsproxy-config");
         if (!el) return;
         try {
-            const det = await API.get("/api/tgproxy/detect");
+            const det = prefetchedDetect || await API.get("/api/tgproxy/detect");
+            if (det._error) throw det._error;
             if (!det.tgwsproxy || !det.tgwsproxy.installed) {
                 el.innerHTML = `<div class="text-muted" style="margin-bottom:10px;">
                     tg-ws-proxy-go не установлен (пакет <code>tg-ws-proxy</code>).
@@ -184,12 +198,14 @@ const TgProxyPage = (() => {
                 return;
             }
 
-            const [cfgRes, tunnelsRes] = await Promise.all([
+            const [cfgRes, tunnelsRes, autoRes] = await Promise.all([
                 API.get("/api/tgproxy/tgwsproxy/config"),
                 API.get("/api/tgproxy/tgwsproxy/tunnels"),
+                API.get("/api/tgproxy/autostart").catch(() => ({})),
             ]);
             const cfg = (cfgRes && cfgRes.config) || {};
             const tunnels = (tunnelsRes && tunnelsRes.tunnels) || [];
+            const autostart = !!(autoRes && autoRes.autostart);
             const configuredPoolSize = Number.isFinite(Number(cfg.pool_size)) ? Number(cfg.pool_size) : 2;
 
             // Режим выхода к Telegram DC определяем по текущему конфигу:
@@ -220,6 +236,19 @@ const TgProxyPage = (() => {
 
             el.innerHTML = `
                 <div class="form-grid">
+                    <div class="form-group">
+                        <label>Адрес прослушивания (bind)</label>
+                        <input type="text" id="tgws-host" class="form-control"
+                               value="${esc(cfg.host || "")}"
+                               placeholder="0.0.0.0">
+                        <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                            Адрес, на котором прокси ждёт подключений из LAN.
+                            <code>0.0.0.0</code> — все интерфейсы; можно указать
+                            конкретный LAN-адрес роутера. Именно он подставляется
+                            в ссылку <code>tg://proxy</code>.
+                        </div>
+                    </div>
+
                     <div class="form-group">
                         <label>Порт</label>
                         <input type="number" id="tgws-port" class="form-control"
@@ -355,6 +384,18 @@ const TgProxyPage = (() => {
                             Сменить secret
                         </button>
                     </div>
+
+                    <div class="form-group">
+                        <label>Автозапуск</label>
+                        <label class="checkbox-option">
+                            <input type="checkbox" id="tgws-autostart"
+                                   ${autostart ? "checked" : ""}>
+                            Поднимать при старте роутера
+                        </label>
+                        <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                            Прокси стартует вместе с zapret-gui после перезагрузки.
+                        </div>
+                    </div>
                 </div>
 
                 <div class="alert alert-warning" style="font-size:12px; margin-top:12px;">
@@ -390,6 +431,11 @@ const TgProxyPage = (() => {
                     <button class="btn btn-danger" id="tgws-btn-down">Остановить</button>
                     <button class="btn" id="tgws-btn-restart">Перезапустить</button>
                 </div>
+                <div class="text-muted" style="font-size:11px; margin-top:8px;">
+                    Настройки пишутся в <code>config.conf</code>; работающий
+                    процесс их не перечитывает — после «Сохранить» нажмите
+                    «Перезапустить».
+                </div>
             `;
 
             document.querySelectorAll('input[name="tgws-mode"]').forEach(r => {
@@ -405,6 +451,8 @@ const TgProxyPage = (() => {
                 "click", () => _tgwsAction("restart"));
             document.getElementById("tgws-btn-rotate-secret").addEventListener(
                 "click", _rotateSecret);
+            const autoBox = document.getElementById("tgws-autostart");
+            if (autoBox) autoBox.addEventListener("change", _toggleAutostart);
 
             await _loadTgwsproxyConnectInfo();
         } catch (e) {
@@ -420,8 +468,29 @@ const TgProxyPage = (() => {
         });
     }
 
+    async function _toggleAutostart(ev) {
+        const box = ev.currentTarget;
+        const want = !!box.checked;
+        box.disabled = true;
+        try {
+            const res = await API.put("/api/tgproxy/autostart", { autostart: want });
+            if (res && res.ok) {
+                Toast.success(want ? "Автозапуск включён" : "Автозапуск выключен");
+            } else {
+                box.checked = !want;
+                Toast.error((res && res.error) || "Не удалось сохранить автозапуск");
+            }
+        } catch (e) {
+            box.checked = !want;
+            Toast.error("Ошибка: " + e.message);
+        } finally {
+            box.disabled = false;
+        }
+    }
+
     async function _saveTgwsproxyConfig() {
         const mode = document.querySelector('input[name="tgws-mode"]:checked').value;
+        const host = document.getElementById("tgws-host").value.trim();
         const port = parseInt(document.getElementById("tgws-port").value, 10) || 1443;
         const fakeTls = document.getElementById("tgws-fake-tls").value.trim();
         const dcIp = document.getElementById("tgws-dc-ip").value.trim();
@@ -448,12 +517,12 @@ const TgProxyPage = (() => {
         }
 
         try {
-            // Сохраняем config.conf: в режиме "tunnel"/"direct" явно
-            // очищаем cf_domain/cf_worker_domain, чтобы не оставался
-            // рассинхронизированный конфиг (см. предупреждение в
-            // документации функции: PUT — полная перезапись).
+            // Сохраняем config.conf. PUT обновляет только переданные
+            // поля, поэтому cf_domain/cf_worker_domain в режимах
+            // "tunnel"/"direct" отправляем ЯВНО пустыми — иначе прежний
+            // домен остался бы в конфиге и продолжал бы работать.
             const res = await API.put("/api/tgproxy/tgwsproxy/config", {
-                port, fake_tls_domain: fakeTls,
+                host, port, fake_tls_domain: fakeTls,
                 cf_domain: cfDomain, cf_worker_domain: cfWorker,
                 dc_ip_default: dcIp,
                 mode,
@@ -552,17 +621,20 @@ const TgProxyPage = (() => {
 
     // ─────────────────────────── mtproto (резерв) ───────────────────────────
 
-    async function _loadMtprotoPanel() {
+    async function _loadMtprotoPanel(prefetchedDetect, prefetchedStatus) {
         const el = document.getElementById("mtproto-panel");
         if (!el) return;
         try {
-            const det = await API.get("/api/tgproxy/detect");
+            const det = prefetchedDetect || await API.get("/api/tgproxy/detect");
+            if (det._error) throw det._error;
             if (!det.mtproto || !det.mtproto.installed) {
                 el.innerHTML = `<div class="text-muted">tg-mtproxy-client не найден на роутере.</div>`;
                 return;
             }
-            const st = await API.get("/api/tgproxy/status");
+            const st = prefetchedStatus || await API.get("/api/tgproxy/status");
             const running = !!(st.mtproto && st.mtproto.running);
+            const mcfg = ((await API.get("/api/tgproxy/mtproto/config")
+                .catch(() => ({}))) || {}).config || {};
 
             let connectHtml = "";
             if (running) {
@@ -575,11 +647,28 @@ const TgProxyPage = (() => {
                 }
             }
 
+            // Поле relay обязательно: движок релей-based, без адреса
+            // релея запускать нечего. Раньше поля не было вовсе, и
+            // кнопка «Запустить» всегда возвращала «relay обязателен».
             el.innerHTML = `
                 <div class="text-muted" style="margin-bottom:8px;">
                     Резервный вариант через community-relay. Использовать, если
                     tg-ws-proxy-go (включая Cloudflare-фоллбэк) перестал работать
                     целиком — самостоятельная от Cloudflare инфраструктура.
+                </div>
+                <div class="form-group">
+                    <label>Relay (WSS-адрес)</label>
+                    <input type="text" id="mtp-relay" class="form-control"
+                           value="${esc(mcfg.relay || "")}"
+                           placeholder="wss://relay.example.org/ws"
+                           ${running ? "disabled" : ""}>
+                    <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                        Адрес релея, через который движок ходит к Telegram.
+                        Сохраняется после успешного запуска.
+                        ${mcfg.secret_configured
+                            ? "Secret сохранён — при запуске используется он."
+                            : "Secret будет сгенерирован при первом запуске."}
+                    </div>
                 </div>
                 <button class="btn ${running ? 'btn-danger' : 'btn-success'}" id="mtp-btn-toggle">
                     ${running ? "Остановить" : "Запустить"}
@@ -595,8 +684,14 @@ const TgProxyPage = (() => {
 
     async function _mtprotoToggle(currentlyRunning) {
         try {
-            const res = await API.post(
-                currentlyRunning ? "/api/tgproxy/mtproto/down" : "/api/tgproxy/mtproto/up");
+            let res;
+            if (currentlyRunning) {
+                res = await API.post("/api/tgproxy/mtproto/down");
+            } else {
+                const relayEl = document.getElementById("mtp-relay");
+                const relay = relayEl ? relayEl.value.trim() : "";
+                res = await API.post("/api/tgproxy/mtproto/up", { relay });
+            }
             if (res.ok) {
                 Toast.success(currentlyRunning ? "Остановлен" : "Запущен");
                 await _refresh();

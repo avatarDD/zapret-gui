@@ -11,17 +11,23 @@ API управления обходом блокировки Telegram.
 Эндпоинты:
   GET  /api/tgproxy/status                    — статус обоих движков
   GET  /api/tgproxy/detect                    — что установлено
+  GET  /api/tgproxy/autostart                 — автозапуск при загрузке
+  PUT  /api/tgproxy/autostart                 — включить/выключить его
 
   GET  /api/tgproxy/tgwsproxy/config          — текущий конфиг
-  PUT  /api/tgproxy/tgwsproxy/config          — сохранить конфиг (тут и
-                                                 задаётся cf_domain)
+  PUT  /api/tgproxy/tgwsproxy/config          — частичное обновление
+                                                 конфига (тут и задаётся
+                                                 cf_domain); поля, которых
+                                                 нет в теле, сохраняют
+                                                 текущее значение
   POST /api/tgproxy/tgwsproxy/up
   POST /api/tgproxy/tgwsproxy/down
   POST /api/tgproxy/tgwsproxy/restart
   POST /api/tgproxy/tgwsproxy/secret/rotate
   GET  /api/tgproxy/tgwsproxy/connect-info    — tg://proxy ссылка
 
-  POST /api/tgproxy/mtproto/up
+  GET  /api/tgproxy/mtproto/config            — сохранённый relay
+  POST /api/tgproxy/mtproto/up                — relay из тела или конфига
   POST /api/tgproxy/mtproto/down
   GET  /api/tgproxy/mtproto/connect-info
 """
@@ -157,15 +163,27 @@ def register(app):
 
     @app.route("/api/tgproxy/tgwsproxy/config", method="PUT")
     def tgwsproxy_config_put():
-        from core.tgproxy_manager import get_tgwsproxy_manager
+        from core.tgproxy_manager import get_tgwsproxy_manager, _TGWSPROXY_MODES
         mgr = get_tgwsproxy_manager()
         data = request.json or {}
 
-        cf_domain = (data.get("cf_domain") or "").strip()
-        cf_worker_domain = (data.get("cf_worker_domain") or "").strip()
-        fake_tls_domain = (data.get("fake_tls_domain") or "").strip()
-        mode = (data.get("mode") or "direct").strip()
-        if mode not in ("direct", "cfcommunity", "cfdomain", "hybrid", "tunnel"):
+        # PUT — частичное обновление поверх текущего config.conf, а не
+        # запись «с нуля». Раньше отсутствующие в теле поля молча
+        # подменялись дефолтами: страница шлёт только port/mode/домены/
+        # профиль ресурсов, и каждое «Сохранить» сбрасывало HOST на
+        # адрес, определённый на стороне сервера, LOG_LEVEL в "0",
+        # DC_IP_DEFAULT_POOL в пустую строку, а собственный
+        # CFPROXY_DOMAINS_URL — на community-пул по умолчанию.
+        current = mgr.get_config()
+
+        def _field(key):
+            return current.get(key, "") if key not in data else data.get(key)
+
+        cf_domain = (_field("cf_domain") or "").strip()
+        cf_worker_domain = (_field("cf_worker_domain") or "").strip()
+        fake_tls_domain = (_field("fake_tls_domain") or "").strip()
+        mode = (_field("mode") or "direct").strip()
+        if mode not in _TGWSPROXY_MODES:
             return {"ok": False, "error": "Неизвестный режим: %s" % mode}
 
         for label, val in (("cf_domain", cf_domain),
@@ -176,34 +194,34 @@ def register(app):
                         "Недопустимый домен в поле %s: %r" % (label, val)}
 
         try:
-            port = int(data.get("port", 1443))
+            port = int(data.get("port", current.get("port") or 1443))
         except (TypeError, ValueError):
             return {"ok": False, "error": "port должен быть числом"}
         if not (1 <= port <= 65535):
             return {"ok": False, "error": "port вне диапазона 1-65535"}
 
-        host = (data.get("host") or "").strip() or _lan_ip_fallback()
+        host = (_field("host") or "").strip() or _lan_ip_fallback()
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in host):
             return {"ok": False, "error": "Недопустимый host"}
         return mgr.save_config(
             host=host,
             port=port,
-            dc_ip_default=data.get("dc_ip_default", "149.154.167.220"),
-            dc_ip_default_pool=data.get("dc_ip_default_pool", ""),
+            dc_ip_default=_field("dc_ip_default") or "149.154.167.220",
+            dc_ip_default_pool=_field("dc_ip_default_pool") or "",
             fake_tls_domain=fake_tls_domain,
             cf_domain=cf_domain,
             cf_worker_domain=cf_worker_domain,
-            cfproxy_domains=data.get("cfproxy_domains", ""),
-            cfproxy_domains_url=data.get("cfproxy_domains_url", ""),
-            extra_args=data.get("extra_args", ""),
+            cfproxy_domains=_field("cfproxy_domains") or "",
+            cfproxy_domains_url=_field("cfproxy_domains_url") or "",
+            extra_args=_field("extra_args") or "",
             secret=data.get("secret", ""),
-            log_level=str(data.get("log_level", "0")),
+            log_level=str(_field("log_level") or "0"),
             mode=mode,
-            pool_size=data.get("pool_size", 2),
-            max_conns=data.get("max_conns", 64),
-            buf_kb=data.get("buf_kb", 64),
+            pool_size=data.get("pool_size", current.get("pool_size", 2)),
+            max_conns=data.get("max_conns", current.get("max_conns", 64)),
+            buf_kb=data.get("buf_kb", current.get("buf_kb", 64)),
             no_cfproxy_domain_refresh=bool(
-                data.get("no_cfproxy_domain_refresh", False)),
+                _field("no_cfproxy_domain_refresh")),
         )
 
     @app.route("/api/tgproxy/tgwsproxy/secret/rotate", method="POST")
@@ -233,6 +251,38 @@ def register(app):
         from core.tgproxy_manager import get_tgwsproxy_manager
         return get_tgwsproxy_manager().get_connect_info()
 
+    # ─────────────────────────── автозапуск ───────────────────────────
+    # app.py при старте поднимает tg-ws-proxy-go, если включены ОБА
+    # флага tgproxy.enabled и tgproxy.autostart. Ставить их было нечем —
+    # ни API, ни страницы: код автозапуска не мог сработать ни при каких
+    # действиях пользователя, и после перезагрузки роутера прокси
+    # оставался лежать. Один переключатель выставляет оба флага.
+
+    @app.route("/api/tgproxy/autostart", method="GET")
+    def tgproxy_autostart_get():
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        return {
+            "ok": True,
+            "autostart": bool(cfg.get("tgproxy", "enabled", default=False)
+                              and cfg.get("tgproxy", "autostart", default=False)),
+        }
+
+    @app.route("/api/tgproxy/autostart", method="PUT")
+    def tgproxy_autostart_put():
+        from core.config_manager import get_config_manager
+        data = request.json or {}
+        if "autostart" not in data:
+            return {"ok": False, "error": "Не передан autostart"}
+        enabled = bool(data.get("autostart"))
+        cfg = get_config_manager()
+        cfg.set("tgproxy", "enabled", enabled)
+        cfg.set("tgproxy", "autostart", enabled)
+        cfg.set("tgproxy", "engine", "tgwsproxy")
+        if not cfg.save():
+            return {"ok": False, "error": "Не удалось сохранить настройки"}
+        return {"ok": True, "autostart": enabled}
+
     # ─────── маршрутизация Telegram DC через уже поднятый WARP-туннель ───────
     # (альтернатива CF-домену/CF-Worker — см. core.tgproxy_manager для
     # объяснения компромиссов: общий failure domain с самим WARP-туннелем)
@@ -261,21 +311,68 @@ def register(app):
 
     # ─────────────────────────── mtproto (резерв) ───────────────────────────
 
+    @app.route("/api/tgproxy/mtproto/config", method="GET")
+    def mtproto_config_get():
+        """Relay/secret резервного движка (secret не отдаём открытым)."""
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        from core.tgproxy_manager import MTPROXY_LOCAL_PORT
+        return {
+            "ok": True,
+            "config": {
+                "relay": cfg.get("tgproxy", "tunnel_url", default="") or "",
+                "secret_configured": bool(
+                    cfg.get("tgproxy", "tunnel_secret", default="")),
+                "port": cfg.get("tgproxy", "port", default=MTPROXY_LOCAL_PORT),
+            },
+        }
+
     @app.route("/api/tgproxy/mtproto/up", method="POST")
     def mtproto_up():
         from core.tgproxy_manager import (get_mtproxy_client_manager,
                                           MTPROXY_LOCAL_PORT)
+        from core.config_manager import get_config_manager
         mgr = get_mtproxy_client_manager()
         data = request.json or {}
+        cfg = get_config_manager()
+
+        # Relay/secret берём из тела запроса, а при отсутствии — из
+        # сохранённых tgproxy.tunnel_url/tunnel_secret. Без этого кнопка
+        # «Запустить» на странице (она шлёт пустое тело) всегда падала в
+        # «relay обязателен для mtproto-режима»: ввести relay было негде,
+        # а сохранённый в конфиге никто не читал.
+        relay = (data.get("relay") or "").strip()
+        persist = bool(relay)
+        if not relay:
+            relay = (cfg.get("tgproxy", "tunnel_url", default="") or "").strip()
+        secret = (data.get("secret") or "").strip()
+        if not secret:
+            secret = (cfg.get("tgproxy", "tunnel_secret", default="") or "").strip()
+
         try:
-            port = int(data.get("port", MTPROXY_LOCAL_PORT))
+            port = int(data.get("port")
+                       or cfg.get("tgproxy", "port", default=MTPROXY_LOCAL_PORT)
+                       or MTPROXY_LOCAL_PORT)
         except (TypeError, ValueError):
             return {"ok": False, "error": "port должен быть числом"}
-        return mgr.start(
+
+        res = mgr.start(
             port=port,
-            relay=(data.get("relay") or "").strip(),
-            secret=data.get("secret", ""),
+            relay=relay,
+            secret=secret,
+            host=(data.get("host") or "").strip(),
         )
+        if res.get("ok") and persist:
+            # Запомнить рабочий relay, чтобы после перезагрузки GUI его
+            # не приходилось вводить заново.
+            try:
+                cfg.set("tgproxy", "tunnel_url", relay)
+                cfg.set("tgproxy", "tunnel_secret", res.get("secret", ""))
+                cfg.set("tgproxy", "port", port)
+                cfg.save()
+            except Exception:
+                pass
+        return res
 
     @app.route("/api/tgproxy/mtproto/down", method="POST")
     def mtproto_down():
