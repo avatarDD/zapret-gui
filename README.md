@@ -50,6 +50,7 @@ Python/Bottle-бэкенд. Работает как на роутере с ~20 �
   - [Маршрутизация (единый слой)](#маршрутизация-единый-слой)
   - [AmneziaWG](#amneziawg)
   - [Opera Proxy](#opera-proxy)
+  - [Telegram Tunnel](#telegram-tunnel)
   - [sing-box](#sing-box)
   - [mihomo](#mihomo)
   - [Списки, домены, IP, блобы, Lua, hosts](#списки-и-данные)
@@ -355,6 +356,96 @@ Opera Proxy — **локальный прокси, а не метод едино
 > сообщает об этом после установки и пишет в лог. Нужна только строгая
 > проверка — ставьте `v1.28.0` вручную и не жмите «Обновить».
 
+### Telegram Tunnel
+
+**Локальный MTProto-прокси на роутере** для обхода блокировки Telegram.
+Приложение Telegram подключается к роутеру по ссылке `tg://proxy`, а
+исходящее соединение заворачивается в WSS и (по выбору) уходит через
+Cloudflare — это лечит именно блокировку **по диапазону IP датацентров
+Telegram**, а не только точечный DPI. VPS не нужен: прокси и клиент — в
+одной домашней сети, белый IP не требуется.
+
+Движков два:
+
+- **tg-ws-proxy-go** — основной. Управляется через свой init.d-скрипт
+  (`start`/`stop`/`status`), конфиг — `/opt/etc/tg-ws-proxy/config.conf`
+  (на OpenWrt `/etc/tg-ws-proxy/`), секрет отдельно в `secret.conf` с
+  правами `0600`.
+- **tg-mtproxy-client** — резервный, relay-based. Нужен на случай, если
+  ляжет вся инфраструктура Cloudflare разом (у основного движка это общая
+  точка отказа). Требует адрес релея (`wss://…`) — он сохраняется после
+  первого удачного запуска.
+
+**Как выходить на датацентр Telegram** — переключатель из пяти режимов:
+
+| Режим | Что происходит |
+|-------|----------------|
+| **Прямое подключение** | Соединение идёт на IP датацентра (поле «DC IP»). Работает, только если провайдер не режет диапазон целиком. |
+| **Cloudflare community** | Публичный пул доменов апстрима. Быстро начать, но пул общий — может быть перегружен или заблокирован. |
+| **Cloudflare custom domain / Worker** | Свой домен за «оранжевым облаком» **или** бесплатный `*.workers.dev`. Заполняется что-то одно. |
+| **Hybrid** | Сначала напрямую, затем Cloudflare-фоллбэк (`--cfproxy-priority=false`). |
+| **Через существующий WARP-туннель** | CIDR датацентров Telegram (список с `core.telegram.org/resources/cidr.txt`) заворачиваются в уже поднятый AWG+WARP или MASQUE+WARP через единый слой маршрутизации. |
+
+Остальное на странице: **порт и адрес прослушивания** (bind — он же
+подставляется в ссылку `tg://proxy`), **fake-TLS домен** (режим `ee`,
+маскирует входящее соединение клиента к роутеру — на исходящий WSS не
+влияет), **профиль соединений** (stealth 1/32 · balanced 2/64 · low
+latency 4/128), **автозапуск при старте роутера**, готовая ссылка
+подключения с кнопкой «Копировать» и **смена secret** (с подтверждением:
+все выданные ранее ссылки перестанут работать).
+
+Настройки пишутся в `config.conf`, работающий процесс их не перечитывает
+— после «Сохранить» нажмите «Перезапустить».
+
+> Если задан **свой** CF-домен, GUI дополнительно заводит для него
+> авто-маршрут `nfqws2` в едином слое — чтобы стратегия десинхронизации
+> применялась и к WSS-соединению до Cloudflare. Для community-пула так
+> сделать нельзя: домен выбирает сам бинарник во время работы, и заранее
+> он неизвестен.
+
+> Режим «через WARP-туннель» и CF-домен — **разные failure domain**, но
+> первый делит инфраструктуру с вашим общим VPN: упадёт WARP — исчезнет и
+> обход Telegram. Для отказоустойчивости держите оба способа
+> переключаемыми.
+
+> Текущий upstream tg-ws-proxy-go использует `InsecureSkipVerify` для
+> исходящего WSS — GUI не прячет это ограничение, строгая TLS-проверка
+> требует обновлённого апстрим-бинарника.
+
+**Бинарник.** Ставится кнопками «Установить tg-ws-proxy» / «Обновить до
+последней версии» прямо на странице. GUI берёт **последний релиз**
+[spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go)
+(форк [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) под
+встраиваемые устройства). Качается **готовый пакет**, а не голый
+бинарник, и ставится штатным пакетным менеджером, поэтому вместе с ним
+приезжает init.d-скрипт `S99tg-ws-proxy`:
+
+- Entware — `.ipk` для **aarch64, armv7, mips, mipsel** → `opkg
+  --force-reinstall install`;
+- OpenWrt — `.apk` для **aarch64, mips, mipsel** → `apk add
+  --allow-untrusted`.
+
+Ваши `config.conf` и `secret.conf` при обновлении сохраняются — апстрим
+объявляет их conffiles, — а сам пакет после установки перезапускает
+сервис. Если нужная версия уже стоит, скачивания не будет («уже
+актуальная версия»).
+
+> **Про проверку целостности.** Для известной нам версии (`0.9.3`) в
+> манифест зашит sha256 каждой сборки — не совпал, установка прерывается;
+> нет хэша под вашу архитектуру у этой же версии — установка тоже не
+> начнётся (fail-closed, как у остальных бинарников). Для более новой
+> версии фиксированного хэша быть не может, а файла контрольных сумм
+> апстрим не публикует, поэтому целостность держится на HTTPS к GitHub —
+> GUI прямо сообщает об этом после установки и пишет в лог. Нужна только
+> строгая проверка — ставьте `0.9.3` вручную через `opkg install`.
+
+Community-пул CF-доменов тянется отдельно, уже самим бинарником, из
+`raw.githubusercontent.com/Flowseal/tg-ws-proxy/…/cfproxy-domains.txt`.
+
+Резервный **tg-mtproxy-client** через GUI не ставится: он ищется по
+путям `/opt/usr/bin/tg-mtproxy-client` и `/opt/sbin/tg-mtproxy-client`, и
+если его там нет — панель так и пишет.
+
 ### sing-box
 
 ![sing-box — конфиги, подписки, пул](docs/img/singbox-configs.png)
@@ -570,6 +661,9 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 | **Cloudflare WARP** | `api.cloudflareclient.com` | AmneziaWG → WARP (нативная генерация) |
 | **opera-proxy** | [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Opera Proxy → «Установить» / «Обновить до последней версии» |
 | **Opera VPN (SurfEasy)** | `api2.sec-tunnel.com` + узлы `*.sec-tunnel.com` | Opera Proxy — регистрация устройства, список стран, сам трафик |
+| **tg-ws-proxy** (пакет `.ipk`/`.apk`) | [spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Telegram Tunnel → «Установить» / «Обновить до последней версии» |
+| **Пул CF-доменов для Telegram** | [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) (`.github/cfproxy-domains.txt`) | Telegram Tunnel → режим «Cloudflare community» (тянет сам бинарник) |
+| **CIDR датацентров Telegram** | `core.telegram.org/resources/cidr.txt` (выгрузка в `import/lists/ipset-telegram.txt`) | Telegram Tunnel → режим «через WARP-туннель», списки IP |
 | **Курируемые списки доменов** | [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) | Списки → Готовые списки |
 | **Публичные серверы (пул)** | [Epodonios/v2ray-configs](https://github.com/Epodonios/v2ray-configs), [ebrasha/free-v2ray-public-list](https://github.com/ebrasha/free-v2ray-public-list), [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia), [kort0881/vpn-vless-configs-russia](https://github.com/kort0881/vpn-vless-configs-russia) | sing-box → Пул серверов (пресеты) |
 | **Проба тестера** | `cp.cloudflare.com` / `aws.amazon.com` / `www.gstatic.com` (generate_204) | sing-box → Тест серверов |
