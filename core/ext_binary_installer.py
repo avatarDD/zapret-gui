@@ -449,6 +449,10 @@ BINARIES = {
             "x86_64": "opera-proxy.linux-amd64",
             "mipsel": "opera-proxy.linux-mipsle",
             "mips": "opera-proxy.linux-mips",
+            # armv7 у апстрима есть (ELF ARM EABI5, статическая сборка) —
+            # без этой строки установка на armv7-роутерах отказывала
+            # «архитектура не поддерживается», хотя бинарник опубликован.
+            "armv7": "opera-proxy.linux-arm",
         },
         # sha256 сборок v1.28.0 (посчитаны с релизных URL; процедура
         # сверена — хэши v1.27.0, посчитанные так же, совпали с прежним
@@ -458,6 +462,7 @@ BINARIES = {
             "x86_64": "19cdb8f80dfae56cb0be2c5a2e228f48a7ab2a6a0d382bdef29a7afe7e918227",
             "mipsel": "179826987cd1861836b21bf49dc1674e9efb94c142fb4a2bcc2599f909ec1f41",
             "mips": "3c0a1dab4fefd95b3c232e3df81bbb9bbb7a191e6a3e5a6da7adb567df52edcf",
+            "armv7": "bfecc0c667f76e3ce62404ec4847040c9f7a14169deb2d3f7558f9e0a751b394",
         },
     },
 }
