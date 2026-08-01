@@ -9,6 +9,12 @@ const UpdateCheckerPage = (() => {
 
     // Куда вести за установкой/обновлением каждого компонента.
     // Имена — те же, что отдаёт /api/updates (см. core/update_checker).
+    //
+    // Оба Telegram-движка живут на ОДНОЙ странице, поэтому им нужен
+    // ?focus=<движок>: без него нажатие «Установить» напротив
+    // tg-mtproxy-client открывало страницу на панели tg-ws-proxy-go, и
+    // выглядело это как «не та программа и без кнопки установки»
+    // (issue #272).
     const _PAGES = {
         "zapret2":   "zapret",
         "gui":       "zapret",        // обновление GUI живёт там же
@@ -16,8 +22,8 @@ const UpdateCheckerPage = (() => {
         "singbox":   "singbox-setup",
         "mihomo":    "mihomo-setup",
         "usque":     "usque-setup",
-        "tgwsproxy": "tgproxy",
-        "tgproto":   "tgproxy",
+        "tgwsproxy": "tgproxy?focus=tgwsproxy",
+        "tgproto":   "tgproxy?focus=mtproto",
         "opera":     "opera-proxy",
     };
 

@@ -14,6 +14,7 @@ Integration-тесты для Telegram Proxy API (/api/tgproxy/*).
   9. POST /tgwsproxy/route-via-tunnel — валидация kind/iface
 """
 
+import threading
 import unittest
 from unittest import mock
 
@@ -292,3 +293,140 @@ class TestMtprotoUpAPI(unittest.TestCase):
         self.assertFalse(r["ok"])
         mgr.start.assert_called_once()
         self.assertEqual(mgr.start.call_args.kwargs["relay"], "")
+
+
+class TestTgproxyInstallEngine(unittest.TestCase):
+    """POST/GET /api/tgproxy/install — выбор движка через engine.
+
+    Регрессия issue #272: ручка знала только tg-ws-proxy, поэтому у
+    резервного tg-mtproxy-client в GUI не было способа установиться, хотя
+    манифест для него в ext_binary_installer уже лежал.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = WSGIClient(build_test_app())
+
+    def setUp(self):
+        from core.ext_binary_installer import _operation_status
+        _operation_status.clear()
+
+    def _install(self, body):
+        """POST /install с замоканным установщиком → имя из BINARIES."""
+        done = threading.Event()
+        seen = []
+
+        def _fake_install(name, progress_cb=None):
+            seen.append(name)
+            done.set()
+            return {"ok": True, "version": "1.0", "tag": "v1.0"}
+
+        with mock.patch("core.ext_binary_installer.install_binary_by_name",
+                        _fake_install):
+            r = self.client.post_json("/api/tgproxy/install", body)
+            done.wait(timeout=5)
+        return r, seen
+
+    def test_default_engine_is_tgwsproxy(self):
+        """Без engine — прежнее поведение (старый фронтенд)."""
+        r, seen = self._install({})
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["engine"], "tgwsproxy")
+        self.assertEqual(seen, ["tgwsproxy"])
+
+    def test_mtproto_engine_maps_to_tgproto(self):
+        """engine=mtproto ставит tgproto — имена GUI и манифеста разные."""
+        r, seen = self._install({"engine": "mtproto"})
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["engine"], "mtproto")
+        self.assertEqual(seen, ["tgproto"])
+
+    def test_unknown_engine_rejected(self):
+        """Неизвестный engine не запускает установку ничего."""
+        r = self.client.post_json("/api/tgproxy/install", {"engine": "teleproxy"})
+        self.assertEqual(r["_status"], 200)
+        self.assertIs(r["ok"], False)
+        self.assertIn("teleproxy", r["error"])
+
+    def test_status_is_per_engine(self):
+        """Прогресс у движков раздельный, а не общий на двоих."""
+        from core.ext_binary_installer import _operation_status
+        _operation_status["tgproto"] = {"status": "download", "progress": 30,
+                                        "message": "качаем"}
+        r = self.client.get_json("/api/tgproxy/install/status?engine=mtproto")
+        self.assertEqual(r["engine"], "mtproto")
+        self.assertEqual(r["progress"]["progress"], 30)
+
+        r = self.client.get_json("/api/tgproxy/install/status")
+        self.assertEqual(r["engine"], "tgwsproxy")
+        self.assertEqual(r["progress"]["status"], "idle")
+
+    def test_concurrent_install_not_restarted(self):
+        """Повторный POST во время установки не плодит второй поток."""
+        from core.ext_binary_installer import _operation_status
+        _operation_status["tgwsproxy"] = {"status": "download", "progress": 40,
+                                          "message": "качаем"}
+        with mock.patch("core.ext_binary_installer.install_binary_by_name") as m:
+            r = self.client.post_json("/api/tgproxy/install", {})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["progress"]["progress"], 40)
+        m.assert_not_called()
+
+    def test_detect_reports_installability(self):
+        """/detect говорит, есть ли сборка под архитектуру роутера."""
+        r = self.client.get_json("/api/tgproxy/detect")
+        for engine in ("tgwsproxy", "mtproto"):
+            self.assertIn("installable", r[engine])
+            self.assertIn("supported_archs", r[engine])
+            self.assertIsInstance(r[engine]["supported_archs"], list)
+
+
+class TestMtprotoInstalledTag(unittest.TestCase):
+    """Тег установленного tg-mtproxy-client запоминается в настройках.
+
+    У бинарника нет `--version`, и попытка спросить её просто запускает
+    прокси — поэтому единственный момент, когда версия известна, это сама
+    установка. Без записи «Обновления» навсегда показывали бы пустую
+    текущую версию.
+    """
+
+    def test_tag_recorded_for_mtproto(self):
+        from api.tgproxy import _remember_installed_tag
+        cm = mock.Mock()
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cm), \
+             mock.patch("core.config_manager.save_config") as save:
+            _remember_installed_tag("mtproto", {"tag": "z2k-classify-rolling",
+                                                "version": ""})
+        cm.set.assert_called_once_with(
+            "tgproxy", "mtproto_installed_tag", "z2k-classify-rolling")
+        save.assert_called_once()
+
+    def test_tag_not_recorded_for_tgwsproxy(self):
+        """У tg-ws-proxy версию отдаёт opkg/apk — своё поле ему не нужно."""
+        from api.tgproxy import _remember_installed_tag
+        cm = mock.Mock()
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cm):
+            _remember_installed_tag("tgwsproxy", {"tag": "v0.9.3"})
+        cm.set.assert_not_called()
+
+    def test_update_check_uses_pinned_tag(self):
+        """«Последняя» для tgproto — закреплённый тег, а не /releases/latest.
+
+        Иначе «Обновления» обещали бы версию, которую установщик никогда
+        не поставит (он ходит за release_tag из манифеста).
+        """
+        from core.update_checker import _check_tgproto
+        with mock.patch("core.update_checker._github_latest") as gl:
+            mgr = mock.Mock()
+            mgr.detect.return_value = {"installed": True,
+                                       "version": "z2k-classify-rolling"}
+            with mock.patch("core.tgproxy_manager.get_mtproxy_client_manager",
+                            return_value=mgr):
+                res = _check_tgproto()
+        gl.assert_not_called()
+        self.assertEqual(res["latest"], "z2k-classify-rolling")
+        self.assertIs(res["has_update"], False)

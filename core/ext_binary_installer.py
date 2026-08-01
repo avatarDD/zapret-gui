@@ -537,6 +537,40 @@ def get_install_status(name: str) -> dict:
     }
 
 
+def get_installability(name: str) -> dict:
+    """Есть ли в манифесте сборка под эту машину — БЕЗ запуска бинарника.
+
+    get_install_status() для «сырых» бинарников зовёт _get_version(), то
+    есть ЗАПУСКАЕТ файл. Для tg-mtproxy-client это означало бы поднимать
+    прокси на каждый опрос /api/tgproxy/detect, поэтому здесь только
+    манифест и `uname -m`.
+
+    Нужно, чтобы GUI показывал «нет сборки под вашу архитектуру» ДО
+    нажатия «Установить», а не отдавал кнопку, которая всегда падает.
+    """
+    cfg = BINARIES.get(name)
+    if not cfg:
+        return {"installable": False, "arch": "", "supported_archs": []}
+
+    install_kind = cfg.get("install_kind", "binary")
+    arch = detect_arch()
+    pkg_mgr = _package_manager() if install_kind == "package" else ""
+
+    if install_kind == "package" and (cfg.get("package_assets") or {}):
+        by_mgr = (cfg["package_assets"].get(pkg_mgr)
+                  or cfg["package_assets"].get("opkg") or {})
+        supported = sorted(by_mgr.keys())
+    else:
+        supported = sorted((cfg.get("arch_map") or {}).keys())
+
+    return {
+        "installable": bool(_resolve_asset_name(cfg, arch, pkg_mgr)),
+        "arch": arch,
+        "supported_archs": supported,
+        "repo": cfg.get("repo", ""),
+    }
+
+
 def _resolve_asset_name(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
     """Получить asset для выбранного типа установки."""
     if cfg.get("install_kind", "binary") == "package":

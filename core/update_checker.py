@@ -246,18 +246,28 @@ def _check_usque() -> dict:
 def _check_tgproto() -> dict:
     """Проверить tg-mtproxy-client."""
     try:
+        from core.ext_binary_installer import BINARIES
         from core.tgproxy_manager import get_mtproxy_client_manager
         mgr = get_mtproxy_client_manager()
         detect = mgr.detect()
-        latest = _github_latest("necronicle/z2k")
+        # «Последняя» — это та, которую реально поставит кнопка
+        # «Установить», а не та, что лежит в /releases/latest: у tgproto
+        # в манифесте закреплён тег. Спрашивать latest у GitHub значило
+        # бы обещать версию, которую установщик никогда не поставит —
+        # ровно тот тупик, из-за которого расфиксировали opera-proxy.
+        pinned = (BINARIES.get("tgproto", {}).get("release_tag") or "").strip()
+        latest = pinned.lstrip("v") if pinned else _github_latest("necronicle/z2k")
+        # _github_latest отдаёт тег без ведущего "v" — приводим к тому же
+        # виду и записанный установщиком, иначе "v1.0" против "1.0"
+        # выглядели бы как доступное обновление навсегда.
+        current = (detect.get("version") or "").strip().lstrip("v")
         return {
             "name": "tgproto",
             "display_name": "tg-mtproxy-client",
             "installed": detect.get("installed", False),
-            "current": detect.get("version", ""),
+            "current": current,
             "latest": latest,
-            "has_update": bool(latest and detect.get("version") and
-                               latest != detect["version"]),
+            "has_update": bool(latest and current and latest != current),
         }
     except Exception as e:
         return {"name": "tgproto", "display_name": "tg-mtproxy-client",
