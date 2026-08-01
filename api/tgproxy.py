@@ -99,9 +99,9 @@ def register(app):
 
     @app.route("/api/tgproxy/install", method="POST")
     def tgproxy_install():
-        # Ставит пакет tg-ws-proxy (основной движок) из GitHub-релиза с
-        # проверкой SHA256 — по той же схеме, что и usque. Асинхронно,
-        # прогресс — через /api/tgproxy/install/status.
+        # Ставит пакет tg-ws-proxy (основной движок) из GitHub-релиза —
+        # ПОСЛЕДНИЙ релиз, sha256 сверяется с манифестом для известной
+        # версии. Асинхронно, прогресс — через /api/tgproxy/install/status.
         import threading
         from core.ext_binary_installer import (install_binary_by_name,
                                                _operation_status)
@@ -118,8 +118,19 @@ def register(app):
             try:
                 res = install_binary_by_name(name, progress_cb=_cb)
                 if res.get("ok"):
-                    _operation_status[name] = {"status": "done", "progress": 100,
-                                               "message": "Установка завершена"}
+                    # Версию и признак сверки хэша тащим в статус: у
+                    # «последнего релиза» пользователь должен видеть, что
+                    # именно приехало и сверялся ли хэш.
+                    _operation_status[name] = {
+                        "status": "done", "progress": 100,
+                        "message": ("Уже актуальная версия %s"
+                                    % res.get("version", "")) if res.get("noop")
+                                   else ("Установлено: %s" % res.get("version", "")),
+                        "version": res.get("version", ""),
+                        "tag": res.get("tag", ""),
+                        "noop": bool(res.get("noop")),
+                        "sha256_verified": res.get("sha256_verified"),
+                    }
                 else:
                     _operation_status[name] = {"status": "error", "progress": 0,
                                                "message": res.get("error", "Ошибка")}

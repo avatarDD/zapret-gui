@@ -325,9 +325,20 @@ def install_binary(source: str, dest: str) -> bool:
 
 # Конфигурация каждого бинарника
 BINARIES = {
+    # tg-ws-proxy ставится ПОСЛЕДНИМ релизом (release_tag пуст): апстрим
+    # выпускает версии регулярно, а закреплённый тег означал бы, что
+    # «Обновления» показывают новую версию, а кнопка «Установить» молча
+    # ставит старую — ровно тот тупик, из-за которого расфиксировали
+    # opera-proxy. Имена ассетов версионированы
+    # (`tg-ws-proxy_<ver>-<rev>_<platform>_<arch>.<ext>`), поэтому
+    # конкретное имя из package_assets годится только для pinned_tag —
+    # для более новой версии ассет ищется по версионно-независимому
+    # суффиксу (package_asset_suffixes).
     "tgwsproxy": {
         "repo": "spatiumstas/tg-ws-proxy-go",
-        "release_tag": "0.9.2",
+        "release_tag": "",
+        "pinned_tag": "0.9.3",
+        "allow_unpinned": True,
         "install_kind": "package",
         "package_name": "tg-ws-proxy",
         "dest": "/opt/bin/tg-ws-proxy",
@@ -335,32 +346,50 @@ BINARIES = {
         # get_install_status (бинарник может лежать не в dest).
         "status_file": "/opt/etc/init.d/S99tg-ws-proxy",
         "arch_map": {
-            "aarch64": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
-            "armv7": "tg-ws-proxy_0.9.2-1_entware_armv7-3.2.ipk",
-            "mips": "tg-ws-proxy_0.9.2-1_entware_mips-3.4.ipk",
-            "mipsel": "tg-ws-proxy_0.9.2-1_entware_mipsel-3.4.ipk",
+            "aarch64": "tg-ws-proxy_0.9.3-1_entware_aarch64-3.10.ipk",
+            "armv7": "tg-ws-proxy_0.9.3-1_entware_armv7-3.2.ipk",
+            "mips": "tg-ws-proxy_0.9.3-1_entware_mips-3.4.ipk",
+            "mipsel": "tg-ws-proxy_0.9.3-1_entware_mipsel-3.4.ipk",
         },
         "package_assets": {
             "opkg": {
-                "aarch64": "tg-ws-proxy_0.9.2-1_entware_aarch64-3.10.ipk",
-                "armv7": "tg-ws-proxy_0.9.2-1_entware_armv7-3.2.ipk",
-                "mips": "tg-ws-proxy_0.9.2-1_entware_mips-3.4.ipk",
-                "mipsel": "tg-ws-proxy_0.9.2-1_entware_mipsel-3.4.ipk",
+                "aarch64": "tg-ws-proxy_0.9.3-1_entware_aarch64-3.10.ipk",
+                "armv7": "tg-ws-proxy_0.9.3-1_entware_armv7-3.2.ipk",
+                "mips": "tg-ws-proxy_0.9.3-1_entware_mips-3.4.ipk",
+                "mipsel": "tg-ws-proxy_0.9.3-1_entware_mipsel-3.4.ipk",
             },
             "apk": {
-                "aarch64": "tg-ws-proxy_0.9.2-r1_openwrt_aarch64_generic.apk",
-                "mips": "tg-ws-proxy_0.9.2-r1_openwrt_mips_24kc.apk",
-                "mipsel": "tg-ws-proxy_0.9.2-r1_openwrt_mipsel_24kc.apk",
+                "aarch64": "tg-ws-proxy_0.9.3-r1_openwrt_aarch64_generic.apk",
+                "mips": "tg-ws-proxy_0.9.3-r1_openwrt_mips_24kc.apk",
+                "mipsel": "tg-ws-proxy_0.9.3-r1_openwrt_mipsel_24kc.apk",
             },
         },
+        # Версионно-независимый «хвост» имени ассета: меняется только
+        # версия и ревизия сборки, платформа с архитектурой — нет.
+        "package_asset_suffixes": {
+            "opkg": {
+                "aarch64": "_entware_aarch64-3.10.ipk",
+                "armv7": "_entware_armv7-3.2.ipk",
+                "mips": "_entware_mips-3.4.ipk",
+                "mipsel": "_entware_mipsel-3.4.ipk",
+            },
+            "apk": {
+                "aarch64": "_openwrt_aarch64_generic.apk",
+                "mips": "_openwrt_mips_24kc.apk",
+                "mipsel": "_openwrt_mipsel_24kc.apk",
+            },
+        },
+        # sha256 сборок 0.9.3 (посчитаны с релизных URL; процедура
+        # сверена — пересчитанные тем же способом хэши 0.9.2 совпали со
+        # всеми значениями прежнего манифеста).
         "sha256_map": {
-            "opkg:aarch64": "9e8737f43ec7114ba904179f54908dd1d21a7bb9151f7b10a38207fda2bd9f50",
-            "opkg:armv7": "f2dae8651859032609e1c3914c488448ca8dee26fbf8294967c3c6c895137415",
-            "opkg:mips": "cc9420023d3dc18facbd6e7f4398002afe2ae6e4f2c67cd129adebd1b3c913f3",
-            "opkg:mipsel": "baea8552ec1b212e220177b712e959edc45c6f0a5c6ef42cfa0b8fadeb7e2850",
-            "apk:aarch64": "1516d79e73146a1886c2ad4348a54804fff2acc558fe2f4f2ab0e35500dc8925",
-            "apk:mips": "cc3dd05de4550ddc74246f9e626deaa6d695503b68d6510c6e024e50cf0e2b1a",
-            "apk:mipsel": "cd827276c1e8b09efdc8207ae3cc9615c4f19c82aee765dfcfa47af35107340e",
+            "opkg:aarch64": "8ab049572108028a57dccab166102fee248f5e8ba486d8d8d1fdd9bdb4941a53",
+            "opkg:armv7": "91428498cc8b426ba4b3e93dd7be03355ae26d0878692b585b66b1e9a0f37989",
+            "opkg:mips": "63f004c00f530cc5c574860cb4a4e04110cd54957a23e6ef38d188bb667aee26",
+            "opkg:mipsel": "dc86818e78b7bf3c58e39f032b402ca2ebd9dec1a4f1989fa4f8ace258c765b4",
+            "apk:aarch64": "e205d4ad04364bda82f2991deabf94ebca2c8355018cd620980461a01a3da003",
+            "apk:mips": "354fcfd8b1eae2f88d7429539de7f0ca6a1b8caa3ea8e49597240ab2bf051321",
+            "apk:mipsel": "0c152081f04a27e40f4cfb0be082308c6700db1110dba8834f913202510c5774",
         },
     },
 
@@ -437,6 +466,33 @@ BINARIES = {
 def _same_tag(a: str, b: str) -> bool:
     """Сравнение тегов без учёта ведущего v/V (`v1.28.0` == `1.28.0`)."""
     return (a or "").strip().lstrip("vV") == (b or "").strip().lstrip("vV")
+
+
+def _pkg_version_matches_tag(pkg_version: str, tag: str) -> bool:
+    """Версия установленного ПАКЕТА против тега релиза.
+
+    opkg/apk хранят версию вместе с ревизией сборки (`0.9.3-1`, `0.9.3-r1`),
+    а тег релиза — без неё (`0.9.3`). Прямое сравнение всегда давало
+    «не совпало», и «Установить» каждый раз качало и переустанавливало
+    пакет, который уже стоит.
+    """
+    pkg_version = (pkg_version or "").strip().lstrip("vV")
+    tag = (tag or "").strip().lstrip("vV")
+    if not pkg_version or not tag:
+        return False
+    if pkg_version == tag:
+        return True
+    # Отрезаем ревизию сборки: "0.9.3-1" / "0.9.3-r1" → "0.9.3".
+    return pkg_version.split("-", 1)[0] == tag.split("-", 1)[0]
+
+
+def _asset_suffix_for(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
+    """Версионно-независимый суффикс имени ассета (или "")."""
+    suffixes = cfg.get("package_asset_suffixes") or {}
+    if not suffixes:
+        return ""
+    by_mgr = suffixes.get(pkg_mgr) or suffixes.get("opkg") or {}
+    return by_mgr.get(arch, "")
 
 # TODO: add sha256 from verified release assets for WARP binaries
 # (warp, wgcf, warp-go, masque-client, awg)
@@ -634,14 +690,11 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
     package_name = cfg.get("package_name", "")
     if install_kind == "package":
         current_version = _pkg_version(package_name)
-        if current_version:
-            cv_norm = current_version.strip().lstrip("vV")
-            tag_norm = tag.strip().lstrip("vV")
-            if cv_norm == tag_norm:
-                log.info("install_binary_by_name: %s version %s is already up to date" % (name, tag), source="ext_installer")
-                if progress_cb:
-                    progress_cb("install", 100, "Уже установлена актуальная версия %s" % tag)
-                return {"ok": True, "binary": dest_path or package_name, "version": tag, "noop": True}
+        if current_version and _pkg_version_matches_tag(current_version, tag):
+            log.info("install_binary_by_name: %s version %s is already up to date" % (name, tag), source="ext_installer")
+            if progress_cb:
+                progress_cb("install", 100, "Уже установлена актуальная версия %s" % tag)
+            return {"ok": True, "binary": dest_path or package_name, "version": tag, "noop": True}
     elif os.path.isfile(dest_path):
         current_version = _get_version(dest_path)
         if current_version:
@@ -684,6 +737,27 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
                 download_url = asset.get("browser_download_url", "")
                 downloaded_asset_name = aname
                 break
+        if not download_url:
+            # Точного имени в релизе нет — значит приехала версия, отличная
+            # от закреплённой в манифесте (мы ставим последний релиз, а имя
+            # ассета содержит версию). Ищем по версионно-независимому
+            # хвосту: `…_entware_aarch64-3.10.ipk`. Без этого «последний
+            # релиз» упирался бы в fallback-URL с несуществующим именем.
+            suffix = _asset_suffix_for(cfg, arch, pkg_mgr)
+            prefix = (package_name + "_") if package_name else ""
+            if suffix:
+                for asset in assets:
+                    aname = asset.get("name", "")
+                    if aname.endswith(suffix) and (
+                            not prefix or aname.startswith(prefix)):
+                        download_url = asset.get("browser_download_url", "")
+                        downloaded_asset_name = aname
+                        break
+                if download_url:
+                    log.info(
+                        "ext_installer: %s — ассет найден по суффиксу %s (%s)"
+                        % (name, suffix, downloaded_asset_name),
+                        source="ext_installer")
     else:
         for c in candidates:
             url = github_download_url(cfg["repo"], tag, c)
@@ -749,6 +823,15 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
                     h.update(chunk)
             if h.hexdigest().lower() != cfg_sha256.lower():
                 raise InstallError("SHA256 mismatch for %s" % name)
+        elif is_pinned_version and pinned_tag and not cfg_sha256:
+            # Приехала ровно та версия, что закреплена в манифесте, а хэша
+            # под эту архитектуру там нет — это дыра в манифесте, а не
+            # ожидаемый случай «версия новее». Fail-closed даже у
+            # allow_unpinned-бинарников.
+            return {
+                "ok": False,
+                "error": "SHA256 для %s (%s) не задан в манифесте" % (name, arch),
+            }
         elif not cfg.get("allow_unpinned"):
             return {
                 "ok": False,
@@ -785,7 +868,14 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
             if progress_cb:
                 progress_cb("done", 100, "Установлено: %s" % tag)
             version = _pkg_version(package_name) or tag
-            return {"ok": True, "binary": dest_path or package_name, "version": version, "tag": tag}
+            # Те же поля, что и у бинарного пути: пакеты тоже ставятся
+            # «последним релизом», и «проверено» не должно подразумеваться
+            # по умолчанию.
+            return {"ok": True, "binary": dest_path or package_name,
+                    "version": version, "tag": tag,
+                    "sha256_verified": bool(sha256_pinned or
+                                            not v_res.get("skipped")),
+                    "sha256_pinned": bool(sha256_pinned)}
 
         # 4. Распаковываем если нужно
         if progress_cb:

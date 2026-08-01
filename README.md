@@ -412,22 +412,33 @@ latency 4/128), **автозапуск при старте роутера**, г�
 > исходящего WSS — GUI не прячет это ограничение, строгая TLS-проверка
 > требует обновлённого апстрим-бинарника.
 
-**Бинарник.** Ставится кнопкой «Установить tg-ws-proxy» прямо на
-странице. GUI берёт **зафиксированный релиз `0.9.2`**
+**Бинарник.** Ставится кнопками «Установить tg-ws-proxy» / «Обновить до
+последней версии» прямо на странице. GUI берёт **последний релиз**
 [spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go)
 (форк [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) под
-встраиваемые устройства) — не «последний», а именно этот тег. Качается
-**готовый пакет**, а не голый бинарник, и ставится штатным пакетным
-менеджером, поэтому вместе с ним приезжает init.d-скрипт
-`S99tg-ws-proxy`:
+встраиваемые устройства). Качается **готовый пакет**, а не голый
+бинарник, и ставится штатным пакетным менеджером, поэтому вместе с ним
+приезжает init.d-скрипт `S99tg-ws-proxy`:
 
 - Entware — `.ipk` для **aarch64, armv7, mips, mipsel** → `opkg
   --force-reinstall install`;
 - OpenWrt — `.apk` для **aarch64, mips, mipsel** → `apk add
   --allow-untrusted`.
 
-sha256 каждой сборки зашит в манифест: не совпал — установка прерывается,
-и хэша в манифесте нет — установка тоже не начнётся (fail-closed).
+Ваши `config.conf` и `secret.conf` при обновлении сохраняются — апстрим
+объявляет их conffiles, — а сам пакет после установки перезапускает
+сервис. Если нужная версия уже стоит, скачивания не будет («уже
+актуальная версия»).
+
+> **Про проверку целостности.** Для известной нам версии (`0.9.3`) в
+> манифест зашит sha256 каждой сборки — не совпал, установка прерывается;
+> нет хэша под вашу архитектуру у этой же версии — установка тоже не
+> начнётся (fail-closed, как у остальных бинарников). Для более новой
+> версии фиксированного хэша быть не может, а файла контрольных сумм
+> апстрим не публикует, поэтому целостность держится на HTTPS к GitHub —
+> GUI прямо сообщает об этом после установки и пишет в лог. Нужна только
+> строгая проверка — ставьте `0.9.3` вручную через `opkg install`.
+
 Community-пул CF-доменов тянется отдельно, уже самим бинарником, из
 `raw.githubusercontent.com/Flowseal/tg-ws-proxy/…/cfproxy-domains.txt`.
 
@@ -650,7 +661,7 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 | **Cloudflare WARP** | `api.cloudflareclient.com` | AmneziaWG → WARP (нативная генерация) |
 | **opera-proxy** | [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Opera Proxy → «Установить» / «Обновить до последней версии» |
 | **Opera VPN (SurfEasy)** | `api2.sec-tunnel.com` + узлы `*.sec-tunnel.com` | Opera Proxy — регистрация устройства, список стран, сам трафик |
-| **tg-ws-proxy** (пакет `.ipk`/`.apk`) | [spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go) (Releases, **фиксированный** тег `0.9.2`; sha256 из манифеста, fail-closed) | Telegram Tunnel → «Установить tg-ws-proxy» |
+| **tg-ws-proxy** (пакет `.ipk`/`.apk`) | [spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Telegram Tunnel → «Установить» / «Обновить до последней версии» |
 | **Пул CF-доменов для Telegram** | [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) (`.github/cfproxy-domains.txt`) | Telegram Tunnel → режим «Cloudflare community» (тянет сам бинарник) |
 | **CIDR датацентров Telegram** | `core.telegram.org/resources/cidr.txt` (выгрузка в `import/lists/ipset-telegram.txt`) | Telegram Tunnel → режим «через WARP-туннель», списки IP |
 | **Курируемые списки доменов** | [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) | Списки → Готовые списки |

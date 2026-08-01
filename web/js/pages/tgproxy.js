@@ -144,12 +144,13 @@ const TgProxyPage = (() => {
     async function _installTgws(ev) {
         const btn = ev && ev.currentTarget;
         const prog = document.getElementById("tgws-install-progress");
+        const label = (btn && btn.dataset.label) || "Установить tg-ws-proxy";
         if (btn) { btn.disabled = true; btn.textContent = "Установка..."; }
         try {
             await API.post("/api/tgproxy/install");
         } catch (e) {
             if (prog) prog.innerHTML = `<span class="text-error">Ошибка запуска: ${esc(String(e))}</span>`;
-            if (btn) { btn.disabled = false; btn.textContent = "Установить tg-ws-proxy"; }
+            if (btn) { btn.disabled = false; btn.textContent = label; }
             return;
         }
         const poll = async () => {
@@ -161,7 +162,15 @@ const TgProxyPage = (() => {
                     + (p.progress ? ` (${p.progress}%)` : "");
             }
             if (p.status === "done") {
-                if (typeof Toast !== "undefined") Toast.show("tg-ws-proxy установлен", "success");
+                Toast.success(p.noop
+                    ? "Уже актуальная версия: " + (p.version || "")
+                    : "tg-ws-proxy установлен: " + (p.version || ""));
+                // Ставится последний релиз: если приехала версия новее
+                // известной нам, сверять хэш было не с чем — не молчим.
+                if (p.sha256_verified === false) {
+                    Toast.info("Версия " + (p.tag || "") + " новее известной — "
+                             + "sha256 не сверялся (скачано с GitHub по HTTPS)");
+                }
                 _refresh();
                 return;
             }
@@ -186,10 +195,12 @@ const TgProxyPage = (() => {
             if (!det.tgwsproxy || !det.tgwsproxy.installed) {
                 el.innerHTML = `<div class="text-muted" style="margin-bottom:10px;">
                     tg-ws-proxy-go не установлен (пакет <code>tg-ws-proxy</code>).
-                    Установите его прямо отсюда — бинарник тянется из
-                    GitHub-релиза с проверкой SHA256.
+                    Установите его прямо отсюда — берётся последний релиз
+                    из GitHub, sha256 сверяется с манифестом для известной
+                    версии.
                 </div>
-                <button class="btn btn-primary" id="tgws-btn-install" type="button">
+                <button class="btn btn-primary" id="tgws-btn-install" type="button"
+                        data-label="Установить tg-ws-proxy">
                     Установить tg-ws-proxy
                 </button>
                 <div id="tgws-install-progress" style="margin-top:10px; font-size:12px;"></div>`;
@@ -436,6 +447,19 @@ const TgProxyPage = (() => {
                     процесс их не перечитывает — после «Сохранить» нажмите
                     «Перезапустить».
                 </div>
+
+                <div style="margin-top:14px; display:flex; gap:8px;
+                            align-items:center; flex-wrap:wrap;">
+                    <span class="text-muted" style="font-size:12px;">
+                        Пакет <code>tg-ws-proxy</code>${det.tgwsproxy.version
+                            ? ", версия " + esc(det.tgwsproxy.version) : ""}
+                    </span>
+                    <button class="btn btn-sm" id="tgws-btn-install" type="button"
+                            data-label="Обновить до последней версии">
+                        Обновить до последней версии
+                    </button>
+                </div>
+                <div id="tgws-install-progress" style="margin-top:8px; font-size:12px;"></div>
             `;
 
             document.querySelectorAll('input[name="tgws-mode"]').forEach(r => {
@@ -453,6 +477,8 @@ const TgProxyPage = (() => {
                 "click", _rotateSecret);
             const autoBox = document.getElementById("tgws-autostart");
             if (autoBox) autoBox.addEventListener("change", _toggleAutostart);
+            const updBtn = document.getElementById("tgws-btn-install");
+            if (updBtn) updBtn.addEventListener("click", _installTgws);
 
             await _loadTgwsproxyConnectInfo();
         } catch (e) {
