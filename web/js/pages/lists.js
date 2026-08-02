@@ -338,20 +338,24 @@ const ListsPage = (() => {
 
     // ─── список → маршрут (единый слой) ───
 
+    /** Метод-kind по источнику интерфейса (usque → warp:<iface>). */
+    function kindForSource(source) {
+        if (source === 'singbox') return 'singbox';
+        if (source === 'mihomo') return 'mihomo';
+        if (source === 'usque') return 'warp';
+        return 'awg';
+    }
+
     function methodOptions() {
         const opts = [['nfqws2', 'nfqws2 (обход DPI)'], ['direct', 'Прямой (direct)']];
         interfaces.forEach(i => {
-            const kind = (i.source === 'singbox') ? 'singbox'
-                       : (i.source === 'mihomo') ? 'mihomo' : 'awg';
+            const kind = kindForSource(i.source);
             opts.push([kind + ':' + i.name,
                        `${kind} → ${i.name}${i.active ? ' (активен)' : ''}`]);
         });
         // По умолчанию первый туннель, если есть; иначе nfqws2.
         const def = interfaces.length
-            ? (() => { const i = interfaces[0];
-                const k = (i.source === 'singbox') ? 'singbox'
-                        : (i.source === 'mihomo') ? 'mihomo' : 'awg';
-                return k + ':' + i.name; })()
+            ? kindForSource(interfaces[0].source) + ':' + interfaces[0].name
             : 'nfqws2';
         return opts.map(([v, l]) =>
             `<option value="${escAttr(v)}" ${v === def ? 'selected' : ''}>${esc(l)}</option>`

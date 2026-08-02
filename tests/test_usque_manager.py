@@ -41,11 +41,118 @@ class TestUsqueManager(unittest.TestCase):
         self.assertNotIn("--http2", popen.call_args_list[0].args[0])
         self.assertIn("--http2", popen.call_args_list[1].args[0])
 
+    @mock.patch.object(UsqueManager, "_names_claimed_elsewhere", return_value=set())
     @mock.patch("core.usque_manager.os.path.exists", return_value=False)
     @mock.patch("core.usque_manager.os.listdir", return_value=["lo", "opkgtun0"])
-    def test_allocate_iface_avoids_existing_and_reserved(self, _listdir, _exists):
+    def test_allocate_iface_avoids_existing_and_reserved(self, _listdir, _exists,
+                                                        _claimed):
         mgr = UsqueManager()
         self.assertEqual(mgr.allocate_iface("opkgtun", {"opkgtun1"}), "opkgtun2")
+
+    @mock.patch.object(UsqueManager, "_names_claimed_elsewhere", return_value=set())
+    @mock.patch("core.usque_manager.os.path.exists", return_value=False)
+    @mock.patch("core.usque_manager.os.listdir", return_value=["lo"])
+    def test_allocate_iface_defaults_to_usque_prefix(self, _listdir, _exists,
+                                                    _claimed):
+        """Имя интерфейса должно называть движок, а не быть общим opkgtun*.
+
+        `opkgtun0` не отличить от AWG-туннеля ни на графиках, ни в списке
+        методов маршрутизации.
+        """
+        self.assertEqual(UsqueManager().allocate_iface(), "usque0")
+
+    @mock.patch.object(UsqueManager, "_names_claimed_elsewhere",
+                       return_value={"usque0", "usque1"})
+    @mock.patch("core.usque_manager.os.path.exists", return_value=False)
+    @mock.patch("core.usque_manager.os.listdir", return_value=["lo"])
+    def test_allocate_iface_skips_names_owned_by_other_tunnels(
+        self, _listdir, _exists, _claimed
+    ):
+        """Имя остановленного чужого туннеля занимать нельзя.
+
+        /sys/class/net показывает только поднятые интерфейсы, а правила
+        маршрутизации ссылаются на имя и когда туннель лежит: заняв его,
+        usque увёл бы чужой трафик к себе.
+        """
+        self.assertEqual(UsqueManager().allocate_iface(), "usque2")
+
+    def test_iface_assignment_survives_stop(self):
+        """Имя выдаётся профилю один раз и переживает «Стоп».
+
+        Раньше оно выделялось на каждый старт: после перезапуска профиль
+        мог получить чужой номер, и правило `warp:usque0` вело уже не туда.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "warp-default.json")
+            with open(cfg, "w") as f:
+                json.dump({"ipv4": "172.16.0.2"}, f)
+            with mock.patch.object(UsqueManager, "allocate_iface",
+                                   side_effect=["usque0", "usque1"]):
+                mgr = UsqueManager()
+                first = mgr.iface_for_config(cfg)
+                second = mgr.iface_for_config(cfg)
+            self.assertEqual(first, "usque0")
+            self.assertEqual(second, "usque0")
+            # Закрепление живёт рядом с конфигом и видно list_configs().
+            self.assertEqual(mgr._detect_iface_for_config(cfg), "usque0")
+
+    def test_forget_iface_releases_assignment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "warp-default.json")
+            with open(cfg, "w") as f:
+                json.dump({}, f)
+            mgr = UsqueManager()
+            with mock.patch.object(UsqueManager, "allocate_iface",
+                                   return_value="usque0"):
+                mgr.iface_for_config(cfg)
+            mgr.forget_iface(cfg)
+            self.assertEqual(mgr._detect_iface_for_config(cfg), "")
+
+    def test_running_tunnel_keeps_its_old_name_after_upgrade(self):
+        """Обновление GUI не должно переименовывать работающий туннель.
+
+        На момент обновления профиль обычно поднят под старым `opkgtun0`,
+        и на это имя уже настроены правила маршрутизации. Имя закрепляется
+        за профилем, поэтому «Стоп»/«Старт» его сохранит, а префикс
+        `usque` получат только новые профили.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "warp-default.json")
+            with open(cfg, "w") as f:
+                json.dump({}, f)
+            with open(cfg + ".run", "w") as f:
+                f.write('IFACE="opkgtun0"\nPID="42"\n')
+            mgr = UsqueManager()
+            self.assertEqual(mgr._detect_iface_for_config(cfg), "opkgtun0")
+            # «Стоп» уносит .run — закрепление должно пережить это.
+            os.remove(cfg + ".run")
+            self.assertEqual(mgr._detect_iface_for_config(cfg), "opkgtun0")
+            with mock.patch.object(UsqueManager, "allocate_iface",
+                                   return_value="usque0"):
+                self.assertEqual(mgr.iface_for_config(cfg), "opkgtun0")
+
+    def test_running_iface_wins_over_assignment(self):
+        """`.run` — правда о поднятом туннеле, `.iface` — лишь бронь."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "warp-default.json")
+            with open(cfg, "w") as f:
+                json.dump({}, f)
+            with open(cfg + ".iface", "w") as f:
+                f.write("usque0\n")
+            with open(cfg + ".run", "w") as f:
+                f.write('IFACE="usque3"\nPID="42"\n')
+            self.assertEqual(
+                UsqueManager()._detect_iface_for_config(cfg), "usque3")
+
+    def test_claimed_names_include_stopped_awg_interfaces(self):
+        awg_configs = [{"name": "awg0-usque0", "iface": "usque0",
+                        "active": False}]
+        with mock.patch("core.awg_manager.AwgManager.list_configs",
+                        return_value=awg_configs), \
+             mock.patch.object(UsqueManager, "list_configs", return_value=[]):
+            claimed = UsqueManager()._names_claimed_elsewhere()
+        self.assertIn("usque0", claimed)
+        self.assertIn("awg0-usque0", claimed)
 
     @mock.patch.object(UsqueManager, "_configure_iface",
                        return_value={"ok": True, "ipv4": "172.16.0.2"})

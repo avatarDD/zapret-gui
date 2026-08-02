@@ -4981,6 +4981,20 @@ body.expert-mode .expert-note { display: none !important; }
 .status-dot.status-off { background: var(--text-muted); }
 
 /* ===== Страница WARP/MASQUE (usque) ===== */
+
+/* .table — table-layout: fixed, поэтому без colgroup все четыре колонки
+   получали по 25%, и три кнопки «Действий» не помещались в свою: «Удалить»
+   уезжала на вторую строку. Ширины задаёт colgroup в разметке, здесь —
+   раскладка самих кнопок: ряд с одинаковыми отступами, переносится
+   целиком и только на узком экране. */
+.usque-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+.usque-actions .btn { white-space: nowrap; }
+
 .usque-steps {
     margin: 0;
     padding-left: 18px;

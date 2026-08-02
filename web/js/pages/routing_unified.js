@@ -232,11 +232,23 @@ const RoutingUnifiedPage = (() => {
     // ─────── методы (цели) ───────
 
     /**
+     * Метод-kind по источнику интерфейса из /api/routing/interfaces.
+     * usque даёт `warp:<iface>` — отдельный kind единого слоя
+     * (core/unified/model.METHOD_KINDS), а не awg.
+     */
+    function kindForSource(source) {
+        if (source === 'singbox') return 'singbox';
+        if (source === 'mihomo') return 'mihomo';
+        if (source === 'usque') return 'warp';
+        return 'awg';
+    }
+
+    /**
      * Все доступные цели-токены. Источники:
      *   - AWG-конфиги (/api/awg/configs) — даже не поднятые (правило
      *     отложится до старта туннеля);
      *   - /api/routing/interfaces — нативные Keenetic WG (NDMS),
-     *     sing-box/mihomo tun, активные awg.
+     *     sing-box/mihomo tun, usque/WARP, активные awg.
      */
     function methodTargets() {
         const seen = new Set();
@@ -250,9 +262,9 @@ const RoutingUnifiedPage = (() => {
         interfaces.forEach(i => {
             if (!i.name || seen.has(i.name)) return;
             seen.add(i.name);
-            const kind = (i.source === 'singbox') ? 'singbox'
-                       : (i.source === 'mihomo') ? 'mihomo' : 'awg';
-            const extra = i.source === 'ndms' ? ' · Keenetic' : '';
+            const kind = kindForSource(i.source);
+            const extra = i.source === 'ndms' ? ' · Keenetic'
+                        : i.source === 'usque' ? ' · usque/MASQUE' : '';
             out.push({ token: kind + ':' + i.name, kind, name: i.name,
                        active: !!i.active,
                        label: `${kind} → ${i.name}${extra}${i.active ? ' (активен)' : ''}` });
@@ -283,6 +295,7 @@ const RoutingUnifiedPage = (() => {
             ['awg', 'AWG (все туннели)'],
             ['singbox', 'sing-box (все)'],
             ['mihomo', 'mihomo (все)'],
+            ['warp', 'WARP/MASQUE (все)'],
         ];
         const targets = methodTargets().map(t => [t.token, '→ ' + t.name]);
         const all = groups.concat(targets);
@@ -431,7 +444,7 @@ const RoutingUnifiedPage = (() => {
 
         const hasDomainRoutes = routes.some(r => {
             const d = r.destination || {};
-            const tun = ['awg', 'singbox', 'mihomo'].includes(_kindOf(r.method));
+            const tun = ['awg', 'singbox', 'mihomo', 'warp'].includes(_kindOf(r.method));
             return tun && ((d.domains || []).length || (d.list_ids || []).length);
         });
         const needWarn = !domainReady && (hasDomainRoutes || !!editing);
@@ -627,7 +640,7 @@ const RoutingUnifiedPage = (() => {
         let method = 'direct';
         if (viaFilter && viaFilter.includes(':')) {
             method = viaFilter;
-        } else if (['awg', 'singbox', 'mihomo'].includes(viaFilter)) {
+        } else if (['awg', 'singbox', 'mihomo', 'warp'].includes(viaFilter)) {
             const t = methodTargets().find(x => x.kind === viaFilter);
             if (t) method = t.token;
         } else if (viaFilter === 'nfqws2') {

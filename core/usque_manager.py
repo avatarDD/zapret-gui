@@ -27,6 +27,23 @@ from core.log_buffer import log
 
 _VALID_IFACE_RE = re.compile(r"^[a-zA-Z0-9_-]{1,15}$")
 _IFACE_PREFIX_RE = re.compile(r"^[a-zA-Z0-9_-]{1,12}$")
+
+# Префикс имён TUN-интерфейсов usque: `usque0`, `usque1`, …
+#
+# Раньше здесь был `opkgtun`, и это давало сразу две проблемы. Во-первых,
+# под тем же именем поднимаются AWG-туннели: конфиг `awg0-opkgtun0.conf`
+# живёт на интерфейсе `opkgtun0`. На графиках и в списке методов
+# маршрутизации было не понять, какой из туннелей чей. Во-вторых,
+# allocate_iface считает имя свободным, если его нет в /sys/class/net, —
+# то есть у ОСТАНОВЛЕННОГО AWG-туннеля имя можно было отобрать, и старые
+# правила `awg:opkgtun0` начинали заворачивать трафик в WARP.
+#
+# Существующие туннели не переименовываются: имя работающего туннеля
+# закрепляется за профилем (см. iface_for_config / _seed_assignment), так
+# что уже настроенные правила `warp:opkgtun0` остаются рабочими. Новый
+# префикс получают только профили, которым имя выдаётся впервые.
+DEFAULT_IFACE_PREFIX = "usque"
+
 _MAX_DIAGNOSTIC_LINES = 40
 # В режиме отладки держим заметно более длинный хвост: 40 строк хватает
 # на «почему не поднялся», но не на «почему отваливается через час».
@@ -408,7 +425,14 @@ class UsqueManager:
         return os.path.join(platform_config_dir(), "usque")
 
     def _detect_iface_for_config(self, config_path: str) -> str:
-        """Определить имя интерфейса для конфига (best-effort)."""
+        """Определить имя интерфейса для конфига (best-effort).
+
+        `.run` — интерфейс ПОДНЯТОГО туннеля, его пишет start() и удаляет
+        stop(). `.iface` — имя, ЗАКРЕПЛЁННОЕ за профилем: оно переживает
+        остановку, поэтому правило маршрутизации `warp:<iface>` остаётся
+        валидным и после «Стоп»/«Старт». Само по себе наличие имени
+        «поднятым» туннель не делает — это решает _is_running().
+        """
         # Проверяем running config если есть
         run_path = config_path + ".run"
         if os.path.isfile(run_path):
@@ -416,20 +440,87 @@ class UsqueManager:
                 with open(run_path) as f:
                     for line in f:
                         if line.startswith("IFACE="):
-                            return line.split("=", 1)[1].strip().strip('"')
+                            iface = line.split("=", 1)[1].strip().strip('"')
+                            if iface:
+                                self._seed_assignment(config_path, iface)
+                                return iface
             except Exception:
                 pass
-        # No fixed fallback: an unknown interface must not be shown as active.
-        return ""
+        return self._read_assigned_iface(config_path)
 
-    def allocate_iface(self, prefix: str = "opkgtun", reserved=None) -> str:
+    def _seed_assignment(self, config_path: str, iface: str) -> None:
+        """Закрепить имя уже работающего туннеля, если оно ещё не закреплено.
+
+        Нужно ровно для одного случая — обновления GUI на версию, где имена
+        стали выдаваться с префиксом `usque`. Туннель в этот момент обычно
+        поднят под старым именем (`opkgtun0`), и на него уже настроены
+        правила маршрутизации. Закрепив имя здесь, мы оставляем этот
+        профиль на нём навсегда: «Стоп»/«Старт» ничего не сломает.
+        """
+        if not self._read_assigned_iface(config_path):
+            self._assign_iface(config_path, iface)
+
+    @staticmethod
+    def _iface_assignment_path(config_path: str) -> str:
+        return config_path + ".iface"
+
+    def _read_assigned_iface(self, config_path: str) -> str:
+        """Закреплённое за профилем имя интерфейса ('' если не закреплено)."""
+        try:
+            with open(self._iface_assignment_path(config_path)) as f:
+                name = f.read().strip()
+        except OSError:
+            return ""
+        return name if _VALID_IFACE_RE.match(name or "") else ""
+
+    def iface_for_config(self, config_path: str, reserved=None) -> str:
+        """Имя интерфейса профиля: закреплённое или новое (и закрепить).
+
+        Раньше имя выделялось на КАЖДЫЙ старт, и профиль после перезапуска
+        мог получить чужой номер: правило `warp:usque0` продолжало
+        показывать на интерфейс, за которым теперь другой профиль. Здесь
+        имя выдаётся один раз и сохраняется рядом с конфигом.
+        """
+        assigned = self._read_assigned_iface(config_path)
+        if assigned and assigned not in set(reserved or ()):
+            return assigned
+        iface = self.allocate_iface(reserved=reserved)
+        if iface:
+            self._assign_iface(config_path, iface)
+        return iface
+
+    def _assign_iface(self, config_path: str, iface: str) -> None:
+        path = self._iface_assignment_path(config_path)
+        try:
+            with open(path, "w") as f:
+                f.write(iface + "\n")
+            os.chmod(path, 0o600)
+        except OSError as e:
+            # Не критично: туннель поднимется, просто на следующем старте
+            # имя выделится заново.
+            log.warning("usque: имя %s за %s не закреплено: %s"
+                        % (iface, os.path.basename(config_path), e),
+                        source="usque")
+
+    def forget_iface(self, config_path: str) -> None:
+        """Снять закрепление имени (при удалении профиля)."""
+        try:
+            os.remove(self._iface_assignment_path(config_path))
+        except OSError:
+            pass
+
+    def allocate_iface(self, prefix: str = None, reserved=None) -> str:
         """Allocate a free interface name without relying on fixed W-I-W names."""
-        prefix = str(prefix or "opkgtun")[:12]
+        prefix = str(prefix or DEFAULT_IFACE_PREFIX)[:12]
         if not _IFACE_PREFIX_RE.match(prefix):
-            prefix = "opkgtun"
+            prefix = DEFAULT_IFACE_PREFIX
         reserved = set(reserved or ())
+        # Опрос чужих менеджеров дёргает подпроцессы — делаем это ДО того,
+        # как возьмём lock жизненного цикла, чтобы не подвешивать на это
+        # время параллельные start()/stop().
+        claimed = self._names_claimed_elsewhere()
         with self._lock:
-            used = set(self._processes) | reserved
+            used = set(self._processes) | reserved | claimed
             try:
                 used.update(os.listdir("/sys/class/net"))
             except OSError:
@@ -442,6 +533,40 @@ class UsqueManager:
                 if name not in used and not os.path.exists(pid_path):
                     return name
         return ""
+
+    def _names_claimed_elsewhere(self) -> set:
+        """Имена, занятые чужими туннелями, даже если те сейчас лежат.
+
+        /sys/class/net показывает только ПОДНЯТЫЕ интерфейсы. Остановленный
+        AWG-туннель там не виден, но имя за ним закреплено (конфиг
+        `awg0-usque0.conf` поднимется именно как `usque0`), и правила
+        маршрутизации уже смотрят на это имя. Заняв его, usque увёл бы
+        чужой трафик к себе, а AWG потом не смог бы подняться.
+
+        Сюда же — интерфейсы других профилей usque (работающие из
+        <config>.run, закреплённые из <config>.iface): профиль может быть
+        остановлен, но правило маршрутизации на его имя протухать не должно.
+        """
+        names = set()
+        try:
+            from core.awg_manager import AwgManager
+            for cfg in AwgManager().list_configs():
+                for key in ("iface", "name"):
+                    val = (cfg.get(key) or "").strip()
+                    if val:
+                        names.add(val)
+        except Exception as e:
+            # AWG может быть не установлен — это не повод не дать имя.
+            log.warning("usque: список AWG-интерфейсов не получен: %s" % e,
+                        source="usque")
+        try:
+            for cfg in self.list_configs():
+                iface = (cfg.get("iface") or "").strip()
+                if iface:
+                    names.add(iface)
+        except Exception:
+            pass
+        return names
 
     def _buf_size(self) -> int:
         return _MAX_DEBUG_LINES if debug_enabled() else _MAX_DIAGNOSTIC_LINES
