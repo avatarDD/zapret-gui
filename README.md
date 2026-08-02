@@ -529,9 +529,11 @@ latency 4/128), **автозапуск при старте роутера**, г�
 Community-пул CF-доменов тянется отдельно, уже самим бинарником, из
 `raw.githubusercontent.com/Flowseal/tg-ws-proxy/…/cfproxy-domains.txt`.
 
-Резервный **tg-mtproxy-client** через GUI не ставится: он ищется по
-путям `/opt/usr/bin/tg-mtproxy-client` и `/opt/sbin/tg-mtproxy-client`, и
-если его там нет — панель так и пишет.
+Резервный **tg-mtproxy-client** панель ищет по путям
+`/opt/usr/bin/tg-mtproxy-client` и `/opt/sbin/tg-mtproxy-client`; если
+его там нет — так и пишет. Сам бинарник **собираем мы** (тег
+`tgproto-bin-v*`): у апстрима в релизах нет aarch64 и armv7, из-за чего
+на массовых aarch64-Keenetic резервный движок было не поставить вообще.
 
 ### sing-box
 
@@ -763,9 +765,10 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 | **Cloudflare WARP** | `api.cloudflareclient.com` | AmneziaWG → WARP (нативная генерация) |
 | **usque** | сборка в наших Releases (тег `usque-bin-v*`, sha256 из `manifest.json` релиза); upstream-код — [Diniboy1123/usque](https://github.com/Diniboy1123/usque). Запасной источник — [side-effect-tm/usque-keenetic](https://github.com/side-effect-tm/usque-keenetic) | WARP/MASQUE → «Установить» |
 | **Cloudflare WARP по MASQUE** | `consumer-masque.cloudflareclient.com` + узлы WARP (443/udp, при `Restricted` — 443/tcp) | WARP/MASQUE — регистрация сессии и сам трафик |
-| **opera-proxy** | [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Opera Proxy → «Установить» / «Обновить до последней версии» |
+| **opera-proxy** | сборка в наших Releases (тег `opera-bin-v*`, sha256 из `manifest.json` релиза); upstream-код — [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) | Opera Proxy → «Установить» |
 | **Opera VPN (SurfEasy)** | `api2.sec-tunnel.com` + узлы `*.sec-tunnel.com` | Opera Proxy — регистрация устройства, список стран, сам трафик |
 | **tg-ws-proxy** (пакет `.ipk`/`.apk`) | [spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Telegram Tunnel → «Установить» / «Обновить до последней версии» |
+| **tg-mtproxy-client** (резервный движок Telegram) | сборка в наших Releases (тег `tgproto-bin-v*`, sha256 из `manifest.json`); upstream-код — [necronicle/z2k](https://github.com/necronicle/z2k) (`mtproxy-client/`) | Telegram Tunnel → резервный движок |
 | **Пул CF-доменов для Telegram** | [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) (`.github/cfproxy-domains.txt`) | Telegram Tunnel → режим «Cloudflare community» (тянет сам бинарник) |
 | **CIDR датацентров Telegram** | `core.telegram.org/resources/cidr.txt` (выгрузка в `import/lists/ipset-telegram.txt`) | Telegram Tunnel → режим «через WARP-туннель», списки IP |
 | **Курируемые списки доменов** | [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains) | Списки → Готовые списки |

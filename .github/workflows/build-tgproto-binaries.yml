@@ -1,0 +1,324 @@
+# ═══════════════════════════════════════════════════════════════
+# build-tgproto-binaries.yml — кросс-компиляция tg-mtproxy-client
+# (резервный движок Telegram-туннеля из necronicle/z2k).
+#
+# Зачем своя сборка:
+#   * в релизных ассетах апстрима нет aarch64 и armv7 — на массовых
+#     aarch64-Keenetic резервный движок было НЕ поставить вообще;
+#   * апстрим публикует их под ROLLING-тэгом (z2k-classify-rolling):
+#     ассеты под тем же тэгом могут перезаливаться, а закреплённые у
+#     нас sha256 при этом протухают — установка начала бы падать;
+#   * своя сборка + manifest.json дают строгую проверку sha256 и
+#     воспроизводимость.
+#
+# Про секрет туннеля. Апстрим зашивает Z2K_TUNNEL_SECRET на этапе
+# сборки (-X main.defaultTunnelSecret). Мы его НЕ зашиваем и не должны:
+# наш core/tgproxy_manager всегда передаёт --tunnel-secret и
+# --tunnel-url явно, из настроек GUI. Бинарник без встроенного секрета
+# для нас полностью рабочий, а секрет апстрима нам и не принадлежит.
+#
+# Модуль лежит в подкаталоге mtproxy-client/ (у z2k несколько
+# независимых go-модулей), поэтому сборка идёт оттуда.
+#
+# Версионных тэгов у апстрима нет (единственный — rolling), поэтому наш
+# тэг кодирует ДАТУ и короткий commit sha: tgproto-bin-v<YYYYMMDD>-<sha>.
+# ═══════════════════════════════════════════════════════════════
+
+name: Build tg-mtproxy-client binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      z2k_ref:
+        description: 'z2k git ref (branch/sha). Пусто = HEAD ветки по умолчанию.'
+        required: false
+        default: ''
+      publish_release:
+        description: 'Опубликовать GitHub Release (true/false)'
+        required: false
+        default: 'true'
+  push:
+    tags:
+      - 'tgproto-bin-*'
+  schedule:
+    # 7:00 — на час позже opera-proxy.
+    - cron: '0 7 * * *'
+
+permissions:
+  contents: write
+
+env:
+  Z2K_REPO: necronicle/z2k
+  # Подкаталог с go-модулем клиента.
+  Z2K_MODULE: mtproxy-client
+
+jobs:
+  # ── 0. Авто-детект новых коммитов апстрима (только cron) ───
+  auto-tag:
+    name: Auto-tag on upstream change
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect & maybe tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Версионных тэгов нет — следим за коммитами, которые реально
+          # трогают модуль клиента, иначе тэг плодился бы на каждое
+          # изменение шелл-скриптов z2k.
+          SHA=$(gh api "repos/$Z2K_REPO/commits?path=$Z2K_MODULE&per_page=1" \
+                  --jq '.[0].sha' 2>/dev/null || echo "")
+          if [ -z "$SHA" ] || [ "$SHA" = "null" ]; then
+            echo "Не удалось получить commit апстрима — пропускаем"
+            exit 0
+          fi
+          SHORT="${SHA:0:7}"
+          DATE=$(gh api "repos/$Z2K_REPO/commits/$SHA" \
+                   --jq '.commit.committer.date' | cut -c1-10 | tr -d '-')
+          NEW_TAG="tgproto-bin-v${DATE}-${SHORT}"
+          echo "Upstream $Z2K_MODULE=$SHORT ($DATE) → tag=$NEW_TAG"
+
+          if git rev-parse "refs/tags/$NEW_TAG" >/dev/null 2>&1 \
+             || gh api "repos/${{ github.repository }}/git/refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG уже существует — пропускаем"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEW_TAG" -m "Auto: z2k/$Z2K_MODULE=$SHORT"
+          git push origin "$NEW_TAG"
+
+  # ── 1. Определить ревизию апстрима ─────────────────────────
+  resolve-version:
+    name: Resolve upstream revision
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    outputs:
+      z2k_ref: ${{ steps.resolve.outputs.z2k_ref }}
+      z2k_version: ${{ steps.resolve.outputs.z2k_version }}
+    steps:
+      - name: Resolve ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          REF="${{ inputs.z2k_ref }}"
+
+          # Запуск по нашему тэгу tgproto-bin-v<date>-<sha>: берём sha
+          # из него, чтобы пересборка тэга дала тот же код.
+          if [ -z "$REF" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [[ "$TAG" =~ ^tgproto-bin-v[0-9]{8}-([0-9a-f]+)$ ]]; then
+              REF="${BASH_REMATCH[1]}"
+              echo "Revision parsed from tag $TAG: $REF"
+            fi
+          fi
+
+          if [ -z "$REF" ]; then
+            REF=$(gh api "repos/$Z2K_REPO/commits?path=$Z2K_MODULE&per_page=1" \
+                    --jq '.[0].sha')
+          fi
+
+          # Версия для имён файлов и манифеста — <дата>-<короткий sha>.
+          FULL=$(gh api "repos/$Z2K_REPO/commits/$REF" --jq '.sha')
+          DATE=$(gh api "repos/$Z2K_REPO/commits/$REF" \
+                   --jq '.commit.committer.date' | cut -c1-10 | tr -d '-')
+          VER="${DATE}-${FULL:0:7}"
+
+          echo "z2k_ref=$FULL"      >> "$GITHUB_OUTPUT"
+          echo "z2k_version=$VER"   >> "$GITHUB_OUTPUT"
+          echo "ref=$FULL version=$VER"
+
+  # ── 2. Сборка ──────────────────────────────────────────────
+  build:
+    name: Build ${{ matrix.arch_name }}
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_name: mipsel-softfloat
+            goarch: mipsle
+            gomips: softfloat
+          - arch_name: mips-softfloat
+            goarch: mips
+            gomips: softfloat
+          - arch_name: aarch64
+            goarch: arm64
+          - arch_name: armv7
+            goarch: arm
+            goarm: '7'
+          - arch_name: x86_64
+            goarch: amd64
+
+    steps:
+      - name: Checkout z2k
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.Z2K_REPO }}
+          ref: ${{ needs.resolve-version.outputs.z2k_ref }}
+          path: src
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: src/${{ env.Z2K_MODULE }}/go.mod
+          cache: false
+
+      - name: Install UPX
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+
+      - name: Build
+        working-directory: src/${{ env.Z2K_MODULE }}
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips }}
+          GOARM: ${{ matrix.goarm }}
+          GOTOOLCHAIN: auto
+        run: |
+          set -euo pipefail
+          go env GOOS GOARCH GOMIPS GOARM
+          # defaultTunnelSecret намеренно НЕ задаём (см. шапку файла):
+          # relay и секрет наш менеджер передаёт флагами.
+          go build -trimpath -ldflags="-s -w" -o tg-mtproxy-client .
+          ls -lh tg-mtproxy-client
+
+      - name: UPX compress
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        working-directory: src/${{ env.Z2K_MODULE }}
+        run: |
+          set -euo pipefail
+          echo "── before UPX ──"; ls -lh tg-mtproxy-client
+          if [ "${{ matrix.goarch }}" = "arm" ]; then
+            upx --best --lzma tg-mtproxy-client || upx --best tg-mtproxy-client || true
+          else
+            upx --best tg-mtproxy-client || true
+          fi
+          echo "── after UPX ──"; ls -lh tg-mtproxy-client
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VER="${{ needs.resolve-version.outputs.z2k_version }}"
+          NAME="tg-mtproxy-client-${VER}-${{ matrix.arch_name }}"
+          cp "src/${Z2K_MODULE}/tg-mtproxy-client" "$NAME"
+          gzip -9 -k -f "$NAME"
+          sha256sum "${NAME}.gz" > "${NAME}.gz.sha256"
+          ls -lh tg-mtproxy-client-*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: tg-mtproxy-client-${{ matrix.arch_name }}
+          path: |
+            tg-mtproxy-client-*.gz
+            tg-mtproxy-client-*.gz.sha256
+          retention-days: 14
+
+  # ── 3. Публикация релиза ───────────────────────────────────
+  publish:
+    name: Publish release
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+         && (github.event_name == 'push' || inputs.publish_release == 'true')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ./artifacts
+
+      - name: Stage release files & build manifest
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.gz' -o -name '*.gz.sha256' \) \
+            -exec cp {} release/ \;
+          ls -lh release/
+
+          VER="${{ needs.resolve-version.outputs.z2k_version }}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "$TAG" = "$GITHUB_REF" ]; then
+            TAG="tgproto-bin-v${VER}"
+          fi
+
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
+
+          python3 - "$VER" "$TAG" "$BASE_URL" <<'EOF' > release/manifest.json
+          import json, os, sys, hashlib
+
+          ver, tag, base = sys.argv[1:4]
+
+          def sha(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(8192), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          archs = {
+              "mipsel": "mipsel-softfloat",
+              "mips": "mips-softfloat",
+              "aarch64": "aarch64",
+              "armv7": "armv7",
+              "x86_64": "x86_64",
+          }
+          manifest = {"schema": 1, "tag": tag,
+                      "tgproto": {"version": ver, "binaries": {}}}
+          for key, arch in archs.items():
+              fname = f"tg-mtproxy-client-{ver}-{arch}.gz"
+              fpath = os.path.join("release", fname)
+              if os.path.exists(fpath):
+                  manifest["tgproto"]["binaries"][key] = {
+                      "filename": fname,
+                      "url": f"{base}/{fname}",
+                      "sha256": sha(fpath),
+                      "size": os.path.getsize(fpath),
+                  }
+          print(json.dumps(manifest, indent=2))
+          EOF
+
+          echo "── manifest.json ──"; cat release/manifest.json
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.stage.outputs.tag }}
+          name: "tg-mtproxy-client binaries ${{ steps.stage.outputs.tag }}"
+          body: |
+            Кросс-скомпилированный `tg-mtproxy-client` — резервный движок
+            Telegram-туннеля из [z2k](https://github.com/necronicle/z2k)
+            (`mtproxy-client/`).
+
+            - ревизия апстрима: `${{ needs.resolve-version.outputs.z2k_version }}`
+            - добавлены отсутствующие у апстрима **aarch64** и **armv7**
+
+            Секрет туннеля в сборку НЕ зашит: relay и `--tunnel-secret`
+            GUI передаёт флагами из своих настроек.
+
+            Архитектуры, размеры, sha256 и URL — в `manifest.json`.
+          draft: false
+          prerelease: false
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

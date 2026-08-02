@@ -243,24 +243,56 @@ def _check_usque() -> dict:
                 "has_update": False, "error": str(e)}
 
 
+def _strip_build_prefix(name: str, value: str) -> str:
+    """'tgproto-bin-v20260802-fe773fa' → '20260802-fe773fa'.
+
+    Наши сборки живут под тэгами <name>-bin-v<версия>, и по разные
+    стороны сравнения одно и то же может прийти как полный тэг и как
+    голая версия. Без нормализации «обновление доступно» горело бы
+    всегда.
+    """
+    from core.ext_binary_installer import BINARIES
+    v = (value or "").strip()
+    prefix = (BINARIES.get(name) or {}).get("release_prefix") or ""
+    if prefix and v.startswith(prefix):
+        v = v[len(prefix):]
+    return v.lstrip("vV")
+
+
+def _our_build_latest(name: str) -> str:
+    """Версия последней НАШЕЙ сборки бинарника ('' — сборок ещё нет).
+
+    Это и есть «последняя» с точки зрения пользователя: именно её
+    поставит кнопка «Установить». Спрашивать latest у апстрима значило
+    бы обещать версию, которую установщик не поставит.
+    """
+    try:
+        from core.ext_binary_installer import BINARIES, list_releases
+        cfg = BINARIES.get(name) or {}
+        if not cfg.get("release_prefix"):
+            return ""
+        rels = list_releases(name)
+        if not rels.get("ok") or not rels.get("releases"):
+            return ""
+        return _strip_build_prefix(name, rels["releases"][0]["tag"])
+    except Exception:
+        return ""
+
+
 def _check_tgproto() -> dict:
     """Проверить tg-mtproxy-client."""
     try:
-        from core.ext_binary_installer import BINARIES
         from core.tgproxy_manager import get_mtproxy_client_manager
         mgr = get_mtproxy_client_manager()
         detect = mgr.detect()
-        # «Последняя» — это та, которую реально поставит кнопка
-        # «Установить», а не та, что лежит в /releases/latest: у tgproto
-        # в манифесте закреплён тег. Спрашивать latest у GitHub значило
-        # бы обещать версию, которую установщик никогда не поставит —
-        # ровно тот тупик, из-за которого расфиксировали opera-proxy.
-        pinned = (BINARIES.get("tgproto", {}).get("release_tag") or "").strip()
-        latest = pinned.lstrip("v") if pinned else _github_latest("necronicle/z2k")
-        # _github_latest отдаёт тег без ведущего "v" — приводим к тому же
-        # виду и записанный установщиком, иначе "v1.0" против "1.0"
-        # выглядели бы как доступное обновление навсегда.
-        current = (detect.get("version") or "").strip().lstrip("v")
+        # Сначала наша сборка; если её ещё нет, установщик уходит на
+        # запасной источник — тогда и «последняя» должна быть оттуда.
+        latest = _our_build_latest("tgproto")
+        if not latest:
+            latest = _github_latest("necronicle/z2k")
+        # Установленное могло быть записано как полный тэг сборки —
+        # приводим обе стороны к одному виду.
+        current = _strip_build_prefix("tgproto", detect.get("version") or "")
         return {
             "name": "tgproto",
             "display_name": "tg-mtproxy-client",
@@ -303,15 +335,20 @@ def _check_opera() -> dict:
         from core.opera_proxy_manager import get_opera_proxy_manager
         mgr = get_opera_proxy_manager()
         env = mgr.detect()
-        latest = _github_latest("Alexey71/opera-proxy")
+        # То же правило, что и у tgproto: «последняя» — та, которую
+        # реально поставит кнопка. Наша сборка, а если её ещё нет —
+        # апстрим (туда же уйдёт и установщик через legacy_source).
+        latest = _our_build_latest("opera")
+        if not latest:
+            latest = _github_latest("Alexey71/opera-proxy")
+        current = _strip_build_prefix("opera", env.get("version") or "")
         return {
             "name": "opera",
             "display_name": "opera-proxy",
             "installed": env.get("installed", False),
-            "current": env.get("version", ""),
+            "current": current,
             "latest": latest,
-            "has_update": bool(latest and env.get("version") and
-                               latest != env["version"]),
+            "has_update": bool(latest and current and latest != current),
         }
     except Exception as e:
         return {"name": "opera", "display_name": "opera-proxy",

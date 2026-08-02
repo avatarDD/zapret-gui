@@ -413,20 +413,50 @@ class TestMtprotoInstalledTag(unittest.TestCase):
             _remember_installed_tag("tgwsproxy", {"tag": "v0.9.3"})
         cm.set.assert_not_called()
 
-    def test_update_check_uses_pinned_tag(self):
-        """«Последняя» для tgproto — закреплённый тег, а не /releases/latest.
-
-        Иначе «Обновления» обещали бы версию, которую установщик никогда
-        не поставит (он ходит за release_tag из манифеста).
-        """
+    def _check_with(self, installed_version, releases):
         from core.update_checker import _check_tgproto
-        with mock.patch("core.update_checker._github_latest") as gl:
-            mgr = mock.Mock()
-            mgr.detect.return_value = {"installed": True,
-                                       "version": "z2k-classify-rolling"}
-            with mock.patch("core.tgproxy_manager.get_mtproxy_client_manager",
-                            return_value=mgr):
-                res = _check_tgproto()
+        mgr = mock.Mock()
+        mgr.detect.return_value = {"installed": True,
+                                   "version": installed_version}
+        with mock.patch("core.update_checker._github_latest") as gl, \
+             mock.patch("core.ext_binary_installer.list_releases",
+                        return_value={"ok": True, "releases": releases}), \
+             mock.patch("core.tgproxy_manager.get_mtproxy_client_manager",
+                        return_value=mgr):
+            return _check_tgproto(), gl
+
+    def test_update_check_uses_our_build_not_upstream_latest(self):
+        """«Последняя» — та, которую реально поставит кнопка «Установить».
+
+        tg-mtproxy-client мы теперь собираем сами; спрашивать latest у
+        апстрима значило бы обещать версию, которую установщик не
+        поставит.
+        """
+        res, gl = self._check_with(
+            "tgproto-bin-v20260802-fe773fa",
+            [{"tag": "tgproto-bin-v20260802-fe773fa"}])
         gl.assert_not_called()
-        self.assertEqual(res["latest"], "z2k-classify-rolling")
+        self.assertEqual(res["latest"], "20260802-fe773fa")
+        self.assertIs(res["has_update"], False)
+
+    def test_update_offered_when_our_build_is_newer(self):
+        res, _gl = self._check_with(
+            "tgproto-bin-v20260701-aaaaaaa",
+            [{"tag": "tgproto-bin-v20260802-fe773fa"}])
+        self.assertTrue(res["has_update"])
+
+    def test_falls_back_to_upstream_until_first_build(self):
+        """Пока нашего релиза нет, установщик идёт к апстриму — и мы тоже."""
+        from core.update_checker import _check_tgproto
+        mgr = mock.Mock()
+        mgr.detect.return_value = {"installed": True,
+                                   "version": "z2k-classify-rolling"}
+        with mock.patch("core.update_checker._github_latest",
+                        return_value="z2k-classify-rolling") as gl, \
+             mock.patch("core.ext_binary_installer.list_releases",
+                        return_value={"ok": True, "releases": []}), \
+             mock.patch("core.tgproxy_manager.get_mtproxy_client_manager",
+                        return_value=mgr):
+            res = _check_tgproto()
+        gl.assert_called_once()
         self.assertIs(res["has_update"], False)

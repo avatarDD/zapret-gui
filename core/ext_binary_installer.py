@@ -539,52 +539,97 @@ BINARIES = {
         },
     },
 
+    # tg-mtproxy-client (резервный движок Telegram) собираем сами —
+    # .github/workflows/build-tgproto-binaries.yml. Причины:
+    #   * у апстрима в релизных ассетах НЕТ aarch64 и armv7 — на массовых
+    #     aarch64-Keenetic резервный движок было не поставить вообще;
+    #   * ассеты лежат под ROLLING-тэгом (z2k-classify-rolling) и могут
+    #     перезаливаться, а закреплённые sha256 при этом протухают:
+    #     установка начала бы падать на несовпадении хэша.
+    # Секрет туннеля в нашу сборку не зашит и не нужен: менеджер всегда
+    # передаёт --tunnel-url и --tunnel-secret явно (core/tgproxy_manager).
     "tgproto": {
-        "repo": "necronicle/z2k",
-        "release_tag": "z2k-classify-rolling",
+        "repo": "avatarDD/zapret-gui",
+        "release_tag": "",          # последний tgproto-bin-*
+        "release_prefix": "tgproto-bin-",
+        "manifest_asset": "manifest.json",
+        "manifest_section": "tgproto",
+        "install_kind": "binary",
         "dest": "/opt/sbin/tg-mtproxy-client",
         "arch_map": {
-            "mipsel": "tg-mtproxy-client-mipsel",
-            "mips": "tg-mtproxy-client-mips",
-            "x86_64": "z2k-classify-x86_64",
+            "aarch64": "aarch64",
+            "armv7": "armv7",
+            "mipsel": "mipsel-softfloat",
+            "mips": "mips-softfloat",
+            "x86_64": "x86_64",
         },
-        "sha256_map": {
-            "mipsel": "77e32695a9324cee75e176d216df37883cb2711fe6caec30cae24f7c2a5bc32d",
-            "mips": "d582b74ba0f4638a9d2a6636ddf8408fceace0416758cd1fd0dcbdab0c5e0b96",
-            "x86_64": "6a8d10c1e42001a4e8e9570d114e6ac2b30b954c553c8970a4573d3fe21e3910",
+        "legacy_source": {
+            # Прежний источник — на случай, если наша сборка недоступна.
+            # Здесь по-прежнему нет aarch64/armv7, это и чинилось.
+            "repo": "necronicle/z2k",
+            "release_tag": "z2k-classify-rolling",
+            "dest": "/opt/sbin/tg-mtproxy-client",
+            "arch_map": {
+                "mipsel": "tg-mtproxy-client-mipsel",
+                "mips": "tg-mtproxy-client-mips",
+                "x86_64": "z2k-classify-x86_64",
+            },
+            "sha256_map": {
+                "mipsel": "77e32695a9324cee75e176d216df37883cb2711fe6caec30cae24f7c2a5bc32d",
+                "mips": "d582b74ba0f4638a9d2a6636ddf8408fceace0416758cd1fd0dcbdab0c5e0b96",
+                "x86_64": "6a8d10c1e42001a4e8e9570d114e6ac2b30b954c553c8970a4573d3fe21e3910",
+            },
         },
     },
-    # opera-proxy обновляется часто (в апстриме релиз раз в 1–2 недели), а
-    # закреплённый тег означал бы, что «Обновления» показывают новую версию,
-    # а кнопка «Установить» молча ставит старую. Поэтому здесь release_tag
-    # пуст — ставим ПОСЛЕДНИЙ релиз; sha256_map относится к known-good
-    # версии pinned_tag: совпал тег — проверка фиксированного хэша
-    # (fail-closed, как у остальных), тег новее — см. allow_unpinned.
+    # opera-proxy собираем сами — .github/workflows/build-opera-binaries.yml.
+    # Апстрим релизится раз в 1–2 недели, поэтому здесь стоял allow_unpinned:
+    # ставился ПОСЛЕДНИЙ релиз, а закреплённый sha256 относился к более
+    # старой pinned-версии. На практике почти каждая установка шла по
+    # «мягкому» пути — без сверки хэша, если апстрим не публиковал
+    # контрольные суммы. Своя сборка + manifest.json возвращают строгую
+    # проверку, не теряя «всегда последняя версия».
     "opera": {
-        "repo": "Alexey71/opera-proxy",
-        "release_tag": "",
-        "pinned_tag": "v1.28.0",
-        "allow_unpinned": True,
+        "repo": "avatarDD/zapret-gui",
+        "release_tag": "",          # последний opera-bin-*
+        "release_prefix": "opera-bin-",
+        "manifest_asset": "manifest.json",
+        "manifest_section": "opera",
+        "install_kind": "binary",
         "dest": "/opt/usr/bin/opera-proxy",
         "arch_map": {
-            "aarch64": "opera-proxy.linux-arm64",
-            "x86_64": "opera-proxy.linux-amd64",
-            "mipsel": "opera-proxy.linux-mipsle",
-            "mips": "opera-proxy.linux-mips",
-            # armv7 у апстрима есть (ELF ARM EABI5, статическая сборка) —
-            # без этой строки установка на armv7-роутерах отказывала
-            # «архитектура не поддерживается», хотя бинарник опубликован.
-            "armv7": "opera-proxy.linux-arm",
+            "aarch64": "aarch64",
+            "armv7": "armv7",
+            "mipsel": "mipsel-softfloat",
+            "mips": "mips-softfloat",
+            "x86_64": "x86_64",
         },
-        # sha256 сборок v1.28.0 (посчитаны с релизных URL; процедура
-        # сверена — хэши v1.27.0, посчитанные так же, совпали с прежним
-        # манифестом).
-        "sha256_map": {
-            "aarch64": "9f34d6bcd0c12ccc9a1e13cf5fa630098d6c52cf8b68d9e7e1c17a58f04a9e94",
-            "x86_64": "19cdb8f80dfae56cb0be2c5a2e228f48a7ab2a6a0d382bdef29a7afe7e918227",
-            "mipsel": "179826987cd1861836b21bf49dc1674e9efb94c142fb4a2bcc2599f909ec1f41",
-            "mips": "3c0a1dab4fefd95b3c232e3df81bbb9bbb7a191e6a3e5a6da7adb567df52edcf",
-            "armv7": "bfecc0c667f76e3ce62404ec4847040c9f7a14169deb2d3f7558f9e0a751b394",
+        "legacy_source": {
+            "repo": "Alexey71/opera-proxy",
+            "release_tag": "",
+            "pinned_tag": "v1.28.0",
+            "allow_unpinned": True,
+            "dest": "/opt/usr/bin/opera-proxy",
+            "arch_map": {
+                "aarch64": "opera-proxy.linux-arm64",
+                "x86_64": "opera-proxy.linux-amd64",
+                "mipsel": "opera-proxy.linux-mipsle",
+                "mips": "opera-proxy.linux-mips",
+                # armv7 у апстрима есть (ELF ARM EABI5, статическая
+                # сборка) — без этой строки установка на armv7-роутерах
+                # отказывала «архитектура не поддерживается», хотя
+                # бинарник опубликован.
+                "armv7": "opera-proxy.linux-arm",
+            },
+            # sha256 сборок v1.28.0 (посчитаны с релизных URL; процедура
+            # сверена — хэши v1.27.0, посчитанные так же, совпали с
+            # прежним манифестом).
+            "sha256_map": {
+                "aarch64": "9f34d6bcd0c12ccc9a1e13cf5fa630098d6c52cf8b68d9e7e1c17a58f04a9e94",
+                "x86_64": "19cdb8f80dfae56cb0be2c5a2e228f48a7ab2a6a0d382bdef29a7afe7e918227",
+                "mipsel": "179826987cd1861836b21bf49dc1674e9efb94c142fb4a2bcc2599f909ec1f41",
+                "mips": "3c0a1dab4fefd95b3c232e3df81bbb9bbb7a191e6a3e5a6da7adb567df52edcf",
+                "armv7": "bfecc0c667f76e3ce62404ec4847040c9f7a14169deb2d3f7558f9e0a751b394",
+            },
         },
     },
 }

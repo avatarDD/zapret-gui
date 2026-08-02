@@ -536,17 +536,29 @@ class TestTgwsproxyLatestRelease(unittest.TestCase):
 
 class TestOperaLatestRelease(unittest.TestCase):
     """
-    opera-proxy ставится ПОСЛЕДНИМ релизом.
+    ЗАПАСНОЙ источник opera-proxy (апстрим Alexey71/opera-proxy).
 
-    Закреплённый тег означал бы, что «Обновления» видят новую версию, а
-    кнопка «Установить» молча ставит старую (апстрим релизится раз в
-    1–2 недели). Манифестный sha256 остаётся для known-good версии:
-    совпал тег — проверка fail-closed, тег новее — установка разрешена,
-    но помечена как несверенная.
+    По умолчанию opera ставится из НАШЕЙ сборки со сверкой sha256 по
+    manifest.json релиза. Прежний путь остался фолбэком, и его политика
+    проверяется здесь: ставится ПОСЛЕДНИЙ релиз апстрима, манифестный
+    sha256 действует для known-good версии (совпал тег — fail-closed,
+    тег новее — установка разрешена, но помечена как несверенная).
     """
 
-    def test_config_asks_for_latest(self):
+    @property
+    def legacy(self):
+        return ebi.BINARIES["opera"]["legacy_source"]
+
+    def test_opera_installs_from_our_build_by_default(self):
         cfg = ebi.BINARIES["opera"]
+        self.assertEqual(cfg["repo"], "avatarDD/zapret-gui")
+        self.assertEqual(cfg["release_prefix"], "opera-bin-")
+        self.assertEqual(cfg["manifest_asset"], "manifest.json")
+        # Мягкой политики у основного пути быть не должно.
+        self.assertFalse(cfg.get("allow_unpinned"))
+
+    def test_config_asks_for_latest(self):
+        cfg = self.legacy
         self.assertEqual(cfg.get("release_tag", ""), "")
         self.assertTrue(cfg.get("allow_unpinned"))
         self.assertTrue(cfg.get("pinned_tag"))
@@ -561,7 +573,7 @@ class TestOperaLatestRelease(unittest.TestCase):
 
     def _install(self, tag, sha_hex, verify_skipped=True):
         """Прогнать install_binary_by_name('opera') с подставленным релизом."""
-        asset = ebi.BINARIES["opera"]["arch_map"]["x86_64"]
+        asset = self.legacy["arch_map"]["x86_64"]
         release = {
             "tag_name": tag,
             "assets": [{"name": asset,
@@ -596,28 +608,28 @@ class TestOperaLatestRelease(unittest.TestCase):
             h = mock.Mock()
             h.hexdigest.return_value = sha_hex
             mhash.return_value = h
-            res = ebi.install_binary_by_name("opera")
+            res = ebi.install_binary_by_name("opera", _cfg=self.legacy)
         return res, m_release
 
     def test_latest_is_requested_not_pinned_tag(self):
-        pinned = ebi.BINARIES["opera"]["pinned_tag"]
+        pinned = self.legacy["pinned_tag"]
         res, m_release = self._install(pinned,
-                                       ebi.BINARIES["opera"]["sha256_map"]["x86_64"])
+                                       self.legacy["sha256_map"]["x86_64"])
         self.assertTrue(res["ok"], res)
         # Пустой тег = /releases/latest.
         m_release.assert_called_once_with("Alexey71/opera-proxy", "",
                                           transport="")
 
     def test_known_version_is_checked_against_manifest(self):
-        pinned = ebi.BINARIES["opera"]["pinned_tag"]
+        pinned = self.legacy["pinned_tag"]
         res, _ = self._install(pinned,
-                               ebi.BINARIES["opera"]["sha256_map"]["x86_64"])
+                               self.legacy["sha256_map"]["x86_64"])
         self.assertTrue(res["ok"], res)
         self.assertTrue(res["sha256_verified"])
         self.assertTrue(res["sha256_pinned"])
 
     def test_known_version_with_wrong_hash_is_refused(self):
-        pinned = ebi.BINARIES["opera"]["pinned_tag"]
+        pinned = self.legacy["pinned_tag"]
         with self.assertRaises(ebi.InstallError):
             self._install(pinned, "0" * 64)
 
@@ -642,7 +654,7 @@ class TestOperaLatestRelease(unittest.TestCase):
         наша сборка, и тогда sha256 берётся из manifest.json релиза. Чего
         быть не должно — так это установки вообще без сверки.
         """
-        for name in ("usque", "tgproto"):
+        for name in ("usque", "tgproto", "opera"):
             cfg = ebi.BINARIES[name]
             self.assertFalse(cfg.get("allow_unpinned"), name)
             self.assertTrue(cfg.get("release_tag")
@@ -653,7 +665,7 @@ class TestOperaLatestRelease(unittest.TestCase):
         закреплённой. Приехала ровно закреплённая, а хэша под эту
         архитектуру в манифесте нет — это дыра в манифесте, ставить
         нельзя."""
-        pinned = ebi.BINARIES["opera"]["pinned_tag"]
+        pinned = self.legacy["pinned_tag"]
         with mock.patch("core.ext_binary_installer._expected_sha256",
                         return_value=""):
             res, _ = self._install(pinned, "0" * 64)
@@ -785,3 +797,61 @@ class TestReleaseListFiltering(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual([r["tag"] for r in out["releases"]],
                          ["usque-bin-v4.2.1", "usque-bin-v4.2.0"])
+
+
+class TestOwnBuildsConfig(unittest.TestCase):
+    """opera-proxy и tg-mtproxy-client тоже собираем сами.
+
+    Мотивы разные: у opera прежний путь почти всегда шёл без сверки
+    sha256 (allow_unpinned + частые релизы апстрима), а у tgproto в
+    ассетах апстрима нет aarch64/armv7 и они лежат под rolling-тэгом.
+    """
+
+    OWN = ("usque", "opera", "tgproto")
+
+    def test_all_own_builds_come_from_our_repo_with_manifest(self):
+        for name in self.OWN:
+            cfg = ebi.BINARIES[name]
+            self.assertEqual(cfg["repo"], "avatarDD/zapret-gui", name)
+            self.assertTrue(cfg["release_prefix"].endswith("-bin-"), name)
+            self.assertEqual(cfg["manifest_asset"], "manifest.json", name)
+            self.assertEqual(cfg["manifest_section"], name, name)
+            self.assertEqual(cfg.get("install_kind"), "binary", name)
+            # Никаких «мягких» установок на основном пути.
+            self.assertFalse(cfg.get("allow_unpinned"), name)
+
+    def test_own_builds_cover_every_supported_arch(self):
+        for name in self.OWN:
+            self.assertEqual(
+                sorted(ebi.BINARIES[name]["arch_map"]),
+                ["aarch64", "armv7", "mips", "mipsel", "x86_64"], name)
+
+    def test_every_own_build_keeps_a_fallback_source(self):
+        """До первой публикации сборки установка обязана работать."""
+        for name in self.OWN:
+            legacy = ebi.BINARIES[name].get("legacy_source")
+            self.assertTrue(legacy, name)
+            self.assertNotEqual(legacy["repo"], "avatarDD/zapret-gui", name)
+            self.assertTrue(legacy.get("dest"), name)
+
+    def test_tgproto_build_closes_the_aarch64_gap(self):
+        """Ради этого всё и затевалось: у апстрима aarch64/armv7 нет."""
+        legacy = ebi.BINARIES["tgproto"]["legacy_source"]
+        self.assertNotIn("aarch64", legacy["arch_map"])
+        self.assertNotIn("armv7", legacy["arch_map"])
+        self.assertIn("aarch64", ebi.BINARIES["tgproto"]["arch_map"])
+        self.assertIn("armv7", ebi.BINARIES["tgproto"]["arch_map"])
+
+    def test_manifest_sections_are_distinct(self):
+        """Секции манифеста не должны пересекаться между бинарниками."""
+        sections = [ebi.BINARIES[n]["manifest_section"] for n in self.OWN]
+        self.assertEqual(len(sections), len(set(sections)))
+
+    def test_fallback_used_when_our_release_is_missing(self):
+        with mock.patch.object(ebi, "github_release_by_prefix",
+                               return_value={"error_detail": "нет релиза"}), \
+             mock.patch.object(ebi, "detect_arch", return_value="mipsel"), \
+             mock.patch.object(ebi, "github_release") as gr:
+            gr.return_value = {"error_detail": "stop"}
+            ebi.install_binary_by_name("tgproto")
+        self.assertEqual(gr.call_args.args[0], "necronicle/z2k")
