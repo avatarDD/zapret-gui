@@ -190,7 +190,7 @@ jobs:
           echo "$NOTES" > /tmp/release_notes.md
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: "Zapret Web-GUI ${{ steps.version.outputs.tag }}"
           body_path: /tmp/release_notes.md

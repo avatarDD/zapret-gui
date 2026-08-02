@@ -187,7 +187,7 @@ jobs:
           echo "── Release notes ──"; cat /tmp/dev_notes.md
 
       - name: Create dev pre-release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.build.outputs.dev_tag }}
           target_commitish: ${{ github.sha }}
