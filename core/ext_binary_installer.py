@@ -241,6 +241,82 @@ def github_latest_release(repo: str) -> dict:
     return github_release(repo)
 
 
+def github_release_by_prefix(repo: str, prefix: str,
+                             transport: str = "") -> dict:
+    """Самый свежий релиз, чей тэг начинается с prefix.
+
+    В одном репозитории живут релизы GUI и наши сборки бинарников
+    (usque-bin-*, singbox-bin-*, awg-bin-*), поэтому `latest` тут не
+    годится — он вернёт релиз самого GUI.
+    """
+    url = "https://api.github.com/repos/%s/releases?per_page=50" % repo
+    headers = {"Accept": "application/vnd.github.v3+json",
+               "User-Agent": "zapret-gui/ext-installer"}
+    try:
+        from core.config_manager import get_config_manager
+        token = (get_config_manager().get("github", "token",
+                                          default="") or "").strip()
+        if token:
+            headers["Authorization"] = "token %s" % token
+    except Exception:
+        pass
+    try:
+        from core.binary_installer import resolve_url
+        from core.download_transport import urlopen_via
+        with urlopen_via(resolve_url(url), transport=transport,
+                         timeout=HTTP_TIMEOUT, headers=headers) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        return {"error_detail": "GitHub API недоступен: %s" % e}
+    if not isinstance(data, list):
+        return {"error_detail": "Некорректный ответ GitHub releases"}
+    for rel in data:
+        if not isinstance(rel, dict) or rel.get("draft"):
+            continue
+        if (rel.get("tag_name") or "").startswith(prefix):
+            return rel
+    return {"error_detail": "В репозитории %s нет релиза с префиксом %s"
+                            % (repo, prefix)}
+
+
+def _manifest_entry(release: dict, cfg: dict, arch: str,
+                    transport: str = "") -> dict:
+    """Запись об этой архитектуре из manifest.json релиза.
+
+    Возвращает {} — значит манифеста/записи нет и ставить по нему нельзя
+    (вызывающий уходит на legacy_source). Хэши наших сборок известны
+    только после сборки, поэтому в манифесте их и держим.
+    """
+    asset_name = cfg.get("manifest_asset") or ""
+    if not asset_name:
+        return {}
+    url = ""
+    for asset in (release.get("assets") or []):
+        if asset.get("name") == asset_name:
+            url = asset.get("browser_download_url", "")
+            break
+    if not url:
+        return {}
+    try:
+        from core.binary_installer import resolve_url
+        from core.download_transport import urlopen_via
+        with urlopen_via(resolve_url(url), transport=transport,
+                         timeout=HTTP_TIMEOUT,
+                         headers={"User-Agent": "zapret-gui/ext-installer"}) as r:
+            manifest = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        log.warning("ext_installer: не удалось прочитать %s: %s"
+                    % (asset_name, e), source="ext_installer")
+        return {}
+    section = manifest.get(cfg.get("manifest_section") or "", {})
+    entry = ((section.get("binaries") or {}).get(arch) or {})
+    if not entry.get("url") or not entry.get("sha256"):
+        return {}
+    entry = dict(entry)
+    entry["version"] = section.get("version", "")
+    return entry
+
+
 def github_download_url(repo: str, tag: str, filename: str) -> str:
     """Сформировать URL для скачивания asset'а."""
     return ("https://github.com/%s/releases/download/%s/%s"
@@ -412,27 +488,54 @@ BINARIES = {
         },
     },
 
+    # usque собираем сами (.github/workflows/build-usque-binaries.yml) —
+    # как amneziawg-go и sing-box. Причины перехода со стороннего .ipk:
+    #   * usque-keenetic отстаёт от самого usque (в v0.3.0 лежал 4.2.0,
+    #     когда апстрим уже выпустил 4.2.1) — версией управляем сами;
+    #   * в его .ipk НЕТ x86_64, поэтому на Linux-ПК/VPS usque было не
+    #     поставить вообще, хотя сам GUI там работает;
+    #   * .ipk требует opkg/apk, а сырой бинарник ставится всюду;
+    #   * на одну стороннюю зависимость в цепочке поставки меньше.
+    # sha256 берём не из этого файла, а из manifest.json релиза
+    # (manifest_asset): хэши каждой сборки известны только после неё, но
+    # проверка при этом остаётся обязательной и fail-closed.
     "usque": {
-        "repo": "side-effect-tm/usque-keenetic",
-        "release_tag": "v0.3.0",
-        # usque-keenetic распространяется как Entware .ipk — ставим через opkg,
-        # а не копированием сырого бинарника (иначе в /opt/usr/bin/usque ляжет
-        # неисполняемый ar-архив и usque не запустится). package_assets нет —
-        # _resolve_asset_name падёт обратно на arch_map (полные имена .ipk).
-        "install_kind": "package",
-        "package_name": "usque-keenetic",
+        "repo": "avatarDD/zapret-gui",
+        "release_tag": "",          # последний usque-bin-*
+        "release_prefix": "usque-bin-",
+        "manifest_asset": "manifest.json",
+        "manifest_section": "usque",
+        "install_kind": "binary",
         "dest": "/opt/usr/bin/usque",
+        # Имена ассетов версионные (usque-<ver>-<arch>.gz), поэтому здесь
+        # только суффиксы: точный файл берётся из манифеста релиза.
         "arch_map": {
-            "aarch64": "usque-keenetic_0.3.0_aarch64-3.10.ipk",
-            "mipsel": "usque-keenetic_0.3.0_mipsel-3.4.ipk",
-            "mips": "usque-keenetic_0.3.0_mips-3.4.ipk",
-            "armv7": "usque-keenetic_0.3.0_all_entware.ipk",
+            "aarch64": "aarch64",
+            "mipsel": "mipsel-softfloat",
+            "mips": "mips-softfloat",
+            "armv7": "armv7",
+            "x86_64": "x86_64",
         },
-        "sha256_map": {
-            "aarch64": "9ff3072a6fb607d404cca65cbfef25d286723f9b76fce8c2d6fc2f9135580a55",
-            "mipsel": "300fa4b3d083636f1a8eeb8cd0ace1ecbbc68de58826831cb7b7426fc2b1aa79",
-            "mips": "8b89ea2656d9fa7fa877e4fc2b9f311fce77c95c7fc2fce4e701e8579733ec9a",
-            "armv7": "2ec8f7d1a40caaf16576567b6fc059877eb5b2fc627a08a8fb8d797d5f9ffb39",
+        "legacy_source": {
+            # Запасной путь, пока не опубликован первый usque-bin-*
+            # релиз (и на случай, если наша сборка почему-то недоступна).
+            "repo": "side-effect-tm/usque-keenetic",
+            "release_tag": "v0.3.0",
+            "install_kind": "package",
+            "package_name": "usque-keenetic",
+            "dest": "/opt/usr/bin/usque",
+            "arch_map": {
+                "aarch64": "usque-keenetic_0.3.0_aarch64-3.10.ipk",
+                "mipsel": "usque-keenetic_0.3.0_mipsel-3.4.ipk",
+                "mips": "usque-keenetic_0.3.0_mips-3.4.ipk",
+                "armv7": "usque-keenetic_0.3.0_all_entware.ipk",
+            },
+            "sha256_map": {
+                "aarch64": "9ff3072a6fb607d404cca65cbfef25d286723f9b76fce8c2d6fc2f9135580a55",
+                "mipsel": "300fa4b3d083636f1a8eeb8cd0ace1ecbbc68de58826831cb7b7426fc2b1aa79",
+                "mips": "8b89ea2656d9fa7fa877e4fc2b9f311fce77c95c7fc2fce4e701e8579733ec9a",
+                "armv7": "2ec8f7d1a40caaf16576567b6fc059877eb5b2fc627a08a8fb8d797d5f9ffb39",
+            },
         },
     },
 
@@ -751,12 +854,16 @@ def list_releases(name: str, transport: str = "", force: bool = False,
         return {"ok": False,
                 "error": "Некорректный ответ GitHub releases (не список)"}
 
+    # Наши сборки бинарников живут в одном репозитории с релизами самого
+    # GUI, поэтому без фильтра по префиксу в выборе версии usque
+    # оказались бы версии GUI (v0.24.0 и т.п.).
+    prefix = cfg.get("release_prefix") or ""
     releases = []
     for rel in data:
         if not isinstance(rel, dict) or rel.get("draft"):
             continue
         tag = rel.get("tag_name") or ""
-        if not tag:
+        if not tag or (prefix and not tag.startswith(prefix)):
             continue
         releases.append({
             "tag": tag,
@@ -843,8 +950,125 @@ def install_local_file(name: str, path: str, orig_name: str = "") -> dict:
             "sha256_verified": False, "warning": warning}
 
 
+def _install_from_manifest(name: str, cfg: dict, arch: str, progress_cb,
+                           transport: str, tag: str = ""):
+    """Установка нашей сборки по manifest.json релиза.
+
+    None — манифест/сборка под эту архитектуру недоступны; вызывающий
+    уходит на legacy_source. dict — окончательный результат.
+    """
+    if progress_cb:
+        progress_cb("fetch", 10, "Поиск релиза...")
+    if tag:
+        release = github_release(cfg["repo"], tag, transport=transport)
+    else:
+        release = github_release_by_prefix(cfg["repo"], cfg["release_prefix"],
+                                           transport=transport)
+    if not release or "error_detail" in release:
+        log.warning("ext_installer: %s — релиз %s не найден: %s"
+                    % (name, tag or (cfg["release_prefix"] + "*"),
+                       (release or {}).get("error_detail", "?")),
+                    source="ext_installer")
+        return None
+
+    entry = _manifest_entry(release, cfg, arch, transport=transport)
+    if not entry:
+        log.warning("ext_installer: %s — в манифесте релиза %s нет сборки для"
+                    " %s" % (name, release.get("tag_name", "?"), arch),
+                    source="ext_installer")
+        return None
+
+    tag = release.get("tag_name", "")
+    filename = entry.get("filename") or os.path.basename(entry["url"])
+    suffix = ".tar.gz" if filename.endswith(".tar.gz") \
+        else (os.path.splitext(filename)[1] or ".bin")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        if progress_cb:
+            progress_cb("download", 30, "Скачивание %s..." % filename)
+        if not download_file(entry["url"], tmp_path, transport=transport):
+            return {"ok": False, "error": "Не удалось скачать %s" % filename}
+
+        if progress_cb:
+            progress_cb("download", 60, "Проверка контрольной суммы...")
+        actual = _sha256_file(tmp_path)
+        if actual.lower() != str(entry["sha256"]).lower():
+            # Fail-closed: расхождение хэша — это либо подмена, либо битая
+            # загрузка; в обоих случаях ставить нельзя.
+            return {"ok": False,
+                    "error": "SHA256 не совпал для %s (ожидался %s, получен %s)"
+                             % (filename, entry["sha256"][:16], actual[:16])}
+
+        if progress_cb:
+            progress_cb("install", 80, "Установка...")
+        res = _install_binary_file(cfg, tmp_path)
+        if not res.get("ok"):
+            return res
+
+        if progress_cb:
+            progress_cb("done", 100, "Установлено: %s" % tag)
+        log.info("ext_installer: %s %s установлен из нашей сборки (%s)"
+                 % (name, entry.get("version") or tag, arch),
+                 source="ext_installer")
+        return {"ok": True, "binary": cfg["dest"], "tag": tag,
+                "version": entry.get("version") or tag,
+                "sha256_verified": True, "sha256_pinned": True}
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
+    """Распаковать (если нужно) и положить бинарник в cfg['dest']."""
+    dest = cfg["dest"]
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": "Каталог %s: %s"
+                                      % (os.path.dirname(dest), e)}
+
+    src = tmp_path
+    if tmp_path.endswith(".gz") and not tmp_path.endswith(".tar.gz"):
+        import gzip
+        src = tmp_path + ".bin"
+        try:
+            with gzip.open(tmp_path, "rb") as f_in, open(src, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        except OSError as e:
+            return {"ok": False, "error": "Распаковка: %s" % e}
+
+    try:
+        # Через временный файл рядом с целью + os.replace: иначе при
+        # обрыве на месте рабочего бинарника остаётся огрызок.
+        staged = dest + ".new"
+        shutil.copyfile(src, staged)
+        os.chmod(staged, 0o755)
+        os.replace(staged, dest)
+    except OSError as e:
+        return {"ok": False, "error": "Запись %s: %s" % (dest, e)}
+    finally:
+        if src != tmp_path:
+            try:
+                os.unlink(src)
+            except OSError:
+                pass
+    return {"ok": True}
+
+
 def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
-                           transport: str = "") -> dict:
+                           transport: str = "", _cfg: dict = None) -> dict:
     """
     Установить бинарник по имени.
 
@@ -861,11 +1085,28 @@ def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
     Returns:
         {ok, binary, version, tag, error}
     """
-    cfg = BINARIES.get(name)
+    cfg = _cfg or BINARIES.get(name)
     if not cfg:
         return {"ok": False, "error": "Неизвестный бинарник: %s" % name}
 
     arch = detect_arch()
+
+    # Наша собственная сборка: релиз ищем по префиксу тэга (или берём
+    # явно выбранный в UI), sha256 — из manifest.json релиза.
+    if cfg.get("manifest_asset") and cfg.get("release_prefix"):
+        res = _install_from_manifest(name, cfg, arch, progress_cb, transport,
+                                     tag=tag)
+        if res is not None:
+            return res
+        legacy = cfg.get("legacy_source")
+        if legacy:
+            log.warning("ext_installer: %s — переключаюсь на запасной"
+                        " источник %s" % (name, legacy.get("repo", "?")),
+                        source="ext_installer")
+            return install_binary_by_name(name, progress_cb=progress_cb,
+                                          transport=transport, _cfg=legacy)
+        return {"ok": False,
+                "error": "Нет сборки %s под архитектуру %s" % (name, arch)}
 
     install_kind = cfg.get("install_kind", "binary")
     pkg_mgr = _package_manager() if install_kind == "package" else ""

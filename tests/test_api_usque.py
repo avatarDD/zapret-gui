@@ -362,42 +362,52 @@ class TestUsqueRegisterTransport(_IsolatedConfig):
 
 
 class TestUsqueVersionSpaces(_IsolatedConfig):
-    """Версия движка usque и тег пакета usque-keenetic — разные величины.
+    """«Установлено» и «в релизе» должны быть одной величиной.
 
-    Пакет v0.3.0 несёт usque 4.2.0. Сравнение «4.2.0 != 0.3.0» давало
-    вечное «доступно обновление» на странице установки.
+    usque мы собираем сами, и тэг сборки кодирует версию самого usque
+    (usque-bin-v4.2.1 → 4.2.1). Раньше «в релизе» брался из тэга
+    стороннего пакета usque-keenetic (v0.3.0) и сравнивался с версией
+    движка (4.2.0) — числа из разных систем нумерации, поэтому «доступно
+    обновление» горело всегда.
     """
 
-    def _env(self, installed_tag="", engine="4.2.0"):
+    def _ask(self, engine="4.2.1", releases=None):
         from core.config_manager import get_config_manager
-        cfg = get_config_manager()
-        cfg.set("usque", "installed_tag", installed_tag)
+        get_config_manager().set("usque", "installed_tag", "")
+        rel = {"ok": True, "releases": releases if releases is not None
+               else [{"tag": "usque-bin-v4.2.1", "published_at": "",
+                      "prerelease": False}]}
         with mock.patch("core.usque_manager.UsqueManager.detect",
                         return_value={"installed": True,
                                       "binary": "/opt/usr/bin/usque",
-                                      "version": engine, "arch": "aarch64"}):
+                                      "version": engine, "arch": "mipsel"}), \
+             mock.patch("core.ext_binary_installer.list_releases",
+                        return_value=rel):
             return (self.client.get_json("/api/usque/environment"),
                     self.client.get_json("/api/usque/version"))
 
-    def test_environment_reports_package_tag_and_engine_separately(self):
-        env, _ver = self._env(installed_tag="v0.3.0")
-        # SetupUI сравнивает именно binary.version с «В релизе».
-        self.assertEqual(env["binary"]["version"], "v0.3.0")
-        self.assertEqual(env["binary"]["engine_version"], "4.2.0")
-        # Основная страница usque.js читает плоское поле — там движок.
-        self.assertEqual(env["version"], "4.2.0")
+    def test_environment_reports_engine_version(self):
+        env, _ = self._ask()
+        # SetupUI сравнивает binary.version с «В релизе» — обе про usque.
+        self.assertEqual(env["binary"]["version"], "4.2.1")
+        self.assertEqual(env["version"], "4.2.1")
 
-    def test_no_phantom_update_when_pinned_tag_installed(self):
-        from core.ext_binary_installer import BINARIES
-        pinned = BINARIES["usque"]["release_tag"]
-        _env, ver = self._env(installed_tag=pinned)
+    def test_no_update_when_versions_match(self):
+        _env, ver = self._ask(engine="4.2.1")
+        self.assertEqual(ver["latest"]["version"], "4.2.1")
         self.assertFalse(ver["has_update"])
 
-    def test_update_offered_for_older_package_tag(self):
-        _env, ver = self._env(installed_tag="v0.2.0")
+    def test_update_offered_for_older_engine(self):
+        _env, ver = self._ask(engine="4.1.0")
         self.assertTrue(ver["has_update"])
 
-    def test_no_update_claim_when_tag_unknown(self):
-        """Пакет поставлен мимо GUI — сравнивать не с чем, значит молчим."""
-        _env, ver = self._env(installed_tag="")
+    def test_no_update_claim_without_network(self):
+        """Список релизов недоступен — про обновления молчим."""
+        _env, ver = self._ask(engine="4.2.1", releases=[])
+        self.assertEqual(ver["latest"]["version"], "")
         self.assertFalse(ver["has_update"])
+
+    def test_version_parsed_from_our_build_tag(self):
+        from api.usque import _version_from_tag
+        self.assertEqual(_version_from_tag("usque-bin-v4.2.1"), "4.2.1")
+        self.assertEqual(_version_from_tag("usque-bin-4.2.1"), "4.2.1")

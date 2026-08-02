@@ -1,0 +1,359 @@
+# ═══════════════════════════════════════════════════════════════
+# build-usque-binaries.yml — кросс-компиляция usque (клиент
+# Cloudflare WARP по протоколу MASQUE) под архитектуры роутеров.
+#
+# Зачем своя сборка, а не сторонний .ipk:
+#   * апстрим usque-keenetic отстаёт от самого usque (в v0.3.0 лежит
+#     usque 4.2.0, когда апстрим уже 4.2.1) — версией управляем сами;
+#   * в его .ipk нет x86_64, поэтому на Linux-ПК/VPS usque было
+#     не поставить вообще;
+#   * .ipk требует opkg/apk; сырой бинарник ставится всюду;
+#   * на одну стороннюю зависимость в цепочке поставки меньше.
+#
+# usque — чистый Go без cgo, поэтому кросс-компиляция тривиальна
+# (проверено локально: все пять архитектур собираются из тега v4.2.0).
+#
+# Способы запустить релиз (как у awg/sing-box):
+#   1. Автоматически: cron раз в сутки смотрит апстрим Diniboy1123/usque
+#      и создаёт тэг usque-bin-<X>, если вышла новая версия.
+#   2. Через веб-интерфейс GitHub: Releases → Draft new release →
+#      Choose a tag → имя вида usque-bin-vN → Publish.
+#   3. Вручную: workflow_dispatch с publish_release=true.
+# ═══════════════════════════════════════════════════════════════
+
+name: Build usque binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      usque_ref:
+        description: 'usque git ref (tag/branch/sha). Пусто = последний релиз.'
+        required: false
+        default: ''
+      publish_release:
+        description: 'Опубликовать GitHub Release (true/false)'
+        required: false
+        default: 'true'
+  push:
+    tags:
+      - 'usque-bin-*'
+  schedule:
+    # 5:00 — на час позже sing-box, чтобы не толкаться за runner'ами.
+    - cron: '0 5 * * *'
+
+permissions:
+  contents: write
+
+env:
+  USQUE_REPO: Diniboy1123/usque
+
+jobs:
+  # ── 0. Авто-детект новых версий апстрима (только cron) ─────
+  auto-tag:
+    name: Auto-tag on upstream release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect & maybe tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          resolve_latest() {
+            local repo="$1" out
+            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            echo "main"
+          }
+
+          UQ_REF=$(resolve_latest "$USQUE_REPO")
+          UQ_VER="${UQ_REF#v}"
+
+          # printf, а не echo: '\n' от echo превратился бы в лишний дефис.
+          sanitize() {
+            printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/^-*//' -e 's/-*$//'
+          }
+          NEW_TAG="usque-bin-v$(sanitize "$UQ_VER")"
+          echo "Upstream usque=$UQ_VER → tag=$NEW_TAG"
+
+          if git rev-parse "refs/tags/$NEW_TAG" >/dev/null 2>&1 \
+             || gh api "repos/${{ github.repository }}/git/refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG уже существует — пропускаем"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEW_TAG" -m "Auto: usque=$UQ_VER"
+          git push origin "$NEW_TAG"
+
+  # ── 1. Определить версию апстрима ──────────────────────────
+  resolve-version:
+    name: Resolve upstream version
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    outputs:
+      usque_ref: ${{ steps.resolve.outputs.usque_ref }}
+      usque_version: ${{ steps.resolve.outputs.usque_version }}
+    steps:
+      - name: Resolve ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          UQ_REF="${{ inputs.usque_ref }}"
+
+          if [ -z "$UQ_REF" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [[ "$TAG" =~ ^usque-bin-v(.+)$ ]]; then
+              UQ_REF="v${BASH_REMATCH[1]}"
+              echo "Version parsed from tag $TAG: $UQ_REF"
+            fi
+          fi
+
+          resolve_latest() {
+            local repo="$1" out
+            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            echo "main"
+          }
+
+          [ -z "$UQ_REF" ] && UQ_REF=$(resolve_latest "$USQUE_REPO")
+
+          # В тэге могли указать "4.2.1", а в репо тэг "v4.2.1".
+          if ! gh api "repos/$USQUE_REPO/git/refs/tags/$UQ_REF" >/dev/null 2>&1; then
+            if [[ "$UQ_REF" != v* ]] \
+               && gh api "repos/$USQUE_REPO/git/refs/tags/v$UQ_REF" >/dev/null 2>&1; then
+              UQ_REF="v$UQ_REF"
+            fi
+          fi
+
+          echo "usque_ref=$UQ_REF"        >> "$GITHUB_OUTPUT"
+          echo "usque_version=${UQ_REF#v}" >> "$GITHUB_OUTPUT"
+
+  # ── 2. Сборка ──────────────────────────────────────────────
+  build:
+    name: Build ${{ matrix.arch_name }}
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_name: mipsel-softfloat
+            goarch: mipsle
+            gomips: softfloat
+          - arch_name: mips-softfloat
+            goarch: mips
+            gomips: softfloat
+          - arch_name: aarch64
+            goarch: arm64
+          - arch_name: armv7
+            goarch: arm
+            goarm: '7'
+          - arch_name: x86_64
+            goarch: amd64
+
+    steps:
+      - name: Checkout usque
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.USQUE_REPO }}
+          ref: ${{ needs.resolve-version.outputs.usque_ref }}
+          path: src
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # go.mod usque требует свежий Go; go-version-file берёт ровно
+          # то, что просит апстрим, и не ломается при его апдейте.
+          go-version-file: src/go.mod
+          cache: false
+
+      - name: Install UPX
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+
+      - name: Build
+        working-directory: src
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips }}
+          GOARM: ${{ matrix.goarm }}
+          GOTOOLCHAIN: auto
+        run: |
+          set -euo pipefail
+          VER="${{ needs.resolve-version.outputs.usque_version }}"
+          go env GOOS GOARCH GOMIPS GOARM
+
+          # Версию зашиваем в бинарник: без -X `usque version` печатает
+          # "dev", и GUI не может сказать, что именно установлено.
+          # Переменная живёт в пакете cmd; путь берём из go.mod, чтобы не
+          # сломаться, когда апстрим приведёт module path к /v4.
+          VER_PKG=$(grep -m1 '^module ' go.mod | awk '{print $2}')
+          go build -trimpath \
+            -ldflags "-s -w -X ${VER_PKG}/cmd.version=${VER}" \
+            -o usque .
+
+          ls -lh usque
+          file usque || true
+
+          # Бинарник должен хотя бы отвечать на `version` там, где мы
+          # можем его запустить (нативная для runner'а архитектура).
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            ./usque version || true
+          fi
+
+      - name: UPX compress
+        # Только там, где flash реально тесная. На aarch64/x86_64 выигрыш
+        # не оправдывает рисков (ложные срабатывания антивирусов и т.п.).
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          echo "── before UPX ──"; ls -lh usque
+          # mips/mipsle с LZMA иногда падают в runtime (Go распаковывает
+          # себя на месте), поэтому LZMA только на armv7.
+          if [ "${{ matrix.goarch }}" = "arm" ]; then
+            upx --best --lzma usque || upx --best usque || true
+          else
+            upx --best usque || true
+          fi
+          echo "── after UPX ──"; ls -lh usque
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VER="${{ needs.resolve-version.outputs.usque_version }}"
+          ARCH="${{ matrix.arch_name }}"
+          NAME="usque-${VER}-${ARCH}"
+          cp src/usque "$NAME"
+          gzip -9 -k -f "$NAME"
+          sha256sum "${NAME}.gz" > "${NAME}.gz.sha256"
+          ls -lh usque-*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: usque-${{ matrix.arch_name }}
+          path: |
+            usque-*.gz
+            usque-*.gz.sha256
+          retention-days: 14
+
+  # ── 3. Публикация релиза ───────────────────────────────────
+  publish:
+    name: Publish release
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+         && (github.event_name == 'push' || inputs.publish_release == 'true')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Stage release files & build manifest
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.gz' -o -name '*.gz.sha256' \) \
+            -exec cp {} release/ \;
+          ls -lh release/
+
+          UQ_VER="${{ needs.resolve-version.outputs.usque_version }}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          # Ручной запуск не даёт тэга из ref — формируем штатный
+          # usque-bin-v<версия>, иначе установщик релиз не найдёт.
+          if [ "$TAG" = "$GITHUB_REF" ]; then
+            TAG="usque-bin-v${UQ_VER#v}"
+          fi
+
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
+
+          python3 - "$UQ_VER" "$TAG" "$BASE_URL" <<'EOF' > release/manifest.json
+          import json, os, sys, hashlib
+
+          uq_ver, tag, base = sys.argv[1:4]
+
+          def sha(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(8192), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          # Ключи — те же имена архитектур, что использует установщик
+          # (core/ext_binary_installer.detect_arch): mipsel/mips/aarch64/
+          # armv7/x86_64. -softfloat в именах файлов оставляем для людей.
+          archs = {
+              "mipsel": "mipsel-softfloat",
+              "mips": "mips-softfloat",
+              "aarch64": "aarch64",
+              "armv7": "armv7",
+              "x86_64": "x86_64",
+          }
+          manifest = {"schema": 1, "tag": tag,
+                      "usque": {"version": uq_ver, "binaries": {}}}
+          for key, arch in archs.items():
+              fname = f"usque-{uq_ver}-{arch}.gz"
+              fpath = os.path.join("release", fname)
+              if os.path.exists(fpath):
+                  manifest["usque"]["binaries"][key] = {
+                      "filename": fname,
+                      "url": f"{base}/{fname}",
+                      "sha256": sha(fpath),
+                      "size": os.path.getsize(fpath),
+                  }
+          print(json.dumps(manifest, indent=2))
+          EOF
+
+          echo "── manifest.json ──"; cat release/manifest.json
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.stage.outputs.tag }}
+          name: "usque binaries ${{ steps.stage.outputs.tag }}"
+          body: |
+            Кросс-скомпилированные бинарники [usque](https://github.com/Diniboy1123/usque)
+            (клиент Cloudflare WARP по протоколу MASQUE) для роутеров и Linux.
+
+            - usque: `${{ needs.resolve-version.outputs.usque_version }}`
+
+            Архитектуры, размеры, sha256 и URL — в `manifest.json`.
+            Установщик GUI сверяет sha256 именно по нему.
+          draft: false
+          prerelease: false
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

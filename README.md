@@ -23,6 +23,10 @@
 - **nfqws2** (zapret2) — обход DPI «на месте», без туннеля;
 - туннели **AmneziaWG / sing-box / mihomo** — когда ресурс заблокирован
   по IP и нужен прокси/VPN;
+- **WARP/MASQUE (usque)** — бесплатный Cloudflare WARP поверх HTTPS/QUIC,
+  выручает там, где WARP по WireGuard уже режется;
+- запасные каналы без своего сервера — **Opera Proxy** (SurfEasy) и
+  **Telegram Tunnel** (локальный MTProto-прокси);
 - **единый слой маршрутизации** «назначение → метод» поверх всего этого:
   для каждого домена/списка/подсети вы выбираете, *через что* пустить
   трафик, с резервной цепочкой и автопереключением при сбое.
@@ -343,9 +347,10 @@ desync), чтобы блокировка по SNI/домену не срабат
 DPI трафик выглядит обычным HTTPS, поэтому режим выручает там, где WARP по
 WireGuard уже режется или закрыт UDP/51820. Свой сервер и подписка не нужны.
 
-Бинарник — [`usque`](https://github.com/Diniboy1123/usque) в сборке
-[usque-keenetic](https://github.com/side-effect-tm/usque-keenetic)
-(Entware-пакет `.ipk`, ставится через opkg, sha256 сверяется).
+Бинарник [`usque`](https://github.com/Diniboy1123/usque) **собираем сами**
+(как `amneziawg-go` и sing-box): релизы `usque-bin-v*`, sha256 сверяется
+по `manifest.json` релиза. Есть сборки под mipsel/mips/aarch64/armv7 и
+**x86_64** — то есть usque ставится и на обычный Linux-ПК/VPS.
 
 - **Установка** — детект бинарника, архитектуры и `/dev/net/tun`, установка
   и обновление пакета. Без модуля TUN туннель не поднимется (`kmod-tun`).
@@ -756,7 +761,7 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 | **mihomo** (Clash.Meta) | [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) (Releases) | mihomo → установка |
 | **amneziawg-go / -tools** | сборка в наших Releases (тег `awg-bin-vX`) | AmneziaWG → Setup |
 | **Cloudflare WARP** | `api.cloudflareclient.com` | AmneziaWG → WARP (нативная генерация) |
-| **usque** (пакет `.ipk`) | [side-effect-tm/usque-keenetic](https://github.com/side-effect-tm/usque-keenetic) (Releases, закреплённый тег, sha256 fail-closed); upstream-код — [Diniboy1123/usque](https://github.com/Diniboy1123/usque) | WARP/MASQUE → «Установить» |
+| **usque** | сборка в наших Releases (тег `usque-bin-v*`, sha256 из `manifest.json` релиза); upstream-код — [Diniboy1123/usque](https://github.com/Diniboy1123/usque). Запасной источник — [side-effect-tm/usque-keenetic](https://github.com/side-effect-tm/usque-keenetic) | WARP/MASQUE → «Установить» |
 | **Cloudflare WARP по MASQUE** | `consumer-masque.cloudflareclient.com` + узлы WARP (443/udp, при `Restricted` — 443/tcp) | WARP/MASQUE — регистрация сессии и сам трафик |
 | **opera-proxy** | [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Opera Proxy → «Установить» / «Обновить до последней версии» |
 | **Opera VPN (SurfEasy)** | `api2.sec-tunnel.com` + узлы `*.sec-tunnel.com` | Opera Proxy — регистрация устройства, список стран, сам трафик |
@@ -816,4 +821,7 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 
 ## Лицензия
 
-MIT.
+[MIT](LICENSE) © avatarDD.
+
+Проект использует сторонние компоненты под их собственными лицензиями —
+см. [Заимствования и благодарности](#заимствования-и-благодарности).

@@ -25,6 +25,16 @@ from core.log_buffer import log
 _re_tag = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
+def _version_from_tag(tag: str) -> str:
+    """usque-bin-v4.2.1 → 4.2.1 (тэг нашей сборки кодирует версию usque)."""
+    t = str(tag or "").strip()
+    for prefix in ("usque-bin-", "usque-"):
+        if t.startswith(prefix):
+            t = t[len(prefix):]
+            break
+    return t.lstrip("vV")
+
+
 def _remember_installed_tag(res: dict) -> None:
     """Запомнить тег установленного ПАКЕТА usque-keenetic.
 
@@ -92,13 +102,12 @@ def register(app):
         # «не установлен». Плоские installed/version/arch сохраняем: их читает
         # основная страница usque.js. binary_dir выше вычислен по строке-пути.
         #
-        # binary.version — это ТЕГ ПАКЕТА, а не версия бинарника usque:
-        # SetupUI сравнивает его с «В релизе» (тоже тег пакета) и по
-        # результату рисует «доступно обновление». Раньше сюда уходила
-        # версия самого usque (4.2.0), она сравнивалась с тегом v0.3.0 —
-        # значения из разных пространств никогда не совпадали, и плашка
-        # «доступно обновление» горела всегда. Версия движка отдаётся
-        # рядом, как engine_version, и показывается отдельной строкой.
+        # binary.version — версия самого usque (4.2.1). SetupUI сравнивает
+        # её с «В релизе», а там теперь версия из тэга НАШЕЙ сборки
+        # (usque-bin-v4.2.1) — то есть то же пространство нумерации.
+        # Раньше «В релизе» брался из тэга стороннего пакета (v0.3.0), и
+        # сравнение версий из разных систем давало вечное «доступно
+        # обновление».
         bin_path = env.get("binary") if isinstance(env.get("binary"), str) else ""
         try:
             from core.config_manager import get_config_manager
@@ -108,8 +117,8 @@ def register(app):
             installed_tag = ""
         env["binary"] = {
             "installed": bool(env.get("installed")),
-            "version": installed_tag,
-            "engine_version": env.get("version", ""),
+            "version": env.get("version", ""),
+            "tag": installed_tag,
             "path": bin_path,
         }
         env["ready"] = bool(env.get("installed"))
@@ -122,43 +131,42 @@ def register(app):
         mgr = get_usque_manager()
         env = mgr.detect()
         cfg = get_config_manager()
-        # Здесь ДВЕ РАЗНЫЕ системы версий, и путать их нельзя:
-        #   * версия самого usque      — например "4.2.0" (usque version);
-        #   * тег пакета usque-keenetic — например "v0.3.0" (его мы ставим).
-        # Пакет v0.3.0 несёт usque 4.2.0. Раньше сравнивали release_tag
-        # пакета с версией бинарника — числа из разных пространств никогда
-        # не совпадали, и «доступно обновление» горело всегда.
-        # Корректное сравнение: тег установленного пакета против тега,
-        # закреплённого в BINARIES.
+        # Теперь usque собираем мы сами, и тэг релиза кодирует версию
+        # самого usque (usque-bin-v4.2.1). Поэтому «установлено» и
+        # «в релизе» — величины ОДНОГО пространства, и их сравнение
+        # наконец осмысленно. Раньше сравнивались версия движка (4.2.0) и
+        # тэг стороннего пакета usque-keenetic (v0.3.0) — числа из разных
+        # систем нумерации, и «доступно обновление» горело всегда.
         installed_ver = env.get("version", "")
         latest_tag, latest_ver = "", ""
         try:
-            from core.ext_binary_installer import BINARIES
-            latest_tag = BINARIES.get("usque", {}).get("release_tag", "")
-            latest_ver = latest_tag.lstrip("v")
-        except Exception:
-            pass
+            from core.ext_binary_installer import list_releases
+            rels = list_releases("usque")
+            if rels.get("ok") and rels.get("releases"):
+                latest_tag = rels["releases"][0]["tag"]
+                latest_ver = _version_from_tag(latest_tag)
+        except Exception as e:
+            # Нет сети — молчим про обновления, а не выдумываем их.
+            log.debug("usque version: список релизов недоступен: %s" % e,
+                      source="usque")
 
-        installed_tag = cfg.get("usque", "installed_tag", default="") or ""
-        # Пакет поставлен не нами (нет installed_tag) — предлагать
-        # «обновление» не на что опереться, поэтому не предлагаем.
-        has_update = bool(
-            latest_tag and installed_tag
-            and installed_tag.lstrip("v") != latest_tag.lstrip("v"))
+        def _norm(v):
+            return str(v or "").strip().lstrip("vV")
+
+        has_update = bool(latest_ver and installed_ver
+                          and _norm(latest_ver) != _norm(installed_ver))
         return {
             "ok": True,
             "installed": {
                 "installed": bool(env.get("installed")),
-                # Как и в /environment: version — тег ПАКЕТА (его SetupUI
-                # сравнивает с «В релизе»), версия движка отдельно.
-                "version": installed_tag,
-                "engine_version": installed_ver,
+                "version": installed_ver,
                 "arch": env.get("arch", ""),
-                "tag": installed_tag,
+                "tag": cfg.get("usque", "installed_tag", default="") or "",
             },
             "latest": {"tag": latest_tag, "version": latest_ver},
             "has_update": has_update,
-            "installed_tag": installed_tag,
+            "installed_tag": cfg.get("usque", "installed_tag",
+                                     default="") or "",
         }
 
     @app.route("/api/usque/register", method="POST")

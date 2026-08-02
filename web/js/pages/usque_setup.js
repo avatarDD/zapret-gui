@@ -14,14 +14,14 @@ const UsqueSetupPage = SetupUI.create({
     binaryLabel: 'usque',
     fetchManifest: false,
     latestLabel: 'В релизе',
-    // «Версия» в карточке — это тег ПАКЕТА usque-keenetic (v0.3.0), он и
-    // сравнивается с «В релизе». Версия самого движка usque (4.2.0) живёт
-    // в своём пространстве нумерации, сравнивать их между собой нельзя —
-    // раньше из-за этого всегда горело «доступно обновление».
+    // «Версия» и «В релизе» — обе про сам usque: мы собираем его сами, и
+    // тэг сборки (usque-bin-v4.2.1) кодирует ровно его версию. Раньше
+    // «В релизе» брался из тэга стороннего пакета (v0.3.0), сравнивался
+    // с версией движка (4.2.0) и вечно показывал «доступно обновление».
     versionExtraHtml: (vm) => {
-        const eng = (vm.bin && vm.bin.engine_version) || '';
-        if (!eng) return '';
-        return `<div class="detail-row">Движок usque: <strong>${eng}</strong></div>`;
+        const tag = (vm.bin && vm.bin.tag) || '';
+        if (!tag) return '';
+        return `<div class="detail-row">Сборка: <code>${tag}</code></div>`;
     },
     releaseLabel: (r) => {
         const date = (r.published_at || '').slice(0, 10);

@@ -16,13 +16,17 @@ description: >-
   и том, почему «Tunnel established» не значит «подключено», настройке
   TUN-интерфейса (кто назначает адреса и поднимает link), профилях транспорта
   performance/restricted/auto (H3/QUIC против H2/TCP), SNI-маскировке,
-  установке пакета usque-keenetic (.ipk через opkg, sha256), автозапуске,
-  watchdog'е, WARP-in-WARP, API /api/usque/*, CLI `zapret-gui usque` и
-  диагностике «туннель не поднимается / интерфейс есть, а трафика нет /
-  версия показывается мусором». Источники истины — Diniboy1123/usque и
-  side-effect-tm/usque-keenetic, привязка — наш код core/usque_manager.py,
-  core/usque_watchdog.py, api/usque.py, web/js/pages/usque.js,
-  core/warp_in_warp.py, core/ext_binary_installer.py.
+  НАШЕЙ сборке бинарника (build-usque-binaries.yml, релизы usque-bin-v*,
+  sha256 из manifest.json релиза, запасной источник usque-keenetic .ipk),
+  регистрации через уже работающий обход (HTTPS_PROXY, транспорты
+  awg/singbox/mihomo, мост SO_BINDTODEVICE), автозапуске, watchdog'е,
+  WARP-in-WARP, API /api/usque/*, CLI `zapret-gui usque` и диагностике
+  «туннель не поднимается / интерфейс есть, а трафика нет / версия
+  показывается мусором / TLS handshake timeout при регистрации».
+  Источники истины — Diniboy1123/usque и наша сборка, привязка — наш код
+  core/usque_manager.py, core/usque_watchdog.py, core/iface_socks.py,
+  api/usque.py, web/js/pages/usque.js, core/warp_in_warp.py,
+  core/ext_binary_installer.py.
 ---
 
 # MASQUE / usque — справочник для zapret-gui
@@ -41,10 +45,12 @@ description: >-
 2. **[Diniboy1123/usque](https://github.com/Diniboy1123/usque)** — апстрим
    (неофициальный клиент WARP на MASQUE). README + `_docs/` + wiki.
    Последний релиз на момент написания — **v4.2.1**.
-3. **[side-effect-tm/usque-keenetic](https://github.com/side-effect-tm/usque-keenetic)**
-   — сборка usque под Keenetic/Entware в виде `.ipk`, откуда мы ставим
-   бинарник. Последний релиз — **v0.3.0** (несёт usque **v4.2.0**, добавлена
-   поддержка HTTP/2).
+3. **Наша сборка** — `.github/workflows/build-usque-binaries.yml`
+   кросс-компилирует апстрим и публикует релизы `usque-bin-v<версия>`.
+   Именно оттуда GUI ставит бинарник (§2).
+   [side-effect-tm/usque-keenetic](https://github.com/side-effect-tm/usque-keenetic)
+   (`.ipk`, последний релиз **v0.3.0** с usque **v4.2.0**) остался только
+   запасным источником.
 4. **Наш код** — `core/usque_manager.py` (жизненный цикл, детект, импорт
    конфигов, лог), `core/usque_watchdog.py` (проба и рестарт),
    `api/usque.py` (REST), `web/js/pages/usque.js` + `usque_setup.js`
@@ -102,36 +108,59 @@ HTTP/2 поверх **TCP:443** — см. §4), поэтому трафик не
 
 ---
 
-## 2. Установка: пакет usque-keenetic
+## 2. Установка: НАША сборка usque
 
-usque-keenetic распространяется **как Entware `.ipk`**, а не сырым бинарником.
-Это важно: `install_kind: "package"` в `BINARIES["usque"]` — если поставить
-файл копированием, в `/opt/usr/bin/usque` ляжет неисполняемый `ar`-архив.
+Бинарник usque собираем сами —
+`.github/workflows/build-usque-binaries.yml`, как `amneziawg-go` и
+`sing-box`. usque — чистый Go без cgo, поэтому кросс-компиляция тривиальна
+(проверено: все пять архитектур собираются из тега `v4.2.0`).
 
 | Что | Значение |
 |---|---|
-| Репозиторий | `side-effect-tm/usque-keenetic` |
-| Закреплённый тег | `v0.3.0` (несёт usque v4.2.0) |
-| Имя пакета | `usque-keenetic` |
-| Путь бинарника | `/opt/usr/bin/usque` |
-| Архитектуры | `aarch64-3.10`, `mipsel-3.4`, `mips-3.4`, `all_entware` (armv7) |
-| Проверка | sha256 из `sha256_map`, fail-closed |
+| Репозиторий сборок | `avatarDD/zapret-gui`, релизы `usque-bin-v<версия usque>` |
+| Апстрим-исходники | `Diniboy1123/usque` |
+| Ассеты | `usque-<ver>-<arch>.gz` + `manifest.json` |
+| Путь бинарника | `/opt/usr/bin/usque` (`install_kind: "binary"`) |
+| Архитектуры | `mipsel`, `mips`, `aarch64`, `armv7`, **`x86_64`** |
+| Проверка | sha256 из `manifest.json` релиза, fail-closed |
 
-Требования апстрим-пакета: Keenetic OS ≥ 5.0, Entware (лучше на USB),
-модуль TUN (`kmod-tun`, устройство `/dev/net/tun`).
+**Почему ушли со стороннего `.ipk` (`side-effect-tm/usque-keenetic`):**
 
-> **Две разные системы версий.** Тег пакета (`v0.3.0`) и версия самого usque
-> (`4.2.0`) — **разные пространства**. Сравнивать их между собой нельзя:
-> «установлено 4.2.0, в релизе 0.3.0» всегда даст ложное «есть обновление».
-> Для «есть ли апдейт» сравнивать надо `usque.installed_tag` (тег пакета,
-> который мы поставили) с `BINARIES["usque"]["release_tag"]`.
+* тот отстаёт от самого usque (в `v0.3.0` лежал usque 4.2.0, когда апстрим
+  выпустил уже 4.2.1) — версией теперь управляем мы;
+* в его `.ipk` **нет x86_64**, поэтому на Linux-ПК/VPS usque было не
+  поставить вообще, хотя GUI там работает;
+* `.ipk` требует opkg/apk, сырой бинарник ставится всюду;
+* на одну стороннюю зависимость в цепочке поставки меньше.
 
-Пакет апстрима также кладёт свой `/opt/etc/init.d/S51usque` и
-`/opt/etc/usque/usque.conf`. **Мы ими не пользуемся**: GUI запускает `usque`
-сам (см. §7) и хранит конфиги в `platform_dirs.config_dir()/usque`. Если
-пользователь включил и штатный `S51usque`, и наш автозапуск — получится два
-процесса и два TUN; это первое, что надо проверять при «интерфейсов больше,
-чем я создавал».
+Сборка зашивает версию через
+`-ldflags "-X <module>/cmd.version=<ver>"` — иначе `usque version` печатает
+`dev` (§3.1), и GUI не может сказать, что установлено.
+
+**sha256 живёт в `manifest.json` релиза, а не в манифесте кода:** хэш
+сборки известен только после неё. Проверка при этом обязательна и
+fail-closed — расхождение отменяет установку.
+
+**Запасной источник.** В `BINARIES["usque"]["legacy_source"]` остался
+прежний `.ipk` с закреплёнными хэшами: он используется, если наш релиз
+недоступен или в нём нет сборки под эту архитектуру. Это же покрывает
+период до публикации первого `usque-bin-*`.
+
+> **Одна система версий.** Тег нашей сборки кодирует версию usque
+> (`usque-bin-v4.2.1` → `4.2.1`), поэтому «установлено» и «в релизе» —
+> одна величина, и их сравнение осмысленно. Раньше сравнивались версия
+> движка (`4.2.0`) и тег стороннего пакета (`v0.3.0`) — разные
+> пространства, отсюда вечное «доступно обновление».
+
+Требования на роутере: Entware (лучше на USB), модуль TUN (`kmod-tun`,
+устройство `/dev/net/tun`).
+
+Пакет `usque-keenetic` (если он всё же стоит у пользователя) кладёт свой
+`/opt/etc/init.d/S51usque` и `/opt/etc/usque/usque.conf`. **Мы ими не
+пользуемся**: GUI запускает `usque` сам (см. §7) и хранит конфиги в
+`platform_dirs.config_dir()/usque`. Если включены и штатный `S51usque`, и
+наш автозапуск — получится два процесса и два TUN; это первое, что надо
+проверять при «интерфейсов больше, чем я создавал».
 
 Поиск бинарника (`UsqueManager._find_binary`, по порядку):
 `/opt/usr/bin/usque` → `/opt/bin/usque` → `/usr/local/bin/usque` → `/usr/bin/usque`.
@@ -690,7 +719,7 @@ watchdog поднимает туннель уже в `restricted` (H2/TCP). Эт
 | Симптом | Что смотреть |
 |---|---|
 | «Установлен: Error: unknown flag…» | Версия читается через `usque --version` — такого флага нет (§3.1). Нужен `usque version`. |
-| Всегда «доступно обновление» | Сравниваются версия usque (`4.2.0`) и тег пакета (`0.3.0`) — разные пространства (§2). |
+| Всегда «доступно обновление» | Сравниваются величины из разных пространств версий. Теперь и «установлено», и «в релизе» — версия самого usque (§2). |
 | `usque не создал интерфейс X (rc=None)` | Ждали `operstate=up`, а с `--no-iproute2` он `down` (§6). Либо реально нет `/dev/net/tun`. |
 | Интерфейс есть, трафика нет | Нет адресов/link down (§6) — либо нет `masquerade` на forwarded-трафик (`core/routing/masquerade.py`). |
 | В логе «Tunnel established», но интернета нет | Это сообщение ничего не значит (§5). Смотреть дальше — `Establishing…` / `Failed to connect…`. |
