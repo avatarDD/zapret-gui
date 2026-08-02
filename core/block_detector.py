@@ -10,6 +10,12 @@ Block Detector: DNS-мониторинг + автообнаружение бло
   - 4-stage probing: DNS → TCP:443 → TLS → HTTP read 32KB
   - Block classification: dns_block, tcp_refused, tls_rst, http_cutoff, etc.
   - Auto-add to named list (опционально)
+
+Сама проба живёт в core/testers/probe.py — она общая с blockcheck
+(«Тестирование доступности»), поэтому оба раздела GUI называют один и тот
+же обрыв одинаково и считают одинаковый remediation (zapret/tunnel/dns).
+Здесь остаётся то, чего в blockcheck нет: сбор доменов из живого DNS,
+периодичность и автодобавление в списки.
 """
 
 from __future__ import annotations
@@ -17,31 +23,17 @@ from __future__ import annotations
 import os
 import re
 import socket
-import ssl
-import subprocess
 import threading
 import time
-from collections import deque
 from typing import Any
 
 from core.log_buffer import log
+from core.testers.probe import PROBE_CODES, ProbeResult, describe_code, probe_domain
 
 
-# Коды блокировок (по мотивам z2k-detect)
-BLOCK_CODES = {
-    "ok": "Доступен",
-    "dns_block": "DNS-блокировка",
-    "dns_hijack": "DNS-хайджак",
-    "tcp_refused": "TCP отклонён",
-    "tcp_timeout": "TCP таймаут",
-    "tls_rst": "TLS RST",
-    "tls_garbage": "TLS мусор",
-    "tls_timeout": "TLS таймаут",
-    "http_cutoff": "HTTP обрезан",
-    "http_timeout": "HTTP таймаут",
-    "throttled": "Замедлен",
-    "unknown": "Неизвестная ошибка",
-}
+# Подписи кодов блокировки. Единый словарь с blockcheck — см. testers/probe.py
+# (историческое имя BLOCK_CODES сохранено: на него ссылается API и тесты).
+BLOCK_CODES = PROBE_CODES
 
 
 class BlockDetector:
@@ -51,9 +43,9 @@ class BlockDetector:
         self._lock = threading.Lock()
         self._thread = None
         self._stop_evt = threading.Event()
-        self._monitored = {}  # domain -> {first_seen, last_checked, block_code}
+        # domain -> {first_seen, last_checked, block_code, dpi, remediation, detail}
+        self._monitored = {}
         self._whitelist = set()
-        self._ssl_context = None
         # MR-62: per-IP rate-limit
         self._request_counts: dict[str, list[float]] = {}
         self._req_counter = 0
@@ -109,18 +101,8 @@ class BlockDetector:
         with self._lock:
             for d in new_domains:
                 if d not in self._monitored and d not in self._whitelist:
-                    self._monitored[d] = {
-                        "first_seen": int(time.time()),
-                        "last_checked": 0,
-                        "block_code": "unknown",
-                    }
-
-            # MR-18: Ограничиваем размер self._monitored до 1000 доменов (FIFO)
-            MAX_MONITORED = 2000
-            if len(self._monitored) > MAX_MONITORED:
-                sorted_keys = sorted(self._monitored.keys(), key=lambda k: self._monitored[k]["first_seen"])
-                for k in sorted_keys[:len(self._monitored) - MAX_MONITORED]:
-                    self._monitored.pop(k, None)
+                    self._monitored[d] = self._new_entry()
+            self._trim_locked()
 
         # Пронируем домены которые давно не проверялись
         now = int(time.time())
@@ -138,16 +120,14 @@ class BlockDetector:
 
         # MR-97: Параллельный опрос через ThreadPoolExecutor
         if to_probe:
-            def _handle(domain, result):
-                with self._lock:
-                    if domain in self._monitored:
-                        self._monitored[domain]["last_checked"] = int(time.time())
-                        self._monitored[domain]["block_code"] = result
-                if result != "ok":
-                    log.info("block-detector: %s → %s (%s)" % (
-                        domain, result, BLOCK_CODES.get(result, result)),
+            def _handle(domain, res: ProbeResult):
+                self._record(domain, res)
+                if not res.ok:
+                    log.info("block-detector: %s → %s (%s), обход: %s" % (
+                        domain, res.code, describe_code(res.code),
+                        res.remediation),
                         source="block_detector")
-                    self._maybe_auto_add(domain, result)
+                    self._maybe_auto_add(domain, res)
 
             # Entware python3-light без python3-logging: concurrent.futures
             # не импортируется — опрашиваем последовательно (медленнее, но
@@ -156,25 +136,22 @@ class BlockDetector:
                 from concurrent.futures import ThreadPoolExecutor, as_completed
             except ImportError:
                 for domain in to_probe:
-                    try:
-                        result = self._probe(domain, timeout)
-                    except Exception:
-                        result = "unknown"
-                    _handle(domain, result)
+                    _handle(domain, self._probe_full(domain, timeout))
             else:
                 max_workers = min(5, len(to_probe))
                 with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="block-detector-probe") as executor:
                     future_to_domain = {
-                        executor.submit(self._probe, domain, timeout): domain
+                        executor.submit(self._probe_full, domain, timeout): domain
                         for domain in to_probe
                     }
                     for future in as_completed(future_to_domain):
                         domain = future_to_domain[future]
                         try:
-                            result = future.result()
-                        except Exception:
-                            result = "unknown"
-                        _handle(domain, result)
+                            res = future.result()
+                        except Exception as e:
+                            res = ProbeResult(domain=domain, code="unknown",
+                                              detail=str(e)[:100])
+                        _handle(domain, res)
 
     def _collect_dns_queries(self) -> list:
         """Собрать уникальные домены из DNS-источника."""
@@ -365,67 +342,67 @@ class BlockDetector:
 
         return domains[-50:]
 
+    # ─────── учёт результатов ───────
+
+    @staticmethod
+    def _new_entry() -> dict[str, Any]:
+        """Пустая запись мониторинга (домен найден, но ещё не проверен)."""
+        return {
+            "first_seen": int(time.time()),
+            "last_checked": 0,
+            "block_code": "unknown",
+            "dpi": "unknown",
+            "remediation": "unknown",
+            "detail": "",
+        }
+
+    def _trim_locked(self) -> None:
+        """MR-18: FIFO-ограничение размера таблицы. Вызывать под self._lock."""
+        MAX_MONITORED = 2000
+        if len(self._monitored) <= MAX_MONITORED:
+            return
+        sorted_keys = sorted(self._monitored.keys(),
+                             key=lambda k: self._monitored[k]["first_seen"])
+        for k in sorted_keys[:len(self._monitored) - MAX_MONITORED]:
+            self._monitored.pop(k, None)
+
+    def _record(self, domain: str, res: ProbeResult) -> None:
+        """Занести вердикт в таблицу мониторинга."""
+        with self._lock:
+            info = self._monitored.get(domain)
+            if info is None:
+                info = self._new_entry()
+                self._monitored[domain] = info
+            info.update({
+                "last_checked": int(time.time()),
+                "block_code": res.code,
+                "dpi": res.dpi,
+                "remediation": res.remediation,
+                "detail": res.detail,
+            })
+            self._trim_locked()
+
     # ─────── probing ───────
 
+    def _probe_full(self, domain: str, timeout: int = 5) -> ProbeResult:
+        """Проба домена общим тестером (DNS → TCP:443 → TLS → HTTP)."""
+        try:
+            return probe_domain(domain, timeout=timeout)
+        except Exception as e:
+            return ProbeResult(domain=domain, code="unknown", detail=str(e)[:100])
+
     def _probe(self, domain: str, timeout: int = 5) -> str:
-        """4-stage probing: DNS → TCP:443 → TLS → HTTP."""
-        # Stage 1: DNS resolve
-        try:
-            ip = socket.getaddrinfo(domain, 443, socket.AF_INET,
-                                    socket.SOCK_STREAM)[0][4][0]
-        except socket.gaierror:
-            return "dns_block"
-        except Exception:
-            return "dns_block"
+        """Код блокировки строкой.
 
-        # Stage 2: TCP connect
-        try:
-            sock = socket.create_connection((ip, 443), timeout=timeout)
-        except ConnectionRefusedError:
-            return "tcp_refused"
-        except (socket.timeout, OSError):
-            return "tcp_timeout"
-
-        # Stage 3 & 4: TLS handshake + HTTP — socket закрываем в finally (MR-29)
-        tls = None
-        try:
-            if self._ssl_context is None:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                self._ssl_context = ctx
-            tls = self._ssl_context.wrap_socket(sock, server_hostname=domain)
-            # Stage 4: HTTP read
-            tls.sendall(b"HEAD / HTTP/1.1\r\nHost: %s\r\n\r\n" % domain.encode())
-            data = tls.recv(4096)
-            if len(data) < 100:
-                return "http_cutoff"
-            if b"200" in data or b"301" in data or b"302" in data:
-                return "ok"
-            # MR-46: любой другой ответ (403 geo-block, 451 legal, 521) → http_cutoff
-            return "http_cutoff"
-        except (ssl.SSLError, OSError) as e:
-            err = str(e).lower()
-            if "rst" in err or "reset" in err:
-                return "tls_rst"
-            if "timeout" in err:
-                return "tls_timeout"
-            return "tls_garbage"
-        except Exception:
-            return "unknown"
-        finally:
-            # MR-29: гарантируем закрытие сокета на всех путях выхода
-            try:
-                if tls:
-                    tls.close()
-                else:
-                    sock.close()
-            except Exception:
-                pass
+        Тонкая обёртка над общей пробой: строковый результат — публичный
+        контракт (им пользуется core/auto_remediation.py для проверки
+        применённого роута).
+        """
+        return self._probe_full(domain, timeout).code
 
     # ─────── auto-add ───────
 
-    def _maybe_auto_add(self, domain: str, block_code: str):
+    def _maybe_auto_add(self, domain: str, result: ProbeResult):
         """Автодобавление в named list если настроено."""
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
@@ -433,6 +410,15 @@ class BlockDetector:
             return
         list_id = cfg.get("block_detector", "auto_add_list_id", default="")
         if not list_id:
+            return
+
+        # В список попадают только домены с внятным способом обхода
+        # (zapret / tunnel / dns). Прежде туда уезжало ВСЁ, что не «ok»:
+        # просроченный сертификат, лежащий сервер, битый TLS — и список,
+        # питающий правила nfqws2 и маршрутизацию, зарастал мусором.
+        if not result.actionable:
+            log.debug("block-detector: %s (%s) не добавлен — способ обхода неясен"
+                      % (domain, result.code), source="block_detector")
             return
 
         try:
@@ -458,7 +444,13 @@ class BlockDetector:
             running = self._thread is not None and self._thread.is_alive()
             monitored_count = len(self._monitored)
             blocked_count = sum(1 for v in self._monitored.values()
-                                 if v["block_code"] != "ok")
+                                 if v["block_code"] not in ("ok", "unknown"))
+            # Сколько из них лечится обходом — по этим доменам работает
+            # автодобавление, и именно они интересны на дашборде.
+            actionable_count = sum(
+                1 for v in self._monitored.values()
+                if v.get("remediation") in ("zapret", "tunnel", "dns")
+            )
         # Источник доменов важен для понимания «почему отслеживается 0»:
         # детектор не берёт домены из списка, а подсматривает живые
         # DNS-запросы. Если ни dnsmasq-лога, ни AdGuard нет, остаётся
@@ -480,6 +472,7 @@ class BlockDetector:
             "running": running,
             "monitored_count": monitored_count,
             "blocked_count": blocked_count,
+            "actionable_count": actionable_count,
             "dns_source": source,
             "dns_source_available": source_ok,
         }
@@ -505,7 +498,11 @@ class BlockDetector:
             out.append({
                 "domain": domain,
                 "block_code": info["block_code"],
-                "block_desc": BLOCK_CODES.get(info["block_code"], "Неизвестно"),
+                "block_desc": describe_code(info["block_code"]),
+                "detail": info.get("detail", ""),
+                # Общая с blockcheck таксономия + рекомендация по обходу.
+                "dpi": info.get("dpi", "unknown"),
+                "remediation": info.get("remediation", "unknown"),
                 "first_seen": info["first_seen"],
                 "last_checked": info["last_checked"],
             })
@@ -531,39 +528,50 @@ class BlockDetector:
                         del self._request_counts[ip]
         return False
 
+    # Ручная проба: таймаут на операцию и жёсткий предел на всю пробу.
+    # MR-98 держал предел в 2.5с, но общая проба читает до 32 КБ тела (без
+    # этого не виден классический обрыв на 16-20 КБ), и на медленном узле
+    # 2.5с давали бы ложный «таймаут». Сервер многопоточный
+    # (ThreadedWSGIServer), одна занятая нить остальных не блокирует.
+    MANUAL_PROBE_TIMEOUT = 4
+    MANUAL_PROBE_HARD_LIMIT = 9.0
+
     def probe_now(self, domain: str, client_ip: str = "") -> dict[str, Any]:
         """Пронировать домен прямо сейчас."""
         # MR-62: per-IP rate-limit
         if self._is_rate_limited(client_ip):
-            return {
-                "domain": domain,
-                "block_code": "throttled",
-                "block_desc": "Too Many Requests",
-            }
-        # MR-98: запускаем пробу в ThreadPoolExecutor с жестким таймаутом 2.5с
-        # чтобы гарантированно не блокировать Bottle-воркер API надолго.
-        # На python3-light без python3-logging concurrent.futures недоступен —
-        # тогда полагаемся на внутренние таймауты _probe (без hard-timeout).
+            # Отдельный код: раньше здесь возвращался «throttled», из-за чего
+            # служебный отказ выглядел как вердикт «провайдер режет скорость».
+            return ProbeResult(
+                domain=domain, code="rate_limited",
+                detail="Слишком много запросов, повторите через минуту",
+            ).to_dict()
+
+        # Жёсткий предел через ThreadPoolExecutor. На python3-light без
+        # python3-logging concurrent.futures недоступен — тогда полагаемся
+        # на внутренние таймауты пробы (без hard-limit).
         try:
             from concurrent.futures import ThreadPoolExecutor
         except ImportError:
-            try:
-                result = self._probe(domain, 2)
-            except Exception:
-                result = "tcp_timeout"
+            res = self._probe_full(domain, self.MANUAL_PROBE_TIMEOUT)
         else:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self._probe, domain, 2)
+                future = executor.submit(self._probe_full, domain,
+                                         self.MANUAL_PROBE_TIMEOUT)
                 try:
-                    result = future.result(timeout=2.5)
+                    res = future.result(timeout=self.MANUAL_PROBE_HARD_LIMIT)
                 except Exception:
-                    result = "tcp_timeout"
+                    res = ProbeResult(domain=domain, code="tcp_timeout",
+                                      detail="проба не уложилась в %.0f с"
+                                             % self.MANUAL_PROBE_HARD_LIMIT)
 
-        return {
-            "domain": domain,
-            "block_code": result,
-            "block_desc": BLOCK_CODES.get(result, "Неизвестно"),
-        }
+        # Ручная проверка тоже попадает в таблицу результатов — страница
+        # обещает это («…или проверьте домен вручную»), а раньше вердикт
+        # показывался разово и нигде не сохранялся. Автодобавление в список
+        # остаётся привилегией фонового цикла: разовая проверка не должна
+        # менять списки, по которым строятся правила.
+        self._record(domain, res)
+        return res.to_dict()
 
 
 # ─────── singleton ───────

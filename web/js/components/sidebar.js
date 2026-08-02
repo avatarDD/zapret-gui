@@ -40,13 +40,14 @@ const Sidebar = (() => {
             ]
         },
         {
+            // Здесь только подбор стратегий; «что и как заблокировано» —
+            // в группе «Диагностика» (раздел «Диагностика блокировок»).
             label: 'Обход DPI (nfqws2)',
             items: [
                 { id: 'control',     label: 'Управление',                icon: 'play' },
                 { id: 'strategies',  label: 'Стратегии',                 icon: 'strategy' },
                 { id: 'blockcheck2', label: 'BlockCheck2 (официальный)', icon: 'blockcheck' },
                 { id: 'scan',        label: 'BlockCheck(mod)',           icon: 'scan' },
-                { id: 'blockcheck',  label: 'Тестирование доступности',  icon: 'diagnostic' },
             ]
         },
         {
@@ -94,7 +95,8 @@ const Sidebar = (() => {
             label: 'Диагностика',
             items: [
                 { id: 'diagnostics', label: 'Диагностика', icon: 'diagnostic' },
-                { id: 'block-detector', label: 'Block Detector', icon: 'scan' },
+                // Вкладки: «Тест доступности» + «Мониторинг DNS» (бывш. Block Detector).
+                { id: 'blockcheck',  label: 'Диагностика блокировок', icon: 'scan' },
                 { id: 'logs',        label: 'Логи',        icon: 'log' },
             ]
         },

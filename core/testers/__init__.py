@@ -11,6 +11,7 @@
     from core.testers.tcp_test import check_tcp_16_20
     from core.testers.isp_detector import detect_isp_page, check_http_injection
     from core.testers.dpi_classifier import DPIClassifier
+    from core.testers.probe import probe_domain
 """
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "detect_isp_page",
     "check_http_injection",
     "DPIClassifier",
+    "probe_domain",
 ]
 
 
@@ -46,4 +48,9 @@ def detect_isp_page(domain, **kwargs):
 
 def check_http_injection(domain, **kwargs):
     from core.testers.isp_detector import check_http_injection as _fn
+    return _fn(domain, **kwargs)
+
+
+def probe_domain(domain, **kwargs):
+    from core.testers.probe import probe_domain as _fn
     return _fn(domain, **kwargs)

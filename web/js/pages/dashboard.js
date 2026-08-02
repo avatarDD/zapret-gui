@@ -181,7 +181,7 @@ const DashboardPage = (() => {
                                 <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                             </svg>
                         </span>
-                        <span class="status-card-label">Block Detector</span>
+                        <span class="status-card-label">Мониторинг DNS</span>
                     </div>
                     <div class="status-card-value stopped" id="bd-status">—</div>
                     <div class="status-card-detail" id="bd-detail"></div>
@@ -641,7 +641,7 @@ const DashboardPage = (() => {
         if (a === 'hash-awg-dashboard') { window.location.hash = 'awg'; return; }
         if (a === 'hash-singbox') { window.location.hash = 'singbox'; return; }
         if (a === 'hash-mihomo') { window.location.hash = 'mihomo'; return; }
-        if (a === 'hash-block-detector') { window.location.hash = 'block-detector'; return; }
+        if (a === 'hash-block-detector') { window.location.hash = 'blockcheck?tab=monitor'; return; }
         if (a === 'hash-strategies') { window.location.hash = 'strategies'; return; }
     }
 

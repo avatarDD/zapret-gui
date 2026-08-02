@@ -17,7 +17,9 @@ const App = (() => {
         blobs:       BlobsPage,
         hosts:       HostsPage,
         diagnostics: DiagnosticsPage,
-        blockcheck:  BlockcheckPage,
+        // «Диагностика блокировок» — вкладки «Тест доступности»
+        // (BlockcheckPage) и «Мониторинг DNS» (BlockDetectorPage).
+        blockcheck:  BlockcheckHubPage,
         blockcheck2: Blockcheck2Page,
         scan:        ScanPage,
         logs:        LogsPage,
@@ -42,12 +44,17 @@ const App = (() => {
         'tunnel-optimizer': TunnelOptimizerPage,
         'dns-routing':      DnsRoutingPage,
         tgproxy:           TgProxyPage,
-        'block-detector':  BlockDetectorPage,
         'opera-proxy':     OperaProxyPage,
         'updates':         UpdateCheckerPage,
         lists:       ListsPage,
         routing:     RoutingUnifiedPage,
         settings:    SettingsPage,
+    };
+
+    // Переехавшие разделы: старый хеш → новый. Держим ссылки рабочими —
+    // на #block-detector ведут закладки и карточка дашборда.
+    const HASH_ALIASES = {
+        'block-detector': 'blockcheck?tab=monitor',
     };
 
     let currentPage = null;
@@ -93,6 +100,13 @@ const App = (() => {
     }
 
     function navigateTo(pageId) {
+        // Старый хеш переехавшего раздела — перекидываем на новый адрес
+        // (смена hash сама вызовет onHashChange → navigateTo).
+        if (HASH_ALIASES[pageId]) {
+            window.location.hash = HASH_ALIASES[pageId];
+            return;
+        }
+
         // Если такой страницы нет — на dashboard
         if (!pages[pageId]) {
             pageId = 'dashboard';
