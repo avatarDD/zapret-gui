@@ -340,7 +340,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Create / update GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.stage.outputs.tag }}
           name: "usque binaries ${{ steps.stage.outputs.tag }}"
