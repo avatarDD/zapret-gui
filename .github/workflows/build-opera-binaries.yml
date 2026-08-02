@@ -1,0 +1,348 @@
+# ═══════════════════════════════════════════════════════════════
+# build-opera-binaries.yml — кросс-компиляция opera-proxy
+# (standalone-клиент Opera VPN / SurfEasy) под архитектуры роутеров.
+#
+# Зачем своя сборка. Апстрим релизится раз в 1–2 недели, поэтому в
+# манифесте у opera стоит allow_unpinned: ставится ПОСЛЕДНИЙ релиз, а
+# закреплённый sha256 относится к более старой pinned-версии. На
+# практике это означало, что почти каждая установка шла по «мягкому»
+# пути: если апстрим не опубликовал файл контрольных сумм, целостность
+# держалась только на HTTPS к GitHub. Своя сборка + manifest.json
+# возвращают строгую проверку, не теряя «всегда последняя версия».
+#
+# opera-proxy — чистый Go без cgo (проверено: все пять архитектур
+# собираются из тега v1.28.0).
+#
+# Версию НЕ зашиваем через -X: апстрим печатает её из
+# debug.ReadBuildInfo().Main.Version, а Go проставляет это сам по
+# git-тегу — поэтому важно чекаутить именно тег и с полной историей
+# (fetch-depth: 0), иначе `opera-proxy -version` покажет «unknown».
+#
+# Способы запустить релиз (как у awg/sing-box/usque):
+#   1. Автоматически: cron раз в сутки смотрит апстрим и создаёт тэг
+#      opera-bin-<X>, если вышла новая версия.
+#   2. Через веб-интерфейс GitHub: Releases → Draft new release →
+#      Choose a tag → имя вида opera-bin-vN → Publish.
+#   3. Вручную: workflow_dispatch с publish_release=true.
+# ═══════════════════════════════════════════════════════════════
+
+name: Build opera-proxy binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      opera_ref:
+        description: 'opera-proxy git ref (tag/branch/sha). Пусто = последний релиз.'
+        required: false
+        default: ''
+      publish_release:
+        description: 'Опубликовать GitHub Release (true/false)'
+        required: false
+        default: 'true'
+  push:
+    tags:
+      - 'opera-bin-*'
+  schedule:
+    # 6:00 — на час позже usque, чтобы не толкаться за runner'ами.
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: write
+
+env:
+  OPERA_REPO: Alexey71/opera-proxy
+
+jobs:
+  # ── 0. Авто-детект новых версий апстрима (только cron) ─────
+  auto-tag:
+    name: Auto-tag on upstream release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect & maybe tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          resolve_latest() {
+            local repo="$1" out
+            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            echo "master"
+          }
+
+          OP_REF=$(resolve_latest "$OPERA_REPO")
+          OP_VER="${OP_REF#v}"
+
+          sanitize() {
+            printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/^-*//' -e 's/-*$//'
+          }
+          NEW_TAG="opera-bin-v$(sanitize "$OP_VER")"
+          echo "Upstream opera-proxy=$OP_VER → tag=$NEW_TAG"
+
+          if git rev-parse "refs/tags/$NEW_TAG" >/dev/null 2>&1 \
+             || gh api "repos/${{ github.repository }}/git/refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG уже существует — пропускаем"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEW_TAG" -m "Auto: opera-proxy=$OP_VER"
+          git push origin "$NEW_TAG"
+
+  # ── 1. Определить версию апстрима ──────────────────────────
+  resolve-version:
+    name: Resolve upstream version
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    outputs:
+      opera_ref: ${{ steps.resolve.outputs.opera_ref }}
+      opera_version: ${{ steps.resolve.outputs.opera_version }}
+    steps:
+      - name: Resolve ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          OP_REF="${{ inputs.opera_ref }}"
+
+          if [ -z "$OP_REF" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [[ "$TAG" =~ ^opera-bin-v(.+)$ ]]; then
+              OP_REF="v${BASH_REMATCH[1]}"
+              echo "Version parsed from tag $TAG: $OP_REF"
+            fi
+          fi
+
+          resolve_latest() {
+            local repo="$1" out
+            if out=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            if out=$(gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null) \
+               && [ -n "$out" ] && [ "$out" != "null" ]; then
+              echo "$out"; return
+            fi
+            echo "master"
+          }
+
+          [ -z "$OP_REF" ] && OP_REF=$(resolve_latest "$OPERA_REPO")
+
+          if ! gh api "repos/$OPERA_REPO/git/refs/tags/$OP_REF" >/dev/null 2>&1; then
+            if [[ "$OP_REF" != v* ]] \
+               && gh api "repos/$OPERA_REPO/git/refs/tags/v$OP_REF" >/dev/null 2>&1; then
+              OP_REF="v$OP_REF"
+            fi
+          fi
+
+          echo "opera_ref=$OP_REF"          >> "$GITHUB_OUTPUT"
+          echo "opera_version=${OP_REF#v}"  >> "$GITHUB_OUTPUT"
+
+  # ── 2. Сборка ──────────────────────────────────────────────
+  build:
+    name: Build ${{ matrix.arch_name }}
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch_name: mipsel-softfloat
+            goarch: mipsle
+            gomips: softfloat
+          - arch_name: mips-softfloat
+            goarch: mips
+            gomips: softfloat
+          - arch_name: aarch64
+            goarch: arm64
+          - arch_name: armv7
+            goarch: arm
+            goarm: '7'
+          - arch_name: x86_64
+            goarch: amd64
+
+    steps:
+      - name: Checkout opera-proxy
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.OPERA_REPO }}
+          ref: ${{ needs.resolve-version.outputs.opera_ref }}
+          path: src
+          # Полная история с тэгами: из неё Go берёт Main.Version, а
+          # апстрим печатает именно её по флагу -version.
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: src/go.mod
+          cache: false
+
+      - name: Install UPX
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+
+      - name: Build
+        working-directory: src
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips }}
+          GOARM: ${{ matrix.goarm }}
+          GOTOOLCHAIN: auto
+        run: |
+          set -euo pipefail
+          go env GOOS GOARCH GOMIPS GOARM
+          go build -trimpath -ldflags="-s -w" -o opera-proxy .
+          ls -lh opera-proxy
+
+          # Версию печатает сам бинарник (VCS-штамп). Проверяем там, где
+          # можем запустить: «unknown» означало бы потерянные git-тэги.
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            V=$(./opera-proxy -version || true)
+            echo "reported version: $V"
+            case "$V" in
+              unknown|"") echo "::warning::VCS-версия не проставилась" ;;
+            esac
+          fi
+
+      - name: UPX compress
+        if: matrix.arch_name == 'mipsel-softfloat'
+             || matrix.arch_name == 'mips-softfloat'
+             || matrix.arch_name == 'armv7'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          echo "── before UPX ──"; ls -lh opera-proxy
+          if [ "${{ matrix.goarch }}" = "arm" ]; then
+            upx --best --lzma opera-proxy || upx --best opera-proxy || true
+          else
+            upx --best opera-proxy || true
+          fi
+          echo "── after UPX ──"; ls -lh opera-proxy
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VER="${{ needs.resolve-version.outputs.opera_version }}"
+          NAME="opera-proxy-${VER}-${{ matrix.arch_name }}"
+          cp src/opera-proxy "$NAME"
+          gzip -9 -k -f "$NAME"
+          sha256sum "${NAME}.gz" > "${NAME}.gz.sha256"
+          ls -lh opera-proxy-*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: opera-proxy-${{ matrix.arch_name }}
+          path: |
+            opera-proxy-*.gz
+            opera-proxy-*.gz.sha256
+          retention-days: 14
+
+  # ── 3. Публикация релиза ───────────────────────────────────
+  publish:
+    name: Publish release
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+         && (github.event_name == 'push' || inputs.publish_release == 'true')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ./artifacts
+
+      - name: Stage release files & build manifest
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.gz' -o -name '*.gz.sha256' \) \
+            -exec cp {} release/ \;
+          ls -lh release/
+
+          OP_VER="${{ needs.resolve-version.outputs.opera_version }}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "$TAG" = "$GITHUB_REF" ]; then
+            TAG="opera-bin-v${OP_VER#v}"
+          fi
+
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
+
+          python3 - "$OP_VER" "$TAG" "$BASE_URL" <<'EOF' > release/manifest.json
+          import json, os, sys, hashlib
+
+          ver, tag, base = sys.argv[1:4]
+
+          def sha(path):
+              h = hashlib.sha256()
+              with open(path, 'rb') as f:
+                  for chunk in iter(lambda: f.read(8192), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          # Ключи — имена архитектур из detect_arch() установщика.
+          archs = {
+              "mipsel": "mipsel-softfloat",
+              "mips": "mips-softfloat",
+              "aarch64": "aarch64",
+              "armv7": "armv7",
+              "x86_64": "x86_64",
+          }
+          manifest = {"schema": 1, "tag": tag,
+                      "opera": {"version": ver, "binaries": {}}}
+          for key, arch in archs.items():
+              fname = f"opera-proxy-{ver}-{arch}.gz"
+              fpath = os.path.join("release", fname)
+              if os.path.exists(fpath):
+                  manifest["opera"]["binaries"][key] = {
+                      "filename": fname,
+                      "url": f"{base}/{fname}",
+                      "sha256": sha(fpath),
+                      "size": os.path.getsize(fpath),
+                  }
+          print(json.dumps(manifest, indent=2))
+          EOF
+
+          echo "── manifest.json ──"; cat release/manifest.json
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.stage.outputs.tag }}
+          name: "opera-proxy binaries ${{ steps.stage.outputs.tag }}"
+          body: |
+            Кросс-скомпилированные бинарники
+            [opera-proxy](https://github.com/Alexey71/opera-proxy)
+            (клиент Opera VPN / SurfEasy) для роутеров и Linux.
+
+            - opera-proxy: `${{ needs.resolve-version.outputs.opera_version }}`
+
+            Архитектуры, размеры, sha256 и URL — в `manifest.json`.
+            Установщик GUI сверяет sha256 именно по нему.
+          draft: false
+          prerelease: false
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
