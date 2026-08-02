@@ -206,6 +206,8 @@ zapret-gui/
 | `blockcheck.py` | Оркестратор Python-проб: запускает все тестеры, агрегирует вердикт. |
 | `blockcheck2.py` | Запуск ОРИГИНАЛЬНОГО `blockcheck2.sh`/`blockcheck.sh` из zapret2 как подпроцесса с потоковой телеметрией в GUI. |
 | `models.py` | Модели данных blockcheck (Status/Type enum'ы и пр.). |
+| `block_detector.py` | Фоновой мониторинг: домены из живого DNS (dnsmasq/AdGuard/AF_PACKET), периодическая проба, автодобавление в списки. |
+| `testers/probe.py` | **Общая** быстрая проба DNS→TCP→TLS→HTTP + единый словарь кодов (`PROBE_CODES`) и их привязка к `DPIClassification`. Ею пользуются `block_detector.py` и DNS-фаза `blockcheck.py`. |
 | `testers/tls_tester.py` | HTTPS/TLS-проба через сырой socket (ClientHello-варианты). |
 | `testers/tcp_test.py` | Детект DPI, рвущего TCP на 16–20 КБ. |
 | `testers/body_tester.py` | Глубокая загрузка тела HTTP(S), детект `FAKE_LEAK`. |
@@ -327,7 +329,15 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 - **Без сборки.** `index.html` подключает скрипты тегами; деплой — просто
   копирование файлов.
 - **Hash-роутинг.** `#dashboard`, `#routing`, `#singbox-configs`
-  и т.д. Роутер в `web/js/` сопоставляет хэш странице.
+  и т.д. Роутер в `web/js/` сопоставляет хэш странице. Переехавшие разделы
+  перечислены в `HASH_ALIASES` (`app.js`): старый хеш редиректит на новый,
+  чтобы закладки и ссылки с дашборда не ломались.
+- **Страница-хаб с вкладками.** `blockcheck_hub.js` монтирует в свои
+  вкладки две самостоятельные страницы (`blockcheck.js`,
+  `block_detector.js`), вызывая их `render/destroy`; под-страницы при этом
+  не рисуют собственный `page-header`. Вкладка живёт в query-части хеша
+  (`#blockcheck?tab=monitor`) — хаб слушает `hashchange` сам, т.к. роутер
+  при том же `pageId` перерисовку не запускает.
 - **Каждая страница** (`web/js/pages/*.js`) — IIFE-модуль с
   `render(container)` и `destroy()`. `destroy()` обязан гасить таймеры/
   SSE (см. `diagnostics.js`, `singbox_configs.js` — там есть poll-таймеры).

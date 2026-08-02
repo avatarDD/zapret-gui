@@ -96,6 +96,8 @@ JS_FILES = [
     "js/pages/dns_routing.js",
     "js/pages/tgproxy.js",
     "js/pages/block_detector.js",
+    # после blockcheck.js и block_detector.js: hub монтирует обе вкладки
+    "js/pages/blockcheck_hub.js",
     "js/pages/opera_proxy.js",
     "js/pages/update_checker.js",
     "js/pages/lists.js",

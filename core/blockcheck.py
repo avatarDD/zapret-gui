@@ -564,19 +564,10 @@ class BlockcheckRunner:
                     pass
             return []
 
-        def _has_non_public_ip(ips: list) -> bool:
-            """Есть ли среди IP непубличный (private/loopback/reserved/
-            link-local/unspecified) — сильный признак DNS-перехвата."""
-            import ipaddress
-            for ip in ips:
-                try:
-                    a = ipaddress.ip_address(str(ip).strip())
-                except ValueError:
-                    continue
-                if (a.is_private or a.is_loopback or a.is_reserved
-                        or a.is_link_local or a.is_unspecified):
-                    return True
-            return False
+        # Признаки подменённого ответа живут в core/testers/probe.py — там же
+        # их берёт block-detector, чтобы «DNS-подмена» означала одно и то же
+        # в обоих разделах GUI.
+        from core.testers.probe import has_non_public_ip, known_block_ip
 
         total = len(domains)
         for idx, domain in enumerate(domains):
@@ -599,11 +590,22 @@ class BlockcheckRunner:
             response_time = dns_result.get("response_time")
 
             is_dns_fake = False
+            fake_reason = ""
             local_ips = {"127.0.0.1", "0.0.0.0", "::1", "::"}
 
             # 1. Если все IP локальные/loopback — явный DNS_FAKE
             if ok and resolved_ips and all(ip in local_ips for ip in resolved_ips):
                 is_dns_fake = True
+                fake_reason = "заглушка"
+
+            # 1b. Совпадение с известным IP блок-страницы провайдера
+            #     (Ростелеком/МТС/Билайн/Мегафон/РКН) — однозначный перехват,
+            #     сверка с DoH тут уже не нужна.
+            if ok and resolved_ips and not is_dns_fake:
+                hit = known_block_ip(resolved_ips)
+                if hit:
+                    is_dns_fake = True
+                    fake_reason = f"IP блок-страницы провайдера ({hit})"
 
             # 2. Если есть IP, сравниваем с DoH — но флажим фейк ТОЛЬКО когда
             #    среди системных IP есть непубличный (private/reserved). Иначе
@@ -618,15 +620,16 @@ class BlockcheckRunner:
                         sys_set = set(resolved_ips)
                         doh_set = set(doh_ips)
                         if sys_set.is_disjoint(doh_set) and \
-                                _has_non_public_ip(resolved_ips):
+                                has_non_public_ip(resolved_ips):
                             is_dns_fake = True
+                            fake_reason = "расходится с DoH, непубличный IP"
                 except Exception:
                     pass
 
             # Создаём SingleTestResult
             if is_dns_fake:
                 status = TestStatus.FAILED.value
-                details = f"DNS Spoofing detected: system={resolved_ips}"
+                details = f"DNS Spoofing detected ({fake_reason}): system={resolved_ips}"
                 error_code = "DNS_FAKE"
             elif ok and resolved_ips:
                 status = TestStatus.SUCCESS.value

@@ -66,17 +66,9 @@ const BlockcheckPage = (() => {
     /* ───────── lifecycle ───────── */
 
     function render(container) {
+        // Заголовок раздела и вкладки рисует BlockcheckHubPage — эта страница
+        // монтируется во вкладку «Тест доступности» и отвечает только за неё.
         container.innerHTML = `
-            <div class="page-header">
-                <h1 class="page-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
-                        <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-                    </svg>
-                    Тестирование доступности${typeof Help !== 'undefined' ? Help.button('blockcheck') : ''}
-                </h1>
-                <p class="page-description">Проверка блокировок и классификация DPI — TLS, QUIC, ClientHello, CDN, троттлинг</p>
-            </div>
-
             <!-- Панель управления -->
             <div class="card" id="bc-controls">
                 <div class="card-title">
@@ -280,6 +272,24 @@ const BlockcheckPage = (() => {
                 if (statusEl) statusEl.textContent = `${res.count} доменов сохранено`;
             } else Toast.error(res.error || 'Ошибка сохранения');
         } catch (err) { Toast.error(err.message); }
+    }
+
+    /**
+     * Подставить домены в форму снаружи — со вкладки «Мониторинг DNS»
+     * («проверить глубоко» по конкретному домену). Пометка modified не даёт
+     * загруженному с сервера списку затереть подстановку; вернуть свой
+     * список — кнопкой «Сбросить».
+     */
+    function prefill(domainList, mode) {
+        savedDomains = (domainList || []).join('\n');
+        savedDomainsModified = true;
+        domainsLoaded = true;
+        if (mode) savedMode = mode;
+
+        const el = document.getElementById('bc-domains');
+        if (el) el.value = savedDomains;
+        const modeEl = document.getElementById('bc-mode');
+        if (modeEl && mode) modeEl.value = mode;
     }
 
     async function resetDomains() {
@@ -760,7 +770,7 @@ const BlockcheckPage = (() => {
     }
 
     return {
-        render, destroy, start, stop, saveDomains, resetDomains,
+        render, destroy, start, stop, saveDomains, resetDomains, prefill,
         toggleProxy, exportReport, toggleRow, traceroute,
     };
 })();
