@@ -20,6 +20,27 @@ from bottle import request
 from core.log_buffer import log
 
 
+def _remember_installed_tag(res: dict) -> None:
+    """Запомнить тег установленного ПАКЕТА usque-keenetic.
+
+    Версия, которую печатает сам бинарник (`usque version` → 4.2.0), и тег
+    пакета (v0.3.0) — разные вещи, и сравнивать их между собой бессмысленно.
+    Тег известен только здесь, в момент установки; без него /api/usque/version
+    не может честно ответить, есть ли обновление.
+    """
+    tag = str(res.get("tag") or res.get("version") or "").strip()
+    if not tag:
+        return
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        cfg.set("usque", "installed_tag", tag)
+        cfg.save()
+    except Exception as e:
+        log.warning("usque: не удалось сохранить installed_tag: %s" % e,
+                    source="usque")
+
+
 def register(app):
     """Зарегистрировать API-маршруты usque в Bottle-приложении."""
 
@@ -81,11 +102,15 @@ def register(app):
         mgr = get_usque_manager()
         env = mgr.detect()
         cfg = get_config_manager()
+        # Здесь ДВЕ РАЗНЫЕ системы версий, и путать их нельзя:
+        #   * версия самого usque      — например "4.2.0" (usque version);
+        #   * тег пакета usque-keenetic — например "v0.3.0" (его мы ставим).
+        # Пакет v0.3.0 несёт usque 4.2.0. Раньше сравнивали release_tag
+        # пакета с версией бинарника — числа из разных пространств никогда
+        # не совпадали, и «доступно обновление» горело всегда.
+        # Корректное сравнение: тег установленного пакета против тега,
+        # закреплённого в BINARIES.
         installed_ver = env.get("version", "")
-        # latest = закреплённый release_tag из BINARIES (та версия, которую
-        # ставит GUI). SetupUI показывает его как «В релизе» и сравнивает с
-        # установленной. Без вложенного installed/latest страница установки
-        # не детектит ни версию, ни доступность обновления.
         latest_tag, latest_ver = "", ""
         try:
             from core.ext_binary_installer import BINARIES
@@ -93,18 +118,24 @@ def register(app):
             latest_ver = latest_tag.lstrip("v")
         except Exception:
             pass
-        has_update = bool(latest_ver and installed_ver
-                          and latest_ver != installed_ver)
+
+        installed_tag = cfg.get("usque", "installed_tag", default="") or ""
+        # Пакет поставлен не нами (нет installed_tag) — предлагать
+        # «обновление» не на что опереться, поэтому не предлагаем.
+        has_update = bool(
+            latest_tag and installed_tag
+            and installed_tag.lstrip("v") != latest_tag.lstrip("v"))
         return {
             "ok": True,
             "installed": {
                 "installed": bool(env.get("installed")),
                 "version": installed_ver,
                 "arch": env.get("arch", ""),
+                "tag": installed_tag,
             },
             "latest": {"tag": latest_tag, "version": latest_ver},
             "has_update": has_update,
-            "installed_tag": cfg.get("usque", "installed_tag", default=""),
+            "installed_tag": installed_tag,
         }
 
     @app.route("/api/usque/register", method="POST")
@@ -417,6 +448,7 @@ def register(app):
             try:
                 res = install_binary_by_name(name, progress_cb=_cb)
                 if res.get("ok"):
+                    _remember_installed_tag(res)
                     _operation_status[name] = {"status": "done", "progress": 100, "message": "Установка завершена"}
                 else:
                     _operation_status[name] = {"status": "error", "progress": 0, "message": res.get("error", "Ошибка")}

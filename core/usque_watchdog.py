@@ -191,6 +191,18 @@ class UsqueWatchdog:
         http2 = cfg.get("usque", "http2_enable", default=False)
         profile = "restricted" if http2 else cfg.get(
             "usque", "transport_profile", default="auto")
+
+        # Профиль "auto" на старте переключиться не может: usque
+        # подключается лениво, поэтому при зарезанном UDP/443 процесс жив и
+        # интерфейс создан — start() возвращает успех, а H3-дозвон падает
+        # уже потом. Единственное место, где отказ транспорта наблюдаем, —
+        # здесь: проба через туннель не прошла N раз подряд. Поэтому при
+        # рестарте понижаем транспорт до H2/TCP.
+        if profile == "auto":
+            profile = "restricted"
+            log.info("usque-watchdog: %s — H3 не отвечает, поднимаем в"
+                     " H2/TCP (transport_profile=auto)" % iface,
+                     source="usque")
         if config_path:
             new_iface = iface or mgr.allocate_iface("opkgtun")
             res = mgr.start(new_iface, config_path, sni=sni,

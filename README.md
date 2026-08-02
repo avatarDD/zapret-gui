@@ -49,6 +49,7 @@ Python/Bottle-бэкенд. Работает как на роутере с ~20 �
   - [Обход DPI: Управление, Стратегии, Подбор, BlockCheck](#обход-dpi-nfqws2)
   - [Маршрутизация (единый слой)](#маршрутизация-единый-слой)
   - [AmneziaWG](#amneziawg)
+  - [WARP/MASQUE (usque)](#warpmasque-usque)
   - [Opera Proxy](#opera-proxy)
   - [Telegram Tunnel](#telegram-tunnel)
   - [sing-box](#sing-box)
@@ -210,7 +211,8 @@ python3 app.py --host 0.0.0.0 --port 8080
 **Сценарий Б — «ресурс заблокирован по IP, нужен туннель»:**
 
 1. Поднимите туннель: **AmneziaWG** (в т.ч. Cloudflare WARP),
-   **sing-box** или **mihomo** (см. разделы ниже).
+   **WARP/MASQUE** (тот же WARP, но по HTTPS/QUIC — когда WireGuard
+   режется), **sing-box** или **mihomo** (см. разделы ниже).
 2. **Списки** → добавьте готовый список доменов (например, YouTube) или
    создайте свой.
 3. На странице **Списки** нажмите у списка **«→ Маршрут»** → выберите
@@ -333,6 +335,46 @@ desync), чтобы блокировка по SNI/домену не срабат
   по ключу), **WARP-in-WARP** (два WARP друг над другом).
 - **Routing** — selective routing в туннель по: CIDR, доменам (через
   dnsmasq+ipset/nftset), устройствам (по IP/MAC), **DSCP-меткам (QoS)**.
+
+### WARP/MASQUE (usque)
+
+Тот же бесплатный **Cloudflare WARP**, но по протоколу **MASQUE**
+(CONNECT-IP, RFC 9484) поверх **HTTP/3 на 443** — а не по WireGuard. Для
+DPI трафик выглядит обычным HTTPS, поэтому режим выручает там, где WARP по
+WireGuard уже режется или закрыт UDP/51820. Свой сервер и подписка не нужны.
+
+Бинарник — [`usque`](https://github.com/Diniboy1123/usque) в сборке
+[usque-keenetic](https://github.com/side-effect-tm/usque-keenetic)
+(Entware-пакет `.ipk`, ставится через opkg, sha256 сверяется).
+
+- **Установка** — детект бинарника, архитектуры и `/dev/net/tun`, установка
+  и обновление пакета. Без модуля TUN туннель не поднимется (`kmod-tun`).
+- **Сессия** — либо **регистрация** нового устройства в Cloudflare прямо из
+  GUI, либо **импорт** готового `config.json` от usque (перенос сессии с
+  другого устройства без плодения устройств в аккаунте).
+- **Запуск** — туннель поднимается как интерфейс `opkgtun0`; адреса из
+  сессии и MTU 1280 GUI назначает сам.
+- **Транспорт** — `Performance` (H3/QUIC, по умолчанию), `Restricted`
+  (H2 поверх **TCP**:443 — когда UDP/443 зарезан), `Auto`.
+- **SNI-маскировка**, режим отладки (буфер лога 40 → 500 строк),
+  **watchdog** (проба трафиком через сам туннель + перезапуск) и
+  автозапуск после перезагрузки.
+- **WARP-in-WARP** — MASQUE+MASQUE, MASQUE+AWG, AWG+MASQUE.
+
+Дальше трафик заворачивается в туннель на странице **Маршрутизация**
+(`warp:opkgtun0`) — по доменам, CIDR или устройствам.
+
+> **Конфиг AmneziaWG сюда не подойдёт, и это не ограничение GUI.** usque
+> говорит по MASQUE, а не по WireGuard, и ключи у них разных алгоритмов
+> (X25519 против ECDSA P-256) — пересчитать одно в другое нельзя. Сессия
+> берётся только регистрацией или импортом `config.json` самого usque.
+
+> **«Туннель запущен» ≠ «WARP подключён».** usque устанавливает соединение
+> **лениво** — только при первом исходящем пакете, уже после старта.
+> Поэтому при зарезанном QUIC туннель поднимается нормально, а трафик не
+> идёт; в «Полном логе» это видно как `Failed to connect tunnel: … no
+> recent network activity`. Лечится переключением транспорта на
+> `Restricted`; watchdog делает это сам, если выбран профиль `Auto`.
 
 ### Opera Proxy
 
@@ -641,6 +683,7 @@ zapret-gui strategy {list|apply <id>}
 zapret-gui singbox {list|up|down|restart <name>}
 zapret-gui mihomo  {list|up|down|restart <name>}
 zapret-gui opera   {status|start|stop}  # Opera Proxy: настройки берутся из GUI
+zapret-gui usque   {status|start <iface|name>|stop <iface>}   # WARP/MASQUE
 ```
 
 Из клона репозитория — напрямую: `python3 app.py status`.
@@ -701,6 +744,8 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 | **mihomo** (Clash.Meta) | [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) (Releases) | mihomo → установка |
 | **amneziawg-go / -tools** | сборка в наших Releases (тег `awg-bin-vX`) | AmneziaWG → Setup |
 | **Cloudflare WARP** | `api.cloudflareclient.com` | AmneziaWG → WARP (нативная генерация) |
+| **usque** (пакет `.ipk`) | [side-effect-tm/usque-keenetic](https://github.com/side-effect-tm/usque-keenetic) (Releases, закреплённый тег, sha256 fail-closed); upstream-код — [Diniboy1123/usque](https://github.com/Diniboy1123/usque) | WARP/MASQUE → «Установить» |
+| **Cloudflare WARP по MASQUE** | `consumer-masque.cloudflareclient.com` + узлы WARP (443/udp, при `Restricted` — 443/tcp) | WARP/MASQUE — регистрация сессии и сам трафик |
 | **opera-proxy** | [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Opera Proxy → «Установить» / «Обновить до последней версии» |
 | **Opera VPN (SurfEasy)** | `api2.sec-tunnel.com` + узлы `*.sec-tunnel.com` | Opera Proxy — регистрация устройства, список стран, сам трафик |
 | **tg-ws-proxy** (пакет `.ipk`/`.apk`) | [spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go) (Releases, **последний** релиз; sha256 сверяется для известной версии) | Telegram Tunnel → «Установить» / «Обновить до последней версии» |
