@@ -171,13 +171,32 @@ class UsqueManager:
 
     # ─────── session management ───────
 
+    # Единственный хост, куда ходит `usque register` (internal/consts.go:
+    # ApiUrl = "https://api.cloudflareclient.com"). Знание точное, поэтому
+    # временный SOCKS сужаем до него, а не открываем «куда угодно».
+    _REGISTER_HOST = "api.cloudflareclient.com"
+
     def register(self, config_path: str, device_name: str = "",
-                 team_token: str = "") -> dict:
+                 team_token: str = "", transport: str = "") -> dict:
         """Зарегистрировать новую WARP-сессию.
 
         device_name → `-n`: под этим именем устройство видно в аккаунте
         Cloudflare; без него все туннели выглядят одинаково.
         team_token  → `--jwt`: регистрация в ZeroTrust вместо обычного WARP.
+
+        transport   → через что идти к API Cloudflare (спека
+        core/download_transport: "", "awg:<iface>", "singbox:<name>",
+        "mihomo:<name>"). Нужно там, где провайдер режет сам
+        api.cloudflareclient.com: без этого регистрация падает с
+        «TLS handshake timeout», хотя рабочий обход на роутере уже есть.
+
+        Как это работает: `usque register` ходит через http.DefaultClient,
+        а у него Proxy=http.ProxyFromEnvironment — то есть бинарник
+        уважает HTTPS_PROXY. Для singbox/mihomo локальный HTTP-прокси уже
+        есть, и мы просто передаём его адрес. У AWG прокси-порта нет,
+        поэтому на время регистрации поднимаем эфемерный SOCKS5 на
+        loopback, чьи исходящие соединения привязаны к интерфейсу
+        (core/iface_socks).
 
         Замечание про AmneziaWG: сессию usque НЕЛЬЗЯ собрать из .conf
         AWG/WireGuard. Это разные протоколы (MASQUE поверх HTTP/3 против
@@ -185,6 +204,8 @@ class UsqueManager:
         кривой P-256. Апстрим (Diniboy1123/usque) прямо пишет «no support
         for WireGuard». Единственный путь получить сессию — регистрация
         здесь либо импорт готового usque-конфига (import_config).
+        Транспорт выше — про то, КАК дойти до Cloudflare, а не про то, из
+        чего сделать сессию.
         """
         binary = self._find_binary()
         if not binary:
@@ -196,16 +217,103 @@ class UsqueManager:
             cmd.extend(["-n", device_name])
         if team_token:
             cmd.extend(["--jwt", team_token])
+
+        forwarder = None
         try:
+            env, forwarder, err = self._register_env(transport)
+            if err:
+                return {"ok": False, "error": err}
             r = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30)
+                cmd, capture_output=True, text=True, timeout=60, env=env)
             if r.returncode != 0:
-                return {"ok": False, "error": r.stderr or r.stdout or "ошибка регистрации"}
-            return {"ok": True, "config_path": config_path}
+                return {"ok": False,
+                        "error": self._register_error(r, transport,
+                                                      forwarder)}
+            return {"ok": True, "config_path": config_path,
+                    "transport": transport or "direct"}
         except subprocess.TimeoutExpired:
-            return {"ok": False, "error": "таймаут регистрации (30s)"}
+            return {"ok": False, "error": "таймаут регистрации (60s)"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+        finally:
+            if forwarder is not None:
+                forwarder.stop()
+
+    def _register_env(self, transport: str):
+        """(env, forwarder, error) для запуска `usque register`.
+
+        env — окружение с прокси-переменными; forwarder — временный
+        SOCKS, который вызывающий обязан остановить.
+        """
+        env = dict(os.environ)
+        # Чужие прокси-переменные в окружении GUI (редко, но бывает при
+        # запуске из-под чего-то) не должны молча решать за пользователя,
+        # который выбрал «Напрямую».
+        for key in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY",
+                    "https_proxy", "ALL_PROXY", "all_proxy"):
+            env.pop(key, None)
+
+        if not transport or transport == "direct":
+            return env, None, ""
+
+        try:
+            from core.download_transport import resolve_transport
+        except ImportError as e:
+            return env, None, "транспорт недоступен: %s" % e
+
+        resolved = resolve_transport(transport)
+        if not resolved.get("ok"):
+            return env, None, resolved.get("error", "транспорт недоступен")
+
+        proxy_url = resolved.get("proxy") or ""
+        forwarder = None
+        if not proxy_url:
+            # awg и прочие «интерфейсные» транспорты: порта нет, строим мост.
+            device = resolved.get("device") or ""
+            if not device:
+                return env, None, ("транспорт %s не даёт ни локального прокси,"
+                                   " ни интерфейса" % transport)
+            from core.iface_socks import IfaceSocksProxy
+            forwarder = IfaceSocksProxy(device,
+                                        allow_hosts=[self._REGISTER_HOST])
+            res = forwarder.start()
+            if not res.get("ok"):
+                return env, None, ("не удалось пустить регистрацию через %s: %s"
+                                   % (device, res.get("error", "")))
+            proxy_url = forwarder.url
+
+        for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            env[key] = proxy_url
+        # NO_PROXY из окружения может исключить наш хост и обесценить всё
+        # вышесказанное.
+        for key in ("NO_PROXY", "no_proxy"):
+            env.pop(key, None)
+        return env, forwarder, ""
+
+    def _register_error(self, proc, transport: str, forwarder) -> str:
+        """Сообщение об ошибке регистрации с подсказкой по причине."""
+        raw = (proc.stderr or proc.stdout or "ошибка регистрации").strip()
+        # usque печатает две строки про отсутствующий config.json ВСЕГДА,
+        # в том числе при успехе, — в сообщении об ошибке это только шум.
+        lines = [ln for ln in raw.splitlines()
+                 if "Config file not found" not in ln
+                 and "You may only use the register command" not in ln]
+        msg = "\n".join(lines).strip() or raw
+
+        low = msg.lower()
+        blocked = ("timeout" in low or "handshake" in low
+                   or "connection refused" in low or "no route" in low
+                   or "i/o timeout" in low)
+        if blocked and (not transport or transport == "direct"):
+            msg += ("\n\nПохоже, провайдер режет доступ к %s. Выберите"
+                    " «Регистрировать через» — уже поднятый туннель"
+                    " (AWG) или прокси (sing-box/mihomo)."
+                    % self._REGISTER_HOST)
+        elif forwarder is not None and forwarder.connections == 0:
+            msg += ("\n\nЧерез выбранный интерфейс не прошло ни одного"
+                    " соединения — проверьте, что туннель поднят и"
+                    " работает.")
+        return msg
 
     # Поля, которые usque кладёт в свой config.json (см. README апстрима).
     # private_key — ECDSA P-256 в DER/base64, access_token+id — учётка

@@ -193,6 +193,35 @@ Flags:
 > но возвращает **rc=0**. Поэтому версию надо брать из **stdout**, а stderr
 > при детекте игнорировать.
 
+### 3.1.1 Регистрация через прокси: usque уважает `HTTPS_PROXY`
+
+Практически важный факт, которого нет в README апстрима. Все запросы к
+API Cloudflare идут через `http.DefaultClient` (`api/cloudflare.go`), а у
+него `Proxy: http.ProxyFromEnvironment`. Значит **`usque register`
+подчиняется переменным окружения** `HTTP_PROXY` / `HTTPS_PROXY` /
+`NO_PROXY`, включая схему `socks5://`.
+
+Проверено на живом бинарнике:
+
+```
+$ HTTPS_PROXY=http://127.0.0.1:1 usque register -a -c out.json
+Failed to register: ... Post "https://api.cloudflareclient.com/v0a4471/reg":
+  proxyconnect tcp: dial tcp 127.0.0.1:1: connect: connection refused
+
+$ HTTPS_PROXY=socks5://127.0.0.1:11080 usque register -a -c out.json
+Successful registration. Saving config...
+   [прокси видит ровно один CONNECT api.cloudflareclient.com:443]
+```
+
+Это единственный вменяемый способ зарегистрироваться там, где провайдер
+режет сам `api.cloudflareclient.com` (симптом —
+`net/http: TLS handshake timeout`). На этом построена наша «Регистрация
+через» (§8.1).
+
+Отдельно: `--http2` тоже ходит через `ProxyFromEnvironment`
+(`api/masque.go`), а **QUIC-режим — нет**. То есть прокси-переменные в
+окружении процесса влияют на регистрацию и на H2-туннель, но не на H3.
+
 ### 3.2 `register` — создать сессию WARP
 
 ```
@@ -536,11 +565,51 @@ usque nativetun --config <path> --interface-name <iface> --no-iproute2
 | POST | `/api/usque/configs/<name>/up` \| `/down` \| `/remove` |
 | GET | `/api/usque/configs/<name>/status` \| `/log?lines=N` |
 | GET | `/api/usque/watchdog/status` |
-| POST | `/api/usque/install` \| `/uninstall`; GET `/install/status` |
+| GET | `/api/usque/releases` (`?transport=&force=`) |
+| POST | `/api/usque/install` (`{tag?, transport?}`) \| `/install/local` (multipart `file`) \| `/uninstall`; GET `/install/status` |
 
-`/environment` отдаёт `binary` **объектом** `{installed, version, path}` —
-этого ждёт `SetupUI` (`usque_setup.js`); плоские `installed`/`version`/`arch`
-рядом читает основная страница `usque.js`. Ломать любую из двух форм нельзя.
+`/environment` отдаёт `binary` **объектом**
+`{installed, version, engine_version, path}` — этого ждёт `SetupUI`
+(`usque_setup.js`); плоские `installed`/`version`/`arch` рядом читает
+основная страница `usque.js`. Ломать любую из двух форм нельзя.
+
+> ⚠️ **`binary.version` — это тег ПАКЕТА (`v0.3.0`), а не версия движка.**
+> SetupUI сравнивает его с «В релизе» и по результату рисует «доступно
+> обновление», а сравнение двух систем нумерации (§2) не совпадает
+> никогда. Версия самого usque живёт рядом в `engine_version` и в плоском
+> `version`.
+
+### 8.1 «Регистрировать через» — когда режут Cloudflare
+
+Симптом: `Failed to register: ... net/http: TLS handshake timeout`. До
+`api.cloudflareclient.com` нет доступа, а сессию получить неоткуда —
+собрать её из AWG-конфига нельзя (§1).
+
+Решение: провести регистрацию через **уже работающий** обход. Спека
+транспорта — общая с «Качать через» (`core/download_transport`):
+`direct`, `awg:<iface>`, `singbox:<name>`, `mihomo:<name>`.
+
+Механика (`UsqueManager._register_env`):
+
+* **singbox/mihomo** дают локальный HTTP-прокси → его адрес просто
+  уходит в `HTTPS_PROXY` дочернего процесса (§3.1.1);
+* **awg** — это интерфейс, порта у него нет. На время регистрации
+  поднимается эфемерный SOCKS5 на loopback, чьи исходящие соединения
+  привязаны к интерфейсу через `SO_BINDTODEVICE`
+  (`core/iface_socks.py`), и в `HTTPS_PROXY` уходит он;
+* `direct` **вычищает** унаследованные прокси-переменные — «напрямую»
+  должно означать напрямую;
+* мост открыт только на `api.cloudflareclient.com` (белый список) и
+  умирает вместе с операцией;
+* привязка к интерфейсу **проверяется чтением** сокет-опции: молчаливый
+  отказ `setsockopt` означал бы выход мимо туннеля, то есть ровно туда,
+  откуда мы уходим. Не встала — ошибка, а не тихий `direct`.
+
+Тот же приём применим к любому «интерфейсному» обходу, не только AWG.
+
+Замечание про DNS: имя резолвит мост (системным резолвером, при неудаче —
+DoH проекта), то есть **не** через туннель. Для случая «TLS режут, DNS
+работает» этого достаточно; при отравленном DNS понадобится DoH.
 
 ### Секция конфига `usque`
 
@@ -632,7 +701,9 @@ watchdog поднимает туннель уже в `restricted` (H2/TCP). Эт
 | Туннель поднялся, но «отваливается через час» | Включить `usque.debug_log` (буфер 40 → 500 строк) и читать `/api/usque/configs/<name>/log`. |
 | Появились лишние `opkgtun*` | Одновременно работают наш автозапуск и штатный `S51usque` из пакета (§2). |
 | «Импортировал конфиг — пишет про неизвестные поля» | В списке известных нет `endpoint_h2_v4`/`endpoint_h2_v6` (§7). |
-| Просят «сделать usque из моего AWG-конфига» | Невозможно в принципе: разные протоколы и ключи (§1). |
+| Регистрация падает с `TLS handshake timeout` | Провайдер режет `api.cloudflareclient.com`. Регистрировать через уже работающий обход (§8.1). |
+| «Список релизов недоступен: method not allowed» | Нет маршрута `GET /api/usque/releases` (§8). |
+| Просят «сделать usque из моего AWG-конфига» | Невозможно в принципе: разные протоколы и ключи (§1). AWG может лишь ДОСТАВИТЬ регистрацию до Cloudflare (§8.1) — но сессию всё равно выдаёт Cloudflare. |
 
 Полезные команды на роутере:
 

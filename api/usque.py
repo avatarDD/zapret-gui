@@ -14,10 +14,15 @@ API-модуль управления WARP/MASQUE (usque).
 """
 
 import os
+import re
 
 from bottle import request
 
 from core.log_buffer import log
+
+# Тег релиза уходит в URL GitHub API — пускать туда произвольную строку
+# (слэши, «..») нельзя.
+_re_tag = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 def _remember_installed_tag(res: dict) -> None:
@@ -86,10 +91,25 @@ def register(app):
         # path}, а не строку-путь — иначе страница установки всегда показывает
         # «не установлен». Плоские installed/version/arch сохраняем: их читает
         # основная страница usque.js. binary_dir выше вычислен по строке-пути.
+        #
+        # binary.version — это ТЕГ ПАКЕТА, а не версия бинарника usque:
+        # SetupUI сравнивает его с «В релизе» (тоже тег пакета) и по
+        # результату рисует «доступно обновление». Раньше сюда уходила
+        # версия самого usque (4.2.0), она сравнивалась с тегом v0.3.0 —
+        # значения из разных пространств никогда не совпадали, и плашка
+        # «доступно обновление» горела всегда. Версия движка отдаётся
+        # рядом, как engine_version, и показывается отдельной строкой.
         bin_path = env.get("binary") if isinstance(env.get("binary"), str) else ""
+        try:
+            from core.config_manager import get_config_manager
+            installed_tag = get_config_manager().get(
+                "usque", "installed_tag", default="") or ""
+        except Exception:
+            installed_tag = ""
         env["binary"] = {
             "installed": bool(env.get("installed")),
-            "version": env.get("version", ""),
+            "version": installed_tag,
+            "engine_version": env.get("version", ""),
             "path": bin_path,
         }
         env["ready"] = bool(env.get("installed"))
@@ -129,7 +149,10 @@ def register(app):
             "ok": True,
             "installed": {
                 "installed": bool(env.get("installed")),
-                "version": installed_ver,
+                # Как и в /environment: version — тег ПАКЕТА (его SetupUI
+                # сравнивает с «В релизе»), версия движка отдельно.
+                "version": installed_tag,
+                "engine_version": installed_ver,
                 "arch": env.get("arch", ""),
                 "tag": installed_tag,
             },
@@ -167,8 +190,19 @@ def register(app):
                                         re.UNICODE):
             return {"ok": False, "error": "Недопустимое имя устройства"}
         team_token = str(data.get("team_token") or "").strip()
+
+        # Через что идти к api.cloudflareclient.com. Там, где провайдер
+        # режет его напрямую, это единственный способ вообще получить
+        # сессию — но обход на роутере обычно уже поднят.
+        transport = str(data.get("transport") or "").strip()
+        if transport:
+            from core.download_transport import is_valid_spec
+            if not is_valid_spec(transport):
+                return {"ok": False,
+                        "error": "Неизвестный транспорт: %s" % transport}
+
         return mgr.register(config_path, device_name=device_name,
-                            team_token=team_token)
+                            team_token=team_token, transport=transport)
 
     @app.route("/api/usque/configs/import", method="POST")
     def usque_config_import():
@@ -433,10 +467,39 @@ def register(app):
         from core.ext_binary_installer import get_operation_status
         return {"ok": True, "progress": get_operation_status("usque")}
 
+    @app.route("/api/usque/releases", method="GET")
+    def usque_releases():
+        """Список релизов usque-keenetic — для выбора версии в SetupUI.
+
+        Без этого маршрута страница установки показывала «список релизов
+        недоступен: method not allowed» и выбрать версию было нельзя.
+        """
+        from core.ext_binary_installer import list_releases
+        transport = (request.params.get("transport") or "").strip()
+        force = request.params.get("force") in ("1", "true", "True")
+        try:
+            return list_releases("usque", transport=transport, force=force)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     @app.route("/api/usque/install", method="POST")
     def usque_install():
         import threading
         from core.ext_binary_installer import install_binary_by_name, _operation_status
+
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        tag = str(body.get("tag") or "").strip()
+        transport = str(body.get("transport") or "").strip()
+        if tag and not _re_tag.match(tag):
+            return {"ok": False, "error": "Недопустимый тег релиза"}
+        if transport:
+            from core.download_transport import is_valid_spec
+            if not is_valid_spec(transport):
+                return {"ok": False,
+                        "error": "Неизвестный транспорт: %s" % transport}
 
         name = "usque"
         _operation_status[name] = {"status": "starting", "progress": 0, "message": "Запуск установки..."}
@@ -446,7 +509,8 @@ def register(app):
 
         def _run():
             try:
-                res = install_binary_by_name(name, progress_cb=_cb)
+                res = install_binary_by_name(name, progress_cb=_cb, tag=tag,
+                                             transport=transport)
                 if res.get("ok"):
                     _remember_installed_tag(res)
                     _operation_status[name] = {"status": "done", "progress": 100, "message": "Установка завершена"}
@@ -457,6 +521,24 @@ def register(app):
 
         threading.Thread(target=_run, daemon=True).start()
         return {"ok": True, "progress": _operation_status[name]}
+
+    @app.route("/api/usque/install/local", method="POST")
+    def usque_install_local():
+        """Установка из локального файла (.ipk) — multipart-поле `file`.
+
+        Нужна ровно тем, у кого GitHub недоступен и туннеля для обхода
+        ещё нет: скачать пакет можно на другом устройстве.
+        """
+        from api._install_upload import handle_single_upload
+        from core.ext_binary_installer import install_local_file
+
+        def _install(path, orig_name):
+            res = install_local_file("usque", path, orig_name)
+            if res.get("ok"):
+                _remember_installed_tag(res)
+            return res
+
+        return handle_single_upload(_install)
 
     @app.route("/api/usque/uninstall", method="POST")
     def usque_uninstall():

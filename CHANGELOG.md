@@ -2,7 +2,45 @@
 
 ## Не выпущено
 
+### Добавлено
+
+- **WARP/MASQUE: регистрация через уже работающий обход.** Там, где
+  провайдер режет сам `api.cloudflareclient.com`, прямая регистрация
+  падает с `TLS handshake timeout` и получить сессию было неоткуда
+  (собрать её из AWG-конфига нельзя — другой протокол и другие ключи). В
+  окне регистрации появился выбор «Регистрировать через» с тем же
+  списком, что и «Качать через»: `direct`, `awg:<iface>`,
+  `singbox:<name>`, `mihomo:<name>`. Опирается на то, что `usque
+  register` ходит через `http.DefaultClient` с
+  `Proxy=http.ProxyFromEnvironment`, то есть уважает `HTTPS_PROXY`
+  (проверено на реальном бинарнике). Для sing-box/mihomo передаётся их
+  локальный прокси; у AWG порта нет, поэтому на время регистрации
+  поднимается эфемерный SOCKS5 на loopback, чьи исходящие соединения
+  привязаны к интерфейсу через `SO_BINDTODEVICE` — без единой правки
+  маршрутов и firewall. Мост открыт только на хост регистрации и
+  умирает вместе с операцией. (`core/iface_socks.py`,
+  `core/usque_manager.py`, `api/usque.py`, `web/js/pages/usque.js`)
+- **Выбор версии и установка из файла для usque.** Добавлены
+  `GET /api/usque/releases` и `POST /api/usque/install/local`, а
+  `POST /api/usque/install` принимает `tag` и `transport`. Установщик
+  научился отдавать список релизов, ставить выбранный тег и ходить к
+  GitHub через транспорт. (`core/ext_binary_installer.py`,
+  `api/usque.py`)
+
 ### Исправлено
+
+- **WARP/MASQUE: страница установки не давала выбрать версию** —
+  «список релизов недоступен: method not allowed». SetupUI зовёт
+  `GET <api>/releases` и `POST <api>/install/local`, а в `api/usque.py`
+  этих маршрутов не было вовсе; выбранные версия и транспорт при этом
+  молча игнорировались. (`api/usque.py`,
+  `core/ext_binary_installer.py`)
+- **WARP/MASQUE: «доступно обновление» на странице установки горело
+  всегда** — SetupUI сравнивает `binary.version` с «В релизе», а туда
+  уходила версия движка usque (`4.2.0`) против тега пакета (`v0.3.0`).
+  Теперь `binary.version` — тег пакета, версия движка показывается
+  отдельной строкой «Движок usque». (`api/usque.py`,
+  `web/js/pages/usque_setup.js`)
 
 - **WARP/MASQUE: туннель не поднимался вообще.** `start()` ждал у TUN
   `operstate` ∈ {up, unknown}, но мы запускаем usque с `--no-iproute2`, а
