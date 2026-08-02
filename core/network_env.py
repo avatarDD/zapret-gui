@@ -71,17 +71,14 @@ def _route_lines():
 
 def _platform_kind() -> str:
     """
-    'keenetic' | 'openwrt' | 'entware' | 'linux' — лёгкий файловый детект
-    (та же логика, что core/system_info._get_platform; тяжёлый
-    awg_detector здесь ни к чему).
+    'keenetic' | 'openwrt' | 'entware' | 'linux' — лёгкий файловый детект.
+
+    Реализация одна на всех — core/system_info.platform_kind (тяжёлый
+    awg_detector здесь ни к чему). Раньше тут лежала своя копия проверок,
+    и на Keenetic без ndnproxy она отвечала «openwrt».
     """
-    if _exists("/tmp/ndnproxy_acl"):
-        return "keenetic"
-    if _exists("/etc/openwrt_release"):
-        return "openwrt"
-    if _exists("/opt/etc/entware_release"):
-        return "entware"
-    return "linux"
+    from core.system_info import platform_kind
+    return platform_kind()
 
 
 def list_interfaces() -> dict:
