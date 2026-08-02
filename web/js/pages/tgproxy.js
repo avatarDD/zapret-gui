@@ -756,15 +756,27 @@ const TgProxyPage = (() => {
             const mcfg = ((await API.get("/api/tgproxy/mtproto/config")
                 .catch(() => ({}))) || {}).config || {};
 
+            // У этого движка нет ссылки tg://proxy: он прозрачный
+            // форвардер и работает только с трафиком, завёрнутым на его
+            // порт правилом REDIRECT. Поэтому показываем не «ссылку», а
+            // состояние заворачивания — без него движок бесполезен, и
+            // раньше это состояние вообще нигде не было видно.
             let connectHtml = "";
             if (running) {
-                const info = await API.get("/api/tgproxy/mtproto/connect-info");
-                if (info.link) {
-                    connectHtml = `
-                        <div class="detail-row" style="margin-top:8px;">Ссылка подключения:</div>
-                        <div class="connect-link"><code>${esc(info.link)}</code></div>
-                    `;
-                }
+                const info = await API.get("/api/tgproxy/mtproto/connect-info")
+                    .catch(() => ({}));
+                const ok = !!info.redirect_active;
+                connectHtml = `
+                    <div class="detail-row" style="margin-top:8px;">
+                        Перехват трафика Telegram:
+                        <b class="${ok ? "text-success" : "text-error"}">
+                            ${ok ? "включён" : "НЕ включён"}
+                        </b>
+                    </div>
+                    <div class="text-muted" style="font-size:11px;">
+                        ${esc(info.note || "")}
+                    </div>
+                `;
             }
 
             // Поле relay обязательно: движок релей-based, без адреса
