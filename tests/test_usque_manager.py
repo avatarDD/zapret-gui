@@ -299,3 +299,108 @@ class TestUsqueManager(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUsqueRegisterTransport(unittest.TestCase):
+    """Регистрация через уже работающий обход.
+
+    `usque register` ходит через http.DefaultClient, у которого
+    Proxy=http.ProxyFromEnvironment — то есть уважает HTTPS_PROXY
+    (проверено на реальном бинарнике v4.2.0: с socks5-прокси на loopback
+    регистрация проходит, прокси видит CONNECT api.cloudflareclient.com:443).
+    """
+
+    def test_direct_strips_inherited_proxy_vars(self):
+        """«Напрямую» должно означать напрямую, а не «как в окружении»."""
+        env = {"PATH": "/bin", "HTTPS_PROXY": "http://corp:3128",
+               "no_proxy": "localhost"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            got, fwd, err = UsqueManager()._register_env("")
+        self.assertEqual(err, "")
+        self.assertIsNone(fwd)
+        self.assertNotIn("HTTPS_PROXY", got)
+        self.assertNotIn("https_proxy", got)
+
+    def test_proxy_transport_is_passed_as_env(self):
+        with mock.patch("core.download_transport.resolve_transport",
+                        return_value={"ok": True, "kind": "singbox",
+                                      "proxy": "http://127.0.0.1:2080"}):
+            got, fwd, err = UsqueManager()._register_env("singbox:main")
+        self.assertEqual(err, "")
+        self.assertIsNone(fwd)          # прокси уже есть, мост не нужен
+        self.assertEqual(got["HTTPS_PROXY"], "http://127.0.0.1:2080")
+        self.assertEqual(got["http_proxy"], "http://127.0.0.1:2080")
+        self.assertNotIn("NO_PROXY", got)
+
+    def test_iface_transport_builds_socks_bridge(self):
+        """У AWG порта нет — поднимаем временный SOCKS, привязанный к нему."""
+        fake = mock.Mock()
+        fake.start.return_value = {"ok": True}
+        fake.url = "socks5://127.0.0.1:34567"
+        with mock.patch("core.download_transport.resolve_transport",
+                        return_value={"ok": True, "kind": "awg",
+                                      "device": "wg0"}), \
+             mock.patch("core.iface_socks.IfaceSocksProxy",
+                        return_value=fake) as ctor:
+            got, fwd, err = UsqueManager()._register_env("awg:wg0")
+        self.assertEqual(err, "")
+        self.assertIs(fwd, fake)
+        self.assertEqual(got["HTTPS_PROXY"], "socks5://127.0.0.1:34567")
+        # Мост открыт только на хост регистрации, а не «куда угодно».
+        self.assertEqual(ctor.call_args.kwargs["allow_hosts"],
+                         [UsqueManager._REGISTER_HOST])
+
+    def test_unavailable_transport_reports_error(self):
+        with mock.patch("core.download_transport.resolve_transport",
+                        return_value={"ok": False,
+                                      "error": "нет активных AWG-интерфейсов"}):
+            _got, fwd, err = UsqueManager()._register_env("awg")
+        self.assertIn("нет активных", err)
+        self.assertIsNone(fwd)
+
+    def test_bridge_failure_is_reported_not_silently_direct(self):
+        """Если мост не поднялся — это ошибка, а не тихий выход напрямую."""
+        fake = mock.Mock()
+        fake.start.return_value = {"ok": False, "error": "нет прав"}
+        with mock.patch("core.download_transport.resolve_transport",
+                        return_value={"ok": True, "kind": "awg",
+                                      "device": "wg0"}), \
+             mock.patch("core.iface_socks.IfaceSocksProxy",
+                        return_value=fake):
+            _got, fwd, err = UsqueManager()._register_env("awg:wg0")
+        self.assertIn("нет прав", err)
+        self.assertIsNone(fwd)
+
+
+class TestUsqueRegisterError(unittest.TestCase):
+
+    def _proc(self, stderr):
+        return mock.Mock(returncode=1, stdout="", stderr=stderr)
+
+    def test_always_printed_config_warning_is_stripped(self):
+        """usque печатает это и при УСПЕШНОЙ регистрации — в ошибке это шум."""
+        proc = self._proc(
+            "Config file not found: failed to open config file: ...\n"
+            "You may only use the register command to generate one.\n"
+            "Failed to register: net/http: TLS handshake timeout\n")
+        msg = UsqueManager()._register_error(proc, "", None)
+        self.assertNotIn("Config file not found", msg)
+        self.assertNotIn("You may only use", msg)
+        self.assertIn("TLS handshake timeout", msg)
+
+    def test_block_hint_added_when_no_transport_selected(self):
+        proc = self._proc("Failed to register: net/http: TLS handshake timeout")
+        msg = UsqueManager()._register_error(proc, "", None)
+        self.assertIn("Регистрировать через", msg)
+
+    def test_no_block_hint_when_transport_already_used(self):
+        proc = self._proc("Failed to register: net/http: TLS handshake timeout")
+        fwd = mock.Mock(connections=3)
+        msg = UsqueManager()._register_error(proc, "awg:wg0", fwd)
+        self.assertNotIn("Регистрировать через", msg)
+
+    def test_hint_when_bridge_saw_no_connections(self):
+        proc = self._proc("Failed to register: something else")
+        fwd = mock.Mock(connections=0)
+        msg = UsqueManager()._register_error(proc, "awg:wg0", fwd)
+        self.assertIn("ни одного", msg)

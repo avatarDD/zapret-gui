@@ -218,7 +218,8 @@ class TestInstallBinaryByName(unittest.TestCase):
                     res = ebi.install_binary_by_name("tgwsproxy")
 
         self.assertTrue(res["ok"])
-        mock_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go", "")
+        mock_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go", "",
+                                            transport="")
 
     @mock.patch("core.ext_binary_installer.github_release")
     @mock.patch("core.ext_binary_installer._pkg_version")
@@ -474,7 +475,8 @@ class TestTgwsproxyLatestRelease(unittest.TestCase):
         res, m_release, _ = self._install(
             release, cfg["sha256_map"]["opkg:aarch64"])
         self.assertTrue(res["ok"], res)
-        m_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go", "")
+        m_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go", "",
+                                          transport="")
 
     def test_newer_release_asset_found_by_suffix(self):
         """Ключевой случай: в релизе 0.9.9 имени из манифеста нет."""
@@ -598,7 +600,8 @@ class TestOperaLatestRelease(unittest.TestCase):
                                        ebi.BINARIES["opera"]["sha256_map"]["x86_64"])
         self.assertTrue(res["ok"], res)
         # Пустой тег = /releases/latest.
-        m_release.assert_called_once_with("Alexey71/opera-proxy", "")
+        m_release.assert_called_once_with("Alexey71/opera-proxy", "",
+                                          transport="")
 
     def test_known_version_is_checked_against_manifest(self):
         pinned = ebi.BINARIES["opera"]["pinned_tag"]

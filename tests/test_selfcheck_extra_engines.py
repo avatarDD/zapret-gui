@@ -112,13 +112,21 @@ class TestSectionWiredIntoRun(unittest.TestCase):
         # Секция должна реально попадать в прогон, а не просто существовать.
         called = []
 
-        def _cb(step):
-            called.append(step)
+        def _cb(step, index, total):
+            called.append((step, index, total))
 
         with mock.patch.object(selfcheck, "run_unit_tests",
                                return_value={"ok": True, "ran": 0}):
             res = selfcheck.run_all(include_tests=False, progress_cb=_cb)
-        self.assertIn("check_extra_engines", called)
+        steps = [c[0] for c in called]
+        self.assertIn("check_extra_engines", steps)
+        # Прогресс должен быть считаемым: шаги нумеруются подряд от 0 и
+        # знают общее количество, иначе полосе в GUI неоткуда взяться.
+        self.assertEqual([c[1] for c in called], list(range(len(called))))
+        self.assertTrue(all(c[2] == len(called) for c in called))
+        # У шага есть человекочитаемое имя — иначе в GUI поедет
+        # «check_extra_engines» вместо русской подписи.
+        self.assertIn("check_extra_engines", selfcheck._PROGRESS_TITLES)
         names = [s["name"] for s in res["sections"]]
         self.assertIn("extra_engines", names)
 

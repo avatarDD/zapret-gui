@@ -28,7 +28,8 @@ def get_system_info() -> dict:
     info = {
         "hostname": _read_file("/etc/hostname", platform.node()),
         "kernel": platform.release(),
-        "arch": platform.machine(),
+        "arch": _get_arch(),
+        "arch_uname": platform.machine(),
         "platform": _get_platform(),
         "uptime": _get_uptime(),
         "uptime_human": _format_uptime(_get_uptime()),
@@ -37,6 +38,29 @@ def get_system_info() -> dict:
         "wan_ip": _get_wan_ip(),
     }
     return info
+
+
+def _get_arch() -> str:
+    """Архитектура, по которой РЕАЛЬНО выбираются сборки бинарников.
+
+    `platform.machine()` — это `uname -m`, а он на MIPS отдаёт просто
+    "mips" и для little-, и для big-endian. Из-за этого «Диагностика»
+    показывала `mips` на роутере, где все остальные страницы (установка
+    sing-box, usque, AWG) правильно определяют `mipsel`, — и выглядело
+    это как противоречие в самом GUI.
+
+    Источник истины здесь тот же, что у установщиков: endianness берётся
+    у работающего интерпретатора, а не у `uname`. Сырое значение
+    остаётся рядом в поле `arch_uname`.
+    """
+    try:
+        from core.ext_binary_installer import detect_arch
+        arch = (detect_arch() or "").strip()
+        if arch:
+            return arch
+    except Exception:
+        pass
+    return platform.machine()
 
 
 def _read_file(path: str, default: str = "") -> str:

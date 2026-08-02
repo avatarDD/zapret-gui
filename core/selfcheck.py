@@ -620,9 +620,13 @@ def run_all(include_tests: bool = True, tests_pattern: str = "",
     sections = []
     steps = [check_python, check_system_tools, check_engines,
              check_extra_engines, check_config, check_network]
-    for fn in steps:
+    # Юнит-тесты — такой же шаг прогресса, как секции: без него на
+    # роутере полоса замирала на 100% и было непонятно, идёт ли ещё
+    # что-нибудь (тесты там занимают минуты).
+    total_steps = len(steps) + (1 if include_tests else 0)
+    for i, fn in enumerate(steps):
         if progress_cb:
-            progress_cb(fn.__name__)
+            progress_cb(fn.__name__, i, total_steps)
         try:
             sec = fn()
         except Exception as e:
@@ -641,7 +645,7 @@ def run_all(include_tests: bool = True, tests_pattern: str = "",
     tests = None
     if include_tests:
         if progress_cb:
-            progress_cb("unit_tests")
+            progress_cb("unit_tests", len(steps), total_steps)
         log.info("самодиагностика: прогон юнит-тестов "
                  "(может занять несколько минут на роутере)...",
                  source="selfcheck")
@@ -689,13 +693,17 @@ def run_all(include_tests: bool = True, tests_pattern: str = "",
 
 # ─────────────────────── фоновый запуск (для API) ────────────────────
 
-_state = {"running": False, "progress": "", "result": None, "started_at": 0}
+_state = {"running": False, "progress": "", "result": None, "started_at": 0,
+          "step": 0, "steps_total": 0, "percent": 0}
 _state_lock = threading.Lock()
 
 _PROGRESS_TITLES = {
     "check_python": "Python и модули",
     "check_system_tools": "Системные утилиты",
     "check_engines": "Движки",
+    # Без этой строки шаг показывался пользователю сырым именем функции
+    # («check_extra_engines»), хотя все соседние — по-русски.
+    "check_extra_engines": "Доп. туннели и прокси",
     "check_config": "Конфигурация",
     "check_network": "Сеть",
     "unit_tests": "Юнит-тесты (может занять минуты)",
@@ -708,11 +716,19 @@ def start_async(include_tests: bool = True, tests_pattern: str = "") -> dict:
         if _state["running"]:
             return {"ok": False, "error": "Самодиагностика уже идёт"}
         _state.update(running=True, progress="запуск",
-                      started_at=int(time.time()))
+                      started_at=int(time.time()),
+                      step=0, steps_total=0, percent=0)
 
-    def _progress(step):
+    def _progress(step, index=0, total=0):
         with _state_lock:
             _state["progress"] = _PROGRESS_TITLES.get(step, step)
+            _state["step"] = index + 1
+            _state["steps_total"] = total
+            # Процент по НАЧАТЫМ шагам: показываем прогресс входа в шаг,
+            # а не его завершения, иначе полоса стоит на 0 всё время
+            # первого (самого долгого на роутере) шага.
+            _state["percent"] = (int(round(index * 100.0 / total))
+                                 if total else 0)
 
     def _worker():
         try:
@@ -726,6 +742,7 @@ def start_async(include_tests: bool = True, tests_pattern: str = "") -> dict:
             _state["result"] = res
             _state["running"] = False
             _state["progress"] = ""
+            _state["percent"] = 100
 
     threading.Thread(target=_worker, daemon=True,
                      name="selfcheck").start()
@@ -734,11 +751,19 @@ def start_async(include_tests: bool = True, tests_pattern: str = "") -> dict:
 
 def status() -> dict:
     with _state_lock:
+        started = _state["started_at"]
         return {
             "ok": True,
             "running": _state["running"],
             "progress": _state["progress"],
-            "started_at": _state["started_at"],
+            "step": _state["step"],
+            "steps_total": _state["steps_total"],
+            "percent": _state["percent"],
+            # Сколько уже идёт: на роутере прогон занимает минуты, и без
+            # этого непонятно, «висит» оно или просто медленно.
+            "elapsed": (max(0, int(time.time()) - started)
+                        if started and _state["running"] else 0),
+            "started_at": started,
             "result": _state["result"],
         }
 

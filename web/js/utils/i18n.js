@@ -39,10 +39,3 @@ const i18n = (() => {
 
 // Глобальная функция для удобства
 const _t = i18n.t;
-
-document.addEventListener('DOMContentLoaded', () => {
-    const btn = document.getElementById('lang-toggle');
-    if (btn) {
-        btn.textContent = i18n.getLanguage().toUpperCase();
-    }
-});

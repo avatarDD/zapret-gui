@@ -238,6 +238,50 @@ def register(app):
         from core import selfcheck
         return selfcheck.status()
 
+    # ─────── обслуживание: перезапуск демона и устройства ───────
+    #
+    # Обе операции рвут текущее соединение, поэтому выполняются
+    # отложенно (core/system_control): сначала ответ браузеру, потом
+    # команда. Перезагрузка устройства требует явного подтверждения —
+    # оно берётся в UI, здесь же дублируется машинно, чтобы случайный
+    # POST не ронял роутер.
+
+    @app.route("/api/system/control", method="GET")
+    def api_system_control_caps():
+        """Что доступно на этой системе — GUI не рисует мёртвых кнопок."""
+        response.content_type = "application/json; charset=utf-8"
+        from core import system_control
+        return system_control.capabilities()
+
+    @app.route("/api/system/restart-gui", method="POST")
+    def api_system_restart_gui():
+        """Перезапустить демон zapret-gui."""
+        response.content_type = "application/json; charset=utf-8"
+        from core import system_control
+        r = system_control.restart_gui()
+        if not r.get("ok"):
+            response.status = 501
+        return r
+
+    @app.route("/api/system/reboot", method="POST")
+    def api_system_reboot():
+        """Перезагрузить устройство. Требует {"confirm": true}."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        if not body.get("confirm"):
+            response.status = 400
+            return {"ok": False,
+                    "error": "Перезагрузка требует подтверждения "
+                             "(confirm: true)"}
+        from core import system_control
+        r = system_control.reboot_device()
+        if not r.get("ok"):
+            response.status = 501
+        return r
+
 
 def _validate_host(host):
     """Базовая валидация хоста/домена — защита от shell-инъекций."""

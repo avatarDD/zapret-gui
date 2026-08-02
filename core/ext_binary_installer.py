@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -31,6 +32,11 @@ HTTP_TIMEOUT = 15
 DOWNLOAD_TIMEOUT = 120
 
 _operation_status = {}
+
+# Кэш списка релизов: (name, transport) → (timestamp, ответ). SetupUI
+# перерисовывается часто, а GitHub API лимитирован по IP.
+_releases_cache = {}
+_releases_lock = threading.Lock()
 
 def get_operation_status(name: str) -> dict:
     """Получить статус текущей операции (установки)."""
@@ -130,10 +136,13 @@ def _parse_retry_after(headers) -> int:
     return 0
 
 
-def github_release(repo: str, tag: str = "") -> dict:
+def github_release(repo: str, tag: str = "", transport: str = "") -> dict:
     """Получить информацию о release.
 
     Если tag пустой — берём latest, иначе фиксированный release/tags/<tag>.
+    transport — через что идти к GitHub API (см. core/download_transport);
+    без него у пользователя с заблокированным GitHub список релизов не
+    загрузится, хотя туннель для этого уже поднят.
     """
     from core.binary_installer import resolve_url
     if tag:
@@ -160,10 +169,12 @@ def github_release(repo: str, tag: str = "") -> dict:
     max_attempts = 3
     backoff = [2, 4]  # секунд между попытками (3-я — последняя, без повтора)
 
+    from core.download_transport import urlopen_via
+
     for attempt in range(max_attempts):
         try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+            with urlopen_via(url, transport=transport, timeout=HTTP_TIMEOUT,
+                             headers=headers) as r:
                 remaining = r.headers.get("X-RateLimit-Remaining", "")
                 if remaining.isdigit() and int(remaining) < 10:
                     log.warning(
@@ -238,8 +249,14 @@ def github_download_url(repo: str, tag: str, filename: str) -> str:
 
 # ─────── Скачивание и установка ───────
 
-def download_file(url: str, dest: str, timeout: int = DOWNLOAD_TIMEOUT) -> bool:
-    """Скачать файл по URL с поддержкой докачки (resume)."""
+def download_file(url: str, dest: str, timeout: int = DOWNLOAD_TIMEOUT,
+                  transport: str = "") -> bool:
+    """Скачать файл по URL с поддержкой докачки (resume).
+
+    transport — через что качать (см. core/download_transport): у
+    пользователя с заблокированным GitHub единственный рабочий путь —
+    уже поднятый туннель.
+    """
     part_file = dest + ".part"
     try:
         from core.binary_installer import resolve_url
@@ -256,7 +273,8 @@ def download_file(url: str, dest: str, timeout: int = DOWNLOAD_TIMEOUT) -> bool:
             headers["Range"] = "bytes=%d-" % existing_size
 
         try:
-            req_ctx = urlopen_via(resolved_url, timeout=timeout, headers=headers)
+            req_ctx = urlopen_via(resolved_url, transport=transport,
+                                  timeout=timeout, headers=headers)
         except Exception as e:
             if "Range" in headers:
                 log.warning("download_file: Range request failed, retrying from scratch: %s" % e, source="ext_installer")
@@ -266,7 +284,8 @@ def download_file(url: str, dest: str, timeout: int = DOWNLOAD_TIMEOUT) -> bool:
                     except OSError:
                         pass
                 headers.pop("Range")
-                req_ctx = urlopen_via(resolved_url, timeout=timeout, headers=headers)
+                req_ctx = urlopen_via(resolved_url, transport=transport,
+                                  timeout=timeout, headers=headers)
             else:
                 raise
 
@@ -687,16 +706,160 @@ def _verify_downloaded_file(release: dict, asset_name: str, filepath: str) -> di
             pass
 
 
-def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
+def list_releases(name: str, transport: str = "", force: bool = False,
+                  limit: int = 30) -> dict:
+    """Релизы репозитория бинарника — для выбора версии в UI.
+
+    Тот же контракт, что у singbox/mihomo-установщиков: SetupUI ждёт
+    {"ok", "releases": [{tag, published_at, prerelease}]}. Кэш на 5 минут,
+    чтобы перерисовка страницы не била по rate-limit GitHub API.
+    """
+    cfg = BINARIES.get(name)
+    if not cfg:
+        return {"ok": False, "error": "Неизвестный бинарник: %s" % name}
+
+    now = time.time()
+    key = (name, transport)
+    with _releases_lock:
+        cached = _releases_cache.get(key)
+        if cached and not force and (now - cached[0]) < 300:
+            return cached[1]
+
+    limit = max(1, min(int(limit or 30), 100))
+    url = "https://api.github.com/repos/%s/releases?per_page=%d" % (
+        cfg["repo"], limit)
+    try:
+        from core.binary_installer import resolve_url
+        from core.download_transport import urlopen_via
+        headers = {"Accept": "application/vnd.github.v3+json",
+                   "User-Agent": "zapret-gui/ext-installer"}
+        try:
+            from core.config_manager import get_config_manager
+            token = (get_config_manager().get("github", "token",
+                                              default="") or "").strip()
+            if token:
+                headers["Authorization"] = "token %s" % token
+        except Exception:
+            pass
+        with urlopen_via(resolve_url(url), transport=transport,
+                         timeout=HTTP_TIMEOUT, headers=headers) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        return {"ok": False, "error": "GitHub API недоступен: %s" % e}
+
+    if not isinstance(data, list):
+        return {"ok": False,
+                "error": "Некорректный ответ GitHub releases (не список)"}
+
+    releases = []
+    for rel in data:
+        if not isinstance(rel, dict) or rel.get("draft"):
+            continue
+        tag = rel.get("tag_name") or ""
+        if not tag:
+            continue
+        releases.append({
+            "tag": tag,
+            "published_at": rel.get("published_at") or "",
+            "prerelease": bool(rel.get("prerelease")),
+        })
+
+    out = {"ok": True, "releases": releases,
+           "pinned": cfg.get("release_tag", "")}
+    with _releases_lock:
+        _releases_cache[key] = (now, out)
+    return out
+
+
+def install_local_file(name: str, path: str, orig_name: str = "") -> dict:
+    """Установить бинарник/пакет из ЛОКАЛЬНОГО файла.
+
+    Путь «GitHub недоступен вообще»: пользователь скачивает .ipk на
+    телефоне и загружает через форму. Проверять sha256 тут не с чем и
+    незачем — файл принёс сам администратор роутера; но и молчать об
+    этом не будем, отдаём warning.
+    """
+    cfg = BINARIES.get(name)
+    if not cfg:
+        return {"ok": False, "error": "Неизвестный бинарник: %s" % name}
+    if not path or not os.path.isfile(path):
+        return {"ok": False, "error": "Файл не найден"}
+
+    install_kind = cfg.get("install_kind", "binary")
+    warning = ("Файл установлен как есть: контрольная сумма не сверялась"
+               " (для загруженного вручную файла её не с чем сравнивать)")
+
+    if install_kind == "package":
+        pkg_mgr = _package_manager()
+        if not pkg_mgr:
+            return {"ok": False,
+                    "error": "Не найден opkg/apk для установки пакета"}
+        # opkg/apk определяют формат по расширению — временный файл от
+        # загрузчика называется upload.bin, поэтому кладём рядом копию с
+        # правильным именем.
+        suffix = ".apk" if pkg_mgr == "apk" else ".ipk"
+        if orig_name and orig_name.lower().endswith((".ipk", ".apk")):
+            suffix = os.path.splitext(orig_name)[1].lower()
+        pkg_path = os.path.join(os.path.dirname(path),
+                                "%s%s" % (cfg.get("package_name", name),
+                                          suffix))
+        try:
+            if pkg_path != path:
+                shutil.copyfile(path, pkg_path)
+        except OSError as e:
+            return {"ok": False, "error": "Подготовка файла: %s" % e}
+
+        if pkg_mgr == "apk":
+            install_cmd = [pkg_mgr, "add", "--allow-untrusted", pkg_path]
+        else:
+            install_cmd = [pkg_mgr, "install", "--force-reinstall", pkg_path]
+        try:
+            proc = subprocess.run(install_cmd, capture_output=True,
+                                  text=True, timeout=600)
+        except (subprocess.SubprocessError, OSError) as e:
+            return {"ok": False, "error": "Установка пакета: %s" % e}
+        if proc.returncode != 0:
+            return {"ok": False,
+                    "error": "Установка пакета не удалась: %s"
+                             % ((proc.stderr or proc.stdout or "").strip())}
+        version = _pkg_version(cfg.get("package_name", "")) or ""
+        log.info("ext_installer: %s установлен из локального файла %s"
+                 % (name, orig_name or path), source="ext_installer")
+        return {"ok": True, "version": version, "sha256_verified": False,
+                "binary": cfg.get("dest", ""), "warning": warning}
+
+    dest = cfg.get("dest", "")
+    if not dest:
+        return {"ok": False, "error": "Не задан путь установки"}
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(path, dest)
+        os.chmod(dest, 0o755)
+    except OSError as e:
+        return {"ok": False, "error": "Запись %s: %s" % (dest, e)}
+    log.info("ext_installer: %s установлен из локального файла %s"
+             % (name, orig_name or path), source="ext_installer")
+    return {"ok": True, "binary": dest, "version": _get_version(dest),
+            "sha256_verified": False, "warning": warning}
+
+
+def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
+                           transport: str = "") -> dict:
     """
     Установить бинарник по имени.
 
     Args:
         name: "tgwsproxy" | "usque" | "tgproto" | "opera"
         progress_cb: callback(stage, pct, label) для UI
+        tag: поставить КОНКРЕТНЫЙ релиз вместо закреплённого в манифесте.
+             Ослабляет проверку sha256 ровно так же, как allow_unpinned:
+             хэши в манифесте относятся к закреплённой версии, для чужого
+             тега сверять их не с чем.
+        transport: через что качать ("", "awg:wg0", "singbox:<name>", …) —
+             см. core/download_transport.
 
     Returns:
-        {ok, binary, version, error}
+        {ok, binary, version, tag, error}
     """
     cfg = BINARIES.get(name)
     if not cfg:
@@ -710,11 +873,13 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
     if not asset_name:
         return {"ok": False, "error": "Архитектура %s не поддерживается" % arch}
 
-    # 1. Получаем pinned release
+    # 1. Получаем release: явно запрошенный тег имеет приоритет над
+    #    закреплённым в манифесте.
     if progress_cb:
         progress_cb("fetch", 10, "Получение информации о релизе...")
-    release_tag = cfg.get("release_tag", "")
-    release = github_release(cfg["repo"], release_tag)
+    requested_tag = str(tag or "").strip()
+    release_tag = requested_tag or cfg.get("release_tag", "")
+    release = github_release(cfg["repo"], release_tag, transport=transport)
     if not release:
         return {"ok": False, "error": "Не удалось получить release с GitHub (сеть или DNS)"}
     if "error_detail" in release:
@@ -829,7 +994,7 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
     pkg_mgr = _package_manager() if install_kind == "package" else ""
 
     try:
-        if not download_file(download_url, tmp_path):
+        if not download_file(download_url, tmp_path, transport=transport):
             return {"ok": False, "error": "Не удалось скачать %s" % asset_name}
 
         # MR-06: Проверка sha256
@@ -871,6 +1036,19 @@ def install_binary_by_name(name: str, *, progress_cb=None) -> dict:
                 "ok": False,
                 "error": "SHA256 для %s (%s) не задан в манифесте" % (name, arch),
             }
+        elif requested_tag and not is_pinned_version:
+            # Пользователь ЯВНО выбрал другой тег в UI. Манифестный хэш
+            # относится к закреплённой версии, сверять его тут не с чем —
+            # но и запрещать выбор версии нельзя, иначе селектор релизов
+            # бессмысленен. Политика та же, что у allow_unpinned: доверяем
+            # файлу контрольных сумм релиза, а если его нет — HTTPS к
+            # GitHub, и об этом громко сообщаем (в лог и в ответ).
+            if v_res.get("skipped"):
+                log.warning(
+                    "ext_installer: %s — установлен выбранный вручную тег %s"
+                    " (закреплён %s), файла контрольных сумм в релизе нет —"
+                    " sha256 не сверялся" % (name, tag, pinned_tag),
+                    source="ext_installer")
         elif not cfg.get("allow_unpinned"):
             return {
                 "ok": False,

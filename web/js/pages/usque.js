@@ -442,6 +442,19 @@ const UsquePage = (() => {
                        style="width:100%; box-sizing:border-box; padding:8px; border-radius:4px; border:1px solid var(--border, #2d313f); background:var(--bg-input, #0f111a); color:var(--text-main, #e1e4ea);" />
                 <div id="prompt-modal-error" style="color:var(--text-error, #ff5370); font-size:0.85rem; margin-top:4px; display:none;"></div>
             </div>
+            <div style="margin-bottom:16px;">
+                <label class="form-label" for="prompt-modal-transport">Регистрировать через</label>
+                <select id="prompt-modal-transport" class="form-input"
+                        style="width:100%; box-sizing:border-box; padding:8px; border-radius:4px; border:1px solid var(--border, #2d313f); background:var(--bg-input, #0f111a); color:var(--text-main, #e1e4ea);">
+                    <option value="direct">Напрямую</option>
+                </select>
+                <div class="form-hint" style="margin-top:4px;">
+                    Регистрация идёт на <code>api.cloudflareclient.com</code>.
+                    Если провайдер режет его (ошибка «TLS handshake timeout»),
+                    выберите уже работающий обход — AWG-туннель или
+                    sing-box/mihomo.
+                </div>
+            </div>
             <div style="display:flex; justify-content:flex-end; gap:8px;">
                 <button class="btn" id="prompt-modal-cancel">Отмена</button>
                 <button class="btn btn-primary" id="prompt-modal-ok">ОК</button>
@@ -450,6 +463,16 @@ const UsquePage = (() => {
 
         overlay.appendChild(content);
         document.body.appendChild(overlay);
+
+        // Список транспортов — тот же, что у «Качать через» на странице
+        // установки (общий эндпоинт), поэтому здесь ничего своего не надо.
+        const transportSel = document.getElementById("prompt-modal-transport");
+        (async () => {
+            try {
+                const list = await TransportSelect.load();
+                transportSel.innerHTML = TransportSelect.optionsHtml(list, "direct");
+            } catch (_) { /* остаётся «Напрямую» */ }
+        })();
 
         const input = document.getElementById("prompt-modal-input");
         const okBtn = document.getElementById("prompt-modal-ok");
@@ -467,8 +490,9 @@ const UsquePage = (() => {
                 errorDiv.style.display = "block";
                 return;
             }
+            const transport = (transportSel && transportSel.value) || "direct";
             overlay.remove();
-            callback(val);
+            callback(val, transport);
         }
 
         // MR-69: addEventListener вместо onclick
@@ -653,10 +677,12 @@ const UsquePage = (() => {
 
     async function _register() {
         // MR-100: Используем наш кастомный prompt-modal вместо native prompt()
-        _showPromptModal("Новый WARP-профиль", "warp-default", "warp-default", async (name) => {
+        _showPromptModal("Новый WARP-профиль", "warp-default", "warp-default", async (name, transport) => {
             try {
-                Toast.info("Регистрируем сессию у Cloudflare…");
-                const res = await API.post("/api/usque/register", { name });
+                Toast.info(transport && transport !== "direct"
+                    ? `Регистрируем сессию у Cloudflare через ${transport}…`
+                    : "Регистрируем сессию у Cloudflare…");
+                const res = await API.post("/api/usque/register", { name, transport });
                 if (res.ok) {
                     Toast.success(_t("warp_registered"));
                     await _refresh();

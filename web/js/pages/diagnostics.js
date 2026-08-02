@@ -103,7 +103,19 @@ const DiagnosticsPage = (() => {
                         <input type="checkbox" id="diag-selfcheck-tests" checked>
                         с юнит-тестами (на роутере — несколько минут)
                     </label>
-                    <span class="text-muted" style="font-size:12px;" id="diag-selfcheck-progress"></span>
+                </div>
+                <div id="diag-selfcheck-progress-box" style="margin-top:10px; display:none;">
+                    <!-- Та же геометрия, что у шкал ОЗУ/диска, но во всю
+                         ширину карточки: .diag-ram-bar задаёт width:60px и
+                         боковые margin — их здесь снимаем. -->
+                    <div class="diag-ram-bar"
+                         style="display:block; width:100%; margin:0;">
+                        <span class="diag-ram-fill" id="diag-selfcheck-bar"
+                              style="width:0%; background:var(--accent, #4a9eff);
+                                     transition:width .3s ease;"></span>
+                    </div>
+                    <div class="text-muted" style="font-size:12px; margin-top:4px;"
+                         id="diag-selfcheck-progress"></div>
                 </div>
                 <div id="diag-selfcheck-result" style="margin-top:10px;"></div>
                 <div class="text-muted expert-only" style="font-size:11px; margin-top:8px;">
@@ -210,6 +222,37 @@ const DiagnosticsPage = (() => {
                     <pre class="diag-manual-output" id="diag-manual-output">Результаты проверок появятся здесь…</pre>
                 </div>
             </div>
+
+            <!-- Обслуживание: намеренно последней карточкой на странице.
+                 Действия здесь рвут связь с GUI, поэтому держим их подальше
+                 от рутинных кнопок и не смешиваем с проверками. -->
+            <div class="card" id="diag-maintenance-card" style="display:none;">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M23 4v6h-6"/>
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                    </svg>
+                    Обслуживание
+                </div>
+                <p class="text-muted" style="font-size:13px; margin:6px 0 10px;">
+                    Перезапуск нужен, если GUI ведёт себя странно после
+                    обновления или правки настроек в обход интерфейса.
+                    Туннели и обход при перезапуске демона поднимутся заново
+                    согласно автозапуску.
+                </p>
+                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <button class="btn btn-sm" id="diag-restart-gui"
+                            onclick="DiagnosticsPage.restartGui()">
+                        Перезапустить zapret-gui
+                    </button>
+                    <button class="btn btn-sm btn-danger" id="diag-reboot"
+                            onclick="DiagnosticsPage.rebootDevice()">
+                        Перезагрузить роутер
+                    </button>
+                    <span class="text-muted" style="font-size:12px;"
+                          id="diag-maintenance-status"></span>
+                </div>
+            </div>
         `;
 
         // Загружаем данные
@@ -219,6 +262,7 @@ const DiagnosticsPage = (() => {
         loadNfqueueDeps();
         loadConflicts();
         loadSelfcheckStatus();
+        loadMaintenanceCaps();
     }
 
     function destroy() {
@@ -247,7 +291,6 @@ const DiagnosticsPage = (() => {
 
     async function runSelfcheck() {
         const withTests = !!document.getElementById('diag-selfcheck-tests')?.checked;
-        const btn = document.getElementById('diag-selfcheck-run');
         try {
             const r = await API.post('/api/diagnostics/selfcheck',
                                      { tests: withTests });
@@ -255,8 +298,7 @@ const DiagnosticsPage = (() => {
                 Toast.error((r && r.error) || 'Не удалось запустить');
                 return;
             }
-            if (btn) btn.disabled = true;
-            _setSelfcheckProgress('запуск...');
+            _setSelfcheckProgress({ progress: 'запуск…', percent: 0 });
             stopSelfcheckPoll();
             selfcheckTimer = setInterval(pollSelfcheck, 2000);
         } catch (e) {
@@ -269,9 +311,7 @@ const DiagnosticsPage = (() => {
         try {
             const s = await API.get('/api/diagnostics/selfcheck/status');
             if (s && s.running) {
-                const btn = document.getElementById('diag-selfcheck-run');
-                if (btn) btn.disabled = true;
-                _setSelfcheckProgress(s.progress || '...');
+                _setSelfcheckProgress(s);
                 stopSelfcheckPoll();
                 selfcheckTimer = setInterval(pollSelfcheck, 2000);
             } else if (s && s.result) {
@@ -284,13 +324,11 @@ const DiagnosticsPage = (() => {
         try {
             const s = await API.get('/api/diagnostics/selfcheck/status');
             if (s && s.running) {
-                _setSelfcheckProgress(s.progress || '...');
+                _setSelfcheckProgress(s);
                 return;
             }
             stopSelfcheckPoll();
-            const btn = document.getElementById('diag-selfcheck-run');
-            if (btn) btn.disabled = false;
-            _setSelfcheckProgress('');
+            _setSelfcheckProgress(null);
             if (s && s.result) {
                 renderSelfcheckResult(s.result);
                 if (s.result.ok) Toast.success('Самодиагностика: всё в порядке');
@@ -299,9 +337,144 @@ const DiagnosticsPage = (() => {
         } catch (_) {}
     }
 
-    function _setSelfcheckProgress(text) {
+    /**
+     * Состояние прогона целиком: полоса, текст и подпись на кнопке.
+     *
+     * Раньше единственным признаком работы была погасшая кнопка —
+     * «неактивна» и «идёт проверка» выглядели одинаково. Теперь кнопка
+     * прямо говорит, что она делает, а рядом видно шаг и время.
+     */
+    function _setSelfcheckProgress(s) {
+        const box = document.getElementById('diag-selfcheck-progress-box');
+        const bar = document.getElementById('diag-selfcheck-bar');
         const el = document.getElementById('diag-selfcheck-progress');
-        if (el) el.textContent = text ? ('Идёт проверка: ' + text) : '';
+        const btn = document.getElementById('diag-selfcheck-run');
+
+        if (!s) {
+            if (box) box.style.display = 'none';
+            if (btn) { btn.disabled = false; btn.textContent = 'Запустить'; }
+            return;
+        }
+
+        if (box) box.style.display = '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Проверяется…'; }
+        if (bar) bar.style.width = `${Math.max(0, Math.min(100, s.percent || 0))}%`;
+        if (el) {
+            const step = (s.steps_total
+                          ? `Шаг ${s.step}/${s.steps_total}: ` : '');
+            const elapsed = s.elapsed
+                ? ` — идёт ${_humanSeconds(s.elapsed)}` : '';
+            el.textContent = `${step}${s.progress || '...'}${elapsed}`;
+        }
+    }
+
+    function _humanSeconds(sec) {
+        if (sec < 60) return `${sec} с`;
+        const m = Math.floor(sec / 60);
+        return `${m} мин ${sec % 60} с`;
+    }
+
+    // ── обслуживание: перезапуск демона и роутера ──
+
+    async function loadMaintenanceCaps() {
+        // Кнопку, которой не на чем сработать, лучше не показывать вовсе,
+        // чем показывать и ронять в ошибку при нажатии.
+        try {
+            const c = await API.get('/api/system/control');
+            const card = document.getElementById('diag-maintenance-card');
+            if (!c || !c.ok || !card) return;
+            if (!c.restart_gui && !c.reboot) return;
+            card.style.display = '';
+            const rg = document.getElementById('diag-restart-gui');
+            const rb = document.getElementById('diag-reboot');
+            if (rg && !c.restart_gui) rg.style.display = 'none';
+            if (rb && !c.reboot) rb.style.display = 'none';
+            if (rg && c.restart_command) rg.title = c.restart_command;
+            if (rb && c.reboot_command) rb.title = c.reboot_command;
+        } catch (_) { /* карточка просто останется скрытой */ }
+    }
+
+    function _setMaintenanceStatus(text) {
+        const el = document.getElementById('diag-maintenance-status');
+        if (el) el.textContent = text || '';
+    }
+
+    function _lockMaintenance() {
+        ['diag-restart-gui', 'diag-reboot'].forEach(id => {
+            const b = document.getElementById(id);
+            if (b) b.disabled = true;
+        });
+    }
+
+    async function restartGui() {
+        if (!confirm('Перезапустить демон zapret-gui?\n\n'
+                     + 'Интерфейс на несколько секунд станет недоступен.')) {
+            return;
+        }
+        try {
+            const r = await API.post('/api/system/restart-gui', {});
+            if (!r || !r.ok) {
+                Toast.error((r && r.error) || 'Не удалось перезапустить');
+                return;
+            }
+            _lockMaintenance();
+            Toast.info(r.message || 'Демон перезапускается…');
+            _waitForGui('Перезапуск…');
+        } catch (e) {
+            Toast.error(e.message);
+        }
+    }
+
+    async function rebootDevice() {
+        if (!confirm('Перезагрузить роутер целиком?\n\n'
+                     + 'Интернет пропадёт для ВСЕХ устройств в сети '
+                     + 'на 1–2 минуты.')) {
+            return;
+        }
+        try {
+            const r = await API.post('/api/system/reboot', { confirm: true });
+            if (!r || !r.ok) {
+                Toast.error((r && r.error) || 'Не удалось перезагрузить');
+                return;
+            }
+            _lockMaintenance();
+            Toast.info(r.message || 'Устройство перезагружается…');
+            _waitForGui('Перезагрузка…');
+        } catch (e) {
+            Toast.error(e.message);
+        }
+    }
+
+    /**
+     * Дождаться, пока GUI снова начнёт отвечать, и перезагрузить страницу.
+     *
+     * Без этого пользователь остаётся на мёртвой вкладке и не понимает,
+     * прошла команда или нет: соединение рвётся ПО ЗАМЫСЛУ, и обычная
+     * обработка ошибки здесь только путает.
+     */
+    function _waitForGui(label) {
+        const startedAt = Date.now();
+        const LIMIT_MS = 5 * 60 * 1000;
+        const tick = async () => {
+            const waited = Math.round((Date.now() - startedAt) / 1000);
+            _setMaintenanceStatus(`${label} ждём ответа ${_humanSeconds(waited)}`);
+            if (Date.now() - startedAt > LIMIT_MS) {
+                _setMaintenanceStatus(
+                    'GUI не ответил за 5 минут — обновите страницу вручную.');
+                return;
+            }
+            try {
+                const r = await fetch('/api/system/control',
+                                      { cache: 'no-store' });
+                if (r.ok) {
+                    _setMaintenanceStatus('Готово, обновляем страницу…');
+                    setTimeout(() => window.location.reload(), 800);
+                    return;
+                }
+            } catch (_) { /* ещё не поднялся — это ожидаемо */ }
+            setTimeout(tick, 3000);
+        };
+        setTimeout(tick, 4000);
     }
 
     function renderSelfcheckResult(res) {
@@ -616,27 +789,35 @@ const DiagnosticsPage = (() => {
         };
 
         // ── Ресурсы ──
-        // Показываем не только «сколько всего», но и сколько СВОБОДНО:
-        // на роутере важно именно это (нехватка ОЗУ роняет движки, а
-        // забитая флешка ломает установку и сохранение конфигов).
+        // Показываем ЗАНЯТО / всего — ровно то, что отражает шкала рядом.
+        // Раньше в числах стояло СВОБОДНО, а в шкале — процент занятого:
+        // «13 / 249 MB» с полосой на 95% читалось как сломанный виджет
+        // (13 от 249 — это 5%). Сколько свободно, видно в подсказке.
         let ramValue = '—';
+        let ramTitle = '';
         if (ram.total_mb) {
             const freeMb = (ram.available_mb != null) ? ram.available_mb : ram.free_mb;
-            // Компактно «свободно / всего»: длинная фраза в узкой колонке
+            const usedMb = (freeMb != null) ? (ram.total_mb - freeMb) : null;
+            // Компактно «занято / всего»: длинная фраза в узкой колонке
             // переносилась на три строки и ломала сетку.
-            ramValue = (freeMb != null
-                        ? `${freeMb} / ${ram.total_mb} MB`
+            ramValue = (usedMb != null
+                        ? `${usedMb} / ${ram.total_mb} MB`
                         : `${ram.total_mb} MB`)
                      // Именно `!= null`: при 0% старая проверка на
                      // истинность прятала шкалу целиком.
                      + (ram.used_percent != null ? ' ' + bar(ram.used_percent) : '');
+            if (freeMb != null) {
+                ramTitle = `занято ${usedMb} MB из ${ram.total_mb} MB, `
+                         + `свободно ${freeMb} MB`;
+            }
         }
         // Путь — только в подсказке: в подписи он вылезал за колонку и
         // выдавливал значение за край карточки.
         const disksHtml = (si.disks || []).map(d =>
             item(d.label === 'конфиг' ? 'Диск (конфиг)' : `Диск ${d.label}`,
-                 `${d.free_mb} / ${d.total_mb} MB ${bar(d.used_percent)}`,
-                 `${d.path} — свободно ${d.free_mb} MB из ${d.total_mb} MB`)).join('');
+                 `${d.total_mb - d.free_mb} / ${d.total_mb} MB ${bar(d.used_percent)}`,
+                 `${d.path} — занято ${d.total_mb - d.free_mb} MB из ${d.total_mb} MB, `
+                 + `свободно ${d.free_mb} MB`)).join('');
 
         // ── Сеть ──
         const noIp = si.tools && si.tools.ip === false;
@@ -653,11 +834,16 @@ const DiagnosticsPage = (() => {
                 item('Хост', dash(si.hostname))
                 + item('Платформа', dash(si.platform))
                 + item('Ядро', dash(si.kernel))
-                + item('Архитектура', dash(si.arch))
+                + item('Архитектура', dash(si.arch),
+                       si.arch_uname && si.arch_uname !== si.arch
+                           ? `по этой архитектуре подбираются сборки; `
+                             + `uname -m сообщает «${si.arch_uname}» — на MIPS `
+                             + `он не различает порядок байт`
+                           : '')
                 + item('Время работы', dash(si.uptime_human))
                 + item('Python', dash(si.python_version)))
             + group('Ресурсы',
-                item('Оперативная память', ramValue)
+                item('Оперативная память', ramValue, ramTitle)
                 + item('Средняя нагрузка', dash(si.load_avg),
                        'Среднее число процессов в очереди за 1, 5 и 15 минут')
                 + disksHtml)
@@ -1182,5 +1368,7 @@ const DiagnosticsPage = (() => {
         manualDns,
         runSelfcheck,
         installNfqueueDeps,
+        restartGui,
+        rebootDevice,
     };
 })();

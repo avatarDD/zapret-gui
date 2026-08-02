@@ -266,3 +266,138 @@ class TestUsqueImport(_IsolatedConfig):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUsqueReleases(_IsolatedConfig):
+    """Страница установки: выбор версии и установка выбранного тега.
+
+    Раньше маршрутов /releases и /install/local не было вовсе — SetupUI
+    показывал «список релизов недоступен: method not allowed», и выбрать
+    версию было нельзя.
+    """
+
+    def test_releases_endpoint_exists_and_returns_list(self):
+        with mock.patch("core.ext_binary_installer.list_releases",
+                        return_value={"ok": True, "releases": [
+                            {"tag": "v0.3.0", "published_at": "2026-07-02",
+                             "prerelease": False}]}) as lr:
+            r = self.client.get_json("/api/usque/releases")
+        self.assertEqual(r["_status"], 200)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["releases"][0]["tag"], "v0.3.0")
+        self.assertEqual(lr.call_args.args[0], "usque")
+
+    def test_releases_passes_transport_through(self):
+        with mock.patch("core.ext_binary_installer.list_releases",
+                        return_value={"ok": True, "releases": []}) as lr:
+            self.client.get_json("/api/usque/releases?transport=awg:wg0&force=1")
+        self.assertEqual(lr.call_args.kwargs["transport"], "awg:wg0")
+        self.assertTrue(lr.call_args.kwargs["force"])
+
+    def test_install_forwards_tag_and_transport(self):
+        seen = {}
+
+        def _fake(name, *, progress_cb=None, tag="", transport=""):
+            seen["name"] = name
+            seen["tag"] = tag
+            seen["transport"] = transport
+            return {"ok": True, "tag": tag}
+
+        with mock.patch("core.ext_binary_installer.install_binary_by_name",
+                        side_effect=_fake):
+            r = self.client.post_json("/api/usque/install",
+                                      {"tag": "v0.2.0",
+                                       "transport": "singbox:main"})
+            self.assertTrue(r["ok"])
+            for _ in range(50):
+                if "tag" in seen:
+                    break
+                import time as _t
+                _t.sleep(0.02)
+        self.assertEqual(seen.get("tag"), "v0.2.0")
+        self.assertEqual(seen.get("transport"), "singbox:main")
+
+    def test_install_rejects_bogus_tag(self):
+        r = self.client.post_json("/api/usque/install",
+                                  {"tag": "../../etc/passwd"})
+        self.assertFalse(r["ok"])
+        self.assertIn("тег", r["error"].lower())
+
+    def test_install_rejects_unknown_transport(self):
+        r = self.client.post_json("/api/usque/install",
+                                  {"transport": "telepathy"})
+        self.assertFalse(r["ok"])
+        self.assertIn("транспорт", r["error"].lower())
+
+
+class TestUsqueRegisterTransport(_IsolatedConfig):
+    """Регистрация через уже работающий обход.
+
+    Провайдер может резать api.cloudflareclient.com — тогда прямая
+    регистрация падает с «TLS handshake timeout», хотя AWG на роутере уже
+    поднят.
+    """
+
+    def test_register_forwards_transport(self):
+        with mock.patch("core.usque_manager.UsqueManager.register",
+                        return_value={"ok": True}) as reg:
+            r = self.client.post_json("/api/usque/register",
+                                      {"name": "warp-x",
+                                       "transport": "awg:wg0"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(reg.call_args.kwargs["transport"], "awg:wg0")
+
+    def test_register_rejects_unknown_transport(self):
+        r = self.client.post_json("/api/usque/register",
+                                  {"name": "warp-x", "transport": "nonsense"})
+        self.assertFalse(r["ok"])
+        self.assertIn("транспорт", r["error"].lower())
+
+    def test_register_without_transport_still_works(self):
+        with mock.patch("core.usque_manager.UsqueManager.register",
+                        return_value={"ok": True}) as reg:
+            r = self.client.post_json("/api/usque/register", {"name": "warp-y"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(reg.call_args.kwargs["transport"], "")
+
+
+class TestUsqueVersionSpaces(_IsolatedConfig):
+    """Версия движка usque и тег пакета usque-keenetic — разные величины.
+
+    Пакет v0.3.0 несёт usque 4.2.0. Сравнение «4.2.0 != 0.3.0» давало
+    вечное «доступно обновление» на странице установки.
+    """
+
+    def _env(self, installed_tag="", engine="4.2.0"):
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        cfg.set("usque", "installed_tag", installed_tag)
+        with mock.patch("core.usque_manager.UsqueManager.detect",
+                        return_value={"installed": True,
+                                      "binary": "/opt/usr/bin/usque",
+                                      "version": engine, "arch": "aarch64"}):
+            return (self.client.get_json("/api/usque/environment"),
+                    self.client.get_json("/api/usque/version"))
+
+    def test_environment_reports_package_tag_and_engine_separately(self):
+        env, _ver = self._env(installed_tag="v0.3.0")
+        # SetupUI сравнивает именно binary.version с «В релизе».
+        self.assertEqual(env["binary"]["version"], "v0.3.0")
+        self.assertEqual(env["binary"]["engine_version"], "4.2.0")
+        # Основная страница usque.js читает плоское поле — там движок.
+        self.assertEqual(env["version"], "4.2.0")
+
+    def test_no_phantom_update_when_pinned_tag_installed(self):
+        from core.ext_binary_installer import BINARIES
+        pinned = BINARIES["usque"]["release_tag"]
+        _env, ver = self._env(installed_tag=pinned)
+        self.assertFalse(ver["has_update"])
+
+    def test_update_offered_for_older_package_tag(self):
+        _env, ver = self._env(installed_tag="v0.2.0")
+        self.assertTrue(ver["has_update"])
+
+    def test_no_update_claim_when_tag_unknown(self):
+        """Пакет поставлен мимо GUI — сравнивать не с чем, значит молчим."""
+        _env, ver = self._env(installed_tag="")
+        self.assertFalse(ver["has_update"])
