@@ -38,6 +38,31 @@ class TestMonitorHistory(unittest.TestCase):
         self.assertIn("r3", s)
         self.assertEqual(s["r3"]["samples"], 1)
 
+    def test_rate_is_per_method(self):
+        """Провалы старого метода не должны портить успешность нового."""
+        for _ in range(9):
+            monitor.record("r4", False, method="awg:awg0")
+        monitor.record("r4", True, method="nfqws2")
+        self.assertAlmostEqual(monitor.success_rate("r4", method="nfqws2"), 1.0)
+        self.assertAlmostEqual(monitor.success_rate("r4", method="awg:awg0"), 0.0)
+        # Без фильтра — как раньше, по всем замерам.
+        self.assertAlmostEqual(monitor.success_rate("r4"), 0.1)
+
+    def test_stats_reports_active_method_only(self):
+        for _ in range(9):
+            monitor.record("r5", False, method="awg:awg0")
+        monitor.record("r5", True, method="nfqws2")
+        s = monitor.stats()["r5"]
+        self.assertEqual(s["method"], "nfqws2")
+        self.assertAlmostEqual(s["rate"], 1.0)
+        self.assertEqual(s["samples"], 1)
+
+    def test_history_filter_drops_samples_without_method(self):
+        """Замер без метода нельзя зачесть новому методу."""
+        monitor.record("r6", False)
+        self.assertEqual(len(monitor.history("r6")), 1)
+        self.assertEqual(monitor.history("r6", method="nfqws2"), [])
+
 
 class TestFailoverDecide(unittest.TestCase):
 
@@ -102,10 +127,10 @@ class TestFailoverState(unittest.TestCase):
         route = UnifiedRoute(name="t", method="nfqws2",
                              fallbacks=["awg:awg0"],
                              destination=Destination(domains=["a.com"]))
-        # история — сплошные неудачи
+        # история — сплошные неудачи ТЕКУЩЕГО метода
         monitor.clear()
         for _ in range(10):
-            monitor.record(route.id, False)
+            monitor.record(route.id, False, method="nfqws2")
         failover.set_current(route.id, "nfqws2", ts=0)
         with mock.patch("core.unified.applier.apply_route",
                         return_value={"ok": True}) as ap:
@@ -113,6 +138,55 @@ class TestFailoverState(unittest.TestCase):
         self.assertTrue(res["switched"])
         self.assertEqual(res["method"], "awg:awg0")
         ap.assert_called_once()
+        monitor.clear()
+
+    def test_step_does_not_reapply_when_method_unchanged(self):
+        """Первый шаг лишь фиксирует активный метод.
+
+        Раньше он ещё и переприменял маршрут — то есть сносил и заново
+        собирал ipset'ы с перезагрузкой dnsmasq на ровном месте.
+        """
+        from core.unified.model import UnifiedRoute, Destination
+        route = UnifiedRoute(name="t", method="nfqws2",
+                             fallbacks=["awg:awg0"],
+                             destination=Destination(domains=["a.com"]))
+        monitor.clear()
+        with mock.patch("core.unified.applier.apply_route") as ap:
+            res = failover.step(route)
+        self.assertFalse(res["switched"])
+        ap.assert_not_called()
+        self.assertEqual(failover.current_method(route.id), "nfqws2")
+
+    def test_healthy_fallback_is_not_abandoned(self):
+        """Переключившись на исправный метод, маршрут на нём и остаётся.
+
+        Регрессия: успешность считалась по сквозной истории, поэтому
+        сразу после переключения окно состояло из провалов ПРЕДЫДУЩЕГО
+        метода. Через cooldown маршрут уходил с исправного метода обратно
+        на сломанный — и так по кругу.
+        """
+        from core.unified.model import UnifiedRoute, Destination
+        route = UnifiedRoute(name="t", method="awg:awg0",
+                             fallbacks=["nfqws2"],
+                             destination=Destination(domains=["a.com"]),
+                             failover_enabled=True)
+        healthy = "nfqws2"
+        monitor.clear()
+        now = [0.0]
+        switches = []
+        with mock.patch("core.unified.applier.apply_route",
+                        return_value={"ok": True}), \
+             mock.patch("core.unified.failover.time.time",
+                        side_effect=lambda: now[0]):
+            for _ in range(40):                       # 40 тиков по минуте
+                cur = failover.current_method(route.id) or route.method
+                monitor.record(route.id, cur == healthy, ts=now[0], method=cur)
+                r = failover.step(route)
+                if r.get("switched"):
+                    switches.append(r["method"])
+                now[0] += 60
+        self.assertEqual(switches, [healthy])
+        self.assertEqual(failover.current_method(route.id), healthy)
         monitor.clear()
 
 
@@ -160,6 +234,59 @@ class TestNeedsMonitorAutostart(unittest.TestCase):
             self.assertFalse(loop.running())
         finally:
             loop.stop()
+
+
+class TestUnprobeableRoutes(unittest.TestCase):
+    """Маршрут по geosite/geoip пробовать нечем — и это не «деградация».
+
+    Регрессия: probe_route возвращал False (конкретного адреса у такого
+    маршрута нет), маршрут выглядел вечно сломанным, и failover
+    бесконечно гонял его по всей цепочке методов.
+    """
+
+    def setUp(self):
+        monitor.clear()
+
+    def tearDown(self):
+        monitor.clear()
+
+    def _route(self, **kw):
+        from core.unified.model import UnifiedRoute, Destination
+        kw.setdefault("destination", Destination(geosite=["youtube"]))
+        return UnifiedRoute(name="geo", method="awg:awg0",
+                            fallbacks=["nfqws2"], failover_enabled=True, **kw)
+
+    def test_probe_returns_none_for_geo_only(self):
+        self.assertIsNone(monitor.probe_route(self._route()))
+
+    def test_probe_domain_makes_route_probeable(self):
+        route = self._route(probe_domain="youtube.com")
+        with mock.patch("core.unified.monitor.probe_host",
+                        return_value=True) as ph:
+            self.assertTrue(monitor.probe_route(route))
+        ph.assert_called_once()
+
+    def test_tick_records_nothing_and_skips_failover(self):
+        route = self._route()
+        loop = monitor._MonitorLoop()
+        with mock.patch("core.unified.storage.load_routes",
+                        return_value=[route]), \
+             mock.patch("core.unified.failover.step") as st:
+            loop._tick()
+        self.assertEqual(monitor.history(route.id), [])
+        st.assert_not_called()
+
+    def test_tick_records_active_method(self):
+        from core.unified.model import UnifiedRoute, Destination
+        route = UnifiedRoute(name="d", method="awg:awg0",
+                             destination=Destination(domains=["a.com"]),
+                             monitor_enabled=True)
+        loop = monitor._MonitorLoop()
+        with mock.patch("core.unified.storage.load_routes",
+                        return_value=[route]), \
+             mock.patch("core.unified.monitor.probe_route", return_value=True):
+            loop._tick()
+        self.assertEqual(monitor.history(route.id)[0][2], "awg:awg0")
 
 
 class TestFailoverNeedsProbeOnly(unittest.TestCase):

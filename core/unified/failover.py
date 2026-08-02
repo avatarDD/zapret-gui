@@ -129,8 +129,12 @@ def step(route) -> dict:
     from core.unified import monitor, applier
     chain = route.method_chain()
     cur = current_method(route.id) or route.method
-    rate = monitor.success_rate(route.id)
-    samples = len(monitor.history(route.id))
+    # Успешность — ТОЛЬКО по замерам текущего метода. Со сквозной
+    # историей сразу после переключения окно состояло из провалов
+    # предыдущего метода, и маршрут уходил с исправного метода обратно
+    # на сломанный, как только истекал cooldown.
+    rate = monitor.success_rate(route.id, method=cur)
+    samples = len(monitor.history(route.id, method=cur))
     st = state(route.id)
     decision = decide(
         chain=chain, current=current_method(route.id),
@@ -141,6 +145,14 @@ def step(route) -> dict:
         return {"switched": False, "method": cur, "reason": decision["reason"]}
 
     new_method = decision["method"]
+    if new_method == cur:
+        # Первый шаг: активный метод ещё не зафиксирован, но он совпадает
+        # с основным. Просто запоминаем его. Переприменять маршрут здесь
+        # не нужно — он уже применён, а лишний apply означал бы снос и
+        # пересборку ipset'ов с перезагрузкой dnsmasq на ровном месте.
+        set_current(route.id, new_method)
+        return {"switched": False, "method": cur,
+                "reason": decision["reason"]}
     set_current(route.id, new_method)
     res = applier.apply_route(route, method=new_method)
     log.info("unified failover: маршрут %s %s → %s (%s)"
