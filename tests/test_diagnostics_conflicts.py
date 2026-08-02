@@ -109,3 +109,41 @@ class TestWanIpValue(unittest.TestCase):
         out = mock.Mock(returncode=0, stdout="8.8.8.8 dev eth0 src")
         with mock.patch("subprocess.run", return_value=out):
             self.assertEqual(_get_wan_ip(), "")
+
+
+class TestSystemInfoArch(unittest.TestCase):
+    """Архитектура должна совпадать с той, по которой ставятся сборки.
+
+    `platform.machine()` (=`uname -m`) на MIPS отдаёт "mips" и для
+    little-, и для big-endian — из-за этого «Диагностика» показывала
+    `mips` там, где страницы установки правильно определяли `mipsel`.
+    """
+
+    def test_arch_matches_installer_detection(self):
+        from core import system_info
+        from core.ext_binary_installer import detect_arch
+        info = system_info.get_system_info()
+        self.assertEqual(info["arch"], detect_arch())
+
+    def test_raw_uname_is_still_reported(self):
+        import platform
+        from core import system_info
+        info = system_info.get_system_info()
+        self.assertEqual(info["arch_uname"], platform.machine())
+
+    def test_mips_router_reports_mipsel_not_mips(self):
+        from core import system_info
+        with mock.patch("core.ext_binary_installer.detect_arch",
+                        return_value="mipsel"), \
+             mock.patch("platform.machine", return_value="mips"):
+            info = system_info.get_system_info()
+        self.assertEqual(info["arch"], "mipsel")
+        self.assertEqual(info["arch_uname"], "mips")
+
+    def test_falls_back_to_uname_when_detection_fails(self):
+        from core import system_info
+        with mock.patch("core.ext_binary_installer.detect_arch",
+                        side_effect=OSError("нет uname")), \
+             mock.patch("platform.machine", return_value="armv7l"):
+            info = system_info.get_system_info()
+        self.assertEqual(info["arch"], "armv7l")

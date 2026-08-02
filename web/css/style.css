@@ -110,29 +110,8 @@
     flex-wrap: wrap;
     row-gap: 8px;
 }
-.lang-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    flex: 0 0 auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-secondary);
-    cursor: pointer;
-    font-size: 11px;
-    font-weight: bold;
-    text-transform: uppercase;
-}
-.lang-toggle:hover {
-    color: var(--text-primary);
-    border-color: var(--border-hover);
-    background: var(--bg-card-hover);
-}
 /* Дубль кнопки самодиагностики в футере сайдбара — та же геометрия,
-   что у соседних иконок языка/темы, иначе строка футера «разъезжается». */
+   что у соседней иконки темы, иначе строка футера «разъезжается». */
 .selfcheck-toggle {
     display: inline-flex;
     align-items: center;
