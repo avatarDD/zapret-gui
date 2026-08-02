@@ -67,25 +67,12 @@ class RunnerStatus:
 # Default targets
 # ---------------------------------------------------------------------------
 
-# Домены по умолчанию, если data/domains.txt отсутствует
-_DEFAULT_DOMAINS: list[str] = [
-    "youtube.com",
-    "www.youtube.com",
-    "i.ytimg.com",
-    "discord.com",
-    "cdn.discordapp.com",
-    "gateway.discord.gg",
-    "telegram.org",
-    "web.telegram.org",
-    "www.google.com",
-    "www.cloudflare.com",
-    "rutracker.org",
-    "www.linkedin.com",
-    "www.instagram.com",
-    "www.facebook.com",
-    "x.com",
-    "www.spotify.com",
-]
+# Домены по умолчанию, если data/domains.txt отсутствует.
+# Каталог целей общий с карточками «Сервисы» в разделе «Диагностика» —
+# см. core/targets.py: добавлять сервис нужно в одном месте.
+from core.targets import default_check_domains
+
+_DEFAULT_DOMAINS: list[str] = default_check_domains()
 
 # Цели для STUN/UDP тестов
 _DEFAULT_STUN_TARGETS: list[dict[str, Any]] = [

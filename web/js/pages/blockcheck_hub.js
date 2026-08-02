@@ -150,17 +150,32 @@ const BlockcheckHubPage = (() => {
     /* ───────── cross-tab ───────── */
 
     /**
-     * «Проверить глубоко» из мониторинга: открыть вкладку теста с этим
-     * доменом. Монитор говорит, ЧТО сломалось, тест — на каком слое и чем
-     * лечится; переход между ними и есть рабочий цикл раздела.
+     * «Разобрать»: открыть вкладку теста с этими доменами.
+     *
+     * Точка входа для двух сценариев: из соседней вкладки «Мониторинг DNS»
+     * (один домен) и из «Диагностики» — с карточки упавшего сервиса (все его
+     * хосты). Там светофор, здесь диагноз; переход между ними и есть
+     * рабочий цикл. Вызов извне раздела корректен: страница теста —
+     * singleton, подстановка переживёт навигацию.
      */
-    function deepCheck(domain) {
-        if (!domain) return;
+    function deepCheck(domains) {
+        const list = (Array.isArray(domains) ? domains : [domains])
+            .map(d => String(d || '').trim()).filter(Boolean);
+        if (!list.length) return;
+
         const page = TABS.test.page();
-        if (page && page.prefill) page.prefill([domain], 'dpi_only');
-        switchTab('test');
+        if (page && page.prefill) page.prefill(list, 'dpi_only');
+
+        if (rootEl) {
+            switchTab('test');
+        } else {
+            // Пришли из другого раздела — обычная навигация.
+            activeTab = 'test';
+            window.location.hash = 'blockcheck';
+        }
         if (typeof Toast !== 'undefined') {
-            Toast.info(`Список заменён на ${domain} — нажмите «Запустить» (вернуть свой: «Сбросить»)`);
+            const what = list.length === 1 ? list[0] : `${list.length} доменов`;
+            Toast.info(`Список заменён на ${what} — нажмите «Запустить» (вернуть свой: «Сбросить»)`);
         }
     }
 

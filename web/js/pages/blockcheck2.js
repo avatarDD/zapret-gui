@@ -33,17 +33,9 @@ const Blockcheck2Page = (() => {
     /* ───────── lifecycle ───────── */
 
     function render(container) {
+        // Заголовок и вкладки рисует StrategyScanHubPage: эта страница —
+        // вкладка «Официальный (blockcheck2.sh)».
         container.innerHTML = `
-            <div class="page-header">
-                <h1 class="page-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
-                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>
-                    </svg>
-                    BlockCheck2 (официальный)${typeof Help !== 'undefined' ? Help.button('blockcheck2') : ''}
-                </h1>
-                <p class="page-description">Запуск штатного blockcheck2.sh из zapret2 с потоковой телеметрией</p>
-            </div>
-
             <!-- Статус скрипта -->
             <div class="card" id="bc2-script-card">
                 <div id="bc2-script-info" style="font-size:13px;color:var(--text-muted);">Поиск скрипта…</div>

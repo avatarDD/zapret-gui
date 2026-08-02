@@ -461,7 +461,9 @@ const DiagnosticsPage = (() => {
             const status = isChecking ? 'checking' : (result ? result.status : 'pending');
             const statusLabel = STATUS_LABELS[status] || status;
             const statusColor = STATUS_COLORS[status] || 'var(--text-muted)';
-            const icon = SVC_ICONS[name] || '';
+            // Для сервисов без своей SVG берём эмодзи из каталога
+            // (core/targets.py) — иначе карточка ехала бы без значка.
+            const icon = SVC_ICONS[name] || _esc(svc.icon || '');
 
             let detailsHtml = '';
             if (result && !isChecking) {
@@ -484,6 +486,7 @@ const DiagnosticsPage = (() => {
                                 ${isChecking ? 'disabled' : ''}>
                             ${isChecking ? '…' : 'Проверить'}
                         </button>
+                        ${analyzeBtn(name, status)}
                     </div>
                     <div class="diag-service-details" id="svc-details-${name}">
                         ${detailsHtml}
@@ -491,6 +494,32 @@ const DiagnosticsPage = (() => {
                 </div>
             `;
         }).join('');
+    }
+
+    /**
+     * Кнопка «Разобрать» — только когда сервис реально просел.
+     *
+     * Здесь светофор: работает / не работает. Почему именно не работает и
+     * чем лечится (DPI, блок по IP, DNS) — задача раздела «Диагностика
+     * блокировок»; раньше пользователь упирался в красную карточку и
+     * переходил туда вручную, перенося домены руками.
+     */
+    function analyzeBtn(name, status) {
+        if (!['partial', 'degraded', 'down'].includes(status)) return '';
+        return `<button class="btn btn-ghost btn-sm diag-service-btn"
+                        onclick="DiagnosticsPage.analyze('${name}')"
+                        title="Разобрать причину в «Диагностике блокировок»">Разобрать</button>`;
+    }
+
+    function analyze(name) {
+        const svc = services[name];
+        const hosts = (svc && svc.hosts) || [];
+        if (!hosts.length) return;
+        if (typeof BlockcheckHubPage === 'undefined') {
+            window.location.hash = 'blockcheck';
+            return;
+        }
+        BlockcheckHubPage.deepCheck(hosts);
     }
 
     function statusIndicator(status) {
@@ -1145,6 +1174,7 @@ const DiagnosticsPage = (() => {
         render,
         destroy,
         checkService,
+        analyze,
         checkAll,
         refreshSystem,
         manualPing,

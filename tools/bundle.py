@@ -98,6 +98,8 @@ JS_FILES = [
     "js/pages/block_detector.js",
     # после blockcheck.js и block_detector.js: hub монтирует обе вкладки
     "js/pages/blockcheck_hub.js",
+    # после scan.js и blockcheck2.js: hub монтирует обе вкладки
+    "js/pages/strategy_scan_hub.js",
     "js/pages/opera_proxy.js",
     "js/pages/update_checker.js",
     "js/pages/lists.js",

@@ -16,10 +16,8 @@ const ScanPage = (() => {
     function render(container) {
         container.innerHTML = `
             <div class="page-container">
-                <div class="page-header">
-                    <h1 class="page-title">BlockCheck(mod)${typeof Help !== 'undefined' ? Help.button('scan') : ''}</h1>
-                    <p class="page-description">Подбор стратегий по каталогу zapret-gui — автоматический поиск работающих стратегий обхода DPI</p>
-                </div>
+                <!-- Заголовок и вкладки рисует StrategyScanHubPage: эта
+                     страница — вкладка «По каталогу zapret-gui». -->
 
                 <!-- Параметры -->
                 <div class="card" id="scan-controls">

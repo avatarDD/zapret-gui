@@ -44,10 +44,10 @@ const Sidebar = (() => {
             // в группе «Диагностика» (раздел «Диагностика блокировок»).
             label: 'Обход DPI (nfqws2)',
             items: [
-                { id: 'control',     label: 'Управление',                icon: 'play' },
-                { id: 'strategies',  label: 'Стратегии',                 icon: 'strategy' },
-                { id: 'blockcheck2', label: 'BlockCheck2 (официальный)', icon: 'blockcheck' },
-                { id: 'scan',        label: 'BlockCheck(mod)',           icon: 'scan' },
+                { id: 'control',     label: 'Управление', icon: 'play' },
+                { id: 'strategies',  label: 'Стратегии',  icon: 'strategy' },
+                // Вкладки: официальный blockcheck2.sh + перебор по нашему каталогу.
+                { id: 'scan',        label: 'Подбор стратегий', icon: 'scan' },
             ]
         },
         {

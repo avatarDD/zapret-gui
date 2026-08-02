@@ -20,8 +20,9 @@ const App = (() => {
         // «Диагностика блокировок» — вкладки «Тест доступности»
         // (BlockcheckPage) и «Мониторинг DNS» (BlockDetectorPage).
         blockcheck:  BlockcheckHubPage,
-        blockcheck2: Blockcheck2Page,
-        scan:        ScanPage,
+        // «Подбор стратегий» — вкладки «Официальный (blockcheck2.sh)»
+        // (Blockcheck2Page) и «По каталогу zapret-gui» (ScanPage).
+        scan:        StrategyScanHubPage,
         logs:        LogsPage,
         autostart:   AutostartPage,
         zapret:      ZapretManagerPage,
@@ -55,6 +56,7 @@ const App = (() => {
     // на #block-detector ведут закладки и карточка дашборда.
     const HASH_ALIASES = {
         'block-detector': 'blockcheck?tab=monitor',
+        'blockcheck2':    'scan',
     };
 
     let currentPage = null;
