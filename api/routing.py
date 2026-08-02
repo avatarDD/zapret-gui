@@ -95,7 +95,14 @@ def register(app):
             мы на Keenetic'е и RCI доступен;
           - sing-box TUN-инbound'ы (`tun0`, `singbox-tun`, ...) —
             читаем из активных sing-box-конфигов;
-          - TUN'ы usque/WARP (`usque0`, ...) — метод `warp:<iface>`.
+          - TUN'ы usque/WARP (`usque0`, ...) — метод `warp:<iface>`;
+          - TUN'ы mihomo (`mihomo-tun`, ...) — метод `mihomo:<iface>`.
+
+        Сюда попадает только то, что существует как СЕТЕВОЙ ИНТЕРФЕЙС:
+        маршрутизация работает через `ip rule` + таблицу с default на
+        интерфейс. Движки, которые дают лишь локальный порт (opera-proxy,
+        mihomo без `tun`), этим механизмом не заворачиваются — их
+        подключают как upstream-outbound внутрь sing-box/mihomo.
 
         Формат:
           {"ok": true,
@@ -104,6 +111,7 @@ def register(app):
              {"name": "Wireguard0", "source": "ndms", "type": "wireguard"},
              {"name": "tun0", "source": "singbox", "type": "singbox-tun"},
              {"name": "usque0", "source": "usque", "type": "usque-tun"},
+             {"name": "mihomo-tun", "source": "mihomo", "type": "mihomo-tun"},
              ...]}
         """
         response.content_type = "application/json; charset=utf-8"
@@ -198,6 +206,33 @@ def register(app):
             except Exception as e:
                 from core.log_buffer import log
                 log.warning("routing/interfaces: usque не добавлен: %s"
+                            % e, source="routing")
+
+            # mihomo: TUN-устройство из секции `tun` конфига. Фронт умел
+            # раскладывать source=mihomo в метод `mihomo:<iface>` с самого
+            # начала, но сюда эти интерфейсы никто не клал — в списке целей
+            # mihomo не появлялся вообще.
+            #
+            # Конфиг без включённого `tun` пропускаем: у него нет
+            # интерфейса, заворачивать в него нечего (mihomo в таком
+            # режиме работает как обычный прокси на порту).
+            try:
+                from core.mihomo_manager import get_mihomo_manager
+                for cfg in get_mihomo_manager().list_configs():
+                    ifname = (cfg.get("tun_iface") or "").strip()
+                    if not ifname or ifname in seen:
+                        continue
+                    seen.add(ifname)
+                    result.append({
+                        "name":        ifname,
+                        "active":      bool(cfg.get("running")),
+                        "source":      "mihomo",
+                        "type":        "mihomo-tun",
+                        "description": "mihomo (%s)" % cfg.get("name", ""),
+                    })
+            except Exception as e:
+                from core.log_buffer import log
+                log.warning("routing/interfaces: mihomo не добавлен: %s"
                             % e, source="routing")
 
             return {"ok": True, "interfaces": result}

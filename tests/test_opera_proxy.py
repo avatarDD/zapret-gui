@@ -858,6 +858,28 @@ class TestApi(_OperaBase):
             self.client.get_json("/api/opera-proxy/debug")["enabled"])
         self.client.post_json("/api/opera-proxy/debug", {"enabled": False})
 
+    def test_chain_targets_endpoint(self):
+        """Цели для «подключить в движок» — конфиги sing-box и mihomo."""
+        r = self.client.get_json("/api/opera-proxy/chain/targets")
+        self.assertEqual(r["_status"], 200, r)
+        self.assertTrue(r["ok"])
+        self.assertIsInstance(r["singbox"], list)
+        self.assertIsInstance(r["mihomo"], list)
+
+    def test_chain_rejects_unknown_engine(self):
+        r = self.client.post_json("/api/opera-proxy/chain",
+                                  {"engine": "redsocks", "config": "main"})
+        self.assertEqual(r["_status"], 400)
+        self.assertFalse(r["ok"])
+
+    def test_chain_passes_engine_and_config_through(self):
+        with mock.patch("core.opera_proxy_chain.attach",
+                        return_value={"ok": True, "tag": "opera-proxy"}) as at:
+            r = self.client.post_json("/api/opera-proxy/chain",
+                                      {"engine": "mihomo", "config": "meta"})
+        self.assertTrue(r["ok"])
+        at.assert_called_once_with(engine="mihomo", config="meta", tag="")
+
 
 if __name__ == "__main__":
     unittest.main()

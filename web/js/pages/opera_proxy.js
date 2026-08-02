@@ -78,9 +78,36 @@ const OperaProxyPage = (() => {
                             Настройте приложения использовать этот прокси.
                         </p>
                         <p class="text-muted" style="font-size:12px;">
-                            Для transparent proxy на роутере используйте redsocks/tproxy
-                            с перенаправлением трафика на этот порт.
+                            Отдельным методом в «Маршрутизации» его выбрать нельзя:
+                            там цель правила — сетевой интерфейс, а Opera Proxy
+                            даёт только локальный порт. Чтобы заворачивать в неё
+                            трафик роутера, подключите её как upstream внутрь
+                            sing-box или mihomo — правило маршрутизации тогда
+                            обычное, на TUN этого движка.
                         </p>
+
+                        <div class="form-group" style="margin-top:12px;">
+                            <label class="form-label" for="opera-chain-engine">Подключить в</label>
+                            <div id="opera-chain-controls" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                                <select id="opera-chain-engine" class="form-control" style="max-width:160px;">
+                                    <option value="singbox">sing-box</option>
+                                    <option value="mihomo">mihomo</option>
+                                </select>
+                                <select id="opera-chain-config" class="form-control" style="max-width:260px;">
+                                    <option value="">Загрузка…</option>
+                                </select>
+                                <button class="btn btn-primary" id="opera-chain-btn">Добавить в конфиг</button>
+                            </div>
+                            <div class="form-hint" style="margin-top:6px;">
+                                В конфиг добавится прокси с текущим bind и режимом
+                                (HTTP или SOCKS5 — как выбрано в настройках выше),
+                                плюс правило «<code>sec-tunnel.com</code> — напрямую»:
+                                без него трафик самой Opera уходил бы в туннель по кругу.
+                                Дальше в конфиге движка направьте на этот прокси нужные
+                                домены — сам по себе он трафик не забирает.
+                            </div>
+                            <div id="opera-chain-result" style="margin-top:8px;"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -96,6 +123,11 @@ const OperaProxyPage = (() => {
         _loadDebugFlag();
         document.getElementById("opera-btn-down").addEventListener("click", _stop);
         document.getElementById("opera-btn-refresh").addEventListener("click", _refreshAll);
+        document.getElementById("opera-chain-engine")
+            .addEventListener("change", _renderChainConfigs);
+        document.getElementById("opera-chain-btn")
+            .addEventListener("click", _chainAttach);
+        _loadChainTargets();
 
         _visibilityHandler = () => {
             if (document.hidden) _stopPoll();
@@ -513,6 +545,86 @@ const OperaProxyPage = (() => {
             }
         } catch (e) {
             Toast.error("Ошибка: " + e.message);
+        }
+    }
+
+    // ─── подключение как upstream в sing-box / mihomo ───
+    //
+    // Своим методом маршрутизации Opera Proxy быть не может: правило
+    // единого слоя заворачивает трафик в ИНТЕРФЕЙС, а здесь только
+    // локальный порт (подробнее — core/opera_proxy_chain.py).
+
+    let _chainTargets = { singbox: [], mihomo: [] };
+
+    async function _loadChainTargets() {
+        try {
+            const r = await API.get("/api/opera-proxy/chain/targets");
+            _chainTargets = { singbox: (r && r.singbox) || [],
+                              mihomo: (r && r.mihomo) || [] };
+        } catch (_) {
+            _chainTargets = { singbox: [], mihomo: [] };
+        }
+        _renderChainConfigs();
+    }
+
+    function _renderChainConfigs() {
+        const engineSel = document.getElementById("opera-chain-engine");
+        const cfgSel = document.getElementById("opera-chain-config");
+        const btn = document.getElementById("opera-chain-btn");
+        if (!engineSel || !cfgSel || !btn) return;
+        const list = _chainTargets[engineSel.value] || [];
+        if (!list.length) {
+            cfgSel.innerHTML = '<option value="">Конфигов нет</option>';
+            cfgSel.disabled = true;
+            btn.disabled = true;
+            return;
+        }
+        cfgSel.disabled = false;
+        btn.disabled = false;
+        cfgSel.innerHTML = list.map(c =>
+            `<option value="${esc(c.name)}">${esc(c.name)}${
+                c.running ? " (запущен)" : ""}</option>`).join("");
+    }
+
+    async function _chainAttach() {
+        const engine = document.getElementById("opera-chain-engine").value;
+        const config = document.getElementById("opera-chain-config").value;
+        const box = document.getElementById("opera-chain-result");
+        const btn = document.getElementById("opera-chain-btn");
+        if (!config) return;
+        btn.disabled = true;
+        box.innerHTML = '<div class="form-hint">Добавляем…</div>';
+        try {
+            const r = await API.post("/api/opera-proxy/chain",
+                                     { engine, config });
+            if (!r || !r.ok) {
+                box.innerHTML = `<div class="text-error">${
+                    esc((r && r.error) || "Не удалось добавить")}</div>`;
+                return;
+            }
+            const page = engine === "singbox" ? "#singbox" : "#mihomo";
+            const what = engine === "singbox" ? "outbound" : "прокси";
+            const warns = (r.warnings || []).map(w =>
+                `<div class="form-hint text-error">${esc(w)}</div>`).join("");
+            box.innerHTML = `
+                <div class="form-hint">
+                    ${r.replaced ? "Обновлён" : "Добавлен"} ${what}
+                    <code>${esc(r.tag)}</code> в конфиг
+                    <code>${esc(config)}</code>${
+                        r.bypass_added
+                            ? ", добавлено правило обхода <code>"
+                              + esc("sec-tunnel.com") + "</code>"
+                            : ""}.
+                    Осталось направить на него нужные домены на странице
+                    <a href="${page}">${engine === "singbox" ? "sing-box" : "mihomo"}</a>
+                    и перезапустить движок.
+                </div>${warns}`;
+            Toast.success(`Opera Proxy добавлена в конфиг ${config}`);
+        } catch (e) {
+            box.innerHTML = `<div class="text-error">Ошибка: ${
+                esc(e.message)}</div>`;
+        } finally {
+            btn.disabled = false;
         }
     }
 

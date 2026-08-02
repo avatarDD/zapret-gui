@@ -97,6 +97,32 @@ class TestRoutingAPI(unittest.TestCase):
         self.assertEqual(entry["source"], "usque")
         self.assertTrue(entry["active"])
 
+    def test_interfaces_include_mihomo_tun(self):
+        """mihomo с включённым `tun` — цель `mihomo:<iface>`.
+
+        Фронт умел раскладывать source=mihomo с самого начала, но сюда
+        эти интерфейсы никто не клал.
+        """
+        configs = [{"name": "meta", "path": "/tmp/meta.yaml",
+                    "running": True, "tun_iface": "mihomo-tun"}]
+        with mock.patch("core.mihomo_manager.MihomoManager.list_configs",
+                        return_value=configs):
+            r = self.client.get_json("/api/routing/interfaces")
+        entry = next((i for i in r["interfaces"]
+                      if i["name"] == "mihomo-tun"), None)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["source"], "mihomo")
+
+    def test_interfaces_skip_mihomo_without_tun(self):
+        """Без `tun` у mihomo только локальный порт — заворачивать нечего."""
+        configs = [{"name": "meta", "path": "/tmp/meta.yaml",
+                    "running": True, "tun_iface": ""}]
+        with mock.patch("core.mihomo_manager.MihomoManager.list_configs",
+                        return_value=configs):
+            r = self.client.get_json("/api/routing/interfaces")
+        self.assertEqual(
+            [i for i in r["interfaces"] if i.get("source") == "mihomo"], [])
+
     def test_interfaces_skip_usque_profile_without_iface(self):
         """У остановленного профиля имени интерфейса нет — маршрутизировать
         не во что, в списке целей его быть не должно."""

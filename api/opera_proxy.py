@@ -10,6 +10,8 @@ API-модуль управления Opera Proxy.
   POST /api/opera-proxy/down      — остановка
   GET  /api/opera-proxy/config    — текущие настройки
   PUT  /api/opera-proxy/config    — обновить настройки
+  GET  /api/opera-proxy/chain/targets — конфиги sing-box/mihomo как цели
+  POST /api/opera-proxy/chain     — подключить прокси в конфиг движка
 """
 
 
@@ -172,6 +174,50 @@ def register(app):
         except (TypeError, ValueError):
             lines = 200
         return get_opera_proxy_manager().read_log(lines=lines)
+
+    @app.route("/api/opera-proxy/chain/targets", method="GET")
+    def opera_chain_targets():
+        """Куда можно подключить opera-proxy: конфиги sing-box и mihomo.
+
+        Своим методом маршрутизации opera-proxy быть не может (нет
+        интерфейса — см. core/opera_proxy_chain), поэтому целями работают
+        движки, которые умеют брать её как upstream-outbound.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        out = {"ok": True, "singbox": [], "mihomo": []}
+        try:
+            from core.singbox_manager import get_singbox_manager
+            for c in get_singbox_manager().list_configs():
+                out["singbox"].append({"name": c.get("name", ""),
+                                       "running": bool(c.get("running"))})
+        except Exception as e:
+            log.warning("opera-proxy: конфиги sing-box не получены: %s" % e,
+                        source="opera_proxy")
+        try:
+            from core.mihomo_manager import get_mihomo_manager
+            for c in get_mihomo_manager().list_configs():
+                out["mihomo"].append({"name": c.get("name", ""),
+                                      "running": bool(c.get("running"))})
+        except Exception as e:
+            log.warning("opera-proxy: конфиги mihomo не получены: %s" % e,
+                        source="opera_proxy")
+        return out
+
+    @app.route("/api/opera-proxy/chain", method="POST")
+    def opera_chain_attach():
+        """Добавить opera-proxy в конфиг движка как upstream.
+
+        body: {engine: "singbox"|"mihomo", config: "<имя>", tag?: "<имя>"}
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.opera_proxy_chain import attach
+        body = _body()
+        res = attach(engine=body.get("engine") or "",
+                     config=body.get("config") or "",
+                     tag=body.get("tag") or "")
+        if not res.get("ok"):
+            response.status = 400
+        return res
 
     @app.route("/api/opera-proxy/install", method="POST")
     def opera_install():
