@@ -337,9 +337,13 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "engine": "tgwsproxy",  # tgwsproxy | mtproto
         "port": 9443,
-        # mtproto-specific (tg-mtproxy-client)
-        "tunnel_url": "",     # WSS relay URL
-        "tunnel_secret": "",
+        # mtproto-specific (tg-mtproxy-client).
+        # Пусто = взять общий дефолт публичного релея из
+        # core/tgproxy_manager (MTPROXY_DEFAULT_RELAY / _TUNNEL_SECRET).
+        # Держим пустыми намеренно: тогда смена дефолта в коде доезжает
+        # до всех, кто не задал своё, а заданное вручную не перетирается.
+        "tunnel_url": "",     # WSS relay URL ("" = дефолтный релей)
+        "tunnel_secret": "",  # ключ HMAC для релея ("" = дефолтный)
         "max_conns": 1024,
         # Тег релиза, из которого поставлен tg-mtproxy-client. Спросить
         # версию у самого бинарника нельзя — у него нет `--version`, и

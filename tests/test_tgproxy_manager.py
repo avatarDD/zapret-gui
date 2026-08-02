@@ -281,8 +281,7 @@ class TestMtProxyClientManager(unittest.TestCase):
     def test_mtproto_listens_on_the_address_it_advertises(
         self, mock_sleep, mock_popen, mock_lan_ip, mock_find_bin
     ):
-        """Раньше процесс слушал 127.0.0.1, а ссылка вела на LAN-адрес —
-        подключиться с телефона по ней было невозможно."""
+        """Раньше процесс слушал 127.0.0.1, а наружу отдавался LAN-адрес."""
         proc = mock.Mock()
         proc.poll.return_value = None
         mock_popen.return_value = proc
@@ -293,7 +292,93 @@ class TestMtProxyClientManager(unittest.TestCase):
         self.assertEqual(listen, "192.168.1.1:%d" % tm.MTPROXY_LOCAL_PORT)
         info = self.mgr.get_connect_info()
         self.assertEqual(info["host"], "192.168.1.1")
-        self.assertIn("tg://proxy?server=192.168.1.1", info["link"])
+
+    @mock.patch("core.tgproxy_manager._find_mtproxy_binary",
+                return_value="/opt/usr/bin/tg-mtproxy-client")
+    @mock.patch("core.tgproxy_manager._lan_ip", return_value="192.168.1.1")
+    @mock.patch("core.tgproxy_manager.subprocess.Popen")
+    @mock.patch("time.sleep", return_value=None)
+    def test_mtproto_does_not_advertise_a_tg_proxy_link(
+        self, mock_sleep, mock_popen, mock_lan_ip, mock_find_bin
+    ):
+        """Этот движок — прозрачный форвардер, а не MTProto-прокси.
+
+        Он читает адрес назначения через SO_ORIGINAL_DST и работает
+        только с трафиком, завёрнутым правилом REDIRECT. Ссылка
+        tg://proxy на его порт не сработала бы никогда: по MTProto там
+        никто не отвечает.
+        """
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        mock_popen.return_value = proc
+        self.mgr.start(relay="wss://example.invalid/ws")
+        info = self.mgr.get_connect_info()
+        self.assertEqual(info["link"], "")
+        self.assertEqual(info["mode"], "transparent")
+        self.assertIn("REDIRECT", info["note"])
+
+    @mock.patch("core.tgproxy_manager._find_mtproxy_binary",
+                return_value="/opt/usr/bin/tg-mtproxy-client")
+    @mock.patch("core.tgproxy_manager.subprocess.Popen")
+    @mock.patch("time.sleep", return_value=None)
+    def test_mtproto_uses_default_relay_secret_not_a_random_one(
+        self, mock_sleep, mock_popen, mock_find_bin
+    ):
+        """--tunnel-secret — ключ HMAC для релея, а не секрет ссылки.
+
+        Случайное значение не проходит ни аутентификацию туннеля, ни
+        /register: релей должен знать ключ заранее. Раньше здесь
+        генерировался secrets.token_hex(16), и движок молча не поднимался.
+        """
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        mock_popen.return_value = proc
+        res = self.mgr.start(relay="wss://example.invalid/ws")
+        self.assertTrue(res["ok"])
+        args = mock_popen.call_args.args[0]
+        secret = args[args.index("--tunnel-secret") + 1]
+        self.assertEqual(secret, tm.MTPROXY_DEFAULT_TUNNEL_SECRET)
+        self.assertTrue(res["using_default_secret"])
+        # Секрет наружу не отдаём: иначе он «прилипал» бы в конфиг и
+        # смена дефолта в коде до роутера не доезжала.
+        self.assertNotIn("secret", res)
+
+    @mock.patch("core.tgproxy_manager._find_mtproxy_binary",
+                return_value="/opt/usr/bin/tg-mtproxy-client")
+    @mock.patch("core.tgproxy_manager.subprocess.Popen")
+    @mock.patch("time.sleep", return_value=None)
+    def test_mtproto_accepts_user_secret_of_real_length(
+        self, mock_sleep, mock_popen, mock_find_bin
+    ):
+        """У публичного релея ключ 64 hex — прежняя проверка «ровно 32»
+        отвергала настоящее значение, и ввести его было нельзя."""
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        mock_popen.return_value = proc
+        own = "a" * 64
+        res = self.mgr.start(relay="wss://example.invalid/ws", secret=own)
+        self.assertTrue(res["ok"], res.get("error"))
+        args = mock_popen.call_args.args[0]
+        self.assertEqual(args[args.index("--tunnel-secret") + 1], own)
+        self.assertFalse(res["using_default_secret"])
+
+    @mock.patch("core.tgproxy_manager._find_mtproxy_binary",
+                return_value="/opt/usr/bin/tg-mtproxy-client")
+    def test_mtproto_rejects_non_hex_secret(self, mock_find_bin):
+        res = self.mgr.start(relay="wss://example.invalid/ws",
+                             secret="not-a-hex-secret!")
+        self.assertFalse(res["ok"])
+        self.assertIn("hex", res["error"])
+
+    def test_default_relay_and_secret_are_the_upstream_ones(self):
+        """Дефолты сняты с опубликованной сборки апстрима (`-h`).
+
+        Процедура повторного снятия — SKILL.md §10.3; тут закрепляем
+        формат, чтобы случайная правка не превратила ключ в мусор.
+        """
+        self.assertTrue(tm.MTPROXY_DEFAULT_RELAY.startswith("wss://"))
+        self.assertRegex(tm.MTPROXY_DEFAULT_TUNNEL_SECRET,
+                         r"^[0-9a-f]{64}$")
 
 
 if __name__ == "__main__":

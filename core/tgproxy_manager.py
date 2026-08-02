@@ -869,8 +869,42 @@ MTPROXY_BIN_CANDIDATES = [
     "/opt/usr/bin/tg-mtproxy-client",
     "/opt/sbin/tg-mtproxy-client",
 ]
-MTPROXY_DEFAULT_RELAY = ""
+
+# Значения по умолчанию — ровно те, что апстрим зашивает в свои сборки
+# (`tg-mtproxy-client -h` печатает их как default). Мы собираем бинарник
+# сами и секрет в него НЕ зашиваем: держать его здесь лучше, потому что
+# сменить значение — это правка настройки в GUI, а не пересборка и
+# релиз. Пользователь может указать свой релей и свой секрет —
+# tgproxy.tunnel_url / tgproxy.tunnel_secret перекрывают эти дефолты.
+#
+# ВАЖНО: это ключ HMAC для аутентификации НА РЕЛЕЕ (см. computeAuthHMAC
+# и /register в апстриме), а НЕ секрет MTProto-ссылки. Он общий для всех
+# пользователей публичного релея — приватности в нём нет.
+#
+# ОТКУДА ВЗЯТ И КАК ОБНОВИТЬ, КОГДА ПЕРЕСТАНЕТ РАБОТАТЬ.
+# Апстрим зашивает секрет в свои сборки при компиляции
+# (-X main.defaultTunnelSecret) и в исходники не коммитит. Реверс не
+# нужен — Go печатает дефолты флагов сам:
+#
+#   git clone --depth 1 https://github.com/necronicle/z2k
+#   chmod +x z2k/mtproxy-client/builds/tg-mtproxy-client-linux-amd64
+#   z2k/mtproxy-client/builds/tg-mtproxy-client-linux-amd64 -h
+#     -tunnel-secret string ... (default "63d91c...")
+#     -tunnel-url    string ... (default "wss://213.176.74.63.nip.io/ws")
+#
+# Симптом протухшего ключа: движок стартует, но туннель не поднимается.
+# Подробности — .claude/skills/telegram-tunnel/SKILL.md §10.3.
+MTPROXY_DEFAULT_RELAY = "wss://213.176.74.63.nip.io/ws"
+MTPROXY_DEFAULT_TUNNEL_SECRET = (
+    "63d91c9c6fbc14b59043696af837774c1f90ecabe112b97113e5d0b289900070"
+)
 MTPROXY_LOCAL_PORT = 1443
+
+# Секрет релея — hex-строка произвольной длины (у публичного релея это
+# 64 символа). Прежняя проверка требовала РОВНО 32 hex, то есть формат
+# MTProto-ссылки, и отвергала настоящий секрет: ввести рабочее значение
+# в GUI было физически нельзя.
+_TUNNEL_SECRET_RE = re.compile(r"^[0-9a-fA-F]{16,128}$")
 
 
 def _find_mtproxy_binary() -> str:
@@ -945,10 +979,18 @@ class MtProxyClientManager:
             if not (1 <= port <= 65535):
                 return {"ok": False, "error": "port вне диапазона 1-65535"}
 
-            if secret and not re.match(r"^[0-9a-fA-F]{32}$", secret):
+            # Пустой секрет — берём общий дефолт публичного релея.
+            #
+            # Раньше здесь генерировался СЛУЧАЙНЫЙ secrets.token_hex(16),
+            # и это не могло работать в принципе: --tunnel-secret — ключ
+            # HMAC, которым клиент аутентифицируется на релее (и которым
+            # подписывает /register). Релей должен знать это значение
+            # заранее, поэтому случайное всегда отвергалось — процесс
+            # запускался, а туннель молча не поднимался.
+            secret = (secret or "").strip() or MTPROXY_DEFAULT_TUNNEL_SECRET
+            if not _TUNNEL_SECRET_RE.match(secret):
                 return {"ok": False,
-                        "error": "secret должен содержать 32 hex-символа"}
-            secret = secret or secrets.token_hex(16)
+                        "error": "secret релея — hex-строка (16–128 символов)"}
 
             # Слушать по умолчанию на LAN-адресе роутера, а не на
             # 127.0.0.1: телефон подключается по ссылке tg://proxy из той
@@ -996,7 +1038,14 @@ class MtProxyClientManager:
                 % (relay, host, port),
                 source="tgproxy",
             )
-            return {"ok": True, "secret": secret, "port": port, "host": host}
+            # Секрет наружу не отдаём: раньше он тут же сохранялся в
+            # конфиг, и сгенерированное значение «прилипало». Теперь
+            # пустая настройка означает «взять общий дефолт», и это
+            # свойство важно сохранить — иначе смена дефолта в коде не
+            # доедет до тех, у кого он однажды записался.
+            return {"ok": True, "port": port, "host": host,
+                    "using_default_secret":
+                        secret == MTPROXY_DEFAULT_TUNNEL_SECRET}
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
@@ -1031,13 +1080,33 @@ class MtProxyClientManager:
             }
 
     def get_connect_info(self) -> dict[str, Any]:
+        """Как подключаться к резервному движку.
+
+        Ссылки tg://proxy здесь НЕТ и быть не может: в отличие от
+        tg-ws-proxy, этот движок — не MTProto-прокси, а прозрачный
+        форвардер. Он читает исходный адрес назначения через
+        SO_ORIGINAL_DST (listener.go апстрима), то есть работает только с
+        трафиком, завёрнутым на его порт правилом iptables/nft REDIRECT,
+        и MTProto-рукопожатия не делает вовсе.
+
+        Раньше мы отдавали сюда tg://proxy со случайным секретом — такая
+        ссылка не работала бы ни при каких условиях: на этом порту никто
+        не говорит по MTProto.
+        """
         with self._lock:
             if not (self._proc and self._proc.poll() is None):
                 return {"link": "", "error": "не запущен"}
-            # Ровно тот адрес, на котором процесс реально слушает.
             host = self._host or _lan_ip() or "127.0.0.1"
-            link = _build_proxy_link(host, self._port, self._secret)
-            return {"link": link, "host": host, "port": self._port}
+            return {
+                "link": "",
+                "host": host,
+                "port": self._port,
+                "mode": "transparent",
+                "note": "Это прозрачный форвардер, а не MTProto-прокси: "
+                        "ссылки tg://proxy у него нет. Трафик к дата-"
+                        "центрам Telegram нужно завернуть на %s:%d "
+                        "правилом REDIRECT." % (host, self._port),
+            }
 
 
 _mtproxy_instance = None
