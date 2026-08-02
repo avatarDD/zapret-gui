@@ -263,6 +263,21 @@ _build_ipk_openwrt:
 #
 # Старый OpenWrt/Entware/Keenetic по-прежнему обслуживаются целями ipk —
 # ничего не ломаем.
+# Зависимости пакета для OpenWrt. Держим ОДИН список и для ipk
+# (packaging/openwrt/control), и для apk — расхождение здесь означает пакет,
+# который ставится на одном менеджере и падает на другом.
+#
+# python3-email в списке НЕТ намеренно (issue #285): в текущем фиде OpenWrt
+# такого пакета больше не существует — модуль `email` переехал внутрь
+# python3-urllib (lang/python/python3/files/python3-package-urllib.mk отдаёт
+# и .../email, и .../urllib). apk отказывался ставить пакет целиком:
+# «python3-email (no such package)». На старом OpenWrt (24.10, opkg) пакет
+# ещё есть, но там python3-urllib тянет его сам по Depends — то есть модуль
+# `email` (нужен bottle: email.utils) приезжает на ОБОИХ менеджерах.
+OPENWRT_DEPENDS := python3-light python3-urllib python3-openssl python3-codecs \
+                   python3-logging python3-unittest python3-uuid python3-yaml \
+                   python3-sqlite3
+
 APK          ?= apk
 FAKEROOT     ?=
 APK_VERSION  := $(PKG_VERSION)-r$(PKG_RELEASE)
@@ -299,7 +314,7 @@ _build_apk_openwrt:
 		--info "origin:$(PKG_NAME)" \
 		--info "url:https://github.com/avatarDD/zapret-gui" \
 		--info "maintainer:avatarDD <https://github.com/avatarDD/zapret-gui>" \
-		--info "depends:python3-light python3-urllib python3-openssl python3-codecs python3-email python3-logging python3-unittest python3-uuid python3-yaml python3-sqlite3" \
+		--info "depends:$(OPENWRT_DEPENDS)" \
 		--script "post-install:$(APK_SCRIPTS)/post-install" \
 		--script "pre-deinstall:$(APK_SCRIPTS)/pre-deinstall" \
 		--files "$(DATA_DIR)" \

@@ -460,3 +460,117 @@ class TestMtprotoInstalledTag(unittest.TestCase):
             res = _check_tgproto()
         gl.assert_called_once()
         self.assertIs(res["has_update"], False)
+
+
+class TestTgwsproxyUpdateCheck(unittest.TestCase):
+    """Версия пакета против тега релиза.
+
+    Issue #272: opkg/apk отдают версию с ревизией сборки (`0.9.3-1`), а
+    тег релиза — без неё (`0.9.3`). Сравнение строк «в лоб» держало
+    кнопку «Обновить» вечно зажжённой на уже актуальной версии.
+    """
+
+    def _check(self, installed, latest):
+        from core.update_checker import _check_tgwsproxy
+        mgr = mock.Mock()
+        mgr.detect.return_value = {"installed": True, "version": installed}
+        with mock.patch("core.update_checker._github_latest",
+                        return_value=latest), \
+             mock.patch("core.tgproxy_manager.get_tgwsproxy_manager",
+                        return_value=mgr):
+            return _check_tgwsproxy()
+
+    def test_build_revision_is_not_an_update(self):
+        for installed in ("0.9.3-1", "0.9.3-r1", "0.9.3"):
+            res = self._check(installed, "0.9.3")
+            self.assertIs(res["has_update"], False, installed)
+            self.assertEqual(res["current"], installed)
+
+    def test_newer_upstream_is_an_update(self):
+        res = self._check("0.9.3-1", "0.9.4")
+        self.assertTrue(res["has_update"])
+
+    def test_unknown_versions_do_not_offer_update(self):
+        self.assertIs(self._check("", "0.9.3")["has_update"], False)
+        self.assertIs(self._check("0.9.3-1", "")["has_update"], False)
+
+
+class TestTgproxyUninstall(unittest.TestCase):
+    """POST /api/tgproxy/uninstall — удаление движка из GUI (issue #272)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = WSGIClient(build_test_app())
+
+    def _uninstall(self, body, *, result=None, stop=None):
+        removed = []
+
+        def _fake_uninstall(name):
+            removed.append(name)
+            return result if result is not None else {"ok": True}
+
+        mgr = mock.Mock()
+        mgr.stop.return_value = stop if stop is not None else {"ok": True}
+        with mock.patch("core.ext_binary_installer.uninstall_binary",
+                        _fake_uninstall), \
+             mock.patch("core.tgproxy_manager.get_tgwsproxy_manager",
+                        return_value=mgr), \
+             mock.patch("core.tgproxy_manager.get_mtproxy_client_manager",
+                        return_value=mgr):
+            r = self.client.post_json("/api/tgproxy/uninstall", body)
+        return r, removed, mgr
+
+    def test_default_engine_is_tgwsproxy(self):
+        r, removed, mgr = self._uninstall({})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["engine"], "tgwsproxy")
+        self.assertEqual(removed, ["tgwsproxy"])
+        mgr.stop.assert_called_once()
+
+    def test_mtproto_engine_maps_to_tgproto(self):
+        r, removed, _mgr = self._uninstall({"engine": "mtproto"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(removed, ["tgproto"])
+
+    def test_unknown_engine_rejected(self):
+        r, removed, _mgr = self._uninstall({"engine": "teleproxy"})
+        self.assertIs(r["ok"], False)
+        self.assertEqual(removed, [])
+
+    def test_stopped_before_removal(self):
+        """Иначе останется процесс без файлов и занятый порт."""
+        _r, _removed, mgr = self._uninstall({})
+        mgr.stop.assert_called_once()
+
+    def test_stop_failure_does_not_block_removal(self):
+        """Движок мог быть и не запущен — это не повод не удалять."""
+        r, removed, _mgr = self._uninstall(
+            {}, stop={"ok": False, "error": "не запущен"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(removed, ["tgwsproxy"])
+        self.assertIn("не запущен", r["stop_warning"])
+
+    def test_removal_error_is_reported(self):
+        r, _removed, _mgr = self._uninstall(
+            {}, result={"ok": False, "error": "opkg remove: busy"})
+        self.assertIs(r["ok"], False)
+        self.assertIn("opkg remove", r["error"])
+
+    def test_installed_tag_forgotten_for_mtproto(self):
+        """Иначе «Обновления» показывают версию удалённого движка."""
+        from api.tgproxy import _forget_installed_tag
+        cm = mock.Mock()
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cm), \
+             mock.patch("core.config_manager.save_config") as save:
+            _forget_installed_tag("mtproto")
+        cm.set.assert_called_once_with("tgproxy", "mtproto_installed_tag", "")
+        save.assert_called_once()
+
+    def test_installed_tag_untouched_for_tgwsproxy(self):
+        from api.tgproxy import _forget_installed_tag
+        cm = mock.Mock()
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cm):
+            _forget_installed_tag("tgwsproxy")
+        cm.set.assert_not_called()

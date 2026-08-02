@@ -125,6 +125,39 @@ class TestRunUnitTests(unittest.TestCase):
         self.assertTrue(r["skipped_run"])
         self.assertIn("python3-unittest", r["error"])
 
+    def test_missing_asyncio_is_a_skip_not_a_failure(self):
+        # Issue #280: без python3-asyncio не импортируется unittest.mock,
+        # и прогон отдавал FAILED (errors=109) — как будто GUI сломан.
+        from unittest import mock
+        with mock.patch.object(selfcheck, "_missing_mock_dependency",
+                               return_value="asyncio"):
+            r = selfcheck.run_unit_tests()
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["skipped_run"])
+        self.assertEqual(r["missing_module"], "asyncio")
+        self.assertIn("python3-asyncio", r["error"])
+        self.assertNotIn("FAILED", r.get("summary", ""))
+
+    def test_missing_asyncio_reported_in_python_section(self):
+        from unittest import mock
+        with mock.patch.object(selfcheck, "_missing_mock_dependency",
+                               return_value="asyncio"):
+            sec = selfcheck.check_python()
+        names = {c["name"]: c for c in sec["checks"]}
+        self.assertIn("stdlib unittest.mock", names)
+        chk = names["stdlib unittest.mock"]
+        self.assertEqual(chk["level"], "warn")
+        self.assertTrue(chk["ok"], "отсутствие asyncio не ломает GUI")
+        self.assertIn("python3-asyncio", chk["details"])
+
+    def test_missing_asyncio_does_not_fail_selfcheck(self):
+        from unittest import mock
+        with mock.patch.object(selfcheck, "_missing_mock_dependency",
+                               return_value="asyncio"):
+            res = selfcheck.run_all(include_tests=True)
+        self.assertTrue(res["tests"]["skipped_run"])
+        self.assertEqual(res["ok"], res["summary"]["fail"] == 0)
+
     def test_run_all_with_skipped_tests_not_failed(self):
         # Поставка без tests/ — не провал: итог зависит только от секций
         # (раньше «тесты FAILED — каталог не найден» роняли весь итог).

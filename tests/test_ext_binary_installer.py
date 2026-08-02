@@ -99,12 +99,16 @@ class TestBinaries(unittest.TestCase):
                 self.assertTrue(name.endswith(suffix), name)
 
     def test_tgwsproxy_asset_suffixes_are_unambiguous(self):
-        """mips/mipsel не должны матчить ассет друг друга."""
+        """mips/mipsel не должны матчить ассет друг друга.
+
+        Ключи-синонимы (`aarch64` = семейный алиас таргета
+        `aarch64_generic`) ведут на ОДИН ассет — их сравнивать не с чем.
+        """
         cfg = ebi.BINARIES["tgwsproxy"]
         for mgr, arches in cfg["package_assets"].items():
             for arch, name in arches.items():
-                for other_arch in arches:
-                    if other_arch == arch:
+                for other_arch, other_name in arches.items():
+                    if other_arch == arch or other_name == name:
                         continue
                     other = ebi._asset_suffix_for(cfg, other_arch, mgr)
                     self.assertFalse(name.endswith(other),
@@ -120,6 +124,78 @@ class TestBinaries(unittest.TestCase):
             ebi._expected_sha256(cfg, "aarch64", "apk"),
             "e205d4ad04364bda82f2991deabf94ebca2c8355018cd620980461a01a3da003",
         )
+
+    def test_every_apk_asset_has_sha256(self):
+        """Ассет без хэша = fail-closed отказ на закреплённой версии."""
+        cfg = ebi.BINARIES["tgwsproxy"]
+        for mgr, arches in cfg["package_assets"].items():
+            for arch in arches:
+                self.assertTrue(ebi._expected_sha256(cfg, arch, mgr),
+                                "нет sha256 для %s:%s" % (mgr, arch))
+
+    def test_openwrt_x86_64_build_is_available(self):
+        """Issue #280: апстрим собирает x86_64 (config/openwrt/x86_64.config),
+        а в манифесте его не было — на OpenWrt x86_64 движок было не
+        поставить, хотя сборка существует."""
+        cfg = ebi.BINARIES["tgwsproxy"]
+        with mock.patch.object(ebi, "detect_openwrt_arch",
+                               return_value="x86_64"):
+            self.assertEqual(
+                ebi._resolve_asset_name(cfg, "x86_64", "apk"),
+                "tg-ws-proxy_%s-r1_openwrt_x86_64.apk" % cfg["pinned_tag"])
+            self.assertTrue(ebi._expected_sha256(cfg, "x86_64", "apk"))
+
+    def test_openwrt_target_wins_over_uname_family(self):
+        """`uname -m` даёт armv7l и для cortex-a7, и для cortex-a9 —
+        различает их только DISTRIB_ARCH, а apk сверяет арку пакета."""
+        cfg = ebi.BINARIES["tgwsproxy"]
+        for target in ("arm_cortex-a7", "arm_cortex-a9"):
+            with mock.patch.object(ebi, "detect_openwrt_arch",
+                                   return_value=target):
+                self.assertEqual(
+                    ebi._resolve_asset_name(cfg, "armv7", "apk"),
+                    "tg-ws-proxy_%s-r1_openwrt_%s.apk"
+                    % (cfg["pinned_tag"], target))
+
+    def test_openwrt_target_ignored_for_opkg(self):
+        """Entware ставит .ipk по семейству — таргет OpenWrt там ни при чём."""
+        cfg = ebi.BINARIES["tgwsproxy"]
+        with mock.patch.object(ebi, "detect_openwrt_arch",
+                               return_value="aarch64_generic"):
+            self.assertEqual(
+                ebi._resolve_asset_name(cfg, "aarch64", "opkg"),
+                "tg-ws-proxy_%s-1_entware_aarch64-3.10.ipk" % cfg["pinned_tag"])
+
+    def test_family_key_used_when_distrib_arch_unreadable(self):
+        cfg = ebi.BINARIES["tgwsproxy"]
+        with mock.patch.object(ebi, "detect_openwrt_arch", return_value=""):
+            self.assertEqual(
+                ebi._resolve_asset_name(cfg, "aarch64", "apk"),
+                "tg-ws-proxy_%s-r1_openwrt_aarch64_generic.apk"
+                % cfg["pinned_tag"])
+
+    def test_detect_openwrt_arch_reads_distrib_arch(self):
+        data = ("DISTRIB_ID='OpenWrt'\n"
+                "DISTRIB_ARCH='arm_cortex-a7'\n")
+        with mock.patch("builtins.open", mock.mock_open(read_data=data)):
+            self.assertEqual(ebi.detect_openwrt_arch(), "arm_cortex-a7")
+
+    def test_detect_openwrt_arch_absent_on_entware(self):
+        with mock.patch("builtins.open", side_effect=OSError):
+            self.assertEqual(ebi.detect_openwrt_arch(), "")
+
+    def test_installability_reports_openwrt_target(self):
+        with mock.patch.object(ebi, "detect_arch", return_value="x86_64"), \
+             mock.patch.object(ebi, "detect_openwrt_arch",
+                               return_value="x86_64"), \
+             mock.patch.object(ebi, "_package_manager", return_value="apk"):
+            info = ebi.get_installability("tgwsproxy")
+        self.assertTrue(info["installable"])
+        self.assertEqual(info["arch"], "x86_64")
+        # Синонимы одного и того же ассета в список не дублируются.
+        self.assertEqual(len(info["supported_archs"]),
+                         len(set(info["supported_archs"])))
+        self.assertNotIn("aarch64_generic", info["supported_archs"])
 
     def test_pkg_version_matches_tag_ignores_build_revision(self):
         """opkg отдаёт `0.9.3-1`, тег релиза — `0.9.3`: без нормализации

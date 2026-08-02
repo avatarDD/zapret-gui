@@ -47,6 +47,28 @@ class TestCiSmoke(unittest.TestCase):
         self.assertTrue(os.path.realpath(cfg.path).startswith(os.path.realpath(cfgdir)))
         self.assertTrue(os.path.isdir(os.path.dirname(cfg.path)))
 
+    def test_api_500_carries_the_real_reason(self):
+        """Issue #280: необработанное исключение отдавало «Internal Server
+        Error» и не писалось никуда — в браузере оставался голый 500."""
+        app, _cfgdir = self._create_app()
+
+        @app.route("/api/_boom_test", method="GET")
+        def _boom():
+            raise ValueError("duplicate tag 'proxy'")
+
+        logged = []
+        import core.log_buffer as log_buffer
+        with mock.patch.object(log_buffer.log, "error",
+                               side_effect=lambda m, **k: logged.append(m)):
+            r = WSGIClient(app).get_json("/api/_boom_test")
+
+        self.assertEqual(r["_status"], 500)
+        self.assertFalse(r["ok"])
+        self.assertIn("duplicate tag 'proxy'", r["error"])
+        self.assertIn("ValueError", r["error"])
+        # traceback уезжает в лог GUI, а не только в stderr процесса
+        self.assertTrue(any("/api/_boom_test" in m for m in logged), logged)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -81,7 +81,7 @@ echo "  Запуск Zapret Web-GUI..."
 
 # Bottle встроен в пакет (vendor/bottle.py). Наличия файла недостаточно:
 # bottle тянет `unicodedata` и др. submodule'ы, которых нет в python3-light
-# (issue #231). Недостающие пакеты (python3-codecs/urllib/openssl/email)
+# (issue #231). Недостающие пакеты (python3-codecs/urllib/openssl)
 # ставятся по Depends, но если импорт всё же падает — покажем причину.
 _bottle_missing_module() {
     PYTHONPATH="$APP_DIR/vendor" python3 - <<'PY' 2>/dev/null
@@ -93,11 +93,20 @@ except ImportError as e:
     print(getattr(e, "name", "") or "")
 PY
 }
+# Имя пакета для недостающего stdlib-модуля. На новом OpenWrt (apk) часть
+# под-пакетов расформирована: `email` теперь внутри python3-urllib, и совет
+# «поставьте python3-email» упирался бы в «no such package» (issue #285).
 _py_pkg_for() {
-    case "${1%%.*}" in
+    _m="${1%%.*}"
+    if [ "$_m" = "email" ] && command -v apk >/dev/null 2>&1 \
+            && ! command -v opkg >/dev/null 2>&1; then
+        echo "python3-urllib"
+        return
+    fi
+    case "$_m" in
         ssl|_ssl|hashlib|_hashlib)   echo "python3-openssl" ;;
         unicodedata|_multibytecodec) echo "python3-codecs" ;;
-        *)                           echo "python3-${1%%.*}" ;;
+        *)                           echo "python3-$_m" ;;
     esac
 }
 if python3 -c "import bottle" 2>/dev/null; then

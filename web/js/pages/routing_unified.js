@@ -395,8 +395,11 @@ const RoutingUnifiedPage = (() => {
         const statsTxt = on
             ? ` · запросов: ${stats.queries || 0}, совпало: ${stats.matched || 0}, IP добавлено: ${stats.ips_added || 0}`
             : '';
+        // Каким бэкендом поставлено правило REDIRECT: на fw4-роутерах
+        // iptables нет вовсе, и раньше перехват там просто не включался.
+        const backendTxt = on && st.backend ? ` · ${esc(st.backend)}` : '';
         return `<span class="text-muted">DNS-перехват:
-                <strong>${on ? 'включён (порт ' + esc(st.port) + ')' : 'выключен'}</strong>${statsTxt}
+                <strong>${on ? 'включён (порт ' + esc(st.port) + ')' : 'выключен'}</strong>${backendTxt}${statsTxt}
             </span>
             <button class="btn ${on ? 'btn-ghost' : 'btn-primary'} btn-sm"
                     onclick="RoutingUnifiedPage.toggleDnsIntercept(${on ? 'false' : 'true'})"
