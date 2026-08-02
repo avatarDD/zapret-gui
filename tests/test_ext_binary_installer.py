@@ -1,6 +1,11 @@
 # tests/test_ext_binary_installer.py
 """Unit-тесты для core/ext_binary_installer.py."""
 
+import hashlib
+import json
+import os
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -631,10 +636,17 @@ class TestOperaLatestRelease(unittest.TestCase):
         self.assertFalse(res["sha256_pinned"])
 
     def test_pinned_binaries_still_fail_closed_without_manifest_hash(self):
-        """Остальные бинарники не должны стать «мягкими» из-за этой правки."""
+        """Остальные бинарники не должны стать «мягкими» из-за этой правки.
+
+        У бинарника либо закреплён тэг (и хэш в манифесте), либо он —
+        наша сборка, и тогда sha256 берётся из manifest.json релиза. Чего
+        быть не должно — так это установки вообще без сверки.
+        """
         for name in ("usque", "tgproto"):
-            self.assertFalse(ebi.BINARIES[name].get("allow_unpinned"), name)
-            self.assertTrue(ebi.BINARIES[name].get("release_tag"), name)
+            cfg = ebi.BINARIES[name]
+            self.assertFalse(cfg.get("allow_unpinned"), name)
+            self.assertTrue(cfg.get("release_tag")
+                            or cfg.get("manifest_asset"), name)
 
     def test_known_version_without_manifest_hash_is_refused(self):
         """У allow_unpinned послабление действует только для версии НОВЕЕ
@@ -651,3 +663,125 @@ class TestOperaLatestRelease(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestManifestInstall(unittest.TestCase):
+    """Установка НАШЕЙ сборки: sha256 из manifest.json релиза.
+
+    Хэш каждой сборки известен только после неё, поэтому в манифесте
+    файла его нет — но проверка обязана оставаться fail-closed.
+    """
+
+    def setUp(self):
+        self.cfg = {
+            "repo": "avatarDD/zapret-gui",
+            "release_prefix": "usque-bin-",
+            "manifest_asset": "manifest.json",
+            "manifest_section": "usque",
+            "install_kind": "binary",
+            "dest": "",
+            "arch_map": {"mipsel": "mipsel-softfloat"},
+        }
+
+    def _release(self):
+        return {"tag_name": "usque-bin-v4.2.1",
+                "assets": [{"name": "manifest.json",
+                            "browser_download_url": "https://x/manifest.json"}]}
+
+    def _manifest(self, sha):
+        return {"schema": 1, "tag": "usque-bin-v4.2.1",
+                "usque": {"version": "4.2.1", "binaries": {
+                    "mipsel": {"filename": "usque-4.2.1-mipsel-softfloat.gz",
+                               "url": "https://x/usque-4.2.1-mipsel-softfloat.gz",
+                               "sha256": sha, "size": 10}}}}
+
+    def _run_install(self, payload, manifest_sha):
+        import gzip
+        import io
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        self.cfg["dest"] = os.path.join(tmpdir, "usque")
+
+        blob = io.BytesIO()
+        with gzip.GzipFile(fileobj=blob, mode="wb") as gz:
+            gz.write(payload)
+        gz_bytes = blob.getvalue()
+
+        def fake_download(url, dest, timeout=None, transport=""):
+            with open(dest, "wb") as f:
+                f.write(gz_bytes)
+            return True
+
+        real_sha = hashlib.sha256(gz_bytes).hexdigest()
+        sha = real_sha if manifest_sha == "real" else manifest_sha
+
+        with mock.patch.object(ebi, "github_release_by_prefix",
+                               return_value=self._release()), \
+             mock.patch.object(ebi, "_manifest_entry",
+                               return_value=dict(
+                                   self._manifest(sha)["usque"]["binaries"]["mipsel"],
+                                   version="4.2.1")), \
+             mock.patch.object(ebi, "download_file", side_effect=fake_download), \
+             mock.patch.object(ebi, "detect_arch", return_value="mipsel"):
+            return ebi.install_binary_by_name("usque", _cfg=self.cfg)
+
+    def test_good_checksum_installs_and_ungzips(self):
+        res = self._run_install(b"#!/bin/true\n", "real")
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(res["sha256_verified"])
+        self.assertEqual(res["version"], "4.2.1")
+        with open(self.cfg["dest"], "rb") as f:
+            self.assertEqual(f.read(), b"#!/bin/true\n")
+        self.assertTrue(os.access(self.cfg["dest"], os.X_OK))
+
+    def test_checksum_mismatch_refuses_install(self):
+        res = self._run_install(b"payload", "0" * 64)
+        self.assertFalse(res["ok"])
+        self.assertIn("SHA256", res["error"])
+        self.assertFalse(os.path.exists(self.cfg["dest"]))
+
+    def test_falls_back_to_legacy_source_when_no_our_build(self):
+        """До первого usque-bin-* релиза установка обязана работать."""
+        self.cfg["legacy_source"] = {"repo": "side-effect-tm/usque-keenetic",
+                                     "release_tag": "v0.3.0",
+                                     "install_kind": "package",
+                                     "dest": "/tmp/usque"}
+        with mock.patch.object(ebi, "github_release_by_prefix",
+                               return_value={"error_detail": "нет релиза"}), \
+             mock.patch.object(ebi, "detect_arch", return_value="mipsel"), \
+             mock.patch.object(ebi, "_resolve_asset_name", return_value=""):
+            res = ebi.install_binary_by_name("usque", _cfg=self.cfg)
+        # Ушли на запасной источник (там своя ошибка про архитектуру),
+        # а не выдали «нет сборки» сразу.
+        self.assertFalse(res["ok"])
+        self.assertIn("Архитектура", res["error"])
+
+
+class TestReleaseListFiltering(unittest.TestCase):
+
+    def test_only_our_binary_releases_are_listed(self):
+        """Релизы самого GUI не должны попадать в выбор версии usque."""
+        payload = [
+            {"tag_name": "v0.24.0", "published_at": "", "draft": False},
+            {"tag_name": "usque-bin-v4.2.1", "published_at": "", "draft": False},
+            {"tag_name": "singbox-bin-v1.14", "published_at": "", "draft": False},
+            {"tag_name": "usque-bin-v4.2.0", "published_at": "", "draft": False},
+        ]
+
+        class _Resp:
+            def read(self):
+                return json.dumps(payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        ebi._releases_cache.clear()
+        with mock.patch("core.download_transport.urlopen_via",
+                        return_value=_Resp()):
+            out = ebi.list_releases("usque", force=True)
+        self.assertTrue(out["ok"])
+        self.assertEqual([r["tag"] for r in out["releases"]],
+                         ["usque-bin-v4.2.1", "usque-bin-v4.2.0"])
