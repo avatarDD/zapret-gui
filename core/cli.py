@@ -243,7 +243,7 @@ def _cmd_usque(args) -> int:
         if not target:
             _p("✗ Интерфейс не найден: %s" % args.iface)
             return 1
-        iface = target.get("iface") or mgr.allocate_iface("opkgtun")
+        iface = mgr.iface_for_config(target["path"])
         return _ok("usque start %s" % iface,
                     mgr.start(iface, target["path"]))
     if action == "stop":

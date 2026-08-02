@@ -204,7 +204,7 @@ class UsqueWatchdog:
                      " H2/TCP (transport_profile=auto)" % iface,
                      source="usque")
         if config_path:
-            new_iface = iface or mgr.allocate_iface("opkgtun")
+            new_iface = iface or mgr.iface_for_config(config_path)
             res = mgr.start(new_iface, config_path, sni=sni,
                             transport_profile=profile)
             if not res.get("ok"):

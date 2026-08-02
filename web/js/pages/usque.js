@@ -12,11 +12,32 @@ const UsquePage = (() => {
     let _inFlight = false;
     let _settingsLoaded = false;
     const _state = { installed: false, configs: [] };
-    // Какие туннели раскрыты. Таблица перерисовывается каждые POLL_MS,
-    // и без этого набора раскрытая панель «Подробнее» захлопывалась бы
-    // сама через пару секунд.
+    // Какие туннели раскрыты. Таблицу пересобирает не каждый тик, а
+    // только изменение данных, но без этого набора раскрытая панель
+    // «Подробнее» захлопывалась бы на любой пересборке.
     const _expanded = new Set();
     let _debugOn = false;
+
+    // HTML панелей «Подробнее», отрисованный в прошлый раз. Нужен, чтобы
+    // при пересборке таблицы вернуть раскрытую панель сразу с прежним
+    // содержимым, а не с плашкой «Загрузка…» на время запроса.
+    const _detailsHtml = new Map();   // имя профиля → HTML
+
+    /**
+     * Записать HTML только если он реально изменился.
+     *
+     * Опрос идёт раз в POLL_MS, а состояние туннеля меняется редко — без
+     * этой проверки каждый тик переписывал innerHTML тем же самым
+     * содержимым. На такой записи браузер сносит и строит заново всё
+     * поддерево: таблица моргает, ховер и выделение текста слетают, а
+     * раскрытая панель успевает схлопнуться и разъехаться обратно.
+     */
+    function _paint(el, html) {
+        if (el.__usqLastHtml === html) return false;
+        el.innerHTML = html;
+        el.__usqLastHtml = html;
+        return true;
+    }
 
     async function render(container) {
         container.innerHTML = `
@@ -38,7 +59,7 @@ const UsquePage = (() => {
                                     аккаунт создаётся бесплатно, без логина и оплаты</span></li>
                             <li data-step="start"><span class="usque-step-mark">•</span>
                                 <span class="usque-step-text">Запустить туннель — появится
-                                    сетевой интерфейс <code>opkgtun0</code></span></li>
+                                    сетевой интерфейс <code>usque0</code></span></li>
                             <li data-step="route"><span class="usque-step-mark">•</span>
                                 <span class="usque-step-text">Направить нужный трафик в туннель на
                                     странице <a href="#routing">Маршрутизация</a>: сам по себе
@@ -163,7 +184,7 @@ const UsquePage = (() => {
             if (!el) return;
             const tunOk = !!(env.tun && env.tun.available);
             if (env.installed) {
-                el.innerHTML = `
+                _paint(el, `
                     <div class="status-row">
                         <span class="status-dot status-ok"></span>
                         <span>Установлен: <strong>${esc(env.version || "?")}</strong></span>
@@ -183,9 +204,9 @@ const UsquePage = (() => {
                     <div style="margin-top:10px;">
                         <a class="btn btn-sm" href="#usque-setup">Установка и обновление</a>
                     </div>
-                `;
+                `);
             } else {
-                el.innerHTML = `
+                const changed = _paint(el, `
                     <div class="status-row">
                         <span class="status-dot status-error"></span>
                         <span>Не установлен</span>
@@ -198,12 +219,18 @@ const UsquePage = (() => {
                     <button class="btn btn-primary btn-sm" id="usque-install-btn" style="margin-top:8px;">
                         Установить usque
                     </button>
-                `;
-                document.getElementById("usque-install-btn")?.addEventListener("click", install);
+                `);
+                // Слушатель вешаем только на свежесозданную кнопку: если
+                // разметку не переписывали, старая кнопка со своим
+                // обработчиком на месте, и повтор дал бы двойной запуск.
+                if (changed) {
+                    document.getElementById("usque-install-btn")
+                        ?.addEventListener("click", install);
+                }
             }
         } catch (e) {
             const el = document.getElementById("usque-env");
-            if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+            if (el) _paint(el, `<div class="text-error">Ошибка: ${esc(String(e))}</div>`);
         }
     }
 
@@ -215,16 +242,22 @@ const UsquePage = (() => {
             const configs = data.configs || [];
             _state.configs = configs;
             if (!configs.length) {
-                el.innerHTML = `
+                _paint(el, `
                     <p class="text-muted">Туннелей пока нет.</p>
                     <div class="form-hint">
                         Нажмите «Зарегистрировать WARP» ниже — GUI создаст бесплатную
                         WARP-сессию у Cloudflare и сохранит её как профиль.
                         Ничего вводить не нужно, только имя профиля.
-                    </div>`;
+                    </div>`);
                 return;
             }
-            let html = '<table class="table"><thead><tr>';
+            // colgroup обязателен: у .table задан table-layout: fixed, и без
+            // явных ширин колонка «Действия» получала те же 25%, что и
+            // остальные, — кнопки в неё не влезали и переносились.
+            let html = '<table class="table">'
+                + '<colgroup><col style="width:26%"><col style="width:20%">'
+                + '<col style="width:20%"><col style="width:34%"></colgroup>'
+                + '<thead><tr>';
             html += '<th>Профиль</th><th>Интерфейс</th><th>Статус</th><th>Действия</th>';
             html += '</tr></thead><tbody>';
             for (const c of configs) {
@@ -233,23 +266,26 @@ const UsquePage = (() => {
                 const toggleBtn = c.active
                     ? `<button class="btn btn-danger btn-sm action-stop" data-name="${esc(c.name)}">Стоп</button>`
                     : `<button class="btn btn-primary btn-sm action-start" data-name="${esc(c.name)}">Старт</button>`;
-                // Интерфейс известен только у поднятого туннеля: его имя
-                // выделяется при старте, поэтому у остановленного профиля
-                // прочерк — это норма, а не ошибка.
+                // Имя закрепляется за профилем при первом запуске и дальше
+                // не меняется. Прочерк — у профиля, который ещё ни разу не
+                // поднимали: это норма, а не ошибка.
                 const ifaceCell = c.iface
                     ? `<code>${esc(c.iface)}</code>`
-                    : '<span class="text-muted" title="Имя выделяется при запуске">—</span>';
+                    : '<span class="text-muted" title="Имя закрепится при первом запуске">—</span>';
                 html += `<tr>
                     <td>${esc(c.name)}</td>
                     <td>${ifaceCell}</td>
                     <td><span class="status-dot ${statusCls}"></span> ${statusText}</td>
-                    <td>${toggleBtn}
+                    <td><div class="usque-actions">${toggleBtn}
                         <button class="btn btn-sm action-details" data-name="${esc(c.name)}">Подробнее</button>
                         <button class="btn btn-sm action-remove" data-name="${esc(c.name)}">Удалить</button>
-                    </td>
+                    </div></td>
                 </tr>
                 <tr class="usque-details-row" data-for="${esc(c.name)}" style="display:none;">
-                    <td colspan="4"><div class="usque-details" data-for="${esc(c.name)}">Загрузка…</div></td>
+                    <td colspan="4">
+                        <div class="usque-details" data-for="${esc(c.name)}">Загрузка…</div>
+                        <div class="usque-log-box" data-for="${esc(c.name)}"></div>
+                    </td>
                 </tr>`;
             }
             html += '</tbody></table>';
@@ -257,46 +293,81 @@ const UsquePage = (() => {
                 html += `<div class="form-hint" style="margin-top:8px;">
                     Туннель поднят, но трафик в него пойдёт только после правила на странице
                     <a href="#routing">Маршрутизация</a> — выберите там метод
-                    <code>warp:${esc(configs.find(c => c.active).iface || 'opkgtun0')}</code>.
+                    <code>warp:${esc(configs.find(c => c.active).iface || 'usque0')}</code>.
                 </div>`;
             }
-            el.innerHTML = html;
+            // Таблицу трогаем, только когда она реально изменилась —
+            // иначе кнопки, ховер и раскрытые панели пересоздавались бы
+            // каждые POLL_MS (это и есть «моргание» страницы).
+            const rebuilt = _paint(el, html);
 
-            el.querySelectorAll(".action-details").forEach(btn => {
-                btn.addEventListener("click", (e) => {
-                    _toggleDetails(e.currentTarget.getAttribute("data-name"));
-                });
-            });
-
-            // Восстановить панели, раскрытые до перерисовки.
+            // Профили, исчезнувшие из списка, из набора раскрытых тоже
+            // убираем — иначе _renderDetails каждый тик искал бы строку,
+            // которой в таблице уже нет.
             for (const name of Array.from(_expanded)) {
-                if (configs.some(c => c.name === name)) {
-                    _renderDetails(name);
-                } else {
-                    _expanded.delete(name);   // профиль удалили
+                if (!configs.some(c => c.name === name)) {
+                    _expanded.delete(name);
+                    _detailsHtml.delete(name);
                 }
             }
 
-            // Навешиваем события безопасности через addEventListener
-            el.querySelectorAll(".action-stop").forEach(btn => {
-                btn.addEventListener("click", (e) => {
-                    stop(e.currentTarget.getAttribute("data-name"));
+            if (rebuilt) {
+                // MR-69: addEventListener вместо onclick. Вешаем только на
+                // свежую разметку — на нетронутой обработчики уже стоят.
+                el.querySelectorAll(".action-details").forEach(btn => {
+                    btn.addEventListener("click", (e) => {
+                        _toggleDetails(e.currentTarget.getAttribute("data-name"));
+                    });
                 });
-            });
-            el.querySelectorAll(".action-start").forEach(btn => {
-                btn.addEventListener("click", (e) => {
-                    start(e.currentTarget.getAttribute("data-name"));
+                el.querySelectorAll(".action-stop").forEach(btn => {
+                    btn.addEventListener("click", (e) => {
+                        stop(e.currentTarget.getAttribute("data-name"));
+                    });
                 });
-            });
-            el.querySelectorAll(".action-remove").forEach(btn => {
-                btn.addEventListener("click", (e) => {
-                    remove(e.currentTarget.getAttribute("data-name"));
+                el.querySelectorAll(".action-start").forEach(btn => {
+                    btn.addEventListener("click", (e) => {
+                        start(e.currentTarget.getAttribute("data-name"));
+                    });
                 });
-            });
+                el.querySelectorAll(".action-remove").forEach(btn => {
+                    btn.addEventListener("click", (e) => {
+                        remove(e.currentTarget.getAttribute("data-name"));
+                    });
+                });
+            }
+
+            // Раскрытые панели: сначала мгновенно возвращаем прошлое
+            // содержимое (чтобы после пересборки не мигала «Загрузка…»),
+            // затем обновляем его запросом.
+            for (const name of _expanded) {
+                if (rebuilt) _restoreDetails(name);
+                _renderDetails(name);
+            }
         } catch (e) {
             const el = document.getElementById("usque-configs");
-            if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+            if (el) _paint(el, `<div class="text-error">Ошибка: ${esc(String(e))}</div>`);
         }
+    }
+
+    /** Вернуть раскрытой панели её прошлое содержимое после пересборки. */
+    function _restoreDetails(name) {
+        const row = document.querySelector(
+            `.usque-details-row[data-for="${CSS.escape(name)}"]`);
+        if (!row) return;
+        row.style.display = "";
+        const box = row.querySelector(".usque-details");
+        const cached = _detailsHtml.get(name);
+        if (box && cached) {
+            box.innerHTML = cached;
+            box.__usqLastHtml = cached;
+            _bindDetailActions(box, name);
+        }
+    }
+
+    function _bindDetailActions(box, name) {
+        box.querySelector(".action-log")?.addEventListener("click", () => {
+            _loadLog(name);
+        });
     }
 
     /**
@@ -327,12 +398,15 @@ const UsquePage = (() => {
         try {
             const st = await API.get(
                 `/api/usque/configs/${encodeURIComponent(name)}/status`);
+            // Панель могли свернуть, пока шёл запрос.
+            if (!_expanded.has(name)) return;
             if (st && st.ok === false) {
-                box.innerHTML = `<div class="text-error">${esc(st.error || "Ошибка")}</div>`;
+                _setDetails(box, name,
+                    `<div class="text-error">${esc(st.error || "Ошибка")}</div>`);
                 return;
             }
             const diag = (st.diagnostic || "").trim();
-            box.innerHTML = `
+            _setDetails(box, name, `
                 <div class="detail-row">Процесс: ${st.running
                     ? '<span class="status-dot status-ok"></span> запущен'
                     : '<span class="status-dot status-off"></span> не запущен'}
@@ -364,13 +438,27 @@ const UsquePage = (() => {
                 <div style="margin-top:8px;">
                     <button class="btn btn-sm action-log" data-name="${esc(name)}">Полный лог</button>
                 </div>
-                <div class="usque-log-box" data-for="${esc(name)}"></div>
-            `;
-            box.querySelector(".action-log")?.addEventListener("click", () => {
-                _loadLog(name);
-            });
+            `);
         } catch (e) {
-            box.innerHTML = `<div class="text-error">${esc(String(e))}</div>`;
+            _setDetails(box, name,
+                `<div class="text-error">${esc(String(e))}</div>`);
+        }
+    }
+
+    /**
+     * Обновить панель «Подробнее», не трогая её при неизменном содержимом.
+     *
+     * Панель перечитывается на каждом тике опроса, а меняется в ней разве
+     * что PID или хвост лога. Без этой проверки innerHTML переписывался
+     * каждые POLL_MS, и раскрытая панель заметно дёргалась. Блок с полным
+     * логом лежит СНАРУЖИ (соседним узлом) — иначе обновление подробностей
+     * стирало бы уже открытый лог.
+     */
+    function _setDetails(box, name, html) {
+        if (!box) return;
+        if (_paint(box, html)) {
+            _detailsHtml.set(name, html);
+            _bindDetailActions(box, name);
         }
     }
 

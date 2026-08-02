@@ -579,8 +579,9 @@ class WarpInWarpManager:
         if not inner_config:
             return {"ok": False, "error": "Нужен inner usque конфиг"}
 
-        outer_iface = mgr.allocate_iface("opkgtun")
-        inner_iface = mgr.allocate_iface("opkgtun", reserved={outer_iface})
+        outer_iface = mgr.iface_for_config(outer_config)
+        inner_iface = mgr.iface_for_config(inner_config,
+                                           reserved={outer_iface})
         if not outer_iface or not inner_iface:
             return {"ok": False, "error": "Не удалось выделить имена MASQUE-интерфейсов"}
 
@@ -679,7 +680,7 @@ class WarpInWarpManager:
                 "error": "Не удалось резолвить endpoint AWG-конфига (%s)" % host,
             }
 
-        outer_iface = usque_mgr.allocate_iface("opkgtun")
+        outer_iface = usque_mgr.iface_for_config(outer_config)
         if not outer_iface:
             return {"ok": False, "error": "Не удалось выделить MASQUE-интерфейс"}
         result = usque_mgr.start(outer_iface, outer_config, sni=outer_sni,
@@ -792,7 +793,8 @@ class WarpInWarpManager:
             return {"ok": False,
                     "error": "Не удалось закрепить endpoint inner MASQUE через AWG"}
 
-        inner_iface = usque_mgr.allocate_iface("opkgtun", reserved={outer_iface})
+        inner_iface = usque_mgr.iface_for_config(inner_config,
+                                                 reserved={outer_iface})
         if not inner_iface:
             for dst, via, v6f, previous in pinned:
                 _restore_route(dst, via, v6f, previous)

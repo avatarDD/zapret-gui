@@ -342,10 +342,11 @@ def _apply_usque_autostart_on_boot():
                     continue
                 log.info("usque autostart: запуск %s" % c["name"],
                          source="usque")
-                # list_configs() отдаёт iface="" для конфигов без .run-файла;
-                # start("") упал бы на валидации имени. Аллоцируем так же,
-                # как API-путь usque_config_up (api/usque.py).
-                iface = c.get("iface") or mgr.allocate_iface("opkgtun")
+                # У профиля, который ещё ни разу не поднимали, имени нет;
+                # start("") упал бы на валидации. Берём закреплённое за
+                # профилем имя (или закрепляем новое) — тем же путём, что
+                # API usque_config_up (api/usque.py).
+                iface = mgr.iface_for_config(c.get("path"))
                 if not iface:
                     log.warning("usque autostart: %s — не удалось выделить"
                                 " интерфейс" % c["name"], source="usque")

@@ -23,6 +23,7 @@
       'awg:<iface>'       — туннель AmneziaWG/WireGuard (iface)
       'singbox:<iface>'   — sing-box tun-интерфейс
       'mihomo:<iface>'    — mihomo tun-интерфейс
+      'warp:<iface>'      — TUN usque (Cloudflare WARP поверх MASQUE)
     parse_method() разбирает в (kind, target).
 
   UnifiedRoute — связка: селекторы + method(primary) + fallbacks[] +
@@ -80,10 +81,14 @@ def method_iface(method: str) -> str:
 
 
 def is_tunnel_method(method: str) -> bool:
-    """True, если метод — туннель (маршрутизируется через iface)."""
+    """True, если метод — туннель (маршрутизируется через iface).
+
+    `warp` (usque/MASQUE) здесь наравне с остальными: applier раскладывает
+    его тем же путём, что awg/singbox/mihomo (см. applier.apply_route).
+    """
     try:
         kind, _ = parse_method(method)
-        return kind in ("awg", "singbox", "mihomo")
+        return kind in ("awg", "singbox", "mihomo", "warp")
     except ValueError:
         return False
 

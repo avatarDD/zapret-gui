@@ -29,6 +29,7 @@ class TestParseMethod(unittest.TestCase):
         self.assertEqual(parse_method("awg:awg0"), ("awg", "awg0"))
         self.assertEqual(parse_method("singbox:tun0"), ("singbox", "tun0"))
         self.assertEqual(parse_method("mihomo:utun"), ("mihomo", "utun"))
+        self.assertEqual(parse_method("warp:usque0"), ("warp", "usque0"))
 
     def test_tunnel_requires_iface(self):
         with self.assertRaises(ValueError):
@@ -44,8 +45,12 @@ class TestParseMethod(unittest.TestCase):
 
     def test_helpers(self):
         self.assertTrue(model.is_tunnel_method("awg:awg0"))
+        # warp раскладывается applier'ом тем же путём, что awg/singbox —
+        # значит и здесь он туннель.
+        self.assertTrue(model.is_tunnel_method("warp:usque0"))
         self.assertFalse(model.is_tunnel_method("nfqws2"))
         self.assertEqual(model.method_iface("singbox:tun0"), "tun0")
+        self.assertEqual(model.method_iface("warp:usque0"), "usque0")
         self.assertEqual(model.method_iface("direct"), "")
 
 

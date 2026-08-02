@@ -406,7 +406,7 @@ def register(app):
 
         sni = cfg.get("usque", "default_sni", default="")
         http2 = cfg.get("usque", "http2_enable", default=False)
-        iface = target.get("iface") or mgr.allocate_iface("opkgtun")
+        iface = mgr.iface_for_config(target["path"])
         if not iface:
             return {"ok": False, "error": "Не удалось выделить интерфейс usque"}
         profile = "restricted" if http2 else cfg.get(
@@ -463,6 +463,10 @@ def register(app):
                 os.remove(target["path"])
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+        # Имя интерфейса закреплено за профилем отдельным файлом — без
+        # этого оно осталось бы занятым навсегда.
+        mgr.forget_iface(target["path"])
 
         return {"ok": True}
 

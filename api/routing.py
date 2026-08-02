@@ -94,7 +94,8 @@ def register(app):
           - нативные Keenetic WG (`Wireguard0..N`) — только если
             мы на Keenetic'е и RCI доступен;
           - sing-box TUN-инbound'ы (`tun0`, `singbox-tun`, ...) —
-            читаем из активных sing-box-конфигов.
+            читаем из активных sing-box-конфигов;
+          - TUN'ы usque/WARP (`usque0`, ...) — метод `warp:<iface>`.
 
         Формат:
           {"ok": true,
@@ -102,6 +103,7 @@ def register(app):
              {"name": "awg0", "source": "awg",  "type": "amneziawg-go", ...},
              {"name": "Wireguard0", "source": "ndms", "type": "wireguard"},
              {"name": "tun0", "source": "singbox", "type": "singbox-tun"},
+             {"name": "usque0", "source": "usque", "type": "usque-tun"},
              ...]}
         """
         response.content_type = "application/json; charset=utf-8"
@@ -167,6 +169,35 @@ def register(app):
                 # для большинства установок. Не валим весь endpoint.
                 from core.log_buffer import log
                 log.warning("routing/interfaces: sing-box не добавлен: %s"
+                            % e, source="routing")
+
+            # usque (WARP/MASQUE). Без этого блока поднятый WARP-туннель
+            # не показывался в списке методов на странице маршрутизации —
+            # выбрать `warp:<iface>` можно было только вручную, хотя сам
+            # метод бэкенд поддерживает (core/unified/model.METHOD_KINDS).
+            #
+            # Имя закреплено за профилем и переживает «Стоп», поэтому
+            # остановленные профили тоже показываем: правило можно завести
+            # заранее, оно заработает при старте туннеля (так же ведут себя
+            # AWG-конфиги). Профиль, который ещё ни разу не поднимали, имени
+            # не имеет — маршрутизировать не во что, его пропускаем.
+            try:
+                from core.usque_manager import get_usque_manager
+                for cfg in get_usque_manager().list_configs():
+                    ifname = (cfg.get("iface") or "").strip()
+                    if not ifname or ifname in seen:
+                        continue
+                    seen.add(ifname)
+                    result.append({
+                        "name":        ifname,
+                        "active":      bool(cfg.get("active")),
+                        "source":      "usque",
+                        "type":        "usque-tun",
+                        "description": "usque/WARP (%s)" % cfg.get("name", ""),
+                    })
+            except Exception as e:
+                from core.log_buffer import log
+                log.warning("routing/interfaces: usque не добавлен: %s"
                             % e, source="routing")
 
             return {"ok": True, "interfaces": result}

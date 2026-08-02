@@ -783,13 +783,39 @@ def _ensure_sysctl_min(path: str, minimum: int) -> bool:
 
 # ─────────────────────────── Batch / Status ───────────────────────
 
+def _warp_ifaces() -> set:
+    """Интерфейсы, поднятые usque (MASQUE поверх QUIC).
+
+    Спрашиваем менеджер, а не угадываем по префиксу имени: имена
+    настраиваемые (`usque0`, исторический `opkgtun0`, имена туннелей
+    WARP-in-WARP), и под тем же `opkgtun*` живут AWG-туннели, у которых
+    QUIC-профиля нет.
+
+    Туннели WARP-in-WARP сюда попадают сами: их usque тоже поднимает
+    через UsqueManager.start(), который пишет <config>.run — по нему
+    list_configs() и видит интерфейс. AWG-половина смешанных режимов
+    (masque_awg / awg_masque) при этом не попадает, и правильно: QUIC там
+    нет.
+    """
+    names = set()
+    try:
+        from core.usque_manager import get_usque_manager
+        for cfg in get_usque_manager().list_configs():
+            if cfg.get("active") and cfg.get("iface"):
+                names.add(cfg["iface"])
+    except Exception:
+        pass
+    return names
+
+
 def optimize_all_tunnels(profile: str = "balanced") -> dict:
     """Применить оптимизации ко всем активным туннелям."""
     from core.tunnel_monitor import get_tunnel_monitor
     monitor = get_tunnel_monitor()
     interfaces = monitor.discover_interfaces()
 
-    has_quic = any(str(i).startswith("opkgtun") for i in interfaces)
+    warp = _warp_ifaces()
+    has_quic = bool(warp)
     buffer_result = ensure_global_tcp_tuning(profile, quic=has_quic)
     bbr_result = _optimize_congestion(_detect_egress_iface())
     # BBR — best-effort: на ядрах Keenetic/Entware модуль часто не собран.
@@ -806,7 +832,7 @@ def optimize_all_tunnels(profile: str = "balanced") -> dict:
     for iface in interfaces:
         if iface.startswith("__"):
             continue
-        kind = "warp" if iface.startswith("opkgtun") else ""
+        kind = "warp" if iface in warp else ""
         results[iface] = optimize_iface(
             iface, profile, apply_global=False, transport_kind=kind)
 

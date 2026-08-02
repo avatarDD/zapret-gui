@@ -81,6 +81,33 @@ class TestRoutingAPI(unittest.TestCase):
         self.assertIn("interfaces", r)
         self.assertIsInstance(r["interfaces"], list)
 
+    def test_interfaces_include_running_usque_tunnel(self):
+        """Поднятый usque должен предлагаться как цель `warp:<iface>`.
+
+        Без него в списке методов на странице маршрутизации был виден
+        только AWG, хотя метод warp: бэкенд поддерживает.
+        """
+        configs = [{"name": "warp-default", "iface": "usque0",
+                    "active": True, "path": "/tmp/warp-default.json"}]
+        with mock.patch("core.usque_manager.UsqueManager.list_configs",
+                        return_value=configs):
+            r = self.client.get_json("/api/routing/interfaces")
+        entry = next((i for i in r["interfaces"] if i["name"] == "usque0"), None)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["source"], "usque")
+        self.assertTrue(entry["active"])
+
+    def test_interfaces_skip_usque_profile_without_iface(self):
+        """У остановленного профиля имени интерфейса нет — маршрутизировать
+        не во что, в списке целей его быть не должно."""
+        configs = [{"name": "warp-default", "iface": "", "active": False,
+                    "path": "/tmp/warp-default.json"}]
+        with mock.patch("core.usque_manager.UsqueManager.list_configs",
+                        return_value=configs):
+            r = self.client.get_json("/api/routing/interfaces")
+        self.assertEqual(
+            [i for i in r["interfaces"] if i.get("source") == "usque"], [])
+
     # ─── /api/routing/aliases ───
 
     def test_aliases_list(self):
