@@ -17,6 +17,7 @@ Stderr перенаправляется в лог-буфер.
 import os
 import pty
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -265,6 +266,7 @@ class NFQWSManager:
         self._out_fd = None           # master-fd PTY (вывод nfqws2) | None=pipe
         self._exit_code = None        # код выхода последнего процесса
         self._debug = False           # --debug активен → вывод на уровне INFO
+        self._rawsend_explained = False   # подсказку про EPERM даём 1 раз
 
         # Пробуем восстановить PID из файла при инициализации
         self._recover_pid()
@@ -1208,6 +1210,7 @@ class NFQWSManager:
         if not line:
             return
         low = line.lower()
+        self._maybe_explain_rawsend(low)
         if "error" in low or "fail" in low:
             log.error(line, source="nfqws")
         elif "warn" in low:
@@ -1219,11 +1222,69 @@ class NFQWSManager:
         else:
             log.debug(line, source="nfqws")
 
+    def _maybe_explain_rawsend(self, low_line: str) -> None:
+        """Один раз на запуск объяснить `rawsend: sendto ... not permitted`.
+
+        Сама строка от nfqws2 сыплется на КАЖДЫЙ фейковый пакет и не
+        говорит ничего: обход при этом молча не работает (issue #280).
+        EPERM на raw-сокете возвращает netfilter, когда локально
+        сгенерированный пакет дропнут в цепочке OUTPUT — то есть его
+        режет чей-то фаервол, а не наш движок. Что именно — не гадаем, а
+        показываем найденные правила-кандидаты (см. _rawsend_suspects).
+        """
+        if self._rawsend_explained:
+            return
+        if "rawsend" not in low_line or "sendto" not in low_line:
+            return
+        if "not permitted" not in low_line and "eperm" not in low_line:
+            return
+        self._rawsend_explained = True
+        hint = ("nfqws2 не может отослать фейковые пакеты: sendto вернул "
+                "EPERM — значит их дропает фаервол в цепочке OUTPUT "
+                "(обход при этом не работает, хотя движок «запущен»). "
+                "Наши правила тут ни при чём: они пропускают пакеты с "
+                "меткой десинка. Ищите чужое правило, режущее исходящие "
+                "пакеты в состоянии conntrack invalid, — их ставят "
+                "drop_invalid во фаерволе и остатки других обходов "
+                "(podkop, прежний zapret) после удаления.")
+        try:
+            suspects = self._rawsend_suspects()
+        except Exception:
+            suspects = []
+        if suspects:
+            hint += (" Найдены правила-кандидаты: " + "; ".join(suspects[:5]))
+        else:
+            hint += (" Проверьте вручную: `nft list ruleset | grep -i invalid`"
+                     " и `iptables-save | grep -i invalid`.")
+        log.warning(hint, source="nfqws")
+
+    @staticmethod
+    def _rawsend_suspects() -> list:
+        """Правила фаервола, дропающие invalid-пакеты (кандидаты на EPERM)."""
+        found = []
+        for cmd in (["nft", "list", "ruleset"], ["iptables-save"]):
+            if not shutil.which(cmd[0]):
+                continue
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=10)
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+            for raw in (r.stdout or "").splitlines():
+                line = raw.strip()
+                low = line.lower()
+                if "invalid" not in low:
+                    continue
+                if "drop" in low or "reject" in low:
+                    found.append("%s: %s" % (cmd[0], line[:120]))
+        return found
+
     def _cleanup(self):
         """Очистить состояние после остановки."""
         self._process = None
         self._pid = None
         self._start_time = None
+        self._rawsend_explained = False
         self._remove_pid_file()
 
     # ─────────────── PID file ───────────────

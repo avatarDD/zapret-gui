@@ -253,5 +253,87 @@ class TestProxyLoopback(unittest.TestCase):
         self.assertFalse(di._running)
 
 
+class TestRedirectBackend(unittest.TestCase):
+    """
+    Issue #280: на OpenWrt 22+/fw4 iptables нет, и перехват падал с
+    «REDIRECT не установлен: [Errno 2] ... 'iptables'». Правило должно
+    ставиться доступным бэкендом.
+    """
+
+    def _which(self, present):
+        return lambda name: ("/usr/sbin/" + name) if name in present else None
+
+    def test_backend_prefers_existing_binary(self):
+        with mock.patch.object(dns_intercept.shutil, "which",
+                               side_effect=self._which({"nft"})), \
+             mock.patch("core.firewall.FirewallManager.detect_fw_type",
+                        return_value="iptables"):
+            # Настройка/детект говорят iptables, но бинарника нет.
+            self.assertEqual(dns_intercept._redirect_backend(), "nftables")
+
+    def test_backend_none_when_nothing_installed(self):
+        with mock.patch.object(dns_intercept.shutil, "which",
+                               side_effect=self._which(set())), \
+             mock.patch("core.firewall.FirewallManager.detect_fw_type",
+                        return_value=""):
+            self.assertEqual(dns_intercept._redirect_backend(), "")
+
+    def test_nft_rule_is_own_table_and_redirects_port(self):
+        calls = []
+
+        def fake_run(args, timeout=5):
+            calls.append(list(args))
+            return 0, "", ""
+
+        with mock.patch.object(dns_intercept, "_redirect_backend",
+                               return_value="nftables"), \
+             mock.patch.object(dns_intercept, "_run", side_effect=fake_run):
+            res = DnsIntercept()._ensure_redirect(15353)
+
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(res.get("backend"), "nftables")
+        flat = [" ".join(c) for c in calls]
+        # своя таблица, не чужая
+        self.assertTrue(any(c.startswith("nft add table inet awg_dns_int")
+                            for c in flat), flat)
+        self.assertTrue(any("udp dport 53 redirect to :15353" in c
+                            for c in flat), flat)
+        # nat-хук раньше fw4/NDM
+        self.assertTrue(any("type nat hook prerouting" in c and "dstnat - 5" in c
+                            for c in flat), flat)
+
+    def test_nft_failure_cleans_up_and_reports(self):
+        def fake_run(args, timeout=5):
+            if "rule" in args:
+                return 1, "", "Error: syntax"
+            return 0, "", ""
+
+        with mock.patch.object(dns_intercept, "_redirect_backend",
+                               return_value="nftables"), \
+             mock.patch.object(dns_intercept, "_run", side_effect=fake_run):
+            res = DnsIntercept()._ensure_redirect(15353)
+        self.assertFalse(res.get("ok"))
+        self.assertIn("nft", res.get("error", ""))
+
+    def test_no_backend_gives_explicit_error(self):
+        with mock.patch.object(dns_intercept, "_redirect_backend",
+                               return_value=""):
+            res = DnsIntercept()._ensure_redirect(15353)
+        self.assertFalse(res.get("ok"))
+        self.assertIn("nft", res.get("error", ""))
+
+    def test_teardown_removes_both_backends(self):
+        removed = []
+        di = DnsIntercept()
+        with mock.patch.object(dns_intercept.shutil, "which",
+                               side_effect=self._which({"nft", "iptables"})), \
+             mock.patch.object(DnsIntercept, "_remove_redirect_ipt",
+                               side_effect=lambda: removed.append("ipt")), \
+             mock.patch.object(DnsIntercept, "_remove_redirect_nft",
+                               side_effect=lambda: removed.append("nft")):
+            di._remove_redirect()
+        self.assertEqual(sorted(removed), ["ipt", "nft"])
+
+
 if __name__ == "__main__":
     unittest.main()

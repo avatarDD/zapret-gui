@@ -235,7 +235,39 @@ const TgProxyPage = (() => {
         setTimeout(poll, 1000);
     }
 
-    // Строка «пакет / версия / Обновить» — одинаковая у обоих движков.
+    // Удаление движка. Кнопки не было ни у одного из двух — поставленный
+    // из GUI движок удалялся только по SSH (issue #272).
+    async function _uninstallEngine(ev) {
+        const btn = ev && ev.currentTarget;
+        const engine = (btn && btn.dataset.engine) || "tgwsproxy";
+        const meta = _ENGINES[engine] || _ENGINES.tgwsproxy;
+        if (!confirm(`Удалить ${meta.pkg}? Прокси будет остановлен, `
+                   + `пакет удалён с роутера. Настройки останутся.`)) return;
+
+        const prog = document.getElementById(meta.progressId);
+        if (btn) { btn.disabled = true; btn.textContent = "Удаление..."; }
+        try {
+            const r = await API.post("/api/tgproxy/uninstall", { engine },
+                                     { timeout: 300000 });
+            if (r && r.ok) {
+                Toast.success(meta.pkg + " удалён");
+                if (r.stop_warning) {
+                    Toast.info("При остановке: " + r.stop_warning);
+                }
+                await _refresh();
+            } else {
+                const msg = (r && r.error) || "не удалось удалить";
+                if (prog) prog.innerHTML = `<span class="text-error">${esc(msg)}</span>`;
+                Toast.error(msg);
+            }
+        } catch (e) {
+            Toast.error(String(e.message || e));
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = "Удалить"; }
+        }
+    }
+
+    // Строка «пакет / версия / Обновить / Удалить» — одинаковая у обоих движков.
     function _packageRow(engine, det) {
         const meta = _ENGINES[engine];
         const label = engine === "tgwsproxy"
@@ -246,12 +278,25 @@ const TgProxyPage = (() => {
                     Пакет <code>${esc(meta.pkg)}</code>${det.version
                         ? ", версия " + esc(det.version) : ""}
                 </span>
-                <button class="btn btn-sm" id="${esc(engine)}-btn-install" type="button"
-                        data-engine="${esc(engine)}"
-                        data-label="${esc(label)}">${esc(label)}</button>
+                <span style="display:flex; gap:6px; flex-wrap:wrap;">
+                    <button class="btn btn-sm" id="${esc(engine)}-btn-install" type="button"
+                            data-engine="${esc(engine)}"
+                            data-label="${esc(label)}">${esc(label)}</button>
+                    <button class="btn btn-sm btn-danger" id="${esc(engine)}-btn-uninstall"
+                            type="button" data-engine="${esc(engine)}">Удалить</button>
+                </span>
             </div>
             <div id="${esc(meta.progressId)}" style="margin-top:8px; font-size:12px;"></div>
         `;
+    }
+
+    // Кнопки строки пакета живут в перерисовываемом HTML — вешать
+    // обработчики надо после каждой отрисовки.
+    function _bindPackageRow(engine) {
+        const upd = document.getElementById(engine + "-btn-install");
+        if (upd) upd.addEventListener("click", _installEngine);
+        const del = document.getElementById(engine + "-btn-uninstall");
+        if (del) del.addEventListener("click", _uninstallEngine);
     }
 
     // Нет сборки под архитектуру роутера — честно говорим об этом
@@ -551,8 +596,7 @@ const TgProxyPage = (() => {
                 "click", _rotateSecret);
             const autoBox = document.getElementById("tgws-autostart");
             if (autoBox) autoBox.addEventListener("change", _toggleAutostart);
-            const updBtn = document.getElementById("tgwsproxy-btn-install");
-            if (updBtn) updBtn.addEventListener("click", _installEngine);
+            _bindPackageRow("tgwsproxy");
 
             await _loadTgwsproxyConnectInfo();
         } catch (e) {
@@ -829,8 +873,7 @@ const TgProxyPage = (() => {
                 "click", () => _mtprotoToggle(running));
             document.getElementById("mtp-btn-save-cfg")?.addEventListener(
                 "click", _mtprotoSaveConfig);
-            const mUpd = document.getElementById("mtproto-btn-install");
-            if (mUpd) mUpd.addEventListener("click", _installEngine);
+            _bindPackageRow("mtproto");
         } catch (e) {
             el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
         }

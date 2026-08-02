@@ -33,7 +33,8 @@ API управления обходом блокировки Telegram.
 
   POST /api/tgproxy/install                   — установить/обновить движок
   GET  /api/tgproxy/install/status            — прогресс установки
-    Обе ручки принимают engine=tgwsproxy|mtproto; без него — tgwsproxy
+  POST /api/tgproxy/uninstall                 — остановить и удалить движок
+    Все три ручки принимают engine=tgwsproxy|mtproto; без него — tgwsproxy
     (так их звал старый фронтенд).
 """
 
@@ -87,6 +88,23 @@ def _remember_installed_tag(engine: str, res: dict) -> None:
     try:
         from core.config_manager import get_config_manager, save_config
         get_config_manager().set("tgproxy", "mtproto_installed_tag", tag)
+        save_config()
+    except Exception:
+        pass
+
+
+def _forget_installed_tag(engine: str) -> None:
+    """Забыть тег после удаления tg-mtproxy-client.
+
+    Тег — единственный источник версии для этого движка (у бинарника нет
+    `--version`). Если его не стереть, «Обновления» после удаления
+    продолжат показывать версию несуществующего движка.
+    """
+    if engine != "mtproto":
+        return
+    try:
+        from core.config_manager import get_config_manager, save_config
+        get_config_manager().set("tgproxy", "mtproto_installed_tag", "")
         save_config()
     except Exception:
         pass
@@ -223,6 +241,47 @@ def register(app):
         threading.Thread(target=_run, daemon=True).start()
         return {"ok": True, "engine": engine,
                 "progress": _operation_status[name]}
+
+    @app.route("/api/tgproxy/uninstall", method="POST")
+    def tgproxy_uninstall():
+        """Удалить движок (пакетом, если ставился пакетным менеджером).
+
+        Раньше удалить поставленный из GUI движок можно было только по
+        SSH: кнопки не было ни у одного из двух (issue #272). Перед
+        удалением останавливаем прокси — иначе останется процесс без
+        файлов, порт занят, а GUI будет считать движок «работающим».
+        """
+        from core.ext_binary_installer import uninstall_binary
+
+        body = request.json or {}
+        engine_arg = body.get("engine") or request.query.get("engine")
+        name = _installer_for(engine_arg)
+        if not name:
+            return {"ok": False, "error": "Неизвестный движок: %s" % engine_arg}
+        engine = _ENGINE_BY_INSTALLER[name]
+
+        stop_error = ""
+        try:
+            from core.tgproxy_manager import (get_tgwsproxy_manager,
+                                              get_mtproxy_client_manager)
+            mgr = (get_tgwsproxy_manager() if engine == "tgwsproxy"
+                   else get_mtproxy_client_manager())
+            res = mgr.stop()
+            if isinstance(res, dict) and not res.get("ok"):
+                stop_error = res.get("error") or res.get("message") or ""
+        except Exception as e:
+            stop_error = str(e)
+
+        out = uninstall_binary(name)
+        if not isinstance(out, dict):
+            out = {"ok": False, "error": "неожиданный ответ установщика"}
+        out["engine"] = engine
+        if stop_error:
+            # Не проваливаем удаление: движок мог быть и не запущен.
+            out["stop_warning"] = stop_error
+        if out.get("ok"):
+            _forget_installed_tag(engine)
+        return out
 
     # ─────────────────────────── tgwsproxy ───────────────────────────
 

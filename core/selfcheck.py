@@ -143,6 +143,20 @@ def check_python() -> dict:
         except ImportError:
             checks.append(_check("stdlib %s" % mod, miss_lvl != "fail",
                                  "ОТСУТСТВУЕТ — %s" % why, level=miss_lvl))
+
+    # unittest есть, а unittest.mock — нет: он тянет asyncio, который на
+    # роутере лежит отдельным пакетом. Проверяем отдельно, иначе прогон
+    # тестов сыпал сотней ImportError'ов без объяснения (issue #280).
+    missing_mock = _missing_mock_dependency()
+    if missing_mock:
+        checks.append(_check(
+            "stdlib unittest.mock", True,
+            "ОТСУТСТВУЕТ (нет модуля %s) — юнит-тесты самодиагностики "
+            "не запускаются, на работу GUI не влияет (%s)"
+            % (missing_mock, _install_hint(missing_mock)),
+            level="warn"))
+    elif importlib.util.find_spec("unittest") is not None:
+        checks.append(_check("stdlib unittest.mock", True, "есть"))
     return _section("python", "Python и модули", checks)
 
 
@@ -565,6 +579,29 @@ def parse_unittest_output(output: str) -> dict:
     return res
 
 
+def _install_hint(pkg_module: str) -> str:
+    """Команда доустановки пакета для текущего менеджера пакетов."""
+    from core.bottle_vendor import stdlib_pkg_for
+    pkg = stdlib_pkg_for(pkg_module)
+    cmd = "apk add" if (_which("apk") and not _which("opkg")) else "opkg install"
+    return "%s %s" % (cmd, pkg)
+
+
+def _missing_mock_dependency() -> str:
+    """Имя модуля, из-за которого не работает unittest.mock ("" — работает).
+
+    unittest.mock импортирует asyncio; на Entware/OpenWrt это отдельный
+    пакет (python3-asyncio), и без него тесты с моками не импортируются.
+    """
+    try:
+        importlib.import_module("unittest.mock")
+        return ""
+    except ImportError as e:
+        return getattr(e, "name", "") or "asyncio"
+    except Exception:
+        return ""
+
+
 def run_unit_tests(pattern: str = "", timeout: int = TESTS_TIMEOUT) -> dict:
     """
     Прогнать юнит-тесты подпроцессом из каталога установки.
@@ -584,6 +621,19 @@ def run_unit_tests(pattern: str = "", timeout: int = TESTS_TIMEOUT) -> dict:
         return {"ok": False, "skipped_run": True,
                 "error": "модуль unittest отсутствует — прогон пропущен "
                          "(Entware: opkg install python3-unittest)"}
+    # unittest.mock тянет asyncio, а его на роутере может не быть отдельным
+    # пакетом. Тогда КАЖДЫЙ тест с моками не импортируется, и прогон отдаёт
+    # сотню ImportError'ов, которые выглядят как «GUI сломан» (issue #280:
+    # errors=109 на OpenWrt). Это не провал тестов, а отсутствующая
+    # зависимость — так и говорим, вместо «FAILED».
+    missing_mock = _missing_mock_dependency()
+    if missing_mock:
+        return {"ok": False, "skipped_run": True,
+                "missing_module": missing_mock,
+                "error": "модуль %s отсутствует — без него не импортируется "
+                         "unittest.mock, а на нём построена половина тестов; "
+                         "прогон пропущен (%s)"
+                         % (missing_mock, _install_hint(missing_mock))}
     args = [sys.executable, "-m", "unittest", "discover",
             "-s", "tests", "-p", pattern or "test_*.py"]
     rc, out, err = _run(args, timeout=timeout, cwd=INSTALL_DIR)

@@ -707,10 +707,33 @@ def create_app(config_dir: str = None) -> Bottle:
     # SSE-потока, что приводит к циклу переподключений и спаму ошибок.
     @app.error(500)
     def error500(error):
+        # У необработанного исключения error.body — это дежурное "Internal
+        # Server Error": пользователь видел в тосте ровно эту строку, а
+        # traceback не попадал никуда вообще, даже в лог GUI (issue #280:
+        # «tun-inbound: 500» и больше ничего). Пишем traceback в лог и
+        # отдаём текст исключения — по нему уже можно понять причину.
+        import json as _json
+        exc = getattr(error, "exception", None)
+        tb = getattr(error, "traceback", None)
+        if exc is not None or tb:
+            try:
+                from core.log_buffer import log
+                log.error("необработанная ошибка %s %s: %s%s"
+                          % (request.method, request.path,
+                             ("%s: %s" % (type(exc).__name__, exc))
+                             if exc is not None else "см. traceback",
+                             ("\n" + str(tb)) if tb else ""),
+                          source="api")
+            except Exception:
+                pass
+
         if request.path.startswith("/api/"):
             response.content_type = "application/json; charset=utf-8"
             msg = str(error.body) if hasattr(error, 'body') else "Внутренняя ошибка сервера"
-            return '{"ok": false, "error": "%s"}' % msg.replace('"', '\\"')
+            if exc is not None:
+                msg = "%s: %s" % (type(exc).__name__, exc)
+            return _json.dumps({"ok": False, "error": msg},
+                               ensure_ascii=False)
         import html
         return '<h1>Внутренняя ошибка сервера</h1><p>%s</p>' % html.escape(str(error))
 

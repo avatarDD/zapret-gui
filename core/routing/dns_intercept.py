@@ -10,11 +10,14 @@
 работает только с выбором устройства».
 
 Как работает:
-  1) iptables nat PREROUTING (наша цепочка AWG_DNS_INT):
-     `-p udp --dport 53 -j REDIRECT --to-ports <port>` — ловим ЛЮБОЙ
+  1) nat PREROUTING: `udp dport 53 → REDIRECT :<port>` — ловим ЛЮБОЙ
      клиентский DNS (и адресованный роутеру, и hardcoded 8.8.8.8).
      Запросы самого роутера идут через OUTPUT и НЕ перехватываются —
-     петли нет.
+     петли нет. Правило ставится тем бэкендом, который есть на машине:
+     iptables (своя цепочка AWG_DNS_INT в nat PREROUTING, Keenetic/
+     Entware) или nftables (своя таблица inet awg_dns_int, приоритет
+     dstnat-5 — раньше цепочек fw4/NDM). На OpenWrt 22+/fw4 iptables нет
+     вовсе, и раньше перехват там не включался совсем (issue #280).
   2) UDP-прокси (threading, без asyncio — python3-light) пересылает
      запрос штатному резолверу (upstream, по умолчанию 127.0.0.1:53 —
      ndnsproxy) и возвращает ответ клиенту как есть.
@@ -37,7 +40,9 @@ DNS-over-HTTPS) идут мимо.
 """
 
 import atexit
+import os
 import queue
+import shutil
 import socket
 import struct
 import threading
@@ -49,9 +54,55 @@ from core.log_buffer import log
 DEFAULT_PORT = 15353
 DEFAULT_UPSTREAM = ("127.0.0.1", 53)
 NAT_CHAIN = "AWG_DNS_INT"
+NFT_TABLE = "awg_dns_int"
 _WORKERS = 4
 _RULES_TTL = 60.0        # сек: перечитать домены правил не чаще
 _UPSTREAM_TIMEOUT = 4.0
+
+
+def _ensure_sbin_in_path():
+    """iptables/nft живут в /sbin и /usr/sbin, которых нет в PATH у
+    процесса, запущенного не из root-шелла (см. core/firewall.py)."""
+    extra = ["/usr/local/sbin", "/usr/sbin", "/sbin"]
+    cur = os.environ.get("PATH", "")
+    parts = cur.split(os.pathsep) if cur else []
+    added = [d for d in extra if d not in parts and os.path.isdir(d)]
+    if added:
+        os.environ["PATH"] = os.pathsep.join(parts + added)
+
+
+_ensure_sbin_in_path()
+
+
+def _redirect_backend() -> str:
+    """Чем ставить REDIRECT: 'iptables', 'nftables' или '' (нечем).
+
+    На OpenWrt 22+/fw4 iptables нет вовсе (issue #280: «REDIRECT не
+    установлен: [Errno 2] No such file or directory: 'iptables'»), и весь
+    перехват DNS был недоступен. Выбор бэкенда — тот же, что у
+    core/firewall.py: учитывается настройка firewall.type, а iptables-шим
+    поверх nftables проигрывает нативному nft, чтобы не писать в чужой
+    backend через compat-слой.
+    """
+    fw = ""
+    try:
+        from core.firewall import FirewallManager
+        fw = FirewallManager().detect_fw_type() or ""
+    except Exception:
+        fw = ""
+    # Настройка могла зафиксировать бэкенд, которого на машине нет —
+    # тогда правило ставить нечем, и надо взять то, что реально есть.
+    if fw == "iptables" and not shutil.which("iptables"):
+        fw = ""
+    if fw == "nftables" and not shutil.which("nft"):
+        fw = ""
+    if fw:
+        return fw
+    if shutil.which("nft"):
+        return "nftables"
+    if shutil.which("iptables"):
+        return "iptables"
+    return ""
 
 
 def _run(args, timeout=5):
@@ -184,6 +235,7 @@ class DnsIntercept:
         self._threads = []
         self._running = False
         self._redirected = False
+        self._backend = ""           # чем поставлен REDIRECT: iptables|nftables
         self._rules_cache = []       # [{id, kind, set_v4, set_v6, table,
         #                              iface, domains}], kind: ipset|nftset|iproute
         self._rules_at = 0.0
@@ -227,10 +279,12 @@ class DnsIntercept:
                         "error": "REDIRECT не установлен: %s"
                                  % red.get("error")}
             self._redirected = True
+            self._backend = red.get("backend", "")
             log.success("dns_intercept: перехват DNS включён "
-                        "(:53 → 127.0.0.1:%d, upstream %s:%d)"
-                        % (port, *_upstream()), source="routing")
-            return {"ok": True, "port": port}
+                        "(:53 → 127.0.0.1:%d, upstream %s:%d, %s)"
+                        % (port, *_upstream(), self._backend or "?"),
+                        source="routing")
+            return {"ok": True, "port": port, "backend": self._backend}
 
     def stop(self) -> dict:
         with self._lock:
@@ -243,6 +297,7 @@ class DnsIntercept:
             "enabled": is_enabled(),
             "running": self._running,
             "redirected": self._redirected,
+            "backend": self._backend or _redirect_backend(),
             "port": _port(),
             "upstream": "%s:%d" % _upstream(),
             "rules_watched": len(self._load_rules()),
@@ -260,6 +315,7 @@ class DnsIntercept:
         if self._redirected:
             self._remove_redirect()
             self._redirected = False
+            self._backend = ""
         if self._sock is not None:
             try:
                 self._sock.close()
@@ -410,9 +466,30 @@ class DnsIntercept:
             return True
         return False
 
-    # ── iptables REDIRECT ─────────────────────────────────────────
+    # ── REDIRECT: iptables или nftables ───────────────────────────
 
     def _ensure_redirect(self, port: int) -> dict:
+        backend = _redirect_backend()
+        if not backend:
+            return {"ok": False,
+                    "error": "не найден ни iptables, ни nft — "
+                             "перехват :53 ставить нечем"}
+        if backend == "nftables":
+            return self._ensure_redirect_nft(port)
+        return self._ensure_redirect_ipt(port)
+
+    def _remove_redirect(self):
+        # Снимаем ОБА варианта: бэкенд мог смениться (доустановили
+        # iptables) между start() и stop(), и оставленное правило увело бы
+        # весь DNS LAN в мёртвый порт.
+        if shutil.which("iptables"):
+            self._remove_redirect_ipt()
+        if shutil.which("nft"):
+            self._remove_redirect_nft()
+
+    # ── iptables ──────────────────────────────────────────────────
+
+    def _ensure_redirect_ipt(self, port: int) -> dict:
         rc, _o, err = _run(["iptables", "-t", "nat", "-N", NAT_CHAIN])
         if rc != 0 and "already exists" not in (err or "").lower():
             return {"ok": False, "error": err.strip()}
@@ -432,9 +509,9 @@ class DnsIntercept:
                             "1", "-j", NAT_CHAIN])
         if rc != 0:
             return {"ok": False, "error": err.strip()}
-        return {"ok": True}
+        return {"ok": True, "backend": "iptables"}
 
-    def _remove_redirect(self):
+    def _remove_redirect_ipt(self):
         for _ in range(8):
             rc, _o, _e = _run(["iptables", "-t", "nat", "-D",
                                "PREROUTING", "-j", NAT_CHAIN])
@@ -442,6 +519,38 @@ class DnsIntercept:
                 break
         _run(["iptables", "-t", "nat", "-F", NAT_CHAIN])
         _run(["iptables", "-t", "nat", "-X", NAT_CHAIN])
+
+    # ── nftables ──────────────────────────────────────────────────
+
+    def _ensure_redirect_nft(self, port: int) -> dict:
+        """То же правило в nftables — своей таблицей, чужих не трогаем.
+
+        Приоритет dstnat-5: раньше цепочки fw4/NDM, чтобы поймать DNS до
+        чужих redirect'ов (аналог `-I PREROUTING 1` в iptables-пути).
+        Семейство inet — одно правило на IPv4 и IPv6 сразу.
+        """
+        # Пересоздаём таблицу целиком: правило одно, идемпотентность
+        # дешевле проверять сносом (иначе после смены порта в настройках
+        # осталось бы два redirect'а, и выигрывал бы старый).
+        self._remove_redirect_nft()
+        cmds = [
+            ["nft", "add", "table", "inet", NFT_TABLE],
+            ["nft", "add", "chain", "inet", NFT_TABLE, "prerouting",
+             "{ type nat hook prerouting priority dstnat - 5 ; policy accept ; }"],
+            ["nft", "add", "rule", "inet", NFT_TABLE, "prerouting",
+             "udp", "dport", "53", "redirect", "to", ":%d" % port],
+        ]
+        for cmd in cmds:
+            rc, _o, err = _run(cmd)
+            if rc != 0:
+                self._remove_redirect_nft()
+                return {"ok": False,
+                        "error": "nft: %s" % ((err or "").strip()
+                                              or "код %d" % rc)}
+        return {"ok": True, "backend": "nftables"}
+
+    def _remove_redirect_nft(self):
+        _run(["nft", "delete", "table", "inet", NFT_TABLE])
 
 
 # ─────────────────────── singleton ──────────────────────────────────

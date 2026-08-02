@@ -310,18 +310,24 @@ def _check_tgproto() -> dict:
 def _check_tgwsproxy() -> dict:
     """Проверить tg-ws-proxy-go (основной Telegram-движок)."""
     try:
+        from core.ext_binary_installer import _pkg_version_matches_tag
         from core.tgproxy_manager import get_tgwsproxy_manager
         mgr = get_tgwsproxy_manager()
         detect = mgr.detect()
         latest = _github_latest("spatiumstas/tg-ws-proxy-go")
+        current = detect.get("version", "")
+        # Движок ставится ПАКЕТОМ, и opkg/apk хранят версию с ревизией
+        # сборки (`0.9.3-1`, `0.9.3-r1`), а тег релиза — без неё
+        # (`0.9.3`). Прямое сравнение строк держало кнопку «Обновить»
+        # вечно зажжённой на уже актуальной версии (issue #272).
         return {
             "name": "tgwsproxy",
             "display_name": "tg-ws-proxy-go",
             "installed": detect.get("installed", False),
-            "current": detect.get("version", ""),
+            "current": current,
             "latest": latest,
-            "has_update": bool(latest and detect.get("version") and
-                               latest != detect["version"]),
+            "has_update": bool(latest and current and
+                               not _pkg_version_matches_tag(current, latest)),
         }
     except Exception as e:
         return {"name": "tgwsproxy", "display_name": "tg-ws-proxy-go",

@@ -122,6 +122,46 @@ def detect_arch() -> str:
     return ""
 
 
+def detect_openwrt_arch() -> str:
+    """Целевая архитектура OpenWrt (`DISTRIB_ARCH`) или "" — не OpenWrt.
+
+    Апстримы выпускают пакеты OpenWrt под ТАРГЕТ (`x86_64`,
+    `arm_cortex-a7`, `aarch64_generic`, `mipsel_24kc`), а `uname -m` даёт
+    только семейство: два разных таргета (`arm_cortex-a7` и
+    `arm_cortex-a9`) неотличимы. apk сверяет арку пакета со своей и
+    откажет при несовпадении, поэтому имя ассета выбираем по DISTRIB_ARCH,
+    а не по догадке.
+    """
+    try:
+        with open("/etc/openwrt_release", encoding="utf-8",
+                  errors="replace") as f:
+            for line in f:
+                if line.startswith("DISTRIB_ARCH="):
+                    val = line.split("=", 1)[1].strip().strip("'\"")
+                    return val
+    except OSError:
+        pass
+    return ""
+
+
+def _arch_keys(arch: str, pkg_mgr: str = "") -> list:
+    """Ключи архитектуры для поиска в манифесте, от точного к общему.
+
+    Для apk (OpenWrt 24.10+) сначала пробуем таргет OpenWrt
+    (`x86_64`, `arm_cortex-a7`), затем семейство от `uname -m`
+    (`armv7`) — так один манифест обслуживает и точные таргеты, и
+    случай, когда DISTRIB_ARCH прочитать не удалось.
+    """
+    keys = []
+    if pkg_mgr == "apk":
+        target = detect_openwrt_arch()
+        if target:
+            keys.append(target)
+    if arch and arch not in keys:
+        keys.append(arch)
+    return keys
+
+
 # ─────── GitHub API ───────
 
 def _parse_retry_after(headers) -> int:
@@ -453,7 +493,20 @@ BINARIES = {
                 "mips": "tg-ws-proxy_0.9.3-1_entware_mips-3.4.ipk",
                 "mipsel": "tg-ws-proxy_0.9.3-1_entware_mipsel-3.4.ipk",
             },
+            # Ключи apk — ТАРГЕТЫ OpenWrt (DISTRIB_ARCH), а не семейства
+            # из `uname -m`: apk сверяет арку пакета со своей, а
+            # arm_cortex-a7 и arm_cortex-a9 по `uname -m` неразличимы
+            # (оба armv7l). Семейные ключи (aarch64/mips/mipsel) оставлены
+            # как запасные — на случай, если DISTRIB_ARCH не прочитался.
+            # x86_64 не было вовсе, хотя апстрим его собирает
+            # (config/openwrt/x86_64.config) — issue #280.
             "apk": {
+                "x86_64": "tg-ws-proxy_0.9.3-r1_openwrt_x86_64.apk",
+                "aarch64_generic": "tg-ws-proxy_0.9.3-r1_openwrt_aarch64_generic.apk",
+                "arm_cortex-a7": "tg-ws-proxy_0.9.3-r1_openwrt_arm_cortex-a7.apk",
+                "arm_cortex-a9": "tg-ws-proxy_0.9.3-r1_openwrt_arm_cortex-a9.apk",
+                "mips_24kc": "tg-ws-proxy_0.9.3-r1_openwrt_mips_24kc.apk",
+                "mipsel_24kc": "tg-ws-proxy_0.9.3-r1_openwrt_mipsel_24kc.apk",
                 "aarch64": "tg-ws-proxy_0.9.3-r1_openwrt_aarch64_generic.apk",
                 "mips": "tg-ws-proxy_0.9.3-r1_openwrt_mips_24kc.apk",
                 "mipsel": "tg-ws-proxy_0.9.3-r1_openwrt_mipsel_24kc.apk",
@@ -469,6 +522,12 @@ BINARIES = {
                 "mipsel": "_entware_mipsel-3.4.ipk",
             },
             "apk": {
+                "x86_64": "_openwrt_x86_64.apk",
+                "aarch64_generic": "_openwrt_aarch64_generic.apk",
+                "arm_cortex-a7": "_openwrt_arm_cortex-a7.apk",
+                "arm_cortex-a9": "_openwrt_arm_cortex-a9.apk",
+                "mips_24kc": "_openwrt_mips_24kc.apk",
+                "mipsel_24kc": "_openwrt_mipsel_24kc.apk",
                 "aarch64": "_openwrt_aarch64_generic.apk",
                 "mips": "_openwrt_mips_24kc.apk",
                 "mipsel": "_openwrt_mipsel_24kc.apk",
@@ -482,6 +541,12 @@ BINARIES = {
             "opkg:armv7": "91428498cc8b426ba4b3e93dd7be03355ae26d0878692b585b66b1e9a0f37989",
             "opkg:mips": "63f004c00f530cc5c574860cb4a4e04110cd54957a23e6ef38d188bb667aee26",
             "opkg:mipsel": "dc86818e78b7bf3c58e39f032b402ca2ebd9dec1a4f1989fa4f8ace258c765b4",
+            "apk:x86_64": "1423a6ba454d6721827b7e318acec2109979d90db2c7744ab1a0305b614a836c",
+            "apk:aarch64_generic": "e205d4ad04364bda82f2991deabf94ebca2c8355018cd620980461a01a3da003",
+            "apk:arm_cortex-a7": "564c2090c0f746af8c92be21e08910bd2f2d7f51d93b99863c943308ad13df73",
+            "apk:arm_cortex-a9": "4543b04bd457dc7540c42ca69f1bbcff289b820e900e4341ffee36300a471555",
+            "apk:mips_24kc": "354fcfd8b1eae2f88d7429539de7f0ca6a1b8caa3ea8e49597240ab2bf051321",
+            "apk:mipsel_24kc": "0c152081f04a27e40f4cfb0be082308c6700db1110dba8834f913202510c5774",
             "apk:aarch64": "e205d4ad04364bda82f2991deabf94ebca2c8355018cd620980461a01a3da003",
             "apk:mips": "354fcfd8b1eae2f88d7429539de7f0ca6a1b8caa3ea8e49597240ab2bf051321",
             "apk:mipsel": "0c152081f04a27e40f4cfb0be082308c6700db1110dba8834f913202510c5774",
@@ -664,7 +729,7 @@ def _asset_suffix_for(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
     if not suffixes:
         return ""
     by_mgr = suffixes.get(pkg_mgr) or suffixes.get("opkg") or {}
-    return by_mgr.get(arch, "")
+    return _pick_by_arch(by_mgr, arch, pkg_mgr)
 
 # TODO: add sha256 from verified release assets for WARP binaries
 # (warp, wgcf, warp-go, masque-client, awg)
@@ -731,16 +796,41 @@ def get_installability(name: str) -> dict:
     if install_kind == "package" and (cfg.get("package_assets") or {}):
         by_mgr = (cfg["package_assets"].get(pkg_mgr)
                   or cfg["package_assets"].get("opkg") or {})
-        supported = sorted(by_mgr.keys())
+        supported = _distinct_archs(by_mgr)
     else:
         supported = sorted((cfg.get("arch_map") or {}).keys())
 
+    # Показываем ту арку, по которой реально шёл выбор: на apk это таргет
+    # OpenWrt (x86_64 / arm_cortex-a7), а не семейство из `uname -m`.
+    keys = _arch_keys(arch, pkg_mgr)
     return {
         "installable": bool(_resolve_asset_name(cfg, arch, pkg_mgr)),
-        "arch": arch,
+        "arch": keys[0] if keys else arch,
         "supported_archs": supported,
         "repo": cfg.get("repo", ""),
     }
+
+
+def _distinct_archs(by_arch: dict) -> list:
+    """Список архитектур без синонимов, ведущих на один и тот же ассет.
+
+    В манифесте один ассет может лежать под таргетом OpenWrt
+    (`aarch64_generic`) и под семейным алиасом (`aarch64`) — в UI это
+    один и тот же вариант, дважды его перечислять незачем.
+    """
+    seen = {}
+    for arch_key, asset in sorted((by_arch or {}).items()):
+        seen.setdefault(asset, arch_key)
+    return sorted(seen.values())
+
+
+def _pick_by_arch(table: dict, arch: str, pkg_mgr: str = "") -> str:
+    """Значение из {арка: значение} по ключам от точного к общему."""
+    for key in _arch_keys(arch, pkg_mgr):
+        val = (table or {}).get(key)
+        if val:
+            return val
+    return ""
 
 
 def _resolve_asset_name(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
@@ -749,20 +839,23 @@ def _resolve_asset_name(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
         package_assets = cfg.get("package_assets", {}) or {}
         if package_assets:
             if pkg_mgr and pkg_mgr in package_assets:
-                return (package_assets.get(pkg_mgr) or {}).get(arch, "")
-            return (package_assets.get("opkg") or {}).get(arch, "")
+                return _pick_by_arch(package_assets.get(pkg_mgr), arch, pkg_mgr)
+            return _pick_by_arch(package_assets.get("opkg"), arch, "opkg")
         # Пакеты без раздельного package_assets (usque): единый набор .ipk
         # по архитектурам лежит в arch_map — используем его.
-        return (cfg.get("arch_map", {}) or {}).get(arch, "")
+        return _pick_by_arch(cfg.get("arch_map"), arch, pkg_mgr)
     return (cfg.get("arch_map", {}) or {}).get(arch, "")
 
 
 def _expected_sha256(cfg: dict, arch: str, pkg_mgr: str = "") -> str:
     """Получить ожидаемый sha256 из встроенного манифеста."""
     sha_map = cfg.get("sha256_map", {}) or {}
-    if pkg_mgr and "%s:%s" % (pkg_mgr, arch) in sha_map:
-        return sha_map["%s:%s" % (pkg_mgr, arch)]
-    return sha_map.get(arch, "")
+    if pkg_mgr:
+        for key in _arch_keys(arch, pkg_mgr):
+            val = sha_map.get("%s:%s" % (pkg_mgr, key))
+            if val:
+                return val
+    return _pick_by_arch(sha_map, arch, pkg_mgr)
 
 
 def _verify_downloaded_file(release: dict, asset_name: str, filepath: str) -> dict:

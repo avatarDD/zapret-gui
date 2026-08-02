@@ -93,16 +93,39 @@ _STDLIB_PKG_OVERRIDES = {
     "readline": "python3-readline",
 }
 
+# Новый OpenWrt (24.10+/SNAPSHOT, менеджер apk) часть под-пакетов убрал,
+# раздав их содержимое соседям. Совет «поставьте python3-email» там
+# заканчивается «no such package» (issue #285), поэтому для apk-хостов
+# карта своя.
+_STDLIB_PKG_OVERRIDES_APK = {
+    "email": "python3-urllib",   # модуль email переехал внутрь python3-urllib
+}
+
+
+def _host_uses_apk() -> bool:
+    """Хост ставит пакеты через apk (новый OpenWrt), а не opkg?
+
+    Entware и старый OpenWrt — opkg; apk там нет. Если есть оба (переходный
+    период), считаем менеджером opkg: его карта пакетов полнее.
+    """
+    import shutil
+    return bool(shutil.which("apk")) and not shutil.which("opkg")
+
 
 def stdlib_pkg_for(module: str) -> str:
     """opkg/apk-пакет Entware/OpenWrt для stdlib-модуля Python.
 
-    `email.utils` → `python3-email`, `urllib.parse` → `python3-urllib`,
-    `unicodedata` → `python3-codecs`, `ssl` → `python3-openssl`. Для
-    остальных модулей — `python3-<top-level>` (на Entware/OpenWrt так
-    называется большинство под-пакетов).
+    `email.utils` → `python3-email` (opkg) либо `python3-urllib` (apk),
+    `urllib.parse` → `python3-urllib`, `unicodedata` → `python3-codecs`,
+    `ssl` → `python3-openssl`. Для остальных модулей — `python3-<top-level>`
+    (на Entware/OpenWrt так называется большинство под-пакетов).
     """
     top = (module or "").split(".", 1)[0]
+    if _host_uses_apk():
+        apk_name = _STDLIB_PKG_OVERRIDES_APK.get(module) \
+            or _STDLIB_PKG_OVERRIDES_APK.get(top)
+        if apk_name:
+            return apk_name
     return _STDLIB_PKG_OVERRIDES.get(module) \
         or _STDLIB_PKG_OVERRIDES.get(top) \
         or ("python3-" + top if top else "")
