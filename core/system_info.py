@@ -3,10 +3,23 @@
 Сбор информации о системе роутера.
 
 Версия ядра, архитектура, RAM, uptime, IP-адреса.
+
+Здесь же живёт лёгкий детект платформы (`platform_kind`) — единственный
+источник правды для тех мест, где нельзя платить за тяжёлые пробы:
+эта функция вызывается на каждый опрос дашборда, поэтому она смотрит
+ТОЛЬКО файлы и PATH, без запуска ndmc/ndmq (их сессии на
+/var/run/ndm.core.socket забивают системный лог роутера).
+
+Для задач, где точность важнее цены (выбор бинарников, путей, init-
+скриптов), есть полноценный детектор — core/awg_detector.AwgDetector:
+он при необходимости дёргает `ndmc` и кэширует результат на процесс.
+Маркеры Keenetic здесь подобраны так, чтобы совпадать с ним.
 """
 
 import os
 import platform
+import re
+import shutil
 import subprocess
 
 
@@ -35,16 +48,87 @@ def _read_file(path: str, default: str = "") -> str:
         return default
 
 
-def _get_platform() -> str:
-    """Определить платформу (Keenetic, OpenWrt, generic Linux)."""
+def _is_keenetic() -> bool:
+    """Keenetic — по любому из дешёвых маркеров (без запуска ndmc).
+
+    Раньше признаком служил один `/tmp/ndnproxy_acl`, но этот файл
+    создаёт ndnproxy — компонент DNS-прокси KeenOS. У кого DNS отдан
+    dnsmasq/AdGuard (типовой случай для zapret-gui), файла нет, и роутер
+    определялся как «OpenWrt» (у KeenOS есть /etc/openwrt_release) либо
+    как «Entware».
+    """
     if os.path.exists("/tmp/ndnproxy_acl"):
-        return "Keenetic (NDMS)"
-    if os.path.exists("/etc/openwrt_release"):
-        return "OpenWrt"
-    if os.path.exists("/opt/etc/entware_release"):
-        release = _read_file("/opt/etc/entware_release")
-        return f"Entware ({release.split(chr(10))[0]})" if release else "Entware"
-    return "Linux"
+        return True
+    # Каталог хуков NDMS — им же пользуется firewall_persistence.is_keenetic.
+    if os.path.isdir("/opt/etc/ndm"):
+        return True
+    # Наличие CLI NDMS в PATH. Именно which, а не запуск: каждый вызов
+    # ndmc открывает сессию на ndm.core.socket и пишет в лог роутера.
+    if shutil.which("ndmc") or shutil.which("ndmq"):
+        return True
+    if "keenetic" in _read_file("/proc/version").lower():
+        return True
+    # KeenOS на OpenWrt-основе: файл есть, но это не «просто OpenWrt».
+    return "keenetic" in _read_file("/etc/openwrt_release").lower()
+
+
+def platform_kind() -> str:
+    """'keenetic' | 'openwrt' | 'entware' | 'linux' — лёгкий детект.
+
+    Keenetic проверяем раньше OpenWrt: у KeenOS бывает и
+    /etc/openwrt_release, и Entware, поэтому обратный порядок давал
+    неверную платформу.
+    """
+    if _is_keenetic():
+        return "keenetic"
+    if os.path.exists("/etc/openwrt_release") or \
+            os.path.exists("/etc/openwrt_version"):
+        return "openwrt"
+    if os.path.exists("/opt/etc/entware_release") or \
+            os.path.exists("/opt/bin/opkg"):
+        return "entware"
+    return "linux"
+
+
+def _keenos_version() -> str:
+    """Версия KeenOS из /proc/version, если она там есть (без ndmc)."""
+    m = re.search(r"Keenetic[^\d]*(\d+\.\d+\.\d+)",
+                  _read_file("/proc/version"), re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r'DISTRIB_DESCRIPTION="[^"]*Keenetic[^"]*?(\d+\.\d+\.\d+)',
+                  _read_file("/etc/openwrt_release"), re.I)
+    return m.group(1) if m else ""
+
+
+def _openwrt_version() -> str:
+    """DISTRIB_RELEASE из /etc/openwrt_release."""
+    m = re.search(r"DISTRIB_RELEASE=['\"]?([^'\"\n]+)",
+                  _read_file("/etc/openwrt_release"))
+    return m.group(1).strip() if m else ""
+
+
+def _get_platform() -> str:
+    """Человекочитаемая платформа для карточки «Системная информация»."""
+    kind = platform_kind()
+    entware = os.path.exists("/opt/etc/entware_release") or \
+        os.path.exists("/opt/bin/opkg")
+
+    if kind == "keenetic":
+        ver = _keenos_version()
+        label = f"Keenetic {ver} (NDMS)" if ver else "Keenetic (NDMS)"
+    elif kind == "openwrt":
+        ver = _openwrt_version()
+        label = f"OpenWrt {ver}" if ver else "OpenWrt"
+    elif kind == "entware":
+        release = _read_file("/opt/etc/entware_release").split("\n")[0]
+        return f"Entware ({release})" if release else "Entware"
+    else:
+        return "Linux"
+
+    # Entware на Keenetic/OpenWrt — норма, и знать о нём полезно: именно
+    # там лежат наши бинарники и init-скрипты.
+    return f"{label} + Entware" if entware else label
 
 
 def _get_uptime() -> int:

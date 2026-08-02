@@ -97,18 +97,13 @@ def detect_pkg_manager():
 def _platform_kind():
     """keenetic | openwrt | entware | linux — лёгкий файловый детект.
 
-    Та же логика, что core/system_info._get_platform и
-    core/network_env._platform_kind (Keenetic проверяем раньше OpenWrt, т.к.
-    на Keenetic-Entware /etc/openwrt_release может отсутствовать, а ndnproxy —
-    характерный маркер).
+    Реализация одна на всех — core/system_info.platform_kind. Здесь это
+    критично: по платформе решается, можно ли ставить модули ядра (на
+    Keenetic нельзя), а прежняя копия проверок принимала Keenetic за
+    OpenWrt и предлагала несуществующий там opkg-пакет.
     """
-    if os.path.exists("/tmp/ndnproxy_acl"):
-        return "keenetic"
-    if os.path.exists("/etc/openwrt_release"):
-        return "openwrt"
-    if os.path.exists("/opt/etc/entware_release"):
-        return "entware"
-    return "linux"
+    from core.system_info import platform_kind
+    return platform_kind()
 
 
 def _detect_fw_type():
