@@ -869,8 +869,42 @@ MTPROXY_BIN_CANDIDATES = [
     "/opt/usr/bin/tg-mtproxy-client",
     "/opt/sbin/tg-mtproxy-client",
 ]
-MTPROXY_DEFAULT_RELAY = ""
+
+# Значения по умолчанию — ровно те, что апстрим зашивает в свои сборки
+# (`tg-mtproxy-client -h` печатает их как default). Мы собираем бинарник
+# сами и секрет в него НЕ зашиваем: держать его здесь лучше, потому что
+# сменить значение — это правка настройки в GUI, а не пересборка и
+# релиз. Пользователь может указать свой релей и свой секрет —
+# tgproxy.tunnel_url / tgproxy.tunnel_secret перекрывают эти дефолты.
+#
+# ВАЖНО: это ключ HMAC для аутентификации НА РЕЛЕЕ (см. computeAuthHMAC
+# и /register в апстриме), а НЕ секрет MTProto-ссылки. Он общий для всех
+# пользователей публичного релея — приватности в нём нет.
+#
+# ОТКУДА ВЗЯТ И КАК ОБНОВИТЬ, КОГДА ПЕРЕСТАНЕТ РАБОТАТЬ.
+# Апстрим зашивает секрет в свои сборки при компиляции
+# (-X main.defaultTunnelSecret) и в исходники не коммитит. Реверс не
+# нужен — Go печатает дефолты флагов сам:
+#
+#   git clone --depth 1 https://github.com/necronicle/z2k
+#   chmod +x z2k/mtproxy-client/builds/tg-mtproxy-client-linux-amd64
+#   z2k/mtproxy-client/builds/tg-mtproxy-client-linux-amd64 -h
+#     -tunnel-secret string ... (default "63d91c...")
+#     -tunnel-url    string ... (default "wss://213.176.74.63.nip.io/ws")
+#
+# Симптом протухшего ключа: движок стартует, но туннель не поднимается.
+# Подробности — .claude/skills/telegram-tunnel/SKILL.md §10.3.
+MTPROXY_DEFAULT_RELAY = "wss://213.176.74.63.nip.io/ws"
+MTPROXY_DEFAULT_TUNNEL_SECRET = (
+    "63d91c9c6fbc14b59043696af837774c1f90ecabe112b97113e5d0b289900070"
+)
 MTPROXY_LOCAL_PORT = 1443
+
+# Секрет релея — hex-строка произвольной длины (у публичного релея это
+# 64 символа). Прежняя проверка требовала РОВНО 32 hex, то есть формат
+# MTProto-ссылки, и отвергала настоящий секрет: ввести рабочее значение
+# в GUI было физически нельзя.
+_TUNNEL_SECRET_RE = re.compile(r"^[0-9a-fA-F]{16,128}$")
 
 
 def _find_mtproxy_binary() -> str:
@@ -916,6 +950,7 @@ class MtProxyClientManager:
         relay: str = MTPROXY_DEFAULT_RELAY,
         secret: str = "",
         host: str = "",
+        apply_redirect: bool = True,
     ) -> dict[str, Any]:
         with self._lock:
             if self._proc and self._proc.poll() is None:
@@ -945,10 +980,18 @@ class MtProxyClientManager:
             if not (1 <= port <= 65535):
                 return {"ok": False, "error": "port вне диапазона 1-65535"}
 
-            if secret and not re.match(r"^[0-9a-fA-F]{32}$", secret):
+            # Пустой секрет — берём общий дефолт публичного релея.
+            #
+            # Раньше здесь генерировался СЛУЧАЙНЫЙ secrets.token_hex(16),
+            # и это не могло работать в принципе: --tunnel-secret — ключ
+            # HMAC, которым клиент аутентифицируется на релее (и которым
+            # подписывает /register). Релей должен знать это значение
+            # заранее, поэтому случайное всегда отвергалось — процесс
+            # запускался, а туннель молча не поднимался.
+            secret = (secret or "").strip() or MTPROXY_DEFAULT_TUNNEL_SECRET
+            if not _TUNNEL_SECRET_RE.match(secret):
                 return {"ok": False,
-                        "error": "secret должен содержать 32 hex-символа"}
-            secret = secret or secrets.token_hex(16)
+                        "error": "secret релея — hex-строка (16–128 символов)"}
 
             # Слушать по умолчанию на LAN-адресе роутера, а не на
             # 127.0.0.1: телефон подключается по ссылке tg://proxy из той
@@ -996,12 +1039,58 @@ class MtProxyClientManager:
                 % (relay, host, port),
                 source="tgproxy",
             )
-            return {"ok": True, "secret": secret, "port": port, "host": host}
+            # Без REDIRECT движок не получит ни одного соединения: он
+            # работает по SO_ORIGINAL_DST, то есть только с трафиком,
+            # завёрнутым ядром на его порт. Ставим правила ПОСЛЕ
+            # успешного старта — вешать их на неподнятый порт значило бы
+            # оборвать Telegram совсем.
+            redirect = {"ok": False, "error": "не применялся"}
+            if apply_redirect:
+                # Та же пара механизмов, что и в
+                # route_telegram_dc_via_tunnel, только с другой стороны:
+                # если DC уже уведены в туннель, наш REDIRECT перехватит
+                # их раньше и туннель окажется не при делах. Не молчим.
+                try:
+                    from core.unified import manager as _um
+                    if _um.get_route(_DC_ROUTE_ID) is not None:
+                        log.warning(
+                            "tgproxy: Telegram DC уже маршрутизируются через "
+                            "туннель — REDIRECT на резервный движок "
+                            "перехватит их раньше", source="tgproxy")
+                except Exception:
+                    pass
+                try:
+                    from core import tgproxy_redirect
+                    redirect = tgproxy_redirect.apply(port)
+                except Exception as e:
+                    redirect = {"ok": False, "error": str(e)}
+
+            return {"ok": True, "port": port, "host": host,
+                    "redirect": redirect,
+                    "using_default_secret":
+                        secret == MTPROXY_DEFAULT_TUNNEL_SECRET}
+
+    def _drop_redirect(self) -> None:
+        """Снять REDIRECT. Обязательно при любой остановке.
+
+        Правила переживают смерть процесса, и оставленные они уводят весь
+        Telegram-трафик на порт, который больше никто не слушает, — то
+        есть Telegram отваливается совсем, а не «возвращается напрямую».
+        """
+        try:
+            from core import tgproxy_redirect
+            tgproxy_redirect.remove()
+        except Exception as e:
+            log.warning("tgproxy: не удалось снять REDIRECT: %s" % e,
+                        source="tgproxy")
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
             proc = self._proc
             self._proc = None
+            # Снимаем ДО проверки «уже остановлен»: если процесс умер сам
+            # (упал/убит извне), правила всё равно надо убрать.
+            self._drop_redirect()
             if not proc or proc.poll() is not None:
                 return {"ok": True, "message": "уже остановлен"}
             try:
@@ -1023,21 +1112,74 @@ class MtProxyClientManager:
     def get_status(self) -> dict[str, Any]:
         with self._lock:
             running = bool(self._proc and self._proc.poll() is None)
-            return {
-                "running": running,
-                "port": self._port if running else None,
-                "host": self._host if running else None,
-                "relay": self._relay if running else None,
-            }
+        # Состояние REDIRECT спрашиваем вне лока: это вызов nft/iptables,
+        # держать на нём мьютекс менеджера незачем.
+        redirect = {"active": False}
+        try:
+            from core import tgproxy_redirect
+            redirect = tgproxy_redirect.status()
+        except Exception:
+            pass
+        return {
+            "running": running,
+            "port": self._port if running else None,
+            "host": self._host if running else None,
+            "relay": self._relay if running else None,
+            # Процесс без REDIRECT бесполезен (см. get_connect_info), и
+            # это единственный способ увидеть такое состояние в GUI.
+            "redirect_active": bool(redirect.get("active")),
+            "redirect_backend": redirect.get("backend", ""),
+        }
 
     def get_connect_info(self) -> dict[str, Any]:
+        """Как подключаться к резервному движку.
+
+        Ссылки tg://proxy здесь НЕТ и быть не может: в отличие от
+        tg-ws-proxy, этот движок — не MTProto-прокси, а прозрачный
+        форвардер. Он читает исходный адрес назначения через
+        SO_ORIGINAL_DST (listener.go апстрима), то есть работает только с
+        трафиком, завёрнутым на его порт правилом iptables/nft REDIRECT,
+        и MTProto-рукопожатия не делает вовсе.
+
+        Раньше мы отдавали сюда tg://proxy со случайным секретом — такая
+        ссылка не работала бы ни при каких условиях: на этом порту никто
+        не говорит по MTProto.
+
+        Правила REDIRECT ставит и снимает сам менеджер (см. start/stop и
+        core/tgproxy_redirect), поэтому настраивать вручную ничего не
+        нужно — но если их почему-то нет, движок бесполезен, и это видно
+        в поле `redirect_active`.
+        """
         with self._lock:
             if not (self._proc and self._proc.poll() is None):
                 return {"link": "", "error": "не запущен"}
-            # Ровно тот адрес, на котором процесс реально слушает.
             host = self._host or _lan_ip() or "127.0.0.1"
-            link = _build_proxy_link(host, self._port, self._secret)
-            return {"link": link, "host": host, "port": self._port}
+            port = self._port
+
+        redirect = {"active": False}
+        try:
+            from core import tgproxy_redirect
+            redirect = tgproxy_redirect.status()
+        except Exception:
+            pass
+
+        if redirect.get("active"):
+            note = ("Ничего настраивать не нужно: трафик к датацентрам "
+                    "Telegram заворачивается на %s:%d автоматически "
+                    "(%s)." % (host, port, redirect.get("backend", "")))
+        else:
+            note = ("Правила REDIRECT не активны — движок не получит ни "
+                    "одного соединения. Перезапустите его; если не "
+                    "помогло, смотрите лог: возможно, на этой прошивке "
+                    "нет ни nft, ни iptables.")
+        return {
+            "link": "",
+            "host": host,
+            "port": port,
+            "mode": "transparent",
+            "redirect_active": bool(redirect.get("active")),
+            "note": note,
+        }
 
 
 _mtproxy_instance = None
@@ -1173,6 +1315,21 @@ def route_telegram_dc_via_tunnel(kind: str, iface: str) -> dict[str, Any]:
     для AmneziaWG)."""
     if kind not in ("warp", "awg"):
         return {"ok": False, "error": "kind должен быть 'warp' или 'awg'"}
+
+    # Взаимоисключающие механизмы на одних и тех же CIDR: REDIRECT
+    # срабатывает в nat раньше, чем принимается решение о маршруте, —
+    # пакет уйдёт на локальный порт и до туннеля не доедет. Молча
+    # включить оба означало бы «настроил туннель, а он не используется».
+    try:
+        from core import tgproxy_redirect
+        if tgproxy_redirect.status().get("active"):
+            return {"ok": False,
+                    "error": "Сейчас трафик Telegram заворачивается на "
+                             "резервный движок (tg-mtproxy-client). "
+                             "Остановите его — иначе до туннеля пакеты "
+                             "не дойдут."}
+    except Exception:
+        pass
     iface = (iface or "").strip()
     if not iface:
         return {"ok": False, "error": "Не указан интерфейс туннеля"}

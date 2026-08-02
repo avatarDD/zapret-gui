@@ -410,16 +410,60 @@ def register(app):
         """Relay/secret резервного движка (secret не отдаём открытым)."""
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
-        from core.tgproxy_manager import MTPROXY_LOCAL_PORT
+        from core.tgproxy_manager import (MTPROXY_DEFAULT_RELAY,
+                                          MTPROXY_LOCAL_PORT)
+        relay = cfg.get("tgproxy", "tunnel_url", default="") or ""
+        secret = cfg.get("tgproxy", "tunnel_secret", default="") or ""
         return {
             "ok": True,
             "config": {
-                "relay": cfg.get("tgproxy", "tunnel_url", default="") or "",
-                "secret_configured": bool(
-                    cfg.get("tgproxy", "tunnel_secret", default="")),
+                "relay": relay,
+                "default_relay": MTPROXY_DEFAULT_RELAY,
+                # Пусто = используется общий дефолт; отличаем это от
+                # «пользователь задал свой», иначе в UI не понять, что
+                # именно поедет в запуск.
+                "secret_configured": bool(secret),
+                "using_defaults": not (relay and secret),
                 "port": cfg.get("tgproxy", "port", default=MTPROXY_LOCAL_PORT),
             },
         }
+
+    @app.route("/api/tgproxy/mtproto/config", method="POST")
+    def mtproto_config_set():
+        """Задать свой релей и/или секрет (пустое поле — вернуть дефолт).
+
+        Секрет — ключ HMAC для аутентификации на релее. По умолчанию
+        используется общий ключ публичного релея (core/tgproxy_manager);
+        сюда его вводят те, у кого свой релей.
+        """
+        import re as _re
+        from core.config_manager import get_config_manager
+        from core.tgproxy_manager import _TUNNEL_SECRET_RE
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        cfg = get_config_manager()
+
+        if "relay" in body:
+            relay = str(body.get("relay") or "").strip()
+            if relay and not _re.match(r"^(wss?|https?)://[^\s]{3,300}$",
+                                       relay):
+                return {"ok": False,
+                        "error": "relay должен быть URL ws://, wss://, "
+                                 "http:// или https:// (пусто — дефолтный)"}
+            cfg.set("tgproxy", "tunnel_url", relay)
+
+        if "secret" in body:
+            secret = str(body.get("secret") or "").strip()
+            if secret and not _TUNNEL_SECRET_RE.match(secret):
+                return {"ok": False,
+                        "error": "secret релея — hex-строка (16–128 "
+                                 "символов); пусто — использовать дефолтный"}
+            cfg.set("tgproxy", "tunnel_secret", secret)
+
+        cfg.save()
+        return mtproto_config_get()
 
     @app.route("/api/tgproxy/mtproto/up", method="POST")
     def mtproto_up():
@@ -458,10 +502,13 @@ def register(app):
         )
         if res.get("ok") and persist:
             # Запомнить рабочий relay, чтобы после перезагрузки GUI его
-            # не приходилось вводить заново.
+            # не приходилось вводить заново. Секрет сюда НЕ пишем: пустая
+            # настройка означает «использовать общий дефолт», и если
+            # записать его значение, смена дефолта в коде до этого
+            # роутера уже не доедет. Свой секрет задают явно —
+            # POST /api/tgproxy/mtproto/config.
             try:
                 cfg.set("tgproxy", "tunnel_url", relay)
-                cfg.set("tgproxy", "tunnel_secret", res.get("secret", ""))
                 cfg.set("tgproxy", "port", port)
                 cfg.save()
             except Exception:

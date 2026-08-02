@@ -756,15 +756,27 @@ const TgProxyPage = (() => {
             const mcfg = ((await API.get("/api/tgproxy/mtproto/config")
                 .catch(() => ({}))) || {}).config || {};
 
+            // У этого движка нет ссылки tg://proxy: он прозрачный
+            // форвардер и работает только с трафиком, завёрнутым на его
+            // порт правилом REDIRECT. Поэтому показываем не «ссылку», а
+            // состояние заворачивания — без него движок бесполезен, и
+            // раньше это состояние вообще нигде не было видно.
             let connectHtml = "";
             if (running) {
-                const info = await API.get("/api/tgproxy/mtproto/connect-info");
-                if (info.link) {
-                    connectHtml = `
-                        <div class="detail-row" style="margin-top:8px;">Ссылка подключения:</div>
-                        <div class="connect-link"><code>${esc(info.link)}</code></div>
-                    `;
-                }
+                const info = await API.get("/api/tgproxy/mtproto/connect-info")
+                    .catch(() => ({}));
+                const ok = !!info.redirect_active;
+                connectHtml = `
+                    <div class="detail-row" style="margin-top:8px;">
+                        Перехват трафика Telegram:
+                        <b class="${ok ? "text-success" : "text-error"}">
+                            ${ok ? "включён" : "НЕ включён"}
+                        </b>
+                    </div>
+                    <div class="text-muted" style="font-size:11px;">
+                        ${esc(info.note || "")}
+                    </div>
+                `;
             }
 
             // Поле relay обязательно: движок релей-based, без адреса
@@ -782,15 +794,31 @@ const TgProxyPage = (() => {
                     <label>Relay (WSS-адрес)</label>
                     <input type="text" id="mtp-relay" class="form-control"
                            value="${esc(mcfg.relay || "")}"
-                           placeholder="wss://relay.example.org/ws"
+                           placeholder="${esc(mcfg.default_relay || "wss://relay.example.org/ws")}"
                            ${running ? "disabled" : ""}>
                     <div class="text-muted" style="font-size:11px; margin-top:4px;">
                         Адрес релея, через который движок ходит к Telegram.
-                        Сохраняется после успешного запуска.
-                        ${mcfg.secret_configured
-                            ? "Secret сохранён — при запуске используется он."
-                            : "Secret будет сгенерирован при первом запуске."}
+                        Пусто — используется публичный релей по умолчанию.
                     </div>
+                </div>
+                <div class="form-group">
+                    <label>Secret релея</label>
+                    <input type="password" id="mtp-secret" class="form-control"
+                           value="" placeholder="${mcfg.secret_configured
+                               ? "задан свой — оставьте пустым, чтобы не менять"
+                               : "используется общий (по умолчанию)"}"
+                           ${running ? "disabled" : ""}>
+                    <div class="text-muted" style="font-size:11px; margin-top:4px;">
+                        Ключ, которым движок аутентифицируется <b>на релее</b>
+                        (это не секрет ссылки <code>tg://proxy</code>).
+                        Свой нужен только для своего релея; для публичного
+                        подставляется общий. Очистить поле и сохранить —
+                        вернуться к значению по умолчанию.
+                    </div>
+                    <button class="btn btn-sm" id="mtp-btn-save-cfg" type="button"
+                            style="margin-top:6px;" ${running ? "disabled" : ""}>
+                        Сохранить релей и secret
+                    </button>
                 </div>
                 <button class="btn ${running ? 'btn-danger' : 'btn-success'}" id="mtp-btn-toggle">
                     ${running ? "Остановить" : "Запустить"}
@@ -799,10 +827,39 @@ const TgProxyPage = (() => {
             `;
             document.getElementById("mtp-btn-toggle").addEventListener(
                 "click", () => _mtprotoToggle(running));
+            document.getElementById("mtp-btn-save-cfg")?.addEventListener(
+                "click", _mtprotoSaveConfig);
             const mUpd = document.getElementById("mtproto-btn-install");
             if (mUpd) mUpd.addEventListener("click", _installEngine);
         } catch (e) {
             el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
+        }
+    }
+
+    /**
+     * Сохранить релей и secret резервного движка.
+     *
+     * Пустой secret означает «вернуться к общему значению по
+     * умолчанию», поэтому поле всегда рендерится пустым: показывать
+     * сохранённый секрет наружу незачем, а пустая отправка — это
+     * осознанный сброс.
+     */
+    async function _mtprotoSaveConfig() {
+        const relay = (document.getElementById("mtp-relay")?.value || "").trim();
+        const secret = (document.getElementById("mtp-secret")?.value || "").trim();
+        try {
+            const res = await API.post("/api/tgproxy/mtproto/config",
+                                       { relay, secret });
+            if (res && res.ok) {
+                Toast.success(secret
+                    ? "Сохранено: используется ваш secret"
+                    : "Сохранено: secret по умолчанию");
+                await _loadMtprotoPanel();
+            } else {
+                Toast.error((res && res.error) || "Не удалось сохранить");
+            }
+        } catch (e) {
+            Toast.error(e.message);
         }
     }
 
