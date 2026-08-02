@@ -338,7 +338,16 @@ const UsquePage = (() => {
                     : '<span class="status-dot status-off"></span> не запущен'}
                     ${st.pid ? ` (PID <code>${esc(String(st.pid))}</code>)` : ""}</div>
                 <div class="detail-row">Интерфейс <code>${esc(st.iface || "—")}</code>:
-                    ${st.iface_exists ? "существует" : "отсутствует"}</div>
+                    ${st.iface_exists ? "существует" : "отсутствует"}${st.iface_exists
+                        ? (st.link_up
+                            ? ", link поднят"
+                            : ', <span class="text-error">link не поднят</span>')
+                        : ""}</div>
+                ${st.iface_exists && !st.link_up
+                    ? `<div class="form-hint">Интерфейс есть, но не поднят — трафик через
+                           него не пойдёт. Обычно это значит, что не удалось назначить
+                           адрес из сессии (нет прав или занят другим интерфейсом).</div>`
+                    : ""}
                 ${diag
                     ? `<div style="margin-top:8px;">
                            <div class="form-label">Последние сообщения usque</div>

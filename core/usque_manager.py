@@ -32,6 +32,24 @@ _MAX_DIAGNOSTIC_LINES = 40
 # на «почему не поднялся», но не на «почему отваливается через час».
 # Буфер в ОЗУ, а не файл: на роутере лишняя запись на флешку ни к чему.
 _MAX_DEBUG_LINES = 500
+# Дефолт usque (`-m/--mtu`, cmd/nativetun.go). Держим то же значение: с
+# --no-iproute2 MTU выставляем мы, и расхождение с тем, из чего usque
+# нарезает пакеты внутри туннеля, дало бы фрагментацию.
+_DEFAULT_MTU = 1280
+
+
+def _run(args, timeout=10):
+    """Запустить команду, вернуть (rc, stdout, stderr)."""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True,
+                           timeout=timeout)
+        return r.returncode, r.stdout or "", r.stderr or ""
+    except FileNotFoundError as e:
+        return 127, "", str(e)
+    except subprocess.TimeoutExpired as e:
+        return 124, "", "timeout: %s" % e
+    except OSError as e:
+        return 1, "", str(e)
 
 
 def debug_enabled() -> bool:
@@ -90,16 +108,36 @@ class UsqueManager:
         return ""
 
     def _get_version(self, binary: str) -> str:
+        """Версия бинарника через подкоманду `usque version`.
+
+        Флага `--version` у usque НЕТ: cobra-команда не объявляет поле
+        Version, и вызов падает с rc=1 и текстом
+        «Error: unknown flag: --version» плюс полный usage. Раньше мы звали
+        именно его, а результат отдавали как версию — GUI показывал
+        «Установлен: Error: unknown flag: --version», а /api/usque/version
+        всегда рапортовал о доступном обновлении.
+
+        `usque version` печатает в stdout три строки:
+            usque version: 4.2.0
+            Commit: ...
+            Build Date: ...
+        Значение «dev» — штатное для сборки без -ldflags, его отдаём как
+        есть. В stderr при этом уходит жалоба на отсутствующий config.json
+        (usque читает конфиг даже для version), поэтому stderr игнорируем:
+        иначе путь к конфигу попадёт в поле версии.
+        """
         try:
-            r = subprocess.run([binary, "--version"],
+            r = subprocess.run([binary, "version"],
                                capture_output=True, text=True, timeout=5)
-            # usque выводит версию в stderr или stdout
-            out = (r.stdout or "") + (r.stderr or "")
-            # Ищем паттерн типа "1.2.3" или "v1.2.3"
-            m = re.search(r"v?(\d+\.\d+\.\d+)", out)
-            return m.group(1) if m else out.strip()[:50]
         except Exception:
             return ""
+        for line in (r.stdout or "").splitlines():
+            if "version:" not in line.lower():
+                continue
+            value = line.split(":", 1)[1].strip()
+            m = re.search(r"v?(\d+\.\d+(?:\.\d+)*)", value)
+            return m.group(1) if m else value[:50]
+        return ""
 
     def _get_arch(self, binary: str) -> str:
         """Архитектура бинарника, а при невозможности — архитектура хоста.
@@ -173,9 +211,14 @@ class UsqueManager:
     # private_key — ECDSA P-256 в DER/base64, access_token+id — учётка
     # устройства. Ими и отличаем настоящий usque-конфиг от чужого файла.
     _USQUE_REQUIRED = ("private_key", "access_token", "id")
+    # endpoint_h2_* — эндпоинты для режима --http2 (H2/TCP). Они есть в
+    # КАЖДОМ конфиге, который выдаёт `usque register` v4.x, поэтому без них
+    # в списке GUI ругался «неизвестные поля» на полностью нормальный файл.
+    # license в бесплатной регистрации отсутствует (появляется только после
+    # привязки ключа WARP+), так что он известный, но необязательный.
     _USQUE_KNOWN = _USQUE_REQUIRED + (
-        "endpoint_v4", "endpoint_v6", "endpoint_pub_key", "license",
-        "ipv4", "ipv6",
+        "endpoint_v4", "endpoint_v6", "endpoint_h2_v4", "endpoint_h2_v6",
+        "endpoint_pub_key", "license", "ipv4", "ipv6",
     )
 
     def import_config(self, name: str, text: str) -> dict:
@@ -347,9 +390,21 @@ class UsqueManager:
               low_latency: bool = True, apply_optimizer: bool = True) -> dict:
         """Запустить WARP туннель.
 
+        Возврат ok=true означает «процесс жив, интерфейс создан и настроен»,
+        а НЕ «WARP подключён»: usque устанавливает MASQUE-соединение лениво,
+        при первом исходящем пакете. Поэтому поле `connected` — всегда None,
+        подтвердить соединение может только проба трафиком (watchdog).
+
         Args:
             transport_profile: performance (H3/QUIC), restricted (H2/TCP)
-                или auto (H3 с fallback на H2 при подтверждённом сбое).
+                или auto.
+
+                Важно про auto: здесь он ловит только сбой САМОГО ЗАПУСКА
+                (процесс умер / интерфейс не появился). Отказ H3-транспорта
+                на старте не виден в принципе — из-за ленивого подключения
+                usque стартует успешно даже при наглухо закрытом UDP/443.
+                Переключение на H2 в этом случае делает watchdog, когда
+                проба через туннель не проходит (core/usque_watchdog.py).
             low_latency: включить безопасный keepalive usque. TCP_NODELAY
                          не является параметром usque CLI, а глобальные
                          buffer sysctl здесь намеренно не меняются.
@@ -411,11 +466,18 @@ class UsqueManager:
                 self._stderr_threads[iface] = reader
                 reader.start()
 
-                # Ждём создания TUN-интерфейса (до 5s)
+                # Ждём ПОЯВЛЕНИЯ TUN-интерфейса (до 5s).
+                #
+                # Раньше здесь ждали operstate ∈ {up, unknown}. С флагом
+                # --no-iproute2, который мы передаём всегда, usque link не
+                # поднимает — operstate остаётся "down", условие не
+                # выполнялось никогда, и через 5 с рабочий туннель убивался
+                # с «usque не создал интерфейс». Признак готовности здесь —
+                # существование интерфейса; поднимаем его мы сами ниже.
                 iface_up = False
                 for _ in range(50):
                     time.sleep(0.1)
-                    if self._check_iface_up(iface):
+                    if self._iface_exists(iface):
                         iface_up = True
                         break
                     if proc.poll() is not None:
@@ -437,8 +499,9 @@ class UsqueManager:
                         pass
                     diagnostic = self._diagnostic(iface)
                     if transport_profile == "auto":
-                        # Auto is deliberately fail-closed: only a confirmed
-                        # H3 process/interface failure triggers one H2 retry.
+                        # Ровно один повтор на H2 и только по подтверждённому
+                        # отказу запуска. Сетевой отказ H3 сюда не попадает
+                        # (ленивое подключение) — им занимается watchdog.
                         fallback = self.start(
                             iface,
                             config_path,
@@ -457,6 +520,24 @@ class UsqueManager:
                         % (iface, rc),
                         "diagnostic": diagnostic,
                     }
+
+                # Интерфейс есть, но он «пустой»: адреса и link — на нас
+                # (см. _configure_iface). Делать это надо ДО того, как
+                # туннель объявлен запущенным, иначе наружу уйдёт ok=true
+                # на заведомо неработающий интерфейс.
+                configured = self._configure_iface(iface, config_path)
+                if not configured.get("ok"):
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1)
+                    except Exception:
+                        pass
+                    try:
+                        reader.join(timeout=0.25)
+                    except Exception:
+                        pass
+                    return {"ok": False, "error": configured.get("error", ""),
+                            "diagnostic": self._diagnostic(iface)}
 
                 # Сохраняем PID
                 try:
@@ -482,10 +563,19 @@ class UsqueManager:
                     except Exception:
                         pass
 
-                log.info("usque: туннель %s запущен (pid=%d)" % (iface, proc.pid),
+                log.info("usque: туннель %s запущен (pid=%d, %s)"
+                         % (iface, proc.pid, configured.get("ipv4") or "без v4"),
                          source="usque")
+                # ВАЖНО: ok=true означает «процесс жив и интерфейс настроен»,
+                # а НЕ «WARP подключён». usque подключается лениво — только
+                # при первом исходящем пакете (в логе это «Detected outbound
+                # activity … Establishing MASQUE connection»). Факт реального
+                # соединения проверяет проба watchdog'а, а не старт.
                 return {"ok": True, "pid": proc.pid, "iface": iface,
-                        "transport_profile": transport_profile}
+                        "transport_profile": transport_profile,
+                        "ipv4": configured.get("ipv4", ""),
+                        "ipv6": configured.get("ipv6", ""),
+                        "connected": None}
 
             except Exception as e:
                 return {"ok": False, "error": str(e),
@@ -593,12 +683,19 @@ class UsqueManager:
         return {"ok": True}
 
     def status(self, iface: str) -> dict:
-        """Статус туннеля."""
+        """Статус туннеля.
+
+        `link_up` отделён от `iface_exists` намеренно: «интерфейс есть, но
+        link down» — это ровно тот случай, когда usque отработал, а наша
+        настройка адресов не доехала, и трафика не будет. Ни то, ни другое
+        поле не означает «WARP подключён»: соединение у usque ленивое.
+        """
         running = self._is_running(iface)
         pid = self._read_pid(self._pid_path(iface))
         return {
             "running": running,
             "iface_exists": self._iface_exists(iface),
+            "link_up": self._check_iface_up(iface),
             "iface": iface,
             "pid": pid,
             "diagnostic": self._diagnostic(iface),
@@ -606,6 +703,69 @@ class UsqueManager:
 
     def _iface_exists(self, iface: str) -> bool:
         return os.path.exists("/sys/class/net/%s" % iface)
+
+    # ─────── настройка TUN-интерфейса ───────
+
+    def _tunnel_addresses(self, config_path: str) -> tuple:
+        """(ipv4, ipv6) ВНУТРИ туннеля из session-конфига usque."""
+        import json as _json
+        try:
+            with open(config_path) as f:
+                data = _json.load(f)
+        except (OSError, ValueError):
+            return "", ""
+        if not isinstance(data, dict):
+            return "", ""
+        return (str(data.get("ipv4") or "").strip(),
+                str(data.get("ipv6") or "").strip())
+
+    def _configure_iface(self, iface: str, config_path: str,
+                         mtu: int = _DEFAULT_MTU) -> dict:
+        """Назначить адреса и поднять link на TUN, созданном usque.
+
+        Мы запускаем usque с `--no-iproute2`, а этот флаг, вопреки имени,
+        означает «не назначать адреса И НЕ ПОДНИМАТЬ link» — usque прямо
+        пишет «You should set the link up manually». Без этого шага
+        интерфейс существует, но остаётся operstate=down и без единого
+        адреса: трафик через него не пойдёт никогда.
+
+        Почему вообще `--no-iproute2`, а не штатная настройка самим usque:
+        в штатном режиме usque падает ЦЕЛИКОМ на хосте без IPv6
+        («failed to add IPv6 address: operation not supported»), потому что
+        любая ошибка netlink там фатальна. Здесь IPv4 обязателен, а IPv6 —
+        best-effort.
+
+        Порядок и префиксы повторяют cmd/nativetun_linux.go апстрима:
+        MTU → адрес /32 → адрес /128 → link up.
+        """
+        v4, v6 = self._tunnel_addresses(config_path)
+
+        if mtu:
+            _run(["ip", "link", "set", "dev", iface, "mtu", str(mtu)])
+
+        if v4:
+            rc, _out, err = _run(
+                ["ip", "-4", "address", "add", "%s/32" % v4, "dev", iface])
+            if rc != 0 and "exists" not in (err or "").lower():
+                return {"ok": False,
+                        "error": "не удалось назначить IPv4 %s на %s: %s"
+                                 % (v4, iface, (err or "").strip())}
+        if v6:
+            # IPv6 намеренно best-effort: на роутере без v6 отсутствие
+            # адреса не повод ронять рабочий v4-туннель.
+            rc, _out, err = _run(
+                ["ip", "-6", "address", "add", "%s/128" % v6, "dev", iface])
+            if rc != 0 and "exists" not in (err or "").lower():
+                log.info("usque: IPv6 %s на %s не назначен: %s"
+                         % (v6, iface, (err or "").strip()), source="usque")
+
+        rc, _out, err = _run(["ip", "link", "set", "dev", iface, "up"])
+        if rc != 0:
+            return {"ok": False,
+                    "error": "не удалось поднять %s: %s"
+                             % (iface, (err or "").strip())}
+
+        return {"ok": True, "ipv4": v4, "ipv6": v6, "mtu": mtu}
 
     def _is_running(self, iface: str) -> bool:
         """Проверить, работает ли процесс."""
@@ -666,11 +826,18 @@ class UsqueManager:
         return "usque" in cmd.lower() if cmd.strip() else True
 
     def _check_iface_up(self, iface: str) -> bool:
-        """Проверить, поднят ли интерфейс.
+        """Поднят ли link на интерфейсе (диагностика в status()).
+
+        Как признак «туннель стартовал» НЕ годится: мы запускаем usque с
+        --no-iproute2, и до нашего `ip link set up` operstate у TUN — "down".
+        Готовность старта определяет _iface_exists().
+
+        У TUN-устройств «поднятое» состояние читается и как "up", и как
+        "unknown" (второе — обычное для интерфейсов без carrier), поэтому
+        оба значения считаем поднятыми.
 
         MR-126: читаем /sys/class/net вместо subprocess ip link show,
-        чтобы исключить лишние fork/exec при каждой проверке (до 50 раз
-        в течение 5 с. после старта туннеля).
+        чтобы исключить лишние fork/exec при частых опросах.
         """
         operstate = "/sys/class/net/%s/operstate" % iface
         try:
