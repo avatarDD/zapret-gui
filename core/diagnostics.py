@@ -28,50 +28,9 @@ from core.log_buffer import log
 
 # ─────────────────────── Предустановленные сервисы ───────────────────────
 
-SERVICES = {
-    "youtube": {
-        "name": "YouTube",
-        "icon": "▶",
-        "hosts": ["youtube.com", "www.youtube.com", "i.ytimg.com"],
-        "urls": ["https://www.youtube.com"],
-    },
-    "discord": {
-        "name": "Discord",
-        "icon": "💬",
-        "hosts": ["discord.com", "cdn.discordapp.com", "gateway.discord.gg"],
-        "urls": ["https://discord.com"],
-    },
-    "telegram": {
-        "name": "Telegram",
-        "icon": "✈",
-        "hosts": ["t.me", "web.telegram.org", "core.telegram.org"],
-        "urls": ["https://t.me"],
-    },
-    "instagram": {
-        "name": "Instagram",
-        "icon": "📷",
-        "hosts": ["instagram.com", "i.instagram.com"],
-        "urls": ["https://www.instagram.com"],
-    },
-    "twitter": {
-        "name": "X / Twitter",
-        "icon": "𝕏",
-        "hosts": ["x.com", "twitter.com"],
-        "urls": ["https://x.com"],
-    },
-    "chatgpt": {
-        "name": "ChatGPT",
-        "icon": "🤖",
-        "hosts": ["chatgpt.com", "chat.openai.com"],
-        "urls": ["https://chatgpt.com"],
-    },
-    "claude": {
-        "name": "Claude",
-        "icon": "🧠",
-        "hosts": ["claude.ai"],
-        "urls": ["https://claude.ai"],
-    },
-}
+# Каталог общий с тестом доступности — см. core/targets.py. Имя SERVICES
+# сохранено: на него ссылаются api/diagnostics.py и тесты.
+from core.targets import SERVICES  # noqa: E402  (после docstring, до кода)
 
 
 # ─────────────────────── Кэш результатов ───────────────────────
@@ -1498,15 +1457,8 @@ def _read_sysctl_int(path):
 
 def get_available_services():
     """Список доступных сервисов для проверки."""
-    return {
-        name: {
-            "name": svc["name"],
-            "icon": svc.get("icon", ""),
-            "hosts": svc["hosts"],
-            "urls": svc.get("urls", []),
-        }
-        for name, svc in SERVICES.items()
-    }
+    from core.targets import available_services
+    return available_services()
 
 
 def clear_cache():

@@ -10,6 +10,7 @@ Zapret Web-GUI — веб-интерфейс для управления nfqws2 
 """
 
 import os
+import re
 import sys
 import argparse
 
@@ -438,6 +439,80 @@ def _run_singbox_transparent_cli(args, remove: bool = False):
         sys.exit(2)
 
 
+# ─────────────────────── Статика и кэш браузера ───────────────────────
+#
+# Симптом, ради которого это сделано: после обновления GUI браузер
+# показывает СТАРЫЙ интерфейс — например, прежние пункты меню, — пока
+# пользователь не нажмёт Ctrl+F5. Причина не в браузере: bottle отдавал
+# js/css вообще без Cache-Control, и по RFC 9111 браузер вправе считать
+# такой ответ свежим «на глазок» (обычно 10% от возраста файла). Файл,
+# пролежавший месяц, кэшируется на сутки-трое — и никакая перезагрузка
+# страницы новую версию не подтянет.
+#
+# Очистить чужой кэш с сервера нельзя, но можно сделать так, чтобы
+# кэшировать было нечего:
+#   • index.html отдаём с no-store — точка входа всегда свежая;
+#   • в нём подставляем ?v=<mtime> каждому js/css/img: файл изменился —
+#     изменился и адрес, браузер обязан скачать заново (сработает и при
+#     обновлении GUI, и при правке одного файла в разработке);
+#   • адреса с ?v= кэшируем «навсегда» (immutable), без ?v= — no-cache.
+# Итог: обычная загрузка страницы не делает ни одного лишнего запроса за
+# статикой, а обновление подхватывается сразу и без ручной очистки кэша.
+
+_ASSET_URL_RE = re.compile(r'\b(src|href)="(/(?:js|css|img)/[^"?#]+)"')
+
+# Кэш «навсегда»: год, как рекомендует RFC 9111 для версионированных URL.
+_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+
+
+def _asset_version(url_path: str) -> str:
+    """Метка версии файла — mtime в секундах, либо '' если файла нет."""
+    rel = url_path.lstrip("/")
+    full = os.path.join(WEB_DIR, *rel.split("/"))
+    try:
+        return str(int(os.path.getmtime(full)))
+    except OSError:
+        return ""
+
+
+def _serve_index():
+    """index.html с версионированными ссылками на статику, без кэша."""
+    from bottle import HTTPResponse
+
+    index_path = os.path.join(WEB_DIR, "index.html")
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            html = f.read()
+    except OSError:
+        # Файла нет — пусть static_file вернёт штатную 404/500.
+        return static_file("index.html", root=WEB_DIR)
+
+    def _stamp(m):
+        attr, url = m.group(1), m.group(2)
+        ver = _asset_version(url)
+        return '%s="%s?v=%s"' % (attr, url, ver) if ver else m.group(0)
+
+    html = _ASSET_URL_RE.sub(_stamp, html)
+
+    resp = HTTPResponse(body=html)
+    resp.set_header("Content-Type", "text/html; charset=UTF-8")
+    resp.set_header("Cache-Control", "no-store, must-revalidate")
+    resp.set_header("Pragma", "no-cache")
+    return resp
+
+
+def _serve_asset(filepath: str, root: str):
+    """Статика: с ?v= — кэш навсегда, без него — обязательная ревалидация."""
+    resp = static_file(filepath, root=root)
+    versioned = bool(request.query.get("v"))
+    try:
+        resp.set_header("Cache-Control",
+                        _IMMUTABLE_CACHE if versioned else "no-cache")
+    except AttributeError:
+        pass  # static_file вернул HTTPError без заголовков — не мешаем
+    return resp
+
+
 def create_app(config_dir: str = None) -> Bottle:
     """
     Создать и настроить Bottle-приложение.
@@ -591,19 +666,19 @@ def create_app(config_dir: str = None) -> Bottle:
     # --- Статические файлы ---
     @app.route("/")
     def index():
-        return static_file("index.html", root=WEB_DIR)
+        return _serve_index()
 
     @app.route("/css/<filepath:path>")
     def serve_css(filepath):
-        return static_file(filepath, root=os.path.join(WEB_DIR, "css"))
+        return _serve_asset(filepath, os.path.join(WEB_DIR, "css"))
 
     @app.route("/js/<filepath:path>")
     def serve_js(filepath):
-        return static_file(filepath, root=os.path.join(WEB_DIR, "js"))
+        return _serve_asset(filepath, os.path.join(WEB_DIR, "js"))
 
     @app.route("/img/<filepath:path>")
     def serve_img(filepath):
-        return static_file(filepath, root=os.path.join(WEB_DIR, "img"))
+        return _serve_asset(filepath, os.path.join(WEB_DIR, "img"))
 
     # --- Favicon ---
     @app.route("/favicon.ico")
@@ -617,8 +692,14 @@ def create_app(config_dir: str = None) -> Bottle:
         if request.path.startswith("/api/"):
             response.content_type = "application/json; charset=utf-8"
             return '{"ok": false, "error": "Не найдено"}'
-        # Для остального — SPA fallback
-        return static_file("index.html", root=WEB_DIR)
+        # Ненайденный файл статики — честная 404. Иначе в ответ на
+        # отсутствующий .js браузер получал HTML главной страницы со
+        # статусом 200 и падал на разборе его как скрипта.
+        if request.path.startswith(("/js/", "/css/", "/img/")):
+            response.content_type = "text/plain; charset=utf-8"
+            return "Не найдено: %s" % request.path
+        # Для остального (маршруты SPA) — точка входа
+        return _serve_index()
 
     # --- 500 для API — JSON вместо HTML ---
     # Без этого SSE-клиент (EventSource) получает HTML-ответ

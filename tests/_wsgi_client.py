@@ -86,6 +86,33 @@ class WSGIClient:
     def get(self, path: str):
         return self._call("GET", path)
 
+    def get_raw(self, path: str):
+        """GET с заголовками: (status, {header: value}, body).
+
+        Нужен там, где проверяется не тело, а политика ответа —
+        например Cache-Control у статики.
+        """
+        path, _, query = path.partition("?")
+        env = make_environ("GET", path, query=query)
+        result = {"status": "", "headers": []}
+
+        def start_response(status, headers, exc_info=None):
+            result["status"] = status
+            result["headers"] = headers
+            return lambda s: None
+
+        body_iter = self.app(env, start_response)
+        try:
+            chunks = [b if isinstance(b, bytes) else b.encode("utf-8")
+                      for b in body_iter]
+            body = b"".join(chunks)
+        finally:
+            close = getattr(body_iter, "close", None)
+            if callable(close):
+                close()
+        headers = {k.lower(): v for k, v in result["headers"]}
+        return result["status"], headers, body
+
     def post(self, path: str, body=None):
         if isinstance(body, (dict, list)):
             data = json.dumps(body).encode("utf-8")
