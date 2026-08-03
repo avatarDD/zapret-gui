@@ -15,15 +15,19 @@ nfqws2 падал с «Incompatible NFQWS2_COMPAT_VER» (issue #151).
 import hashlib
 import os
 import re
+import sys
 import tempfile
 import unittest
 
 from core import asset_importer as ai
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LUA_DIR = ai.IMPORT_LUA_DIR
 
 # ─────────────────────────────────────────────────────────────────────────
-# Базовый релиз upstream, с которым побайтово совпадает наш bundled core-lua.
+# Базовый релиз upstream, с которым побайтово совпадает наш bundled core-lua,
+# живёт в ЕДИНОМ манифесте `docs/upstream.json` (запись `zapret2`) — вместе
+# с остальными апстримами проекта. Здесь его только читаем.
 #
 # Зачем хэши, а не только COMPAT_VER: защита `_protected_core_lua` срабатывает
 # лишь на СМЕНЕ compat-версии. Внутри одной (все zapret2 1.0…1.0.4 = 6) наш
@@ -34,29 +38,26 @@ LUA_DIR = ai.IMPORT_LUA_DIR
 # Как обновлять при выходе нового релиза zapret2:
 #   1. скопировать lua/*.lua из релиза в import/lua/
 #   2. пересчитать: sha256sum import/lua/zapret-*.lua
-#   3. обновить _UPSTREAM_LUA_TAG и _UPSTREAM_LUA_SHA256 ниже
-#   4. проверить SKILL §0 (.claude/skills/nfqws2-strategies/SKILL.md) —
+#   3. обновить pinned/verified_at/vendored в docs/upstream.json
+#   4. перечитать SKILL §0 (.claude/skills/nfqws2-strategies/SKILL.md) —
 #      не поменялась ли семантика, а не только байты
+#
+# Отставание самого релиза (вышел 1.0.5, а мы на 1.0.4) ловит не этот тест,
+# а еженедельный .github/workflows/check-upstream.yml — здесь сети нет.
 #
 # Наши собственные расширения живут в ОТДЕЛЬНЫХ файлах (custom_funcs.lua,
 # zapret-multishake.lua, …) и сюда не входят: core-lua правится только
 # синхронизацией с апстримом.
 # ─────────────────────────────────────────────────────────────────────────
-_UPSTREAM_LUA_TAG = "v1.0.4"
-_UPSTREAM_LUA_SHA256 = {
-    "zapret-lib.lua":
-        "b272d207cca145a3b6174793b7d335489519f6d4299418ff2b870765cea24d5a",
-    "zapret-antidpi.lua":
-        "31c9dd75b0bd55e98e5306293f2be81e9d2ecadcbbf9157394ff37dcff7dc85a",
-    "zapret-auto.lua":
-        "aacfde0c95c3058f8e95f5d7d244398bdc03ebf846a8f17322129fb543366a3d",
-    "zapret-obfs.lua":
-        "e9581bfbca846630ada78193641d834e25abc11337ba85467d642c2d8c6fa47f",
-    "zapret-pcap.lua":
-        "6866c37c92fbc62075accf94228da48af618c7f416edc682eba99b2196e05f45",
-    "zapret-tests.lua":
-        "1d13e191cae02d9ed314ba41a91d2079965d07c16f80e08f1c9bf7c6e0e24100",
-}
+sys.path.insert(0, os.path.join(REPO_ROOT, "tools"))
+import check_upstream as cu  # noqa: E402
+
+_ZAPRET2 = next(e for e in cu.load_manifest()["upstreams"]
+                if e["id"] == "zapret2")
+_UPSTREAM_LUA_TAG = _ZAPRET2["pinned"]
+# Ключи манифеста — пути от корня репозитория, здесь удобнее по имени файла.
+_UPSTREAM_LUA_SHA256 = {os.path.basename(p): sha
+                        for p, sha in _ZAPRET2["vendored"].items()}
 
 
 def _write(path, text):

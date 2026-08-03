@@ -65,6 +65,7 @@ help:
 	@echo "  make release VERSION=X.Y.Z — обновить версию, создать тег и запустить релиз"
 	@echo "  make clean        — очистить build/ и dist/"
 	@echo "  make lint         — проверка синтаксиса Python"
+	@echo "  make upstream     — сверить docs/upstream.json с апстримами (нужна сеть)"
 	@echo "  make info         — информация о пакете"
 	@echo "  make bundle       — собрать минифицированные бандлы CSS/JS (MR-119)"
 	@echo ""
@@ -354,3 +355,14 @@ lint:
 		exit 1; \
 	fi
 	@echo "✓ Все Python файлы корректны"
+
+# ── Сверка с апстримами ───────────────────────────────────────
+# Отставание от чужих проектов (движки, каталоги стратегий) не видно само
+# по себе: скил nfqws2 три месяца описывал zapret2 0.9.5.2, пока апстрим
+# ушёл на 1.0.4. Манифест — docs/upstream.json, подробности — CoderManual §3.2.
+.PHONY: upstream upstream-offline
+upstream:
+	@python3 tools/check_upstream.py
+
+upstream-offline:
+	@python3 tools/check_upstream.py --offline

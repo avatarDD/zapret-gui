@@ -1,0 +1,129 @@
+# Сторож отставания от апстримов.
+#
+# Раз в неделю сверяет docs/upstream.json с реальным состоянием чужих
+# репозиториев и, если что-то отстало, заводит (или обновляет) одну
+# постоянную issue. Ровно та ситуация, ради которой заведён: скил nfqws2
+# три месяца описывал zapret2 0.9.5.2, пока апстрим ушёл на 1.0.4, а
+# bundled core-lua откатывала пользователю апстримные фиксы — и никто не
+# узнал, потому что узнавать было неоткуда.
+#
+# Сеть нужна только на `git ls-remote` и мелкие клоны — токен для опроса
+# апстримов не требуется. GITHUB_TOKEN используется лишь для issue.
+
+name: Check upstream drift
+
+on:
+  schedule:
+    # Понедельник, 06:00 UTC. Раз в неделю достаточно: апстримы релизятся
+    # не чаще, а шумная issue быстро перестаёт читаться.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      create_issue:
+        description: 'Заводить/обновлять issue при отставании'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: check-upstream
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Сверка с апстримами
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Локальные сверки (манифест ↔ репозиторий)
+        # Отдельным шагом до сети: если разошлись наши собственные файлы,
+        # это чинится без оглядки на апстрим и должно быть видно сразу.
+        run: python3 tools/check_upstream.py --offline
+
+      - name: Опрос апстримов
+        id: check
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 tools/check_upstream.py --json > report.json || true
+          python3 tools/check_upstream.py | tee report.txt
+          echo "ok=$(python3 -c "import json;print('1' if json.load(open('report.json'))['ok'] else '0')")" >> "$GITHUB_OUTPUT"
+          echo "behind=$(python3 -c "import json;print(len(json.load(open('report.json'))['behind']))")" >> "$GITHUB_OUTPUT"
+
+      - name: Отчёт в summary
+        if: always()
+        run: |
+          {
+            echo '## Сверка с апстримами'
+            echo
+            echo '```'
+            cat report.txt 2>/dev/null || echo 'отчёт не сформирован'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Завести или обновить issue
+        if: >-
+          steps.check.outputs.behind != '0' &&
+          (github.event_name == 'schedule' || inputs.create_issue)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE='Апстримы ушли вперёд — нужна сверка'
+          BODY_FILE=$(mktemp)
+          {
+            echo 'Автоматическая еженедельная сверка `docs/upstream.json` с апстримами.'
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo '### Что делать'
+            echo
+            echo '1. Прочитать changelog апстрима между `pinned` и `latest` —'
+            echo '   интересует не номер версии, а изменившаяся семантика.'
+            echo '2. Если у апстрима есть vendored-файлы (см. манифест) —'
+            echo '   синхронизировать их и пересчитать sha256.'
+            echo '3. Обновить скил: он источник правды для всех агентов,'
+            echo '   и устаревший скил хуже отсутствующего.'
+            echo '4. Обновить `pinned` и `verified_at` в `docs/upstream.json`.'
+            echo
+            echo 'Проверить локально: `python3 tools/check_upstream.py`'
+            echo
+            echo "_Обновлено прогоном ${GITHUB_RUN_ID} от $(date -u +%Y-%m-%d)._"
+          } > "$BODY_FILE"
+
+          EXISTING=$(gh issue list --state open --label upstream-drift \
+                       --search "$TITLE in:title" --json number \
+                       --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --body-file "$BODY_FILE"
+            echo "Обновлена issue #$EXISTING"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE" \
+              --label upstream-drift || \
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE"
+          fi
+
+      - name: Закрыть issue, если всё сошлось
+        if: steps.check.outputs.behind == '0' && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          N=$(gh issue list --state open --label upstream-drift \
+                --search 'Апстримы ушли вперёд in:title' --json number \
+                --jq '.[0].number // empty')
+          if [ -n "$N" ]; then
+            gh issue close "$N" --comment 'Все апстримы сошлись с `docs/upstream.json` — закрыто автоматически.'
+          fi
+
+      - name: Отметить провал
+        if: steps.check.outcome == 'failure' || steps.check.outputs.ok != '1'
+        run: |
+          echo 'Есть отставание или расхождения — см. отчёт выше.'
+          exit 1
