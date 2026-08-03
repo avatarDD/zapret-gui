@@ -59,11 +59,21 @@ class TestBinaries(unittest.TestCase):
         self.assertEqual(cfg.get("install_kind"), "package")
         self.assertEqual(cfg.get("package_name"), "tg-ws-proxy")
 
-    def test_tgwsproxy_installs_latest_release(self):
-        """Закреплённый тег означал бы, что «Обновления» показывают новую
-        версию, а «Установить» молча ставит старую."""
+    def test_tgwsproxy_pinned_to_last_router_release(self):
+        """Тег закреплён на 0.9.3 — последнем релизе с пакетами для роутера.
+
+        Раньше здесь стоял пустой release_tag («ставить последний релиз»), и
+        это было верно, пока апстрим оставался роутерным демоном на Go. В
+        v1.0.0 spatiumstas/tg-ws-proxy-go переписан на Python и стал
+        десктопным GUI-приложением: .ipk/.apk в релизах больше нет, только
+        сборки PyInstaller. С пустым тегом установка уходила в
+        /releases/latest и падала на 404.
+        """
         cfg = ebi.BINARIES["tgwsproxy"]
-        self.assertEqual(cfg.get("release_tag", ""), "")
+        self.assertEqual(cfg.get("release_tag", ""), "0.9.3")
+        self.assertEqual(cfg.get("release_tag"), cfg.get("pinned_tag"),
+                         "sha256 в манифесте относятся к pinned_tag — теги "
+                         "обязаны совпадать")
         self.assertTrue(cfg.get("allow_unpinned"))
         self.assertTrue(cfg.get("pinned_tag"))
         self.assertIn("opkg:aarch64", cfg.get("sha256_map", {}))
@@ -299,8 +309,9 @@ class TestInstallBinaryByName(unittest.TestCase):
                     res = ebi.install_binary_by_name("tgwsproxy")
 
         self.assertTrue(res["ok"])
-        mock_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go", "",
-                                            transport="")
+        mock_release.assert_called_once_with(
+            "spatiumstas/tg-ws-proxy-go",
+            ebi.BINARIES["tgwsproxy"]["release_tag"], transport="")
 
     @mock.patch("core.ext_binary_installer.github_release")
     @mock.patch("core.ext_binary_installer._pkg_version")
@@ -504,10 +515,12 @@ class TestInstallBinaryByName(unittest.TestCase):
 
 class TestTgwsproxyLatestRelease(unittest.TestCase):
     """
-    tg-ws-proxy ставится ПОСЛЕДНИМ релизом, а имя ассета версионировано
-    (`tg-ws-proxy_0.9.3-1_entware_aarch64-3.10.ipk`). Значит на версии
-    новее закреплённой ассет обязан находиться по версионно-независимому
-    суффиксу — иначе установка упирается в fallback-URL с несуществующим
+    tg-ws-proxy закреплён на 0.9.3 (см. TestBinaries), но механика поиска
+    ассета по версионно-независимому суффиксу остаётся рабочей и нужной:
+    имя ассета версионировано (`tg-ws-proxy_0.9.3-1_entware_aarch64-3.10.ipk`),
+    и при установке любого другого тега — через allow_unpinned или после
+    будущего переезда на новый источник — ассет обязан находиться по
+    суффиксу, иначе установка упирается в fallback-URL с несуществующим
     именем файла.
     """
 
@@ -549,15 +562,18 @@ class TestTgwsproxyLatestRelease(unittest.TestCase):
             res = ebi.install_binary_by_name("tgwsproxy")
         return res, m_release, m_download
 
-    def test_latest_is_requested_not_pinned_tag(self):
+    def test_pinned_tag_is_requested_not_latest(self):
+        """Запрашиваем именно 0.9.3: /releases/latest у этого апстрима
+        отдаёт десктопное приложение без пакетов для роутера (см. §7 скила
+        telegram-tunnel)."""
         cfg = ebi.BINARIES["tgwsproxy"]
         release = self._release(
             cfg["pinned_tag"], [cfg["package_assets"]["opkg"]["aarch64"]])
         res, m_release, _ = self._install(
             release, cfg["sha256_map"]["opkg:aarch64"])
         self.assertTrue(res["ok"], res)
-        m_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go", "",
-                                          transport="")
+        m_release.assert_called_once_with("spatiumstas/tg-ws-proxy-go",
+                                          cfg["release_tag"], transport="")
 
     def test_newer_release_asset_found_by_suffix(self):
         """Ключевой случай: в релизе 0.9.9 имени из манифеста нет."""

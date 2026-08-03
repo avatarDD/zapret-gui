@@ -187,6 +187,39 @@ class TestDriftDetection(unittest.TestCase):
         self.assertEqual(status, "unknown")
         self.assertIn("нет сети", msg)
 
+    def test_hold_turns_behind_into_held(self):
+        """Осознанная задержка видна в отчёте, но не поднимает тревогу.
+
+        Апстрим может уйти туда, куда мы за ним не идём (tg-ws-proxy-go
+        переписан с Go на Python и перестал выпускать пакеты для роутера).
+        Такое отставание надо ВИДЕТЬ, но еженедельно тревожить им нельзя —
+        иначе сторожа перестанут читать.
+        """
+        entry = self._entry(hold={"reason": "апстрим сменил платформу"})
+        status, msg, latest = self._with_tags(["v1.0.0", "v2.0.0"], entry)
+        self.assertEqual(status, "held")
+        self.assertEqual(latest, "v2.0.0")
+        self.assertIn("апстрим сменил платформу", msg)
+
+    def test_held_does_not_fail_the_run(self):
+        manifest = {"upstreams": [self._entry(
+            hold={"reason": "r"}, vendored={}, mentions=[], skill=None)]}
+        real = cu.remote_tags
+        cu.remote_tags = lambda repo, **kw: (["v9.9.9"], None)
+        try:
+            report = cu.run(manifest)
+        finally:
+            cu.remote_tags = real
+        self.assertEqual(report["behind"], [])
+        self.assertEqual(len(report["held"]), 1)
+        self.assertTrue(report["ok"])
+
+    def test_hold_does_not_hide_an_up_to_date_entry(self):
+        """`hold` не должен маскировать нормальное состояние."""
+        entry = self._entry(hold={"reason": "r"})
+        status, _, _ = self._with_tags(["v1.0.0"], entry)
+        self.assertEqual(status, "ok")
+
     def test_unpinned_does_not_fail_the_run(self):
         """Незапиннованный апстрим — долг, а не регресс: сборку не валит."""
         manifest = {"upstreams": [self._entry(pinned=None, vendored={},

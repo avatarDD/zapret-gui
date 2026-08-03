@@ -218,6 +218,17 @@ def check_release_drift(entry):
                 "%s: не разобрать версии (pinned=%s, latest=%s)"
                 % (entry["id"], pinned, latest), latest)
     if lk > pk:
+        # Осознанная задержка: мы знаем, что апстрим ушёл, и остаёмся
+        # намеренно (например, он переписан на другом языке и сменил
+        # раскладку). Это должно быть ВИДНО в отчёте, но не должно
+        # каждую неделю поднимать тревогу — иначе сторожа перестанут читать.
+        hold = entry.get("hold")
+        if hold:
+            return ("held",
+                    "%s: остаёмся на %s (апстрим на %s) — %s"
+                    % (entry["id"], pinned, latest,
+                       hold.get("reason") or "решение зафиксировано"),
+                    latest)
         return ("behind",
                 "%s: мы на %s, апстрим на %s" % (entry["id"], pinned, latest),
                 latest)
@@ -265,7 +276,7 @@ def check_branch_paths(entry, workdir=None):
 # ─────────────────────────── отчёт ───────────────────────────
 
 _ICON = {"ok": "✓", "behind": "!", "unpinned": "?", "unknown": "~",
-         "problem": "✗"}
+         "held": "=", "problem": "✗"}
 
 
 def run(manifest, offline=False, only_id=""):
@@ -294,6 +305,7 @@ def run(manifest, offline=False, only_id=""):
     report["behind"] = [r for r in report["entries"] if r["status"] == "behind"]
     report["unpinned"] = [r for r in report["entries"]
                           if r["status"] == "unpinned"]
+    report["held"] = [r for r in report["entries"] if r["status"] == "held"]
     report["ok"] = (not report["offline_problems"]) and not report["behind"]
     return report
 
@@ -324,6 +336,12 @@ def print_report(report, offline=False):
             print("  ! %s" % r["message"])
         print("\nЧто делать: синхронизировать vendored-файлы, перечитать "
               "changelog апстрима, обновить скил и pinned в docs/upstream.json.")
+
+    if report.get("held"):
+        print("\nОтстаём намеренно (%d) — решение зафиксировано в манифесте:"
+              % len(report["held"]))
+        for r in report["held"]:
+            print("  = %s" % r["message"])
 
     if report["unpinned"]:
         print("\nБез базовой версии (%d) — не ошибка, но и не контроль:"

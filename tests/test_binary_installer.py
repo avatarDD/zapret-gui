@@ -282,3 +282,43 @@ class TestWorkdir(unittest.TestCase):
             self.assertTrue(os.path.isdir(wd))
             self.assertTrue(os.path.abspath(wd).startswith(os.path.abspath(d)))
             shutil.rmtree(wd, ignore_errors=True)
+
+
+class TestTgWsProxyPinnedToRouterRelease(unittest.TestCase):
+    """tg-ws-proxy закреплён на 0.9.3 — последнем релизе с пакетами роутера.
+
+    В v1.0.0 апстрим `spatiumstas/tg-ws-proxy-go` переписан с Go на Python и
+    стал десктопным GUI-приложением (сборка PyInstaller под Windows/macOS/
+    Linux). Роутерной упаковки там больше нет: в 0.9.3 её 52 файла, начиная
+    с v1.0.0 — ноль, а релизы несут .exe вместо
+    `tg-ws-proxy_<ver>_entware_<arch>.ipk`.
+
+    С пустым `release_tag` установка шла в /releases/latest, не находила ни
+    точного имени ассета, ни версионно-независимого суффикса, и падала на
+    404 — движок Telegram просто не ставился. Тест держит закрепление:
+    расфиксировать его можно только вместе с переездом на другой источник.
+    """
+
+    def setUp(self):
+        from core import ext_binary_installer as ebi
+        self.cfg = ebi.BINARIES["tgwsproxy"]
+
+    def test_release_tag_is_pinned(self):
+        self.assertEqual(
+            self.cfg.get("release_tag"), "0.9.3",
+            "release_tag расфиксирован: /releases/latest у этого апстрима "
+            "отдаёт десктопное приложение без пакетов для роутера")
+
+    def test_pinned_and_release_tag_agree(self):
+        """sha256 в манифесте относятся к pinned_tag — теги обязаны совпасть."""
+        self.assertEqual(self.cfg.get("release_tag"),
+                         self.cfg.get("pinned_tag"))
+
+    def test_asset_names_match_pinned_version(self):
+        """Имена ассетов версионированы — версия в них та же, что в теге."""
+        tag = self.cfg["pinned_tag"]
+        for arch, name in (self.cfg.get("arch_map") or {}).items():
+            self.assertIn(tag, name,
+                          "ассет %s (%s) не от версии %s" % (name, arch, tag))
+
+

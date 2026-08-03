@@ -305,5 +305,75 @@ class TestEnsurePersistentKeepalive(unittest.TestCase):
         self.assertIn("PersistentKeepalive = 25", render_conf(cfg))
 
 
+class TestFieldsUnsupportedByTools(unittest.TestCase):
+    """`J1..J3`/`Itime` не должны попадать в `awg setconf`.
+
+    Документация протокола AmneziaWG 2.0 их описывает, но парсер
+    amneziawg-tools (`key_match` в src/config.c) их не знает — проверено на
+    релизах v1.0.20260618-2 и v3.0.20260730. На неизвестном ключе config.c
+    делает `goto error`: печатает `Line unrecognized` и отбрасывает
+    **весь** конфиг, то есть интерфейс не поднимается вообще, а в логе
+    видно лишь невнятное «Unable to modify interface».
+
+    При этом терять поля нельзя: пользователь импортирует .conf из клиента
+    Amnezia, и round-trip обязан их сохранять.
+    """
+
+    CONF = (
+        "[Interface]\n"
+        "PrivateKey = aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTI=\n"
+        "ListenPort = 51820\n"
+        "Jc = 4\nJmin = 40\nJmax = 70\n"
+        "S1 = 15\nS2 = 30\n"
+        "I1 = <b 0xdeadbeef>\n"
+        "J1 = <b 0xcafebabe>\n"
+        "J2 = <b 0xfeedface>\n"
+        "Itime = 30\n"
+        "\n[Peer]\n"
+        "PublicKey = aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTI=\n"
+        "Endpoint = 1.2.3.4:51820\n"
+        "AllowedIPs = 0.0.0.0/0\n"
+    )
+
+    def setUp(self):
+        self.cfg = parse_conf(self.CONF)
+
+    def test_setconf_omits_unsupported_fields(self):
+        setconf = render_setconf(self.cfg)
+        for field in ("J1", "J2", "J3", "Itime"):
+            self.assertNotIn(
+                field + " ", setconf,
+                "%s ушло в setconf — amneziawg-tools отвергнет весь конфиг "
+                "с «Line unrecognized»" % field)
+
+    def test_setconf_keeps_fields_tools_do_support(self):
+        """Соседние поля обфускации при этом остаются на месте."""
+        setconf = render_setconf(self.cfg)
+        for field in ("Jc", "Jmin", "Jmax", "S1", "S2", "I1"):
+            self.assertIn(field, setconf,
+                          "%s поддерживается tools и должно уходить в "
+                          "setconf" % field)
+
+    def test_round_trip_preserves_unsupported_fields(self):
+        """В самом .conf поля сохраняются — иначе потеряем при импорте."""
+        text = render_conf(self.cfg)
+        for field in ("J1", "J2", "Itime"):
+            self.assertIn(field, text,
+                          "%s потерялось при round-trip" % field)
+        again = parse_conf(text)
+        self.assertEqual(again["interface"].get("Itime"),
+                         self.cfg["interface"].get("Itime"))
+
+    def test_unsupported_list_matches_declaration(self):
+        """Список не разъехался с тем, что реально пропускается."""
+        from core.awg_config import (AWG_FIELDS_UNSUPPORTED_BY_TOOLS,
+                                     WG_INTERFACE_FIELDS)
+        for field in AWG_FIELDS_UNSUPPORTED_BY_TOOLS:
+            self.assertIn(
+                field, WG_INTERFACE_FIELDS,
+                "%s должно оставаться известным полем (иначе validate "
+                "заругается на легитимный конфиг Amnezia)" % field)
+
+
 if __name__ == "__main__":
     unittest.main()

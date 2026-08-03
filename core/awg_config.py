@@ -79,6 +79,22 @@ AWG_OBFUSCATION_FIELDS = ("Jc", "Jmin", "Jmax", "S1", "S2",
 AWG_V2_BLOB_FIELDS = ("I1", "I2", "I3", "I4", "I5",
                       "J1", "J2", "J3")
 
+# Поля, которые amneziawg-tools НЕ понимает, сколько бы их ни описывала
+# документация протокола. Проверено по `key_match` в src/config.c релизов
+# v1.0.20260618-2 и v3.0.20260730: там есть Jc/Jmin/Jmax, S1..S4, H1..H4,
+# I1..I5 — и НЕТ J1..J3 и Itime.
+#
+# Почему это нельзя просто отдать в setconf «на всякий случай»: на
+# неизвестном ключе config.c делает `goto error` — печатает
+# `Line unrecognized: '<строка>'` и отбрасывает КОНФИГ ЦЕЛИКОМ. То есть
+# один лишний ключ из чужого .conf = интерфейс вообще не поднимается,
+# причём в логе будет невнятное «Unable to modify interface».
+#
+# Разбирать и хранить их мы продолжаем: пользователь может импортировать
+# .conf из клиента Amnezia, и терять поля молча при round-trip нельзя.
+# Не отдаём только в `awg setconf` — см. `_setconf_skip_fields`.
+AWG_FIELDS_UNSUPPORTED_BY_TOOLS = ("J1", "J2", "J3", "Itime")
+
 
 def _is_base64_key(value: str) -> bool:
     if not isinstance(value, str):
@@ -435,6 +451,10 @@ def _setconf_skip_fields(iface: dict) -> set:
     for k in ("H1", "H2", "H3", "H4"):
         if str(iface.get(k, "")).strip() == "0":
             skip.add(k)
+    # Ключи, которых нет в парсере amneziawg-tools: один такой в setconf
+    # роняет весь конфиг (`Line unrecognized`), см. комментарий у
+    # AWG_FIELDS_UNSUPPORTED_BY_TOOLS.
+    skip.update(AWG_FIELDS_UNSUPPORTED_BY_TOOLS)
     return skip
 
 
@@ -443,6 +463,11 @@ def render_setconf(cfg: dict) -> str:
     Отрендерить только те поля, которые принимает `awg setconf`:
     PrivateKey, ListenPort, FwMark, AmneziaWG-обфускация, и поля [Peer].
     Используется при поднятии интерфейса (см. awg_manager).
+
+    Поля, которых нет в парсере amneziawg-tools (`J1..J3`, `Itime`),
+    сознательно НЕ выводятся: они остаются в разобранном конфиге и в
+    `render_conf`, но в setconf уронили бы весь конфиг целиком. См.
+    `AWG_FIELDS_UNSUPPORTED_BY_TOOLS`.
     """
     cfg = cfg or {}
     iface = cfg.get("interface") or {}

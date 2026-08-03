@@ -26,6 +26,8 @@
     "  vendored      скопированные к нам файлы апстрима + их sha256",
     "  paths         (kind=branch) пути в дереве апстрима, от которых мы зависим",
     "  tag_prefix    префикс тегов, если у апстрима их несколько линий",
+    "  hold          {reason, revisit} — отстаём ОСОЗНАННО. Отставание видно",
+    "                в отчёте как «=», но не поднимает тревогу и не валит CI",
     "  note          чем грозит отставание именно здесь"
   ],
   "version": 1,
@@ -74,45 +76,53 @@
       "id": "sing-box",
       "repo": "SagerNet/sing-box",
       "kind": "release",
-      "pinned": null,
-      "verified_at": null,
+      "pinned": "v1.13.15",
+      "verified_at": "2026-08-03",
       "skill": ".claude/skills/singbox/SKILL.md",
-      "mentions": [],
+      "mentions": [
+        ".claude/skills/singbox/SKILL.md"
+      ],
       "vendored": {},
-      "note": "Скил описывает миграции 1.11→1.14, но конкретной сверенной версии не зафиксировано. sing-box ломает обратную совместимость по мажорным минорам (geoip/geosite удалены в 1.12, block/dns outbounds и wireguard outbound — в 1.13, legacy-DNS — в 1.14), поэтому базовую версию нужно проставить при ближайшей сверке."
+      "note": "sing-box ломает совместимость по минорам, поэтому §9 скила — таблица «что удалено в какой версии» — сверена с docs/deprecated.md и docs/migration.md апстрима. 1.14 пока в бете (1.14.0-beta.4), стабильная линия 1.13.x; всё, что помечено deprecated в 1.14, апстрим обещает удалить только в 1.16. Наш генератор чужих полей не выдаёт, но пользовательские конфиги — выдают, отсюда pre-flight `sing-box check`."
     },
     {
       "id": "mihomo",
       "repo": "MetaCubeX/mihomo",
       "kind": "release",
-      "pinned": null,
-      "verified_at": null,
+      "pinned": "v1.19.29",
+      "verified_at": "2026-08-03",
       "skill": ".claude/skills/mihomo/SKILL.md",
-      "mentions": [],
+      "mentions": [
+        ".claude/skills/mihomo/SKILL.md"
+      ],
       "vendored": {},
-      "note": "Конфиг мы почти не трогаем (отдаём на откуп `mihomo -t`), поэтому риск ниже, чем у sing-box. Базовую версию всё равно стоит зафиксировать — от неё зависит наш конвертер clash-YAML → sing-box (core/clash_yaml.py)."
+      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.29 их 23, конвертируем 6."
     },
     {
       "id": "amneziawg-go",
       "repo": "amnezia-vpn/amneziawg-go",
       "kind": "release",
-      "pinned": null,
-      "verified_at": null,
+      "pinned": "v3.0.3",
+      "verified_at": "2026-08-03",
       "skill": ".claude/skills/awg/SKILL.md",
-      "mentions": [],
+      "mentions": [
+        ".claude/skills/awg/SKILL.md"
+      ],
       "vendored": {},
-      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5, J1-J3, Itime) и версий протокола 1.0/1.5/2.0. Новые параметры появляются вместе с версиями протокола — при отставании awg_config молча теряет ключи."
+      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0. Проверять при обновлении: UAPI-ключи в device/uapi.go — от них зависит, что демон вообще примет."
     },
     {
       "id": "amneziawg-tools",
       "repo": "amnezia-vpn/amneziawg-tools",
       "kind": "release",
-      "pinned": null,
-      "verified_at": null,
+      "pinned": "v3.0.20260730",
+      "verified_at": "2026-08-03",
       "skill": ".claude/skills/awg/SKILL.md",
-      "mentions": [],
+      "mentions": [
+        ".claude/skills/awg/SKILL.md"
+      ],
       "vendored": {},
-      "note": "Форк wireguard-tools: бинари awg/awg-quick. Теги датированные (v3.0.YYYYMMDD)."
+      "note": "Форк wireguard-tools: бинари awg/awg-quick, теги датированные (v3.0.YYYYMMDD). КЛЮЧЕВОЕ при сверке — key_match в src/config.c: это окончательный список полей .conf. Неизвестный ключ там приводит к «Line unrecognized» и отбрасыванию ВСЕГО конфига, то есть интерфейс не поднимается. Так выяснилось, что J1..J3 и Itime из документации протокола 2.0 парсером не принимаются, а v3.0.20260730 добавил семь новых полей (HeaderProtectionKey, ContentPaddingAddition, Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts), которых мы пока не генерируем."
     },
     {
       "id": "usque",
@@ -121,7 +131,9 @@
       "pinned": "v4.2.1",
       "verified_at": "2026-08-03",
       "skill": ".claude/skills/masque-usque/SKILL.md",
-      "mentions": [".claude/skills/masque-usque/SKILL.md"],
+      "mentions": [
+        ".claude/skills/masque-usque/SKILL.md"
+      ],
       "vendored": {},
       "note": "Мы собираем бинарник сами (build-usque-binaries.yml, job auto-tag тянет последний релиз апстрима), поэтому отставание скила = расхождение с тем, что реально ставится. §3 сверен с выводом --help v4.2.0; v4.2.1 не изменил ни одного флага и ни одного поля config.json (единственный коммит — quic.Transport{ConnectionIDLength: 20} против PROTOCOL_VIOLATION от бэкенда), поэтому карта CLI валидна для обеих версий."
     },
@@ -132,7 +144,9 @@
       "pinned": "v1.28.0",
       "verified_at": "2026-07-31",
       "skill": ".claude/skills/opera-proxy/SKILL.md",
-      "mentions": [".claude/skills/opera-proxy/SKILL.md"],
+      "mentions": [
+        ".claude/skills/opera-proxy/SKILL.md"
+      ],
       "vendored": {},
       "note": "Апстрим релизится раз в 1–2 недели и добавляет флаги между версиями, а ставим мы «последний релиз» — то есть расхождение скила с реальностью накапливается быстрее всех. Проверять чаще прочих."
     },
@@ -140,12 +154,18 @@
       "id": "tg-ws-proxy-go",
       "repo": "spatiumstas/tg-ws-proxy-go",
       "kind": "release",
-      "pinned": null,
-      "verified_at": null,
+      "pinned": "0.9.3",
+      "verified_at": "2026-08-03",
       "skill": ".claude/skills/telegram-tunnel/SKILL.md",
-      "mentions": [],
+      "mentions": [
+        ".claude/skills/telegram-tunnel/SKILL.md"
+      ],
       "vendored": {},
-      "note": "Скил сверен с src/config.go и init.d-скриптом апстрима, но без привязки к тегу. Имена флагов берутся из config.go — при их смене init.d получает argv, которого бинарник не понимает."
+      "note": "core/ext_binary_installer.py BINARIES['tgwsproxy'] закреплён на pinned_tag='0.9.3' — последнем релизе, где проект ещё был на Go (в 0.9.3 28 .go-файлов, в v1.0.0 уже ноль). Скил §3 берёт флаги из src/config.go, который существует только до этого тега. Имя ассета в arch_map жёстко содержит версию, поэтому попытка поставить более новый тег через allow_unpinned даёт честный 404, а не молчаливую подмену.",
+      "hold": {
+        "reason": "апстрим переписан с Go на Python в v1.0.0 — другая раскладка репозитория и другие ассеты релиза; мы намеренно ставим последний Go-релиз",
+        "revisit": "когда решим переезжать на Python-ветку: понадобится новый arch_map/sha256 в BINARIES['tgwsproxy'] и пересверка §3 скила по новому источнику флагов"
+      }
     }
   ]
 }
