@@ -154,3 +154,49 @@ class TestCheckForUpdatesArch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReleaseListingSeesManualTags(unittest.TestCase):
+    """Список релизов AWG в GUI не должен быть пустым (сообщение о баге).
+
+    Исторически бинарники AWG публиковались под тэгами `manual-<дата>`, а
+    релизов с тэгом `awg-bin-*` не существовало ни одного. list_releases()
+    отбрасывал всё, что не начинается на `awg-bin-`, поэтому в GUI список
+    выходил пустым — «не видит релизы». При этом установка работала: у неё
+    свой manual-фолбэк, отсюда и странность симптома.
+
+    Отсекать чужое надо по содержимому релиза, а не по имени тэга.
+    """
+
+    GO = "amneziawg-go-0.2.18-aarch64.tar.gz"
+    TOOLS = "amneziawg-tools-1.0.20260223-mips-softfloat.tar.gz"
+
+    def test_manual_tag_with_awg_assets_is_awg(self):
+        from core.awg_installer import _looks_like_awg_assets
+        self.assertTrue(_looks_like_awg_assets(
+            [self.GO, self.TOOLS, "manifest.json"]))
+
+    def test_foreign_release_with_manifest_is_rejected(self):
+        """issue #111: чужой релиз тоже носит manifest.json."""
+        from core.awg_installer import _looks_like_awg_assets
+        self.assertFalse(_looks_like_awg_assets(
+            ["usque-linux-arm64.tar.gz", "manifest.json"]))
+        self.assertFalse(_looks_like_awg_assets(["manifest.json"]))
+
+    def test_versions_recovered_from_asset_names(self):
+        """У manual-тэга версий в имени нет — берём их из ассетов."""
+        from core.awg_installer import _version_from_assets
+        names = [self.GO, self.TOOLS, "manifest.json"]
+        self.assertEqual(_version_from_assets(names, "amneziawg-go-"),
+                         "0.2.18")
+        # Архитектура mips-softfloat содержит дефис — версия не должна
+        # его захватить.
+        self.assertEqual(_version_from_assets(names, "amneziawg-tools-"),
+                         "1.0.20260223")
+
+    def test_version_missing_is_empty_not_crash(self):
+        from core.awg_installer import _version_from_assets
+        self.assertEqual(_version_from_assets(["manifest.json"],
+                                              "amneziawg-go-"), "")
+
+
