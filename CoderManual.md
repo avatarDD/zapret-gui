@@ -96,6 +96,13 @@ zapret-gui/
 ├── README.md               # руководство пользователя
 ├── CoderManual.md          # этот файл
 ├── CHANGELOG.md / TODO.md
+├── AGENTS.md               # инструкции для AI-агентов + индекс скилов
+├── GEMINI.md               # указатель на AGENTS.md (Gemini CLI)
+│
+├── .claude/skills/         # предметные справочники (скилы), см. §3.1
+├── .cursor/rules/          # указатель на AGENTS.md (Cursor)
+├── docs/skills.json        # машиночитаемый индекс скилов
+├── tools/gen_agent_index.py # генератор всего перечисленного выше
 │
 ├── api/                    # REST-роуты (Bottle), по одному файлу на домен
 ├── core/                   # бизнес-логика
@@ -122,6 +129,35 @@ zapret-gui/
 └── .github/workflows/      # release.yml, build-awg-binaries.yml,
                             #   build-singbox-binaries.yml
 ```
+
+### 3.1 Скилы — предметные справочники по движкам
+
+В `.claude/skills/<имя>/SKILL.md` лежат плотные справочники по каждому
+внешнему движку: nfqws2/zapret2, sing-box, mihomo, AmneziaWG, MASQUE/usque,
+Opera Proxy, Telegram-туннель. Это не обзоры, а рабочие спецификации —
+точные CLI-флаги, форматы конфигов, инварианты, типовые причины «не
+работает», плюс привязка к нашим модулям в `core/`.
+
+**Источник правды у скила — апстрим** (`bol-van/zapret2`,
+`sagernet/sing-box`, `MetaCubeX/mihomo`, …). Если апстрим ушёл вперёд —
+правим скил, а не подгоняем код под устаревший текст.
+
+Каталог `.claude/` подхватывает сам Claude Code. Чтобы скилы видели и
+остальные агенты (Codex, Cursor, Copilot, Gemini CLI, Aider, Zed …),
+`tools/gen_agent_index.py` раскладывает индекс по их точкам входа:
+`AGENTS.md` (кросс-инструментальный стандарт и единственный файл с
+содержательным текстом), `GEMINI.md`, `.github/copilot-instructions.md`,
+`.cursor/rules/zapret-gui.mdc`, `docs/skills.json`. Дублируется только
+список скилов, не их содержимое.
+
+```sh
+python3 tools/gen_agent_index.py           # после добавления/правки скила
+python3 tools/gen_agent_index.py --check   # проверить синхронность
+```
+
+Синхронность стережёт `tests/test_agent_skill_index.py`. Ручной текст в
+`AGENTS.md` вне маркеров `BEGIN/END GENERATED SKILL INDEX` переживает
+перегенерацию.
 
 ---
 
