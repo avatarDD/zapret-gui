@@ -18,6 +18,7 @@ Unified Update Checker: проверка обновлений ВСЕХ бина�
 """
 
 import json
+import re
 import threading
 import time
 import urllib.request
@@ -178,18 +179,33 @@ def _check_mihomo() -> dict:
 
 
 def _check_awg() -> dict:
-    """Проверить AmneziaWG."""
+    """Проверить AmneziaWG.
+
+    Ключи берём ровно те, что отдаёт `check_for_updates()`. Раньше здесь
+    читались несуществующие: `installed.version` (на деле `go_version`),
+    `latest.version` (плоские `latest_go`/`latest_tag`) и `has_update`
+    (на деле `update_available`). Из-за этого на странице «Обновления»
+    AmneziaWG всегда показывал «–» и никогда не предлагал обновление,
+    хотя своя страница AWG ту же новую версию видела — она читает
+    правильные поля.
+    """
     try:
         from core.awg_installer import get_awg_installer
         inst = get_awg_installer()
         result = inst.check_for_updates()
+        if not result.get("ok"):
+            return {"name": "awg", "display_name": "AmneziaWG",
+                    "installed": False, "current": "", "latest": "",
+                    "has_update": False,
+                    "error": result.get("error") or "нет манифеста"}
+        inst_info = result.get("installed") or {}
         return {
             "name": "awg",
             "display_name": "AmneziaWG",
-            "installed": result.get("installed", {}).get("installed", False),
-            "current": result.get("installed", {}).get("version", ""),
-            "latest": result.get("latest", {}).get("version", ""),
-            "has_update": result.get("has_update", False),
+            "installed": bool(inst_info.get("installed")),
+            "current": inst_info.get("go_version") or "",
+            "latest": result.get("latest_go") or "",
+            "has_update": bool(result.get("update_available")),
         }
     except Exception as e:
         return {"name": "awg", "display_name": "AmneziaWG",
@@ -226,16 +242,20 @@ def _check_usque() -> dict:
         from core.usque_manager import get_usque_manager
         mgr = get_usque_manager()
         env = mgr.detect()
-        # Проверяем GitHub releases
-        latest = _github_latest("side-effect-tm/usque-keenetic")
+        # Источник — НАША сборка (релизы `usque-bin-<версия>` в этом же
+        # репозитории), ровно откуда ставит установщик. Раньше спрашивали
+        # `side-effect-tm/usque-keenetic` — это давно лишь ЗАПАСНОЙ источник,
+        # который отстаёт от самого usque: его последний релиз 0.3.0 несёт
+        # usque 4.2.0. В итоге при установленной 4.2.1 «последней» значилась
+        # 0.3.0, и GUI предлагал обновиться назад.
+        latest = _latest_from_our_release("usque")
         return {
             "name": "usque",
             "display_name": "usque (WARP/MASQUE)",
             "installed": env.get("installed", False),
             "current": env.get("version", ""),
             "latest": latest,
-            "has_update": bool(latest and env.get("version") and
-                               latest != env["version"]),
+            "has_update": _is_newer(latest, env.get("version", "")),
         }
     except Exception as e:
         return {"name": "usque", "display_name": "usque (WARP/MASQUE)",
@@ -360,6 +380,55 @@ def _check_opera() -> dict:
         return {"name": "opera", "display_name": "opera-proxy",
                 "installed": False, "current": "", "latest": "",
                 "has_update": False, "error": str(e)}
+
+
+def _latest_from_our_release(name: str) -> str:
+    """Версия последнего НАШЕГО релиза бинарника `name`.
+
+    Мы собираем часть движков сами и публикуем как `<name>-bin-<версия>`
+    в собственном репозитории — установщик берёт их именно оттуда
+    (`BINARIES[name]["release_prefix"]`). Спрашивать вместо этого чужой
+    репозиторий-донор неверно: он живёт своей жизнью и отстаёт, отчего
+    «последняя» версия оказывается старше установленной.
+    """
+    try:
+        from core.ext_binary_installer import (BINARIES,
+                                               github_release_by_prefix)
+        cfg = BINARIES.get(name) or {}
+        prefix = cfg.get("release_prefix") or ""
+        repo = cfg.get("repo") or ""
+        if not prefix or not repo:
+            return ""
+        rel = github_release_by_prefix(repo, prefix) or {}
+        tag = rel.get("tag_name") or ""
+        return tag[len(prefix):].lstrip("v") if tag.startswith(prefix) else ""
+    except Exception:
+        return ""
+
+
+def _version_tuple(v: str):
+    """Числовой ключ версии; None — не разбирается."""
+    m = re.match(r"^v?(\d+(?:\.\d+)*)", (v or "").strip())
+    if not m:
+        return None
+    return tuple(int(x) for x in m.group(1).split("."))
+
+
+def _is_newer(latest: str, current: str) -> bool:
+    """Есть ли смысл предлагать обновление.
+
+    Сравниваем ЧИСЛАМИ, а не `!=`. Простое неравенство строк даёт две
+    беды: предлагает «обновиться» на версию старше (usque 4.2.1 → 0.3.0)
+    и срабатывает на разнице записи одной и той же версии. Если версии
+    не разбираются как числа — откатываемся на строгое неравенство,
+    чтобы не потерять обновление там, где формат нестандартный.
+    """
+    if not latest or not current:
+        return False
+    lv, cv = _version_tuple(latest), _version_tuple(current)
+    if lv is None or cv is None:
+        return latest.strip() != current.strip()
+    return lv > cv
 
 
 def _github_latest(repo: str) -> str:
