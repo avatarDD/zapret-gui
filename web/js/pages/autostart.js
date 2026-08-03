@@ -457,25 +457,10 @@ const AutostartPage = (() => {
         // Используем сохранённый raw-текст, а не innerHTML
         if (!_rawScriptText) return;
 
-        try {
-            await navigator.clipboard.writeText(_rawScriptText);
-            Toast.show('Скрипт скопирован', 'success');
-        } catch (err) {
-            // Fallback
-            const ta = document.createElement('textarea');
-            ta.value = _rawScriptText;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
-            ta.select();
-            try {
-                document.execCommand('copy');
-                Toast.show('Скрипт скопирован', 'success');
-            } catch (e2) {
-                Toast.show('Не удалось скопировать', 'error');
-            }
-            document.body.removeChild(ta);
-        }
+        // Общий Clipboard: сам уходит на execCommand, когда GUI открыт
+        // по http и navigator.clipboard недоступен.
+        await Clipboard.copyWithToast(_rawScriptText,
+                                      { okText: 'Скрипт скопирован' });
     }
 
     function closeModal(event) {

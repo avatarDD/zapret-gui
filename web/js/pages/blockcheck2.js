@@ -609,28 +609,11 @@ const Blockcheck2Page = (() => {
     }
 
     // Копирование в буфер с fallback на execCommand (как в strategies.js).
+    // Копирование — через общий Clipboard: он сам уходит на
+    // execCommand, когда GUI открыт по http и navigator.clipboard
+    // недоступен (см. web/js/utils/clipboard.js).
     function _copyText(text, okMsg) {
-        const done = () => Toast && Toast.success && Toast.success(okMsg || 'Скопировано');
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(done).catch(() => _copyFallback(text, done));
-        } else {
-            _copyFallback(text, done);
-        }
-    }
-    function _copyFallback(text, done) {
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-            done();
-        } catch (_e) {
-            Toast && Toast.error && Toast.error('Не удалось скопировать');
-        }
+        Clipboard.copyWithToast(text, { okText: okMsg || 'Скопировано' });
     }
 
     function useStrategy(index) {

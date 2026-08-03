@@ -717,10 +717,11 @@ const BlobsPage = (() => {
         }
 
         if (text) {
-            navigator.clipboard.writeText(text).then(() => {
-                Toast.success('Hex скопирован в буфер обмена');
-            }).catch(() => {
-                Toast.error('Не удалось скопировать');
+            // По http на роутере navigator.clipboard отсутствует, и прямой
+            // вызов падает синхронно — мимо .catch(). Clipboard сам уходит
+            // на execCommand-фолбэк (см. web/js/utils/clipboard.js).
+            Clipboard.copyWithToast(text, {
+                okText: 'Hex скопирован в буфер обмена',
             });
         }
     }

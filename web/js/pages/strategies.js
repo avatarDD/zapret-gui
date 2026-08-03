@@ -1466,17 +1466,12 @@ const StrategiesPage = (() => {
         const cmdEl = document.getElementById('preview-command');
         if (!cmdEl) return;
         const text = cmdEl._rawText || cmdEl.textContent;
-        navigator.clipboard.writeText(text).then(() => {
-            Toast.success('Команда скопирована');
-        }).catch(() => {
-            // Fallback
-            const range = document.createRange();
-            range.selectNode(cmdEl);
-            window.getSelection().removeAllRanges();
-            window.getSelection().addRange(range);
-            document.execCommand('copy');
-            window.getSelection().removeAllRanges();
-            Toast.success('Команда скопирована');
+        // Фолбэк здесь был, но не срабатывал: без secure context
+        // navigator.clipboard === undefined, и вызов падает СИНХРОННО —
+        // до того, как появится .catch(). Clipboard закрывает этот случай.
+        Clipboard.copyWithToast(text, {
+            node: cmdEl,
+            okText: 'Команда скопирована',
         });
     }
 
@@ -2281,28 +2276,11 @@ const StrategiesPage = (() => {
 
     // Копирование в буфер с fallback на execCommand (работает и по http,
     // где navigator.clipboard недоступен).
+    // Копирование — через общий Clipboard: он сам уходит на
+    // execCommand, когда GUI открыт по http и navigator.clipboard
+    // недоступен (см. web/js/utils/clipboard.js).
     function _copyText(text, okMsg) {
-        const done = () => Toast.success(okMsg || 'Скопировано');
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(done).catch(() => _copyFallback(text, done));
-        } else {
-            _copyFallback(text, done);
-        }
-    }
-    function _copyFallback(text, done) {
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-            done();
-        } catch (_e) {
-            Toast.error('Не удалось скопировать');
-        }
+        Clipboard.copyWithToast(text, { okText: okMsg || 'Скопировано' });
     }
 
     // ══════════════════ Множественный выбор и объединение (§7) ══════════════════

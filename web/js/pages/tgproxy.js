@@ -754,9 +754,14 @@ const TgProxyPage = (() => {
                 ${info.fake_tls ? '<div class="text-muted" style="margin-top:6px;">Режим: Fake-TLS (ee)</div>' : ""}
             `;
             document.getElementById("tgws-copy-link").addEventListener("click", () => {
-                navigator.clipboard.writeText(info.link).then(
-                    () => Toast.success("Ссылка скопирована"),
-                    () => Toast.error("Не удалось скопировать"));
+                // Через Clipboard, а не navigator.clipboard напрямую: на
+                // роутере GUI открыт по http, а там объект недоступен и
+                // вызов падает СИНХРОННО — не срабатывал даже .catch(),
+                // кнопка молча не делала ничего (issue #272).
+                Clipboard.copyWithToast(info.link, {
+                    node: document.getElementById("tgws-link-text"),
+                    okText: "Ссылка скопирована",
+                });
             });
         } catch (e) {
             el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;

@@ -665,25 +665,8 @@ const LogsPage = (() => {
             return `${e.date || ''} ${e.time || ''} [${e.level}]${src} ${e.message}`;
         }).join('\n');
 
-        try {
-            await navigator.clipboard.writeText(text);
-            Toast.show(`Скопировано ${filteredEntries.length} записей`, 'success');
-        } catch (err) {
-            // Fallback: textarea
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
-            ta.select();
-            try {
-                document.execCommand('copy');
-                Toast.show(`Скопировано ${filteredEntries.length} записей`, 'success');
-            } catch (e2) {
-                Toast.show('Не удалось скопировать', 'error');
-            }
-            document.body.removeChild(ta);
-        }
+        await Clipboard.copyWithToast(
+            text, { okText: `Скопировано ${filteredEntries.length} записей` });
     }
 
     async function clearLogs() {

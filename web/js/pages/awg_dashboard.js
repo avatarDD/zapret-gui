@@ -461,19 +461,7 @@ const AwgDashboardPage = (() => {
         document.getElementById('awgDiagClose').onclick =
             () => document.body.removeChild(overlay);
         document.getElementById('awgDiagCopy').onclick = async () => {
-            try {
-                await navigator.clipboard.writeText(text);
-                Toast.success('Скопировано');
-            } catch {
-                // Фолбэк через execCommand
-                const ta = document.createElement('textarea');
-                ta.value = text;
-                document.body.appendChild(ta);
-                ta.select();
-                try { document.execCommand('copy'); Toast.success('Скопировано'); }
-                catch { Toast.error('Не удалось скопировать'); }
-                document.body.removeChild(ta);
-            }
+            await Clipboard.copyWithToast(text);
         };
     }
 
