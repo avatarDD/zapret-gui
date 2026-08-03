@@ -2967,9 +2967,9 @@ function discord_timestamp_travel(ctx, desync)
             local old_ts = now - time_offset
             -- Упаковываем в big-endian
             local tsval = string.char(
-                bitand(bitright(old_ts, 24), 0xFF),
-                bitand(bitright(old_ts, 16), 0xFF),
-                bitand(bitright(old_ts, 8), 0xFF),
+                bitand(bitrshift(old_ts, 24), 0xFF),
+                bitand(bitrshift(old_ts, 16), 0xFF),
+                bitand(bitrshift(old_ts, 8), 0xFF),
                 bitand(old_ts, 0xFF)
             )
             local tsecr = string.char(0, 0, 0, 0)  -- TSecr = 0 для исходящих
@@ -2992,9 +2992,9 @@ function discord_timestamp_travel(ctx, desync)
 
                 -- Упаковываем обратно
                 local new_tsval = string.char(
-                    bitand(bitright(new_ts, 24), 0xFF),
-                    bitand(bitright(new_ts, 16), 0xFF),
-                    bitand(bitright(new_ts, 8), 0xFF),
+                    bitand(bitrshift(new_ts, 24), 0xFF),
+                    bitand(bitrshift(new_ts, 16), 0xFF),
+                    bitand(bitrshift(new_ts, 8), 0xFF),
                     bitand(new_ts, 0xFF)
                 )
 

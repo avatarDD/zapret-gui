@@ -1,0 +1,151 @@
+{
+  "$comment": [
+    "Манифест апстримов: единственное место, где записано, ЧЕМУ соответствуют",
+    "наши vendored-файлы, справочники (скилы) и спеки редактора.",
+    "",
+    "Зачем: без него отставание не видно. Скил nfqws2 три месяца описывал",
+    "zapret2 0.9.5.2, пока апстрим ушёл на 1.0.4; bundled core-lua отставала",
+    "на релиз и молча откатывала пользователю апстримные фиксы. Ни один тест",
+    "этого не ловил, потому что сравнивать было не с чем.",
+    "",
+    "Проверяется скриптом tools/check_upstream.py:",
+    "  --offline  сверка манифеста с файлами в репозитории (идёт в тестах)",
+    "  (по умолчанию) + опрос апстримов через git ls-remote и отчёт об отставании",
+    "Раз в неделю то же самое запускает .github/workflows/check-upstream.yml",
+    "и заводит/обновляет issue, если что-то отстало.",
+    "",
+    "Поля записи:",
+    "  repo          owner/name на GitHub",
+    "  kind          release  — следим за тегами релизов",
+    "                branch   — следим за веткой и наличием путей в дереве",
+    "  pinned        версия, с которой наши файлы/скил СВЕРЕНЫ. null = базовой",
+    "                версии ещё нет (при ближайшей сверке проставить)",
+    "  verified_at   дата сверки (YYYY-MM-DD)",
+    "  skill         скил, документирующий этот апстрим",
+    "  mentions      файлы, которые ОБЯЗАНЫ упоминать pinned-версию дословно",
+    "  vendored      скопированные к нам файлы апстрима + их sha256",
+    "  paths         (kind=branch) пути в дереве апстрима, от которых мы зависим",
+    "  tag_prefix    префикс тегов, если у апстрима их несколько линий",
+    "  note          чем грозит отставание именно здесь"
+  ],
+  "version": 1,
+  "upstreams": [
+    {
+      "id": "zapret2",
+      "repo": "bol-van/zapret2",
+      "kind": "release",
+      "pinned": "v1.0.4",
+      "verified_at": "2026-08-03",
+      "skill": ".claude/skills/nfqws2-strategies/SKILL.md",
+      "mentions": [
+        ".claude/skills/nfqws2-strategies/SKILL.md",
+        "web/js/utils/nfqws2_spec.js"
+      ],
+      "vendored": {
+        "import/lua/zapret-lib.lua": "b272d207cca145a3b6174793b7d335489519f6d4299418ff2b870765cea24d5a",
+        "import/lua/zapret-antidpi.lua": "31c9dd75b0bd55e98e5306293f2be81e9d2ecadcbbf9157394ff37dcff7dc85a",
+        "import/lua/zapret-auto.lua": "aacfde0c95c3058f8e95f5d7d244398bdc03ebf846a8f17322129fb543366a3d",
+        "import/lua/zapret-obfs.lua": "e9581bfbca846630ada78193641d834e25abc11337ba85467d642c2d8c6fa47f",
+        "import/lua/zapret-pcap.lua": "6866c37c92fbc62075accf94228da48af618c7f416edc682eba99b2196e05f45",
+        "import/lua/zapret-tests.lua": "1d13e191cae02d9ed314ba41a91d2079965d07c16f80e08f1c9bf7c6e0e24100"
+      },
+      "note": "core-lua жёстко привязана к бинарнику через NFQWS2_COMPAT_VER, но защита _protected_core_lua срабатывает только на СМЕНЕ compat-версии. Внутри одной (все 1.0…1.0.4 = 6) наш бандл перезаписывает upstream-копию, поэтому отставший бандл откатывает пользователю апстримные фиксы. Отсюда побайтовый пиннинг."
+    },
+    {
+      "id": "strategy-catalogs",
+      "repo": "youtubediscord/zapret",
+      "kind": "branch",
+      "branch": "main",
+      "pinned": null,
+      "verified_at": "2026-08-03",
+      "skill": ".claude/skills/nfqws2-strategies/SKILL.md",
+      "mentions": [],
+      "vendored": {},
+      "paths": [
+        "src/profile/strategy_catalogs/winws2/tcp.txt",
+        "src/profile/strategy_catalogs/winws2/udp.txt",
+        "src/profile/strategy_catalogs/winws2/http80.txt",
+        "src/profile/strategy_catalogs/winws2/voice.txt",
+        "src/presets/builtin/winws2"
+      ],
+      "note": "Источник каталогов стратегий («Обновить стратегии», core/catalog_updater.py). Релизов нет — следим за веткой. Опасность не в версии, а в РЕСТРУКТУРИЗАЦИИ дерева: апстрим периодически переносит каталоги, и SOURCE_DIRECT_SUBPATH/SOURCE_PRESETS_SUBPATH перестают существовать. Фолбэк-скан в catalog_updater это переживает, но молча и не всегда — поэтому пути проверяются явно."
+    },
+    {
+      "id": "sing-box",
+      "repo": "SagerNet/sing-box",
+      "kind": "release",
+      "pinned": null,
+      "verified_at": null,
+      "skill": ".claude/skills/singbox/SKILL.md",
+      "mentions": [],
+      "vendored": {},
+      "note": "Скил описывает миграции 1.11→1.14, но конкретной сверенной версии не зафиксировано. sing-box ломает обратную совместимость по мажорным минорам (geoip/geosite удалены в 1.12, block/dns outbounds и wireguard outbound — в 1.13, legacy-DNS — в 1.14), поэтому базовую версию нужно проставить при ближайшей сверке."
+    },
+    {
+      "id": "mihomo",
+      "repo": "MetaCubeX/mihomo",
+      "kind": "release",
+      "pinned": null,
+      "verified_at": null,
+      "skill": ".claude/skills/mihomo/SKILL.md",
+      "mentions": [],
+      "vendored": {},
+      "note": "Конфиг мы почти не трогаем (отдаём на откуп `mihomo -t`), поэтому риск ниже, чем у sing-box. Базовую версию всё равно стоит зафиксировать — от неё зависит наш конвертер clash-YAML → sing-box (core/clash_yaml.py)."
+    },
+    {
+      "id": "amneziawg-go",
+      "repo": "amnezia-vpn/amneziawg-go",
+      "kind": "release",
+      "pinned": null,
+      "verified_at": null,
+      "skill": ".claude/skills/awg/SKILL.md",
+      "mentions": [],
+      "vendored": {},
+      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5, J1-J3, Itime) и версий протокола 1.0/1.5/2.0. Новые параметры появляются вместе с версиями протокола — при отставании awg_config молча теряет ключи."
+    },
+    {
+      "id": "amneziawg-tools",
+      "repo": "amnezia-vpn/amneziawg-tools",
+      "kind": "release",
+      "pinned": null,
+      "verified_at": null,
+      "skill": ".claude/skills/awg/SKILL.md",
+      "mentions": [],
+      "vendored": {},
+      "note": "Форк wireguard-tools: бинари awg/awg-quick. Теги датированные (v3.0.YYYYMMDD)."
+    },
+    {
+      "id": "usque",
+      "repo": "Diniboy1123/usque",
+      "kind": "release",
+      "pinned": "v4.2.1",
+      "verified_at": "2026-08-03",
+      "skill": ".claude/skills/masque-usque/SKILL.md",
+      "mentions": [".claude/skills/masque-usque/SKILL.md"],
+      "vendored": {},
+      "note": "Мы собираем бинарник сами (build-usque-binaries.yml, job auto-tag тянет последний релиз апстрима), поэтому отставание скила = расхождение с тем, что реально ставится. §3 сверен с выводом --help v4.2.0; v4.2.1 не изменил ни одного флага и ни одного поля config.json (единственный коммит — quic.Transport{ConnectionIDLength: 20} против PROTOCOL_VIOLATION от бэкенда), поэтому карта CLI валидна для обеих версий."
+    },
+    {
+      "id": "opera-proxy",
+      "repo": "Alexey71/opera-proxy",
+      "kind": "release",
+      "pinned": "v1.28.0",
+      "verified_at": "2026-07-31",
+      "skill": ".claude/skills/opera-proxy/SKILL.md",
+      "mentions": [".claude/skills/opera-proxy/SKILL.md"],
+      "vendored": {},
+      "note": "Апстрим релизится раз в 1–2 недели и добавляет флаги между версиями, а ставим мы «последний релиз» — то есть расхождение скила с реальностью накапливается быстрее всех. Проверять чаще прочих."
+    },
+    {
+      "id": "tg-ws-proxy-go",
+      "repo": "spatiumstas/tg-ws-proxy-go",
+      "kind": "release",
+      "pinned": null,
+      "verified_at": null,
+      "skill": ".claude/skills/telegram-tunnel/SKILL.md",
+      "mentions": [],
+      "vendored": {},
+      "note": "Скил сверен с src/config.go и init.d-скриптом апстрима, но без привязки к тегу. Имена флагов берутся из config.go — при их смене init.d получает argv, которого бинарник не понимает."
+    }
+  ]
+}
