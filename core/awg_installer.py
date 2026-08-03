@@ -44,6 +44,43 @@ from core.safe_io import is_safe_member_name
 HTTP_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 300
 
+def _looks_like_awg_assets(asset_names) -> bool:
+    """Ассеты релиза принадлежат именно AWG.
+
+    Нужно, чтобы принимать исторические релизы с тэгом `manual-<дата>`, но
+    не подхватить чужой релиз, у которого тоже есть `manifest.json`
+    (issue #111): проверяем не имя тэга, а содержимое.
+    """
+    return any(n.startswith("amneziawg-go-")
+               or n.startswith("amneziawg-tools-")
+               for n in asset_names)
+
+
+def _version_from_assets(asset_names, prefix: str) -> str:
+    """Версия из имени ассета `<prefix><version>-<arch>.tar.gz`.
+
+    У тэгов `manual-*` версий в имени нет, а показать их в списке надо —
+    иначе пользователь выбирает между несколькими одинаковыми строками.
+    """
+    for name in asset_names:
+        if not name.startswith(prefix) or not name.endswith(".tar.gz"):
+            continue
+        rest = name[len(prefix):-len(".tar.gz")]
+        # Отрезаем архитектуру справа: она всегда после последнего дефиса,
+        # но у `mips-softfloat` дефис внутри — поэтому режем по первому
+        # сегменту, который перестал быть похож на версию.
+        parts = rest.split("-")
+        ver = []
+        for p in parts:
+            if p and (p[0].isdigit() or (ver and p[0].isdigit())):
+                ver.append(p)
+            else:
+                break
+        if ver:
+            return "-".join(ver)
+    return ""
+
+
 DEFAULT_REPO         = "avatardd/zapret-gui"
 DEFAULT_TAG_PREFIX   = "awg-bin-"
 GITHUB_API_BASE      = "https://api.github.com"
@@ -370,10 +407,21 @@ class AwgInstaller:
     def list_releases(self, transport: str = "",
                       force: bool = False) -> dict:
         """
-        Релизы с бинарниками AWG (тэги awg-bin-* с manifest.json) для
-        выбора версии при установке. manual-* не включаем: их manifest
-        может принадлежать другому движку (issue #111), а опция
-        «Последняя» и так умеет manual-фолбэк. Кэш 5 минут.
+        Релизы с бинарниками AWG для выбора версии при установке.
+
+        Берём релизы с `manifest.json`, у которых тэг начинается на
+        `awg-bin-`, **а также** релизы с иным тэгом (исторические
+        `manual-<дата>`), если по именам ассетов видно, что это точно AWG.
+
+        Раньше `manual-*` отбрасывались целиком — из осторожности, потому
+        что их manifest мог принадлежать другому движку (issue #111). Но
+        AWG-релизы по факту публиковались именно под такими тэгами, а
+        `awg-bin-*` не существовало ни одного: список в GUI выходил пустым
+        («не видит релизы»), хотя установка работала — у неё свой
+        manual-фолбэк. Отсекаем чужое не по имени тэга, а по содержимому:
+        в релизе должны быть ассеты `amneziawg-go-*` / `amneziawg-tools-*`.
+
+        Кэш 5 минут.
         """
         s = self._settings()
         now = time.time()
@@ -392,10 +440,13 @@ class AwgInstaller:
             if not isinstance(rel, dict) or rel.get("draft"):
                 continue
             tag = rel.get("tag_name") or ""
-            if not tag.startswith(s["tag_prefix"]):
+            names = [(a.get("name") or "").lower()
+                     for a in rel.get("assets") or []]
+            if "manifest.json" not in names:
                 continue
-            if not any((a.get("name") or "").lower() == "manifest.json"
-                       for a in rel.get("assets") or []):
+            prefixed = tag.startswith(s["tag_prefix"])
+            if not prefixed and not _looks_like_awg_assets(names):
+                # Чужой релиз с manifest.json (issue #111) — не наш движок.
                 continue
             item = {"tag": tag,
                     "published_at": rel.get("published_at") or ""}
@@ -404,6 +455,16 @@ class AwgInstaller:
                 item["go_version"] = m.group("go")
                 item["tools_version"] = m.group("tools")
                 item["version"] = m.group("go")
+            else:
+                # Тэг без версий в имени (manual-*) — достаём их из имён
+                # ассетов: amneziawg-go-<ver>-<arch>.tar.gz.
+                go_v = _version_from_assets(names, "amneziawg-go-")
+                tools_v = _version_from_assets(names, "amneziawg-tools-")
+                if go_v:
+                    item["go_version"] = go_v
+                    item["version"] = go_v
+                if tools_v:
+                    item["tools_version"] = tools_v
             rels.append(item)
         out = {"ok": True, "releases": rels}
         with self._lock:
