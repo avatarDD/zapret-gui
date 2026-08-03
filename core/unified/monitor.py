@@ -7,16 +7,23 @@
 RAM (как traffic-буферы — без записи на flash).
 
 Архитектура:
-  - история: {route_id: deque[(ts, ok)]} (maxlen ограничен);
+  - история: {route_id: deque[(ts, ok, method)]} (maxlen ограничен);
   - `record()` — добавить замер;
   - `success_rate()` — доля успехов в окне (или None, если данных нет);
-  - `probe_destination()` — реальная проба (TLS-connect к probe-домену);
+  - `probe_route()` — реальная проба (TLS-connect к probe-домену);
   - фоновый цикл (singleton, default OFF) — `start()/stop()`.
 
 Проба намеренно простая и без внешних зависимостей: TCP+TLS handshake
 к <probe_domain>:443 с таймаутом. Это не полноценный DPI-тест (для него
 есть core/testers), а быстрый сигнал «достучались/нет» через текущий
 маршрут.
+
+Замер помнит МЕТОД, через который он сделан. Без этого failover считал
+успешность нового метода вместе с неудачами старого: сразу после
+переключения окно из 10 замеров почти целиком состояло из провалов
+предыдущего метода, rate оставался ниже порога, и по истечении cooldown
+маршрут уходил с исправного метода обратно на сломанный — и так по
+кругу.
 """
 
 import socket
@@ -35,32 +42,42 @@ _history_lock = threading.Lock()
 
 # ─────────────────────── history ─────────────────────────────────────
 
-def record(route_id: str, ok: bool, ts: float = None):
+def record(route_id: str, ok: bool, ts: float = None, method: str = ""):
     ts = ts if ts is not None else time.time()
     with _history_lock:
         dq = _history.get(route_id)
         if dq is None:
             dq = deque(maxlen=_HISTORY_MAXLEN)
             _history[route_id] = dq
-        dq.append((ts, bool(ok)))
+        dq.append((ts, bool(ok), method or ""))
 
 
-def history(route_id: str) -> list:
+def history(route_id: str, method: str = None) -> list:
+    """Замеры маршрута; с `method` — только сделанные через этот метод.
+
+    Замеры без метода (сделанные до того, как он стал записываться) при
+    фильтрации отбрасываются: приписать их какому-то методу нельзя, а
+    зачесть чужие провалы новому методу — ровно та ошибка, из-за которой
+    failover и уводил маршрут с исправного метода.
+    """
     with _history_lock:
         dq = _history.get(route_id)
-        return list(dq) if dq else []
+        items = list(dq) if dq else []
+    if method is None:
+        return items
+    return [e for e in items if len(e) > 2 and e[2] == method]
 
 
-def success_rate(route_id: str, window: int = 10):
+def success_rate(route_id: str, window: int = 10, method: str = None):
     """
     Доля успехов среди последних `window` замеров (0.0..1.0) или None,
-    если замеров ещё нет.
+    если замеров ещё нет. С `method` — только по замерам этого метода.
     """
-    h = history(route_id)
+    h = history(route_id, method=method)
     if not h:
         return None
     recent = h[-window:]
-    oks = sum(1 for _ts, ok in recent if ok)
+    oks = sum(1 for e in recent if e[1])
     return oks / len(recent)
 
 
@@ -74,24 +91,36 @@ def clear(route_id: str = None):
     with _history_lock:
         if route_id is None:
             _history.clear()
+            _warned_unprobeable.clear()
         else:
             _history.pop(route_id, None)
+            _warned_unprobeable.discard(route_id)
 
 
 def stats() -> dict:
-    """Сводка по всем маршрутам для UI/API."""
+    """Сводка по всем маршрутам для UI/API.
+
+    `rate` считается по замерам ТЕКУЩЕГО метода (метод последнего
+    замера) — иначе после переключения UI показывал бы успешность,
+    в которой половина провалов относится к уже брошенному методу.
+    """
     out = {}
     with _history_lock:
-        for rid, dq in _history.items():
-            data = list(dq)
-            recent = data[-10:]
-            oks = sum(1 for _t, ok in recent if ok)
-            out[rid] = {
-                "samples": len(data),
-                "rate": (oks / len(recent)) if recent else None,
-                "last_ok": data[-1][1] if data else None,
-                "last_ts": data[-1][0] if data else None,
-            }
+        snapshot = {rid: list(dq) for rid, dq in _history.items()}
+    for rid, data in snapshot.items():
+        if not data:
+            continue
+        method = data[-1][2] if len(data[-1]) > 2 else ""
+        same = [e for e in data if (e[2] if len(e) > 2 else "") == method]
+        recent = same[-10:]
+        oks = sum(1 for e in recent if e[1])
+        out[rid] = {
+            "samples": len(same),
+            "rate": (oks / len(recent)) if recent else None,
+            "last_ok": data[-1][1],
+            "last_ts": data[-1][0],
+            "method": method,
+        }
     return out
 
 
@@ -127,10 +156,19 @@ def probe_host(host: str, port: int = 443, timeout: float = 4.0,
             pass
 
 
-def probe_route(route) -> bool:
+def probe_route(route):
     """
     Проба маршрута: берём probe_domain (или первый домен назначения).
     Если доменов нет (только CIDR) — пробуем первый IP из cidrs.
+
+    Возвращает True/False, либо **None — «пробовать нечего»**. Последнее
+    бывает у маршрутов, назначение которых состоит только из geosite/
+    geoip: категории разворачивает движок, конкретного адреса у маршрута
+    нет. Раньше такой маршрут возвращал False, то есть выглядел вечно
+    деградировавшим, и failover бесконечно гонял его по всей цепочке
+    методов — включая заведомо неподходящие. Ответ None означает «нет
+    данных»: замер не пишется, решение не принимается. Чтобы включить
+    здесь failover, достаточно задать у маршрута probe_domain.
     """
     domain = (route.probe_domain or "").strip()
     if not domain:
@@ -143,7 +181,7 @@ def probe_route(route) -> bool:
             if cidrs:
                 host = cidrs[0].split("/", 1)[0]
                 return probe_host(host, port=443, tls=False)
-            return False
+            return None
     return probe_host(domain, port=443, tls=True)
 
 
@@ -184,7 +222,7 @@ class _MonitorLoop:
             self._stop.wait(self._interval)
 
     def _tick(self):
-        from core.unified import storage
+        from core.unified import storage, failover
         for route in storage.load_routes():
             # failover требует проб — поэтому пробуем маршрут, если включён
             # мониторинг ЛИБО автопереключение.
@@ -193,10 +231,15 @@ class _MonitorLoop:
             if not (route.monitor_enabled or route.failover_enabled):
                 continue
             ok = probe_route(route)
-            record(route.id, ok)
+            if ok is None:
+                _warn_unprobeable(route)
+                continue
+            # Замер принадлежит методу, через который он сделан:
+            # успешность считается по каждому методу отдельно.
+            record(route.id, ok,
+                   method=failover.current_method(route.id) or route.method)
             if route.failover_enabled:
                 try:
-                    from core.unified import failover
                     failover.step(route)
                 except Exception as e:
                     log.warning("unified failover step %s: %s"
@@ -204,6 +247,21 @@ class _MonitorLoop:
 
 
 _loop = _MonitorLoop()
+
+# Про какие маршруты уже сказали «пробовать нечего». Тик идёт раз в
+# минуту — без этого предупреждение засоряло бы лог бесконечно.
+_warned_unprobeable = set()
+
+
+def _warn_unprobeable(route) -> None:
+    if route.id in _warned_unprobeable:
+        return
+    _warned_unprobeable.add(route.id)
+    log.warning(
+        "unified monitor: у маршрута «%s» нечего пробовать (назначение —"
+        " только geosite/geoip). Мониторинг и автопереключение для него"
+        " не работают: укажите «домен для проверки» в настройках маршрута."
+        % (route.name or route.id), source="unified")
 
 
 def needs_monitor() -> bool:

@@ -634,6 +634,29 @@ const RoutingUnifiedPage = (() => {
 
     // ─────── редактор ───────
 
+    /**
+     * Предупреждение для маршрута, который нечем пробовать.
+     *
+     * geosite/geoip разворачивает движок — конкретного адреса у такого
+     * назначения нет, и фоновая проверка не знает, куда стучаться. Без
+     * probe-домена мониторинг и автопереключение для него просто не
+     * работают (бэкенд такой маршрут пропускает, см.
+     * core/unified/monitor.probe_route).
+     */
+    function probeHintHtml(e) {
+        const d = e.destination || {};
+        const hasGeo = (d.geosite || []).length || (d.geoip || []).length;
+        const hasAddr = (d.domains || []).length || (d.cidrs || []).length
+                      || (d.list_ids || []).length;
+        if (!hasGeo || hasAddr || (e.probe_domain || '').trim()) return '';
+        return `<span class="text-error" style="font-size:11px; margin-left:22px;">
+                    Назначение — только geosite/geoip: проверять нечего, и обе
+                    галки останутся без эффекта. Укажите «Probe-домен»
+                    (например, <code>youtube.com</code>) — он виден в режиме
+                    эксперта.
+                </span>`;
+    }
+
     function blankRoute() {
         // Пресет метода — по активному фильтру: на AWG-виде логично
         // сразу предлагать первый AWG-туннель.
@@ -752,6 +775,7 @@ const RoutingUnifiedPage = (() => {
                         <span class="text-muted" style="font-size:11px; margin-left:22px;">
                             Любая из галок включает фоновую проверку автоматически —
                             отдельно запускать мониторинг сверху не нужно.</span>
+                        ${probeHintHtml(e)}
                     </div>
                 </div>
                 ${typeof Expert !== 'undefined'
