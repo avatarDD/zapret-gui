@@ -43,6 +43,7 @@ JS_FILES = [
     # utils
     "js/utils/theme-init.js",
     "js/utils/debounce.js",
+    "js/utils/clipboard.js",
     "js/utils/nfqws2_spec.js",
     "js/utils/nfqws2_lint.js",
     "js/utils/syntax.js",

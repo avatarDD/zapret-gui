@@ -60,26 +60,10 @@ const ProxyTable = (() => {
         return (n < 10 ? n.toFixed(2) : n.toFixed(1)) + ' ' + u[i];
     }
 
-    async function copyText(text) {
-        // Secure-context (localhost/https) — Clipboard API.
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                await navigator.clipboard.writeText(text);
-                return true;
-            }
-        } catch (_) { /* упадём на fallback */ }
-        // Fallback для http на роутере: скрытая textarea + execCommand.
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.focus(); ta.select();
-            const ok = document.execCommand('copy');
-            document.body.removeChild(ta);
-            return ok;
-        } catch (_) { return false; }
+    // Тонкая обёртка над общим Clipboard (web/js/utils/clipboard.js): он и
+    // выбирает между Clipboard API и execCommand-фолбэком для http.
+    function copyText(text) {
+        return Clipboard.copy(text);
     }
 
     function isEditable(el) {

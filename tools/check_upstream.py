@@ -236,7 +236,14 @@ def check_release_drift(entry):
 
 
 def check_branch_paths(entry, workdir=None):
-    """Пути, от которых мы зависим, всё ещё есть в дереве. → (статус, сообщ.)."""
+    """Ветка: пути на месте И содержимое всё ещё нашего формата.
+
+    Проверять только существование путей мало. У источника без релизов
+    (каталоги стратегий) ломается не «версия», а договорённость о формате:
+    файл на месте, но внутри уже не INI-секции с `--lua-desync=`, и наш
+    парсер молча получает ноль стратегий. Поэтому вторым шагом файлы,
+    перечисленные в `content_checks`, выкачиваются и проверяются регекспом.
+    """
     import shutil
     import tempfile
 
@@ -244,6 +251,7 @@ def check_branch_paths(entry, workdir=None):
     if not paths:
         return "ok", "%s: путей для проверки нет" % entry["id"]
 
+    checks = entry.get("content_checks") or {}
     tmp = workdir or tempfile.mkdtemp(prefix="upstream-check-")
     clone = os.path.join(tmp, entry["id"])
     try:
@@ -267,7 +275,27 @@ def check_branch_paths(entry, workdir=None):
                 "реструктурировал дерево — поправьте пути в коде-потребителе "
                 "и в docs/upstream.json"
                 % (entry["id"], ", ".join(missing)))
-        return "ok", "%s: все %d путей на месте" % (entry["id"], len(paths))
+
+        # Формат содержимого. Блобы отфильтрованы при клонировании, поэтому
+        # `git show` дотягивает ровно нужные файлы — это дешевле чекаута.
+        broken = []
+        for rel, pattern in sorted(checks.items()):
+            r = _git(["git", "-C", clone, "show", "HEAD:%s" % rel])
+            if r.returncode != 0:
+                broken.append("%s (не читается)" % rel)
+                continue
+            if not re.search(pattern, r.stdout, re.M):
+                broken.append("%s (не найдено /%s/)" % (rel, pattern))
+        if broken:
+            return "behind", (
+                "%s: файлы на месте, но формат изменился: %s. Пути целы, "
+                "поэтому существующая проверка путей это пропустила бы, а "
+                "наш парсер получил бы ноль стратегий"
+                % (entry["id"], "; ".join(broken)))
+
+        tail = (", формат %d файлов прежний" % len(checks)) if checks else ""
+        return "ok", ("%s: все %d путей на месте%s"
+                      % (entry["id"], len(paths), tail))
     finally:
         if workdir is None:
             shutil.rmtree(tmp, ignore_errors=True)

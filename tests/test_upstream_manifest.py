@@ -307,6 +307,64 @@ class TestManifestMatchesReality(unittest.TestCase):
         self.assertEqual(entry["repo"],
                          "%s/%s" % (cup.SOURCE_OWNER, cup.SOURCE_REPO))
 
+    def test_strategy_catalogs_have_content_checks(self):
+        """У источника без релизов формат важнее версии.
+
+        Пути могут остаться на месте, а содержимое смениться — тогда
+        `_parse_ini_sections` молча вернёт ноль секций, и «обновление
+        каталогов» тихо ничего не привезёт. Проверка путей такое пропустит.
+        """
+        entry = self.by_id["strategy-catalogs"]
+        checks = entry.get("content_checks") or {}
+        self.assertTrue(checks,
+                        "у branch-источника должны быть content_checks")
+        from core import catalog_updater as cup
+        for name in cup.CATALOG_FILES:
+            rel = "%s/%s" % (cup.SOURCE_DIRECT_SUBPATH, name)
+            self.assertIn(rel, checks,
+                          "формат %s не проверяется" % name)
+
+    def test_content_check_patterns_match_our_own_catalogs(self):
+        """Регекспы не бутафория: они матчат наши же каталоги.
+
+        `catalogs/direct/*.txt` — то, что приехало из этого апстрима и что
+        реально разбирает наш парсер. Если паттерн не находит секций даже
+        здесь, он не найдёт их и в апстриме, и проверка будет ложно-зелёной
+        или ложно-красной.
+        """
+        import re as _re
+        entry = self.by_id["strategy-catalogs"]
+        for rel, pattern in (entry.get("content_checks") or {}).items():
+            local = os.path.join(REPO_ROOT, "catalogs", "direct",
+                                 os.path.basename(rel))
+            if not os.path.isfile(local):
+                continue
+            with open(local, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            self.assertRegex(
+                text, _re.compile(pattern, _re.M),
+                "паттерн %r не матчит наш собственный каталог %s"
+                % (pattern, local))
+
+    def test_content_checks_only_on_branch_entries(self):
+        """`content_checks` осмысленны только для branch-источников."""
+        for entry in self.manifest["upstreams"]:
+            if entry.get("content_checks"):
+                self.assertEqual(
+                    entry.get("kind"), "branch",
+                    "%s: content_checks заданы для kind=%s"
+                    % (entry["id"], entry.get("kind")))
+
+    def test_content_check_patterns_are_valid_regexes(self):
+        import re as _re
+        for entry in self.manifest["upstreams"]:
+            for rel, pattern in (entry.get("content_checks") or {}).items():
+                try:
+                    _re.compile(pattern)
+                except _re.error as e:
+                    self.fail("%s: битый регексп для %s: %s"
+                              % (entry["id"], rel, e))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,9 @@
     "  tag_prefix    префикс тегов, если у апстрима их несколько линий",
     "  hold          {reason, revisit} — отстаём ОСОЗНАННО. Отставание видно",
     "                в отчёте как «=», но не поднимает тревогу и не валит CI",
+    "  content_checks (kind=branch) {путь: регексп} — договорённость о ФОРМАТЕ.",
+    "                Пути могут остаться на месте, а содержимое смениться —",
+    "                тогда парсер молча получит ноль стратегий",
     "  note          чем грозит отставание именно здесь"
   ],
   "version": 1,
@@ -70,7 +73,13 @@
         "src/profile/strategy_catalogs/winws2/voice.txt",
         "src/presets/builtin/winws2"
       ],
-      "note": "Источник каталогов стратегий («Обновить стратегии», core/catalog_updater.py). Релизов нет — следим за веткой. Опасность не в версии, а в РЕСТРУКТУРИЗАЦИИ дерева: апстрим периодически переносит каталоги, и SOURCE_DIRECT_SUBPATH/SOURCE_PRESETS_SUBPATH перестают существовать. Фолбэк-скан в catalog_updater это переживает, но молча и не всегда — поэтому пути проверяются явно."
+      "note": "Источник каталогов стратегий («Обновить стратегии», core/catalog_updater.py). Релизов нет — следим за веткой, поэтому pinned здесь неприменим по природе источника. Ломается тут не версия, а две вещи: (1) РЕСТРУКТУРИЗАЦИЯ дерева — апстрим периодически переносит каталоги, и SOURCE_DIRECT_SUBPATH/SOURCE_PRESETS_SUBPATH перестают существовать; (2) СМЕНА ФОРМАТА — файл на месте, но внутри уже не INI-секции `[id]` со строками `--lua-desync=`, и _parse_ini_sections молча возвращает ноль секций. Первое ловят paths, второе — content_checks.",
+      "content_checks": {
+        "src/profile/strategy_catalogs/winws2/tcp.txt": "^\\[[^\\]]+\\]",
+        "src/profile/strategy_catalogs/winws2/udp.txt": "^--lua-desync=",
+        "src/profile/strategy_catalogs/winws2/http80.txt": "^\\[[^\\]]+\\]",
+        "src/profile/strategy_catalogs/winws2/voice.txt": "^--lua-desync="
+      }
     },
     {
       "id": "sing-box",

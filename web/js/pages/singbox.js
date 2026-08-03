@@ -379,24 +379,8 @@ const SingboxDashboardPage = (() => {
         const st = logState[name];
         const text = (st && st.text) || '';
         if (!text) { Toast.error('Лог пуст'); return; }
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                await navigator.clipboard.writeText(text);
-            } else {
-                // Фолбэк для http/старых браузеров: временный textarea.
-                const ta = document.createElement('textarea');
-                ta.value = text;
-                ta.style.position = 'fixed';
-                ta.style.opacity = '0';
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand('copy');
-                document.body.removeChild(ta);
-            }
-            Toast.success('Лог скопирован в буфер');
-        } catch (e) {
-            Toast.error('Не удалось скопировать: ' + e.message);
-        }
+        await Clipboard.copyWithToast(text,
+                                      { okText: 'Лог скопирован в буфер' });
     }
 
     // ══════════════ actions ══════════════
