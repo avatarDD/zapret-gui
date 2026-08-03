@@ -67,7 +67,13 @@ description: >-
 | `-t` | проверить конфиг и выйти (test) | **да** (pre-flight + `/validate`) |
 | `-v` | версия | да (детект версии) |
 | `-ext-ctl <addr>` | переопределить external-controller | нет (через YAML) |
-| `-ext-ui`, `-secret`, `-m` | UI/секрет/лимит памяти | нет |
+| `-ext-ui`, `-secret`, `-m` | UI/секрет/geodata-режим | нет |
+
+Таблица — только то, что вызываем мы; полный список шире. В v1.19.29 есть
+ещё `-config` (конфиг base64-строкой), `-ext-ctl-tls`/`-ext-ctl-unix`/
+`-ext-ctl-pipe`/`-ext-ctl-routing-mark`, `-post-up`/`-post-down` (скрипты),
+`-age-secret-key`. Почти все дублируются переменными `CLASH_*` — сверено с
+`main.go` mihomo v1.19.29.
 
 Запуск у нас: `mihomo -d <config_dir> -f <config.yaml>` в новой сессии
 (`start_new_session`), `stdin=DEVNULL`, stdout/stderr → лог-файл,
@@ -234,9 +240,23 @@ mihomo. Мини-парсер YAML + реестр конвертеров `_CLASH
 | `hysteria2`/`hy2` | `hysteria2` | `password`/`auth`, sni, `skip-cert-verify`→`insecure` |
 | `tuic` | `tuic` | `uuid`, `password`, sni |
 
-**НЕ конвертируются** (пропуск с причиной «неподдерживаемый тип»): `wireguard`,
-`snell`, `ssr`, `ssh`, `http`, `socks5`, `direct`, и т.п. — для них в sing-box
-другой путь или нет аналога.
+**НЕ конвертируются** — узел попадает в `skipped` с причиной
+«неподдерживаемый тип» (не теряется молча: список отдаётся вызывающему и
+показывается в GUI). Но причины у разных типов **разные**, и это важно:
+
+| Тип в clash | Почему не конвертируем |
+|---|---|
+| `anytls`, `hysteria` (v1), `ssh`, `socks5`→`socks`, `http` | **Аналог в sing-box ЕСТЬ** — просто конвертер не написан. Реальный пробел, а не ограничение |
+| `wireguard` | В sing-box это не outbound, а **`endpoint`** (outbound удалён в 1.13) — нужен отдельный путь, см. скил `singbox` §5.3 |
+| `tailscale` | Тоже не outbound: в sing-box это endpoint/service |
+| `ssr`, `snell` | Аналога нет: ShadowsocksR из sing-box выпилен ещё в 1.6, snell там не реализован |
+| `mieru`, `masque`, `shadowquic`, `trusttunnel`, `openvpn`, `sudoku`, `rematch` | Протоколы, которые есть только у mihomo |
+| `direct`, `dns`, `reject` | Служебные, при импорте узлов не нужны |
+
+Список типов сверен с `adapter/parser.go` mihomo v1.19.29 и каталогом
+`docs/configuration/outbound/` sing-box v1.13.15. Апстрим mihomo добавляет
+протоколы заметно быстрее — при следующей сверке проверить, не появился ли
+аналог у обоих.
 
 > Нюанс YAML: `short-id: 01` парсится как int `1` — конвертер обрабатывает это
 > best-effort, чтобы не потерять ведущий ноль. `proxy-groups`/`rules` при таком

@@ -27,6 +27,10 @@ description: >-
 Источники истины (в порядке убывания авторитета):
 1. **sing-box.sagernet.org** — официальная документация конфигурации и CLI;
    `sagernet/sing-box` (Go-исходники) — окончательная истина по схемам.
+   §9 сверен с `docs/deprecated.md` + `docs/migration.md` апстрима на
+   **v1.13.15** (актуальная стабильная линия; 1.14 пока в бете).
+   Базовая версия зафиксирована в `docs/upstream.json` — при выходе новой
+   еженедельный сторож заведёт issue, см. CoderManual §3.2.
 2. **`sing-box check -c <file>`** — валидатор самого бинаря. Если он молчит —
    конфиг валиден для ЭТОЙ версии; если ругается — это и есть причина.
 3. **Наш код** — `core/singbox_config.py` (генерация/валидация JSON),
@@ -282,10 +286,11 @@ endpoint заменил старый `type:wireguard` outbound (он deprecated 
 | Версия | Что произошло | Замена | Наш статус |
 |--------|---------------|--------|-----------|
 | 1.8 | deprecated: `geoip`, `geosite` | `rule_set` (бинарные `.srs`) | ipset/hostlist + rule-set при импорте |
-| 1.11 | deprecated: спец-outbounds **`block`**/**`dns`**; inbound-поля `sniff*`/`domain_strategy`; outbound `wireguard` | rule-actions `reject`/`hijack-dns`/`sniff`/`resolve`; `endpoints` для WG | `block` убран из `make_minimal_config`; sniff/dns-hijack через route |
-| **1.12** | **УДАЛЕНЫ `geoip`/`geosite`** (как route-матчеры); формат `dns` переписан на типизированные серверы (legacy-`address` пока принимается) | `rule_set`; `type:udp/tcp/tls/…` | geo — через ipset/rule-set; DNS см. §7 |
-| **1.13** | **УДАЛЕНЫ** `block`/`dns` outbounds, legacy inbound-поля (`sniff*`/`domain_strategy`), старый outbound `type:wireguard` | как deprecated в 1.11 | issue #149 — генератор чистый; `validate()` держит block/dns в «известных типах» только для ЧТЕНИЯ старых чужих конфигов |
-| **1.14** (latest — 1.14.0-alpha) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`); deprecated: inline `tls.acme`, address-filter поля DNS-правил (→ action `evaluate`), `independent_cache` (убрано), `store_rdrc`→`store_dns` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed |
+| 1.10 | deprecated: TUN `inet4_address`/`inet6_address`, `inet4_route_address`/`inet6_*`, `inet4_route_exclude_address`/… (слиты в одно поле); `rule_set_ipcidr_match_source` | `address`, `route_address`, `route_exclude_address`; `rule_set_ip_cidr_match_source` | генерим слитые поля (`singbox_config.py:353`) |
+| 1.11 | **УДАЛЁН** `rule_set_ipcidr_match_source`. deprecated: спец-outbounds **`block`**/**`dns`**; inbound-поля `sniff*`/`domain_strategy`; outbound `wireguard`; `override_address`/`override_port` у direct; TUN `gso` | rule-actions `reject`/`hijack-dns`/`sniff`/`resolve`; `endpoints` для WG; route-опции для override | `block` убран из `make_minimal_config`; sniff/dns-hijack через route |
+| **1.12** | **УДАЛЕНЫ `geoip`/`geosite`** (как route-матчеры) и слитые в 1.10 TUN-поля; формат `dns` переписан на типизированные серверы (legacy-`address` пока принимается); deprecated legacy-ECH поля (`pq_signature_schemes_enabled`, `dynamic_record_sizing_disabled` — уже не работают) | `rule_set`; `type:udp/tcp/tls/…` | geo — через ipset/rule-set; DNS см. §7 |
+| **1.13** | **УДАЛЕНЫ** `block`/`dns` outbounds, legacy inbound-поля (`sniff*`/`domain_strategy`), старый outbound `type:wireguard`, **`override_address`/`override_port` у direct**, **TUN `gso`** | как deprecated в 1.11 | issue #149 — генератор чистый; `validate()` держит block/dns в «известных типах» только для ЧТЕНИЯ старых чужих конфигов |
+| **1.14** (в бете: 1.14.0-beta.4; стабильная линия — 1.13.x) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`). Новые deprecated — **удаление обещано в 1.16**, не сейчас: inline `tls.acme` → `certificate_provider`; address-filter поля DNS-правил (`ip_cidr`/`ip_is_private` без `match_response`) и `rule_set_ip_cidr_accept_empty` → action `evaluate` + `match_response`; `independent_cache` (кэш и так ключуется по транспорту); `store_rdrc` → `store_dns`; legacy `strategy` в DNS rule action; `download_detour` у remote rule-set → `http_client`; неявный HTTP-клиент по умолчанию → явные `http_clients` + `route.default_http_client` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed; `independent_cache` не задаём (`singbox_config.py:755`) |
 
 > Симптомы по версиям: на 1.12+ — падение на `{"geosite":…}`/`{"geoip":…}` в
 > route или на legacy-DNS уже на 1.14; на 1.13 — `FATAL ... legacy inbound
@@ -293,6 +298,21 @@ endpoint заменил старый `type:wireguard` outbound (он deprecated 
 > `{"type":"block"|"dns"|"wireguard"}`. Лечится переходом на rule-actions/
 > rule_set/endpoints/typed-DNS. Наш генератор уже чистый; импортированные/ручные
 > конфиги пользователя — нет, поэтому существует pre-flight `check` и режим отладки.
+
+> ⚠️ **Ловушка 1.14, которая бьёт по чужим конфигам сильнее прочих.**
+> DNS-правило, ссылающееся на rule-set, где лежат ТОЛЬКО `ip_cidr`-элементы
+> (типичный geoip-набор), **без `match_response` отвергается на старте**,
+> когда legacy-режим DNS выключен. То есть это не тихая деградация, а отказ
+> запуска. Готовые конфиги «geoip-cn → local DNS» — самый частый паттерн,
+> который так ломается; чинится вставкой шага `{"action":"evaluate", …}`
+> перед правилом и `"match_response": true` в самом правиле.
+
+**Различай deprecated и removed.** Апстрим сначала объявляет поле устаревшим
+и лишь через 2–3 минорных релиза удаляет: `geoip`/`geosite` — deprecated в
+1.8, удалены в 1.12; `block`/`dns` — deprecated в 1.11, удалены в 1.13. Всё,
+что помечено deprecated в 1.14, апстрим обещает убрать в **1.16**, и до тех
+пор оно работает. Поэтому «сегодня в логе warning» ≠ «надо срочно менять
+генератор», а «поле удалено» = мгновенный отказ запуска.
 
 ---
 
