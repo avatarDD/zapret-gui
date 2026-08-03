@@ -6,7 +6,8 @@
  * Никакого legacy nfqws1 (`--dpi-desync*`) — движок другой (см. SKILL §1).
  *
  * Опирается на:
- *   - SKILL §3   — CLI-опции nfqws2 (v0.9.5.2)
+ *   - SKILL §0   — что изменилось в zapret2 1.0.x
+ *   - SKILL §3   — CLI-опции nfqws2 (v1.0.4)
  *   - SKILL §4   — диапазоны --in-range/--out-range
  *   - SKILL §5/6 — payload-типы и pos-маркеры
  *   - SKILL §8   — desync-функции zapret-antidpi.lua и блоки опций (fooling/…)
@@ -569,7 +570,8 @@ const Nfqws2Spec = (() => {
         // встречаются в стратегиях и наших пресетах. Редактор обязан их
         // знать — иначе ложная ошибка «неизвестный флаг» (напр. на
         // --ipcache-hostname=1, который есть в builtin-пресетах).
-        // Список сверен с bol-van/zapret2 v1.0.1 (docs/manual.md, `-?`).
+        // Список сверен с bol-van/zapret2 v1.0.4 (docs/manual.md, `-?`).
+        // Набор опций с 0.9.5.2 не менялся, кроме --writeable → --writable.
         '--ipcache-hostname':  { slot: 'global', cat: 'service', desc: 'Кэшировать ip→hostname (нужно стратегиям нулевой фазы: wssize/syndata с хостлистами)', arg: { type: 'enum', values: ['0', '1'], optional: true } },
         '--ipcache-lifetime':  { slot: 'global', cat: 'service', desc: 'TTL кэша ip→hostname, сек (дефолт 7200, 0 = без ограничений)', arg: { type: 'int', ex: ['7200', '8400'] } },
         '--ctrack-timeouts':   { slot: 'global', cat: 'service', desc: 'Таймауты внутр. conntrack: TCP SYN:ESTABLISHED:FIN[:UDP] (дефолт 60:300:60:60)', arg: { type: 'string', ex: ['60:300:60:60'] } },
@@ -581,9 +583,24 @@ const Nfqws2Spec = (() => {
         '--bind-fix4':         { slot: 'global', cat: 'service', desc: 'Фикс выбора исходящего интерфейса IPv4 (PBR/multi-WAN). Обычно ставит GUI', arg: null },
         '--bind-fix6':         { slot: 'global', cat: 'service', desc: 'Фикс выбора исходящего интерфейса IPv6. Обычно ставит GUI', arg: null },
         '--lua-init':          { slot: 'global', cat: 'service', desc: 'Загрузить Lua (@файл|текст). Обычно ставит GUI (core + extension)', arg: { type: 'string', ex: ['@/opt/zapret2/lua/zapret-lib.lua'] } },
-        '--lua-gc':            { slot: 'global', cat: 'service', desc: 'Интервал GC Lua, сек (дефолт 60)', arg: { type: 'int' } },
+        '--lua-gc':            { slot: 'global', cat: 'service', desc: 'Интервал GC Lua, сек (дефолт 60, 0 = выкл). В zapret2 1.0/1.0.1 дефолт был багом 60 мс — обновиться до ≥1.0.2', arg: { type: 'int' } },
         '--writable':          { slot: 'global', cat: 'service', desc: 'Каталог с правом записи для Lua (env WRITABLE). До zapret2 1.0 — --writeable', arg: { type: 'string', optional: true } },
         '--comment':           { slot: 'global', cat: 'service', desc: 'No-op, для читабельности конфига', arg: { type: 'string', optional: true } },
+
+        // Рантайм-параметры процесса. GUI подставляет их сам
+        // (nfqws_manager._build_base_args / compose_command), но пользователь
+        // легко копирует готовую команду из мануала, blockcheck2 или превью —
+        // без них редактор ругался бы «неизвестный флаг» на валидной строке.
+        '--qnum':              { slot: 'global', cat: 'service', desc: 'Номер очереди NFQUEUE (== firewall queue num). Ставит GUI из nfqws.queue_num', arg: { type: 'int', ex: ['300'] } },
+        '--debug':             { slot: 'global', cat: 'service', desc: 'Отладочный лог: 0|1|syslog|android|@<файл>. Ставит GUI при nfqws.debug=true', arg: { type: 'string', ex: ['1', 'syslog', '@/tmp/nfqws2.log'], optional: true } },
+        '--user':              { slot: 'global', cat: 'service', desc: 'Сброс привилегий на пользователя. Ставит GUI', arg: { type: 'string', ex: ['nobody'] } },
+        '--uid':               { slot: 'global', cat: 'service', desc: 'Сброс привилегий: uid[:gid,…]', arg: { type: 'string', ex: ['65534:65534'] } },
+        '--daemon':            { slot: 'global', cat: 'service', desc: 'Демонизироваться. GUI запускает БЕЗ него (foreground-child); используется только автозапуском S99zapret', arg: null },
+        '--pidfile':           { slot: 'global', cat: 'service', desc: 'PID-файл (у S99zapret — /var/run/zapret-nfqws.pid)', arg: { type: 'string' } },
+        '--chdir':             { slot: 'global', cat: 'service', desc: 'Сменить рабочий каталог (без аргумента — EXEDIR)', arg: { type: 'string', optional: true } },
+        '--intercept':         { slot: 'global', cat: 'service', desc: 'Разрешить перехват. 0 = выполнить только lua-init и выйти — на этом построена валидация стратегий. ⚠️ при заведённых таймерах выход откладывается', arg: { type: 'enum', values: ['0', '1'], optional: true } },
+        '--dry-run':           { slot: 'global', cat: 'service', desc: 'Проверить опции и наличие файлов, затем выйти. Lua НЕ проверяется (для этого --intercept=0)', arg: null },
+        '--version':           { slot: 'global', cat: 'service', desc: 'Напечатать версию и lua_compat_ver, выйти', arg: null },
 
         // доп. параметры автохостлиста (slot list, как остальные --hostlist-auto-*)
         '--hostlist-auto-incoming-maxseq': { slot: 'list', cat: 'list', desc: 'Успех если входящий rel-seq > N (дефолт 4096)', arg: { type: 'int' } },

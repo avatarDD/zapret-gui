@@ -120,7 +120,33 @@ test('lint: неверный payload в csv = предупреждение', () 
 
 // ──────────────── Глобальные/служебные флаги (--ipcache-hostname и пр.) ────────────────
 
-test('spec: знает глобальные/служебные флаги nfqws2 1.0.1', () => {
+test('spec: знает рантайм-флаги процесса (GUI подставляет их сам)', () => {
+    // Пользователь копирует готовую команду из мануала/превью/blockcheck2 —
+    // редактор не должен ругаться «неизвестный флаг» на валидной строке.
+    ['--qnum', '--debug', '--user', '--uid', '--daemon', '--pidfile',
+     '--chdir', '--intercept', '--dry-run', '--version',
+    ].forEach((f) => {
+        assert.ok(Spec.isKnownFlag(f), f + ' должен быть известен редактору');
+    });
+});
+
+test('lint: полная команда из превью не даёт ложных ошибок', () => {
+    const r = Lint.analyze(
+        '--user=nobody --fwmark=0x40000000 --qnum=300 --debug '
+        + '--lua-init=@/opt/zapret2/lua/zapret-lib.lua '
+        + '--lua-init=@/opt/zapret2/lua/zapret-antidpi.lua '
+        + '--filter-tcp=443 --filter-l7=tls --payload=tls_client_hello '
+        + '--lua-desync=fake:blob=fake_default_tls:tcp_md5');
+    assert.strictEqual(errs(r).length, 0,
+        'ложные ошибки на реальной команде: ' + JSON.stringify(errs(r)));
+});
+
+test('lint: --intercept=0 (валидация) НЕ ошибка', () => {
+    const r = Lint.analyze('--intercept=0 --lua-desync=multisplit:pos=1');
+    assert.strictEqual(errs(r).length, 0);
+});
+
+test('spec: знает глобальные/служебные флаги nfqws2 1.0.4', () => {
     ['--ipcache-hostname', '--ipcache-lifetime', '--ctrack-timeouts',
      '--ctrack-disable', '--server', '--payload-disable', '--reasm-disable',
      '--fwmark', '--bind-fix4', '--bind-fix6', '--lua-init', '--lua-gc',
