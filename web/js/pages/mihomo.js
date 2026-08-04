@@ -386,7 +386,10 @@ rules:
                 `/api/mihomo/configs/${encodeURIComponent(name)}/validate`,
                 { text });
             if (r && r.ok) Toast.success('Конфиг валиден');
-            else Toast.error('mihomo -t: ' + ((r && (r.stderr || r.error)) || 'ошибка'));
+            // Причину mihomo печатает в stdout, а не в stderr — бэкенд
+            // отдаёт её разобранной в `reason`.
+            else Toast.error('mihomo -t: '
+                + ((r && (r.reason || r.stderr || r.error)) || 'ошибка'), 12000);
         } catch (e) { Toast.error(e.message); }
     }
 
@@ -412,7 +415,17 @@ rules:
             const r = await API.post(`/api/mihomo/configs/${encodeURIComponent(name)}/${op}`);
             if (r && r.ok) Toast.success(`${name}: ${op} OK`);
             else {
-                Toast.error(`${name}: ${(r && r.error) || 'ошибка'}`);
+                Toast.error(`${name}: ${(r && r.error) || 'ошибка'}`, 15000);
+                // Кнопка «Проверить» проверяет САМ конфиг, а запуск с
+                // включённой отладкой — сгенерированный launch-конфиг с
+                // подменённым log-level. Если вердикты разошлись, дело
+                // может быть именно в этом.
+                if (r && r.debug_launch) {
+                    Toast.error('Запуск шёл через launch-конфиг режима '
+                        + 'отладки (log-level=debug) — он проверяется '
+                        + 'отдельно от того, что смотрит «Проверить». '
+                        + 'Выключите отладку и попробуйте снова.', 15000);
+                }
                 if (r && r.log_tail) console.warn(`mihomo ${name} log:`, r.log_tail);
             }
         } catch (e) { Toast.error(`${name}: ${e.message}`); }
