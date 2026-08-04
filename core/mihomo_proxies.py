@@ -26,7 +26,7 @@ import urllib.request
 
 from core.clash_yaml import (parse_yaml, dump_yaml, dump_seq, has_pyyaml,
                              _parse_flow, _parse_scalar, _split_kv,
-                             _strip_yaml_comment)
+                             _strip_yaml_comment, _needs_quote)
 
 
 _SELECT_TYPE = "Selector"   # как Clash API называет group типа select
@@ -425,6 +425,290 @@ def append_proxies_text(text: str, new_proxies: list) -> str:
     new_lines = lines[:end] + item_lines + lines[end:]
     out = "\n".join(new_lines)
     return out + "\n" if had_nl else out
+
+
+def _seq_items(lines: list, start: int, end: int, item_indent: int):
+    """
+    Разбить block-последовательность на элементы.
+
+    Возвращает [(first, stop, key_col)]: индекс первой строки элемента,
+    индекс ЗА последней и колонку, с которой идут ключи элемента (у
+    `- name: a` это позиция `name`). Строки между элементами (пустые,
+    комментарии) прилипают к предыдущему элементу — так их удаление вместе
+    с ним не оставляет висячих хвостов.
+    """
+    starts = []
+    for j in range(start + 1, end):
+        line = lines[j]
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == item_indent and (s.startswith("- ") or s == "-"):
+            starts.append(j)
+    items = []
+    for n, first in enumerate(starts):
+        stop = starts[n + 1] if n + 1 < len(starts) else end
+        line = lines[first]
+        after = line[line.index("-") + 1:]
+        if after.strip():
+            key_col = len(line) - len(after) + (len(after) - len(after.lstrip(" ")))
+        else:
+            key_col = item_indent + 2
+            for k in range(first + 1, stop):
+                if lines[k].strip():
+                    key_col = len(lines[k]) - len(lines[k].lstrip(" "))
+                    break
+        items.append((first, stop, key_col))
+    return items
+
+
+def _item_name(lines: list, first: int, stop: int, key_col: int):
+    """Значение `name:` элемента последовательности (или None).
+
+    Смотрим только ключи ПЕРВОГО уровня элемента: `name` внутри вложенных
+    `ws-opts`/`headers` — чужой.
+    """
+    line = lines[first]
+    rest = line[line.index("-") + 1:].strip()
+    if rest.startswith("{"):
+        flow = _parse_flow(rest)
+        if isinstance(flow, dict) and flow.get("name") is not None:
+            return str(flow["name"])
+        return None
+    candidates = [rest] if rest else []
+    for k in range(first + 1, stop):
+        cur = lines[k]
+        if not cur.strip() or cur.strip().startswith("#"):
+            continue
+        if len(cur) - len(cur.lstrip(" ")) == key_col:
+            candidates.append(cur.strip())
+    for c in candidates:
+        key, val = _split_kv(_strip_yaml_comment(c))
+        if key == "name" and val is not None:
+            return str(_parse_scalar(val))
+    return None
+
+
+def remove_proxies_text(text: str, names) -> dict:
+    """
+    Удалить прокси из блока `proxies:` ТЕКСТОМ, без round-trip.
+
+    Зачем не через pyyaml: на роутере (Entware) его обычно нет, а
+    round-trip самописным парсером повредил бы конфиг — из-за этого
+    удаление из таблицы просто отказывало («требует модуля PyYAML»).
+    Здесь мы не переписываем конфиг, а вырезаем строки удаляемых
+    элементов; всё остальное — комментарии, отступы, порядок ключей,
+    якоря — остаётся байт в байт.
+
+    Ссылки на удалённые узлы вычищаются из `proxy-groups[].proxies`
+    (`_strip_group_refs_lines`): группа, ссылающаяся на несуществующий
+    прокси, не даст mihomo стартовать.
+
+    Возвращает {ok, text, removed[], emptied_groups[]} либо
+    {ok: False, unsupported: True, error} — если блок задан инлайном и
+    текстовая правка небезопасна (тогда caller идёт в round-trip).
+    """
+    nameset = {str(n) for n in (names or []) if str(n)}
+    if not nameset:
+        return {"ok": True, "text": text, "removed": [],
+                "emptied_groups": []}
+
+    had_nl = text.endswith("\n") or text == ""
+    lines = text.splitlines()
+    idx = _find_top_key(lines, "proxies")
+    if idx is None:
+        return {"ok": True, "text": text, "removed": [],
+                "emptied_groups": []}
+
+    inline = lines[idx].split(":", 1)[1].strip()
+    if inline and inline not in ("[]", "~", "null"):
+        return {"ok": False, "unsupported": True,
+                "error": "секция proxies задана инлайном — текстовое "
+                         "удаление небезопасно"}
+
+    end = _proxies_block_end(lines, idx)
+    item_indent = _seq_item_indent(lines, idx, end)
+    if item_indent is None:
+        return {"ok": True, "text": text, "removed": [],
+                "emptied_groups": []}
+
+    drop, removed = set(), []
+    for first, stop, key_col in _seq_items(lines, idx, end, item_indent):
+        name = _item_name(lines, first, stop, key_col)
+        if name is not None and name in nameset:
+            removed.append(name)
+            drop.update(range(first, stop))
+
+    kept = [l for i, l in enumerate(lines) if i not in drop]
+    # Не оставляем `proxies:` без значения: пустой ключ разбирается как
+    # null, а `[]` — честный пустой список (и наш validate_yaml выдаёт
+    # понятное предупреждение вместо «неправильный YAML»).
+    if drop and len(removed) >= len(_seq_items(lines, idx, end, item_indent)):
+        new_idx = _find_top_key(kept, "proxies")
+        if new_idx is not None:
+            kept[new_idx] = "proxies: []"
+    kept, emptied = _strip_group_refs_lines(kept, nameset)
+    out = "\n".join(kept)
+    return {"ok": True, "text": (out + "\n" if had_nl else out),
+            "removed": removed, "emptied_groups": emptied}
+
+
+def _strip_group_refs_lines(lines: list, nameset: set):
+    """
+    Убрать удалённые имена из `proxy-groups[].proxies` (block и flow).
+
+    Возвращает (lines, emptied_groups) — группы, у которых после чистки не
+    осталось ни одного узла: такой конфиг mihomo тоже не примет, и об этом
+    честнее предупредить, чем молча отдать нерабочий файл.
+    """
+    idx = _find_top_key(lines, "proxy-groups")
+    if idx is None:
+        return lines, []
+
+    end = _proxies_block_end(lines, idx)
+    out = list(lines[:idx + 1])
+    emptied = []
+    group_name = ""
+    list_key_indent = None      # отступ ключа `proxies:` текущей группы
+    list_key_line = None        # его индекс в out (чтобы дописать `[]`)
+    kept_in_list = 0
+
+    def _close_list():
+        if list_key_indent is None or kept_in_list:
+            return
+        if group_name:
+            emptied.append(group_name)
+        if list_key_line is not None:
+            out[list_key_line] = out[list_key_line].rstrip() + " []"
+
+    for j in range(idx + 1, end):
+        line = lines[j]
+        s = line.strip()
+        if not s or s.startswith("#"):
+            out.append(line)
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+
+        if list_key_indent is not None:
+            # Элемент списка. Отступ может быть и БОЛЬШЕ ключа (рукописный
+            # стиль), и РАВНЫМ ему (стиль pyyaml: `proxies:` и `- A` на
+            # одной колонке) — второе мы сначала не учли, и ссылки в
+            # pyyaml-конфигах оставались висеть.
+            if indent >= list_key_indent and (s.startswith("- ")
+                                              or s == "-"):
+                val = str(_parse_scalar(_strip_yaml_comment(s[1:].strip())))
+                if val in nameset:
+                    continue                    # ссылка на удалённый узел
+                kept_in_list += 1
+                out.append(line)
+                continue
+            _close_list()
+            list_key_indent = None
+
+        # Группа целиком записана flow-мэпом (`- {name: PROXY, proxies:
+        # [A, B]}`) — правим только список внутри строки, остальное не
+        # трогаем.
+        if s.startswith("- ") and s[1:].strip().startswith("{"):
+            new_line, gname, became_empty = _filter_flow_group_line(
+                line, nameset)
+            if became_empty and gname:
+                emptied.append(gname)
+            out.append(new_line)
+            continue
+
+        key, val = _split_kv(_strip_yaml_comment(s.lstrip("- ").strip())
+                             if s.startswith("- ") else _strip_yaml_comment(s))
+        if key == "name" and val is not None:
+            group_name = str(_parse_scalar(val))
+        elif key == "proxies":
+            if val == "":
+                list_key_indent = indent if not s.startswith("- ") \
+                    else indent + 2
+                kept_in_list = 0
+                list_key_line = len(out)
+                out.append(line)
+                continue
+            if val.startswith("["):
+                items = _parse_flow(val)
+                if isinstance(items, list):
+                    left = [x for x in items if str(x) not in nameset]
+                    if not left and group_name:
+                        emptied.append(group_name)
+                    prefix = line[:len(line) - len(line.lstrip(" "))]
+                    body = ", ".join(_yaml_inline_scalar(x) for x in left)
+                    dash = "- " if s.startswith("- ") else ""
+                    out.append("%s%sproxies: [%s]" % (prefix, dash, body))
+                    continue
+        out.append(line)
+
+    _close_list()
+    out.extend(lines[end:])
+    return out, emptied
+
+
+# Имя, которое в flow-списке безопасно писать без кавычек. Всё остальное
+# (пробелы, эмодзи, `|` — обычный вид имён в подписках) квотируем: голый
+# скаляр с ними формально валиден, но слишком легко ломается.
+_BARE_FLOW_SCALAR_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+def _yaml_inline_scalar(v) -> str:
+    """Скаляр для flow-списка: квотируем всё, кроме простых токенов."""
+    s = str(v)
+    if _BARE_FLOW_SCALAR_RE.match(s) and not _needs_quote(s):
+        return s
+    return '"%s"' % s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+_FLOW_PROXIES_KEY_RE = re.compile(r"(?:(?<=\{)|(?<=,))\s*proxies\s*:\s*(?=\[)")
+
+
+def _filter_flow_group_line(line: str, nameset: set):
+    """
+    Вырезать удалённые имена из `proxies: [...]` внутри flow-мэпа группы.
+
+    Правим ТОЛЬКО span самого списка — остальная часть строки (порядок и
+    квотирование прочих ключей) остаётся байт в байт. Возвращает
+    (строка, имя группы, стала ли группа пустой).
+    """
+    m = _FLOW_PROXIES_KEY_RE.search(line)
+    if not m:
+        return line, "", False
+    start = line.index("[", m.end() - 1)
+    depth, stop = 0, -1
+    in_s = in_d = False
+    for i in range(start, len(line)):
+        ch = line[i]
+        if ch == "'" and not in_d:
+            in_s = not in_s
+        elif ch == '"' and not in_s:
+            in_d = not in_d
+        elif not in_s and not in_d:
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    stop = i
+                    break
+    if stop < 0:
+        return line, "", False                  # незакрытый список — не лезем
+
+    items = _parse_flow(line[start:stop + 1])
+    if not isinstance(items, list):
+        return line, "", False
+    left = [x for x in items if str(x) not in nameset]
+    if len(left) == len(items):
+        return line, "", False                  # ничего не поменялось
+
+    gname = ""
+    flow = _parse_flow(line[line.index("{"):].rstrip())
+    if isinstance(flow, dict) and flow.get("name") is not None:
+        gname = str(flow["name"])
+    body = ", ".join(_yaml_inline_scalar(x) for x in left)
+    return (line[:start] + "[" + body + "]" + line[stop + 1:],
+            gname, not left)
 
 
 def enable_external_controller_text(text: str, host: str, port: int,

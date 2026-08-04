@@ -55,6 +55,27 @@ def _safe_tag(name: str, fallback: str = "out") -> str:
 _XRAY_ONLY_TRANSPORTS = {"xhttp", "splithttp"}
 
 
+# Пропуск проверки TLS-сертификата приезжает в ссылках под РАЗНЫМИ именами:
+# `allowInsecure` (самое частое в дикой природе — Nekoray/v2rayN/Hiddify),
+# `allow_insecure` (TUIC-нотация), `insecure`, `skip-cert-verify` (clash).
+# Ключи из _parse_query уже в нижнем регистре. Раньше каждый парсер знал
+# только свой подсет, и hysteria2-ссылка с `allowInsecure=true` теряла флаг:
+# сервер с self-signed (а у hysteria2 это норма, sni там часто вообще IP)
+# не проходил TLS-рукопожатие — прокси выглядел мёртвым при живом сервере.
+_INSECURE_KEYS = ("allowinsecure", "allow_insecure", "insecure",
+                  "skip-cert-verify", "skipcertverify")
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _insecure_flag(q: dict) -> bool:
+    """Просил ли URI пропустить проверку TLS-сертификата."""
+    for k in _INSECURE_KEYS:
+        v = q.get(k)
+        if v is not None and str(v).strip().lower() in _TRUTHY:
+            return True
+    return False
+
+
 def _parse_query(qs: str) -> dict:
     """urlparse.parse_qs, но возвращает первую запись каждого ключа как str."""
     if not qs:
@@ -192,6 +213,10 @@ def vless_to_outbound(uri: str) -> dict:
             tls["utls"] = {"enabled": True, "fingerprint": fp}
         if q.get("alpn"):
             tls["alpn"] = [a for a in q["alpn"].split(",") if a]
+        # У reality пропуск проверки не нужен (там своя верификация), а вот
+        # обычный TLS с self-signed без него не поднимется.
+        if _insecure_flag(q):
+            tls["insecure"] = True
 
     outbound = make_vless_outbound(
         tag=tag, server=server, port=port, uuid=uuid,
@@ -360,8 +385,7 @@ def trojan_to_outbound(uri: str) -> dict:
     # allowInsecure=1 / insecure=1 — self-signed сертификат: без пропуска
     # проверки TLS-рукопожатие к таким серверам падает. fp/alpn — uTLS-маскировка
     # и согласование ALPN (как у vless).
-    insecure = (q.get("allowinsecure") or q.get("insecure")
-                or "").strip().lower() in ("1", "true", "yes", "on")
+    insecure = _insecure_flag(q)
     fp = q.get("fp", "")
     alpn = [a for a in (q.get("alpn") or "").split(",") if a]
     outbound = make_trojan_outbound(
@@ -477,11 +501,10 @@ def hysteria2_to_outbound(uri: str) -> dict:
     tag = _safe_tag(urllib.parse.unquote(p.fragment or "")
                     or "hy2-%s" % server)
     sni = q.get("sni") or ""
-    # Нормализуем регистр: insecure=TRUE/Yes/1 тоже должны включать
-    # пропуск проверки TLS, иначе outbound к серверу с self-signed не
-    # поднимется (handshake падает).
-    insecure = (q.get("insecure") or "").strip().lower() in (
-        "1", "true", "yes", "on")
+    # Все написания флага сразу (см. _insecure_flag): у hysteria2 ссылки
+    # почти всегда несут `allowInsecure`, а сервер — self-signed, поэтому
+    # без пропуска проверки рукопожатие не проходит.
+    insecure = _insecure_flag(q)
 
     # Salamander-обфускация: без obfs-пароля сервер с obfs не отвечает.
     obfs_type = (q.get("obfs") or "").strip().lower()
@@ -527,8 +550,7 @@ def tuic_to_outbound(uri: str) -> dict:
                     or "tuic-%s" % p.hostname)
     sni = q.get("sni") or ""
     alpn = [a for a in (q.get("alpn") or "").split(",") if a]
-    insecure = (q.get("allow_insecure") or q.get("insecure")
-                or "").strip().lower() in ("1", "true", "yes", "on")
+    insecure = _insecure_flag(q)
     cc = (q.get("congestion_control") or q.get("congestion") or "").strip()
     urm = (q.get("udp_relay_mode") or "").strip()
 

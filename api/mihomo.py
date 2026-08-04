@@ -459,9 +459,20 @@ def register(app):
         if not res.get("ok"):
             response.status = 404
             return res
+        text = res.get("text") or ""
         present = set(mp.proxy_names(cfg or {}))
-        r = mp.safe_mutate(res.get("text") or "",
-                           lambda c: mp.remove_proxies(c, names))
+        if not present:
+            present = {p["name"] for p in mp.proxies_from_text(text)}
+
+        # Текстовое удаление — основной путь: оно вырезает только строки
+        # удаляемых узлов и не требует PyYAML (на Entware его обычно нет,
+        # и удаление из таблицы просто отказывало). Заодно сохраняются
+        # комментарии и форматирование, которые round-trip теряет.
+        r = mp.remove_proxies_text(text, names)
+        if r.get("unsupported"):
+            # Нестандартный блок (инлайн/якорь) — тут безопаснее полный
+            # round-trip, а он возможен только с PyYAML.
+            r = mp.safe_mutate(text, lambda c: mp.remove_proxies(c, names))
         if not r.get("ok"):
             # needs_pyyaml — это не ошибка сервера: 200 с понятным телом,
             # чтобы фронт показал подсказку (API.post бросает на не-2xx).
@@ -473,7 +484,11 @@ def register(app):
             return save
         deleted = sorted(present & set(names))
         return {"ok": True, "deleted": deleted,
-                "skipped": sorted(set(names) - present)}
+                "skipped": sorted(set(names) - present),
+                # Группа без узлов не даст mihomo стартовать — предупредим,
+                # а не отдадим молча нерабочий конфиг.
+                "emptied_groups": r.get("emptied_groups") or [],
+                "warnings": save.get("warnings") or []}
 
     @app.route("/api/mihomo/configs/<name>/import-links", method="POST")
     def mihomo_import_links(name):

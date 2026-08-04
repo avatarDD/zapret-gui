@@ -584,6 +584,10 @@ const ProxyTable = (() => {
                         const extraMsg = opts.testDoneExtra
                             ? (opts.testDoneExtra(st.result) || '') : '';
                         Toast.success(`Готово: живых ${sum.alive || 0} / ${sum.total || 0}${extraMsg}`);
+                        // «Мертвы все и по одной причине» — это почти всегда
+                        // не про серверы, а про сам роутер (DNS, нет выхода,
+                        // трафик завёрнут в нерабочий туннель). Говорим прямо.
+                        if (st.result.hint) Toast.error(st.result.hint, 15000);
                         renderBody();
                         return;
                     }
@@ -658,6 +662,14 @@ const ProxyTable = (() => {
                 const r = await opts.deleteItems(ctx, ids);
                 if (r && r.ok) {
                     Toast.success(`Удалено: ${(r.deleted || []).length}${(r.skipped || []).length ? `, пропущено: ${r.skipped.length}` : ''}`);
+                    // Группа, оставшаяся без узлов, не даст движку стартовать —
+                    // молчать об этом нельзя.
+                    const empty = r.emptied_groups || [];
+                    if (empty.length) {
+                        Toast.error('Без узлов осталась группа: ' + empty.join(', ')
+                            + '. Добавьте туда прокси, иначе конфиг не запустится.',
+                            10000);
+                    }
                     state.selected = new Set();
                     await loadItems();
                 } else {
