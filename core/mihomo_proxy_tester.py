@@ -34,6 +34,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.log_buffer import log
 from core.proxy_tester import (
     resolve_target, tcp_prefilter, parse_delay, _free_port,
+    unpack_tcp_entry, common_failure_hint, TCP_FAIL_OTHER,
 )
 
 
@@ -85,6 +86,29 @@ def _tail(path: str, limit: int = 600) -> str:
 
 # ─────── фаза 2: через запущенный external-controller ───────
 
+NOT_LOADED_ERROR = ("узел ещё не загружен движком — перезапустите конфиг")
+
+
+def controller_known_names(ep: dict) -> set:
+    """Имена узлов, которые ЗАПУЩЕННЫЙ инстанс реально держит.
+
+    Конфиг на диске мог поменяться после старта: только что добавленных
+    прокси в рантайме нет, и `/proxies/<имя>/delay` отвечает 404. Без
+    этой сверки такой ответ выглядел как «сервер мёртв» — самый обидный
+    ложный вердикт, потому что срабатывал ровно на свежедобавленных
+    (то есть заведомо живых) ключах.
+    """
+    try:
+        from core import mihomo_proxies as mp
+        live = mp.controller_proxies(ep)
+    except Exception:
+        return set()
+    if not live.get("ok"):
+        return set()
+    return {str(n.get("name")) for n in (live.get("nodes") or [])
+            if n.get("name")}
+
+
 def _controller_delays(ep: dict, names: list, target_url: str,
                        timeout_ms: int, on_done=None) -> dict:
     out: dict = {}
@@ -98,6 +122,10 @@ def _controller_delays(ep: dict, names: list, target_url: str,
             urllib.request.quote(nm, safe=""), timeout_ms, q)
         st, body = _get(ep["host"], ep["port"], ep.get("secret", ""),
                         path, http_to)
+        if st == 404:
+            # Гонка: узел исчез из рантайма между сверкой и замером.
+            return nm, {"ok": False, "engine_missing": True,
+                        "error": NOT_LOADED_ERROR}
         return nm, parse_delay(st, body)
 
     with ThreadPoolExecutor(max_workers=min(_E2E_WORKERS, total)) as ex:
@@ -255,16 +283,38 @@ def run_proxy_tests(proxies: list, *, target: str = "cloudflare",
 
     _rep("tcp", 0, len(obs))
     tcp = tcp_prefilter(tcp_models, on_done=lambda d, t: _rep("tcp", d, t))
-    survivors = [n for n, (ok, _ms) in tcp.items() if ok]
+    survivors = [n for n, e in tcp.items() if unpack_tcp_entry(e)[0]]
 
     e2e: dict = {}
     engine_used = False
     if survivors:
         if controller:
+            # Узлы, которых в рантайме нет (конфиг правили после старта),
+            # через контроллер меряться не могут — он ответит 404. Их
+            # гоняем одноразовым движком, если бинарь есть.
+            known = controller_known_names(controller)
+            live = [n for n in survivors if not known or n in known]
+            missing = [n for n in survivors if n not in live]
             _rep("e2e", 0, len(survivors))
-            e2e = _controller_delays(
-                controller, survivors, target_url, timeout_ms,
-                on_done=lambda d, t: _rep("e2e", d, t))
+            if live:
+                e2e = _controller_delays(
+                    controller, live, target_url, timeout_ms,
+                    on_done=lambda d, t: _rep("e2e", d, len(survivors)))
+            if missing:
+                if binary:
+                    try:
+                        e2e.update(_throwaway_delays(
+                            [meta[n] for n in missing], target_url,
+                            timeout_ms, binary))
+                    except Exception as e:
+                        log.warning("mihomo tester (новые узлы): %s" % e,
+                                    source="mihomo")
+                        e2e.update({n: {"ok": False, "engine_fail": True,
+                                        "error": str(e)} for n in missing})
+                else:
+                    e2e.update({n: {"ok": False, "engine_missing": True,
+                                    "error": NOT_LOADED_ERROR}
+                                for n in missing})
             engine_used = bool(e2e)
         elif binary:
             _rep("e2e", 0, len(survivors))
@@ -279,12 +329,12 @@ def run_proxy_tests(proxies: list, *, target: str = "cloudflare",
 
     results = []
     for nm, p in meta.items():
-        tcp_ok, tcp_ms = tcp.get(nm, (False, None))
+        tcp_ok, tcp_ms, tcp_reason = unpack_tcp_entry(tcp.get(nm))
         row = {"tag": nm, "server": p.get("server"),
                "port": p.get("port"), "type": p.get("type")}
         if not tcp_ok:
             row.update({"alive": False, "latency_ms": None, "stage": "tcp",
-                        "error": "сервер не отвечает (TCP)"})
+                        "error": tcp_reason or TCP_FAIL_OTHER})
         elif engine_used and nm in e2e and not e2e[nm].get("engine_fail"):
             r = e2e[nm]
             row.update({"alive": bool(r.get("ok")),
@@ -302,6 +352,7 @@ def run_proxy_tests(proxies: list, *, target: str = "cloudflare",
     alive = sum(1 for r in results if r["alive"])
     return {"ok": True, "target": target_url, "engine_used": engine_used,
             "results": results,
+            "hint": common_failure_hint(results),
             "summary": {"total": len(results), "alive": alive,
                         "dead": len(results) - alive}}
 

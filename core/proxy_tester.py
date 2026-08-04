@@ -32,6 +32,7 @@ tcp_prefilter) тестируются без I/O и без бинаря.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -97,27 +98,99 @@ def resolve_target(target: str) -> str:
 
 # ─────── phase 1: TCP prefilter ───────
 
+# Почему проба не прошла. Разные причины — разное лечение, а раньше все
+# они сводились к одному «сервер не отвечает (TCP)»: по такому вердикту
+# нельзя отличить дохлый сервер от сломанного резолвера роутера или от
+# трафика, завёрнутого в неработающий туннель.
+TCP_FAIL_DNS       = "имя не резолвится (DNS)"
+TCP_FAIL_REFUSED   = "соединение отклонено"
+TCP_FAIL_UNREACH   = "нет маршрута до сервера"
+TCP_FAIL_TIMEOUT   = "таймаут TCP"
+TCP_FAIL_BAD_ADDR  = "некорректный адрес/порт"
+TCP_FAIL_OTHER     = "сервер не отвечает (TCP)"
+
+
+def _tcp_fail_reason(exc) -> str:
+    """Классифицировать ошибку connect() в человекочитаемую причину."""
+    if isinstance(exc, socket.gaierror):
+        return TCP_FAIL_DNS
+    if isinstance(exc, ConnectionRefusedError):
+        return TCP_FAIL_REFUSED
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return TCP_FAIL_TIMEOUT
+    if isinstance(exc, OSError) and exc.errno in (
+            errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+            errno.EHOSTDOWN):
+        return TCP_FAIL_UNREACH
+    return TCP_FAIL_OTHER
+
+
 def _tcp_connect_ok(host: str, port: int, timeout: float) -> tuple:
-    """(ok, latency_ms|None). Чистый TCP-connect без TLS."""
-    if not host or not (0 < int(port) < 65536):
-        return False, None
+    """(ok, latency_ms|None, reason). Чистый TCP-connect без TLS."""
+    try:
+        port_ok = 0 < int(port) < 65536
+    except (TypeError, ValueError):
+        port_ok = False
+    if not host or not port_ok:
+        return False, None, TCP_FAIL_BAD_ADDR
     t0 = time.time()
     try:
         sock = socket.create_connection((host, int(port)), timeout=timeout)
-    except (OSError, socket.timeout, ValueError):
-        return False, None
+    except (OSError, socket.timeout, ValueError) as e:
+        return False, None, _tcp_fail_reason(e)
     try:
         sock.close()
     except OSError:
         pass
-    return True, int((time.time() - t0) * 1000)
+    return True, int((time.time() - t0) * 1000), ""
+
+
+def unpack_tcp_entry(entry) -> tuple:
+    """(ok, ms, reason) из записи tcp_prefilter (терпит старый 2-кортеж)."""
+    if not entry:
+        return False, None, TCP_FAIL_OTHER
+    if len(entry) >= 3:
+        return entry[0], entry[1], entry[2]
+    return entry[0], entry[1], ("" if entry[0] else TCP_FAIL_OTHER)
+
+
+def common_failure_hint(results: list) -> str:
+    """
+    Подсказка, когда «умерли» ВСЕ серверы по одной причине.
+
+    Массовый отказ почти никогда не значит, что все ключи разом протухли:
+    так выглядит сломанный резолвер, обрубленный выход роутера или
+    завёрнутый в неработающий туннель трафик самого GUI. Один общий
+    вердикт «дохлые» это скрывает, поэтому формулируем причину явно.
+    """
+    rows = [r for r in (results or []) if not r.get("invalid")]
+    if len(rows) < 2 or any(r.get("alive") for r in rows):
+        return ""
+    reasons = {(r.get("error") or "").strip() for r in rows}
+    if len(reasons) != 1:
+        return ""
+    reason = reasons.pop()
+    base = ("Ни один из %d серверов не прошёл проверку, и причина у всех "
+            "одна: «%s». " % (len(rows), reason))
+    if reason == TCP_FAIL_DNS:
+        return base + ("Это не про серверы — на роутере не резолвятся имена. "
+                       "Проверьте DNS роутера и перехват DNS.")
+    if reason in (TCP_FAIL_UNREACH, TCP_FAIL_TIMEOUT):
+        return base + ("Похоже, у самого роутера нет выхода к этим адресам: "
+                       "проверьте интернет и не завёрнут ли трафик роутера в "
+                       "туннель, который сейчас не работает (остановите "
+                       "инстанс и повторите тест).")
+    return base + ("Проверьте выход в интернет с самого роутера — при живых "
+                   "ключах так выглядит проблема на его стороне.")
 
 
 def tcp_prefilter(outbounds: list, *, timeout: float = _TCP_TIMEOUT,
                   workers: int = _TCP_WORKERS, on_done=None) -> dict:
     """
-    Параллельный TCP-отсев. Возвращает {tag: (ok, latency_ms)} для
-    каждого outbound'а с тегом и server/server_port.
+    Параллельный TCP-отсев. Возвращает {tag: (ok, latency_ms, reason)}
+    для каждого outbound'а с тегом и server/server_port. `reason` — почему
+    проба не прошла (DNS / нет маршрута / отказ / таймаут), пустая строка
+    при успехе; распаковывать удобно через unpack_tcp_entry().
 
     on_done(done, total) — опциональный колбэк прогресса, вызывается по
     мере завершения каждой пробы.
@@ -136,7 +209,7 @@ def tcp_prefilter(outbounds: list, *, timeout: float = _TCP_TIMEOUT,
         # ним всегда падает и ложно метит «мёртвыми». Пропускаем в e2e:
         # реальную проверку (delay через прокси) сделает движок.
         if str(ob.get("type") or "").lower() in UDP_PROXY_TYPES:
-            results[tag] = (True, None)
+            results[tag] = (True, None, "")
             continue
         targets.append((tag, host, port))
 
@@ -146,15 +219,15 @@ def tcp_prefilter(outbounds: list, *, timeout: float = _TCP_TIMEOUT,
 
     def _job(item):
         tag, host, port = item
-        ok, ms = _tcp_connect_ok(host, port, timeout)
-        return tag, ok, ms
+        ok, ms, reason = _tcp_connect_ok(host, port, timeout)
+        return tag, ok, ms, reason
 
     done = 0
     with ThreadPoolExecutor(max_workers=min(workers, total)) as ex:
         futs = [ex.submit(_job, t) for t in targets]
         for fut in as_completed(futs):
-            tag, ok, ms = fut.result()
-            results[tag] = (ok, ms)
+            tag, ok, ms, reason = fut.result()
+            results[tag] = (ok, ms, reason)
             done += 1
             if on_done:
                 try:
@@ -534,7 +607,7 @@ def run_outbound_tests(outbounds: list, *, target: str = DEFAULT_TARGET,
     else:
         tcp = {o["tag"]: (True, None) for o in obs}
 
-    survivors = [meta[t] for t, (ok, _ms) in tcp.items() if ok]
+    survivors = [meta[t] for t, e in tcp.items() if unpack_tcp_entry(e)[0]]
 
     # Фаза 2 — e2e через движок (если есть бинарь и есть кого тестить).
     bin_path = binary if binary is not None else _singbox_binary()
@@ -564,13 +637,13 @@ def run_outbound_tests(outbounds: list, *, target: str = DEFAULT_TARGET,
     results = []
     for ob in obs:
         tag = ob["tag"]
-        tcp_ok, tcp_ms = tcp.get(tag, (False, None))
+        tcp_ok, tcp_ms, tcp_reason = unpack_tcp_entry(tcp.get(tag))
         if not tcp_ok:
             results.append({
                 "tag": tag, "server": ob.get("server"),
                 "port": ob.get("server_port"), "type": ob.get("type"),
                 "alive": False, "latency_ms": None,
-                "stage": "tcp", "error": "сервер не отвечает (TCP)",
+                "stage": "tcp", "error": tcp_reason or TCP_FAIL_OTHER,
             })
             continue
         if engine_used and tag in e2e and not e2e[tag].get("engine_fail"):
@@ -610,6 +683,7 @@ def run_outbound_tests(outbounds: list, *, target: str = DEFAULT_TARGET,
         "target": target_url,
         "engine_used": engine_used,
         "results": results,
+        "hint": common_failure_hint(results),
         "summary": {"total": len(results), "alive": alive,
                     "dead": len(results) - alive},
     }

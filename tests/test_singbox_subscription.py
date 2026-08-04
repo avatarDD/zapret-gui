@@ -358,6 +358,37 @@ class TestHysteria2(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertTrue(r["outbound"]["tls"]["insecure"])
 
+    def test_allow_insecure_spellings(self):
+        """Регресс: парсер знал только `insecure`.
+
+        В дикой природе hysteria2-ссылки почти всегда несут
+        `allowInsecure` (v2rayN/Nekoray/Hiddify), а сервер — self-signed
+        (sni там сплошь и рядом просто IP). Без флага TLS-рукопожатие
+        падает, и заведомо живой сервер тестировался «мёртвым».
+        """
+        for q in ("allowInsecure=true", "allowInsecure=1",
+                  "allow_insecure=1", "insecure=yes",
+                  "skip-cert-verify=true"):
+            r = hysteria2_to_outbound("hy2://p@h:443?security=tls&%s#i" % q)
+            self.assertTrue(r["ok"], msg=q)
+            self.assertTrue(r["outbound"]["tls"].get("insecure"), msg=q)
+
+    def test_insecure_absent_when_not_asked(self):
+        r = hysteria2_to_outbound("hy2://p@h:443?sni=h.com#i")
+        self.assertFalse(r["outbound"]["tls"].get("insecure"))
+
+    def test_real_world_link_roundtrips_to_both_engines(self):
+        """Ссылка из репорта: sing-box и mihomo должны получить флаг."""
+        from core.clash_yaml import uri_to_clash_proxy
+        uri = ("hysteria2://LzMWgm6LaNWCm11bFTbynDPq2TqQj03t"
+               "@5.255.102.165:443?security=tls&sni=5.255.102.165"
+               "&allowInsecure=true#NL")
+        ob = hysteria2_to_outbound(uri)["outbound"]
+        self.assertTrue(ob["tls"]["insecure"])
+        self.assertEqual(ob["tls"]["server_name"], "5.255.102.165")
+        proxy = uri_to_clash_proxy(uri)["proxy"]
+        self.assertTrue(proxy["skip-cert-verify"])
+
     def test_obfs_salamander(self):
         # Сервер с obfs не отвечает без совпадающего obfs-пароля.
         r = hysteria2_to_outbound(
@@ -375,6 +406,22 @@ class TestHysteria2(unittest.TestCase):
         r = hysteria2_to_outbound("hy2://p@h:443#n")
         self.assertTrue(r["ok"])
         self.assertNotIn("obfs", r["outbound"])
+
+
+class TestVlessInsecure(unittest.TestCase):
+    """vless с обычным TLS и self-signed: флаг терялся целиком."""
+
+    def test_allow_insecure_sets_tls_insecure(self):
+        from core.singbox_subscription import vless_to_outbound
+        r = vless_to_outbound(
+            "vless://u@h:443?security=tls&sni=h.com&allowInsecure=1#v")
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        self.assertTrue(r["outbound"]["tls"]["insecure"])
+
+    def test_not_set_without_flag(self):
+        from core.singbox_subscription import vless_to_outbound
+        r = vless_to_outbound("vless://u@h:443?security=tls&sni=h.com#v")
+        self.assertFalse(r["outbound"]["tls"].get("insecure"))
 
 
 class TestTuic(unittest.TestCase):

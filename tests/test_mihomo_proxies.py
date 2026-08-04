@@ -318,6 +318,68 @@ class TestTester(unittest.TestCase):
         self.assertEqual(res["summary"]["total"], 0)
 
 
+class TestTesterFreshlyAddedProxies(unittest.TestCase):
+    """Только что добавленный узел движок ещё не держит.
+
+    Конфиг на диске меняется без перезапуска, поэтому
+    `/proxies/<имя>/delay` у запущенного инстанса отвечает 404. Раньше это
+    трактовалось как «сервер мёртв» — ложный вердикт срабатывал ровно на
+    свежедобавленных (то есть заведомо живых) ключах.
+    """
+
+    EP = {"host": "127.0.0.1", "port": 9090, "secret": ""}
+    NEW = {"name": "new", "type": "ss", "server": "1.2.3.4", "port": 443}
+
+    def test_unknown_node_is_not_called_dead(self):
+        from core import mihomo_proxy_tester as t
+        with mock.patch.object(t, "tcp_prefilter",
+                               return_value={"new": (True, 5, "")}), \
+             mock.patch.object(t, "controller_known_names",
+                               return_value={"old"}), \
+             mock.patch.object(t, "_controller_delays") as ctl:
+            res = run_proxy_tests([self.NEW], controller=self.EP, binary=None)
+        ctl.assert_not_called()          # 404 даже не запрашиваем
+        row = res["results"][0]
+        self.assertFalse(row["alive"])
+        self.assertIn("перезапустите", row["error"])
+
+    def test_unknown_node_goes_to_throwaway_engine(self):
+        from core import mihomo_proxy_tester as t
+        with mock.patch.object(t, "tcp_prefilter",
+                               return_value={"new": (True, 5, "")}), \
+             mock.patch.object(t, "controller_known_names",
+                               return_value={"old"}), \
+             mock.patch.object(t, "_throwaway_delays",
+                               return_value={"new": {"ok": True,
+                                                     "latency_ms": 42}}) as tw:
+            res = run_proxy_tests([self.NEW], controller=self.EP,
+                                  binary="/opt/usr/sbin/mihomo")
+        tw.assert_called_once()
+        row = res["results"][0]
+        self.assertTrue(row["alive"])
+        self.assertEqual(row["latency_ms"], 42)
+
+    def test_known_node_still_measured_through_controller(self):
+        from core import mihomo_proxy_tester as t
+        with mock.patch.object(t, "tcp_prefilter",
+                               return_value={"new": (True, 5, "")}), \
+             mock.patch.object(t, "controller_known_names",
+                               return_value={"new"}), \
+             mock.patch.object(t, "_controller_delays",
+                               return_value={"new": {"ok": True,
+                                                     "latency_ms": 7}}) as ctl:
+            res = run_proxy_tests([self.NEW], controller=self.EP, binary=None)
+        ctl.assert_called_once()
+        self.assertTrue(res["results"][0]["alive"])
+
+    def test_controller_404_is_reported_as_needing_restart(self):
+        from core import mihomo_proxy_tester as t
+        with mock.patch.object(t, "_get", return_value=(404, "{}")):
+            out = t._controller_delays(self.EP, ["x"], "http://e", 1000)
+        self.assertFalse(out["x"]["ok"])
+        self.assertTrue(out["x"]["engine_missing"])
+
+
 # ─────── менеджер: debug / log / dotfiles ───────
 
 class _FakePlatform(MihomoPlatform):
@@ -409,3 +471,123 @@ class TestManagerDebug(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Удаление прокси из таблицы БЕЗ pyyaml. Раньше операция просто
+# отказывала («требует модуля PyYAML»), а на роутере его обычно нет.
+# ─────────────────────────────────────────────────────────────────────
+
+class TestRemoveProxiesText(unittest.TestCase):
+
+    BLOCK = ("mixed-port: 7890\n"
+             "# комментарий пользователя\n"
+             "proxies:\n"
+             "  - name: A\n    type: ss\n    server: 1.2.3.4\n    port: 8388\n"
+             "  - name: B\n    type: vless\n    server: b.io\n    port: 443\n"
+             "    ws-opts:\n      path: /x\n      headers:\n"
+             "        Host: b.io\n"
+             "  - name: C\n    type: http\n    server: 127.0.0.1\n"
+             "    port: 18080\n"
+             "proxy-groups:\n"
+             "  - name: PROXY\n    type: select\n    proxies:\n"
+             "      - A\n      - B\n      - C\n"
+             "rules:\n  - MATCH,PROXY\n")
+
+    PYYAML_STYLE = ("proxies:\n"
+                    "- name: A\n  type: ss\n  server: 1.2.3.4\n  port: 8388\n"
+                    "- name: B\n  type: ss\n  server: 5.6.7.8\n  port: 8388\n"
+                    "proxy-groups:\n"
+                    "- name: PROXY\n  type: select\n  proxies:\n"
+                    "  - A\n  - B\n")
+
+    FLOW = ('proxies:\n'
+            '  - {name: A, type: ss, server: 1.2.3.4, port: 8388}\n'
+            '  - {name: "B 2", type: trojan, server: b.io, port: 443}\n'
+            'proxy-groups:\n'
+            '  - {name: PROXY, type: select, proxies: [A, "B 2", DIRECT]}\n')
+
+    def test_removes_only_selected(self):
+        r = mp.remove_proxies_text(self.BLOCK, ["A", "C"])
+        self.assertTrue(r["ok"])
+        self.assertEqual(sorted(r["removed"]), ["A", "C"])
+        self.assertEqual([p["name"] for p in mp.proxies_from_text(r["text"])],
+                         ["B"])
+
+    def test_keeps_comments_and_other_sections(self):
+        r = mp.remove_proxies_text(self.BLOCK, ["A"])
+        self.assertIn("# комментарий пользователя", r["text"])
+        self.assertIn("mixed-port: 7890", r["text"])
+        self.assertIn("  - MATCH,PROXY", r["text"])
+
+    def test_nested_options_do_not_confuse_item_bounds(self):
+        """`Host: b.io` внутри ws-opts не должен ломать границы элемента."""
+        r = mp.remove_proxies_text(self.BLOCK, ["B"])
+        self.assertEqual([p["name"] for p in mp.proxies_from_text(r["text"])],
+                         ["A", "C"])
+        self.assertNotIn("ws-opts", r["text"])
+
+    def test_group_references_are_cleaned(self):
+        """Группа со ссылкой на удалённый узел не даст mihomo стартовать."""
+        r = mp.remove_proxies_text(self.BLOCK, ["A"])
+        self.assertNotIn("      - A\n", r["text"])
+        self.assertIn("      - B", r["text"])
+
+    def test_group_refs_cleaned_in_pyyaml_style(self):
+        """Стиль pyyaml: `proxies:` и `- A` на одной колонке."""
+        r = mp.remove_proxies_text(self.PYYAML_STYLE, ["A"])
+        self.assertNotIn("- A\n", r["text"])
+        self.assertIn("- B", r["text"])
+
+    def test_flow_items_and_flow_group(self):
+        r = mp.remove_proxies_text(self.FLOW, ["A"])
+        self.assertEqual([p["name"] for p in mp.proxies_from_text(r["text"])],
+                         ["B 2"])
+        self.assertIn('proxies: ["B 2", DIRECT]', r["text"])
+
+    def test_emptied_group_is_reported(self):
+        r = mp.remove_proxies_text(self.BLOCK, ["A", "B", "C"])
+        self.assertEqual(r["emptied_groups"], ["PROXY"])
+        # Пустой ключ разбирался бы как null — эмитим честный [].
+        self.assertIn("proxies: []", r["text"])
+
+    def test_unknown_name_is_a_noop(self):
+        r = mp.remove_proxies_text(self.BLOCK, ["нет-такого"])
+        self.assertEqual(r["removed"], [])
+        self.assertEqual(r["text"], self.BLOCK)
+
+    def test_inline_block_is_refused_not_corrupted(self):
+        r = mp.remove_proxies_text("proxies: *anchor\n", ["A"])
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["unsupported"])
+
+    def test_works_without_pyyaml(self):
+        import builtins
+        real = builtins.__import__
+
+        def _no_yaml(name, *a, **k):
+            if name == "yaml":
+                raise ImportError("no yaml")
+            return real(name, *a, **k)
+
+        builtins.__import__ = _no_yaml
+        try:
+            self.assertFalse(mp.has_pyyaml())
+            r = mp.remove_proxies_text(self.BLOCK, ["A"])
+        finally:
+            builtins.__import__ = real
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["removed"], ["A"])
+
+    def test_unicode_names(self):
+        text = ('proxies:\n'
+                '  - name: "🇭🇰 HK 01"\n    type: ss\n'
+                '    server: hk.io\n    port: 1\n'
+                '  - name: keep\n    type: ss\n    server: k.io\n    port: 2\n'
+                'proxy-groups:\n'
+                '  - name: PROXY\n    type: select\n    proxies:\n'
+                '      - "🇭🇰 HK 01"\n      - keep\n')
+        r = mp.remove_proxies_text(text, ["🇭🇰 HK 01"])
+        self.assertEqual([p["name"] for p in mp.proxies_from_text(r["text"])],
+                         ["keep"])
+        self.assertNotIn("HK 01", r["text"])

@@ -144,7 +144,7 @@ class TestUdpProtoPrefilter(unittest.TestCase):
         obs = [{"type": "hysteria2", "tag": "h", "server": "192.0.2.1",
                 "server_port": 8449}]
         res = pt.tcp_prefilter(obs)
-        self.assertEqual(res.get("h"), (True, None))
+        self.assertEqual(res.get("h"), (True, None, ""))
 
     def test_tuic_and_wireguard_bypass(self):
         obs = [{"type": "tuic", "tag": "t", "server": "192.0.2.1",
@@ -152,18 +152,18 @@ class TestUdpProtoPrefilter(unittest.TestCase):
                {"type": "wireguard", "tag": "w", "server": "192.0.2.2",
                 "server_port": 51820}]
         res = pt.tcp_prefilter(obs)
-        self.assertEqual(res.get("t"), (True, None))
-        self.assertEqual(res.get("w"), (True, None))
+        self.assertEqual(res.get("t"), (True, None, ""))
+        self.assertEqual(res.get("w"), (True, None, ""))
 
     def test_tcp_proto_still_probed(self):
         # Не-UDP тип по-прежнему проходит TCP-пробу.
         obs = [{"type": "vless", "tag": "v", "server": "192.0.2.1",
                 "server_port": 443}]
         with mock.patch.object(pt, "_tcp_connect_ok",
-                               return_value=(False, None)) as m:
+                               return_value=(False, None, "таймаут TCP")) as m:
             res = pt.tcp_prefilter(obs)
         m.assert_called_once()
-        self.assertEqual(res.get("v"), (False, None))
+        self.assertEqual(res.get("v"), (False, None, "таймаут TCP"))
 
     def test_hysteria2_not_dead_in_run_outbound_tests(self):
         # Регресс: hysteria2 не помечается «мёртвым» TCP-фазой (была причина
@@ -251,3 +251,82 @@ class TestSkipE2EWithoutClashApi(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTcpFailureReasons(unittest.TestCase):
+    """Причина отказа TCP-пробы: раньше всё сводилось к одной строке.
+
+    По вердикту «сервер не отвечает (TCP)» нельзя отличить дохлый сервер
+    от сломанного резолвера роутера или от трафика, завёрнутого в
+    неработающий туннель, — а лечатся они по-разному.
+    """
+
+    def test_dns_failure_is_named(self):
+        with mock.patch.object(pt.socket, "create_connection",
+                               side_effect=pt.socket.gaierror(-2, "no name")):
+            ok, ms, reason = pt._tcp_connect_ok("nope.invalid", 443, 1.0)
+        self.assertFalse(ok)
+        self.assertEqual(reason, pt.TCP_FAIL_DNS)
+
+    def test_refused_timeout_and_unreachable(self):
+        import errno as _errno
+        cases = [
+            (ConnectionRefusedError(), pt.TCP_FAIL_REFUSED),
+            (pt.socket.timeout(), pt.TCP_FAIL_TIMEOUT),
+            (OSError(_errno.ENETUNREACH, "unreach"), pt.TCP_FAIL_UNREACH),
+            (OSError(_errno.EHOSTUNREACH, "unreach"), pt.TCP_FAIL_UNREACH),
+        ]
+        for exc, expected in cases:
+            with mock.patch.object(pt.socket, "create_connection",
+                                   side_effect=exc):
+                _ok, _ms, reason = pt._tcp_connect_ok("1.2.3.4", 443, 1.0)
+            self.assertEqual(reason, expected, repr(exc))
+
+    def test_bad_port_is_named(self):
+        _ok, _ms, reason = pt._tcp_connect_ok("1.2.3.4", "abc", 1.0)
+        self.assertEqual(reason, pt.TCP_FAIL_BAD_ADDR)
+
+    def test_reason_reaches_the_result_row(self):
+        obs = [{"type": "vless", "tag": "a", "server": "h.invalid",
+                "server_port": 443, "uuid": "u"}]
+        with mock.patch.object(pt, "_tcp_connect_ok",
+                               return_value=(False, None, pt.TCP_FAIL_DNS)):
+            res = pt.run_outbound_tests(obs, binary="")
+        self.assertEqual(res["results"][0]["error"], pt.TCP_FAIL_DNS)
+
+    def test_unpack_tolerates_legacy_two_tuple(self):
+        self.assertEqual(pt.unpack_tcp_entry((True, 12)), (True, 12, ""))
+        ok, ms, reason = pt.unpack_tcp_entry((False, None))
+        self.assertFalse(ok)
+        self.assertTrue(reason)
+
+
+class TestCommonFailureHint(unittest.TestCase):
+    """«Умерли все и по одной причине» — это про роутер, а не про ключи."""
+
+    def _rows(self, error, n=3, alive=False):
+        return [{"tag": "t%d" % i, "alive": alive, "error": error}
+                for i in range(n)]
+
+    def test_dns_hint(self):
+        hint = pt.common_failure_hint(self._rows(pt.TCP_FAIL_DNS))
+        self.assertIn("DNS", hint)
+        self.assertIn("не про серверы", hint)
+
+    def test_unreachable_hint_mentions_tunnel(self):
+        hint = pt.common_failure_hint(self._rows(pt.TCP_FAIL_UNREACH))
+        self.assertIn("туннель", hint)
+
+    def test_no_hint_when_something_is_alive(self):
+        rows = self._rows(pt.TCP_FAIL_DNS)
+        rows.append({"tag": "ok", "alive": True, "error": ""})
+        self.assertEqual(pt.common_failure_hint(rows), "")
+
+    def test_no_hint_when_reasons_differ(self):
+        rows = self._rows(pt.TCP_FAIL_DNS, n=1)
+        rows += self._rows(pt.TCP_FAIL_TIMEOUT, n=1)
+        self.assertEqual(pt.common_failure_hint(rows), "")
+
+    def test_no_hint_for_single_server(self):
+        self.assertEqual(pt.common_failure_hint(self._rows(pt.TCP_FAIL_DNS, 1)),
+                         "")
