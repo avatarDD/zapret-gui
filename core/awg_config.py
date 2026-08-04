@@ -25,6 +25,29 @@ import subprocess
 import tempfile
 
 
+# Поколение параметров AWG 3+ (README amneziawg-go v3.0.3, раздел
+# «[AWG 3+]»). Секция устройства:
+#   HeaderProtectionKey    — ключ шифрования полей заголовка (server-side,
+#                            нонсом служит crypto-паддинг S1..S4, поэтому
+#                            требует S1..S4 >= 12); генерится `awg genkey`;
+#   ContentPaddingAddition — доп. паддинг содержимого (uint32/range);
+#   Rekey*/RejectAfterTime/KeepaliveTimeout/MaxHandshakeAttempts —
+#                            тайминги WireGuard (uint32/range, секунды).
+# Тип `range` = "a-b" | "a" | "(off)", поэтому числами их не валидируем.
+AWG3_INTERFACE_FIELDS = (
+    "HeaderProtectionKey",
+    "ContentPaddingAddition",
+    "RekeyAfterTime",
+    "RekeyTimeout",
+    "RejectAfterTime",
+    "KeepaliveTimeout",
+    "MaxHandshakeAttempts",
+)
+
+# Минимальное значение S1..S4, при котором работает защита заголовка
+# (README: «Header protection requires S1-S4 value to be 12 at least»).
+AWG3_HEADER_PROTECTION_MIN_S = 12
+
 # Поля [Interface], которые применяются через `awg setconf`
 # (всё остальное — wg-quick-расширения и обрабатывается нами).
 WG_INTERFACE_FIELDS = (
@@ -47,6 +70,12 @@ WG_INTERFACE_FIELDS = (
     "I1", "I2", "I3", "I4", "I5",
     "J1", "J2", "J3",
     "Itime",
+    # Поколение AWG 3+ (ветка amneziawg-go v3.x). Парсером amneziawg-tools
+    # ПОДДЕРЖИВАЮТСЯ (key_match в src/config.c, v3.0.20260730), поэтому в
+    # setconf уходят наравне с остальной обфускацией. Без них демон
+    # поднимается без защиты заголовка, а пир, который её ждёт, дропает
+    # data-пакеты — та же картина «92 B in / 20 KB out».
+    *AWG3_INTERFACE_FIELDS,
 )
 
 # Поля [Interface] для wg-quick-логики (не для setconf).
@@ -56,13 +85,17 @@ WGQUICK_INTERFACE_FIELDS = (
     "SaveConfig",
 )
 
-# Поля [Peer], принимаемые `awg setconf`.
+# Поля [Peer], принимаемые `awg setconf` (key_match секции [Peer] в
+# amneziawg-tools src/config.c). `AdvancedSecurity` — per-peer флаг
+# AmneziaWG: тулза его понимает, значит отбрасывать чужой профиль из-за
+# него нельзя.
 WG_PEER_FIELDS = (
     "PublicKey",
     "PresharedKey",
     "AllowedIPs",
     "Endpoint",
     "PersistentKeepalive",
+    "AdvancedSecurity",
 )
 
 # Все известные поля интерфейса.
@@ -513,6 +546,37 @@ def _is_valid_awg_header(value) -> bool:
     return True
 
 
+# Тип `range,x` из README amneziawg-go: "a-b", "a" либо "(off)". Так
+# задаются тайминги AWG 3+, ContentPaddingAddition и PersistentKeepalive.
+_AWG_RANGE_OFF = "(off)"
+
+# AWG3-поля с типом `uint32,range` (HeaderProtectionKey — ключ, не число).
+AWG3_RANGE_FIELDS = tuple(f for f in AWG3_INTERFACE_FIELDS
+                          if f != "HeaderProtectionKey")
+
+
+def _is_valid_awg_range(value) -> bool:
+    """True, если значение — uint, диапазон `N-M` (N<=M) либо `(off)`."""
+    s = str(value).strip()
+    if s == _AWG_RANGE_OFF:
+        return True
+    return _is_valid_awg_header(s)
+
+
+def _min_crypto_padding(iface: dict):
+    """Минимум из заданных S1..S4 (None — ни одного не задано)."""
+    vals = []
+    for k in ("S1", "S2", "S3", "S4"):
+        v = iface.get(k)
+        if v in ("", None):
+            continue
+        try:
+            vals.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    return min(vals) if vals else None
+
+
 def validate(cfg: dict) -> list:
     """
     Проверить структуру конфига. Возвращает список строк-ошибок.
@@ -576,6 +640,31 @@ def validate(cfg: dict) -> list:
             except (TypeError, ValueError):
                 errors.append(f"[Interface] {k} должен быть числом")
 
+    # AWG 3+: тайминги и паддинг — тип `uint32,range` («a-b» / «a» /
+    # «(off)»), поэтому строгим int их проверять нельзя.
+    for k in AWG3_RANGE_FIELDS:
+        if k not in iface or iface[k] in ("", None):
+            continue
+        if not _is_valid_awg_range(iface[k]):
+            errors.append(
+                f"[Interface] {k} должен быть числом, диапазоном N-M "
+                f"или (off)")
+
+    hpk = iface.get("HeaderProtectionKey")
+    if hpk not in ("", None):
+        if not _is_base64_key(hpk):
+            errors.append("[Interface] HeaderProtectionKey должен быть "
+                          "base64 ключом длиной 32 байта (awg genkey)")
+        else:
+            # Паддинг S1..S4 служит нонсом шифра заголовка: ниже 12 связка
+            # нерабочая (README amneziawg-go, «Header protection»).
+            min_s = _min_crypto_padding(iface)
+            if min_s is None or min_s < AWG3_HEADER_PROTECTION_MIN_S:
+                errors.append(
+                    "[Interface] HeaderProtectionKey требует S1–S4 не меньше "
+                    f"{AWG3_HEADER_PROTECTION_MIN_S} (сейчас "
+                    f"{'не заданы' if min_s is None else min_s})")
+
     # Peers
     for i, peer in enumerate(peers):
         prefix = f"[Peer #{i+1}]"
@@ -593,13 +682,19 @@ def validate(cfg: dict) -> list:
         if ep and ":" not in ep:
             errors.append(f"{prefix} Endpoint должен иметь формат host:port")
 
-        if "PersistentKeepalive" in peer and peer["PersistentKeepalive"] != "":
-            try:
-                ka = int(peer["PersistentKeepalive"])
-                if not 0 <= ka <= 65535:
-                    raise ValueError
-            except (TypeError, ValueError):
-                errors.append(f"{prefix} PersistentKeepalive должен быть числом 0..65535")
+        # PersistentKeepalive в AWG 3+ — тип `range`: помимо числа валидны
+        # «22-30» и «(off)» (README amneziawg-go, «Timings»).
+        ka_raw = peer.get("PersistentKeepalive")
+        if ka_raw not in ("", None):
+            ka_s = str(ka_raw).strip()
+            if not _is_valid_awg_range(ka_s):
+                errors.append(f"{prefix} PersistentKeepalive должен быть "
+                              f"числом 0..65535, диапазоном N-M или (off)")
+            elif ka_s != _AWG_RANGE_OFF:
+                bounds = [int(x) for x in ka_s.split("-")]
+                if any(not 0 <= b <= 65535 for b in bounds):
+                    errors.append(f"{prefix} PersistentKeepalive должен быть "
+                                  f"числом 0..65535, диапазоном N-M или (off)")
 
         ips = peer.get("AllowedIPs")
         if ips:

@@ -34,15 +34,28 @@ class FakePlatform:
         self.binary_dir = os.path.join(tmpdir, "bin")
         self.config_dir = os.path.join(tmpdir, "config")
         self.run_dir    = os.path.join(tmpdir, "run")
+        # UAPI-сокеты кладём во временный каталог: teardown интерфейса их
+        # удаляет, и трогать настоящий /var/run тесты не должны.
+        self.uapi_dir   = os.path.join(tmpdir, "uapi")
         os.makedirs(self.binary_dir, exist_ok=True)
         os.makedirs(self.config_dir, exist_ok=True)
         os.makedirs(self.run_dir, exist_ok=True)
+        os.makedirs(self.uapi_dir, exist_ok=True)
 
     def binary_path(self, name="amneziawg-go"):
         return os.path.join(self.binary_dir, name)
 
     def awg_path(self):
         return os.path.join(self.binary_dir, "awg")
+
+    def uapi_dirs(self):
+        return (self.uapi_dir,)
+
+    def uapi_paths(self, iface):
+        return [os.path.join(d, "%s.sock" % iface) for d in self.uapi_dirs()]
+
+    def uapi_path(self, iface):
+        return self.uapi_paths(iface)[0]
 
 
 class TestAwgManagerCRUD(unittest.TestCase):
@@ -416,3 +429,59 @@ class TestResolveEndpointIp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUapiSocketDirs(unittest.TestCase):
+    """Каталог UAPI-сокета зависит от ветки движка.
+
+    amneziawg-go v3.x создаёт сокет в /var/run/amneziawg
+    (`ipc/uapi_unix.go`), туда же ходит `awg` из tools v3
+    (`src/ipc-uapi-unix.h`); сборки на базе wireguard-go — в
+    /var/run/wireguard. Раньше мы знали только второй путь: после SIGKILL
+    сокет v3 оставался, а поиск интерфейсов по сокетам не находил ничего.
+    """
+
+    def test_platform_lists_both_dirs_v3_first(self):
+        from core.awg_platform import GenericLinuxPlatform, UAPI_SOCKET_DIRS
+        self.assertEqual(UAPI_SOCKET_DIRS,
+                         ("/var/run/amneziawg", "/var/run/wireguard"))
+        paths = GenericLinuxPlatform().uapi_paths("awg0")
+        self.assertEqual(paths, ["/var/run/amneziawg/awg0.sock",
+                                 "/var/run/wireguard/awg0.sock"])
+
+    def test_uapi_path_prefers_the_socket_that_exists(self):
+        from core.awg_platform import GenericLinuxPlatform
+        plat = GenericLinuxPlatform()
+        legacy = "/var/run/wireguard/awg0.sock"
+        with mock.patch("os.path.exists", side_effect=lambda p: p == legacy):
+            self.assertEqual(plat.uapi_path("awg0"), legacy)
+
+    def test_uapi_path_falls_back_to_current_branch(self):
+        from core.awg_platform import GenericLinuxPlatform
+        with mock.patch("os.path.exists", return_value=False):
+            self.assertEqual(GenericLinuxPlatform().uapi_path("awg0"),
+                             "/var/run/amneziawg/awg0.sock")
+
+    def test_cleanup_removes_socket_from_every_dir(self):
+        tmpdir = tempfile.mkdtemp(prefix="awg-uapi-test-")
+        self.addCleanup(shutil.rmtree, tmpdir, True)
+        platform = FakePlatform(tmpdir)
+        # Два каталога, как на реальной системе со сменившейся веткой.
+        second = os.path.join(tmpdir, "uapi-legacy")
+        os.makedirs(second, exist_ok=True)
+        platform.uapi_dirs = lambda: (platform.uapi_dir, second)
+        socks = platform.uapi_paths("awg0")
+        for s in socks:
+            with open(s, "w") as f:
+                f.write("")
+
+        mgr = awg_manager.AwgManager()
+        with mock.patch.object(awg_manager.AwgManager, "_platform",
+                               return_value=platform):
+            mgr._cleanup_iface("awg0")
+
+        for s in socks:
+            self.assertFalse(os.path.exists(s),
+                             "не удалён мёртвый сокет %s" % s)
+
+

@@ -286,6 +286,30 @@
 
 ### Исправлено
 
+- **AWG: поля поколения AWG 3+ молча терялись по дороге к демону** —
+  `HeaderProtectionKey`, `ContentPaddingAddition`, `RekeyAfterTime`,
+  `RekeyTimeout`, `RejectAfterTime`, `KeepaliveTimeout`,
+  `MaxHandshakeAttempts` отсутствовали в `WG_INTERFACE_FIELDS`, хотя
+  парсер amneziawg-tools их принимает (`key_match` в `src/config.c`
+  v3.0.20260730). Импортированный профиль AWG3 получал от `validate()`
+  «неизвестное поле», а `render_setconf` вырезал их — туннель поднимался
+  без защиты заголовка, и пир, который её ждёт, дропал data-пакеты: та
+  самая картина «92 B in / 20 KB out». Поля добавлены
+  (`AWG3_INTERFACE_FIELDS`) и валидируются как тип `range` (`a-b` / `a` /
+  `(off)` — числом их проверять нельзя); `HeaderProtectionKey` — как
+  base64-ключ, плюс проверка требования апстрима «S1–S4 не меньше 12»
+  (паддинг служит нонсом шифра заголовка). Заодно `[Peer]
+  AdvancedSecurity` перестал отбрасываться, а `PersistentKeepalive`
+  принимает диапазон `22-30` и `(off)` (`core/awg_config.py`)
+- **AWG: мёртвый UAPI-сокет оставался лежать, а интерфейсы по сокетам не
+  находились** — `amneziawg-go` ветки v3 создаёт сокет в
+  `/var/run/amneziawg/` (`ipc/uapi_unix.go`), туда же ходит `awg` из
+  tools v3, а наш код был захардкожен на унаследованный от wireguard-go
+  `/var/run/wireguard/`. Подчистка после SIGKILL промахивалась мимо
+  файла, и «Способ 3» детекта интерфейсов не видел ничего. Каталоги
+  собраны в `awg_platform.UAPI_SOCKET_DIRS` (v3-путь первым) — оба места
+  обходят их все, потому что на роутере может стоять и старая сборка
+  (`core/awg_platform.py`, `core/awg_manager.py`, `core/awg_detector.py`)
 - **mihomo: разделы «Маршрутизация — домены / списки» и «Весь трафик /
   по устройствам» вечно висели на «Загрузка…»** — признак «форму уже
   отрисовали» жил в модульной переменной страницы и не сбрасывался при

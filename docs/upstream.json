@@ -118,7 +118,7 @@
         ".claude/skills/awg/SKILL.md"
       ],
       "vendored": {},
-      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0, а с ветки v3.x — ещё и поколения AWG 3+ (HeaderProtectionKey, ContentPaddingAddition, тайминги, тип range): в docs.amnezia.org его нет. Проверять при обновлении: UAPI-ключи в device/uapi.go (что демон вообще примет) и socketDirectory в ipc/uapi_unix.go — в v3 это /var/run/amneziawg, а наш код всё ещё знает только /var/run/wireguard."
+      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0, а с ветки v3.x — ещё и поколения AWG 3+ (HeaderProtectionKey, ContentPaddingAddition, тайминги, тип range): в docs.amnezia.org его нет. Проверять при обновлении: UAPI-ключи в device/uapi.go (что демон вообще примет) и socketDirectory в ipc/uapi_unix.go — в v3 это /var/run/amneziawg, у сборок на базе wireguard-go /var/run/wireguard; оба каталога перечислены в awg_platform.UAPI_SOCKET_DIRS."
     },
     {
       "id": "amneziawg-tools",
@@ -131,7 +131,7 @@
         ".claude/skills/awg/SKILL.md"
       ],
       "vendored": {},
-      "note": "Форк wireguard-tools: бинари awg/awg-quick, теги датированные (v3.0.YYYYMMDD). КЛЮЧЕВОЕ при сверке — key_match в src/config.c: это окончательный список полей .conf. Неизвестный ключ там приводит к «Line unrecognized» и отбрасыванию ВСЕГО конфига, то есть интерфейс не поднимается. Так выяснилось, что J1..J3 и Itime из документации протокола 2.0 парсером не принимаются, а v3.0.20260730 добавил семь новых полей (HeaderProtectionKey, ContentPaddingAddition, Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts), которых мы пока не генерируем."
+      "note": "Форк wireguard-tools: бинари awg/awg-quick, теги датированные (v3.0.YYYYMMDD). КЛЮЧЕВОЕ при сверке — key_match в src/config.c: это окончательный список полей .conf. Неизвестный ключ там приводит к «Line unrecognized» и отбрасыванию ВСЕГО конфига, то есть интерфейс не поднимается. Так выяснилось, что J1..J3 и Itime из документации протокола 2.0 парсером не принимаются, а v3.0.20260730 добавил семь новых полей (HeaderProtectionKey, ContentPaddingAddition, Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts) — они поддержаны в awg_config.AWG3_INTERFACE_FIELDS. Там же сверяются [Peer]-ключи: AdvancedSecurity легко упустить."
     },
     {
       "id": "usque",

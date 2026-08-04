@@ -19,6 +19,17 @@ import os
 import subprocess
 
 
+# Каталоги UAPI-сокетов amneziawg-go, в порядке приоритета.
+#
+# Ветка v3.x создаёт сокет в /var/run/amneziawg (`ipc/uapi_unix.go`:
+# `var socketDirectory = "/var/run/amneziawg"`), туда же ходит `awg` из
+# amneziawg-tools v3 (`src/ipc-uapi-unix.h`: SOCK_PATH RUNSTATEDIR
+# "/amneziawg/"). Унаследованные от wireguard-go сборки (v0.2.x) держат его
+# в /var/run/wireguard. На роутере может стоять любая из них, поэтому и
+# подчистка сокета, и поиск интерфейсов по сокетам обязаны смотреть в оба.
+UAPI_SOCKET_DIRS = ("/var/run/amneziawg", "/var/run/wireguard")
+
+
 def _cmd_ok(args, timeout=5):
     try:
         r = subprocess.run(args, capture_output=True, timeout=timeout)
@@ -118,9 +129,24 @@ class AwgPlatform:
     def pid_path(self, iface):
         return os.path.join(self.run_dir, f"awg-{iface}.pid")
 
+    def uapi_dirs(self):
+        """Каталоги, где может лежать UAPI-сокет (см. UAPI_SOCKET_DIRS)."""
+        return UAPI_SOCKET_DIRS
+
+    def uapi_paths(self, iface):
+        """Все возможные пути UAPI-сокета интерфейса (в порядке приоритета)."""
+        return [os.path.join(d, f"{iface}.sock") for d in self.uapi_dirs()]
+
     def uapi_path(self, iface):
-        """UAPI-сокет, создаваемый amneziawg-go в userspace-режиме."""
-        return f"/var/run/wireguard/{iface}.sock"
+        """UAPI-сокет, создаваемый amneziawg-go в userspace-режиме.
+
+        Существующий, если найден; иначе — путь текущей ветки движка.
+        """
+        paths = self.uapi_paths(iface)
+        for p in paths:
+            if os.path.exists(p):
+                return p
+        return paths[0]
 
     def init_script_path(self):
         return os.path.join(self.init_dir, f"{self.init_priority}{self.init_name}")
