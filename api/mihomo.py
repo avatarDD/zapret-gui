@@ -483,6 +483,15 @@ def register(app):
             response.status = 500
             return save
         deleted = sorted(present & set(names))
+        # Счётчики трафика кумулятивные и ключуются по ИМЕНИ прокси, поэтому
+        # переживают удаление: добавив ту же ссылку заново, пользователь
+        # увидел бы старые цифры как текущие. Обнуляем вместе с узлом.
+        if deleted:
+            try:
+                from core.proxy_traffic import get_mihomo_traffic_tracker
+                get_mihomo_traffic_tracker().reset(deleted)
+            except Exception:
+                pass
         return {"ok": True, "deleted": deleted,
                 "skipped": sorted(set(names) - present),
                 # Группа без узлов не даст mihomo стартовать — предупредим,

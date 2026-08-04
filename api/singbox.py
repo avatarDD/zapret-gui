@@ -970,6 +970,15 @@ def register(app):
         res = _modify_outbounds(name, _mut)
         if isinstance(res, dict) and res.get("ok"):
             res.update(report)
+            # Счётчики трафика кумулятивные и ключуются по ТЕГУ, поэтому
+            # переживают удаление: добавив ту же ссылку заново,
+            # пользователь увидел бы старые цифры как текущие.
+            if report["deleted"]:
+                try:
+                    from core.proxy_traffic import get_traffic_tracker
+                    get_traffic_tracker().reset(report["deleted"])
+                except Exception:
+                    pass
         return res
 
     @app.route("/api/singbox/configs/<name>/prune-invalid", method="POST")
