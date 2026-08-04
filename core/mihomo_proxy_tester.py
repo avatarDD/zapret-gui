@@ -175,7 +175,10 @@ def _throwaway_batch(proxies: list, target_url: str, timeout_ms: int,
     mixed_port = _free_port()
     secret = secrets.token_hex(8)
     cfg = {
-        "log-level": "silent",
+        # НЕ silent: это одноразовый процесс, и его stderr — единственное
+        # место, где видно, почему замер не прошёл (TLS, DNS, отказ узла).
+        # С silent наружу шло безликое «недоступно».
+        "log-level": "error",
         "mixed-port": mixed_port,
         "mode": "rule",
         "external-controller": "127.0.0.1:%d" % ctrl_port,
@@ -227,6 +230,20 @@ def _throwaway_batch(proxies: list, target_url: str, timeout_ms: int,
             for fut in as_completed(futs):
                 nm, res = fut.result()
                 out[nm] = res
+
+        failed = [n for n, r in out.items() if not r.get("ok")]
+        if failed:
+            try:
+                err_f.flush()
+            except Exception:
+                pass
+            tail = _tail(err_path, 600)
+            if tail:
+                log.warning(
+                    "mihomo tester: не прошли замер %d из %d (%s); лог "
+                    "движка: %s" % (len(failed), len(names),
+                                    ", ".join(failed[:5]), tail),
+                    source="mihomo")
     finally:
         if popen is not None:
             try:

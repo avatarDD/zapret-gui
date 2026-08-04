@@ -480,6 +480,23 @@ def _e2e_batch(outbounds: list, target_url: str, timeout_ms: int,
             for fut in as_completed(futs):
                 tag, res = fut.result()
                 out[tag] = res
+
+        # Замер не прошёл, а движок при этом жив: настоящая причина (TLS,
+        # DNS, отказ сервера) осталась в его stderr, и раньше мы её просто
+        # выбрасывали — наружу шло безликое «недоступно». Кладём хвост в
+        # лог, чтобы «почему дохлые» можно было прочитать, а не угадывать.
+        failed = [t for t, r in out.items() if not r.get("ok")]
+        if failed:
+            try:
+                err_f.flush()
+            except Exception:
+                pass
+            tail = _tail_text(err_path, 600)
+            if tail:
+                log.warning(
+                    "proxy_tester: не прошли замер %d из %d (%s); лог движка: %s"
+                    % (len(failed), len(tags), ", ".join(failed[:5]), tail),
+                    source="singbox")
     finally:
         if popen is not None:
             try:
