@@ -22,6 +22,7 @@ from core.awg_platform import (
     KeeneticPlatform,
     OpenWrtPlatform,
     GenericLinuxPlatform,
+    UAPI_SOCKET_DIRS,
 )
 from core.log_buffer import log
 
@@ -561,9 +562,12 @@ class AwgDetector:
                         seen.add(iface)
                         interfaces.append({"name": iface, "source": "ip_link"})
 
-        # Способ 3: поиск UAPI-сокетов amneziawg-go в userspace-режиме
-        uapi_dir = "/var/run/wireguard"
-        if os.path.isdir(uapi_dir):
+        # Способ 3: поиск UAPI-сокетов amneziawg-go в userspace-режиме.
+        # Каталог зависит от ветки движка (v3.x — /var/run/amneziawg,
+        # унаследованные от wireguard-go — /var/run/wireguard), смотрим оба.
+        for uapi_dir in UAPI_SOCKET_DIRS:
+            if not os.path.isdir(uapi_dir):
+                continue
             for entry in os.listdir(uapi_dir):
                 if entry.endswith(".sock"):
                     iface = entry[:-5]

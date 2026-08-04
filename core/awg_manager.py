@@ -1547,13 +1547,17 @@ class AwgManager:
                 os.remove(pid_path)
             except OSError:
                 pass
-        # uapi sock тоже подчистим
-        sock = "/var/run/wireguard/%s.sock" % ifname
-        if os.path.exists(sock):
-            try:
-                os.remove(sock)
-            except OSError:
-                pass
+        # uapi sock тоже подчистим — во ВСЕХ каталогах, где его может
+        # оставить движок: v3.x кладёт его в /var/run/amneziawg, сборки на
+        # базе wireguard-go — в /var/run/wireguard. Штатно демон удаляет
+        # сокет сам, но после SIGKILL он остаётся, и следующий подъём
+        # интерфейса натыкается на чужой мёртвый сокет.
+        for sock in self._platform().uapi_paths(ifname):
+            if os.path.exists(sock):
+                try:
+                    os.remove(sock)
+                except OSError:
+                    pass
 
     def _remove_added_routes(self, ifname: str):
         """

@@ -22,14 +22,19 @@ const MihomoPage = (() => {
     // Маршрутизация (самодостаточные конфиги: tun+dns/fake-ip+rules внутри
     // движка mihomo — OS-слой ip rule не нужен).
     let routingOpts = null;            // /api/mihomo/routing/options
-    let domainRendered = false, domainBusy = false;
+    let routingOptsError = '';         // текст ошибки загрузки опций
+    // «Форму уже отрисовали» — признак на САМОМ узле (data-built), а не
+    // модульный флаг: при возврате на страницу render() создаёт свежий DOM
+    // с «Загрузка…», и модульный флаг оставлял бы карточку в этом состоянии
+    // навсегда (форма больше никогда не перерисовывалась).
+    let domainBusy = false;
     let domainForm = {
         name: 'mihomo-domains', proxy_link: '', proxy_config: '',
         route_all: false, hostlists: {}, lists: {}, ipsets: {},
         geosite: '', geoip: '', domains: '', cidrs: '',
         stack: '', mtu: 1500, reject_quic: false, group_type: 'select',
     };
-    let sourceRendered = false, sourceBusy = false;
+    let sourceBusy = false;
     let sourceForm = {
         name: 'mihomo-devices', proxy_link: '', proxy_config: '',
         source_ips: '', route_all: false, stack: '', mtu: 1500,
@@ -111,24 +116,28 @@ const MihomoPage = (() => {
     // ══════════════ data ══════════════
 
     async function loadAll() {
-        try {
-            const [envResp, cfgsResp, autoResp, optsResp, wdResp] = await Promise.all([
-                API.get('/api/mihomo/environment').catch(() => null),
-                API.get('/api/mihomo/configs').catch(() => null),
-                API.get('/api/mihomo/autostart').catch(() => null),
-                API.get('/api/mihomo/routing/options').catch(() => null),
-                API.get('/api/mihomo/watchdog').catch(() => null),
-            ]);
-            env       = envResp || null;
-            configs   = (cfgsResp && cfgsResp.configs) || [];
-            autostart = (autoResp && autoResp.status && autoResp.status.autostart) || {};
-            if (optsResp && optsResp.ok) routingOpts = optsResp;
-            if (wdResp && wdResp.ok) watchdog = wdResp.status;
-        } catch (err) {
-            const box = document.getElementById('mh-summary-body');
-            if (box) box.innerHTML =
-                `<div class="text-muted">Ошибка: ${escapeHtml(err.message)}</div>`;
+        // Каждый запрос гасим по отдельности: один упавший эндпоинт не
+        // должен оставлять остальные карточки в «Загрузка…».
+        let optsErr = '';
+        const [envResp, cfgsResp, autoResp, optsResp, wdResp] = await Promise.all([
+            API.get('/api/mihomo/environment').catch(() => null),
+            API.get('/api/mihomo/configs').catch(() => null),
+            API.get('/api/mihomo/autostart').catch(() => null),
+            API.get('/api/mihomo/routing/options')
+                .catch(e => { optsErr = e.message || String(e); return null; }),
+            API.get('/api/mihomo/watchdog').catch(() => null),
+        ]);
+        env       = envResp || null;
+        configs   = (cfgsResp && cfgsResp.configs) || [];
+        autostart = (autoResp && autoResp.status && autoResp.status.autostart) || {};
+        if (optsResp && optsResp.ok) {
+            routingOpts = optsResp;
+            routingOptsError = '';
+        } else {
+            routingOptsError = optsErr
+                || (optsResp && optsResp.error) || 'сервер не вернул данные';
         }
+        if (wdResp && wdResp.ok) watchdog = wdResp.status;
     }
 
     async function refresh() {
@@ -456,6 +465,18 @@ rules:
             </label>`;
     }
 
+    function routingErrorHtml() {
+        // Форма не собралась — говорим ПОЧЕМУ (таймаут, 500, нет сети), а не
+        // «нет данных»: иначе непонятно, чинить сервер или обновить страницу.
+        return `
+            <div class="text-muted" style="font-size:12.5px;">
+                Не удалось загрузить параметры маршрутизации:
+                ${escapeHtml(routingOptsError || 'сервер не вернул данные')}.
+                <button class="btn btn-ghost btn-sm" style="margin-left:8px;"
+                        onclick="MihomoPage.refresh()">Повторить</button>
+            </div>`;
+    }
+
     function routingNotice() {
         const o = routingOpts || {};
         let out = '';
@@ -476,9 +497,12 @@ rules:
     function renderDomainRouting() {
         const body = document.getElementById('mh-routing-domain-body');
         if (!body) return;
-        if (!routingOpts) { body.innerHTML = '<div class="text-muted">Нет данных от сервера.</div>'; return; }
-        if (domainRendered) return;       // не перерисовываем при poll (не теряем ввод)
-        domainRendered = true;
+        if (!routingOpts) { body.innerHTML = routingErrorHtml(); return; }
+        // Не перерисовываем при poll (не теряем ввод), но признак держим на
+        // самом узле: после ухода со страницы и возврата DOM новый, и форма
+        // обязана отрисоваться заново.
+        if (body.dataset.built === '1') return;
+        body.dataset.built = '1';
         const o = routingOpts, f = domainForm;
 
         const hostlistChecks = (o.hostlists || []).map(h => `
@@ -629,9 +653,9 @@ rules:
     function renderSourceRouting() {
         const body = document.getElementById('mh-routing-source-body');
         if (!body) return;
-        if (!routingOpts) { body.innerHTML = '<div class="text-muted">Нет данных от сервера.</div>'; return; }
-        if (sourceRendered) return;
-        sourceRendered = true;
+        if (!routingOpts) { body.innerHTML = routingErrorHtml(); return; }
+        if (body.dataset.built === '1') return;
+        body.dataset.built = '1';
         const f = sourceForm;
         body.innerHTML = `
             <p class="text-muted" style="font-size:12px; margin:0 0 8px;">

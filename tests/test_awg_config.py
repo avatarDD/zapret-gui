@@ -375,5 +375,127 @@ class TestFieldsUnsupportedByTools(unittest.TestCase):
                 "заругается на легитимный конфиг Amnezia)" % field)
 
 
+class TestAwg3Fields(unittest.TestCase):
+    """Поколение AWG 3+ (ветка amneziawg-go v3.x).
+
+    Ключи принимаются парсером amneziawg-tools (key_match в src/config.c
+    v3.0.20260730), значит обязаны доходить до `awg setconf`. Раньше их не
+    было в WG_INTERFACE_FIELDS: демон поднимался без защиты заголовка, а
+    пир, который её ждёт, дропал data-пакеты — «92 B in / 20 KB out».
+    """
+
+    CONF = (
+        "[Interface]\n"
+        "PrivateKey = QFvE7YbLQZ7Nn3+ZL1kmFCPRE1BpBcDGcs+2c0T1YXQ=\n"
+        "Address = 10.2.0.2/32\n"
+        "S1 = 16\nS2 = 16\nS3 = 16\nS4 = 16\n"
+        "HeaderProtectionKey = mNk1PLcYbHRTPd0h2FzC9YZ0kSHqVvBv6mR6l7Kx0nA=\n"
+        "ContentPaddingAddition = 10-40\n"
+        "RekeyAfterTime = 120\n"
+        "RekeyTimeout = 5\n"
+        "RejectAfterTime = 180\n"
+        "KeepaliveTimeout = (off)\n"
+        "MaxHandshakeAttempts = 5\n"
+        "\n"
+        "[Peer]\n"
+        "PublicKey = jNRPY62L5FXVfKQ6Yl8t2vT0/DiC2h3sB0YlxLKGZk4=\n"
+        "Endpoint = vpn.example.com:51820\n"
+        "AllowedIPs = 0.0.0.0/0\n"
+    )
+
+    def test_valid_awg3_config_has_no_errors(self):
+        self.assertEqual(validate(parse_conf(self.CONF)), [])
+
+    def test_awg3_fields_reach_setconf(self):
+        from core.awg_config import AWG3_INTERFACE_FIELDS
+        text = render_setconf(parse_conf(self.CONF))
+        for field in AWG3_INTERFACE_FIELDS:
+            self.assertIn(field, text,
+                          "%s обязано доходить до демона" % field)
+
+    def test_awg3_fields_survive_roundtrip(self):
+        cfg = parse_conf(render_conf(parse_conf(self.CONF)))
+        self.assertEqual(cfg["interface"]["ContentPaddingAddition"], "10-40")
+        self.assertEqual(cfg["interface"]["KeepaliveTimeout"], "(off)")
+
+    def test_timings_accept_range_and_off(self):
+        for value in ("120", "60-180", "(off)"):
+            cfg = parse_conf(self.CONF.replace("RekeyAfterTime = 120",
+                                               "RekeyAfterTime = %s" % value))
+            self.assertEqual(validate(cfg), [], "RekeyAfterTime = %s" % value)
+
+    def test_timings_reject_garbage(self):
+        cfg = parse_conf(self.CONF.replace("RekeyAfterTime = 120",
+                                           "RekeyAfterTime = abc"))
+        self.assertTrue(any("RekeyAfterTime" in e for e in validate(cfg)))
+
+    def test_header_protection_key_must_be_a_key(self):
+        cfg = parse_conf(self.CONF.replace(
+            "HeaderProtectionKey = mNk1PLcYbHRTPd0h2FzC9YZ0kSHqVvBv6mR6l7Kx0nA=",
+            "HeaderProtectionKey = not-a-key"))
+        self.assertTrue(any("HeaderProtectionKey" in e for e in validate(cfg)))
+
+    def test_header_protection_requires_padding_at_least_12(self):
+        """README: «Header protection requires S1-S4 value to be 12 at least»."""
+        cfg = parse_conf(self.CONF.replace("S3 = 16", "S3 = 4"))
+        errs = validate(cfg)
+        self.assertTrue(any("не меньше 12" in e for e in errs), errs)
+
+    def test_header_protection_without_padding_is_flagged(self):
+        text = self.CONF
+        for k in ("S1", "S2", "S3", "S4"):
+            text = text.replace("%s = 16\n" % k, "")
+        self.assertTrue(any("не меньше 12" in e for e in validate(parse_conf(text))))
+
+
+class TestPeerAdvancedSecurity(unittest.TestCase):
+    """`AdvancedSecurity` есть в key_match секции [Peer] у amneziawg-tools."""
+
+    CONF = (
+        "[Interface]\n"
+        "PrivateKey = QFvE7YbLQZ7Nn3+ZL1kmFCPRE1BpBcDGcs+2c0T1YXQ=\n"
+        "\n"
+        "[Peer]\n"
+        "PublicKey = jNRPY62L5FXVfKQ6Yl8t2vT0/DiC2h3sB0YlxLKGZk4=\n"
+        "AllowedIPs = 0.0.0.0/0\n"
+        "AdvancedSecurity = on\n"
+    )
+
+    def test_reaches_setconf(self):
+        self.assertIn("AdvancedSecurity", render_setconf(parse_conf(self.CONF)))
+
+    def test_config_is_valid(self):
+        self.assertEqual(validate(parse_conf(self.CONF)), [])
+
+
+class TestPersistentKeepaliveRange(unittest.TestCase):
+    """AWG 3+ разрешает `PersistentKeepalive = 22-30` (тип range)."""
+
+    def _conf(self, value):
+        return (
+            "[Interface]\n"
+            "PrivateKey = QFvE7YbLQZ7Nn3+ZL1kmFCPRE1BpBcDGcs+2c0T1YXQ=\n"
+            "\n"
+            "[Peer]\n"
+            "PublicKey = jNRPY62L5FXVfKQ6Yl8t2vT0/DiC2h3sB0YlxLKGZk4=\n"
+            "AllowedIPs = 0.0.0.0/0\n"
+            "PersistentKeepalive = %s\n" % value
+        )
+
+    def test_accepts_plain_int_range_and_off(self):
+        for value in ("25", "22-30", "(off)"):
+            self.assertEqual(validate(parse_conf(self._conf(value))), [],
+                             "PersistentKeepalive = %s" % value)
+
+    def test_rejects_reversed_range(self):
+        errs = validate(parse_conf(self._conf("30-22")))
+        self.assertTrue(any("PersistentKeepalive" in e for e in errs))
+
+    def test_rejects_out_of_bounds(self):
+        errs = validate(parse_conf(self._conf("70000")))
+        self.assertTrue(any("PersistentKeepalive" in e for e in errs))
+
+
+
 if __name__ == "__main__":
     unittest.main()

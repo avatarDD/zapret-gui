@@ -192,22 +192,22 @@ class MihomoManager:
                 "mtime":   mtime,
                 "running": self.is_running(name),
                 "tun_iface": tun_iface,
+                # Конфиг без TUN — это не поломка, а «mihomo как обычный
+                # прокси на порту»: заворачивать в него через ip rule нечего.
+                # Отдаём флаг явно, чтобы UI объяснил, а не молчал.
+                "tun_enabled": bool(tun_iface),
             })
         return out
 
     def _detect_mihomo_tun_iface(self, config_path: str) -> str:
         try:
-            from core.clash_yaml import parse_yaml
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, "r", encoding="utf-8",
+                      errors="replace") as f:
                 text = f.read()
-            data = parse_yaml(text)
-            if isinstance(data, dict):
-                tun = data.get("tun", {})
-                if isinstance(tun, dict) and tun.get("enable"):
-                    return tun.get("device") or tun.get("name") or "utun"
-        except Exception:
-            pass
-        return ""
+        except OSError:
+            return ""
+        from core.mihomo_config import tun_device_from_text
+        return tun_device_from_text(text)
 
     def get_config(self, name: str) -> dict:
         if not _valid_name(name):

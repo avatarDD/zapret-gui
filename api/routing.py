@@ -112,13 +112,19 @@ def register(app):
              {"name": "tun0", "source": "singbox", "type": "singbox-tun"},
              {"name": "usque0", "source": "usque", "type": "usque-tun"},
              {"name": "mihomo-tun", "source": "mihomo", "type": "mihomo-tun"},
-             ...]}
+             ...],
+           "notes": [{"source": "mihomo", "text": "<почему цели нет>"}]}
+
+        `notes` — подсказки о движках, которые запущены, но интерфейса не
+        дают (например mihomo без секции `tun`): без них список выглядит
+        просто «пустым» и непонятно, что чинить.
         """
         response.content_type = "application/json; charset=utf-8"
         try:
             from core.awg_manager import AwgManager
             mgr = AwgManager()
             result = []
+            notes = []      # почему ожидаемой цели нет в списке
             seen = set()
 
             for iface in mgr.list_interfaces():
@@ -220,7 +226,22 @@ def register(app):
                 from core.mihomo_manager import get_mihomo_manager
                 for cfg in get_mihomo_manager().list_configs():
                     ifname = (cfg.get("tun_iface") or "").strip()
-                    if not ifname or ifname in seen:
+                    if not ifname:
+                        # Запущенный конфиг без TUN — самая частая причина
+                        # «mihomo нет в списке целей». Молчать нельзя:
+                        # объясняем в notes, что чинить.
+                        if cfg.get("running"):
+                            notes.append({
+                                "source": "mihomo",
+                                "text": "mihomo «%s» запущен без секции "
+                                        "`tun` — сетевого интерфейса нет, "
+                                        "заворачивать в него нечем. Создайте "
+                                        "конфиг в разделе mihomo → "
+                                        "«Маршрутизация»."
+                                        % cfg.get("name", ""),
+                            })
+                        continue
+                    if ifname in seen:
                         continue
                     seen.add(ifname)
                     result.append({
@@ -235,7 +256,7 @@ def register(app):
                 log.warning("routing/interfaces: mihomo не добавлен: %s"
                             % e, source="routing")
 
-            return {"ok": True, "interfaces": result}
+            return {"ok": True, "interfaces": result, "notes": notes}
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}

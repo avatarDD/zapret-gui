@@ -24,10 +24,18 @@ import re
 import urllib.error
 import urllib.request
 
-from core.clash_yaml import parse_yaml, dump_yaml, dump_seq, has_pyyaml
+from core.clash_yaml import (parse_yaml, dump_yaml, dump_seq, has_pyyaml,
+                             _parse_flow, _parse_scalar, _split_kv,
+                             _strip_yaml_comment)
 
 
 _SELECT_TYPE = "Selector"   # как Clash API называет group типа select
+
+# Как Clash API называет ГРУППЫ (их в таблицу узлов не кладём) и встроенные
+# псевдо-прокси, которых нет в конфиге.
+_GROUP_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance", "Relay"}
+_BUILTIN_PROXIES = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL",
+                    "COMPATIBLE"}
 
 
 # ─────── чтение конфига ───────
@@ -61,6 +69,79 @@ def proxy_rows(cfg: dict) -> list:
                 int(port) if str(port).isdigit() else port),
         })
     return rows
+
+
+# Ключи, которые нас интересуют в текстовом фолбэке (см. proxies_from_text).
+_TEXT_ROW_KEYS = ("name", "type", "server", "port")
+
+
+def proxies_from_text(text: str) -> list:
+    """
+    Строки таблицы прокси, вытащенные ПРЯМО ИЗ ТЕКСТА конфига.
+
+    Фолбэк для случая «в редакторе прокси видно, а в таблице пусто»: если
+    YAML не разобрался целиком (якоря/`<<:`-merge, нестандартный отступ,
+    окружение без PyYAML, где самописный парсер покрывает не весь YAML),
+    структурный путь отдаёт пустой список и страница врёт «в конфиге нет
+    прокси». Здесь мы не пытаемся понять весь YAML — только пройти по
+    элементам блока `proxies:` и снять с каждого name/type/server/port.
+
+    Возвращает только записи, у которых есть и `name`, и `type` — как
+    list_proxies(), чтобы таблица была одинаковой в обоих путях.
+    """
+    if not text or not text.strip():
+        return []
+    lines = text.splitlines()
+    idx = _find_top_key(lines, "proxies")
+    if idx is None:
+        return []
+    inline = lines[idx].split(":", 1)[1].strip()
+    if inline and inline not in ("[]", "~", "null"):
+        return []                       # `proxies: <якорь/flow-список>`
+    end = _proxies_block_end(lines, idx)
+
+    rows, cur = [], None
+
+    def _flush():
+        if cur and cur.get("name") and cur.get("type"):
+            rows.append(dict(cur))
+
+    for raw in lines[idx + 1:end]:
+        line = _strip_yaml_comment(raw)
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("- ") or s == "-":
+            _flush()
+            cur = {}
+            rest = s[1:].strip()
+            if rest.startswith("{"):    # flow-элемент `- {name: a, type: ss}`
+                flow = _parse_flow(rest)
+                if isinstance(flow, dict):
+                    cur = {k: flow.get(k) for k in _TEXT_ROW_KEYS
+                           if flow.get(k) is not None}
+                continue
+            s = rest
+            if not s:
+                continue
+        if cur is None:
+            continue
+        key, val = _split_kv(s)
+        if key in _TEXT_ROW_KEYS and val is not None:
+            cur[key] = _parse_scalar(val)
+    _flush()
+
+    out = []
+    for p in rows:
+        port = p.get("port")
+        out.append({
+            "name":   str(p.get("name")),
+            "type":   str(p.get("type") or ""),
+            "server": str(p.get("server") or ""),
+            "port":   port if isinstance(port, int) else (
+                int(port) if str(port).isdigit() else port),
+        })
+    return out
 
 
 def provider_rows(cfg: dict) -> list:
@@ -204,8 +285,11 @@ def _request(ep: dict, path: str, method: str = "GET", data=None,
 
 def controller_proxies(ep: dict) -> dict:
     """
-    GET /proxies → {"ok", "active", "groups": [{name, now, all}]}.
+    GET /proxies → {"ok", "active", "groups": [{name, now, all}], "nodes"}.
     `active` — текущий узел первой select-группы (для отметки в таблице).
+    `nodes`  — ВСЕ узлы, которые реально загрузил движок (не группы и не
+    встроенные DIRECT/REJECT/…). Это единственный источник правды, когда
+    конфиг не разобрался нашим YAML-парсером: узлы всё равно видно.
     """
     st, body = _request(ep, "/proxies")
     if st != 200 or not body:
@@ -217,12 +301,18 @@ def controller_proxies(ep: dict) -> dict:
     proxies = data.get("proxies") if isinstance(data, dict) else None
     if not isinstance(proxies, dict):
         return {"ok": False}
-    groups = []
+    groups, nodes = [], []
     for nm, info in proxies.items():
-        if isinstance(info, dict) and info.get("type") == _SELECT_TYPE:
+        if not isinstance(info, dict):
+            continue
+        if info.get("type") == _SELECT_TYPE:
             groups.append({"name": nm,
                            "now": info.get("now") or "",
                            "all": info.get("all") or []})
+        if (str(info.get("type") or "") not in _GROUP_TYPES
+                and str(nm) not in _BUILTIN_PROXIES):
+            nodes.append({"name": str(nm),
+                          "type": str(info.get("type") or "")})
     # mihomo всегда добавляет встроенную группу GLOBAL (для mode: global). Когда
     # у конфига есть СВОИ select-группы (наш routing-флоу создаёт «PROXY»),
     # GLOBAL — шум: и показывать, и переключать надо именно пользовательскую
@@ -231,7 +321,7 @@ def controller_proxies(ep: dict) -> dict:
     non_global = [g for g in groups if g["name"] != "GLOBAL"]
     groups = non_global or groups
     active = groups[0]["now"] if groups else ""
-    return {"ok": True, "active": active, "groups": groups}
+    return {"ok": True, "active": active, "groups": groups, "nodes": nodes}
 
 
 def controller_activate(ep: dict, tag: str) -> dict:

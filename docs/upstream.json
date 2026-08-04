@@ -85,21 +85,21 @@
       "id": "sing-box",
       "repo": "SagerNet/sing-box",
       "kind": "release",
-      "pinned": "v1.13.15",
-      "verified_at": "2026-08-03",
+      "pinned": "v1.13.16",
+      "verified_at": "2026-08-04",
       "skill": ".claude/skills/singbox/SKILL.md",
       "mentions": [
         ".claude/skills/singbox/SKILL.md"
       ],
       "vendored": {},
-      "note": "sing-box ломает совместимость по минорам, поэтому §9 скила — таблица «что удалено в какой версии» — сверена с docs/deprecated.md и docs/migration.md апстрима. 1.14 пока в бете (1.14.0-beta.4), стабильная линия 1.13.x; всё, что помечено deprecated в 1.14, апстрим обещает удалить только в 1.16. Наш генератор чужих полей не выдаёт, но пользовательские конфиги — выдают, отсюда pre-flight `sing-box check`."
+      "note": "sing-box ломает совместимость по минорам, поэтому §9 скила — таблица «что удалено в какой версии» — сверена с docs/deprecated.md и docs/migration.md апстрима. 1.14 пока в бете (1.14.0-beta.5), стабильная линия 1.13.x; всё, что помечено deprecated в 1.14, апстрим обещает удалить только в 1.16. Наш генератор чужих полей не выдаёт, но пользовательские конфиги — выдают, отсюда pre-flight `sing-box check`."
     },
     {
       "id": "mihomo",
       "repo": "MetaCubeX/mihomo",
       "kind": "release",
       "pinned": "v1.19.29",
-      "verified_at": "2026-08-03",
+      "verified_at": "2026-08-04",
       "skill": ".claude/skills/mihomo/SKILL.md",
       "mentions": [
         ".claude/skills/mihomo/SKILL.md"
@@ -112,26 +112,26 @@
       "repo": "amnezia-vpn/amneziawg-go",
       "kind": "release",
       "pinned": "v3.0.3",
-      "verified_at": "2026-08-03",
+      "verified_at": "2026-08-04",
       "skill": ".claude/skills/awg/SKILL.md",
       "mentions": [
         ".claude/skills/awg/SKILL.md"
       ],
       "vendored": {},
-      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0. Проверять при обновлении: UAPI-ключи в device/uapi.go — от них зависит, что демон вообще примет."
+      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0, а с ветки v3.x — ещё и поколения AWG 3+ (HeaderProtectionKey, ContentPaddingAddition, тайминги, тип range): в docs.amnezia.org его нет. Проверять при обновлении: UAPI-ключи в device/uapi.go (что демон вообще примет) и socketDirectory в ipc/uapi_unix.go — в v3 это /var/run/amneziawg, у сборок на базе wireguard-go /var/run/wireguard; оба каталога перечислены в awg_platform.UAPI_SOCKET_DIRS."
     },
     {
       "id": "amneziawg-tools",
       "repo": "amnezia-vpn/amneziawg-tools",
       "kind": "release",
       "pinned": "v3.0.20260730",
-      "verified_at": "2026-08-03",
+      "verified_at": "2026-08-04",
       "skill": ".claude/skills/awg/SKILL.md",
       "mentions": [
         ".claude/skills/awg/SKILL.md"
       ],
       "vendored": {},
-      "note": "Форк wireguard-tools: бинари awg/awg-quick, теги датированные (v3.0.YYYYMMDD). КЛЮЧЕВОЕ при сверке — key_match в src/config.c: это окончательный список полей .conf. Неизвестный ключ там приводит к «Line unrecognized» и отбрасыванию ВСЕГО конфига, то есть интерфейс не поднимается. Так выяснилось, что J1..J3 и Itime из документации протокола 2.0 парсером не принимаются, а v3.0.20260730 добавил семь новых полей (HeaderProtectionKey, ContentPaddingAddition, Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts), которых мы пока не генерируем."
+      "note": "Форк wireguard-tools: бинари awg/awg-quick, теги датированные (v3.0.YYYYMMDD). КЛЮЧЕВОЕ при сверке — key_match в src/config.c: это окончательный список полей .conf. Неизвестный ключ там приводит к «Line unrecognized» и отбрасыванию ВСЕГО конфига, то есть интерфейс не поднимается. Так выяснилось, что J1..J3 и Itime из документации протокола 2.0 парсером не принимаются, а v3.0.20260730 добавил семь новых полей (HeaderProtectionKey, ContentPaddingAddition, Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts) — они поддержаны в awg_config.AWG3_INTERFACE_FIELDS. Там же сверяются [Peer]-ключи: AdvancedSecurity легко упустить."
     },
     {
       "id": "usque",

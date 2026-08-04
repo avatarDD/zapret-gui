@@ -48,7 +48,12 @@ def _str_list(v):
 
 
 def _load_cfg(name):
-    """(mgr, res, cfg|None). res — ответ get_config; cfg — разобранный YAML."""
+    """(mgr, res, cfg|None). res — ответ get_config; cfg — разобранный YAML.
+
+    Ошибку разбора НЕ глотаем молча (раньше отдавали пустой cfg, и страница
+    прокси заявляла «в конфиге нет прокси», хотя в редакторе они видны):
+    кладём текст в res['parse_error'], чтобы вызывающий мог объяснить.
+    """
     from core.mihomo_manager import get_mihomo_manager
     from core.clash_yaml import parse_yaml
     mgr = get_mihomo_manager()
@@ -57,7 +62,8 @@ def _load_cfg(name):
         return mgr, res, None
     try:
         cfg = parse_yaml(res.get("text") or "")
-    except Exception:
+    except Exception as e:
+        res["parse_error"] = str(e)
         cfg = {}
     return mgr, res, (cfg if isinstance(cfg, dict) else {})
 
@@ -78,12 +84,17 @@ def _resolve_test_proxies(body):
     if not res.get("ok"):
         return [], None
     proxies = mp.list_proxies(cfg or {})
+    ep = mp.external_controller_endpoint(cfg or {}) \
+        if mgr.is_running(name) else None
+    if not proxies and ep:
+        # Конфиг не разобрался структурно, но инстанс поднят: узлы у движка
+        # есть, и замер идёт по ИМЕНИ через его же Clash API — текстовых
+        # строк (name/type/server/port) для этого достаточно.
+        proxies = mp.proxies_from_text(res.get("text") or "")
     names = body.get("names")
     if isinstance(names, list) and names:
         ns = {str(n) for n in names}
         proxies = [p for p in proxies if str(p.get("name")) in ns]
-    ep = mp.external_controller_endpoint(cfg or {}) \
-        if mgr.is_running(name) else None
     return proxies, ep
 
 
@@ -330,24 +341,39 @@ def register(app):
         running = mgr.is_running(name)
         ep = mp.external_controller_endpoint(cfg or {})
         active, groups, controller_live = "", [], False
-        provider_live = []
+        provider_live, live_nodes = [], []
         if running and ep:
             live = mp.controller_proxies(ep)
             if live.get("ok"):
                 controller_live = True
                 active = live.get("active") or ""
                 groups = live.get("groups") or []
+                live_nodes = live.get("nodes") or []
             # Узлы из proxy-providers существуют только в рантайме —
             # спрашиваем их у самого движка (issue #248).
             pl = mp.controller_provider_proxies(ep)
             if pl.get("ok"):
                 provider_live = pl.get("providers") or []
-        return {"ok": True, "proxies": mp.proxy_rows(cfg or {}),
+
+        rows = mp.proxy_rows(cfg or {})
+        # Структурный разбор ничего не дал, а в тексте блок `proxies:` есть —
+        # снимаем строки прямо с текста. Иначе таблица пуста и выглядит так,
+        # будто прокси в конфиге нет (а редактор их показывает).
+        text_fallback = False
+        if not rows and not mp.provider_rows(cfg or {}):
+            rows = mp.proxies_from_text(res.get("text") or "")
+            text_fallback = bool(rows)
+
+        return {"ok": True, "proxies": rows,
                 "active": active, "groups": groups, "running": running,
                 "controller": ep is not None,
                 "controller_live": controller_live,
                 "providers": mp.provider_rows(cfg or {}),
                 "provider_live": provider_live,
+                # Узлы, которые движок реально загрузил (правда рантайма).
+                "live_nodes": live_nodes,
+                "text_fallback": text_fallback,
+                "parse_error": res.get("parse_error") or "",
                 "select_groups": mp.select_group_names(cfg or {})}
 
     @app.route("/api/mihomo/configs/<name>/activate", method="POST")

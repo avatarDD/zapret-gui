@@ -102,3 +102,64 @@ class TestMihomoRoutingAPI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMihomoProxiesAPI(unittest.TestCase):
+    """/api/mihomo/configs/<name>/proxies — «в редакторе есть, в таблице нет».
+
+    Конфиг с якорями (`<<:`-merge) наш YAML-парсер разбирает не целиком.
+    Раньше это молча давало пустой список и надпись «в конфиге нет прокси»
+    при полном конфиге на диске.
+    """
+
+    ANCHOR_CFG = (
+        "defaults: &d\n"
+        "  udp: true\n"
+        "proxies:\n"
+        "  - <<: *d\n"
+        "    name: A\n"
+        "    type: hysteria2\n"
+        "    server: h.example.com\n"
+        "    port: 443\n"
+        "rules:\n"
+        "  - MATCH,DIRECT\n"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = WSGIClient(build_test_app())
+
+    def _get(self, text, running=False):
+        with mock.patch("core.mihomo_manager.MihomoManager.get_config",
+                        return_value={"ok": True, "name": "meta",
+                                      "text": text}), \
+             mock.patch("core.mihomo_manager.MihomoManager.is_running",
+                        return_value=running):
+            return self.client.get_json("/api/mihomo/configs/meta/proxies")
+
+    def test_text_fallback_when_structured_parse_is_empty(self):
+        import builtins
+        real = builtins.__import__
+
+        def _no_yaml(name, *a, **k):
+            if name == "yaml":
+                raise ImportError("no yaml")
+            return real(name, *a, **k)
+
+        builtins.__import__ = _no_yaml
+        try:
+            r = self._get(self.ANCHOR_CFG)
+        finally:
+            builtins.__import__ = real
+        self.assertTrue(r["ok"])
+        self.assertEqual([p["name"] for p in r["proxies"]], ["A"])
+        self.assertTrue(r["text_fallback"])
+
+    def test_normal_config_uses_structured_path(self):
+        text = ("proxies:\n"
+                "  - name: A\n    type: ss\n    server: 1.2.3.4\n"
+                "    port: 8388\n")
+        r = self._get(text)
+        self.assertEqual([p["name"] for p in r["proxies"]], ["A"])
+        self.assertFalse(r["text_fallback"])
+        self.assertEqual(r["parse_error"], "")

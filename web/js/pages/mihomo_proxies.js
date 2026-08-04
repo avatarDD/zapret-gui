@@ -161,8 +161,21 @@ const MihomoProxiesPage = (() => {
                 raw: p,
             }));
             const seen = new Set(own.map(i => i.id));
+            // Узлы, которые движок реально загрузил: правда рантайма. Нужны,
+            // когда YAML не разобрался нашим парсером — иначе таблица пуста
+            // при живом инстансе с полным списком прокси внутри.
+            const fromEngine = (r.live_nodes || [])
+                .filter(n => n.name && !seen.has(n.name))
+                .map(n => {
+                    seen.add(n.name);
+                    return {
+                        id: n.name, type: n.type, address: 'из движка',
+                        raw: { name: n.name, type: n.type },
+                    };
+                });
             return {
-                items: own.concat(fromProviders.filter(i => !seen.has(i.id))),
+                items: own.concat(fromEngine,
+                                  fromProviders.filter(i => !seen.has(i.id))),
                 activeId: r.active || '',
                 running: !!r.running,
                 extra: {
@@ -171,6 +184,8 @@ const MihomoProxiesPage = (() => {
                     selectGroups: r.select_groups || [],
                     providers: r.providers || [],
                     providerLive: r.provider_live || [],
+                    parseError: r.parse_error || '',
+                    textFallback: !!r.text_fallback,
                 },
             };
         },
@@ -222,6 +237,29 @@ const MihomoProxiesPage = (() => {
 
         bannersHtml: (st) => {
             const ex = st.extra;
+            // Конфиг не разобрался — говорим об этом прямо. Молчаливый
+            // «нет прокси» на конфиге, где они видны в редакторе, — самая
+            // сбивающая с толку ситуация на этой странице.
+            let parseBanner = '';
+            if (ex.parseError) {
+                parseBanner = `
+                    <div class="alert alert-warning" style="margin-top:10px; font-size:12px;">
+                        YAML конфига «${esc(st.configName)}» не разобрался:
+                        <code>${esc(ex.parseError)}</code>.
+                        Список ниже собран по тексту конфига и по данным
+                        запущенного движка — он может быть неполным.
+                        Проверьте конфиг кнопкой «Проверить (mihomo -t)» на
+                        странице «Инстансы».
+                    </div>`;
+            } else if (ex.textFallback) {
+                parseBanner = `
+                    <div class="alert" style="margin-top:10px; font-size:12px;">
+                        Секция <code>proxies</code> прочитана по тексту конфига
+                        (структурный разбор ничего не дал). Редактирование
+                        списка из таблицы в таком конфиге лучше не делать —
+                        правьте YAML на странице «Инстансы».
+                    </div>`;
+            }
             // Подписки proxy-providers: их узлы не лежат в конфиге, их
             // качает сам mihomo. Без этой плашки таблица выглядела пустой
             // и подписка казалась нерабочей (issue #248).
@@ -256,10 +294,10 @@ const MihomoProxiesPage = (() => {
                     </div>`;
             }
             if (ex.hasController && (ex.controllerLive || !st.running)) {
-                return providersBanner;
+                return parseBanner + providersBanner;
             }
             if (!ex.hasController) {
-                return `
+                return parseBanner + `
                     <div class="alert alert-warning" style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
                         <div style="font-size:12px;">
                             У конфига <strong>${esc(st.configName)}</strong> нет
@@ -273,7 +311,7 @@ const MihomoProxiesPage = (() => {
                     </div>` + providersBanner;
             }
             // есть controller, но running и не отвечает
-            return `
+            return parseBanner + `
                 <div class="alert alert-warning" style="margin-top:10px; font-size:12px;">
                     external-controller настроен, но не отвечает. Проверьте порт/secret
                     и что конфиг перезапущен после изменения.

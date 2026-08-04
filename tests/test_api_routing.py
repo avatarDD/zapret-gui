@@ -114,7 +114,11 @@ class TestRoutingAPI(unittest.TestCase):
         self.assertEqual(entry["source"], "mihomo")
 
     def test_interfaces_skip_mihomo_without_tun(self):
-        """Без `tun` у mihomo только локальный порт — заворачивать нечего."""
+        """Без `tun` у mihomo только локальный порт — заворачивать нечего.
+
+        Но раз конфиг ЗАПУЩЕН, а цели нет — объясняем это в `notes`:
+        иначе выглядит как пропажа mihomo из списка методов.
+        """
         configs = [{"name": "meta", "path": "/tmp/meta.yaml",
                     "running": True, "tun_iface": ""}]
         with mock.patch("core.mihomo_manager.MihomoManager.list_configs",
@@ -122,6 +126,19 @@ class TestRoutingAPI(unittest.TestCase):
             r = self.client.get_json("/api/routing/interfaces")
         self.assertEqual(
             [i for i in r["interfaces"] if i.get("source") == "mihomo"], [])
+        notes = [n for n in r.get("notes", []) if n.get("source") == "mihomo"]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("meta", notes[0]["text"])
+
+    def test_no_note_for_stopped_mihomo_without_tun(self):
+        """Остановленный конфиг без TUN — не повод шуметь в списке методов."""
+        configs = [{"name": "meta", "path": "/tmp/meta.yaml",
+                    "running": False, "tun_iface": ""}]
+        with mock.patch("core.mihomo_manager.MihomoManager.list_configs",
+                        return_value=configs):
+            r = self.client.get_json("/api/routing/interfaces")
+        self.assertEqual(
+            [n for n in r.get("notes", []) if n.get("source") == "mihomo"], [])
 
     def test_interfaces_skip_usque_profile_without_iface(self):
         """У остановленного профиля имени интерфейса нет — маршрутизировать
