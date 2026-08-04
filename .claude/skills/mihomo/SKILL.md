@@ -29,16 +29,21 @@ description: >-
 2. **`mihomo -t -f <config>`** — валидатор самого бинаря. Молчит → конфиг
    валиден для ЭТОЙ версии; ругается — это и есть причина.
 3. **Наш код** — `core/mihomo_manager.py` (run/test/up/down/status),
+   `core/mihomo_config.py` + `core/mihomo_routing.py` (генерация конфигов
+   маршрутизации), `core/mihomo_proxies.py` (таблица прокси + Clash API),
    `core/mihomo_platform.py` (пути), `core/mihomo_installer.py` +
    `core/mihomo_detector.py` (бинарь/арх), `core/mihomo_autostart.py`,
-   `core/clash_yaml.py` (конвертер clash→sing-box, §10), `api/mihomo.py`,
-   `web/js/pages/mihomo.js`.
+   `core/mihomo_watchdog.py`, `core/clash_yaml.py` (конвертер clash→sing-box,
+   §10), `api/mihomo.py`, `web/js/pages/mihomo{,_proxies,_setup}.js`.
+   Полный список — §17.
 
-> ⚠️ **Мы почти не трогаем содержимое YAML.** `mihomo_manager` хранит конфиг
-> как текст, проверяет минимально (валидный YAML + есть `proxies` или
-> `proxy-providers`) и отдаёт всё на откуп `mihomo -t`. Поэтому **истина по
-> ключам — официальная вики, а не наш код.** Не «угадывай» поля по нашему
-> парсеру — их там нет.
+> ⚠️ **Пользовательский YAML мы не переписываем.** `mihomo_manager` хранит
+> конфиг как текст, проверяет минимально (валидный YAML + есть `proxies` или
+> `proxy-providers`) и отдаёт всё на откуп `mihomo -t`. Свои конфиги мы
+> **генерируем целиком** (`mihomo_config`, §11.1) — но и их валидирует
+> бинарь. Поэтому **истина по ключам — официальная вики и исходники, а не наш
+> парсер**: он покрывает подмножество YAML (см. §16.8) и «угадывать» поля по
+> нему нельзя.
 
 ---
 
@@ -105,8 +110,8 @@ description: >-
 | `profile` | `store-selected` (запоминать выбор в группах), `store-fake-ip` |
 
 Секции: `proxies` (§4), `proxy-groups` (§5), `rules`+`rule-providers` (§6),
-`proxy-providers` (§9), `dns` (§7), `tun`+`listeners` (§8), `sniffer`, `hosts`,
-`ntp`, `experimental`.
+`proxy-providers` (§9), `dns` (§7), `tun`+`listeners` (§8), `sniffer` (§8.1),
+`hosts`, `ntp`, `experimental`.
 
 > **geo-базы (`geoip.dat`/`geosite.dat`/`*.mmdb`) zapret-gui НЕ ставит** (в
 > отличие от sing-box). Они лежат в `-d`-workdir (= `config_dir`); mihomo сам
@@ -196,20 +201,68 @@ mihomo поддерживает: `ss` (shadowsocks), `ssr`, `snell`, `vmess`, `v
 
 ## 8. TUN / прозрачное проксирование / listeners
 
-**tun** (вики, config/inbound): `enable`, `stack` (`system`/`gvisor`/`mixed`),
-`device`, `auto-route` (прописать маршруты, чтобы трафик шёл в TUN),
-`auto-redirect`, `auto-detect-interface` (авто-определение выходного интерфейса),
-`dns-hijack` (например `["any:53"]`), `mtu`, `strict-route`, `inet4-address` /
-`inet4-route-address`, `endpoint-independent-nat`.
+**tun** (вики, config/inbound): `enable`, `stack` (`system`/`gvisor`/`mixed`,
+дефолт `gvisor`), `device`, `auto-route` (прописать маршруты, чтобы трафик шёл
+в TUN), `auto-redirect` (nft-redirect для ПЕРЕсылаемого трафика LAN; только
+Linux+nftables, вместе с `auto-route`), `auto-detect-interface`, `dns-hijack`
+(например `["any:53"]`; без схемы подразумевается `udp://`), `mtu`,
+`strict-route`, `route-address` / `route-address-set` /
+`route-exclude-address-set` (последние два — только nftables при
+`auto-route`+`auto-redirect`), `gso`/`gso-max-size` (дефолт 65536),
+`disable-icmp-forwarding`, `endpoint-independent-nat`, `udp-timeout` (300 c),
+`iproute2-table-index` (2022) / `iproute2-rule-index` (9000), устаревшие
+`inet4-address`/`inet4-route-address`.
+
+> **`device` по умолчанию — `Meta`, а не `utun`.** В
+> `listener/sing_tun/server.go`: `var InterfaceName = "Meta"`, и
+> `CalculateInterfaceName()` на не-darwin возвращает это имя как есть (префикс
+> `utun` — исключительно macOS). Значит конфиг с `tun: {enable: true}` без
+> `device` создаёт интерфейс **`Meta`**. Мы на это опираемся в
+> `core/mihomo_config.tun_device_from_text()` — правило маршрутизации должно
+> указывать на реальное имя, иначе оно молча ни во что не заворачивает.
 
 **listeners** (доп. входящие): `http`, `socks`, `mixed`, `redir`, `tproxy`,
 `tunnel`, `tun`, а также серверные `shadowsocks`/`vmess`/`vless`/`trojan`/`tuic`.
 
-> zapret-gui **не генерирует и не настраивает** TUN/tproxy/redir для mihomo —
-> это делает сам YAML пользователя. Мы лишь детектим `/dev/net/tun`
-> (`mihomo_detector`) и сообщаем доступность TUN. Прозрачный режим через ОС у
-> нас исторически завязан на sing-box (`core/singbox_transparent*`) и
-> Selective routing (`core/routing`).
+> Прозрачный режим через ОС (iptables/nft-правила) у нас завязан на sing-box
+> (`core/singbox_transparent*`) и Selective routing (`core/routing`). Для
+> mihomo мы TUN не настраиваем на уровне ОС — движок делает это сам
+> (`auto-route`/`auto-redirect`), а секцию `tun` в конфиге **генерируем**
+> (`core/mihomo_config.make_tun()`, флоу «Маршрутизация» на странице mihomo).
+> Дополнительно детектим `/dev/net/tun` (`mihomo_detector`).
+
+### 8.1 sniffer — как движок узнаёт домен
+
+`sniffer` определяет домен по содержимому соединения (TLS SNI / HTTP Host),
+когда его неоткуда взять иначе. Ключи и **дефолты сверены с
+`config/config.go` v1.19.29** (`DefaultRawConfig`):
+
+| Ключ | Дефолт | Смысл |
+|------|--------|-------|
+| `enable` | `false` | сниффер выключен, пока не включишь |
+| `sniff` | `{}` | что и на каких портах: `TLS`/`QUIC` (без `ports` — 443), `HTTP` (без `ports` — 80). Каждый протокол может переопределить `override-destination` |
+| `override-destination` | **`true`** | подменять адрес назначения сниффнутым доменом |
+| `force-dns-mapping` | `true` | принудительно сниффить трафик, опознанный как redir-host |
+| `parse-pure-ip` | `true` | сниффить всё, у чего домена нет вовсе |
+| `force-domain` / `skip-domain` | `[]` | белый/чёрный список доменов |
+| `skip-src-address` / `skip-dst-address` | `[]` | пропускать по адресам |
+| `sniffing` / `port-whitelist` | — | **устаревшие**, игнорируются, если задан `sniff` |
+
+> ⚠️ **Когда fake-ip не спасает.** Доменные правила (`DOMAIN-SUFFIX`,
+> `GEOSITE`) матчатся, только если движок знает домен. При `enhanced-mode:
+> fake-ip` он его знает — но лишь для клиентов, чей DNS идёт **через сам
+> mihomo**. Приложение со своим DoH/DoT (браузер с DNS-over-HTTPS,
+> `opera-proxy`, `usque`) резолвит мимо движка, и mihomo видит только IP —
+> доменное правило не сработает. Единственное лекарство — `sniffer`.
+> Именно поэтому `core/opera_proxy_chain._attach_mihomo()` при подключении
+> opera-proxy в TUN-конфиг включает сниффер: без него защита от петли
+> `DOMAIN-SUFFIX,sec-tunnel.com,DIRECT` мертва и трафик самого прокси
+> уходит в туннель по кругу.
+>
+> **`override-destination` при fake-ip ставь в `false`.** Дефолт `true`
+> подменяет назначение сниффнутым доменом и ломает уже корректную
+> fake-ip-маршрутизацию; для матчинга правил подмена не нужна — домен
+> попадает в метаданные соединения в любом случае.
 
 ---
 
@@ -278,7 +331,40 @@ mihomo. Мини-парсер YAML + реестр конвертеров `_CLASH
 - **down**: SIGTERM → ждём 5 c → SIGKILL. **restart** = down → 0.5 c → up.
 - CRUD: `list_configs`/`get_config`/`save_config` (атомарно через `.tmp`+rename)/
   `delete_config` (только если не запущен). `status(name)` → `{name, active, pid,
-  log_path}`.
+  log_path}`. `list_configs()` дополнительно отдаёт `tun_iface`/`tun_enabled` —
+  через них mihomo попадает в цели маршрутизации (§16.9).
+
+## 11.1 Наши генераторы конфигов маршрутизации
+
+`core/mihomo_config.py` — **чистые** билдеры (без I/O), `core/mihomo_routing.py`
+— оркестратор. Два режима, оба самодостаточные: OS-слой `ip rule` для них не
+нужен, трафик забирает сам движок.
+
+| Режим | Билдер | Кого проксируем | Стек по умолчанию |
+|-------|--------|-----------------|-------------------|
+| домены / списки | `build_domain_config()` | выбранные домены и подсети (`RULE-SET`/`DOMAIN-SUFFIX` + `IP-CIDR` → `PROXY`, остальное `MATCH,DIRECT`), либо весь трафик | `gvisor` |
+| устройства / весь трафик | `build_source_config()` | `SRC-IP-CIDR` выбранных устройств, либо весь трафик | `system` (kernel, низкий CPU) |
+
+Общий каркас: `mode: rule`, `unified-delay`, `tcp-concurrent`,
+`external-controller` на свободном порту 127.0.0.1 + `secret`, `proxies`,
+одна `proxy-group` (`PROXY`, `select` либо `url-test`), `tun` (§8), `dns` с
+`enhanced-mode: fake-ip` и «приватное → DIRECT» первым правилом.
+
+Осознанные решения (уроки sing-box, см. комментарии в модуле): `mtu: 1500`
+(9000 с gvisor на MIPS → GC-молотьба и 100% CPU), `strict-route: false` (не
+«лочим» роутер при мёртвом прокси), QUIC **не** глушим по умолчанию (ломает
+DoH3 клиента), DoH задаём **по имени хоста** (`https://cloudflare-dns.com/…`,
+не по IP-литералу — иначе не сходится TLS-сертификат), домены прокси-серверов
+исключаются из fake-ip и резолвятся через `proxy-server-nameserver` (иначе
+петля «резолв адреса прокси через сам прокси»).
+
+`geosite:`/`geoip:` в этом флоу **разворачиваются нашим `alias_resolver`** в
+домены и CIDR (тот же путь, что у OS-routing/sing-box/AWG) — geo-базы mihomo
+для них не нужны, что важно на роутере без исходящего доступа (§3, §16.3).
+
+`_validate_and_pick()` собирает несколько кандидатов (стек `gvisor`↔`system`,
+inline `RULE-SET`↔развёрнутые `DOMAIN-SUFFIX`) и берёт **первый, который принял
+`mihomo -t`**; без бинаря сохраняет самый совместимый с предупреждением.
 
 ---
 
@@ -333,12 +419,34 @@ mihomo. Мини-парсер YAML + реестр конвертеров `_CLASH
 
 ## 15. API (`api/mihomo.py`)
 
-`GET /api/mihomo/environment` (+`/refresh`), `GET /install/status`,
-`POST /install`, `POST /uninstall`, `GET /version` (проверка обновлений),
-`GET /configs`, `POST /configs` (`{name,text}`), `GET|PUT|DELETE /configs/<name>`,
-`POST /configs/<name>/up|down|restart`, `GET /configs/<name>/status`,
-`POST /configs/<name>/validate` (`mihomo -t`), `GET /autostart`,
-`POST /autostart/<name>` (`{enabled}`), `POST /autostart/{regenerate,remove,apply}`.
+**Окружение и бинарь:** `GET /environment` (+`POST /environment/refresh`),
+`GET /install/status`, `POST /install`, `POST /install/local` (multipart),
+`GET /releases`, `POST /uninstall`, `GET /version`.
+
+**Конфиги:** `GET /configs`, `POST /configs` (`{name,text}`),
+`GET|PUT|DELETE /configs/<name>`, `POST /configs/<name>/up|down|restart`,
+`GET /configs/<name>/status`, `POST /configs/<name>/validate` (`mihomo -t`,
+принимает несохранённый `{text}`), `GET /configs/<name>/log?lines=N`.
+
+**Прокси-таблица:** `GET /configs/<name>/proxies`,
+`POST /configs/<name>/activate` (переключение узла вживую через
+external-controller), `POST /configs/<name>/enable-controller`,
+`POST /configs/<name>/proxies/delete-bulk`, `POST /configs/<name>/import-links`
+(Ctrl+V), `POST /export-links` (Ctrl+C).
+
+**Маршрутизация:** `GET /routing/options`, `POST /routing/domain/build`,
+`POST /routing/source/build`.
+
+**Прочее:** `GET|POST /watchdog`, `GET|POST /debug` (log-level=debug),
+`POST /test` + `GET /test/status`, `GET /traffic?config=<name>`,
+`GET /autostart`, `POST /autostart/<name>` (`{enabled}`),
+`POST /autostart/{regenerate,remove,apply}`.
+
+Ответ `GET /configs/<name>/proxies` (важен для §16.8): `proxies` (строки
+таблицы), `providers`/`provider_live` (подписки), `live_nodes` (узлы,
+которые реально загрузил движок), `groups`/`active`/`select_groups`,
+`controller`/`controller_live`/`running`, а также `parse_error` и
+`text_fallback` — признаки того, что YAML разобрался не полностью.
 
 ---
 
@@ -363,15 +471,47 @@ mihomo. Мини-парсер YAML + реестр конвертеров `_CLASH
 7. **Импорт clash-подписки в sing-box** (НЕ запуск mihomo) — если узел
    пропал, его тип не из 6 поддерживаемых (§10): `wireguard`/`snell`/`ssr`/… не
    конвертируются.
+8. **«В редакторе прокси есть, а в таблице пусто» / «mihomo нет в списке целей
+   маршрутизации»** — это ОДИН симптом: конфиг не разобрался нашим YAML-парсером.
+   Чаще всего виноваты **якоря и `<<:`-merge** (частый приём генераторов
+   подписок), которые самописный fallback-парсер (окружение без PyYAML —
+   типичная Entware-сборка) не понимает; секции `proxies` и `tun` при этом
+   «исчезают» одновременно. Что сделано, чтобы это не выглядело как пустой
+   конфиг:
+   - ошибка разбора видна в ответе `/proxies` (`parse_error`) и в баннере
+     страницы, а не глотается;
+   - `mihomo_proxies.proxies_from_text()` снимает `name/type/server/port` прямо
+     с текста блока `proxies:` (флаг `text_fallback`);
+   - у запущенного инстанса список дополняется правдой рантайма — `live_nodes`
+     из `GET /proxies` его external-controller;
+   - `mihomo_config.tun_device_from_text()` так же имеет текстовый фолбэк для
+     блока `tun:`, поэтому цель маршрутизации не пропадает.
+   Если прокси не видно даже так — проверь, не подписка ли это
+   (`proxy-providers`, §9): её узлов в файле нет by design.
+9. **Конфиг запущен, но `mihomo:<iface>` не предлагается в правилах
+   маршрутизации** — у конфига нет секции `tun`. Это не поломка: без TUN
+   mihomo работает обычным прокси на порту, сетевого интерфейса нет и
+   `ip rule` заворачивать некуда. `/api/routing/interfaces` объясняет это
+   в поле `notes`.
 
 ---
 
 ## 17. Layout (где что)
 
-- Менеджер (run/test/up/down/status, CRUD): `core/mihomo_manager.py`.
+- Менеджер (run/test/up/down/status, CRUD, debug/log): `core/mihomo_manager.py`.
+- Генератор clash-YAML для маршрутизации (tun/dns-fakeip/rules):
+  `core/mihomo_config.py`; оркестратор (резолв прокси → сборка → `mihomo -t` →
+  сохранение): `core/mihomo_routing.py`.
+- Прокси-таблица, Clash API запущенного инстанса, текстовые правки конфига:
+  `core/mihomo_proxies.py`; тестер задержек: `core/mihomo_proxy_tester.py`.
+- Watchdog: `core/mihomo_watchdog.py`. Учёт трафика: `core/proxy_traffic.py`.
 - Пути/раскладка: `core/mihomo_platform.py`.
 - Установка/детект/арх: `core/mihomo_installer.py`, `core/mihomo_detector.py`.
 - Автозапуск: `core/mihomo_autostart.py`.
 - Конвертер clash-YAML → sing-box (импорт): `core/clash_yaml.py`.
-- API: `api/mihomo.py`. UI: `web/js/pages/mihomo.js`.
-- Тесты: `tests/test_mihomo.py`, `tests/test_clash_yaml.py`.
+- opera-proxy как upstream внутрь конфига: `core/opera_proxy_chain.py` (§8.1).
+- API: `api/mihomo.py`. UI: `web/js/pages/mihomo.js` (инстансы + маршрутизация),
+  `mihomo_proxies.js` (таблица прокси), `mihomo_setup.js` (установка).
+- Тесты: `tests/test_mihomo.py`, `tests/test_mihomo_proxies.py`,
+  `tests/test_mihomo_providers.py`, `tests/test_api_mihomo_routing.py`,
+  `tests/test_clash_yaml.py`, `tests/test_opera_proxy_chain.py`.

@@ -27,8 +27,9 @@ description: >-
 Источники истины (в порядке убывания авторитета):
 1. **sing-box.sagernet.org** — официальная документация конфигурации и CLI;
    `sagernet/sing-box` (Go-исходники) — окончательная истина по схемам.
-   §9 сверен с `docs/deprecated.md` + `docs/migration.md` апстрима на
-   **v1.13.15** (актуальная стабильная линия; 1.14 пока в бете).
+   §9 сверен с `docs/deprecated.md` + `docs/migration.md` + `docs/changelog.md`
+   апстрима на **v1.13.16** (актуальная стабильная линия; 1.14 пока в бете —
+   `v1.14.0-beta.5`).
    Базовая версия зафиксирована в `docs/upstream.json` — при выходе новой
    еженедельный сторож заведёт issue, см. CoderManual §3.2.
 2. **`sing-box check -c <file>`** — валидатор самого бинаря. Если он молчит —
@@ -101,6 +102,7 @@ description: >-
 | `generate uuid` / `rand` / `reality-keypair` / `wireguard-keypair` / `tls-keypair` / `ech-keypair` / `vapid-keypair` | генерация ключей/идентификаторов. |
 | `rule-set compile/decompile/convert/format/match/merge/upgrade` | работа с rule-set (бинарные `.srs`). |
 | `geoip` / `geosite` | устаревшие (geoip/geosite удалены в пользу rule-set, §9). |
+| `schema` | **новое в 1.14**: печатает JSON Schema конфига под ЭТОТ бинарь и его build-теги. Плюс верхнеуровневое поле `$schema` в самом конфиге — редакторы дают автодополнение и валидацию. Полезно как «что вообще принимает эта сборка» без гадания по версии. |
 | `version` | версия (всегда снимай при диагностике). |
 
 ### 2.1 Режим отладки (наш `singbox.debug_log`)
@@ -240,6 +242,26 @@ endpoint заменил старый `type:wireguard` outbound (он deprecated 
 `{"protocol":"dns","action":"hijack-dns"}`, затем доменные/ip правила с
 `outbound`, в конце `final`.
 
+> ⚠️ **Порядок здесь — не косметика.** У трафика, пойманного TUN/tproxy/
+> redirect, домена НЕТ: движок видит только IP. Домен появляется ровно после
+> действия `sniff` (оно не-терминальное — выполняется и передаёт управление
+> дальше). Поэтому **любое `domain`/`domain_suffix`-правило, вставленное ВЫШЕ
+> `{"action":"sniff"}`, не сработает никогда** — и это тихий отказ, без
+> единой строчки в логе.
+>
+> Отдельно коварно с приложениями, у которых **свой DoH/DoT** (браузер с
+> DNS-over-HTTPS, `opera-proxy`, `usque`): их резолв идёт мимо DNS движка,
+> так что даже FakeIP домена не даст — остаётся только sniff. На этом мы уже
+> обожглись: правило «`sec-tunnel.com` → direct», защищающее opera-proxy от
+> петли, вставлялось `front=True`, то есть перед sniff'ом, и трафик самого
+> прокси уходил в туннель по кругу. Правильная вставка —
+> `singbox_config.insert_route_rule_after_managed()`: первым
+> ПОЛЬЗОВАТЕЛЬСКИМ, но после служебных.
+>
+> И проверь, что `outbound` правила существует: ссылка на несуществующий тег
+> (`"outbound": "direct"` в конфиге без direct-outbound) — это отказ старта,
+> а не игнорирование.
+
 ---
 
 ## 7. DNS (формат переписан в 1.12)
@@ -290,7 +312,7 @@ endpoint заменил старый `type:wireguard` outbound (он deprecated 
 | 1.11 | **УДАЛЁН** `rule_set_ipcidr_match_source`. deprecated: спец-outbounds **`block`**/**`dns`**; inbound-поля `sniff*`/`domain_strategy`; outbound `wireguard`; `override_address`/`override_port` у direct; TUN `gso` | rule-actions `reject`/`hijack-dns`/`sniff`/`resolve`; `endpoints` для WG; route-опции для override | `block` убран из `make_minimal_config`; sniff/dns-hijack через route |
 | **1.12** | **УДАЛЕНЫ `geoip`/`geosite`** (как route-матчеры) и слитые в 1.10 TUN-поля; формат `dns` переписан на типизированные серверы (legacy-`address` пока принимается); deprecated legacy-ECH поля (`pq_signature_schemes_enabled`, `dynamic_record_sizing_disabled` — уже не работают) | `rule_set`; `type:udp/tcp/tls/…` | geo — через ipset/rule-set; DNS см. §7 |
 | **1.13** | **УДАЛЕНЫ** `block`/`dns` outbounds, legacy inbound-поля (`sniff*`/`domain_strategy`), старый outbound `type:wireguard`, **`override_address`/`override_port` у direct**, **TUN `gso`** | как deprecated в 1.11 | issue #149 — генератор чистый; `validate()` держит block/dns в «известных типах» только для ЧТЕНИЯ старых чужих конфигов |
-| **1.14** (в бете: 1.14.0-beta.4; стабильная линия — 1.13.x) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`). Новые deprecated — **удаление обещано в 1.16**, не сейчас: inline `tls.acme` → `certificate_provider`; address-filter поля DNS-правил (`ip_cidr`/`ip_is_private` без `match_response`) и `rule_set_ip_cidr_accept_empty` → action `evaluate` + `match_response`; `independent_cache` (кэш и так ключуется по транспорту); `store_rdrc` → `store_dns`; legacy `strategy` в DNS rule action; `download_detour` у remote rule-set → `http_client`; неявный HTTP-клиент по умолчанию → явные `http_clients` + `route.default_http_client` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed; `independent_cache` не задаём (`singbox_config.py:755`) |
+| **1.14** (в бете: 1.14.0-beta.5; стабильная линия — 1.13.x) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`). Новые deprecated — **удаление обещано в 1.16**, не сейчас: inline `tls.acme` → `certificate_provider`; address-filter поля DNS-правил (`ip_cidr`/`ip_is_private` без `match_response`) и `rule_set_ip_cidr_accept_empty` → action `evaluate` + `match_response`; `independent_cache` (кэш и так ключуется по транспорту); `store_rdrc` → `store_dns`; legacy `strategy` в DNS rule action; `download_detour` у remote rule-set → `http_client`; неявный HTTP-клиент по умолчанию → явные `http_clients` + `route.default_http_client` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed; `independent_cache` не задаём (`singbox_config.py:755`) |
 
 > Симптомы по версиям: на 1.12+ — падение на `{"geosite":…}`/`{"geoip":…}` в
 > route или на legacy-DNS уже на 1.14; на 1.13 — `FATAL ... legacy inbound
@@ -306,6 +328,41 @@ endpoint заменил старый `type:wireguard` outbound (он deprecated 
 > запуска. Готовые конфиги «geoip-cn → local DNS» — самый частый паттерн,
 > который так ломается; чинится вставкой шага `{"action":"evaluate", …}`
 > перед правилом и `"match_response": true` в самом правиле.
+
+### 9.1 Что нового в 1.14 (кроме удалений)
+
+Про 1.14 надо знать не только «что удалили»: линия добавила крупные вещи, о
+которых будут спрашивать. Сверено с `docs/changelog.md` на `v1.14.0-beta.5`:
+
+- **JSON Schema конфига** (beta.2) — команда `sing-box schema` + поле
+  `$schema` (см. §2).
+- **Исправлена семантика rule-set в правилах** (beta.1): «слитый» матчинг
+  (поля rule-set считаются полями ссылающегося правила) теперь применяется
+  **только** к rule-set из одного `default`-правила без `invert`. Любой другой
+  rule-set матчится как отдельное поле — срабатывает, если сработало любое из
+  его правил. Апстрим не считает это breaking (прежнее поведение было
+  неопределённым), но конфиг, «работавший непонятно почему», может поменять
+  поведение.
+- **DNS: параллельные ответы** (beta.1) — у action `evaluate` появился `tag`,
+  у правил `match_response` по тегу, `race` для параллельной гонки правил и
+  `speculative`. Плюс новые матчеры `domain_label_count` и
+  `search_domain_available`.
+- **Новые endpoint'ы: OpenVPN (клиент и сервер) и OpenConnect** (alpha.47+) —
+  Cisco AnyConnect, GlobalProtect, Fortinet, F5, Pulse, Juniper; DNS-серверы
+  типов `openvpn`/`openconnect` для push'ей от сервера.
+- **Network namespaces** (alpha.43) — секция `network_namespaces`, поле `netns`
+  у tun/listen/dial; тип `unshare` позволяет rootless-процессу поднять tun с
+  `auto_route`/`auto_redirect` внутри namespace.
+- **UDP NAT** (alpha.46) — `udp_mapping`, `udp_filtering`, `udp_nat_max` у tun,
+  tproxy и wireguard-endpoint.
+- **rule-set с несколькими тегами** (alpha.46) — `tag` принимает список,
+  плейсхолдер `{tag}` в `path`/`url`.
+- **AnyTLS: клиентские метаданные больше не шлются** (1.14.0-beta.5 **и
+  1.13.16**) — апстрим выяснил, что опенсорсный сервер их не использует, а
+  провайдеры профилируют по ним пользователей. Теперь поле пустое, значение
+  настраивается вручную. Нас напрямую не касается (anytls мы не генерируем и
+  не конвертируем, §11), но это единственное поведенческое изменение в
+  стабильной 1.13-линии за последние релизы.
 
 **Различай deprecated и removed.** Апстрим сначала объявляет поле устаревшим
 и лишь через 2–3 минорных релиза удаляет: `geoip`/`geosite` — deprecated в

@@ -4,6 +4,25 @@
 
 ### Добавлено
 
+- **Справочники awg / sing-box / mihomo сверены с апстримами** (skill'ы для
+  агентов). AWG: описано поколение **AWG 3+** ветки `amneziawg-go v3.x`
+  (`HeaderProtectionKey` — требует `S1–S4` ≥ 12, `ContentPaddingAddition`,
+  тайминги `Rekey*/RejectAfterTime/KeepaliveTimeout/MaxHandshakeAttempts`,
+  тип `range` у `PersistentKeepalive`), деление параметров на client-side и
+  server-side, настоящий синтаксис `I1..I5` (теги `<b>/<r>/<rd>/<rc>/<t>`, а
+  не «просто hex»), поле `[Peer] AdvancedSecurity` и **смена каталога
+  UAPI-сокета на `/var/run/amneziawg/`** — с пометкой, что наш код всё ещё
+  знает только старый `/var/run/wireguard/`. mihomo: новый раздел про
+  `sniffer` (дефолты из `config/config.go` v1.19.29 и почему при fake-ip
+  нужен `override-destination: false`), дефолтное имя TUN `Meta` из
+  `listener/sing_tun/server.go`, раздел про наши генераторы конфигов
+  маршрутизации, полный список эндпоинтов API. sing-box: линия поднята до
+  **v1.13.16**, добавлен разбор новинок 1.14 (`sing-box schema` и `$schema`,
+  исправленная семантика rule-set, параллельные DNS-ответы, endpoint'ы
+  OpenVPN/OpenConnect, network namespaces, UDP-NAT, отказ AnyTLS слать
+  клиентские метаданные) и предупреждение о порядке `{"action":"sniff"}`
+  относительно доменных правил. `docs/upstream.json` перевыверен
+  (`tools/check_upstream.py --offline` — зелёный)
 - **Скилы проекта доступны любым AI-агентам, а не только Claude** — новый
   `tools/gen_agent_index.py` собирает индекс справочников из frontmatter
   `.claude/skills/*/SKILL.md` и раскладывает его по кросс-инструментальным
