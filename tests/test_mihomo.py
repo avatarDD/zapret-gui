@@ -384,3 +384,45 @@ class TestControllerNodes(unittest.TestCase):
         self.assertEqual(sorted(n["name"] for n in res["nodes"]), ["A", "B"])
         # GLOBAL уходит, когда есть своя select-группа.
         self.assertEqual([g["name"] for g in res["groups"]], ["PROXY"])
+
+
+class TestTestFailureReason(unittest.TestCase):
+    """`mihomo -t` пишет ВСЁ в stdout, в stderr не попадает ничего.
+
+    `log.SetOutput(os.Stdout)` в log/log.go, а в ветке `-t` (main.go)
+    причина идёт через `log.Errorln`, следом `fmt.Println("configuration
+    test failed")`. Мы собирали сообщение только из stderr — пользователь
+    видел «mihomo -t test: » без единого слова о причине.
+    """
+
+    def test_reason_taken_from_stdout(self):
+        out = ('level=error msg="proxy 5 does not exist"\n'
+               "configuration file /opt/etc/mihomo/test.yaml test failed\n")
+        self.assertIn("proxy 5 does not exist",
+                      mihomo_manager.test_failure_reason(out, "", 1))
+
+    def test_verdict_lines_are_dropped(self):
+        out = ("configuration test failed\n"
+               "configuration file /x/test.yaml test failed\n")
+        self.assertIn("вывода нет",
+                      mihomo_manager.test_failure_reason(out, "", 1))
+
+    def test_ansi_is_stripped(self):
+        out = '\x1b[31mlevel=error msg="init DNS error"\x1b[0m\n'
+        self.assertEqual(mihomo_manager.test_failure_reason(out, "", 1),
+                         'level=error msg="init DNS error"')
+
+    def test_stderr_still_used_when_present(self):
+        # Наш собственный таймаут пишется именно в stderr.
+        self.assertIn("timeout",
+                      mihomo_manager.test_failure_reason(
+                          "", "timeout: Command timed out", 124))
+
+    def test_empty_output_mentions_return_code(self):
+        self.assertIn("код 1", mihomo_manager.test_failure_reason("", "", 1))
+
+    def test_multiline_reason_is_joined(self):
+        out = "level=error msg=\"a\"\nlevel=error msg=\"b\"\n"
+        reason = mihomo_manager.test_failure_reason(out, "", 1)
+        self.assertIn("a", reason)
+        self.assertIn("b", reason)

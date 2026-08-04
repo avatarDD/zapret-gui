@@ -114,6 +114,38 @@ def _pid_alive(pid: int) -> bool:
 
 # ─────── lightweight config validation ───────
 
+# Строки, которые `mihomo -t` печатает всегда — сам вердикт, а не причина.
+_TEST_VERDICT_RE = re.compile(
+    r"^(configuration test failed"
+    r"|configuration file .* test (failed|is successful))\s*$", re.I)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def test_failure_reason(stdout: str = "", stderr: str = "",
+                        returncode=None) -> str:
+    """
+    Человекочитаемая причина отказа `mihomo -t`.
+
+    ВСЁ уходит в stdout: `log.SetOutput(os.Stdout)` в `log/log.go`, а в
+    ветке `-t` (main.go) причина печатается `log.Errorln`, следом
+    `fmt.Println("configuration test failed")` — в stderr не попадает
+    НИЧЕГО. Сообщение, собранное только из stderr, было всегда пустым, и
+    пользователь видел «mihomo -t <имя>: » без единого слова о причине.
+    """
+    lines = []
+    for chunk in (stdout or "", stderr or ""):
+        for raw in _ANSI_RE.sub("", chunk).splitlines():
+            s = raw.strip()
+            if not s or _TEST_VERDICT_RE.match(s):
+                continue
+            lines.append(s)
+    if lines:
+        return "; ".join(lines[-6:])
+    if returncode is not None:
+        return "проверка не прошла (код %s), вывода нет" % returncode
+    return "проверка не прошла, вывода нет"
+
+
 def validate_yaml(text: str) -> list:
     """
     Лёгкая структурная проверка clash/mihomo-YAML. Глубокую делает
@@ -216,7 +248,7 @@ class MihomoManager:
         if not os.path.isfile(path):
             return {"ok": False, "error": "Конфиг не найден"}
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
         except OSError as e:
             return {"ok": False, "error": "read: %s" % e}
@@ -240,7 +272,7 @@ class MihomoManager:
         path = self._platform().config_path(name)
         try:
             tmp = path + ".tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(text)
             os.replace(tmp, path)
         except OSError as e:
@@ -303,14 +335,14 @@ class MihomoManager:
     def _write_debug_launch(self, name: str, config: str):
         """Записать launch-конфиг с debug-логом, вернуть путь или None."""
         try:
-            with open(config, "r") as f:
+            with open(config, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
         except OSError:
             return None
         path = self._debug_launch_path(name)
         try:
             tmp = path + ".tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(_inject_log_level(text, "debug"))
             os.replace(tmp, path)
             return path
@@ -367,7 +399,7 @@ class MihomoManager:
                 # tmp-файл вне списка конфигов (не *.yaml/*.yml).
                 fd, tmp_path = tempfile.mkstemp(
                     prefix=".validate-", suffix=".tmp", dir=config_dir)
-                with os.fdopen(fd, "w") as f:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(text)
             except OSError as e:
                 return {"ok": False, "error": "write tmp: %s" % e}
@@ -388,8 +420,14 @@ class MihomoManager:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-        return {"ok": rc == 0, "stdout": out, "stderr": err,
-                "returncode": rc}
+        res = {"ok": rc == 0, "stdout": out, "stderr": err,
+               "returncode": rc}
+        if rc != 0:
+            # `reason` — уже разобранный текст (mihomo пишет его в stdout,
+            # см. test_failure_reason): фронту не нужно знать, в каком
+            # потоке движок сегодня печатает ошибки.
+            res["reason"] = test_failure_reason(out, err, rc)
+        return res
 
     # ─────── lifecycle ───────
 
@@ -450,14 +488,22 @@ class MihomoManager:
 
         # Pre-flight: mihomo -t (с тем же -d, что и при запуске, иначе
         # geoip/geosite/провайдеры ищутся не там и проверка ложно падает).
-        chk_rc, _o, chk_err = _run(
+        chk_rc, chk_out, chk_err = _run(
             [binary, "-t", "-d", platform.config_dir, "-f", run_config],
             timeout=15)
         if chk_rc != 0:
             if debug_used:
                 self._cleanup_debug_launch(name)
-            return {"ok": False, "error":
-                    "mihomo -t %s: %s" % (name, (chk_err or "").strip())}
+            reason = test_failure_reason(chk_out, chk_err, chk_rc)
+            log.warning("mihomo: конфиг '%s' не прошёл mihomo -t: %s"
+                        % (name, reason), source="mihomo")
+            return {"ok": False,
+                    "error": "mihomo -t %s: %s" % (name, reason),
+                    "stdout": chk_out, "stderr": chk_err,
+                    "returncode": chk_rc,
+                    # Пользователь только что нажимал «Проверить» и получил
+                    # «валиден» — подсказываем, где расхождение.
+                    "debug_launch": debug_used}
 
         self._ensure_dir(platform.run_dir)
         pid_file = platform.pid_path(name)
