@@ -34,8 +34,16 @@ import re
 # Диапазон fake-ip mihomo (дефолт движка — 198.18.0.1/16).
 FAKEIP_RANGE = "198.18.0.1/16"
 
-# Имя TUN-устройства по умолчанию (≤15 символов — лимит Linux TUN).
+# Имя TUN-устройства по умолчанию для НАШИХ конфигов (≤15 символов — лимит
+# Linux TUN).
 DEFAULT_TUN_DEVICE = "mihomo-tun"
+
+# Как САМ mihomo называет TUN, если `tun.device` в конфиге не задан. В
+# listener/sing_tun/server.go: `var InterfaceName = "Meta"`, и
+# CalculateInterfaceName() на не-darwin возвращает это имя как есть. Раньше мы
+# подставляли сюда "utun" (это darwin-префикс) — интерфейс с таким именем на
+# роутере не появляется, и правило маршрутизации указывало в пустоту.
+ENGINE_DEFAULT_TUN_DEVICE = "Meta"
 
 # Чистый резолвер для прямого трафика / резолва домена прокси-сервера.
 # DoH задаём ПО ИМЕНИ ХОСТА (а не по IP-литералу): URL `https://1.1.1.1/...`
@@ -261,11 +269,77 @@ def active_proxy_group(cfg: dict) -> str:
 
 
 def find_tun_device(cfg: dict) -> str:
-    """Имя TUN-устройства из секции tun (или '' если tun выключен/нет)."""
+    """Имя TUN-устройства из секции tun (или '' если tun выключен/нет).
+
+    `device` не задан — движок сам назовёт интерфейс `Meta`
+    (ENGINE_DEFAULT_TUN_DEVICE), поэтому возвращаем его, а не пустую строку:
+    иначе конфиг с `tun: {enable: true}` без `device` выглядел бы «без
+    интерфейса» и не попадал в цели маршрутизации.
+    """
     tun = cfg.get("tun") if isinstance(cfg, dict) else None
     if isinstance(tun, dict) and tun.get("enable"):
-        return str(tun.get("device") or "")
+        return str(tun.get("device") or tun.get("name")
+                   or ENGINE_DEFAULT_TUN_DEVICE)
     return ""
+
+
+# Значения, которые YAML/clash считают истиной для `enable:`.
+_TRUE_WORDS = ("true", "yes", "on", "1")
+
+
+def tun_device_from_text(text: str) -> str:
+    """
+    Имя TUN-интерфейса конфига по его ТЕКСТУ (или '' — tun выключен/нет).
+
+    Сначала обычный разбор YAML. Если он ничего не дал (подписка с якорями,
+    экзотический отступ, окружение без PyYAML — самописный парсер покрывает
+    не весь YAML), сканируем блок `tun:` построчно. Без этого фолбэка одна
+    неразобранная секция полностью прятала mihomo из списка целей
+    маршрутизации, хотя интерфейс в системе есть.
+    """
+    if not text or not text.strip():
+        return ""
+    try:
+        from core.clash_yaml import parse_yaml
+        dev = find_tun_device(parse_yaml(text))
+        if dev:
+            return dev
+        # Разобралось и tun честно выключен — доверяем разбору.
+        cfg = parse_yaml(text)
+        if isinstance(cfg, dict) and isinstance(cfg.get("tun"), dict):
+            return ""
+    except Exception:
+        pass
+    return _tun_device_scan(text)
+
+
+def _tun_device_scan(text: str) -> str:
+    """Построчный разбор блока `tun:` (фолбэк для tun_device_from_text)."""
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(r"^tun\s*:", line):
+            start = i
+            break
+    if start is None:
+        return ""
+    enabled, device = False, ""
+    for line in lines[start + 1:]:
+        if line.strip() and not line[0].isspace():
+            break                       # следующий ключ верхнего уровня
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        m = re.match(r"^enable\s*:\s*(\S+)", s)
+        if m:
+            enabled = m.group(1).strip().strip('"\'').lower() in _TRUE_WORDS
+            continue
+        m = re.match(r"^(?:device|name)\s*:\s*(\S+)", s)
+        if m and not device:
+            device = m.group(1).strip().strip('"\'')
+    if not enabled:
+        return ""
+    return device or ENGINE_DEFAULT_TUN_DEVICE
 
 
 # ─────────────────────── full config builders ───────────────────────

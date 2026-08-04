@@ -245,3 +245,142 @@ class TestExtractGz(unittest.TestCase):
                 f.write(b"not gzip at all")
             r = _bi.extract_gz(bad, os.path.join(d, "out"))
             self.assertFalse(r["ok"])
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Конфиг, который наш YAML-парсер не осиливает целиком (якоря/`<<:`-merge —
+# частый приём в clash-подписках), раньше выглядел как «пустой»: прокси не
+# видно в таблице, а TUN-интерфейса не видно в целях маршрутизации. Оба
+# симптома — один корень, поэтому оба пути имеют текстовый фолбэк.
+# ─────────────────────────────────────────────────────────────────────
+
+from core.mihomo_config import tun_device_from_text, ENGINE_DEFAULT_TUN_DEVICE
+from core import mihomo_proxies as _mp
+
+_ANCHOR_CFG = (
+    "defaults: &d\n"
+    "  udp: true\n"
+    "proxies:\n"
+    "  - <<: *d\n"
+    "    name: A\n"
+    "    type: hysteria2\n"
+    "    server: h.example.com\n"
+    "    port: 443\n"
+    "tun:\n"
+    "  enable: true\n"
+    "  device: mihomo-tun\n"
+    "rules:\n"
+    "  - MATCH,DIRECT\n"
+)
+
+
+class TestTunDeviceFromText(unittest.TestCase):
+
+    def test_device_from_normal_config(self):
+        self.assertEqual(
+            tun_device_from_text("tun:\n  enable: true\n  device: mh0\n"),
+            "mh0")
+
+    def test_engine_default_when_device_omitted(self):
+        # mihomo назовёт интерфейс сам (listener/sing_tun: InterfaceName).
+        self.assertEqual(tun_device_from_text("tun:\n  enable: true\n"),
+                         ENGINE_DEFAULT_TUN_DEVICE)
+
+    def test_disabled_tun_gives_nothing(self):
+        self.assertEqual(
+            tun_device_from_text("tun:\n  enable: false\n  device: mh0\n"), "")
+
+    def test_no_tun_section(self):
+        self.assertEqual(tun_device_from_text("proxies: []\n"), "")
+
+    def test_yes_and_quoted_forms(self):
+        self.assertEqual(tun_device_from_text("tun:\n  enable: yes\n"
+                                              "  device: \"mh1\"\n"), "mh1")
+
+    def test_text_fallback_when_yaml_does_not_parse(self):
+        self.assertEqual(tun_device_from_text(_ANCHOR_CFG), "mihomo-tun")
+
+
+class TestProxiesFromText(unittest.TestCase):
+
+    def test_block_style(self):
+        rows = _mp.proxies_from_text(
+            "proxies:\n"
+            "  - name: A\n    type: ss\n    server: 1.2.3.4\n    port: 8388\n"
+            "  - name: opera-proxy\n    type: http\n"
+            "    server: 127.0.0.1\n    port: 18080\n"
+            "rules:\n  - MATCH,DIRECT\n")
+        self.assertEqual([r["name"] for r in rows], ["A", "opera-proxy"])
+        self.assertEqual(rows[1]["port"], 18080)
+
+    def test_pyyaml_style_items_at_column_zero(self):
+        rows = _mp.proxies_from_text(
+            "proxies:\n- name: A\n  type: ss\n  server: a.io\n  port: 1\n"
+            "proxy-groups:\n- name: PROXY\n  type: select\n")
+        self.assertEqual([r["name"] for r in rows], ["A"])
+
+    def test_flow_items(self):
+        rows = _mp.proxies_from_text(
+            'proxies:\n'
+            '  - {name: "HK 01", type: vless, server: hk.io, port: 443}\n')
+        self.assertEqual(rows[0]["name"], "HK 01")
+        self.assertEqual(rows[0]["type"], "vless")
+
+    def test_anchors_config_that_structured_parser_loses(self):
+        from core.clash_yaml import parse_yaml
+        import builtins
+        real = builtins.__import__
+
+        def _no_yaml(name, *a, **k):
+            if name == "yaml":
+                raise ImportError("no yaml")
+            return real(name, *a, **k)
+
+        builtins.__import__ = _no_yaml
+        try:
+            self.assertEqual(_mp.proxy_rows(parse_yaml(_ANCHOR_CFG)), [])
+        finally:
+            builtins.__import__ = real
+        rows = _mp.proxies_from_text(_ANCHOR_CFG)
+        self.assertEqual([r["name"] for r in rows], ["A"])
+
+    def test_nested_options_do_not_leak_into_next_item(self):
+        rows = _mp.proxies_from_text(
+            "proxies:\n"
+            "  - name: WS\n    type: vless\n    server: w.io\n    port: 443\n"
+            "    ws-opts:\n      path: /ray\n      headers:\n"
+            "        Host: w.io\n"
+            "  - name: T\n    type: trojan\n    server: t.io\n    port: 443\n")
+        self.assertEqual([r["name"] for r in rows], ["WS", "T"])
+        self.assertEqual(rows[0]["server"], "w.io")
+        self.assertEqual(rows[1]["server"], "t.io")
+
+    def test_no_proxies_section(self):
+        self.assertEqual(_mp.proxies_from_text("proxy-providers:\n  s: {}\n"),
+                         [])
+
+
+class TestControllerNodes(unittest.TestCase):
+    """Живой /proxies движка — правда рантайма, когда YAML не разобрался."""
+
+    PAYLOAD = {
+        "proxies": {
+            "DIRECT": {"type": "Direct"},
+            "REJECT": {"type": "Reject"},
+            "GLOBAL": {"type": "Selector", "now": "A", "all": ["A"]},
+            "PROXY": {"type": "Selector", "now": "A", "all": ["A", "B"]},
+            "A": {"type": "Vless"},
+            "B": {"type": "Trojan"},
+        }
+    }
+
+    def test_nodes_exclude_groups_and_builtins(self):
+        import json as _json
+        with mock.patch.object(_mp, "_request",
+                               return_value=(200, _json.dumps(self.PAYLOAD))):
+            res = _mp.controller_proxies({"host": "127.0.0.1", "port": 1,
+                                          "secret": ""})
+        self.assertTrue(res["ok"])
+        self.assertEqual(sorted(n["name"] for n in res["nodes"]), ["A", "B"])
+        # GLOBAL уходит, когда есть своя select-группа.
+        self.assertEqual([g["name"] for g in res["groups"]], ["PROXY"])

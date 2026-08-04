@@ -138,7 +138,8 @@ def attach(engine: str, config: str, tag: str = "") -> dict:
 
 def _attach_singbox(config: str, tag: str, s: dict) -> dict:
     from core.singbox_manager import get_singbox_manager
-    from core.singbox_config import render_conf, add_route_rule
+    from core.singbox_config import (render_conf, add_route_rule,
+                                     insert_route_rule_after_managed)
 
     mgr = get_singbox_manager()
     got = mgr.get_config(config)
@@ -162,20 +163,63 @@ def _attach_singbox(config: str, tag: str, s: dict) -> dict:
     else:
         obs.append(outbound)
 
-    # Правило петли ставим ПЕРЕД остальными: ниже по списку обычно лежит
-    # «всё остальное → прокси», и оно перехватило бы sec-tunnel.com.
+    # `direct`-outbound должен существовать: route-правило со ссылкой на
+    # несуществующий тег sing-box не примет («outbound not found»), и конфиг
+    # перестанет стартовать.
+    if not any(isinstance(o, dict) and o.get("tag") == "direct" for o in obs):
+        obs.append({"type": "direct", "tag": "direct"})
+
+    # Прозрачный конфиг без sniff'а: домена у пойманного трафика нет вообще,
+    # доменное правило-исключение мертво. Включаем сниффинг (не-терминальное
+    # действие, лишним не будет).
+    sniff_added = False
+    if _singbox_captures_transparently(cfg):
+        from core.singbox_config import make_sniff_rule
+        sniff_rule = make_sniff_rule()
+        route_rules = (cfg.get("route") or {}).get("rules") or []
+        if sniff_rule not in route_rules:
+            add_route_rule(cfg, sniff_rule, front=True)
+            sniff_added = True
+
+    # Правило петли ставим первым ПОЛЬЗОВАТЕЛЬСКИМ, но ПОСЛЕ служебных
+    # `{"action":"sniff"}`/`hijack-dns`. Раньше оно шло в самое начало
+    # (front=True) — то есть до сниффинга, когда домен ещё не определён.
+    # Трафик самого opera-proxy приходит в движок без домена (он резолвит
+    # свои узлы через собственный DoH, мимо DNS движка), так что
+    # `domain_suffix` без sniff'а не матчился НИКОГДА: связка молча уходила
+    # в петлю, а прокси выглядел мёртвым при тесте.
     rule = singbox_bypass_rule()
     rules = ((cfg.get("route") or {}).get("rules")
              if isinstance(cfg.get("route"), dict) else None)
     bypass_added = not any(r == rule for r in (rules or []))
-    if bypass_added:
-        add_route_rule(cfg, rule, front=True)
+    insert_route_rule_after_managed(cfg, rule)
 
     save = mgr.save_config(config, text=render_conf(cfg))
     if not save.get("ok"):
         return {"ok": False, "error": save.get("error")
                 or "Не удалось сохранить конфиг sing-box"}
-    return {"ok": True, "replaced": replaced, "bypass_added": bypass_added}
+    warnings = []
+    if sniff_added:
+        warnings.append("В конфиг добавлен `{\"action\": \"sniff\"}` — без "
+                        "него правило обхода sec-tunnel.com не сработало бы "
+                        "(домен у пойманного трафика неизвестен).")
+    return {"ok": True, "replaced": replaced, "bypass_added": bypass_added,
+            "warnings": warnings}
+
+
+_TRANSPARENT_INBOUNDS = ("tun", "tproxy", "redirect")
+
+
+def _singbox_captures_transparently(cfg: dict) -> bool:
+    """Ловит ли конфиг чужой трафик прозрачно (tun/tproxy/redirect)?
+
+    Только у такого трафика домен неизвестен до сниффинга — там и нужен
+    `{"action":"sniff"}`, чтобы доменные правила вообще матчились.
+    """
+    for ib in (cfg.get("inbounds") or []):
+        if isinstance(ib, dict) and ib.get("type") in _TRANSPARENT_INBOUNDS:
+            return True
+    return False
 
 
 def _attach_mihomo(config: str, tag: str, s: dict) -> dict:
@@ -218,6 +262,7 @@ def _attach_mihomo(config: str, tag: str, s: dict) -> dict:
     # слишком легко ломает конфиг.
     warnings = []
     bypass_added = False
+    sniffer_added = False
     rule = mihomo_bypass_rule()
     if rule in [str(r) for r in (cfg.get("rules") or [])]:
         pass
@@ -234,12 +279,77 @@ def _attach_mihomo(config: str, tag: str, s: dict) -> dict:
             " его первым в секцию rules, иначе трафик самого opera-proxy"
             " уйдёт по кругу." % rule)
 
+    # Само по себе `DOMAIN-SUFFIX,sec-tunnel.com,DIRECT` спасает не всегда:
+    # opera-proxy резолвит свои узлы СВОИМ DoH-пулом, мимо DNS движка, и в
+    # fake-ip домен не попадает — mihomo видит только IP, доменное правило
+    # не матчится, трафик прокси уходит по кругу. Домен даёт сниффер (TLS
+    # SNI). Секция сложная (вложенная), поэтому только round-trip'ом.
+    if _mihomo_captures_transparently(cfg) and not cfg.get("sniffer"):
+        if mp.has_pyyaml():
+            res = mp.safe_mutate(new_text, _add_mihomo_sniffer)
+            if res.get("ok"):
+                checked = _mihomo_accepts(mgr, config, res["text"])
+                if checked:
+                    new_text = res["text"]
+                    sniffer_added = True
+                else:
+                    warnings.append(
+                        "Эта сборка mihomo не приняла секцию `sniffer` —"
+                        " добавьте её вручную, иначе обход sec-tunnel.com"
+                        " сработает только когда домен известен движку.")
+        else:
+            warnings.append(
+                "Без PyYAML не добавить секцию `sniffer` — впишите её"
+                " вручную (enable: true, sniff: {TLS: {}}), иначе домен"
+                " sec-tunnel.com движку неизвестен и обход не сработает.")
+
     save = mgr.save_config(config, text=new_text)
     if not save.get("ok"):
         return {"ok": False, "error": save.get("error")
                 or "Не удалось сохранить конфиг mihomo"}
     return {"ok": True, "replaced": replaced, "bypass_added": bypass_added,
-            "warnings": warnings}
+            "sniffer_added": sniffer_added, "warnings": warnings}
+
+
+def _mihomo_captures_transparently(cfg: dict) -> bool:
+    """Ловит ли mihomo-конфиг чужой трафик прозрачно (tun / redir / tproxy)?"""
+    tun = cfg.get("tun")
+    if isinstance(tun, dict) and tun.get("enable"):
+        return True
+    if cfg.get("redir-port") or cfg.get("tproxy-port"):
+        return True
+    for l in (cfg.get("listeners") or []):
+        if isinstance(l, dict) and str(l.get("type") or "") in (
+                "tun", "redir", "tproxy"):
+            return True
+    return False
+
+
+def _mihomo_accepts(mgr, config: str, text: str) -> bool:
+    """`mihomo -t` принял текст? Без бинаря — считаем, что да (нечем
+    проверить, а конфиг всё равно валидный YAML)."""
+    try:
+        from core.mihomo_detector import get_mihomo_detector
+        if not get_mihomo_detector().detect_binary().get("installed"):
+            return True
+        return bool(mgr.validate_via_binary(config, text=text).get("ok"))
+    except Exception:
+        return True
+
+
+def _add_mihomo_sniffer(cfg: dict) -> dict:
+    """Включить сниффер TLS/HTTP (домен для правил), не подменяя назначение.
+
+    `override-destination: false` — важно: с fake-ip подмена адреса на
+    сниффнутый домен ломает уже корректную маршрутизацию по fake-ip.
+    """
+    cfg["sniffer"] = {
+        "enable": True,
+        "override-destination": False,
+        "sniff": {"TLS": {"ports": [443]},
+                  "HTTP": {"ports": [80]}},
+    }
+    return cfg
 
 
 def _replace_proxy(cfg: dict, name: str, proxy: dict) -> dict:

@@ -49,6 +49,9 @@ class FakeMihomoManager:
         self.text = text
         return {"ok": True}
 
+    def validate_via_binary(self, name, text=None):
+        return {"ok": True}
+
 
 def _settings(socks=False, running=True, host="127.0.0.1", port=18080):
     return {"host": host, "port": port, "socks": socks,
@@ -149,6 +152,55 @@ class TestAttachSingbox(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertIsNone(mgr.saved)
 
+    # ─── петля: правило обхода обязано стоять ПОСЛЕ sniff ───
+
+    TUN_BASE = {
+        "inbounds": [{"type": "tun", "tag": "tun-in"}],
+        "outbounds": [{"type": "direct", "tag": "direct"}],
+        "route": {"rules": [{"action": "sniff"},
+                            {"domain_suffix": ["ya.ru"],
+                             "outbound": "proxy"}]},
+    }
+
+    def test_bypass_goes_after_sniff_action(self):
+        """domain_suffix матчится только по определённому домену.
+
+        Трафик самого opera-proxy приходит в движок без домена (свой DoH),
+        поэтому правило перед `{"action":"sniff"}` не сработает никогда —
+        связка уходит в петлю, а прокси выглядит мёртвым.
+        """
+        res, mgr = self._attach(json.loads(json.dumps(self.TUN_BASE)))
+        self.assertTrue(res["ok"])
+        rules = mgr.cfg["route"]["rules"]
+        self.assertEqual(rules[0], {"action": "sniff"})
+        self.assertEqual(rules[1], {"domain_suffix": ["sec-tunnel.com"],
+                                    "outbound": "direct"})
+
+    def test_sniff_added_to_transparent_config_without_it(self):
+        cfg = {"inbounds": [{"type": "tun", "tag": "tun-in"}],
+               "outbounds": [{"type": "direct", "tag": "direct"}],
+               "route": {"rules": []}}
+        res, mgr = self._attach(cfg)
+        self.assertTrue(res["ok"])
+        rules = mgr.cfg["route"]["rules"]
+        self.assertEqual(rules[0], {"action": "sniff"})
+        self.assertEqual(rules[1]["domain_suffix"], ["sec-tunnel.com"])
+        self.assertTrue(any("sniff" in w for w in res["warnings"]))
+
+    def test_no_sniff_added_to_plain_proxy_config(self):
+        """Без прозрачных inbound'ов домен известен и так — sniff не нужен."""
+        res, mgr = self._attach()
+        self.assertNotIn({"action": "sniff"}, mgr.cfg["route"]["rules"])
+        self.assertTrue(res["ok"])
+
+    def test_direct_outbound_is_created_when_missing(self):
+        """Правило ссылается на тег `direct` — без него sing-box не стартует."""
+        cfg = {"outbounds": [{"type": "shadowsocks", "tag": "ss"}],
+               "route": {"rules": []}}
+        res, mgr = self._attach(cfg)
+        self.assertTrue(res["ok"])
+        self.assertIn("direct", [o["tag"] for o in mgr.cfg["outbounds"]])
+
 
 class TestAttachMihomo(unittest.TestCase):
 
@@ -200,6 +252,46 @@ class TestAttachMihomo(unittest.TestCase):
         self.assertEqual(
             [r for r in cfg["rules"]
              if r == "DOMAIN-SUFFIX,sec-tunnel.com,DIRECT"].__len__(), 1)
+
+    # ─── петля: доменное правило работает, только если домен известен ───
+
+    TUN_TEXT = ("proxies:\n"
+                "  - name: existing\n"
+                "    type: http\n"
+                "    server: 10.0.0.1\n"
+                "    port: 8080\n"
+                "tun:\n"
+                "  enable: true\n"
+                "  device: mihomo-tun\n"
+                "rules:\n"
+                "  - MATCH,DIRECT\n")
+
+    def test_sniffer_enabled_for_tun_config(self):
+        """opera-proxy резолвит свои узлы своим DoH — в fake-ip домена нет.
+
+        Без сниффера mihomo видит только IP, DOMAIN-SUFFIX не матчится и
+        трафик прокси уходит по кругу.
+        """
+        res, mgr = self._attach(self.TUN_TEXT)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["sniffer_added"])
+        cfg = parse_yaml(mgr.text)
+        self.assertTrue(cfg["sniffer"]["enable"])
+        # override-destination=false: с fake-ip подмена адреса сниффнутым
+        # доменом ломает уже корректную маршрутизацию.
+        self.assertFalse(cfg["sniffer"]["override-destination"])
+        self.assertIn("TLS", cfg["sniffer"]["sniff"])
+
+    def test_sniffer_not_added_to_plain_config(self):
+        res, mgr = self._attach()
+        self.assertFalse(res["sniffer_added"])
+        self.assertNotIn("sniffer", parse_yaml(mgr.text))
+
+    def test_existing_sniffer_is_not_overwritten(self):
+        text = self.TUN_TEXT + "sniffer:\n  enable: false\n"
+        res, mgr = self._attach(text)
+        self.assertFalse(res["sniffer_added"])
+        self.assertFalse(parse_yaml(mgr.text)["sniffer"]["enable"])
 
 
 if __name__ == "__main__":

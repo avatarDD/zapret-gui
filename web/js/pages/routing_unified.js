@@ -21,6 +21,7 @@ const RoutingUnifiedPage = (() => {
     let routes = [];
     let statusMap = {};       // id → status entry из /api/unified/status
     let interfaces = [];      // /api/routing/interfaces (ndms/singbox/активные awg)
+    let interfaceNotes = [];  // почему ожидаемой цели нет в списке методов
     let awgConfigs = [];      // /api/awg/configs (цели даже для лежащих туннелей)
     let namedLists = [];
     let hostLists = [];       // /api/hostlists — nfqws2-хостлисты (id `hl:имя`)
@@ -173,6 +174,7 @@ const RoutingUnifiedPage = (() => {
             dnsIntInfo = await API.get('/api/routing/dns-intercept')
                 .catch(() => null);
             interfaces  = (ifResp && ifResp.interfaces) || [];
+            interfaceNotes = (ifResp && ifResp.notes) || [];
             namedLists  = (listResp && listResp.lists) || [];
             // nfqws2-хостлисты как выбираемые списки маршрутизации (id `hl:имя`).
             // Domain-движок разворачивает их через Destination.resolve().
@@ -278,9 +280,14 @@ const RoutingUnifiedPage = (() => {
         if (selected && !opts.some(([v]) => v === selected)) {
             opts.push([selected, selected + ' (недоступен)']);
         }
+        // Движок запущен, но интерфейса не даёт (mihomo без `tun` и т.п.) —
+        // показываем причину прямо в списке: иначе пользователь ищет цель,
+        // которой в принципе не может быть, и решает, что это баг.
+        const notes = interfaceNotes.map(n =>
+            `<option value="" disabled>— ${esc(n.text || '')}</option>`).join('');
         return opts.map(([v, l]) =>
             `<option value="${escAttr(v)}" ${v === selected ? 'selected' : ''}>${esc(l)}</option>`
-        ).join('');
+        ).join('') + notes;
     }
 
     // ─────── фильтр «Через» ───────

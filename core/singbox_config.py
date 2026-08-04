@@ -457,6 +457,20 @@ def set_tun_inbound(cfg: dict, *, interface_name: str = "singbox-tun",
     return cfg
 
 
+def insert_route_rule_after_managed(cfg: dict, rule: dict) -> None:
+    """
+    Публичная обёртка над _insert_after_managed: вставить правило первым
+    ПОЛЬЗОВАТЕЛЬСКИМ, но после служебных `{"action":"sniff"}` /
+    `hijack-dns`.
+
+    Именно так надо добавлять доменные правила-исключения: `domain_suffix`
+    матчится только по УЖЕ определённому домену, а для трафика, пойманного
+    TUN/tproxy, домен появляется только после действия `sniff`. Правило,
+    вставленное перед sniff'ом, не сработает никогда.
+    """
+    _insert_after_managed(cfg, rule)
+
+
 def _insert_after_managed(cfg: dict, rule: dict) -> None:
     """
     Идемпотентно вставить route-правило сразу ПОСЛЕ служебных
