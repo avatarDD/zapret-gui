@@ -22,9 +22,19 @@
 
 Целевые «крупные облака» (которые в РФ часто под блокировкой, поэтому
 доступность через прокси показательна):
-  - cloudflare → http://cp.cloudflare.com/generate_204  (отдаёт 204)
-  - google     → http://www.gstatic.com/generate_204
+  - cloudflare → https://cp.cloudflare.com/generate_204  (отдаёт 204)
+  - google     → https://www.gstatic.com/generate_204
   - amazon     → https://aws.amazon.com/
+
+Цели ТОЛЬКО https. По http замер ломается на ровном месте: движок шлёт
+HEAD, а часть провайдеров/узлов перехватывает известные captive-portal
+адреса и на повторный HEAD отвечает мусором. mihomo предупреждает об
+этом прямо в коде URLTest («It is recommended to use HTTPS … Due to some
+proxy providers hijacking test addresses and not being compatible with
+repeated HEAD requests, using HTTP may result in failed tests»), а с
+`unified-delay: true` — а наши конфиги его включают — запрос повторяется,
+и попасть под это вдвое проще. Симптом: живой узел с реальным трафиком
+отвечает «An error occurred in the delay test».
 
 Чистые помощники (build_test_config / parse_delay / resolve_target /
 tcp_prefilter) тестируются без I/O и без бинаря.
@@ -62,8 +72,8 @@ def _strip_ansi(s: str) -> str:
 # ─────── target presets ───────
 
 TARGET_PRESETS = {
-    "cloudflare": "http://cp.cloudflare.com/generate_204",
-    "google":     "http://www.gstatic.com/generate_204",
+    "cloudflare": "https://cp.cloudflare.com/generate_204",
+    "google":     "https://www.gstatic.com/generate_204",
     "amazon":     "https://aws.amazon.com/",
 }
 DEFAULT_TARGET = "cloudflare"
@@ -73,7 +83,10 @@ _TCP_TIMEOUT      = 3.0      # сек на TCP-connect (фаза 1)
 _TCP_WORKERS      = 32
 _E2E_WORKERS      = 16
 _E2E_BATCH        = 40       # серверов на один throwaway sing-box
-_DEFAULT_E2E_MS   = 5000     # таймаут одного delay-замера (мс)
+# Таймаут одного delay-замера. 5 c не хватало: с `unified-delay` движок
+# делает ДВА запроса подряд, а узел может быть за океаном (NL/TW из РФ) —
+# живые серверы отваливались по «Timeout».
+_DEFAULT_E2E_MS   = 8000
 _MAX_SERVERS      = 200      # потолок числа серверов за один прогон
 _CLASH_BOOT_WAIT  = 12.0     # сек ждём, пока поднимется clash_api
 
@@ -313,7 +326,30 @@ def parse_delay(status: int, body: str) -> dict:
     msg = ""
     if isinstance(data, dict):
         msg = data.get("message") or data.get("error") or ""
-    return {"ok": False, "error": msg or ("HTTP %d" % status)}
+    return {"ok": False, "error": humanize_delay_error(msg, status)}
+
+
+# Что движки отвечают на провалившийся замер. Тексты английские и
+# непрозрачные («An error occurred in the delay test» — это буквально
+# «что-то пошло не так»), поэтому переводим в формулировку, из которой
+# понятно, что проверять.
+_DELAY_ERROR_MAP = (
+    ("an error occurred in the delay test",
+     "движок не смог открыть проверочный URL через этот узел"),
+    ("response status is inconsistent",
+     "проверочный URL ответил не тем кодом (узел подменяет ответ?)"),
+    ("context deadline exceeded", "таймаут замера"),
+    ("timeout", "таймаут замера"),
+    ("request timeout", "таймаут замера"),
+)
+
+
+def humanize_delay_error(msg: str, status: int = 0) -> str:
+    low = (msg or "").strip().lower()
+    for needle, human in _DELAY_ERROR_MAP:
+        if needle in low:
+            return human
+    return msg or ("HTTP %d" % status)
 
 
 # ─────── phase 2: orchestration (needs binary) ───────
