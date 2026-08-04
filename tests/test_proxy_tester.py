@@ -87,9 +87,25 @@ class TestParseDelay(unittest.TestCase):
         self.assertEqual(r["latency_ms"], 137)
 
     def test_timeout_error(self):
+        # Английский текст движка непрозрачен («что-то пошло не так») —
+        # отдаём формулировку, из которой понятно, что проверять.
         r = parse_delay(408, '{"message": "An error occurred in the delay test"}')
         self.assertFalse(r["ok"])
-        self.assertIn("delay", r["error"].lower())
+        self.assertIn("проверочный URL", r["error"])
+
+    def test_known_delay_errors_are_translated(self):
+        cases = {
+            '{"message": "Request timeout"}': "таймаут",
+            '{"message": "context deadline exceeded"}': "таймаут",
+            '{"message": "response status is inconsistent with the expected"}':
+                "не тем кодом",
+        }
+        for body, needle in cases.items():
+            self.assertIn(needle, parse_delay(504, body)["error"], msg=body)
+
+    def test_unknown_error_is_passed_through(self):
+        r = parse_delay(404, '{"message": "Proxy does not exist"}')
+        self.assertEqual(r["error"], "Proxy does not exist")
 
     def test_non_json(self):
         r = parse_delay(0, "connection refused")
@@ -251,6 +267,31 @@ class TestSkipE2EWithoutClashApi(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTargetsAreHttps(unittest.TestCase):
+    """Цели замера — только https.
+
+    По http движок шлёт HEAD, а провайдеры/узлы перехватывают известные
+    captive-portal адреса и на повторный HEAD (его делает `unified-delay`,
+    который включён в наших конфигах) отвечают мусором. Апстрим mihomo
+    предупреждает об этом прямо в URLTest. Симптом был ровно такой: живой
+    узел с реальным трафиком → «An error occurred in the delay test».
+    """
+
+    def test_no_plain_http_presets(self):
+        for name, url in pt.TARGET_PRESETS.items():
+            self.assertTrue(url.startswith("https://"),
+                            "%s = %s" % (name, url))
+
+    def test_default_target_is_https(self):
+        self.assertTrue(pt.resolve_target("").startswith("https://"))
+        self.assertTrue(pt.resolve_target("cloudflare").startswith("https://"))
+
+    def test_explicit_user_url_is_respected(self):
+        # Свой URL пользователь вправе задать любой — не подменяем.
+        self.assertEqual(pt.resolve_target("http://example.com/x"),
+                         "http://example.com/x")
 
 
 class TestTcpFailureReasons(unittest.TestCase):

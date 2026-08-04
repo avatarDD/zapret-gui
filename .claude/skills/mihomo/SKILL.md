@@ -501,6 +501,20 @@ external-controller), `POST /configs/<name>/enable-controller`,
      резолвится (DNS)» / «нет маршрута» означает проблему у самого роутера
      (сломанный резолвер, трафик роутера завёрнут в нерабочий туннель), а
      не у ключей. Тест выводит это отдельной подсказкой.
+
+   > ⚠️ **Цель замера обязана быть `https://`.** `URLTest` в
+   > `adapter/adapter.go` шлёт **HEAD**, а при `unified-delay: true` (наши
+   > конфиги его включают) — ДВА раза подряд. Апстрим прямо предупреждает в
+   > этом же коде: «It is recommended to use HTTPS … Due to some proxy
+   > providers hijacking test addresses and not being compatible with
+   > repeated HEAD requests, using HTTP may result in failed tests».
+   > Симптом ровно этот: узел с реальным трафиком (видно по счётчикам
+   > ↑/↓) отвечает «An error occurred in the delay test». Поэтому
+   > `TARGET_PRESETS` в `core/proxy_tester.py` — только https.
+   >
+   > Тексты движка мы переводим (`humanize_delay_error`): «An error
+   > occurred in the delay test» = «движок не смог открыть проверочный URL
+   > через этот узел», а не «сервер мёртв».
 10. **«Удаление прокси требует PyYAML»** — больше не требует: удаление идёт
    текстом (`remove_proxies_text`), вырезая элементы блока `proxies:` и
    ссылки на них в `proxy-groups[].proxies`. Round-trip через PyYAML
