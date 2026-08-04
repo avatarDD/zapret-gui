@@ -508,9 +508,15 @@ external-controller), `POST /configs/<name>/enable-controller`,
    > этом же коде: «It is recommended to use HTTPS … Due to some proxy
    > providers hijacking test addresses and not being compatible with
    > repeated HEAD requests, using HTTP may result in failed tests».
-   > Симптом ровно этот: узел с реальным трафиком (видно по счётчикам
-   > ↑/↓) отвечает «An error occurred in the delay test». Поэтому
-   > `TARGET_PRESETS` в `core/proxy_tester.py` — только https.
+   > Симптом: «An error occurred in the delay test» на узле, который по
+   > https замеряется нормально. Поэтому `TARGET_PRESETS` в
+   > `core/proxy_tester.py` — только https.
+   >
+   > **Столбец трафика тут не свидетель.** Счётчики кумулятивные, лежат в
+   > `proxy_traffic.json`, переживают перезапуск и ключуются по ИМЕНИ:
+   > заново добавленный тем же именем узел наследует старые цифры.
+   > Смотреть надо на пометку возраста рядом с ними, а не на сам факт
+   > ненулевых чисел.
    >
    > Тексты движка мы переводим (`humanize_delay_error`): «An error
    > occurred in the delay test» = «движок не смог открыть проверочный URL

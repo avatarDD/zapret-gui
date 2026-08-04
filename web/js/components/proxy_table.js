@@ -436,12 +436,38 @@ const ProxyTable = (() => {
                 </div>`;
         }
 
+        // Счётчики КУМУЛЯТИВНЫЕ и переживают перезапуск (лежат в
+        // proxy_traffic.json), а ключ у них — имя прокси. Значит цифры
+        // могут быть хоть недельной давности, а при повторном добавлении
+        // той же ссылки новый узел унаследует чужие. Без отметки времени
+        // это читается как «трафик идёт прямо сейчас» — на этом уже
+        // построили ложный вывод «узел живой».
+        const TRAFFIC_FRESH_SEC = 120;
+
+        function agoText(sec) {
+            if (sec < 90) return 'только что';
+            const m = Math.round(sec / 60);
+            if (m < 60) return `${m} мин назад`;
+            const h = Math.round(m / 60);
+            if (h < 48) return `${h} ч назад`;
+            return `${Math.round(h / 24)} дн назад`;
+        }
+
         function trafficCellHtml(id) {
             const tr = state.traffic[id] || {};
             const tt = (Number(tr.up) || 0) + (Number(tr.down) || 0);
             if (tt <= 0) return '<span class="text-muted">—</span>';
-            return `<span class="text-muted">↑</span> ${humanBytes(tr.up)} `
-                 + `<span class="text-muted">↓</span> ${humanBytes(tr.down)}`;
+            const body = `<span class="text-muted">↑</span> ${humanBytes(tr.up)} `
+                       + `<span class="text-muted">↓</span> ${humanBytes(tr.down)}`;
+            const seen = Number(tr.seen) || 0;
+            if (!seen) return body;
+            const age = Math.max(0, Date.now() / 1000 - seen);
+            if (age <= TRAFFIC_FRESH_SEC) return body;
+            // Старые данные показываем приглушённо и с возрастом — это
+            // «за всё время», а не «сейчас».
+            return `<span class="text-muted" title="Суммарно за всё время;`
+                 + ` последний трафик ${escAttr(agoText(age))}">${body}`
+                 + ` <span style="font-size:10px;">· ${esc(agoText(age))}</span></span>`;
         }
 
         function renderTestCell(id) {

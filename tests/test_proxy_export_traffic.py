@@ -380,3 +380,55 @@ class TestTrafficTracker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTrafficCountersAreCumulative(unittest.TestCase):
+    """Счётчики переживают перезапуск и ключуются по имени прокси.
+
+    Отсюда ловушка: удалил узел, добавил ту же ссылку заново — и новый
+    узел показывает чужие цифры как текущие. На этом уже построили ложный
+    вывод «узел живой, раз трафик идёт». Поэтому счётчики удаляемого узла
+    обнуляются, а `seen` (когда трафик был в последний раз) отдаётся
+    наружу, чтобы UI мог показать возраст.
+    """
+
+    def _tracker(self, tmpdir):
+        import os as _os
+        from core.proxy_traffic import TrafficTracker
+        return TrafficTracker(
+            targets_fn=lambda: [],
+            state_path_fn=lambda: _os.path.join(tmpdir, "traffic.json"))
+
+    def test_snapshot_carries_seen(self):
+        import tempfile, shutil, time as _time
+        tmp = tempfile.mkdtemp(prefix="traffic-test-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        tr = self._tracker(tmp)
+        tr._totals["node"] = {"up": 10, "down": 20, "seen": _time.time()}
+        snap = tr.snapshot(["node"])
+        self.assertIn("seen", snap["node"])
+        self.assertGreater(snap["node"]["seen"], 0)
+
+    def test_totals_survive_restart(self):
+        import tempfile, shutil
+        tmp = tempfile.mkdtemp(prefix="traffic-test-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        tr = self._tracker(tmp)
+        tr._totals["node"] = {"up": 10, "down": 20, "seen": 1.0}
+        tr._save()
+        again = self._tracker(tmp)
+        self.assertEqual(again.snapshot(["node"])["node"]["up"], 10)
+
+    def test_reset_clears_only_named(self):
+        import tempfile, shutil
+        tmp = tempfile.mkdtemp(prefix="traffic-test-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        tr = self._tracker(tmp)
+        tr._totals["gone"] = {"up": 1, "down": 2, "seen": 1.0}
+        tr._totals["kept"] = {"up": 3, "down": 4, "seen": 1.0}
+        tr.reset(["gone"])
+        self.assertEqual(tr.snapshot(["gone"])["gone"]["up"], 0)
+        self.assertEqual(tr.snapshot(["kept"])["kept"]["up"], 3)
+        # И на диске тоже — иначе вернулись бы после перезапуска.
+        self.assertEqual(
+            self._tracker(tmp).snapshot(["gone"])["gone"]["up"], 0)

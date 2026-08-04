@@ -33,8 +33,8 @@ HEAD, а часть провайдеров/узлов перехватывает
 proxy providers hijacking test addresses and not being compatible with
 repeated HEAD requests, using HTTP may result in failed tests»), а с
 `unified-delay: true` — а наши конфиги его включают — запрос повторяется,
-и попасть под это вдвое проще. Симптом: живой узел с реальным трафиком
-отвечает «An error occurred in the delay test».
+и попасть под это вдвое проще. Симптом: «An error occurred in the delay
+test» на узле, который по https замеряется нормально.
 
 Чистые помощники (build_test_config / parse_delay / resolve_target /
 tcp_prefilter) тестируются без I/O и без бинаря.
