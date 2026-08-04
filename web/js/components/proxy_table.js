@@ -657,7 +657,12 @@ const ProxyTable = (() => {
                 if (r && r.ok) {
                     Toast.success(`Добавлено: ${r.added}${r.renamed ? `, переименовано: ${r.renamed}` : ''}${r.errors ? `, ошибок: ${r.errors}` : ''}`);
                     state.showPasteBox = false;
-                    await loadItems();
+                    // Полная перезагрузка, а не только список серверов:
+                    // импорт может завести конфиг (sing-box дописывает
+                    // TUN+DNS первой вставкой) и меняет счётчики трафика.
+                    // Раньше обновлялись только items, и страница выглядела
+                    // неизменившейся — приходилось жать «Обновить» руками.
+                    await loadConfigs();
                 } else {
                     Toast.error((r && r.error) || 'не удалось импортировать');
                 }
@@ -697,7 +702,7 @@ const ProxyTable = (() => {
                             10000);
                     }
                     state.selected = new Set();
-                    await loadItems();
+                    await loadConfigs();
                 } else {
                     Toast.error((r && r.error) || 'не удалось удалить');
                 }
