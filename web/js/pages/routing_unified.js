@@ -360,9 +360,12 @@ const RoutingUnifiedPage = (() => {
         if (!netEnv || netEnv.profile !== 'pc') return '';
         const what = netEnv.single_nic
             ? 'одна сетевая карта' : 'ПК/VPS без LAN';
-        return `<div style="font-size:12px; margin-bottom:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        // align-items:flex-start + flex:1 у текста: иначе на узком экране
+        // абзац не влезает рядом с иконкой и переносится целиком, оставляя
+        // «🖥» одиноко висеть на отдельной строке.
+        return `<div style="font-size:12px; margin-bottom:12px; display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">
             <span>🖥</span>
-            <span class="text-muted">
+            <span class="text-muted" style="flex:1; min-width:0;">
                 <strong>Локальный режим</strong> (${esc(what)}): правила
                 применяются к исходящему трафику этой машины — LAN-форвардинг
                 не используется, выбор устройств сети обычно не нужен.

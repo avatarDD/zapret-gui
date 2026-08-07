@@ -694,9 +694,12 @@ const UsquePage = (() => {
             <div class="form-group">
                 <label class="form-label">Куда стучаться при проверке</label>
                 <div style="display:flex; gap:8px;">
-                    <input type="text" id="usq-wd-host" class="form-control" style="flex:2;"
+                    <!-- min-width:0 обязателен: без него поле не сжимается ниже
+                         своей min-content ширины (у number это ещё и спиннер),
+                         и пара «хост : порт» вылезает за карточку на телефоне. -->
+                    <input type="text" id="usq-wd-host" class="form-control" style="flex:2; min-width:0;"
                            value="${esc(wd.probe_host || "1.1.1.1")}" placeholder="1.1.1.1">
-                    <input type="number" id="usq-wd-port" class="form-control" style="flex:1;"
+                    <input type="number" id="usq-wd-port" class="form-control" style="flex:1; min-width:0;"
                            min="1" max="65535" value="${esc(String(wd.probe_port || 443))}">
                 </div>
                 <div class="form-hint">

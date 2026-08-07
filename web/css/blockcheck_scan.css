@@ -436,8 +436,18 @@
 
 /* Responsive */
 @media (max-width: 768px) {
+    /* flex-wrap:wrap из десктопных стилей вместе с колонкой раскладывает
+       поля в несколько колонок шириной по max-content — «Режим» вылезал за
+       карточку. В колонке перенос не нужен, ширину задаёт контейнер. */
     .bc-form-row {
         flex-direction: column;
+        flex-wrap: nowrap;
+    }
+
+    .bc-form-row > *,
+    .scan-result-header > * {
+        min-width: 0;
+        max-width: 100%;
     }
 
     .bc-table {
@@ -456,6 +466,7 @@
     .scan-result-header {
         flex-direction: column;
         align-items: flex-start;
+        flex-wrap: nowrap;
     }
 
     .bc-verdict-icon { font-size: 26px; }

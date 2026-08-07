@@ -2011,6 +2011,14 @@ input:focus, textarea:focus, select:focus {
         flex: 1;
     }
 
+    /* Растягивать имеет смысл группу кнопок — они делят строку поровну.
+       Единственная кнопка при flex:1 занимает всю ширину карточки: на
+       странице Hosts так получалась пустая полоса во весь экран с одной
+       иконкой «обновить» посередине. */
+    .lists-toolbar-right .btn:only-child {
+        flex: 0 0 auto;
+    }
+
     .lists-add-row {
         flex-direction: column;
         align-items: stretch;
@@ -3650,6 +3658,31 @@ input:focus, textarea:focus, select:focus {
         width: 18px;
         height: 18px;
     }
+
+    /* Кружок «?» задан инлайном на 18×18 (Help.button() и футер сайдбара) —
+       пальцем в него попасть трудно. Саму кнопку не увеличиваем, чтобы не
+       ломать вид заголовков: расширяем только зону нажатия невидимым
+       псевдоэлементом. 32px — компромисс: соседние кнопки в шапке стоят
+       в ~8px, зона 44px начала бы перехватывать нажатия по ним. */
+    .help-btn {
+        position: relative;
+    }
+
+    .help-btn::after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 32px;
+        height: 32px;
+        transform: translate(-50%, -50%);
+    }
+
+    /* «Подробнее» в карточке стратегии — 16px по высоте */
+    .strategy-card-toggle {
+        min-height: 32px;
+        padding: 6px 8px;
+    }
 }
 
 /* ── Settings: планшет ── */
@@ -3819,11 +3852,23 @@ input:focus, textarea:focus, select:focus {
        страницам складываем в одну колонку. Селектор по style-атрибуту —
        сознательно: эти сетки задаются inline в JS-шаблонах, и это
        единственный способ накрыть их все без правки каждой страницы.
-       Складывание в колонку безопасно для любой формы. */
+       Складывание в колонку безопасно для любой формы.
+
+       minmax(0, …), а не голый 1fr: у 1fr минимум — auto, то есть max-content
+       самого длинного элемента колонки. Длинная подсказка («Локальный режим:
+       заворачивается исходящий трафик…») раздувала колонку до 320px внутри
+       266-пиксельной карточки, и подпись с выпадающим списком уезжали за край. */
     #page-container div[style*="grid-template-columns"],
     .modal-content div[style*="grid-template-columns"],
     #modal-overlay div[style*="grid-template-columns"] {
-        grid-template-columns: 1fr !important;
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    /* Тот же auto-минимум действует и на сам грид-элемент. */
+    #page-container div[style*="grid-template-columns"] > *,
+    .modal-content div[style*="grid-template-columns"] > *,
+    #modal-overlay div[style*="grid-template-columns"] > * {
+        min-width: 0;
     }
 
     /* AWG-конфиги: список над редактором (после складывания колонок)
@@ -5102,4 +5147,182 @@ body.expert-mode .expert-note { display: none !important; }
     border-radius: 4px;
     font-size: 12px;
     word-break: break-all;
+}
+
+
+/* ═════════════ Мобильная раскладка: страховка от «разъезжания» ═════════════
+ *
+ * Идёт последним блоком: правила ниже должны выигрывать у ранее заданных
+ * @media-правил разделов при равной специфичности.
+ *
+ * Две ошибки повторялись по всем разделам, и обе давали один симптом —
+ * блок вылезает за карточку и обрезается (страница при этом НЕ скроллится
+ * вбок, поэтому баг незаметен в devtools, но на телефоне часть интерфейса
+ * просто не видна):
+ *
+ *  1) Ряд переводят в колонку (`flex-direction: column`), но у контейнера
+ *     остаётся `flex-wrap: wrap` из десктопных стилей. Колоночный флекс с
+ *     переносом раскладывает детей в НЕСКОЛЬКО колонок, а ширину колонки
+ *     берёт по max-content. Так фильтры уровней в «Логах» получали 514px
+ *     внутри карточки шириной 306px.
+ *
+ *  2) Ряд переводят в колонку с `align-items: flex-start`. Растяжки по
+ *     поперечной оси больше нет, ширина ребёнка = max-content. Так строка
+ *     стратегии получала 1448px при экране 360px.
+ *
+ * Лечим адресно по обоим пунктам: колонка не переносится, ребёнок не шире
+ * контейнера. `min-width: 0` дополнительно разрешает флекс-детям сжиматься —
+ * без него длинное слово (домен, ключ, путь) распирает строку изнутри.
+ */
+@media (max-width: 768px) {
+    .control-buttons,
+    .strategy-card-actions,
+    .strategy-card-header,
+    .lists-toolbar,
+    .hl-actions,
+    .asn-row,
+    .diag-manual-row,
+    .diag-toolbar,
+    .diag-card-header,
+    .hosts-entry-row,
+    .logs-toolbar,
+    .logs-toolbar-left,
+    .autostart-card,
+    .settings-action-item,
+    .settings-info-row,
+    .page-header {
+        flex-wrap: nowrap;
+    }
+
+    .control-buttons > *,
+    .strategy-card-actions > *,
+    .strategy-card-header > *,
+    .lists-toolbar > *,
+    .hl-actions > *,
+    .asn-row > *,
+    .diag-manual-row > *,
+    .diag-toolbar > *,
+    .diag-card-header > *,
+    .hosts-entry-row > *,
+    .logs-toolbar > *,
+    .logs-toolbar-left > *,
+    .autostart-card > *,
+    .settings-action-item > *,
+    .settings-info-row > *,
+    .page-header > * {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    /* Фильтры уровней в «Логах» шире экрана даже после клампа — оставляем
+       им собственный горизонтальный скролл (задан в разделе «Логи»), но
+       запрещаем распирать родителя. */
+    .logs-level-filters {
+        flex-wrap: nowrap;
+    }
+
+    /* Шапка карточки — это ряд «заголовок ↔ группа действий», причём группу
+       страницы верстают инлайновым `display:flex` прямо в JS, без переноса.
+       На десктопе всё помещается, на телефоне группа («Включить», «Проверить
+       сейчас», «Настроить») уезжает за край карточки. Разрешаем перенос и
+       самой шапке, и вложенным группам. */
+    .card-title,
+    .card-title > * {
+        flex-wrap: wrap;
+    }
+
+    .card-title > * {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    /* Строки вида «название ↔ кнопки» страницы верстают инлайновым
+       `style="display:flex; justify-content:space-between"` прямо в шаблонах
+       JS — таких мест больше двухсот, класса у них нет. Переноса там никто не
+       ставил, поэтому на телефоне хвост группы уезжает за карточку: в списке
+       конфигов sing-box кнопка «Удалить» вообще не видна, в mihomo — «Restart».
+       Разрешаем перенос всем инлайновым флекс-строкам внутри контента. Если
+       перенос где-то не нужен, инлайновый flex-wrap:nowrap перебивает правило,
+       а строки, которые и так помещаются, не переносятся вовсе. */
+    #page-container [style*="display:flex"],
+    #page-container [style*="display: flex"],
+    .modal-content [style*="display:flex"],
+    .modal-content [style*="display: flex"] {
+        flex-wrap: wrap;
+    }
+
+    /* Поля с классом .form-control описания в CSS не имеют (страницы ставят
+       его по привычке от Bootstrap), поэтому голый <select> раскрывается по
+       самому длинному пункту: «Performance — HTTP/3 поверх QUIC …» давал
+       527px при экране 360px. Ширину задаёт контейнер, а не текст опции. */
+    #page-container select,
+    .modal-content select,
+    #page-container input[type="text"],
+    #page-container input[type="search"],
+    #page-container input[type="url"],
+    #page-container input[type="password"],
+    #page-container input[type="email"] {
+        max-width: 100%;
+    }
+
+    /* Восемь страниц (WARP/MASQUE, Оптимизации, Blobs, Lua…) ставят голый
+       <h1> вместо .page-title, а стилей у h1/h2 в проекте нет — работает
+       дефолт браузера: 2em и крупные отступы. На телефоне такой заголовок
+       съедает пол-экрана и выталкивает кнопку «?» на отдельную строку,
+       тогда как остальные разделы показывают 18px. Приводим к общему виду. */
+    #page-container h1,
+    #page-container h2 {
+        font-size: 18px;
+        font-weight: 600;
+        line-height: 1.25;
+        margin: 0 0 4px;
+    }
+
+    /* Инлайновый <code> — это команды, пути и JSON-примеры: точек переноса
+       внутри `{"iface":"opkgtun0",…}` браузер не видит и строка вылезает за
+       карточку. В <pre> (редакторы Lua/конфигов) правило не действует —
+       там white-space:pre вообще запрещает перенос. */
+    code {
+        overflow-wrap: anywhere;
+    }
+
+    /* Редактор профиля стратегии: имя профиля и два выпадающих списка в один
+       ряд на телефоне не помещаются, а ряд не переносился — поле имени
+       сжималось до ширины галочки. Переносим и отдаём имени всю строку. */
+    .profile-editor-header {
+        flex-wrap: wrap;
+    }
+
+    .profile-editor-header > .toggle-label {
+        flex: 1 1 100%;
+    }
+
+    /* Поиск в тулбарах задан инлайном (flex:0 0 240px; max-width:280px) —
+       на телефоне он занимает пол-строки, а placeholder обрезается. В
+       колоночном тулбаре поиск должен быть на всю ширину; инлайновый
+       стиль перебивается только !important. */
+    .list-ui-search,
+    .logs-search-wrap {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
+        width: 100%;
+    }
+}
+
+/* Карточки статуса на «Главной»: до 480px они шли в одну колонку, и пять
+   коротких строк («остановлен», «Linux», «Выключен») растягивались почти
+   на тысячу пикселей прокрутки. Две колонки помещаются уже на 320px. */
+@media (max-width: 480px) {
+    .status-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    /* В две колонки карточка узкая, и на 320px строка «иконка + имя файла +
+       бейдж» перестаёт помещаться — бейдж (`margin-left:auto`) вылезал за
+       карточку. Разрешаем ему переехать на вторую строку. */
+    .status-card-header {
+        flex-wrap: wrap;
+    }
 }
