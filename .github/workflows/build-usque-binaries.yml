@@ -354,6 +354,14 @@ jobs:
             Установщик GUI сверяет sha256 именно по нему.
           draft: false
           prerelease: false
+          # Бинарный релиз НЕ должен становиться "latest": ссылки вида
+          # /releases/latest/download/zapret-gui-openwrt.apk (README,
+          # install.sh, бейдж в шапке) начинают вести на этот релиз, а
+          # пакетов GUI в нём нет — пользователь получает HTTP 404
+          # (issue #305). "latest" обязан оставаться за релизом vX.Y.Z.
+          # На поиск самих бинарников это не влияет: их ищут по префиксу
+          # тэга (github_release_by_prefix), а не через /releases/latest.
+          make_latest: "false"
           files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

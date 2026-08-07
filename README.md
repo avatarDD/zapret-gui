@@ -127,7 +127,7 @@ apk add --allow-untrusted ./zapret-gui-openwrt.apk
 ```
 Одной строкой (то же самое, удобно скопировать в SSH):
 ```bash
-wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk; apk add --allow-untrusted ./zapret-gui-openwrt.apk; /etc/init.d/zapret-gui enable; /etc/init.d/zapret-gui start
+wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk && apk add --allow-untrusted ./zapret-gui-openwrt.apk && /etc/init.d/zapret-gui enable && /etc/init.d/zapret-gui start
 ```
 > Новые OpenWrt перешли с opkg на apk. Пакет `.apk` не подписан ключами
 > репозитория, поэтому нужен флаг `--allow-untrusted` (обычная практика для
@@ -139,6 +139,11 @@ wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/l
 > редирект, и `wget` без `-O` может сохранить файл под именем, полученным
 > из конечного URL, — тогда следующая строка не найдёт
 > `./zapret-gui-openwrt.apk`.
+>
+> В однострочнике команды соединены через `&&`, а не `;`: если скачивание
+> не удалось, установка не начнётся. С `;` apk всё равно пытался поставить
+> недокачанный файл и выдавал сбивающее с толку
+> `./zapret-gui-openwrt.apk (no such package)` вместо честной ошибки wget.
 >
 > `enable` и `start` пакет делает сам в post-install, так что обычно они не
 > нужны — но выполнить их повторно безвредно, а если сопровождающий скрипт
