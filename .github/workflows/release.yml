@@ -196,6 +196,11 @@ jobs:
           body_path: /tmp/release_notes.md
           draft: false
           prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+          # "latest" должен принадлежать релизу GUI, и только ему: на него
+          # завязаны все ссылки /releases/latest/download/zapret-gui-*.
+          # Явно, а не по умолчанию — чтобы было видно, что это требование,
+          # а не побочный эффект (issue #305). Пререлиз latest'ом не делаем.
+          make_latest: ${{ contains(steps.version.outputs.tag, '-') && 'false' || 'true' }}
           files: artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
