@@ -112,6 +112,11 @@ jobs:
           echo "── Собранный apk ──"
           ls -lh dist/*_openwrt.apk
 
+      # --transform кладёт всё внутрь каталога zapret-gui/. Без него архив
+      # разворачивался прямо в текущий каталог («tar-бомба»): README советует
+      # `tar xzf … && cd zapret-gui`, а такого каталога не появлялось — cd
+      # падал, и ~70 файлов проекта рассыпались по ~/Downloads. Регрессию
+      # стережёт tests/test_linux_archive_layout.py.
       - name: Create Linux archive
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -124,8 +129,11 @@ jobs:
             --exclude='*.pyc' \
             --exclude='*.7z' \
             --exclude='.github' \
+            --transform "s,^\.,${PKG_NAME}," \
             .
           echo "✓ Архив: $(ls -lh $ARCHIVE)"
+          echo "── Верхний уровень архива ──"
+          tar tzf "$ARCHIVE" | cut -d/ -f1 | sort -u
 
       # ── Именование артефактов ────────────────────────────────
 

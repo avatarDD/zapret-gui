@@ -106,8 +106,8 @@
 - [ ] `core/ext_binary_installer.py` (820), `core/teardown.py`
 
 ### Кластер L — CLI + сборка + CI
-- [ ] `core/cli.py` (+195), `api/v1_compat.py`, `build_ipk.py`, `build_ipk.ps1`,
-      `tools/bundle.py`, `.github/workflows/dev-release.yml`, `Makefile`, `install.sh`
+- [ ] `core/cli.py` (+195), `api/v1_compat.py`, `tools/bundle.py`,
+      `.github/workflows/dev-release.yml`, `Makefile`, `install.sh`
 
 ---
 
