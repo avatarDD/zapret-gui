@@ -4,9 +4,9 @@
 #
 # Использование:
 #   make ipk          — собрать ipk-пакет для Entware
-#   make openwrt-ipk  — собрать ipk-пакет для OpenWrt (старые, opkg)
-#   make openwrt-apk  — собрать apk-пакет для нового OpenWrt (24.10+/25.x,
-#                       apk-tools 3; передайте APK=apk.static при отсутствии apk)
+#   make openwrt-ipk  — собрать ipk-пакет для OpenWrt ≤24.10 (opkg)
+#   make openwrt-apk  — собрать apk-пакет для OpenWrt 25.12+/SNAPSHOT
+#                       (apk-tools 3; передайте APK=apk.static при отсутствии apk)
 #   make release      — создать git-тег и запустить релиз
 #   make clean        — очистить артефакты сборки
 #   make lint         — проверка синтаксиса Python
@@ -60,7 +60,7 @@ help:
 	@echo "  Zapret Web-GUI — Makefile"
 	@echo "  ─────────────────────────"
 	@echo "  make ipk          — собрать ipk для Entware"
-	@echo "  make openwrt-ipk  — собрать ipk для OpenWrt (старые, opkg)"
+	@echo "  make openwrt-ipk  — собрать ipk для OpenWrt ≤24.10 (opkg)"
 	@echo "  make openwrt-apk  — собрать apk для нового OpenWrt (apk-tools 3; APK=apk.static)"
 	@echo "  make release VERSION=X.Y.Z — обновить версию, создать тег и запустить релиз"
 	@echo "  make clean        — очистить build/ и dist/"
@@ -251,9 +251,10 @@ _build_ipk_openwrt:
 
 	@echo "Сборка ipk (OpenWrt): OK"
 
-# ── Сборка apk для НОВОГО OpenWrt (24.10+/25.x, apk-tools 3) ──
+# ── Сборка apk для НОВОГО OpenWrt (25.12+/SNAPSHOT, apk-tools 3) ──
 #
-# Новые OpenWrt перешли с opkg (.ipk) на apk (.apk, формат APKv3). Пакет
+# OpenWrt перешёл с opkg (.ipk) на apk (.apk, формат APKv3) в релизе 25.12
+# (в main/SNAPSHOT — раньше; 24.10 и предыдущие остались на opkg). Пакет
 # собирается той же командой `apk mkpkg`, что и штатный build-система OpenWrt
 # (include/package-pack.mk): маппинг сопровождающих скриптов postinst →
 # post-install, prerm → pre-deinstall; arch=noarch для arch-независимого пакета.
@@ -262,7 +263,7 @@ _build_ipk_openwrt:
 # (напр. из alpine:edge `apk add apk-tools-static`), как это делает CI. Файловое
 # дерево берём тем же `_prepare_data_openwrt`, что и для ipk — один источник.
 #
-# Старый OpenWrt/Entware/Keenetic по-прежнему обслуживаются целями ipk —
+# OpenWrt ≤24.10, Entware и Keenetic по-прежнему обслуживаются целями ipk —
 # ничего не ломаем.
 # Зависимости пакета для OpenWrt. Держим ОДИН список и для ipk
 # (packaging/openwrt/control), и для apk — расхождение здесь означает пакет,

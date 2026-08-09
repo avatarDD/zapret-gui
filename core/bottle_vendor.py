@@ -93,7 +93,7 @@ _STDLIB_PKG_OVERRIDES = {
     "readline": "python3-readline",
 }
 
-# Новый OpenWrt (24.10+/SNAPSHOT, менеджер apk) часть под-пакетов убрал,
+# Новый OpenWrt (25.12+/SNAPSHOT, менеджер apk) часть под-пакетов убрал,
 # раздав их содержимое соседям. Совет «поставьте python3-email» там
 # заканчивается «no such package» (issue #285), поэтому для apk-хостов
 # карта своя.

@@ -3,8 +3,8 @@
 
 Targets:
   1. zapret-gui-keenetic.ipk  — Entware / Keenetic (opkg)
-  2. zapret-gui-openwrt.ipk   — OpenWRT ≤24.05 (opkg)
-  3. zapret-gui-openwrt.apk   — OpenWRT 24.10+/25.x (apk-tools 3)
+  2. zapret-gui-openwrt.ipk   — OpenWRT ≤24.10 (opkg)
+  3. zapret-gui-openwrt.apk   — OpenWRT 25.12+/SNAPSHOT (apk-tools 3)
   4. zapret-gui-linux.tar.gz  — universal Linux archive
 
 Usage:

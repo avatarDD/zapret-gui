@@ -52,8 +52,9 @@ detect_env() {
         INITD_DIR="/etc/init.d"
         INITD_SCRIPT="$INITD_DIR/zapret-gui"
         PID_FILE="/var/run/zapret-gui.pid"
-        # OpenWrt 24.10+ перешёл с opkg на apk. Берём то, что реально есть:
-        # на 23.05 и раньше — opkg, на 24.10+/snapshot — apk.
+        # OpenWrt перешёл с opkg на apk в 25.12 (в main/SNAPSHOT — раньше;
+        # 24.10 и предыдущие релизы остались на opkg). Берём то, что реально
+        # есть в системе, а не гадаем по номеру версии.
         if command -v opkg >/dev/null 2>&1; then
             PKG_CMD="opkg"
         elif command -v apk >/dev/null 2>&1; then
@@ -216,8 +217,8 @@ ensure_python_stdlib() {
     # Актуально только там, где Python разбит на submodule-пакеты.
     [ "$PKG_CMD" = "opkg" ] || [ "$PKG_CMD" = "apk" ] || return 0
 
-    # module:package — имена пакетов в фидах opkg (Entware/OpenWrt≤23.05)
-    # и apk (OpenWrt 24.10+) совпадают.
+    # module:package — имена пакетов в фидах opkg (Entware/OpenWrt≤24.10)
+    # и apk (OpenWrt 25.12+/SNAPSHOT) совпадают.
     #   urllib → python3-urllib   (загрузки, подписки, обновление каталогов)
     #   ssl    → python3-openssl  (HTTPS: без него не стартует download_transport)
     _PY_STDLIB_PAIRS="urllib:python3-urllib ssl:python3-openssl"
@@ -345,7 +346,7 @@ check_deps() {
         warn "python3 не найден"
         case "$PKG_CMD" in
             opkg|apk)
-                # Entware / OpenWrt (opkg на 23.05 и раньше, apk на 24.10+)
+                # Entware / OpenWrt (opkg на 24.10 и раньше, apk на 25.12+)
                 $PKG_CMD update 2>/dev/null || true
                 info "  Устанавливаем python3-light..."
                 _opkg_install_pkg python3-light

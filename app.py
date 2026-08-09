@@ -51,7 +51,7 @@ except ImportError as e:
         print("ОШИБКА: Bottle установлен, но Python не может его загрузить —")
         print("  не хватает модуля стандартной библиотеки: '%s'." % missing)
         print("  На Entware/OpenWrt доустановите пакет и перезапустите:")
-        print("    opkg install %s   (или: apk add %s — OpenWrt 24.10+)" % (pkg, pkg))
+        print("    opkg install %s   (или: apk add %s — OpenWrt 25.12+)" % (pkg, pkg))
     else:
         print("ОШИБКА: Bottle не найден (нет ни системного, ни vendor/bottle.py).")
         print("  Копия проекта неполная? Переустановите zapret-gui")

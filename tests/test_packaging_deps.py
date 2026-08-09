@@ -15,7 +15,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Пакеты, которых в apk-фиде OpenWrt (24.10+/SNAPSHOT) больше не существует:
+# Пакеты, которых в apk-фиде OpenWrt (25.12+/SNAPSHOT) больше не существует:
 # зависимость от них делает пакет неустанавливаемым.
 REMOVED_UPSTREAM = {"python3-email"}
 

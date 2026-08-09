@@ -20,7 +20,7 @@
 # Артефакты dev-релиза (ipk для роутера):
 #   zapret-gui-keenetic-dev.ipk  — Keenetic / Entware (opkg)
 #   zapret-gui-entware-dev.ipk   — Entware (opkg)
-#   zapret-gui-openwrt-dev.ipk   — OpenWrt ≤23.05 (opkg)
+#   zapret-gui-openwrt-dev.ipk   — OpenWrt ≤24.10 (opkg)
 # ═══════════════════════════════════════════════════════════════
 
 name: Dev Build (unstable)
@@ -123,7 +123,7 @@ jobs:
           echo "✓ core/version.py → $VERSION"
 
       # Собираем только ipk-форматы — они нужны для отладки на роутере.
-      # apk (OpenWrt 24.10+) и linux tar.gz в dev-канале не собираем ради скорости.
+      # apk (OpenWrt 25.12+) и linux tar.gz в dev-канале не собираем ради скорости.
       - name: Build Keenetic / Entware ipk
         run: make ipk
 
