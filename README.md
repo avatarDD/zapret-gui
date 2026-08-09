@@ -110,15 +110,19 @@ opkg install ./zapret-gui-entware.ipk
 /opt/etc/init.d/S99zapret-gui start
 ```
 
-**OpenWrt (старые версии, ≤ 23.05 — opkg):**
+**OpenWrt 24.10 и старее — opkg:**
 ```bash
 wget -O zapret-gui-openwrt.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.ipk
 opkg install ./zapret-gui-openwrt.ipk
 /etc/init.d/zapret-gui enable
 /etc/init.d/zapret-gui start
 ```
+Одной строкой (то же самое, удобно скопировать в SSH):
+```bash
+wget -O zapret-gui-openwrt.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.ipk && opkg install ./zapret-gui-openwrt.ipk && /etc/init.d/zapret-gui enable && /etc/init.d/zapret-gui start
+```
 
-**OpenWrt (новые версии, 24.10+ / 25.x — apk):**
+**OpenWrt 25.12+ и SNAPSHOT — apk:**
 ```bash
 wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk
 apk add --allow-untrusted ./zapret-gui-openwrt.apk
@@ -129,16 +133,23 @@ apk add --allow-untrusted ./zapret-gui-openwrt.apk
 ```bash
 wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk && apk add --allow-untrusted ./zapret-gui-openwrt.apk && /etc/init.d/zapret-gui enable && /etc/init.d/zapret-gui start
 ```
-> Новые OpenWrt перешли с opkg на apk. Пакет `.apk` не подписан ключами
-> репозитория, поэтому нужен флаг `--allow-untrusted` (обычная практика для
-> локальных `.apk`), а имя файла — с `./`, чтобы apk взял именно файл, а не
-> искал пакет в репозитории. Не уверены, opkg у вас или apk? Проверьте:
+> **Какой пакет ваш.** OpenWrt перешёл с opkg на apk не в 24.10, а в
+> **25.12** (5 марта 2026) — до этого apk был только в main/SNAPSHOT.
+> Релиз 24.10 остаётся на opkg: в его release notes прямо сказано
+> «OpenWrt 24.10 uses OPKG only, APK packages are *not* supported. Only
+> main branch was changed to APK». Поэтому на 24.10 нужен `.ipk`, а не
+> `.apk`. Проверить надёжнее, чем по номеру версии:
 > `command -v apk || command -v opkg`.
+>
+> Пакет `.apk` не подписан ключами репозитория, поэтому нужен флаг
+> `--allow-untrusted` (обычная практика для локальных `.apk`), а имя
+> файла — с `./`, чтобы apk взял именно файл, а не искал пакет в
+> репозитории. У `opkg install` то же правило про `./`.
 >
 > `-O <имя>` у `wget` обязателен: ссылка `releases/latest/download/…` — это
 > редирект, и `wget` без `-O` может сохранить файл под именем, полученным
 > из конечного URL, — тогда следующая строка не найдёт
-> `./zapret-gui-openwrt.apk`.
+> `./zapret-gui-openwrt.apk` (или `.ipk`).
 >
 > В однострочнике команды соединены через `&&`, а не `;`: если скачивание
 > не удалось, установка не начнётся. С `;` apk всё равно пытался поставить
@@ -514,8 +525,11 @@ latency 4/128), **автозапуск при старте роутера**, г�
 
 - Entware — `.ipk` для **aarch64, armv7, mips, mipsel** → `opkg
   --force-reinstall install`;
-- OpenWrt — `.apk` для **aarch64, mips, mipsel** → `apk add
-  --allow-untrusted`.
+- OpenWrt с apk (25.12+/SNAPSHOT) — `.apk` для **aarch64, mips, mipsel** →
+  `apk add --allow-untrusted`.
+
+Роутерных пакетов под opkg-сборки OpenWrt (≤ 24.10) апстрим не выпускает —
+там берётся Entware'ская `.ipk` (то есть нужен установленный Entware).
 
 Ваши `config.conf` и `secret.conf` при обновлении сохраняются — апстрим
 объявляет их conffiles, — а сам пакет после установки перезапускает
@@ -739,8 +753,8 @@ opkg upgrade zapret-gui            # через пакетный менедже�
 **Если ставили ipk/apk-пакетом** (`opkg install …` / `apk add …`) — удаляйте
 пакетным менеджером (имя пакета — `zapret-gui`, независимо от имени файла):
 ```bash
-opkg remove zapret-gui             # OpenWrt ≤23.05 и Entware/Keenetic
-apk del zapret-gui                 # OpenWrt 24.10+/25.x
+opkg remove zapret-gui             # OpenWrt ≤24.10 и Entware/Keenetic
+apk del zapret-gui                 # OpenWrt 25.12+ / SNAPSHOT
 ```
 
 **Если ставили скриптом** (`wget -O - …/install.sh | sh`) **или вручную из

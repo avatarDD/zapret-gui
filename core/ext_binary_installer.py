@@ -147,7 +147,7 @@ def detect_openwrt_arch() -> str:
 def _arch_keys(arch: str, pkg_mgr: str = "") -> list:
     """Ключи архитектуры для поиска в манифесте, от точного к общему.
 
-    Для apk (OpenWrt 24.10+) сначала пробуем таргет OpenWrt
+    Для apk (OpenWrt 25.12+/SNAPSHOT) сначала пробуем таргет OpenWrt
     (`x86_64`, `arm_cortex-a7`), затем семейство от `uname -m`
     (`armv7`) — так один манифест обслуживает и точные таргеты, и
     случай, когда DISTRIB_ARCH прочитать не удалось.

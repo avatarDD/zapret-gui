@@ -3,7 +3,7 @@
 Unit-тесты core/kmod_manager — установка модулей ядра NFQUEUE из GUI.
 
 Проверяем чистую логику без рута и без реальной установки:
-  • детект СИСТЕМНОГО пакетного менеджера (apk на 24.10+, opkg на 23.05,
+  • детект СИСТЕМНОГО пакетного менеджера (apk на 25.12+, opkg на 24.10,
     игнор Entware'ского /opt/bin/opkg);
   • набор пакетов под iptables/nftables;
   • команды/подкоманды (apk add / opkg install);
@@ -40,7 +40,7 @@ class TestPkgManagerDetect(unittest.TestCase):
             return k.detect_pkg_manager()
 
     def test_apk_based_openwrt(self):
-        # 24.10+: есть /usr/bin/apk и БД /etc/apk
+        # 25.12+/SNAPSHOT: есть /usr/bin/apk и БД /etc/apk
         kind, path = self._detect(
             present_files=("/usr/bin/apk",), present_dirs=("/etc/apk",))
         self.assertEqual(kind, "apk")
