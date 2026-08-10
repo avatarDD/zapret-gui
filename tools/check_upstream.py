@@ -34,7 +34,9 @@ rate-limit, работает для любого публичного репоз
     python3 tools/check_upstream.py --json       # машиночитаемый отчёт (CI)
     python3 tools/check_upstream.py --id zapret2 # только один апстрим
 
-Код возврата: 0 — всё сходится, 1 — есть расхождения или отставание.
+Код возврата: 0 — всё сходится, 1 — есть расхождения, отставание или
+апстрим, который не удалось опросить (последнее — тоже не «сошлось»:
+молчание источника означает, что мы про него ничего не знаем).
 """
 
 import argparse
@@ -334,7 +336,16 @@ def run(manifest, offline=False, only_id=""):
     report["unpinned"] = [r for r in report["entries"]
                           if r["status"] == "unpinned"]
     report["held"] = [r for r in report["entries"] if r["status"] == "held"]
-    report["ok"] = (not report["offline_problems"]) and not report["behind"]
+    # Апстрим, который не удалось опросить (репозиторий переехал, сеть
+    # моргнула, клон отвалился), — это НЕ «сошлось». Пока unknown не входил
+    # в `ok`, сторож на каждый такой апстрим отвечал «всё хорошо» и был
+    # готов закрыть заведённую issue: отсутствие данных читалось как их
+    # отсутствие проблем. В offline-режиме этот статус не возникает вовсе.
+    report["unknown"] = [r for r in report["entries"]
+                         if r["status"] == "unknown"]
+    report["ok"] = ((not report["offline_problems"])
+                    and not report["behind"]
+                    and not report["unknown"])
     return report
 
 
@@ -370,6 +381,16 @@ def print_report(report, offline=False):
               % len(report["held"]))
         for r in report["held"]:
             print("  = %s" % r["message"])
+
+    if report.get("unknown"):
+        print("\nНе удалось опросить (%d) — состояние неизвестно, "
+              "это не «сошлось»:" % len(report["unknown"]))
+        for r in report["unknown"]:
+            print("  ~ %s" % r["message"])
+        print("\nЧто делать: проверить руками, жив ли апстрим по указанному "
+              "адресу. Если репозиторий переехал или закрылся — почините "
+              "`repo` в docs/upstream.json и код-потребитель; если моргнула "
+              "сеть — повторите прогон.")
 
     if report["unpinned"]:
         print("\nБез базовой версии (%d) — не ошибка, но и не контроль:"

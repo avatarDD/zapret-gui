@@ -36,8 +36,15 @@ jobs:
   check:
     name: Сверка с апстримами
     runs-on: ubuntu-latest
+    env:
+      # Заголовок постоянной issue живёт в одном месте: по нему её ищут ОБА
+      # шага — и заводящий, и закрывающий. Разъехавшиеся копии этой строки
+      # означали бы issue, которую больше некому закрыть.
+      # Формулировка нарочно шире «ушли вперёд»: сюда попадает и апстрим,
+      # который не удалось опросить.
+      DRIFT_ISSUE_TITLE: Расхождения с апстримами — нужна сверка
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Локальные сверки (манифест ↔ репозиторий)
         # Отдельным шагом до сети: если разошлись наши собственные файлы,
@@ -47,12 +54,36 @@ jobs:
       - name: Опрос апстримов
         id: check
         continue-on-error: true
+        # Ненулевой код возврата здесь — ШТАТНЫЙ результат («есть
+        # отставание»), а не сбой шага, поэтому он гасится через `|| true`.
+        # Прогон 31364588800: шаг идёт под `bash -e`, стоял `set -o pipefail`,
+        # и штатная единица от сверки убивала шаг ДО записи в $GITHUB_OUTPUT.
+        # Незаписанный output — это `null`, а GitHub при сравнении разных
+        # типов приводит операнды к числу: `null == '0'` → истина. Условия
+        # ниже переворачивались, и сторож, найдя отставание, пропускал
+        # создание issue и шёл закрывать существующую.
         run: |
-          set -o pipefail
           python3 tools/check_upstream.py --json > report.json || true
-          python3 tools/check_upstream.py | tee report.txt
-          echo "ok=$(python3 -c "import json;print('1' if json.load(open('report.json'))['ok'] else '0')")" >> "$GITHUB_OUTPUT"
-          echo "behind=$(python3 -c "import json;print(len(json.load(open('report.json'))['behind']))")" >> "$GITHUB_OUTPUT"
+          python3 tools/check_upstream.py | tee report.txt || true
+          # Outputs пишутся ВСЕГДА и отдельным процессом: если отчёта нет
+          # или он битый, это провал, а не «сошлось». Отсюда behind=-1 —
+          # нейтральный 0 здесь означал бы ровно ту ложь, что чинится выше.
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+          try:
+              with open('report.json', encoding='utf-8') as fh:
+                  report = json.load(fh)
+          except Exception as exc:
+              # Только в stderr: всё, что уходит в stdout, попадает в файл
+              # outputs и должно быть строго парами `ключ=значение`.
+              print('Отчёт не прочитан: %s' % exc, file=sys.stderr)
+              print('ok=0')
+              print('behind=-1')
+          else:
+              print('ok=%s' % ('1' if report['ok'] else '0'))
+              print('behind=%d' % len(report['behind']))
+          PY
 
       - name: Отчёт в summary
         if: always()
@@ -66,14 +97,19 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Завести или обновить issue
+        # Сравниваем с '1', а НЕ с '0': незаписанный output — это `null`,
+        # который при сравнении с числоподобной строкой приводится к 0 и
+        # совпадает с '0'. Любое условие вида `outputs.X == '0'` поэтому
+        # срабатывает и тогда, когда данных нет вовсе. С '1' такого нет:
+        # `null == '1'` — ложь, и сторож в неизвестности молчать не станет.
         if: >-
-          steps.check.outputs.behind != '0' &&
+          steps.check.outputs.ok != '1' &&
           (github.event_name == 'schedule' || inputs.create_issue)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TITLE='Апстримы ушли вперёд — нужна сверка'
+          TITLE="$DRIFT_ISSUE_TITLE"
           BODY_FILE=$(mktemp)
           {
             echo 'Автоматическая еженедельная сверка `docs/upstream.json` с апстримами.'
@@ -91,6 +127,11 @@ jobs:
             echo '3. Обновить скил: он источник правды для всех агентов,'
             echo '   и устаревший скил хуже отсутствующего.'
             echo '4. Обновить `pinned` и `verified_at` в `docs/upstream.json`.'
+            echo
+            echo 'Если апстрим помечен `~` («не удалось опросить») — сверять'
+            echo 'нечего, пока не выяснено, жив ли он по указанному адресу:'
+            echo 'репозиторий могли переименовать, закрыть или удалить. Тогда'
+            echo 'чинится `repo` в манифесте И код, который из него тянет.'
             echo
             echo 'Проверить локально: `python3 tools/check_upstream.py`'
             echo
@@ -110,13 +151,18 @@ jobs:
           fi
 
       - name: Закрыть issue, если всё сошлось
-        if: steps.check.outputs.behind == '0' && github.event_name == 'schedule'
+        # Закрывать можно только по `ok`, и только по положительному
+        # утверждению. `behind == '0'` не годился дважды: ловил незаписанный
+        # output (см. выше) и не видел статусов, которые в `behind` не
+        # попадают, — апстрим, который не удалось опросить, закрывал issue
+        # с формулировкой «всё сошлось», хотя мы про него ничего не знаем.
+        if: steps.check.outputs.ok == '1' && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           N=$(gh issue list --state open --label upstream-drift \
-                --search 'Апстримы ушли вперёд in:title' --json number \
+                --search "$DRIFT_ISSUE_TITLE in:title" --json number \
                 --jq '.[0].number // empty')
           if [ -n "$N" ]; then
             gh issue close "$N" --comment 'Все апстримы сошлись с `docs/upstream.json` — закрыто автоматически.'
