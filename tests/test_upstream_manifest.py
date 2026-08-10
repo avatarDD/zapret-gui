@@ -366,5 +366,141 @@ class TestManifestMatchesReality(unittest.TestCase):
                               % (entry["id"], rel, e))
 
 
+class TestSilenceIsNotAgreement(unittest.TestCase):
+    """«Не знаем» никогда не должно читаться как «сошлось».
+
+    Прогон 31364588800 упал молча в самом неприятном смысле: отставание
+    нашлось, а issue заведена не была — вместо этого сторож пошёл ЗАКРЫВАТЬ
+    существующую. Ошибка была не одна, но обе одного рода — отсутствие
+    данных трактовалось как их благополучие. Здесь стережём оба конца.
+    """
+
+    @staticmethod
+    def _entry(**kw):
+        base = {"id": "x", "repo": "o/r", "kind": "release", "pinned": "v1.0.0",
+                "vendored": {}, "mentions": [], "skill": None}
+        base.update(kw)
+        return base
+
+    def test_unknown_upstream_is_not_ok(self):
+        """Апстрим, который не удалось опросить, валит прогон.
+
+        Пока `unknown` не входил в `ok`, недоступный апстрим (репозиторий
+        переехал, сеть моргнула) считался благополучным: сторож рапортовал
+        «всё сходится» и был готов закрыть заведённую issue, хотя о самом
+        апстриме не знал вообще ничего.
+        """
+        manifest = {"upstreams": [self._entry()]}
+        real = cu.remote_tags
+        cu.remote_tags = lambda repo, **kw: ([], "нет сети")
+        try:
+            report = cu.run(manifest)
+        finally:
+            cu.remote_tags = real
+        self.assertEqual(report["behind"], [],
+                         "«не опросили» — это не «отстали»")
+        self.assertEqual(len(report["unknown"]), 1)
+        self.assertFalse(report["ok"],
+                         "неопрошенный апстрим зачтён как «всё сошлось»")
+
+    def test_unknown_does_not_hide_a_healthy_run(self):
+        """Обратная сторона: исправный прогон остаётся зелёным."""
+        manifest = {"upstreams": [self._entry()]}
+        real = cu.remote_tags
+        cu.remote_tags = lambda repo, **kw: (["v1.0.0"], None)
+        try:
+            report = cu.run(manifest)
+        finally:
+            cu.remote_tags = real
+        self.assertEqual(report["unknown"], [])
+        self.assertTrue(report["ok"])
+
+    def test_offline_run_has_no_unknown(self):
+        """В offline-режиме статус неоткуда взять — и он не выдумывается."""
+        report = cu.run(cu.load_manifest(), offline=True)
+        self.assertEqual(report["unknown"], [])
+
+
+class TestCheckUpstreamWorkflow(unittest.TestCase):
+    """Сторож самого сторожа: `.github/workflows/check-upstream.yml`.
+
+    Проверяется текстом, а не запуском: выражения `if:` вычисляет GitHub,
+    и воспроизвести его семантику в тесте нельзя — можно только запретить
+    конструкции, на которых она уже один раз обманула.
+    """
+
+    WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows",
+                            "check-upstream.yml")
+
+    def setUp(self):
+        with open(self.WORKFLOW, encoding="utf-8") as f:
+            self.text = f.read()
+
+    def test_no_step_condition_compares_output_to_zero(self):
+        """Сравнения output'а с '0' запрещены — они ловят и пустоту.
+
+        Незаписанный output в выражениях GitHub — `null`, а при сравнении
+        значений разных типов операнды приводятся к числу: `null` → 0 и
+        `'0'` → 0, то есть `outputs.behind == '0'` истинно и тогда, когда
+        шаг не записал вообще ничего. Ровно так «Закрыть issue, если всё
+        сошлось» и отработало на прогоне с тремя отставшими апстримами.
+        Сравнение с '1' этой ловушки лишено: `null == '1'` — ложь.
+        """
+        import re as _re
+        bad = _re.findall(r"steps\.\w+\.outputs\.\w+\s*[!=]=\s*'0'",
+                          self.text)
+        self.assertEqual(
+            bad, [],
+            "условие сравнивает output с '0' и потому срабатывает на "
+            "незаписанном output: %s. Сравнивайте с '1'." % bad)
+
+    def test_drift_check_never_aborts_before_writing_outputs(self):
+        """Штатная единица от сверки не должна убивать шаг.
+
+        Шаги GitHub идут под `bash -e`, а ненулевой код `check_upstream.py`
+        означает «есть отставание», а не сбой. Без явного гашения шаг
+        обрывался на самой сверке, и строки записи в `$GITHUB_OUTPUT` до
+        выполнения не доходили — а дальше см. тест выше.
+        """
+        import re as _re
+        # Именно ИСПОЛНЯЕМЫЕ вызовы: строка команды начинается со сверки.
+        # Упоминания в тексте issue («Проверить локально: …») сюда не идут.
+        call_re = _re.compile(
+            r"^(?:run:\s*)?python3\s+tools/check_upstream\.py\b(?P<tail>.*)$")
+        calls = [m for m in (call_re.match(ln.strip())
+                             for ln in self.text.splitlines()) if m]
+        self.assertTrue(calls, "в workflow не осталось вызовов сверки")
+        for m in calls:
+            tail = m.group("tail").strip()
+            if tail == "--offline":
+                continue  # отдельный шаг до сети — ему падать и положено
+            self.assertTrue(
+                tail.endswith("|| true"),
+                "вызов сверки может оборвать шаг под `bash -e` до записи "
+                "outputs: %r" % m.group(0))
+
+    def test_outputs_are_written_even_without_a_report(self):
+        """Нет отчёта — тоже провал, а не молчаливое «сошлось»."""
+        self.assertIn("ok=0", self.text,
+                      "нет аварийной ветки записи ok при нечитаемом отчёте")
+        self.assertNotIn(
+            "behind=0", self.text,
+            "аварийное значение behind не должно быть нулём — ноль читается "
+            "как «отставаний нет»")
+
+    def test_issue_title_defined_once(self):
+        """Заголовок постоянной issue — в одном месте.
+
+        Его ищут оба шага: заводящий и закрывающий. Разъехавшись, копии
+        оставили бы issue, которую больше некому закрыть.
+        """
+        self.assertIn("DRIFT_ISSUE_TITLE:", self.text)
+        literal = self.text.count("Расхождения с апстримами")
+        self.assertEqual(
+            literal, 1,
+            "заголовок issue встречается %d раз — держите его в env "
+            "DRIFT_ISSUE_TITLE" % literal)
+
+
 if __name__ == "__main__":
     unittest.main()
