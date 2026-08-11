@@ -673,3 +673,38 @@ def get_strategy_manager() -> StrategyManager:
             if _strategy_manager is None:
                 _strategy_manager = StrategyManager()
     return _strategy_manager
+
+
+def active_strategy_args(source: str = "strategy"):
+    """Аргументы nfqws2 активной стратегии (`strategy.current_id`) или None.
+
+    Пересобираем из конфига, а не берём закэшированные в NFQWSManager
+    аргументы прошлого запуска: во-первых, активную стратегию могли только
+    что отредактировать, во-вторых, кэша может не быть вовсе — nfqws2
+    поднял автозапуск, а не GUI, и «последних аргументов» у нас нет.
+    """
+    from core.config_manager import get_config_manager
+
+    current_id = get_config_manager().get("strategy", "current_id",
+                                          default=None)
+    if not current_id:
+        return None
+    try:
+        sm = get_strategy_manager()
+        strategy = sm.get_strategy(current_id)
+        if not strategy:
+            return None
+        args = sm.build_nfqws_args(strategy)
+        if args:
+            log.info(
+                "Пересобраны аргументы активной стратегии «%s»"
+                % strategy.get("name", current_id),
+                source=source,
+            )
+            return args
+    except Exception as e:
+        log.warning(
+            "Не удалось пересобрать аргументы активной стратегии: %s" % e,
+            source=source,
+        )
+    return None

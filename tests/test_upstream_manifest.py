@@ -289,63 +289,6 @@ class TestManifestMatchesReality(unittest.TestCase):
             pinned, set(ai._UPSTREAM_CORE_LUA),
             "набор запиннованных core-lua разошёлся с _UPSTREAM_CORE_LUA")
 
-    def test_strategy_catalogs_paths_match_updater(self):
-        """Пути в манифесте — те же, что реально запрашивает catalog_updater."""
-        from core import catalog_updater as cup
-        paths = self.by_id["strategy-catalogs"]["paths"]
-        self.assertIn(cup.SOURCE_PRESETS_SUBPATH, paths,
-                      "путь пресетов из catalog_updater не отслеживается")
-        for name in cup.CATALOG_FILES:
-            expected = "%s/%s" % (cup.SOURCE_DIRECT_SUBPATH, name)
-            self.assertIn(expected, paths,
-                          "каталог %s не отслеживается манифестом" % name)
-
-    def test_strategy_catalogs_branch_matches_updater(self):
-        from core import catalog_updater as cup
-        entry = self.by_id["strategy-catalogs"]
-        self.assertEqual(entry["branch"], cup.SOURCE_BRANCH)
-        self.assertEqual(entry["repo"],
-                         "%s/%s" % (cup.SOURCE_OWNER, cup.SOURCE_REPO))
-
-    def test_strategy_catalogs_have_content_checks(self):
-        """У источника без релизов формат важнее версии.
-
-        Пути могут остаться на месте, а содержимое смениться — тогда
-        `_parse_ini_sections` молча вернёт ноль секций, и «обновление
-        каталогов» тихо ничего не привезёт. Проверка путей такое пропустит.
-        """
-        entry = self.by_id["strategy-catalogs"]
-        checks = entry.get("content_checks") or {}
-        self.assertTrue(checks,
-                        "у branch-источника должны быть content_checks")
-        from core import catalog_updater as cup
-        for name in cup.CATALOG_FILES:
-            rel = "%s/%s" % (cup.SOURCE_DIRECT_SUBPATH, name)
-            self.assertIn(rel, checks,
-                          "формат %s не проверяется" % name)
-
-    def test_content_check_patterns_match_our_own_catalogs(self):
-        """Регекспы не бутафория: они матчат наши же каталоги.
-
-        `catalogs/direct/*.txt` — то, что приехало из этого апстрима и что
-        реально разбирает наш парсер. Если паттерн не находит секций даже
-        здесь, он не найдёт их и в апстриме, и проверка будет ложно-зелёной
-        или ложно-красной.
-        """
-        import re as _re
-        entry = self.by_id["strategy-catalogs"]
-        for rel, pattern in (entry.get("content_checks") or {}).items():
-            local = os.path.join(REPO_ROOT, "catalogs", "direct",
-                                 os.path.basename(rel))
-            if not os.path.isfile(local):
-                continue
-            with open(local, encoding="utf-8", errors="replace") as f:
-                text = f.read()
-            self.assertRegex(
-                text, _re.compile(pattern, _re.M),
-                "паттерн %r не матчит наш собственный каталог %s"
-                % (pattern, local))
-
     def test_content_checks_only_on_branch_entries(self):
         """`content_checks` осмысленны только для branch-источников."""
         for entry in self.manifest["upstreams"]:

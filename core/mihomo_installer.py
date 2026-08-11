@@ -253,7 +253,12 @@ class MihomoInstaller:
             return {"ok": False, "error": str(e), "installed": installed}
         latest_tag = rel.get("tag_name", "")
         latest_ver = latest_tag.lstrip("v")
-        has_update = bool(latest_ver) and latest_ver != installed.get("version")
+        # Только для установленного: у отсутствующего mihomo версия пустая,
+        # и `latest_ver != ""` держало «доступно обновление» вечно зажжённым
+        # на странице «Обновления» для неустановленной программы
+        # (discussion #102).
+        has_update = (bool(installed.get("installed")) and bool(latest_ver)
+                      and latest_ver != installed.get("version"))
         return {"ok": True, "installed": installed,
                 "latest": {"tag": latest_tag, "version": latest_ver},
                 "has_update": has_update}

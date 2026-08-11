@@ -1720,8 +1720,18 @@ class StrategyScanner:
             if self._saved_firewall_applied:
                 fw.apply_rules()
 
-            if self._saved_nfqws_args:
-                nfqws.start(self._saved_nfqws_args)
+            # Аргументов может не быть вовсе: до скана nfqws2 работал не с
+            # нашего запуска, а с автозапуска (после перезагрузки роутера это
+            # обычное дело), и «последних аргументов» менеджер не помнит.
+            # Голый nfqws2 без десинка тогда бесполезен — пересобираем
+            # активную стратегию, как это делает кнопка «Старт».
+            restore_args = self._saved_nfqws_args
+            if not restore_args:
+                from core.strategy_builder import active_strategy_args
+                restore_args = active_strategy_args(source="scanner")
+
+            if restore_args:
+                nfqws.start(restore_args)
             else:
                 nfqws.start()
 
