@@ -32,6 +32,16 @@ _WAN_CACHE_TTL = 10.0  # 10 секунд TTL
 
 PID_FILE = "/var/run/zapret-gui-nfqws.pid"
 
+# PID-файл автозапуска (S99zapret пишет его сам, см. autostart_manager).
+# nfqws2 может быть поднят не нами, и тогда наш PID-файл не существует
+# вовсе — /var/run это tmpfs, после перезагрузки роутера он пуст.
+AUTOSTART_PID_FILE = "/var/run/zapret-nfqws.pid"
+
+# Как часто разрешаем скан /proc в поисках чужого nfqws2. Статус дёргается
+# поллингом «Главной»/«Управления» каждые пару секунд, а скан читает
+# cmdline всех процессов — без троттлинга это лишняя работа на роутере.
+_EXTERNAL_SCAN_TTL = 2.0
+
 # ─────────────────────── Lua scripts injection ──────────────────────
 # Конвенции взяты из youtubediscord/zapret (winws_runtime/runners/zapret2_runner.py).
 #
@@ -267,6 +277,8 @@ class NFQWSManager:
         self._exit_code = None        # код выхода последнего процесса
         self._debug = False           # --debug активен → вывод на уровне INFO
         self._rawsend_explained = False   # подсказку про EPERM даём 1 раз
+        self._external = False        # процесс поднят не нами (автозапуск)
+        self._last_external_scan = 0.0    # троттлинг скана /proc
 
         # Пробуем восстановить PID из файла при инициализации
         self._recover_pid()
@@ -606,6 +618,9 @@ class NFQWSManager:
             "binary": cfg.get("zapret", "nfqws_binary"),
             "last_args": self._last_args,
             "exit_code": self._exit_code,
+            # Процесс подобран, а не запущен нами: аргументы в last_args
+            # тогда не от него, и UI об этом честно говорит.
+            "external": bool(running and self._external),
         }
 
     # ─────────────────────── command builder ───────────────────────
@@ -1004,19 +1019,79 @@ class NFQWSManager:
         if self._pid is not None:
             if self._check_pid_alive(self._pid):
                 if self._start_time is None:
-                    try:
-                        self._start_time = os.stat(
-                            "/proc/%d" % self._pid).st_mtime
-                    except OSError:
-                        self._start_time = time.time()
+                    self._start_time = self._proc_start_time(self._pid)
                 return True
             else:
                 self._pid = None
                 self._start_time = None
+                self._external = False
                 self._remove_pid_file()
                 return False
 
+        # Ни Popen, ни своего PID-файла — но nfqws2 всё равно может работать:
+        # его поднял автозапуск S99zapret (свой PID-файл + --daemon). После
+        # перезагрузки роутера это ШТАТНЫЙ путь, а /var/run — tmpfs, так что
+        # наш PID-файл заведомо пуст. Раньше мы в этом месте отвечали «не
+        # запущен», и «Главная»/«Управление» показывали остановленный обход,
+        # пока он реально фильтровал трафик (discussion #102).
+        pid = self._find_external_pid()
+        if pid is not None:
+            self._pid = pid
+            self._external = True
+            self._start_time = self._proc_start_time(pid)
+            return True
+
         return False
+
+    def _find_external_pid(self):
+        """PID живого nfqws2, поднятого не нами (или None).
+
+        Сначала PID-файл автозапуска — он дешёвый и точный. Если его нет
+        (или он протух), падаем на скан /proc, но берём ТОЛЬКО демонов
+        (`--daemon`/`--pidfile` в cmdline). Без этого фильтра мы бы
+        подхватывали короткоживущие nfqws2, которые запускает под собой
+        blockcheck2.sh во время подбора стратегии, и «Главная» мигала бы
+        «обход запущен» посреди скана.
+
+        Скан троттлится: статус поллится каждые пару секунд, а тут читается
+        cmdline всех процессов системы.
+        """
+        pid = self._read_pid_file(AUTOSTART_PID_FILE)
+        if pid is not None and self._check_pid_alive(pid):
+            return pid
+
+        now = time.time()
+        if (now - self._last_external_scan) < _EXTERNAL_SCAN_TTL:
+            return None
+        self._last_external_scan = now
+
+        for pid in self._find_nfqws_pids():
+            cmdline = self._proc_cmdline(pid)
+            if any(a == "--daemon" or a.startswith("--pidfile")
+                   for a in cmdline):
+                return pid
+        return None
+
+    @staticmethod
+    def _proc_cmdline(pid: int) -> list:
+        """argv процесса из /proc (пустой список — прочитать не вышло)."""
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                raw = f.read()
+        except (IOError, OSError):
+            return []
+        if not raw:
+            return []
+        return [a.decode("utf-8", errors="replace")
+                for a in raw.split(b"\x00") if a]
+
+    @staticmethod
+    def _proc_start_time(pid: int) -> float:
+        """Момент запуска процесса по /proc (грубо), иначе — «сейчас»."""
+        try:
+            return os.stat("/proc/%d" % pid).st_mtime
+        except OSError:
+            return time.time()
 
     @staticmethod
     def _find_nfqws_pids() -> list:
@@ -1124,18 +1199,25 @@ class NFQWSManager:
         return name in ("nfqws", "nfqws2")
 
     def _recover_pid(self):
-        """Восстановить PID из PID-файла при инициализации."""
+        """Подобрать уже работающий nfqws2 при инициализации.
+
+        Сначала свой PID-файл (перезапуск GUI при живом обходе), затем —
+        чужой: после перезагрузки роутера nfqws2 поднимает автозапуск, и
+        своего PID-файла у нас нет в принципе.
+        """
         pid = self._read_pid_file()
-        if pid and self._check_pid_alive(pid):
+        external = False
+        if not (pid and self._check_pid_alive(pid)):
+            pid = self._find_external_pid()
+            external = pid is not None
+
+        if pid:
             self._pid = pid
-            # Пробуем определить время запуска из /proc
-            try:
-                stat = os.stat("/proc/%d" % pid)
-                self._start_time = stat.st_mtime
-            except OSError:
-                self._start_time = time.time()
+            self._external = external
+            self._start_time = self._proc_start_time(pid)
             log.info(
-                "Обнаружен работающий nfqws2 (PID %d)" % pid,
+                "Обнаружен работающий nfqws2 (PID %d%s)"
+                % (pid, ", запущен автозапуском" if external else ""),
                 source="nfqws"
             )
 
@@ -1284,6 +1366,7 @@ class NFQWSManager:
         self._process = None
         self._pid = None
         self._start_time = None
+        self._external = False
         self._rawsend_explained = False
         self._remove_pid_file()
 
@@ -1301,12 +1384,12 @@ class NFQWSManager:
                         source="nfqws")
 
     @staticmethod
-    def _read_pid_file():
-        """Прочитать PID из файла."""
+    def _read_pid_file(path: str = PID_FILE):
+        """Прочитать PID из файла (по умолчанию — из своего)."""
         try:
-            with open(PID_FILE, "r") as f:
+            with open(path, "r") as f:
                 return int(f.read().strip())
-        except (IOError, ValueError):
+        except (IOError, OSError, ValueError):
             return None
 
     @staticmethod

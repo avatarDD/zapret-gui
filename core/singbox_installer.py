@@ -284,7 +284,14 @@ class SingboxInstaller:
                     "installed": installed}
         latest_ver = (manifest.get("sing_box") or {}).get("version", "")
         latest_tag = manifest.get("tag", "")
-        has_update = bool(latest_ver) and latest_ver != installed.get("version")
+        # «Обновление» имеет смысл только для УСТАНОВЛЕННОГО бинарника. Без
+        # проверки installed у неустановленного sing-box версия пустая, а
+        # `latest_ver != ""` — всегда истина, и страница «Обновления»
+        # показывала «← доступно» с кнопкой «Обновить» для того, чего на
+        # роутере нет вовсе (discussion #102). Своя страница sing-box этим
+        # не страдала: SetupUI считает has_update сам и гейтит по installed.
+        has_update = (bool(installed.get("installed")) and bool(latest_ver)
+                      and latest_ver != installed.get("version"))
         # Переустановка нужна, даже если версия совпадает: наши сборки
         # начиная с тэга «clash_api в бинаре» включают with_clash_api, без
         # которого не работает тестер серверов (proxy_tester). Если в

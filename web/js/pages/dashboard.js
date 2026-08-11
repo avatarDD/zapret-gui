@@ -305,6 +305,10 @@ const DashboardPage = (() => {
                 const parts = [];
                 if (data.nfqws.pid) parts.push(`PID ${data.nfqws.pid}`);
                 if (data.nfqws.uptime_human) parts.push(data.nfqws.uptime_human);
+                // Процесс подобран, а не запущен из GUI (после перезагрузки
+                // роутера обход поднимает автозапуск) — говорим об этом, чтобы
+                // «Работает» не выглядело как заслуга текущей сессии.
+                if (data.nfqws.external) parts.push('автозапуск');
                 detail.textContent = parts.join(' · ');
             } else {
                 detail.textContent = '';

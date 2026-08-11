@@ -160,7 +160,7 @@ const UpdateCheckerPage = (() => {
                 : "";
             html += `<tr>
                 <td><strong>${esc(r.display_name || r.name)}</strong></td>
-                <td><span class="status-dot ${installedCls}"></span> ${r.installed ? "Да" : "Нет"}</td>
+                <td${r.path ? ` title="${esc(r.path)}"` : ""}><span class="status-dot ${installedCls}"></span> ${r.installed ? "Да" : "Нет"}</td>
                 <td><code>${esc(r.current || "-")}</code></td>
                 <td><code class="${updateCls}">${esc(r.latest || "-")}</code></td>
                 <td>${r.has_update ? '<span style="color:var(--warning);font-weight:600;">← доступно</span>' : ""}

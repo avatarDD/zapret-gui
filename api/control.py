@@ -20,33 +20,8 @@ def _active_strategy_args():
     правки активной стратегии перезапуск применял старую версию, и приходилось
     вручную переключаться на другую стратегию и обратно.
     """
-    from core.config_manager import get_config_manager
-    from core.log_buffer import log
-
-    cfg = get_config_manager()
-    current_id = cfg.get("strategy", "current_id", default=None)
-    if not current_id:
-        return None
-    try:
-        from core.strategy_builder import get_strategy_manager
-        sm = get_strategy_manager()
-        strategy = sm.get_strategy(current_id)
-        if not strategy:
-            return None
-        args = sm.build_nfqws_args(strategy)
-        if args:
-            log.info(
-                "Пересобраны аргументы активной стратегии «%s»"
-                % strategy.get("name", current_id),
-                source="control",
-            )
-            return args
-    except Exception as e:
-        log.warning(
-            "Не удалось пересобрать аргументы активной стратегии: %s" % e,
-            source="control",
-        )
-    return None
+    from core.strategy_builder import active_strategy_args
+    return active_strategy_args(source="control")
 
 
 def register(app):

@@ -194,6 +194,10 @@ const ControlPage = (() => {
                 const parts = [];
                 if (data.nfqws.pid) parts.push('PID ' + data.nfqws.pid);
                 if (data.nfqws.uptime_human) parts.push('uptime ' + data.nfqws.uptime_human);
+                // Подобранный процесс (поднят автозапуском, а не этой
+                // сессией GUI) — помечаем, иначе непонятно, откуда uptime
+                // больше времени жизни самого GUI.
+                if (data.nfqws.external) parts.push('запущен автозапуском');
                 detail.textContent = parts.join(' · ');
             } else {
                 const ec = data.nfqws?.exit_code;

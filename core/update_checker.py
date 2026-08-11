@@ -93,6 +93,17 @@ def check_all() -> dict:
     # opera-proxy
     results.append(_check_opera())
 
+    # Единое правило страницы «Обновления»: обновлять можно только то, что
+    # УСТАНОВЛЕНО. Каждый инсталлятор считает has_update сам, и стоит одному
+    # забыть про эту проверку — у неустановленной программы версия пустая,
+    # «последняя» непустая, и в таблице загорается «← доступно» с кнопкой
+    # «Обновить» для того, чего на роутере нет (discussion #102: так вели
+    # себя sing-box и mihomo). Гейт здесь делает страницу честной независимо
+    # от частных ошибок в инсталляторах.
+    for r in results:
+        if r.get("has_update") and not r.get("installed"):
+            r["has_update"] = False
+
     updates_count = sum(1 for r in results if r.get("has_update"))
 
     with _results_lock:
@@ -256,6 +267,11 @@ def _check_usque() -> dict:
             "current": env.get("version", ""),
             "latest": latest,
             "has_update": _is_newer(latest, env.get("version", "")),
+            # Путь, по которому найден бинарник. «Установлен: Да» у usque —
+            # это ровно «в одном из стандартных каталогов лежит исполняемый
+            # файл usque»; когда пользователь его не ставил, единственный
+            # способ разобраться — увидеть, что именно нашлось.
+            "path": env.get("binary", ""),
         }
     except Exception as e:
         return {"name": "usque", "display_name": "usque (WARP/MASQUE)",
