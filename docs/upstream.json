@@ -57,31 +57,6 @@
       "note": "core-lua жёстко привязана к бинарнику через NFQWS2_COMPAT_VER, но защита _protected_core_lua срабатывает только на СМЕНЕ compat-версии. Внутри одной (все 1.0…1.0.4 = 6) наш бандл перезаписывает upstream-копию, поэтому отставший бандл откатывает пользователю апстримные фиксы. Отсюда побайтовый пиннинг."
     },
     {
-      "id": "strategy-catalogs",
-      "repo": "youtubediscord/zapret",
-      "kind": "branch",
-      "branch": "main",
-      "pinned": null,
-      "verified_at": "2026-08-03",
-      "skill": ".claude/skills/nfqws2-strategies/SKILL.md",
-      "mentions": [],
-      "vendored": {},
-      "paths": [
-        "src/profile/strategy_catalogs/winws2/tcp.txt",
-        "src/profile/strategy_catalogs/winws2/udp.txt",
-        "src/profile/strategy_catalogs/winws2/http80.txt",
-        "src/profile/strategy_catalogs/winws2/voice.txt",
-        "src/presets/builtin/winws2"
-      ],
-      "note": "ИСТОЧНИК НЕДОСТУПЕН с 2026-08-11: и github.com/youtubediscord/zapret, и вся организация youtubediscord отдают 404 — репозиторий не переехал (переезд GitHub редиректит), а снят, как в июле 2026 сняли Flowseal/zapret-discord-youtube. Практические следствия: «Обновить стратегии» не работает вовсе, а проверка версии каталогов даёт 404 (discussion #102); установленные каталоги при этом целы и продолжают работать. Чинится только сменой источника — форк/зеркало нужно ВЫБРАТЬ ОСОЗНАННО (это каталог desync-стратегий, случайный форк = доверие чужому коду), после чего править SOURCE_OWNER/SOURCE_REPO в core/catalog_updater.py и repo/paths здесь. Дальше по существу: релизов у источника нет — следим за веткой, поэтому pinned здесь неприменим по природе источника. Ломается тут не версия, а две вещи: (1) РЕСТРУКТУРИЗАЦИЯ дерева — апстрим периодически переносит каталоги, и SOURCE_DIRECT_SUBPATH/SOURCE_PRESETS_SUBPATH перестают существовать; (2) СМЕНА ФОРМАТА — файл на месте, но внутри уже не INI-секции `[id]` со строками `--lua-desync=`, и _parse_ini_sections молча возвращает ноль секций. Первое ловят paths, второе — content_checks.",
-      "content_checks": {
-        "src/profile/strategy_catalogs/winws2/tcp.txt": "^\\[[^\\]]+\\]",
-        "src/profile/strategy_catalogs/winws2/udp.txt": "^--lua-desync=",
-        "src/profile/strategy_catalogs/winws2/http80.txt": "^\\[[^\\]]+\\]",
-        "src/profile/strategy_catalogs/winws2/voice.txt": "^--lua-desync="
-      }
-    },
-    {
       "id": "sing-box",
       "repo": "SagerNet/sing-box",
       "kind": "release",

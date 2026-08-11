@@ -3,7 +3,7 @@
 Integration-тесты для остальных API-модулей: status, logs,
 gui_update, autostart, control, diagnostics, hosts, hostlists,
 ipsets, lua_scripts, blobs, devices, blockcheck, scan,
-catalog_update, zapret_manager.
+zapret_manager.
 
 Эти тесты проверяют что endpoint'ы:
   1. Зарегистрированы (HTTP 200/400/404, не 500/exception).
@@ -431,18 +431,6 @@ class TestGuiReleasesAPI(unittest.TestCase):
         self.assertIn(r["_status"], (200, 500))
         self.assertEqual(captured.get("tag"), "v0.22.0")
         self.assertEqual(captured.get("transport"), "awg:wg0")
-
-
-class TestCatalogUpdateAPI(unittest.TestCase):
-
-    @classmethod
-    def setUpClass(cls):
-        cls.client = WSGIClient(build_test_app())
-
-    def test_catalog_status(self):
-        # Может идти в сеть — допускаем 200/500.
-        r = self.client.get_json("/api/catalog/status")
-        self.assertIn(r["_status"], (200, 404, 500))
 
 
 if __name__ == "__main__":

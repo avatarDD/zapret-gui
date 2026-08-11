@@ -524,8 +524,8 @@ def _merge_ini_dir(src_dir: str, dst_dir: str) -> dict:
     """
     Merge-импорт каждого *.txt из src_dir в одноимённый файл в dst_dir.
 
-    Использует `catalog_updater._merge_content`, чтобы семантика
-    совпадала с апстримом youtubediscord/zapret.
+    Использует `catalog_merge._merge_content`, чтобы семантика
+    совпадала с той, по которой каталоги собраны.
     """
     stats = {"added": 0, "updated": 0, "preserved": 0, "files": []}
     if not os.path.isdir(src_dir):
@@ -533,7 +533,7 @@ def _merge_ini_dir(src_dir: str, dst_dir: str) -> dict:
 
     os.makedirs(dst_dir, exist_ok=True)
 
-    from core.catalog_updater import _merge_content, _read_text
+    from core.catalog_merge import _merge_content, _read_text
 
     for name in sorted(os.listdir(src_dir)):
         if name.startswith(_SKIP_PREFIXES):
@@ -581,7 +581,7 @@ def _merge_bundled_presets(src_dir: str, dst_file: str) -> dict:
     Merge-импорт winws2-пресетов из src_dir в единый INI-файл dst_file.
 
     Конвертация (срез --wf-*, префикс `winws2_`) полностью повторяет
-    логику catalog_updater, чтобы section_id-ы были сравнимы между
+    логику catalog_merge, чтобы section_id-ы были сравнимы между
     bundled-импортом и GitHub-обновлением.
     """
     stats = {"added": 0, "updated": 0, "preserved": 0, "files": 0}
@@ -608,7 +608,7 @@ def _merge_bundled_presets(src_dir: str, dst_file: str) -> dict:
 
     stats["files"] = len(preset_files)
 
-    from core.catalog_updater import (
+    from core.catalog_merge import (
         _build_presets_ini,
         _merge_content,
         _read_text,

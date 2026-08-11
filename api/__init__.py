@@ -29,7 +29,6 @@ def register_routes(app):
     from api.blockcheck2 import register as reg_blockcheck2
     from api.scan import register as reg_scan
     from api.gui_update import register as reg_gui_update
-    from api.catalog_update import register as reg_catalog_update
     from api.awg import register as reg_awg
     from api.routing import register as reg_routing
     from api.devices import register as reg_devices
@@ -69,7 +68,6 @@ def register_routes(app):
     reg_blockcheck2(app)
     reg_scan(app)
     reg_gui_update(app)
-    reg_catalog_update(app)
     reg_awg(app)
     reg_routing(app)
     reg_devices(app)

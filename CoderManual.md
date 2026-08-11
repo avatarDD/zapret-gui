@@ -291,7 +291,7 @@ make upstream-offline    # только локальные сверки (идё�
 | `strategy_state.py` | Persist выученных стратегий (state.tsv от z2k-state-persist.lua: закреплённая `nstrategy` на домен). |
 | `healthcheck.py` | Healthcheck-демон (autocircular watchdog): фоном дёргает референс-домены служб и чинит упавшее. |
 | `scan_targets.py` | Профили целей подбора. |
-| `catalog_loader.py` / `catalog_updater.py` | Загрузка и обновление INI-каталогов стратегий (youtubediscord/zapret), merge по `section_id` с сохранением локального. |
+| `catalog_loader.py` / `catalog_merge.py` | Загрузка INI-каталогов стратегий и merge по `section_id` с сохранением локальных секций (используется `asset_importer` при импорте bundled-каталогов). |
 | `hostlist_manager.py` | Hostlist'ы доменов nfqws2 (суффикс-матчинг поддоменов). |
 | `ipset_manager.py` | IP-списки (ipset/nftset, загрузка по ASN). |
 | `blob_manager.py` / `blob_registry.py` | Блобы для fake-пакетов (hex, генерация fake ClientHello). |
@@ -408,7 +408,6 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | `blockcheck.py` | `/api/blockcheck` | тестирование/классификация DPI (Python-пробы) |
 | `blockcheck2.py` | `/api/blockcheck2` | оригинальный blockcheck2.sh + стрим вывода |
 | `zapret_manager.py` | `/api/zapret` | установка/обновление nfqws2 (+`/releases`) |
-| `catalog_update.py` | `/api/catalog` | обновление каталогов |
 | `hostlists.py` / `lists.py` | `/api/hostlists`, `/api/lists` | домены nfqws2 / именованные списки (+`/curated`) |
 | `ipsets.py` / `blobs.py` / `lua_scripts.py` / `hosts.py` | … | IP-списки / блобы / Lua / hosts |
 | `unified.py` | `/api/unified` | единый слой (routes/status/monitor/scan) |
