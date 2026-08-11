@@ -270,6 +270,11 @@ make upstream-offline    # только локальные сверки (идё�
 | `version.py` | Единый источник версии `GUI_VERSION`. |
 | `system_info.py` | Инфо о роутере (uptime, RAM, arch). |
 | `binary_installer.py` | Общая загрузка/проверка sha/распаковка бинарников + зеркало (`ZAPRET_GUI_MIRROR`/`install.mirror`/`file://`) + retry + выбор версии (`list_releases`) + локальный файл. База для всех установщиков. |
+| `ext_binary_installer.py` | Установщик «внешних» движков, которые мы собираем сами или ставим пакетом: `BINARIES` (usque, opera-proxy, оба движка Telegram) — релиз-префиксы, sha256 из `manifest.json`, opkg/apk, запасные источники. |
+| `platform_dirs.py` | Пути под платформу (Entware `/opt` vs OpenWrt/Linux) — единый источник для всех менеджеров. |
+| `kmod_manager.py` | Модули ядра (`nfnetlink_queue`, `xt_*`, `tun`) — детект и загрузка. |
+| `update_checker.py` | Проверка обновлений ВСЕХ движков за один проход + фоновой демон по расписанию. Обновление предлагается только для установленного. |
+| `system_control.py` | Перезапуск GUI и перезагрузка роутера (отложенно, в отвязанном процессе; на Keenetic — через `ndmc`). |
 | `download_transport.py` | «Через что» качать (когда GitHub заблокирован напрямую): `direct`/`awg[:iface]`/`singbox[:cfg]`/`mihomo[:cfg]` → `urlopen_via`. Используется установщиками и рефрешерами. |
 | `network_env.py` | Детект окружения: `router` (форвардим LAN) vs `pc` (одна NIC, заворачиваем только себя). Override `network.profile`. |
 | `safe_io.py` | Общие безопасные I/O: атомарная запись (`atomic_write_*`: temp→fsync→`os.replace`) и пр. |
@@ -283,7 +288,8 @@ make upstream-offline    # только локальные сверки (идё�
 
 | Модуль | Назначение |
 |--------|-----------|
-| `nfqws_manager.py` | Менеджер процесса nfqws2: compose_command, start/stop/restart, PID-мониторинг. |
+| `nfqws_manager.py` | Менеджер процесса nfqws2: compose_command, start/stop/restart, PID-мониторинг. Подхватывает и чужой процесс — поднятый автозапуском (его PID-файл `/var/run/zapret-nfqws.pid`, затем скан `/proc` по демонам); такой помечен `external` в статусе. |
+| `nfqws_reload.py` | Горячая перезагрузка списков в живом nfqws2 (SIGHUP): движок читает `--hostlist`/`--ipset` один раз при старте, поэтому правка файла без сигнала ничего не меняет. |
 | `zapret_installer.py` | Установка/обновление бинаря nfqws2 (bol-van/zapret2). |
 | `strategy_builder.py` | Менеджер стратегий (единый источник: builtin JSON + пользовательские). |
 | `strategy_generator.py` | Генерация стратегий «на лету» (параметрические сетки приёмов desync). |
@@ -379,6 +385,9 @@ make upstream-offline    # только локальные сверки (идё�
 | `dnsmasq_integration.py` / `doh_resolver.py` | Domain-routing через dnsmasq + DoH-резолв для pre-population set'ов. |
 | `alias_resolver.py` | `geosite:`/`geoip:` → списки доменов/подсетей. |
 | `masquerade.py` | MASQUERADE/SNAT на исходящий tunnel-интерфейс. |
+| `dns_intercept.py` | Перехват DNS-запросов на роутере (заворот на свой резолвер). |
+| `domain_refresh.py` | Фоновый пере-резолв доменных правил: IP за доменом меняются, set'ы протухают. |
+| `sweeper.py` / `doctor.py` | Уборка осиротевших правил/set'ов + диагностика «почему маршрут не работает». |
 
 **`core/ndms/`** — Keenetic RCI: `rci_client` (HTTP к Router Control
 Interface), `commands` (интерфейсы, политики хостов), `wg_discovery`,
@@ -386,6 +395,21 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 
 **`core/connectivity/`** — `matrix` (связность туннелей), `traffic`
 (RX/TX-серии в RAM для sparkline).
+
+### 5.7 Прочие движки и фоновые службы
+
+| Модуль | Назначение |
+|--------|-----------|
+| `usque_manager.py` / `usque_watchdog.py` | WARP/MASQUE через usque: регистрация сессии, TUN-интерфейсы, старт/стоп + авто-реконнект. |
+| `warp_in_warp.py` / `warp_in_warp_watchdog.py` | Двойной туннель (`masque_masque` / `masque_awg` / `awg_masque`) и его сторож. |
+| `tgproxy_manager.py` / `tgproxy_redirect.py` | Telegram Tunnel: оба движка (`tg-ws-proxy-go`, резервный `tg-mtproxy-client`), секрет и `tg://proxy`, заворот CIDR датацентров. |
+| `opera_proxy_manager.py` / `opera_proxy_watchdog.py` / `opera_proxy_chain.py` | Opera VPN (SurfEasy): локальный HTTP/SOCKS5-прокси, сторож с TCP-пробой, цепочка через другой транспорт. |
+| `mihomo_config.py` / `mihomo_routing.py` / `mihomo_watchdog.py` | Генерация clash-YAML, доменный роутинг mihomo, авто-рестарт зависшего инстанса. |
+| `dns_routing.py` / `dns_providers.py` | Правила «домен → свой DNS» + каталог публичных резолверов (DoH/DoT). |
+| `tunnel_monitor.py` / `tunnel_optimizer.py` | Метрики туннелей (rx/tx, latency) / MTU·PMTU, TCP-буферы, BBR по профилям. |
+| `auto_remediation.py` | Авто-починка: по сигналам мониторинга поднимает упавшее и переключает метод. |
+| `geosite_importer.py` | Импорт geosite/geoip-баз для алиасов маршрутизации. |
+| `iface_socks.py` | SOCKS-прокси, привязанный к интерфейсу (`SO_BINDTODEVICE`) — регистрация usque/WARP через уже работающий обход. |
 
 ---
 
@@ -395,7 +419,7 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 роуты. Все они собираются в `api/__init__.py:register_routes(app)`.
 Соглашения: `response.content_type = "application/json; charset=utf-8"`,
 ответ — dict `{ok: bool, …}`, ошибки — `{ok: false, error: …}` + HTTP-код.
-Всего **более 330 роутов** (route-декораторов). Установка из локального
+Всего **более 440 роутов** (route-декораторов). Установка из локального
 файла во всех трёх установщиках использует общий помощник
 `api/_install_upload.py` (multipart → temp → установщик).
 
@@ -415,10 +439,18 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | `awg.py` | `/api/awg` | AmneziaWG (configs/up/down/warp/routing) |
 | `singbox.py` | `/api/singbox` | sing-box: configs/outbounds/**proxies**/subscriptions/**pool**/**test**/transparent (scope forward·self)/autostart |
 | `mihomo.py` | `/api/mihomo` | mihomo: configs/**proxies**/test/traffic/debug/install (+releases·local)/autostart |
+| `usque.py` / `warp_in_warp.py` | `/api/usque`, `/api/warp-in-warp` | WARP/MASQUE: регистрация, туннели, установка / двойной туннель |
+| `tgproxy.py` | `/api/tgproxy` | Telegram Tunnel: оба движка, секрет и `tg://proxy`-ссылка, установка/удаление |
+| `opera_proxy.py` | `/api/opera-proxy` | Opera Proxy: настройки, страны, старт/стоп, установка |
+| `dns_routing.py` | `/api/dns-routing` | правила «домен → свой DNS» |
+| `tunnel_monitor.py` / `tunnel_optimizer.py` | … | трафик по туннелям / MTU·буферы·BBR |
+| `update_checker.py` | `/api/updates` | проверка обновлений всех движков разом |
+| `block_detector.py` / `auto_remediation.py` / `geosite.py` | … | фоновой детектор блокировок / авто-починка / импорт geosite |
 | `connectivity.py` / `devices.py` | … | матрица связности / устройства LAN |
 | `diagnostics.py` | `/api/diagnostics` | ping/http/dns/conflicts/**known-conflicts**/firewall/system/**selfcheck** |
 | `healthcheck.py` | `/api/healthcheck` | autocircular-демон: enable/disable/run/status/config |
 | `backup.py` / `config_api.py` / `autostart.py` / `gui_update.py` / `logs.py` | … | бэкап / настройки / автозапуск / обновление GUI (+`/releases`) / логи (SSE) |
+| `v1_compat.py` | `/api/v1/*` | алиасы старых путей — чтобы внешние скрипты не сломались при переименованиях |
 
 > Полный список конкретных роутов — в docstring каждого файла `api/*.py`
 > (там перечислены методы и пути).
