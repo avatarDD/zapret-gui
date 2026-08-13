@@ -1,3 +1,5 @@
+
+
 # Zapret Web-GUI
 
 [![Release](https://img.shields.io/github/v/release/avatarDD/zapret-gui?style=flat-square)](https://github.com/avatarDD/zapret-gui/releases/latest)
@@ -284,7 +286,7 @@ GUI видит nfqws2 и тогда, когда его поднял не он, �
   приёмов desync для своего фильтра (TCP 443, HTTP 80, QUIC и т.д.);
   <img width="1973" height="1163" alt="Image" src="https://github.com/user-attachments/assets/6654dcda-a705-48c1-8391-5fa260d34908" />
 - **Превью** — показывает финальную командную строку перед применением;
-- доступны стратегии из INI-каталогов (`basic` / `advanced` / `direct` /
+- доступны стратегии из каталогов (`basic` / `advanced` / `direct` /
   `builtin`). Каталоги приезжают вместе со сборкой GUI и обновляются
   вместе с ней — отдельной кнопки «обновить каталоги» нет (источник, из
   которого они тянулись, закрыт, см.
