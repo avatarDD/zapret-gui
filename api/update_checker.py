@@ -3,7 +3,9 @@
 API-модуль Unified Update Checker.
 
 Эндпоинты:
-  GET  /api/updates         — кешированные результаты
+  GET  /api/updates         — кешированные результаты, сверенные с диском
+                              («последняя версия» из кеша, «установлен» —
+                              на сейчас: путь из строки проверяется stat'ом)
   POST /api/updates/check   — проверить все бинарники
   GET  /api/updates/status  — статус фонового процесса
   POST /api/updates/start   — запустить фоновую проверку

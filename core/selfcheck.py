@@ -342,9 +342,15 @@ def check_extra_engines() -> dict:
                     "нет — зарегистрируйте WARP-сессию на странице"
                     " «WARP/MASQUE»", level="info"))
         else:
+            # Перечисляем каталоги, где смотрели: «установлен» для usque —
+            # это ровно наличие исполняемого файла в одном из них, и на
+            # вопрос «почему GUI решил, что он установлен» отвечать нужно
+            # списком путей, а не общими словами (discussion #102).
+            from core.usque_manager import USQUE_BINARY_PATHS
             checks.append(_check(
                 "usque (WARP/MASQUE)", True,
-                "не установлен (раздел WARP/MASQUE → Установка)",
+                "не установлен (раздел WARP/MASQUE → Установка); искали в: %s"
+                % ", ".join(USQUE_BINARY_PATHS),
                 level="info"))
     except Exception as e:
         checks.append(_check("usque (WARP/MASQUE)", True,

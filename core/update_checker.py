@@ -18,6 +18,7 @@ Unified Update Checker: проверка обновлений ВСЕХ бина�
 """
 
 import json
+import os
 import re
 import threading
 import time
@@ -104,7 +105,19 @@ def check_all() -> dict:
         if r.get("has_update") and not r.get("installed"):
             r["has_update"] = False
 
+    # Время файла, по которому программа считается установленной. Ответ на
+    # «я ничего не ставил, а лампочка горит» (discussion #102) — это дата
+    # появления файла: по ней видно, когда и, значит, чем он там оказался.
+    for r in results:
+        p = r.get("path") or ""
+        if p and _binary_alive(p):
+            mtime = _path_mtime(p)
+            if mtime:
+                r["path_mtime"] = mtime
+
     updates_count = sum(1 for r in results if r.get("has_update"))
+
+    _log_installed_transitions(results)
 
     with _results_lock:
         _results = {
@@ -118,12 +131,99 @@ def check_all() -> dict:
     return _results
 
 
-def get_cached_results() -> dict:
-    """Получить кешированные результаты последней проверки."""
+def _binary_alive(path: str) -> bool:
+    """Лежит ли по пути исполняемый непустой файл ПРЯМО СЕЙЧАС.
+
+    Условие то же, по которому детекторы считают программу установленной
+    (файл + право на исполнение + ненулевой размер), — иначе сверка
+    расходилась бы с самой проверкой.
+    """
+    try:
+        return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK) \
+            and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def _path_mtime(path: str) -> int:
+    """mtime файла (0 — не прочитался)."""
+    try:
+        return int(os.path.getmtime(path))
+    except OSError:
+        return 0
+
+
+def _log_installed_transitions(results: list) -> None:
+    """Отметить в логе появление и пропажу бинарников между проверками.
+
+    Лампочка «Установлен» может зажечься сама — не потому, что GUI врёт,
+    а потому, что файл действительно появился (обрыв установки, чужой
+    пакет, остатки старой версии). Разобраться постфактум было нечем:
+    таблица показывает состояние, но не момент и не путь. Теперь в логе
+    остаются отметка времени и путь — с ними видно, что именно GUI нашёл.
+    """
     with _results_lock:
-        if _results:
-            return _results
-    return {"ok": True, "results": [], "updates_count": 0, "checked_at": 0}
+        prev = {r.get("name"): r for r in ((_results or {}).get("results") or [])}
+    if not prev:
+        return
+    for r in results:
+        was = prev.get(r.get("name"))
+        if was is None:
+            continue
+        if bool(was.get("installed")) == bool(r.get("installed")):
+            continue
+        if r.get("installed"):
+            log.info("update-checker: %s появился: %s%s"
+                     % (r.get("name"), r.get("path") or "путь неизвестен",
+                        (" (%s)" % r.get("current")) if r.get("current") else ""),
+                     source="update_checker")
+        else:
+            log.info("update-checker: %s пропал (был %s)"
+                     % (r.get("name"), was.get("path") or "путь неизвестен"),
+                     source="update_checker")
+
+
+def _revalidate_row(row: dict) -> dict:
+    """Сверить строку результата с диском.
+
+    Проверка ходит в GitHub и потому кешируется на сутки, но «установлен»
+    — факт локальный: файл, найденный вчера, мог исчезнуть. Отдавать его
+    из кеша значит показывать «Установлен: Да» для программы, которой на
+    роутере уже нет, — ровно то, чем страница «Обновления» спорила с
+    собственной страницей установки компонента (discussion #102).
+    """
+    r = dict(row)
+    path = r.get("path") or ""
+    if not r.get("installed") or not path or _binary_alive(path):
+        return r
+    r["installed"] = False
+    r["has_update"] = False
+    r["current"] = ""
+    r["path"] = ""
+    r["path_mtime"] = 0
+    # Показываем, что именно исчезло: иначе после самокоррекции строка
+    # выглядит так, будто GUI и не находил ничего.
+    r["vanished_path"] = path
+    return r
+
+
+def get_cached_results() -> dict:
+    """Кешированные результаты последней проверки, сверенные с диском.
+
+    Сверка дешёвая — один stat на строку, сеть не трогаем: «последняя
+    версия» остаётся из кеша, а «установлен» отвечает за состояние на
+    сейчас.
+    """
+    with _results_lock:
+        cached = _results
+    if not cached:
+        return {"ok": True, "results": [], "updates_count": 0, "checked_at": 0}
+
+    results = [_revalidate_row(r) for r in (cached.get("results") or [])]
+    out = dict(cached)
+    out["results"] = results
+    out["updates_count"] = sum(1 for r in results if r.get("has_update"))
+    return out
 
 
 def _check_zapret() -> dict:
@@ -142,6 +242,10 @@ def _check_zapret() -> dict:
             "has_update": bool(latest.get("version") and
                                installed.get("version") and
                                latest["version"] != installed["version"]),
+            # binary_path приходит из конфига и заполнен всегда — как
+            # «что нашли» он годится только при installed.
+            "path": (installed.get("binary_path", "")
+                     if installed.get("installed") else ""),
         }
     except Exception as e:
         return {"name": "zapret2", "display_name": "zapret2",
@@ -162,6 +266,7 @@ def _check_singbox() -> dict:
             "current": result.get("installed", {}).get("version", ""),
             "latest": result.get("latest", {}).get("version", ""),
             "has_update": result.get("has_update", False),
+            "path": result.get("installed", {}).get("path", ""),
         }
     except Exception as e:
         return {"name": "singbox", "display_name": "sing-box",
@@ -182,6 +287,7 @@ def _check_mihomo() -> dict:
             "current": result.get("installed", {}).get("version", ""),
             "latest": result.get("latest", {}).get("version", ""),
             "has_update": result.get("has_update", False),
+            "path": result.get("installed", {}).get("path", ""),
         }
     except Exception as e:
         return {"name": "mihomo", "display_name": "mihomo",
@@ -217,6 +323,9 @@ def _check_awg() -> dict:
             "current": inst_info.get("go_version") or "",
             "latest": result.get("latest_go") or "",
             "has_update": bool(result.get("update_available")),
+            # У AWG два бинарника; показываем ведущий (amneziawg-go), а
+            # если установка записана только в settings — путь пустой.
+            "path": inst_info.get("amneziawg_go") or inst_info.get("awg") or "",
         }
     except Exception as e:
         return {"name": "awg", "display_name": "AmneziaWG",
@@ -270,7 +379,9 @@ def _check_usque() -> dict:
             # Путь, по которому найден бинарник. «Установлен: Да» у usque —
             # это ровно «в одном из стандартных каталогов лежит исполняемый
             # файл usque»; когда пользователь его не ставил, единственный
-            # способ разобраться — увидеть, что именно нашлось.
+            # способ разобраться — увидеть, что именно нашлось. Поэтому
+            # путь печатается прямо в строке таблицы, а не прячется в
+            # подсказке (discussion #102).
             "path": env.get("binary", ""),
         }
     except Exception as e:
@@ -336,6 +447,7 @@ def _check_tgproto() -> dict:
             "current": current,
             "latest": latest,
             "has_update": bool(latest and current and latest != current),
+            "path": detect.get("path", ""),
         }
     except Exception as e:
         return {"name": "tgproto", "display_name": "tg-mtproxy-client",
@@ -364,6 +476,9 @@ def _check_tgwsproxy() -> dict:
             "latest": latest,
             "has_update": bool(latest and current and
                                not _pkg_version_matches_tag(current, latest)),
+            # Движок ставится пакетом; «что нашли» — его init.d-скрипт,
+            # по нему же detect() и считает пакет установленным.
+            "path": detect.get("path", ""),
         }
     except Exception as e:
         return {"name": "tgwsproxy", "display_name": "tg-ws-proxy-go",
@@ -391,6 +506,7 @@ def _check_opera() -> dict:
             "current": current,
             "latest": latest,
             "has_update": bool(latest and current and latest != current),
+            "path": env.get("binary", ""),
         }
     except Exception as e:
         return {"name": "opera", "display_name": "opera-proxy",
