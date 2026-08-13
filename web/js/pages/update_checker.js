@@ -158,9 +158,28 @@ const UpdateCheckerPage = (() => {
                        ${r.has_update ? "Обновить" : (r.installed ? "Открыть" : "Установить")}
                    </button>`
                 : "";
+            // «Установлен: Да» у того, что пользователь не ставил, —
+            // вопрос без ответа, пока не видно, ЧТО нашёл GUI. Показываем
+            // путь и дату файла прямо в строке: по ним видно и где лежит,
+            // и когда появился (discussion #102).
+            const found = r.installed && r.path
+                ? `<div class="text-muted" style="font-size:11px;margin-top:2px;">
+                       <code>${esc(r.path)}</code>${r.path_mtime
+                           ? " · " + new Date(r.path_mtime * 1000).toLocaleString()
+                           : ""}
+                   </div>`
+                : "";
+            // Файл мог исчезнуть уже после проверки — тогда строка
+            // самокорректируется на сервере, а здесь объясняем почему.
+            const vanished = !r.installed && r.vanished_path
+                ? `<div class="text-muted" style="font-size:11px;margin-top:2px;">
+                       найденный при проверке <code>${esc(r.vanished_path)}</code> исчез
+                   </div>`
+                : "";
+
             html += `<tr>
                 <td><strong>${esc(r.display_name || r.name)}</strong></td>
-                <td${r.path ? ` title="${esc(r.path)}"` : ""}><span class="status-dot ${installedCls}"></span> ${r.installed ? "Да" : "Нет"}</td>
+                <td${r.path ? ` title="${esc(r.path)}"` : ""}><span class="status-dot ${installedCls}"></span> ${r.installed ? "Да" : "Нет"}${found}${vanished}</td>
                 <td><code>${esc(r.current || "-")}</code></td>
                 <td><code class="${updateCls}">${esc(r.latest || "-")}</code></td>
                 <td>${r.has_update ? '<span style="color:var(--warning);font-weight:600;">← доступно</span>' : ""}

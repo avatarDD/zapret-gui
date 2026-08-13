@@ -44,6 +44,18 @@ _IFACE_PREFIX_RE = re.compile(r"^[a-zA-Z0-9_-]{1,12}$")
 # префикс получают только профили, которым имя выдаётся впервые.
 DEFAULT_IFACE_PREFIX = "usque"
 
+# Каталоги, где ищется бинарник usque. Список вынесен наружу намеренно:
+# «установлен» для usque — это ровно «в одном из этих путей лежит
+# исполняемый файл», и когда GUI зажигает лампочку у того, кто ничего не
+# ставил (discussion #102), пользователю нужно видеть, ГДЕ мы смотрели.
+# Самодиагностика печатает этот список, когда бинарник не найден.
+USQUE_BINARY_PATHS = (
+    "/opt/usr/bin/usque",
+    "/opt/bin/usque",
+    "/usr/local/bin/usque",
+    "/usr/bin/usque",
+)
+
 _MAX_DIAGNOSTIC_LINES = 40
 # В режиме отладки держим заметно более длинный хвост: 40 строк хватает
 # на «почему не поднялся», но не на «почему отваливается через час».
@@ -112,16 +124,19 @@ class UsqueManager:
         }
 
     def _find_binary(self) -> str:
-        """Поиск бинарника usque в стандартных путях."""
-        candidates = [
-            "/opt/usr/bin/usque",
-            "/opt/bin/usque",
-            "/usr/local/bin/usque",
-            "/usr/bin/usque",
-        ]
-        for p in candidates:
-            if os.path.isfile(p) and os.access(p, os.X_OK):
-                return p
+        """Поиск бинарника usque в стандартных путях.
+
+        Пустой файл установкой не считаем: оборванная закачка оставляет
+        нулевой файл с выставленным правом на исполнение, и GUI начинал
+        рапортовать «установлен» о том, что запустить нельзя.
+        """
+        for p in USQUE_BINARY_PATHS:
+            try:
+                if (os.path.isfile(p) and os.access(p, os.X_OK)
+                        and os.path.getsize(p) > 0):
+                    return p
+            except OSError:
+                continue
         return ""
 
     def _get_version(self, binary: str) -> str:
