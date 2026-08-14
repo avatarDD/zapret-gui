@@ -11,49 +11,6 @@ import unittest
 from unittest import mock
 
 
-class TestGeositeEnumFix(unittest.TestCase):
-    """geosite_importer: правильная нумерация v2ray Domain.Type enum.
-
-    Было: typ in (1,3,4) — держал Regex(1), отбрасывал Domain(2, ~99% записей).
-    Стало: typ in (0,2,3) — Plain/Domain/Full, без Regex(1).
-    """
-
-    @staticmethod
-    def _entry(typ: int, domain: str) -> bytes:
-        def enc(fn, wt):
-            return bytes([(fn << 3) | wt])
-
-        def varint(n):
-            o = b""
-            while True:
-                b = n & 0x7F
-                n >>= 7
-                o += bytes([b | 0x80]) if n else bytes([b])
-                if not n:
-                    break
-            return o
-        return (enc(1, 0) + varint(typ)
-                + enc(2, 2) + varint(len(domain)) + domain.encode())
-
-    def test_domain_type_kept(self):
-        from core.geosite_importer import _parse_domain_entry
-        # type 2 = Domain (RootDomain) — основной тип
-        self.assertEqual(_parse_domain_entry(self._entry(2, "example.com")),
-                         "example.com")
-
-    def test_plain_and_full_kept(self):
-        from core.geosite_importer import _parse_domain_entry
-        self.assertEqual(_parse_domain_entry(self._entry(0, "plain.com")),
-                         "plain.com")
-        self.assertEqual(_parse_domain_entry(self._entry(3, "full.com")),
-                         "full.com")
-
-    def test_regex_excluded(self):
-        from core.geosite_importer import _parse_domain_entry
-        # type 1 = Regex — НЕ домен, должен отбрасываться
-        self.assertEqual(_parse_domain_entry(self._entry(1, "re.*x")), "")
-
-
 class TestAutoRemediationOperaRemoved(unittest.TestCase):
     """auto_remediation: opera убран (не метод unified-слоя → ValueError)."""
 

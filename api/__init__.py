@@ -42,7 +42,6 @@ def register_routes(app):
     from api.usque import register as reg_usque
     from api.tgproxy import register as reg_tgproxy
     from api.block_detector import register as reg_block_detector
-    from api.geosite import register as reg_geosite
     from api.opera_proxy import register as reg_opera_proxy
     from api.update_checker import register as reg_update_checker
     from api.auto_remediation import register as reg_auto_remediation
@@ -81,7 +80,6 @@ def register_routes(app):
     reg_usque(app)
     reg_tgproxy(app)
     reg_block_detector(app)
-    reg_geosite(app)
     reg_opera_proxy(app)
     reg_update_checker(app)
     reg_auto_remediation(app)

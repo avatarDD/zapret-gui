@@ -99,9 +99,8 @@
 - [ ] `core/tunnel_monitor.py`, `core/tunnel_optimizer.py` (794),
       `api/*`, `web/js/pages/*`
 
-### Кластер F — DNS routing / providers / GeoHide / geosite
-- [ ] `core/dns_routing.py`, `core/dns_providers.py`, `core/geosite_importer.py`,
-      `api/dns_routing.py`, `api/geosite.py`, `web/js/pages/dns_routing.js`
+### Кластер F — DNS routing / GeoHide
+- [ ] `core/dns_routing.py`, `api/dns_routing.py`, `web/js/pages/dns_routing.js`
 
 ### Кластер G — Block detector (DPI filtering)
 - [ ] `core/block_detector.py` (527), `api/block_detector.py`, `web/js/pages/block_detector.js`
