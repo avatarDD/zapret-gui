@@ -405,10 +405,9 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | `tgproxy_manager.py` / `tgproxy_redirect.py` | Telegram Tunnel: оба движка (`tg-ws-proxy-go`, резервный `tg-mtproxy-client`), секрет и `tg://proxy`, заворот CIDR датацентров. |
 | `opera_proxy_manager.py` / `opera_proxy_watchdog.py` / `opera_proxy_chain.py` | Opera VPN (SurfEasy): локальный HTTP/SOCKS5-прокси, сторож с TCP-пробой, цепочка через другой транспорт. |
 | `mihomo_config.py` / `mihomo_routing.py` / `mihomo_watchdog.py` | Генерация clash-YAML, доменный роутинг mihomo, авто-рестарт зависшего инстанса. |
-| `dns_routing.py` / `dns_providers.py` | Правила «домен → свой DNS» + каталог публичных резолверов (DoH/DoT). |
+| `dns_routing.py` | Правила «домен → свой DNS». Каталог публичных резолверов (DoH/DoT) — в `routing/doh_resolver.py`. |
 | `tunnel_monitor.py` / `tunnel_optimizer.py` | Метрики туннелей (rx/tx, latency) / MTU·PMTU, TCP-буферы, BBR по профилям. |
 | `auto_remediation.py` | Авто-починка: по сигналам мониторинга поднимает упавшее и переключает метод. |
-| `geosite_importer.py` | Импорт geosite/geoip-баз для алиасов маршрутизации. |
 | `iface_socks.py` | SOCKS-прокси, привязанный к интерфейсу (`SO_BINDTODEVICE`) — регистрация usque/WARP через уже работающий обход. |
 
 ---

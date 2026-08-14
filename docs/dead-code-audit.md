@@ -32,7 +32,25 @@
 
 ---
 
-## A. Подсистема geosite — мертва целиком (474 строки)
+## A. Подсистема geosite — мертва целиком (474 строки) — ✅ УДАЛЕНО
+
+> Выполнено. Удалены `api/geosite.py`, `core/geosite_importer.py`,
+> `core/dns_providers.py`, `tests/test_geosite_importer.py`,
+> `tests/test_dns_providers.py`, класс `TestGeositeEnumFix` из
+> `tests/test_dev_merge_regressions.py`, регистрация в `api/__init__.py`,
+> строки в `CoderManual.md` и `TESTING_PLAN.md`. Историческая таблица
+> дефектов в `TESTING_PLAN.md` (строки 130, 146) сохранена намеренно — это
+> лог найденного, а не живой индекс.
+>
+> Проверка: 2670 → 2652 теста (минус ровно 18 удалённых, пересчитано
+> поимённо), 0 падений, `make lint` чист, JS 11/11, `register_routes`
+> поднимает 760 роутов, geosite-роутов не осталось, живой
+> `doh_resolver` цел.
+>
+> Расхождение каталогов зафиксировано в `CHANGELOG.md`: в мёртвом файле
+> было 13 DNS-провайдеров против 3 в живом `doh_resolver.KNOWN_PROVIDERS`.
+
+
 
 Самая крупная находка. Три модуля образуют замкнутую цепочку, в которую
 никто не входит: у `/api/geosite/*` **нет ни одного вызова** из `web/js`
