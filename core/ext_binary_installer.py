@@ -490,6 +490,12 @@ _ELF_MACHINES = {
 }
 
 
+def _host_bits() -> int:
+    """Разрядность системы (по интерпретатору — он собран под неё же)."""
+    import sys
+    return 64 if sys.maxsize > 2 ** 32 else 32
+
+
 def _elf_arch(path: str):
     """
     (arch, error): что за файл лежит по пути.
@@ -497,6 +503,11 @@ def _elf_arch(path: str):
     arch — наше имя архитектуры ('mipsel'/'mips'/'aarch64'/'armv7'/
     'x86_64') либо '' если распознать не удалось. error — человеческое
     объяснение, если файл заведомо не исполняемый.
+
+    Разрядность (EI_CLASS) проверяется отдельно от e_machine: 64-битная
+    сборка на 32-битном роутере — самый частый способ получить «Exec
+    format error», и ловить её нужно даже когда e_machine нам незнаком
+    (mips64el, riscv и прочее, чего нет в таблице).
     """
     try:
         with open(path, "rb") as f:
@@ -516,6 +527,13 @@ def _elf_arch(path: str):
 
     if len(head) < 20:
         return "", "ELF-заголовок обрезан — файл повреждён"
+
+    bits = 64 if head[4] == 2 else 32     # EI_CLASS: 1 = 32-bit, 2 = 64-bit
+    host_bits = _host_bits()
+    if bits != host_bits:
+        return "", ("%d-битная сборка, а система %d-битная"
+                    % (bits, host_bits))
+
     little = head[5] == 1                 # EI_DATA: 1 = LSB, 2 = MSB
     machine = (head[18] | (head[19] << 8)) if little \
         else (head[19] | (head[18] << 8))

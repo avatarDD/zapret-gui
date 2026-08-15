@@ -29,16 +29,21 @@ from core import ext_binary_installer as ebi
 
 # Минимальные ELF-заголовки: 64 байта, дальше содержимое не важно —
 # _elf_arch читает только e_ident/e_machine.
-def _elf(machine: int, little: bool = True) -> bytes:
+def _elf(machine: int, little: bool = True, bits: int = 0) -> bytes:
     head = bytearray(64)
     head[0:4] = b"\x7fELF"
-    head[4] = 1                       # ELFCLASS32
+    head[4] = 2 if (bits or _host_bits()) == 64 else 1   # EI_CLASS
     head[5] = 1 if little else 2      # EI_DATA
     if little:
         head[18], head[19] = machine & 0xFF, machine >> 8
     else:
         head[18], head[19] = machine >> 8, machine & 0xFF
     return bytes(head) + b"\0" * 64
+
+
+def _host_bits() -> int:
+    import sys
+    return 64 if sys.maxsize > 2 ** 32 else 32
 
 
 ELF_MIPSEL = _elf(0x08, little=True)
@@ -78,6 +83,22 @@ class TestElfArch(unittest.TestCase):
         arch, err = ebi._elf_arch(self._write(b"<!DOCTYPE html><html>404"))
         self.assertEqual(arch, "")
         self.assertIn("HTML", err)
+
+    def test_wrong_bitness_is_reported(self):
+        """64-битная сборка на 32-битном роутере — ровно случай
+        пользователя: `od -c` показал `177 E L F 002` (EI_CLASS=2)."""
+        other = 32 if _host_bits() == 64 else 64
+        arch, err = ebi._elf_arch(self._write(_elf(0x08, bits=other)))
+        self.assertEqual(arch, "")
+        self.assertIn("битная", err)
+        self.assertIn(str(other), err)
+
+    def test_unknown_machine_with_wrong_bitness_still_caught(self):
+        """Даже незнакомый e_machine не должен проскочить по разрядности."""
+        other = 32 if _host_bits() == 64 else 64
+        arch, err = ebi._elf_arch(self._write(_elf(0xF3, bits=other)))
+        self.assertEqual(arch, "")
+        self.assertTrue(err)
 
 
 class TestVerifyInstalledBinary(unittest.TestCase):
