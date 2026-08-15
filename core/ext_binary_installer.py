@@ -83,42 +83,113 @@ def _package_manager() -> str:
 
 # ─────── Архитектуры ───────
 
-def detect_arch() -> str:
-    """Определить архитектуру системы."""
-    try:
-        r = subprocess.run(["uname", "-m"], capture_output=True, text=True, timeout=5)
-        m = (r.stdout or "").strip().lower()
-        if "aarch64" in m or "arm64" in m:
-            return "aarch64"
-        if "x86_64" in m or "x86-64" in m:
-            return "x86_64"
-        if "mipsel" in m:
-            return "mipsel"
-        if "mips" in m:
-            # `uname -m` на mips возвращает "mips" для обоих порядков байт;
-            # у массовых Keenetic (MT7621) это little-endian. Endianness
-            # надёжно даёт только байт-порядок работающего интерпретатора.
-            import sys
-            return "mipsel" if sys.byteorder == "little" else "mips"
-        if "armv7" in m or "armhf" in m:
-            return "armv7"
-    except Exception:
-        pass
-    # Fallback: opkg
+# Разрядность наших архитектур — для проверки правдоподобия детекта.
+_ARCH_BITS = {"aarch64": 64, "x86_64": 64,
+              "mipsel": 32, "mips": 32, "armv7": 32}
+
+
+def _arch_from_name(name: str) -> str:
+    """Наше имя архитектуры из произвольной строки (uname/opkg-арка)."""
+    m = (name or "").strip().lower()
+    if not m:
+        return ""
+    if "aarch64" in m or "arm64" in m:
+        return "aarch64"
+    if "x86_64" in m or "x86-64" in m or "amd64" in m:
+        return "x86_64"
+    # mipsel ДО mips: "mipsel-3.4" содержит и то и другое.
+    if "mipsel" in m or "mipsle" in m:
+        return "mipsel"
+    if "mips" in m:
+        # `uname -m` на mips возвращает "mips" для обоих порядков байт;
+        # у массовых Keenetic (MT7621) это little-endian. Endianness
+        # надёжно даёт только байт-порядок работающего интерпретатора.
+        import sys
+        return "mipsel" if sys.byteorder == "little" else "mips"
+    if "armv7" in m or "armhf" in m or m.startswith("arm"):
+        return "armv7"
+    return ""
+
+
+def _arch_from_opkg() -> str:
+    """
+    Архитектура по `opkg print-architecture` — по ПРИОРИТЕТУ, а не по
+    порядку строк.
+
+    Формат вывода: `arch <имя> <приоритет>`, и там перечислены ВСЕ
+    настроенные арки, а не только родная:
+
+        arch all 1
+        arch noarch 1
+        arch mipsel-3.4 10
+
+    Раньше мы возвращали первую строку, в которой нашлось хоть одно
+    знакомое слово. Достаточно чужой строки (лишний фид в opkg.conf —
+    в руководствах по Keenetic такое копипастят регулярно), оказавшейся
+    выше родной, чтобы на mipsel-роутер поехала aarch64-сборка. Родная
+    арка у opkg — с наибольшим приоритетом; `all`/`noarch` не про
+    процессор и пропускаются.
+    """
     try:
         r = subprocess.run(["opkg", "print-architecture"],
                            capture_output=True, text=True, timeout=5)
-        for line in (r.stdout or "").splitlines():
-            if "mipsel" in line:
-                return "mipsel"
-            if "mips" in line:
-                return "mips"
-            if "aarch64" in line:
-                return "aarch64"
-            if "arm" in line:
-                return "armv7"
     except Exception:
-        pass
+        return ""
+    best, best_prio = "", -1
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != "arch":
+            continue
+        name = parts[1]
+        if name.lower() in ("all", "noarch"):
+            continue
+        try:
+            prio = int(parts[2]) if len(parts) > 2 else 0
+        except ValueError:
+            prio = 0
+        arch = _arch_from_name(name)
+        if arch and prio > best_prio:
+            best, best_prio = arch, prio
+    return best
+
+
+def _arch_matches_host(arch: str) -> bool:
+    """Совместим ли детект с системой, на которой мы работаем.
+
+    Интерпретатор собран под эту же машину, поэтому его разрядность —
+    независимый свидетель: 64-битная арка при 32-битном userland
+    означает, что детект соврал (ровно так на mipsel-роутер уезжала
+    aarch64-сборка).
+
+    Проверка ОДНОСТОРОННЯЯ. Обратное сочетание — 32-битная арка на
+    64-битной системе — совершенно законно: так живут aarch64-роутеры с
+    32-битным Entware, и запрещать его нельзя.
+    """
+    return not (_ARCH_BITS.get(arch, 0) == 64 and _host_bits() == 32)
+
+
+def detect_arch() -> str:
+    """Определить архитектуру системы (uname, затем opkg)."""
+    uname = ""
+    try:
+        r = subprocess.run(["uname", "-m"], capture_output=True, text=True,
+                           timeout=5)
+        uname = (r.stdout or "").strip()
+    except Exception:
+        uname = ""
+
+    for source, value in (("uname -m", _arch_from_name(uname)),
+                          ("opkg print-architecture", _arch_from_opkg())):
+        if not value:
+            continue
+        if not _arch_matches_host(value):
+            log.warning("detect_arch: %s даёт %s, но userland 32-битный —"
+                        " игнорирую (иначе поставили бы 64-битный бинарник,"
+                        " который здесь не запускается)"
+                        % (source, value),
+                        source="ext_installer")
+            continue
+        return value
     return ""
 
 
