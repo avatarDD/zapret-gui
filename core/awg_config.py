@@ -590,6 +590,51 @@ def _min_crypto_padding(iface: dict):
     return min(vals) if vals else None
 
 
+def required_generation(cfg: dict) -> dict:
+    """
+    Какое поколение AmneziaWG нужно движку, чтобы применить этот конфиг.
+
+    Возвращает {"generation": "1.0"|"1.5"|"2.0"|"3.0", "fields": [...]},
+    где fields — человеко-читаемый список полей, из-за которых поднялась
+    планка. Нужно для диагностики `awg setconf … Unable to modify
+    interface: Invalid argument`: тулза передаёт значение демону, а тот
+    отвечает EINVAL, если поле его поколения не знает — снаружи видно
+    только «Invalid argument», хотя конфиг корректен, а стар движок.
+
+    Матрица поколений — .claude/skills/awg/SKILL.md §2.3:
+      1.0 — Jc/Jmin/Jmax, S1, S2, H1..H4 (одиночные uint)
+      1.5 — + I1..I5, J1..J3, Itime
+      2.0 — + S3, S4; диапазоны `N-M` у H1..H4
+      3.0 — + HeaderProtectionKey, ContentPaddingAddition, тайминги
+    """
+    cfg = cfg or {}
+    iface = cfg.get("interface") or {}
+    order = ["1.0", "1.5", "2.0", "3.0"]
+    generation, fields = "1.0", []
+
+    def bump(to: str, label: str):
+        nonlocal generation
+        fields.append(label)
+        if order.index(to) > order.index(generation):
+            generation = to
+
+    for key in ("I1", "I2", "I3", "I4", "I5", "J1", "J2", "J3", "Itime"):
+        if str(iface.get(key, "")).strip():
+            bump("1.5", key)
+    for key in ("S3", "S4"):
+        raw = str(iface.get(key, "")).strip()
+        if raw and raw != "0":
+            bump("2.0", key)
+    for key in ("H1", "H2", "H3", "H4"):
+        if "-" in str(iface.get(key, "")).strip():
+            bump("2.0", "%s (диапазон)" % key)
+    for key in AWG3_INTERFACE_FIELDS:
+        if str(iface.get(key, "")).strip():
+            bump("3.0", key)
+
+    return {"generation": generation, "fields": fields}
+
+
 def validate(cfg: dict) -> list:
     """
     Проверить структуру конфига. Возвращает список строк-ошибок.
