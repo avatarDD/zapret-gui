@@ -101,6 +101,65 @@ class TestElfArch(unittest.TestCase):
         self.assertTrue(err)
 
 
+class TestDetectArch(unittest.TestCase):
+    """Регрессия: на mipsel-роутере GUI поставил aarch64-сборку usque.
+
+    `e_machine` установленного файла — 0x00B7 (aarch64), EI_CLASS=2, а
+    роутер 32-битный mipsel. Ставилось всё через GUI, где архитектуру
+    выбрать нельзя — значит соврал автодетект.
+    """
+
+    def _opkg(self, out):
+        return mock.Mock(stdout=out, stderr="", returncode=0)
+
+    def test_opkg_picks_by_priority_not_by_line_order(self):
+        """Чужой фид выше родного в opkg.conf не должен решать."""
+        out = ("arch all 1\n"
+               "arch noarch 1\n"
+               "arch aarch64-3.10 6\n"      # лишний фид, идёт ПЕРВЫМ
+               "arch mipsel-3.4 10\n")      # родная арка, приоритет выше
+        with mock.patch.object(ebi.subprocess, "run",
+                               return_value=self._opkg(out)):
+            self.assertEqual(ebi._arch_from_opkg(), "mipsel")
+
+    def test_opkg_ignores_all_and_noarch(self):
+        out = "arch all 1\narch noarch 1\n"
+        with mock.patch.object(ebi.subprocess, "run",
+                               return_value=self._opkg(out)):
+            self.assertEqual(ebi._arch_from_opkg(), "")
+
+    def test_64bit_detection_rejected_on_32bit_host(self):
+        """Интерпретатор — независимый свидетель разрядности системы."""
+        with mock.patch.object(ebi, "_host_bits", return_value=32), \
+             mock.patch.object(ebi.subprocess, "run",
+                               side_effect=OSError("uname: fork failed")), \
+             mock.patch.object(ebi, "_arch_from_opkg",
+                               return_value="aarch64"):
+            self.assertEqual(ebi.detect_arch(), "")
+
+    def test_uname_wins_when_recognised(self):
+        with mock.patch.object(ebi.subprocess, "run",
+                               return_value=mock.Mock(stdout="mips\n")), \
+             mock.patch.object(ebi, "_host_bits", return_value=32):
+            self.assertIn(ebi.detect_arch(), ("mipsel", "mips"))
+
+    def test_32bit_arch_on_64bit_host_is_allowed(self):
+        """aarch64-роутер с 32-битным Entware — законная конфигурация."""
+        with mock.patch.object(ebi, "_host_bits", return_value=64):
+            self.assertTrue(ebi._arch_matches_host("armv7"))
+            self.assertTrue(ebi._arch_matches_host("mipsel"))
+
+    def test_falls_back_to_opkg_when_uname_fails(self):
+        with mock.patch.object(ebi.subprocess, "run",
+                               side_effect=OSError("no fork")), \
+             mock.patch.object(ebi, "_arch_from_opkg", return_value="mipsel"), \
+             mock.patch.object(ebi, "_host_bits", return_value=32):
+            self.assertEqual(ebi.detect_arch(), "mipsel")
+
+    def test_mipsel_before_mips_in_name(self):
+        self.assertEqual(ebi._arch_from_name("mipsel-3.4"), "mipsel")
+
+
 class TestVerifyInstalledBinary(unittest.TestCase):
 
     def _write(self, data: bytes) -> str:
