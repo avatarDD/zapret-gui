@@ -255,7 +255,14 @@ def register(app):
                 name, text=text, parsed=parsed, allow_overwrite=False
             )
             return {"ok": True, "config": cfg}
-        except (ValueError, FileExistsError) as e:
+        except FileExistsError:
+            # str(FileExistsError(name)) — это ровно имя, и пользователь
+            # видел тост из одного слова («router») вместо объяснения.
+            response.status = 409
+            return {"ok": False,
+                    "error": "Конфиг «%s» уже существует — выберите другое "
+                             "имя или откройте существующий" % name}
+        except ValueError as e:
             response.status = 400
             return {"ok": False, "error": str(e)}
         except Exception as e:

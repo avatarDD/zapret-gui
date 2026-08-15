@@ -374,6 +374,34 @@ PersistentKeepalive = 25
 
     // ══════════════ import / export / keypair ══════════════
 
+    /**
+     * Имя интерфейса из имени файла: только [A-Za-z0-9_.-], не длиннее
+     * 15 символов (IFNAMSIZ), не пустое. Кириллица транслитерируется —
+     * иначе от «Сервер Нидерланды.conf» не осталось бы ничего.
+     */
+    const TRANSLIT = {
+        а:'a', б:'b', в:'v', г:'g', д:'d', е:'e', ё:'e', ж:'zh', з:'z',
+        и:'i', й:'i', к:'k', л:'l', м:'m', н:'n', о:'o', п:'p', р:'r',
+        с:'s', т:'t', у:'u', ф:'f', х:'h', ц:'c', ч:'ch', ш:'sh', щ:'sch',
+        ъ:'', ы:'y', ь:'', э:'e', ю:'yu', я:'ya',
+    };
+
+    function safeIfaceName(fileName) {
+        let base = String(fileName || '').replace(/\.conf$/i, '');
+        base = base.replace(/[Ѐ-ӿ]/g, ch => {
+            const low = ch.toLowerCase();
+            const tr = TRANSLIT[low];
+            if (tr === undefined) return '';
+            return ch === low ? tr : (tr.charAt(0).toUpperCase() + tr.slice(1));
+        });
+        base = base.replace(/[^A-Za-z0-9_.-]+/g, '_')
+                   .replace(/_{2,}/g, '_')
+                   .replace(/^[_.-]+|[_.-]+$/g, '')
+                   .slice(0, 15)
+                   .replace(/[_.-]+$/, '');
+        return base || 'awg';
+    }
+
     function importFile(event) {
         const file = event.target.files && event.target.files[0];
         if (!file) return;
@@ -386,11 +414,16 @@ PersistentKeepalive = 25
                 editorText = text;
                 editorDirty = true;
                 if (creating && !currentName) {
-                    // подсказать имя из имени файла
-                    const base = file.name.replace(/\.conf$/i, '');
+                    // Подсказать имя из имени файла. Имя интерфейса ядро
+                    // ограничивает 15 символами и допускает только
+                    // [A-Za-z0-9_.-], а файл из приложения Amnezia
+                    // называется как угодно — «AmneziaWG (1).conf»,
+                    // «Сервер Нидерланды.conf». Раньше такое имя
+                    // подставлялось как есть и сохранение падало с
+                    // претензией к имени, которое пользователь не вводил.
                     const inp = document.getElementById('awg-cfg-name');
                     if (inp && !inp.value) {
-                        inp.value = base.slice(0, 15);
+                        inp.value = safeIfaceName(file.name);
                         currentName = inp.value;
                     }
                 }

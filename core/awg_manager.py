@@ -1438,14 +1438,55 @@ class AwgManager:
             rc, _out, err = _run([self._awg_bin(), "setconf", ifname, tmp_path],
                                  timeout=self._setconf_timeout())
             if rc != 0:
-                return {"ok": False, "message":
-                        "awg setconf %s: %s" % (ifname, err.strip())}
+                msg = "awg setconf %s: %s" % (ifname, err.strip())
+                hint = self._setconf_failure_hint(err, setconf_text)
+                return {"ok": False, "message": msg + hint}
             return {"ok": True}
         finally:
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
+
+    def _setconf_failure_hint(self, err: str, setconf_text: str) -> str:
+        """
+        Объяснение к отказу `awg setconf`.
+
+        «Unable to modify interface: Invalid argument» — это EINVAL от
+        ДЕМОНА: тулза ключ разобрала и передала дальше, а amneziawg-go
+        значение не принял. Практически всегда это разрыв поколений:
+        профиль из свежего клиента Amnezia приносит поля AWG 2.0 (S3/S4,
+        диапазоны `H1..H4`) или AWG 3+, а на роутере стоит движок
+        постарше. Снаружи же видно только «Invalid argument» —
+        пользователю неоткуда узнать, что чинить не конфиг, а движок.
+
+        (Другой частый случай — `Line unrecognized`: там ключ не понял
+        уже сам `awg`, и конфиг отброшен целиком.)
+        """
+        low = (err or "").lower()
+        if "invalid argument" not in low and "unrecognized" not in low:
+            return ""
+        try:
+            from core.awg_config import parse_conf, required_generation
+            need = required_generation(parse_conf(setconf_text))
+        except Exception:
+            return ""
+        if need["generation"] == "1.0":
+            return ""
+        versions = []
+        for label, path in (("amneziawg-go", self._amneziawg_go()),
+                            ("awg", self._awg_bin())):
+            rc, out, verr = _run([path, "--version"], timeout=3)
+            text = ((out or "") + (verr or "")).strip().splitlines()
+            if rc == 0 and text:
+                versions.append("%s: %s" % (label, text[0].strip()))
+        return (". Конфиг требует AmneziaWG %s (поля: %s) — похоже,"
+                " установленный движок их не понимает%s. Обновите"
+                " amneziawg-go и amneziawg-tools на странице «AmneziaWG →"
+                " Установка»; версии на обоих концах туннеля должны"
+                " совпадать."
+                % (need["generation"], ", ".join(need["fields"]),
+                   (" (" + "; ".join(versions) + ")") if versions else ""))
 
     def _do_down(self, name: str) -> dict:
         if not _valid_iface_name(name):
