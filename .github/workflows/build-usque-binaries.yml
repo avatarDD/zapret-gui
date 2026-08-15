@@ -274,14 +274,18 @@ jobs:
           fi
           echo "── after UPX ──"; ls -lh usque
 
-          if "$QEMU" ./usque version; then
+          # Важен не код возврата программы, а сам факт запуска: qemu
+          # отдаёт 255 при отказе загрузить ELF, шелл — 126.
+          runs() { set +e; timeout 20 "$QEMU" "$1" version >/dev/null 2>&1;
+                   rc=$?; set -e; [ "$rc" -lt 126 ]; }
+          if runs ./usque; then
             echo "✓ упакованный бинарник запускается под qemu"
           else
-            echo "✗ упакованный бинарник не запускается — откат к"\
-                 "неупакованному"
+            echo "✗ упакованный не запускается — откат к неупакованному"
             # Неупакованный обязан работать: если и он не запускается,
             # ломаем сборку — публиковать такое нельзя.
-            "$QEMU" ./usque.unpacked version
+            runs ./usque.unpacked \
+              || { echo "::error::и неупакованный не запускается"; exit 1; }
             mv usque.unpacked usque
           fi
           rm -f usque.unpacked

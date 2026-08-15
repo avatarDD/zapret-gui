@@ -223,24 +223,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # qemu — чем проверяем, что собранный (и упакованный UPX'ом)
+          # бинарник вообще запускается; x86_64 идёт на runner'е сам.
           - arch_name: mipsel-softfloat
             goos: linux
             goarch: mipsle
             gomips: softfloat
+            qemu: qemu-mipsel-static
           - arch_name: mips-softfloat
             goos: linux
             goarch: mips
             gomips: softfloat
+            qemu: qemu-mips-static
           - arch_name: aarch64
             goos: linux
             goarch: arm64
+            qemu: qemu-aarch64-static
           - arch_name: armv7
             goos: linux
             goarch: arm
             goarm: '7'
+            qemu: qemu-arm-static
           - arch_name: x86_64
             goos: linux
             goarch: amd64
+            qemu: ''
 
     steps:
       - name: Checkout amneziawg-go
@@ -273,7 +280,9 @@ jobs:
              || matrix.arch_name == 'armv7'
         run: |
           sudo apt-get update
-          sudo apt-get install -y upx-ucl
+          # qemu-user-static — не для сборки, а для проверки: упакованный
+          # бинарник надо хотя бы раз запустить до публикации.
+          sudo apt-get install -y upx-ucl qemu-user-static
           upx --version | head -1
 
       - name: Build
@@ -299,7 +308,7 @@ jobs:
           ls -lh amneziawg-go
           file amneziawg-go || true
 
-      - name: UPX compress
+      - name: UPX compress (verified under qemu)
         # Применяем УЖЕ ПОСЛЕ -s -w линка — это даёт максимальный
         # выигрыш (~50-70% от размера). --best — самый агрессивный
         # пресет, --lzma — LZMA-компрессор. Mipsel-binary падает с
@@ -308,10 +317,13 @@ jobs:
              || matrix.arch_name == 'mips-softfloat'
              || matrix.arch_name == 'armv7'
         working-directory: src
+        env:
+          QEMU: ${{ matrix.qemu }}
         run: |
           set -euo pipefail
           echo "── before UPX ──"
           ls -lh amneziawg-go
+          cp amneziawg-go amneziawg-go.unpacked
           # На mips Go-runtime использует sigaltstack + dynamic
           # allocations, которые UPX может ломать; --no-lzma безопаснее
           # на mips, но для armv7 LZMA работает стабильно.
@@ -324,9 +336,26 @@ jobs:
           fi
           echo "── after UPX ──"
           ls -lh amneziawg-go
-          # Smoke-test: UPX-распакованный бинарь должен хотя бы запускаться
-          # с `--help` (на host-arch — но мы не можем выполнить cross-arch).
           file amneziawg-go || true
+
+          # Smoke-test под qemu вместо прежнего `file`: UPX переписывает
+          # ELF-заголовок, а MIPS-ядро проверяет его строже прочих
+          # (ABI/FP-флаги) — неудачная упаковка даёт файл, который роутер
+          # отказывается исполнять. Важен не код возврата программы, а
+          # факт запуска: qemu отдаёт 255 при отказе загрузить ELF,
+          # шелл — 126.
+          runs() { set +e; timeout 20 "$QEMU" "$1" --version >/dev/null 2>&1;
+                   rc=$?; set -e; [ "$rc" -lt 126 ]; }
+          if runs ./amneziawg-go; then
+            echo "✓ упакованный бинарник запускается под qemu"
+          else
+            echo "✗ упакованный не запускается — откат к неупакованному"
+            runs ./amneziawg-go.unpacked \
+              || { echo "::error::и неупакованный не запускается"; exit 1; }
+            mv amneziawg-go.unpacked amneziawg-go
+          fi
+          rm -f amneziawg-go.unpacked
+          ls -lh amneziawg-go
 
       - name: Package
         run: |
