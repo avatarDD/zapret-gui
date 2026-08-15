@@ -29,6 +29,7 @@ const RoutingUnifiedPage = (() => {
     let legacyRules = [];     // /api/unified/legacy — старый формат
     let dnsmasqInfo = null;   // /api/routing/dnsmasq/status
     let dnsIntInfo = null;    // /api/routing/dns-intercept (перехват :53)
+    let killSwitch = null;    // /api/routing/killswitch (null — ещё не знаем)
     let ndmsInfo = null;      // /api/routing/ndms/status
     let environment = null;   // /api/awg/environment (платформа/firewall)
     let netEnv = null;        // /api/network/environment (роутер / ПК 1 NIC)
@@ -173,6 +174,9 @@ const RoutingUnifiedPage = (() => {
                 ]);
             dnsIntInfo = await API.get('/api/routing/dns-intercept')
                 .catch(() => null);
+            const ks = await API.get('/api/routing/killswitch')
+                .catch(() => null);
+            killSwitch = ks && ks.ok ? !!ks.enabled : null;
             interfaces  = (ifResp && ifResp.interfaces) || [];
             interfaceNotes = (ifResp && ifResp.notes) || [];
             namedLists  = (listResp && listResp.lists) || [];
@@ -350,7 +354,11 @@ const RoutingUnifiedPage = (() => {
     function renderBanners() {
         const box = document.getElementById('ru-banners');
         if (!box) return;
-        box.innerHTML = legacyBannerHtml() + pcModeHtml() + infraHtml();
+        const ks = killSwitchHtml();
+        box.innerHTML = legacyBannerHtml() + pcModeHtml() + infraHtml()
+            + (ks ? `<div style="font-size:12px; margin-bottom:12px;
+                                 display:flex; gap:10px; align-items:center;
+                                 flex-wrap:wrap;">${ks}</div>` : '');
     }
 
     // Локальный режим (задача №5): ПК/VPS без LAN-ролей — правила
@@ -428,6 +436,31 @@ const RoutingUnifiedPage = (() => {
                     onclick="RoutingUnifiedPage.toggleDnsIntercept(${on ? 'false' : 'true'})"
                     title="Перехватывать DNS-запросы LAN-клиентов (udp:53 → встроенный прокси поверх штатного резолвера). IP доменов из маршрутов попадают в маршрутизацию в момент запроса клиента — включая CDN-поддомены, как с dnsmasq. Клиенты с включённым DoH перехвату не видны.">
                 ${on ? 'Выключить DNS-перехват' : 'Включить DNS-перехват'}
+            </button>`;
+    }
+
+    /**
+     * Kill-switch: что делать с трафиком, пока туннель перезапускается.
+     *
+     * Без него окно рестарта (watchdog поднимает упавший туннель) —
+     * это окно утечки: маршруты интерфейса ядро выкидывает, таблица
+     * пустеет, policy-db идёт дальше до main, и трафик устройства уходит
+     * через провайдера. Выглядит как «маршрутизация работает
+     * нестабильно: на 2ip то туннель, то свой адрес».
+     */
+    function killSwitchHtml() {
+        if (killSwitch === null) return '';
+        const on = !!killSwitch;
+        return `<span class="text-muted">Kill-switch:
+                <strong>${on ? 'включён' : 'выключен'}</strong>
+                <span style="font-size:11px;">${on
+                    ? '— пока туннель лежит, трафик маршрутов дропается'
+                    : '— пока туннель перезапускается, трафик уходит через провайдера'}</span>
+            </span>
+            <button class="btn ${on ? 'btn-ghost' : 'btn-primary'} btn-sm"
+                    onclick="RoutingUnifiedPage.toggleKillSwitch(${on ? 'false' : 'true'})"
+                    title="Держать в таблице маршрутизации blackhole-маршрут. Пока туннель поднят, он проигрывает настоящему по метрике и ни на что не влияет; как только туннель упал — трафик маршрутов дропается вместо того, чтобы уйти мимо туннеля через провайдера.">
+                ${on ? 'Выключить kill-switch' : 'Включить kill-switch'}
             </button>`;
     }
 
@@ -610,6 +643,29 @@ const RoutingUnifiedPage = (() => {
         ].filter(Boolean).join(', ') || '—';
     }
 
+    /**
+     * Метод, при котором часть настроек маршрута не делает НИЧЕГО.
+     *
+     * Устройства и DSCP работают только с туннельными методами: applier
+     * помечает их skipped для direct/nfqws2. Раньше об этом сообщал
+     * только всплывающий тост в момент сохранения — маршрут «с
+     * устройствами» продолжал выглядеть настроенным, и пользователь
+     * искал причину в туннеле, firewall и чём угодно ещё, а трафик
+     * устройств просто шёл через провайдера.
+     */
+    function ignoredSelectorsNote(r) {
+        const hasSrc = (r.devices || []).length
+                     || (r.dscp != null && r.dscp !== '');
+        if (!hasSrc) return '';
+        const kind = _kindOf(r.method);
+        if (['awg', 'singbox', 'mihomo', 'warp'].includes(kind)) return '';
+        return `<div class="text-error" style="font-size:11px; margin-top:2px;">
+                    ⚠ устройства/DSCP не применяются: метод
+                    «${esc(r.method || '—')}» их не поддерживает —
+                    выберите туннель
+                </div>`;
+    }
+
     function rowHtml(r) {
         const st = statusMap[r.id] || {};
         const active = st.active_method || r.method;
@@ -627,7 +683,8 @@ const RoutingUnifiedPage = (() => {
         return `<tr>
             <td>${enabledDot} <strong>${esc(r.name)}</strong>
                 ${r.failover_enabled ? '<span class="text-muted" style="font-size:10px;"> failover</span>' : ''}</td>
-            <td style="font-size:12px;">${esc(trafficSummary(r))}</td>
+            <td style="font-size:12px;">${esc(trafficSummary(r))}
+                ${ignoredSelectorsNote(r)}</td>
             <td style="font-family:monospace; font-size:12px;">
                 ${esc(active)}${active !== r.method ? ` <span class="text-muted">(осн. ${esc(r.method)})</span>` : ''}
                 ${(r.fallbacks||[]).length ? `<br><span class="text-muted" style="font-size:10px;">↳ ${esc((r.fallbacks||[]).join(', '))}</span>` : ''}</td>
@@ -759,7 +816,11 @@ const RoutingUnifiedPage = (() => {
                     </div>
 
                     <label class="text-muted" style="padding-top:6px;">Метод</label>
-                    <select id="ru-method" class="form-control" style="max-width:320px;">${methodOptions(e.method)}</select>
+                    <div>
+                        <select id="ru-method" class="form-control" style="max-width:320px;"
+                                data-action="methodChanged">${methodOptions(e.method)}</select>
+                        <div id="ru-method-warn"></div>
+                    </div>
 
                     <label class="text-muted expert-only" style="padding-top:6px;">Fallback-методы</label>
                     <input id="ru-fallbacks" class="form-control expert-only" style="max-width:480px;"
@@ -796,7 +857,31 @@ const RoutingUnifiedPage = (() => {
                 </div>
             </div>`;
         renderDevicesBox();
+        renderMethodWarning();
         renderBanners();
+    }
+
+    /**
+     * Живое предупреждение под селектором метода: выбранный метод не
+     * умеет то, что уже настроено в маршруте. Считаем по ТЕКУЩЕМУ
+     * значению селектора и текущему списку устройств, а не по
+     * сохранённому маршруту — предупредить надо ДО сохранения.
+     */
+    function renderMethodWarning() {
+        const box = document.getElementById('ru-method-warn');
+        const sel = document.getElementById('ru-method');
+        if (!box || !sel || !editing) return;
+        const dscpRaw = (document.getElementById('ru-dscp')?.value || '').trim();
+        const hasSrc = (editing.devices || []).length || dscpRaw !== '';
+        const kind = _kindOf(sel.value);
+        const tunnel = ['awg', 'singbox', 'mihomo', 'warp'].includes(kind);
+        box.innerHTML = (hasSrc && !tunnel)
+            ? `<div class="text-error" style="font-size:11px; margin-top:4px; max-width:420px;">
+                   ⚠ Устройства и DSCP работают только с туннельными методами.
+                   С методом «${esc(sel.value)}» маршрут сохранится, но трафик
+                   выбранных устройств останется идти через провайдера.
+               </div>`
+            : '';
     }
 
     function newRoute() { editing = blankRoute(); renderEditor(); }
@@ -969,6 +1054,7 @@ const RoutingUnifiedPage = (() => {
             editing.devices.push({ ip, mac: mac || '', hostname: hostname || '' });
         }
         renderDevicesBox();
+        renderMethodWarning();
     }
 
     function addDeviceManual() {
@@ -984,6 +1070,7 @@ const RoutingUnifiedPage = (() => {
         if (!editing) return;
         editing.devices = (editing.devices || []).filter(x => x.ip !== ip);
         renderDevicesBox();
+        renderMethodWarning();
     }
 
     // ─────── save / CRUD ───────
@@ -1249,6 +1336,28 @@ const RoutingUnifiedPage = (() => {
         await refresh();
     }
 
+    async function toggleKillSwitch(enable) {
+        if (enable && !confirm(
+                'Включить kill-switch?\n\n'
+                + 'Пока туннель поднят — ничего не меняется. Как только он'
+                + ' упадёт или начнёт перезапускаться, трафик маршрутов'
+                + ' (устройства/CIDR/домены этого туннеля) будет'
+                + ' ДРОПАТЬСЯ, а не уходить через провайдера.\n\n'
+                + 'Это защита от утечки в обмен на пропадание интернета'
+                + ' у выбранных устройств на время простоя туннеля.'
+                + '\n\nПродолжить?')) {
+            return;
+        }
+        try {
+            const r = await API.post('/api/routing/killswitch',
+                                     { enabled: !!enable });
+            if (!r || !r.ok) throw new Error((r && r.error) || 'не удалось');
+            killSwitch = !!r.enabled;
+            Toast.success('Kill-switch: ' + (killSwitch ? 'включён' : 'выключен'));
+        } catch (e) { Toast.error(e.message); }
+        renderBanners();
+    }
+
     async function toggleDnsIntercept(enable) {
         if (enable) {
             const ok = window.confirm(
@@ -1319,9 +1428,18 @@ const RoutingUnifiedPage = (() => {
                 case 'toggleMonitor': toggleMonitor(el.checked); break;
                 case 'setVia': setVia(el.value); break;
                 case 'toggleDevicesAuto': toggleDevicesAuto(el.checked); break;
+                case 'methodChanged':
+                    // Запоминаем выбор сразу: renderEditor() рисует
+                    // селектор из editing.method, и без этого любая
+                    // перерисовка редактора (обновление списка, баннеров)
+                    // молча возвращала бы метод к прежнему значению.
+                    if (editing) editing.method = el.value;
+                    renderMethodWarning();
+                    break;
                 case 'setDscpPreset':
                     const dscpInput = document.getElementById('ru-dscp');
                     if (dscpInput) dscpInput.value = el.value;
+                    renderMethodWarning();
                     break;
             }
         });
@@ -1357,5 +1475,6 @@ const RoutingUnifiedPage = (() => {
         migrateLegacy, deleteLegacy, reapplyLowLevel,
         reapplyAll, previewSweep,
         runDnsmasqSetup, runDnsmasqRevert, toggleDnsIntercept,
+        toggleKillSwitch,
     };
 })();

@@ -510,10 +510,14 @@ class RoutingManager:
         # деградирует — об этом пишем в лог.
         masq = None
         if added:
-            from core.routing import masquerade
+            from core.routing import killswitch, masquerade
             fams = sorted({"v6" if a["family"] == "-6" else "v4"
                            for a in added})
             masq = masquerade.ensure_for_iface(ifname, families=fams)
+            # Пока туннель лежит, таблица пуста и правило не мешает
+            # трафику уйти через провайдера — kill-switch закрывает это
+            # окно (по умолчанию выключен, core/routing/killswitch).
+            killswitch.ensure(table, families=fams)
             if not masq.get("ok"):
                 log.warning("routing: masquerade для %s не повешен: %s"
                             " — трафик с LAN-устройств через этот CIDR"

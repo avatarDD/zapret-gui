@@ -283,15 +283,142 @@ def _diagnose_cidr_rule(rule) -> list:
     return checks
 
 
+def _forward_accept_present(ifname: str, family: str = "v4") -> bool:
+    """Есть ли ACCEPT форварда через ifname (FORWARD-политика обычно DROP)."""
+    cmd = "iptables" if family == "v4" else "ip6tables"
+    rc, out, _e = _run([cmd, "-t", "filter", "-S", "FORWARD"])
+    if rc != 0:
+        return False
+    return ("-o %s -j ACCEPT" % ifname) in out
+
+
+def _shadowing_rule(src: str, table: int, priority: int, family: str = "-4"):
+    """
+    Правило ВЫШЕ нашего (меньший приоритет), которое перехватит трафик
+    устройства раньше и уведёт его мимо туннеля.
+
+    Классика на роутерах: прошивка (ndm/multi-wan) ставит свои `ip rule`
+    с приоритетами 0..9999 — наши 10200 до них не доживают, и «правило на
+    месте, а трафик идёт через провайдера».
+    """
+    for line in _ip_rule_lines(family):
+        parts = line.split(":", 1)
+        if len(parts) != 2 or not parts[0].strip().isdigit():
+            continue
+        prio = int(parts[0].strip())
+        body = parts[1].strip()
+        if prio >= priority:
+            continue
+        if body.startswith("from all lookup local"):
+            continue                       # local — обязателен и безобиден
+        # Нас интересует то, что может поймать пакет этого устройства:
+        # `from all …` или `from <наша подсеть/ip> …`, ведущее НЕ в нашу
+        # таблицу.
+        if "lookup %d" % table in body:
+            continue                       # ведёт туда же, куда и мы
+        if body.startswith("from all") or ("from %s" % src) in body:
+            return "%d: %s" % (prio, body)
+    return ""
+
+
+def _route_get_from(dst: str, src: str):
+    """Через какой iface уйдёт пакет ОТ src К dst (как у форварда)."""
+    rc, out, _e = _run(["ip", "route", "get", dst, "from", src])
+    if rc != 0:
+        # Без iif ядро может отказать для чужого src — пробуем как есть.
+        return _route_get_dev(dst)
+    parts = (out.splitlines() or [""])[0].split()
+    if "dev" in parts:
+        i = parts.index("dev")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    return ""
+
+
 def _diagnose_device_rule(rule) -> list:
-    from core.routing.device_rule import _table_id_for
+    """
+    Полная цепочка device-правила, а не только факт наличия `ip rule`.
+
+    Раньше здесь проверялось единственное звено — что правило есть в
+    policy-db. Но «весь трафик с устройства в туннель» рвётся ещё в трёх
+    местах, и все они молчаливые: пустая таблица маршрутизации, снятый
+    masquerade (сервер дропает пакеты с LAN-src) и правило прошивки
+    ВЫШЕ нашего по приоритету. Отчёт должен показывать первый ✗, иначе
+    чинить приходится вслепую.
+    """
+    from core.routing.device_rule import DEVICE_PRIORITY, _table_id_for
     checks = []
-    table = _table_id_for(rule.target_iface)
-    src = rule.source_ip
-    found = any(("from %s" % src) in line and "lookup %d" % table in line
-                for line in _ip_rule_lines("-4") + _ip_rule_lines("-6"))
+    ifname = rule.target_iface
+    table = _table_id_for(ifname)
+    src = (rule.source_ip or "").strip()
+    v6 = ":" in src
+    family = "-6" if v6 else "-4"
+    fam = "v6" if v6 else "v4"
+
+    # 1. Само правило в policy-db.
+    src_short = src.split("/")[0]
+    found = any(("from %s" % src_short) in line and "lookup %d" % table in line
+                for line in _ip_rule_lines(family))
     checks.append(_check("ip rule from %s" % src, found,
-                         "table %d" % table))
+                         "table %d" % table if found else
+                         "нет в policy-db — правило не применено"
+                         " (интерфейс лежал в момент apply?)"))
+
+    # 2. Таблице есть куда слать.
+    dev = _table_default_iface(table, family)
+    checks.append(_check(
+        "default-route в table %d" % table, dev == ifname,
+        ("dev %s" % dev) if dev else
+        "нет default — пакет попадёт в пустую таблицу и уйдёт по main"
+        " (то есть через провайдера)"))
+
+    # 3. MASQUERADE: без него сервер дропнет пакеты с LAN-src.
+    mq = _masquerade_present(ifname, fam)
+    checks.append(_check(
+        "masquerade на %s" % ifname, mq,
+        "" if mq else "нет — пакеты уйдут с адресом устройства (192.168.x.y),"
+                      " и сервер туннеля их отбросит"))
+
+    # 4. FORWARD-ACCEPT: политика FORWARD на роутерах — DROP.
+    fw = _forward_accept_present(ifname, fam)
+    checks.append(_check(
+        "форвард LAN→%s разрешён" % ifname, fw,
+        "" if fw else "нет ACCEPT в FORWARD — трафик С УСТРОЙСТВ режется"
+                      " (с самого роутера при этом работает)"))
+
+    # 5. Куда уходит трафик, пока туннель перезапускается.
+    #
+    # Это и есть «работает нестабильно, на 2ip то туннель, то провайдер»:
+    # watchdog кладёт интерфейс, ядро выкидывает его маршруты, таблица
+    # пустеет — и policy-db идёт дальше, до main.
+    try:
+        from core.routing import killswitch
+        ks = killswitch.status(table, family)
+        checks.append(_check(
+            "kill-switch (не выпускать мимо туннеля)",
+            True,
+            "включён — пока туннель лежит, трафик устройства дропается"
+            if ks["present"] else
+            "выключен: пока туннель перезапускается, трафик устройства"
+            " уходит через провайдера (включается на странице"
+            " «Маршрутизация»)"))
+    except Exception:
+        pass
+
+    # 6. Не перебивает ли нас правило прошивки.
+    shadow = _shadowing_rule(src_short, table, DEVICE_PRIORITY, family)
+    checks.append(_check(
+        "нет правила выше нашего", not shadow,
+        "" if not shadow else
+        "«%s» стоит выше (приоритет < %d) и уводит трафик раньше"
+        % (shadow, DEVICE_PRIORITY)))
+
+    # 7. Контрольный вопрос ядру: куда реально уйдёт пакет устройства.
+    if found and not v6:
+        via = _route_get_from("1.1.1.1", src_short)
+        checks.append(_check(
+            "пакет от %s уходит в %s" % (src_short, ifname), via == ifname,
+            "ядро отправит через %s" % (via or "?")))
     return checks
 
 
@@ -376,12 +503,35 @@ def diagnose() -> dict:
                 kind, _target = parse_method(method)
             except ValueError:
                 kind = ""
-            if kind not in ("awg", "singbox", "mihomo"):
-                checks.append(_check(
-                    "метод", True,
-                    "%s — производных правил не требует" % (method or "?")))
+            has_src = bool(route.devices) or route.dscp is not None
+            # `warp` (usque/MASQUE) раскладывается applier'ом тем же путём,
+            # что awg/singbox/mihomo (см. applier.apply_route), но здесь его
+            # не было — и маршруты через WARP отчёт молча объявлял
+            # «не требующими правил».
+            if kind not in ("awg", "singbox", "mihomo", "warp"):
+                if has_src:
+                    # Устройства/DSCP работают ТОЛЬКО с туннельным методом.
+                    # Маршрут выглядит настроенным, а трафик устройств идёт
+                    # мимо — тот самый «на 2ip адрес провайдера».
+                    checks.append(_check(
+                        "метод", False,
+                        "%s — но у маршрута выбраны устройства/DSCP, а они"
+                        " работают только с туннелем (awg:/singbox:/mihomo:/"
+                        "warp:). Сейчас трафик этих устройств никуда не"
+                        " заворачивается" % (method or "?")))
+                else:
+                    checks.append(_check(
+                        "метод", True,
+                        "%s — производных правил не требует" % (method or "?")))
                 unified_report.append(entry)
                 continue
+            if method != route.method:
+                # Failover увёл маршрут на запасной метод: в списке маршрутов
+                # виден основной, а работает другой.
+                checks.append(_check(
+                    "активный метод", True,
+                    "%s (основной — %s, переключил failover)"
+                    % (method, route.method)))
             resolved = route.destination.resolve()
             if resolved.get("domains"):
                 present = _dom_rule_id(route.id) in known

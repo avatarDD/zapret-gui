@@ -156,9 +156,18 @@ def apply_device_rule(rule: DeviceRoutingRule) -> dict:
         masq_status = "ok" if mq.get("ok") else (
             "error: %s" % mq.get("error"))
 
+        # Kill-switch (по умолчанию выключен, см. core/routing/killswitch):
+        # без него в момент, когда туннель лежит, таблица пуста, правило
+        # ничего не решает и трафик устройства уходит через провайдера.
+        from core.routing import killswitch
+        ks = killswitch.ensure(table, families=(fam,))
+        ks_status = ("" if ks.get("skipped")
+                     else (", kill-switch=ok" if ks.get("ok")
+                           else ", kill-switch=error: %s" % ks.get("error")))
+
         log.info("routing: device-правило %s применено (src=%s → %s"
-                 " table %d, masquerade=%s)"
-                 % (rule.id, src, ifname, table, masq_status),
+                 " table %d, masquerade=%s%s)"
+                 % (rule.id, src, ifname, table, masq_status, ks_status),
                  source="routing")
 
         return {
@@ -187,6 +196,13 @@ def remove_device_rule(rule: DeviceRoutingRule) -> dict:
         # MASQUERADE убираем только если на этот iface не осталось
         # никаких других включённых routing-rules (cidr/device/domain),
         # которым он нужен.
+        #
+        # А вот blackhole kill-switch'а здесь НЕ трогаем: сюда же приходит
+        # снятие правил при уходе интерфейса вниз (rules остаются в
+        # storage), и именно в этот момент blackhole и должен держать
+        # трафик, пока туннель перезапускается. Снимается он в
+        # killswitch.ensure() — как только опция выключена — и sweeper'ом
+        # вместе с таблицей исчезнувшего интерфейса.
         try:
             from core.routing import masquerade
             masquerade.remove_if_unused(rule.target_iface,
