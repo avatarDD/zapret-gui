@@ -230,6 +230,14 @@ class UnifiedRoute:
     @staticmethod
     def from_dict(d: dict):
         d = d or {}
+        # Метод по умолчанию — только когда поля НЕТ вовсе (старые
+        # payload'ы, импорт). Присланная пустая строка — это «в форме
+        # ничего не выбралось», и молча превращать её в direct нельзя:
+        # маршрут сохранялся как рабочий, а на деле не делал ничего —
+        # устройства с методом direct не маршрутизируются в принципе.
+        if "method" in d and not str(d.get("method") or "").strip():
+            raise ValueError("Не выбран метод маршрута (через что пускать "
+                             "трафик)")
         return UnifiedRoute(
             route_id=d.get("id") or "",
             name=d.get("name") or "",

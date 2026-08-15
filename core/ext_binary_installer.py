@@ -456,6 +456,116 @@ def install_binary(source: str, dest: str) -> bool:
         return False
 
 
+# ─────── проверка «а это вообще запустится?» ───────
+#
+# Мотив: пользователь получал всплывающее «[Errno 8] Exec format error:
+# '/opt/usr/bin/usque'» — рабочий бинарник был затёрт файлом, который ядро
+# отказывается исполнять (архив вместо ELF, сборка под другой порядок байт,
+# битая упаковка). Установщик рапортовал успех, потому что не проверял
+# НИЧЕГО, кроме факта записи файла. Проверяем в два шага: сначала дёшево по
+# заголовку (без exec — работает и для чужой архитектуры), затем реальным
+# запуском там, где это возможно.
+
+# Сигнатуры не-ELF файлов, которые чаще всего приезжают вместо бинарника.
+_MAGIC_HINTS = (
+    (b"\x1f\x8b",      "это gzip-архив (.gz), а не бинарник — его нужно"
+                       " распаковать"),
+    (b"BZh",           "это bzip2-архив, а не бинарник"),
+    (b"\xfd7zXZ\x00",  "это xz-архив, а не бинарник"),
+    (b"PK\x03\x04",    "это zip-архив, а не бинарник"),
+    (b"!<arch>",       "это ar-архив (.ipk/.deb), а не бинарник — такой"
+                       " файл ставится пакетным менеджером"),
+    (b"<!DOCTYPE",     "это HTML-страница (скачалась ошибка сервера, а не"
+                       " файл)"),
+    (b"<html",         "это HTML-страница (скачалась ошибка сервера, а не"
+                       " файл)"),
+)
+
+# e_machine → архитектуры, на которых такой ELF исполним.
+_ELF_MACHINES = {
+    0x08: "mips",       # MIPS (порядок байт различаем по EI_DATA)
+    0x28: "armv7",
+    0xB7: "aarch64",
+    0x3E: "x86_64",
+}
+
+
+def _elf_arch(path: str):
+    """
+    (arch, error): что за файл лежит по пути.
+
+    arch — наше имя архитектуры ('mipsel'/'mips'/'aarch64'/'armv7'/
+    'x86_64') либо '' если распознать не удалось. error — человеческое
+    объяснение, если файл заведомо не исполняемый.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+    except OSError as e:
+        return "", "файл не читается: %s" % e
+
+    if not head:
+        return "", "файл пустой (0 байт) — закачка оборвалась"
+    if head[:2] == b"#!":
+        return "", ""                     # скрипт — не наше дело, пропускаем
+    if head[:4] != b"\x7fELF":
+        for magic, hint in _MAGIC_HINTS:
+            if head.startswith(magic):
+                return "", hint
+        return "", "файл не является исполняемым (нет сигнатуры ELF)"
+
+    if len(head) < 20:
+        return "", "ELF-заголовок обрезан — файл повреждён"
+    little = head[5] == 1                 # EI_DATA: 1 = LSB, 2 = MSB
+    machine = (head[18] | (head[19] << 8)) if little \
+        else (head[19] | (head[18] << 8))
+    arch = _ELF_MACHINES.get(machine, "")
+    if arch == "mips":
+        arch = "mipsel" if little else "mips"
+    return arch, ""
+
+
+def verify_installed_binary(path: str, probe_args=("version", "--version",
+                                                   "--help")) -> dict:
+    """
+    Проверить, что установленный файл реально исполняется на этой машине.
+
+    Возвращает {"ok": bool, "error": str}. Ненулевой код возврата ошибкой
+    НЕ считается: многие программы отвечают rc=1 на неизвестный аргумент,
+    а нам важно ровно одно — соглашается ли ядро запустить файл.
+    """
+    arch, err = _elf_arch(path)
+    if err:
+        return {"ok": False, "error": err}
+
+    host = detect_arch()
+    if arch and host and arch != host:
+        # mipsel-роутер и mips-сборка внешне неотличимы (`uname -m` на обоих
+        # даёт "mips") — именно на этом ловились «Exec format error».
+        return {"ok": False,
+                "error": "сборка под %s, а система — %s" % (arch, host)}
+
+    import errno as _errno
+    fatal = {_errno.ENOEXEC, _errno.ELIBBAD, _errno.EACCES, _errno.EPERM}
+    last = ""
+    for arg in probe_args:
+        try:
+            subprocess.run([path, arg], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=15)
+            return {"ok": True, "error": ""}
+        except OSError as e:
+            if e.errno in fatal:
+                return {"ok": False,
+                        "error": "не запускается: %s" % e.strerror}
+            last = str(e)
+        except subprocess.SubprocessError as e:
+            # Таймаут/зависание на --help — файл исполнился, значит формат
+            # верный; это всё, что мы здесь проверяем.
+            last = str(e)
+            return {"ok": True, "error": ""}
+    return {"ok": True, "error": last}
+
+
 # ─────── Конкретные установщики ───────
 
 # Конфигурация каждого бинарника
@@ -583,6 +693,9 @@ BINARIES = {
         "manifest_section": "usque",
         "install_kind": "binary",
         "dest": "/opt/usr/bin/usque",
+        # Чем проверять, что поставленный файл вообще исполняется:
+        # у usque это подкоманда `version` (флага --version нет).
+        "version_args": ("version",),
         # Имена ассетов версионные (usque-<ver>-<arch>.gz), поэтому здесь
         # только суффиксы: точный файл берётся из манифеста релиза.
         "arch_map": {
@@ -1087,12 +1200,37 @@ def install_local_file(name: str, path: str, orig_name: str = "") -> dict:
     dest = cfg.get("dest", "")
     if not dest:
         return {"ok": False, "error": "Не задан путь установки"}
+
+    # Ассеты наших релизов лежат сжатыми (`usque-<ver>-<arch>.gz`,
+    # `amneziawg-go-<ver>-<arch>.tar.gz`), и именно их пользователь
+    # скачивает на телефоне, когда GitHub с роутера недоступен. Раньше
+    # такой файл копировался на место бинарника КАК ЕСТЬ — получался
+    # исполняемый архив и «[Errno 8] Exec format error» при запуске.
+    # Имя из формы (orig_name) надёжнее временного upload.bin.
+    staged_name = orig_name or os.path.basename(path)
+    upload = path
+    made_copy = False
+    for ext in (".tar.gz", ".tgz", ".gz"):
+        if staged_name.lower().endswith(ext) and not path.endswith(ext):
+            upload = path + ext
+            try:
+                shutil.copyfile(path, upload)
+                made_copy = True
+            except OSError as e:
+                return {"ok": False, "error": "Подготовка файла: %s" % e}
+            break
+
     try:
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.copyfile(path, dest)
-        os.chmod(dest, 0o755)
-    except OSError as e:
-        return {"ok": False, "error": "Запись %s: %s" % (dest, e)}
+        res = _install_binary_file(cfg, upload)
+    finally:
+        if made_copy:
+            try:
+                os.unlink(upload)
+            except OSError:
+                pass
+    if not res.get("ok"):
+        return res
+
     log.info("ext_installer: %s установлен из локального файла %s"
              % (name, orig_name or path), source="ext_installer")
     return {"ok": True, "binary": dest, "version": _get_version(dest),
@@ -1153,6 +1291,15 @@ def _install_from_manifest(name: str, cfg: dict, arch: str, progress_cb,
         if progress_cb:
             progress_cb("install", 80, "Установка...")
         res = _install_binary_file(cfg, tmp_path)
+        if res.get("exec_error"):
+            # Наша сборка под эту архитектуру не исполняется. Ведём себя
+            # так же, как при её отсутствии: None → вызывающий уходит на
+            # legacy_source. Иначе единственным выходом остаётся SSH.
+            log.warning("ext_installer: %s — сборка из релиза %s не"
+                        " запускается, пробую запасной источник: %s"
+                        % (name, tag, res.get("error")),
+                        source="ext_installer")
+            return None
         if not res.get("ok"):
             return res
 
@@ -1179,8 +1326,55 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _unpack_if_needed(path: str) -> tuple:
+    """
+    (путь_к_бинарнику, временный_ли, ошибка) — распаковать .gz/.tar.gz.
+
+    Порядок проверок важен: '.tar.gz' тоже оканчивается на '.gz', и если
+    сначала спросить про '.gz', тарбол «распакуется» в сам tar-архив,
+    который потом ляжет на место бинарника (и получится ровно тот самый
+    «Exec format error»).
+    """
+    if path.endswith(".tar.gz") or path.endswith(".tgz"):
+        import tarfile
+        extract_dir = tempfile.mkdtemp()
+        try:
+            with tarfile.open(path, "r:gz") as tar:
+                for member in tar.getmembers():
+                    if not member.isfile() or member.name.startswith("."):
+                        continue
+                    member_path = os.path.realpath(
+                        os.path.join(extract_dir, member.name))
+                    if not member_path.startswith(
+                            os.path.realpath(extract_dir) + os.sep):
+                        continue        # zip-slip
+                    tar.extract(member, extract_dir)
+                    return member_path, True, ""
+        except (OSError, tarfile.TarError) as e:
+            return "", False, "Распаковка архива: %s" % e
+        return "", False, "В архиве нет файлов"
+
+    if path.endswith(".gz"):
+        import gzip
+        out = path + ".bin"
+        try:
+            with gzip.open(path, "rb") as f_in, open(out, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        except (OSError, EOFError) as e:
+            return "", False, "Распаковка: %s" % e
+        return out, True, ""
+
+    return path, False, ""
+
+
 def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
-    """Распаковать (если нужно) и положить бинарник в cfg['dest']."""
+    """Распаковать (если нужно) и положить бинарник в cfg['dest'].
+
+    Перед заменой сохраняем прежний бинарник, после — проверяем, что новый
+    вообще исполняется. Не исполняется — откатываемся: пользователь
+    остаётся с рабочей версией, а не с файлом, на котором всё падает с
+    «Exec format error».
+    """
     dest = cfg["dest"]
     try:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -1188,15 +1382,19 @@ def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
         return {"ok": False, "error": "Каталог %s: %s"
                                       % (os.path.dirname(dest), e)}
 
-    src = tmp_path
-    if tmp_path.endswith(".gz") and not tmp_path.endswith(".tar.gz"):
-        import gzip
-        src = tmp_path + ".bin"
-        try:
-            with gzip.open(tmp_path, "rb") as f_in, open(src, "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
-        except OSError as e:
-            return {"ok": False, "error": "Распаковка: %s" % e}
+    src, tmp_made, err = _unpack_if_needed(tmp_path)
+    if err:
+        return {"ok": False, "error": err}
+
+    backup = dest + ".prev"
+    had_backup = False
+    try:
+        if os.path.isfile(dest):
+            shutil.copyfile(dest, backup)
+            shutil.copystat(dest, backup)
+            had_backup = True
+    except OSError:
+        had_backup = False
 
     try:
         # Через временный файл рядом с целью + os.replace: иначе при
@@ -1208,12 +1406,50 @@ def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
     except OSError as e:
         return {"ok": False, "error": "Запись %s: %s" % (dest, e)}
     finally:
-        if src != tmp_path:
+        if tmp_made:
             try:
                 os.unlink(src)
             except OSError:
                 pass
+
+    check = verify_installed_binary(dest, _probe_args(cfg))
+    if not check.get("ok"):
+        restored = False
+        if had_backup:
+            try:
+                os.replace(backup, dest)
+                restored = True
+            except OSError:
+                pass
+        if not restored:
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+        log.warning("ext_installer: %s не прошёл проверку запуска (%s)%s"
+                    % (dest, check.get("error"),
+                       " — вернул прежнюю версию" if restored else ""),
+                    source="ext_installer")
+        return {"ok": False, "exec_error": True, "restored": restored,
+                "error": "Скачанный файл не запускается на этом устройстве"
+                         " (%s).%s" % (check.get("error"),
+                                       " Прежняя версия возвращена на место."
+                                       if restored else "")}
+
+    if had_backup:
+        try:
+            os.unlink(backup)
+        except OSError:
+            pass
     return {"ok": True}
+
+
+def _probe_args(cfg: dict) -> tuple:
+    """Чем проверять запуск: у каждого движка своя подкоманда версии."""
+    args = cfg.get("version_args")
+    if isinstance(args, (list, tuple)) and args:
+        return tuple(args)
+    return ("version", "--version", "--help")
 
 
 def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
@@ -1488,35 +1724,13 @@ def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
         if progress_cb:
             progress_cb("install", 70, "Установка...")
 
-        final_path = tmp_path
-        if tmp_path.endswith(".gz"):
-            import gzip
-            uncompressed = tmp_path + ".unc"
-            with gzip.open(tmp_path, "rb") as f_in:
-                with open(uncompressed, "wb") as f_out:
-                    while True:
-                        chunk = f_in.read(64 * 1024)
-                        if not chunk:
-                            break
-                        f_out.write(chunk)
-            final_path = uncompressed
-        elif tmp_path.endswith(".tar.gz"):
-            import tarfile
-            extract_dir = tempfile.mkdtemp()
-            with tarfile.open(tmp_path, "r:gz") as tar:
-                # Ищем бинарник в архиве
-                for member in tar.getmembers():
-                    if not member.isfile() or member.name.startswith("."):
-                        continue
-                    # MR-143: валидация пути члена архива (защита от zip-slip)
-                    member_path = os.path.realpath(os.path.join(extract_dir, member.name))
-                    if not member_path.startswith(os.path.realpath(extract_dir) + os.sep):
-                        log.warning("ext_installer: tar path traversal blocked: %s" % member.name,
-                                    source="ext_installer")
-                        continue
-                    tar.extract(member, extract_dir)
-                    final_path = member_path
-                    break
+        # `.tar.gz` тоже оканчивается на `.gz` — порядок проверок внутри
+        # _unpack_if_needed не даёт «распаковать» тарбол в самого себя и
+        # положить tar-архив на место бинарника (MR-143: защита от
+        # zip-slip осталась там же).
+        final_path, unpacked_tmp, unpack_err = _unpack_if_needed(tmp_path)
+        if unpack_err:
+            return {"ok": False, "error": unpack_err}
 
         # 5. Устанавливаем
         if progress_cb:
@@ -1524,6 +1738,21 @@ def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
 
         if not install_binary(final_path, cfg["dest"]):
             return {"ok": False, "error": "Не удалось установить бинарник"}
+        if unpacked_tmp:
+            try:
+                os.unlink(final_path)
+            except OSError:
+                pass
+
+        check = verify_installed_binary(cfg["dest"], _probe_args(cfg))
+        if not check.get("ok"):
+            try:
+                os.unlink(cfg["dest"])
+            except OSError:
+                pass
+            return {"ok": False, "exec_error": True,
+                    "error": "Скачанный файл не запускается на этом"
+                             " устройстве (%s)" % check.get("error")}
 
         # 6. Проверяем
         version = _get_version(cfg["dest"])
@@ -1544,8 +1773,8 @@ def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
                 "sha256_pinned": bool(sha256_pinned)}
 
     finally:
-        # Очистка
-        for p in (tmp_path, tmp_path + ".unc"):
+        # Очистка (.bin — распакованный из .gz, .part — хвост докачки)
+        for p in (tmp_path, tmp_path + ".bin", tmp_path + ".part"):
             try:
                 if os.path.isfile(p):
                     os.unlink(p)

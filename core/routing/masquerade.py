@@ -73,13 +73,13 @@ def ensure_for_iface(ifname: str, families=("v4", "v6")) -> dict:
     return {"ok": True, "added": added, "ifname": ifname}
 
 
-def remove_if_unused(ifname: str, excluding_id: str = "") -> dict:
+def iface_in_use(ifname: str, excluding_id: str = "") -> bool:
     """
-    Снять masquerade с ifname, если на него не ссылается ни одно ДРУГОЕ
-    включённое routing-правило (cidr/device/domain).
+    Ссылается ли на ifname хоть одно ДРУГОЕ включённое routing-правило.
 
     excluding_id — id правила, которое прямо сейчас снимается; его не
-    учитываем при подсчёте «кому ещё нужен masquerade».
+    учитываем. Общий вопрос для masquerade и kill-switch: обе штуки
+    ставятся на интерфейс целиком, а не на конкретное правило.
     """
     from core.routing import storage
     from core.routing.rules import (
@@ -93,8 +93,22 @@ def remove_if_unused(ifname: str, excluding_id: str = "") -> dict:
             continue
         if r.target_iface != ifname:
             continue
-        if isinstance(r, (CidrRoutingRule, DeviceRoutingRule, DomainRoutingRule)):
-            return {"ok": True, "removed": False, "reason": "still in use"}
+        if isinstance(r, (CidrRoutingRule, DeviceRoutingRule,
+                          DomainRoutingRule)):
+            return True
+    return False
+
+
+def remove_if_unused(ifname: str, excluding_id: str = "") -> dict:
+    """
+    Снять masquerade с ifname, если на него не ссылается ни одно ДРУГОЕ
+    включённое routing-правило (cidr/device/domain).
+
+    excluding_id — id правила, которое прямо сейчас снимается; его не
+    учитываем при подсчёте «кому ещё нужен masquerade».
+    """
+    if iface_in_use(ifname, excluding_id):
+        return {"ok": True, "removed": False, "reason": "still in use"}
 
     # Никто больше не использует интерфейс — снимаем masquerade с обоих
     # бэкендов (idempotent), чтобы не оставить висящего правила, если

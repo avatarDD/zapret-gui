@@ -685,6 +685,8 @@ class TestOperaLatestRelease(unittest.TestCase):
                         return_value=True), \
              mock.patch("core.ext_binary_installer.install_binary",
                         return_value=True), \
+             mock.patch("core.ext_binary_installer.verify_installed_binary",
+                        return_value={"ok": True, "error": ""}), \
              mock.patch("core.ext_binary_installer._get_version",
                         return_value=tag), \
              mock.patch("os.path.isfile", return_value=False), \

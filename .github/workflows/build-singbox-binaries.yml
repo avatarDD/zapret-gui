@@ -200,24 +200,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # qemu — чем проверяем, что собранный (и упакованный UPX'ом)
+          # бинарник вообще запускается; x86_64 идёт на runner'е сам.
           - arch_name: mipsel-softfloat
             goos: linux
             goarch: mipsle
             gomips: softfloat
+            qemu: qemu-mipsel-static
           - arch_name: mips-softfloat
             goos: linux
             goarch: mips
             gomips: softfloat
+            qemu: qemu-mips-static
           - arch_name: aarch64
             goos: linux
             goarch: arm64
+            qemu: qemu-aarch64-static
           - arch_name: armv7
             goos: linux
             goarch: arm
             goarm: '7'
+            qemu: qemu-arm-static
           - arch_name: x86_64
             goos: linux
             goarch: amd64
+            qemu: ''
 
     steps:
       - name: Checkout sing-box
@@ -245,7 +252,9 @@ jobs:
              || matrix.arch_name == 'armv7'
         run: |
           sudo apt-get update
-          sudo apt-get install -y upx-ucl
+          # qemu-user-static — не для сборки, а для проверки: упакованный
+          # бинарник надо хотя бы раз запустить до публикации.
+          sudo apt-get install -y upx-ucl qemu-user-static
           upx --version | head -1
 
       - name: Build
@@ -285,18 +294,27 @@ jobs:
           ls -lh sing-box
           file sing-box || true
 
-      - name: UPX compress
+      - name: UPX compress (verified under qemu)
         # Только для архитектур со строгим лимитом flash.
         # На aarch64/x86_64 экономия не оправдывает риски (антивирусы
         # ругаются, +stuff).
+        #
+        # Упакованный бинарник обязан пройти запуск под qemu: UPX
+        # переписывает ELF-заголовок, и на MIPS ядро проверяет его
+        # строже прочих (ABI/FP-флаги) — неудачная упаковка даёт файл,
+        # который роутер отказывается исполнять («Exec format error»).
+        # Не прошёл — публикуем неупакованный.
         if: matrix.arch_name == 'mipsel-softfloat'
              || matrix.arch_name == 'mips-softfloat'
              || matrix.arch_name == 'armv7'
         working-directory: src
+        env:
+          QEMU: ${{ matrix.qemu }}
         run: |
           set -euo pipefail
           echo "── before UPX ──"
           ls -lh sing-box
+          cp sing-box sing-box.unpacked
           # mips/mipsle с LZMA иногда падают в runtime (Go-runtime
           # in-place decompression), поэтому LZMA только на armv7.
           if [ "${{ matrix.goarch }}" = "arm" ]; then
@@ -307,6 +325,21 @@ jobs:
           echo "── after UPX ──"
           ls -lh sing-box
           file sing-box || true
+
+          # Важен не код возврата программы, а сам факт запуска: qemu
+          # отдаёт 255 при отказе загрузить ELF, шелл — 126.
+          runs() { set +e; timeout 20 "$QEMU" "$1" version >/dev/null 2>&1;
+                   rc=$?; set -e; [ "$rc" -lt 126 ]; }
+          if runs ./sing-box; then
+            echo "✓ упакованный бинарник запускается под qemu"
+          else
+            echo "✗ упакованный не запускается — откат к неупакованному"
+            runs ./sing-box.unpacked \
+              || { echo "::error::и неупакованный не запускается"; exit 1; }
+            mv sing-box.unpacked sing-box
+          fi
+          rm -f sing-box.unpacked
+          ls -lh sing-box
 
       - name: Package
         run: |

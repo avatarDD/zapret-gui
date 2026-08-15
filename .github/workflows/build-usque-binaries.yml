@@ -159,20 +159,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # qemu — чем проверяем, что собранный бинарник вообще запускается
+        # (см. шаг «UPX compress»). x86_64 запускается на runner'е сам.
         include:
           - arch_name: mipsel-softfloat
             goarch: mipsle
             gomips: softfloat
+            qemu: qemu-mipsel-static
           - arch_name: mips-softfloat
             goarch: mips
             gomips: softfloat
+            qemu: qemu-mips-static
           - arch_name: aarch64
             goarch: arm64
+            qemu: qemu-aarch64-static
           - arch_name: armv7
             goarch: arm
             goarm: '7'
+            qemu: qemu-arm-static
           - arch_name: x86_64
             goarch: amd64
+            qemu: ''
 
     steps:
       - name: Checkout usque
@@ -190,11 +197,18 @@ jobs:
           go-version-file: src/go.mod
           cache: false
 
-      - name: Install UPX
+      - name: Install UPX and qemu-user
+        # qemu нужен не для сборки, а для ПРОВЕРКИ: собранный (и особенно
+        # упакованный UPX'ом) бинарник надо хотя бы один раз запустить,
+        # прежде чем публиковать. Иначе «Exec format error» ловит
+        # пользователь на роутере, а не CI.
         if: matrix.arch_name == 'mipsel-softfloat'
              || matrix.arch_name == 'mips-softfloat'
              || matrix.arch_name == 'armv7'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq upx-ucl qemu-user-static
+          upx --version | head -1
 
       - name: Build
         working-directory: src
@@ -228,16 +242,29 @@ jobs:
             ./usque version || true
           fi
 
-      - name: UPX compress
+      - name: UPX compress (verified under qemu)
         # Только там, где flash реально тесная. На aarch64/x86_64 выигрыш
         # не оправдывает рисков (ложные срабатывания антивирусов и т.п.).
+        #
+        # ГЛАВНОЕ: упакованный бинарник ОБЯЗАН пройти запуск под qemu.
+        # UPX переписывает ELF-заголовок, и на MIPS ядро проверяет его
+        # строже прочих (ABI/FP-флаги, PT_MIPS_ABIFLAGS) — неудачная
+        # упаковка даёт файл, который роутер отказывается исполнять:
+        # «[Errno 8] Exec format error». Раньше такой файл спокойно
+        # уезжал в релиз, потому что после UPX не запускалось НИЧЕГО.
+        # Не прошёл — публикуем неупакованный: лишние мегабайты лучше
+        # неработающего движка.
         if: matrix.arch_name == 'mipsel-softfloat'
              || matrix.arch_name == 'mips-softfloat'
              || matrix.arch_name == 'armv7'
         working-directory: src
+        env:
+          QEMU: ${{ matrix.qemu }}
         run: |
           set -euo pipefail
           echo "── before UPX ──"; ls -lh usque
+          cp usque usque.unpacked
+
           # mips/mipsle с LZMA иногда падают в runtime (Go распаковывает
           # себя на месте), поэтому LZMA только на armv7.
           if [ "${{ matrix.goarch }}" = "arm" ]; then
@@ -246,6 +273,35 @@ jobs:
             upx --best usque || true
           fi
           echo "── after UPX ──"; ls -lh usque
+
+          # Важен не код возврата программы, а сам факт запуска: qemu
+          # отдаёт 255 при отказе загрузить ELF, шелл — 126.
+          runs() { set +e; timeout 20 "$QEMU" "$1" version >/dev/null 2>&1;
+                   rc=$?; set -e; [ "$rc" -lt 126 ]; }
+          if runs ./usque; then
+            echo "✓ упакованный бинарник запускается под qemu"
+          else
+            echo "✗ упакованный не запускается — откат к неупакованному"
+            # Неупакованный обязан работать: если и он не запускается,
+            # ломаем сборку — публиковать такое нельзя.
+            runs ./usque.unpacked \
+              || { echo "::error::и неупакованный не запускается"; exit 1; }
+            mv usque.unpacked usque
+          fi
+          rm -f usque.unpacked
+          ls -lh usque
+
+      - name: Verify binary runs (qemu)
+        # Для архитектур без UPX проверка та же, но отдельным шагом.
+        if: matrix.qemu != '' && matrix.arch_name != 'mipsel-softfloat'
+             && matrix.arch_name != 'mips-softfloat'
+             && matrix.arch_name != 'armv7'
+        working-directory: src
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+          ${{ matrix.qemu }} ./usque version
 
       - name: Package
         run: |

@@ -81,6 +81,32 @@ def _run(args, timeout=10):
         return 1, "", str(e)
 
 
+def _exec_error_text(binary: str, err: OSError) -> str:
+    """Человеческий текст вместо голого «[Errno 8] Exec format error».
+
+    Ядро отказывается запускать файл, когда он не ELF (например, скачанный
+    с GitHub `.gz` положили на место бинарника), собран под другой порядок
+    байт (mips вместо mipsel — `uname -m` на обоих даёт «mips») или
+    повреждён. Пользователю из этой строки должно быть понятно, что чинить,
+    поэтому пишем и путь, и способ починки.
+    """
+    import errno as _errno
+    if err.errno == _errno.ENOEXEC:
+        return ("Бинарник %s не запускается: ядро не признаёт его"
+                " исполняемым файлом. Обычно это не та архитектура,"
+                " недокачанный файл или загруженный вручную архив (.gz)"
+                " вместо распакованного бинарника. Переустановите usque:"
+                " «WARP/MASQUE → Установка» → «Переустановить»." % binary)
+    if err.errno in (_errno.EACCES, _errno.EPERM):
+        return ("Бинарник %s не запускается: нет прав на исполнение"
+                " (или раздел смонтирован с noexec). Переустановите usque"
+                " на странице «WARP/MASQUE → Установка»." % binary)
+    if err.errno == _errno.ENOENT:
+        return ("Бинарник %s исчез — переустановите usque на странице"
+                " «WARP/MASQUE → Установка»." % binary)
+    return str(err)
+
+
 def debug_enabled() -> bool:
     """Включён ли режим отладки usque (usque.debug_log)."""
     try:
@@ -825,6 +851,9 @@ class UsqueManager:
                         "ipv6": configured.get("ipv6", ""),
                         "connected": None}
 
+            except OSError as e:
+                return {"ok": False, "error": _exec_error_text(binary, e),
+                        "diagnostic": self._diagnostic(iface)}
             except Exception as e:
                 return {"ok": False, "error": str(e),
                         "diagnostic": self._diagnostic(iface)}

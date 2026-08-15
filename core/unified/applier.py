@@ -132,6 +132,10 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
         if has_src:
             skipped.append("устройства/DSCP применимы только к туннельным "
                            "методам — для nfqws2 пропущены")
+            log.warning("unified: у маршрута %s (%s) выбраны устройства/DSCP,"
+                        " но метод nfqws2 — они не применяются (nfqws2"
+                        " работает по доменам назначения)"
+                        % (route.id, route.name), source="unified")
         _remove_geo(route)
         res["method"] = method
         res["skipped_selectors"] = skipped
@@ -148,6 +152,16 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
                        "методам — для direct пропущены")
     log.info("unified: маршрут %s = direct (артефакты сняты)" % route.id,
              source="unified")
+    # Маршрут с устройствами и методом direct — гарантированный no-op:
+    # трафик этих устройств идёт мимо любого туннеля. В GUI это выглядит
+    # как полностью настроенное правило, поэтому пишем предупреждение —
+    # иначе «правило создано, устройства выбраны, а на 2ip адрес
+    # провайдера» не находится ни в логе, ни где-либо ещё.
+    if has_src:
+        log.warning("unified: у маршрута %s (%s) выбраны устройства/DSCP, но"
+                    " метод direct — трафик НЕ заворачивается никуда."
+                    " Выберите туннель (awg:/singbox:/mihomo:/warp:)"
+                    % (route.id, route.name), source="unified")
     return {"ok": True, "method": "direct", "skipped_selectors": skipped}
 
 

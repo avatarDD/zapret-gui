@@ -226,7 +226,7 @@ const DiagnosticsPage = (() => {
             <!-- Обслуживание: намеренно последней карточкой на странице.
                  Действия здесь рвут связь с GUI, поэтому держим их подальше
                  от рутинных кнопок и не смешиваем с проверками. -->
-            <div class="card" id="diag-maintenance-card" style="display:none;">
+            <div class="card" id="diag-maintenance-card">
                 <div class="card-title">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                         <path d="M23 4v6h-6"/>
@@ -251,6 +251,11 @@ const DiagnosticsPage = (() => {
                     </button>
                     <span class="text-muted" style="font-size:12px;"
                           id="diag-maintenance-status"></span>
+                    <button class="btn btn-ghost btn-sm"
+                            id="diag-maintenance-retry" style="display:none;"
+                            onclick="DiagnosticsPage.retryMaintenanceCaps()">
+                        Проверить ещё раз
+                    </button>
                 </div>
             </div>
         `;
@@ -376,22 +381,53 @@ const DiagnosticsPage = (() => {
 
     // ── обслуживание: перезапуск демона и роутера ──
 
+    /**
+     * Кнопки обслуживания: перезапуск демона и перезагрузка роутера.
+     *
+     * Карточка рисуется ВСЕГДА. Раньше она была скрыта до ответа
+     * /api/system/control и показывалась только при успехе — а любой
+     * сбой этого запроса (таймаут на занятом роутере: 15 с при идущей
+     * самодиагностике набираются легко, обрыв, ошибка 500) молча
+     * оставлял её скрытой навсегда: повторов не было, и кнопки просто
+     * «пропадали». Теперь недоступность видна и объяснена, а запрос
+     * можно повторить.
+     */
     async function loadMaintenanceCaps() {
-        // Кнопку, которой не на чем сработать, лучше не показывать вовсе,
-        // чем показывать и ронять в ошибку при нажатии.
+        const rg = document.getElementById('diag-restart-gui');
+        const rb = document.getElementById('diag-reboot');
         try {
             const c = await API.get('/api/system/control');
-            const card = document.getElementById('diag-maintenance-card');
-            if (!c || !c.ok || !card) return;
-            if (!c.restart_gui && !c.reboot) return;
-            card.style.display = '';
-            const rg = document.getElementById('diag-restart-gui');
-            const rb = document.getElementById('diag-reboot');
-            if (rg && !c.restart_gui) rg.style.display = 'none';
-            if (rb && !c.reboot) rb.style.display = 'none';
-            if (rg && c.restart_command) rg.title = c.restart_command;
-            if (rb && c.reboot_command) rb.title = c.reboot_command;
-        } catch (_) { /* карточка просто останется скрытой */ }
+            if (!c || !c.ok) throw new Error(c && c.error || 'нет ответа');
+            _applyMaintenanceCap(rg, c.restart_gui, c.restart_command,
+                                 'способ перезапуска не найден '
+                                 + '(нет init-скрипта и systemd-юнита)');
+            _applyMaintenanceCap(rb, c.reboot, c.reboot_command,
+                                 'команда перезагрузки не найдена '
+                                 + '(нет ndmc/reboot)');
+            _setMaintenanceStatus('');
+        } catch (e) {
+            // Кнопки оставляем на месте, но выключенными: пусть лучше
+            // видно «не смогли проверить», чем пустое место.
+            [rg, rb].forEach(b => { if (b) b.disabled = true; });
+            _setMaintenanceStatus('не удалось проверить доступность: '
+                                  + (e.message || e));
+            const box = document.getElementById('diag-maintenance-retry');
+            if (box) box.style.display = '';
+        }
+    }
+
+    function _applyMaintenanceCap(btn, available, command, why) {
+        if (!btn) return;
+        btn.disabled = !available;
+        btn.title = available ? (command || '')
+                              : 'Недоступно на этой системе: ' + why;
+    }
+
+    async function retryMaintenanceCaps() {
+        const box = document.getElementById('diag-maintenance-retry');
+        if (box) box.style.display = 'none';
+        _setMaintenanceStatus('проверяю…');
+        await loadMaintenanceCaps();
     }
 
     function _setMaintenanceStatus(text) {
@@ -1370,5 +1406,6 @@ const DiagnosticsPage = (() => {
         installNfqueueDeps,
         restartGui,
         rebootDevice,
+        retryMaintenanceCaps,
     };
 })();

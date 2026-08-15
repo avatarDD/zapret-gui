@@ -442,6 +442,50 @@ def register(app):
             response.status = 500
             return {"ok": False, "error": str(e)}
 
+    @app.route("/api/routing/killswitch")
+    def routing_killswitch_status():
+        """Состояние kill-switch: выпускать ли трафик мимо лежащего туннеля.
+
+        Пока туннель перезапускается (watchdog, обрыв), его маршруты
+        исчезают, таблица пустеет и трафик уходит через провайдера —
+        снаружи это «маршрутизация работает нестабильно». Kill-switch
+        держит в таблице blackhole-маршрут и дропает такой трафик.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            from core.routing import killswitch
+            return {"ok": True, "enabled": killswitch.enabled()}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
+    @app.route("/api/routing/killswitch", method="POST")
+    def routing_killswitch_set():
+        """body: {"enabled": bool} — включить/выключить kill-switch."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        want = bool(body.get("enabled"))
+        try:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            cfg.set("routing", "killswitch", want)
+            cfg.save()
+            # Правила переприменяются здесь же: blackhole ставится (или
+            # снимается) в apply, иначе переключатель подействовал бы
+            # только после следующего подъёма туннеля.
+            from core.routing.manager import get_routing_manager
+            get_routing_manager().reapply_all()
+            from core.log_buffer import log
+            log.info("routing: kill-switch → %s" % ("ON" if want else "OFF"),
+                     source="routing")
+            return {"ok": True, "enabled": want}
+        except Exception as e:
+            response.status = 500
+            return {"ok": False, "error": str(e)}
+
     @app.route("/api/routing/doctor")
     def routing_doctor():
         """Пошаговая диагностика цепочки маршрутизации (core/routing/doctor):
