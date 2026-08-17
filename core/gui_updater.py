@@ -44,6 +44,19 @@ DOWNLOAD_TIMEOUT = 300       # архив всего GUI — на роутере
 REMOTE_VERSION_CACHE_TTL = 300  # 5 минут
 RELEASES_CACHE_TTL = 300
 
+# Сколько места нужно рабочему каталогу обновления: архив исходников
+# (~4 МБ) + распакованное дерево (~15 МБ) + запас на рост репозитория.
+# На Keenetic /tmp — это tmpfs в RAM, и он давно не резиновый: когда там
+# кончается место, загрузка/распаковка падает, а раньше об этом узнавал
+# только лог (фронт показывал успех). Теперь проверяем ДО загрузки и, если
+# /tmp мал, уходим на файловую систему приложения (/opt — внешний диск).
+WORK_DIR_NEED_MB = 45
+
+# Свободное место на разделе приложения: копируем дерево рядом со старым
+# (<dir>.new) и только потом переставляем — нужен запас под самый большой
+# каталог поставки плюс небольшой резерв.
+APP_DIR_NEED_MB = 25
+
 
 def _http_get_json(url: str, transport: str = "", timeout: int = HTTP_TIMEOUT):
     """
@@ -84,6 +97,11 @@ class GuiUpdater:
         self._operation_in_progress = False
         self._operation_status = ""
         self._operation_progress = 0
+        # Итог последнего обновления. Веб-клиент почти всегда узнаёт исход
+        # не из ответа на POST (обновление длится дольше HTTP-запроса), а
+        # опросом /api/gui/progress — без этого поля неуспех был неотличим
+        # от успеха, и страница радостно перезагружалась на старой версии.
+        self._last_result = None
 
         # Кэш удалённой версии
         self._remote_version_cache = None
@@ -92,6 +110,9 @@ class GuiUpdater:
         # Кэш списка релизов (для выбора версии)
         self._releases_cache = None
         self._releases_time = 0
+
+        # Последняя ошибка загрузки — уходит в сообщение об отказе
+        self._last_download_error = ""
 
     # ═══════════════════ PUBLIC API ═══════════════════
 
@@ -294,29 +315,84 @@ class GuiUpdater:
         Returns:
             {"ok": bool, "message": str, "version": str | None}
         """
-        with self._lock:
-            if self._operation_in_progress:
-                return {"ok": False, "message": "Операция уже выполняется"}
-            self._operation_in_progress = True
-            self._operation_status = "Начало обновления GUI..."
-            self._operation_progress = 0
-
+        if not self._begin_operation():
+            return {"ok": False, "message": "Операция уже выполняется"}
         try:
-            return self._do_update(tag=tag, branch=branch, transport=transport)
-        finally:
-            with self._lock:
-                self._operation_in_progress = False
+            result = self._do_update(tag=tag, branch=branch,
+                                     transport=transport)
+        except Exception as e:      # noqa: BLE001 — исход обязан сохраниться
+            result = {"ok": False,
+                      "message": "Ошибка обновления: %s" % e,
+                      "version": None}
+        return self._finish_operation(result)
+
+    def start_update(self, tag: str = "", branch: str = "",
+                     transport: str = "") -> dict:
+        """
+        Запустить обновление в фоне и сразу вернуть управление.
+
+        Слот операции занимается СИНХРОННО, до возврата из функции: иначе
+        первый же опрос /api/gui/progress успевал увидеть in_progress=False
+        и принять хвост предыдущего запуска за итог текущего.
+
+        Итог кладётся в get_operation_status()["last_result"].
+        """
+        if not self._begin_operation():
+            return {"ok": True, "in_progress": True,
+                    "message": "Обновление уже выполняется."}
+
+        def _worker():
+            try:
+                result = self._do_update(tag=tag, branch=branch,
+                                         transport=transport)
+            except Exception as e:  # noqa: BLE001
+                result = {"ok": False,
+                          "message": "Ошибка обновления: %s" % e,
+                          "version": None}
+            self._finish_operation(result)
+
+        threading.Thread(target=_worker, daemon=True,
+                         name="gui-update").start()
+        return {"ok": True, "in_progress": True, "started": True,
+                "message": "Обновление запущено. Следите за прогрессом."}
 
     def get_operation_status(self) -> dict:
-        """Статус текущей операции."""
+        """Статус текущей операции (+ итог последней завершённой)."""
         with self._lock:
             return {
                 "in_progress": self._operation_in_progress,
                 "status": self._operation_status,
                 "progress": self._operation_progress,
+                "last_result": self._last_result,
             }
 
     # ═══════════════════ INTERNAL ═══════════════════
+
+    def _begin_operation(self) -> bool:
+        """Занять слот операции. False — обновление уже идёт."""
+        with self._lock:
+            if self._operation_in_progress:
+                return False
+            self._operation_in_progress = True
+            self._operation_status = "Начало обновления GUI..."
+            self._operation_progress = 0
+            self._last_result = None     # итог прошлого запуска — не наш
+            return True
+
+    def _finish_operation(self, result: dict) -> dict:
+        """Освободить слот и запомнить исход (его читает фронт)."""
+        result = dict(result or {"ok": False,
+                                 "message": "Обновление не вернуло результат"})
+        result["finished_at"] = time.time()
+        with self._lock:
+            self._operation_in_progress = False
+            self._last_result = result
+            if not result.get("ok"):
+                # Полоса прогресса застывала на последнем успешном шаге —
+                # пусть в ней будет причина отказа.
+                self._operation_status = (result.get("message")
+                                          or "Ошибка обновления")
+        return result
 
     def _set_progress(self, status: str, progress: int) -> None:
         with self._lock:
@@ -327,7 +403,21 @@ class GuiUpdater:
                    transport: str = "") -> dict:
         """Основная логика обновления."""
         app_dir = _APP_DIR
-        tmp_dir = "/tmp/zapret-gui-update-%d" % os.getpid()
+
+        # Место под скачивание и распаковку — до первого байта из сети:
+        # упасть на «нет места» после пятиминутной загрузки обидно и вдвойне
+        # непонятно.
+        work_base, space_err = self._pick_work_base(app_dir)
+        if not space_err:
+            space_err = self._check_app_dir_space(app_dir)
+        if space_err:
+            log.error(space_err, source="gui-updater")
+            return {"ok": False, "message": space_err, "version": None}
+        tmp_dir = os.path.join(work_base, "zapret-gui-update-%d" % os.getpid())
+
+        # Хвосты от прошлого прерванного обновления (<dir>.new/<dir>.old)
+        # занимают место, которое нам сейчас понадобится.
+        self._cleanup_stale_dirs(app_dir)
 
         # Что качаем: конкретный тэг → ветка → последний релиз (фолбэк main).
         ref_label = ""
@@ -359,11 +449,21 @@ class GuiUpdater:
             archive_path = os.path.join(tmp_dir, "gui.tar.gz")
             os.makedirs(tmp_dir, exist_ok=True)
 
+            self._last_download_error = ""
             if not self._download_file(archive_url, archive_path,
                                        transport=transport):
+                # Причина обязана быть в сообщении: чаще всего это
+                # недоступный GitHub, и подсказка про транспорт — ровно то,
+                # что нужно сделать дальше.
+                why = self._last_download_error or "причина в логе"
                 return {
                     "ok": False,
-                    "message": "Не удалось скачать архив с GitHub",
+                    "message": (
+                        "Не удалось скачать архив %s: %s. Если GitHub "
+                        "заблокирован — выберите транспорт скачивания "
+                        "(AWG / sing-box / mihomo) в блоке обновления."
+                        % (ref_label, why)
+                    ),
                     "version": None,
                 }
 
@@ -424,16 +524,11 @@ class GuiUpdater:
                 src = os.path.join(src_dir, d)
                 dst = os.path.join(app_dir, d)
                 if os.path.isdir(src):
-                    # Удаляем старое (кроме user-данных)
-                    if os.path.isdir(dst):
-                        # Для config — не удаляем user strategies
-                        if d == "config":
-                            self._safe_update_config_dir(src, dst)
-                        else:
-                            shutil.rmtree(dst, ignore_errors=True)
-                            shutil.copytree(src, dst)
+                    # Для config — не удаляем user strategies
+                    if d == "config" and os.path.isdir(dst):
+                        self._safe_update_config_dir(src, dst)
                     else:
-                        shutil.copytree(src, dst)
+                        self._replace_dir(src, dst)
 
             for f in files_to_update:
                 src = os.path.join(src_dir, f)
@@ -479,8 +574,17 @@ class GuiUpdater:
                             os.path.join(root, d), ignore_errors=True
                         )
 
-            # 7. Прочитать новую версию
+            # 7. Прочитать новую версию и УБЕДИТЬСЯ, что она доехала.
+            #
+            # Раньше «успешной» версией отдавалась та, что лежала в
+            # скачанном архиве — то есть отчёт об успехе не зависел от
+            # того, обновилось ли что-нибудь на диске вообще. Сверяем с
+            # core/version.py установленного каталога: если там осталась
+            # прежняя, это не обновление, и врать об этом нельзя.
             new_version = self._read_version_from_dir(src_dir)
+            stale = self._verify_installed(app_dir, src_dir)
+            if stale:
+                return stale
 
             self._set_progress("Обновление завершено!", 100)
 
@@ -537,6 +641,142 @@ class GuiUpdater:
         finally:
             # Очистка tmp
             shutil.rmtree(tmp_dir, ignore_errors=True)
+            # И недокопированных <dir>.new, если сорвались на середине —
+            # место освобождаем сразу, а не до следующей попытки.
+            self._cleanup_stale_dirs(app_dir)
+
+    def _verify_installed(self, app_dir: str, src_dir: str):
+        """
+        Сверить версию на диске с версией из скачанного архива.
+
+        None — всё сошлось; иначе готовый ответ об ошибке. Без этой сверки
+        «успехом» считалось само выполнение шагов, а не их результат:
+        обновление, не поменявшее ни одного файла, всё равно рапортовало
+        новую версию — и пользователь получал старую после перезапуска.
+        """
+        new_version = self._read_version_from_dir(src_dir)
+        installed_now = self._read_version_from_dir(app_dir)
+        if not new_version or installed_now == new_version:
+            return None
+        msg = (
+            "Файлы скопированы, но в %s/core/version.py осталась версия %s "
+            "вместо %s — обновление не применилось. Проверьте права на "
+            "каталог и свободное место."
+            % (app_dir, installed_now or "неизвестная", new_version)
+        )
+        log.error(msg, source="gui-updater")
+        return {"ok": False, "message": msg, "version": installed_now}
+
+    @staticmethod
+    def _free_mb(path: str) -> int:
+        """Свободно МБ на разделе path (-1 — не удалось узнать)."""
+        try:
+            return int(shutil.disk_usage(path).free // (1024 * 1024))
+        except OSError:
+            return -1
+
+    def _pick_work_base(self, app_dir: str) -> tuple:
+        """
+        Выбрать каталог под загрузку и распаковку архива.
+
+        Кандидаты по порядку: ZAPRET_GUI_TMPDIR → /tmp → раздел самого
+        приложения (на Entware это /opt, внешний диск). Берём первый, где
+        хватает места; если не хватает нигде — самый просторный, и, если
+        даже он мал, возвращаем понятную ошибку вместо загадочного обрыва
+        распаковки.
+
+        Плюс проверяем место на разделе приложения — туда переезжает
+        дерево.
+
+        Returns: (work_base, error_message|"")
+        """
+        cands = []
+        env_dir = (os.environ.get("ZAPRET_GUI_TMPDIR") or "").strip()
+        if env_dir:
+            cands.append(env_dir)
+        cands.append("/tmp")
+        cands.append(os.path.dirname(app_dir.rstrip("/")) or app_dir)
+
+        seen, checked = set(), []
+        for c in cands:
+            c = os.path.abspath(c)
+            if c in seen or not os.path.isdir(c):
+                continue
+            seen.add(c)
+            free = self._free_mb(c)
+            checked.append((c, free))
+            if free >= WORK_DIR_NEED_MB:
+                if c != "/tmp":
+                    log.info(
+                        "Рабочий каталог обновления: %s (в /tmp мало места)"
+                        % c, source="gui-updater")
+                return c, ""
+
+        if not checked:
+            return "/tmp", ""       # disk_usage недоступен — работаем как раньше
+
+        best, best_free = max(checked, key=lambda x: x[1])
+        detail = ", ".join("%s: %d МБ" % (p, f) for p, f in checked)
+        return best, (
+            "Недостаточно места для обновления: нужно ~%d МБ свободных, "
+            "есть %s. Освободите место (или задайте ZAPRET_GUI_TMPDIR на "
+            "разделе с местом) и повторите."
+            % (WORK_DIR_NEED_MB, detail)
+        )
+
+    def _check_app_dir_space(self, app_dir: str) -> str:
+        """Хватит ли места на разделе приложения ('' — да)."""
+        free = self._free_mb(app_dir)
+        if free < 0 or free >= APP_DIR_NEED_MB:
+            return ""
+        return (
+            "Недостаточно места в %s: нужно ~%d МБ, свободно %d МБ. "
+            "Обновление не начато, текущая установка не тронута."
+            % (app_dir, APP_DIR_NEED_MB, free)
+        )
+
+    @staticmethod
+    def _replace_dir(src: str, dst: str) -> None:
+        """
+        Заменить каталог dst деревом src.
+
+        Копируем рядом (<dst>.new) и переставляем переименованием, а не
+        «rmtree + copytree»: при обрыве на середине (кончилось место, OOM
+        убил процесс, пропало питание) старый каталог остаётся целым, и
+        GUI переживает неудачное обновление. Вдобавок исчезает окно, когда
+        core/ или web/ на диске нет вовсе.
+        """
+        tmp_new = dst + ".new"
+        tmp_old = dst + ".old"
+        shutil.rmtree(tmp_new, ignore_errors=True)
+        shutil.rmtree(tmp_old, ignore_errors=True)
+
+        shutil.copytree(src, tmp_new)   # упало — dst не тронут
+
+        if os.path.isdir(dst):
+            os.rename(dst, tmp_old)
+        try:
+            os.rename(tmp_new, dst)
+        except OSError:
+            # Новый каталог поставить не удалось — возвращаем старый.
+            if os.path.isdir(tmp_old) and not os.path.exists(dst):
+                os.rename(tmp_old, dst)
+            shutil.rmtree(tmp_new, ignore_errors=True)
+            raise
+        shutil.rmtree(tmp_old, ignore_errors=True)
+
+    @staticmethod
+    def _cleanup_stale_dirs(app_dir: str) -> None:
+        """Убрать <dir>.new/<dir>.old от прошлого прерванного обновления."""
+        try:
+            entries = os.listdir(app_dir)
+        except OSError:
+            return
+        for name in entries:
+            if name.endswith(".new") or name.endswith(".old"):
+                path = os.path.join(app_dir, name)
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
 
     def _ensure_cli_wrapper(self, app_dir: str):
         """
@@ -775,10 +1015,12 @@ class GuiUpdater:
                                    transport=transport)
             if res.get("ok"):
                 return True
+            self._last_download_error = str(res.get("error") or "")
             log.error("Ошибка загрузки %s: %s" % (url, res.get("error")),
                       source="gui-updater")
             return False
         except Exception as e:
+            self._last_download_error = str(e)
             log.error("Ошибка загрузки %s: %s" % (url, e),
                       source="gui-updater")
             return False

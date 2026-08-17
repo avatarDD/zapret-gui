@@ -7,6 +7,9 @@
 """
 
 import json
+import os
+import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -205,6 +208,177 @@ class TestGuiUpdateRef(unittest.TestCase):
     def test_default_falls_back_to_main(self):
         seen = self._run(resolved="")
         self.assertIn("/archive/refs/heads/main.tar.gz", seen["url"])
+
+
+class TestGuiUpdateResultSurvives(unittest.TestCase):
+    """
+    Регрессия: «жму обновить — пишет, что идёт процесс, страница
+    перезагружается, версия прежняя».
+
+    Обновление длится дольше HTTP-запроса, поэтому его исход веб-клиент
+    узнаёт опросом /api/gui/progress. Раньше результат жил только внутри
+    обработчика POST и терялся — фронт по окончании операции рисовал
+    успех независимо от того, что случилось. Теперь исход остаётся в
+    get_operation_status()["last_result"].
+    """
+
+    def _failing_updater(self):
+        up = GuiUpdater()
+        up._download_file = lambda url, dest, transport="": False
+        return up
+
+    def test_failure_is_kept_in_last_result(self):
+        up = self._failing_updater()
+        res = up.update(tag="v9.9.9")
+        self.assertFalse(res["ok"])
+
+        st = up.get_operation_status()
+        self.assertFalse(st["in_progress"])
+        self.assertIsNotNone(st["last_result"])
+        self.assertFalse(st["last_result"]["ok"])
+        # Причина видна и в строке прогресса — не только в логе.
+        self.assertIn("скачать", st["status"])
+
+    def test_new_run_clears_previous_result(self):
+        """Итог прошлого запуска не должен выдаваться за итог текущего."""
+        up = self._failing_updater()
+        up.update(tag="v9.9.9")
+        self.assertIsNotNone(up.get_operation_status()["last_result"])
+
+        seen = {}
+
+        def slow_download(url, dest, transport=""):
+            seen["last_result"] = up.get_operation_status()["last_result"]
+            return False
+
+        up._download_file = slow_download
+        up.update(tag="v9.9.9")
+        self.assertIsNone(seen["last_result"])
+
+    def test_start_update_occupies_slot_synchronously(self):
+        """start_update() возвращается уже с in_progress=True — иначе
+        первый опрос прогресса примет «ещё не началось» за «уже всё»."""
+        up = GuiUpdater()
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_download(url, dest, transport=""):
+            started.set()
+            release.wait(5)
+            return False
+
+        up._download_file = blocking_download
+        try:
+            r = up.start_update(tag="v9.9.9")
+            self.assertTrue(r["in_progress"])
+            st = up.get_operation_status()
+            self.assertTrue(st["in_progress"])
+            self.assertIsNone(st["last_result"])
+            self.assertTrue(started.wait(5))
+            # Пока идёт — второй запуск не стартует новую операцию.
+            self.assertNotIn("started", up.start_update(tag="v9.9.9"))
+        finally:
+            release.set()
+
+
+class TestGuiUpdateVerifiesInstalledVersion(unittest.TestCase):
+    """
+    Успех обязан подтверждаться диском: версия берётся из скачанного
+    архива, а сверяется с core/version.py установленного каталога. Иначе
+    обновление, не поменявшее ни файла, рапортует новую версию.
+    """
+
+    def _versions(self, app_dir, installed, src_dir, downloaded):
+        return mock.patch.object(
+            GuiUpdater, "_read_version_from_dir", autospec=True,
+            side_effect=lambda _self, d: (installed if d == app_dir
+                                          else downloaded))
+
+    def test_stale_version_on_disk_is_failure(self):
+        up, app_dir, src_dir = GuiUpdater(), "/app", "/src"
+        with self._versions(app_dir, "0.24.13", src_dir, "0.24.15"):
+            res = up._verify_installed(app_dir, src_dir)
+        self.assertIsNotNone(res)
+        self.assertFalse(res["ok"])
+        self.assertIn("0.24.13", res["message"])
+        self.assertIn("0.24.15", res["message"])
+
+    def test_matching_version_passes(self):
+        up, app_dir, src_dir = GuiUpdater(), "/app", "/src"
+        with self._versions(app_dir, "0.24.15", src_dir, "0.24.15"):
+            self.assertIsNone(up._verify_installed(app_dir, src_dir))
+
+
+class TestGuiUpdateWorkDir(unittest.TestCase):
+    """
+    /tmp на Keenetic — tmpfs в RAM. Когда места не хватает, загрузка или
+    распаковка обрывается на середине; проверяем место ДО сети и, если
+    /tmp мал, уходим на раздел приложения.
+    """
+
+    def test_falls_back_to_app_partition(self):
+        up = GuiUpdater()
+        with tempfile.TemporaryDirectory() as parent:
+            app_dir = os.path.join(parent, "zapret-gui")
+            os.makedirs(app_dir)
+            free = {"/tmp": 5}
+            with mock.patch.object(gu.GuiUpdater, "_free_mb",
+                                   staticmethod(lambda p: free.get(p, 900))):
+                base, err = up._pick_work_base(app_dir)
+            self.assertEqual(err, "")
+            self.assertEqual(base, parent)
+
+    def test_no_space_anywhere_is_reported_before_download(self):
+        up = GuiUpdater()
+        with mock.patch.object(gu.GuiUpdater, "_free_mb",
+                               staticmethod(lambda p: 3)), \
+             mock.patch.object(up, "_download_file") as dl:
+            res = up._do_update(tag="v9.9.9")
+        self.assertFalse(res["ok"])
+        self.assertIn("места", res["message"])
+        dl.assert_not_called()
+
+
+class TestReplaceDirKeepsOldOnFailure(unittest.TestCase):
+    """
+    Каталог заменяется через <dir>.new + rename, а не «rmtree + copytree»:
+    сорвавшееся обновление не должно оставлять GUI без core/ или web/.
+    """
+
+    def test_old_tree_survives_copy_error(self):
+        with tempfile.TemporaryDirectory() as base:
+            src = os.path.join(base, "src")
+            dst = os.path.join(base, "dst")
+            os.makedirs(src)
+            os.makedirs(dst)
+            with open(os.path.join(src, "f.txt"), "w") as f:
+                f.write("new")
+            with open(os.path.join(dst, "f.txt"), "w") as f:
+                f.write("old")
+
+            with mock.patch.object(gu.shutil, "copytree",
+                                   side_effect=OSError(28, "No space")):
+                with self.assertRaises(OSError):
+                    GuiUpdater._replace_dir(src, dst)
+
+            with open(os.path.join(dst, "f.txt")) as f:
+                self.assertEqual(f.read(), "old")
+
+    def test_swap_replaces_content(self):
+        with tempfile.TemporaryDirectory() as base:
+            src = os.path.join(base, "src")
+            dst = os.path.join(base, "dst")
+            os.makedirs(src)
+            os.makedirs(dst)
+            with open(os.path.join(src, "new.txt"), "w") as f:
+                f.write("new")
+            with open(os.path.join(dst, "gone.txt"), "w") as f:
+                f.write("old")
+
+            GuiUpdater._replace_dir(src, dst)
+
+            self.assertEqual(sorted(os.listdir(dst)), ["new.txt"])
+            self.assertEqual(sorted(os.listdir(base)), ["dst", "src"])
 
 
 if __name__ == "__main__":
