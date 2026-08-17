@@ -359,8 +359,17 @@ class FirewallManager:
 
     def _rules_applied(self, rules) -> bool:
         """Вычислить applied по списку правил и сохранить под локом
-        (запись _applied — под тем же локом, что и в apply/remove)."""
-        has_rules = any(IPT_COMMENT in r or NFT_TABLE in r for r in rules)
+        (запись _applied — под тем же локом, что и в apply/remove).
+
+        Геттеры отдают ТОЛЬКО наши правила (_get_iptables_rules фильтрует
+        по комментарию и по нашим именованным цепочкам, _get_nftables_rules
+        читает нашу таблицу), поэтому непустой список = правила стоят.
+        Раньше здесь искался литерал `zapret-gui`/`zapret_gui` в строке —
+        и правила из именованных цепочек nfqws_* (их ставят автозапуск
+        S99zapret и reapply-хук персистентности, комментария там нет)
+        не считались применёнными вовсе.
+        """
+        has_rules = bool(rules)
         with self._lock:
             self._applied = has_rules
         return has_rules
@@ -944,24 +953,89 @@ class FirewallManager:
                 break
         return ok
 
+    def _ipt_chain_lines(self, ipt_cmd, table, chain) -> list:
+        """Строки правил одной цепочки без шапки. [] — цепочки нет/ошибка."""
+        try:
+            result = subprocess.run(
+                [ipt_cmd, "-t", table, "-L", chain, "-n", "-v",
+                 "--line-numbers"],
+                capture_output=True, text=True, timeout=5
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return []
+        if result.returncode != 0:
+            return []
+
+        lines = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            # `Chain <name> (...)` и заголовок колонок `num pkts bytes ...`
+            if not line or line.startswith("Chain ") or line.startswith("num"):
+                continue
+            lines.append(line)
+        return lines
+
+    def _ipt_named_chain_hooked(self, ipt_cmd, table, hook, name) -> bool:
+        """Подцеплена ли наша цепочка `name` к встроенной `hook` (-j name)?
+
+        Осиротевшая цепочка (правила есть, перехода из POSTROUTING/PREROUTING
+        нет) трафик не видит — считать её «правила применены» нельзя.
+        """
+        try:
+            wait = FirewallManager._iptables_wait_flag(ipt_cmd)
+            return subprocess.run(
+                [ipt_cmd] + wait + ["-t", table, "-C", hook, "-j", name],
+                capture_output=True, text=True, timeout=5,
+            ).returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return False
+
     def _get_iptables_rules(self) -> list:
-        """Получить текущие NFQUEUE-правила iptables + ip6tables."""
+        """Получить наши NFQUEUE-правила iptables + ip6tables.
+
+        Правила живут в двух местах, и статус обязан видеть оба:
+
+          • **встроенные цепочки** (mangle POSTROUTING/PREROUTING, nat
+            POSTROUTING) — туда кладёт правила Python-путь, помечая каждое
+            `-m comment --comment zapret-gui`;
+          • **именованные цепочки** nfqws_post/nfqws_pre/nfqws_nat — туда
+            кладут правила shell-путь (автозапуск S99zapret и reapply-хук
+            персистентности, см. core/firewall_persistence) и Python-путь на
+            системах без xt_comment (issue #151). Комментария там нет вовсе,
+            а во встроенной цепочке виден только переход `-j nfqws_post`.
+
+        Читалась же только mangle POSTROUTING и только строки со словом
+        NFQUEUE или комментарием. Поэтому полностью рабочий firewall,
+        поднятый автозапуском или переустановленный хуком после flush'а
+        NDMS/fw3, показывался в GUI как «Firewall: не активен» с пустым
+        списком правил — и «оживал» лишь после перезапуска обхода из GUI,
+        который переносил правила во встроенные цепочки Python-путём.
+        """
         rules = []
         for ipt_cmd in ("iptables", "ip6tables"):
             if not shutil.which(ipt_cmd):
                 continue
-            try:
-                result = subprocess.run(
-                    [ipt_cmd, "-t", "mangle", "-L", "POSTROUTING",
-                     "-n", "-v", "--line-numbers"],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    for line in result.stdout.splitlines():
-                        if "NFQUEUE" in line or IPT_COMMENT in line:
-                            rules.append(line.strip())
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
+            fam = "ip6" if ipt_cmd == "ip6tables" else "ip4"
+
+            # 1. Встроенные цепочки — наши только помеченные комментарием.
+            for table, chain in self._IPT_CHAINS:
+                for line in self._ipt_chain_lines(ipt_cmd, table, chain):
+                    if IPT_COMMENT in line:
+                        rules.append("[%s %s/%s] %s"
+                                     % (fam, table, chain, line))
+
+            # 2. Именованные цепочки — наши целиком, если подцеплены к hook'у.
+            for table, hook, name in self._IPT_NAMED_CHAINS:
+                if ipt_cmd == "ip6tables" and table == "nat":
+                    continue  # NAT-цепочку мы заводим только для IPv4
+                chain_lines = self._ipt_chain_lines(ipt_cmd, table, name)
+                if not chain_lines:
+                    continue
+                if not self._ipt_named_chain_hooked(
+                        ipt_cmd, table, hook, name):
+                    continue
+                for line in chain_lines:
+                    rules.append("[%s %s/%s] %s" % (fam, table, name, line))
         return rules
 
     # ──────────────── nftables implementation ────────────────
@@ -1260,3 +1334,56 @@ def get_firewall_manager() -> FirewallManager:
             if _fw_manager is None:
                 _fw_manager = FirewallManager()
     return _fw_manager
+
+
+def reapply_if_missing() -> dict:
+    """Вернуть правила, если nfqws2 работает, а правил в системе нет.
+
+    nfqws2 без NFQUEUE-правил — процесс, до которого не доходит ни один
+    пакет: обход «запущен», но не работает, и снаружи это выглядит как
+    «сайты снова не открываются». Правила при этом теряются штатно —
+    например, `nft flush ruleset` от fw4 на OpenWrt (наш hotplug-хук умеет
+    переставлять только iptables-правила) или системная чистка таблиц, чья
+    единственная страховка — ndm-хук Keenetic.
+
+    Раньше GUI это состояние никак не лечил: boot-инициализация выходила
+    раньше проверки firewall, если nfqws2 уже запущен (типично после
+    самообновления GUI — сервис перезапускается, а nfqws2 переживает
+    рестарт), и пользователю приходилось перезапускать обход руками, чтобы
+    правила вернулись.
+
+    Ничего не делает, когда правила на месте, nfqws2 не запущен или
+    выключен `firewall.apply_on_start` (пользователь ведёт правила сам).
+
+    Returns:
+        {"checked": bool, "reapplied": bool, "reason": str}
+    """
+    def _res(reason, checked=True, reapplied=False):
+        return {"checked": checked, "reapplied": reapplied, "reason": reason}
+
+    try:
+        from core.config_manager import get_config_manager
+        if not get_config_manager().get("firewall", "apply_on_start",
+                                        default=True):
+            return _res("firewall.apply_on_start выключен", checked=False)
+
+        from core.nfqws_manager import get_nfqws_manager
+        if not get_nfqws_manager().is_running():
+            return _res("nfqws2 не запущен")
+
+        fw = get_firewall_manager()
+        if fw.is_applied():
+            return _res("правила на месте")
+
+        log.warning(
+            "nfqws2 запущен, но правил firewall в системе нет — "
+            "восстанавливаем (без них обход не получает трафик)",
+            source="firewall",
+        )
+        if fw.apply_rules():
+            return _res("правила восстановлены", reapplied=True)
+        return _res("не удалось применить правила")
+    except Exception as e:  # noqa: BLE001
+        log.warning("Проверка правил firewall не выполнена: %s" % e,
+                    source="firewall")
+        return _res("ошибка: %s" % e, checked=False)

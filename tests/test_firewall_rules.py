@@ -448,6 +448,228 @@ class TestNftablesStatusApplied(unittest.TestCase):
         self.assertTrue(fw._rules_applied(rules))
 
 
+class TestIptablesStatusNamedChains(unittest.TestCase):
+    """Регрессия: firewall, поднятый shell-путём, читался как «не активен».
+
+    Правила nfqws2 лежат либо во встроенных цепочках с комментарием
+    `zapret-gui` (Python-путь), либо в именованных цепочках nfqws_* без
+    комментария — так их ставят автозапуск S99zapret и reapply-хук
+    персистентности (а также Python-путь на системах без xt_comment,
+    issue #151). Статус читал только mangle POSTROUTING и требовал
+    комментарий, поэтому во втором случае GUI показывал «Firewall: не
+    активен» с пустым списком, пока пользователь не перезапустит обход.
+    """
+
+    # `iptables -t mangle -L nfqws_post -n -v --line-numbers`
+    _NAMED_CHAIN = (
+        "Chain nfqws_post (1 references)\n"
+        "num   pkts bytes target     prot opt in     out     source"
+        "               destination\n"
+        "1        0     0 RETURN     0    --  *      eth0    0.0.0.0/0"
+        "            0.0.0.0/0            connmark match 0x20000000\n"
+        "2        1    52 NFQUEUE    6    --  *      eth0    0.0.0.0/0"
+        "            0.0.0.0/0            multiport dports 80,443 "
+        "NFQUEUE num 300 bypass\n"
+    )
+
+    # Встроенная цепочка: виден только переход в нашу цепочку — ни слова
+    # NFQUEUE, ни комментария.
+    _BUILTIN_WITH_JUMP = (
+        "Chain POSTROUTING (policy ACCEPT 2 packets, 104 bytes)\n"
+        "num   pkts bytes target     prot opt in     out     source"
+        "               destination\n"
+        "1        3   156 nfqws_post  0    --  *      *       0.0.0.0/0"
+        "            0.0.0.0/0\n"
+    )
+
+    _EMPTY_CHAIN = (
+        "Chain PREROUTING (policy ACCEPT 0 packets, 0 bytes)\n"
+        "num   pkts bytes target     prot opt in     out     source"
+        "               destination\n"
+    )
+
+    def _rules(self, hooked=True, chain_exists=True):
+        """Свести iptables к одной живой цепочке mangle/nfqws_post."""
+        def fake_run(cmd, **_kw):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            r = _R()
+            # ip6tables в этом сценарии не участвует
+            if cmd[0] != "iptables":
+                r.returncode = 1
+                return r
+            if "-C" in cmd:            # проверка перехода из hook-цепочки
+                r.returncode = 0 if hooked else 1
+                return r
+            if "-L" not in cmd:
+                return r
+            chain = cmd[cmd.index("-L") + 1]
+            if chain == "nfqws_post":
+                if not chain_exists:
+                    r.returncode = 1
+                    return r
+                r.stdout = self._NAMED_CHAIN
+            elif chain == "POSTROUTING":
+                r.stdout = self._BUILTIN_WITH_JUMP
+            elif chain in ("nfqws_pre", "nfqws_nat"):
+                r.returncode = 1
+            else:
+                r.stdout = self._EMPTY_CHAIN
+            return r
+
+        fw = FirewallManager()
+        with mock.patch("core.firewall.subprocess.run", side_effect=fake_run), \
+                mock.patch("core.firewall.shutil.which",
+                           side_effect=lambda n: "/sbin/iptables"
+                           if n == "iptables" else None):
+            return fw, fw._get_iptables_rules()
+
+    def test_named_chain_rules_found(self):
+        _fw, rules = self._rules()
+        self.assertTrue(rules, "правила из nfqws_post должны попасть в статус")
+        self.assertTrue(any("NFQUEUE num 300" in r for r in rules))
+
+    def test_named_chain_rules_marked_applied(self):
+        fw, rules = self._rules()
+        self.assertTrue(fw._rules_applied(rules))
+
+    def test_chain_name_visible_in_output(self):
+        _fw, rules = self._rules()
+        self.assertTrue(all(r.startswith("[ip4 mangle/nfqws_post]")
+                            for r in rules))
+
+    def test_orphan_chain_not_counted(self):
+        # Цепочка есть, но перехода из POSTROUTING нет — трафик её не видит.
+        fw, rules = self._rules(hooked=False)
+        self.assertEqual(rules, [])
+        self.assertFalse(fw._rules_applied(rules))
+
+    def test_no_chain_no_rules(self):
+        fw, rules = self._rules(chain_exists=False)
+        self.assertEqual(rules, [])
+        self.assertFalse(fw._rules_applied(rules))
+
+
+class TestIptablesStatusCommentChains(unittest.TestCase):
+    """Обычный путь: правила во встроенных цепочках с комментарием."""
+
+    _POSTROUTING = (
+        "Chain POSTROUTING (policy ACCEPT 2 packets, 104 bytes)\n"
+        "num   pkts bytes target     prot opt in     out     source"
+        "               destination\n"
+        "1        0     0 NFQUEUE    6    --  *      eth0    0.0.0.0/0"
+        "            0.0.0.0/0            multiport dports 80,443 "
+        "/* zapret-gui */ NFQUEUE num 300 bypass\n"
+        "2        7   402 MASQUERADE  0   --  *      eth0    0.0.0.0/0"
+        "            0.0.0.0/0            /* podkop */\n"
+    )
+
+    def _rules(self, stdout):
+        def fake_run(cmd, **_kw):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            r = _R()
+            if cmd[0] != "iptables" or "-L" not in cmd:
+                r.returncode = 1
+                return r
+            table = cmd[cmd.index("-t") + 1]
+            chain = cmd[cmd.index("-L") + 1]
+            r.stdout = stdout if (table, chain) == ("mangle", "POSTROUTING") \
+                else ""
+            return r
+
+        fw = FirewallManager()
+        with mock.patch("core.firewall.subprocess.run", side_effect=fake_run), \
+                mock.patch("core.firewall.shutil.which",
+                           side_effect=lambda n: "/sbin/iptables"
+                           if n == "iptables" else None):
+            return fw, fw._get_iptables_rules()
+
+    def test_commented_rule_found(self):
+        fw, rules = self._rules(self._POSTROUTING)
+        self.assertEqual(len(rules), 1)
+        self.assertIn("NFQUEUE num 300", rules[0])
+        self.assertTrue(fw._rules_applied(rules))
+
+    def test_foreign_rules_ignored(self):
+        # Чужое правило без нашего комментария не должно давать «активен»:
+        # иначе самолечение (reapply_if_missing) сочтёт firewall целым.
+        foreign = self._POSTROUTING.replace("/* zapret-gui */", "/* podkop */")
+        fw, rules = self._rules(foreign)
+        self.assertEqual(rules, [])
+        self.assertFalse(fw._rules_applied(rules))
+
+
+class TestReapplyIfMissing(unittest.TestCase):
+    """nfqws2 работает, а правил нет — GUI обязан вернуть их сам.
+
+    Раньше boot-инициализация выходила раньше проверки firewall, если
+    nfqws2 уже запущен (типичный случай после самообновления GUI: сервис
+    перезапускается, nfqws2 переживает рестарт), и правила приходилось
+    возвращать руками — перезапуском обхода.
+    """
+
+    def _run(self, running, applied, apply_ok=True, apply_on_start=True):
+        import core.firewall as fwmod
+
+        calls = {"apply": 0}
+        fw = FirewallManager()
+
+        def _apply():
+            calls["apply"] += 1
+            return apply_ok
+
+        cfg = mock.Mock()
+        cfg.get.return_value = apply_on_start
+        nfqws = mock.Mock()
+        nfqws.is_running.return_value = running
+
+        with mock.patch.object(fw, "is_applied", return_value=applied), \
+                mock.patch.object(fw, "apply_rules", side_effect=_apply), \
+                mock.patch.object(fwmod, "get_firewall_manager",
+                                  return_value=fw), \
+                mock.patch.dict("sys.modules", {
+                    "core.nfqws_manager": mock.Mock(
+                        get_nfqws_manager=lambda: nfqws),
+                    "core.config_manager": mock.Mock(
+                        get_config_manager=lambda: cfg),
+                }):
+            return fwmod.reapply_if_missing(), calls
+
+    def test_reapplies_when_running_without_rules(self):
+        res, calls = self._run(running=True, applied=False)
+        self.assertTrue(res["reapplied"])
+        self.assertEqual(calls["apply"], 1)
+
+    def test_noop_when_rules_present(self):
+        res, calls = self._run(running=True, applied=True)
+        self.assertFalse(res["reapplied"])
+        self.assertEqual(calls["apply"], 0)
+
+    def test_noop_when_nfqws_stopped(self):
+        res, calls = self._run(running=False, applied=False)
+        self.assertFalse(res["reapplied"])
+        self.assertEqual(calls["apply"], 0)
+
+    def test_respects_apply_on_start_off(self):
+        res, calls = self._run(running=True, applied=False,
+                               apply_on_start=False)
+        self.assertFalse(res["reapplied"])
+        self.assertFalse(res["checked"])
+        self.assertEqual(calls["apply"], 0)
+
+    def test_reports_apply_failure(self):
+        res, calls = self._run(running=True, applied=False, apply_ok=False)
+        self.assertFalse(res["reapplied"])
+        self.assertEqual(calls["apply"], 1)
+
+
 class TestNftPortSet(unittest.TestCase):
 
     def test_converts_colon_to_dash(self):

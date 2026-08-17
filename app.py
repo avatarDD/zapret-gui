@@ -127,6 +127,9 @@ def _apply_saved_strategy_on_boot():
     отдельный init.d/S99zapret — в этом случае пропускаем, чтобы
     не запустить второй экземпляр nfqws2.
 
+    Плюс — независимо от автозапуска — чиним «nfqws2 работает, а правил
+    firewall нет» (core.firewall.reapply_if_missing).
+
     Вызывается в фоновом потоке, чтобы не блокировать подъём web-сервера.
     """
     import threading
@@ -139,6 +142,15 @@ def _apply_saved_strategy_on_boot():
 
             from core.config_manager import get_config_manager
             from core.log_buffer import log
+
+            # nfqws2 переживает рестарт GUI (свой сеанс, setsid), а вот
+            # правила firewall из системы могут за это время пропасть —
+            # тогда обход «запущен», но трафика не видит. Проверяем ДО всех
+            # выходов ниже: они рассчитаны на «nfqws2 поднимет кто-то
+            # другой», а про firewall не знают вовсе. No-op, если правила на
+            # месте или nfqws2 не запущен.
+            from core.firewall import reapply_if_missing
+            reapply_if_missing()
 
             cfg = get_config_manager()
             if not cfg.get("autostart", "enabled", default=False):
