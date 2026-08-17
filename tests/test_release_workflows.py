@@ -34,14 +34,23 @@ WORKFLOW_DIR = os.path.join(REPO_ROOT, ".github", "workflows")
 # Workflow релиза самого GUI — единственный, кому «latest» разрешён.
 GUI_RELEASE_WORKFLOW = "release.yml"
 
-# Публикация релиза (softprops/action-gh-release) — по ней и опознаём
-# workflow, который вообще создаёт Release.
-PUBLISH_RE = re.compile(r"uses:\s*softprops/action-gh-release@", re.M)
+# Публикация релиза — по ней и опознаём workflow, который вообще создаёт
+# Release. Способов два: action softprops/action-gh-release и gh CLI
+# (`gh release create`). Второй появился в release.yml после того, как
+# codeload.github.com отдал 429 на скачивании самих actions и релиз
+# v0.24.16 не вышел вовсе: gh предустановлен на раннере и не скачивается.
+PUBLISH_RE = re.compile(
+    r"uses:\s*softprops/action-gh-release@|gh release create", re.M)
 
-# `make_latest: "false"` / make_latest: false — кавычки не принципиальны.
-MAKE_LATEST_FALSE_RE = re.compile(
-    r"^\s*make_latest:\s*['\"]?false['\"]?\s*$", re.M)
-MAKE_LATEST_ANY_RE = re.compile(r"^\s*make_latest:", re.M)
+# Заявка «этот релиз — latest»: у action это `make_latest:` с не-false
+# значением, у gh CLI — флаг `--latest` (именно без `=false`).
+CLAIMS_LATEST_RE = re.compile(
+    r"^\s*make_latest:\s*(?!['\"]?false)|--latest(?![=\w])", re.M)
+
+# Отказ от latest: `make_latest: "false"` / `make_latest: false` /
+# `--latest=false`.
+DISCLAIMS_LATEST_RE = re.compile(
+    r"^\s*make_latest:\s*['\"]?false['\"]?\s*$|--latest=false", re.M)
 
 # Пререлиз в «latest» не попадает по определению — с него спроса нет.
 PRERELEASE_TRUE_RE = re.compile(r"^\s*prerelease:\s*true\s*$", re.M)
@@ -85,9 +94,10 @@ class TestReleaseWorkflows(unittest.TestCase):
                 continue          # пререлиз «latest» не станет
             checked.append(name)
             self.assertRegex(
-                text, MAKE_LATEST_FALSE_RE,
-                "%s публикует НЕ-пререлиз без `make_latest: \"false\"`. "
-                "Такой релиз перехватит «latest» у vX.Y.Z, и ссылки "
+                text, DISCLAIMS_LATEST_RE,
+                "%s публикует НЕ-пререлиз, не отказавшись от «latest» "
+                "(`make_latest: \"false\"` или `--latest=false`). Такой "
+                "релиз перехватит «latest» у vX.Y.Z, и ссылки "
                 "/releases/latest/download/zapret-gui-*.apk отдадут 404 "
                 "(issue #305)." % name)
 
@@ -97,16 +107,17 @@ class TestReleaseWorkflows(unittest.TestCase):
             "проверка перестала что-либо проверять")
 
     def test_gui_release_claims_latest(self):
-        """У релиза GUI «latest» задан явно и не выключен наглухо."""
+        """У релиза GUI «latest» заявлен явно.
+
+        `--latest=false` в release.yml допустим — но только в ветке для
+        пререлиза; безусловная заявка на latest обязана быть рядом, иначе
+        «latest» не будет указывать ни на один релиз с пакетами GUI.
+        """
         text = self.workflows[GUI_RELEASE_WORKFLOW]
         self.assertRegex(
-            text, MAKE_LATEST_ANY_RE,
-            "release.yml должен явно объявлять make_latest: на «latest» "
-            "завязаны все ссылки на пакеты в README")
-        self.assertNotRegex(
-            text, MAKE_LATEST_FALSE_RE,
-            "release.yml выключил make_latest — тогда «latest» не будет "
-            "указывать ни на один релиз с пакетами GUI")
+            text, CLAIMS_LATEST_RE,
+            "release.yml должен явно заявлять «latest» (make_latest: или "
+            "--latest): на него завязаны все ссылки на пакеты в README")
 
 
 if __name__ == "__main__":
