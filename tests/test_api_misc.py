@@ -11,6 +11,8 @@ zapret_manager.
   3. Корректно обрабатывают невалидный body / параметры.
 """
 
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -417,20 +419,35 @@ class TestGuiReleasesAPI(unittest.TestCase):
 
     def test_gui_update_passes_tag_branch_transport(self):
         captured = {}
+        done = threading.Event()
 
-        def fake_update(self, tag="", branch="", transport=""):
+        def fake_do_update(self, tag="", branch="", transport=""):
             captured.update(tag=tag, branch=branch, transport=transport)
+            done.set()
             return {"ok": True, "version": tag or "latest"}
 
-        with mock.patch("core.gui_updater.GuiUpdater.get_operation_status",
-                        return_value={"in_progress": False}), \
-             mock.patch("core.gui_updater.GuiUpdater.update", new=fake_update):
+        with mock.patch("core.gui_updater.GuiUpdater._do_update",
+                        new=fake_do_update):
             r = self.client.post_json("/api/gui/update",
                                       {"tag": "v0.22.0",
                                        "transport": "awg:wg0"})
-        self.assertIn(r["_status"], (200, 500))
+            self.assertEqual(r["_status"], 200)
+            # Обновление идёт в фоне: POST отвечает in_progress, а исход
+            # клиент забирает из /api/gui/progress.
+            self.assertTrue(r["in_progress"])
+            self.assertTrue(done.wait(5))
+
         self.assertEqual(captured.get("tag"), "v0.22.0")
         self.assertEqual(captured.get("transport"), "awg:wg0")
+
+        for _ in range(50):
+            prog = self.client.get_json("/api/gui/progress")
+            if not prog["in_progress"]:
+                break
+            time.sleep(0.1)
+        self.assertFalse(prog["in_progress"])
+        self.assertTrue(prog["last_result"]["ok"])
+        self.assertEqual(prog["last_result"]["version"], "v0.22.0")
 
 
 if __name__ == "__main__":

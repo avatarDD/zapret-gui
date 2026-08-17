@@ -10,12 +10,7 @@ API обновления zapret-gui.
   GET  /api/gui/progress    — прогресс обновления
 """
 
-import threading
 from bottle import request, response
-
-
-# Краткий таймаут: ловим быстрые ошибки, затем возвращаем in_progress
-_UPDATE_THREAD_TIMEOUT = 5
 
 
 def register(app):
@@ -66,20 +61,18 @@ def register(app):
 
     @app.post("/api/gui/update")
     def api_gui_update():
-        """Обновить GUI (body: {tag?, branch?, transport?})."""
+        """
+        Обновить GUI (body: {tag?, branch?, transport?}).
+
+        Всегда возвращает in_progress: обновление на роутере длится дольше
+        любого разумного HTTP-таймаута. Исход клиент забирает из
+        /api/gui/progress (поле last_result) — раньше он терялся вместе с
+        обработчиком запроса, и неудача выглядела как успех.
+        """
         response.content_type = "application/json; charset=utf-8"
 
         from core.gui_updater import get_gui_updater
         updater = get_gui_updater()
-
-        # Проверяем, не идёт ли уже обновление
-        op = updater.get_operation_status()
-        if op["in_progress"]:
-            return {
-                "ok": True,
-                "message": "Обновление уже выполняется.",
-                "in_progress": True,
-            }
 
         try:
             body = request.json or {}
@@ -91,38 +84,15 @@ def register(app):
         branch = (body.get("branch") or "").strip()
         transport = (body.get("transport") or "").strip()
 
-        # Запускаем в фоновом потоке
-        result_holder = {"result": None}
-
-        def update_task():
-            result_holder["result"] = updater.update(
-                tag=tag, branch=branch, transport=transport)
-
-        t = threading.Thread(
-            target=update_task, daemon=True, name="gui-update"
-        )
-        t.start()
-        t.join(timeout=_UPDATE_THREAD_TIMEOUT)
-
-        if t.is_alive():
-            return {
-                "ok": True,
-                "message": "Обновление запущено. Следите за прогрессом.",
-                "in_progress": True,
-            }
-
-        result = result_holder["result"]
-        if result:
-            if not result.get("ok"):
-                response.status = 500
-            return result
-
-        response.status = 500
-        return {"ok": False, "message": "Внутренняя ошибка обновления"}
+        return updater.start_update(tag=tag, branch=branch,
+                                    transport=transport)
 
     @app.route("/api/gui/progress")
     def api_gui_progress():
-        """Прогресс текущей операции обновления GUI."""
+        """
+        Прогресс обновления GUI + last_result — итог последней завершённой
+        операции (null, пока она идёт или ещё не было ни одной).
+        """
         response.content_type = "application/json; charset=utf-8"
 
         from core.gui_updater import get_gui_updater

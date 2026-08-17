@@ -817,14 +817,10 @@ const ZapretManagerPage = (() => {
                         stopGuiProgressPolling();
                         if (guiUpdateRunning) {
                             guiUpdateRunning = false;
-                            showProgress('Обновление завершено!', 100, 'Обновление zapret-gui...');
-                            setTimeout(() => {
-                                hideProgress();
-                                // Polling-фолбэк не знает финальный result —
-                                // показываем оптимистичный сценарий с авто-
-                                // поллингом и резервным ручным рестартом.
-                                showGuiReloadPrompt({ ok: true, restart_scheduled: true });
-                            }, 1200);
+                            // last_result — настоящий исход операции. Без него
+                            // (старый бэкенд) считаем результат неизвестным и
+                            // не рисуем успех: обновление могло и упасть.
+                            finishGuiUpdate(prog.last_result);
                         }
                     }
                 }
@@ -832,6 +828,45 @@ const ZapretManagerPage = (() => {
                 // Тихо игнорируем
             }
         }, 1500);
+    }
+
+    /**
+     * Показать исход обновления GUI: успех — прогресс до 100% и приглашение
+     * перезагрузить страницу; неудача — причина отказа, чтобы её было видно
+     * без похода в лог.
+     */
+    function finishGuiUpdate(result) {
+        if (result && result.ok === false) {
+            hideProgress();
+            renderGuiActions();
+            const msg = result.message || 'Ошибка обновления GUI';
+            Toast.error(msg);
+            const banner = document.getElementById('gui-update-banner');
+            if (banner) {
+                banner.classList.remove('hidden');
+                banner.innerHTML = `
+                    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                        <div>
+                            <span style="font-weight:600; color:var(--error);">Обновление не выполнено</span>
+                            <div style="color:var(--text-secondary); font-size:13px; margin-top:4px;">
+                                ${escapeHtml(msg)}<br>
+                                Подробности — на странице «Лог» (источник <code>gui-updater</code>).
+                            </div>
+                        </div>
+                        <button class="btn btn-ghost btn-sm" onclick="ZapretManagerPage.updateGui()">Повторить</button>
+                    </div>
+                `;
+            }
+            return;
+        }
+
+        showProgress('Обновление завершено!', 100, 'Обновление zapret-gui...');
+        setTimeout(() => {
+            hideProgress();
+            // Нет last_result (старый бэкенд) — оптимистичный сценарий с
+            // авто-поллингом версии и резервным ручным рестартом.
+            showGuiReloadPrompt(result || { ok: true, restart_scheduled: true });
+        }, 1200);
     }
 
     function stopGuiProgressPolling() {
@@ -997,21 +1032,12 @@ const ZapretManagerPage = (() => {
 
             if (result.in_progress) {
                 Toast.info('Обновление GUI запущено. Следите за прогрессом...');
-                // Продолжаем polling — он сам завершит процесс
-            } else if (result.ok) {
-                stopGuiProgressPolling();
-                guiUpdateRunning = false;
-                showProgress('Обновление завершено!', 100, 'Обновление zapret-gui...');
-                setTimeout(() => {
-                    hideProgress();
-                    showGuiReloadPrompt(result);
-                }, 1200);
+                // Продолжаем polling — исход придёт в last_result
             } else {
+                // Бэкенд ответил синхронным результатом (успех или отказ).
                 stopGuiProgressPolling();
                 guiUpdateRunning = false;
-                hideProgress();
-                renderGuiActions();
-                Toast.error(result.message || 'Ошибка обновления GUI');
+                finishGuiUpdate(result);
             }
         } catch (err) {
             stopGuiProgressPolling();
