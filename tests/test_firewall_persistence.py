@@ -183,5 +183,213 @@ class TestShellDegradation(unittest.TestCase):
         self.assertEqual(rules, [])
 
 
+# Фейковый nft: печатает всё, что ему передали, склеивая argv через пробел —
+# ровно как это делает настоящий nft перед разбором.
+_FAKE_NFT = r"""
+nft() { echo "NFT: $*"; return 0; }
+"""
+
+_NFT_PRELUDE = (
+    'QUEUE_NUM=300\nPORTS_TCP="80,443,2053:2087"\nPORTS_UDP="443,3478:3481"\n'
+    'MAX_PKT_OUT=20\nMAX_PKT_OUT_UDP=5\nMAX_PKT_IN=10\n'
+    'MARK_PROCESSED="0x40000000/0x40000000"\n'
+    'MARK_EXCLUDE="0x20000000/0x20000000"\n'
+    'IPV6_ENABLED=0\n'
+)
+
+
+def _run_shell_backend(backend, wan="eth3", command="apply_firewall",
+                       have_iptables=True, have_nft=True,
+                       iptables_is_shim=False):
+    """Прогнать shell-функции с фейковыми nft/iptables.
+
+    Возвращает (nft_cmds, ipt_cmds) — что ушло в каждый бэкенд.
+    """
+    sh = shutil.which("sh")
+    if not sh:
+        return None, None
+
+    # command -v должен видеть ровно то, что просим: подменяем его.
+    stub_cmdv = (
+        'command() {\n'
+        '    if [ "$1" = "-v" ]; then\n'
+        '        case "$2" in\n'
+        '            iptables|ip6tables) [ "%s" = "1" ] && echo /sbin/$2 && return 0; return 1 ;;\n'
+        '            nft) [ "%s" = "1" ] && echo /usr/sbin/nft && return 0; return 1 ;;\n'
+        '        esac\n'
+        '    fi\n'
+        '    return 1\n'
+        '}\n'
+        % ("1" if have_iptables else "0", "1" if have_nft else "0")
+    )
+    # `iptables --version` — по нему shell отличает legacy от nft-шима.
+    # `-C` отвечает «правила нет» (иначе снятие переходов зациклилось бы —
+    # ровно та петля, которую в _fw_unhook ограничивает счётчик).
+    stub_ver = (
+        'iptables() {\n'
+        '    if [ "$1" = "--version" ]; then echo "iptables v1.8.10 (%s)"; return 0; fi\n'
+        '    case " $* " in\n'
+        '      *" -C "*) return 1 ;;\n'
+        '      *" -N "*|*" -F "*|*" -X "*|*" -A ZGUI_PROBE "*) return 0 ;;\n'
+        '      *) echo "IPT: $*"; return 0 ;;\n'
+        '    esac\n'
+        '}\n'
+        'ip6tables() { iptables "$@"; }\n'
+        % ("nf_tables" if iptables_is_shim else "legacy")
+    )
+
+    script = (_NFT_PRELUDE
+              + 'WAN_IFACES="%s"\nFW_BACKEND="%s"\n' % (wan, backend)
+              + _FAKE_NFT + stub_ver + stub_cmdv
+              + fp.FIREWALL_SH_FUNCTIONS + "\n%s\n" % command)
+    r = subprocess.run([sh], input=script, text=True, capture_output=True)
+    out = r.stdout.splitlines()
+    return ([ln[len("NFT: "):] for ln in out if ln.startswith("NFT: ")],
+            [ln[len("IPT: "):] for ln in out if ln.startswith("IPT: ")])
+
+
+@unittest.skipUnless(shutil.which("sh"), "нет sh")
+class TestShellNftables(unittest.TestCase):
+    """Shell-путь обязан уметь nftables.
+
+    Раньше он знал только iptables, поэтому на OpenWrt с fw4 хук после
+    `nft flush ruleset` не возвращал ничего: на чистом nft-образе iptables
+    нет вовсе, а где есть — это шим мимо таблицы, которой владеет fw4.
+    Обход оставался «запущенным» без единого правила.
+    """
+
+    def _nft(self, **kw):
+        nft, _ipt = _run_shell_backend("nftables", **kw)
+        return nft
+
+    def test_creates_table_and_three_chains(self):
+        cmds = self._nft()
+        self.assertIn("add table inet zapret_gui", cmds)
+        for chain, spec in (
+            ("postrouting", "type filter hook postrouting priority 150"),
+            ("prerouting", "type filter hook prerouting priority -150"),
+            ("natpost", "type nat hook postrouting priority 100"),
+        ):
+            self.assertTrue(
+                any(("add chain inet zapret_gui %s" % chain) in c and spec in c
+                    for c in cmds), "нет цепочки %s" % chain)
+
+    def test_chain_spec_has_bare_semicolon(self):
+        # issue #4: экранированный `\;` доезжает до nft буквально и валит
+        # разбор — точка с запятой должна быть обычным символом.
+        for c in self._nft():
+            self.assertNotIn("\\;", c)
+
+    def test_queue_rules_both_directions(self):
+        cmds = self._nft()
+        self.assertTrue(any("postrouting" in c and "tcp dport" in c
+                            and "queue num 300 bypass" in c for c in cmds))
+        self.assertTrue(any("prerouting" in c and "tcp sport" in c
+                            and "queue num 300 bypass" in c for c in cmds))
+        self.assertTrue(any("udp dport" in c for c in cmds))
+        self.assertTrue(any("udp sport" in c for c in cmds))
+
+    def test_masquerade_rule(self):
+        self.assertTrue(any("natpost" in c and "masquerade" in c
+                            for c in self._nft()))
+
+    def test_port_ranges_use_dash(self):
+        # issue #101: в nft диапазон — через дефис, иначе «Could not resolve
+        # service: Servname not supported for ai_socktype».
+        cmds = [c for c in self._nft() if "dport" in c or "sport" in c]
+        self.assertTrue(cmds)
+        for c in cmds:
+            self.assertNotIn(":", c)
+        self.assertTrue(any("2053-2087" in c for c in cmds))
+        self.assertTrue(any("3478-3481" in c for c in cmds))
+
+    def test_marks_without_iptables_mask(self):
+        # В firewall.run метки лежат в форме MARK/MASK — nft нужен голый MARK.
+        for c in self._nft():
+            self.assertNotIn("0x40000000/0x40000000", c)
+            self.assertNotIn("0x20000000/0x20000000", c)
+        self.assertTrue(any("meta mark and 0x40000000 == 0x40000000"
+                            in c for c in self._nft()))
+
+    def test_iface_names_quoted(self):
+        # issue #226: имя, начинающееся с цифры, без кавычек ломает лексер.
+        cmds = [c for c in self._nft(wan="eth3 6in4-he_net")
+                if "ifname" in c]
+        self.assertTrue(cmds)
+        for c in cmds:
+            self.assertIn('{ "eth3", "6in4-he_net" }', c)
+
+    def test_single_iface_without_braces(self):
+        cmds = [c for c in self._nft(wan="br-wan") if "ifname" in c]
+        self.assertTrue(cmds)
+        for c in cmds:
+            self.assertIn('oifname "br-wan"' if "oifname" in c
+                          else 'iifname "br-wan"', c)
+
+    def test_no_ifaces_no_filter(self):
+        cmds = self._nft(wan="")
+        self.assertTrue(cmds)
+        self.assertFalse(any("ifname" in c for c in cmds))
+
+    def test_table_recreated_not_appended(self):
+        # Реаплай после flush'а не должен копить дубли: таблица сносится
+        # целиком перед пересозданием.
+        cmds = self._nft()
+        self.assertLess(cmds.index("add table inet zapret_gui"),
+                        cmds.index("add chain inet zapret_gui postrouting "
+                                   "{ type filter hook postrouting "
+                                   "priority 150 ; }"))
+        self.assertIn("delete table inet zapret_gui", cmds)
+
+    def test_stop_deletes_table(self):
+        nft, _ipt = _run_shell_backend("nftables", command="firewall_stop")
+        self.assertIn("delete table inet zapret_gui", nft)
+
+
+@unittest.skipUnless(shutil.which("sh"), "нет sh")
+class TestShellBackendChoice(unittest.TestCase):
+    """Выбор бэкенда в shell — тем же правилом, что в firewall.py::_auto_detect."""
+
+    def test_explicit_nftables_skips_iptables(self):
+        nft, ipt = _run_shell_backend("nftables")
+        self.assertTrue(nft)
+        self.assertEqual(ipt, [], "на nft-бэкенде iptables трогать нельзя")
+
+    def test_explicit_iptables_skips_nft(self):
+        nft, ipt = _run_shell_backend("iptables")
+        self.assertTrue(ipt)
+        self.assertEqual(nft, [])
+
+    def test_auto_only_nft(self):
+        nft, ipt = _run_shell_backend("", have_iptables=False)
+        self.assertTrue(nft)
+        self.assertEqual(ipt, [])
+
+    def test_auto_only_iptables(self):
+        nft, ipt = _run_shell_backend("", have_nft=False)
+        self.assertTrue(ipt)
+        self.assertEqual(nft, [])
+
+    def test_auto_both_legacy_prefers_iptables(self):
+        nft, ipt = _run_shell_backend("")
+        self.assertTrue(ipt)
+        self.assertEqual(nft, [])
+
+    def test_auto_iptables_shim_prefers_nft(self):
+        # OpenWrt 22+/fw4: iptables — шим iptables-nft, пишущий в тот же
+        # backend, которым владеет fw4 (issue #236).
+        nft, ipt = _run_shell_backend("", iptables_is_shim=True)
+        self.assertTrue(nft)
+        self.assertEqual(ipt, [])
+
+    def test_stop_clears_both_backends(self):
+        # Бэкенд мог смениться с прошлого старта — иначе правила «прошлого»
+        # останутся висеть навсегда. Снимаем оба, какой бы ни был текущий.
+        nft, _ipt = _run_shell_backend("iptables", command="firewall_stop")
+        self.assertIn("delete table inet zapret_gui", nft)
+        nft, _ipt = _run_shell_backend("nftables", command="firewall_stop")
+        self.assertIn("delete table inet zapret_gui", nft)
+
+
 if __name__ == "__main__":
     unittest.main()

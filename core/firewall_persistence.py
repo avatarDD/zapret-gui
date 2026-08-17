@@ -27,6 +27,20 @@ nfqws2 продолжает работать, но трафик в него уж
 
 Единый источник shell-логики firewall — FIREWALL_SH_FUNCTIONS: его же встраивает
 генератор init-скрипта автозапуска (core/autostart_manager).
+
+Бэкенды
+───────
+Shell-функции умеют оба бэкенда — iptables/ip6tables (именованные цепочки
+nfqws_post/nfqws_pre/nfqws_nat) и nftables (таблица inet zapret_gui, паритет с
+core/firewall.py::_apply_nftables). Какой применять — говорит переменная
+FW_BACKEND из firewall.run / S99zapret: её проставляет GUI, знающий и настройку
+`firewall.type`, и результат авто-детекта. Если она пуста (firewall.run от
+прошлых версий), shell определяет бэкенд сам тем же правилом.
+
+Раньше shell-путь знал только iptables. На OpenWrt с fw4 это значило, что после
+`nft flush ruleset` хук не возвращал НИЧЕГО: на чистом nft-образе `iptables`
+вообще нет, а где есть — это шим, пишущий мимо таблицы, которой владеет fw4.
+Обход оставался «запущенным» без единого правила до ручного перезапуска.
 """
 
 import os
@@ -58,12 +72,13 @@ AUTOSTART_INIT = "/opt/etc/init.d/S99zapret"
 #  Использует переменные окружения, которые задаются ВЫШЕ по скрипту
 #  (бейкингом в S99zapret либо `source firewall.run` в reapply):
 #    QUEUE_NUM PORTS_TCP PORTS_UDP MAX_PKT_OUT MAX_PKT_OUT_UDP MAX_PKT_IN
-#    MARK_PROCESSED MARK_EXCLUDE IPV6_ENABLED WAN_IFACES
+#    MARK_PROCESSED MARK_EXCLUDE IPV6_ENABLED WAN_IFACES FW_BACKEND
 # ─────────────────────────────────────────────────────────────────────────
 FIREWALL_SH_FUNCTIONS = r"""
 IPT_GROUP_POST="nfqws_post"
 IPT_GROUP_PRE="nfqws_pre"
 IPT_GROUP_NAT="nfqws_nat"
+NFT_TABLE="zapret_gui"
 : "${MAX_PKT_IN:=15}"
 
 _jnfq() { echo "-j NFQUEUE --queue-num $QUEUE_NUM --queue-bypass"; }
@@ -202,24 +217,155 @@ _firewall_start() {
     done
 }
 
+# Снять все переходы `hook -j chain` (их может быть несколько — дубли от
+# прошлых реаплаев). Счётчик обязателен: без него `-C`, который по любой
+# причине продолжает отвечать «правило есть», вешает init-скрипт намертво —
+# а он крутится под root при каждой загрузке и на каждом firewall-хуке.
+# $1=CMD $2=таблица $3=hook-цепочка $4=наша цепочка
+_fw_unhook() {
+    _uh_i=0
+    while [ "$_uh_i" -lt 10 ]; do
+        $1 -w -t "$2" -C "$3" -j "$4" 2>/dev/null || break
+        $1 -w -t "$2" -D "$3" -j "$4" 2>/dev/null || break
+        _uh_i=$((_uh_i + 1))
+    done
+}
+
 _firewall_stop() {
     CMD="$1"
-    while $CMD -w -t mangle -C POSTROUTING -j $IPT_GROUP_POST 2>/dev/null; do
-        $CMD -w -t mangle -D POSTROUTING -j $IPT_GROUP_POST 2>/dev/null || break
-    done
-    while $CMD -w -t mangle -C PREROUTING -j $IPT_GROUP_PRE 2>/dev/null; do
-        $CMD -w -t mangle -D PREROUTING -j $IPT_GROUP_PRE 2>/dev/null || break
-    done
+    _fw_unhook "$CMD" mangle POSTROUTING $IPT_GROUP_POST
+    _fw_unhook "$CMD" mangle PREROUTING $IPT_GROUP_PRE
     if [ "$CMD" = "iptables" ]; then
-        while $CMD -w -t nat -C POSTROUTING -j $IPT_GROUP_NAT 2>/dev/null; do
-            $CMD -w -t nat -D POSTROUTING -j $IPT_GROUP_NAT 2>/dev/null || break
-        done
+        _fw_unhook "$CMD" nat POSTROUTING $IPT_GROUP_NAT
     fi
     $CMD -w -t mangle -F $IPT_GROUP_POST 2>/dev/null; $CMD -w -t mangle -X $IPT_GROUP_POST 2>/dev/null
     $CMD -w -t mangle -F $IPT_GROUP_PRE 2>/dev/null;  $CMD -w -t mangle -X $IPT_GROUP_PRE 2>/dev/null
     if [ "$CMD" = "iptables" ]; then
         $CMD -w -t nat -F $IPT_GROUP_NAT 2>/dev/null; $CMD -w -t nat -X $IPT_GROUP_NAT 2>/dev/null
     fi
+}
+
+# ──────────────────────────── nftables ────────────────────────────
+# Паритет с Python-путём (_apply_nftables в core/firewall.py): одна inet-таблица
+# zapret_gui с цепочками postrouting / prerouting / natpost. Семейство inet
+# покрывает сразу IPv4 и IPv6, поэтому IPV6_ENABLED здесь не при чём (ровно как
+# в Python-пути).
+#
+# Каждая команда уходит в nft ОДНОЙ строкой-аргументом: nft склеивает argv через
+# пробел и лексит заново, так что кавычки вокруг имён интерфейсов и `;` внутри
+# спецификации цепочки доезжают как есть, а shell не ломает `{ … }`.
+
+# Список портов iptables-стиля → nft-множество: "443,3478:3481" → "443, 3478-3481".
+# Без замены двоеточия nft падает с «Could not resolve service: Servname not
+# supported for ai_socktype» (issue #101).
+_nft_ports() {
+    echo "$1" | sed 's/:/-/g; s/,/, /g'
+}
+
+# `oifname "eth0"` / `oifname { "eth0", "eth1" }` / пусто (все интерфейсы).
+# Кавычки обязательны: имя, начинающееся с цифры (6in4-he_net, 6to4-wan),
+# nft-лексер без них читает как число+строку → синтаксическая ошибка на каждом
+# правиле (issue #226).
+_nft_iface() {
+    [ -n "$WAN_IFACES" ] || return 0
+    _ni_n=0; _ni_list=""
+    for _ni in $WAN_IFACES; do
+        _ni_n=$((_ni_n + 1))
+        if [ -z "$_ni_list" ]; then _ni_list="\"$_ni\""
+        else _ni_list="$_ni_list, \"$_ni\""; fi
+    done
+    if [ "$_ni_n" = "1" ]; then echo "$1 $_ni_list"
+    else echo "$1 { $_ni_list }"; fi
+}
+
+# Ошибки НЕ глушим: у iptables-пути они тоже видны, а хук и init-скрипт сами
+# решают, куда девать вывод. Молчаливое падение здесь означало бы «правил нет,
+# и никто об этом не узнал».
+_nft_rule() {
+    nft add rule inet $NFT_TABLE "$1" "$2"
+}
+
+_nft_firewall_start() {
+    # Метки в firewall.run записаны в iptables-форме MARK/MASK — nft нужен
+    # только сам MARK.
+    _mark_proc="${MARK_PROCESSED%%/*}"
+    _mark_excl="${MARK_EXCLUDE%%/*}"
+    _oif="$(_nft_iface oifname)"
+    _iif="$(_nft_iface iifname)"
+    _tcpp=""; [ -n "$PORTS_TCP" ] && _tcpp="{ $(_nft_ports "$PORTS_TCP") }"
+    _udpp=""; [ -n "$PORTS_UDP" ] && _udpp="{ $(_nft_ports "$PORTS_UDP") }"
+
+    # Таблицу пересоздаём целиком: так реаплай после flush'а не копит дубли
+    # правил, а порядок гарантированно совпадает с Python-путём.
+    nft delete table inet $NFT_TABLE 2>/dev/null
+    nft add table inet $NFT_TABLE || {
+        echo "zapret-gui: nft add table не удался — правила не поставлены" >&2
+        return 1
+    }
+    nft add chain inet $NFT_TABLE postrouting \
+        '{ type filter hook postrouting priority 150 ; }'
+    nft add chain inet $NFT_TABLE prerouting \
+        '{ type filter hook prerouting priority -150 ; }'
+    nft add chain inet $NFT_TABLE natpost \
+        '{ type nat hook postrouting priority 100 ; }'
+
+    # ─── postrouting (исходящий) ───
+    # EXCLUDE — это CONNMARK, поэтому матчим `ct mark`, а не пакетный
+    # `meta mark` (иначе исключённое соединение снова попадёт в очередь).
+    _nft_rule postrouting "$_oif ct mark and $_mark_excl == $_mark_excl return"
+    _nft_rule postrouting "$_oif meta mark and $_mark_proc == $_mark_proc return"
+    if [ -n "$_tcpp" ]; then
+        _nft_rule postrouting "$_oif tcp dport $_tcpp ct original packets 1-$MAX_PKT_OUT queue num $QUEUE_NUM bypass"
+        _nft_rule postrouting "$_oif tcp dport $_tcpp tcp flags fin queue num $QUEUE_NUM bypass"
+        _nft_rule postrouting "$_oif tcp dport $_tcpp tcp flags rst queue num $QUEUE_NUM bypass"
+    fi
+    if [ -n "$_udpp" ]; then
+        _nft_rule postrouting "$_oif udp dport $_udpp ct original packets 1-$MAX_PKT_OUT_UDP queue num $QUEUE_NUM bypass"
+    fi
+
+    # ─── prerouting (входящий/ответы) ───
+    _nft_rule prerouting "$_iif ct mark and $_mark_excl == $_mark_excl return"
+    _nft_rule prerouting "$_iif meta mark and $_mark_proc == $_mark_proc return"
+    if [ -n "$_tcpp" ]; then
+        _nft_rule prerouting "$_iif tcp sport $_tcpp ct reply packets 1-$MAX_PKT_IN queue num $QUEUE_NUM bypass"
+        _nft_rule prerouting "$_iif tcp sport $_tcpp tcp flags syn,ack queue num $QUEUE_NUM bypass"
+    fi
+    if [ -n "$_udpp" ]; then
+        _nft_rule prerouting "$_iif udp sport $_udpp ct reply packets 1-$MAX_PKT_IN queue num $QUEUE_NUM bypass"
+    fi
+
+    # ─── nat postrouting: MASQUERADE для переписанных nfqws2 пакетов ───
+    _nft_rule natpost "$_oif meta mark and $_mark_proc == $_mark_proc meta l4proto udp masquerade"
+}
+
+_nft_firewall_stop() {
+    # Отсутствие таблицы — не ошибка: глушим только stderr.
+    nft delete table inet $NFT_TABLE 2>/dev/null
+    return 0
+}
+
+# Какой бэкенд использовать. FW_BACKEND проставляет GUI (он знает и настройку
+# firewall.type, и результат авто-детекта); пусто — определяем сами тем же
+# правилом, что и core/firewall.py::_auto_detect.
+_fw_backend() {
+    if [ -n "$FW_BACKEND" ]; then echo "$FW_BACKEND"; return 0; fi
+    _has_ipt=0; _has_nft=0
+    command -v iptables >/dev/null 2>&1 && _has_ipt=1
+    command -v nft >/dev/null 2>&1 && _has_nft=1
+    [ "$_has_ipt" = "0" ] && { [ "$_has_nft" = "1" ] && echo nftables; return 0; }
+    [ "$_has_nft" = "0" ] && { echo iptables; return 0; }
+    # Обе есть. `iptables` на OpenWrt 22+/fw4 — это шим iptables-nft поверх
+    # nftables: пишем нативно через nft, иначе конфликтуем с fw4. На legacy
+    # (Keenetic/Entware) остаётся iptables.
+    if iptables --version 2>/dev/null | grep -q nf_tables; then
+        echo nftables
+    else
+        echo iptables
+    fi
+}
+
+firewall_nftables() {
+    command -v nft >/dev/null 2>&1 && _nft_firewall_start
 }
 
 firewall_iptables() {
@@ -231,16 +377,25 @@ firewall_ip6tables() {
     command -v ip6tables >/dev/null 2>&1 && _firewall_start ip6tables
 }
 
+# Снимаем ОБА бэкенда независимо от текущего: настройка firewall.type могла
+# смениться с прошлого старта, и правила «прошлого» бэкенда надо убрать, иначе
+# они останутся висеть навсегда.
 firewall_stop() {
+    command -v nft >/dev/null 2>&1 && _nft_firewall_stop
     command -v iptables >/dev/null 2>&1 && _firewall_stop iptables
     if [ "$IPV6_ENABLED" = "1" ] && command -v ip6tables >/dev/null 2>&1; then
         _firewall_stop ip6tables
     fi
+    return 0
 }
 
 apply_firewall() {
-    firewall_iptables
-    firewall_ip6tables
+    if [ "$(_fw_backend)" = "nftables" ]; then
+        firewall_nftables
+    else
+        firewall_iptables
+        firewall_ip6tables
+    fi
 }
 """
 
@@ -266,6 +421,10 @@ def render_run_conf(params: dict) -> str:
         + "MARK_EXCLUDE=%s\n" % q(params.get("mark_exclude"))
         + "IPV6_ENABLED=%s\n" % q(params.get("ipv6_enabled"))
         + "WAN_IFACES=%s\n" % q(params.get("wan_ifaces"))
+        # Бэкенд определяет GUI (он знает и настройку firewall.type, и
+        # результат авто-детекта). Пусто — shell определит сам тем же
+        # правилом; так же ведут себя firewall.run от прошлых версий.
+        + "FW_BACKEND=%s\n" % q(params.get("fw_backend"))
     )
 
 

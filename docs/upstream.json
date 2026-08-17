@@ -60,53 +60,53 @@
       "id": "sing-box",
       "repo": "SagerNet/sing-box",
       "kind": "release",
-      "pinned": "v1.13.16",
-      "verified_at": "2026-08-04",
+      "pinned": "v1.13.19",
+      "verified_at": "2026-08-17",
       "skill": ".claude/skills/singbox/SKILL.md",
       "mentions": [
         ".claude/skills/singbox/SKILL.md"
       ],
       "vendored": {},
-      "note": "sing-box ломает совместимость по минорам, поэтому §9 скила — таблица «что удалено в какой версии» — сверена с docs/deprecated.md и docs/migration.md апстрима. 1.14 пока в бете (1.14.0-beta.5), стабильная линия 1.13.x; всё, что помечено deprecated в 1.14, апстрим обещает удалить только в 1.16. Наш генератор чужих полей не выдаёт, но пользовательские конфиги — выдают, отсюда pre-flight `sing-box check`."
+      "note": "sing-box ломает совместимость по минорам, поэтому §9 скила — таблица «что удалено в какой версии» — сверена с docs/deprecated.md и docs/migration.md апстрима. 1.14 пока в бете (1.14.0-beta.5), стабильная линия 1.13.x; всё, что помечено deprecated в 1.14, апстрим обещает удалить только в 1.16. Наш генератор чужих полей не выдаёт, но пользовательские конфиги — выдают, отсюда pre-flight `sing-box check`. 1.13.17—1.13.19 схему не трогали: deprecated.md и migration.md побайтово те же, что на 1.13.16, в changelog — только фиксы и naiveproxy v150.0.7871.63-1."
     },
     {
       "id": "mihomo",
       "repo": "MetaCubeX/mihomo",
       "kind": "release",
-      "pinned": "v1.19.29",
-      "verified_at": "2026-08-04",
+      "pinned": "v1.19.30",
+      "verified_at": "2026-08-17",
       "skill": ".claude/skills/mihomo/SKILL.md",
       "mentions": [
         ".claude/skills/mihomo/SKILL.md"
       ],
       "vendored": {},
-      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.29 их 23, конвертируем 6."
+      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.30 их 24, конвертируем 6. В v1.19.30 main.go не изменился, в parser.go добавился тип `zerotier` (оверлейная mesh-сеть, аналога в sing-box нет)."
     },
     {
       "id": "amneziawg-go",
       "repo": "amnezia-vpn/amneziawg-go",
       "kind": "release",
-      "pinned": "v3.0.3",
-      "verified_at": "2026-08-04",
+      "pinned": "v3.1.20260814",
+      "verified_at": "2026-08-17",
       "skill": ".claude/skills/awg/SKILL.md",
       "mentions": [
         ".claude/skills/awg/SKILL.md"
       ],
       "vendored": {},
-      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0, а с ветки v3.x — ещё и поколения AWG 3+ (HeaderProtectionKey, ContentPaddingAddition, тайминги, тип range): в docs.amnezia.org его нет. Проверять при обновлении: UAPI-ключи в device/uapi.go (что демон вообще примет) и socketDirectory в ipc/uapi_unix.go — в v3 это /var/run/amneziawg, у сборок на базе wireguard-go /var/run/wireguard; оба каталога перечислены в awg_platform.UAPI_SOCKET_DIRS."
+      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0, а с ветки v3.x — ещё и поколения AWG 3+ (HeaderProtectionKey, ContentPaddingAddition, тайминги, тип range): в docs.amnezia.org его нет. Проверять при обновлении: UAPI-ключи в device/uapi.go (что демон вообще примет) и socketDirectory в ipc/uapi_unix.go — в v3 это /var/run/amneziawg, у сборок на базе wireguard-go /var/run/wireguard; оба каталога перечислены в awg_platform.UAPI_SOCKET_DIRS. И не полагаться на один README: v3.1.20260814 добавил UAPI-ключи random_trailers/disable_cookies, не тронув README ни на строку — поколение 3.1 (AWG31_INTERFACE_FIELDS) собрано по device/uapi.go, send.go и receive.go. socketDirectory на 3.1 прежний."
     },
     {
       "id": "amneziawg-tools",
       "repo": "amnezia-vpn/amneziawg-tools",
       "kind": "release",
-      "pinned": "v3.0.20260730",
-      "verified_at": "2026-08-04",
+      "pinned": "v3.1.20260812",
+      "verified_at": "2026-08-17",
       "skill": ".claude/skills/awg/SKILL.md",
       "mentions": [
         ".claude/skills/awg/SKILL.md"
       ],
       "vendored": {},
-      "note": "Форк wireguard-tools: бинари awg/awg-quick, теги датированные (v3.0.YYYYMMDD). КЛЮЧЕВОЕ при сверке — key_match в src/config.c: это окончательный список полей .conf. Неизвестный ключ там приводит к «Line unrecognized» и отбрасыванию ВСЕГО конфига, то есть интерфейс не поднимается. Так выяснилось, что J1..J3 и Itime из документации протокола 2.0 парсером не принимаются, а v3.0.20260730 добавил семь новых полей (HeaderProtectionKey, ContentPaddingAddition, Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts) — они поддержаны в awg_config.AWG3_INTERFACE_FIELDS. Там же сверяются [Peer]-ключи: AdvancedSecurity легко упустить."
+      "note": "Форк wireguard-tools: бинари awg/awg-quick, теги датированные (v3.0.YYYYMMDD). КЛЮЧЕВОЕ при сверке — key_match в src/config.c: это окончательный список полей .conf. Неизвестный ключ там приводит к «Line unrecognized» и отбрасыванию ВСЕГО конфига, то есть интерфейс не поднимается. Так выяснилось, что J1..J3 и Itime из документации протокола 2.0 парсером не принимаются, а v3.0.20260730 добавил семь новых полей (HeaderProtectionKey, ContentPaddingAddition, Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts) — они поддержаны в awg_config.AWG3_INTERFACE_FIELDS. v3.1.20260812 добавил ещё два, булевых: RandomTrailers и DisableCookies (awg_config.AWG31_INTERFACE_FIELDS). Смотреть не только на список ключей, но и на ТИП значения: parse_bool принимает on/off и число, а на true/false отбрасывает конфиг целиком — это первый ключ .conf, который не строка и не число. Там же сверяются [Peer]-ключи: AdvancedSecurity легко упустить."
     },
     {
       "id": "usque",

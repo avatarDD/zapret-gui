@@ -5,8 +5,9 @@ description: >-
   Entware / OpenWrt / Linux). Использовать при любых задачах о: конфигах AWG
   (.conf — [Interface]/[Peer], wg-quick-расширения), параметрах обфускации
   (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5, J1-J3, Itime) и версиях протокола
-  1.0/1.5/2.0/3.0 (AWG 3+: HeaderProtectionKey, ContentPaddingAddition,
-  Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts), разборе
+  1.0/1.5/2.0/3.0/3.1 (AWG 3+: HeaderProtectionKey, ContentPaddingAddition,
+  Rekey*/RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts;
+  AWG 3.1: RandomTrailers, DisableCookies), разборе
   и генерации конфигов (awg_config), жизненном цикле туннеля
   (amneziawg-go + awg setconf + ip link/addr/route, awg_manager), установке/детекте
   бинарей (amneziawg-go, awg/awg-quick), платформенных путях, Cloudflare WARP и
@@ -27,9 +28,12 @@ description: >-
 
 Источники истины (в порядке убывания авторитета):
 1. **amnezia-vpn/amneziawg-go** — userspace-реализация протокола на Go
-   (`README.md` = спецификация параметров обфускации; сверено с **v3.0.3**);
-   **amnezia-vpn/amneziawg-tools** — форк `wireguard-tools` (`awg`/`awg-quick`),
-   сверено с **v3.0.20260730**. Окончательный список ключей, которые вообще
+   (`README.md` = спецификация параметров обфускации; сверено с
+   **v3.1.20260814**); **amnezia-vpn/amneziawg-tools** — форк
+   `wireguard-tools` (`awg`/`awg-quick`), сверено с **v3.1.20260812**.
+   README на ветке 3.1 не изменился: два новых параметра (§2.1.2) описаны
+   только кодом — `device/uapi.go` и `src/config.c`.
+   Окончательный список ключей, которые вообще
    можно писать в `.conf`, — это `key_match` в его `src/config.c`, а НЕ
    документация: docs.amnezia.org описывает параметры протокола, часть
    которых парсер не принимает (см. §2.1 про `J1..J3`/`Itime`).
@@ -159,7 +163,7 @@ WireGuard, **сохраняя его крипто и производитель�
 
 > ⚠️ **`J1..J3` и `Itime` нельзя отдавать в `awg setconf` — вообще никогда.**
 > Их нет в `key_match` парсера amneziawg-tools (`src/config.c`) ни в одном
-> релизе, включая свежий `v3.0.20260730`. На неизвестном ключе парсер делает
+> релизе, включая свежий `v3.1.20260812`. На неизвестном ключе парсер делает
 > `goto error`: печатает `Line unrecognized: '<строка>'` и **отбрасывает
 > конфиг целиком**. То есть один лишний ключ из чужого `.conf` = интерфейс не
 > поднимается вовсе, а наружу видно лишь невнятное «Unable to modify
@@ -170,7 +174,8 @@ WireGuard, **сохраняя его крипто и производитель�
 
 ### 2.1.1 AWG 3+: защита заголовка, паддинг содержимого, тайминги
 
-Ветка **amneziawg-go v3.x** (текущая; сверено с README **v3.0.3**) добавила
+Ветка **amneziawg-go v3.x** (текущая; сверено с README **v3.1.20260814** —
+на 3.1 он не менялся) добавила
 поколение параметров, которое апстрим маркирует как **`[AWG 3+]`**. В `.conf`
 они живут в секции устройства (`[Device]` в терминах README = `[Interface]` в
 терминах wg-quick):
@@ -190,8 +195,8 @@ WireGuard, **сохраняя его крипто и производитель�
 > `S*` < 12 — нерабочая связка.
 
 Все семь ключей **принимаются парсером tools** — они есть в `key_match`
-(`src/config.c`, `v3.0.20260730`), в отличие от `J1..J3`/`Itime`. То есть в
-`awg setconf` их отдавать можно и нужно.
+(`src/config.c`, `v3.0.20260730` и новее), в отличие от `J1..J3`/`Itime`.
+То есть в `awg setconf` их отдавать можно и нужно.
 
 **Наш статус:** поддержаны — константа `AWG3_INTERFACE_FIELDS` в
 `core/awg_config.py` входит в `WG_INTERFACE_FIELDS`, поэтому поля переживают
@@ -205,6 +210,42 @@ round-trip и доходят до демона. `validate()` проверяет 
 > `render_setconf`: демон поднимался без защиты заголовка, а пир, который её
 > ждёт, дропал data-пакеты — тот самый «92 B in / 20 KB out» (§12).
 > Тесты-сторожа: `TestAwg3Fields` в `tests/test_awg_config.py`.
+
+### 2.1.2 AWG 3.1: случайные хвосты и отказ от cookie-ответов
+
+Пара **amneziawg-go `v3.1.20260814`** + **amneziawg-tools `v3.1.20260812`**
+добавила ровно два ключа в секцию устройства. В README их нет — источник
+истины здесь только код: `device/uapi.go` (UAPI-ключи) и `src/config.c`
+(`key_match`).
+
+| Ключ | UAPI-ключ | Тип | Назначение |
+|---|---|---|---|
+| `RandomTrailers` | `random_trailers` | bool | Дописывать служебным пакетам (init / response / cookie) хвост случайной длины — до размера UDP-окна пира. Размер пакета перестаёт быть константой, по которой его опознаёт DPI |
+| `DisableCookies` | `disable_cookies` | bool | Не отвечать cookie-reply на отброшенный handshake. Cookie-ответ — заметная сигнатура WireGuard, но это же и штатная анти-DoS-защита |
+
+> ⚠️ **`RandomTrailers` симметричен — включать надо на ОБОИХ концах.**
+> Приёмник опознаёт служебный пакет по точному размеру и допускает больший
+> только при включённом флаге (`DeterminePacketTypeAndPadding` в
+> `device/receive.go`). Включён у клиента и выключен у сервера — handshake не
+> проходит вовсе: пакет просто не распознаётся как init.
+
+> ⚠️ **Значение пишется как `on`/`off` или число, но НЕ `true`/`false`.**
+> `parse_bool` в `src/config.c` знает только `on`/`off` (без учёта регистра) и
+> десятичное число (`0` = выкл). На `true` он печатает «Boolean value is
+> neither on/off nor 0/1» и, как на любой ошибке разбора, **отбрасывает
+> конфиг целиком**. Наш `validate()` ловит это на импорте, пока ещё видно,
+> какое поле виновато.
+
+> ⚠️ **Это отдельная планка поколения, а не «ещё два поля AWG 3+».** Движок
+> `v3.0.x` на этих UAPI-ключах отвечает `invalid UAPI device key` → EINVAL →
+> знакомое «Unable to modify interface: Invalid argument». Поэтому
+> `required_generation()` поднимает такой профиль до **3.1**, а не до 3.0:
+> подсказка «нужен AWG 3.0» пользователю, у которого как раз 3.0, увела бы
+> совсем не туда.
+
+**Наш статус:** поддержаны — `AWG31_INTERFACE_FIELDS` в `core/awg_config.py`
+входит в `WG_INTERFACE_FIELDS`, поэтому поля переживают round-trip и доходят
+до `awg setconf`.
 
 ### 2.1.2а Поле `[Peer] AdvancedSecurity`
 
@@ -251,6 +292,7 @@ round-trip и доходят до демона. `validate()` проверяет 
 | **1.5** | мимикрия под обычные UDP-протоколы (QUIC, DNS…) через signature-пакеты | + I1–I5, J1–J3, Itime |
 | **2.0** | «полная мимикрия»: меняющиеся заголовки и размеры пакетов и в data-фазе | + S3, S4; range для H1–H4; **− J1–J3, Itime** |
 | **3.0** (`AWG 3+`) | шифрование полей заголовка, кастомный паддинг содержимого, настраиваемые тайминги WireGuard | + HeaderProtectionKey, ContentPaddingAddition, RekeyAfterTime, RekeyTimeout, RejectAfterTime, KeepaliveTimeout, MaxHandshakeAttempts; тип `range` у таймингов и `PersistentKeepalive` (§2.1.1) |
+| **3.1** | случайная длина служебных пакетов, отказ от cookie-ответов | + RandomTrailers, DisableCookies (bool, `on`/`off`; §2.1.2) |
 
 > **Нумерация версий ≠ нумерация релизов, но с 3.0 они совпали.** `amneziawg-go`
 > прыгнул с `v0.2.19` сразу на `v3.0.0`, и `[AWG 3+]` в README — это ровно
@@ -396,7 +438,7 @@ SIGKILL) демону по PID → удалить pid-файл и UAPI-соке�
 | Бинарь | Каталог сокета |
 |---|---|
 | `amneziawg-go` **v3.x** | `/var/run/amneziawg/<iface>.sock` (`ipc/uapi_unix.go`: `var socketDirectory = "/var/run/amneziawg"`) |
-| `awg` (tools v3.0.20260730) | тот же: `SOCK_PATH RUNSTATEDIR "/amneziawg/"` (`src/ipc-uapi-unix.h`) |
+| `awg` (tools v3.1.20260812) | тот же: `SOCK_PATH RUNSTATEDIR "/amneziawg/"` (`src/ipc-uapi-unix.h`) |
 | унаследованный от wireguard-go (старые сборки `v0.2.x`) | `/var/run/wireguard/<iface>.sock` |
 
 Единый список каталогов — `awg_platform.UAPI_SOCKET_DIRS` (v3-путь первым);
@@ -549,7 +591,8 @@ SIGKILL) демону по PID → удалить pid-файл и UAPI-соке�
 3. **версия бинаря** `amneziawg-go --version` / `awg --version` — поддерживает
    ли он поля своего поколения? `S3/S4` и range-`H*` — это 2.0; AWG3-поля
    (`HeaderProtectionKey`, `ContentPaddingAddition`, тайминги, §2.1.1) — только
-   ветка `v3.x`. Старый **демон** молча работает в 1.x, а старые **tools** на
+   ветка `v3.x`, а `RandomTrailers`/`DisableCookies` (§2.1.2) — только
+   `v3.1.20260814` и новее. Старый **демон** молча работает в 1.x, а старые **tools** на
    незнакомом ключе печатают `Line unrecognized` и отбрасывают весь конфиг —
    разные симптомы, не перепутай. Наш `render_setconf` AWG3-поля пропускает
    (§2.1.1), так что их отсутствие в `awg showconf` на свежем бинаре — это

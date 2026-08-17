@@ -5,7 +5,11 @@
 Формат совместим с wg-quick + AmneziaWG расширениями:
   [Interface] PrivateKey, Address, ListenPort, DNS, MTU, Table,
               PreUp, PostUp, PreDown, PostDown,
-              Jc, Jmin, Jmax, S1..S4, H1..H4, I1..I5, J1..J3, Itime
+              Jc, Jmin, Jmax, S1..S4, H1..H4, I1..I5, J1..J3, Itime,
+              AWG 3+:   HeaderProtectionKey, ContentPaddingAddition,
+                        Rekey*/RejectAfterTime, KeepaliveTimeout,
+                        MaxHandshakeAttempts
+              AWG 3.1:  RandomTrailers, DisableCookies
   [Peer]      PublicKey, PresharedKey, AllowedIPs,
               Endpoint, PersistentKeepalive
 
@@ -44,9 +48,33 @@ AWG3_INTERFACE_FIELDS = (
     "MaxHandshakeAttempts",
 )
 
+# Поколение AWG 3.1 (amneziawg-go v3.1.20260814 + amneziawg-tools
+# v3.1.20260812). Оба поля — булевы, оба общедевайсные:
+#   RandomTrailers — дописывать служебным пакетам (init/response/cookie)
+#                    хвост случайной длины, чтобы их размер перестал быть
+#                    константой. Параметр СИММЕТРИЧНЫЙ: приёмник считает
+#                    пакет своим по точному размеру и допускает больший
+#                    только с этим флагом (device/receive.go,
+#                    DeterminePacketTypeAndPadding) — включённый на одной
+#                    стороне и выключенный на другой ломает handshake;
+#   DisableCookies — не отвечать cookie-reply на отброшенный handshake
+#                    (device/send.go, SendHandshakeCookie). Cookie-ответ —
+#                    заметная сигнатура WireGuard; ценой отказа от неё
+#                    выключается штатная анти-DoS-защита.
+# Значения — `on`/`off`/`0`/`1` (parse_bool в src/config.c). `true`/`false`
+# тулза НЕ принимает и отбрасывает конфиг целиком, см. validate().
+AWG31_INTERFACE_FIELDS = (
+    "RandomTrailers",
+    "DisableCookies",
+)
+
 # Минимальное значение S1..S4, при котором работает защита заголовка
 # (README: «Header protection requires S1-S4 value to be 12 at least»).
 AWG3_HEADER_PROTECTION_MIN_S = 12
+
+# Значения, которые принимает parse_bool в amneziawg-tools src/config.c:
+# `on`/`off` без учёта регистра либо любое десятичное число (0 = выкл).
+AWG_BOOL_WORDS = ("on", "off")
 
 # Поля [Interface], которые применяются через `awg setconf`
 # (всё остальное — wg-quick-расширения и обрабатывается нами).
@@ -76,6 +104,8 @@ WG_INTERFACE_FIELDS = (
     # поднимается без защиты заголовка, а пир, который её ждёт, дропает
     # data-пакеты — та же картина «92 B in / 20 KB out».
     *AWG3_INTERFACE_FIELDS,
+    # AWG 3.1 (key_match в src/config.c, v3.1.20260812).
+    *AWG31_INTERFACE_FIELDS,
 )
 
 # Поля [Interface] для wg-quick-логики (не для setconf).
@@ -594,7 +624,7 @@ def required_generation(cfg: dict) -> dict:
     """
     Какое поколение AmneziaWG нужно движку, чтобы применить этот конфиг.
 
-    Возвращает {"generation": "1.0"|"1.5"|"2.0"|"3.0", "fields": [...]},
+    Возвращает {"generation": "1.0"|"1.5"|"2.0"|"3.0"|"3.1", "fields": [...]},
     где fields — человеко-читаемый список полей, из-за которых поднялась
     планка. Нужно для диагностики `awg setconf … Unable to modify
     interface: Invalid argument`: тулза передаёт значение демону, а тот
@@ -606,10 +636,11 @@ def required_generation(cfg: dict) -> dict:
       1.5 — + I1..I5, J1..J3, Itime
       2.0 — + S3, S4; диапазоны `N-M` у H1..H4
       3.0 — + HeaderProtectionKey, ContentPaddingAddition, тайминги
+      3.1 — + RandomTrailers, DisableCookies
     """
     cfg = cfg or {}
     iface = cfg.get("interface") or {}
-    order = ["1.0", "1.5", "2.0", "3.0"]
+    order = ["1.0", "1.5", "2.0", "3.0", "3.1"]
     generation, fields = "1.0", []
 
     def bump(to: str, label: str):
@@ -631,6 +662,12 @@ def required_generation(cfg: dict) -> dict:
     for key in AWG3_INTERFACE_FIELDS:
         if str(iface.get(key, "")).strip():
             bump("3.0", key)
+    # Отдельная планка, а не «ещё одно поле 3.0»: движок v3.0.x на этих
+    # ключах отвечает EINVAL («invalid UAPI device key»), и подсказка
+    # «нужен 3.0» у пользователя, у которого как раз 3.0, увела бы не туда.
+    for key in AWG31_INTERFACE_FIELDS:
+        if str(iface.get(key, "")).strip():
+            bump("3.1", key)
 
     return {"generation": generation, "fields": fields}
 
@@ -707,6 +744,22 @@ def validate(cfg: dict) -> list:
             errors.append(
                 f"[Interface] {k} должен быть числом, диапазоном N-M "
                 f"или (off)")
+
+    # AWG 3.1: булевы поля. parse_bool в amneziawg-tools знает только
+    # `on`/`off` и десятичное число — на `true`/`false` он печатает
+    # «Boolean value is neither on/off nor 0/1» и отбрасывает ВЕСЬ конфиг,
+    # то есть интерфейс просто не поднимется. Ловим это на импорте, пока
+    # понятно, какое поле виновато.
+    for k in AWG31_INTERFACE_FIELDS:
+        raw = iface.get(k)
+        if raw in ("", None):
+            continue
+        val = str(raw).strip()
+        if val.lower() in AWG_BOOL_WORDS or val.isdigit():
+            continue
+        errors.append(
+            f"[Interface] {k} должен быть on/off или числом "
+            f"(amneziawg-tools не понимает true/false)")
 
     hpk = iface.get("HeaderProtectionKey")
     if hpk not in ("", None):
