@@ -52,11 +52,13 @@ LOCAL_SCRIPT_PATH = os.path.join(LOCAL_INIT_DIR, SCRIPT_NAME)
 # (etc/init.d/common): отдельные цепочки nfqws_post/nfqws_pre/nfqws_nat,
 # метки MARK_PROCESSED/MARK_EXCLUDE, правила на оба направления, NAT
 # MASQUERADE для UDP, обработка TCP-флагов и тюнинг conntrack через sysctl.
+# На nftables-системах те же правила ставятся нативно через nft (таблица
+# inet zapret_gui) — бэкенд выбирается по FW_BACKEND.
 #
-# Подкоманды firewall_iptables/firewall_ip6tables/firewall_stop позволяют
-# ndm-хуку (Keenetic) и hotplug-хуку (OpenWrt) переустанавливать правила
-# после flush'а системного firewall — без этого правила слетают и nfqws2
-# работает «вхолостую».
+# Подкоманды firewall_iptables/firewall_ip6tables/firewall_nftables/
+# firewall_stop позволяют ndm-хуку (Keenetic) и hotplug-хуку (OpenWrt)
+# переустанавливать правила после flush'а системного firewall — без этого
+# правила слетают и nfqws2 работает «вхолостую».
 _S99ZAPRET_TEMPLATE = r"""#!/bin/sh
 #
 # Zapret Web-GUI — автозапуск nfqws2
@@ -84,6 +86,8 @@ MARK_PROCESSED=@MARK_PROCESSED@
 MARK_EXCLUDE=@MARK_EXCLUDE@
 IPV6_ENABLED=@IPV6_ENABLED@
 WAN_IFACES=@WAN_IFACES@
+# iptables | nftables | пусто (тогда shell-функции определят сами)
+FW_BACKEND=@FW_BACKEND@
 
 # Каталог для state.tsv (z2k-state-persist.lua). Переживает переустановку
 # zapret2, бекапится с настройками GUI. nfqws2 запускается под --user nobody,
@@ -159,11 +163,12 @@ case "$1" in
         ;;
     firewall_iptables) is_running && firewall_iptables ;;
     firewall_ip6tables) is_running && firewall_ip6tables ;;
+    firewall_nftables) is_running && firewall_nftables ;;
     firewall_stop) firewall_stop ;;
     reapply) is_running && apply_firewall ;;
     kernel_modules) kernel_modules ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|reapply|firewall_iptables|firewall_ip6tables|firewall_stop}"
+        echo "Usage: $0 {start|stop|restart|status|reapply|firewall_iptables|firewall_ip6tables|firewall_nftables|firewall_stop}"
         exit 1
         ;;
 esac
@@ -658,6 +663,16 @@ class AutostartManager:
         mark_proc_full = "%s/%s" % (mark_processed, mark_processed)
         mark_excl_full = "%s/%s" % (mark_exclude, mark_exclude)
 
+        # Бэкенд firewall — тот же, что выберет GUI (с учётом настройки
+        # firewall.type и того, что iptables может быть шимом поверх nft).
+        # Иначе на OpenWrt с fw4 автозапуск ставил бы iptables-правила мимо
+        # nftables, которым реально управляет система.
+        try:
+            from core.firewall import get_firewall_manager
+            fw_backend = get_firewall_manager().detect_fw_type() or ""
+        except Exception:  # noqa: BLE001
+            fw_backend = ""
+
         # Единый источник shell-функций firewall (общий с reapply-хуками).
         from core.firewall_persistence import FIREWALL_SH_FUNCTIONS
 
@@ -688,6 +703,7 @@ class AutostartManager:
             "@MARK_EXCLUDE@": _q(mark_excl_full),
             "@IPV6_ENABLED@": _q(ipv6_enabled),
             "@WAN_IFACES@": _q(wan_ifaces),
+            "@FW_BACKEND@": _q(fw_backend),
             "@FIREWALL_FUNCS@": FIREWALL_SH_FUNCTIONS,
         }
 

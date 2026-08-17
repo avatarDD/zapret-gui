@@ -267,7 +267,7 @@ class FirewallManager:
                     self._ensure_persistence(
                         qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,
                         tcp_pkt_in, udp_pkt_in, mark_exclude,
-                        disable_ipv6, wan4, wan6,
+                        disable_ipv6, wan4, wan6, fw_type,
                     )
                 else:
                     log.error("Ошибка при применении правил", source="firewall")
@@ -299,7 +299,7 @@ class FirewallManager:
     @staticmethod
     def _ensure_persistence(qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,
                             tcp_pkt_in, udp_pkt_in, mark_exclude,
-                            disable_ipv6, wan4, wan6):
+                            disable_ipv6, wan4, wan6, fw_type=""):
         """Записать рантайм-конфиг firewall и установить хуки (только роутер).
 
         На обычных хостах (systemd/desktop) ndm/hotplug отсутствуют — тогда
@@ -323,6 +323,9 @@ class FirewallManager:
                 "mark_exclude": "%s/%s" % (mark_exclude, mark_exclude),
                 "ipv6_enabled": "0" if disable_ipv6 else "1",
                 "wan_ifaces": " ".join(sorted(ifaces)),
+                # Бэкенд, которым правила поставлены сейчас: reapply-хук
+                # обязан переставлять их тем же, а не гадать заново.
+                "fw_backend": fw_type or "",
             }
             fp.write_runtime_conf(params)
             fp.install_hooks()
