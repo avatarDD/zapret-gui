@@ -161,15 +161,27 @@ jobs:
           path: release-artifacts/
 
   # ── 3. Публикация релиза ────────────────────────────────────
+  #
+  # В этом job'е намеренно НЕТ ни одного `uses:`. Каждый action раннер
+  # тянет с codeload.github.com в шаге «Set up job» — до единой строки
+  # нашего кода. Когда codeload отвечает 429/502/503, job падает там же:
+  # так v0.24.16 не вышел (run #153, обе попытки — три ретрая раннера и
+  # отказ на actions/download-artifact). Пакеты при этом собраны и лежат
+  # артефактом. gh CLI предустановлен в образе раннера и не скачивается,
+  # поэтому публикация больше не зависит от доступности codeload.
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: build
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+    permissions:
+      contents: write
+      actions: read           # gh run download читает артефакт этого прогона
 
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
       - name: Extract version
         id: version
         run: |
@@ -179,36 +191,55 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: release-packages
-          path: ./artifacts
+        run: |
+          mkdir -p artifacts
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name release-packages --dir artifacts
+          echo "── Артефакты релиза ──"
+          ls -lh artifacts/
 
+      # CHANGELOG берём через API, а не checkout'ом: ради одного файла
+      # тянуть action (и рисковать тем же codeload) незачем.
       - name: Extract changelog
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
           NOTES=""
-          if [ -f CHANGELOG.md ]; then
-            NOTES=$(awk "/^## $TAG|^## v?$VERSION/{found=1; next} /^## /{if(found) exit} found{print}" CHANGELOG.md)
+          if gh api "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md?ref=$TAG" \
+                 -H "Accept: application/vnd.github.raw" > /tmp/CHANGELOG.md; then
+            NOTES=$(awk "/^## $TAG|^## v?$VERSION/{found=1; next} /^## /{if(found) exit} found{print}" /tmp/CHANGELOG.md)
           fi
           if [ -z "$NOTES" ]; then
             NOTES="Релиз $TAG"
           fi
-          echo "$NOTES" > /tmp/release_notes.md
+          printf '%s\n' "$NOTES" > /tmp/release_notes.md
 
       - name: Create Release
-        uses: softprops/action-gh-release@v3
-        with:
-          name: "Zapret Web-GUI ${{ steps.version.outputs.tag }}"
-          body_path: /tmp/release_notes.md
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
           # "latest" должен принадлежать релизу GUI, и только ему: на него
           # завязаны все ссылки /releases/latest/download/zapret-gui-*.
           # Явно, а не по умолчанию — чтобы было видно, что это требование,
-          # а не побочный эффект (issue #305). Пререлиз latest'ом не делаем.
-          make_latest: ${{ contains(steps.version.outputs.tag, '-') && 'false' || 'true' }}
-          files: artifacts/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # а не побочный эффект (issue #305). Пререлиз (тэг с дефисом,
+          # v1.2.3-rc1) latest'ом не делаем.
+          if [ "${{ contains(steps.version.outputs.tag, '-') }}" = "true" ]; then
+            CHANNEL=(--prerelease --latest=false)
+          else
+            CHANNEL=(--latest)
+          fi
+
+          # Повторный прогон после сбоя (частично созданный релиз) не должен
+          # упираться в «release already exists» — дописываем, а не падаем.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "Zapret Web-GUI $TAG" \
+              --notes-file /tmp/release_notes.md \
+              --draft=false "${CHANNEL[@]}"
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" artifacts/* \
+              --title "Zapret Web-GUI $TAG" \
+              --notes-file /tmp/release_notes.md \
+              "${CHANNEL[@]}"
+          fi
+          echo "✓ Релиз опубликован: $TAG"
