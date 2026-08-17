@@ -448,6 +448,77 @@ class TestAwg3Fields(unittest.TestCase):
         self.assertTrue(any("не меньше 12" in e for e in validate(parse_conf(text))))
 
 
+class TestAwg31Fields(unittest.TestCase):
+    """Поколение AWG 3.1 (amneziawg-go v3.1.20260814 + tools v3.1.20260812).
+
+    Два булевых ключа устройства: RandomTrailers (случайный хвост у
+    служебных пакетов, СИММЕТРИЧНЫЙ — приёмник допускает пакет больше
+    ожидаемого только с этим флагом) и DisableCookies (не отвечать
+    cookie-reply). В README апстрима их нет, источник — device/uapi.go и
+    key_match в src/config.c.
+    """
+
+    CONF = (
+        "[Interface]\n"
+        "PrivateKey = QFvE7YbLQZ7Nn3+ZL1kmFCPRE1BpBcDGcs+2c0T1YXQ=\n"
+        "Address = 10.2.0.2/32\n"
+        "Jc = 4\nJmin = 40\nJmax = 70\n"
+        "RandomTrailers = on\n"
+        "DisableCookies = off\n"
+        "\n"
+        "[Peer]\n"
+        "PublicKey = jNRPY62L5FXVfKQ6Yl8t2vT0/DiC2h3sB0YlxLKGZk4=\n"
+        "Endpoint = vpn.example.com:51820\n"
+        "AllowedIPs = 0.0.0.0/0\n"
+    )
+
+    def test_valid_config_has_no_errors(self):
+        self.assertEqual(validate(parse_conf(self.CONF)), [])
+
+    def test_fields_reach_setconf(self):
+        from core.awg_config import AWG31_INTERFACE_FIELDS
+        text = render_setconf(parse_conf(self.CONF))
+        for field in AWG31_INTERFACE_FIELDS:
+            self.assertIn(field, text,
+                          "%s обязано доходить до демона" % field)
+
+    def test_fields_survive_roundtrip(self):
+        cfg = parse_conf(render_conf(parse_conf(self.CONF)))
+        self.assertEqual(cfg["interface"]["RandomTrailers"], "on")
+        self.assertEqual(cfg["interface"]["DisableCookies"], "off")
+
+    def test_accepts_on_off_and_digits(self):
+        for value in ("on", "off", "ON", "0", "1"):
+            cfg = parse_conf(self.CONF.replace("RandomTrailers = on",
+                                               "RandomTrailers = %s" % value))
+            self.assertEqual(validate(cfg), [], "RandomTrailers = %s" % value)
+
+    def test_rejects_true_false(self):
+        # parse_bool в src/config.c знает только on/off и число; на true он
+        # отбрасывает ВЕСЬ конфиг — ловим на импорте, пока видно виновника.
+        for value in ("true", "false", "yes"):
+            cfg = parse_conf(self.CONF.replace("RandomTrailers = on",
+                                               "RandomTrailers = %s" % value))
+            errs = validate(cfg)
+            self.assertTrue(any("RandomTrailers" in e for e in errs),
+                            "RandomTrailers = %s должно ругаться" % value)
+
+    def test_bumps_generation_to_31_not_30(self):
+        # Движок v3.0.x на этих UAPI-ключах отвечает EINVAL, поэтому
+        # подсказка «нужен 3.0» увела бы пользователя не туда.
+        from core.awg_config import required_generation
+        need = required_generation(parse_conf(self.CONF))
+        self.assertEqual(need["generation"], "3.1")
+        self.assertIn("RandomTrailers", need["fields"])
+
+    def test_config_without_them_stays_on_lower_generation(self):
+        from core.awg_config import required_generation
+        text = self.CONF.replace("RandomTrailers = on\n", "") \
+                        .replace("DisableCookies = off\n", "")
+        self.assertEqual(
+            required_generation(parse_conf(text))["generation"], "1.0")
+
+
 class TestPeerAdvancedSecurity(unittest.TestCase):
     """`AdvancedSecurity` есть в key_match секции [Peer] у amneziawg-tools."""
 
