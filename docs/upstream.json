@@ -125,8 +125,8 @@
       "id": "opera-proxy",
       "repo": "Alexey71/opera-proxy",
       "kind": "release",
-      "pinned": "v1.28.0",
-      "verified_at": "2026-07-31",
+      "pinned": "v1.29.0",
+      "verified_at": "2026-08-26",
       "skill": ".claude/skills/opera-proxy/SKILL.md",
       "mentions": [
         ".claude/skills/opera-proxy/SKILL.md"
