@@ -314,8 +314,11 @@ def _blob_warnings(names) -> list:
     """Есть ли объявленные blob'ы на этом устройстве."""
     try:
         from core.blob_registry import list_blobs
+        # Свои блобы (kind=user) есть только на этом роутере: у того,
+        # кто поставит стратегию из каталога, их не будет.
         known = {item.get("name") for item in (list_blobs() or [])
-                 if item.get("exists", True)}
+                 if item.get("exists", True)
+                 and item.get("kind") != "user"}
     except Exception:                           # noqa: BLE001 — граница
         return []
     missing = [name for name in names if name not in known]

@@ -30,57 +30,55 @@ const BlockDetectorPage = (() => {
         return `<span class="bc-chip ${r.cls}" style="font-size:10px;padding:1px 7px;">${r.text}</span>`;
     }
 
+    let _onlyProblems = true;
+    let _running = false;
+
     async function render(container) {
         container.innerHTML = `
-            <div class="card-grid">
-                <div class="card">
-                    <div class="card-title">Статус</div>
-                    <div class="card-body" id="bd-status">Загрузка...</div>
+            <div class="card">
+                <div class="bd-status-head">
+                    <div class="card-title" style="margin:0;">Фоновый мониторинг</div>
+                    <button class="btn btn-primary btn-sm" id="bd-btn-toggle">Запустить</button>
+                </div>
+                <div id="bd-status" style="margin-top:10px;">Загрузка...</div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Проверить сайт</div>
+                <div class="form-inline">
+                    <input type="text" id="bd-probe-domain" class="form-control"
+                           placeholder="example.com" style="flex:1" spellcheck="false">
+                    <button class="btn btn-primary" id="bd-btn-probe">Проверить</button>
+                </div>
+                <div id="bd-probe-result" style="margin-top:8px"></div>
+                <div class="form-hint" style="margin-top:6px;">
+                    Быстрая проба: DNS → соединение → TLS → первые 32 КБ ответа.
+                    Полный разбор (QUIC, ClientHello, traceroute) — вкладка
+                    «Тест доступности».
                 </div>
             </div>
 
-            <div class="card-grid">
-                <div class="card">
-                    <div class="card-title">Ручная проверка</div>
-                    <div class="card-body">
-                        <div class="form-inline">
-                            <input type="text" id="bd-probe-domain" class="form-control"
-                                   placeholder="example.com" style="flex:1">
-                            <button class="btn btn-primary" id="bd-btn-probe">Проверить</button>
-                        </div>
-                        <div id="bd-probe-result" style="margin-top:8px"></div>
-                        <div class="form-hint" style="margin-top:6px;">
-                            Быстрая проба одного домена: DNS → TCP:443 → TLS → HTTP.
-                            Нужен полный разбор (QUIC, ClientHello, CDN, traceroute) —
-                            вкладка «Тест доступности».
-                        </div>
-                    </div>
+            <div class="card">
+                <div class="bd-status-head">
+                    <div class="card-title" style="margin:0;">Результаты</div>
+                    <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center;">
+                        <input type="checkbox" id="bd-only-problems" ${_onlyProblems ? 'checked' : ''}>
+                        только проблемные
+                    </label>
                 </div>
-            </div>
-
-            <div class="card-grid">
-                <div class="card">
-                    <div class="card-title">Результаты проверок</div>
-                    <div class="card-body" id="bd-results">Загрузка...</div>
-                </div>
-            </div>
-
-            <div class="card-grid">
-                <div class="card">
-                    <div class="card-title">Управление</div>
-                    <div class="card-body">
-                        <button class="btn btn-primary" id="bd-btn-start">Запустить мониторинг</button>
-                        <button class="btn btn-danger" id="bd-btn-stop">Остановить</button>
-                        <button class="btn" id="bd-btn-refresh">Обновить</button>
-                    </div>
-                </div>
+                <div id="bd-results" style="margin-top:10px;">Загрузка...</div>
             </div>
         `;
 
         document.getElementById("bd-btn-probe").onclick = _probe;
-        document.getElementById("bd-btn-start").onclick = _start;
-        document.getElementById("bd-btn-stop").onclick = _stop;
-        document.getElementById("bd-btn-refresh").onclick = _refresh;
+        document.getElementById("bd-btn-toggle").onclick = () => (_running ? _stop() : _start());
+        document.getElementById("bd-probe-domain").addEventListener("keydown", e => {
+            if (e.key === "Enter") _probe();
+        });
+        document.getElementById("bd-only-problems").onchange = e => {
+            _onlyProblems = !!e.target.checked;
+            _loadResults();
+        };
 
         _visibilityHandler = () => {
             if (document.hidden) _stopPoll();
@@ -142,14 +140,24 @@ const BlockDetectorPage = (() => {
                     GUI от root (для перехвата пакетов).
                 </div>`;
             }
+            _running = !!st.running;
+            const btn = document.getElementById("bd-btn-toggle");
+            if (btn) {
+                btn.textContent = _running ? "Остановить" : "Запустить";
+                btn.className = "btn btn-sm " + (_running ? "btn-ghost" : "btn-primary");
+            }
             el.innerHTML = `
-                <div class="status-row">
-                    <span class="status-dot ${cls}"></span>
-                    <span>${text}</span>
+                <div class="bd-stats">
+                    <span><span class="status-dot ${cls}"></span> ${text}</span>
+                    <span>Проверено сайтов: <strong>${st.monitored_count || 0}</strong></span>
+                    <span>С проблемами: <strong>${st.blocked_count || 0}</strong></span>
+                    <span>Лечится обходом или туннелем: <strong>${st.actionable_count || 0}</strong></span>
                 </div>
-                <div class="detail-row">Отслеживается доменов: <strong>${st.monitored_count || 0}</strong></div>
-                <div class="detail-row">Заблокировано: <strong>${st.blocked_count || 0}</strong>,
-                    из них с понятным обходом: <strong>${st.actionable_count || 0}</strong></div>
+                <div class="form-hint" style="margin-top:6px;">
+                    Детектор смотрит, к каким сайтам обращаются устройства сети,
+                    и раз в час проверяет каждый. Локальные имена (.lan, .local)
+                    и адреса внутренней сети не проверяются.
+                </div>
                 ${_sourceHtml(st)}
             `;
         } catch (e) {
@@ -168,21 +176,29 @@ const BlockDetectorPage = (() => {
                 el.innerHTML = `<p class="text-muted">Пока нет результатов. Запустите мониторинг или проверьте домен вручную.</p>`;
                 return;
             }
-            let html = '<table class="table"><thead><tr>';
-            html += '<th>Домен</th><th>Статус</th><th>Описание</th><th>Обход</th>'
-                 + '<th>Последняя проверка</th><th></th>';
+            // Проблемные — первыми: ради них вкладку и открывают.
+            const order = r => (r.block_code === "ok" ? 2 : (r.block_code === "unknown" ? 1 : 0));
+            let rows = results.slice().sort((a, b) => order(a) - order(b));
+            if (_onlyProblems) rows = rows.filter(r => r.block_code !== "ok");
+            if (!rows.length) {
+                el.innerHTML = `<p class="text-muted">Проблемных сайтов нет — все ${results.length} открываются.</p>`;
+                return;
+            }
+            let html = '<table class="table bd-table"><thead><tr>';
+            html += '<th>Сайт</th><th>Что с ним</th><th>Что поможет</th>'
+                 + '<th>Проверен</th><th></th>';
             html += '</tr></thead><tbody>';
-            for (const r of results) {
-                const cls = r.block_code === "ok" ? "status-ok" : "status-error";
-                const timeStr = r.last_checked ? _timeAgo(r.last_checked) : "never";
+            for (const r of rows) {
+                const cls = r.block_code === "ok" ? "status-ok"
+                    : (r.block_code === "unknown" ? "status-off" : "status-error");
+                const timeStr = r.last_checked ? _timeAgo(r.last_checked) : "ещё нет";
                 const detail = r.detail
                     ? `<div class="text-muted" style="font-size:11px;">${esc(r.detail)}</div>` : '';
                 html += `<tr>
-                    <td><code>${esc(r.domain)}</code></td>
-                    <td><span class="status-dot ${cls}"></span> ${esc(r.block_code)}</td>
-                    <td>${esc(r.block_desc)}${detail}</td>
+                    <td class="bd-domain"><code>${esc(r.domain)}</code></td>
+                    <td><span class="status-dot ${cls}"></span> ${esc(r.block_desc)}${detail}</td>
                     <td>${_remBadge(r.remediation)}</td>
-                    <td>${timeStr}</td>
+                    <td style="white-space:nowrap;">${timeStr}</td>
                     <td><button class="btn btn-ghost btn-sm" data-deep="${esc(r.domain)}"
                                 title="Разобрать домен на вкладке «Тест доступности»">Разобрать</button></td>
                 </tr>`;
@@ -218,8 +234,7 @@ const BlockDetectorPage = (() => {
                 ? `<div class="text-muted" style="font-size:11px;">${esc(res.detail)}</div>` : '';
             el.innerHTML = `
                 <span class="status-dot ${cls}"></span>
-                <strong>${esc(domain)}</strong> → ${esc(res.block_code)}
-                <span class="text-muted">(${esc(res.block_desc)})</span>
+                <strong>${esc(domain)}</strong> — ${esc(res.block_desc)}
                 ${_remBadge(res.remediation)}
                 ${detail}
             `;

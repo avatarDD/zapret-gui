@@ -32,6 +32,9 @@ def register(app):
                     "size": b["size"],
                     "type": b["type"],
                     "is_builtin": b["is_builtin"],
+                    # Под каким именем блоб пишут в blob=… (для системных
+                    # файлов — алиас из каталога, см. BlobManager.refs_for).
+                    "refs": b.get("refs") or [],
                 }
                 for b in blobs
             ],

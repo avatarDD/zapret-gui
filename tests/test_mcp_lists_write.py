@@ -291,14 +291,15 @@ class TestBlob(Sandbox):
         self.blobs = manager
 
     def test_writes_and_undo_deletes(self):
+        # Имя — идентификатор: nfqws2 не принимает «-» в --blob=<имя>:,
+        # и с «mcp-test» тест тихо уходил в skipTest.
         payload = self.data("blob_add",
-                            {"name": "mcp-test", "hex": "16 03 01 00 05"})
-        if not payload["ok"]:
-            self.skipTest("blob-менеджер недоступен: %s" % payload["error"])
+                            {"name": "mcp_test", "hex": "16 03 01 00 05"})
+        self.assertTrue(payload["ok"], payload)
         self.assertTrue(payload["created"])
         self.assertEqual(payload["undo"]["kind"], audit.KIND_BLOB)
         self.assertTrue(self.undo()["reverted"])
-        self.assertIsNone(self.blobs.get_blob("mcp-test"))
+        self.assertIsNone(self.blobs.get_blob("mcp_test"))
 
     def test_builtin_name_is_refused(self):
         name = next((n for n in ("fake_default_tls", "tls_google")
@@ -315,9 +316,25 @@ class TestBlob(Sandbox):
 
     def test_junk_hex_is_refused(self):
         payload = self.data("blob_add",
-                            {"name": "mcp-test", "hex": "не hex вовсе"})
+                            {"name": "mcp_test", "hex": "не hex вовсе"})
         self.assertFalse(payload["ok"])
         self.assertIn("hex", payload["hint"])
+
+    def test_blob_name_must_be_identifier(self):
+        payload = self.data("blob_add", {"name": "my-blob", "hex": "16 03 01"})
+        self.assertFalse(payload["ok"])
+        self.assertIn("my_blob", payload["hint"])
+        self.assertNotIn("hex", payload["hint"])
+
+    def test_user_blob_is_declared_and_listed(self):
+        self.assertTrue(self.data("blob_add", {"name": "my_blob",
+                                               "hex": "16 03 01"})["ok"])
+        rows = self.data("blobs_list", {"query": "my_blob"})["items"]
+        self.assertEqual([r["kind"] for r in rows], ["user"])
+        from core.blob_registry import build_blob_declarations
+        decls = build_blob_declarations(["--lua-desync=fake:blob=my_blob"])
+        self.assertEqual(len(decls), 1)
+        self.assertTrue(decls[0].startswith("--blob=my_blob:@"))
 
 
 class TestLua(Sandbox):
@@ -549,6 +566,48 @@ class TestLuaDelete(Sandbox):
         payload = self.data("lua_script_delete", {"name": "nope"})
         self.assertFalse(payload["ok"])
         self.assertIn("нет", payload["error"])
+
+
+class TestAfterListsReview(Sandbox):
+    """Правка списков через MCP после ревью менеджеров списков и blob'ов."""
+
+    def test_hostlist_add_normalizes_idn_wildcard_strict(self):
+        payload = self.data("hostlist_edit", {
+            "name": "other2", "mode": "add",
+            "domains": ["пример.рф", "*.x.com", "^exact.com", "bad domain"]})
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["rejected"], ["bad domain"])
+        items = self.data("hostlist_get", {"name": "other2"})["items"]
+        self.assertEqual(items, ["xn--e1afmkfd.xn--p1ai", "x.com",
+                                 "^exact.com"])
+
+    def test_hostlist_keeps_www_distinct(self):
+        # Для доменов каноничное сравнение недопустимо: www.x.com и x.com
+        # в хостлисте значат разное.
+        self.data("hostlist_edit", {"name": "other2", "mode": "replace",
+                                    "domains": ["^www.x.com"]})
+        payload = self.data("hostlist_edit", {"name": "other2", "mode": "add",
+                                              "domains": ["x.com"]})
+        self.assertEqual(payload["added"], 1)
+
+    def _seed_ipset(self):
+        with open(os.path.join(self.dir, "ipset", "my-ipset.txt"), "w") as f:
+            f.write("1.2.3.4/32\n10.0.0.1/8\n2001:DB8::/32\n")
+
+    def test_ipset_add_does_not_duplicate_other_form(self):
+        self._seed_ipset()
+        payload = self.data("ipset_edit", {"name": "my-ipset", "mode": "add",
+                                           "entries": ["1.2.3.4",
+                                                       "2001:db8::/32"]})
+        self.assertEqual(payload["added"], 0)
+        self.assertEqual(payload["count"], 3)
+
+    def test_ipset_remove_by_canonical_form(self):
+        self._seed_ipset()
+        payload = self.data("ipset_edit", {"name": "my-ipset",
+                                           "mode": "remove",
+                                           "entries": ["10.0.0.0/8"]})
+        self.assertEqual(payload["removed"], 1)
 
 
 if __name__ == "__main__":

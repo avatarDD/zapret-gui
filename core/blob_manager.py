@@ -16,6 +16,7 @@ nfqws2 использует их через параметр --lua-desync=fake:b
 """
 
 import os
+import re
 import struct
 import threading
 
@@ -36,6 +37,25 @@ VALID_NAME_CHARS = set(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "0123456789_-."
 )
+
+# Имя, под которым nfqws2 принимает blob: `--blob=<имя>:@файл` грузит его
+# в Lua-переменную и проверяет is_identifier() (nfq2/nfqws.c, item_name):
+# буква или «_», дальше буквы, цифры, «_». С «-» или «.» nfqws2 падает при
+# старте с «bad identifier», поэтому НОВЫЕ блобы называем только так.
+# Старые файлы с такими именами читаются и удаляются как раньше.
+IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+
+def _ascii_host(host):
+    """Имя хоста для fake-пакета: кириллический домен → punycode.
+
+    В настоящем ClientHello/Host имя всегда в ASCII; раньше генератор
+    падал на «пример.рф» с UnicodeEncodeError (500 в API).
+    """
+    host = (host or "").strip().strip(".")
+    if host.isascii():
+        return host
+    return host.encode("idna").decode("ascii")
 
 
 # ═══════════════════ Singleton ═══════════════════
@@ -99,6 +119,20 @@ class BlobManager:
         if ".." in name or "/" in name or "\\" in name:
             return False, "Имя содержит запрещённые последовательности"
 
+        return True, ""
+
+    @staticmethod
+    def validate_new_name(name):
+        """Имя для нового/перезаписываемого блоба: только то, что примет
+        nfqws2 в ``--blob=<имя>:``. Возвращает (is_valid, error_message)."""
+        valid, err = BlobManager.validate_name(name)
+        if not valid:
+            return valid, err
+        if not IDENT_RE.match(name):
+            return False, ("Имя блоба должно начинаться с буквы или «_» и "
+                           "состоять из латиницы, цифр и «_» (до 64 "
+                           "символов): его подставляют в blob=<имя>, а "
+                           "nfqws2 не принимает в нём «-» и «.»")
         return True, ""
 
     @staticmethod
@@ -236,7 +270,26 @@ class BlobManager:
                 "type": self._detect_type(entry, data_head),
                 "is_builtin": is_builtin,
                 "path": full_path,
+                "refs": self.refs_for(entry, full_path, system=force_builtin),
             })
+
+    def refs_for(self, name, path, system=False):
+        """Под какими именами блоб подставляют в ``blob=<имя>``.
+
+        Имя файла и имя в стратегии — разные вещи. Системный
+        ``tls_clienthello_www_google_com.bin`` в стратегиях зовётся
+        ``tls_google`` (см. core/blob_registry), а страница раньше
+        показывала только имя файла — и подсказывала писать его в
+        ``blob=``, чего nfqws2 не понимает. Пользовательский блоб
+        подставляется по своему имени, если оно годится nfqws2.
+        """
+        if not system:
+            return [name] if IDENT_RE.match(name) else []
+        try:
+            from core.blob_registry import aliases_for_file
+            return aliases_for_file(path)
+        except Exception:
+            return []
 
     def get_blob(self, name):
         """
@@ -270,6 +323,9 @@ class BlobManager:
             "type": self._detect_type(name, data_head),
             "is_builtin": is_builtin,
             "path": full_path,
+            "refs": self.refs_for(name, full_path,
+                                  system=not full_path.startswith(
+                                      self.blobs_dir + os.sep)),
         }
 
     def get_blob_content(self, name):
@@ -308,7 +364,7 @@ class BlobManager:
         Сохранить блоб из бинарных данных.
         Возвращает (success: bool, error: str|None).
         """
-        valid, err = self.validate_name(name)
+        valid, err = self.validate_new_name(name)
         if not valid:
             return False, err
 
@@ -401,7 +457,7 @@ class BlobManager:
 
         Возвращает bytes.
         """
-        domain_bytes = domain.encode("ascii")
+        domain_bytes = _ascii_host(domain).encode("ascii")
 
         # ── SNI extension ──
         # SNI list entry: type(1) + length(2) + hostname
@@ -518,6 +574,7 @@ class BlobManager:
 
         Возвращает bytes.
         """
+        host = _ascii_host(host)
         request_str = (
             f"GET / HTTP/1.1\r\n"
             f"Host: {host}\r\n"

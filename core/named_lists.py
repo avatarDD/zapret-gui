@@ -35,6 +35,9 @@ _DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
     r"(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$")
 
+# «1.2.3» — не домен и не IP: без этой проверки уезжало в домены.
+_ALL_DIGITS_RE = re.compile(r"^[0-9.]+$")
+
 
 # ─────────────────────── pure helpers ────────────────────────────────
 
@@ -54,16 +57,32 @@ def classify_entry(raw: str) -> tuple:
             return (None, "")
     # Убираем схему и путь, если вставили URL.
     s = re.sub(r"^[a-z]+://", "", s)
-    s = s.split("/", 1)[0].strip().strip(".")
+    s = s.split("/", 1)[0].strip()
+    # «*.example.com» из чужих списков — то же, что домен: и nfqws2, и
+    # dnsmasq-маршрутизация покрывают поддомены сами.
+    if s.startswith("*."):
+        s = s[2:]
+    s = s.strip(".")
     if not s:
         return (None, "")
     # Голый IP → /32 или /128.
     try:
         ip = ipaddress.ip_address(s)
+        # 0.0.0.0 / 127.0.0.1 — это не назначение, а первая колонка
+        # hosts-файла («0.0.0.0 ads.example.com»): импорт такого списка
+        # раньше заводил их в CIDR и заворачивал loopback в туннель.
+        if ip.is_unspecified or ip.is_loopback:
+            return (None, "")
         return ("cidr", "%s/%d" % (str(ip), 32 if ip.version == 4 else 128))
     except ValueError:
         pass
-    if _DOMAIN_RE.match(s):
+    # Кириллические домены — в punycode: так их видят DNS и SNI.
+    if not s.isascii():
+        try:
+            s = s.encode("idna").decode("ascii")
+        except UnicodeError:
+            return (None, "")
+    if _DOMAIN_RE.match(s) and not _ALL_DIGITS_RE.match(s):
         return ("domain", s)
     return (None, "")
 
@@ -191,7 +210,15 @@ def update(list_id: str, *, name=None, description=None,
             return {"ok": False, "error": "Список не найден"}
         item = dict(items[idx])
         if name is not None:
-            item["name"] = (name or "").strip() or item.get("name")
+            new_name = (name or "").strip() or item.get("name")
+            # Уникальность имени проверяет и create(): иначе переименование
+            # давало два списка с одним именем, неразличимых в выборе
+            # назначения маршрута.
+            if any(i != idx and isinstance(x, dict)
+                   and x.get("name") == new_name
+                   for i, x in enumerate(items)):
+                return {"ok": False, "error": "Список с таким именем уже есть"}
+            item["name"] = new_name
         if description is not None:
             item["description"] = (description or "").strip()
         if entries is not None:
@@ -205,6 +232,8 @@ def update(list_id: str, *, name=None, description=None,
         item["updated_at"] = int(time.time())
         items[idx] = item
         _save_all(items)
+    if entries is not None:
+        _notify(list_id)
     return {"ok": True, "list": item}
 
 
@@ -229,7 +258,67 @@ def update_fields(list_id: str, fields: dict) -> dict:
         item["updated_at"] = int(time.time())
         items[idx] = item
         _save_all(items)
+    if "domains" in fields or "cidrs" in fields:
+        _notify(list_id)
     return {"ok": True, "list": item}
+
+
+def mutate(list_id: str, fn) -> dict:
+    """
+    Атомарно «прочитать → изменить → записать» один список.
+
+    fn(item) получает копию записи и возвращает dict полей для записи
+    (или None — ничего не менять). Всё под замком модуля: обновлятель
+    списков (list_updater) скачивает ответ секунды, и если он брал
+    содержимое ДО скачивания, а писал после, автодобавление детектора
+    или правка из GUI за это время молча терялись.
+    """
+    with _lock:
+        items = _all_raw()
+        idx = next((i for i, x in enumerate(items)
+                    if isinstance(x, dict) and x.get("id") == list_id), -1)
+        if idx < 0:
+            return {"ok": False, "error": "Список не найден"}
+        item = dict(items[idx])
+        fields = fn(dict(item))
+        if not fields:
+            return {"ok": True, "list": item, "changed": False}
+        item.update(fields)
+        item["updated_at"] = int(time.time())
+        items[idx] = item
+        _save_all(items)
+    if "domains" in fields or "cidrs" in fields:
+        _notify(list_id)
+    return {"ok": True, "list": item, "changed": True}
+
+
+def add_entries(list_id: str, entries) -> dict:
+    """Дописать записи в список атомарно; возвращает число добавленных."""
+    parsed = parse_entries(entries)
+    added = {"n": 0}
+
+    def _fn(item):
+        domains = list(item.get("domains") or [])
+        cidrs = list(item.get("cidrs") or [])
+        new_d = _merge(domains, parsed["domains"])
+        new_c = _merge(cidrs, parsed["cidrs"])
+        added["n"] = (len(new_d) - len(domains)) + (len(new_c) - len(cidrs))
+        if not added["n"]:
+            return None
+        return {"domains": new_d, "cidrs": new_c}
+
+    res = mutate(list_id, _fn)
+    res["added"] = added["n"]
+    return res
+
+
+def _notify(list_id: str) -> None:
+    """Маршруты единого слоя с этим списком — переприменить (отложенно)."""
+    try:
+        from core.unified.manager import notify_list_changed
+        notify_list_changed(list_id)
+    except Exception:
+        pass
 
 
 def delete(list_id: str) -> dict:
@@ -240,6 +329,9 @@ def delete(list_id: str) -> dict:
         if len(new) == len(items):
             return {"ok": False, "error": "Список не найден"}
         _save_all(new)
+    # Маршрут, ссылавшийся на список, теперь получит из него пустоту —
+    # его правила надо снять, а не оставить с последним снимком.
+    _notify(list_id)
     return {"ok": True, "id": list_id}
 
 

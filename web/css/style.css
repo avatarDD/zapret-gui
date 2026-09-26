@@ -2094,7 +2094,7 @@ input:focus, textarea:focus, select:focus {
 
 .blob-table-header {
     display: grid;
-    grid-template-columns: 1fr 80px 80px 80px 120px;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 64px 72px 88px 120px;
     gap: 8px;
     padding: 10px 16px;
     border-bottom: 1px solid var(--border);
@@ -2107,7 +2107,7 @@ input:focus, textarea:focus, select:focus {
 
 .blob-table-row {
     display: grid;
-    grid-template-columns: 1fr 80px 80px 80px 120px;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 64px 72px 88px 120px;
     gap: 8px;
     padding: 10px 16px;
     align-items: center;
@@ -2222,6 +2222,10 @@ input:focus, textarea:focus, select:focus {
     .blob-col-size,
     .blob-col-badge {
         font-size: 11px;
+    }
+
+    .blob-col-ref {
+        width: 100%;
     }
 
     .blob-col-actions {
@@ -5400,4 +5404,176 @@ body.expert-mode .expert-note { display: none !important; }
     .strategy-card .strategy-card-actions > .btn-primary { flex: 1; width: auto; }
     .strategy-card .strategy-card-menu > summary.btn { width: auto; }
     .strategy-card-menu-list { left: auto; right: 0; }
+}
+
+/* ===== Общая шапка страницы с кнопками справа ===== */
+.page-header-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.page-header-bar > div:first-child { flex: 1 1 420px; min-width: 260px; }
+.page-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.btn-chip:disabled { opacity: .5; cursor: default; }
+.btn-chip-done {
+    cursor: default;
+    color: var(--success);
+    border-color: rgba(57, 196, 94, 0.35);
+}
+.btn-chip-done:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--success);
+    border-color: rgba(57, 196, 94, 0.35);
+}
+/* Раскрывающийся блок «ещё настройки» */
+.lists-more > summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-secondary);
+    user-select: none;
+}
+.lists-more > summary:hover { color: var(--accent); }
+
+/* ===== Списки маршрутизации: строка списка ===== */
+.nl-card { padding: 4px 20px; }
+.nl-row {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+}
+.nl-row:last-child { border-bottom: none; }
+.nl-main { min-width: 0; flex: 1; }
+.nl-name { font-weight: 600; color: var(--text-heading); font-size: 14px; }
+.nl-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: center;
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.nl-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.nl-used { font-size: 12px; margin-top: 6px; color: var(--text-secondary); }
+.nl-used a { color: var(--accent); text-decoration: none; }
+.nl-used a:hover { text-decoration: underline; }
+.nl-unused { color: var(--text-muted); font-style: italic; }
+.nl-error { color: var(--error); }
+.nl-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+.nl-del:hover { color: var(--error); }
+@media (max-width: 768px) {
+    .nl-row { flex-direction: column; align-items: stretch; gap: 10px; }
+    .nl-actions { justify-content: flex-start; }
+}
+.nl-meta .badge { text-transform: none; letter-spacing: 0; }
+
+/* ===== Маршрутизация: строка маршрута ===== */
+.ru-dot { color: var(--text-muted); }
+.ru-dot-on { color: var(--success); }
+.ru-ok { color: var(--success); }
+.ru-fail { color: var(--error); }
+.ru-badge { text-transform: none; letter-spacing: 0; margin-left: 4px; }
+.ru-actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; min-width: 250px; }
+@media (max-width: 768px) { .ru-actions { min-width: 0; justify-content: flex-start; } }
+
+/* ===== DNS для отдельных доменов ===== */
+.dr-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 260px) auto;
+    gap: 8px;
+    margin-top: 8px;
+}
+.dr-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 12px;
+}
+.dr-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+.dr-row:last-child { border-bottom: none; }
+.dr-domain { font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.dr-arrow { color: var(--text-muted); }
+.dr-server { flex: 1; font-size: 13px; color: var(--text-secondary); }
+.dr-del:hover { color: var(--error); }
+@media (max-width: 768px) {
+    .dr-form { grid-template-columns: 1fr; }
+}
+
+/* ===== Блобы: имя для стратегии ===== */
+.blob-intro { font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.blob-intro code, .blob-ref {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--bg-input);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+.blob-col-ref { min-width: 0; font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px; }
+.blob-ref { color: var(--accent); cursor: pointer; }
+.blob-ref:hover { background: rgba(91, 158, 244, 0.15); }
+.blob-ref-bad { color: var(--warning); font-size: 11px; }
+.blob-ref { overflow-wrap: anywhere; }
+
+/* Подсказка по формату под редактором hostlist'а/ipset'а */
+.lists-editor-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 6px 2px 0;
+}
+.lists-editor-hint code {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--bg-input);
+    padding: 1px 5px;
+    border-radius: 4px;
+}
+
+/* ===== Мониторинг DNS (детектор блокировок) ===== */
+.bd-status-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.bd-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    font-size: 13px;
+}
+.bd-table .bd-domain code { overflow-wrap: anywhere; font-size: 12px; }
+.bd-table td { vertical-align: top; }
+@media (max-width: 768px) {
+    /* В колонку flex-basis работает как высота — шапка раздувалась. */
+    .page-header-bar > div:first-child { flex: 0 0 auto; min-width: 0; width: 100%; }
+    /* Таблица результатов детектора — карточками. */
+    .bd-table thead { display: none; }
+    .bd-table, .bd-table tbody, .bd-table tr, .bd-table td { display: block; width: 100%; }
+    .bd-table tr { padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .bd-table td { padding: 2px 0; border: none; }
 }

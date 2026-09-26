@@ -11,7 +11,6 @@
 const BlobsPage = (() => {
 
     let blobs = [];
-    let stats = {};
 
     // ══════════════════ Render ══════════════════
 
@@ -43,9 +42,15 @@ const BlobsPage = (() => {
                 </div>
             </div>
 
-            <!-- Статистика -->
-            <div class="status-grid" id="blob-stats-grid">
-                <div class="status-card"><div class="status-card-label">Загрузка...</div></div>
+            <!-- Что это и как подключить -->
+            <div class="card blob-intro">
+                Блоб — содержимое поддельного пакета, который nfqws2 отправляет
+                перед настоящим (приём <code>fake</code>). В стратегию блоб
+                подставляется по имени из колонки <b>«В стратегии»</b>:
+                <code>--lua-desync=fake:blob=tls_google</code>. У системных
+                файлов это короткое имя из каталога, у своих — имя блоба.
+                Объявлять <code>--blob=…</code> вручную не нужно: GUI сделает
+                это сам при запуске стратегии.
             </div>
 
             <!-- Таблица блобов -->
@@ -82,25 +87,6 @@ const BlobsPage = (() => {
                 </div>
             </div>
 
-            <!-- Подсказка -->
-            <div class="card" style="border-left: 3px solid var(--info);">
-                <div class="card-title" style="font-size:13px;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align: -2px; color: var(--info);">
-                        <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/>
-                        <line x1="12" y1="8" x2="12.01" y2="8"/>
-                    </svg>
-                    Как использовать блобы
-                </div>
-                <div style="font-size:12px; color:var(--text-secondary); line-height:1.7;">
-                    В стратегиях блобы указываются параметром:
-                    <code style="background:var(--bg-input); padding:2px 6px; border-radius:4px; font-family:var(--font-mono); font-size:11px;">
-                        --lua-desync=fake:blob=&lt;имя_блоба&gt;
-                    </code><br>
-                    Блобы с префиксом <strong>fake_default_</strong> — встроенные и не могут быть удалены.<br>
-                    Генератор создаёт fake TLS ClientHello или HTTP GET для указанного домена.
-                </div>
-            </div>
-
             <!-- Модал: просмотр блоба -->
             <div id="blob-view-modal" class="modal-backdrop" style="display:none;">
                 <div class="modal-content modal-lg">
@@ -127,7 +113,7 @@ const BlobsPage = (() => {
                             <input type="text" class="form-input" id="blob-create-name"
                                    placeholder="my_custom_blob" spellcheck="false"
                                    style="font-family:var(--font-mono);">
-                            <span class="form-hint">Допустимы: латиница, цифры, _ - .</span>
+                            <span class="form-hint">Латиница, цифры и «_», начинается с буквы — под этим именем блоб пишут в blob=…</span>
                         </div>
                         <div class="form-group">
                             <label class="form-label">Hex-данные</label>
@@ -252,6 +238,7 @@ const BlobsPage = (() => {
             if (action === 'doEdit') { doEdit(); return; }
             if (action === 'delete') { deleteBlob(btn.dataset.name); return; }
             if (action === 'copy-hex') { copyHex(btn.dataset.target); return; }
+            if (action === 'copy-ref') { copyRef(btn.dataset.ref); return; }
         });
 
         loadData();
@@ -260,7 +247,7 @@ const BlobsPage = (() => {
     // ══════════════════ Data Loading ══════════════════
 
     async function loadData() {
-        await Promise.all([loadBlobs(), loadStats()]);
+        await loadBlobs();
     }
 
     async function loadBlobs() {
@@ -272,78 +259,6 @@ const BlobsPage = (() => {
             document.getElementById('blobs-table-wrap').innerHTML =
                 '<div style="text-align:center; padding:24px; color:var(--error);">Ошибка загрузки: ' + escapeHtml(err.message) + '</div>';
         }
-    }
-
-    async function loadStats() {
-        try {
-            const data = await API.get('/api/blobs/stats');
-            stats = data.stats || {};
-            renderStats(stats);
-        } catch (err) {
-            // не критично
-        }
-    }
-
-    // ══════════════════ Render Stats ══════════════════
-
-    function renderStats(s) {
-        const grid = document.getElementById('blob-stats-grid');
-        if (!grid) return;
-
-        grid.innerHTML = `
-            <div class="status-card">
-                <div class="status-card-header">
-                    <span class="status-card-icon" style="color:var(--accent);">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                        </svg>
-                    </span>
-                    <span class="status-card-label">Всего</span>
-                </div>
-                <div class="status-card-value">${s.total || 0}</div>
-                <div class="status-card-detail">блобов</div>
-            </div>
-            <div class="status-card">
-                <div class="status-card-header">
-                    <span class="status-card-icon" style="color:var(--warning);">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                        </svg>
-                    </span>
-                    <span class="status-card-label">Встроенные</span>
-                </div>
-                <div class="status-card-value">${s.builtin || 0}</div>
-                <div class="status-card-detail">builtin</div>
-            </div>
-            <div class="status-card">
-                <div class="status-card-header">
-                    <span class="status-card-icon" style="color:var(--success);">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                            <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                            <circle cx="8.5" cy="7" r="4"/>
-                            <line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>
-                        </svg>
-                    </span>
-                    <span class="status-card-label">Пользовательские</span>
-                </div>
-                <div class="status-card-value">${s.user || 0}</div>
-                <div class="status-card-detail">user</div>
-            </div>
-            <div class="status-card">
-                <div class="status-card-header">
-                    <span class="status-card-icon" style="color:var(--info);">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-                        </svg>
-                    </span>
-                    <span class="status-card-label">Общий размер</span>
-                </div>
-                <div class="status-card-value">${formatSize(s.total_size || 0)}</div>
-                <div class="status-card-detail">${s.total_size || 0} байт</div>
-            </div>
-        `;
     }
 
     // ══════════════════ Render Table ══════════════════
@@ -369,11 +284,12 @@ const BlobsPage = (() => {
         let html = '<div class="blob-table">';
         html += `
             <div class="blob-table-header">
-                <div class="blob-col-name">Имя</div>
+                <div class="blob-col-name">Файл</div>
+                <div class="blob-col-ref">В стратегии</div>
                 <div class="blob-col-type">Тип</div>
                 <div class="blob-col-size">Размер</div>
-                <div class="blob-col-badge">Статус</div>
-                <div class="blob-col-actions">Действия</div>
+                <div class="blob-col-badge">Откуда</div>
+                <div class="blob-col-actions"></div>
             </div>
         `;
 
@@ -381,7 +297,20 @@ const BlobsPage = (() => {
             const typeIcon = getTypeIcon(b.type);
             const typeLabel = getTypeLabel(b.type);
             const badgeClass = b.is_builtin ? 'blob-badge-builtin' : 'blob-badge-user';
-            const badgeText = b.is_builtin ? 'builtin' : 'user';
+            const badgeText = b.is_builtin ? 'системный' : 'свой';
+            const refs = b.refs || [];
+            let refHtml;
+            if (refs.length) {
+                refHtml = refs.map(r =>
+                    `<code class="blob-ref" title="Нажмите, чтобы скопировать"
+                           data-action="copy-ref" data-ref="${escapeHtml(r)}">blob=${escapeHtml(r)}</code>`
+                ).join(' ');
+            } else if (!b.is_builtin) {
+                refHtml = `<span class="blob-ref-bad" title="nfqws2 принимает в имени блоба только латиницу, цифры и «_»">
+                    ⚠ имя не подходит nfqws2 — создайте копию с именем вида my_blob</span>`;
+            } else {
+                refHtml = `<span class="text-muted" title="В каталогах стратегий этот файл не используется">—</span>`;
+            }
 
             html += `
                 <div class="blob-table-row">
@@ -389,8 +318,9 @@ const BlobsPage = (() => {
                         <span class="blob-name-icon">${typeIcon}</span>
                         <span class="blob-name-text">${escapeHtml(b.name)}</span>
                     </div>
+                    <div class="blob-col-ref">${refHtml}</div>
                     <div class="blob-col-type">
-                        <span class="blob-type-label">${typeLabel}</span>
+                        ${b.type === 'unknown' ? '<span class="text-muted">—</span>' : `<span class="blob-type-label">${typeLabel}</span>`}
                     </div>
                     <div class="blob-col-size">${formatSize(b.size)}</div>
                     <div class="blob-col-badge">
@@ -490,7 +420,7 @@ const BlobsPage = (() => {
                     </div>
                     <div style="flex:1; min-width:120px;">
                         <div class="form-hint" style="margin-bottom:2px;">Статус</div>
-                        <div><span class="blob-badge ${blob.is_builtin ? 'blob-badge-builtin' : 'blob-badge-user'}">${blob.is_builtin ? 'builtin' : 'user'}</span></div>
+                        <div><span class="blob-badge ${blob.is_builtin ? 'blob-badge-builtin' : 'blob-badge-user'}">${blob.is_builtin ? 'системный' : 'свой'}</span></div>
                     </div>
                 </div>
                 <div class="form-group">
@@ -671,7 +601,8 @@ const BlobsPage = (() => {
         const nameInput = document.getElementById('blob-gen-name');
         const typeSelect = document.getElementById('blob-gen-type');
         if (nameInput && typeSelect) {
-            const safeDomain = domain.replace(/\./g, '_');
+            // Имя блоба — идентификатор для nfqws2: «-» и «.» он не примет.
+            const safeDomain = domain.replace(/[^A-Za-z0-9_]/g, '_');
             nameInput.value = 'fake_' + typeSelect.value + '_' + safeDomain;
         }
     }
@@ -717,6 +648,16 @@ const BlobsPage = (() => {
             Toast.error(err.message);
         } finally {
             btn.disabled = false;
+        }
+    }
+
+    function copyRef(ref) {
+        const text = 'blob=' + ref;
+        const done = () => Toast.success('Скопировано: ' + text);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => Toast.info(text));
+        } else {
+            Toast.info(text);
         }
     }
 

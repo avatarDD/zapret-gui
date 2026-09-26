@@ -987,7 +987,9 @@ class BlockcheckRunner:
         max_workers: int,
     ) -> None:
         """QUIC-проба (UDP/443) для подвыборки доменов."""
-        from core.testers.quic_tester import test_quic
+        # test_quic_dpi — Initial с SNI (как видит DPI) + контроль без
+        # имени; VN-проб без SNI пропускал блок QUIC по имени сайта.
+        from core.testers.quic_tester import test_quic_dpi
         from core.testers.config import QUIC_MAX_DOMAINS
 
         targets = _select_probe_domains(domains, QUIC_MAX_DOMAINS)
@@ -1003,7 +1005,7 @@ class BlockcheckRunner:
             for d in targets:
                 if self._is_cancelled:
                     break
-                futures[pool.submit(test_quic, d)] = d
+                futures[pool.submit(test_quic_dpi, d)] = d
 
             for future in as_completed(futures):
                 if self._is_cancelled:
@@ -1273,9 +1275,29 @@ class BlockcheckRunner:
         """Классификация DPI для каждого TargetResult."""
         from core.testers.dpi_classifier import DPIClassifier
 
+        stun_names = {t["name"] for t in _DEFAULT_STUN_TARGETS}
+        # HTTPS до сайтов работает хоть где-то — без этого провал STUN
+        # значит «нет сети», а не «режут UDP».
+        https_ok = any(
+            t.status == TestStatus.SUCCESS.value
+            and t.test_type in (TestType.HTTP.value, TestType.TLS_12.value,
+                                TestType.TLS_13.value)
+            for tr in report.targets for t in tr.results
+        )
+
         for tr in report.targets:
-            # Пропускаем служебные target-ы (TCP, Ping IP)
-            if tr.domain in ("TCP 16-20KB",) or tr.domain.startswith("Ping "):
+            if tr.domain.startswith("Ping "):
+                continue
+            # Служебные цели не проходят через DPIClassifier: он решает по
+            # тестам одного домена, а у «TCP 16-20KB» и STUN-серверов TLS-
+            # тестов нет. Раньше их просто пропускали — и блок на 16-20 КБ,
+            # самый частый у ТСПУ, как и полностью закрытый STUN, в итог
+            # отчёта не попадали («DPI не обнаружен»).
+            if tr.domain == "TCP 16-20KB":
+                self._classify_tcp_target(tr)
+                continue
+            if tr.domain in stun_names:
+                self._classify_stun_target(tr, report, stun_names, https_ok)
                 continue
 
             classification, detail = DPIClassifier.classify(tr)
@@ -1287,6 +1309,44 @@ class BlockcheckRunner:
                     f"DPI {tr.domain}: {classification.value} — {detail}",
                     source="blockcheck",
                 )
+
+    @staticmethod
+    def _classify_tcp_target(tr: TargetResult) -> None:
+        """«TCP 16-20KB»: блок, если хоть одна цель стабильно рвётся в окне."""
+        hits = [t for t in tr.results
+                if t.status == TestStatus.FAILED.value
+                and t.error == "TCP_16_20"]
+        if hits:
+            tr.dpi_classification = DPIClassification.TCP_16_20.value
+            tr.dpi_detail = ("Обрыв на 16-20 КБ у %d из %d тестовых серверов"
+                             % (len(hits), len(tr.results)))
+        else:
+            tr.dpi_classification = DPIClassification.NONE.value
+            tr.dpi_detail = ""
+
+    @staticmethod
+    def _classify_stun_target(tr: TargetResult, report: BlockcheckReport,
+                              stun_names: set, https_ok: bool) -> None:
+        """STUN-сервер: блок, только если молчат ВСЕ серверы, а HTTPS жив.
+
+        Один недоступный сервер — это его проблема, а не блокировка UDP;
+        не резолвящийся (DNS_ERR) — тоже.
+        """
+        tr.dpi_classification = DPIClassification.NONE.value
+        tr.dpi_detail = ""
+        if not https_ok:
+            return
+        stun_tests = [
+            t for x in report.targets if x.domain in stun_names
+            for t in x.results
+            if t.test_type == TestType.STUN.value
+            and t.status != TestStatus.SKIPPED.value
+            and t.error != "DNS_ERR"
+        ]
+        if stun_tests and all(t.status != TestStatus.SUCCESS.value
+                              for t in stun_tests):
+            tr.dpi_classification = DPIClassification.STUN_BLOCK.value
+            tr.dpi_detail = "STUN/UDP не проходит ни к одному серверу, HTTPS работает"
 
     @staticmethod
     def _aggregate_dpi(report: BlockcheckReport) -> str:

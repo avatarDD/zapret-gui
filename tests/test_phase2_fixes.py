@@ -205,13 +205,23 @@ class TestBlobSystemProtection(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_save_does_not_overwrite_system(self):
-        ok, err = self.mgr.save_blob("tls_sys.bin", b"USERDATA")
+        # Имя без «.bin»: новые блобы называются так, как их примет nfqws2
+        # в --blob=<имя>: (идентификатор), см. test_blob_user_registry.
+        sys_plain = os.path.join(self.mgr.system_blobs_dir, "tls_sys")
+        with open(sys_plain, "wb") as f:
+            f.write(b"SYSTEM")
+        ok, err = self.mgr.save_blob("tls_sys", b"USERDATA")
         self.assertTrue(ok, err)
         # Системный файл не тронут, юзерский — в blobs/.
-        with open(self.sys_file, "rb") as f:
+        with open(sys_plain, "rb") as f:
             self.assertEqual(f.read(), b"SYSTEM")
         self.assertTrue(os.path.isfile(
-            os.path.join(self.mgr.blobs_dir, "tls_sys.bin")))
+            os.path.join(self.mgr.blobs_dir, "tls_sys")))
+
+    def test_save_rejects_name_nfqws2_cannot_load(self):
+        ok, err = self.mgr.save_blob("tls_sys.bin", b"USERDATA")
+        self.assertFalse(ok)
+        self.assertIn("blob=", err)
 
     def test_delete_refuses_system_blob(self):
         ok, err = self.mgr.delete_blob("tls_sys.bin")

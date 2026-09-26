@@ -86,13 +86,27 @@ TCP_BLOCK_RANGE_WIDE_MAX = 25_600   # 25 KB
 # ---------------------------------------------------------------------------
 # ISP block page markers (body content)
 # ---------------------------------------------------------------------------
-ISP_BODY_MARKERS: list[str] = [
+# Однозначные: такие строки встречаются только на заглушках (ссылки на
+# РКН, номер закона, реестр).
+ISP_STRONG_MARKERS: list[str] = [
     "eais.rkn.gov.ru",
     "rkn.gov.ru",
     "nap.rkn.gov.ru",
     "blocklist.rkn.gov.ru",
     "Роскомнадзор",
     "Roskomnadzor",
+    "этот ресурс заблокирован",
+    "federalnyj-zakon",
+    "149-fz",
+    "zapret-info",
+]
+
+# Общие фразы. «Access denied» пишет и сам сайт: страница геоблока
+# Akamai, WAF Cloudflare/Imperva, свой 403. Считаются заглушкой, только
+# если страница маленькая и не несёт подписи CDN/WAF (см.
+# isp_detector.find_isp_marker) — иначе отчёт звал обход DPI туда, где
+# блокирует сам сервер.
+ISP_WEAK_MARKERS: list[str] = [
     "blocked by",
     "заблокирован",
     "ограничен доступ",
@@ -102,11 +116,20 @@ ISP_BODY_MARKERS: list[str] = [
     "web filter",
     "content filter",
     "warning: this site",
-    "этот ресурс заблокирован",
-    "federalnyj-zakon",
-    "149-fz",
-    "zapret-info",
 ]
+
+# Подписи страниц, которые отдаёт сам сервер/CDN, а не провайдер.
+SERVER_BLOCK_SIGNATURES: list[str] = [
+    "cloudflare", "cf-ray", "ray id", "akamai", "edgesuite.net",
+    "reference #", "reference&#32;&#35;", "incapsula", "imperva",
+    "sucuri", "fastly", "request id", "varnish",
+]
+
+# Заглушки провайдеров — маленькие страницы. Больше — это чей-то сайт.
+ISP_WEAK_MAX_BODY = 6144
+
+# Совместимость: полный список (сильные + общие).
+ISP_BODY_MARKERS: list[str] = ISP_STRONG_MARKERS + ISP_WEAK_MARKERS
 
 # ---------------------------------------------------------------------------
 # ISP redirect markers (URL patterns)

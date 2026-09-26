@@ -27,7 +27,6 @@ from urllib.parse import urlparse
 
 from core.models import SingleTestResult, TestStatus, TestType
 from core.testers.config import (
-    ISP_BODY_MARKERS,
     TCP_BLOCK_RANGE_MAX,
     TCP_BLOCK_RANGE_MIN,
     TCP_BLOCK_RANGE_WIDE_MAX,
@@ -40,24 +39,19 @@ _READ_CHUNK = 4096
 # Сколько первых байт тела сканируем на ISP-маркеры. Заглушки провайдера —
 # обычно <8 КБ, нет смысла читать больше.
 _ISP_SCAN_BYTES = 8192
-# Для ускорения матча перевели маркеры в нижний регистр один раз на модуль.
-_ISP_MARKERS_LOWER: tuple[bytes, ...] = tuple(
-    m.lower().encode("utf-8", errors="ignore") for m in ISP_BODY_MARKERS
-)
 
 
 def _detect_isp_marker(body: bytes) -> str:
-    """Найти ISP-маркер в первых ~8 КБ тела. Возвращает совпавшую строку или ''."""
+    """Найти ISP-маркер в первых ~8 КБ тела. Возвращает совпавшую строку или ''.
+
+    Правила общие с blockcheck и детектором — isp_detector.find_isp_marker
+    (общие фразы вроде «access denied» не считаются заглушкой на странице
+    CDN/WAF).
+    """
     if not body:
         return ""
-    head = body[:_ISP_SCAN_BYTES].lower()
-    for marker in _ISP_MARKERS_LOWER:
-        if marker and marker in head:
-            try:
-                return marker.decode("utf-8", errors="ignore")
-            except Exception:
-                return ""
-    return ""
+    from core.testers.isp_detector import find_isp_marker
+    return find_isp_marker(body[:_ISP_SCAN_BYTES])
 
 
 _FAMILIES = {"ipv4": socket.AF_INET, "ipv6": socket.AF_INET6}

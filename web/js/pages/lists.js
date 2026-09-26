@@ -16,6 +16,7 @@ const ListsPage = (() => {
     let transports = null;      // /api/install/transports (через TransportSelect)
     let busy = false;
     let interfaces = [];      // из /api/routing/interfaces (туннели)
+    let routes = [];          // маршруты единого слоя — «где используется»
     let routeFor = null;      // {listId, listName} — открыт пикер «в маршрут»
     let _eventAbort = null;
 
@@ -66,27 +67,27 @@ const ListsPage = (() => {
 
     function render(container) {
         container.innerHTML = `
-            <div class="page-header">
+            <div class="page-header page-header-bar">
                 <div>
                     <h1 class="page-title">Списки маршрутизации${typeof Help !== 'undefined' ? Help.button('lists') : ''}</h1>
                     <p class="page-description">
-                        Именованные списки доменов и IP/CIDR. Используются
-                        в «Маршрутизации» (назначение → метод) и как
-                        hostlist'ы nfqws2.
+                        Наборы доменов и IP-подсетей под именем. Список сам по
+                        себе ничего не меняет — его подключают к маршруту:
+                        «эти сайты → через туннель» или «→ обход DPI».
                     </p>
                 </div>
-                <div style="display:flex; gap:8px;">
-                    <button class="btn btn-ghost btn-sm" data-action="new-list">+ Список</button>
-                    <button class="btn btn-ghost btn-sm" data-action="refresh-all-managed">↻ Обновить списки</button>
-                    <button class="btn btn-ghost btn-sm" data-action="refresh">Обновить</button>
+                <div class="page-actions">
+                    <button class="btn btn-ghost btn-sm" data-action="refresh-all-managed"
+                            title="Скачать заново все списки, у которых есть источник (URL)">↻ Обновить из источников</button>
+                    <button class="btn btn-primary btn-sm" data-action="new-list">+ Создать список</button>
                 </div>
             </div>
-            <div id="lists-curated"></div>
             <div id="lists-route"></div>
             <div id="lists-editor"></div>
             <div id="lists-body">
                 <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
             </div>
+            <div id="lists-curated"></div>
         `;
         _bindEvents(container);
         refresh();
@@ -95,13 +96,15 @@ const ListsPage = (() => {
 
     async function refresh() {
         try {
-            const [r, c, ifc, tr] = await Promise.all([
+            const [r, c, ifc, tr, rt] = await Promise.all([
                 API.get('/api/lists'),
                 API.get('/api/lists/curated').catch(() => null),
                 API.get('/api/routing/interfaces').catch(() => null),
                 TransportSelect.load().catch(() => null),
+                API.get('/api/unified/routes').catch(() => null),
             ]);
             lists = (r && r.lists) || [];
+            routes = (rt && rt.routes) || [];
             if (c && c.ok) curated = { presets: c.presets || [],
                                        refresher: c.refresher || {},
                                        transport: c.transport || '' };
@@ -122,7 +125,7 @@ const ListsPage = (() => {
         const groups = {};
         const CATEGORY_LABELS = {
             services: 'Сервисы',
-            countries: 'Страны',
+            countries: 'Всё заблокированное в стране',
             categories: 'Категории',
         };
         for (const p of (curated.presets || [])) {
@@ -138,17 +141,12 @@ const ListsPage = (() => {
             const items = groups[cat];
             if (!items || !items.length) continue;
             const label = CATEGORY_LABELS[cat] || cat;
-            const chips = items.map(p => `
-                <span class="preset-chip" style="display:inline-flex;gap:2px;">
-                    <button class="btn btn-ghost btn-sm" ${p.added||busy?'disabled':''}
-                            title="${escAttr(p.description||p.url)}"
-                            data-action="add-preset" data-url="${escAttr(p.url)}">
-                        ${p.added ? '✓ ' : '+ '}${esc(p.name)}
-                    </button>
-                    ${p.added ? `<button class="btn btn-ghost btn-sm" title="Добавить в маршрут"
-                            data-action="add-preset-to-route" data-url="${escAttr(p.url)}" data-name="${escAttr(p.name)}"
-                            style="font-size:10px; padding:2px 6px;">→</button>` : ''}
-                </span>`).join(' ');
+            const chips = items.map(p => p.added
+                ? `<span class="btn-chip btn-chip-done" title="${escAttr(p.description||p.url)}">✓ ${esc(p.name)}</span>`
+                : `<button class="btn-chip" ${busy?'disabled':''}
+                        title="${escAttr(p.description||p.url)}"
+                        data-action="add-preset" data-url="${escAttr(p.url)}">+ ${esc(p.name)}</button>`
+            ).join(' ');
             groupsHtml += `
                 <div style="margin-bottom:8px;">
                     <div style="font-size:11px; font-weight:600; color:var(--text-muted);
@@ -160,42 +158,64 @@ const ListsPage = (() => {
         }
 
         box.innerHTML = `
-            <div class="card" style="margin-bottom:16px;">
-                <div class="card-title">Готовые списки (podkop-стиль)</div>
-                <p class="text-muted" style="font-size:12px; margin:4px 0 8px;">
-                    Community-списки доменов с автообновлением по таймеру
-                    (источник: itdoginfo/allow-domains). Добавьте одним кликом,
-                    затем используйте в «Маршрутизации». Ручные правки при
-                    обновлении сохраняются; пустой ответ сервера не затирает
-                    текущее содержимое.
+            <div class="card">
+                <div class="card-title">Готовые списки</div>
+                <p class="text-muted" style="font-size:12px; margin:4px 0 10px;">
+                    Списки доменов популярных сервисов от сообщества
+                    (itdoginfo/allow-domains). Добавляются одним нажатием и
+                    обновляются сами; ваши правки при обновлении сохраняются.
                 </p>
                 ${groupsHtml}
-                <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; align-items:center;">
-                    <input id="lst-curated-url" class="form-control" style="flex:1; min-width:220px;"
-                           placeholder="Свой URL списка доменов (raw .txt/.lst)"
-                           value="${escAttr(curatedUrl)}"
-                           data-action="curated-url-input">
-                    <input id="lst-curated-interval" type="number" min="1" step="1"
-                           class="form-control" style="width:80px;"
-                           title="Интервал автообновления, часов"
-                           value="${curatedInterval}"
-                           data-action="curated-interval-change">
-                    <span class="text-muted" style="font-size:11px;">ч</span>
-                    <button class="btn btn-primary btn-sm" ${busy?'disabled':''}
-                            data-action="add-custom-url">Добавить URL</button>
-                </div>
-                <div style="display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap;">
-                    <label class="text-muted" style="font-size:12px;">Качать через:</label>
-                    <select class="form-control" style="max-width:300px;"
-                            data-action="set-transport">
-                        ${TransportSelect.optionsHtml(transports, curated.transport)}
-                    </select>
-                    <span class="text-muted" style="font-size:11px;">
-                        для автообновления всех списков с URL; «напрямую»
-                        учитывает зеркало из Настройки → Установка
-                    </span>
-                </div>
+                <details class="lists-more" style="margin-top:12px;">
+                    <summary>Свой список по ссылке и настройки скачивания</summary>
+                    <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; align-items:center;">
+                        <input id="lst-curated-url" class="form-control" style="flex:1; min-width:220px;"
+                               placeholder="https://… — текстовый файл, по домену в строке"
+                               value="${escAttr(curatedUrl)}"
+                               data-action="curated-url-input">
+                        <label class="text-muted" style="font-size:12px;">обновлять каждые</label>
+                        <input id="lst-curated-interval" type="number" min="1" step="1"
+                               class="form-control" style="width:70px;"
+                               title="Интервал автообновления, часов"
+                               value="${curatedInterval}"
+                               data-action="curated-interval-change">
+                        <span class="text-muted" style="font-size:12px;">ч</span>
+                        <button class="btn btn-primary btn-sm" ${busy?'disabled':''}
+                                data-action="add-custom-url">Добавить</button>
+                    </div>
+                    <div style="display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap;">
+                        <label class="text-muted" style="font-size:12px;">Скачивать через:</label>
+                        <select class="form-control" style="max-width:300px;"
+                                data-action="set-transport">
+                            ${TransportSelect.optionsHtml(transports, curated.transport)}
+                        </select>
+                        <span class="text-muted" style="font-size:11px;">
+                            если GitHub недоступен напрямую — выберите туннель
+                        </span>
+                    </div>
+                </details>
             </div>`;
+    }
+
+    /** Маршруты, которые берут этот список. */
+    function routesUsing(listId) {
+        return routes.filter(r => ((r.destination || {}).list_ids || []).includes(listId));
+    }
+
+    function plural(n, one, few, many) {
+        const m10 = n % 10, m100 = n % 100;
+        if (m10 === 1 && m100 !== 11) return one;
+        if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+        return many;
+    }
+
+    function ago(ts) {
+        if (!ts) return 'ещё не обновлялся';
+        const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+        if (s < 90) return 'обновлён только что';
+        if (s < 3600) return `обновлён ${Math.round(s / 60)} мин назад`;
+        if (s < 86400) return `обновлён ${Math.round(s / 3600)} ч назад`;
+        return 'обновлён ' + new Date(ts * 1000).toLocaleDateString('ru-RU');
     }
 
     function renderBody() {
@@ -203,44 +223,53 @@ const ListsPage = (() => {
         if (!box) return;
         if (!lists.length) {
             box.innerHTML = `<div class="card"><div class="text-muted">
-                Списков нет. Нажмите «+ Список».</div></div>`;
+                Списков пока нет. Добавьте готовый ниже или нажмите
+                «+ Создать список».</div></div>`;
             return;
         }
-        box.innerHTML = `<div class="card"><table class="table">
-            <thead><tr><th>Имя</th><th>Домены</th><th>CIDR</th>
-                <th>Описание</th><th style="width:160px;"></th></tr></thead>
-            <tbody>${lists.map(l => {
-                const managed = !!(l.source_url && String(l.source_url).trim());
-                let badge = '';
-                if (managed) {
-                    const st = l.last_status;
-                    const color = st === 'ok' ? '#39c45e'
-                        : (st === 'error' ? '#e58'
-                           : (st === 'empty' ? '#e5a' : '#888'));
-                    const when = l.last_refresh
-                        ? new Date(l.last_refresh * 1000).toLocaleString() : 'никогда';
-                    badge = `<div class="text-muted" style="font-size:10px;">
-                        <span style="color:${color};">●</span> авто ·
-                        каждые ${parseInt(l.interval_hours, 10) || 12} ч ·
-                        обновлён: ${esc(when)}
-                        ${l.last_error ? ' · ' + esc(l.last_error) : ''}</div>`;
-                }
-                return `
-                <tr>
-                    <td><strong>${esc(l.name)}</strong>${badge}</td>
-                    <td>${l.domain_count}</td>
-                    <td>${l.cidr_count}</td>
-                    <td>${esc(l.description || '')}</td>
-                    <td style="text-align:right;">
-                        ${managed ? `<button class="btn btn-ghost btn-sm" title="Обновить из источника"
-                            data-action="refresh-list" data-id="${esc(l.id)}">↻</button>` : ''}
-                        <button class="btn btn-ghost btn-sm" title="Создать маршрут для этого списка"
-                            data-action="open-route" data-id="${esc(l.id)}" data-name="${escAttr(l.name)}">→ Маршрут</button>
-                        <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${esc(l.id)}">Ред.</button>
-                        <button class="btn btn-ghost btn-sm" data-action="del" data-id="${esc(l.id)}">✕</button>
-                    </td>
-                </tr>`; }).join('')}
-            </tbody></table></div>`;
+        box.innerHTML = `<div class="card nl-card">${lists.map(l => {
+            const managed = !!(l.source_url && String(l.source_url).trim());
+            const nd = l.domain_count || 0, nc = l.cidr_count || 0;
+            const parts = [];
+            if (nd || !nc) parts.push(`${nd} ${plural(nd, 'домен', 'домена', 'доменов')}`);
+            if (nc) parts.push(`${nc} ${plural(nc, 'подсеть', 'подсети', 'подсетей')}`);
+            let src = '';
+            if (managed) {
+                const st = l.last_status;
+                const cls = st === 'ok' ? 'badge-success'
+                    : (st === 'error' ? 'badge-danger'
+                       : (st === 'empty' ? 'badge-warning' : 'badge-muted'));
+                src = `<span class="badge ${cls}" title="${escAttr(l.source_url)}">
+                        авто · раз в ${parseInt(l.interval_hours, 10) || 12} ч</span>
+                    <span class="text-muted">${esc(ago(l.last_refresh))}</span>
+                    ${l.last_error ? `<span class="nl-error">${esc(l.last_error)}</span>` : ''}`;
+            }
+            const used = routesUsing(l.id);
+            const usedHtml = used.length
+                ? `<div class="nl-used">→ ${used.map(r => `<a href="#routing">${esc(r.name)}</a>`).join(', ')}</div>`
+                : `<div class="nl-used nl-unused">не подключён ни к одному маршруту</div>`;
+            return `
+            <div class="nl-row">
+                <div class="nl-main">
+                    <div class="nl-name">${esc(l.name)}</div>
+                    <div class="nl-meta">
+                        <span>${parts.join(' · ')}</span>
+                        ${src}
+                    </div>
+                    ${l.description ? `<div class="nl-desc">${esc(l.description)}</div>` : ''}
+                    ${usedHtml}
+                </div>
+                <div class="nl-actions">
+                    ${used.length ? '' : `<button class="btn btn-primary btn-sm" title="Создать маршрут для этого списка"
+                        data-action="open-route" data-id="${esc(l.id)}" data-name="${escAttr(l.name)}">Подключить к маршруту</button>`}
+                    <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${esc(l.id)}">Изменить</button>
+                    ${managed ? `<button class="btn btn-ghost btn-sm" title="Скачать заново из источника"
+                        data-action="refresh-list" data-id="${esc(l.id)}">↻</button>` : ''}
+                    <button class="btn btn-ghost btn-sm nl-del" title="Удалить список"
+                        data-action="del" data-id="${esc(l.id)}">✕</button>
+                </div>
+            </div>`; }).join('')}
+        </div>`;
     }
 
     function renderEditor() {
@@ -328,7 +357,12 @@ const ListsPage = (() => {
     }
 
     async function del(id) {
-        if (!confirm('Удалить список?')) return;
+        const used = routesUsing(id);
+        const msg = used.length
+            ? `Список подключён к маршрутам: ${used.map(r => r.name).join(', ')}.\n` +
+              'После удаления они перестанут получать из него домены. Удалить?'
+            : 'Удалить список?';
+        if (!confirm(msg)) return;
         try {
             const r = await API.delete('/api/lists/' + encodeURIComponent(id));
             if (r && r.ok) { Toast.success('Удалён'); await refresh(); }
@@ -347,12 +381,15 @@ const ListsPage = (() => {
     }
 
     function methodOptions() {
-        const opts = [['nfqws2', 'nfqws2 (обход DPI)'], ['direct', 'Прямой (direct)']];
+        const KIND = { awg: 'AmneziaWG', singbox: 'sing-box', mihomo: 'mihomo', warp: 'WARP (MASQUE)' };
+        const opts = [];
         interfaces.forEach(i => {
             const kind = kindForSource(i.source);
             opts.push([kind + ':' + i.name,
-                       `${kind} → ${i.name}${i.active ? ' (активен)' : ''}`]);
+                       `Туннель ${KIND[kind] || kind} · ${i.name}${i.active ? '' : ' (сейчас не поднят)'}`]);
         });
+        opts.push(['nfqws2', 'Обход DPI (nfqws2) — без туннеля']);
+        opts.push(['direct', 'Напрямую (исключение)']);
         // По умолчанию первый туннель, если есть; иначе nfqws2.
         const def = interfaces.length
             ? kindForSource(interfaces[0].source) + ':' + interfaces[0].name
@@ -412,7 +449,7 @@ const ListsPage = (() => {
             if (r && r.ok) {
                 Toast.success('Маршрут создан');
                 routeFor = null;
-                renderRoutePicker();
+                await refresh();
             } else {
                 Toast.error((r && r.error) || 'не удалось создать маршрут');
             }
@@ -459,45 +496,13 @@ const ListsPage = (() => {
     }
 
     async function addPresetToRoute(url, name) {
-        busy = true; renderCurated();
-        try {
-            // 1. Добавляем пресет как named list (если ещё нет)
-            let listId = null;
-            const existing = lists.find(l => l.source_url === url);
-            if (existing) {
-                listId = existing.id;
-            } else {
-                const r = await API.post('/api/lists/curated', { url });
-                if (!r || !r.ok) {
-                    Toast.error((r && r.error) || 'Не удалось добавить список');
-                    return;
-                }
-                listId = r.id;
-                await refresh();
-            }
-
-            if (!listId) {
-                Toast.error('Не удалось определить list_id');
-                return;
-            }
-
-            // 2. Создаём маршрут через unified routing
-            const payload = {
-                name: 'Список: ' + (name || url.split('/').pop()),
-                method: 'nfqws2',
-                enabled: true,
-                destination: { list_ids: [listId] },
-            };
-            const r2 = await API.post('/api/unified/routes', payload);
-            if (r2 && r2.ok) {
-                Toast.success('Маршрут создан для ' + (name || 'списка'));
-            } else {
-                Toast.warning('Список добавлен, но маршрут не создан: ' +
-                    ((r2 && r2.error) || 'ошибка'));
-            }
-            await refresh();
-        } catch (e) { Toast.error(e.message); }
-        finally { busy = false; renderCurated(); }
+        // Раньше «→» молча создавал маршрут с методом nfqws2 — даже когда
+        // список заводили ради туннеля. Теперь открываем выбор метода.
+        const existing = lists.find(l => l.source_url === url);
+        if (existing) { openRoute(existing.id, existing.name); return; }
+        await addPreset(url);
+        const added = lists.find(l => l.source_url === url);
+        if (added) openRoute(added.id, added.name || name);
     }
 
     async function addCustomUrl() {

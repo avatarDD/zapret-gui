@@ -229,6 +229,18 @@ hostname (макс. 2 «перескока»). Если все инстансы 
 `--blob=NAME:@bin/file.bin`. Дозаявка по имени в проекте автоматизирована —
 `core/blob_registry.build_blob_declarations()`.
 
+Откуда реестр берёт имена (`get_blob_value`): сначала `--blob=` из каталогов
+и `_FALLBACK_ALIASES` (каталожное имя всегда главнее), затем **свои блобы**
+со страницы «Блобы» / MCP `blob_add` — файл `{base_path}/blobs/<имя>`
+объявляется как `--blob=<имя>:@<абсолютный путь>`. Имя блоба nfqws2 проверяет
+`is_identifier()` (nfq2/nfqws.c, `item_name`): буква или `_`, дальше буквы,
+цифры, `_`. С `-` или `.` — «bad identifier» и **выход при старте**, поэтому
+`BlobManager.save_blob` принимает только такие имена
+(`validate_new_name`), а старые файлы вроде `my-fake.bin` показываются с
+пометкой «имя не подходит». У системных файлов (`files/fake/*.bin`) имя для
+`blob=` — алиас из реестра (`aliases_for_file`): файл
+`tls_clienthello_www_google_com.bin` в стратегии зовётся `tls_google`.
+
 **Поведение при недоступном блобе (изменено в 1.0.4):** если подстановка
 `%blob` / `#blob` в аргументах инстанса не резолвится, **C-код обрывает
 execution plan ещё до входа в Lua** (раньше падало внутри Lua с
@@ -332,7 +344,7 @@ execution plan ещё до входа в Lua** (раньше падало вну
 | `--filter-l7=p1[,p2…]` | L7-протокол потока. Полный список — §3.6. |
 | `--ipset=<file>` / `--ipset-ip=<list>` | Include по IP/CIDR (ipv4+ipv6, gzip, несколько файлов). |
 | `--ipset-exclude=<file>` / `--ipset-exclude-ip=<list>` | Exclude по IP. |
-| `--hostlist=<file>` / `--hostlist-domains=<list>` | Десинк только для перечисленных хостов. Поддомены автоматически, `^` в начале — отключает учёт поддоменов, `#` — комментарий, gzip, несколько. |
+| `--hostlist=<file>` / `--hostlist-domains=<list>` | Десинк только для перечисленных хостов. Поддомены автоматически, `^` в начале — отключает учёт поддоменов, `#` — комментарий, gzip, несколько. Wildcard'ов нет: `*.x.com` сравнивается буквально и не совпадает ни с чем (наш `normalize_domain` переводит в `x.com`, кириллицу — в punycode). Файл перечитывается сам по смене mtime (nfq2/hostlist.c) уже от `--user` — пишем атомарно и с 0644. |
 | `--hostlist-exclude=<file>` / `--hostlist-exclude-domains=<list>` | Исключения. |
 | `--hostlist-auto=<file>` | Автохостлист. |
 | `--hostlist-auto-fail-threshold=<n>` | Фейлов для добавления (дефолт 3). |

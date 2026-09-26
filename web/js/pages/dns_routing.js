@@ -1,94 +1,91 @@
 /**
- * dns_routing.js — Per-domain DNS routing.
+ * dns_routing.js — DNS для отдельных доменов (per-domain DNS).
  *
- * Кастомный DNS для конкретных хостов (обход DNS-подмены ISP).
+ * Правило «домен → DNS-сервер» превращается в `server=/домен/IP` для
+ * dnsmasq. Применяется сразу после добавления и удаления: раньше правило
+ * лежало в настройках, пока не нажата отдельная кнопка «Применить», и
+ * удалённое правило продолжало действовать.
  */
 
 const DnsRoutingPage = (() => {
     let _rules = [];
     let _servers = [];
+    let _lastError = '';
+
+    const PRESETS = [
+        ['youtube.com', 'cloudflare', 'YouTube'],
+        ['googlevideo.com', 'cloudflare', 'Видео YouTube'],
+        ['instagram.com', 'cloudflare', 'Instagram'],
+        ['facebook.com', 'cloudflare', 'Facebook'],
+        ['x.com', 'cloudflare', 'X / Twitter'],
+        ['discord.com', 'cloudflare', 'Discord'],
+        ['telegram.org', 'cloudflare', 'Telegram'],
+        ['t.me', 'cloudflare', 't.me'],
+    ];
 
     async function render(container) {
         container.innerHTML = `
             <div class="page-header">
-                <h1>Per-domain DNS${typeof Help !== 'undefined' ? Help.button('dns-routing') : ''}</h1>
-                <span class="page-subtitle">Кастомный DNS для конкретных хостов</span>
+                <h1 class="page-title">DNS для отдельных доменов${typeof Help !== 'undefined' ? Help.button('dns-routing') : ''}</h1>
+                <p class="page-description">
+                    Спрашивать адрес выбранных сайтов не у провайдера, а у
+                    другого DNS-сервера. Помогает, когда провайдер подменяет
+                    ответ DNS (сайт резолвится в заглушку или не резолвится).
+                </p>
             </div>
 
-            <div class="card-grid">
-                <div class="card">
-                    <div class="card-title">Добавить правило</div>
-                    <div class="card-body">
-                        <div class="form-grid" style="grid-template-columns: 1fr 1fr auto;">
-                            <div class="form-group">
-                                <label for="dns-domain">Домен</label>
-                                <input type="text" id="dns-domain" class="form-control"
-                                       placeholder="youtube.com">
-                            </div>
-                            <div class="form-group">
-                                <label for="dns-server">DNS-сервер</label>
-                                <select id="dns-server" class="form-control">
-                                    <option value="">— загрузка...</option>
-                                </select>
-                            </div>
-                            <div class="form-group" style="align-self:end;">
-                                <button id="dr-add-rule-btn" class="btn btn-primary">Добавить</button>
-                            </div>
-                        </div>
-                        <div class="text-muted" style="font-size:12px;">
-                            Пример: youtube.com → Cloudflare (1.1.1.1) для обхода DNS-подмены ISP
-                        </div>
-                    </div>
+            <div class="card">
+                <div class="card-title">Добавить правило</div>
+                <div class="dr-form">
+                    <input type="text" id="dns-domain" class="form-control"
+                           placeholder="Домен, например youtube.com" spellcheck="false">
+                    <select id="dns-server" class="form-control">
+                        <option value="">— загрузка...</option>
+                    </select>
+                    <button id="dr-add-rule-btn" class="btn btn-primary">Добавить</button>
                 </div>
+                <div class="dr-presets">
+                    <span class="text-muted" style="font-size:12px;">Быстро через Cloudflare:</span>
+                    ${PRESETS.map(([d, s, label]) =>
+                        `<button class="btn-chip" data-preset-domain="${esc(d)}" data-dns="${esc(s)}">${esc(label)}</button>`
+                    ).join('')}
+                </div>
+                <p class="form-hint" style="margin-top:10px;">
+                    Поддомены входят в правило автоматически. Запрос уходит
+                    обычным DNS (порт 53) на выбранный сервер: если провайдер
+                    перехватывает весь DNS, это не поможет — тогда сайт нужно
+                    пустить через туннель (раздел «Маршрутизация»).
+                </p>
             </div>
 
-            <div class="card-grid">
-                <div class="card">
-                    <div class="card-title" style="display:flex; justify-content:space-between;">
-                        <span>Правила</span>
-                        <button id="dr-apply-btn" class="btn btn-primary btn-sm">Применить (dnsmasq)</button>
-                    </div>
-                    <div class="card-body" id="dns-rules">Загрузка...</div>
+            <div class="card">
+                <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
+                    <span>Правила</span>
+                    <button id="dr-apply-btn" class="btn btn-ghost btn-sm"
+                            title="Записать правила в dnsmasq ещё раз">Применить заново</button>
                 </div>
-            </div>
-
-            <div class="card-grid">
-                <div class="card">
-                    <div class="card-title">Быстрые пресеты</div>
-                    <div class="card-body">
-                        <div style="display:flex; flex-wrap:wrap; gap:6px;">
-                            <button class="btn btn-ghost btn-sm" data-domain="youtube.com" data-dns="cloudflare">YouTube → Cloudflare</button>
-                            <button class="btn btn-ghost btn-sm" data-domain="google.com" data-dns="google">Google → Google DNS</button>
-                            <button class="btn btn-ghost btn-sm" data-domain="telegram.org" data-dns="cloudflare">Telegram → Cloudflare</button>
-                            <button class="btn btn-ghost btn-sm" data-domain="discord.com" data-dns="cloudflare">Discord → Cloudflare</button>
-                            <button class="btn btn-ghost btn-sm" data-domain="t.me" data-dns="cloudflare">t.me → Cloudflare</button>
-                            <button class="btn btn-ghost btn-sm" data-domain="facebook.com" data-dns="cloudflare">Facebook → Cloudflare</button>
-                            <button class="btn btn-ghost btn-sm" data-domain="instagram.com" data-dns="cloudflare">Instagram → Cloudflare</button>
-                        </div>
-                    </div>
-                </div>
+                <div id="dns-rules">Загрузка...</div>
             </div>
         `;
 
-        bindEvents();
+        bindEvents(container);
         await _refresh();
     }
 
     function destroy() {}
 
-    function bindEvents() {
+    function bindEvents(container) {
         document.getElementById("dr-add-rule-btn")?.addEventListener("click", addRule);
-        document.getElementById("dr-apply-btn")?.addEventListener("click", applyRules);
-
-        document.querySelectorAll("[data-domain][data-dns]").forEach(btn => {
-            btn.addEventListener("click", () => {
-                addPreset(btn.dataset.domain, btn.dataset.dns);
-            });
+        document.getElementById("dr-apply-btn")?.addEventListener("click", () => applyRules(true));
+        document.getElementById("dns-domain")?.addEventListener("keydown", e => {
+            if (e.key === 'Enter') addRule();
         });
 
-        document.getElementById("dns-rules")?.addEventListener("click", e => {
-            const btn = e.target.closest("[data-domain]");
-            if (btn) removeRule(btn.dataset.domain);
+        container.addEventListener("click", e => {
+            const preset = e.target.closest("[data-preset-domain]");
+            if (preset) { addPreset(preset.dataset.presetDomain, preset.dataset.dns); return; }
+            const del = e.target.closest("[data-remove-domain]");
+            if (del) removeRule(del.dataset.removeDomain);
         });
     }
 
@@ -108,28 +105,32 @@ const DnsRoutingPage = (() => {
         }
     }
 
+    function serverLabel(id) {
+        const s = _servers.find(x => x.id === id);
+        if (s) return `${s.name} (${s.ip})`;
+        return id;
+    }
+
     function _renderRules() {
         const el = document.getElementById("dns-rules");
         if (!el) return;
 
+        const warn = _lastError
+            ? `<div class="form-hint" style="color:var(--warning); margin-bottom:8px;">${esc(_lastError)}</div>`
+            : '';
         if (!_rules.length) {
-            el.innerHTML = `<p class="text-muted">Нет правил. Добавьте домен выше или используйте пресеты.</p>`;
+            el.innerHTML = warn + `<p class="text-muted">Правил нет. Добавьте домен выше.</p>`;
             return;
         }
 
-        let html = '<table class="table"><thead><tr>';
-        html += '<th>Домен</th><th>DNS</th><th>Описание</th><th></th>';
-        html += '</tr></thead><tbody>';
-        for (const r of _rules) {
-            html += `<tr>
-                <td><code>${esc(r.domain)}</code></td>
-                <td>${esc(r.dns)}</td>
-                <td class="text-muted">${esc(r.description || "")}</td>
-                <td><button class="btn btn-danger btn-sm" data-domain="${esc(r.domain)}">Удалить</button></td>
-            </tr>`;
-        }
-        html += '</tbody></table>';
-        el.innerHTML = html;
+        el.innerHTML = warn + `<div class="dr-list">${_rules.map(r => `
+            <div class="dr-row">
+                <code class="dr-domain">${esc(r.domain)}</code>
+                <span class="dr-arrow">→</span>
+                <span class="dr-server">${esc(serverLabel(r.dns))}</span>
+                <button class="btn btn-ghost btn-sm dr-del" title="Удалить правило"
+                        data-remove-domain="${esc(r.domain)}">✕</button>
+            </div>`).join('')}</div>`;
     }
 
     function _renderServers() {
@@ -140,21 +141,28 @@ const DnsRoutingPage = (() => {
         ).join('');
     }
 
+    async function _post(domain, dns, description) {
+        const res = await API.post("/api/dns-routing/rules",
+                                   { domain, dns, description: description || '' });
+        if (!res.ok) { Toast.error(res.error || "Ошибка"); return false; }
+        await applyRules(false);
+        await _refresh();
+        return true;
+    }
+
     async function addRule() {
-        const domain = document.getElementById("dns-domain")?.value.trim();
+        const input = document.getElementById("dns-domain");
+        const domain = (input?.value || '').trim().toLowerCase()
+            .replace(/^https?:\/\//, '').split('/')[0];
         const dns = document.getElementById("dns-server")?.value;
         if (!domain || !dns) {
             Toast.error("Укажите домен и DNS-сервер");
             return;
         }
         try {
-            const res = await API.post("/api/dns-routing/rules", { domain, dns });
-            if (res.ok) {
-                Toast.success("Правило добавлено");
-                document.getElementById("dns-domain").value = "";
-                await _refresh();
-            } else {
-                Toast.error(res.error || "Ошибка");
+            if (await _post(domain, dns)) {
+                Toast.success(domain + " → " + serverLabel(dns));
+                if (input) input.value = "";
             }
         } catch (e) {
             Toast.error("Ошибка: " + e.message);
@@ -163,14 +171,8 @@ const DnsRoutingPage = (() => {
 
     async function addPreset(domain, dns) {
         try {
-            const res = await API.post("/api/dns-routing/rules", {
-                domain, dns, description: "Быстрый пресет"
-            });
-            if (res.ok) {
-                Toast.success(domain + " → " + dns);
-                await _refresh();
-            } else {
-                Toast.error(res.error || "Ошибка");
+            if (await _post(domain, dns, "Быстрый пресет")) {
+                Toast.success(domain + " → " + serverLabel(dns));
             }
         } catch (e) {
             Toast.error("Ошибка: " + e.message);
@@ -181,6 +183,7 @@ const DnsRoutingPage = (() => {
         try {
             const res = await API.delete("/api/dns-routing/rules/" + encodeURIComponent(domain));
             if (res.ok) {
+                await applyRules(false);
                 Toast.success("Правило удалено");
                 await _refresh();
             } else {
@@ -191,37 +194,35 @@ const DnsRoutingPage = (() => {
         }
     }
 
-    async function applyRules() {
+    /**
+     * Записать правила в dnsmasq. `loud` — нажата кнопка (показать итог);
+     * после добавления/удаления сообщаем только о проблеме.
+     */
+    async function applyRules(loud) {
         try {
             const res = await API.post("/api/dns-routing/apply");
             if (res.ok) {
-                Toast.success("Применено " + (res.applied || 0) + " правил → " + (res.file || "dnsmasq"));
-            } else if (res.dnsmasq_found === false) {
-                // Отдельная ветка: правила записаны, но включить их некому.
-                // Сообщение длинное, поэтому показываем его и в карточке —
-                // toast пропадёт, а причина должна остаться на виду.
-                Toast.error("dnsmasq не найден — правила не применены");
-                const box = document.getElementById("dns-rules");
-                if (box) {
-                    const warn = document.createElement("div");
-                    warn.className = "form-hint";
-                    warn.style.color = "var(--warning)";
-                    warn.style.marginTop = "8px";
-                    warn.textContent = res.error || "";
-                    box.appendChild(warn);
-                }
+                _lastError = '';
+                if (loud) Toast.success("Применено правил: " + (res.applied || 0));
             } else {
-                Toast.error(res.error || "Ошибка");
+                // Правило сохранено, но включить его некому (нет dnsmasq и
+                // т.п.) — причина должна остаться на виду, а не в тосте.
+                _lastError = res.error || "Правила сохранены, но не применены";
+                Toast.warning(res.dnsmasq_found === false
+                    ? "dnsmasq не найден — правила сохранены, но не действуют"
+                    : _lastError);
             }
         } catch (e) {
+            _lastError = e.message;
             Toast.error("Ошибка: " + e.message);
         }
+        _renderRules();
     }
 
     function esc(s) {
         const d = document.createElement("div");
-        d.textContent = s;
-        return d.innerHTML;
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML.replace(/"/g, '&quot;');
     }
 
     return { render, destroy, addRule, addPreset, removeRule, applyRules };

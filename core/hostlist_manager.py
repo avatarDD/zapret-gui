@@ -256,20 +256,30 @@ def _is_ipset_name(name):
     """True, если имя принадлежит namespace'у IP-списков."""
     return isinstance(name, str) and bool(IPSET_NAME_RE.match(name))
 
-# Regex для валидации домена
-# Допускает: example.com, sub.example.com, *.example.com
+# Regex для валидации домена (после нормализации: нижний регистр, IDN уже
+# в punycode). Допускает example.com, sub.example.com и punycode-зоны
+# вроде «.xn--p1ai» (.рф): раньше TLD обязан был состоять из одних букв, и
+# при сохранении списка из GUI выпадали даже дефолтные исключения .рф.
+# Маска «*.» сюда не входит: nfqws2 не знает wildcard'ов и сравнивал бы
+# строку «*.example.com» буквально — запись молча никогда не срабатывала.
+# Поддомены hostlist nfqws2 и так покрывает сам (nfq2/hostlist.c).
 DOMAIN_RE = re.compile(
-    r'^(?:\*\.)?'
-    r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*'
-    r'[a-zA-Z]{2,63}$'
+    r'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*'
+    r'(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$'
 )
+
+# Предел скачивания при импорте по URL: список уезжает в память роутера
+# целиком (python3-light, десятки мегабайт RAM).
+MAX_IMPORT_BYTES = 8 * 1024 * 1024
 
 
 class HostlistManager:
     """Управление файлами списков доменов."""
 
     def __init__(self):
-        self._lock = threading.Lock()
+        # RLock: add/remove держат замок на всё «прочитать → изменить →
+        # записать», а save_hostlist внутри берёт его ещё раз.
+        self._lock = threading.RLock()
 
     @property
     def lists_path(self):
@@ -404,9 +414,15 @@ class HostlistManager:
                 seen.add(d)
 
         try:
+            # Атомарно: nfqws2 сам перечитывает хостлист по смене mtime
+            # (nfq2/hostlist.c, HostlistsReloadCheck) и мог попасть на
+            # полузаписанный файл, а обрыв питания посреди записи оставлял
+            # пустой список. 0644 — файл читает nfqws2 уже от --user=nobody.
+            from core.safe_io import atomic_write_text
             with self._lock:
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write("\n".join(clean) + "\n" if clean else "")
+                atomic_write_text(filepath,
+                                  "\n".join(clean) + "\n" if clean else "",
+                                  mode=0o644)
 
             log.info(f"Сохранён {name}.txt ({len(clean)} доменов)", source="hostlists")
 
@@ -419,6 +435,17 @@ class HostlistManager:
             except Exception as e:
                 log.debug(f"SIGHUP после записи {name}.txt не удался: {e}",
                           source="hostlists")
+
+            # Маршруты единого слоя, которые берут домены из этого списка
+            # (`hl:<имя>`), иначе продолжали бы жить прежним содержимым до
+            # ручного «Переприменить». Хостлисты, которые пишет сам единый
+            # слой (unified_*), не трогаем — это его же результат.
+            if not name.startswith("unified"):
+                try:
+                    from core.unified.manager import notify_list_changed
+                    notify_list_changed("hl:%s" % name)
+                except Exception:
+                    pass
 
             return True
         except Exception as e:
@@ -542,19 +569,24 @@ class HostlistManager:
         if not self._validate_name(name):
             return 0
 
-        current = self.get_hostlist(name)
-        current_set = set(d.lower() for d in current)
+        # Весь цикл «прочитать → дополнить → записать» под замком: два
+        # одновременных добавления (GUI + детектор/MCP) иначе теряли
+        # домены одного из них.
+        with self._lock:
+            current = self.get_hostlist(name)
+            current_set = set(d.lower() for d in current)
 
-        added = 0
-        for d in domains:
-            normalized = self.normalize_domain(d)
-            if normalized and normalized not in current_set:
-                current.append(normalized)
-                current_set.add(normalized)
-                added += 1
+            added = 0
+            for d in domains:
+                normalized = self.normalize_domain(d)
+                if normalized and normalized not in current_set:
+                    current.append(normalized)
+                    current_set.add(normalized)
+                    added += 1
 
+            if added > 0:
+                self.save_hostlist(name, current)
         if added > 0:
-            self.save_hostlist(name, current)
             log.info(f"Добавлено {added} доменов в {name}.txt", source="hostlists")
 
         return added
@@ -573,32 +605,58 @@ class HostlistManager:
         if not self._validate_name(name):
             return 0
 
-        current = self.get_hostlist(name)
-        remove_set = set(d.strip().lower() for d in domains if d.strip())
+        # Удаляем и по записи как есть, и по нормализованной форме: в GUI
+        # могут вставить «https://www.example.com/», а в файле лежит
+        # «example.com».
+        remove_set = set()
+        for d in domains:
+            if not isinstance(d, str) or not d.strip():
+                continue
+            remove_set.add(d.strip().lower())
+            normalized = self.normalize_domain(d)
+            if normalized:
+                remove_set.add(normalized)
 
-        new_list = [d for d in current if d.lower() not in remove_set]
-        removed = len(current) - len(new_list)
+        with self._lock:
+            current = self.get_hostlist(name)
+            new_list = [d for d in current if d.lower() not in remove_set]
+            removed = len(current) - len(new_list)
 
+            if removed > 0:
+                self.save_hostlist(name, new_list)
         if removed > 0:
-            self.save_hostlist(name, new_list)
             log.info(f"Удалено {removed} доменов из {name}.txt", source="hostlists")
 
         return removed
 
     def normalize_domain(self, text):
         """
-        Нормализация домена: убрать протокол, www, путь, порт.
+        Нормализация записи хостлиста: убрать протокол, www, путь, порт.
+
+        Понимает то, что умеет сам nfqws2 (nfq2/hostlist.c), и то, что
+        обычно вставляют руками:
+          - «^example.com» — строгое совпадение без поддоменов, префикс
+            сохраняется (www при этом не срезается: запись точная);
+          - «*.example.com» и «.example.com» → «example.com»: wildcard'ов
+            nfqws2 не знает, а поддомены покрывает сам;
+          - кириллица (IDN) → punycode: nfqws2 сравнивает с SNI/Host, где
+            имя всегда в punycode;
+          - IPv4-адрес — оставляется как есть (Host: 1.2.3.4 у HTTP).
 
         Args:
             text: Строка (может быть URL или домен)
 
         Returns:
-            str|None: Нормализованный домен или None если невалидный
+            str|None: Нормализованная запись или None если невалидная
         """
         if not text or not isinstance(text, str):
             return None
 
         text = text.strip().lower()
+
+        strict = text.startswith("^")
+        if strict:
+            text = text[1:].strip()
 
         # Убираем протокол
         for prefix in ("https://", "http://", "//"):
@@ -614,19 +672,36 @@ class HostlistManager:
         if ":" in text and not text.startswith("["):
             text = text.rsplit(":", 1)[0]
 
-        # Убираем www.
-        if text.startswith("www."):
-            text = text[4:]
+        # Маска и ведущая точка — то же, что голый домен
+        if text.startswith("*."):
+            text = text[2:]
+        text = text.strip(".")
 
-        # Убираем завершающую точку
-        text = text.rstrip(".")
+        # Убираем www. (кроме строгой записи — там имя точное)
+        if not strict and text.startswith("www."):
+            text = text[4:]
 
         if not text:
             return None
 
+        prefix = "^" if strict else ""
+
+        try:
+            import ipaddress
+            if ipaddress.ip_address(text).version == 4:
+                return prefix + text
+        except ValueError:
+            pass
+
+        if not text.isascii():
+            try:
+                text = text.encode("idna").decode("ascii")
+            except UnicodeError:
+                return None
+
         # Валидация
         if DOMAIN_RE.match(text):
-            return text
+            return prefix + text
 
         return None
 
@@ -708,6 +783,14 @@ class HostlistManager:
         if not self._validate_name(name):
             return -1
 
+        # Только http(s): urllib понимает и file://, а это чтение
+        # произвольных файлов роутера из запроса к API.
+        if not isinstance(url, str) or \
+                not url.lower().startswith(("http://", "https://")):
+            log.error(f"Импорт: поддерживаются только http(s)-ссылки: {url}",
+                      source="hostlists")
+            return -1
+
         log.info(f"Импорт из URL: {url} → {name}.txt", source="hostlists")
 
         try:
@@ -721,7 +804,12 @@ class HostlistManager:
 
             req = urllib.request.Request(url, headers={"User-Agent": "zapret-gui/1.0"})
             with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
-                text = resp.read().decode("utf-8", errors="ignore")
+                raw = resp.read(MAX_IMPORT_BYTES + 1)
+            if len(raw) > MAX_IMPORT_BYTES:
+                log.error(f"Импорт: файл больше {MAX_IMPORT_BYTES // 1048576} МБ",
+                          source="hostlists")
+                return -1
+            text = raw.decode("utf-8", errors="ignore")
 
             return self.import_from_text(name, text)
 

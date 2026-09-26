@@ -322,16 +322,90 @@ class TestDetectorUsesSharedProbe(unittest.TestCase):
         cfg.get.side_effect = lambda *a, **kw: (
             True if a[1] == "auto_add_enabled" else "my-list")
         with mock.patch("core.config_manager.get_config_manager", return_value=cfg), \
-             mock.patch.object(named_lists, "get", return_value={"domains": []}), \
-             mock.patch.object(named_lists, "update_fields") as upd:
+             mock.patch.object(named_lists, "add_entries",
+                               return_value={"ok": True, "added": 1}) as add:
             # Способ обхода неясен — в список не добавляем.
             self.det._maybe_auto_add(
                 "x.com", probe.ProbeResult(domain="x.com", code="tls_garbage"))
-            upd.assert_not_called()
+            add.assert_not_called()
 
             self.det._maybe_auto_add(
                 "y.com", probe.ProbeResult(domain="y.com", code="tls_rst"))
-            upd.assert_called_once_with("my-list", {"domains": ["y.com"]})
+            add.assert_called_once_with("my-list", ["y.com"])
+
+    def _auto_add_cfg(self):
+        cfg = mock.MagicMock()
+        cfg.get.side_effect = lambda *a, **kw: (
+            True if a[1] == "auto_add_enabled" else "my-list")
+        return cfg
+
+    def test_auto_add_skips_lan_names(self):
+        # nas.lan → 192.168.1.10, 443 закрыт → «TCP отклонён» → «туннель»:
+        # это не блокировка, в список обхода такое не попадает.
+        from core import named_lists
+        from core import block_detector as bd
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=self._auto_add_cfg()), \
+             mock.patch.object(named_lists, "add_entries") as add:
+            self.det._maybe_auto_add("nas.example.org", probe.ProbeResult(
+                domain="nas.example.org", code="tcp_refused",
+                resolved_ips=["192.168.1.10"]))
+            add.assert_not_called()
+        self.assertFalse(bd.is_probe_candidate("nas.lan"))
+        self.assertFalse(bd.is_probe_candidate("1.0.168.192.in-addr.arpa"))
+        self.assertFalse(bd.is_probe_candidate("router"))
+        self.assertTrue(bd.is_probe_candidate("youtube.com"))
+
+    def test_auto_add_dns_block_needs_doh_confirmation(self):
+        # NXDOMAIN/0.0.0.0 — так же отвечают фильтры рекламы и опечатки.
+        from core import named_lists
+        from core import block_detector as bd
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=self._auto_add_cfg()), \
+             mock.patch.object(named_lists, "add_entries",
+                               return_value={"ok": True, "added": 1}) as add:
+            with mock.patch.object(bd, "doh_confirms_exists",
+                                   return_value=False):
+                self.det._maybe_auto_add("ads.example.com", probe.ProbeResult(
+                    domain="ads.example.com", code="dns_hijack",
+                    resolved_ips=["0.0.0.0"]))
+            add.assert_not_called()
+            with mock.patch.object(bd, "doh_confirms_exists",
+                                   return_value=True):
+                self.det._maybe_auto_add("site.com", probe.ProbeResult(
+                    domain="site.com", code="dns_block"))
+            add.assert_called_once_with("my-list", ["site.com"])
+
+    def test_whitelist_covers_subdomains(self):
+        self.det._whitelist = {"google.com"}
+        self.assertTrue(self.det._whitelisted("www.google.com"))
+        self.assertTrue(self.det._whitelisted("google.com"))
+        self.assertFalse(self.det._whitelisted("notgoogle.com"))
+
+    def test_last_unique_keeps_order(self):
+        from core import block_detector as bd
+        self.assertEqual(bd._last_unique(["a", "b", "a", "c", "d"], 3),
+                         ["a", "c", "d"])
+
+    def test_manual_probe_hard_limit_does_not_wait(self):
+        # Раньше `with ThreadPoolExecutor` ждал конца пробы на выходе,
+        # и предел в 9 с ничего не ограничивал.
+        import threading
+        import time as _t
+        release = threading.Event()
+
+        def slow(domain, timeout):
+            release.wait(5)
+            return probe.ProbeResult(domain=domain, code="ok")
+
+        with mock.patch.object(self.det, "_probe_full", side_effect=slow), \
+             mock.patch.object(type(self.det), "MANUAL_PROBE_HARD_LIMIT", 0.2):
+            t0 = _t.monotonic()
+            out = self.det.probe_now("x.com")
+            elapsed = _t.monotonic() - t0
+        release.set()
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual(out["block_code"], "tcp_timeout")
 
     def test_rate_limit_has_its_own_code(self):
         # Раньше служебный отказ выдавался кодом throttled и выглядел как

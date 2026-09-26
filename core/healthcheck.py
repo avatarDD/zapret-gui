@@ -93,9 +93,14 @@ class HealthcheckDaemon:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return True
-            self._stop_evt.clear()
+            # Своё событие на каждый поток. stop() ждёт поток лишь 2 с, а
+            # прогон длится дольше; общее событие, сброшенное здесь, будило
+            # старый поток «продолжать» — и после reload() из GUI работали
+            # два демона, каждый со своими сбросами стратегий.
+            self._stop_evt = threading.Event()
             self._thread = threading.Thread(
-                target=self._loop, name="HealthcheckDaemon", daemon=True)
+                target=self._loop, args=(self._stop_evt,),
+                name="HealthcheckDaemon", daemon=True)
             self._thread.start()
             self._started_at = time.time()
         log.success("Healthcheck-демон запущен", source="healthcheck")
@@ -175,6 +180,9 @@ class HealthcheckDaemon:
         /status, показывая спиннер.
         """
         if blocking:
+            with self._lock:
+                if self._checking:
+                    return {"started": False, "busy": True}
             return self._run_guarded()
 
         with self._lock:
@@ -199,34 +207,49 @@ class HealthcheckDaemon:
 
     # ──────────────────────── Internal ────────────────────────
 
-    def _loop(self):
+    def _loop(self, stop_evt=None):
         """Главный цикл демона."""
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
+        stop_evt = stop_evt or self._stop_evt
 
         # Начальная задержка перед первым тиком — чтобы nfqws2 успел
         # подняться и применить стратегию. Без неё демон может «провалить»
         # первый тик ещё до того, как обход заработает, и сбросить state.tsv
         # на пустом месте.
-        if self._stop_evt.wait(30):
+        if stop_evt.wait(30):
             return
 
-        try:
-            self._tick()
-        except Exception as e:
-            log.error("Healthcheck tick: %s" % e, source="healthcheck")
+        self._tick_exclusive()
 
-        while not self._stop_evt.is_set():
+        while not stop_evt.is_set():
             interval = max(60, int(cfg.get("healthcheck", "interval_min",
                                            default=5)) * 60)
             self._next_check_at = time.time() + interval
             # wait() даёт реактивный stop без sleep-цикла.
-            if self._stop_evt.wait(interval):
+            if stop_evt.wait(interval):
                 break
-            try:
-                self._tick()
-            except Exception as e:
-                log.error("Healthcheck tick: %s" % e, source="healthcheck")
+            self._tick_exclusive()
+
+    def _tick_exclusive(self):
+        """Плановый прогон, если сейчас не идёт ручной («Проверить сейчас»).
+
+        Раньше цикл звал _tick() мимо флага _checking: плановый и ручной
+        прогоны шли параллельно, одновременно правили счётчики провалов и
+        могли дважды сбросить стратегии одних и тех же хостов.
+        """
+        with self._lock:
+            if self._checking:
+                return None
+            self._checking = True
+        try:
+            return self._tick()
+        except Exception as e:
+            log.error("Healthcheck tick: %s" % e, source="healthcheck")
+            return None
+        finally:
+            with self._lock:
+                self._checking = False
 
     @staticmethod
     def _build_targets(cfg):

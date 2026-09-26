@@ -38,7 +38,10 @@ const HostlistsPage = (() => {
                         </svg>
                         Списки доменов${typeof Help !== 'undefined' ? Help.button('domains') : ''}
                     </h1>
-                    <p class="page-description">Управление hostlist-файлами для nfqws2</p>
+                    <p class="page-description">
+                        Сайты, к которым nfqws2 применяет обход DPI (hostlist'ы).
+                        «Исключения» — сайты, которые обход не трогает никогда.
+                    </p>
                 </div>
                 <button class="btn btn-primary" onclick="HostlistsPage.showCreateModal()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -48,10 +51,6 @@ const HostlistsPage = (() => {
                 </button>
             </div>
 
-            <!-- Статистика -->
-            <div class="status-grid" id="hl-stats-grid">
-                <div class="status-card"><div class="status-card-label">Загрузка...</div></div>
-            </div>
 
             <!-- Табы -->
             <div class="card" style="padding: 0;">
@@ -150,6 +149,12 @@ const HostlistsPage = (() => {
                     <textarea class="lists-editor" id="hl-editor"
                               placeholder="Один домен на строку...&#10;example.com&#10;sub.example.com"
                               spellcheck="false"></textarea>
+                    <div class="lists-editor-hint">
+                        Один домен в строке. Поддомены учитываются сами:
+                        <code>youtube.com</code> покрывает и <code>www.youtube.com</code>.
+                        <code>^example.com</code> — только сам домен, без поддоменов.
+                        Кириллица при сохранении переводится в punycode.
+                    </div>
 
                     <!-- Добавление доменов -->
                     <div class="lists-add-section">
@@ -467,11 +472,19 @@ const HostlistsPage = (() => {
         applyFileFilter();
     }
 
+    // Встроенные файлы называем по смыслу: «other.txt» пользователю
+    // ничего не говорит. Имя файла остаётся в подсказке и описании.
+    const BUILTIN_LABELS = {
+        other: 'Основной список',
+        other2: 'Мои домены',
+        netrogat: 'Исключения',
+    };
+
     function tabsFromFiles(files) {
         return files.map(f => ({
             name: f.name,
-            label: f.filename || (f.name + '.txt'),
-            desc: f.description || '',
+            label: BUILTIN_LABELS[f.name] || f.name,
+            desc: (f.description || '') + ' — ' + (f.filename || (f.name + '.txt')),
             is_builtin: !!f.is_builtin,
         }));
     }

@@ -124,7 +124,7 @@ class Destination:
                 if isinstance(lid, str) and lid.startswith("hl:"):
                     from core.hostlist_manager import get_hostlist_manager
                     doms = get_hostlist_manager().get_hostlist(lid[3:]) or []
-                    domains += [str(d) for d in doms]
+                    domains += _hostlist_domains(doms)
                     continue
                 # `ipl:<имя>` — IP-список zapret2 (ipset_manager,
                 # ipset-*.txt): готовые CIDR-подсети сервисов
@@ -356,6 +356,27 @@ def _clean_cidrs(entries) -> list:
         except ValueError:
             continue
         out.append(s)
+    return out
+
+
+def _hostlist_domains(entries) -> list:
+    """Записи nfqws2-хостлиста → домены для маршрутизации.
+
+    Синтаксис хостлиста шире доменного: «^example.com» (строгое
+    совпадение в nfqws2), «*.example.com», хвост после пробела. Как
+    есть такие строки уезжали в dnsmasq (`ipset=/^example.com/…`) и
+    не совпадали ни с одним запросом. Маршрутизация по домену и так
+    покрывает поддомены — берём голое имя.
+    """
+    out = []
+    for e in entries or []:
+        s = str(e or "").strip().split()[0] if str(e or "").strip() else ""
+        s = s.lstrip("^").lower()
+        if s.startswith("*."):
+            s = s[2:]
+        s = s.strip(".")
+        if s:
+            out.append(s)
     return out
 
 

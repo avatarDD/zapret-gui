@@ -32,7 +32,11 @@ const IPSetsPage = (() => {
                         </svg>
                         IP-списки${typeof Help !== 'undefined' ? Help.button('ipsets') : ''}
                     </h1>
-                    <p class="page-description">Управление ipset-файлами для nfqws2</p>
+                    <p class="page-description">
+                        IP-адреса и подсети для nfqws2 (ipset'ы): обход DPI по
+                        адресу, а не по имени сайта. Их же можно выбрать
+                        назначением маршрута.
+                    </p>
                 </div>
                 <button class="btn btn-primary" onclick="IPSetsPage.showCreateModal()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
@@ -40,11 +44,6 @@ const IPSetsPage = (() => {
                     </svg>
                     Создать список
                 </button>
-            </div>
-
-            <!-- Статистика -->
-            <div class="status-grid" id="ip-stats-grid">
-                <div class="status-card"><div class="status-card-label">Загрузка...</div></div>
             </div>
 
             <!-- Табы -->
@@ -137,6 +136,12 @@ const IPSetsPage = (() => {
                     <textarea class="lists-editor" id="ip-editor"
                               placeholder="Один IP или подсеть на строку...&#10;1.2.3.4&#10;10.0.0.0/8&#10;2001:db8::/32"
                               spellcheck="false"></textarea>
+                    <div class="lists-editor-hint">
+                        Один адрес или подсеть в строке: <code>1.2.3.4</code>,
+                        <code>10.0.0.0/8</code>, <code>2001:db8::/32</code>.
+                        При сохранении записи приводятся к единому виду, а то,
+                        что nfqws2 не поймёт, отбрасывается.
+                    </div>
 
                     <!-- Добавление записей -->
                     <div class="lists-add-section">
@@ -184,7 +189,10 @@ const IPSetsPage = (() => {
                             <button class="btn-chip" onclick="IPSetsPage.setASN('32934')">Facebook (32934)</button>
                             <button class="btn-chip" onclick="IPSetsPage.setASN('14618')">Amazon (14618)</button>
                             <button class="btn-chip" onclick="IPSetsPage.setASN('8075')">Microsoft (8075)</button>
-                            <button class="btn-chip" onclick="IPSetsPage.setASN('36492')">Google (36492)</button>
+                            <button class="btn-chip" onclick="IPSetsPage.setASN('24940')">Hetzner (24940)</button>
+                            <button class="btn-chip" onclick="IPSetsPage.setASN('16276')">OVH (16276)</button>
+                            <button class="btn-chip" onclick="IPSetsPage.setASN('14061')">DigitalOcean (14061)</button>
+                            <button class="btn-chip" onclick="IPSetsPage.setASN('63949')">Linode (63949)</button>
                         </div>
                     </div>
                 </div>

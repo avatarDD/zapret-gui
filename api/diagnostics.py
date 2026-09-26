@@ -289,6 +289,10 @@ def _validate_host(host):
     # Допускаем: буквы, цифры, точки, дефисы, двоеточия (IPv6)
     if not host or len(host) > 253:
         return False
+    # Ведущий «-» — это опция для ping/nslookup/traceroute, а не хост:
+    # «-f», «-s65000» уходили в argv утилиты как её собственные ключи.
+    if host.startswith("-"):
+        return False
     if re.match(r'^[a-zA-Z0-9.:_-]+$', host):
         return True
     return False

@@ -356,3 +356,49 @@ def test_quic_handshake(
         raw_data={"family": family_label,
                   "connected_ip": str(target_addr[0])},
     )
+
+
+def test_quic_dpi(
+    host: str,
+    port: int = 443,
+    timeout: float = QUIC_TIMEOUT,
+    retries: int = QUIC_RETRIES,
+) -> SingleTestResult:
+    """QUIC-проба для blockcheck: как видит DPI + контроль без имени сайта.
+
+    Раньше фаза QUIC blockcheck'а слала только Version Negotiation-проб
+    (:func:`test_quic`). В нём нет SNI, и DPI, который режет QUIC по
+    имени сайта (так режут YouTube), его пропускает: отчёт писал «QUIC
+    доступен», хотя видео по HTTP/3 не шло. Теперь сначала — настоящий
+    Initial с SNI (:func:`test_quic_handshake`). Если на него тишина,
+    контрольный VN-проб без SNI отличает два случая:
+
+      * без имени сервер отвечает → QUIC режут ПО ИМЕНИ сайта
+        (``QUIC_SNI_BLOCK``, лечится обходом DPI);
+      * молчит и без имени → UDP/443 к адресу не проходит вовсе
+        (или сервер не держит QUIC) — прежний ``TIMEOUT``.
+    """
+    res = test_quic_handshake(host, port=port, timeout=timeout,
+                              retries=retries)
+    if res.status != TestStatus.TIMEOUT.value:
+        return res
+    control = test_quic(host, port=port, timeout=timeout, retries=retries)
+    raw = dict(res.raw_data or {})
+    raw["control_no_sni"] = control.status
+    if control.status == TestStatus.SUCCESS.value:
+        return SingleTestResult(
+            target=res.target, test_type=TestType.QUIC.value,
+            status=TestStatus.TIMEOUT.value, error="QUIC_SNI_BLOCK",
+            latency_ms=res.latency_ms,
+            details="QUIC режется по имени сайта: Initial с SNI без "
+                    "ответа, а пакет без имени сервер получает",
+            raw_data=raw,
+        )
+    return SingleTestResult(
+        target=res.target, test_type=TestType.QUIC.value,
+        status=res.status, error=res.error or "TIMEOUT",
+        latency_ms=res.latency_ms,
+        details="UDP/443 не проходит (нет ответа ни на Initial с SNI, "
+                "ни на пакет без имени)",
+        raw_data=raw,
+    )

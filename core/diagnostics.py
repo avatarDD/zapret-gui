@@ -112,6 +112,10 @@ def ping_host(host, count=3, timeout=3):
         "raw_output": "",
     }
 
+    if str(host).startswith("-"):
+        result["raw_output"] = "недопустимое имя хоста"
+        return result
+
     ping_bin = _find_binary(["ping"])
     if not ping_bin:
         result["raw_output"] = "ping не найден"
@@ -204,6 +208,12 @@ def traceroute_host(host, max_hops=20, port=443, use_tcp=True, timeout=45):
         "error": None,
     }
 
+    # Хост идёт последним аргументом traceroute/tracepath: с ведущим «-»
+    # он стал бы их опцией (вызывают и REST, и MCP).
+    if str(host).startswith("-"):
+        result["error"] = "недопустимое имя хоста"
+        return result
+
     # Резолвим целевой IP (для определения, дошли ли мы).
     try:
         result["target_ip"] = socket.gethostbyname(host)
@@ -265,7 +275,9 @@ def check_http(url, timeout=5):
     Returns:
         dict: { url, status_code, ok, response_time, error, tls_version, redirect_url }
     """
-    cache_key = f"http:{url}"
+    # timeout — часть ключа, как у ping_host: healthcheck (8 с) и
+    # диагностика (5 с) иначе делили бы один результат.
+    cache_key = f"http:{url}:{timeout}"
     cached = _cache_get(cache_key)
     if cached:
         return cached
@@ -394,6 +406,10 @@ def check_dns(domain, dns_server=None, timeout=3):
         "response_time": None,
         "error": None,
     }
+
+    if str(domain).startswith("-") or str(dns_server or "").startswith("-"):
+        result["error"] = "недопустимое имя хоста"
+        return result
 
     # Попытка 1: nslookup
     nslookup_bin = _find_binary(["nslookup"])
@@ -1654,8 +1670,18 @@ def check_strategy_prerequisites():
     #     NFQUEUE обход невозможен; без multiport/connbytes firewall.py
     #     деградирует сам (порты → отдельные --dport/--sport, без ограничителя).
     #     Проверка пробует реальные матчи/цель в одноразовой цепочке filter.
+    # Только когда firewall правда iptables. На OpenWrt 22+ (fw4) правила
+    # идут через nft, а `iptables` там — nft-шим: проба его xt-цели NFQUEUE
+    # (нужен kmod-nft-compat) давала ложный блокер «цель NFQUEUE
+    # недоступна» и заодно заводила таблицу iptables-nft рядом с fw4.
     ipt = _find_binary(["iptables"])
-    if ipt:
+    try:
+        from core.firewall import get_firewall_manager
+        fw_type = get_firewall_manager().detect_fw_type()
+    except Exception:
+        fw_type = None
+    checks["firewall_type"] = fw_type
+    if ipt and fw_type == "iptables":
         try:
             from core.firewall import FirewallManager
             fw = FirewallManager()

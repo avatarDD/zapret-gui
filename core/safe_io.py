@@ -29,10 +29,16 @@ import zipfile
 
 # ───────────────────────── атомарная запись ──────────────────────────
 
-def atomic_write_bytes(path: str, data: bytes) -> None:
+def atomic_write_bytes(path: str, data: bytes, mode=None) -> None:
     """Атомарно записать ``data`` в ``path`` (temp в той же ФС → fsync →
     ``os.replace``). Бросает ``OSError`` при неудаче — вызывающий решает,
-    логировать/глотать ли."""
+    логировать/глотать ли.
+
+    ``mode`` — права итогового файла. По умолчанию остаются права
+    ``mkstemp`` (0600): для settings.json с токенами так и нужно. Файлы,
+    которые читает не root (хостлисты и ipset'ы nfqws2 перечитывает уже
+    после сброса прав до ``--user=nobody``), пишутся с ``mode=0o644`` —
+    иначе после сохранения движок перестал бы их видеть."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     # temp обязан лежать в той же ФС, что и dest — иначе os.replace не атомарен.
@@ -42,6 +48,8 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
         tmp = None  # успех — temp уже переименован
     finally:
@@ -52,9 +60,10 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
                 pass
 
 
-def atomic_write_text(path: str, text: str, encoding: str = "utf-8") -> None:
+def atomic_write_text(path: str, text: str, encoding: str = "utf-8",
+                      mode=None) -> None:
     """Атомарно записать текст (см. :func:`atomic_write_bytes`)."""
-    atomic_write_bytes(path, text.encode(encoding))
+    atomic_write_bytes(path, text.encode(encoding), mode=mode)
 
 
 def atomic_write_json(path: str, obj, *, indent: int = 2,
