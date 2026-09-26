@@ -194,6 +194,28 @@ class TestIssueDraft(_Base):
                      "core/mcp/tools/lists.py", "<домен-1>", "<ip-1>"):
             self.assertIn(kept, md)
 
+    def test_domains_that_look_like_our_packages_are_masked(self):
+        # `api.` и `web.` — и наши пакеты, и начало настоящих доменов:
+        # раньше такие домены уезжали в отчёт открытым текстом.
+        text = ("web.whatsapp.com, api.telegram.org и tools.example.ru; "
+                "код: core.mcp.tools.lists, api.mcp_ui, "
+                "urllib.error.URLError, os.path.join")
+        md = self.draft(actual=text)["markdown"]
+        for hidden in ("web.whatsapp.com", "api.telegram.org",
+                       "tools.example.ru"):
+            self.assertNotIn(hidden, md)
+        for kept in ("core.mcp.tools.lists", "api.mcp_ui",
+                     "urllib.error.URLError", "os.path.join"):
+            self.assertIn(kept, md)
+
+    def test_repro_args_from_model_are_masked_on_disk(self):
+        self.draft(tool="blobs_list",
+                   args={"password": "hunter2xyz", "offset": 0})
+        with open(issues.path(), encoding="utf-8") as f:
+            stored = f.read()
+        self.assertNotIn("hunter2xyz", stored)
+        self.assertIn('"offset": 0', stored)
+
     def test_include_targets_keeps_them(self):
         md = self.draft(actual="rutracker.org и 8.8.8.8",
                         include_targets=True)["markdown"]

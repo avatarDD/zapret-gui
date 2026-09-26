@@ -180,7 +180,8 @@ jobs:
 
           ### Установка на роутер (Keenetic / Entware)
           \`\`\`sh
-          opkg install zapret-gui-keenetic-dev.ipk
+          opkg update
+          opkg install ./zapret-gui-keenetic-dev.ipk
           \`\`\`
           Файлы \`*-dev.ipk\` прикреплены к этому релизу ниже.
           EOF

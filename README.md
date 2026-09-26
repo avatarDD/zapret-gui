@@ -105,6 +105,7 @@ Python/Bottle-бэкенд. Работает как на роутере с ~20 �
 
 **Keenetic (Entware):**
 ```bash
+opkg update
 wget -O zapret-gui-keenetic.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-keenetic.ipk
 opkg install ./zapret-gui-keenetic.ipk
 /opt/etc/init.d/S99zapret-gui start
@@ -112,6 +113,7 @@ opkg install ./zapret-gui-keenetic.ipk
 
 **Другие роутеры с Entware (ASUS, Xiaomi, GL.iNet и т.п.):**
 ```bash
+opkg update
 wget -O zapret-gui-entware.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-entware.ipk
 opkg install ./zapret-gui-entware.ipk
 /opt/etc/init.d/S99zapret-gui start
@@ -119,6 +121,7 @@ opkg install ./zapret-gui-entware.ipk
 
 **OpenWrt 24.10 и старее — opkg:**
 ```bash
+opkg update
 wget -O zapret-gui-openwrt.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.ipk
 opkg install ./zapret-gui-openwrt.ipk
 /etc/init.d/zapret-gui enable
@@ -126,11 +129,12 @@ opkg install ./zapret-gui-openwrt.ipk
 ```
 Одной строкой (то же самое, удобно скопировать в SSH):
 ```bash
-wget -O zapret-gui-openwrt.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.ipk && opkg install ./zapret-gui-openwrt.ipk && /etc/init.d/zapret-gui enable && /etc/init.d/zapret-gui start
+opkg update && wget -O zapret-gui-openwrt.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.ipk && opkg install ./zapret-gui-openwrt.ipk && /etc/init.d/zapret-gui enable && /etc/init.d/zapret-gui start
 ```
 
 **OpenWrt 25.12+ и SNAPSHOT — apk:**
 ```bash
+apk update
 wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk
 apk add --allow-untrusted ./zapret-gui-openwrt.apk
 /etc/init.d/zapret-gui enable
@@ -138,8 +142,19 @@ apk add --allow-untrusted ./zapret-gui-openwrt.apk
 ```
 Одной строкой (то же самое, удобно скопировать в SSH):
 ```bash
-wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk && apk add --allow-untrusted ./zapret-gui-openwrt.apk && /etc/init.d/zapret-gui enable && /etc/init.d/zapret-gui start
+apk update && wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk && apk add --allow-untrusted ./zapret-gui-openwrt.apk && /etc/init.d/zapret-gui enable && /etc/init.d/zapret-gui start
 ```
+> **Сначала `opkg update` (или `apk update`).** Зависимости пакета —
+> `python3-light` и модули Python — ставятся из репозитория Entware/OpenWrt,
+> а opkg берёт их имена и версии из локального индекса. Если индекс давно
+> не обновлялся, opkg попытается скачать версию, которой в репозитории уже
+> нет, и установка оборвётся ошибкой вида
+> `Failed to download http://bin.entware.net/…/python3-base_3.11.10-1_….ipk`
+> `… HTTP/1.1 404 Not Found` / `Perhaps you need to run 'opkg update'?`.
+> Лечится ровно тем, что подсказывает opkg: `opkg update` и повторить
+> `opkg install`. Версию Python пакет не закрепляет — подойдёт та, что
+> сейчас лежит в репозитории.
+>
 > **Какой пакет ваш.** OpenWrt перешёл с opkg на apk не в 24.10, а в
 > **25.12** (5 марта 2026) — до этого apk был только в main/SNAPSHOT.
 > Релиз 24.10 остаётся на opkg: в его release notes прямо сказано
@@ -195,7 +210,7 @@ wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/main/install.sh 
 ### Вариант 3: вручную из репозитория
 ```bash
 cd /opt && git clone https://github.com/avatarDD/zapret-gui.git && cd zapret-gui
-opkg install python3-light
+opkg update && opkg install python3-light
 python3 app.py --host 0.0.0.0 --port 8080
 ```
 > Bottle ставить не нужно — он встроен (`vendor/bottle.py`) и подключается

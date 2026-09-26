@@ -209,7 +209,10 @@ def collect_context(spec, crash, *, args=None, now=None) -> dict:
                        "scope": spec.scope or "read",
                        "mutating": spec.mutating,
                        "handler": crashes.locate(spec.handler)}
-        repro_args = args if isinstance(args, dict) else _last_args(spec.name)
+        # Аргументы от модели — как в журнале: маска по ключам и подрезка
+        # уже при сохранении, а не только при рендере текста issue.
+        repro_args = (_safe_args(args) if isinstance(args, dict)
+                      else _last_args(spec.name))
         if repro_args is not None:
             ctx["repro"] = {"tool": spec.name, "args": repro_args}
     if crash:
@@ -520,8 +523,19 @@ _FILE_SUFFIXES = frozenset((
     "key", "service", "rules", "nft", "hex", "exe", "dll", "svg", "png",
 ))
 # Первая метка, по которой видно, что это путь модуля, а не домен.
+# Только пока окончание не похоже на настоящую зону: `api.` и `web.` —
+# это и наши пакеты, и `api.telegram.org` / `web.whatsapp.com`, а
+# список обходимых сайтов — ровно то, что прячем.
 _MODULE_HEADS = ("core.", "api.", "web.", "tests.", "tools.", "self.",
                  "os.", "sys.", "json.", "re.")
+# Зоны, при которых «путь модуля» всё-таки считаем доменом. Двухбуквенные
+# (все национальные) проверяются по длине, здесь — частые общие.
+_COMMON_TLDS = frozenset((
+    "com", "net", "org", "info", "biz", "edu", "gov", "int", "app", "dev",
+    "io", "xyz", "top", "site", "online", "pro", "shop", "club", "cloud",
+    "tech", "store", "live", "media", "news", "art", "link", "space",
+    "website", "world", "one", "games", "video", "social",
+))
 # Наши собственные адреса и адреса апстримов: публичные, в отчёте полезны.
 _KEEP_DOMAINS = ("github.com", "githubusercontent.com", "entware.net",
                  "sagernet.org", "metacubex.one", "amnezia.org",
@@ -562,13 +576,29 @@ class _Masker:
         return self._label("ip", value)
 
     def _domain(self, match):
-        value, tld = match.group(1), match.group(2).lower()
+        value, tld = match.group(1), match.group(2)
         low = value.lower()
-        if tld in _FILE_SUFFIXES or low.startswith(_MODULE_HEADS):
+        if tld.lower() in _FILE_SUFFIXES or _looks_like_code(low, tld):
             return value
         if any(low == d or low.endswith("." + d) for d in _KEEP_DOMAINS):
             return value
         return self._label("домен", value)
+
+
+def _looks_like_code(low: str, tld: str) -> bool:
+    """Имя из кода (``urllib.error.URLError``, ``core.mcp.tools``), а не домен.
+
+    Сомнение решается в пользу маски: лишняя метка портит строку
+    отчёта, а пропущенный домен уезжает на GitHub.
+    """
+    # CamelCase в последней метке — имя класса: зон вида `URLError` нет,
+    # а `YouTube.Com` и `YOUTUBE.COM` остаются доменами.
+    if any(c.isupper() for c in tld[1:]) and any(c.islower() for c in tld):
+        return True
+    if low.startswith(_MODULE_HEADS):
+        zone = tld.lower()
+        return not (len(zone) == 2 or zone in _COMMON_TLDS)
+    return False
 
 
 # ───────────────────────────── частности ────────────────────────────
@@ -619,6 +649,14 @@ def _recent_crash(tool: str, window: float = 3600):
         if crash.get("tool") == tool and now - (crash.get("ts") or 0) < window:
             return crash
     return None
+
+
+def _safe_args(args: dict) -> dict:
+    try:
+        from core.mcp import audit
+        return audit._safe_args(args)
+    except Exception:                           # noqa: BLE001 — граница
+        return {}
 
 
 def _last_args(tool: str):
