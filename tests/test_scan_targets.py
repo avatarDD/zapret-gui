@@ -71,5 +71,42 @@ class TestHintsMatchByLabel(unittest.TestCase):
                 self.assertEqual(detect_target(host).key, key)
 
 
+class TestProviderTargets(unittest.TestCase):
+    """Cloudflare и крупные хостинги: основные цели разблокировки."""
+
+    def test_cloudflare_profile(self):
+        for host in ("one.one.one.one", "cloudflare.com",
+                     "speed.cloudflare.com"):
+            with self.subTest(host=host):
+                self.assertEqual(detect_target(host).key, "cloudflare")
+        t = detect_target("one.one.one.one")
+        # Тело — со speed.cloudflare.com: корневая страница 1.1.1.1 мала
+        # для пробы 64 КБ.
+        self.assertIn("speed.cloudflare.com", t.get_probe_url())
+
+    def test_hosting_profile_has_no_hostlist(self):
+        t = detect_target("hel1-speed.hetzner.com")
+        self.assertEqual(t.key, "hosting")
+        # Блок по сети провайдера: стратегия для всего трафика.
+        self.assertEqual(t.all_hostlist_domains(), [])
+        for host in t.test_hosts:
+            with self.subTest(host=host):
+                url = t.get_probe_url(host)
+                self.assertTrue(url.startswith("https://%s/" % host), url)
+                self.assertNotEqual(url, "https://%s/" % host)
+
+    def test_custom_host_inside_hosting_uses_its_own_url(self):
+        t = detect_target("proof.ovh.net")
+        self.assertEqual(t.key, "hosting")
+        self.assertEqual(t.get_probe_url(),
+                         "https://proof.ovh.net/files/1Mb.dat")
+        self.assertTrue(t.no_hostlist)
+
+    def test_youtube_probe_downloads_a_body(self):
+        # generate_204 — ответ без тела: обрыв на 16-20 КБ не виден.
+        self.assertNotIn("generate_204",
+                         detect_target("youtube.com").get_probe_url())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -838,16 +838,22 @@ class StrategyScanner:
         """
         from core.catalog_loader import get_catalog_manager
 
+        from core.scan_targets import detect_target, traffic_family
+
         cm = get_catalog_manager()
         protocol = self._protocol
+        # Приёмы — под трафик цели: HTTP-приёмы для TLS-цели и голос
+        # Discord для QUIC — пустые пробы.
+        family = traffic_family(
+            self._scan_profile or detect_target(self._target), protocol)
 
         # quick/standard/full — отбираем кандидатов из каталога
         if self._mode == "quick":
-            entries = cm.get_quick_set(protocol=protocol)
+            entries = cm.get_quick_set(protocol=protocol, family=family)
         elif self._mode == "standard":
-            entries = cm.get_standard_set(protocol=protocol)
+            entries = cm.get_standard_set(protocol=protocol, family=family)
         else:  # full
-            entries = cm.get_full_set(protocol=protocol)
+            entries = cm.get_full_set(protocol=protocol, family=family)
 
         # quick может оказаться без builtin (label=recommended нет у
         # пресетов). Подставляем топ-N builtin в начало, общий размер
@@ -1610,9 +1616,7 @@ class StrategyScanner:
                 host_tls_ok_any = True
 
                 # Шаг 2: body-загрузка
-                url = (profile.get_probe_url()
-                       if host == profile.primary_host
-                       else "https://%s/" % host)
+                url = profile.get_probe_url(host)
                 # Тело — по ТОМУ ЖЕ семейству адресов, что и TLS: иначе
                 # при открытом IPv4 и заблокированном IPv6 «успех по
                 # IPv6» скачивался бы по IPv4 (http.client откатывается

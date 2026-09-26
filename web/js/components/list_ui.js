@@ -76,9 +76,13 @@ const ListUI = (() => {
 
         // ──────────────────────── state ────────────────────────
         const saved = loadState(cfg.storageKey);
+        // Сохранённый фильтр мог исчезнуть из новой версии страницы —
+        // тогда берём фильтр по умолчанию, а не «никакой».
+        const savedFilter = cfg.filters && cfg.filters.some(f => f.id === saved.filterId)
+            ? saved.filterId : null;
         const state = {
             search: saved.search || '',
-            filterId: saved.filterId
+            filterId: savedFilter
                 || (cfg.filters && cfg.filters.find(f => f.default)?.id)
                 || (cfg.filters && cfg.filters[0] && cfg.filters[0].id)
                 || null,

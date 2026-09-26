@@ -14,14 +14,23 @@ const ScanPage = (() => {
     let lastStatus = null;
 
     // Быстрый выбор цели: домен + протокол, который для неё обычно нужен.
+    // Хостинги — одна цель на всех: блокировка по сети провайдера рвёт
+    // загрузку у всех сайтов на его адресах, стратегия подбирается без
+    // привязки к доменам (профиль hosting в core/scan_targets.py).
     const QUICK_TARGETS = [
         { label: 'YouTube',   target: 'youtube.com',   protocol: 'tcp' },
         { label: 'YouTube (QUIC)', target: 'youtube.com', protocol: 'udp' },
+        { label: 'X / Twitter', target: 'x.com',       protocol: 'tcp' },
+        { label: 'Facebook',  target: 'facebook.com',  protocol: 'tcp' },
+        { label: 'Instagram', target: 'instagram.com', protocol: 'tcp' },
+        { label: 'Cloudflare 1.1.1.1', target: 'one.one.one.one', protocol: 'tcp' },
+        { label: 'Хостинги (Hetzner, OVH, DO, Linode)', target: 'hel1-speed.hetzner.com', protocol: 'tcp' },
         { label: 'Discord',   target: 'discord.com',   protocol: 'tcp' },
         { label: 'Telegram',  target: 'web.telegram.org', protocol: 'tcp' },
-        { label: 'Instagram', target: 'instagram.com', protocol: 'tcp' },
-        { label: 'X / Twitter', target: 'x.com',       protocol: 'tcp' },
     ];
+
+    // Цели, которые проверяются по сети провайдера, а не по домену.
+    const HOSTING_HINTS = ['hetzner', 'ovh', 'digitalocean', 'linode'];
 
     // Домены, для которых UDP проверяется STUN (голос), а не QUIC.
     const STUN_HINTS = ['discord'];
@@ -235,6 +244,8 @@ const ScanPage = (() => {
             text = stun
                 ? 'Проверка: STUN-запрос по UDP — так работает голосовая связь. Для голоса Discord подбирайте UDP, для самого сайта — TCP.'
                 : 'Проверка: QUIC-рукопожатие с именем сайта, как у браузера (HTTP/3). Если сайт открывается, но видео тормозит — часто дело в QUIC.';
+        } else if (HOSTING_HINTS.some(h => target.split('.').some(l => l.startsWith(h)))) {
+            text = 'Проверка: скачиваем 64 КБ со speedtest-серверов Hetzner, OVH, DigitalOcean и Linode. Блокировка хостингов обычно обрывает загрузку на 16–20 КБ у всех сайтов на их адресах — поэтому стратегия подбирается для всего трафика, без списка доменов.';
         } else {
             text = 'Проверка: скачиваем 64 КБ с сайта. Блокировки часто пропускают первые 16–20 КБ и обрывают — такая стратегия не засчитывается.';
         }

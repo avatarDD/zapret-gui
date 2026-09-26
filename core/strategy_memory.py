@@ -443,6 +443,33 @@ def lookup(targets=None, limit: int = 20, all_networks: bool = False) -> dict:
     return out
 
 
+def helped_by_strategy() -> dict:
+    """``{strategy_id: {"wins", "targets"}}`` — что помогало в этой сети.
+
+    Для списка стратегий: вместо статичной метки «recommended» (ею
+    помечена четверть каталога) — «помогала у вас». Засчитываются
+    записи текущей сети, где побед больше поражений и которые не
+    устарели. Стратегия, сохранённая подбором как ``scan_<id>``, — та же
+    находка, поэтому отдаётся и под этим id.
+    """
+    net = network_key()["id"]
+    now = time.time()
+    out: dict = {}
+    for record in load()["records"]:
+        sid = str(record.get("strategy_id") or "")
+        if not sid or record.get("network") != net:
+            continue
+        view = _view(record, now)
+        if view["stale"] or view["wins"] <= view["losses"]:
+            continue
+        for key in (sid, "scan_" + sid):
+            item = out.setdefault(key, {"wins": 0, "targets": []})
+            item["wins"] += view["wins"]
+            if view["target"] and view["target"] not in item["targets"]:
+                item["targets"].append(view["target"])
+    return out
+
+
 def targets_known(network_only: bool = True) -> list:
     """Домены, о которых вообще что-то известно."""
     net = network_key()["id"]

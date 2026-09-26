@@ -290,5 +290,55 @@ class TestTool(MemoryCase):
         self.assertEqual(answer["network"]["id"], NET["id"])
 
 
+
+class TestHelpedByStrategy(MemoryCase):
+    """«Помогала у вас» в списке стратегий — вместо метки recommended."""
+
+    def test_wins_in_this_network_count(self):
+        args = ["--filter-tcp=443", "--lua-desync=fake"]
+        self.observe("youtube.com", args, strategy_id="fake_x")
+        self.observe("x.com", args, strategy_id="fake_x")
+        helped = memory.helped_by_strategy()
+        self.assertEqual(helped["fake_x"]["wins"], 2)
+        self.assertEqual(sorted(helped["fake_x"]["targets"]),
+                         ["x.com", "youtube.com"])
+        # Стратегия, которую подбор сохранил как свою, — та же находка.
+        self.assertIn("scan_fake_x", helped)
+
+    def test_losing_and_foreign_records_do_not_count(self):
+        args = ["--lua-desync=split"]
+        self.observe("youtube.com", args, ok=False, strategy_id="bad")
+        memory.remember([{"target": "x.com", "args": args, "ok": True,
+                          "strategy_id": "foreign"}],
+                        network={"id": "other-net"})
+        helped = memory.helped_by_strategy()
+        self.assertNotIn("bad", helped)
+        self.assertNotIn("foreign", helped)
+
+
+
+class TestStrategiesApiHelped(unittest.TestCase):
+    """/api/strategies отдаёт helped из памяти и снимает его, когда её нет."""
+
+    def test_helped_appears_and_disappears(self):
+        from unittest import mock
+        from tests._wsgi_client import WSGIClient, build_test_app
+        from core.strategy_builder import get_strategy_manager
+
+        client = WSGIClient(build_test_app())
+        sid = get_strategy_manager().get_strategies()[0]["id"]
+        with mock.patch.object(memory, "helped_by_strategy",
+                               return_value={sid: {"wins": 3,
+                                                   "targets": ["x.com"]}}):
+            data = client.get_json("/api/strategies")
+        row = next(s for s in data["strategies"] if s["id"] == sid)
+        self.assertEqual(row["helped"], 3)
+        self.assertEqual(row["helped_targets"], ["x.com"])
+        with mock.patch.object(memory, "helped_by_strategy", return_value={}):
+            data = client.get_json("/api/strategies")
+        row = next(s for s in data["strategies"] if s["id"] == sid)
+        self.assertNotIn("helped", row)
+
+
 if __name__ == "__main__":
     unittest.main()

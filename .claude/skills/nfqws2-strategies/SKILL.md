@@ -799,6 +799,24 @@ bol-van/zapret2. Из nfqws2-keenetic берём только **идеи пов�
 | `builtin/winws2_presets.txt`, `zapret_gui_defaults.txt` | **Полные пресеты** — содержат свои `--filter-*`/`--hostlist=`/`--blob=`/`--new`. Берутся как есть, только резолвятся пути. |
 | `basic/`, `advanced/`, `direct/` | **«Приёмы» (tricks)** — один-два `--lua-desync=`. Сканер сам оборачивает в шаблон цели (добавляет `--filter-*`, `--filter-l7`, `--payload`, `--hostlist=<tmp с доменами цели>`). См. `StrategyScanner._wrap_trick_args`. |
 
+**Отбор в наборы подбора** (`CatalogManager.get_quick/standard/full_set`
+с `family`): приёмы только семейства цели (`catalog_family` по имени
+файла: `http80_*` HTTP, `tcp_*` TLS, `udp_*` QUIC, `*voice*` голос;
+`scan_targets.traffic_family` — семейство цели), без повторов по args,
+по очереди из каждой техники (`technique_key`). Раньше quick брал первые
+30 `recommended` по алфавиту файлов — для TLS это были 30 HTTP-приёмов.
+Одноимённые `section_id` с разными args разводятся при загрузке
+(`<id>__<хеш>`). «Голый приём», применённый со страницы стратегий,
+`autowrap_bare_trick` ограничивает протоколом/семейством каталога
+(`--filter-tcp|udp=<ports>` [+ `--filter-l7`]).
+
+Профили целей: youtube (тело — превью ролика, не `generate_204`: 204 без
+тела не видит обрыв 16-20 КБ), twitter, facebook, instagram, discord,
+telegram, google, **cloudflare** (one.one.one.one, тело со
+speed.cloudflare.com), **hosting** (Hetzner/OVH/DigitalOcean/Linode —
+speedtest-файлы через `probe_urls`, `no_hostlist`: блок по сети
+провайдера, стратегия для всего трафика).
+
 Эвристика «полный пресет vs приём» — `_is_full_preset_args()` в
 `strategy_scanner.py`: наличие `--filter-*`/`--new`/`--hostlist`/`--ipset`/
 `--blob` ⇒ полный пресет.
