@@ -16,6 +16,7 @@ HTTPS/TLS тестер — низкоуровневая проверка чер�
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import socket
@@ -72,6 +73,36 @@ def _resolve_connect_addrs(
 # ---------------------------------------------------------------------------
 # Main function
 # ---------------------------------------------------------------------------
+
+# «До этого адреса нет маршрута» — ответ не сайта и не DPI, а своей
+# сети: у роутера без IPv6 так отвечает каждый AAAA-адрес сайта.
+_NO_ROUTE_ERRNOS = {
+    errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL,
+    errno.EAFNOSUPPORT,
+}
+
+
+def is_no_route_error(exc: BaseException | None) -> bool:
+    """Ошибка «нет маршрута до адреса» (а не ответ сервера/DPI)."""
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) in \
+        _NO_ROUTE_ERRNOS
+
+
+def pick_error(prev: BaseException | None,
+               new: BaseException) -> BaseException:
+    """Какую из ошибок перебора адресов показывать в вердикте.
+
+    Раньше побеждала последняя. На роутере без IPv6 сайт с AAAA-записями
+    сначала получал RST от DPI по IPv4, а затем «Network is unreachable»
+    по IPv6 — и вердикт превращался в «блок по IP, нужен туннель» вместо
+    «режет DPI, поможет обход». «Нет маршрута» уступает любой ошибке,
+    пришедшей от сети.
+    """
+    if prev is not None and is_no_route_error(new) \
+            and not is_no_route_error(prev):
+        return prev
+    return new
+
 
 def _make_context(tls_version: str | None) -> ssl.SSLContext:
     """Создать SSL-контекст с фиксацией версии TLS (или любой)."""
@@ -227,16 +258,16 @@ def test_tls(
             )
 
         except ssl.SSLError as e:
-            last_exception = e
+            last_exception = pick_error(last_exception, e)
             continue
         except socket.timeout as e:
-            last_exception = e
+            last_exception = pick_error(last_exception, e)
             continue
         except (ConnectionResetError, ConnectionRefusedError, OSError) as e:
-            last_exception = e
+            last_exception = pick_error(last_exception, e)
             continue
         except Exception as e:
-            last_exception = e
+            last_exception = pick_error(last_exception, e)
             continue
         finally:
             for s in (ssock, sock):

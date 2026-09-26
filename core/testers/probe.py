@@ -42,7 +42,6 @@ from typing import Any
 
 from core.models import DPIClassification, remediation_for
 from core.testers.config import (
-    ISP_BODY_MARKERS,
     KNOWN_BLOCK_IPS,
     TCP_BLOCK_RANGE_MAX,
     TCP_BLOCK_RANGE_MIN,
@@ -346,15 +345,14 @@ def _http_request(domain: str) -> bytes:
 
 
 def _looks_like_isp_page(body: bytes) -> str:
-    """Найти маркер провайдерской заглушки в теле ответа."""
-    try:
-        text = body.decode("utf-8", errors="ignore").lower()
-    except Exception:
-        return ""
-    for marker in ISP_BODY_MARKERS:
-        if marker.lower() in text:
-            return marker
-    return ""
+    """Найти маркер провайдерской заглушки в теле ответа.
+
+    Общие правила — isp_detector.find_isp_marker: «access denied» на
+    странице Cloudflare/Akamai — блок самого сайта, а не провайдера, и
+    детектор не должен тащить такой домен в список обхода.
+    """
+    from core.testers.isp_detector import find_isp_marker
+    return find_isp_marker(body)
 
 
 def _classify_cutoff(bytes_read: int, label: str) -> tuple[str, str]:
@@ -429,7 +427,10 @@ def probe_domain(
             connected_ip = ip
             break
         except Exception as e:      # socket.timeout — подкласс OSError
-            last_err = e
+            # «Нет маршрута» (IPv6 на роутере без IPv6) не перекрывает
+            # ответ сети по другому адресу — см. tls_tester.pick_error.
+            from core.testers.tls_tester import pick_error
+            last_err = pick_error(last_err, e)
             sock = None
 
     if sock is None:

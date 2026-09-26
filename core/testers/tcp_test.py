@@ -60,10 +60,14 @@ def _make_connection(
     return conn
 
 
-def _stream_get(url: str, timeout: int, max_bytes: int = 25_000) -> tuple[int, int, str]:
+def _stream_get(url: str, timeout: int, max_bytes: int = 25_000,
+                progress: dict | None = None) -> tuple[int, int, str]:
     """Скачать до max_bytes по GET, вернуть (bytes_received, status_code, error).
 
-    Следует до 5 редиректов.
+    Следует до 5 редиректов. ``progress["bytes"]`` обновляется по ходу
+    чтения тела: при обрыве посреди тела функция бросает исключение, и
+    без этого вызывающий не узнал бы, на каком байте оборвалось — а ради
+    этого числа (16-20 КБ) тест и существует.
     """
     redirects_left = 5
     current_url = url
@@ -104,11 +108,15 @@ def _stream_get(url: str, timeout: int, max_bytes: int = 25_000) -> tuple[int, i
 
             # Стриминг тела
             bytes_received = 0
+            if progress is not None:
+                progress["bytes"] = 0
             while bytes_received < max_bytes:
                 chunk = resp.read(1024)
                 if not chunk:
                     break
                 bytes_received += len(chunk)
+                if progress is not None:
+                    progress["bytes"] = bytes_received
 
             return bytes_received, resp.status, ""
 
@@ -199,10 +207,11 @@ def check_tcp_16_20_single(
     """Один TCP 16-20KB тест — скачать и проверить обрыв в диапазоне 16-20 КБ."""
     start = time.time()
     bytes_received = 0
+    progress = {"bytes": 0}
 
     try:
         bytes_received, status_code, err_msg = _stream_get(
-            url, timeout, max_bytes=25_000,
+            url, timeout, max_bytes=25_000, progress=progress,
         )
 
         if err_msg:
@@ -244,17 +253,28 @@ def check_tcp_16_20_single(
     except Exception as e:
         elapsed = (time.time() - start) * 1000
         error_msg = str(e).lower()
+        # Сколько тела пришло до обрыва. Раньше здесь оставался 0 (число
+        # байт возвращал только успешный _stream_get), и ветка ниже была
+        # недостижима: самый частый блок ТСПУ — обрыв или зависание на
+        # 16-20 КБ — отдавался как «ошибка теста» (TCP_ERR).
+        bytes_received = progress.get("bytes", 0)
 
-        # Обрыв соединения в диапазоне 16-20 КБ → DPI
-        if bytes_received > 0 and TCP_BLOCK_RANGE_MIN <= bytes_received <= TCP_BLOCK_RANGE_MAX:
-            if "reset" in error_msg or "aborted" in error_msg or "broken pipe" in error_msg:
-                return SingleTestResult(
-                    target=url, test_type=TestType.TCP_16_20.value,
-                    status=TestStatus.FAILED.value, error="TCP_16_20",
-                    latency_ms=round(elapsed, 2),
-                    details=f"RST at {bytes_received}B (16-20KB DPI block)",
-                    raw_data={"bytes_received": bytes_received, "error": str(e)[:80]},
-                )
+        # Обрыв (RST/EOF) или зависание (таймаут) в диапазоне 16-20 КБ →
+        # DPI. Так же трактует его body-проба (testers/body_tester.py).
+        if TCP_BLOCK_RANGE_MIN <= bytes_received <= TCP_BLOCK_RANGE_MAX and (
+                "reset" in error_msg or "aborted" in error_msg
+                or "broken pipe" in error_msg or "timed out" in error_msg
+                or "eof" in error_msg
+                or isinstance(e, (socket.timeout, ConnectionError))):
+            how = "timeout" if ("timed out" in error_msg
+                                or isinstance(e, socket.timeout)) else "RST"
+            return SingleTestResult(
+                target=url, test_type=TestType.TCP_16_20.value,
+                status=TestStatus.FAILED.value, error="TCP_16_20",
+                latency_ms=round(elapsed, 2),
+                details=f"{how} at {bytes_received}B (16-20KB DPI block)",
+                raw_data={"bytes_received": bytes_received, "error": str(e)[:80]},
+            )
 
         return SingleTestResult(
             target=url, test_type=TestType.TCP_16_20.value,

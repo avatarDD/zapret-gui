@@ -26,7 +26,43 @@ from urllib.parse import urlparse
 
 from core.log_buffer import log
 from core.models import SingleTestResult, TestStatus, TestType
-from core.testers.config import ISP_BODY_MARKERS, ISP_PAGE_TIMEOUT, ISP_REDIRECT_MARKERS
+from core.testers.config import (
+    ISP_PAGE_TIMEOUT,
+    ISP_REDIRECT_MARKERS,
+    ISP_STRONG_MARKERS,
+    ISP_WEAK_MARKERS,
+    ISP_WEAK_MAX_BODY,
+    SERVER_BLOCK_SIGNATURES,
+)
+
+
+def find_isp_marker(body) -> str:
+    """Маркер заглушки провайдера в теле ответа или ''.
+
+    Сильный маркер (РКН, 149-ФЗ, реестр) — всегда. Общая фраза («access
+    denied», «заблокирован») — только на маленькой странице без подписи
+    CDN/WAF: так выглядят заглушки провайдеров, а геоблок Akamai или
+    WAF Cloudflare с тем же «Access Denied» — это блок на стороне сайта,
+    и обход DPI там не поможет.
+    """
+    if not body:
+        return ""
+    if isinstance(body, (bytes, bytearray)):
+        text = bytes(body).decode("utf-8", errors="ignore")
+    else:
+        text = str(body)
+    low = text.lower()
+    for marker in ISP_STRONG_MARKERS:
+        if marker.lower() in low:
+            return marker
+    if len(text) > ISP_WEAK_MAX_BODY:
+        return ""
+    if any(sig in low for sig in SERVER_BLOCK_SIGNATURES):
+        return ""
+    for marker in ISP_WEAK_MARKERS:
+        if marker.lower() in low:
+            return marker
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -112,17 +148,17 @@ def check_http_injection(
         body = response.decode("utf-8", errors="ignore")
 
         # Проверяем маркеры ISP в теле ответа
-        for marker in ISP_BODY_MARKERS:
-            if marker.lower() in body.lower():
-                return SingleTestResult(
-                    target=domain,
-                    test_type=TestType.HTTP_INJECT.value,
-                    status=TestStatus.FAILED.value,
-                    error="HTTP_INJECT",
-                    latency_ms=round(elapsed, 2),
-                    details=f"HTTP injection detected (marker: {marker})",
-                    raw_data={"marker": marker, "body_len": len(body)},
-                )
+        marker = find_isp_marker(body)
+        if marker:
+            return SingleTestResult(
+                target=domain,
+                test_type=TestType.HTTP_INJECT.value,
+                status=TestStatus.FAILED.value,
+                error="HTTP_INJECT",
+                latency_ms=round(elapsed, 2),
+                details=f"HTTP injection detected (marker: {marker})",
+                raw_data={"marker": marker, "body_len": len(body)},
+            )
 
         # Проверяем редирект на ISP-заглушку
         location_match = re.search(
@@ -284,21 +320,21 @@ def detect_isp_page(
             elapsed = (time.time() - start) * 1000
 
             # Проверяем маркеры ISP в теле
-            for marker in ISP_BODY_MARKERS:
-                if marker.lower() in body.lower():
-                    return SingleTestResult(
-                        target=domain,
-                        test_type=TestType.ISP_DETECT.value,
-                        status=TestStatus.FAILED.value,
-                        error="ISP_PAGE",
-                        latency_ms=round(elapsed, 2),
-                        details=f"ISP block page detected (marker: {marker})",
-                        raw_data={
-                            "marker": marker,
-                            "status_code": resp.status,
-                            "chain": redirect_chain,
-                        },
-                    )
+            marker = find_isp_marker(body)
+            if marker:
+                return SingleTestResult(
+                    target=domain,
+                    test_type=TestType.ISP_DETECT.value,
+                    status=TestStatus.FAILED.value,
+                    error="ISP_PAGE",
+                    latency_ms=round(elapsed, 2),
+                    details=f"ISP block page detected (marker: {marker})",
+                    raw_data={
+                        "marker": marker,
+                        "status_code": resp.status,
+                        "chain": redirect_chain,
+                    },
+                )
 
             return SingleTestResult(
                 target=domain,
