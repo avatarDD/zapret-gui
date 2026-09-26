@@ -65,22 +65,22 @@ const RoutingUnifiedPage = (() => {
             ? `Отфильтрованный вид раздела
                <a href="#routing" style="text-decoration:underline;">Маршрутизация</a>
                (Через: AWG). Это тот же единый движок — правила здесь и там одни.`
-            : `Единый слой: что маршрутизируем (домены / CIDR / списки /
-               устройства / DSCP) → через что (direct / nfqws2 / туннель),
-               с резервными методами и авто-переключением.`;
+            : `Что пускать и через что: сайты, списки, IP-подсети или целые
+               устройства → через туннель, обход DPI (nfqws2) или напрямую.
+               Можно задать резервный путь на случай сбоя.`;
 
         container.innerHTML = `
-            <div class="page-header">
+            <div class="page-header page-header-bar">
                 <div>
                     <h1 class="page-title">${title}${typeof Help !== 'undefined' ? Help.button(helpId) : ''}${typeof Help !== 'undefined' ? Help.button('routing-modes', {label: '⇄'}) : ''}</h1>
                     <p class="page-description">${subtitle}</p>
                 </div>
-                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                    <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center;">
+                <div class="page-actions">
+                    <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center;"
+                           title="Фоновая проверка доступности маршрутов с включённым мониторингом">
                         <input type="checkbox" id="ru-monitor" data-action="toggleMonitor">
-                        Мониторинг
+                        Проверять доступность
                     </label>${typeof Help !== 'undefined' ? Help.button('monitoring') : ''}
-                    <button class="btn btn-ghost btn-sm" data-action="newRoute">+ Маршрут</button>
                     <button class="btn btn-ghost btn-sm" data-action="applyAll">Применить все</button>
                     <button class="btn btn-ghost btn-sm" data-action="reapplyAll"
                             title="Переприменить все маршруты заново и снять из ядра
@@ -90,7 +90,7 @@ const RoutingUnifiedPage = (() => {
                                    осталась в старом состоянии.">
                         Переприменить и сбросить лишнее
                     </button>
-                    <button class="btn btn-ghost btn-sm" data-action="refresh">Обновить</button>
+                    <button class="btn btn-primary btn-sm" data-action="newRoute">+ Маршрут</button>
                 </div>
             </div>
             <div id="ru-banners"></div>
@@ -263,7 +263,7 @@ const RoutingUnifiedPage = (() => {
             if (!c.name || seen.has(c.name)) return;
             seen.add(c.name);
             out.push({ token: 'awg:' + c.name, kind: 'awg', name: c.name,
-                       active: !!c.active, label: `awg → ${c.name}${c.active ? ' (активен)' : ''}` });
+                       active: !!c.active, label: `Туннель ${methodLabel('awg:' + c.name)}${c.active ? '' : ' (сейчас не поднят)'}` });
         });
         interfaces.forEach(i => {
             if (!i.name || seen.has(i.name)) return;
@@ -273,14 +273,15 @@ const RoutingUnifiedPage = (() => {
                         : i.source === 'usque' ? ' · usque/MASQUE' : '';
             out.push({ token: kind + ':' + i.name, kind, name: i.name,
                        active: !!i.active,
-                       label: `${kind} → ${i.name}${extra}${i.active ? ' (активен)' : ''}` });
+                       label: `Туннель ${methodLabel(kind + ':' + i.name)}${extra}${i.active ? '' : ' (сейчас не поднят)'}` });
         });
         return out;
     }
 
     function methodOptions(selected) {
-        const opts = [['direct', 'Прямой (direct)'], ['nfqws2', 'nfqws2 (обход DPI)']]
-            .concat(methodTargets().map(t => [t.token, t.label]));
+        const opts = methodTargets().map(t => [t.token, t.label])
+            .concat([['nfqws2', 'Обход DPI (nfqws2) — без туннеля'],
+                     ['direct', 'Напрямую (исключение)']]);
         if (selected && !opts.some(([v]) => v === selected)) {
             opts.push([selected, selected + ' (недоступен)']);
         }
@@ -627,7 +628,8 @@ const RoutingUnifiedPage = (() => {
         if (!box) return;
         if (!routes.length) {
             box.innerHTML = `<div class="card"><div class="text-muted">
-                Маршрутов нет. Нажмите «+ Маршрут».</div></div>`;
+                Маршрутов пока нет. Нажмите «+ Маршрут» или подключите
+                список на странице <a href="#lists">«Списки маршрутизации»</a>.</div></div>`;
             _setCount(0, 0);
             return;
         }
@@ -641,8 +643,8 @@ const RoutingUnifiedPage = (() => {
         }
         box.innerHTML = `<div class="card"><table class="table">
             <thead><tr>
-                <th>Маршрут</th><th>Трафик</th><th>Метод</th>
-                <th>Статус</th><th>Успешность</th><th style="width:230px;"></th>
+                <th>Маршрут</th><th>Что</th><th>Через</th>
+                <th>Проверка</th><th></th>
             </tr></thead>
             <tbody>${visible.map(rowHtml).join('')}</tbody>
         </table></div>`;
@@ -655,17 +657,54 @@ const RoutingUnifiedPage = (() => {
             : '';
     }
 
+    function _plural(n, one, few, many) {
+        const m10 = n % 10, m100 = n % 100;
+        if (m10 === 1 && m100 !== 11) return one;
+        if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+        return many;
+    }
+
+    /** Имя списка по его id: named-list, nfqws2-хостлист или IP-список. */
+    function listLabel(id) {
+        const s = String(id || '');
+        if (s.startsWith('hl:')) return 'домены nfqws2 «' + s.slice(3) + '»';
+        if (s.startsWith('ipl:')) return 'IP-список «' + s.slice(4) + '»';
+        const l = namedLists.find(x => x.id === s);
+        return l ? '«' + l.name + '»' : 'удалённый список';
+    }
+
+    /**
+     * «Что маршрутизируем» словами. Раньше здесь было «1 спис., 3 дом.»:
+     * какой именно список — приходилось открывать редактор.
+     */
     function trafficSummary(r) {
         const dest = r.destination || {};
+        const nd = (dest.domains || []).length, nc = (dest.cidrs || []).length;
+        const nv = (r.devices || []).length;
         return [
-            (dest.domains || []).length ? `${dest.domains.length} дом.` : '',
-            (dest.cidrs || []).length ? `${dest.cidrs.length} CIDR` : '',
-            (dest.list_ids || []).length ? `${dest.list_ids.length} спис.` : '',
-            (dest.geosite || []).length ? `geosite:${dest.geosite.join(',')}` : '',
-            (dest.geoip || []).length ? `geoip:${dest.geoip.join(',')}` : '',
-            (r.devices || []).length ? `${r.devices.length} устр.` : '',
+            (dest.list_ids || []).length
+                ? (dest.list_ids.length === 1 ? 'список ' : 'списки ')
+                  + dest.list_ids.map(listLabel).join(', ') : '',
+            nd ? `${nd} ${_plural(nd, 'домен', 'домена', 'доменов')}` : '',
+            nc ? `${nc} ${_plural(nc, 'подсеть', 'подсети', 'подсетей')}` : '',
+            (dest.geosite || []).length ? `geosite: ${dest.geosite.join(', ')}` : '',
+            (dest.geoip || []).length ? `geoip: ${dest.geoip.join(', ')}` : '',
+            nv ? `${nv} ${_plural(nv, 'устройство', 'устройства', 'устройств')}` : '',
             (r.dscp != null && r.dscp !== '') ? `DSCP ${r.dscp}` : '',
-        ].filter(Boolean).join(', ') || '—';
+        ].filter(Boolean).join(' · ') || '—';
+    }
+
+    /** Метод-токен словами: `awg:wg0` → «AmneziaWG · wg0». */
+    function methodLabel(token) {
+        const t = String(token || '');
+        if (t === 'direct') return 'Напрямую';
+        if (t === 'nfqws2') return 'Обход DPI (nfqws2)';
+        const i = t.indexOf(':');
+        if (i < 0) return t || '—';
+        const KIND = { awg: 'AmneziaWG', singbox: 'sing-box', mihomo: 'mihomo',
+                       warp: 'WARP (MASQUE)' };
+        const kind = t.slice(0, i), iface = t.slice(i + 1);
+        return (KIND[kind] || kind) + ' · ' + iface;
     }
 
     /**
@@ -695,32 +734,42 @@ const RoutingUnifiedPage = (() => {
         const st = statusMap[r.id] || {};
         const active = st.active_method || r.method;
         const mon = st.monitor || {};
-        const rate = (mon.rate == null) ? '—' : Math.round(mon.rate * 100) + '%';
-        const rateColor = (mon.rate == null) ? 'var(--text-muted,#888)'
-                        : (mon.rate >= 0.5 ? '#39c45e' : '#e58');
         const enabledDot = r.enabled
-            ? '<span style="color:#39c45e;">●</span>'
-            : '<span class="text-muted">○</span>';
+            ? '<span class="ru-dot ru-dot-on" title="Включён">●</span>'
+            : '<span class="ru-dot" title="Выключен">○</span>';
+        // Проверка доступности — одной колонкой: «не проверяется» или
+        // «работает · 95%». Раньше две колонки почти всегда стояли в «—».
+        let check;
+        if (!r.monitor_enabled) {
+            check = '<span class="text-muted">не проверяется</span>';
+        } else if (mon.last_ok == null) {
+            check = '<span class="text-muted">ждём первую проверку</span>';
+        } else {
+            const rate = mon.rate == null ? '' : ' · ' + Math.round(mon.rate * 100) + '%';
+            check = mon.last_ok
+                ? `<span class="ru-ok">работает${rate}</span>`
+                : `<span class="ru-fail">не открывается${rate}</span>`;
+        }
         const scanBtn = st.suggest_scan
             ? `<button class="btn btn-ghost btn-sm" title="${escAttr(st.suggest_reason||'')}"
                        data-action="scan" data-id="${esc(r.id)}">Подобрать</button>`
             : '';
         return `<tr>
             <td>${enabledDot} <strong>${esc(r.name)}</strong>
-                ${r.failover_enabled ? '<span class="text-muted" style="font-size:10px;"> failover</span>' : ''}</td>
+                ${r.failover_enabled ? '<span class="badge badge-info ru-badge" title="При сбое переключится на резервный метод">авто-переключение</span>' : ''}</td>
             <td style="font-size:12px;">${esc(trafficSummary(r))}
                 ${ignoredSelectorsNote(r)}</td>
-            <td style="font-family:monospace; font-size:12px;">
-                ${esc(active)}${active !== r.method ? ` <span class="text-muted">(осн. ${esc(r.method)})</span>` : ''}
-                ${(r.fallbacks||[]).length ? `<br><span class="text-muted" style="font-size:10px;">↳ ${esc((r.fallbacks||[]).join(', '))}</span>` : ''}</td>
-            <td>${r.monitor_enabled ? (mon.last_ok == null ? 'ждём' : (mon.last_ok ? 'ok' : 'сбой')) : '—'}</td>
-            <td style="color:${rateColor};">${rate}</td>
-            <td style="text-align:right;">
+            <td style="font-size:12px;" title="${escAttr(active)}">
+                ${esc(methodLabel(active))}${active !== r.method ? ` <span class="text-muted">(основной: ${esc(methodLabel(r.method))})</span>` : ''}
+                ${(r.fallbacks||[]).length ? `<br><span class="text-muted" style="font-size:11px;">резерв: ${esc((r.fallbacks||[]).map(methodLabel).join(', '))}</span>` : ''}</td>
+            <td style="font-size:12px;">${check}</td>
+            <td><div class="ru-actions">
                 ${scanBtn}
-                <button class="btn btn-ghost btn-sm" data-action="apply" data-id="${esc(r.id)}">Применить</button>
-                <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${esc(r.id)}">Ред.</button>
-                <button class="btn btn-ghost btn-sm" data-action="del" data-id="${esc(r.id)}">✕</button>
-            </td>
+                <button class="btn btn-ghost btn-sm" data-action="apply" data-id="${esc(r.id)}"
+                        title="Применить этот маршрут заново">Применить</button>
+                <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${esc(r.id)}">Изменить</button>
+                <button class="btn btn-ghost btn-sm" data-action="del" data-id="${esc(r.id)}" title="Удалить маршрут">✕</button>
+            </div></td>
         </tr>`;
     }
 

@@ -315,7 +315,7 @@ UI), и `tools_by_scope`.
 | `hostlist_get` | read | нет | `tools/lists.py` | name, search?, offset?, limit? | окно одного списка + `search`; на 50 000 доменов отдаёт окно, не дамп |
 | `ipsets_list` | read | нет | `tools/lists.py` | name?, search?, offset?, limit? | списки IP: перечень, с `name` — содержимое |
 | `lists_list` | read | нет | `tools/lists.py` | id?, offset?, limit? | именованные списки единого слоя: домены и CIDR по списку |
-| `blobs_list` | read | нет | `tools/lists.py` | query?, missing_only?, offset?, limit? | реестр blob'ов и **существует ли файл** (`missing_only`) |
+| `blobs_list` | read | нет | `tools/lists.py` | query?, missing_only?, offset?, limit? | реестр blob'ов и **существует ли файл** (`missing_only`); свои блобы — `kind: "user"` |
 | `lua_functions_list` | read | нет | `tools/lists.py` | name?, query?, needs_blob?, offset?, limit? | функции `--lua-desync` с этого устройства: параметры, `needs_blob` |
 | `firewall_status` | read | нет | `tools/firewall.py` | rules?, offset?, limit? | правила NFQUEUE, бэкенд, `queue_numbers`, `conflicts` |
 | `traffic_recent` | read | нет | `tools/traffic.py` | minutes?, domain?, source?, offset?, limit? | дошёл ли трафик до движка: домен/профиль/вердикт за N минут |
@@ -343,7 +343,7 @@ UI), и `tools_by_scope`.
 | `strategy_delete` | strategies_write | **да** | `tools/strategies.py` | id | удалить USER-стратегию; builtin — отказ |
 | `hostlist_edit` | strategies_write | **да** | `tools/lists.py` | name, mode?, domains | `replace`/`add`/`remove` по списку доменов; SIGHUP; пустой список — предупреждение |
 | `ipset_edit` | strategies_write | **да** | `tools/lists.py` | name, mode?, entries | то же для IP/CIDR; непринятые записи перечисляются |
-| `blob_add` | strategies_write | **да** | `tools/lists.py` | name, hex | записать blob из hex (≤ 64 КБ); builtin-имена — отказ |
+| `blob_add` | strategies_write | **да** | `tools/lists.py` | name, hex | записать blob из hex (≤ 64 КБ); builtin-имена — отказ; имя — идентификатор (`[A-Za-z_][A-Za-z0-9_]*`, иначе nfqws2 не стартует), после записи `blob=<имя>` объявляется сам |
 | `lua_script_save` | strategies_write | **да** | `tools/lists.py` | name, content, force? | сохранить lua-скрипт; битый синтаксис — отказ, `force=true` перебивает |
 | `lua_script_get` | strategies_write | нет | `tools/lists.py` | name?, offset?, limit?, numbered? | текст скрипта окном; без имени — перечень скриптов с их функциями |
 | `lua_script_patch` | strategies_write | **да** | `tools/lists.py` | name, edits?, diff?, force?, apply? | точечная правка (тем же кодом, что `code_patch`); `apply=true` — ещё и `nfqws_restart` |

@@ -38,6 +38,16 @@ DNS_SERVERS = {
     "geohide": {"doh": "https://dns.geohide.ru:444/dns-query", "dot": "dns.geohide.ru:853", "ip": "45.155.204.190"},
 }
 
+SERVER_TITLES = {
+    "cloudflare": "Cloudflare",
+    "google": "Google",
+    "adguard": "AdGuard",
+    "quad9": "Quad9",
+    "yandex": "Яндекс",
+    "comss": "Comss.one",
+    "geohide": "GeoHide",
+}
+
 # MR-83: кеш DNS-резолва чтобы не блокировать apply() на каждом вызове
 _dns_cache = {}  # {hostname: (ip, timestamp)}
 _dns_cache_lock = threading.Lock()
@@ -348,8 +358,15 @@ class DnsRoutingManager:
         return ""
 
     def get_available_servers(self) -> list:
-        """Список доступных DNS-серверов."""
-        return [{"id": k, "name": v.get("doh", k), "ip": v.get("ip", "")}
+        """Список доступных DNS-серверов.
+
+        ``name`` — человеческое имя провайдера. Раньше здесь отдавался
+        DoH-адрес, и GUI показывал «https://1.1.1.1/dns-query», хотя
+        dnsmasq шлёт этим серверам обычный DNS на порт 53 (``server=``
+        DoH не умеет). ``doh`` остаётся отдельным полем.
+        """
+        return [{"id": k, "name": SERVER_TITLES.get(k, k),
+                 "ip": v.get("ip", ""), "doh": v.get("doh", "")}
                 for k, v in DNS_SERVERS.items()]
 
 
