@@ -36,6 +36,98 @@ from core.testers.probe import PROBE_CODES, ProbeResult, describe_code, probe_do
 BLOCK_CODES = PROBE_CODES
 
 
+# Имена, которые в публичном DNS не живут: локальные зоны, обратные
+# зоны, служебные. Детектор видит их в каждом логе dnsmasq, и проба
+# «nas.lan → порт 443 закрыт» выглядела как блокировка по IP.
+_LOCAL_SUFFIXES = (
+    ".lan", ".local", ".localdomain", ".home", ".home.arpa", ".internal",
+    ".intranet", ".corp", ".private", ".arpa", ".invalid", ".test",
+    ".example", ".localhost", ".onion",
+)
+
+
+def is_probe_candidate(domain: str) -> bool:
+    """Стоит ли пробовать домен: публичное имя, а не локальное/служебное."""
+    d = (domain or "").strip().lower().strip(".")
+    if not d or "." not in d or len(d) > 253:
+        return False
+    if d.endswith(_LOCAL_SUFFIXES) or d in ("localhost",):
+        return False
+    try:
+        import ipaddress
+        ipaddress.ip_address(d)
+        return False                     # голый адрес — не домен
+    except ValueError:
+        pass
+    return True
+
+
+def all_non_public(ips) -> bool:
+    """Все адреса внутренние (private/loopback/link-local/…)."""
+    import ipaddress
+    seen = False
+    for raw in ips or []:
+        try:
+            addr = ipaddress.ip_address(str(raw).strip())
+        except ValueError:
+            continue
+        seen = True
+        if addr.is_global:
+            return False
+    return seen
+
+
+def doh_confirms_exists(domain: str, timeout: float = 4.0) -> bool:
+    """Знает ли домен публичный DNS (DoH, мимо провайдера).
+
+    True — у домена есть публичный A-адрес: значит, NXDOMAIN или 0.0.0.0
+    от местного резолвера — действительно блокировка. False — DoH тоже
+    не знает домен или недоступен: не добавляем (лучше пропустить домен,
+    чем засорить список обхода рекламой и опечатками).
+    """
+    import json
+    import urllib.parse
+    import urllib.request
+    urls = ("https://cloudflare-dns.com/dns-query",
+            "https://dns.google/resolve")
+    for base in urls:
+        url = "%s?%s" % (base, urllib.parse.urlencode(
+            {"name": domain, "type": "A"}))
+        try:
+            req = urllib.request.Request(
+                url, headers={"Accept": "application/dns-json",
+                              "User-Agent": "zapret-gui/block-detector"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read(65536).decode("utf-8", "replace"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        ips = [a.get("data") for a in (data.get("Answer") or [])
+               if isinstance(a, dict) and a.get("type") == 1]
+        return bool(ips) and not all_non_public(ips) \
+            and not all(ip in ("0.0.0.0", "127.0.0.1") for ip in ips)
+    return False
+
+
+def _last_unique(items, limit: int) -> list:
+    """Последние `limit` уникальных значений в порядке появления.
+
+    Прежнее `list(set(x))[-50:]` брало случайные 50: у множества нет
+    порядка, и «последние» домены из хвоста лога терялись.
+    """
+    seen = set()
+    out = []
+    for x in reversed(items):
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+            if len(out) >= limit:
+                break
+    out.reverse()
+    return out
+
+
 class BlockDetector:
     """Singleton: мониторинг DNS + пронирование доменов."""
 
@@ -57,13 +149,16 @@ class BlockDetector:
         if not cfg.get("block_detector", "enabled", default=False):
             return
 
-        self._whitelist = set(cfg.get("block_detector", "whitelist", default=[]))
+        self._whitelist = self._load_whitelist()
 
         with self._lock:
             if self._thread and self._thread.is_alive():
                 return
-            self._stop_evt.clear()
-            t = threading.Thread(target=self._run_loop,
+            # Своё событие на каждый поток: общее событие «стоп → старт»
+            # сбрасывало раньше, чем старый поток успевал его увидеть (он
+            # мог быть посреди пробы), и работали два детектора сразу.
+            self._stop_evt = threading.Event()
+            t = threading.Thread(target=self._run_loop, args=(self._stop_evt,),
                                  name="block-detector", daemon=True)
             t.start()
             self._thread = t
@@ -78,9 +173,31 @@ class BlockDetector:
             self._thread = None
             log.info("block-detector: остановлен", source="block_detector")
 
-    def _run_loop(self):
+    @staticmethod
+    def _load_whitelist() -> set:
         from core.config_manager import get_config_manager
-        while not self._stop_evt.is_set():
+        raw = get_config_manager().get("block_detector", "whitelist",
+                                       default=[]) or []
+        return {str(d).strip().lower().strip(".") for d in raw
+                if str(d).strip()}
+
+    def _whitelisted(self, domain: str) -> bool:
+        """Домен или его родитель в белом списке («google.com» покрывает
+        и «www.google.com»: раньше сравнение было точным, и белый список
+        почти ничего не отсекал)."""
+        d = domain.lower().strip(".")
+        while d:
+            if d in self._whitelist:
+                return True
+            if "." not in d:
+                return False
+            d = d.split(".", 1)[1]
+        return False
+
+    def _run_loop(self, stop_evt=None):
+        from core.config_manager import get_config_manager
+        stop_evt = stop_evt or self._stop_evt
+        while not stop_evt.is_set():
             interval = 300  # дефолт до чтения конфига: иначе исключение в
                             # try оставит interval неопределённым → NameError
                             # в wait() ниже убил бы поток детектора.
@@ -92,16 +209,24 @@ class BlockDetector:
                 log.warning("block-detector tick: %s" % e,
                             source="block_detector")
             # MR-30: использовать настраиваемый interval вместо хардкода 60s
-            self._stop_evt.wait(interval)
+            stop_evt.wait(interval)
 
     def _tick(self):
         """Основной цикл: собрать DNS + пронировать."""
         # Собираем домены из DNS-источника
         new_domains = self._collect_dns_queries()
+        # Белый список перечитываем каждый такт: правка в настройках иначе
+        # ждала перезапуска детектора.
+        try:
+            self._whitelist = self._load_whitelist()
+        except Exception:
+            pass
         with self._lock:
             for d in new_domains:
-                if d not in self._monitored and d not in self._whitelist:
-                    self._monitored[d] = self._new_entry()
+                if d in self._monitored or self._whitelisted(d) \
+                        or not is_probe_candidate(d):
+                    continue
+                self._monitored[d] = self._new_entry()
             self._trim_locked()
 
         # Пронируем домены которые давно не проверялись
@@ -203,7 +328,7 @@ class BlockDetector:
                     domains.append(m.group(1).lower())
         except Exception:
             pass
-        return list(set(domains))[-50:]  # последние 50 уникальных
+        return _last_unique(domains, 50)
 
     def _from_adguard_log(self) -> list:
         """Читать домены из AdGuard Home лога."""
@@ -232,7 +357,7 @@ class BlockDetector:
                     pass
         except Exception:
             pass
-        return list(set(domains))[-50:]
+        return _last_unique(domains, 50)
 
     def _from_af_packet(self) -> list:
         """AF_PACKET DNS-сниффинг для случаев, когда dnsmasq/adguard-log недоступны."""
@@ -421,15 +546,29 @@ class BlockDetector:
                       % (domain, result.code), source="block_detector")
             return
 
+        # Домен внутренней сети (nas.lan → 192.168.1.10, порт 443 закрыт →
+        # «TCP отклонён» → «нужен туннель») — не блокировка.
+        if result.resolved_ips and all_non_public(result.resolved_ips):
+            log.debug("block-detector: %s не добавлен — адреса внутренние"
+                      % domain, source="block_detector")
+            return
+
+        # «Не резолвится» и «резолвится в 0.0.0.0» — ровно то, что
+        # отвечают на рекламу и трекеры AdGuard/фильтры роутера, и то,
+        # что получает опечатка. Раньше всё это уезжало в список обхода.
+        # Блокировкой считаем, только если публичный DoH знает домен.
+        if result.code in ("dns_block", "dns_hijack") \
+                and not doh_confirms_exists(domain):
+            log.debug("block-detector: %s (%s) не добавлен — DoH домен тоже "
+                      "не знает (фильтр рекламы/опечатка)"
+                      % (domain, result.code), source="block_detector")
+            return
+
         try:
             from core import named_lists
-            item = named_lists.get(list_id)
-            if not item:
-                return
-            domains = list(item.get("domains") or [])
-            if domain not in domains:
-                domains.append(domain)
-                named_lists.update_fields(list_id, {"domains": domains})
+            # Атомарно: обновлятель списков и GUI пишут тот же список.
+            res = named_lists.add_entries(list_id, [domain])
+            if res.get("ok") and res.get("added"):
                 log.info("block-detector: автодобавлен %s в %s" % (domain, list_id),
                          source="block_detector")
         except Exception as e:
@@ -555,7 +694,11 @@ class BlockDetector:
         except ImportError:
             res = self._probe_full(domain, self.MANUAL_PROBE_TIMEOUT)
         else:
-            with ThreadPoolExecutor(max_workers=1) as executor:
+            # Не `with`: выход из него ждёт завершения пробы
+            # (shutdown(wait=True)), и «жёсткий предел» ничего не
+            # ограничивал — запрос висел, пока проба не кончится сама.
+            executor = ThreadPoolExecutor(max_workers=1)
+            try:
                 future = executor.submit(self._probe_full, domain,
                                          self.MANUAL_PROBE_TIMEOUT)
                 try:
@@ -564,6 +707,8 @@ class BlockDetector:
                     res = ProbeResult(domain=domain, code="tcp_timeout",
                                       detail="проба не уложилась в %.0f с"
                                              % self.MANUAL_PROBE_HARD_LIMIT)
+            finally:
+                executor.shutdown(wait=False)
 
         # Ручная проверка тоже попадает в таблицу результатов — страница
         # обещает это («…или проверьте домен вручную»), а раньше вердикт

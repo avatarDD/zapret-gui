@@ -34,6 +34,7 @@ hostlist_manager работает с lists_path (хостлисты), ipset_mana
     prefixes = im.load_by_asn(13335)  # Cloudflare
 """
 
+import ipaddress
 import os
 import re
 import json
@@ -128,6 +129,16 @@ def validate_ip_entry(text):
     """
     Валидация IP-адреса или CIDR-подсети.
 
+    Разбор — модулем ipaddress, запись приводится к каноничному виду:
+    нижний регистр и сжатие IPv6, адрес сети вместо адреса с маской
+    («10.0.0.1/8» → «10.0.0.0/8»), одиночный адрес без «/32».
+
+    Раньше хватало регулярок, и они пропускали то, что nfqws2 (inet_pton
+    в nfq2/ipset.c) отбрасывает молча с «bad ip or subnet»: «:::»,
+    «01.2.3.4» с ведущим нулём. Запись числилась в списке и не работала.
+    А валидный «::ffff:1.2.3.4» наоборот отвергался. Разный регистр
+    одного IPv6 давал дубли.
+
     Args:
         text: Строка с IP или CIDR
 
@@ -138,65 +149,35 @@ def validate_ip_entry(text):
         return None
 
     text = text.strip()
-    if not text:
+    if not text or any(c.isspace() for c in text) or "%" in text:
         return None
 
-    # IPv4
-    if IPV4_RE.match(text):
-        return text
-
-    # IPv4 CIDR
-    if IPV4_CIDR_RE.match(text):
-        return text
-
-    # IPv6 или IPv6 CIDR
-    if "/" in text:
-        ip_part, prefix_part = text.rsplit("/", 1)
-        try:
-            prefix_len = int(prefix_part)
-            if 0 <= prefix_len <= 128 and _is_valid_ipv6(ip_part):
-                return text
-        except ValueError:
-            pass
-    else:
-        if _is_valid_ipv6(text):
-            return text
-
-    return None
+    try:
+        if "/" in text:
+            net = ipaddress.ip_network(text, strict=False)
+            if net.prefixlen == net.max_prefixlen:
+                return str(net.network_address)
+            return str(net)
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return None
 
 
 def _is_valid_ipv6(text):
     """Проверить является ли строка валидным IPv6-адресом."""
-    if not text:
+    try:
+        return ipaddress.ip_address((text or "").strip()).version == 6
+    except ValueError:
         return False
-    if IPV6_RE.match(text):
-        return True
-    if "::" in text:
-        parts = text.split("::")
-        if len(parts) != 2:
-            return False
-        left = parts[0].split(":") if parts[0] else []
-        right = parts[1].split(":") if parts[1] else []
-        if len(left) + len(right) > 7:
-            return False
-        for part in left + right:
-            if not part:
-                continue
-            if len(part) > 4:
-                return False
-            try:
-                int(part, 16)
-            except ValueError:
-                return False
-        return True
-    return False
 
 
 class IPSetManager:
     """Управление файлами IP-списков."""
 
     def __init__(self):
-        self._lock = threading.Lock()
+        # RLock: add/remove держат замок на всё «прочитать → изменить →
+        # записать», а save_ipset внутри берёт его ещё раз.
+        self._lock = threading.RLock()
         self._migrated = False  # ленивая миграция из lists_path
 
     @property
@@ -383,9 +364,12 @@ class IPSetManager:
                 seen.add(entry)
 
         try:
+            # Атомарно и с 0644: см. HostlistManager.save_hostlist.
+            from core.safe_io import atomic_write_text
             with self._lock:
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write("\n".join(clean) + "\n" if clean else "")
+                atomic_write_text(filepath,
+                                  "\n".join(clean) + "\n" if clean else "",
+                                  mode=0o644)
 
             log.info(f"Сохранён {name}.txt ({len(clean)} записей)", source="ipsets")
 
@@ -398,6 +382,13 @@ class IPSetManager:
             except Exception as e:
                 log.debug(f"SIGHUP после записи {name}.txt не удался: {e}",
                           source="ipsets")
+
+            # Маршруты единого слоя с этим списком (`ipl:<имя>`).
+            try:
+                from core.unified.manager import notify_list_changed
+                notify_list_changed("ipl:%s" % name)
+            except Exception:
+                pass
 
             return True
         except Exception as e:
@@ -531,19 +522,23 @@ class IPSetManager:
         if not self._validate_name(name):
             return 0
 
-        current = self.get_ipset(name)
-        current_set = set(current)
+        with self._lock:
+            current = self.get_ipset(name)
+            # Сравниваем по каноничной форме: «2001:DB8::/32» и
+            # «2001:db8::/32» — одна сеть.
+            current_set = set(validate_ip_entry(e) or e for e in current)
 
-        added = 0
-        for entry in entries:
-            validated = validate_ip_entry(entry)
-            if validated and validated not in current_set:
-                current.append(validated)
-                current_set.add(validated)
-                added += 1
+            added = 0
+            for entry in entries:
+                validated = validate_ip_entry(entry)
+                if validated and validated not in current_set:
+                    current.append(validated)
+                    current_set.add(validated)
+                    added += 1
 
+            if added > 0:
+                self.save_ipset(name, current)
         if added > 0:
-            self.save_ipset(name, current)
             log.info(f"Добавлено {added} записей в {name}.txt", source="ipsets")
 
         return added
@@ -562,14 +557,25 @@ class IPSetManager:
         if not self._validate_name(name):
             return 0
 
-        current = self.get_ipset(name)
-        remove_set = set(e.strip() for e in entries if e.strip())
+        remove_set = set()
+        for e in entries:
+            if not isinstance(e, str) or not e.strip():
+                continue
+            remove_set.add(e.strip())
+            canon = validate_ip_entry(e)
+            if canon:
+                remove_set.add(canon)
 
-        new_list = [e for e in current if e not in remove_set]
-        removed = len(current) - len(new_list)
+        with self._lock:
+            current = self.get_ipset(name)
+            new_list = [e for e in current
+                        if e not in remove_set
+                        and (validate_ip_entry(e) or e) not in remove_set]
+            removed = len(current) - len(new_list)
 
+            if removed > 0:
+                self.save_ipset(name, new_list)
         if removed > 0:
-            self.save_ipset(name, new_list)
             log.info(f"Удалено {removed} записей из {name}.txt", source="ipsets")
 
         return removed

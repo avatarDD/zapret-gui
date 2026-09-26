@@ -242,6 +242,27 @@ def list_blobs() -> list:
             item["exists"] = bool(item["path"]
                                   and os.path.exists(item["path"]))
         out.append(item)
+
+    # Пользовательские блобы со страницы «Блобы» — тоже объявляемые имена.
+    known = {x["name"] for x in out}
+    try:
+        from core.blob_manager import get_blob_manager
+        user = [b for b in get_blob_manager().get_blobs()
+                if not b.get("is_builtin")]
+    except Exception:                   # noqa: BLE001 — граница
+        user = []
+    for b in user:
+        name = b.get("name") or ""
+        if name in known or not _user_blob_path(name):
+            continue
+        out.append({
+            "name": name,
+            "value": "@" + b.get("path", ""),
+            "kind": "user",
+            "path": b.get("path", ""),
+            "exists": True,
+            "builtin": False,
+        })
     return out
 
 
@@ -270,10 +291,53 @@ def _blob_file_path(value: str) -> str:
     return os.path.join(base, path)
 
 
+def _user_blob_path(name: str) -> str:
+    """Файл пользовательского блоба (страница «Блобы», MCP blob_add).
+
+    Такие блобы лежат в {base_path}/blobs/<имя> и в реестр из каталогов
+    не попадают. Раньше это значило, что созданный в GUI блоб по ссылке
+    blob=<имя> nfqws2 не получал вовсе: декларацию собрать было не из
+    чего, и fake уходил пустым. Теперь имя ищется и там. Только имена,
+    годные nfqws2 в `--blob=<имя>:`, и не встроенные.
+    """
+    if not name or name in BUILTIN_BLOB_NAMES \
+            or not re.match(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$", name):
+        return ""
+    try:
+        from core.config_manager import get_config_manager
+        base = get_config_manager().get("zapret", "base_path",
+                                        default="/opt/zapret2")
+    except Exception:                   # noqa: BLE001 — граница
+        base = "/opt/zapret2"
+    path = os.path.join(base or "/opt/zapret2", "blobs", name)
+    return path if os.path.isfile(path) else ""
+
+
 def get_blob_value(name: str):
-    """Значение декларации для имени blob'а или None, если не известно."""
+    """Значение декларации для имени blob'а или None, если не известно.
+
+    Каталожные имена важнее пользовательских: tls_google всегда тот,
+    что в пресетах, даже если рядом лежит свой файл с таким именем.
+    """
     _ensure_loaded()
-    return _registry.get(name)
+    value = _registry.get(name)
+    if value is not None:
+        return value
+    path = _user_blob_path(name)
+    return ("@" + path) if path else None
+
+
+def aliases_for_file(path: str) -> list:
+    """Имена реестра, под которыми подставляют этот файл (tls_google …)."""
+    _ensure_loaded()
+    base = os.path.basename(str(path or ""))
+    if not base:
+        return []
+    with _lock:
+        pairs = sorted(_registry.items())
+    return [name for name, value in pairs
+            if str(value).startswith("@")
+            and os.path.basename(str(value)[1:]) == base]
 
 
 def referenced_blob_names(args) -> list:
@@ -329,7 +393,7 @@ def build_blob_declarations(args) -> list:
             continue
         if name in declared:
             continue
-        value = _registry.get(name)
+        value = get_blob_value(name)
         if value is None:
             # Неизвестное имя — не молчим, но и не падаем: nfqws2 сам
             # сообщит об отсутствующем blob'е. Чаще всего это опечатка

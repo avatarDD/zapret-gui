@@ -133,6 +133,9 @@ class TestListsFetchTransport(unittest.TestCase):
         with mock.patch("core.named_lists.get",
                         return_value=item), \
              mock.patch("core.named_lists.update_fields"), \
+             mock.patch("core.named_lists.mutate",
+                        side_effect=lambda _id, fn: {
+                            "ok": True, "list": dict(item, **fn(item))}), \
              mock.patch.object(lu, "get_transport",
                                return_value="mihomo:main"), \
              mock.patch.object(lu, "_fetch",

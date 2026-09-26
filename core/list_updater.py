@@ -355,20 +355,36 @@ def refresh_one(list_id: str) -> dict:
         return {"ok": False, "error": "Пустой список (не затёрто)",
                 "preserved": True}
 
-    current = {"domains": list(item.get("domains") or []),
-               "cidrs": list(item.get("cidrs") or [])}
-    prev_remote = item.get("_remote") or {"domains": [], "cidrs": []}
-    merged = merge_preserving_manual(current, remote, prev_remote)
+    # Слияние — внутри замка named_lists и по СВЕЖЕМУ содержимому: пока
+    # шло скачивание, детектор блокировок или пользователь могли дописать
+    # домены, а запись по снимку из начала функции их бы затёрла.
+    out = {}
 
-    named_lists.update_fields(list_id, {
-        "domains": merged["domains"],
-        "cidrs": merged["cidrs"],
-        "_remote": remote,
-        "last_refresh": int(time.time()),
-        "last_status": "ok",
-        "last_error": "",
-        "last_count": len(merged["domains"]) + len(merged["cidrs"]),
-    })
+    def _apply(fresh):
+        current = {"domains": list(fresh.get("domains") or []),
+                   "cidrs": list(fresh.get("cidrs") or [])}
+        prev_remote = fresh.get("_remote") or {"domains": [], "cidrs": []}
+        merged = merge_preserving_manual(current, remote, prev_remote)
+        out["merged"] = merged
+        fields = {
+            "_remote": remote,
+            "last_refresh": int(time.time()),
+            "last_status": "ok",
+            "last_error": "",
+            "last_count": len(merged["domains"]) + len(merged["cidrs"]),
+        }
+        # Содержимое пишем, только если оно изменилось: запись доменов
+        # переприменяет зависящие маршруты (рестарт dnsmasq), а
+        # автообновление без изменений — обычное дело.
+        if merged != current:
+            fields["domains"] = merged["domains"]
+            fields["cidrs"] = merged["cidrs"]
+        return fields
+
+    res = named_lists.mutate(list_id, _apply)
+    if not res.get("ok"):
+        return res
+    merged = out["merged"]
     log.info("list %s: обновлён, доменов %d, cidr %d"
              % (list_id, len(merged["domains"]), len(merged["cidrs"])),
              source="lists")

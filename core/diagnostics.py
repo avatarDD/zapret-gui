@@ -112,6 +112,10 @@ def ping_host(host, count=3, timeout=3):
         "raw_output": "",
     }
 
+    if str(host).startswith("-"):
+        result["raw_output"] = "недопустимое имя хоста"
+        return result
+
     ping_bin = _find_binary(["ping"])
     if not ping_bin:
         result["raw_output"] = "ping не найден"
@@ -203,6 +207,12 @@ def traceroute_host(host, max_hops=20, port=443, use_tcp=True, timeout=45):
         "reached": False,
         "error": None,
     }
+
+    # Хост идёт последним аргументом traceroute/tracepath: с ведущим «-»
+    # он стал бы их опцией (вызывают и REST, и MCP).
+    if str(host).startswith("-"):
+        result["error"] = "недопустимое имя хоста"
+        return result
 
     # Резолвим целевой IP (для определения, дошли ли мы).
     try:
@@ -394,6 +404,10 @@ def check_dns(domain, dns_server=None, timeout=3):
         "response_time": None,
         "error": None,
     }
+
+    if str(domain).startswith("-") or str(dns_server or "").startswith("-"):
+        result["error"] = "недопустимое имя хоста"
+        return result
 
     # Попытка 1: nslookup
     nslookup_bin = _find_binary(["nslookup"])

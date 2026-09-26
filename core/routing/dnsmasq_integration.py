@@ -79,6 +79,42 @@ def _blen(s):
         return len(s)
 
 
+# Что можно класть в `ipset=/…/` и `nftset=/…/`. Любой другой символ в
+# managed-файле — «/», «,», «#», пробел, перевод строки — dnsmasq разберёт
+# как разделитель или мусор и не стартует («bad option»), а вместе с ним
+# лягут DNS и DHCP всего роутера (issue #332). Домены приходят из
+# хостлистов, которые правят руками, из импорта и из geosite — проверяем
+# на выходе, одним местом.
+_DNSMASQ_DOMAIN_RE = re.compile(
+    r"^(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)*"
+    r"[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$")
+
+
+def safe_dnsmasq_domains(domains):
+    """Отфильтровать домены для dnsmasq → (годные, отброшенные)."""
+    good, bad = [], []
+    for d in domains or []:
+        s = str(d or "").strip().lower().lstrip("^")
+        # «*.x.com» старые dnsmasq (до 2.86) не понимают; `ipset=/x.com/`
+        # и так ловит все поддомены.
+        if s.startswith("*."):
+            s = s[2:]
+        s = s.strip(".")
+        if not s:
+            continue
+        if not s.isascii():
+            try:
+                s = s.encode("idna").decode("ascii")
+            except UnicodeError:
+                bad.append(str(d))
+                continue
+        if len(s) <= 253 and _DNSMASQ_DOMAIN_RE.match(s):
+            good.append(s)
+        else:
+            bad.append(str(d))
+    return good, bad
+
+
 def split_domain_directives(prefix, domains, suffix,
                             limit=DNSMASQ_MAX_LINE):
     """Разложить домены по нескольким директивам с оглядкой на лимит строки.
@@ -668,7 +704,14 @@ class DnsmasqIntegration:
         for blk in blocks:
             lines.append("# rule %s" % blk.get("rule_id", "?"))
             kind = (blk.get("set_kind") or "ipset").lower()
-            doms = [d.strip() for d in (blk.get("domains") or []) if d.strip()]
+            doms, dropped = safe_dnsmasq_domains(blk.get("domains") or [])
+            if dropped:
+                log.warning(
+                    "dnsmasq: правило %s — пропущено %d записей, которые не "
+                    "являются доменом (%s)" % (
+                        blk.get("rule_id", "?"), len(dropped),
+                        ", ".join(repr(x) for x in dropped[:5])),
+                    source="routing")
             if not doms:
                 lines.append("# (no domains)\n")
                 continue

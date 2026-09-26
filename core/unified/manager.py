@@ -4,6 +4,8 @@
 (applier). Используется API. Держим API-слой тонким и тестируемым.
 """
 
+import threading
+
 from core.log_buffer import log
 from core.unified import storage, applier
 from core.unified.model import UnifiedRoute
@@ -162,6 +164,86 @@ def _reapply_legacy() -> dict:
         except Exception as e:
             errors.append("%s: %s" % (rule.id, e))
     return {"ok": not errors, "applied": done, "errors": errors}
+
+
+# ─────── переприменение при смене содержимого списка ───────
+
+# Маршрут хранит не домены, а ССЫЛКУ на список (named-list по id,
+# `hl:<хостлист>`, `ipl:<ipset>`), а в ядро/dnsmasq уходит снимок его
+# содержимого на момент apply. Раньше правка списка в GUI, его
+# автообновление по URL и автодобавление детектора блокировок меняли
+# только сам список: маршрут жил прежним снимком до ручного
+# «Переприменить» или перезагрузки. Теперь каждое изменение списка
+# зовёт notify_list_changed(), а маршруты, которые на него ссылаются,
+# переприменяются — с задержкой, чтобы пачка правок (импорт, refresh-all)
+# дала одно переприменение, а не десятки рестартов dnsmasq.
+REAPPLY_DELAY_SEC = 3.0
+# Выключатель для тестов (tests/conftest.py): отложенный поток иначе
+# переприменял бы маршруты уже чужого теста.
+AUTO_REAPPLY = True
+
+_pending_refs = set()
+_pending_lock = threading.Lock()
+_pending_timer = None
+
+
+def routes_using(refs) -> list:
+    """Включённые маршруты, чьё назначение ссылается на любой из refs."""
+    wanted = set(refs or [])
+    if not wanted:
+        return []
+    return [r for r in storage.load_routes()
+            if r.enabled and wanted.intersection(r.destination.list_ids)]
+
+
+def reapply_routes_for(refs) -> dict:
+    """Синхронно переприменить маршруты, зависящие от списков refs."""
+    done = []
+    for route in routes_using(refs):
+        try:
+            res = applier.apply_route(route)
+        except Exception as e:                  # noqa: BLE001 — граница
+            res = {"ok": False, "error": str(e)}
+        done.append({"id": route.id, "result": res})
+        log.info("unified: маршрут %s переприменён — изменился список"
+                 % route.id, source="unified")
+    return {"ok": all((d["result"] or {}).get("ok", True) for d in done),
+            "applied": done}
+
+
+def notify_list_changed(ref: str) -> None:
+    """Сообщить, что содержимое списка ref изменилось.
+
+    ref — id named-list'а, `hl:<имя>` или `ipl:<имя>`. Переприменение
+    откладывается на REAPPLY_DELAY_SEC и склеивает все ref'ы за это окно.
+    """
+    global _pending_timer
+    ref = str(ref or "").strip()
+    if not ref or not AUTO_REAPPLY:
+        return
+    with _pending_lock:
+        _pending_refs.add(ref)
+        if _pending_timer is not None:
+            return
+        t = threading.Timer(REAPPLY_DELAY_SEC, _flush_pending)
+        t.daemon = True
+        _pending_timer = t
+    t.start()
+
+
+def _flush_pending() -> None:
+    global _pending_timer
+    with _pending_lock:
+        refs = set(_pending_refs)
+        _pending_refs.clear()
+        _pending_timer = None
+    if not refs:
+        return
+    try:
+        reapply_routes_for(refs)
+    except Exception as e:                      # noqa: BLE001 — фоновый поток
+        log.warning("unified: переприменение после смены списка: %s" % e,
+                    source="unified")
 
 
 def status() -> dict:
