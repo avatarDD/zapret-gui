@@ -645,6 +645,12 @@ class AutostartManager:
         queue_num = int(cfg.get("nfqws", "queue_num", default=300))
         ports_tcp = cfg.get("nfqws", "ports_tcp", default="80,443")
         ports_udp = cfg.get("nfqws", "ports_udp", default="443")
+        # Порты управления (SSH, веб-интерфейс) — мимо очереди, как в
+        # FirewallManager.apply_rules(): скрипт ставит правила сам, при
+        # загрузке, и без этого `1:65535` в ports_tcp увёл бы SSH в
+        # NFQUEUE именно тогда, когда чинить роутер больше нечем.
+        from core.firewall import strip_management_ports
+        ports_tcp, _dropped = strip_management_ports(ports_tcp, cfg)
         tcp_pkt = int(cfg.get("nfqws", "tcp_pkt_out", default=20))
         udp_pkt = int(cfg.get("nfqws", "udp_pkt_out", default=5))
         mark_processed = cfg.get("nfqws", "desync_mark",

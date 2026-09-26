@@ -247,8 +247,10 @@ def start(strategy_args=None, source: str = "control") -> dict:
 
     if not mgr.start(args if args else None):
         # Правила без движка — это чёрная дыра: пакеты уходят в NFQUEUE,
-        # где их никто не читает. Снимаем то, что сами же поставили.
-        if apply_fw and fw_ok:
+        # где их никто не читает. Снимаем то, что сами же поставили, —
+        # и при неудачном apply_rules() тоже: он снимает прежние правила
+        # до наката, так что всё, что осталось, поставлено им частично.
+        if apply_fw:
             fw.remove_rules()
         return _fail("Не удалось запустить nfqws2", mgr, fw)
 
@@ -283,7 +285,11 @@ def restart(strategy_args=None, source: str = "control") -> dict:
 
     if cfg.get("firewall", "apply_on_start", default=True):
         fw.remove_rules()
-        fw.apply_rules()
+        # Движок не поднялся — правила обратно не ставим, как и в
+        # start(): перехват на пустую очередь диагностика называет
+        # ошибкой `rules_without_engine`.
+        if nfqws_ok:
+            fw.apply_rules()
 
     if not nfqws_ok:
         return _fail("Ошибка перезапуска nfqws2", mgr, fw)
@@ -320,12 +326,17 @@ def apply_strategy(strategy_id: str, source: str = "strategies") -> dict:
     log.info("Применяем стратегию: %s (%s)"
              % (strategy.get("name", ""), strategy_id), source=source)
 
-    if cfg.get("firewall", "apply_on_start", default=True):
+    apply_fw = cfg.get("firewall", "apply_on_start", default=True)
+    if apply_fw:
         fw.remove_rules()
         fw.apply_rules()
 
     ok = mgr.restart(args) if mgr.is_running() else mgr.start(args)
     if not ok:
+        # Правила без движка — снимаем, как start() (старый движок
+        # restart() уже остановил, нового нет).
+        if apply_fw:
+            fw.remove_rules()
         out = _fail("Не удалось запустить nfqws2 со стратегией", mgr, fw)
         out["error_code"] = "start_failed"
         return out

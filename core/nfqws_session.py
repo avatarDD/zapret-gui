@@ -168,7 +168,7 @@ class NfqwsSession:
                 if not self._depth:
                     record = {"owner": owner, "reason": reason,
                               "since": time.time(), "pid": os.getpid(),
-                              "thread": me}
+                              "boot_id": _boot_id(), "thread": me}
                     taken, foreign = self._take_file(record)
                     if taken:
                         self._holder = record
@@ -424,6 +424,15 @@ class NfqwsSession:
             # Наш собственный остаток: в памяти захвата нет (сюда
             # попадают только при свободном мьютексе процесса).
             return False
+        # Лок из прошлой загрузки: файл пережил ребут (он рядом с
+        # settings.json), а PID за это время почти наверняка занял
+        # кто-то другой — `kill(pid, 0)` сказал бы «жив», и движок
+        # стоял бы запертым до STALE_SEC. Типичный путь сюда —
+        # перезагрузка роутера посреди подбора стратегий.
+        boot = str(record.get("boot_id") or "")
+        current = _boot_id()
+        if boot and current and boot != current:
+            return False
         try:
             since = float(record.get("since") or 0.0)
         except (TypeError, ValueError):
@@ -545,6 +554,15 @@ def _call(obj, name: str, default):
         log.debug("Снимок состояния: %s не опросился (%s)" % (name, e),
                   source="session")
         return default
+
+
+def _boot_id() -> str:
+    """Идентификатор текущей загрузки ядра; ``""`` — не прочитался."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id", "r") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def _cfg_get(cfg, *path):

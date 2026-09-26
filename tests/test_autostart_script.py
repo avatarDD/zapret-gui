@@ -74,6 +74,35 @@ class TestGeneratedScript(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
+class TestManagementPortsInScript(unittest.TestCase):
+    """Автозапуск ставит правила сам — и тоже мимо SSH и порта GUI."""
+
+    def test_management_ports_are_not_intercepted(self):
+        from unittest import mock
+        from core.firewall import management_ports
+
+        cfg = get_config_manager()
+        real_get = cfg.get
+
+        def fake_get(*parts, **kw):
+            if parts == ("nfqws", "ports_tcp"):
+                return "1:65535"
+            return real_get(*parts, **kw)
+
+        with mock.patch.object(cfg, "get", side_effect=fake_get):
+            script = get_autostart_manager()._generate_script()
+        line = next(l for l in script.splitlines()
+                    if l.startswith("PORTS_TCP="))
+        spec = line.split("=", 1)[1].strip("'\"")
+        for port in management_ports(cfg):
+            with self.subTest(port=port):
+                for token in spec.split(","):
+                    low, _, high = token.partition(":")
+                    self.assertFalse(
+                        int(low) <= port <= int(high or low),
+                        "порт %d перехватывается: %s" % (port, spec))
+
+
 class TestAutostartModel(unittest.TestCase):
     """Issue #107: на systemd (Debian) Entware-каталог /opt/etc/init.d
     может существовать, но init.d-скрипты НЕ исполняются при загрузке.

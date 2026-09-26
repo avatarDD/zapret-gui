@@ -275,6 +275,28 @@ class TestProcessLock(SessionCase):
         with self.session.acquire(owner=OWNER_SCANNER, timeout=0):
             pass
 
+    def test_lock_from_previous_boot_is_stolen(self):
+        # Роутер перезагрузили посреди подбора: PID из файла теперь
+        # занят чужим живым процессом, но загрузка уже другая.
+        self._write_lock(pid=os.getppid(), owner=OWNER_SCANNER,
+                         boot_id="00000000-0000-0000-0000-000000000000")
+        if not nfqws_session._boot_id():
+            self.skipTest("нет /proc/sys/kernel/random/boot_id")
+        self.assertEqual(self.session.holder(), {})
+        with self.session.acquire(owner=OWNER_EXPERIMENT, timeout=0):
+            pass
+
+    def test_lock_of_this_boot_still_blocks(self):
+        self._write_lock(pid=os.getppid(), owner=OWNER_SCANNER,
+                         boot_id=nfqws_session._boot_id())
+        with self.assertRaises(SessionBusy):
+            self.session.claim(OWNER_EXPERIMENT, timeout=0)
+
+    def test_taken_lock_records_boot_id(self):
+        with self.session.acquire(owner=OWNER_SCANNER, timeout=0):
+            record = json.load(open(self.lock_path))
+        self.assertEqual(record.get("boot_id"), nfqws_session._boot_id())
+
     def test_our_own_leftover_is_stolen(self):
         # Процесс упал и поднялся с тем же pid: в памяти захвата нет.
         self._write_lock(pid=os.getpid(), owner=OWNER_SCANNER)
@@ -300,9 +322,11 @@ class TestProcessLock(SessionCase):
             self._write_lock(pid=os.getppid(), owner=OWNER_EXPERIMENT)
         self.assertTrue(os.path.exists(self.lock_path))
 
-    def _write_lock(self, pid, owner, since=None):
+    def _write_lock(self, pid, owner, since=None, boot_id=None):
         record = {"owner": owner, "reason": "", "pid": pid,
                   "since": time.time() if since is None else since}
+        if boot_id is not None:
+            record["boot_id"] = boot_id
         with open(self.lock_path, "w") as f:
             json.dump(record, f)
 

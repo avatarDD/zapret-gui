@@ -87,7 +87,22 @@ class TestControlAPI(unittest.TestCase):
         # /api/start — POST-эндпоинт. Не запускаем nfqws реально,
         # просто проверяем что эндпоинт зарегистрирован.
         # Без body может вернуть 200/400/500 — главное не 404.
-        status, _ = self.client._call("POST", "/api/start")
+        # Менеджеры подменены: настоящий старт ставит правила firewall
+        # машине, на которой идёт тест, а под root — по-настоящему.
+        from core import nfqws_control
+        mgr = mock.MagicMock()
+        mgr.start.return_value = False
+        mgr.get_status.return_value = {"running": False}
+        fw = mock.MagicMock()
+        fw.apply_rules.return_value = True
+        fw.get_status.return_value = {"applied": False}
+        cfg = mock.MagicMock()
+        cfg.get.side_effect = lambda *a, **kw: kw.get("default")
+        with mock.patch.object(nfqws_control, "_managers",
+                               return_value=(mgr, fw, cfg)), \
+                mock.patch.object(nfqws_control, "active_strategy_args",
+                                  return_value=[]):
+            status, _ = self.client._call("POST", "/api/start")
         self.assertFalse(status.startswith("404"),
                          "POST /api/start не зарегистрирован")
 

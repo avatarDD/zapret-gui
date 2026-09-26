@@ -323,7 +323,21 @@ class TestNftablesRules(unittest.TestCase):
 
     def test_has_tcp_flags(self):
         joined = "\n".join(self.flat)
-        self.assertIn("tcp flags syn,ack", joined)
+        self.assertIn("tcp flags & (syn | ack) == syn | ack", joined)
+
+    def test_synack_is_exact_match_not_any_flag(self):
+        # Голое `tcp flags syn,ack` nft компилирует в `flags & 0x12 != 0`:
+        # «SYN или ACK» — это любой пакет с ACK, весь входящий поток в
+        # очередь мимо `ct reply packets 1-N`.
+        for cmd in self.flat:
+            self.assertNotIn("tcp flags syn,ack", cmd)
+
+    def test_prerouting_has_fin_and_rst_like_iptables(self):
+        pre = [c for c in self.flat if " prerouting " in c]
+        self.assertTrue(any("tcp sport" in c and "tcp flags fin" in c
+                            for c in pre))
+        self.assertTrue(any("tcp sport" in c and "tcp flags rst" in c
+                            for c in pre))
 
 
     def test_port_ranges_use_dash_not_colon(self):

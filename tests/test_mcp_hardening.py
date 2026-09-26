@@ -272,6 +272,26 @@ class TestStrategyCannotOwnTheEngine(unittest.TestCase):
         self.assertNotIn("--hostlist-auto=/etc/shadow", argv)
         self.assertIn("--hostlist-auto=%s/auto.txt" % self.lists, argv)
 
+    def test_two_token_form_is_cut_with_its_value(self):
+        # getopt_long nfqws2 принимает `--pidfile /путь` двумя токенами,
+        # а стратегия из текста режется по пробелам.
+        argv = self._compose([
+            "--filter-tcp=443", "--qnum", "1", "--pidfile", "/etc/shadow",
+            "--user", "root", "--lua-desync=fake"])
+        for bad in ("1", "/etc/shadow", "root", "--pidfile"):
+            self.assertNotIn(bad, argv)
+        self.assertEqual(argv.count("--qnum=300"), 1)
+        self.assertIn("--lua-desync=fake", argv)
+
+    def test_two_token_autohostlist_is_checked_too(self):
+        argv = self._compose([
+            "--hostlist-auto", "/etc/nologin",
+            "--hostlist-auto", "%s/auto.txt" % self.lists,
+            "--lua-desync=fake"])
+        self.assertNotIn("/etc/nologin", argv)
+        i = argv.index("%s/auto.txt" % self.lists)
+        self.assertEqual(argv[i - 1], "--hostlist-auto")
+
     def test_linter_names_it(self):
         found = strategy_lint.lint(["--filter-tcp=443", "--qnum=5",
                                     "--lua-desync=fake"])
