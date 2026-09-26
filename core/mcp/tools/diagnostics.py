@@ -292,8 +292,10 @@ def _environment() -> tuple:
         if _disk_is_full(disk):
             findings.append(_finding(
                 "environment", "disk-full", "warning",
-                "мало места: %s" % disk.get("mount", "?"),
-                "занято %s%%" % disk.get("percent", "?"),
+                "мало места: %s" % (disk.get("path")
+                                    or disk.get("mount", "?")),
+                "занято %s%%, свободно %s МБ" % (
+                    _disk_percent(disk), disk.get("free_mb", "?")),
                 "конфиги, бинарники и логи живут в /opt — при полном "
                 "разделе они молча не сохраняются"))
     return environment, findings
@@ -442,11 +444,18 @@ def _probe_budget() -> float:
     return max(5.0, timeout * PROBE_BUDGET_SHARE)
 
 
-def _disk_is_full(disk) -> bool:
+def _disk_percent(disk) -> int:
+    """Занятость раздела. core.diagnostics._get_disk_usage отдаёт её как
+    ``used_percent`` — раньше здесь читался несуществующий ``percent``,
+    и находка «мало места» не срабатывала ни разу."""
     try:
-        return int(disk.get("percent") or 0) >= 90
+        return int(disk.get("used_percent", disk.get("percent")) or 0)
     except (TypeError, ValueError):
-        return False
+        return 0
+
+
+def _disk_is_full(disk) -> bool:
+    return _disk_percent(disk) >= 90
 
 
 def _age(stamp) -> int:

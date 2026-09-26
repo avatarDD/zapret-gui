@@ -342,7 +342,7 @@ UI), и `tools_by_scope`.
 | `strategy_save` | strategies_write | **да** | `tools/strategies.py` | id, name, description?, protocol?, profiles | создать/перезаписать USER-стратегию; профили заменяются целиком; `validation` — прогон `--intercept=0` |
 | `strategy_delete` | strategies_write | **да** | `tools/strategies.py` | id | удалить USER-стратегию; builtin — отказ |
 | `hostlist_edit` | strategies_write | **да** | `tools/lists.py` | name, mode?, domains | `replace`/`add`/`remove` по списку доменов; SIGHUP; пустой список — предупреждение |
-| `ipset_edit` | strategies_write | **да** | `tools/lists.py` | name, mode?, entries | то же для IP/CIDR; непринятые записи перечисляются |
+| `ipset_edit` | strategies_write | **да** | `tools/lists.py` | name, mode?, entries | то же для IP/CIDR; непринятые записи перечисляются; записи сравниваются в каноничной форме (`1.2.3.4/32` = `1.2.3.4`) — у `hostlist_edit` нет: `www.x.com` ≠ `x.com` |
 | `blob_add` | strategies_write | **да** | `tools/lists.py` | name, hex | записать blob из hex (≤ 64 КБ); builtin-имена — отказ; имя — идентификатор (`[A-Za-z_][A-Za-z0-9_]*`, иначе nfqws2 не стартует), после записи `blob=<имя>` объявляется сам |
 | `lua_script_save` | strategies_write | **да** | `tools/lists.py` | name, content, force? | сохранить lua-скрипт; битый синтаксис — отказ, `force=true` перебивает |
 | `lua_script_get` | strategies_write | нет | `tools/lists.py` | name?, offset?, limit?, numbered? | текст скрипта окном; без имени — перечень скриптов с их функциями |

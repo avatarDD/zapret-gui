@@ -599,7 +599,8 @@ def ipset_edit(args: dict) -> dict:
               if str(e).strip()]
     mode = (args.get("mode") or "add").strip() or "add"
 
-    after, rejected = _apply_mode(mode, before, values, validate_ip_entry)
+    after, rejected = _apply_mode(mode, before, values, validate_ip_entry,
+                                  canon_before=True)
     over = _too_many(after)
     if over:
         return over
@@ -628,8 +629,10 @@ def ipset_edit(args: dict) -> dict:
         "properties": {
             "name": {
                 "type": "string",
-                "description": "Blob name used in blob=NAME. / Имя "
-                               "blob'а.",
+                "description": "Blob name used in blob=NAME: letters, "
+                               "digits and _, not starting with a digit "
+                               "(nfqws2 rejects - and .). / Имя blob'а — "
+                               "идентификатор.",
                 "maxLength": 64,
             },
             "hex": {
@@ -657,9 +660,16 @@ def blob_add(args: dict) -> dict:
     except Exception as e:                      # noqa: BLE001 — граница
         return {"ok": False, "error": "реестр blob'ов недоступен: %s" % e}
 
-    valid, error = manager.validate_name(name)
+    # Имя проверяем тем же правилом, что и запись (validate_new_name):
+    # nfqws2 принимает в --blob=<имя>: только идентификатор, а отказ
+    # из save_blob_hex пришёл бы с подсказкой про формат hex.
+    valid, error = manager.validate_new_name(name)
     if not valid:
-        return {"ok": False, "error": error, "name": name}
+        return {"ok": False, "error": error, "name": name,
+                "hint": "имя — латиница, цифры и «_», с буквы или «_»: "
+                        "например %s" % (re.sub(r"[^A-Za-z0-9_]", "_",
+                                                name).lstrip("0123456789")
+                                         or "my_blob")}
     if manager.is_builtin(name):
         return {
             "ok": False,
@@ -1402,13 +1412,28 @@ def _bad_name(name, pattern, what):
     return None
 
 
-def _apply_mode(mode, before, values, normalize):
+def _apply_mode(mode, before, values, normalize, canon_before=False):
     """Применить режим правки к списку и вернуть ``(after, rejected)``.
 
     Нормализация — функция менеджера (домен без схемы и ``www.``, IP с
     проверкой формата): отвергнутое не пишется, но и не молчит —
     «добавил десять доменов, прибавилось три» иначе выглядит как сбой.
+
+    ``canon_before`` — сравнивать и прежние записи в каноничном виде.
+    Для IP это точная эквивалентность (``1.2.3.4/32`` = ``1.2.3.4``,
+    ``2001:DB8::/32`` = ``2001:db8::/32``): без неё add дописывал дубль
+    записи, лежащей в файле в другой форме, а remove её не находил. Для
+    доменов — нет: нормализация срезает ``www.``, а ``www.x.com`` и
+    ``x.com`` в хостлисте значат разное.
     """
+    def _canon(item):
+        if not canon_before:
+            return item
+        try:
+            return normalize(item) or item
+        except Exception:                       # noqa: BLE001 — граница
+            return item
+
     rejected = []
     clean = []
     for raw in values:
@@ -1429,9 +1454,10 @@ def _apply_mode(mode, before, values, normalize):
         # лежать в файле как его записал человек.
         drop = set(clean) | {v.strip().lower() for v in values if v.strip()}
         return [item for item in before
-                if item not in drop and item.strip().lower() not in drop], \
+                if item not in drop and item.strip().lower() not in drop
+                and _canon(item) not in drop], \
             rejected
-    known = set(before)
+    known = set(before) | {_canon(item) for item in before}
     after = list(before)
     for item in clean:
         if item not in known:

@@ -228,3 +228,15 @@ class TestHealthcheckThreads(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMcpDiskFull(unittest.TestCase):
+
+    def test_disk_full_finding_uses_real_keys(self):
+        # _get_disk_usage отдаёт used_percent/path — раньше MCP читал
+        # несуществующие percent/mount, и находка не срабатывала никогда.
+        from core.mcp.tools import diagnostics as d
+        disk = {"label": "/opt", "path": "/opt", "total_mb": 100,
+                "free_mb": 4, "used_percent": 96}
+        self.assertTrue(d._disk_is_full(disk))
+        self.assertFalse(d._disk_is_full(dict(disk, used_percent=40)))
