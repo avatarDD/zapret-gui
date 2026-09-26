@@ -160,6 +160,7 @@ class StrategyScanner:
         self._protocol = "tcp"
         self._mode = "quick"
         self._start_index = 0
+        self._dpi_type = ""
         # Профиль цели (см. core/scan_targets.py)
         self._scan_profile = None  # type: ignore[var-annotated]
         # Путь временного hostlist'а для приёмов (создаётся в _run_scan)
@@ -215,6 +216,15 @@ class StrategyScanner:
         Returns:
             True если сканирование запущено.
         """
+        # Разбор входа — ДО статуса RUNNING: исключение здесь иначе
+        # оставило бы сканер «запущенным» без потока, а движок — занятым
+        # для всех (nfqws_control.busy() смотрит на этот статус).
+        target = str(target or "").strip() or "youtube.com"
+        protocol = str(protocol or "").strip().lower() or "tcp"
+        mode = str(mode or "").strip().lower() or "quick"
+        start_index = max(0, int(start_index or 0))
+        dpi_type = str(dpi_type or "").strip().lower()
+
         with self._lock:
             if self._status == STATUS_RUNNING:
                 log.warning(
@@ -235,11 +245,11 @@ class StrategyScanner:
             self._error = ""
             self._started_at = time.time()
 
-            self._target = target.strip() or "youtube.com"
-            self._protocol = protocol.strip().lower() or "tcp"
-            self._mode = mode.strip().lower() or "quick"
-            self._start_index = max(0, int(start_index))
-            self._dpi_type = dpi_type.strip().lower() if dpi_type else ""
+            self._target = target
+            self._protocol = protocol
+            self._mode = mode
+            self._start_index = start_index
+            self._dpi_type = dpi_type
             self._callback = callback
 
         log.info(
@@ -330,9 +340,35 @@ class StrategyScanner:
         with self._lock:
             return [r.to_dict() for r in self._results if r.success]
 
-    def get_resume_index(self) -> int:
-        """Получить индекс для resume из сохранённого состояния."""
-        return self._load_resume_state()
+    def get_resume_index(self, target=None, protocol=None, mode=None,
+                         dpi_type=None) -> int:
+        """Индекс для resume из сохранённого состояния.
+
+        Индекс имеет смысл только в том же списке стратегий, а список
+        задают цель, протокол, режим и тип DPI. Сохранённая позиция
+        ЧУЖОГО прогона (отменили youtube/tcp/standard на 50-й, а
+        продолжить просят discord/udp/quick) — это 0, а не «начать с
+        50-й стратегии другого списка». ``None`` — параметр не сверять.
+        """
+        state = self._load_resume_state()
+        if not state:
+            return 0
+        want = {"target": target, "protocol": protocol, "mode": mode,
+                "dpi_type": dpi_type}
+        for key, value in want.items():
+            if value is None:
+                continue
+            saved = str(state.get(key) or "").strip().lower()
+            if saved != str(value or "").strip().lower():
+                log.info(
+                    "Resume не применён: сохранён прогон %s=%s, а просят %s"
+                    % (key, saved or "—", value or "—"),
+                    source="scanner")
+                return 0
+        try:
+            return max(0, int(state.get("next_index", 0)))
+        except (TypeError, ValueError):
+            return 0
 
     def apply_strategy(self, index: int) -> bool:
         """
@@ -1383,11 +1419,25 @@ class StrategyScanner:
                 url = (profile.get_probe_url()
                        if host == profile.primary_host
                        else "https://%s/" % host)
+                # Тело — по ТОМУ ЖЕ семейству адресов, что и TLS: иначе
+                # при открытом IPv4 и заблокированном IPv6 «успех по
+                # IPv6» скачивался бы по IPv4 (http.client откатывается
+                # на другое семейство сам).
                 body = probe_body(
                     url=url,
                     min_bytes=BODY_PROBE_MIN_BYTES,
                     timeout=BODY_PROBE_TIMEOUT,
+                    ip_family=af,
                 )
+                if body.status == TestStatus.SKIPPED.value:
+                    # У хоста пробного URL нет адресов этого семейства —
+                    # качаем с хоста, на котором TLS по нему уже прошёл.
+                    body = probe_body(
+                        url="https://%s/" % host,
+                        min_bytes=BODY_PROBE_MIN_BYTES,
+                        timeout=BODY_PROBE_TIMEOUT,
+                        ip_family=af,
+                    )
                 body_ok = body.status == TestStatus.SUCCESS.value
                 af_entry["body_ok"] = body_ok
                 af_entry["body_error"] = body.error or ""
@@ -1679,7 +1729,19 @@ class StrategyScanner:
                     source="scanner",
                 )
                 continue
-            per_af[af] = (res.status == TestStatus.SUCCESS.value)
+            ok = res.status == TestStatus.SUCCESS.value
+            if ok:
+                # Критерий — тот же, что у пробы стратегии (TLS + тело
+                # ≥64 КБ): TLS-тестер читает ≤2 КБ, и при обрыве на
+                # 16-20 КБ baseline видел бы «открыт», а каждая
+                # стратегия получала бы BASELINE_OPEN — подбор под самый
+                # частый тип блокировки не находил бы ничего.
+                body = self._baseline_body(af)
+                if body is not None and \
+                        body.status != TestStatus.SUCCESS.value:
+                    ok = False
+                    res = body
+            per_af[af] = ok
             log.info(
                 "Baseline %s: %s (%s, %.0f ms)" % (
                     af,
@@ -1721,6 +1783,26 @@ class StrategyScanner:
             )
 
         return is_accessible
+
+    def _baseline_body(self, af: str):
+        """Body-проба цели без обхода по одному AF (или ``None``).
+
+        URL — тот же, что у пробы стратегии для основного хоста
+        (``_deep_probe``). ``None`` — проверить нечем (у цели нет адресов
+        этого AF ни по пробному URL, ни по ней самой): тогда baseline
+        остаётся на результате TLS.
+        """
+        from core.scan_targets import detect_target
+        from core.testers.body_tester import probe_body
+
+        profile = self._scan_profile or detect_target(self._target)
+        urls = [profile.get_probe_url(), "https://%s/" % self._target]
+        for url in dict.fromkeys(urls):
+            body = probe_body(url=url, min_bytes=BODY_PROBE_MIN_BYTES,
+                              timeout=BODY_PROBE_TIMEOUT, ip_family=af)
+            if body.status != TestStatus.SKIPPED.value:
+                return body
+        return None
 
     # ─────────────────── State save/restore ───────────────────
 
@@ -1848,6 +1930,7 @@ class StrategyScanner:
                 "target": self._target,
                 "protocol": self._protocol,
                 "mode": self._mode,
+                "dpi_type": self._dpi_type,
                 "next_index": next_index,
                 "timestamp": time.time(),
                 "working_count": len(
@@ -1861,22 +1944,23 @@ class StrategyScanner:
         except (IOError, OSError):
             pass  # tmp может быть недоступен — не критично
 
-    def _load_resume_state(self) -> int:
+    def _load_resume_state(self) -> dict:
         """
-        Загрузить позицию resume.
+        Загрузить сохранённое состояние resume.
 
         Returns:
-            Индекс следующей стратегии (0 если нет данных).
+            Словарь ``{target, protocol, mode, dpi_type, next_index, …}``
+            (пустой, если данных нет или файл битый).
         """
         resume_file = self._resume_file_path()
         try:
             if not os.path.exists(resume_file):
-                return 0
+                return {}
             with open(resume_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            return int(state.get("next_index", 0))
-        except (IOError, OSError, json.JSONDecodeError, ValueError):
-            return 0
+        except (IOError, OSError, ValueError):
+            return {}
+        return state if isinstance(state, dict) else {}
 
     def _remove_resume_state(self) -> None:
         """Удалить файл resume state."""
@@ -1930,7 +2014,7 @@ class StrategyScanner:
         Применить стратегию из результата пробы.
 
         Создаёт user-стратегию в JSON-формате через StrategyManager
-        и применяет её (start nfqws2 + apply firewall).
+        и применяет её через ``nfqws_control.apply_strategy``.
 
         Args:
             probe_result: Результат успешной пробы.
@@ -1940,8 +2024,6 @@ class StrategyScanner:
         """
         from core.catalog_loader import get_catalog_manager
         from core.strategy_builder import get_strategy_manager
-        from core.nfqws_manager import get_nfqws_manager
-        from core.firewall import get_firewall_manager
 
         # Находим оригинальную запись каталога
         cm = get_catalog_manager()
@@ -1999,46 +2081,27 @@ class StrategyScanner:
             )
             return False
 
-        # Применяем: firewall + nfqws2
-        try:
-            fw = get_firewall_manager()
-            nfqws = get_nfqws_manager()
-
-            # Останавливаем текущий nfqws если запущен
-            if nfqws.is_running():
-                nfqws.stop()
-                time.sleep(0.3)
-
-            # Применяем firewall
-            if not fw.apply_rules():
-                log.error("Не удалось применить firewall", source="scanner")
-                return False
-
-            # Запускаем nfqws2 с новой стратегией
-            if not nfqws.start(args):
-                log.error("Не удалось запустить nfqws2", source="scanner")
-                fw.remove_rules()
-                return False
-
-            # Обновляем конфиг
-            from core.config_manager import get_config_manager
-            cfg = get_config_manager()
-            cfg.set("strategy", "current_id", saved["id"])
-            cfg.set("strategy", "current_name", saved["name"])
-            cfg.save()
-
-            log.success(
-                "Стратегия применена: %s" % entry.name,
-                source="scanner",
-            )
-            return True
-
-        except Exception as e:
+        # Применяем тем же путём, что кнопка «Применить» и MCP
+        # (`nfqws_control.apply_strategy`): общий мьютекс на движок (не
+        # поверх идущего скана или эксперимента), откат правил при
+        # неудачном старте, запись в конфиг и пересборка автозапуска —
+        # иначе после перезагрузки роутера поднялась бы прежняя
+        # стратегия.
+        from core import nfqws_control
+        result = nfqws_control.apply_strategy(saved["id"], source="scanner")
+        if not result.get("ok"):
             log.error(
-                "Ошибка применения стратегии: %s" % e,
+                "Не удалось применить стратегию %s: %s"
+                % (entry.name, result.get("error") or "?"),
                 source="scanner",
             )
             return False
+
+        log.success(
+            "Стратегия применена: %s" % entry.name,
+            source="scanner",
+        )
+        return True
 
     def _materialize_tmp_hostlist(
         self,

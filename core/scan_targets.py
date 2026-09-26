@@ -244,6 +244,22 @@ _HOST_HINTS = (
 )
 
 
+def _hint_matches(host: str, hint: str) -> bool:
+    """Относится ли домен к подсказке — по границам меток, не подстрокой.
+
+    Подстрока давала чужой профиль: `x.com` сидит в `netflix.com` и
+    `dropbox.com`, `t.me` — в `bit.media.ru`. Тогда в пробы уходили
+    хосты twitter/telegram, а результат скана описывал не ту цель.
+
+    Подсказка с точкой — домен: совпадает он сам или его поддомен.
+    Подсказка-слово — начало одной из меток (`discord` → `discordapp.com`,
+    но не `notdiscord.com`).
+    """
+    if "." in hint:
+        return host == hint or host.endswith("." + hint)
+    return any(label.startswith(hint) for label in host.split("."))
+
+
 def detect_target(host: str) -> ScanTarget:
     """
     Определить профиль цели по имени домена.
@@ -256,7 +272,7 @@ def detect_target(host: str) -> ScanTarget:
         host_lower = "youtube.com"
 
     for hint, key in _HOST_HINTS:
-        if hint in host_lower:
+        if _hint_matches(host_lower, hint):
             base = _KNOWN[key]
             # Если пользователь указал нестандартный домен — добавляем его
             # в primary_host и в hostlist_domains как первую запись.

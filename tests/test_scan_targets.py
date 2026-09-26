@@ -43,5 +43,33 @@ class TestDetectTarget(unittest.TestCase):
         self.assertIsInstance(t, ScanTarget)
 
 
+class TestHintsMatchByLabel(unittest.TestCase):
+    """Профиль — по границам меток домена, а не по подстроке.
+
+    `x.com` сидит внутри `netflix.com`, `t.me` — внутри `bit.media.ru`:
+    раньше такие цели получали профиль twitter/telegram, и в пробы уходили
+    чужие хосты.
+    """
+
+    def test_substring_lookalikes_are_generic(self):
+        for host in ("netflix.com", "dropbox.com", "xbox.com",
+                     "bit.media.ru", "notdiscord.com", "mygoogleblog.ru"):
+            with self.subTest(host=host):
+                self.assertEqual(detect_target(host).key, "generic")
+
+    def test_real_members_keep_their_profile(self):
+        for host, key in (("x.com", "twitter"), ("api.x.com", "twitter"),
+                          ("pbs.twimg.com", "twitter"),
+                          ("t.me", "telegram"),
+                          ("web.telegram.org", "telegram"),
+                          ("youtu.be", "youtube"),
+                          ("rr1.googlevideo.com", "youtube"),
+                          ("www.youtube-nocookie.com", "youtube"),
+                          ("cdn.discordapp.com", "discord"),
+                          ("scontent.fbcdn.net", "facebook")):
+            with self.subTest(host=host):
+                self.assertEqual(detect_target(host).key, key)
+
+
 if __name__ == "__main__":
     unittest.main()

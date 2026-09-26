@@ -69,7 +69,8 @@ class FakeScanner:
         self.running = False
         return True
 
-    def get_resume_index(self):
+    def get_resume_index(self, **run):
+        self.resume_asked = run
         return self.resume_index
 
     def get_status(self):
@@ -173,6 +174,9 @@ class TestStartReturnsAJob(JobCase):
                                      "resume": True})
         self.assertEqual(result["resumed_from"], 42)
         self.assertEqual(self.scanner.started_with["start_index"], 42)
+        # Позицию сверяют с ЭТИМ прогоном, а не берут любую сохранённую.
+        self.assertEqual(self.scanner.resume_asked["target"], "youtube.com")
+        self.assertEqual(self.scanner.resume_asked["protocol"], "tcp")
 
     def test_bad_target_never_reaches_the_scanner(self):
         result = data("scan_start", {"target": "https://youtube.com/x"})

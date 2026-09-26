@@ -75,14 +75,17 @@ def register(app):
                          "Допустимые: quick, standard, full" % mode,
             }
 
-        # Resume: загрузить индекс из сохранённого состояния
+        # DPI-type фильтрация (опционально, из BlockCheck)
+        dpi_type = (body.get("dpi_type") or "").strip().lower()
+
+        # Resume: индекс из сохранённого состояния — только если это тот
+        # же прогон (иначе позиция чужого списка стратегий).
         resume = bool(body.get("resume", False))
         start_index = 0
         if resume:
-            start_index = scanner.get_resume_index()
-
-        # DPI-type фильтрация (опционально, из BlockCheck)
-        dpi_type = (body.get("dpi_type") or "").strip().lower()
+            start_index = scanner.get_resume_index(
+                target=target, protocol=protocol, mode=mode,
+                dpi_type=dpi_type)
 
         # Запускаем
         started = scanner.start(
