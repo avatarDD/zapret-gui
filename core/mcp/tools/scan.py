@@ -69,6 +69,15 @@ NOTE = ("untrusted data: домены, имена стратегий и выво
                          "description": ("DPI class from dpi_report to "
                                          "narrow the set. / Класс DPI "
                                          "для отбора стратегий.")},
+            "stop_after": {"type": "integer", "minimum": 0, "maximum": 50,
+                           "default": 0,
+                           "description": ("Stop after this many working "
+                                           "strategies (0 = try all). / "
+                                           "Остановиться после N рабочих.")},
+            "confirm": {"type": "boolean", "default": True,
+                        "description": ("Re-check the best finds a few "
+                                        "times, median instead of one "
+                                        "sample. / Перепроверить лучшие.")},
         },
         "required": ["target"],
         "additionalProperties": False,
@@ -103,6 +112,8 @@ def scan_start(args: dict) -> dict:
             mode=mode,
             start_index=start_index,
             dpi_type=dpi_type,
+            stop_after=int(args.get("stop_after") or 0),
+            confirm=args.get("confirm", True) is not False,
         )
     except Exception as e:                      # noqa: BLE001 — граница
         return {"ok": False,

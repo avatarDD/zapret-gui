@@ -206,6 +206,10 @@ DEFAULT_CONFIG = {
         # Включать сгенерированные «на лету» стратегии в режимах standard/full
         # (комбинаторное расширение без хранения файлов). См. strategy_generator.
         "use_generated": True,
+        # Перепроверка лучших находок: сколько лучших и сколько раз ещё.
+        # 0 в любом — перепроверки нет. См. StrategyScanner._confirm_best.
+        "confirm_top": 3,
+        "confirm_repeats": 2,
     },
 
     # --- Healthcheck (фоновый watchdog для autocircular) ---

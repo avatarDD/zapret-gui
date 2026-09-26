@@ -237,3 +237,122 @@ def test_quic(
         details=last_error,
         raw_data={"family": last_family} if last_family else {},
     )
+
+
+# ─────────────── Проба настоящим Initial (с SNI) ────────────────
+
+_FAMILY_BY_NAME = {"ipv4": socket.AF_INET, "ipv6": socket.AF_INET6}
+
+
+def test_quic_handshake(
+    host: str,
+    port: int = 443,
+    timeout: float = QUIC_TIMEOUT,
+    retries: int = QUIC_RETRIES,
+    ip_family: str = "auto",
+    sni: str = "",
+) -> SingleTestResult:
+    """Проверить QUIC так, как его видит DPI: Initial с ClientHello и SNI.
+
+    В отличие от :func:`test_quic` (Version Negotiation без SNI), этот
+    пакет DPI расшифровывает и узнаёт по имени сайта — поэтому только он
+    годится, чтобы понять, режет ли провайдер QUIC к этому сайту и
+    помогает ли стратегия (``core/testers/quic_initial.py``).
+
+    SUCCESS — сервер ответил QUIC-пакетом на наш SCID (Initial с
+    ServerHello, Retry, CONNECTION_CLOSE — неважно: Initial дошёл и
+    разобран). TIMEOUT — тишина, пакет дропнули. SKIPPED — у хоста нет
+    адресов запрошенного семейства.
+    """
+    from core.testers.quic_initial import build_initial, parse_server_reply
+
+    start = time.monotonic()
+    target_name = f"{host}:{port}/udp"
+    family = _FAMILY_BY_NAME.get(ip_family)
+
+    try:
+        addresses = _resolve_udp_addresses(host, port, family)
+    except (socket.gaierror, OSError) as e:
+        if family is not None:
+            return SingleTestResult(
+                target=target_name, test_type=TestType.QUIC.value,
+                status=TestStatus.SKIPPED.value, error="NO_ADDR_FAMILY",
+                details=f"Нет адресов {ip_family} для {host}",
+                raw_data={"ip_family": ip_family},
+            )
+        return SingleTestResult(
+            target=target_name, test_type=TestType.QUIC.value,
+            status=TestStatus.ERROR.value, error="DNS_ERR",
+            latency_ms=round((time.monotonic() - start) * 1000, 2),
+            details=f"DNS resolution failed: {str(e)[:60]}",
+        )
+    if not addresses:
+        return SingleTestResult(
+            target=target_name, test_type=TestType.QUIC.value,
+            status=TestStatus.SKIPPED.value, error="NO_ADDR_FAMILY",
+            details=f"Нет UDP-адреса для {host}",
+        )
+
+    af, socktype, proto, target_addr = addresses[0]
+    family_label = "IPv6" if af == socket.AF_INET6 else "IPv4"
+    rounds = max(1, int(retries))
+    per_round = max(float(timeout) / rounds, 1.0)
+    last_code, last_details = "QUIC_TIMEOUT", (
+        f"Сервер не ответил на QUIC Initial с SNI ({family_label}) — "
+        f"пакет дропается")
+
+    for attempt in range(1, rounds + 1):
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            packet, _dcid, scid = build_initial(sni or host)
+            sock.sendto(packet, target_addr)
+            deadline = time.monotonic() + per_round
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                sock.settimeout(left)
+                try:
+                    data, _peer = sock.recvfrom(4096)
+                except socket.timeout:
+                    break
+                kind = parse_server_reply(data, scid)
+                if not kind:
+                    continue            # чужая датаграмма — ждём дальше
+                return SingleTestResult(
+                    target=target_name, test_type=TestType.QUIC.value,
+                    status=TestStatus.SUCCESS.value,
+                    latency_ms=round((time.monotonic() - start) * 1000, 2),
+                    details=f"QUIC отвечает ({family_label}, {kind}, "
+                            f"{len(data)} B)",
+                    raw_data={"connected_ip": str(target_addr[0]),
+                              "family": family_label, "reply": kind,
+                              "attempt": attempt},
+                )
+        except ConnectionResetError:
+            last_code = "QUIC_REFUSED"
+            last_details = (f"ICMP unreachable — на {family_label} QUIC не "
+                            f"слушается")
+            break
+        except OSError as e:
+            last_code = "QUIC_ERR"
+            last_details = f"{str(e)[:60]} ({family_label})"
+            break
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    status = (TestStatus.TIMEOUT.value if last_code == "QUIC_TIMEOUT"
+              else TestStatus.FAILED.value)
+    return SingleTestResult(
+        target=target_name, test_type=TestType.QUIC.value,
+        status=status, error=last_code,
+        latency_ms=round((time.monotonic() - start) * 1000, 2),
+        details=last_details,
+        raw_data={"family": family_label,
+                  "connected_ip": str(target_addr[0])},
+    )

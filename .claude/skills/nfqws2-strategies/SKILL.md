@@ -929,6 +929,34 @@ API: `GET /api/diagnostics/prerequisites`. Проверяет:
 
 Возвращает `issues` со `severity=error|warning` и `hint`.
 
+### 13.4a Как устроен прогон (этапы, правила, перепроверка, память)
+
+Этапы (`status.stage`): `prepare` → `baseline` → `scan` → `confirm` → `done`.
+
+* **Правила firewall — один раз на прогон** (`_start_scan_rules` после
+  baseline). На стратегию — только старт/стоп nfqws2 и дешёвый
+  `fw.is_applied()`; пропали (NDMS/fw4 сбросили) — ставятся заново,
+  счётчик `rules_reapplied` виден в статусе. Правила с `bypass`, поэтому
+  между стратегиями пакеты идут мимо очереди, а не в пустоту.
+* **UDP: чем проверять** (`udp_probe_kind`): профиль с `udp_l7=quic` —
+  настоящий QUIC v1 Initial с ClientHello и SNI
+  (`core/testers/quic_initial.py`, чистый Python: AES-128/GCM/HKDF,
+  сверено с FIPS-197, NIST GCM, RFC 9001 A.1/A.2 и сервером aioquic).
+  VN-проба `test_quic` без SNI для подбора НЕ годится: DPI режет QUIC по
+  имени сайта, VN он пропускает. Остальные UDP-профили (discord) — STUN.
+* **Перепроверка лучших** (`_confirm_best`, `scan.confirm_top`=3 ×
+  `scan.confirm_repeats`=2): медиана скорости/задержки, score × доля
+  прошедших проверок, не прошедшая большинства — `UNSTABLE`. Поля
+  результата `checks`/`passes`/`confirmed`; лучшая — подтверждённая.
+* **Остановка после N рабочих** (`stop_after`, 0 — всё): позиция
+  сохраняется ровно на остановке, «Искать дальше» = resume.
+* **Память подбора** (`core/strategy_memory`): стратегии, которые уже
+  срабатывали на цели в этой сети (`wins > losses`, не `stale`), идут
+  первыми (`from_memory`, до `MEMORY_FIRST_MAX`=10, в т.ч. не попавшие в
+  набор quick). Порядок сохраняется в resume (`memory_ids`). В память
+  пишутся удачи, провалы выдвинутых памятью и `UNSTABLE`; цель, открытая
+  без обхода, — нет.
+
 ### 13.5 Дедуп
 
 `strategy_generator._norm_args()` (`:262`) — нормализованный ключ для дедупа.

@@ -53,13 +53,15 @@ class FakeScanner:
         self.resume_index = 42
 
     def start(self, target="", protocol="tcp", mode="quick",
-              start_index=0, dpi_type="", callback=None):
+              start_index=0, dpi_type="", callback=None, stop_after=0,
+              confirm=True):
         if self.running:
             return False
         self.running = True
         self.started_with = {"target": target, "protocol": protocol,
                              "mode": mode, "start_index": start_index,
-                             "dpi_type": dpi_type}
+                             "dpi_type": dpi_type, "stop_after": stop_after,
+                             "confirm": confirm}
         return True
 
     def stop(self):
@@ -177,6 +179,12 @@ class TestStartReturnsAJob(JobCase):
         # Позицию сверяют с ЭТИМ прогоном, а не берут любую сохранённую.
         self.assertEqual(self.scanner.resume_asked["target"], "youtube.com")
         self.assertEqual(self.scanner.resume_asked["protocol"], "tcp")
+
+    def test_stop_after_and_confirm_reach_the_scanner(self):
+        data("scan_start", {"target": "youtube.com", "stop_after": 3,
+                            "confirm": False})
+        self.assertEqual(self.scanner.started_with["stop_after"], 3)
+        self.assertFalse(self.scanner.started_with["confirm"])
 
     def test_bad_target_never_reaches_the_scanner(self):
         result = data("scan_start", {"target": "https://youtube.com/x"})
