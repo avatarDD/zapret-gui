@@ -47,7 +47,9 @@ INI-формат:
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import threading
 from typing import Any, Optional
 
@@ -80,6 +82,90 @@ _STANDARD_SET_SIZE = 80
 # нужны — у них есть собственные --filter-*/--hostlist=, и они часто
 # самые рабочие. Сканер их использует как-есть, не модифицируя args.
 _SCANNER_EXCLUDED_LEVELS: frozenset = frozenset()
+
+# Семейство трафика, для которого написан приём, — по имени файла
+# каталога. Без этого быстрый набор брал первые 30 записей с меткой
+# recommended по алфавиту файлов: для TLS-цели это были 30 HTTP-приёмов
+# из http80_*, для QUIC — 27 приёмов голоса Discord.
+# Порядок важен: discord_voice_* раньше udp/tcp.
+_FAMILY_PREFIXES = (
+    ("discord_voice", "voice"),
+    ("voice", "voice"),
+    ("http80", "http"),
+    ("udp", "quic"),
+    ("tcp", "tls"),
+)
+FAMILIES = ("tls", "http", "quic", "voice")
+_FAMILY_TITLES = {"tls": "TLS", "http": "HTTP", "quic": "QUIC",
+                  "voice": "голос Discord"}
+
+
+def catalog_family(source_file: str) -> str:
+    """Семейство трафика записи каталога: tls/http/quic/voice или ""."""
+    name = os.path.basename(str(source_file or "")).lower()
+    for prefix, family in _FAMILY_PREFIXES:
+        if name.startswith(prefix):
+            return family
+    return ""
+
+
+def technique_key(entry) -> tuple:
+    """Какие lua-функции делают приём — для чередования в наборах."""
+    funcs = re.findall(r"--lua-desync=([A-Za-z0-9_]+)",
+                       " ".join(entry.get_args_list()))
+    return tuple(sorted(set(funcs) - {"send", "drop", "pass"})) or ("",)
+
+
+def _unique_args(entries: list) -> list:
+    """Убрать записи с теми же аргументами, что у уже взятой (первая — в силе).
+
+    365 записей каталогов — точные копии других под другими именами:
+    подбор проверял бы одно и то же несколько раз.
+    """
+    seen, out = set(), []
+    for entry in entries:
+        key = " ".join(entry.get_args_list())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out
+
+
+def _diverse(entries: list, size: int) -> list:
+    """Разнообразный набор: по очереди из каждой техники приёмов.
+
+    Внутри техники порядок прежний, помеченные ``recommended`` — первыми
+    (метка теперь лишь подсказка внутри техники: ею помечена четверть
+    каталога, и отбирать по ней одной — значит брать 30 вариаций одного
+    и того же).
+    """
+    groups: dict = {}
+    order = []
+    for entry in entries:
+        key = technique_key(entry)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(entry)
+    for key in order:
+        groups[key].sort(key=lambda e: e.label != "recommended")
+    order.sort(key=lambda k: groups[k][0].label != "recommended")
+    out = []
+    depth = 0
+    while len(out) < size:
+        added = False
+        for key in order:
+            if depth < len(groups[key]):
+                out.append(groups[key][depth])
+                added = True
+                if len(out) >= size:
+                    break
+        if not added:
+            break
+        depth += 1
+    return out
+
 
 # Директории, которые НЕ содержат INI-каталоги
 # (presets/ содержит raw-файлы пресетов, конвертированных в JSON)
@@ -406,6 +492,7 @@ class CatalogManager:
 
                     total += len(entries)
 
+            self._disambiguate_ids()
             self._loaded = True
 
             log.info(
@@ -415,6 +502,37 @@ class CatalogManager:
             )
 
             return dict(self._cache)
+
+    def _disambiguate_ids(self) -> None:
+        """Дать одноимённым записям с РАЗНЫМИ аргументами разные id.
+
+        Один и тот же ``section_id`` встречается в нескольких файлах
+        (голос Discord и QUIC держат ``fake_2_n2`` с разными блобами), а
+        и подбор, и список стратегий берут первую запись по id — вторая
+        не видна нигде. Первая (в порядке ``get_all_for_protocol``)
+        сохраняет id — на неё могут ссылаться избранное и активная
+        стратегия; остальные получают ``<id>__<хеш args>``: одинаковый
+        вариант из разных файлов — один id, повтор отсеется как раньше.
+        Вызывается под ``self._lock``.
+        """
+        first: dict = {}
+        for key in sorted(self._cache):
+            proto = key.split("/")[-1]
+            for entry in self._cache[key]:
+                args = " ".join(entry.get_args_list())
+                slot = (proto, entry.section_id)
+                if slot not in first:
+                    first[slot] = (args, entry.source_file)
+                    continue
+                if first[slot][0] == args:
+                    continue
+                digest = hashlib.sha1(args.encode("utf-8")).hexdigest()[:6]
+                entry.section_id = "%s__%s" % (entry.section_id, digest)
+                family = catalog_family(entry.source_file)
+                if family and family != catalog_family(first[slot][1]):
+                    entry.name = "%s · %s" % (entry.name, _FAMILY_TITLES[family])
+                else:
+                    entry.name = "%s · вариант %s" % (entry.name, digest[:4])
 
     def reload(self) -> dict[str, list[CatalogEntry]]:
         """Перезагрузить каталоги."""
@@ -467,8 +585,10 @@ class CatalogManager:
         """
         Получить ВСЕ стратегии для протокола (из всех уровней).
 
-        Порядок: basic → advanced → direct (по алфавиту ключей).
-        Дубликаты по section_id удаляются (приоритет у первого).
+        Порядок — по алфавиту ключей (advanced → basic → builtin →
+        direct). Дубликаты по section_id удаляются (приоритет у первого);
+        одноимённые записи с РАЗНЫМИ аргументами до сюда не доходят —
+        load_all даёт им разные id.
 
         Args:
             protocol:       "tcp" или "udp"
@@ -497,76 +617,34 @@ class CatalogManager:
 
         return result
 
-    def get_quick_set(self, protocol: str = "tcp") -> list[CatalogEntry]:
+    def _scan_pool(self, protocol: str, family: str = "") -> list:
+        """Записи протокола для подбора: своего семейства, без повторов.
+
+        ``family`` — семейство трафика цели (tls/http/quic/voice); записи
+        чужого семейства в пул не идут (HTTP-приём для TLS-цели — пустая
+        трата пробы), записи без семейства (готовые наборы builtin) — идут.
         """
-        Быстрый набор стратегий (~30 шт.):
-        recommended + первые N из basic.
+        entries = self.get_all_for_protocol(
+            protocol, exclude_levels=_SCANNER_EXCLUDED_LEVELS)
+        if family:
+            entries = [e for e in entries
+                       if catalog_family(e.source_file) in ("", family)]
+        return _unique_args(entries)
 
-        Для быстрого сканирования.
-        Builtin-стратегии (полные конфигурации) исключаются.
-        """
-        all_entries = self.get_all_for_protocol(
-            protocol,
-            exclude_levels=_SCANNER_EXCLUDED_LEVELS,
-        )
+    def get_quick_set(self, protocol: str = "tcp",
+                      family: str = "") -> list[CatalogEntry]:
+        """Быстрый набор (~30): по одной-две стратегии каждой техники."""
+        return _diverse(self._scan_pool(protocol, family), _QUICK_SET_SIZE)
 
-        # Сначала recommended
-        recommended = [e for e in all_entries if e.label == "recommended"]
-        # Потом остальные (без recommended)
-        others = [e for e in all_entries if e.label != "recommended"]
+    def get_standard_set(self, protocol: str = "tcp",
+                         family: str = "") -> list[CatalogEntry]:
+        """Стандартный набор (~80): то же чередование, глубже."""
+        return _diverse(self._scan_pool(protocol, family), _STANDARD_SET_SIZE)
 
-        result = list(recommended)
-        remaining = _QUICK_SET_SIZE - len(result)
-        if remaining > 0:
-            result.extend(others[:remaining])
-
-        return result[:_QUICK_SET_SIZE]
-
-    def get_standard_set(self, protocol: str = "tcp") -> list[CatalogEntry]:
-        """
-        Стандартный набор (~80 шт.):
-        basic полностью + recommended из advanced.
-        """
-        self._ensure_loaded()
-
-        basic = self.get_catalog_entries(protocol=protocol, level="basic")
-        advanced = self.get_catalog_entries(protocol=protocol, level="advanced")
-
-        seen_ids: set[str] = set()
-        result: list[CatalogEntry] = []
-
-        # basic целиком
-        for entry in basic:
-            if entry.section_id not in seen_ids:
-                seen_ids.add(entry.section_id)
-                result.append(entry)
-
-        # recommended из advanced
-        for entry in advanced:
-            if entry.label == "recommended" and entry.section_id not in seen_ids:
-                seen_ids.add(entry.section_id)
-                result.append(entry)
-
-        # Если мало — добираем из advanced
-        if len(result) < _STANDARD_SET_SIZE:
-            for entry in advanced:
-                if entry.section_id not in seen_ids:
-                    seen_ids.add(entry.section_id)
-                    result.append(entry)
-                if len(result) >= _STANDARD_SET_SIZE:
-                    break
-
-        return result[:_STANDARD_SET_SIZE]
-
-    def get_full_set(self, protocol: str = "tcp") -> list[CatalogEntry]:
-        """
-        Полный набор: все стратегии для протокола.
-        Builtin-стратегии (полные конфигурации) исключаются.
-        """
-        return self.get_all_for_protocol(
-            protocol,
-            exclude_levels=_SCANNER_EXCLUDED_LEVELS,
-        )
+    def get_full_set(self, protocol: str = "tcp",
+                     family: str = "") -> list[CatalogEntry]:
+        """Полный набор: все стратегии своего семейства, без повторов."""
+        return self._scan_pool(protocol, family)
 
     def get_entry_by_id(
         self,

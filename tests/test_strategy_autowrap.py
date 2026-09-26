@@ -68,5 +68,50 @@ class TestAutowrapBareTrick(unittest.TestCase):
         self.assertEqual(autowrap_bare_trick(list(args)), args)
 
 
+class TestAutowrapByProtocol(unittest.TestCase):
+    """Каталожный приём без --payload — ограничивается своим протоколом.
+
+    Профиль без --filter-tcp/udp подходит к любому L4: TCP-приём с
+    TLS-фейком срабатывал на QUIC-пакетах, UDP-приём — на TCP.
+    """
+
+    def test_tls_trick_gets_tcp_ports_and_l7(self):
+        args = ["--lua-desync=fake:blob=tls_google"]
+        out = autowrap_bare_trick(list(args), protocol="tcp", family="tls",
+                                  ports="80,443")
+        self.assertEqual(out, ["--filter-tcp=80,443", "--filter-l7=tls"]
+                         + args)
+
+    def test_voice_trick_gets_udp_ports_without_l7(self):
+        args = ["--lua-desync=fake:blob=0x00"]
+        out = autowrap_bare_trick(list(args), protocol="udp", family="voice",
+                                  ports="443,50000-65535")
+        self.assertEqual(out, ["--filter-udp=443,50000-65535"] + args)
+
+    def test_payload_all_quic_trick_is_scoped_too(self):
+        args = ["--payload=all", "--lua-desync=fake:blob=quic_google"]
+        out = autowrap_bare_trick(list(args), protocol="udp", family="quic",
+                                  ports="443")
+        self.assertEqual(out[:2], ["--filter-udp=443", "--filter-l7=quic"])
+
+    def test_filtered_profile_still_untouched(self):
+        args = ["--filter-tcp=443", "--lua-desync=fake"]
+        self.assertEqual(autowrap_bare_trick(list(args), protocol="tcp",
+                                             family="tls", ports="443"), args)
+
+    def test_catalog_strategy_through_manager(self):
+        from core.strategy_builder import StrategyManager, _nfqws_ports
+        self.assertEqual(_nfqws_ports("443,3478:3481, 5349"),
+                         "443,3478-3481,5349")
+        scope = StrategyManager._autowrap_scope(
+            {"protocol": "tcp", "family": "tls", "is_builtin": True})
+        self.assertEqual(scope["protocol"], "tcp")
+        self.assertEqual(scope["family"], "tls")
+        self.assertTrue(scope["ports"])
+        # Пользовательская стратегия без протокола — как раньше.
+        self.assertEqual(StrategyManager._autowrap_scope(
+            {"profiles": [], "is_builtin": False}), {})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -799,6 +799,24 @@ bol-van/zapret2. Из nfqws2-keenetic берём только **идеи пов�
 | `builtin/winws2_presets.txt`, `zapret_gui_defaults.txt` | **Полные пресеты** — содержат свои `--filter-*`/`--hostlist=`/`--blob=`/`--new`. Берутся как есть, только резолвятся пути. |
 | `basic/`, `advanced/`, `direct/` | **«Приёмы» (tricks)** — один-два `--lua-desync=`. Сканер сам оборачивает в шаблон цели (добавляет `--filter-*`, `--filter-l7`, `--payload`, `--hostlist=<tmp с доменами цели>`). См. `StrategyScanner._wrap_trick_args`. |
 
+**Отбор в наборы подбора** (`CatalogManager.get_quick/standard/full_set`
+с `family`): приёмы только семейства цели (`catalog_family` по имени
+файла: `http80_*` HTTP, `tcp_*` TLS, `udp_*` QUIC, `*voice*` голос;
+`scan_targets.traffic_family` — семейство цели), без повторов по args,
+по очереди из каждой техники (`technique_key`). Раньше quick брал первые
+30 `recommended` по алфавиту файлов — для TLS это были 30 HTTP-приёмов.
+Одноимённые `section_id` с разными args разводятся при загрузке
+(`<id>__<хеш>`). «Голый приём», применённый со страницы стратегий,
+`autowrap_bare_trick` ограничивает протоколом/семейством каталога
+(`--filter-tcp|udp=<ports>` [+ `--filter-l7`]).
+
+Профили целей: youtube (тело — превью ролика, не `generate_204`: 204 без
+тела не видит обрыв 16-20 КБ), twitter, facebook, instagram, discord,
+telegram, google, **cloudflare** (one.one.one.one, тело со
+speed.cloudflare.com), **hosting** (Hetzner/OVH/DigitalOcean/Linode —
+speedtest-файлы через `probe_urls`, `no_hostlist`: блок по сети
+провайдера, стратегия для всего трафика).
+
 Эвристика «полный пресет vs приём» — `_is_full_preset_args()` в
 `strategy_scanner.py`: наличие `--filter-*`/`--new`/`--hostlist`/`--ipset`/
 `--blob` ⇒ полный пресет.
@@ -891,6 +909,19 @@ bol-van/zapret2. Из nfqws2-keenetic берём только **идеи пов�
 **Следствие:** подбор надо запускать на **заблокированном** ресурсе. На
 заведомо доступном — 0% это **не баг**, это охрана от ложных «успехов».
 
+**Критерий «открыт» у baseline — тот же, что у стратегии:** TLS **и**
+тело ≥ 64 КБ (`_baseline_body`). TLS-тестер читает ≤ 2 КБ ответа, и при
+обрыве на 16-20 КБ handshake проходит и без обхода — по одному TLS цель
+с таким блоком выглядела бы открытой, и каждая стратегия получала бы
+`BASELINE_OPEN`. Body-проба и в baseline, и в `_deep_probe` идёт **по
+тому же AF**, что и TLS (`probe_body(ip_family=…)`): `http.client` сам
+откатывается с IPv6 на IPv4, и «успех по IPv6» при открытом IPv4 был бы
+ложным. Нет адресов нужного AF у пробного URL — `SKIPPED`, повтор на
+`https://<хост>/`.
+
+Профиль цели (`scan_targets.detect_target`) выбирается по границам меток
+домена, не подстрокой: `x.com` не должен ловить `netflix.com`.
+
 ### 13.3 Body-проба (≥ 64 KB)
 
 `BODY_PROBE_MIN_BYTES = 65_536` (`strategy_scanner.py:61`). DPI часто пускает
@@ -915,6 +946,34 @@ API: `GET /api/diagnostics/prerequisites`. Проверяет:
 - `nf_conntrack_tcp_be_liberal = 1`.
 
 Возвращает `issues` со `severity=error|warning` и `hint`.
+
+### 13.4a Как устроен прогон (этапы, правила, перепроверка, память)
+
+Этапы (`status.stage`): `prepare` → `baseline` → `scan` → `confirm` → `done`.
+
+* **Правила firewall — один раз на прогон** (`_start_scan_rules` после
+  baseline). На стратегию — только старт/стоп nfqws2 и дешёвый
+  `fw.is_applied()`; пропали (NDMS/fw4 сбросили) — ставятся заново,
+  счётчик `rules_reapplied` виден в статусе. Правила с `bypass`, поэтому
+  между стратегиями пакеты идут мимо очереди, а не в пустоту.
+* **UDP: чем проверять** (`udp_probe_kind`): профиль с `udp_l7=quic` —
+  настоящий QUIC v1 Initial с ClientHello и SNI
+  (`core/testers/quic_initial.py`, чистый Python: AES-128/GCM/HKDF,
+  сверено с FIPS-197, NIST GCM, RFC 9001 A.1/A.2 и сервером aioquic).
+  VN-проба `test_quic` без SNI для подбора НЕ годится: DPI режет QUIC по
+  имени сайта, VN он пропускает. Остальные UDP-профили (discord) — STUN.
+* **Перепроверка лучших** (`_confirm_best`, `scan.confirm_top`=3 ×
+  `scan.confirm_repeats`=2): медиана скорости/задержки, score × доля
+  прошедших проверок, не прошедшая большинства — `UNSTABLE`. Поля
+  результата `checks`/`passes`/`confirmed`; лучшая — подтверждённая.
+* **Остановка после N рабочих** (`stop_after`, 0 — всё): позиция
+  сохраняется ровно на остановке, «Искать дальше» = resume.
+* **Память подбора** (`core/strategy_memory`): стратегии, которые уже
+  срабатывали на цели в этой сети (`wins > losses`, не `stale`), идут
+  первыми (`from_memory`, до `MEMORY_FIRST_MAX`=10, в т.ч. не попавшие в
+  набор quick). Порядок сохраняется в resume (`memory_ids`). В память
+  пишутся удачи, провалы выдвинутых памятью и `UNSTABLE`; цель, открытая
+  без обхода, — нет.
 
 ### 13.5 Дедуп
 

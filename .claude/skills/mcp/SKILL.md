@@ -358,7 +358,7 @@ UI), и `tools_by_scope`.
 | `connectivity_matrix` | read | нет | `tools/probes.py` | refresh?, ifaces?, offset?, limit? | матрица «цель × интерфейс»; `refresh` — по `probes` |
 | `probe_targets` | probes | нет | `tools/probes.py` | targets, repeats?, timeout_sec?, port?, offset?, limit? | проба доменов DNS→TCP→TLS→HTTP; коды из `PROBE_CODES`, состояния не меняет |
 | `probe_compare` | probes | **да** | `tools/probes.py` | target, repeats?, timeout_sec?, toggle? | домен с обходом и без; вердикт из пяти; переключение движка требует ещё и `control` |
-| `scan_start` | probes | **да** | `tools/scan.py` | target, protocol?, mode?, resume?, dpi_type? | запустить подбор стратегий; ответ — `job_id`, сразу |
+| `scan_start` | probes | **да** | `tools/scan.py` | target, protocol?, mode?, resume?, dpi_type?, stop_after?, confirm? | запустить подбор стратегий; ответ — `job_id`, сразу. `stop_after` — остановиться после N рабочих (0 — всё), `confirm` — перепроверить лучшие (медиана); `resume` берёт позицию только того же прогона |
 | `scan_stop` | probes | **да** | `tools/scan.py` | — | остановить подбор; проверенное остаётся в `scan_results` |
 | `blockcheck_start` | probes | **да** | `tools/blockcheck.py` | mode?, domains?, timeout_sec? | наш blockcheck в фоне; отчёт потом — `dpi_report` |
 | `blockcheck2_start` | probes | **да** | `tools/blockcheck.py` | domains?, scanlevel?, ipv?, repeats?, http?, tls12?, tls13?, http3? | оригинальный скрипт zapret2 (DOMAINS/SCANLEVEL/REPEATS/…) |

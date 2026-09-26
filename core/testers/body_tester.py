@@ -60,10 +60,56 @@ def _detect_isp_marker(body: bytes) -> str:
     return ""
 
 
+_FAMILIES = {"ipv4": socket.AF_INET, "ipv6": socket.AF_INET6}
+
+
+def _connect_family(host, port, timeout, family):
+    """TCP-сокет к `host` строго по одному семейству адресов.
+
+    `socket.create_connection` (его зовёт `http.client`) перебирает
+    ВСЕ адреса и при неудаче IPv6 молча уходит на IPv4 — проба «по
+    IPv6» тогда мерила бы открытый IPv4.
+    """
+    last = None
+    for fam, _type, _proto, _canon, sockaddr in socket.getaddrinfo(
+            host, port, family, socket.SOCK_STREAM):
+        sock = socket.socket(fam, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as e:
+            last = e
+            sock.close()
+    raise last or OSError("нет адресов для %s" % host)
+
+
+class _FamilyHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, family, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._family = family
+
+    def connect(self):
+        self.sock = _connect_family(self.host, self.port, self.timeout,
+                                    self._family)
+
+
+class _FamilyHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, family, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._family = family
+
+    def connect(self):
+        sock = _connect_family(self.host, self.port, self.timeout,
+                               self._family)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
 def probe_body(
     url: str,
     min_bytes: int = _DEFAULT_MIN_BYTES,
     timeout: float = 10.0,
+    ip_family: str = "auto",
 ) -> SingleTestResult:
     """Скачать ≥ min_bytes байт тела через GET и классифицировать исход.
 
@@ -71,6 +117,9 @@ def probe_body(
         url: Полный URL (http/https).
         min_bytes: Минимум байт, после которого можно остановить чтение.
         timeout: Сетевой таймаут в секундах.
+        ip_family: "ipv4"/"ipv6" — только это семейство адресов, без
+            отката на другое; "auto" — как решит система. Нет адресов
+            нужного семейства — SKIPPED (как у TLS-тестера).
 
     Returns:
         SingleTestResult со статусом SUCCESS/FAILED/ERROR/TIMEOUT и
@@ -92,6 +141,20 @@ def probe_body(
     if parsed.query:
         path += "?" + parsed.query
 
+    family = _FAMILIES.get(ip_family)
+    if family is not None:
+        try:
+            socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+        except socket.gaierror:
+            return SingleTestResult(
+                target=url,
+                test_type=TestType.HTTP.value,
+                status=TestStatus.SKIPPED.value,
+                error="NO_ADDR_FAMILY",
+                details="Нет адресов %s для %s" % (ip_family, host),
+                raw_data={"ip_family": ip_family},
+            )
+
     start = time.time()
     bytes_received = 0
     status_code = 0
@@ -102,9 +165,18 @@ def probe_body(
             ctx = ssl.create_default_context()
             ctx.check_hostname = True
             ctx.verify_mode = ssl.CERT_REQUIRED
-            conn = http.client.HTTPSConnection(
-                host, port=port, timeout=timeout, context=ctx,
-            )
+            if family is not None:
+                conn = _FamilyHTTPSConnection(
+                    host, port=port, timeout=timeout, context=ctx,
+                    family=family,
+                )
+            else:
+                conn = http.client.HTTPSConnection(
+                    host, port=port, timeout=timeout, context=ctx,
+                )
+        elif family is not None:
+            conn = _FamilyHTTPConnection(host, port=port, timeout=timeout,
+                                         family=family)
         else:
             conn = http.client.HTTPConnection(host, port=port, timeout=timeout)
 

@@ -232,7 +232,11 @@ class TestIssueDraft(_Base):
         self.assertTrue(out["body_shortened"])
 
     def test_short_body_fits_unshortened(self):
-        out = self.draft(actual="коротко")
+        # Лог-буфер общий на весь прогон: после «шумных» соседних тестов
+        # строки лога сами раздували бы короткий черновик сверх ссылки.
+        from unittest import mock
+        with mock.patch.object(issues, "_log_rows", return_value=[]):
+            out = self.draft(actual="коротко")
         self.assertFalse(out["body_shortened"])
         self.assertIn("коротко", unquote(out["open_on_github"]))
 

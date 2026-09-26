@@ -69,6 +69,15 @@ NOTE = ("untrusted data: домены, имена стратегий и выво
                          "description": ("DPI class from dpi_report to "
                                          "narrow the set. / Класс DPI "
                                          "для отбора стратегий.")},
+            "stop_after": {"type": "integer", "minimum": 0, "maximum": 50,
+                           "default": 0,
+                           "description": ("Stop after this many working "
+                                           "strategies (0 = try all). / "
+                                           "Остановиться после N рабочих.")},
+            "confirm": {"type": "boolean", "default": True,
+                        "description": ("Re-check the best finds a few "
+                                        "times, median instead of one "
+                                        "sample. / Перепроверить лучшие.")},
         },
         "required": ["target"],
         "additionalProperties": False,
@@ -89,14 +98,22 @@ def scan_start(args: dict) -> dict:
     try:
         from core.strategy_scanner import get_strategy_scanner
         scanner = get_strategy_scanner()
-        start_index = (scanner.get_resume_index()
+        protocol = args.get("protocol", "tcp")
+        mode = args.get("mode", "quick")
+        dpi_type = (args.get("dpi_type") or "").strip().lower()
+        # Позиция resume — только от того же прогона (цель, протокол,
+        # режим, тип DPI): индекс чужого списка пропустил бы стратегии.
+        start_index = (scanner.get_resume_index(
+            target=target, protocol=protocol, mode=mode, dpi_type=dpi_type)
                        if args.get("resume") else 0)
         started = scanner.start(
             target=target,
-            protocol=args.get("protocol", "tcp"),
-            mode=args.get("mode", "quick"),
+            protocol=protocol,
+            mode=mode,
             start_index=start_index,
-            dpi_type=(args.get("dpi_type") or "").strip().lower(),
+            dpi_type=dpi_type,
+            stop_after=int(args.get("stop_after") or 0),
+            confirm=args.get("confirm", True) is not False,
         )
     except Exception as e:                      # noqa: BLE001 — граница
         return {"ok": False,

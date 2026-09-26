@@ -56,6 +56,7 @@ STABILIZATION_DELAY = 1.0       # Ожидание после запуска nfq
 PROBE_TIMEOUT = 6               # Таймаут TLS handshake
 BODY_PROBE_TIMEOUT = 8          # Таймаут body-загрузки (>=64 KB)
 STUN_PROBE_TIMEOUT = 4          # Таймаут STUN-пробы (UDP)
+QUIC_PROBE_TIMEOUT = 4          # Таймаут QUIC-пробы (Initial с SNI)
 KILL_TIMEOUT = 4                # Ожидание остановки nfqws2
 INTER_STRATEGY_DELAY = 0.3      # Пауза между стратегиями
 BODY_PROBE_MIN_BYTES = 65_536   # Минимум для прохождения 16-20 KB барьера
@@ -65,7 +66,24 @@ BODY_PROBE_MIN_BYTES = 65_536   # Минимум для прохождения 1
 NFQWS_CRASH_RETRIES = 2
 NFQWS_CRASH_BACKOFF = 1.0       # пауза между попытками
 
-# Scan status
+# Остановка после N рабочих: потолок, чтобы «найти 1000» не выглядело
+# как режим.
+MAX_STOP_AFTER = 50
+
+# Перепроверка лучших: сколько лучших и сколько раз ещё (по умолчанию;
+# переопределяются scan.confirm_top / scan.confirm_repeats).
+CONFIRM_TOP = 3
+CONFIRM_REPEATS = 2
+
+# Сколько стратегий из памяти подбора ставим в начало.
+MEMORY_FIRST_MAX = 10
+
+# Этапы прогона — для прогресса в UI.
+STAGE_PREPARE = "prepare"
+STAGE_BASELINE = "baseline"
+STAGE_SCAN = "scan"
+STAGE_CONFIRM = "confirm"
+STAGE_DONE = "done"
 
 # Scan status
 STATUS_IDLE = "idle"
@@ -85,6 +103,17 @@ STATUS_CANCELLED = "cancelled"
 # гигабитного score, а латентность ниже 50 мс не улучшает результат.
 SCORE_KBPS_CAP = 2048.0         # выше этого скорость в score не растёт
 SCORE_LATENCY_FLOOR_MS = 50.0   # ниже этого латентность в score не падает
+
+
+def udp_probe_kind(profile) -> str:
+    """Чем проверять UDP-цель: ``quic`` или ``stun``.
+
+    STUN к ``youtube.com:19302`` для QUIC-профиля ничего не говорит — там
+    нет STUN-сервера, и такой подбор давал 0% на всём. QUIC-цели
+    проверяются настоящим Initial с SNI (``core/testers/quic_initial``).
+    """
+    l7 = str(getattr(profile, "udp_l7", "") or "").lower()
+    return "quic" if "quic" in l7.split(",") else "stun"
 
 
 def credit_success(success: bool, baseline_open: bool) -> bool:
@@ -160,6 +189,22 @@ class StrategyScanner:
         self._protocol = "tcp"
         self._mode = "quick"
         self._start_index = 0
+        self._dpi_type = ""
+        # Сколько раз правила перехвата пришлось ставить заново посреди
+        # прогона (их сбрасывал системный firewall) — видно в статусе.
+        self._rules_reapplied = 0
+        # Остановка после N рабочих и перепроверка лучших.
+        self._stop_after = 0
+        self._confirm = True
+        self._stopped_early = False
+        # Этап прогона (для человеческого прогресса в UI).
+        self._stage = ""
+        self._confirm_progress = 0
+        self._confirm_total = 0
+        # id стратегий, поднятых в начало памятью подбора.
+        self._memory_ids: list[str] = []
+        # Записи каталога прогона по id — для перепроверки.
+        self._entries_by_id: dict[str, CatalogEntry] = {}
         # Профиль цели (см. core/scan_targets.py)
         self._scan_profile = None  # type: ignore[var-annotated]
         # Путь временного hostlist'а для приёмов (создаётся в _run_scan)
@@ -199,6 +244,8 @@ class StrategyScanner:
         start_index: int = 0,
         dpi_type: str = "",
         callback: Optional[Callable] = None,
+        stop_after: int = 0,
+        confirm: bool = True,
     ) -> bool:
         """
         Запустить сканирование стратегий в фоновом потоке.
@@ -211,10 +258,25 @@ class StrategyScanner:
             dpi_type:    Тип DPI-блокировки (из BlockCheck). Фильтрует
                          релевантные стратегии.
             callback:    Опциональный callable(event_type, data).
+            stop_after:  Остановить перебор, когда найдено столько рабочих
+                         стратегий (0 — перебрать всё).
+            confirm:     Перепроверить лучшие находки несколько раз
+                         (медиана вместо одного замера).
 
         Returns:
             True если сканирование запущено.
         """
+        # Разбор входа — ДО статуса RUNNING: исключение здесь иначе
+        # оставило бы сканер «запущенным» без потока, а движок — занятым
+        # для всех (nfqws_control.busy() смотрит на этот статус).
+        target = str(target or "").strip() or "youtube.com"
+        protocol = str(protocol or "").strip().lower() or "tcp"
+        mode = str(mode or "").strip().lower() or "quick"
+        start_index = max(0, int(start_index or 0))
+        dpi_type = str(dpi_type or "").strip().lower()
+        stop_after = max(0, min(int(stop_after or 0), MAX_STOP_AFTER))
+        confirm = bool(confirm)
+
         with self._lock:
             if self._status == STATUS_RUNNING:
                 log.warning(
@@ -235,12 +297,21 @@ class StrategyScanner:
             self._error = ""
             self._started_at = time.time()
 
-            self._target = target.strip() or "youtube.com"
-            self._protocol = protocol.strip().lower() or "tcp"
-            self._mode = mode.strip().lower() or "quick"
-            self._start_index = max(0, int(start_index))
-            self._dpi_type = dpi_type.strip().lower() if dpi_type else ""
+            self._target = target
+            self._protocol = protocol
+            self._mode = mode
+            self._start_index = start_index
+            self._dpi_type = dpi_type
             self._callback = callback
+            self._stop_after = stop_after
+            self._confirm = confirm
+            self._stopped_early = False
+            self._rules_reapplied = 0
+            self._stage = STAGE_PREPARE
+            self._confirm_progress = 0
+            self._confirm_total = 0
+            self._memory_ids = []
+            self._entries_by_id = {}
 
         log.info(
             "Запуск сканирования: target=%s, protocol=%s, mode=%s"
@@ -319,7 +390,27 @@ class StrategyScanner:
                 # ошибка: подбор нужно запускать на ЗАБЛОКИРОВАННОМ ресурсе.
                 "baseline_open": self._baseline_open,
                 "baseline_by_af": dict(self._baseline_by_af),
+                # Для человеческого прогресса: этап, перепроверка,
+                # чем проверяется цель, остановка после N рабочих.
+                "stage": self._stage,
+                "probe_kind": self._probe_kind_name(),
+                "stop_after": self._stop_after,
+                "stopped_early": self._stopped_early,
+                "confirm": self._confirm,
+                "confirm_progress": self._confirm_progress,
+                "confirm_total": self._confirm_total,
+                "confirmed_count": len([r for r in working if r.confirmed]),
+                "memory_first": len(self._memory_ids),
+                "rules_reapplied": self._rules_reapplied,
             }
+
+    def _probe_kind_name(self) -> str:
+        """Чем проверяется цель: ``tls+body`` / ``quic`` / ``stun``."""
+        if self._protocol != "udp":
+            return "tls+body"
+        if self._scan_profile is None:
+            return "quic"
+        return udp_probe_kind(self._scan_profile)
 
     def get_results(self) -> Optional[StrategyScanReport]:
         """Получить результаты последнего сканирования."""
@@ -330,9 +421,35 @@ class StrategyScanner:
         with self._lock:
             return [r.to_dict() for r in self._results if r.success]
 
-    def get_resume_index(self) -> int:
-        """Получить индекс для resume из сохранённого состояния."""
-        return self._load_resume_state()
+    def get_resume_index(self, target=None, protocol=None, mode=None,
+                         dpi_type=None) -> int:
+        """Индекс для resume из сохранённого состояния.
+
+        Индекс имеет смысл только в том же списке стратегий, а список
+        задают цель, протокол, режим и тип DPI. Сохранённая позиция
+        ЧУЖОГО прогона (отменили youtube/tcp/standard на 50-й, а
+        продолжить просят discord/udp/quick) — это 0, а не «начать с
+        50-й стратегии другого списка». ``None`` — параметр не сверять.
+        """
+        state = self._load_resume_state()
+        if not state:
+            return 0
+        want = {"target": target, "protocol": protocol, "mode": mode,
+                "dpi_type": dpi_type}
+        for key, value in want.items():
+            if value is None:
+                continue
+            saved = str(state.get(key) or "").strip().lower()
+            if saved != str(value or "").strip().lower():
+                log.info(
+                    "Resume не применён: сохранён прогон %s=%s, а просят %s"
+                    % (key, saved or "—", value or "—"),
+                    source="scanner")
+                return 0
+        try:
+            return max(0, int(state.get("next_index", 0)))
+        except (TypeError, ValueError):
+            return 0
 
     def apply_strategy(self, index: int) -> bool:
         """
@@ -452,7 +569,8 @@ class StrategyScanner:
             self._stop_current_nfqws()
 
             # 4. Baseline тест (без обхода)
-            self._set_phase("Baseline-тест")
+            self._set_stage(STAGE_BASELINE)
+            self._set_phase("Проверка без обхода (baseline)")
             baseline_accessible = self._run_baseline_test()
 
             if baseline_accessible:
@@ -462,8 +580,18 @@ class StrategyScanner:
                     source="scanner",
                 )
 
-            # 5. Перебор стратегий
-            self._set_phase("Сканирование стратегий")
+            # 5. Правила перехвата — один раз на весь прогон
+            self._set_phase("Подготовка перехвата")
+            if not self._start_scan_rules():
+                self._set_error(
+                    "Не удалось применить правила firewall: без них "
+                    "стратегии проверить нельзя. Подробности — в журнале "
+                    "(источник firewall).")
+                return
+
+            # 6. Перебор стратегий
+            self._set_stage(STAGE_SCAN)
+            self._set_phase("Перебор стратегий")
 
             for idx, entry in enumerate(strategies):
                 if self._cancelled:
@@ -473,6 +601,7 @@ class StrategyScanner:
                 with self._lock:
                     self._progress = idx + 1
                     self._current_strategy_name = entry.name
+                    self._entries_by_id[entry.section_id] = entry
 
                 self._emit_callback(
                     "strategy_start",
@@ -506,6 +635,7 @@ class StrategyScanner:
                 probe_start = time.time()
                 result = self._probe_one_strategy(entry, actual_idx)
                 probe_elapsed = time.time() - probe_start
+                result.from_memory = entry.section_id in self._memory_ids
 
                 with self._lock:
                     self._results.append(result)
@@ -561,11 +691,36 @@ class StrategyScanner:
                     self._save_resume_state(save_idx)
                     self._last_save_time = now
 
+                # Остановка после N рабочих: пользователю нужна рабочая
+                # стратегия, а не перебор всего каталога.
+                if self._stop_after and working_count >= self._stop_after:
+                    with self._lock:
+                        self._stopped_early = True
+                    # Позиция — точно на месте остановки: «Искать дальше»
+                    # продолжит отсюда, а не с последнего троттлинга.
+                    self._save_resume_state(actual_idx + 1)
+                    log.info(
+                        "Найдено рабочих стратегий: %d — перебор "
+                        "остановлен (stop_after=%d)"
+                        % (working_count, self._stop_after),
+                        source="scanner",
+                    )
+                    break
+
                 # Пауза между стратегиями
                 if not self._cancelled and idx < len(strategies) - 1:
                     time.sleep(INTER_STRATEGY_DELAY)
 
-            # 6. Формируем отчёт
+            # 7. Перепроверка лучших: один замер — это совпадение,
+            #    три подряд — знание.
+            if self._confirm and not self._cancelled:
+                self._confirm_best()
+
+            # 8. Память подбора: что сработало на этой цели в этой сети.
+            self._remember_findings()
+
+            # 9. Формируем отчёт
+            self._set_stage(STAGE_DONE)
             finished_at = time.time()
             self._build_report(
                 started_at, finished_at, baseline_accessible,
@@ -635,8 +790,9 @@ class StrategyScanner:
             # Восстанавливаем предыдущее состояние nfqws
             self._restore_previous_state()
 
-            # Удаляем resume file при успешном завершении
-            if not self._cancelled:
+            # Resume-файл нужен после отмены и после остановки «после N
+            # рабочих» («Искать дальше»); после полного прохода — нет.
+            if not self._cancelled and not self._stopped_early:
                 self._remove_resume_state()
 
     def _check_prerequisites(self) -> None:
@@ -682,16 +838,22 @@ class StrategyScanner:
         """
         from core.catalog_loader import get_catalog_manager
 
+        from core.scan_targets import detect_target, traffic_family
+
         cm = get_catalog_manager()
         protocol = self._protocol
+        # Приёмы — под трафик цели: HTTP-приёмы для TLS-цели и голос
+        # Discord для QUIC — пустые пробы.
+        family = traffic_family(
+            self._scan_profile or detect_target(self._target), protocol)
 
         # quick/standard/full — отбираем кандидатов из каталога
         if self._mode == "quick":
-            entries = cm.get_quick_set(protocol=protocol)
+            entries = cm.get_quick_set(protocol=protocol, family=family)
         elif self._mode == "standard":
-            entries = cm.get_standard_set(protocol=protocol)
+            entries = cm.get_standard_set(protocol=protocol, family=family)
         else:  # full
-            entries = cm.get_full_set(protocol=protocol)
+            entries = cm.get_full_set(protocol=protocol, family=family)
 
         # quick может оказаться без builtin (label=recommended нет у
         # пресетов). Подставляем топ-N builtin в начало, общий размер
@@ -770,6 +932,10 @@ class StrategyScanner:
 
         entries.sort(key=_sort_key)
 
+        # То, что уже срабатывало на этой цели в этой сети, — первым:
+        # пользователю важна рабочая стратегия, и шанс у этих выше.
+        entries = self._memory_first(entries)
+
         # Применяем start_index для resume
         if self._start_index > 0 and self._start_index < len(entries):
             entries = entries[self._start_index:]
@@ -779,6 +945,62 @@ class StrategyScanner:
             )
 
         return entries
+
+    def _memory_first(self, entries: list) -> list:
+        """Поставить в начало стратегии, которые помнит память подбора.
+
+        Порядок сохраняется в resume-файле (``memory_ids``): «продолжить»
+        обязано идти по тому же списку, даже если память с тех пор
+        пополнил эксперимент. Стратегию из памяти, не попавшую в набор
+        режима (quick — ~30 штук), берём из каталога целиком.
+        """
+        ids = self._remembered_ids()
+        if not ids:
+            self._memory_ids = []
+            return entries
+        by_id = {e.section_id: e for e in entries}
+        front = []
+        for sid in ids:
+            entry = by_id.get(sid) or self._catalog_entry(sid)
+            if entry is not None and entry not in front:
+                front.append(entry)
+        taken = {e.section_id for e in front}
+        self._memory_ids = [e.section_id for e in front]
+        if front:
+            log.info(
+                "Память подбора: первыми проверим %d стратегий, которые "
+                "уже срабатывали на %s в этой сети"
+                % (len(front), self._target), source="scanner")
+        return front + [e for e in entries if e.section_id not in taken]
+
+    def _remembered_ids(self) -> list:
+        """id стратегий из памяти: для resume — сохранённые, иначе свежие."""
+        if self._start_index > 0:
+            saved = self._load_resume_state().get("memory_ids")
+            return [str(x) for x in saved] if isinstance(saved, list) else []
+        try:
+            from core import strategy_memory
+            found = strategy_memory.lookup(targets=[self._target], limit=50)
+        except Exception as e:                  # noqa: BLE001 — граница
+            log.debug("Память подбора недоступна: %s" % e, source="scanner")
+            return []
+        ids = []
+        for item in found.get("items") or []:
+            sid = str(item.get("strategy_id") or "")
+            if (sid and sid not in ids and not item.get("stale")
+                    and item.get("wins", 0) > item.get("losses", 0)):
+                ids.append(sid)
+            if len(ids) >= MEMORY_FIRST_MAX:
+                break
+        return ids
+
+    def _catalog_entry(self, strategy_id: str):
+        try:
+            from core.catalog_loader import get_catalog_manager
+            return get_catalog_manager().get_entry_by_id(
+                strategy_id, protocol=self._protocol)
+        except Exception:                       # noqa: BLE001 — граница
+            return None
 
     def _filter_by_dpi(self, entries: list, dpi_type: str) -> list:
         """
@@ -939,7 +1161,6 @@ class StrategyScanner:
 
         start_time = time.time()
         nfqws_started = False
-        fw_applied = False
 
         try:
             # 1. Собираем аргументы из CatalogEntry
@@ -969,8 +1190,10 @@ class StrategyScanner:
                 source="scanner",
             )
 
-            # 2. Применяем правила firewall
-            if not fw.apply_rules():
+            # 2. Правила firewall стоят на весь прогон (_start_scan_rules);
+            #    здесь — только дешёвая проверка, что их не снёс
+            #    системный firewall (Keenetic NDMS, fw4 reload).
+            if not self._ensure_scan_rules(fw):
                 return StrategyProbeResult(
                     strategy_id=entry.section_id,
                     strategy_name=entry.name,
@@ -986,8 +1209,6 @@ class StrategyScanner:
                         "level": entry.level,
                     },
                 )
-
-            fw_applied = True
 
             # 3. Запускаем nfqws2 с crash-retry (гонка с conntrack/NFQUEUE bind
             #    бывает на холодном старте; ретрай через короткую паузу решает).
@@ -1111,14 +1332,41 @@ class StrategyScanner:
                     source="scanner",
                 )
 
-            try:
-                if fw_applied:
-                    fw.remove_rules()
-            except Exception as e:
-                log.warning(
-                    "Ошибка снятия firewall: %s" % e,
-                    source="scanner",
-                )
+    # ─────────────────── Правила на весь прогон ───────────────────
+
+    def _start_scan_rules(self) -> bool:
+        """Поставить правила перехвата один раз — на весь прогон.
+
+        Раньше правила ставились и снимались на КАЖДУЮ стратегию: на
+        роутере это десятки вызовов iptables/nft на пробу. Они стоят с
+        `--queue-bypass`/`bypass`: пока nfqws2 между стратегиями
+        перезапускается, пакеты идут мимо очереди, а не в пустоту.
+        Снимает их `_ensure_cleanup` в конце прогона.
+        """
+        from core.firewall import get_firewall_manager
+
+        if get_firewall_manager().apply_rules():
+            with self._lock:
+                self._rules_reapplied = 0
+            return True
+        return False
+
+    def _ensure_scan_rules(self, fw) -> bool:
+        """Правила на месте? Нет — поставить снова (и посчитать это)."""
+        try:
+            if fw.is_applied():
+                return True
+        except Exception as e:                  # noqa: BLE001 — граница
+            log.debug("Проверка правил не удалась: %s" % e,
+                      source="scanner")
+        log.warning("Правила перехвата пропали посреди подбора (их "
+                    "сбросил системный firewall?) — ставим заново",
+                    source="scanner")
+        if not fw.apply_rules():
+            return False
+        with self._lock:
+            self._rules_reapplied += 1
+        return True
 
     # ─────────────────── Args builder ───────────────────
 
@@ -1269,7 +1517,10 @@ class StrategyScanner:
 
         profile = self._scan_profile or detect_target(self._target)
 
-        # UDP: ничего лучше STUN сейчас не умеем.
+        # UDP: QUIC-профилю — настоящий QUIC Initial с SNI (его DPI и
+        # режет), остальным (Discord voice, STUN) — STUN.
+        if self._protocol == "udp" and udp_probe_kind(profile) == "quic":
+            return self._quic_probe(profile)
         if self._protocol == "udp":
             stun = self._probe_stun()
             ok = stun.status == TestStatus.SUCCESS.value
@@ -1302,22 +1553,7 @@ class StrategyScanner:
         # TCP: TLS + body
         hosts = self._select_test_hosts(profile)
 
-        # Какие AF имеет смысл проверять у стратегии:
-        #  - если baseline дал per-AF map — пробуем те, что были заблокированы
-        #    (на доступных нет смысла — стратегия их «не починит»);
-        #  - если карта пустая (нет резолва или UDP) — только ipv4 как и раньше.
-        if self._baseline_by_af:
-            blocked_afs = [af for af, ok in self._baseline_by_af.items()
-                           if not ok]
-            if not blocked_afs:
-                # Все AF уже открыты на baseline — стратегия не может «починить»,
-                # но всё равно прогоним один проход (чтобы не пустые результаты).
-                probe_afs = ["ipv4"] if "ipv4" in self._baseline_by_af else \
-                            list(self._baseline_by_af.keys())[:1]
-            else:
-                probe_afs = blocked_afs
-        else:
-            probe_afs = ["ipv4"]
+        probe_afs = self._probe_afs()
 
         per_host: list[dict[str, Any]] = []
         sum_latency = 0.0
@@ -1380,14 +1616,26 @@ class StrategyScanner:
                 host_tls_ok_any = True
 
                 # Шаг 2: body-загрузка
-                url = (profile.get_probe_url()
-                       if host == profile.primary_host
-                       else "https://%s/" % host)
+                url = profile.get_probe_url(host)
+                # Тело — по ТОМУ ЖЕ семейству адресов, что и TLS: иначе
+                # при открытом IPv4 и заблокированном IPv6 «успех по
+                # IPv6» скачивался бы по IPv4 (http.client откатывается
+                # на другое семейство сам).
                 body = probe_body(
                     url=url,
                     min_bytes=BODY_PROBE_MIN_BYTES,
                     timeout=BODY_PROBE_TIMEOUT,
+                    ip_family=af,
                 )
+                if body.status == TestStatus.SKIPPED.value:
+                    # У хоста пробного URL нет адресов этого семейства —
+                    # качаем с хоста, на котором TLS по нему уже прошёл.
+                    body = probe_body(
+                        url="https://%s/" % host,
+                        min_bytes=BODY_PROBE_MIN_BYTES,
+                        timeout=BODY_PROBE_TIMEOUT,
+                        ip_family=af,
+                    )
                 body_ok = body.status == TestStatus.SUCCESS.value
                 af_entry["body_ok"] = body_ok
                 af_entry["body_error"] = body.error or ""
@@ -1498,6 +1746,219 @@ class StrategyScanner:
             "baseline_by_af": dict(self._baseline_by_af),
         }
 
+    def _probe_afs(self) -> list:
+        """Какие AF имеет смысл проверять у стратегии.
+
+        Если baseline дал per-AF карту — те, что были заблокированы (на
+        открытых стратегия ничего «не починит»). Все открыты — один
+        проход, чтобы результат не был пустым. Карты нет — только ipv4.
+        """
+        if not self._baseline_by_af:
+            return ["ipv4"]
+        blocked = [af for af, ok in self._baseline_by_af.items() if not ok]
+        if blocked:
+            return blocked
+        return (["ipv4"] if "ipv4" in self._baseline_by_af
+                else list(self._baseline_by_af.keys())[:1])
+
+    def _quic_probe(self, profile) -> dict[str, Any]:
+        """QUIC-проба стратегии: Initial с SNI по хостам цели и AF.
+
+        Та же форма ответа, что у TLS+body-пробы, чтобы отчёт, score и
+        UI не различали протоколы. Скорости у QUIC-пробы нет — в формулу
+        уходит единичная, как у STUN.
+        """
+        from core.testers.quic_tester import test_quic_handshake
+
+        hosts = self._select_test_hosts(profile)
+        probe_afs = self._probe_afs()
+        per_host: list[dict[str, Any]] = []
+        ok_count, sum_latency, sub_errors = 0, 0.0, []
+
+        for host in hosts:
+            entry = {"host": host, "tls_ok": False, "body_ok": False,
+                     "quic_ok": False, "kbps": 0.0, "latency_ms": 0.0,
+                     "details": "", "af_results": {}}
+            for af in probe_afs:
+                res = test_quic_handshake(host, port=443,
+                                          timeout=QUIC_PROBE_TIMEOUT,
+                                          ip_family=af)
+                if res.status == TestStatus.SKIPPED.value:
+                    continue
+                ok = res.status == TestStatus.SUCCESS.value
+                entry["af_results"][af] = {
+                    "quic_ok": ok, "quic_error": res.error or "",
+                    "quic_details": res.details,
+                    "latency_ms": res.latency_ms,
+                    "connected_ip": res.raw_data.get("connected_ip", ""),
+                }
+                if ok and not entry["quic_ok"]:
+                    entry["quic_ok"] = True
+                    entry["latency_ms"] = res.latency_ms
+                elif not ok and res.error:
+                    sub_errors.append(res.error)
+                entry["details"] = entry["details"] or res.details
+            if entry["quic_ok"]:
+                ok_count += 1
+                sum_latency += entry["latency_ms"]
+            per_host.append(entry)
+
+        total = max(len(hosts), 1)
+        success_rate = round(ok_count / total, 3)
+        baseline_open_all = bool(self._baseline_by_af) and \
+            all(self._baseline_by_af.values())
+        success = credit_success(ok_count > 0, baseline_open_all)
+        latency = (sum_latency / ok_count) if ok_count else 0.0
+        if success:
+            err = ""
+        elif baseline_open_all:
+            err = "BASELINE_OPEN"
+        else:
+            err = self._pick_best_error(sub_errors, 0, 0) if sub_errors \
+                else "QUIC_TIMEOUT"
+        return {
+            "success": success,
+            "latency_ms": latency,
+            "error": err,
+            "http_code": 0,
+            "kbps": 0.0,
+            "body_passed": False,
+            "success_rate": success_rate,
+            "score": compose_score(success, success_rate, 1.0, latency)
+                     if success else round(success_rate, 2),
+            "test_type": "quic",
+            "details": "AF=%s, QUIC %d/%d" % (",".join(probe_afs),
+                                              ok_count, total),
+            "per_host": per_host,
+            "probe_afs": probe_afs,
+            "baseline_by_af": dict(self._baseline_by_af),
+        }
+
+    # ─────────────────── Перепроверка лучших ───────────────────
+
+    def _confirm_settings(self) -> tuple:
+        """``(сколько лучших, сколько раз ещё)`` — из конфига или дефолт."""
+        top, repeats = CONFIRM_TOP, CONFIRM_REPEATS
+        try:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            top = int(cfg.get("scan", "confirm_top", default=top))
+            repeats = int(cfg.get("scan", "confirm_repeats",
+                                  default=repeats))
+        except (TypeError, ValueError):
+            pass
+        return max(0, min(top, 10)), max(0, min(repeats, 5))
+
+    def _confirm_best(self) -> None:
+        """Перепроверить лучшие находки ещё несколько раз.
+
+        Один удачный замер — это и настоящая стратегия, и случайность
+        (DPI пропустил одно соединение, CDN отдал кэш). Лучшие K
+        проверяются ещё R раз; скорость и задержка берутся медианой,
+        score умножается на долю пройденных проверок, а стратегия, не
+        прошедшая большинства, успех теряет (``UNSTABLE``).
+        """
+        top, repeats = self._confirm_settings()
+        if not top or not repeats:
+            return
+        with self._lock:
+            candidates = sorted((r for r in self._results if r.success),
+                                key=lambda r: r.score, reverse=True)[:top]
+            self._confirm_total = len(candidates) * repeats
+            self._confirm_progress = 0
+        if not candidates:
+            return
+
+        self._set_stage(STAGE_CONFIRM)
+        log.info("Перепроверка лучших: %d стратегий × %d"
+                 % (len(candidates), repeats), source="scanner")
+        for n, result in enumerate(candidates, 1):
+            entry = self._entries_by_id.get(result.strategy_id)
+            if entry is None:
+                continue
+            samples = [result]
+            for _ in range(repeats):
+                if self._cancelled:
+                    break
+                self._set_phase("Перепроверка лучших: %d из %d"
+                                % (n, len(candidates)))
+                with self._lock:
+                    self._current_strategy_name = result.strategy_name
+                samples.append(self._probe_one_strategy(entry, 0))
+                with self._lock:
+                    self._confirm_progress += 1
+                time.sleep(INTER_STRATEGY_DELAY)
+            self._merge_checks(result, samples)
+
+    def _merge_checks(self, result: StrategyProbeResult,
+                      samples: list) -> None:
+        """Свести повторные замеры в один результат (медиана)."""
+        checks = len(samples)
+        good = [x for x in samples if x.success]
+        passes = len(good)
+        with self._lock:
+            result.checks = checks
+            result.passes = passes
+            result.confirmed = checks > 1 and passes == checks
+            result.raw_data["checks"] = [
+                {"success": x.success, "latency_ms": round(x.latency_ms, 1),
+                 "kbps": round(x.throughput_kbps, 1), "error": x.error}
+                for x in samples]
+            if passes * 2 <= checks:
+                # Большинство проверок провалено: первый успех был
+                # случайностью, а не стратегией.
+                result.success = False
+                result.error = "UNSTABLE"
+                result.score = round(result.success_rate * passes / checks,
+                                     2)
+                return
+            result.latency_ms = _median([x.latency_ms for x in good])
+            result.throughput_kbps = _median([x.throughput_kbps
+                                              for x in good])
+            result.success_rate = _median([x.success_rate for x in good])
+            speed = (result.throughput_kbps
+                     if self._probe_kind_name() == "tls+body" else 1.0)
+            result.score = round(
+                compose_score(True, result.success_rate, speed,
+                              result.latency_ms) * passes / checks, 2)
+
+    # ─────────────────── Память подбора ───────────────────
+
+    def _remember_findings(self) -> None:
+        """Записать находки прогона в память подбора (core/strategy_memory).
+
+        Удачи — всегда. Провалы — только у тех, кого выдвинула сама
+        память, и у не прошедших перепроверку: память должна узнать, что
+        стратегия перестала работать, но не копить сотни «не сработало»
+        по всему каталогу (у неё потолок записей). Цель, открытая без
+        обхода, в память не пишется: вклада стратегии там нет.
+        """
+        if self._baseline_by_af and all(self._baseline_by_af.values()):
+            return
+        with self._lock:
+            results = list(self._results)
+        observations = []
+        for r in results:
+            if not (r.success or r.from_memory or r.error == "UNSTABLE"):
+                continue
+            args = str(r.raw_data.get("args_preview") or "").split()
+            if not args:
+                continue
+            observations.append({
+                "target": self._target, "args": args, "ok": bool(r.success),
+                "strategy_id": r.strategy_id, "label": r.strategy_name,
+                "score": r.score, "success_rate": r.success_rate,
+                "latency_ms": r.latency_ms,
+            })
+        if not observations:
+            return
+        try:
+            from core import strategy_memory
+            strategy_memory.remember(observations, source="scanner")
+        except Exception as e:                  # noqa: BLE001 — граница
+            log.debug("Память подбора не записана: %s" % e,
+                      source="scanner")
+
     @staticmethod
     def _pick_best_error(
         errors: list[str],
@@ -1538,6 +1999,8 @@ class StrategyScanner:
             "HOST_UNREACH",
             "NET_UNREACH",
             "TLS_TIMEOUT",
+            "QUIC_REFUSED",
+            "QUIC_TIMEOUT",
             "TCP_TIMEOUT",
             "READ_TIMEOUT",
             "TIMEOUT",
@@ -1622,7 +2085,12 @@ class StrategyScanner:
 
         self._emit_callback("phase", {"phase": "Baseline-тест"})
 
-        # UDP: per-AF не делаем (STUN сам резолвит как умеет)
+        from core.scan_targets import detect_target
+        profile = self._scan_profile or detect_target(self._target)
+        if self._protocol == "udp" and udp_probe_kind(profile) == "quic":
+            return self._quic_baseline()
+
+        # UDP-STUN: per-AF не делаем (STUN сам резолвит как умеет)
         if self._protocol == "udp":
             result = self._probe_stun()
             is_accessible = result.status == TestStatus.SUCCESS.value
@@ -1679,7 +2147,19 @@ class StrategyScanner:
                     source="scanner",
                 )
                 continue
-            per_af[af] = (res.status == TestStatus.SUCCESS.value)
+            ok = res.status == TestStatus.SUCCESS.value
+            if ok:
+                # Критерий — тот же, что у пробы стратегии (TLS + тело
+                # ≥64 КБ): TLS-тестер читает ≤2 КБ, и при обрыве на
+                # 16-20 КБ baseline видел бы «открыт», а каждая
+                # стратегия получала бы BASELINE_OPEN — подбор под самый
+                # частый тип блокировки не находил бы ничего.
+                body = self._baseline_body(af)
+                if body is not None and \
+                        body.status != TestStatus.SUCCESS.value:
+                    ok = False
+                    res = body
+            per_af[af] = ok
             log.info(
                 "Baseline %s: %s (%s, %.0f ms)" % (
                     af,
@@ -1721,6 +2201,61 @@ class StrategyScanner:
             )
 
         return is_accessible
+
+    def _quic_baseline(self) -> bool:
+        """Baseline QUIC-цели: Initial с SNI без обхода, по IPv4 и IPv6.
+
+        Критерий — тот же, что у пробы стратегии (``_quic_probe``).
+        Нет адресов AF, «порт закрыт» (ICMP) или сетевая ошибка — AF
+        из карты исключается: DPI-стратегия это не лечит.
+        """
+        from core.testers.quic_tester import test_quic_handshake
+
+        per_af: dict[str, bool] = {}
+        for af in ("ipv4", "ipv6"):
+            try:
+                res = test_quic_handshake(self._target, port=443,
+                                          timeout=QUIC_PROBE_TIMEOUT,
+                                          ip_family=af)
+            except Exception as e:              # noqa: BLE001 — граница
+                log.debug("Baseline QUIC %s: исключение %s" % (af, e),
+                          source="scanner")
+                continue
+            if res.status == TestStatus.SKIPPED.value or \
+                    res.error in ("QUIC_REFUSED", "QUIC_ERR"):
+                continue
+            per_af[af] = res.status == TestStatus.SUCCESS.value
+            log.info("Baseline QUIC %s: %s (%s)" % (
+                af, "доступен" if per_af[af] else "заблокирован",
+                res.details), source="scanner")
+
+        self._baseline_by_af = per_af
+        self._baseline_open = any(per_af.values())
+        if per_af and all(per_af.values()):
+            log.warning(
+                "Baseline: QUIC к %s работает без обхода — подбирать "
+                "UDP-стратегию незачем" % self._target, source="scanner")
+        return self._baseline_open
+
+    def _baseline_body(self, af: str):
+        """Body-проба цели без обхода по одному AF (или ``None``).
+
+        URL — тот же, что у пробы стратегии для основного хоста
+        (``_deep_probe``). ``None`` — проверить нечем (у цели нет адресов
+        этого AF ни по пробному URL, ни по ней самой): тогда baseline
+        остаётся на результате TLS.
+        """
+        from core.scan_targets import detect_target
+        from core.testers.body_tester import probe_body
+
+        profile = self._scan_profile or detect_target(self._target)
+        urls = [profile.get_probe_url(), "https://%s/" % self._target]
+        for url in dict.fromkeys(urls):
+            body = probe_body(url=url, min_bytes=BODY_PROBE_MIN_BYTES,
+                              timeout=BODY_PROBE_TIMEOUT, ip_family=af)
+            if body.status != TestStatus.SKIPPED.value:
+                return body
+        return None
 
     # ─────────────────── State save/restore ───────────────────
 
@@ -1848,6 +2383,8 @@ class StrategyScanner:
                 "target": self._target,
                 "protocol": self._protocol,
                 "mode": self._mode,
+                "dpi_type": self._dpi_type,
+                "memory_ids": list(self._memory_ids),
                 "next_index": next_index,
                 "timestamp": time.time(),
                 "working_count": len(
@@ -1861,22 +2398,23 @@ class StrategyScanner:
         except (IOError, OSError):
             pass  # tmp может быть недоступен — не критично
 
-    def _load_resume_state(self) -> int:
+    def _load_resume_state(self) -> dict:
         """
-        Загрузить позицию resume.
+        Загрузить сохранённое состояние resume.
 
         Returns:
-            Индекс следующей стратегии (0 если нет данных).
+            Словарь ``{target, protocol, mode, dpi_type, next_index, …}``
+            (пустой, если данных нет или файл битый).
         """
         resume_file = self._resume_file_path()
         try:
             if not os.path.exists(resume_file):
-                return 0
+                return {}
             with open(resume_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            return int(state.get("next_index", 0))
-        except (IOError, OSError, json.JSONDecodeError, ValueError):
-            return 0
+        except (IOError, OSError, ValueError):
+            return {}
+        return state if isinstance(state, dict) else {}
 
     def _remove_resume_state(self) -> None:
         """Удалить файл resume state."""
@@ -1899,15 +2437,18 @@ class StrategyScanner:
         with self._lock:
             working = [r for r in self._results if r.success]
 
-            # Лучшая = максимальный score (success_rate × kbps/latency).
-            # Это надёжнее, чем просто latency: latency низкий бывает у
-            # «псевдо-успехов», у которых body обрывается на 16-20 KB.
+            # Лучшая = подтверждённая перепроверкой, среди них — с
+            # максимальным score (success_rate × kbps/latency). Score
+            # надёжнее latency: низкая задержка бывает у «псевдо-успехов»,
+            # у которых тело обрывается на 16-20 KB.
             best: Optional[StrategyProbeResult] = None
             if working:
-                best = max(working, key=lambda r: r.score)
+                best = max(working, key=lambda r: (r.confirmed, r.score))
 
-            # Сортируем self._results по score (для UI)
-            self._results.sort(key=lambda r: r.score, reverse=True)
+            # Для UI: рабочие вперёд, среди них подтверждённые, затем score.
+            self._results.sort(
+                key=lambda r: (r.success, r.confirmed, r.score),
+                reverse=True)
 
             self._report = StrategyScanReport(
                 target=self._target,
@@ -1921,6 +2462,12 @@ class StrategyScanner:
                 finished_at=finished_at,
                 cancelled=self._cancelled,
                 baseline_accessible=baseline_accessible,
+                probe_kind=self._probe_kind_name(),
+                stop_after=self._stop_after,
+                stopped_early=self._stopped_early,
+                confirmed_count=len([r for r in working if r.confirmed]),
+                memory_first=len(self._memory_ids),
+                rules_reapplied=self._rules_reapplied,
             )
 
     # ─────────────────── Apply strategy ───────────────────
@@ -1930,7 +2477,7 @@ class StrategyScanner:
         Применить стратегию из результата пробы.
 
         Создаёт user-стратегию в JSON-формате через StrategyManager
-        и применяет её (start nfqws2 + apply firewall).
+        и применяет её через ``nfqws_control.apply_strategy``.
 
         Args:
             probe_result: Результат успешной пробы.
@@ -1940,8 +2487,6 @@ class StrategyScanner:
         """
         from core.catalog_loader import get_catalog_manager
         from core.strategy_builder import get_strategy_manager
-        from core.nfqws_manager import get_nfqws_manager
-        from core.firewall import get_firewall_manager
 
         # Находим оригинальную запись каталога
         cm = get_catalog_manager()
@@ -1999,46 +2544,27 @@ class StrategyScanner:
             )
             return False
 
-        # Применяем: firewall + nfqws2
-        try:
-            fw = get_firewall_manager()
-            nfqws = get_nfqws_manager()
-
-            # Останавливаем текущий nfqws если запущен
-            if nfqws.is_running():
-                nfqws.stop()
-                time.sleep(0.3)
-
-            # Применяем firewall
-            if not fw.apply_rules():
-                log.error("Не удалось применить firewall", source="scanner")
-                return False
-
-            # Запускаем nfqws2 с новой стратегией
-            if not nfqws.start(args):
-                log.error("Не удалось запустить nfqws2", source="scanner")
-                fw.remove_rules()
-                return False
-
-            # Обновляем конфиг
-            from core.config_manager import get_config_manager
-            cfg = get_config_manager()
-            cfg.set("strategy", "current_id", saved["id"])
-            cfg.set("strategy", "current_name", saved["name"])
-            cfg.save()
-
-            log.success(
-                "Стратегия применена: %s" % entry.name,
-                source="scanner",
-            )
-            return True
-
-        except Exception as e:
+        # Применяем тем же путём, что кнопка «Применить» и MCP
+        # (`nfqws_control.apply_strategy`): общий мьютекс на движок (не
+        # поверх идущего скана или эксперимента), откат правил при
+        # неудачном старте, запись в конфиг и пересборка автозапуска —
+        # иначе после перезагрузки роутера поднялась бы прежняя
+        # стратегия.
+        from core import nfqws_control
+        result = nfqws_control.apply_strategy(saved["id"], source="scanner")
+        if not result.get("ok"):
             log.error(
-                "Ошибка применения стратегии: %s" % e,
+                "Не удалось применить стратегию %s: %s"
+                % (entry.name, result.get("error") or "?"),
                 source="scanner",
             )
             return False
+
+        log.success(
+            "Стратегия применена: %s" % entry.name,
+            source="scanner",
+        )
+        return True
 
     def _materialize_tmp_hostlist(
         self,
@@ -2087,6 +2613,11 @@ class StrategyScanner:
         ]
 
     # ─────────────────── Helpers ───────────────────
+
+    def _set_stage(self, stage: str) -> None:
+        """Этап прогона (prepare/baseline/scan/confirm/done)."""
+        with self._lock:
+            self._stage = stage
 
     def _set_phase(self, phase: str) -> None:
         """Установить текущую фазу."""
@@ -2167,6 +2698,17 @@ class StrategyScanner:
 # ═══════════════════════════════════════════════════════════
 #  Helpers (module-level)
 # ═══════════════════════════════════════════════════════════
+
+def _median(values) -> float:
+    """Медиана без ``statistics`` (его может не быть в python3-light)."""
+    items = sorted(float(v or 0.0) for v in values)
+    if not items:
+        return 0.0
+    mid = len(items) // 2
+    if len(items) % 2:
+        return items[mid]
+    return (items[mid - 1] + items[mid]) / 2.0
+
 
 def _is_full_preset_args(args: list[str]) -> bool:
     """Эвристика: «полный пресет» — содержит --filter-* или --new или

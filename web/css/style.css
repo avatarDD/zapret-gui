@@ -5326,3 +5326,78 @@ body.expert-mode .expert-note { display: none !important; }
         flex-wrap: wrap;
     }
 }
+
+/* ===== Список стратегий: читаемая карточка ===== */
+.badge-info {
+    background: var(--info-bg);
+    color: var(--info);
+}
+.strategy-card-name .badge {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 1px 7px;
+    margin-left: 6px;
+}
+.strategy-card-scopes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+.strategy-scope {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-family: var(--font-mono);
+}
+.strategy-card-author {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.strategy-card-menu {
+    position: relative;
+    display: inline-block;
+}
+.strategy-card-menu > summary {
+    list-style: none;
+    cursor: pointer;
+    min-width: 32px;
+    justify-content: center;
+}
+.strategy-card-menu > summary::-webkit-details-marker { display: none; }
+.strategy-card-menu-list {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.strategy-card-menu-list .btn {
+    justify-content: flex-start;
+    width: 100%;
+}
+@media (max-width: 768px) {
+    /* Карточка стратегии: «Применить», «Параметры» и «⋯» — одним рядом,
+       а не тремя строками (общее правило выше ставит кнопки столбиком). */
+    .strategy-card .strategy-card-actions {
+        flex-direction: row;
+        align-items: center;
+        flex-wrap: nowrap;
+    }
+    .strategy-card .strategy-card-actions > .btn-primary { flex: 1; width: auto; }
+    .strategy-card .strategy-card-menu > summary.btn { width: auto; }
+    .strategy-card-menu-list { left: auto; right: 0; }
+}

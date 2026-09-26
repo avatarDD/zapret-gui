@@ -242,9 +242,16 @@ const StrategiesPage = (() => {
     function _bindEvents(container) {
         // click delegation
         container.addEventListener('click', (e) => {
+            // Меню «⋯» карточек: клик мимо закрывает открытое, выбор
+            // пункта — закрывает своё (ниже).
+            container.querySelectorAll('details.strategy-card-menu[open]').forEach(d => {
+                if (!d.contains(e.target)) d.open = false;
+            });
             const el = e.target.closest('[data-action]');
             if (!el) return;
             const action = el.dataset.action;
+            const menu = el.closest('details.strategy-card-menu');
+            if (menu) menu.open = false;
 
             // Strategy ID: from closest card [data-id] or explicit data-strategy-id
             const card = el.closest('[data-id]');
@@ -1003,12 +1010,120 @@ const StrategiesPage = (() => {
         }
     }
 
+    // ══════════════════ Классификация для списка ══════════════════
+    //
+    // Метки каталога (recommended/stable/experimental) больше не
+    // показываются: recommended стоит у четверти каталога и ничего не
+    // выделяет. Вместо них — то, что помогает выбрать: готовый набор или
+    // приём, для какого трафика, помогала ли стратегия в вашей сети.
+
+    const LUA_WORDS = [
+        [/^circular/, 'сам перебирает приёмы и запоминает рабочий'],
+        [/^hostfakesplit|^snifakesplit/, 'подмена имени сайта в запросе'],
+        [/^fakeddisorder|^fakemultidisorder/, 'перестановка частей с фейками'],
+        [/^fakedsplit|^fakemultisplit/, 'разбиение с фейками'],
+        [/^multidisorder|disorder/, 'разбиение с перестановкой частей'],
+        [/^multisplit|split/, 'разбиение запроса'],
+        [/^fake|flood_white|white_sandwich/, 'фейковый пакет'],
+        [/^syndata/, 'данные в SYN'],
+        [/^tcpseg/, 'сегментация'],
+        [/^oob/, 'OOB-байт'],
+        [/^wssize|^wsize/, 'уменьшение TCP-окна'],
+        [/^udplen/, 'изменение длины UDP'],
+        [/^rst/, 'поддельный RST'],
+        [/^http_/, 'HTTP-приём'],
+        [/^tls_|^tlsrec/, 'TLS-приём'],
+        [/^z2k_|^discord_/, 'особый приём'],
+    ];
+
+    const PURPOSES = {
+        combo: 'Комплексные (сайты + QUIC и голос)',
+        tls:   'Сайты и видео (TLS)',
+        http:  'HTTP (порт 80)',
+        quic:  'QUIC / HTTP3',
+        voice: 'Голос и игры (UDP)',
+        udp:   'Прочий UDP',
+    };
+
+    function _allArgs(s) {
+        return (s.profiles || []).filter(p => p.enabled !== false)
+            .map(p => p.args || '').join(' ');
+    }
+
+    /** ready — применяется как есть; trick — строительный блок подбора. */
+    function strategyKind(s) {
+        const args = _allArgs(s);
+        if (/(?:^|[^a-z])circular/i.test(args)) return 'auto';
+        if (!s.is_builtin) return 'mine';
+        if ((s.profiles || []).length > 1 || /--filter-(tcp|udp|l7)/.test(args)) return 'ready';
+        return 'trick';
+    }
+
+    function strategyPurpose(s) {
+        if ((s.profiles || []).filter(p => p.enabled !== false).length > 1) return 'combo';
+        if (s.family && PURPOSES[s.family]) return s.family;
+        const args = _allArgs(s);
+        const l7 = (args.match(/--filter-l7=([a-z0-9_,]+)/) || [])[1] || '';
+        if (/quic/.test(l7)) return 'quic';
+        if (/discord|stun/.test(l7)) return 'voice';
+        if (l7 === 'http' || /--filter-tcp=80(\s|$)/.test(args)) return 'http';
+        if (/--filter-udp/.test(args) || s.protocol === 'udp') return 'udp';
+        return 'tls';
+    }
+
+    /** «TLS · TCP 80, 443» — к какому трафику профиль применяется. */
+    function profileScope(p, s) {
+        const args = p.args || '';
+        const tcp = (args.match(/--filter-tcp=(\S+)/) || [])[1];
+        const udp = (args.match(/--filter-udp=(\S+)/) || [])[1];
+        const l7 = (args.match(/--filter-l7=(\S+)/) || [])[1];
+        const ports = x => {
+            const list = x.split(',');
+            return list.slice(0, 4).join(', ') + (list.length > 4 ? '…' : '');
+        };
+        const parts = [];
+        if (l7) parts.push(l7.toUpperCase().replace(/,/g, '+'));
+        if (tcp) parts.push('TCP ' + ports(tcp));
+        if (udp) parts.push('UDP ' + ports(udp));
+        if (parts.length) return parts.join(' · ');
+        const fam = { tls: 'TLS', http: 'HTTP', quic: 'QUIC', voice: 'голос' }[s.family] || '';
+        const proto = (s.protocol || '').toUpperCase();
+        return [fam, proto].filter(Boolean).join(' · ') + ' · порты перехвата';
+    }
+
+    /** «Что делает» — по lua-функциям, когда у стратегии нет описания. */
+    function strategySummary(s) {
+        const funcs = (_allArgs(s).match(/--lua-desync=([a-z0-9_]+)/gi) || [])
+            .map(x => x.split('=')[1]);
+        const words = [];
+        funcs.forEach(fn => {
+            const hit = LUA_WORDS.find(([re]) => re.test(fn));
+            if (hit && !words.includes(hit[1])) words.push(hit[1]);
+        });
+        if (/seqovl=/.test(_allArgs(s)) && !words.includes('перекрытие последовательности')) {
+            words.push('перекрытие последовательности');
+        }
+        return words.length ? 'Что делает: ' + words.join(' + ') : '';
+    }
+
+    function _sortForList(list) {
+        const rank = s => (s.id === currentId ? 0 : 1);
+        return list.slice().sort((a, b) =>
+            rank(a) - rank(b)
+            || (b.helped || 0) - (a.helped || 0)
+            || (b.is_favorite ? 1 : 0) - (a.is_favorite ? 1 : 0)
+            || (strategyKind(a) === 'trick') - (strategyKind(b) === 'trick')
+            || (b.featured ? 1 : 0) - (a.featured ? 1 : 0));
+    }
+
     function renderList(list) {
         const host = document.getElementById('strategies-list-host');
         if (!host) return;
 
+        const items = _sortForList(list);
+
         // Если ListUI уже создан — просто обновляем данные.
-        if (listUI) { listUI.setItems(list); return; }
+        if (listUI) { listUI.setItems(items); return; }
 
         const container = document.createElement('div');
         container.id = 'strategies-list';
@@ -1017,33 +1132,34 @@ const StrategiesPage = (() => {
 
         listUI = ListUI.create({
             container,
-            items: list,
-            searchPlaceholder: 'Поиск по имени, автору, описанию, args...',
+            items,
+            searchPlaceholder: 'Поиск: название, сайт, приём (fake, split…)',
             searchFields: s => [
-                s.name, s.description, s.author, s.label, s.id,
+                s.name, s.description, s.author, s.id,
+                strategySummary(s), PURPOSES[strategyPurpose(s)],
+                (s.helped_targets || []).join(' '),
                 (s.profiles || []).map(p => p.args || '').join(' '),
             ],
             filters: [
-                { id: 'all', label: 'Все', test: () => true, default: true },
-                { id: 'circular', label: '⟳ Авто (circular)',
-                  test: s => /(?:^|[^a-z])circular/i.test(
-                      (s.profiles || []).map(p => p.args || '').join(' ')) },
+                { id: 'ready', label: 'Готовые наборы', default: true,
+                  test: s => strategyKind(s) !== 'trick' },
+                { id: 'helped', label: '✓ Помогали у вас', test: s => (s.helped || 0) > 0 },
                 { id: 'favorites', label: '★ Избранное', test: s => s.is_favorite },
-                { id: 'recommended', label: 'Рекомендуемые', test: s => s.label === 'recommended' },
-                { id: 'builtin', label: 'Встроенные', test: s => s.is_builtin },
-                { id: 'user', label: 'Пользовательские', test: s => !s.is_builtin },
+                { id: 'circular', label: '⟳ Авто-подбор', test: s => strategyKind(s) === 'auto' },
+                { id: 'user', label: 'Мои', test: s => !s.is_builtin },
+                { id: 'tricks', label: 'Приёмы для подбора', test: s => strategyKind(s) === 'trick' },
+                { id: 'all', label: 'Все', test: () => true },
             ],
-            groupBy: s => (s.protocol || 'other').toLowerCase(),
-            groupLabel: g => ({
-                tcp: 'TCP', udp: 'UDP / QUIC', http: 'HTTP', tls: 'TLS', other: 'Прочее',
-            }[g] || String(g).toUpperCase()),
+            groupBy: s => strategyPurpose(s),
+            groupLabel: g => PURPOSES[g] || String(g),
             renderItem: renderStrategyCard,
-            pageSize: 80,
-            storageKey: 'strategies-list',
+            pageSize: 60,
+            storageKey: 'strategies-list-v2',
             renderEmpty: (q, f) => `<div class="list-ui-empty">${
                 q ? 'По запросу «' + escapeHtml(q) + '» ничего не найдено' :
                 f === 'favorites' ? 'Нет избранных стратегий. Нажмите ★ на любой карточке.' :
-                f === 'user' ? 'Нет пользовательских стратегий. Создайте первую кнопкой выше.' :
+                f === 'helped' ? 'Пока ничего. Запустите «Подбор стратегий» — найденное будет отмечаться здесь.' :
+                f === 'user' ? 'Своих стратегий нет. Их создаёт «Подбор стратегий» или кнопка «Создать стратегию».' :
                 'Нет стратегий'
             }</div>`,
             countLabel: (v, t) => v + ' из ' + t + ' стратегий',
@@ -1051,39 +1167,40 @@ const StrategiesPage = (() => {
     }
 
     /**
-     * Карточка стратегии. По умолчанию компактная (имя/бейджи/действия);
-     * подробности (профили, args) раскрываются кнопкой «Подробнее» —
-     * ListUI обрабатывает клик по [data-list-ui-toggle].
+     * Карточка стратегии: название, для чего она и что делает, одна
+     * главная кнопка. Подробности (аргументы) — по «Подробнее», редкие
+     * действия — в меню «⋯».
      */
     function renderStrategyCard(s) {
         const isActive = s.id === currentId;
         const isFav = s.is_favorite;
         const isBuiltin = s.is_builtin;
         const isSelected = selectedIds.has(s.id);
+        const kind = strategyKind(s);
 
-        const labelTag = s.label
-            ? `<span class="label ${escapeAttr(s.label)}">${escapeHtml(s.label)}</span>` : '';
-        const authorTag = s.author
-            ? `<span title="Автор">${escapeHtml(s.author)}</span>` : '';
-        const metaInline = (labelTag || authorTag)
-            ? `<span class="strategy-card-meta">${labelTag}${authorTag}</span>` : '';
+        const badges = [];
+        if (isActive) badges.push('<span class="badge badge-success">Активна</span>');
+        if (!isBuiltin) badges.push('<span class="badge badge-accent">Моя</span>');
+        if (s.helped) {
+            const where = (s.helped_targets || []).join(', ');
+            badges.push(`<span class="badge badge-success" title="Подбор находил её рабочей в вашей сети${where ? ': ' + escapeAttr(where) : ''}">✓ Помогала у вас${s.helped > 1 ? ' ×' + s.helped : ''}</span>`);
+        }
+        if (kind === 'auto') badges.push('<span class="badge badge-info" title="Сам перебирает приёмы для каждого сайта и запоминает рабочий">⟳ Авто-подбор</span>');
+        if (kind === 'trick') badges.push('<span class="badge badge-muted" title="Строительный блок: обычно его проверяет «Подбор стратегий» под конкретный сайт">Приём</span>');
+        if (s.label === 'caution') badges.push('<span class="badge badge-warning" title="Может мешать части сайтов — проверьте после применения">⚠ Осторожно</span>');
+        if (s.label === 'game') badges.push('<span class="badge badge-muted" title="Подобрана под игровой трафик">Для игр</span>');
 
-        const profileBadges = (s.profiles || []).map(p => {
-            const enabled = p.enabled !== false;
-            let color = 'var(--text-muted)';
-            const label = p.name || p.id;
-            const ll = label.toLowerCase();
-            if (ll.includes('http') && !ll.includes('https') && !ll.includes('tls')) color = 'var(--warning)';
-            if (ll.includes('tls')) color = 'var(--success)';
-            if (ll.includes('quic') || ll.includes('udp')) color = 'var(--info)';
-            return `<span class="profile-badge${enabled ? '' : ' disabled'}" style="--badge-color:${color};">${escapeHtml(label)}</span>`;
-        }).join('');
+        const scopes = (s.profiles || []).filter(p => p.enabled !== false)
+            .map(p => `<span class="strategy-scope">${escapeHtml(profileScope(p, s))}</span>`).join('');
+
+        const text = s.description || strategySummary(s);
 
         const argsBlocks = (s.profiles || []).filter(p => p.enabled !== false).map(p => {
             const args = p.args || '';
             if (!args) return '';
             return '<div class="strategy-args-preview">' + NfqwsSyntax.highlight(args) + '</div>';
         }).join('');
+        const author = s.author ? `<div class="strategy-card-author">Автор: ${escapeHtml(s.author)}</div>` : '';
 
         return `
             <div class="strategy-card compact${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}" data-id="${escapeAttr(s.id)}" data-list-ui-card>
@@ -1093,12 +1210,11 @@ const StrategiesPage = (() => {
                     </label>
                     <div class="strategy-card-info">
                         <div class="strategy-card-name">
-                            ${isActive ? '<span class="status-dot running" style="width:8px;height:8px;"></span>' : ''}
                             ${escapeHtml(s.name)}
-                            ${isBuiltin ? '<span class="badge badge-muted">builtin</span>' : '<span class="badge badge-accent">user</span>'}
-                            ${metaInline}
+                            ${badges.join('')}
                         </div>
-                        ${s.description ? `<div class="strategy-card-desc">${escapeHtml(s.description)}</div>` : ''}
+                        ${text ? `<div class="strategy-card-desc">${escapeHtml(text)}</div>` : ''}
+                        ${scopes ? `<div class="strategy-card-scopes">${scopes}</div>` : ''}
                     </div>
                     <button class="btn-icon-only fav-btn${isFav ? ' active' : ''}" data-action="toggleFavorite" title="${isFav ? 'Убрать из избранного' : 'В избранное'}">
                         <svg viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" width="18" height="18">
@@ -1106,60 +1222,29 @@ const StrategiesPage = (() => {
                         </svg>
                     </button>
                 </div>
-                <div class="strategy-card-profiles">${profileBadges}</div>
-                <div class="strategy-card-args-wrap">${argsBlocks}</div>
+                <div class="strategy-card-args-wrap">${argsBlocks}${author}</div>
                 <div class="strategy-card-actions">
                     <button class="btn btn-primary btn-sm" data-action="applyStrategy"${isActive ? ' disabled' : ''}>
                         ${isActive ? '✓ Активна' : 'Применить'}
                     </button>
-                    <button class="strategy-card-toggle" data-list-ui-toggle title="Развернуть/свернуть подробности">
+                    <button class="strategy-card-toggle" data-list-ui-toggle title="Показать параметры">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
                             <polyline points="6 9 12 15 18 9"/>
                         </svg>
-                        Подробнее
+                        Параметры
                     </button>
-                    <button class="btn btn-ghost btn-sm" data-action="showPreview" title="Превью команды">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                            <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
-                        </svg>
-                        Превью
-                    </button>
-                    <button class="btn btn-ghost btn-sm" data-action="copyStrategyToClipboard" title="Скопировать стратегию со всеми профилями (через --new) в буфер обмена">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                        </svg>
-                        В буфер
-                    </button>
-                    <button class="btn btn-ghost btn-sm" data-action="exportToCatalog" title="Собрать секцию каталога catalogs/*.txt — готовую к pull request'у в zapret-gui. Файлы каталогов при этом не трогаются.">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-                        </svg>
-                        В каталог
-                    </button>
-                    ${!isBuiltin ? `
-                        <button class="btn btn-ghost btn-sm" data-action="openEdit" title="Редактировать">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                            </svg>
-                        </button>
-                        <button class="btn btn-ghost btn-sm" data-action="deleteStrategy" title="Удалить" style="color:var(--error);">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                <polyline points="3 6 5 6 21 6"/>
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                            </svg>
-                        </button>
-                    ` : `
-                        <button class="btn btn-ghost btn-sm" data-action="duplicateStrategy" title="Копировать как пользовательскую">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                            </svg>
-                            Копировать
-                        </button>
-                    `}
+                    <details class="strategy-card-menu">
+                        <summary class="btn btn-ghost btn-sm" title="Ещё действия">⋯</summary>
+                        <div class="strategy-card-menu-list">
+                            <button class="btn btn-ghost btn-sm" data-action="showPreview">Превью команды</button>
+                            <button class="btn btn-ghost btn-sm" data-action="copyStrategyToClipboard">Скопировать в буфер</button>
+                            ${isBuiltin
+                                ? '<button class="btn btn-ghost btn-sm" data-action="duplicateStrategy">Сделать своей копией</button>'
+                                : '<button class="btn btn-ghost btn-sm" data-action="openEdit">Редактировать</button>'}
+                            <button class="btn btn-ghost btn-sm" data-action="exportToCatalog" title="Собрать секцию каталога catalogs/*.txt — для pull request'а в zapret-gui">Секция для каталога</button>
+                            ${!isBuiltin ? '<button class="btn btn-ghost btn-sm" data-action="deleteStrategy" style="color:var(--error);">Удалить</button>' : ''}
+                        </div>
+                    </details>
                 </div>
             </div>
         `;
@@ -1175,7 +1260,12 @@ const StrategiesPage = (() => {
         const s = strategies.find(x => x.id === sid);
         if (!s) return;
 
-        if (!confirm('Применить стратегию "' + s.name + '"?\n\nnfqws2 будет перезапущен.')) return;
+        const note = strategyKind(s) === 'trick'
+            ? '\n\nЭто приём, а не готовый набор: он будет применён ко всему трафику '
+              + profileScope((s.profiles || [])[0] || {}, s)
+              + '. Надёжнее подобрать стратегию для сайта в разделе «Подбор стратегий».'
+            : '';
+        if (!confirm('Применить стратегию «' + s.name + '»?\n\nОбход перезапустится.' + note)) return;
 
         try {
             const result = await API.post('/api/strategies/' + sid + '/apply', {});

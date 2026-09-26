@@ -366,11 +366,21 @@ class StrategyProbeResult:
     success_rate: float = 0.0
     # Композитный балл, по которому сортируется UI
     score: float = 0.0
+    # Перепроверка лучших (сканер): сколько раз стратегию проверяли и
+    # сколько раз она прошла. confirmed — прошла ВСЕ проверки.
+    checks: int = 1
+    passes: int = 0
+    confirmed: bool = False
+    # Стратегия поднята в начало списка памятью подбора: она уже
+    # срабатывала на этой цели в этой сети (core/strategy_memory).
+    from_memory: bool = False
     raw_data: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.timestamp == 0.0:
             self.timestamp = time.time()
+        if self.passes == 0 and self.success and self.checks == 1:
+            self.passes = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -387,6 +397,10 @@ class StrategyProbeResult:
             "body_passed": self.body_passed,
             "success_rate": round(self.success_rate, 3),
             "score": round(self.score, 2),
+            "checks": self.checks,
+            "passes": self.passes,
+            "confirmed": self.confirmed,
+            "from_memory": self.from_memory,
             # FIX: включаем raw_data — содержит args_preview, details и др.
             "raw_data": self.raw_data,
         }
@@ -408,6 +422,17 @@ class StrategyScanReport:
     cancelled: bool = False
     baseline_accessible: bool = False
     error: str = ""
+    # Чем проверялась цель: "tls+body" | "quic" | "stun".
+    probe_kind: str = ""
+    # Остановка после N рабочих (0 — перебрать всё) и сработала ли она.
+    stop_after: int = 0
+    stopped_early: bool = False
+    # Сколько стратегий прошли перепроверку целиком.
+    confirmed_count: int = 0
+    # Сколько стратегий поставлено в начало памятью подбора.
+    memory_first: int = 0
+    # Сколько раз правила перехвата ставились заново посреди прогона.
+    rules_reapplied: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         working = [r for r in self.results if r.success]
@@ -437,6 +462,12 @@ class StrategyScanReport:
             "cancelled": self.cancelled,
             "baseline_accessible": self.baseline_accessible,
             "error": self.error,
+            "probe_kind": self.probe_kind,
+            "stop_after": self.stop_after,
+            "stopped_early": self.stopped_early,
+            "confirmed_count": self.confirmed_count,
+            "memory_first": self.memory_first,
+            "rules_reapplied": self.rules_reapplied,
         }
 
 

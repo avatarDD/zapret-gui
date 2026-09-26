@@ -49,7 +49,19 @@ _PAYLOAD_FILTER = {
 }
 
 
-def autowrap_bare_trick(profile_args: list) -> list:
+# Семейство каталога (core.catalog_loader.catalog_family) → L7-фильтр.
+# Голос Discord — без L7: для nfqws2 его RTP — payload unknown.
+_FAMILY_L7 = {"tls": "tls", "http": "http", "quic": "quic"}
+
+
+def _nfqws_ports(spec) -> str:
+    """Порты из конфига (``80,443,3478:3481``) → синтаксис nfqws2 (``-``)."""
+    return ",".join(p.strip().replace(":", "-")
+                    for p in str(spec or "").split(",") if p.strip())
+
+
+def autowrap_bare_trick(profile_args: list, protocol: str = "",
+                        family: str = "", ports: str = "") -> list:
     """Ограничить «голый приём» фильтром, выведенным из однозначного --payload.
 
     Возвращает profile_args без изменений, если:
@@ -74,6 +86,17 @@ def autowrap_bare_trick(profile_args: list) -> list:
             break
 
     if payload not in _PAYLOAD_FILTER:
+        # Payload не говорит, чей это приём, — но каталожная стратегия
+        # знает свой протокол. Профиль без --filter-tcp/udp подходит к
+        # ЛЮБОМУ L4: TCP-приём с TLS-фейком срабатывал бы на QUIC-пакетах,
+        # UDP-приём — на TCP. Ограничиваем протоколом и портами перехвата
+        # (шире них очередь и так ничего не получает), а при известном
+        # семействе — ещё и L7.
+        if protocol in ("tcp", "udp") and ports:
+            wrap = ["--filter-%s=%s" % (protocol, ports)]
+            if family in _FAMILY_L7:
+                wrap.append("--filter-l7=%s" % _FAMILY_L7[family])
+            return wrap + profile_args
         return profile_args
 
     proto, port, l7 = _PAYLOAD_FILTER[payload]
@@ -540,6 +563,23 @@ class StrategyManager:
 
     # ─────────────────── Args Builder ───────────────────
 
+    @staticmethod
+    def _autowrap_scope(strategy: dict) -> dict:
+        """Протокол, семейство и порты для ограничения «голого приёма»."""
+        protocol = str(strategy.get("protocol") or "")
+        if protocol not in ("tcp", "udp") or not strategy.get("is_builtin"):
+            return {}
+        try:
+            from core.config_manager import get_config_manager
+            ports = get_config_manager().get(
+                "nfqws", "ports_%s" % protocol,
+                default="80,443" if protocol == "tcp" else "443")
+        except Exception:                       # noqa: BLE001 — граница
+            ports = "80,443" if protocol == "tcp" else "443"
+        return {"protocol": protocol,
+                "family": str(strategy.get("family") or ""),
+                "ports": _nfqws_ports(ports)}
+
     def build_nfqws_args(self, strategy: dict,
                          hostlist_path: str = None) -> list:
         """
@@ -591,7 +631,8 @@ class StrategyManager:
 
             # Авто-ограничение «голого приёма» фильтром (SKILL §1/§2/§3):
             # приём без --filter-* иначе десинхронизирует весь трафик очереди.
-            profile_args = autowrap_bare_trick(profile_args)
+            profile_args = autowrap_bare_trick(
+                profile_args, **self._autowrap_scope(strategy))
 
             # Вставляем флаги списков перед --payload (если профиль их ещё
             # не содержит).
@@ -786,6 +827,8 @@ def _catalog_entry_to_strategy(entry) -> dict:
     Args с --new разбиваются на отдельные profiles.
     Args без --filter-* оборачиваются в один profile.
     """
+    from core.catalog_loader import catalog_family
+
     args_list = entry.get_args_list()
     if not args_list:
         return None
@@ -829,6 +872,9 @@ def _catalog_entry_to_strategy(entry) -> dict:
         "label": entry.label,
         "author": entry.author,
         "protocol": entry.protocol,
+        # Для какого трафика приём (tls/http/quic/voice) — из имени файла
+        # каталога: им ограничивается «голый приём» и его подписывает UI.
+        "family": catalog_family(entry.source_file),
         "featured": bool(getattr(entry, "featured", False)),
         "blobs": list(getattr(entry, "blobs", []) or []),
         "profiles": profiles,

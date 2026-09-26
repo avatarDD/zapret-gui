@@ -50,9 +50,25 @@ def register(app):
         current_id = cfg.get("strategy", "current_id")
         favorites = cfg.get("strategy", "favorites", default=[])
 
+        # «Помогала у вас» — из памяти подбора (вместо метки recommended,
+        # которой помечена четверть каталога и которая ничего не выделяет).
+        try:
+            from core import strategy_memory
+            helped = strategy_memory.helped_by_strategy()
+        except Exception:                       # noqa: BLE001 — граница
+            helped = {}
+
         for s in strategies:
             s["is_active"] = (s["id"] == current_id)
             s["is_favorite"] = (s["id"] in favorites)
+            info = helped.get(s["id"])
+            # Словари могут быть общими с кешем менеджера: снимаем
+            # прошлое значение, иначе сброс памяти не был бы виден.
+            s.pop("helped", None)
+            s.pop("helped_targets", None)
+            if info:
+                s["helped"] = info["wins"]
+                s["helped_targets"] = info["targets"][:5]
 
         return {"ok": True, "strategies": strategies}
 

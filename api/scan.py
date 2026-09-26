@@ -25,7 +25,9 @@ def register(app):
                 "target": "youtube.com",                    (обязательно)
                 "protocol": "tcp" | "udp",                  (опционально, default: tcp)
                 "mode": "quick" | "standard" | "full",      (опционально, default: quick)
-                "resume": true | false                       (опционально, default: false)
+                "resume": true | false,                      (опционально, default: false)
+                "stop_after": 0..50,                         (опционально, 0 — перебрать всё)
+                "confirm": true | false                      (опционально, default: true)
             }
         """
         response.content_type = "application/json; charset=utf-8"
@@ -75,14 +77,31 @@ def register(app):
                          "Допустимые: quick, standard, full" % mode,
             }
 
-        # Resume: загрузить индекс из сохранённого состояния
+        # DPI-type фильтрация (опционально, из BlockCheck)
+        dpi_type = (body.get("dpi_type") or "").strip().lower()
+
+        # Остановиться после N рабочих (0 — перебрать всё) и перепроверка
+        # лучших находок.
+        try:
+            stop_after = int(body.get("stop_after") or 0)
+        except (TypeError, ValueError):
+            stop_after = -1
+        if not 0 <= stop_after <= 50:
+            response.status = 400
+            return {
+                "ok": False,
+                "error": "stop_after — число от 0 до 50 (0 — перебрать всё)",
+            }
+        confirm = body.get("confirm", True) is not False
+
+        # Resume: индекс из сохранённого состояния — только если это тот
+        # же прогон (иначе позиция чужого списка стратегий).
         resume = bool(body.get("resume", False))
         start_index = 0
         if resume:
-            start_index = scanner.get_resume_index()
-
-        # DPI-type фильтрация (опционально, из BlockCheck)
-        dpi_type = (body.get("dpi_type") or "").strip().lower()
+            start_index = scanner.get_resume_index(
+                target=target, protocol=protocol, mode=mode,
+                dpi_type=dpi_type)
 
         # Запускаем
         started = scanner.start(
@@ -91,6 +110,8 @@ def register(app):
             mode=mode,
             start_index=start_index,
             dpi_type=dpi_type,
+            stop_after=stop_after,
+            confirm=confirm,
         )
 
         if not started:
