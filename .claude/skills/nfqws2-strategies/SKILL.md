@@ -300,7 +300,10 @@ execution plan ещё до входа в Lua** (раньше падало вну
 > (`fopen("wt")` от root на разборе опций) и `--hostlist-auto*=` вне
 > каталогов списков (`ensure_file_access` → `chown`). Список —
 > `strategy_lint.ENGINE_OWNED_OPTIONS`, линтер называет это кодом
-> `engine_owned_option`.
+> `engine_owned_option`. getopt_long nfqws2 принимает опции с
+> обязательным значением и двумя токенами (`--pidfile /путь`), поэтому
+> такое значение вырезается вместе с опцией (`strategy_lint.TAKES_VALUE`),
+> а `--hostlist-auto <путь>` проверяется так же, как `--hostlist-auto=`.
 
 ### 3.2 DESYNC ENGINE INIT
 
@@ -692,7 +695,11 @@ iptables не видит трафик. Это поведенческий эта�
    - TCP: `nfqws.tcp_pkt_out` (20) / `nfqws.tcp_pkt_in` (10).
    - UDP: `nfqws.udp_pkt_out` (5) / `nfqws.udp_pkt_in` (3).
 3. **Перехват SYN+ACK, FIN, RST** на входе нужен для корректной работы
-   conntrack и autohostlist (детект RST-блока).
+   conntrack и autohostlist (детект RST-блока). ⚠️ В nft SYN+ACK пишется
+   **только** точным сравнением `tcp flags & (syn | ack) == syn | ack`:
+   голое `tcp flags syn,ack` nft компилирует в `flags & 0x12 != 0` («SYN
+   или ACK») — это любой пакет с ACK, весь входящий поток в очередь мимо
+   `ct reply packets 1-N`. Одиночный флаг (`tcp flags fin`) безопасен.
 4. **notrack для пакетов с DESYNC_MARK** в output/predefrag — чтобы NAT не
    ломал нестандартные пакеты (только nftables-POSTNAT).
 5. **Не указывать в фильтрах** исключающий ipset (`nozapret`/`nozapret6`) —

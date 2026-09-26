@@ -328,7 +328,11 @@ _nft_firewall_start() {
     _nft_rule prerouting "$_iif meta mark and $_mark_proc == $_mark_proc return"
     if [ -n "$_tcpp" ]; then
         _nft_rule prerouting "$_iif tcp sport $_tcpp ct reply packets 1-$MAX_PKT_IN queue num $QUEUE_NUM bypass"
-        _nft_rule prerouting "$_iif tcp sport $_tcpp tcp flags syn,ack queue num $QUEUE_NUM bypass"
+        # SYN+ACK — точным сравнением: голое `tcp flags syn,ack` у nft —
+        # «SYN или ACK», то есть весь входящий поток (см. firewall.py).
+        _nft_rule prerouting "$_iif tcp sport $_tcpp tcp flags & (syn | ack) == syn | ack queue num $QUEUE_NUM bypass"
+        _nft_rule prerouting "$_iif tcp sport $_tcpp tcp flags fin queue num $QUEUE_NUM bypass"
+        _nft_rule prerouting "$_iif tcp sport $_tcpp tcp flags rst queue num $QUEUE_NUM bypass"
     fi
     if [ -n "$_udpp" ]; then
         _nft_rule prerouting "$_iif udp sport $_udpp ct reply packets 1-$MAX_PKT_IN queue num $QUEUE_NUM bypass"

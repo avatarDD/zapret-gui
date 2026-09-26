@@ -235,6 +235,47 @@ class TestEngine(ControlCase):
                          ("restart", ["--filter-tcp=443"]))
         self.assertEqual(payload["action"], "restart")
 
+    def test_partially_applied_rules_are_rolled_back_too(self):
+        # apply_rules() вернул False (часть правил встала, очередь — нет),
+        # движок не поднялся: оставшееся — наше, его и снимаем.
+        self.firewall.can_apply = False
+        self.nfqws.can_start = False
+        payload = self.data("nfqws_start")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(self.firewall.calls, ["apply", "remove"])
+
+    def test_failed_restart_does_not_leave_rules_without_engine(self):
+        # Как и у старта: перехват на очередь, которую никто не читает,
+        # диагностика называет ошибкой rules_without_engine.
+        self.nfqws.running = True
+        self.firewall.applied = True
+        self.nfqws.can_start = False
+        payload = self.data("nfqws_restart")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(self.firewall.calls, ["remove"])
+        self.assertFalse(self.firewall.applied)
+
+    def test_failed_apply_strategy_does_not_leave_rules(self):
+        from core import strategy_builder
+
+        class _Strategies:
+            def get_strategy(self, sid):
+                return {"id": sid, "name": "тест"}
+
+            def build_nfqws_args(self, strategy):
+                return ["--filter-tcp=443"]
+
+        self._patch(strategy_builder, "get_strategy_manager", _Strategies)
+        self.nfqws.can_start = False
+        out = nfqws_control.apply_strategy("s1")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_code"], "start_failed")
+        self.assertEqual(self.firewall.calls, ["remove", "apply", "remove"])
+        self.assertFalse(self.firewall.applied)
+        # Неудачная стратегия не записывается активной.
+        self.assertEqual(self.cfg.values[("strategy", "current_id")],
+                         "old-one")
+
     def test_busy_engine_refuses_instead_of_fighting(self):
         # Сканер сам поднимает и роняет nfqws2: применять поверх него —
         # испортить и скан, и стратегию. S9 заменит эту проверку общим

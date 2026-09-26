@@ -931,14 +931,24 @@ class NFQWSManager:
             if index in drop or not isinstance(arg, str):
                 continue
             for flag in ("--hostlist-auto=", "--hostlist-auto-debug="):
+                option = flag.rstrip("=")
+                # `--hostlist-auto /путь` двумя токенами getopt_long
+                # nfqws2 тоже примет — проверяем и эту форму.
                 if arg.startswith(flag):
-                    if roots is None:
-                        roots = self._write_roots(cfg)
-                    if not self._under_roots(arg[len(flag):], roots):
-                        drop[index] = ("%s вне каталогов списков: nfqws2 "
-                                       "создаёт этот файл от root и отдаёт "
-                                       "его пользователю движка"
-                                       % flag.rstrip("="))
+                    value, value_index = arg[len(flag):], None
+                elif arg == option and index + 1 < len(strategy_args):
+                    value = str(strategy_args[index + 1])
+                    value_index = index + 1
+                else:
+                    continue
+                if roots is None:
+                    roots = self._write_roots(cfg)
+                if not self._under_roots(value, roots):
+                    drop[index] = ("%s вне каталогов списков: nfqws2 "
+                                   "создаёт этот файл от root и отдаёт "
+                                   "его пользователю движка" % option)
+                    if value_index is not None:
+                        drop[value_index] = "значение %s" % option
         if not drop:
             return strategy_args
         for index in sorted(drop):

@@ -1406,8 +1406,22 @@ class FirewallManager:
             cmds.append("add rule inet %s prerouting %stcp sport %s "
                         "ct reply packets 1-%d queue num %d bypass"
                         % (NFT_TABLE, iif, tcp_ports, tcp_pkt_in, qnum))
+            # SYN+ACK — точным сравнением, как `--tcp-flags syn,ack
+            # syn,ack` у iptables. Голое `tcp flags syn,ack` nft читает
+            # как «SYN или ACK» (`flags & 0x12 != 0`): под него попадает
+            # любой пакет с ACK, то есть весь входящий поток мимо
+            # ограничителя `ct reply packets`. FIN/RST — паритет с
+            # iptables-путём: по ним autohostlist и детекторы circular
+            # видят RST от DPI, пришедший после первых N пакетов.
             cmds.append("add rule inet %s prerouting %stcp sport %s "
-                        "tcp flags syn,ack queue num %d bypass"
+                        "tcp flags & (syn | ack) == syn | ack "
+                        "queue num %d bypass"
+                        % (NFT_TABLE, iif, tcp_ports, qnum))
+            cmds.append("add rule inet %s prerouting %stcp sport %s "
+                        "tcp flags fin queue num %d bypass"
+                        % (NFT_TABLE, iif, tcp_ports, qnum))
+            cmds.append("add rule inet %s prerouting %stcp sport %s "
+                        "tcp flags rst queue num %d bypass"
                         % (NFT_TABLE, iif, tcp_ports, qnum))
         if udp_ports:
             cmds.append("add rule inet %s prerouting %sudp sport %s "

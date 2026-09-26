@@ -76,6 +76,16 @@ ENGINE_OWNED_OPTIONS = (
     "--intercept", "--dry-run",
 )
 
+# Опции из ENGINE_OWNED_OPTIONS с ОБЯЗАТЕЛЬНЫМ значением. getopt_long
+# nfqws2 принимает их и двумя токенами — `--pidfile /путь`, — а стратегия
+# из текста режется по пробелам. Такое значение вырезается вместе с
+# опцией, иначе оно остаётся висеть позиционным аргументом. Ту же форму
+# `--hostlist-auto <путь>` проверяет сам сборщик
+# (``NFQWSManager._strip_engine_owned``).
+TAKES_VALUE = frozenset((
+    "--user", "--uid", "--qnum", "--fwmark", "--pidfile",
+))
+
 # ``--debug=@<файл>``: nfqws2 открывает файл на запись (``"wt"`` —
 # обнуляет) от root и отдаёт его пользователю движка. Остальные формы
 # ``--debug`` (вывод в наш лог, syslog) безвредны и нужны.
@@ -382,12 +392,17 @@ def engine_owned(argv) -> list:
     ``--qnum`` не доехал до движка.
     """
     out = []
-    for index, arg in enumerate(argv or []):
+    argv = list(argv or [])
+    for index, arg in enumerate(argv):
         text = str(arg)
         name = text.split("=", 1)[0]
         if name in ENGINE_OWNED_OPTIONS:
             out.append({"index": index, "arg": text,
                         "reason": "%s задаёт GUI, а не стратегия" % name})
+            if text in TAKES_VALUE and index + 1 < len(argv):
+                out.append({"index": index + 1, "arg": str(argv[index + 1]),
+                            "reason": "значение %s (записано отдельным "
+                                      "аргументом)" % name})
         elif text.startswith(_DEBUG_FILE_PREFIX):
             out.append({"index": index, "arg": text,
                         "reason": "--debug в файл: nfqws2 обнуляет его от "

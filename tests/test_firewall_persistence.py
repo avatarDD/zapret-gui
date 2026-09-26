@@ -293,6 +293,16 @@ class TestShellNftables(unittest.TestCase):
         self.assertTrue(any("natpost" in c and "masquerade" in c
                             for c in self._nft()))
 
+    def test_synack_exact_and_fin_rst_on_input(self):
+        # Голое `tcp flags syn,ack` у nft — «SYN или ACK»: весь входящий
+        # поток в очередь. Форма — та же, что у Python-пути.
+        pre = [c for c in self._nft() if " prerouting " in c]
+        self.assertFalse(any("tcp flags syn,ack" in c for c in pre))
+        self.assertTrue(any("tcp flags & (syn | ack) == syn | ack" in c
+                            for c in pre))
+        self.assertTrue(any("tcp flags fin" in c for c in pre))
+        self.assertTrue(any("tcp flags rst" in c for c in pre))
+
     def test_port_ranges_use_dash(self):
         # issue #101: в nft диапазон — через дефис, иначе «Could not resolve
         # service: Servname not supported for ai_socktype».
