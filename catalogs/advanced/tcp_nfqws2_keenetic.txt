@@ -1,0 +1,70 @@
+# Приёмы TLS из экосистемы nfqws2-keenetic.
+# Источники: github.com/nfqws/nfqws2-keenetic 1.3.1 (три стратегии
+# circular из nfqws2.conf — здесь по отдельности, чтобы сканер мерил
+# каждую) и чат t.me/nfqws, сентябрь–октябрь 2026: только nfqws2-приёмы
+# с подтверждением «работает». Это «приёмы» — сканер сам оборачивает их
+# под цель (--filter-tcp/--filter-l7/--payload/--hostlist).
+# seqovl_pattern=<имя блоба> дозаявляет blob_registry (stun, stun2,
+# tls_clienthello — синоним tls_google из nfqws2-keenetic).
+
+[kn2_tls_fake_fonts_multisplit_seqovl]
+name = nfqws2-keenetic №1: fake (SNI fonts.google.com) + multisplit seqovl=1
+author = nfqws/nfqws2-keenetic
+label = recommended
+description = Стратегия 1 дефолта nfqws2-keenetic: fake ClientHello Google с SNI fonts.google.com и сдвигом seq, затем multisplit по 1,midsld с перекрытием в 1 байт из того же ClientHello.
+--lua-desync=fake:blob=tls_clienthello:tls_mod=rnd,dupsid,sni=fonts.google.com:tcp_seq=10000
+--lua-desync=multisplit:pos=1,midsld:seqovl=1:seqovl_pattern=tls_clienthello:tcp_ts_up
+
+[kn2_tls_zero_fake_multisplit]
+name = nfqws2-keenetic №2: нулевой fake + multisplit 1,midsld
+author = nfqws/nfqws2-keenetic
+label = stable
+description = Стратегия 2 дефолта nfqws2-keenetic: 4 нулевых байта как fake (с tls_mod он превращается в ClientHello www.google.com) ×2 с плохим ack, затем multisplit по 1,midsld.
+--lua-desync=fake:blob=0x00000000:tcp_ack=-66000:tls_mod=rnd,dupsid,sni=www.google.com:repeats=2
+--lua-desync=multisplit:pos=1,midsld
+
+[kn2_tls_hostfakesplit_ozon]
+name = nfqws2-keenetic №3: hostfakesplit ozon.ru + seqovl
+author = nfqws/nfqws2-keenetic
+label = stable
+description = Стратегия 3 дефолта nfqws2-keenetic: hostfakesplit с фейковым хостом ozon.ru, перекрытием до sniext+3 и md5/ts-фулингом, затем второй hostfakesplit.
+--lua-desync=hostfakesplit:host=ozon.ru:midhost=host-2:seqovl=sniext+3:seqovl_pattern=tls_clienthello:badsum:tcp_md5:tcp_ts_up
+--lua-desync=hostfakesplit:tcp_md5:tcp_ts_up
+
+[kn2_tls_multisplit_seqovl568_stun]
+name = 16 КБ-блок: multisplit 1,midsld, seqovl=568 из STUN
+author = nik-ps (чат nfqws2-keenetic)
+label = recommended
+description = Против обрыва на 16–20 КБ: перекрытие 568 байт STUN-паттерном перед разрезом 1,midsld. У автора — 94% целей «TCP 16-20KB» (104/110). Проходит TLS 1.3; если не проходит TLS 1.2 — добавьте следом fake с блобом и ts-фулингом.
+--lua-desync=multisplit:pos=1,midsld:seqovl=568:seqovl_pattern=stun
+
+[kn2_tls_multisplit_seqovl568_stun2]
+name = 16 КБ-блок: multisplit 1,midsld, seqovl=568 из STUN2
+author = nik-ps (чат nfqws2-keenetic)
+label = stable
+description = То же, что seqovl=568 со STUN, но паттерн stun2 (из бандла Flowseal 1.10): если на первом сработал триггер DPI на STUN.
+--lua-desync=multisplit:pos=1,midsld:seqovl=568:seqovl_pattern=stun2
+
+[kn2_tls_dot_multisplit_seqovl4]
+name = multisplit 1,host+2,midsld+2,endsld-2 seqovl=4 + fake ozon.ru
+author = Andrey R (чат nfqws2-keenetic)
+label = stable
+description = Из профиля для DoT/DoH: четыре разреза вокруг имени хоста с перекрытием 4 байта + fake tls_google с SNI ozon.ru, md5 и сдвигом seq ×3. Подтверждено в чате для публичных резолверов.
+--lua-desync=multisplit:pos=1,host+2,midsld+2,endsld-2:seqovl=4
+--lua-desync=fake:blob=tls_google:tcp_seq=-10000:tcp_md5:tls_mod=rnd,dupsid,sni=ozon.ru:repeats=3
+
+[kn2_tls_yt_multisplit11_fake_rutube]
+name = multisplit по 11 точкам seqovl=3 + fake rutube.ru
+author = Andrey R (чат nfqws2-keenetic)
+label = stable
+description = Из профиля для YouTube: длинное имя (youtubeembeddedplayer.googleapis.com) режется на 11 частей вокруг SNI/host/SLD с перекрытием нулями, плюс fake ClientHello с SNI rutube.ru, badsum и сдвигами seq/ack ×3. По словам автора, проходит проверки TLS 1.2 и 1.3.
+--lua-desync=multisplit:pos=1,sniext-2,sniext,sniext+2,host-2,host,host+2,midsld-2,midsld,midsld+2,endhost-1:seqovl=3:seqovl_pattern=0x00000000
+--lua-desync=fake:blob=tls_clienthello:optional:tcp_seq=-10000:tcp_ack=-66000:badsum:tls_mod=rnd,dupsid,sni=rutube.ru:repeats=3
+
+[kn2_tls_multidisorder7_fake_rzd]
+name = multidisorder по 7 точкам + fake rzd.ru
+author = чат nfqws2-keenetic
+label = stable
+description = Популярный в чате приём для YouTube: multidisorder по 1,sniext+1,host+1,midsld±2,endhost-1 + встроенный fake с SNI rzd.ru, badsum и сдвигами seq/ack ×4.
+--lua-desync=multidisorder:pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1
+--lua-desync=fake:blob=fake_default_tls:optional:tcp_seq=-10000:tcp_ack=-66000:badsum:tls_mod=rnd,dupsid,sni=rzd.ru:repeats=4

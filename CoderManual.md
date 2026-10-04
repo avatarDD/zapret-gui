@@ -328,7 +328,8 @@ make upstream-offline    # только локальные сверки (идё�
 | `blob_manager.py` / `blob_registry.py` | Блобы для fake-пакетов (hex, генерация fake ClientHello). |
 | `lua_manager.py` | Lua-скрипты nfqws2. |
 | `hosts_manager.py` | `/etc/hosts`. |
-| `firewall.py` / `firewall_persistence.py` | Правила перенаправления трафика в nfqws2 + их персистентность. |
+| `firewall.py` / `firewall_persistence.py` | Правила перенаправления трафика в nfqws2 + их персистентность. `uncovered_filter_ports` — порты профилей стратегии вне перехвата (предупреждение при старте). |
+| `keenetic_policy.py` | Политика доступа Keenetic для перехвата (`firewall.keenetic_policy[_exclude]`, паритет с POLICY_NAME nfqws2-keenetic): метка из `ndmc -c show ip policy`; в shell — `_policy_resolve` в `FIREWALL_SH_FUNCTIONS`. |
 | `asset_importer.py` | Импорт bundled-ассетов (blobs/lua/lists) в рабочие директории. |
 
 ### 5.3 Тестеры и диагностика — `core/testers/` + `core/`
@@ -381,7 +382,7 @@ make upstream-offline    # только локальные сверки (идё�
 | Модуль | Назначение |
 |--------|-----------|
 | `named_lists.py` | Именованные списки доменов/CIDR: `classify_entry`/`parse_entries`, CRUD, `update_fields`. Общее хранилище для единого слоя и nfqws2. |
-| `list_updater.py` | Курируемые списки доменов (podkop-стиль): пресеты itdoginfo, `merge_preserving_manual` (сохраняет ручные правки), фоновый `ListRefresher`. |
+| `list_updater.py` | Курируемые списки доменов (podkop-стиль): пресеты itdoginfo, `merge_preserving_manual` (сохраняет ручные правки), фоновый `ListRefresher`. `extra_urls` пресета/списка — доп. источники (подсети сервиса), `source_urls()`; ошибка любого источника откладывает обновление целиком. |
 
 **`core/unified/`** — единый слой «назначение → метод»:
 

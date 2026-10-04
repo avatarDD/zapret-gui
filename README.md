@@ -106,6 +106,8 @@ Python/Bottle-бэкенд. Работает как на роутере с ~20 �
 **Keenetic (Entware):**
 ```bash
 opkg update
+opkg install ca-certificates wget-ssl
+opkg remove wget-nossl
 wget -O zapret-gui-keenetic.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-keenetic.ipk
 opkg install ./zapret-gui-keenetic.ipk
 /opt/etc/init.d/S99zapret-gui start
@@ -114,6 +116,8 @@ opkg install ./zapret-gui-keenetic.ipk
 **Другие роутеры с Entware (ASUS, Xiaomi, GL.iNet и т.п.):**
 ```bash
 opkg update
+opkg install ca-certificates wget-ssl
+opkg remove wget-nossl
 wget -O zapret-gui-entware.ipk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-entware.ipk
 opkg install ./zapret-gui-entware.ipk
 /opt/etc/init.d/S99zapret-gui start
@@ -144,6 +148,19 @@ apk add --allow-untrusted ./zapret-gui-openwrt.apk
 ```bash
 apk update && wget -O zapret-gui-openwrt.apk https://github.com/avatarDD/zapret-gui/releases/latest/download/zapret-gui-openwrt.apk && apk add --allow-untrusted ./zapret-gui-openwrt.apk && /etc/init.d/zapret-gui enable && /etc/init.d/zapret-gui start
 ```
+> **На свежем Entware сначала `wget-ssl`.** В Entware по умолчанию стоит
+> `wget-nossl` (или busybox-`wget`) — без поддержки HTTPS. Ссылки на GitHub
+> начинаются с `https://`, и такой `wget` отвечает
+> `wget: not an http or ftp url: https://…`. Поэтому в инструкции для
+> Keenetic и других Entware-роутеров перед скачиванием стоят
+> `opkg install ca-certificates wget-ssl` и `opkg remove wget-nossl`: первый
+> пакет даёт корневые сертификаты, второй — `wget` с TLS, а `wget-nossl`
+> убираем, чтобы в `PATH` не остался старый бинарь. Если `wget-nossl` у вас не
+> стоял, `opkg remove` просто ответит, что удалять нечего. На OpenWrt
+> `wget` (uclient-fetch) умеет HTTPS из коробки, этот шаг не нужен. То же
+> касается и автоустановки скриптом (вариант 2): `wget -O - https://…` без
+> `wget-ssl` упадёт той же ошибкой.
+>
 > **Сначала `opkg update` (или `apk update`).** Зависимости пакета —
 > `python3-light` и модули Python — ставятся из репозитория Entware/OpenWrt,
 > а opkg берёт их имена и версии из локального индекса. Если индекс давно
@@ -190,6 +207,14 @@ python3 app.py --host 0.0.0.0 --port 8080
 ```
 
 ### Вариант 2: автоустановка скриптом
+На Entware (Keenetic и др.) сначала нужен `wget` с HTTPS — см. примечание
+к варианту 1:
+```bash
+opkg update
+opkg install ca-certificates wget-ssl
+opkg remove wget-nossl
+```
+Потом сам скрипт:
 ```bash
 wget -O - https://raw.githubusercontent.com/avatarDD/zapret-gui/main/install.sh | sh
 ```
@@ -319,8 +344,36 @@ GUI видит nfqws2 и тогда, когда его поднял не он, �
   которого они тянулись, закрыт, см.
   [Откуда что качается](#откуда-что-качается-ресурсы)).
 
+- в каталоге есть **стратегии экосистемы nfqws2-keenetic**: дефолт пакета
+  [nfqws2-keenetic](https://github.com/nfqws/nfqws2-keenetic) (circular из
+  трёх приёмов), а также подтверждённые участниками его чата профили — DoT/DoH
+  для публичных резолверов, YouTube (TLS + QUIC), голос Discord, игра
+  Wardogs (UDP 4192). Стратегию из того чата можно вставить как есть: имена
+  блобов `tls_clienthello`, `quic_initial`, `stun`, `stun2`, `tls_sochi`,
+  `game_udp`, `discord_udp` GUI знает и объявит сам.
+- если профиль стратегии ловит порт, которого нет в перехвате
+  («Настройки → nfqws → TCP/UDP-порты»), журнал при запуске назовёт его:
+  например, DoT — TCP 853, Wardogs — UDP 4192. Без порта в настройках такой
+  профиль не увидит ни одного пакета.
+
 *Пример:* создать стратегию → добавить профиль для `tcp/443` с приёмом
 `multisplit` + `fake` → Превью → Сохранить → Применить.
+
+#### Политика доступа Keenetic и аппаратный fastpath
+Как в nfqws2-keenetic, обход можно ограничить устройствами одной
+**политики доступа Keenetic** («Приоритеты подключений → Политики доступа
+в интернет»): имя политики — в «Настройки → Firewall → Политика доступа
+Keenetic» (`firewall.keenetic_policy`). Обход будет только для её устройств,
+а с переключателем «исключить её устройства» — для всех, кроме них.
+Политики с таким именем нет — обход для всех, в журнале предупреждение.
+Работает с iptables (Keenetic), действует и для автозапуска.
+
+`nfqws.fastpath_workaround` (по умолчанию `auto`) передаёт nfqws2 опцию
+`--fastpath-workaround` сборки nfqws2-keenetic: на роутерах с аппаратным
+ускорителем (известный случай — Keenetic KN-1011, MT7621) поток уходит
+мимо NFQUEUE, пока nfqws2 собирает длинный ClientHello, и стратегия на
+TLS не срабатывает. Штатный nfqws2 этой опции не знает — тогда GUI её не
+передаёт.
 
 #### Подбор стратегий
 Автоматический перебор стратегий против ваших целей — раздел из двух
@@ -705,7 +758,10 @@ MTU/PMTU, безопасные нижние границы TCP/QUIC-буферо
 - **Готовые списки** — подборки доменов от сообщества
   (YouTube, Meta, X, Discord, Telegram, «вся заблокировка в РФ»;
   источник [itdoginfo/allow-domains](https://github.com/itdoginfo/allow-domains))
-  добавляются **одним кликом** и **обновляются по таймеру**. Ваши ручные
+  добавляются **одним кликом** и **обновляются по таймеру**. У Telegram,
+  Discord, Meta и X вместе с доменами приезжают **подсети** сервиса
+  (IPv4 и IPv6): их приложения ходят на серверы по IP, мимо DNS, и
+  маршрут по одним доменам заворачивал бы сайт, но не приложение. Ваши ручные
   правки при обновлении сохраняются, пустой ответ сервера не затирает
   текущее содержимое. Можно добавить **свой URL**.
 - У каждого списка видно, **к каким маршрутам он подключён**; у

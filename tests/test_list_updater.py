@@ -148,5 +148,93 @@ class TestPresets(unittest.TestCase):
         self.assertFalse(by_url[other])
 
 
+class TestExtraUrls(unittest.TestCase):
+    """Подсети сервиса — дополнительные источники того же списка (#102)."""
+
+    def setUp(self):
+        self.fake = FakeConfigManager()
+        self._p = mock.patch("core.named_lists.get_config_manager",
+                             return_value=self.fake)
+        self._p.start()
+        self._pr = mock.patch.object(lu, "get_list_refresher",
+                                     return_value=mock.Mock())
+        self._pr.start()
+        self.tg = lu.preset_for_url(lu._BASE + "/Services/telegram.lst")
+
+    def tearDown(self):
+        self._p.stop()
+        self._pr.stop()
+
+    @staticmethod
+    def _fake_fetch(url, transport=""):
+        if "/Subnets/IPv4/" in url:
+            return "91.108.4.0/22\n149.154.160.0/20\n"
+        if "/Subnets/IPv6/" in url:
+            return "2001:b28:f23d::/48\n"
+        return "telegram.org\nt.me\n"
+
+    def test_telegram_preset_has_subnets(self):
+        self.assertIsNotNone(self.tg)
+        extra = self.tg.get("extra_urls") or []
+        self.assertTrue(any("/Subnets/IPv4/telegram.lst" in u for u in extra))
+        self.assertTrue(any("/Subnets/IPv6/telegram.lst" in u for u in extra))
+
+    def test_refresh_merges_domains_and_cidrs(self):
+        from core import named_lists
+        lid = named_lists.create("Telegram", source_url=self.tg["url"])["list"]["id"]
+        named_lists.update_fields(lid, {"extra_urls": self.tg["extra_urls"]})
+        with mock.patch.object(lu, "_fetch", side_effect=self._fake_fetch):
+            r = lu.refresh_one(lid)
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        item = named_lists.get(lid)
+        self.assertEqual(item["domains"], ["telegram.org", "t.me"])
+        self.assertIn("91.108.4.0/22", item["cidrs"])
+        self.assertIn("2001:b28:f23d::/48", item["cidrs"])
+
+    def test_legacy_list_gets_preset_subnets(self):
+        # Список «Telegram», добавленный до появления extra_urls: поля нет —
+        # подсети берутся из пресета.
+        from core import named_lists
+        lid = named_lists.create("Telegram", source_url=self.tg["url"])["list"]["id"]
+        item = named_lists.get(lid)
+        self.assertNotIn("extra_urls", item)
+        self.assertEqual(lu.source_urls(item)[1:], self.tg["extra_urls"])
+
+    def test_explicit_empty_extra_honored(self):
+        from core import named_lists
+        lid = named_lists.create("Telegram", source_url=self.tg["url"])["list"]["id"]
+        named_lists.update_fields(lid, {"extra_urls": []})
+        self.assertEqual(lu.source_urls(named_lists.get(lid)), [self.tg["url"]])
+
+    def test_extra_failure_does_not_clobber(self):
+        from core import named_lists
+        lid = named_lists.create("Telegram", source_url=self.tg["url"])["list"]["id"]
+        with mock.patch.object(lu, "_fetch", side_effect=self._fake_fetch):
+            self.assertTrue(lu.refresh_one(lid)["ok"])
+
+        def _broken(url, transport=""):
+            if "/Subnets/" in url:
+                raise RuntimeError("HTTP 404")
+            return self._fake_fetch(url)
+
+        with mock.patch.object(lu, "_fetch", side_effect=_broken):
+            r = lu.refresh_one(lid)
+        self.assertFalse(r["ok"])
+        self.assertIn("Subnets", r["error"])
+        item = named_lists.get(lid)
+        self.assertIn("149.154.160.0/20", item["cidrs"])  # подсети на месте
+        self.assertEqual(item["last_status"], "error")
+
+    def test_add_preset_stores_extra_urls(self):
+        from core import named_lists
+        with mock.patch.object(lu, "is_safe_url", return_value=True), \
+                mock.patch.object(lu, "_fetch", side_effect=self._fake_fetch):
+            r = lu.add_preset(self.tg["url"])
+        self.assertTrue(r["ok"], msg=r.get("error"))
+        item = named_lists.get(r["id"])
+        self.assertEqual(item["extra_urls"], self.tg["extra_urls"])
+        self.assertIn("91.108.4.0/22", item["cidrs"])
+
+
 if __name__ == "__main__":
     unittest.main()

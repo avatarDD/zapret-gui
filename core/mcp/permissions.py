@@ -188,6 +188,7 @@ ENUMS = {
     "scan.default_protocol": ["tcp", "udp"],
     "block_detector.dns_source": ["auto", "dnsmasq_log", "adguard_log",
                                   "af_packet"],
+    "nfqws.fastpath_workaround": ["auto", "1", "0"],
 }
 
 

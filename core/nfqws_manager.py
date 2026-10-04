@@ -351,6 +351,8 @@ class NFQWSManager:
             # exit 1 ещё до открытия NFQUEUE (см. _ensure_list_files).
             self._ensure_list_files(full_args, self._write_roots(cfg))
 
+            self._warn_uncovered_ports(strategy_args, cfg)
+
             log.info("Запуск nfqws2...", source="nfqws")
             log.debug("Команда: %s" % " ".join(full_args), source="nfqws")
 
@@ -647,7 +649,8 @@ class NFQWSManager:
             "external": bool(running and self._external),
         }
 
-    def get_help(self, refresh: bool = False, timeout: float = 6.0) -> dict:
+    def get_help(self, refresh: bool = False, timeout: float = 6.0,
+                 binary: str = None) -> dict:
         """Справка `nfqws2 -?` **с этого устройства**.
 
         Единственный честный источник списка флагов: у разных версий
@@ -663,13 +666,15 @@ class NFQWSManager:
         Args:
             refresh: перечитать, даже если ответ уже в кеше.
             timeout: сколько ждать бинарник (справка печатается сразу).
+            binary: чей `-?` читать (по умолчанию — из конфига).
 
         Returns:
             dict: ``available`` (бинарник есть и запустился), ``binary``,
             ``text``, ``returncode``, ``cached``, при неудаче — ``error``.
         """
-        from core.config_manager import get_config_manager
-        binary = get_config_manager().get("zapret", "nfqws_binary")
+        if not binary:
+            from core.config_manager import get_config_manager
+            binary = get_config_manager().get("zapret", "nfqws_binary")
 
         if not binary or not os.path.isfile(binary):
             return {"available": False, "binary": binary or "",
@@ -689,7 +694,7 @@ class NFQWSManager:
                     "returncode": None, "cached": False,
                     "error": "не читается %s: %s" % (binary, e)}
 
-        cached = self._help_cache
+        cached = getattr(self, "_help_cache", None)
         if not refresh and cached and cached[0] == signature:
             result = dict(cached[1])
             result["cached"] = True
@@ -722,6 +727,77 @@ class NFQWSManager:
                   "returncode": rc, "cached": False}
         self._help_cache = (signature, dict(result))
         return result
+
+    @staticmethod
+    def _warn_uncovered_ports(strategy_args, cfg) -> None:
+        """Предупредить о портах профилей, которых firewall не перехватывает."""
+        try:
+            from core.firewall import uncovered_filter_ports
+            miss = uncovered_filter_ports(
+                strategy_args,
+                cfg.get("nfqws", "ports_tcp", default="80,443"),
+                cfg.get("nfqws", "ports_udp", default="443"))
+        except Exception:  # noqa: BLE001 — подсказка, а не условие запуска
+            return
+        parts = ["%s %s" % (proto.upper(), ", ".join(miss[proto]))
+                 for proto in ("tcp", "udp") if miss[proto]]
+        if parts:
+            log.warning(
+                "Порты из фильтров стратегии не перехватываются firewall: "
+                "%s. Профили на них не увидят ни одного пакета — добавьте "
+                "порты в «Настройки → nfqws → TCP/UDP-порты» "
+                "(nfqws.ports_tcp / nfqws.ports_udp)." % "; ".join(parts),
+                source="nfqws")
+
+    def supports_option(self, option: str, binary: str = None) -> bool:
+        """Знает ли бинарник опцию (по его `-?`, с кешем get_help).
+
+        Нужна для опций, которых нет в штатном zapret2, но есть в
+        патченых сборках (``--fastpath-workaround`` у nfqws2-keenetic):
+        передать незнакомую опцию — nfqws2 не стартует вовсе.
+        """
+        help_ = self.get_help(binary=binary)
+        if not help_.get("available"):
+            return False
+        return ("--%s" % option.lstrip("-")) in (help_.get("text") or "")
+
+    def _fastpath_args(self, strategy_args: list, binary: str, cfg) -> tuple:
+        """``--fastpath-workaround`` для патченого nfqws2.
+
+        Возвращает (доп. базовые аргументы, аргументы стратегии). Опция в
+        самой стратегии главнее настройки; бинарнику, который её не знает,
+        она не уходит ни из настройки, ни из стратегии (вставленный конфиг
+        nfqws2-keenetic с ней иначе ронял бы запуск).
+        """
+        opt = "--fastpath-workaround"
+        in_strategy = any(a == opt or a.startswith(opt + "=")
+                          for a in strategy_args)
+        mode = str(cfg.get("nfqws", "fastpath_workaround",
+                           default="auto") or "").strip().lower()
+        if not in_strategy and mode not in ("1", "auto"):
+            return [], strategy_args
+        supported = self.supports_option(opt, binary)
+        if in_strategy:
+            if supported:
+                return [], strategy_args
+            out, skip = [], False
+            for a in strategy_args:
+                if skip:
+                    skip = False
+                    continue
+                if a == opt:
+                    skip = True
+                    continue
+                if a.startswith(opt + "="):
+                    continue
+                out.append(a)
+            log.warning("%s убран из стратегии: установленный nfqws2 его "
+                        "не знает (опция есть только в сборке "
+                        "nfqws2-keenetic)" % opt, source="nfqws")
+            return [], out
+        if supported:
+            return ["%s=%s" % (opt, mode)], strategy_args
+        return [], strategy_args
 
     # ─────────────────────── command builder ───────────────────────
 
@@ -756,6 +832,9 @@ class NFQWSManager:
         strategy_args = self._strip_engine_owned(list(strategy_args or []),
                                                  cfg)
         base_args = self._build_base_args(cfg)
+        fastpath, strategy_args = self._fastpath_args(strategy_args,
+                                                      binary, cfg)
+        base_args += fastpath
 
         lua_path = cfg.get("zapret", "lua_path") or "/opt/zapret2/lua"
         lua_args = self._build_lua_init_args(strategy_args, lua_path)

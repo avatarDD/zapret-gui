@@ -1,0 +1,11 @@
+# Приёмы QUIC из экосистемы nfqws2-keenetic (чат t.me/nfqws,
+# сентябрь–октябрь 2026; только подтверждённые nfqws2-приёмы).
+
+[kn2_quic_fake11_ipfrag_drop]
+name = QUIC: fake ×11 + IP-фрагментация оригинала
+author = Andrey R (чат nfqws2-keenetic)
+label = stable
+description = Вторая стратегия QUIC-профиля для YouTube: Initial www.google.com как fake ×11, затем исходный Initial уходит IP-фрагментами (разрез на 128 байте UDP), а цельный оригинал отбрасывается.
+--lua-desync=fake:blob=quic_initial_www_google_com:repeats=11
+--lua-desync=send:ipfrag:ipfrag_pos_udp=128
+--lua-desync=drop

@@ -1,0 +1,27 @@
+# Приёмы HTTP (порт 80) из экосистемы nfqws2-keenetic.
+# Источники: github.com/nfqws/nfqws2-keenetic 1.3.1 и чат t.me/nfqws,
+# сентябрь–октябрь 2026 — только nfqws2-приёмы с подтверждением
+# «работает». Сканер оборачивает их под цель (--payload=http_req и т.д.).
+
+[kn2_http_methodeol_badsum]
+name = nfqws2-keenetic: http_methodeol + badsum
+author = nfqws/nfqws2-keenetic
+label = stable
+description = HTTP-часть дефолта nfqws2-keenetic: перевод строки перед методом (понимает nginx) с битой контрольной суммой. На 16 КБ-блоке хостингов не пробивает — для него приёмы ниже.
+--lua-desync=http_methodeol:badsum
+
+[kn2_http_stun_fake_ts_sld_split]
+name = 16 КБ-блок HTTP: fake STUN (ts) + multisplit sld+1 seqovl=1
+author = Alexei M / Деепричастие Междометие (чат nfqws2-keenetic)
+label = recommended
+description = HTTP на хостингах с обрывом на 16 КБ (Hetzner, OVH, CDN77, Oracle …): STUN-пакет как fake с отрицательным timestamp ×2, затем разрез по sld+1 с перекрытием 1 байт. Подтверждено: «в итоге вот это помогло».
+--lua-desync=fake:blob=stun:tcp_ts=-1000:repeats=2
+--lua-desync=multisplit:pos=sld+1:seqovl=1
+
+[kn2_http_sochi_fake_hostfakesplit_mailru]
+name = HTTP: fake sochi-park (ts) ×5 + hostfakesplit mail.ru
+author = reSigo (чат nfqws2-keenetic)
+label = stable
+description = Замена дефолтной HTTP-стратегии, когда та не подошла: fake ClientHello staging-sochi-park.predict.mail.ru ×5 с ts-фулингом, затем hostfakesplit с фейковым хостом mail.ru.
+--lua-desync=fake:blob=tls_sochi:repeats=5:tcp_ts=-600000:tcp_ts_up
+--lua-desync=hostfakesplit:host=mail.ru:tcp_ts=-600000:tcp_ts_up

@@ -88,6 +88,12 @@ IPV6_ENABLED=@IPV6_ENABLED@
 WAN_IFACES=@WAN_IFACES@
 # iptables | nftables | пусто (тогда shell-функции определят сами)
 FW_BACKEND=@FW_BACKEND@
+# Политика доступа Keenetic: имя (метку ищем при старте через ndmc — после
+# перезагрузки она может быть другой) и режим: 1 — исключить её устройства,
+# 0 — обход только для них. Пустое имя — весь трафик.
+POLICY_NAME=@POLICY_NAME@
+POLICY_EXCLUDE=@POLICY_EXCLUDE@
+POLICY_MARK=""
 
 # Каталог для state.tsv (z2k-state-persist.lua). Переживает переустановку
 # zapret2, бекапится с настройками GUI. nfqws2 запускается под --user nobody,
@@ -679,6 +685,12 @@ class AutostartManager:
         except Exception:  # noqa: BLE001
             fw_backend = ""
 
+        from core.keenetic_policy import clean_name
+        policy_name = clean_name(cfg.get("firewall", "keenetic_policy",
+                                         default=""))
+        policy_exclude = "1" if cfg.get("firewall", "keenetic_policy_exclude",
+                                        default=False) else "0"
+
         # Единый источник shell-функций firewall (общий с reapply-хуками).
         from core.firewall_persistence import FIREWALL_SH_FUNCTIONS
 
@@ -710,6 +722,10 @@ class AutostartManager:
             "@IPV6_ENABLED@": _q(ipv6_enabled),
             "@WAN_IFACES@": _q(wan_ifaces),
             "@FW_BACKEND@": _q(fw_backend),
+            # Политика Keenetic — только с iptables, как в FirewallManager.
+            "@POLICY_NAME@": _q(policy_name if fw_backend in ("", "iptables")
+                                else ""),
+            "@POLICY_EXCLUDE@": _q(policy_exclude),
             "@FIREWALL_FUNCS@": FIREWALL_SH_FUNCTIONS,
             # Каталог state.tsv берём от каталога конфига: с
             # `--config DIR` автозапуск обязан писать туда же, куда пишет

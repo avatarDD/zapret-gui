@@ -48,8 +48,20 @@ USER_AGENT             = "zapret-gui/list-updater"
 
 _BASE = "https://raw.githubusercontent.com/itdoginfo/allow-domains/main"
 
+
+def _subnets(name: str) -> list:
+    """URL'ы подсетей сервиса у itdoginfo (Subnets/IPv4 + Subnets/IPv6)."""
+    return [_BASE + "/Subnets/IPv4/%s.lst" % name,
+            _BASE + "/Subnets/IPv6/%s.lst" % name]
+
 # Курируемые пресеты (community-списки доменов). Пользователь добавляет
 # одним кликом; список редактируемый — можно добавить свой URL.
+#
+# `extra_urls` — дополнительные источники того же списка, сейчас это
+# подсети сервиса. Домена мало там, где приложение ходит по IP без DNS:
+# Telegram подключается к датацентрам по зашитым адресам, голос Discord и
+# звонки WhatsApp — тоже. Без подсетей маршрут «Telegram → туннель»
+# заворачивал сайт и веб-версию, а само приложение шло мимо.
 CURATED_PRESETS = [
     # ─── Сервисы ───
     {
@@ -61,25 +73,29 @@ CURATED_PRESETS = [
     {
         "name": "Meta (Instagram/Facebook)",
         "url": _BASE + "/Services/meta.lst",
-        "description": "Домены Meta: Instagram, Facebook, WhatsApp.",
+        "description": "Домены и подсети Meta: Instagram, Facebook, WhatsApp.",
+        "extra_urls": _subnets("meta"),
         "category": "services",
     },
     {
         "name": "Twitter / X",
         "url": _BASE + "/Services/twitter.lst",
-        "description": "Домены X (бывш. Twitter).",
+        "description": "Домены и подсети X (бывш. Twitter).",
+        "extra_urls": _subnets("twitter"),
         "category": "services",
     },
     {
         "name": "Discord",
         "url": _BASE + "/Services/discord.lst",
-        "description": "Домены Discord (включая voice/CDN).",
+        "description": "Домены Discord (включая voice/CDN) и его подсети.",
+        "extra_urls": _subnets("discord"),
         "category": "services",
     },
     {
         "name": "Telegram",
         "url": _BASE + "/Services/telegram.lst",
-        "description": "Домены Telegram.",
+        "description": "Домены и подсети Telegram: приложения ходят на датацентры по IP, без DNS.",
+        "extra_urls": _subnets("telegram"),
         "category": "services",
     },
     {
@@ -165,6 +181,35 @@ def set_transport(transport: str) -> dict:
 
 # ─────── presets / creation ───────
 
+def preset_for_url(url: str):
+    """Пресет с таким основным URL или None."""
+    return next((p for p in CURATED_PRESETS if p["url"] == url), None)
+
+
+def source_urls(item: dict) -> list:
+    """Все URL, из которых собирается управляемый список.
+
+    Основной `source_url` + `extra_urls`. Если поля `extra_urls` у списка
+    нет вовсе (добавлен до появления подсетей в пресетах), берём их из
+    пресета: старый список «Telegram» сам получит подсети при следующем
+    обновлении. Явный пустой список `extra_urls: []` — «только основной
+    URL», пресет его не переопределяет.
+    """
+    url = (item.get("source_url") or "").strip()
+    if not url:
+        return []
+    extra = item.get("extra_urls")
+    if extra is None:
+        p = preset_for_url(url)
+        extra = (p or {}).get("extra_urls") or []
+    out = [url]
+    for u in extra:
+        u = str(u or "").strip()
+        if u and u not in out:
+            out.append(u)
+    return out
+
+
 def presets() -> list:
     """Курируемые пресеты с пометкой, добавлен ли уже такой URL."""
     existing = {(it.get("source_url") or "")
@@ -220,7 +265,7 @@ def is_safe_url(url: str) -> bool:
 
 def add_from_url(url: str, *, name: str = "", description: str = "",
                  interval_hours: int = DEFAULT_INTERVAL_HOURS,
-                 refresh_now: bool = True) -> dict:
+                 refresh_now: bool = True, extra_urls=None) -> dict:
     """
     Создать управляемый named-list по URL и (опц.) сразу подтянуть.
     Имя по умолчанию берём из URL.
@@ -251,6 +296,7 @@ def add_from_url(url: str, *, name: str = "", description: str = "",
     named_lists.update_fields(list_id, {
         "interval_hours": max(1, int(interval_hours)),
         "auto_managed": True,
+        "extra_urls": [u for u in (extra_urls or []) if is_safe_url(u)],
         "last_refresh": 0, "last_status": "", "last_error": "",
     })
 
@@ -262,11 +308,12 @@ def add_from_url(url: str, *, name: str = "", description: str = "",
 
 
 def add_preset(url: str) -> dict:
-    p = next((x for x in CURATED_PRESETS if x["url"] == url), None)
+    p = preset_for_url(url)
     if not p:
         return {"ok": False, "error": "Неизвестный пресет"}
     return add_from_url(p["url"], name=p["name"],
-                        description=p.get("description", ""))
+                        description=p.get("description", ""),
+                        extra_urls=p.get("extra_urls") or [])
 
 
 # ─────── fetch + merge ───────
@@ -328,8 +375,8 @@ def refresh_one(list_id: str) -> dict:
     item = named_lists.get(list_id)
     if not item:
         return {"ok": False, "error": "Список не найден"}
-    url = (item.get("source_url") or "").strip()
-    if not url:
+    urls = source_urls(item)
+    if not urls:
         return {"ok": False, "error": "У списка нет source_url"}
 
     # Per-list transport: если у списка задан свой транспорт — используем его,
@@ -337,15 +384,22 @@ def refresh_one(list_id: str) -> dict:
     list_transport = (item.get("transport") or "").strip()
     transport = list_transport if list_transport else get_transport()
 
-    try:
-        text = _fetch(url, transport=transport)
-    except RuntimeError as e:
-        named_lists.update_fields(list_id, {
-            "last_refresh": int(time.time()),
-            "last_status": "error", "last_error": str(e)})
-        return {"ok": False, "error": str(e)}
+    # Все источники — или ни одного: слияние считает «пропавшим в
+    # upstream» всё, чего нет в remote, и упавший источник подсетей стёр
+    # бы подсети из списка. Поэтому ошибка любого URL = ошибка обновления,
+    # содержимое не трогаем.
+    texts = []
+    for url in urls:
+        try:
+            texts.append(_fetch(url, transport=transport))
+        except RuntimeError as e:
+            err = str(e) if url == urls[0] else "%s: %s" % (url, e)
+            named_lists.update_fields(list_id, {
+                "last_refresh": int(time.time()),
+                "last_status": "error", "last_error": err})
+            return {"ok": False, "error": err}
 
-    remote = named_lists.parse_entries(text)
+    remote = named_lists.parse_entries("\n".join(texts))
     if not remote["domains"] and not remote["cidrs"]:
         # Не затираем при пустом ответе.
         named_lists.update_fields(list_id, {

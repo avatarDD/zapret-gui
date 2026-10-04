@@ -97,6 +97,16 @@ DEFAULT_CONFIG = {
         # на уровне INFO (видимый), что нужно для диагностики «почему стратегия
         # не сработала» (грузятся ли lua, объявлены ли blob'ы, матчится ли цель).
         "debug": False,
+        # Обход аппаратного fastpath при сборке TLS ClientHello (опция
+        # --fastpath-workaround=0|1|auto из патча nfqws2-keenetic; у
+        # bol-van/zapret2 её нет). На роутерах с аппаратным ускорителем
+        # (известный случай — MT7621, Keenetic KN-1011) задержанный на
+        # сборку сегмент переводит поток в fastpath, остальные сегменты
+        # идут мимо NFQUEUE, и стратегия на tls_client_hello не
+        # срабатывает. auto включает обход сам после двух ретрансмиссий
+        # без успешной сборки. Передаётся ТОЛЬКО бинарнику, чей `-?`
+        # знает опцию, — штатный nfqws2 с ней не стартовал бы.
+        "fastpath_workaround": "auto",
     },
 
     # --- Firewall ---
@@ -105,6 +115,12 @@ DEFAULT_CONFIG = {
         "apply_on_start": True,
         "flowoffload": "donttouch",  # donttouch, none, software, hardware
         "postnat": True,
+        # Политика доступа Keenetic (как POLICY_NAME в nfqws2-keenetic):
+        # имя (описание) политики, чьи устройства обрабатывает nfqws2.
+        # Пусто — весь трафик. С keenetic_policy_exclude — наоборот, все,
+        # кроме устройств политики. Только iptables (Keenetic).
+        "keenetic_policy": "",
+        "keenetic_policy_exclude": False,
     },
 
     # --- Фильтрация ---

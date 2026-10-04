@@ -28,7 +28,7 @@ description: >-
 1. **sing-box.sagernet.org** — официальная документация конфигурации и CLI;
    `sagernet/sing-box` (Go-исходники) — окончательная истина по схемам.
    §9 сверен с `docs/deprecated.md` + `docs/migration.md` + `docs/changelog.md`
-   апстрима на **v1.14.1** (2026-09-15). **1.14 вышла из беты 2026-08-31
+   апстрима на **v1.14.2** (2026-09-24). **1.14 вышла из беты 2026-08-31
    (v1.14.0) и теперь это актуальная линия**; 1.13 продолжает получать фиксы
    (последняя — `v1.13.21`, 2026-08-30: паники в system-стеке и websocket,
    TUN loopback protection, зависание URLTest), но новых полей конфига в неё
@@ -317,7 +317,7 @@ endpoint заменил старый `type:wireguard` outbound (он deprecated 
 | 1.11 | **УДАЛЁН** `rule_set_ipcidr_match_source`. deprecated: спец-outbounds **`block`**/**`dns`**; inbound-поля `sniff*`/`domain_strategy`; outbound `wireguard`; `override_address`/`override_port` у direct; TUN `gso` | rule-actions `reject`/`hijack-dns`/`sniff`/`resolve`; `endpoints` для WG; route-опции для override | `block` убран из `make_minimal_config`; sniff/dns-hijack через route |
 | **1.12** | **УДАЛЕНЫ `geoip`/`geosite`** (как route-матчеры) и слитые в 1.10 TUN-поля; формат `dns` переписан на типизированные серверы (legacy-`address` пока принимается); deprecated legacy-ECH поля (`pq_signature_schemes_enabled`, `dynamic_record_sizing_disabled` — уже не работают) | `rule_set`; `type:udp/tcp/tls/…` | geo — через ipset/rule-set; DNS см. §7 |
 | **1.13** | **УДАЛЕНЫ** `block`/`dns` outbounds, legacy inbound-поля (`sniff*`/`domain_strategy`), старый outbound `type:wireguard`, **`override_address`/`override_port` у direct**, **TUN `gso`** | как deprecated в 1.11 | issue #149 — генератор чистый; `validate()` держит block/dns в «известных типах» только для ЧТЕНИЯ старых чужих конфигов |
-| **1.14** (стабильная с 2026-08-31; текущая — 1.14.1) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`). Новые deprecated — **удаление обещано в 1.16**, не сейчас: inline `tls.acme` → `certificate_provider`; address-filter поля DNS-правил (`ip_cidr`/`ip_is_private` без `match_response`) и `rule_set_ip_cidr_accept_empty` → action `evaluate` + `match_response`; `independent_cache` (кэш и так ключуется по транспорту); `store_rdrc` → `store_dns`; legacy `strategy` в DNS rule action; `download_detour` у remote rule-set → `http_client`; неявный HTTP-клиент по умолчанию → явные `http_clients` + `route.default_http_client` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed; `independent_cache` не задаём (`singbox_config.py:755`) |
+| **1.14** (стабильная с 2026-08-31; текущая — 1.14.2) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`). Новые deprecated — **удаление обещано в 1.16**, не сейчас: inline `tls.acme` → `certificate_provider`; address-filter поля DNS-правил (`ip_cidr`/`ip_is_private` без `match_response`) и `rule_set_ip_cidr_accept_empty` → action `evaluate` + `match_response`; `independent_cache` (кэш и так ключуется по транспорту); `store_rdrc` → `store_dns`; legacy `strategy` в DNS rule action; `download_detour` у remote rule-set → `http_client`; неявный HTTP-клиент по умолчанию → явные `http_clients` + `route.default_http_client` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed; `independent_cache` не задаём (`singbox_config.py:755`) |
 
 > Симптомы по версиям: на 1.12+ — падение на `{"geosite":…}`/`{"geoip":…}` в
 > route или на legacy-DNS уже на 1.14; на 1.13 — `FATAL ... legacy inbound
@@ -338,8 +338,16 @@ endpoint заменил старый `type:wireguard` outbound (он deprecated 
 
 Про 1.14 надо знать не только «что удалили»: линия добавила крупные вещи, о
 которых будут спрашивать. Сверено с `docs/changelog.md` релиза **v1.14.0**
-(2026-08-31) и `v1.14.1` (2026-09-15; в ней «fixes and improvements», без
-изменений схемы):
+(2026-08-31), `v1.14.1` (2026-09-15) и `v1.14.2` (2026-09-24) — обе
+«fixes and improvements», без изменений схемы: `docs/deprecated.md`,
+`docs/migration.md` и регистрации протоколов (`include/`) побайтово те же.
+Из фиксов 1.14.2 для нас заметны: сброс сети на каждом старте (TUN/auto-route),
+потеря UDP-адреса-домена внутри групп `selector`/`urltest`, half-close в
+gRPC-транспорте, начальный handshake WireGuard-эндпоинта с доменным пиром,
+port hopping hysteria2 к «чужому» адресу. В документации поправлено: дефолт
+`tls.min_version` — TLS 1.2 и для клиента, и для сервера; dashboard
+API-сервиса больше не берёт неявный HTTP-клиент по умолчанию (deprecation
+неявного клиента для remote rule-set/ACME остаётся в силе):
 
 - **JSON Schema конфига** — команда `sing-box schema` + поле
   `$schema` (см. §2).

@@ -4,6 +4,47 @@
 
 ### Добавлено
 
+- **Стратегии из экосистемы nfqws2-keenetic и её чата.** Новые каталоги:
+  `catalogs/builtin/nfqws2_keenetic.txt` — полные пресеты (дефолт
+  nfqws2-keenetic 1.3.1 с тремя стратегиями circular; DoT/DoH для
+  публичных резолверов; YouTube TLS+QUIC с перебором; YouTube
+  multidisorder + fake rzd.ru; голос Discord; Wardogs на UDP 4192) и
+  приёмы для подбора `catalogs/advanced/{tcp,http80,udp}_nfqws2_keenetic.txt`
+  (три стратегии дефолта по отдельности, 16 КБ-блок seqovl=568 из STUN,
+  HTTP-обход 16 КБ на хостингах fake STUN + multisplit sld+1 и др.). Из
+  выгрузки чата t.me/nfqws взяты только nfqws2-стратегии с подтверждением
+  «работает»; синтаксис nfqws1 отброшен, опечатка `repeat=` исправлена.
+- **Блобы и имена из nfqws2-keenetic.** `tls_clienthello` и
+  `quic_initial` — синонимы наших google-блобов (файлы побайтово те же),
+  новые файлы `stun2.bin`, `tls_clienthello_sochi_park.bin` (`tls_sochi`),
+  `active_discord_udp.bin` (`discord_udp`), `active_game_udp.bin`
+  (`game_udp`). Стратегию из чата можно вставить как есть.
+- **`--fastpath-workaround` (настройка `nfqws.fastpath_workaround`,
+  по умолчанию `auto`).** Обход аппаратного fastpath при сборке
+  многосегментного ClientHello из сборки nfqws2-keenetic (MT7621,
+  Keenetic KN-1011: поток уходит мимо NFQUEUE, и стратегия на
+  `tls_client_hello` не срабатывает). Опция передаётся только бинарнику,
+  чей `-?` её знает; у штатного nfqws2 bol-van её нет — тогда она не
+  передаётся, а из вставленной стратегии вырезается (иначе nfqws2 не
+  стартовал бы).
+- **Политика доступа Keenetic для обхода** (`firewall.keenetic_policy`,
+  `firewall.keenetic_policy_exclude`, как `POLICY_NAME`/`POLICY_EXCLUDE`
+  в nfqws2-keenetic): обход nfqws2 только для устройств политики или для
+  всех, кроме них. Метка читается из `ndmc -c show ip policy` — и GUI, и
+  автозапуском `S99zapret`, и reapply-хуком после flush NDMS. Политики
+  нет — обрабатывается весь трафик, в журнале предупреждение.
+- **Предупреждение о портах вне перехвата.** При запуске nfqws2 журнал
+  называет порты из `--filter-tcp/udp` стратегии, которых нет в
+  `nfqws.ports_tcp/udp` («UDP 4192», «TCP 853»): такие профили не видят ни
+  одного пакета, а nfqws2 об этом молчит.
+- **Готовые списки Telegram, Discord, Meta, X — с подсетями.** Пресет
+  тянет не только домены, но и `Subnets/IPv4` + `Subnets/IPv6` сервиса из
+  itdoginfo/allow-domains (поле `extra_urls` списка). Приложения Telegram
+  ходят на датацентры по IP без DNS, поэтому маршрут «Telegram → туннель»
+  по одним доменам заворачивал сайт, а не приложение. Уже добавленные
+  списки получат подсети при следующем обновлении; ошибка любого из
+  источников не стирает содержимое (обновление целиком откладывается).
+
 - **Страницы списков, маршрутизации, DNS, блобов и мониторинга DNS
   приведены в порядок.**
   - «Списки маршрутизации»: у каждого списка — сколько в нём доменов и
@@ -86,6 +127,15 @@
 
 ### Документация
 
+- **README: `wget-ssl` на свежем Entware (#378).** Без него `wget`
+  не умеет HTTPS и на ссылку релиза отвечает `wget: not an http or ftp
+  url`. В инструкции для Keenetic/Entware и автоустановки добавлены
+  `opkg install ca-certificates wget-ssl` и `opkg remove wget-nossl`.
+
+- **Сверка с sing-box 1.14.2 (#377).** Схема не менялась
+  (`deprecated.md`, `migration.md`, регистрации протоколов те же); скил
+  `singbox` и `docs/upstream.json` переведены на v1.14.2.
+
 - **README: `opkg update` перед установкой пакета.** Во всех
   инструкциях установки `.ipk`/`.apk` (Keenetic, Entware, OpenWrt, ручная
   установка) первым шагом стоит `opkg update` / `apk update`, и добавлено
@@ -105,6 +155,12 @@
   «MCP-сервер выключен».
 
 ### Исправлено
+
+- **Блоб из `seqovl_pattern=`/`pattern=` не дозаявлялся.** Реестр
+  блобов искал только `blob=NAME`, и `multisplit:seqovl=568:
+  seqovl_pattern=stun` уходил без `--blob=stun` — инстанс падал «blob
+  unavailable». Теперь паттерны тоже дозаявляются, кроме имён
+  `init_vars.lua` (`tls_google`, `tls_rnd`, …), у которых своё значение.
 
 - **MCP после ревью списков:** `ipset_edit` сравнивает записи в
   каноничной форме — `add` больше не дописывает дубль записи, лежащей в

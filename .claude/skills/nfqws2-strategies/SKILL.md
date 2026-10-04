@@ -229,6 +229,24 @@ hostname (макс. 2 «перескока»). Если все инстансы 
 `--blob=NAME:@bin/file.bin`. Дозаявка по имени в проекте автоматизирована —
 `core/blob_registry.build_blob_declarations()`.
 
+**Что считается ссылкой на блоб** (`referenced_blob_names` +
+`referenced_pattern_names`): `blob=NAME` (и `fake_blob=`) **и**
+`seqovl_pattern=NAME` / `pattern=NAME`. Паттерн lua берёт тем же
+`blob(desync, name)`, и до 2026-10 реестр его не дозаявлял:
+`multisplit:seqovl=568:seqovl_pattern=stun` уходил без `--blob=stun` →
+«blob unavailable». Исключение — имена `init_vars.lua`
+(`_INIT_VARS_NAMES`: `tls_google`, `tls_rnd`, …): у них своё значение
+(fake_default_tls с другим SNI), и подмена файлом из реестра молча
+поменяла бы стратегию — их по паттерну не заявляем.
+
+**Имена из nfqws2-keenetic** (`_FALLBACK_ALIASES`): `tls_clienthello` и
+`quic_initial` (их `/opt/etc/nfqws2/blobs/*.bin` побайтово равны нашим
+`tls_clienthello_www_google_com.bin` / `quic_initial_www_google_com.bin`),
+`quic_initial_www_google_com`, `stun`, `stun2`, `tls_sochi`
+(`tls_clienthello_sochi_park.bin`), `discord_udp`/`ACTIVE_DISCORD_UDP`,
+`game_udp`/`ACTIVE_GAME_UDP` (блобы бандла Flowseal 1.10). Стратегии из
+их чата вставляются как есть.
+
 Откуда реестр берёт имена (`get_blob_value`): сначала `--blob=` из каталогов
 и `_FALLBACK_ALIASES` (каталожное имя всегда главнее), затем **свои блобы**
 со страницы «Блобы» / MCP `blob_add` — файл `{base_path}/blobs/<имя>`
@@ -303,6 +321,21 @@ execution plan ещё до входа в Lua** (раньше падало вну
 | `--filter-ssid=ssid1[,…]` | Wi-Fi SSID-фильтр (Linux). |
 | `--filter-ssid-neg[=0\|1]` | **1.0.5+.** Инверсия SSID-фильтра профиля: профиль работает во всех сетях, КРОМЕ перечисленных. |
 | `--filter-mark=mark[/mask]` | **1.0.5+.** Фильтр профиля по mark пакета (десятичный или `0xHEX`, с необязательной маской). Позволяет включать профиль только для трафика, уже промаркированного firewall'ом. ⚠️ Не путать с `--fwmark` (это anti-loop мarker самого nfqws2) и с нашими MARK_PROCESSED / MARK_EXCLUDE (`core/firewall.py`): те стоят в правилах NFQUEUE, а `--filter-mark` разбирает mark **внутри** профиля. |
+
+**Патченая сборка nfqws2-keenetic: `--fastpath-workaround=0|1|auto`.**
+Опции НЕТ у bol-van/zapret2 — она из патча `001-tls-reasm-fastpath.patch`
+nfqws2-keenetic (ветка Anonym-tsk/zapret2 `tls-reasm-fastpath` поверх
+v1.0.5.2). Проблема: на роутерах с аппаратным fastpath (MT7621, Keenetic
+KN-1011) вердикт DROP для незавершённой TLS-сборки переводит поток в
+fastpath, остальные сегменты идут мимо NFQUEUE, реасм не завершается —
+стратегия на многосегментный `tls_client_hello` (kyber) не срабатывает.
+`1` заменяет задержанные сегменты на ACK без пейлоада; `auto` включает
+это глобально после двух ретрансмиссий без успешной сборки. У нас —
+настройка `nfqws.fastpath_workaround` (дефолт `auto`, как у
+nfqws2-keenetic); `NFQWSManager._fastpath_args` передаёт её **только**
+бинарнику, чей `-?` знает опцию (`supports_option`, кеш `get_help`), а из
+стратегии её вырезает, если бинарник не знает — со штатным nfqws2
+незнакомая опция = процесс не стартует.
 
 > **Что стратегии не положено (наша сборка).** `compose_command`
 > вырезает из аргументов стратегии `--user`/`--uid`/`--qnum`/`--fwmark`
@@ -741,6 +774,20 @@ iptables -t nat -A POSTROUTING -o $wanif -p udp \
 nftables-пути есть свой `nat postrouting … masquerade` для переписанных
 nfqws2-пакетов.
 
+### 10.3a Политика доступа Keenetic (`firewall.keenetic_policy`)
+
+Паритет с `POLICY_NAME`/`POLICY_EXCLUDE` nfqws2-keenetic, только
+iptables-путь. Метка политики — из `ndmc -c show ip policy` (строка
+«description = <имя>:» и рядом «mark: <hex>», маска `0x0fffffff`;
+`core/keenetic_policy.py`, в shell — `_policy_resolve` в
+`FIREWALL_SH_FUNCTIONS`, им пользуются и `S99zapret`, и reapply-хук).
+Включение — `-m mark ! --mark POLICY -j CONNMARK --set-xmark
+MARK_EXCLUDE` до NFQUEUE-правил: соединения остальных устройств вместе с
+ответами уходят по существующему connmark-RETURN. Исключение — RETURN по
+метке политики в POSTROUTING и PREROUTING. Политики нет → весь трафик и
+предупреждение (молча выключать обход нельзя). Пустое имя (дефолт) —
+политика не используется.
+
 ### 10.4 Порты по умолчанию
 
 `config_manager.DEFAULT_CONFIG` (намеренно шире эталона keenetic, который
@@ -752,7 +799,10 @@ nfqws2-пакетов.
 
 Должны согласовываться с `--filter-tcp=` / `--filter-udp=` в стратегии. Если
 стратегия `--filter-tcp=443`, а в `nfqws.ports_tcp` нет 443 — в очередь не
-придёт ничего.
+придёт ничего. `NFQWSManager.start` пишет в журнал предупреждение с такими
+портами (`firewall.uncovered_filter_ports`, чистая функция; диапазон,
+хоть как-то пересекающийся с перехватом, не считается проблемой). Типичные
+случаи из чата nfqws2-keenetic: Wardogs — UDP 4192, DoT — TCP 853.
 
 ### 10.5 Сигналы nfqws2
 
@@ -828,6 +878,14 @@ telegram, google, **cloudflare** (one.one.one.one, тело со
 speed.cloudflare.com), **hosting** (Hetzner/OVH/DigitalOcean/Linode —
 speedtest-файлы через `probe_urls`, `no_hostlist`: блок по сети
 провайдера, стратегия для всего трафика).
+
+Из экосистемы nfqws2-keenetic: `builtin/nfqws2_keenetic.txt` (дефолт
+пакета 1.3.1 + подтверждённые в чате t.me/nfqws полные профили: DoT/DoH,
+YouTube, голос Discord, Wardogs) и `advanced/{tcp,http80,udp}_nfqws2_keenetic.txt`
+(приёмы). Отбор из чата — только `--lua-desync` (nfqws2) с
+подтверждением «работает»; правки при переносе — в шапке файла
+(`repeat=` → `repeats=`, голый `padencap` у multisplit убран — это
+значение `tls_mod`, а не ключ).
 
 Эвристика «полный пресет vs приём» — `_is_full_preset_args()` в
 `strategy_scanner.py`: наличие `--filter-*`/`--new`/`--hostlist`/`--ipset`/
@@ -1223,6 +1281,13 @@ proto/port/l7/payload как в `scan_targets`. Фронтенд (`blockcheck2.j
 20. **nfqws2 жрёт CPU на ровном месте**: если версия ровно 1.0 или 1.0.1 —
     это баг дефолта `--lua-gc` (60 мс вместо 60 с). Обновиться до ≥ 1.0.2 или
     явно задать `--lua-gc=60`.
+21. **Профиль на порт, которого нет в перехвате** (`nfqws.ports_tcp/udp`):
+    UDP 4192 у Wardogs, TCP 853 у DoT. nfqws2 молчит, журнал GUI при
+    запуске называет такие порты (§10.4). Дописать порт в настройки.
+22. **Keenetic с аппаратным fastpath (MT7621, KN-1011)**: многосегментный
+    ClientHello не собирается — стратегия на `tls_client_hello` не
+    срабатывает. Лечится сборкой nfqws2-keenetic с
+    `--fastpath-workaround=auto` (§3.1) или отключением ускорителя.
 
 ---
 

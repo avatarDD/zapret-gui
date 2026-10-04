@@ -73,6 +73,7 @@ AUTOSTART_INIT = "/opt/etc/init.d/S99zapret"
 #  (бейкингом в S99zapret либо `source firewall.run` в reapply):
 #    QUEUE_NUM PORTS_TCP PORTS_UDP MAX_PKT_OUT MAX_PKT_OUT_UDP MAX_PKT_IN
 #    MARK_PROCESSED MARK_EXCLUDE IPV6_ENABLED WAN_IFACES FW_BACKEND
+#    POLICY_NAME POLICY_MARK POLICY_EXCLUDE (политика доступа Keenetic)
 # ─────────────────────────────────────────────────────────────────────────
 FIREWALL_SH_FUNCTIONS = r"""
 IPT_GROUP_POST="nfqws_post"
@@ -140,6 +141,26 @@ _fw_port_match() {
     IFS="$_oifs"
 }
 
+# Метка политики доступа Keenetic по её имени (POLICY_NAME), если POLICY_MARK
+# не задан явно. Как create_running_config у nfqws2-keenetic: строка
+# «description = <имя>:», рядом «mark: <hex>». Нет ndmc или политики — пусто,
+# и правила ставятся для всего трафика.
+_policy_resolve() {
+    [ -n "$POLICY_MARK" ] && return 0
+    [ -n "$POLICY_NAME" ] || return 0
+    _ndmc=""
+    for _np in /bin/ndmc /usr/bin/ndmc /opt/bin/ndmc; do
+        [ -x "$_np" ] && { _ndmc="$_np"; break; }
+    done
+    [ -n "$_ndmc" ] || return 0
+    _pm=$(LD_LIBRARY_PATH=/lib:/usr/lib "$_ndmc" -c show ip policy 2>&1 \
+        | grep -i "description = $POLICY_NAME:" -A 1 | grep 'mark:' \
+        | grep -o '[^ ]*$' | head -n 1)
+    _pm="${_pm#0x}"
+    [ -n "$_pm" ] && POLICY_MARK="0x$_pm/0x0fffffff"
+    return 0
+}
+
 # Фрагмент ограничителя «первые N пакетов»; пусто, если connbytes недоступен.
 # $1=original|reply $2=limit.
 _fw_cb() {
@@ -156,6 +177,7 @@ _firewall_start() {
     fi
     JNFQ="$(_jnfq)"
     CONN_CHECK="-m mark ! --mark $MARK_PROCESSED"
+    _policy_resolve
 
     $CMD -w -t mangle -N $IPT_GROUP_POST 2>/dev/null
     $CMD -w -t mangle -F $IPT_GROUP_POST
@@ -175,6 +197,13 @@ _firewall_start() {
     for IFACE in $(_iface_list); do
         if [ "$IFACE" = "__ALL__" ]; then OIF=""; IIF=""; else OIF="-o $IFACE"; IIF="-i $IFACE"; fi
 
+        if [ -n "$POLICY_MARK" ]; then
+            if [ "$POLICY_EXCLUDE" = "1" ]; then
+                $CMD -w -t mangle -A $IPT_GROUP_POST $OIF -m mark --mark $POLICY_MARK -j RETURN
+            else
+                $CMD -w -t mangle -A $IPT_GROUP_POST $OIF -m mark ! --mark $POLICY_MARK -j CONNMARK --set-xmark $MARK_EXCLUDE
+            fi
+        fi
         $CMD -w -t mangle -A $IPT_GROUP_POST $OIF -m connmark --mark $MARK_EXCLUDE -j RETURN
         if [ -n "$PORTS_UDP" ]; then
             CB="$(_fw_cb original $MAX_PKT_OUT_UDP)"
@@ -196,6 +225,9 @@ _firewall_start() {
             $CMD -w -t nat -A $IPT_GROUP_NAT $OIF -m mark --mark $MARK_PROCESSED -p udp -j MASQUERADE
         fi
 
+        if [ -n "$POLICY_MARK" ] && [ "$POLICY_EXCLUDE" = "1" ]; then
+            $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m mark --mark $POLICY_MARK -j RETURN
+        fi
         $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m connmark --mark $MARK_EXCLUDE -j RETURN
         $CMD -w -t mangle -A $IPT_GROUP_PRE $IIF -m mark --mark $MARK_PROCESSED -j RETURN
         if [ -n "$PORTS_UDP" ]; then
@@ -429,6 +461,11 @@ def render_run_conf(params: dict) -> str:
         # результат авто-детекта). Пусто — shell определит сам тем же
         # правилом; так же ведут себя firewall.run от прошлых версий.
         + "FW_BACKEND=%s\n" % q(params.get("fw_backend"))
+        # Политика доступа Keenetic: метка NDMS «0x…/0x0fffffff» и режим
+        # (1 — исключить её устройства, 0 — только они). Пусто — нет.
+        + "POLICY_NAME=%s\n" % q(params.get("policy_name"))
+        + "POLICY_MARK=%s\n" % q(params.get("policy_mark"))
+        + "POLICY_EXCLUDE=%s\n" % q(params.get("policy_exclude", "0"))
     )
 
 

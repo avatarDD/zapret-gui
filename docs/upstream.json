@@ -60,8 +60,8 @@
       "id": "sing-box",
       "repo": "SagerNet/sing-box",
       "kind": "release",
-      "pinned": "v1.14.1",
-      "verified_at": "2026-09-15",
+      "pinned": "v1.14.2",
+      "verified_at": "2026-10-04",
       "skill": ".claude/skills/singbox/SKILL.md",
       "mentions": [
         ".claude/skills/singbox/SKILL.md"
