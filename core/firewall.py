@@ -118,6 +118,56 @@ def strip_management_ports(spec, cfg=None):
     return ",".join(kept), sorted(set(removed))
 
 
+def _port_ranges(spec, sep) -> list:
+    """«80,443,1000:2000» → [(80, 80), (443, 443), (1000, 2000)].
+
+    ``sep`` — разделитель диапазона: «:» у firewall, «-» у --filter-*.
+    Нечисловые токены, «*» и инверсию «~» пропускаем — о них не судим.
+    """
+    out = []
+    for tok in str(spec or "").split(","):
+        tok = tok.strip()
+        if not tok or tok == "*" or tok.startswith("~"):
+            continue
+        lo, _, hi = tok.partition(sep)
+        try:
+            a, b = int(lo), int(hi or lo)
+        except ValueError:
+            continue
+        out.append((min(a, b), max(a, b)))
+    return out
+
+
+def uncovered_filter_ports(strategy_args, ports_tcp, ports_udp) -> dict:
+    """Порты из ``--filter-tcp/udp`` стратегии, которых нет в перехвате.
+
+    Firewall уводит в NFQUEUE только ``nfqws.ports_tcp/udp``: профиль на
+    порт вне этого списка не увидит ни одного пакета, а nfqws2 об этом
+    молчит (так «не работал» Wardogs на UDP 4192 и DoT на 853, пока порт
+    не дописали руками). Диапазон фильтра, хоть как-то пересекающийся с
+    перехватом, не считаем проблемой — широкие игровые диапазоны иначе
+    шумели бы. Чистая функция.
+
+    Возвращает {"tcp": [...], "udp": [...]} — токены фильтра как в
+    стратегии («853», «590-600»).
+    """
+    fw = {"tcp": _port_ranges(ports_tcp, ":"),
+          "udp": _port_ranges(ports_udp, ":")}
+    out = {"tcp": [], "udp": []}
+    for a in strategy_args or []:
+        for proto in ("tcp", "udp"):
+            prefix = "--filter-%s=" % proto
+            if not str(a).startswith(prefix):
+                continue
+            for lo, hi in _port_ranges(a[len(prefix):], "-"):
+                if any(lo <= fhi and flo <= hi for flo, fhi in fw[proto]):
+                    continue
+                tok = str(lo) if lo == hi else "%d-%d" % (lo, hi)
+                if tok not in out[proto]:
+                    out[proto].append(tok)
+    return out
+
+
 def _nft_port_set(spec: str) -> str:
     """
     Преобразовать iptables/multiport-список портов в nftables-синтаксис.
@@ -375,6 +425,24 @@ class FirewallManager:
                 log.error("Тип firewall не определён", source="firewall")
                 return False
 
+            # Политика доступа Keenetic — метка NDMS есть только в
+            # iptables-пути (Keenetic). На nftables настройку не применяем.
+            policy = {"name": "", "exclude": False, "mark": ""}
+            if fw_type == "iptables":
+                try:
+                    from core import keenetic_policy
+                    policy = keenetic_policy.resolve(cfg)
+                except Exception as e:  # noqa: BLE001 — не мешаем перехвату
+                    log.warning("Политика Keenetic: %s" % e,
+                                source="firewall")
+            elif str(cfg.get("firewall", "keenetic_policy",
+                             default="") or "").strip():
+                log.warning("Политика Keenetic поддерживается только с "
+                            "iptables — настройка пропущена",
+                            source="firewall")
+            self._extra["policy_mark"] = policy["mark"]
+            self._extra["policy_exclude"] = bool(policy["exclude"])
+
             # Снимаем старые правила
             self._remove_rules_locked(fw_type)
 
@@ -408,6 +476,9 @@ class FirewallManager:
                         qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,
                         tcp_pkt_in, udp_pkt_in, mark_exclude,
                         disable_ipv6, wan4, wan6, fw_type,
+                        policy_mark=policy["mark"],
+                        policy_exclude=policy["exclude"],
+                        policy_name=policy["name"],
                     )
                 else:
                     log.error("Ошибка при применении правил", source="firewall")
@@ -439,7 +510,9 @@ class FirewallManager:
     @staticmethod
     def _ensure_persistence(qnum, tcp, udp, fwmark, tcp_pkt, udp_pkt,
                             tcp_pkt_in, udp_pkt_in, mark_exclude,
-                            disable_ipv6, wan4, wan6, fw_type=""):
+                            disable_ipv6, wan4, wan6, fw_type="",
+                            policy_mark="", policy_exclude=False,
+                            policy_name=""):
         """Записать рантайм-конфиг firewall и установить хуки (только роутер).
 
         На обычных хостах (systemd/desktop) ndm/hotplug отсутствуют — тогда
@@ -466,6 +539,11 @@ class FirewallManager:
                 # Бэкенд, которым правила поставлены сейчас: reapply-хук
                 # обязан переставлять их тем же, а не гадать заново.
                 "fw_backend": fw_type or "",
+                "policy_mark": policy_mark or "",
+                # Имя — чтобы reapply мог найти метку сам, если при
+                # применении политика ещё не была видна NDMS.
+                "policy_name": policy_name if not policy_mark else "",
+                "policy_exclude": "1" if policy_exclude else "0",
             }
             fp.write_runtime_conf(params)
             fp.install_hooks()
@@ -1044,6 +1122,28 @@ class FirewallManager:
             else:
                 ok = False
 
+            # 1a) Политика доступа Keenetic (как nfqws2-keenetic). Режим
+            # исключения — пакеты устройств политики мимо очереди. Режим
+            # включения — соединения прочих устройств метим connmark-
+            # исключением: следующее правило вернёт их, а PREROUTING по той
+            # же connmark пропустит мимо очереди и ответы.
+            policy_mark = self._extra.get("policy_mark")
+            if policy_mark:
+                if self._extra.get("policy_exclude"):
+                    pol = ["-m", "mark", "--mark", policy_mark] + _comment() \
+                        + ["-j", "RETURN"]
+                else:
+                    pol = ["-m", "mark", "!", "--mark", policy_mark] \
+                        + _comment() + ["-j", "CONNMARK", "--set-xmark",
+                                        mark_excl]
+                if self._run_cmd([ipt_cmd, "-t", "mangle", "-A", post_chain]
+                                 + oif_args + pol):
+                    rules.append("%s политика Keenetic %s%s" % (
+                        family_tag, "исключена" if self._extra.get(
+                            "policy_exclude") else "— только она", tag))
+                else:
+                    ok = False
+
             # 2) RETURN для исключённых соединений
             self._run_cmd(
                 [ipt_cmd, "-t", "mangle", "-A", post_chain] + oif_args
@@ -1094,6 +1194,12 @@ class FirewallManager:
                     rules.append("%s NAT MASQUERADE udp%s" % (family_tag, tag))
 
             # ───────── PREROUTING (входящий / ответы) ─────────
+            if policy_mark and self._extra.get("policy_exclude"):
+                self._run_cmd(
+                    [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args
+                    + ["-m", "mark", "--mark", policy_mark] + _comment()
+                    + ["-j", "RETURN"]
+                )
             # RETURN для исключённых и уже обработанных
             self._run_cmd(
                 [ipt_cmd, "-t", "mangle", "-A", pre_chain] + iif_args

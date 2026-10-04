@@ -97,6 +97,10 @@ const SettingsPage = (() => {
                 { key: 'nfqws.debug',                label: 'Режим отладки nfqws2',   type: 'toggle',
                   hint: 'Добавляет --debug к nfqws2: пер-пакетный лог (грузятся ли lua, объявлены ли блобы, матчится ли пакет цели, какие desync применяются) выводится в журнал на уровне INFO. Применяется при следующем запуске/перезапуске nfqws2. Включайте на время диагностики — лог многословный.' },
                 { key: 'nfqws.disable_ipv6',         label: 'Отключить IPv6',         type: 'toggle' },
+                { key: 'nfqws.fastpath_workaround',  label: 'Обход аппаратного fastpath', type: 'select', expert: true, options: [
+                    { value: 'auto', label: 'Авто' }, { value: '1', label: 'Всегда' }, { value: '0', label: 'Выключен' }
+                  ],
+                  hint: 'Опция --fastpath-workaround сборки nfqws2-keenetic. На роутерах с аппаратным ускорителем (MT7621, Keenetic KN-1011) поток уходит мимо NFQUEUE, пока nfqws2 собирает многосегментный ClientHello, — стратегия не срабатывает. «Авто» включает обход после двух ретрансмиссий. Штатный nfqws2 опцию не знает — тогда она просто не передаётся.' },
                 { key: 'nfqws.unified_hostlist',     label: 'Единый слой: ограничить домены', type: 'toggle',
                   hint: 'Применять стратегию nfqws2 только к доменам маршрутов «Маршрутизации» с методом nfqws2 (через --hostlist агрегата unified_nfqws). Выключено — стратегия глобальна, как раньше.' },
             ]
@@ -115,6 +119,10 @@ const SettingsPage = (() => {
                     { value: 'software', label: 'Software' }, { value: 'hardware', label: 'Hardware' },
                 ]},
                 { key: 'firewall.postnat',         label: 'Post-NAT',        type: 'toggle', expert: true },
+                { key: 'firewall.keenetic_policy',  label: 'Политика доступа Keenetic', type: 'text', placeholder: 'nfqws', expert: true,
+                  hint: 'Имя политики из «Приоритеты подключений → Политики доступа в интернет». Обход nfqws2 — только для устройств этой политики (или для всех, кроме них — переключатель ниже). Пусто — для всех. Как POLICY_NAME в nfqws2-keenetic; только iptables.' },
+                { key: 'firewall.keenetic_policy_exclude', label: 'Политика: исключить её устройства', type: 'toggle', expert: true,
+                  hint: 'Включено — обход для всех, КРОМЕ устройств политики. Выключено — только для них.' },
             ]
         },
         {

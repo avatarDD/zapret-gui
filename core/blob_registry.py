@@ -98,6 +98,21 @@ _FALLBACK_ALIASES = {
     "quic6":        "@bin/quic_6.bin",
     "quic7":        "@bin/quic_7.bin",
     "stun_pat":     "@bin/stun.bin",
+    "stun":         "@bin/stun.bin",
+    # Имена из nfqws2-keenetic (/opt/etc/nfqws2/blobs) и сообщества его
+    # чата: стратегии оттуда вставляют как есть. tls_clienthello.bin и
+    # quic_initial.bin nfqws2-keenetic побайтово совпадают с нашими
+    # google-блобами — заводим имена-синонимы, а не копии файлов.
+    "tls_clienthello":   "@bin/tls_clienthello_www_google_com.bin",
+    "quic_initial":      "@bin/quic_initial_www_google_com.bin",
+    "quic_initial_www_google_com": "@bin/quic_initial_www_google_com.bin",
+    "tls_max_ru":        "@bin/tls_clienthello_max_ru.bin",
+    "stun2":             "@bin/stun2.bin",
+    "tls_sochi":         "@bin/tls_clienthello_sochi_park.bin",
+    "discord_udp":       "@bin/active_discord_udp.bin",
+    "ACTIVE_DISCORD_UDP": "@bin/active_discord_udp.bin",
+    "game_udp":          "@bin/active_game_udp.bin",
+    "ACTIVE_GAME_UDP":   "@bin/active_game_udp.bin",
     "quic_test":    "@bin/quic_test_00.bin",
     "fake_tls":     "@bin/fake_tls_1.bin",
     "fake_tls_1":   "@bin/fake_tls_1.bin",
@@ -126,6 +141,13 @@ _BLOB_DECL_RE = re.compile(r"^--blob=([^:]+):(.+)$")
 
 # blob=NAME внутри --lua-desync=...:blob=NAME:... (имя — до ':' или конца).
 _BLOB_REF_RE = re.compile(r"blob=([A-Za-z0-9_]+)")
+
+# seqovl_pattern=NAME / pattern=NAME — тоже ссылка на блоб: lua-функция
+# берёт его через blob(desync, name), и незаявленное имя = ошибка инстанса
+# («blob 'stun' unavailable»). Стратегии из чата nfqws2-keenetic пишут
+# так сплошь и рядом: multisplit:seqovl=568:seqovl_pattern=stun.
+_PATTERN_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:seqovl_pattern|pattern)=([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _catalogs_dir() -> str:
@@ -403,4 +425,39 @@ def build_blob_declarations(args) -> list:
             continue
         out.append("--blob=%s:%s" % (name, value))
         declared.add(name)
+    # Паттерны: заявляем только то, что есть в реестре и НЕ является
+    # именованной переменной init_vars.lua (tls_google, tls_rnd, …) — та
+    # подставляет свой паттерн (fake_default_tls с другим SNI), и подмена
+    # её файлом из реестра молча поменяла бы стратегию. Прочие незнакомые
+    # имена — глобалы чьего-то lua, о них не предупреждаем.
+    for name in referenced_pattern_names(args):
+        if name in declared or name in BUILTIN_BLOB_NAMES:
+            continue
+        if name in _init_vars_names():
+            continue
+        value = get_blob_value(name)
+        if value is None:
+            continue
+        out.append("--blob=%s:%s" % (name, value))
+        declared.add(name)
     return out
+
+
+def referenced_pattern_names(args) -> list:
+    """Имена из ``seqovl_pattern=NAME`` / ``pattern=NAME`` (без hex)."""
+    seen = []
+    for a in args:
+        for m in _PATTERN_REF_RE.finditer(a):
+            name = m.group(1)
+            if name.startswith("0x") or name in seen:
+                continue
+            seen.append(name)
+    return seen
+
+
+def _init_vars_names() -> set:
+    try:
+        from core.nfqws_manager import _INIT_VARS_NAMES
+        return set(_INIT_VARS_NAMES)
+    except Exception:  # noqa: BLE001 — без менеджера просто не фильтруем
+        return set()

@@ -128,6 +128,18 @@ DOCS = {
                 "lua, объявлены ли blob'ы, матчится ли цель.",
         "see": ["logging.level"],
     },
+    "nfqws.fastpath_workaround": {
+        "text": "Обход аппаратного fastpath при сборке многосегментного "
+                "TLS ClientHello (--fastpath-workaround из сборки "
+                "nfqws2-keenetic). На роутерах с аппаратным ускорителем "
+                "(MT7621, Keenetic KN-1011) поток уходит в fastpath, пока "
+                "nfqws2 ждёт остальные сегменты, и стратегия на "
+                "tls_client_hello молча не срабатывает. auto включает "
+                "обход после двух ретрансмиссий без сборки. Штатный "
+                "nfqws2 bol-van опции не знает — тогда она не передаётся.",
+        "unit": "auto | 1 | 0",
+        "see": ["firewall.flowoffload"],
+    },
 
     # ────────────────────────── firewall ────────────────────────────
     "firewall.type": {
@@ -136,6 +148,21 @@ DOCS = {
                 "Неверный бэкенд оставляет роутер без правил и без "
                 "обхода, а иногда и без управления.",
         "unit": "auto | iptables | nftables",
+    },
+    "firewall.keenetic_policy": {
+        "text": "Имя политики доступа Keenetic (как POLICY_NAME в "
+                "nfqws2-keenetic): в обход попадает трафик только её "
+                "устройств, а с keenetic_policy_exclude — всех, кроме них. "
+                "Метка политики читается из «ndmc -c show ip policy» при "
+                "применении правил. Политики нет — обрабатывается весь "
+                "трафик. Работает только с iptables (Keenetic).",
+        "empty": "пусто — обход для всех устройств",
+        "see": ["firewall.keenetic_policy_exclude", "firewall.type"],
+    },
+    "firewall.keenetic_policy_exclude": {
+        "text": "Режим политики Keenetic: false — обход только для "
+                "устройств политики, true — для всех, кроме них.",
+        "see": ["firewall.keenetic_policy"],
     },
     "firewall.apply_on_start": {
         "text": "Ставить правила NFQUEUE автоматически при запуске "

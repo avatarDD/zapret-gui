@@ -162,8 +162,11 @@ const ListsPage = (() => {
                 <div class="card-title">Готовые списки</div>
                 <p class="text-muted" style="font-size:12px; margin:4px 0 10px;">
                     Списки доменов популярных сервисов от сообщества
-                    (itdoginfo/allow-domains). Добавляются одним нажатием и
-                    обновляются сами; ваши правки при обновлении сохраняются.
+                    (itdoginfo/allow-domains). Для Telegram, Discord, Meta и X
+                    к доменам добавляются подсети сервиса: их приложения
+                    ходят на серверы по IP, мимо DNS. Списки добавляются
+                    одним нажатием и обновляются сами; ваши правки при
+                    обновлении сохраняются.
                 </p>
                 ${groupsHtml}
                 <details class="lists-more" style="margin-top:12px;">
