@@ -212,6 +212,16 @@ class Blockcheck2Runner:
         Returns:
             dict: { ok, error?, script?, cmd? }.
         """
+        # Соседа спрашиваем ДО своего лока: он, в свою очередь, спрашивает
+        # нас под своим, и встречные захваты дали бы взаимоблокировку.
+        try:
+            from core.blockcheck2_multi import get_multi_runner
+            if get_multi_runner().is_running():
+                return {"ok": False,
+                        "error": "blockcheck уже выполняется на вкладке "
+                                 "«Несколько доменов»"}
+        except ImportError:
+            pass
         with self._lock:
             if self._is_running_locked():
                 return {"ok": False, "error": "blockcheck уже выполняется"}

@@ -14,7 +14,11 @@
  * «Диагностика блокировок», который не подбирает стратегии, а ставит
  * диагноз.
  *
- * Хеш: #scan (официальный) и #scan?tab=catalog.
+ *   • «Несколько доменов» (Blockcheck2MultiPage) — клон blockcheck2.sh с
+ *     правками GUI: домены параллельно, ранняя остановка, общая
+ *     стратегия через --new (core/blockcheck2_multi).
+ *
+ * Хеш: #scan (официальный), #scan?tab=multi и #scan?tab=catalog.
  */
 
 const StrategyScanHubPage = (() => {
@@ -25,6 +29,12 @@ const StrategyScanHubPage = (() => {
             help:  'blockcheck2',
             desc:  'Штатный скрипт zapret2 с потоковой телеметрией — эталонный перебор.',
             page:  () => (typeof Blockcheck2Page !== 'undefined' ? Blockcheck2Page : null),
+        },
+        multi: {
+            label: 'Несколько доменов',
+            help:  'blockcheck2_multi',
+            desc:  'Клон blockcheck2.sh: домены параллельно, остановка после N рабочих стратегий, общая стратегия через --new.',
+            page:  () => (typeof Blockcheck2MultiPage !== 'undefined' ? Blockcheck2MultiPage : null),
         },
         catalog: {
             label: 'По каталогу zapret-gui',
