@@ -1802,7 +1802,7 @@ const StrategiesPage = (() => {
     }
 
     // Открыть редактор СОЗДАНИЯ, предзаполненный приёмом из blockcheck2.
-    // payload: { name, description, args }. Реконструкция дословная: фильтр +
+    // payload: { name, description, args | profiles[] }. Реконструкция дословная: фильтр +
     // payload (из типа теста) + lua-desync (как нашёл blockcheck2).
     function prefillCreate(payload) {
         pendingPrefill = payload || null;
@@ -1818,15 +1818,20 @@ const StrategiesPage = (() => {
         if (!pendingPrefill) return;
         const p = pendingPrefill;
         pendingPrefill = null;
+        // p.profiles — готовые профили (общая стратегия с вкладки
+        // «Несколько доменов»: по профилю на --new), иначе один из p.args.
+        const profiles = Array.isArray(p.profiles) && p.profiles.length
+            ? p.profiles.map((x, i) => ({
+                id: x.id || ('bc2_' + (i + 1)), name: x.name || ('Профиль ' + (i + 1)),
+                enabled: x.enabled !== false, args: x.args || '' }))
+            : [{ id: 'bc2', name: p.name || 'blockcheck2', enabled: true,
+                 args: p.args || '' }];
         openEditor({
             id: '',
             name: p.name || '',
             description: p.description || '',
             type: 'combined',
-            profiles: [
-                { id: 'bc2', name: p.name || 'blockcheck2', enabled: true,
-                  args: p.args || '' },
-            ],
+            profiles,
         }, 'create');
     }
 

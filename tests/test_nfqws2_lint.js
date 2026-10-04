@@ -317,4 +317,49 @@ test('syntax: ошибочный токен обёрнут в .nfq-error', () =>
     assert.ok(/nfq-error/.test(html), 'нет класса ошибки');
 });
 
+// ──────────────── Стратегии из blockcheck2 (zapret2 v1.0.5.2) ────────────────
+// Строки, которые генерирует сам blockcheck2.d/standard, и найденные им
+// рабочие стратегии. Раньше редактор ругался «неизвестный параметр» на
+// fooling/rawsend у multisplit/tcpseg, на seqovl=#var и на forced_cutoff
+// с типом payload — хотя nfqws2 их принимает (группы аргументов функций
+// берутся из комментариев «standard args» в zapret-antidpi.lua).
+
+const BLOCKCHECK2_SAMPLES = [
+    '--payload=tls_client_hello --lua-desync=multisplit:blob=fake_default_tls:tcp_md5:pos=2:nodrop:repeats=1',
+    '--payload=tls_client_hello --lua-desync=fake:blob=0x00000000:tcp_md5:repeats=1 --payload=empty --out-range=<s1 --lua-desync=send:tcp_md5',
+    '--payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:ip_ttl=4:repeats=1 --payload=empty --out-range=s1<d1 --lua-desync=pktmod:ip_ttl=1',
+    '--payload=tls_client_hello --lua-desync=hostfakesplit:tcp_md5:host=iana.org:nofake1:midhost=midsld:ip_autottl=-1,3-20:repeats=1',
+    '--payload=tls_client_hello --lua-desync=multisplit:pos=1:seqovl=#patmod:seqovl_pattern=patmod',
+    '--payload=tls_client_hello --lua-desync=tcpseg:pos=0,midsld:ip_id=rnd:repeats=3 --lua-desync=multidisorder:pos=1,midsld',
+    '--payload=tls_client_hello --lua-desync=tcpseg:pos=0,midsld:ip_id=zero:ipfrag:ipfrag_disorder:repeats=3',
+    '--payload=tls_client_hello --lua-desync=multidisorder:pos=1,midsld:seqovl=midsld-1',
+    '--payload=tls_client_hello --out-range=-d20 --in-range=-s5556 --lua-desync=wssize:wsize=4:scale=8:forced_cutoff=tls_server_hello',
+    '--payload=tls_client_hello --lua-desync=multisplit:pos=1,midsld:seqovl=568:seqovl_pattern=stun:tcp_ts_up:ip_ttl=1:ip_autottl=-1,3-20',
+    '--payload=tls_client_hello --lua-desync=multisplit:pos=1,sniext+1:seqovl=1:dir=out:payload=tls_client_hello:ip_id=zero',
+    '--payload=quic_initial --lua-desync=send:ipfrag:ipfrag_pos_udp=8 --lua-desync=drop',
+    '--payload=quic_initial --lua-desync=fake:blob=fake_default_quic:ip6_hopbyhop:ip6_destopt=0102:repeats=2',
+    '--payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:badsum:fwmark=0x1000:ifout=eth0',
+    '--in-range=-s1 --payload=tls_client_hello --lua-desync=oob:urp=midsld:tcp_md5',
+    '--filter-tcp=443 --lua-desync=circular:fails=2:time=60:retrans=3:nld=2:reset --lua-desync=fake:strategy=1',
+];
+
+test('blockcheck2: найденные им стратегии без предупреждений', () => {
+    for (const text of BLOCKCHECK2_SAMPLES) {
+        const r = Lint.analyze(text);
+        const bad = r.diagnostics.filter(d => d.severity === 'error' || d.severity === 'warn'
+            || (d.severity === 'info' && /флаг без значения/.test(d.message)));
+        assert.deepStrictEqual(bad.map(d => text.slice(d.start, d.end) + ': ' + d.message), [],
+            'ложная диагностика для: ' + text);
+    }
+});
+
+test('blockcheck2: настоящие ошибки по-прежнему видны', () => {
+    const r1 = Lint.analyze('--payload=tls_client_hello --lua-desync=hostfakesplit:ip_id=seqgroup');
+    assert.ok(warns(r1).some(d => /ip_id/.test(d.message)), 'ip_id=seqgroup должен ругаться');
+    const r2 = Lint.analyze('--payload=tls_client_hello --lua-desync=multisplit:keepsum');
+    assert.ok(warns(r2).some(d => /keepsum/.test(d.message)), 'keepsum — не аргумент');
+    const r3 = Lint.analyze('--payload=tls_client_hello --lua-desync=multisplit:seqovl=abc');
+    assert.ok(warns(r3).some(d => /seqovl/.test(d.message)), 'seqovl=abc — не число');
+});
+
 console.log('nfqws2 lint/spec: ' + passed + ' тест(ов) пройдено');

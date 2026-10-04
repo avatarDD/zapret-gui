@@ -73,6 +73,7 @@ JS_FILES = [
     "js/pages/diagnostics.js",
     "js/pages/blockcheck.js",
     "js/pages/blockcheck2.js",
+    "js/pages/blockcheck2_multi.js",
     "js/pages/scan.js",
     "js/pages/logs.js",
     "js/pages/autostart.js",

@@ -338,6 +338,9 @@ make upstream-offline    # только локальные сверки (идё�
 |--------|-----------|
 | `blockcheck.py` | Оркестратор Python-проб: запускает все тестеры, агрегирует вердикт. |
 | `blockcheck2.py` | Запуск ОРИГИНАЛЬНОГО `blockcheck2.sh`/`blockcheck.sh` из zapret2 как подпроцесса с потоковой телеметрией в GUI. |
+| `blockcheck2_patch.py` | Клон установленного `blockcheck2.sh` с правками GUI по якорям (`GUI_STOP_AFTER`, печать каждой рабочей стратегии, `iptables -w`); якорь не найден — `PatchError`, клон не собирается. Чистые функции. |
+| `blockcheck2_multi.py` | Вкладка «Несколько доменов»: копии клона параллельно (до 4), домены с общими IP — одной копией (`group_by_ips`), `LineParser` (ok/total по блокам), снятие обхода через `nfqws_session` (владелец `blockcheck`). |
+| `strategy_combine.py` | Общая стратегия из находок: профили по семействам HTTP/TLS/QUIC с `--hostlist-domains`, через `--new`; режимы grouped (жадное покрытие), per_domain, custom, all (декартово произведение с лимитом); `--blob=`/`--lua-init=` выносятся до первого `--new`. |
 | `models.py` | Модели данных blockcheck (Status/Type enum'ы и пр.). |
 | `targets.py` | **Общий** каталог целей: сервисы для карточек «Диагностики» + домены по умолчанию для теста доступности. Добавлять сервис — только здесь. |
 | `block_detector.py` | Фоновой мониторинг: домены из живого DNS (dnsmasq/AdGuard/AF_PACKET), периодическая проба, автодобавление в списки. |
@@ -527,6 +530,7 @@ stdout). Период опроса задаёт сам
 | `scan.py` | `/api/scan` | подбор стратегий |
 | `blockcheck.py` | `/api/blockcheck` | тестирование/классификация DPI (Python-пробы) |
 | `blockcheck2.py` | `/api/blockcheck2` | оригинальный blockcheck2.sh + стрим вывода |
+| `blockcheck2_multi.py` | `/api/blockcheck2m` | несколько доменов: start/status/output/stop + `combine` (общая стратегия через `--new`) |
 | `zapret_manager.py` | `/api/zapret` | установка/обновление nfqws2 (+`/releases`) |
 | `hostlists.py` / `lists.py` | `/api/hostlists`, `/api/lists` | домены nfqws2 / именованные списки (+`/curated`) |
 | `ipsets.py` / `blobs.py` / `lua_scripts.py` / `hosts.py` | … | IP-списки / блобы / Lua / hosts |
