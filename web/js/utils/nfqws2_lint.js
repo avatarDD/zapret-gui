@@ -92,6 +92,10 @@ const Nfqws2Lint = (() => {
     // Проверка значения по типу arg. Возвращает null (ок) или строку-ошибку.
     function checkValueType(type, value, valuesEnum) {
         if (value === '' || value == null) return null; // пустое допустимо у многих
+        // %var / #var — подстановка C-кода nfqws2 до вызова Lua (значение /
+        // длина desync.var или глобала var): seqovl=#patmod у blockcheck2.
+        // Тип самого значения узнаём только в рантайме.
+        if (/^[%#][A-Za-z_][A-Za-z0-9_]*$/.test(value)) return null;
         switch (type) {
             case 'int':
                 return isInt(value) ? null : 'ожидается целое число';
@@ -197,8 +201,7 @@ const Nfqws2Lint = (() => {
                             + valuesEnum.slice(0, 4).join(', ') + '…)' });
                 }
             }
-            if (spec && spec.type === 'flag' && val !== null && key !== 'tcp_md5'
-                && key !== 'ip6_hopbyhop') {
+            if (spec && spec.type === 'flag' && val !== null && !spec.optval) {
                 diags.push({ start: abs, end: abs + txt.length, severity: SEV.INFO,
                     message: key + ' — флаг без значения' });
             }

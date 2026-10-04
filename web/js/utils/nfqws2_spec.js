@@ -77,16 +77,16 @@ const Nfqws2Spec = (() => {
                 ip6_ttl:         { type: 'int', desc: 'Hop limit IPv6-фейка', ex: ['1', '3', '8'] },
                 ip_autottl:      { type: 'string', desc: 'Авто-TTL: <delta>,<min>-<max>', ex: ['-2,3-20'] },
                 ip6_autottl:     { type: 'string', desc: 'Авто hop-limit IPv6', ex: ['-2,3-20'] },
-                ip6_hopbyhop:    { type: 'flag', desc: 'IPv6 hop-by-hop заголовок (можно =hex)' },
-                ip6_hopbyhop2:   { type: 'flag', desc: 'IPv6 hop-by-hop (вариант 2)' },
-                ip6_destopt:     { type: 'flag', desc: 'IPv6 destination options' },
-                ip6_destopt2:    { type: 'flag', desc: 'IPv6 destination options (вариант 2)' },
-                ip6_routing:     { type: 'flag', desc: 'IPv6 routing header' },
-                ip6_ah:          { type: 'flag', desc: 'IPv6 authentication header' },
+                ip6_hopbyhop:    { type: 'flag', optval: true, desc: 'IPv6 hop-by-hop заголовок (можно =hex)' },
+                ip6_hopbyhop2:   { type: 'flag', optval: true, desc: 'IPv6 hop-by-hop (вариант 2, можно =hex)' },
+                ip6_destopt:     { type: 'flag', optval: true, desc: 'IPv6 destination options (можно =hex)' },
+                ip6_destopt2:    { type: 'flag', optval: true, desc: 'IPv6 destination options (вариант 2, можно =hex)' },
+                ip6_routing:     { type: 'flag', optval: true, desc: 'IPv6 routing header (можно =hex)' },
+                ip6_ah:          { type: 'flag', optval: true, desc: 'IPv6 authentication header (можно =hex)' },
                 tcp_seq:         { type: 'int', desc: 'Смещение TCP seq (±)', ex: ['-10000', '1'] },
                 tcp_ack:         { type: 'int', desc: 'Смещение TCP ack (±)', ex: ['-1'] },
                 tcp_ts:          { type: 'int', desc: 'Смещение TCP timestamp (±)', ex: ['-5'] },
-                tcp_md5:         { type: 'flag', desc: 'TCP MD5 signature (можно =16byte_hex)' },
+                tcp_md5:         { type: 'flag', optval: true, desc: 'TCP MD5 signature (можно =16byte_hex)' },
                 tcp_flags_set:   { type: 'string', desc: 'Установить флаги: FIN,SYN,…', ex: ['fin,syn'] },
                 tcp_flags_unset: { type: 'string', desc: 'Снять флаги', ex: ['ack'] },
                 tcp_ts_up:       { type: 'flag', desc: 'Увеличить TCP timestamp' },
@@ -106,26 +106,43 @@ const Nfqws2Spec = (() => {
         ipfrag: {
             label: 'ipfrag (IP-фрагментация)',
             opts: {
-                ipfrag:          { type: 'flag', desc: 'Включить ipfrag2 (дефолт)' },
+                // Без значения — ipfrag2; со значением — имя своей lua-функции
+                // фрагментации (zapret-lib: rawsend_dissect_ipfrag).
+                ipfrag:          { type: 'flag', optval: true, desc: 'Включить IP-фрагментацию (ipfrag2 или =своя_функция)' },
                 ipfrag_disorder: { type: 'flag', desc: 'Фрагменты в обратном порядке' },
-                ipfrag_pos_udp:  { type: 'int', desc: 'Позиция фрагмента UDP (кратно 8)', ex: ['8'] },
-                ipfrag_pos_tcp:  { type: 'int', desc: 'Позиция фрагмента TCP (кратно 8)', ex: ['32'] },
-                ipfrag_next:     { type: 'string', desc: 'Следующий протокол', ex: [] },
+                ipfrag_pos_udp:  { type: 'int', desc: 'Позиция фрагмента UDP (кратно 8, дефолт 8)', ex: ['8'] },
+                ipfrag_pos_tcp:  { type: 'int', desc: 'Позиция фрагмента TCP (кратно 8, дефолт 32)', ex: ['32'] },
+                ipfrag_pos_icmp: { type: 'int', desc: 'Позиция фрагмента ICMP (кратно 8, дефолт 8)', ex: ['8'] },
+                ipfrag_pos:      { type: 'int', desc: 'Позиция фрагмента прочих L4 (кратно 8, дефолт 32)', ex: ['32'] },
+                ipfrag_next:     { type: 'string', desc: 'next-протокол в IPv6 fragment-заголовке 2-го фрагмента', ex: [] },
             },
         },
         reconstruct: {
             label: 'reconstruct',
             opts: {
-                keepsum:           { type: 'flag', desc: 'Сохранить контрольную сумму' },
-                ip6_preserve_next: { type: 'flag', desc: 'Сохранить IPv6 next-header' },
-                ip6_last_proto:    { type: 'flag', desc: 'IPv6 последний протокол' },
+                // zapret-lib reconstruct_opts(): из аргументов читается только
+                // badsum; ip6_preserve_next/ip6_last_proto — «can be set from
+                // code only, not from args».
+                badsum:            { type: 'flag', desc: 'Неверная L4 контрольная сумма' },
+            },
+        },
+        direction: {
+            label: 'direction',
+            opts: {
+                dir: { type: 'enum', values: ['in', 'out', 'any'], desc: 'Направление (дефолт out)' },
+            },
+        },
+        payload: {
+            label: 'payload',
+            opts: {
+                payload: { type: 'payload', desc: 'Типы payload, на которых работает инстанс (~ — инверсия)' },
             },
         },
         rawsend: {
             label: 'rawsend (отправка)',
             opts: {
                 repeats: { type: 'int', desc: 'Повторов отправки', ex: ['2', '6', '11'] },
-                fwmark:  { type: 'int', desc: 'fwmark для пакета', ex: [] },
+                fwmark:  { type: 'string', desc: 'fwmark для пакета (число или 0xHEX)', ex: ['0x1000'] },
                 ifout:   { type: 'string', desc: 'Имя выходного интерфейса', ex: [] },
             },
         },
@@ -175,14 +192,24 @@ const Nfqws2Spec = (() => {
     // type аргумента: 'flag' | 'int' | 'enum' | 'string' | 'blob' | 'pos' |
     //                 'pattern' | 'payload' | 'tls_mod' | 'lua-detector' | …
 
+    // Группы — ровно «standard args» из комментария перед функцией в
+    // zapret-antidpi.lua: например, у multisplit/tcpseg это direction,
+    // payload, fooling, ip_id, rawsend, reconstruct, ipfrag. Раньше у них
+    // стояло groups: [], и редактор ругался «неизвестный параметр» на
+    // стратегии, которые генерирует сам blockcheck2
+    // (multisplit:blob=…:tcp_md5:pos=2:nodrop:repeats=1).
     const G_FAKE = ['fooling', 'ipid', 'ipfrag', 'reconstruct', 'rawsend'];
+    const G_FULL = ['direction', 'payload', 'fooling', 'ipid', 'rawsend', 'reconstruct', 'ipfrag'];
+    // fakedsplit/fakeddisorder/hostfakesplit: то же без ipfrag
+    // («FOOLING AND REPEATS APPLIED ONLY TO FAKES»).
+    const G_FAKED = ['direction', 'payload', 'fooling', 'ipid', 'rawsend', 'reconstruct'];
 
     const LUA_FUNCS = {
         // ─── Базовые (zapret-antidpi.lua) ───
         fake: {
             file: 'zapret-antidpi.lua', cat: 'core', payload: 'known',
             desc: 'Прямой фейк отдельным пакетом. Сегментация по MSS автоматическая.',
-            groups: G_FAKE,
+            groups: G_FULL,
             args: {
                 blob:     { type: 'blob', desc: 'Имя блоба фейка', required: false },
                 payload:  { type: 'payload', desc: 'Тип payload (дефолт known)' },
@@ -194,7 +221,7 @@ const Nfqws2Spec = (() => {
         multisplit: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Нарезать payload по списку маркеров (split).',
-            groups: [],
+            groups: G_FULL,
             args: {
                 pos:            { type: 'pos', desc: 'Маркеры разбиения (дефолт 2)' },
                 seqovl:         { type: 'int', desc: 'Sequence overlap (байт)', ex: ['5', '681'] },
@@ -207,10 +234,10 @@ const Nfqws2Spec = (() => {
         multidisorder: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Как multisplit, но отправка в обратном порядке. Не работает с Windows-серверами.',
-            groups: [],
+            groups: G_FULL,
             args: {
                 pos:            { type: 'pos', desc: 'Маркеры (seqovl может быть маркером)' },
-                seqovl:         { type: 'int', desc: 'Sequence overlap' },
+                seqovl:         { type: 'pos', desc: 'Sequence overlap: число или маркер (меньше первой позиции разреза)' },
                 seqovl_pattern: { type: 'pattern', desc: 'Паттерн seqovl' },
                 blob:           { type: 'blob', desc: 'Заменить payload' },
                 optional:       { type: 'flag' }, nodrop: { type: 'flag' },
@@ -219,12 +246,16 @@ const Nfqws2Spec = (() => {
         multidisorder_legacy: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'multidisorder с поведением nfqws1 (backward-compat).',
-            groups: [], args: { pos: { type: 'pos' }, seqovl: { type: 'int' } },
+            groups: G_FULL,
+            args: {
+                pos: { type: 'pos' }, seqovl: { type: 'pos' },
+                seqovl_pattern: { type: 'pattern' }, optional: { type: 'flag' },
+            },
         },
         fakedsplit: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Split с замешиванием фейков. Требует fooling.',
-            groups: G_FAKE,
+            groups: G_FAKED,
             args: {
                 pos:            { type: 'pos' },
                 seqovl:         { type: 'int' },
@@ -239,7 +270,7 @@ const Nfqws2Spec = (() => {
         fakeddisorder: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Disorder с замешиванием фейков. Требует fooling.',
-            groups: G_FAKE,
+            groups: G_FAKED,
             args: {
                 pos: { type: 'pos' }, seqovl: { type: 'int' },
                 seqovl_pattern: { type: 'pattern' }, pattern: { type: 'pattern' },
@@ -251,19 +282,19 @@ const Nfqws2Spec = (() => {
         hostfakesplit: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Резка http_req/tls_client_hello вокруг имени хоста.',
-            groups: G_FAKE,
+            groups: G_FAKED,
             args: {
                 host:           { type: 'string', desc: 'random.template' },
                 midhost:        { type: 'pos', desc: 'Маркер середины хоста' },
-                disorder_after: { type: 'pos', desc: 'Маркер disorder' },
-                nofake:         { type: 'flag' }, nofake2: { type: 'flag' },
+                disorder_after: { type: 'pos', desc: 'Маркер disorder (пусто — «-1»)' },
+                nofake1:        { type: 'flag' }, nofake2: { type: 'flag' },
                 blob:           { type: 'blob' }, optional: { type: 'flag' }, nodrop: { type: 'flag' },
             },
         },
         tcpseg: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Отослать часть payload/reasm/blob между двумя маркерами. Вердикт не выносит.',
-            groups: [],
+            groups: G_FULL,
             args: {
                 pos:            { type: 'pos', desc: '2 маркера: m1,m2' },
                 seqovl:         { type: 'int' },
@@ -275,23 +306,23 @@ const Nfqws2Spec = (() => {
         oob: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Вставить 1 OOB-байт в TCP handshake. Требует --in-range=-s1.',
-            groups: [],
+            groups: ['fooling', 'ipid', 'rawsend', 'reconstruct', 'ipfrag'],
             args: {
                 char: { type: 'string', desc: 'OOB-символ' },
                 byte: { type: 'int', desc: 'OOB-байт' },
-                urp:  { type: 'enum', values: ['b', 'e'], desc: 'Позиция urgent pointer' },
+                urp:  { type: 'string', desc: 'Urgent pointer: b, e или маркер позиции', ex: ['b', 'e', 'midsld'] },
             },
         },
         syndata: {
             file: 'zapret-antidpi.lua', cat: 'core', payload: 'tls_client_hello',
             desc: 'Добавить payload в SYN (должен влезть в MTU). Стратегия нулевой фазы.',
-            groups: ['fooling'],
+            groups: ['fooling', 'rawsend', 'reconstruct', 'ipfrag'],
             args: { blob: { type: 'blob' }, tls_mod: { type: 'tls_mod' } },
         },
         rst: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Отослать пустой RST (или RST+ACK при rstack).',
-            groups: G_FAKE,
+            groups: G_FULL,
             args: {
                 dir:     { type: 'enum', values: ['in', 'out', 'any'] },
                 payload: { type: 'payload' },
@@ -311,7 +342,9 @@ const Nfqws2Spec = (() => {
             args: {
                 dir: { type: 'enum', values: ['in', 'out', 'any'] },
                 wsize: { type: 'int' }, scale: { type: 'int' },
-                forced_cutoff: { type: 'int', desc: 'Cutoff в payload' },
+                forced_cutoff: { type: 'csv-enum', values: PAYLOAD_TYPES,
+                                 desc: 'Payload-типы, на которых wssize снимается (дефолт — любой непустой)',
+                                 ex: ['tls_server_hello'] },
             },
         },
         udplen: {
@@ -330,22 +363,23 @@ const Nfqws2Spec = (() => {
         dht_dn: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Заменить d1/d2 в DHT на dN.',
-            groups: [], args: { dn: { type: 'string' } },
+            groups: ['direction'], args: { dn: { type: 'int', desc: 'N (дефолт 3)' } },
         },
         synack: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'SYN/ACK до SYN (TCB turnaround). Ломает NAT, требует nftables-POSTNAT.',
-            groups: G_FAKE, args: {},
+            groups: ['rawsend', 'reconstruct', 'ipfrag'], args: {},
         },
         synack_split: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Вариация synack. Требует nftables-POSTNAT.',
-            groups: G_FAKE, args: {},
+            groups: ['rawsend', 'reconstruct', 'ipfrag'],
+            args: { mode: { type: 'enum', values: ['syn', 'synack', 'acksyn'], desc: 'Режим (дефолт synack)' } },
         },
         tls_client_hello_clone: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Подготовить блоб с модифицированным TLS ClientHello.',
-            groups: [],
+            groups: ['direction'],
             args: {
                 blob: { type: 'blob' }, fallback: { type: 'string' },
                 sni_del_ext: { type: 'flag' }, sni_del: { type: 'flag' },
@@ -356,19 +390,19 @@ const Nfqws2Spec = (() => {
         http_hostcase: {
             file: 'zapret-antidpi.lua', cat: 'core', payload: 'http_req',
             desc: 'Менять регистр заголовка Host:.',
-            groups: [], args: { spell: { type: 'string', ex: ['host'] } },
+            groups: ['direction'], args: { spell: { type: 'string', ex: ['host'] } },
         },
         http_domcase: {
             file: 'zapret-antidpi.lua', cat: 'core', payload: 'http_req',
-            desc: 'Менять регистр имени домена в Host:.', groups: [], args: {},
+            desc: 'Менять регистр имени домена в Host:.', groups: ['direction'], args: {},
         },
         http_methodeol: {
             file: 'zapret-antidpi.lua', cat: 'core', payload: 'http_req',
-            desc: '\\r\\n перед методом (nginx).', groups: [], args: {},
+            desc: '\\r\\n перед методом (nginx).', groups: ['direction'], args: {},
         },
         http_unixeol: {
             file: 'zapret-antidpi.lua', cat: 'core', payload: 'http_req',
-            desc: '0D0A → 0A в HTTP.', groups: [], args: {},
+            desc: '0D0A → 0A в HTTP.', groups: ['direction'], args: {},
         },
         drop: {
             file: 'zapret-antidpi.lua', cat: 'core',
@@ -385,7 +419,7 @@ const Nfqws2Spec = (() => {
         pktmod: {
             file: 'zapret-antidpi.lua', cat: 'core',
             desc: 'Применить fooling/ipid к диссекту (без отсылки и вердикта).',
-            groups: ['fooling', 'ipid'], args: {},
+            groups: ['direction', 'fooling', 'ipid'], args: {},
         },
         pass: { file: 'zapret-antidpi.lua', cat: 'core', desc: 'No-op (для оркестраторов).', groups: [], args: {} },
         luaexec: {
@@ -401,9 +435,21 @@ const Nfqws2Spec = (() => {
             groups: [],
             args: {
                 fails:            { type: 'int', desc: 'Фейлов до смены', ex: ['3'] },
+                time:             { type: 'int', desc: 'Сброс счётчика фейлов, если последний был раньше N сек (дефолт 60)', ex: ['60'] },
                 retrans:          { type: 'int', desc: 'Ретрансмиссий до смены', ex: ['3'] },
-                nld:              { type: 'int', desc: 'Порог no-life-detect' },
-                maxseq:           { type: 'int' },
+                // standard_hostkey: nld — обрезать имя до N-го уровня,
+                // reqhost — не работать по IP; key — своя таблица состояния.
+                nld:              { type: 'int', desc: 'Ключ хоста — домен N-го уровня (2: a.b.example.com → example.com)', ex: ['2'] },
+                reqhost:          { type: 'flag', desc: 'Не работать без имени хоста (по голому IP)' },
+                key:              { type: 'string', desc: 'Имя таблицы состояния (несколько оркестраторов на одном хранилище)' },
+                // standard_failure_detector / standard_success_detector
+                maxseq:           { type: 'int', desc: 'TCP: окно ретрансмиссий / порог успеха по rel-seq (дефолт 32K)' },
+                inseq:            { type: 'int', desc: 'TCP: порог входящего rel-seq (RST от DPI / успех, дефолт 4K)' },
+                reset:            { type: 'flag', desc: 'Слать RST ретрансмиттеру, чтобы не ждать долго' },
+                no_http_redirect: { type: 'flag', desc: 'TCP: не считать HTTP-редирект DPI провалом' },
+                no_rst:           { type: 'flag', desc: 'TCP: не считать входящий RST провалом' },
+                udp_out:          { type: 'int', desc: 'UDP: ≥ исходящих пакетов (дефолт 4)' },
+                udp_in:           { type: 'int', desc: 'UDP: ≤ входящих пакетов (дефолт 1)' },
                 failure_detector: { type: 'lua-failure', desc: 'Детектор неудачи' },
                 success_detector: { type: 'lua-success', desc: 'Детектор успеха' },
                 detector:         { type: 'lua-failure', desc: 'Детектор (алиас)' },
@@ -431,6 +477,7 @@ const Nfqws2Spec = (() => {
                 repeats:   { type: 'int', desc: 'Сколько раз' },
                 stop:      { type: 'flag' }, clear: { type: 'flag' },
                 iff:       { type: 'lua-iff', desc: 'Условие' }, neg: { type: 'flag' },
+                percent: { type: 'int' }, pattern: { type: 'string' }, cond_code: { type: 'string' },
             },
         },
         condition: {
@@ -440,6 +487,9 @@ const Nfqws2Spec = (() => {
             args: {
                 iff: { type: 'lua-iff' }, neg: { type: 'flag' },
                 instances: { type: 'int' },
+                // Аргументы iff-функций: cond_random:percent,
+                // cond_payload_str:pattern, cond_lua:cond_code.
+                percent: { type: 'int' }, pattern: { type: 'string' }, cond_code: { type: 'string' },
             },
         },
         per_instance_condition: {
@@ -450,7 +500,10 @@ const Nfqws2Spec = (() => {
         stopif: {
             file: 'zapret-auto.lua', cat: 'orch',
             desc: 'Очистить план при условии.',
-            groups: [], args: { iff: { type: 'lua-iff' }, neg: { type: 'flag' } },
+            groups: [], args: {
+                iff: { type: 'lua-iff' }, neg: { type: 'flag' },
+                percent: { type: 'int' }, pattern: { type: 'string' }, cond_code: { type: 'string' },
+            },
         },
 
         // ─── Расширения проекта (import/lua/*) ───
