@@ -94,6 +94,13 @@ FW_BACKEND=@FW_BACKEND@
 POLICY_NAME=@POLICY_NAME@
 POLICY_EXCLUDE=@POLICY_EXCLUDE@
 POLICY_MARK=""
+# Метка проб GUI (MARK/MASK; пусто — нет), разгрузка ускорителя PPE Keenetic
+# (1/0, окно connskip) и пропуск клиентов, уведённых ip rule мимо WAN
+# (метки ищутся при старте — NDMS раздаёт их заново после перезагрузки).
+PROBE_MARK=@PROBE_MARK@
+PPE_DEOFFLOAD=@PPE_DEOFFLOAD@
+PPE_CONNSKIP=@PPE_CONNSKIP@
+SKIP_ROUTED_MARKS=@SKIP_ROUTED_MARKS@
 
 # Каталог для state.tsv (z2k-state-persist.lua). Переживает переустановку
 # zapret2, бекапится с настройками GUI. nfqws2 запускается под --user nobody,
@@ -691,6 +698,20 @@ class AutostartManager:
         policy_exclude = "1" if cfg.get("firewall", "keenetic_policy_exclude",
                                         default=False) else "0"
 
+        from core.firewall import (normalize_mark, ppe_connskip, ppe_mode,
+                                   PROBE_MARK)
+        probe_mark = normalize_mark(cfg.get("nfqws", "desync_mark_probe",
+                                            default=PROBE_MARK))
+        probe_mark_full = "%s/%s" % (probe_mark, probe_mark) \
+            if probe_mark else ""
+        ppe_deoffload = "1" if (fw_backend in ("", "iptables")
+                                and ppe_mode(cfg) == "auto") else "0"
+        ppe_window = ppe_connskip(
+            tcp_pkt, cfg.get("nfqws", "tcp_pkt_in", default=10),
+            udp_pkt, cfg.get("nfqws", "udp_pkt_in", default=3))
+        skip_routed = "1" if cfg.get("firewall", "skip_routed_marks",
+                                     default=True) else "0"
+
         # Единый источник shell-функций firewall (общий с reapply-хуками).
         from core.firewall_persistence import FIREWALL_SH_FUNCTIONS
 
@@ -726,6 +747,10 @@ class AutostartManager:
             "@POLICY_NAME@": _q(policy_name if fw_backend in ("", "iptables")
                                 else ""),
             "@POLICY_EXCLUDE@": _q(policy_exclude),
+            "@PROBE_MARK@": _q(probe_mark_full),
+            "@PPE_DEOFFLOAD@": _q(ppe_deoffload),
+            "@PPE_CONNSKIP@": _q(ppe_window),
+            "@SKIP_ROUTED_MARKS@": _q(skip_routed),
             "@FIREWALL_FUNCS@": FIREWALL_SH_FUNCTIONS,
             # Каталог state.tsv берём от каталога конфига: с
             # `--config DIR` автозапуск обязан писать туда же, куда пишет

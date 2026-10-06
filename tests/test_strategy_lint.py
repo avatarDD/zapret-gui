@@ -274,6 +274,44 @@ class TestNoDesyncAtAll(unittest.TestCase):
         self.assertEqual(codes([]), [lint.CODE_NO_DESYNC])
 
 
+class TestTtlFakeOnUdp(unittest.TestCase):
+    """TTL-фейк на UDP: ICMP time-exceeded рвёт QUIC у Safari (d2k)."""
+
+    def test_quic_fake_with_ttl_warns(self):
+        found = lint.lint(["--filter-udp=443", "--filter-l7=quic",
+                           "--lua-desync=fake:blob=fake_default_quic:"
+                           "ip_ttl=4:repeats=6"])
+        hit = [f for f in found if f["code"] == lint.CODE_TTL_FAKE_UDP]
+        self.assertEqual(len(hit), 1)
+        self.assertEqual(hit[0]["severity"], lint.SEVERITY_WARNING)
+        self.assertIn("Safari", hit[0]["message"])
+
+    def test_autottl_and_payload_quic(self):
+        found = codes(["--payload=quic_initial",
+                       "--lua-desync=fake:blob=fake_default_quic:"
+                       "ip6_autottl=-2,3-20"])
+        self.assertIn(lint.CODE_TTL_FAKE_UDP, found)
+
+    def test_tcp_ttl_is_fine(self):
+        # У TCP ICMP на чужой сегмент — мягкая ошибка: не ругаемся.
+        self.assertNotIn(lint.CODE_TTL_FAKE_UDP, codes([
+            "--filter-tcp=443", "--lua-desync=fake:blob=fake_default_tls:"
+            "ip_autottl=-2,3-20"]))
+
+    def test_udp_without_ttl_is_fine(self):
+        self.assertNotIn(lint.CODE_TTL_FAKE_UDP, codes([
+            "--filter-udp=443", "--lua-desync=fake:blob=fake_default_quic:"
+            "repeats=6"]))
+
+    def test_one_finding_per_profile(self):
+        found = codes(["--filter-udp=443",
+                       "--lua-desync=fake:blob=a:ip_ttl=3",
+                       "--lua-desync=fake:blob=b:ip_ttl=4",
+                       "--new", "--filter-udp=50000-65535",
+                       "--lua-desync=fake:blob=c:ip_ttl=2"])
+        self.assertEqual(found.count(lint.CODE_TTL_FAKE_UDP), 2)
+
+
 class TestRuleTable(unittest.TestCase):
     """Сама таблица правил остаётся данными и остаётся полной."""
 

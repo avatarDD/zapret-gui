@@ -27,7 +27,7 @@
 
 import unittest
 
-from core import nfqws_control, probe_runner
+from core import nfqws_control, probe_mark, probe_runner
 from core.config_manager import get_config_manager
 from core.mcp import registry
 from core.testers.probe import PROBE_CODES, ProbeResult
@@ -100,6 +100,12 @@ class ProbeCase(unittest.TestCase):
         self._patch(nfqws_control, "active_strategy_args",
                     lambda: ["--filter-tcp=443"])
         self._patch(probe_runner, "probe_domain", self.fake_probe)
+        # Помеченная проба (мимо очереди, core/probe_mark.py) зависит от
+        # прав процесса и правил firewall хоста — в тестах её нет, если
+        # тест не включил её сам.
+        self._patch(probe_mark, "baseline_mode",
+                    lambda firewall=None: {"marked": False, "mark": 0,
+                                           "reason": "тест: метки нет"})
         # Пауза после переключения движка в тесте не нужна: она про
         # реальный сетевой стек, а не про логику.
         self._limits(settle_sec=0)
@@ -202,6 +208,45 @@ class TestProbeTargets(ProbeCase):
         self.assertEqual(item["code"], "tls_rst")
         self.assertEqual(item["attempts"], 3)
         self.assertEqual(item["ok_count"], 1)
+
+
+class TestProbeCompareMarked(ProbeCase):
+    """Движок работает — «без обхода» меряется меткой, движок не трогаем."""
+
+    def setUp(self):
+        super().setUp()
+        Perms(self, probes=True, control=True)
+        self._patch(probe_mark, "baseline_mode",
+                    lambda firewall=None: {"marked": True,
+                                           "mark": 0x10000000,
+                                           "reason": "тест"})
+        self.marks = []
+
+    def fake_probe(self, domain, timeout=5, port=443, **kw):
+        mark = kw.get("mark", 0)
+        self.marks.append(mark)
+        code = "tls_rst" if mark else "ok"
+        return ProbeResult(domain=domain, code=code, detail="фейк",
+                           latency_ms=120.0 if code == "ok" else 0.0,
+                           resolved_ips=["93.184.216.34"])
+
+    def test_engine_untouched(self):
+        self.engine.running_flag = True
+        result = data("probe_compare", {"target": "rutracker.org"},
+                      PROBES_AND_CONTROL)
+        self.assertEqual(self.engine.calls, [])
+        self.assertEqual(result["verdict"], "bypass_helps")
+        self.assertEqual(result["without_method"], "probe_mark")
+        self.assertFalse(result["engine_toggled"])
+        self.assertEqual(self.marks, [0, 0x10000000])
+
+    def test_marked_without_control(self):
+        # Метка не меняет состояние устройства — control не нужен.
+        self.engine.running_flag = True
+        result = data("probe_compare", {"target": "rutracker.org"},
+                      PROBES)
+        self.assertEqual(result["verdict"], "bypass_helps")
+        self.assertEqual(self.engine.calls, [])
 
 
 class TestProbeCompare(ProbeCase):
@@ -384,3 +429,37 @@ class TestConnectivityMatrix(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDpiClassify(ProbeCase):
+    """dpi_classify: упаковка ответа классификатора и проверка имён."""
+
+    def setUp(self):
+        super().setUp()
+        Perms(self, probes=True)
+        from core.testers import dpi_differential
+        self.asked = []
+
+        def fake(domain, **kw):
+            self.asked.append((domain, kw.get("control_sni")))
+            return {"target": domain, "verdict": "opaque",
+                    "verdict_text": "x", "reason": "y",
+                    "dpi_classification": "tls_dpi",
+                    "remediation": "zapret", "steps": {}}
+
+        self._patch(dpi_differential, "classify", fake)
+
+    def test_verdict_and_hint(self):
+        result = data("dpi_classify", {"target": "rutracker.org"}, PROBES)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["verdict"], "opaque")
+        self.assertIn("фейк", result["hint"])
+        self.assertEqual(self.asked, [("rutracker.org", "example.com")])
+
+    def test_bad_names_rejected_before_any_packet(self):
+        result = data("dpi_classify", {"target": "http://x y"}, PROBES)
+        self.assertFalse(result["ok"])
+        result = data("dpi_classify", {"target": "a.org",
+                                       "control_sni": "$(reboot)"}, PROBES)
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.asked, [])

@@ -58,6 +58,7 @@ CODE_LUA_INIT_ORDER = "lua_init_order"
 CODE_L7_WITHOUT_PORTS = "l7_filter_without_ports"
 CODE_NO_DESYNC = "no_desync_action"
 CODE_ENGINE_OPTION = "engine_owned_option"
+CODE_TTL_FAKE_UDP = "ttl_fake_on_udp"
 
 # Опции nfqws2, которыми владеет GUI, а не стратегия. Первые четыре —
 # базовые аргументы (``NFQWSManager._build_base_args``): стратегия идёт
@@ -150,6 +151,13 @@ RULES = (
         "title": "опция, которой владеет GUI, а не стратегия",
         "section": "скил nfqws2-strategies §3.1–3.2 (глобальные опции) и "
                    "скил mcp, «Аргументы стратегии: чем владеет GUI»",
+    },
+    {
+        "code": CODE_TTL_FAKE_UDP,
+        "severity": SEVERITY_WARNING,
+        "title": "фейк с пониженным TTL на UDP/QUIC",
+        "section": "скил nfqws2-strategies §8.8 (ip_ttl/ip_autottl) и "
+                   "§15.4 (QUIC)",
     },
 )
 
@@ -384,6 +392,50 @@ def _check_l7_without_ports(profiles) -> list:
     return out
 
 
+# Опции, которые делают фейк «короче» пути: пакет умирает по дороге, и
+# узел, где он умер, отвечает ICMP time-exceeded.
+_TTL_OPT_RE = re.compile(r"(?:^|:)(ip6?_(?:auto)?ttl)=")
+_FILTER_UDP_RE = re.compile(r"^--filter-udp=")
+_QUIC_MARK_RE = re.compile(r"^--(?:filter-l7|payload)=.*\bquic")
+
+
+def _check_ttl_fake_udp(profiles) -> list:
+    """TTL-фейк на UDP: ICMP time-exceeded доходит до клиента.
+
+    NAT роутера переводит ICMP «время жизни истекло» на фейк клиенту по
+    кортежу его же потока (conntrack RELATED). Подключённый UDP-сокет
+    получает ошибку на пакет, которого не посылал: Network.framework
+    (Safari, iOS/macOS) закрывает QUIC-соединение, Chrome ICMP не
+    слушает и проходит. Поймано в d2k (necronicle/d2k,
+    datapath/include/d2k_icmpguard.h, поле 04.10.2026). У TCP ICMP на
+    чужой сегмент — мягкая ошибка, поэтому только UDP.
+    """
+    out = []
+    for index, args in enumerate(profiles):
+        if not any(_FILTER_UDP_RE.match(a) or _QUIC_MARK_RE.match(a)
+                   for a in args):
+            continue
+        for arg in args:
+            if not _LUA_DESYNC_RE.match(arg):
+                continue
+            match = _TTL_OPT_RE.search(arg)
+            if not match:
+                continue
+            out.append(_finding(
+                CODE_TTL_FAKE_UDP,
+                "профиль %d шлёт UDP-фейк с %s: узел, где фейк умрёт, "
+                "ответит ICMP time-exceeded, и NAT роутера доставит его "
+                "клиенту по его же потоку. Safari и приложения на "
+                "Network.framework (iOS/macOS) после этого рвут QUIC, "
+                "Chrome — нет, поэтому замер с компьютера проблему не "
+                "покажет. Мусорный QUIC Initial сервер отбрасывает и без "
+                "TTL — если обход работает без него, лучше убрать"
+                % (index, match.group(1)),
+                where=arg, profile=index))
+            break
+    return out
+
+
 def engine_owned(argv) -> list:
     """Аргументы стратегии, которые движку от неё передавать нельзя.
 
@@ -464,6 +516,7 @@ def lint(argv, known_functions=None, known_blobs=None) -> list:
     findings.extend(_check_lua_init_order(argv))
     findings.extend(_check_bare_trick(profiles))
     findings.extend(_check_l7_without_ports(profiles))
+    findings.extend(_check_ttl_fake_udp(profiles))
 
     # Ошибки первыми: окно ответа у модели конечное, и обрезать надо
     # предупреждения, а не то, из-за чего стратегия не работает.

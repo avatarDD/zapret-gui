@@ -45,6 +45,98 @@ _QUEUE_NUM_RE = re.compile(
 _QUEUE_RANGE_MAX = 64
 
 
+# ─── Метка собственных проб GUI ────────────────────────────────────────
+# Сокет пробы метится SO_MARK (core/probe_mark.py), а firewall ставит
+# соединению connmark-исключение: туда и обратно — мимо очереди. Бит 28
+# свободен: младшие 28 бит занимает NDMS (политики, 0x0fffffff), 29-й —
+# наше исключение, 30-й — пакеты nfqws2.
+PROBE_MARK = "0x10000000"
+
+
+def normalize_mark(value) -> str:
+    """``"0x10000000"`` → ``"0x10000000"``; пусто/0/мусор → ``""``.
+
+    Метка для пробы — один или несколько бит, маска совпадает со
+    значением (как у остальных наших меток).
+    """
+    text = str(value if value is not None else "").strip().lower()
+    if not text:
+        return ""
+    try:
+        number = int(text, 0)
+    except ValueError:
+        return ""
+    if number <= 0 or number > 0xFFFFFFFF:
+        return ""
+    return "0x%x" % number
+
+
+# ─── Разгрузка аппаратного ускорителя Keenetic (PPE) ────────────────────
+# На Keenetic (MediaTek PPE, fastnat) прошивка переводит транзитный поток
+# в аппаратный путь мимо netfilter: nfqws2 видит начало соединения, но не
+# ответы, повторы и RST. Штатная цель прошивки `-j PPE` с матчем
+# `-m connskip --connskip N` держит первые N пакетов КАЖДОГО подходящего
+# соединения на процессоре, дальше поток снова ускоряется — так делает
+# сама NDM для своих правил. Пара правил на направление: исходящее по
+# --dports (PREROUTING и FORWARD) и ответное по --sports (FORWARD: в
+# PREROUTING обратный NAT ещё не отработал). Правило только по --dports
+# дало видимость ответа 0,08 % — замер d2k (necronicle/d2k,
+# files/d2k-ppe-deoffload.sh, docs/decisions/0003). Вставленное на уже
+# привязанный поток правило его не отвязывает: работает с первых пакетов.
+PPE_TARGET = "PPE"
+PPE_TARGETS_FILES = {
+    "iptables": "/proc/net/ip_tables_targets",
+    "ip6tables": "/proc/net/ip6_tables_targets",
+}
+# Наши цепочки: (таблица, hook, имя). В статус «правила стоят» они не
+# входят — без NFQUEUE-правил разгрузка ничего не перехватывает.
+PPE_CHAINS = (
+    ("mangle", "PREROUTING", "nfqws_ppe_pre"),
+    ("mangle", "FORWARD", "nfqws_ppe_fwd"),
+)
+PPE_CONNSKIP_MIN = 30
+# Запас сверх окна перехвата: повторы ClientHello и ретрансмиссии.
+PPE_CONNSKIP_SLACK = 10
+
+
+def ppe_mode(cfg) -> str:
+    """``auto`` | ``off`` из ``firewall.ppe_deoffload`` (мусор — auto)."""
+    value = str(cfg.get("firewall", "ppe_deoffload", default="auto")
+                or "").strip().lower()
+    if value in ("off", "0", "false", "no", "none"):
+        return "off"
+    return "auto"
+
+
+def ppe_connskip(tcp_out, tcp_in, udp_out, udp_in) -> int:
+    """Сколько пакетов соединения держать на процессоре.
+
+    connskip считает пакеты в ОБЕ стороны, а окно перехвата задано
+    по направлениям — поэтому сумма, плюс запас, но не меньше 30
+    (столько проверено d2k на KN-1811).
+    """
+    def _int(value, default):
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return default
+    window = max(_int(tcp_out, 20) + _int(tcp_in, 10),
+                 _int(udp_out, 5) + _int(udp_in, 3))
+    return max(PPE_CONNSKIP_MIN, window + PPE_CONNSKIP_SLACK)
+
+
+def ppe_available(ipt_cmd: str) -> bool:
+    """Есть ли в ядре цель PPE для семейства (только Keenetic)."""
+    path = PPE_TARGETS_FILES.get(ipt_cmd)
+    if not path:
+        return False
+    try:
+        with open(path, "r") as handle:
+            return any(line.strip() == PPE_TARGET for line in handle)
+    except (IOError, OSError):
+        return False
+
+
 # Порты управления роутером: перехватывать их нельзя НИКОГДА. Пакет,
 # уведённый в NFQUEUE, которую никто не читает (движок упал, ещё не
 # поднялся или стоит на другом номере очереди), просто исчезает — и
@@ -443,6 +535,36 @@ class FirewallManager:
             self._extra["policy_mark"] = policy["mark"]
             self._extra["policy_exclude"] = bool(policy["exclude"])
 
+            # Метка собственных проб GUI: их соединения — мимо очереди.
+            self._extra["probe_mark"] = normalize_mark(
+                cfg.get("nfqws", "desync_mark_probe", default=PROBE_MARK))
+            # Разгрузка PPE (только iptables: цель есть лишь в прошивке
+            # Keenetic) — окно на процессоре с запасом на оба направления.
+            self._extra["ppe"] = ppe_mode(cfg) if fw_type == "iptables" \
+                else "off"
+            self._extra["ppe_connskip"] = ppe_connskip(
+                tcp_pkt, tcp_pkt_in, udp_pkt, udp_pkt_in)
+            # Клиенты, уведённые `ip rule` мимо WAN, — только когда WAN не
+            # известен: правила на `-o <wan>` и так их не видят.
+            routed = {"4": [], "6": []}
+            skip_routed = bool(cfg.get("firewall", "skip_routed_marks",
+                                       default=True))
+            self._extra["skip_routed"] = skip_routed
+            if skip_routed:
+                from core import route_marks
+                if not wan4:
+                    routed["4"] = route_marks.detect("4")
+                if wan6 is not None and not wan6:
+                    routed["6"] = route_marks.detect("6")
+                for fam, marks in routed.items():
+                    if marks:
+                        log.info("WAN не задан: клиенты с метками %s "
+                                 "(IPv%s) уведены ip rule мимо основного "
+                                 "выхода — идут мимо очереди"
+                                 % (", ".join(marks), fam),
+                                 source="firewall")
+            self._extra["routed_marks"] = routed
+
             # Снимаем старые правила
             self._remove_rules_locked(fw_type)
 
@@ -479,6 +601,7 @@ class FirewallManager:
                         policy_mark=policy["mark"],
                         policy_exclude=policy["exclude"],
                         policy_name=policy["name"],
+                        extra=self._extra,
                     )
                 else:
                     log.error("Ошибка при применении правил", source="firewall")
@@ -512,7 +635,7 @@ class FirewallManager:
                             tcp_pkt_in, udp_pkt_in, mark_exclude,
                             disable_ipv6, wan4, wan6, fw_type="",
                             policy_mark="", policy_exclude=False,
-                            policy_name=""):
+                            policy_name="", extra=None):
         """Записать рантайм-конфиг firewall и установить хуки (только роутер).
 
         На обычных хостах (systemd/desktop) ndm/hotplug отсутствуют — тогда
@@ -545,6 +668,17 @@ class FirewallManager:
                 "policy_name": policy_name if not policy_mark else "",
                 "policy_exclude": "1" if policy_exclude else "0",
             }
+            extra = extra or {}
+            probe = extra.get("probe_mark") or ""
+            params.update({
+                "probe_mark": "%s/%s" % (probe, probe) if probe else "",
+                "ppe_deoffload": "1" if extra.get("ppe") == "auto" else "0",
+                "ppe_connskip": extra.get("ppe_connskip") or PPE_CONNSKIP_MIN,
+                # Метки уведённых клиентов shell считает сам: после
+                # перезагрузки NDMS раздаёт их заново.
+                "skip_routed_marks": "1" if extra.get(
+                    "skip_routed", True) else "0",
+            })
             fp.write_runtime_conf(params)
             fp.install_hooks()
         except Exception as e:
@@ -607,7 +741,30 @@ class FirewallManager:
             "applied": applied,
             "rules": rules if applied else [],
             "rules_count": len(rules) if applied else 0,
+            "ppe": self.ppe_status() if fw_type == "iptables" else {
+                "available": False},
         }
+
+    # Статус опрашивается UI раз в несколько секунд; правила PPE меняются
+    # только вместе с apply/remove — пересчитывать их каждый раз незачем.
+    PPE_STATUS_TTL = 30.0
+
+    def ppe_status(self) -> dict:
+        """Состояние разгрузки PPE (IPv4): есть ли цель, сколько правил."""
+        cached = getattr(self, "_ppe_cache", None)
+        now = time.monotonic()
+        if cached and now - cached[0] < self.PPE_STATUS_TTL:
+            return dict(cached[1])
+        out = {"available": ppe_available("iptables"), "rules": 0}
+        if out["available"] and shutil.which("iptables"):
+            for _, hook, name in PPE_CHAINS:
+                if self._ipt_named_chain_hooked("iptables", "mangle",
+                                                hook, name):
+                    out["rules"] += len(self._ipt_chain_lines(
+                        "iptables", "mangle", name))
+        out["active"] = out["rules"] > 0
+        self._ppe_cache = (now, dict(out))
+        return out
 
     def queue_numbers(self, rules=None) -> list:
         """Номера NFQUEUE, на которые уводят применённые правила.
@@ -1144,6 +1301,18 @@ class FirewallManager:
                 else:
                     ok = False
 
+            # 1b) Собственные пробы GUI (SO_MARK) и клиенты, уведённые
+            # ip rule мимо WAN, — connmark-исключением: следующее правило
+            # вернёт их, PREROUTING по той же connmark — их ответы.
+            for mark, why in self._exclusion_marks(ipt_cmd, oif):
+                if self._run_cmd(
+                    [ipt_cmd, "-t", "mangle", "-A", post_chain] + oif_args
+                    + ["-m", "mark", "--mark", mark] + _comment()
+                    + ["-j", "CONNMARK", "--set-xmark", mark_excl]
+                ):
+                    rules.append("%s %s %s мимо очереди%s"
+                                 % (family_tag, why, mark, tag))
+
             # 2) RETURN для исключённых соединений
             self._run_cmd(
                 [ipt_cmd, "-t", "mangle", "-A", post_chain] + oif_args
@@ -1233,7 +1402,72 @@ class FirewallManager:
                                          + _comment() + _nfq()):
                         ok = False
 
+        # ───────── Разгрузка ускорителя PPE (Keenetic) ─────────
+        # Не гейтит ok: без неё перехват работает как раньше, просто
+        # хуже видит ответы на роутерах с аппаратным ускорителем.
+        self._apply_ppe(ipt_cmd, ports_tcp, ports_udp, _port_bases, rules)
         return ok
+
+    def _exclusion_marks(self, ipt_cmd, oif) -> list:
+        """Метки, чьи соединения идут мимо очереди: ``[(mark/mask, why)]``.
+
+        Проба GUI — всегда (если метка не выключена). Уведённые ip rule
+        клиенты — только без привязки к WAN (``oif`` пуст): с ``-o <wan>``
+        их пакеты в эти правила не попадают и так.
+        """
+        out = []
+        probe = self._extra.get("probe_mark") or ""
+        if probe:
+            out.append(("%s/%s" % (probe, probe), "пробы GUI"))
+        if not oif:
+            fam = "6" if ipt_cmd == "ip6tables" else "4"
+            for mark in (self._extra.get("routed_marks") or {}).get(fam, []):
+                out.append((mark, "клиенты ip rule"))
+        return out
+
+    def _apply_ppe(self, ipt_cmd, ports_tcp, ports_udp, port_bases,
+                   rules) -> bool:
+        """Поставить `-j PPE -m connskip` в наши цепочки nfqws_ppe_*.
+
+        Только если включено и цель PPE есть в ядре этого семейства.
+        Цепочки именованные: `-m comment` на Keenetic бывает недоступен,
+        а снимать надо ровно своё, не трогая чужие -j PPE (NDM, z2k).
+        """
+        self._ppe_cache = None
+        if self._extra.get("ppe") != "auto" or not ppe_available(ipt_cmd):
+            return False
+        family_tag = "IPv4" if ipt_cmd == "iptables" else "IPv6"
+        connskip = int(self._extra.get("ppe_connskip") or PPE_CONNSKIP_MIN)
+        tail = ["-m", "connskip", "--connskip", str(connskip),
+                "-j", PPE_TARGET]
+        (_, pre_hook, pre_chain), (_, fwd_hook, fwd_chain) = PPE_CHAINS
+        self._ensure_named_chain(ipt_cmd, "mangle", pre_hook, pre_chain)
+        self._ensure_named_chain(ipt_cmd, "mangle", fwd_hook, fwd_chain)
+
+        plan = []
+        for proto, ports in (("tcp", ports_tcp), ("udp", ports_udp)):
+            if not ports:
+                continue
+            plan.append((pre_chain, proto, "dports", ports))
+            plan.append((fwd_chain, proto, "dports", ports))
+            plan.append((fwd_chain, proto, "sports", ports))
+
+        placed = failed = 0
+        for chain, proto, direction, ports in plan:
+            prefix = [ipt_cmd, "-t", "mangle", "-A", chain]
+            for base in port_bases(prefix, proto, direction, ports):
+                if self._run_cmd(base + tail):
+                    placed += 1
+                else:
+                    failed += 1
+        if placed:
+            rules.append("%s PPE connskip %d (%d правил)"
+                         % (family_tag, connskip, placed))
+        if failed:
+            log.warning("%s: %d правил разгрузки PPE не встали — ответы "
+                        "аппаратно ускоренных потоков nfqws2 может не "
+                        "видеть" % (family_tag, failed), source="firewall")
+        return failed == 0 and placed > 0
 
     def _remove_iptables(self) -> bool:
         """Удалить все правила iptables/ip6tables с комментарием zapret-gui."""
@@ -1243,6 +1477,7 @@ class FirewallManager:
                 continue
             ok &= self._remove_ipt_family(ipt_cmd)
         self._rules_info = []
+        self._ppe_cache = None
         return ok
 
     # Цепочки, в которые мы добавляем правила (таблица, цепочка).
@@ -1269,7 +1504,7 @@ class FirewallManager:
             if not self._remove_ipt_chain(ipt_cmd, table, chain):
                 ok = False
         # Снести именованные цепочки персистентного режима, если остались.
-        for table, hook, name in self._IPT_NAMED_CHAINS:
+        for table, hook, name in self._IPT_NAMED_CHAINS + PPE_CHAINS:
             if not self._remove_ipt_named_chain(ipt_cmd, table, hook, name):
                 ok = False
         return ok
@@ -1479,6 +1714,22 @@ class FirewallManager:
                     "{ type nat hook postrouting priority 100 ; }" % NFT_TABLE)
 
         # ─── postrouting (исходящий) ───
+        # Пробы GUI и (без привязки к WAN) клиенты, уведённые ip rule, —
+        # connmark-исключение до проверки исключения, как в iptables-пути.
+        probe = self._extra.get("probe_mark") or ""
+        if probe:
+            cmds.append("add rule inet %s postrouting %smeta mark and %s == %s "
+                        "ct mark set ct mark or %s"
+                        % (NFT_TABLE, oif, probe, probe, mark_excl_raw))
+        if not all_wan:
+            routed = self._extra.get("routed_marks") or {}
+            for fam, proto in (("4", "ipv4"), ("6", "ipv6")):
+                for mark in routed.get(fam, []):
+                    value, _, mask = mark.partition("/")
+                    cmds.append("add rule inet %s postrouting meta nfproto %s "
+                                "meta mark and %s == %s ct mark set ct mark "
+                                "or %s" % (NFT_TABLE, proto, mask or value,
+                                           value, mark_excl_raw))
         # EXCLUDE — это CONNMARK (ставится на conntrack), поэтому матчим
         # `ct mark`, а не пакетный `meta mark` (иначе на пакетах без
         # восстановленной метки исключённое соединение повторно попадёт в

@@ -30,6 +30,8 @@ from core.testers.config import (
     TCP_16_20_TIMEOUT,
     TCP_BLOCK_RANGE_MAX,
     TCP_BLOCK_RANGE_MIN,
+    TCP_BLOCK_RANGE_WIDE_MAX,
+    TCP_BLOCK_RANGE_WIDE_MIN,
     TCP_HEALTH_TIMEOUT,
     TCP_TARGET_MAX_COUNT,
     TCP_TARGETS_PER_PROVIDER,
@@ -431,3 +433,164 @@ def select_tcp_targets(
             )
 
     return healthy
+
+
+# ---------------------------------------------------------------------------
+# Исходящий объём (TX-лестница) — приём d2k
+# ---------------------------------------------------------------------------
+#
+# Тест выше меряет ПРИЁМ: сколько тела ответа доходит до обрыва. Но ТСПУ
+# считает пакеты соединения в обе стороны, и бывают коробки, которые
+# режут по объёму ОТПРАВЛЕННОГО: загрузка файла, длинный POST, видео-
+# звонок. Чужой сервер не обязан присылать много, поэтому объём качаем
+# сами: d2k (necronicle/d2k, core/volume.c) шлёт десяток запросов по
+# одному соединению, со второго — с мусорным заголовком. Мусор в
+# заголовке — единственный способ накачать соединение СВОИМ объёмом, не
+# завися от того, что отдаёт цель. Пауза между запросами обязательна:
+# без неё запросы уходят одной очередью, и коробка видит поток иначе,
+# чем видит его браузер.
+#
+# HEAD, а не GET: ответ без тела, и приёмное направление не набирает
+# свой объём — меряется только наше.
+
+TX_REQUESTS = 15
+TX_PAD_BYTES = 2000
+TX_PAUSE_SEC = 0.05
+TX_RETRIES = 2
+
+
+def tx_verdict(answered: int, sent_before_fail: int, error: str,
+               requests: int = TX_REQUESTS) -> tuple[str, str]:
+    """Вердикт TX-лестницы — чистая функция.
+
+    Args:
+        answered: сколько запросов получили ответ.
+        sent_before_fail: сколько байт ушло до обрыва (0 — обрыва нет).
+        error: что оборвало (``reset``/``timeout``/``closed``/
+            ``server_close`` — сервер сам попросил закрыть, ``""``).
+
+    Returns:
+        (status, details): ``ok`` — вся лестница прошла; ``cut`` —
+        обрыв посреди лестницы после хотя бы двух ответов, внутри
+        окна объёма; ``inconclusive`` — данных для вывода нет.
+    """
+    if answered >= requests:
+        return "ok", "все %d запросов прошли" % requests
+    if error == "server_close":
+        return "inconclusive", ("сервер сам закрыл соединение после %d "
+                                "запросов — лестницу не довести" % answered)
+    if answered < 2:
+        # Первый запрос не прошёл — это не объём, а TLS/HTTP.
+        return "inconclusive", ("оборвалось на %d-м запросе — дело не в "
+                                "объёме" % (answered + 1))
+    # Окно — широкое (как у приёма, blockcheckw): коробка считает
+    # ПАКЕТЫ, а сколько байт в них уехало, зависит от размера запроса.
+    if TCP_BLOCK_RANGE_WIDE_MIN <= sent_before_fail <= \
+            TCP_BLOCK_RANGE_WIDE_MAX + TX_PAD_BYTES * 4:
+        return "cut", ("исходящий поток оборван (%s) после %d Б "
+                       "отправленных, на %d-м запросе"
+                       % (error or "обрыв", sent_before_fail, answered + 1))
+    return "inconclusive", ("оборвалось (%s) после %d Б — вне окна "
+                            "объёма" % (error or "обрыв", sent_before_fail))
+
+
+def _tx_ladder_once(host: str, port: int, timeout: int,
+                    mark: int = 0) -> tuple[int, int, str]:
+    """Один проход лестницы → (ответов, байт до обрыва, причина)."""
+    from core import probe_mark
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    sock = probe_mark.create_connection((host, port), timeout=timeout,
+                                        mark=mark)
+    sent = answered = 0
+    try:
+        tls = ctx.wrap_socket(sock, server_hostname=host)
+        tls.settimeout(timeout)
+        pad = "".join(random.choice("abcdefghijklmnopqrstuvwxyz")
+                      for _ in range(TX_PAD_BYTES))
+        buf = b""
+        for index in range(TX_REQUESTS):
+            request = ("HEAD / HTTP/1.1\r\nHost: %s\r\n"
+                       "User-Agent: Mozilla/5.0\r\nAccept: */*\r\n"
+                       "Connection: keep-alive\r\n" % host)
+            if index:
+                request += "X-Pad: %s\r\n" % pad
+            request += "\r\n"
+            data = request.encode("ascii")
+            try:
+                tls.sendall(data)
+            except (ConnectionResetError, BrokenPipeError):
+                return answered, sent, "reset"
+            sent += len(data)
+            # Ответ на HEAD — только заголовки.
+            while b"\r\n\r\n" not in buf:
+                try:
+                    chunk = tls.recv(4096)
+                except socket.timeout:
+                    return answered, sent, "timeout"
+                except (ConnectionResetError, ssl.SSLError, OSError):
+                    return answered, sent, "reset"
+                if not chunk:
+                    return answered, sent, "closed"
+                buf += chunk
+            head, _, buf = buf.partition(b"\r\n\r\n")
+            answered += 1
+            if b"connection: close" in head.lower():
+                return answered, sent, "server_close"
+            time.sleep(TX_PAUSE_SEC)
+        return answered, sent, ""
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def check_tcp_tx_volume(url: str, timeout: int = TCP_16_20_TIMEOUT,
+                        retries: int = TX_RETRIES,
+                        mark: int = 0) -> SingleTestResult:
+    """TX-лестница по хосту из ``url``: режут ли объём ОТПРАВЛЕННОГО.
+
+    Обрыв засчитывается, только если повторился в каждой попытке: один
+    обрыв посреди лестницы — это ещё сеть, а не коробка.
+    """
+    parsed = urlparse(url if "://" in url else "https://" + url)
+    host = parsed.hostname or ""
+    port = parsed.port or 443
+    start = time.time()
+    verdicts = []
+    for _ in range(max(1, retries)):
+        try:
+            answered, sent, error = _tx_ladder_once(host, port, timeout,
+                                                    mark=mark)
+        except (OSError, ssl.SSLError) as e:
+            verdicts.append(("inconclusive", "соединение не встало: %s"
+                             % str(e)[:60], 0))
+            continue
+        status, details = tx_verdict(answered, sent if error else 0,
+                                     error)
+        verdicts.append((status, details, sent))
+        if status == "ok":
+            break
+    elapsed = round((time.time() - start) * 1000, 2)
+    kinds = {v[0] for v in verdicts}
+    last = verdicts[-1]
+    raw = {"direction": "tx", "bytes_sent": last[2],
+           "attempts": len(verdicts)}
+    if kinds == {"cut"}:
+        return SingleTestResult(
+            target=url, test_type=TestType.TCP_16_20.value,
+            status=TestStatus.FAILED.value, error="TCP_16_20",
+            latency_ms=elapsed, details="TX: " + last[1], raw_data=raw)
+    if "ok" in kinds:
+        return SingleTestResult(
+            target=url, test_type=TestType.TCP_16_20.value,
+            status=TestStatus.SUCCESS.value, latency_ms=elapsed,
+            details="TX: " + next(v[1] for v in verdicts if v[0] == "ok"),
+            raw_data=raw)
+    return SingleTestResult(
+        target=url, test_type=TestType.TCP_16_20.value,
+        status=TestStatus.ERROR.value, error="TX_INCONCLUSIVE",
+        latency_ms=elapsed, details="TX: " + last[1], raw_data=raw)

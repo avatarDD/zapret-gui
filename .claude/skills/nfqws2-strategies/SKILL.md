@@ -788,6 +788,44 @@ MARK_EXCLUDE` до NFQUEUE-правил: соединения остальных
 предупреждение (молча выключать обход нельзя). Пустое имя (дефолт) —
 политика не используется.
 
+### 10.3b Приёмы d2k: PPE, пробы GUI, клиенты `ip rule`
+
+Перенесены из d2k (necronicle/d2k — свой C-движок для Keenetic без
+nfqws, MIT) там, где они ложатся на NFQUEUE + nfqws2. Все три — и в
+Python-пути (`core/firewall.py`), и в shell-пути (`FIREWALL_SH_FUNCTIONS`:
+автозапуск S99zapret и reapply-хук; переменные `PROBE_MARK`,
+`PPE_DEOFFLOAD`, `PPE_CONNSKIP`, `SKIP_ROUTED_MARKS` в `firewall.run`).
+
+* **Разгрузка ускорителя PPE** (`firewall.ppe_deoffload` = `auto`|`off`,
+  только iptables). Аппаратный ускоритель Keenetic (MediaTek PPE) после
+  первых пакетов уводит поток мимо netfilter: nfqws2 не видит ответов,
+  повторов и RST (у d2k: правило только по `--dports` дало видимость
+  ответа 0,08 %). Если в `/proc/net/ip_tables_targets` есть `PPE`,
+  ставится штатная для NDM цель `-m connskip --connskip N -j PPE`:
+  исходящее по `--dports` в mangle PREROUTING **и** FORWARD, ответ по
+  `--sports` в FORWARD (в PREROUTING обратный NAT ещё не отработал).
+  N = max(tcp_pkt_out+tcp_pkt_in, udp_pkt_out+udp_pkt_in) + 10, не
+  меньше 30 (connskip считает пакеты в обе стороны). Цепочки
+  `nfqws_ppe_pre`/`nfqws_ppe_fwd`, чужие `-j PPE` не трогаются; в статус
+  «правила стоят» не входят. **Ограничение:** уже привязанный к
+  ускорителю поток правило не отвязывает, а пакеты после N снова в
+  ускорителе — поздние RST таких потоков не видны. Это дополняет, а не
+  заменяет `--fastpath-workaround` (§12, сборка nfqws2-keenetic).
+* **Метка проб GUI** (`nfqws.desync_mark_probe`, `0x10000000` — бит 28:
+  младшие 28 занимает NDMS, 29 — EXCLUDE, 30 — DESYNC_MARK). В
+  POSTROUTING до NFQUEUE: `-m mark --mark P/P -j CONNMARK --set-xmark
+  EXCLUDE` — дальше обычный connmark-RETURN в обе стороны. Сокет пробы
+  метит `core/probe_mark.py` (с чтением метки обратно). Так baseline
+  эксперимента и `probe_compare` меряют «без обхода», не гася движок.
+* **Клиенты, уведённые `ip rule` мимо WAN** (`firewall.skip_routed_marks`).
+  Только когда WAN не задан и не найден (правила без `-o`): fwmark,
+  выбирающая правило с blackhole/unreachable/prohibit или lookup в
+  таблицу, чей default идёт не через устройство default основной
+  таблицы, → тот же connmark-EXCLUDE. Иначе nfqws2 шлёт фейки и сегменты
+  клиента VPN своей меткой по основной таблице — в WAN мимо туннеля.
+  Политика Keenetic, чья таблица ведёт в того же провайдера, под это не
+  попадает. Разбор — `core/route_marks.py`, shell — `_routed_marks`.
+
 ### 10.4 Порты по умолчанию
 
 `config_manager.DEFAULT_CONFIG` (намеренно шире эталона keenetic, который
@@ -1043,7 +1081,10 @@ API: `GET /api/diagnostics/prerequisites`. Проверяет:
   первыми (`from_memory`, до `MEMORY_FIRST_MAX`=10, в т.ч. не попавшие в
   набор quick). Порядок сохраняется в resume (`memory_ids`). В память
   пишутся удачи, провалы выдвинутых памятью и `UNSTABLE`; цель, открытая
-  без обхода, — нет.
+  без обхода, — нет. После своих — стратегии **соседей по
+  регистрируемому домену** (`strategy_memory.family_candidates`, приём
+  d2k): голоса за 30 дней, свежие (7 дней) провалы против, свой провал
+  цели сильнее семьи.
 
 ### 13.5 Дедуп
 
@@ -1225,6 +1266,15 @@ IP назначения, поэтому домены с общими адрес�
     --lua-desync=fake:blob=quic_google:repeats=11
 ```
 
+**TTL на QUIC-фейке — осторожно.** `ip_ttl`/`ip_autottl` на UDP: узел,
+где фейк умер, отвечает ICMP time-exceeded, а NAT роутера (conntrack
+RELATED) доставляет его клиенту по кортежу его же потока. Safari и всё
+на Network.framework (iOS/macOS) закрывают подключённый UDP-сокет —
+QUIC рвётся, Chrome ICMP не слушает и проходит (поле d2k 04.10.2026,
+`datapath/include/d2k_icmpguard.h`). Мусорный Initial сервер отбрасывает
+и так — TTL для QUIC обычно не нужен. Линтер: `ttl_fake_on_udp`
+(warning) — `core/strategy_lint.py` и редактор.
+
 ### 15.5 WireGuard / STUN / Discord (UDP)
 
 ```
@@ -1279,7 +1329,9 @@ IP назначения, поэтому домены с общими адрес�
    доменами цели; если домен не совпал с реальным SNI — десинк не применился.
    Лечится «выключить hostlist для теста» (`MODE_FILTER=none`).
 6. **Hardware offload включён** / **conntrack не настроен.** iptables не
-   видит трафик, либо ядро дропает out-of-window сегменты десинка. Наш
+   видит трафик, либо ядро дропает out-of-window сегменты десинка. На
+   Keenetic — `firewall.ppe_deoffload=auto` (§10.3b) и `ppe` в статусе
+   firewall: `available` без `active` — правила не встали. Наш
    firewall ставит `nf_conntrack_tcp_be_liberal=1` и `nf_conntrack_checksum=0`
    — проверить, что применилось (`sysctl -a | grep be_liberal`) **на роутере,
    не в контейнере**.

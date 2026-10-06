@@ -164,6 +164,9 @@ class TargetResult:
     dpi_classification: str = DPIClassification.NONE.value
     dpi_detail: str = ""
     summary: str = ""
+    # Ответ дифференциального классификатора (dpi_differential.classify):
+    # чем именно режут. None — не спрашивали.
+    differential: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         # Собираем tests как dict по test_type для удобства фронтенда
@@ -187,6 +190,7 @@ class TargetResult:
             "dpi_detail": self.dpi_detail,
             "remediation": remediation_for(self.dpi_classification),
             "summary": self.summary,
+            "differential": self.differential,
         }
 
     def _compute_overall_status(self) -> str:

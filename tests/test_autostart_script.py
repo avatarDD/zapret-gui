@@ -34,8 +34,9 @@ class TestGeneratedScript(unittest.TestCase):
         mark = self.cfg.get("nfqws", "desync_mark", default="0x40000000")
         # `0x.../0x...` — безопасная для shlex строка, кавычки не добавляются.
         self.assertIn("MARK_PROCESSED=%s/%s\n" % (mark, mark), self.script)
-        # Старый хардкод 0x10000 должен исчезнуть.
-        self.assertNotIn("0x10000", self.script)
+        # Старый хардкод 0x10000 должен исчезнуть. Граница слова: метка
+        # проб GUI 0x10000000 начинается с тех же символов.
+        self.assertNotRegex(self.script, r"0x10000(?![0-9a-fA-F])")
 
     def test_has_prerouting_chain(self):
         self.assertIn("nfqws_pre", self.script)

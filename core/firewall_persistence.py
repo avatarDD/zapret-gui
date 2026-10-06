@@ -74,13 +74,18 @@ AUTOSTART_INIT = "/opt/etc/init.d/S99zapret"
 #    QUEUE_NUM PORTS_TCP PORTS_UDP MAX_PKT_OUT MAX_PKT_OUT_UDP MAX_PKT_IN
 #    MARK_PROCESSED MARK_EXCLUDE IPV6_ENABLED WAN_IFACES FW_BACKEND
 #    POLICY_NAME POLICY_MARK POLICY_EXCLUDE (политика доступа Keenetic)
+#    PROBE_MARK (метка проб GUI, MARK/MASK) PPE_DEOFFLOAD PPE_CONNSKIP
+#    SKIP_ROUTED_MARKS (паритет с core/firewall.py, см. там же)
 # ─────────────────────────────────────────────────────────────────────────
 FIREWALL_SH_FUNCTIONS = r"""
 IPT_GROUP_POST="nfqws_post"
 IPT_GROUP_PRE="nfqws_pre"
 IPT_GROUP_NAT="nfqws_nat"
+IPT_GROUP_PPE_PRE="nfqws_ppe_pre"
+IPT_GROUP_PPE_FWD="nfqws_ppe_fwd"
 NFT_TABLE="zapret_gui"
 : "${MAX_PKT_IN:=15}"
+: "${PPE_CONNSKIP:=30}"
 
 _jnfq() { echo "-j NFQUEUE --queue-num $QUEUE_NUM --queue-bypass"; }
 
@@ -161,6 +166,89 @@ _policy_resolve() {
     return 0
 }
 
+# Метки клиентов, которых ip rule уводит мимо основного выхода (VPN
+# Keenetic, туннели): MARK/MASK по строке. Тот же алгоритм, что
+# core/route_marks.py: правило с fwmark (без not) и действием
+# blackhole/unreachable/prohibit, либо lookup в нестандартную таблицу,
+# чей default идёт через устройство не из default основной таблицы.
+# $1 = 4|6. Только при перехвате на всех интерфейсах (WAN_IFACES пуст).
+_routed_marks() {
+    [ "$SKIP_ROUTED_MARKS" = "1" ] || return 0
+    command -v ip >/dev/null 2>&1 || return 0
+    _rm_main=$(ip -"$1" route show table main 2>/dev/null \
+        | awk '$1 == "default" { for (i = 2; i < NF; i++) if ($i == "dev") print $(i + 1) }')
+    ip -"$1" rule show 2>/dev/null | awk '
+        { sub(/^[0-9]+:/, ""); m = ""; t = ""; neg = 0
+          for (i = 1; i <= NF; i++) {
+              if ($i == "not") neg = 1
+              if ($i == "fwmark" && i < NF) m = $(i + 1)
+              if (($i == "lookup" || $i == "table") && i < NF && t == "") t = $(i + 1)
+              if ($i == "blackhole" || $i == "unreachable" || $i == "prohibit") { if (t == "") t = "@" }
+          }
+          if (m == "" || neg || t == "") next
+          if (index(m, "/") == 0) m = m "/0xffffffff"
+          print m, t }' | while read -r _rm_m _rm_t; do
+        case "$_rm_t" in
+            local|main|default|253|254|255) continue ;;
+            @) echo "$_rm_m"; continue ;;
+        esac
+        _rm_d=$(ip -"$1" route show table "$_rm_t" 2>/dev/null \
+            | awk '$1 == "default" { for (i = 2; i < NF; i++) if ($i == "dev") print $(i + 1) }')
+        for _rm_x in $_rm_d; do
+            case " $(echo $_rm_main) " in
+                *" $_rm_x "*) ;;
+                *) echo "$_rm_m"; break ;;
+            esac
+        done
+    done | awk '!seen[$0]++'
+}
+
+# Есть ли в ядре цель PPE (Keenetic, аппаратный ускоритель). $1=CMD.
+_ppe_available() {
+    case "$1" in
+        iptables) _pf=${PPE_PROC_NET:-/proc/net}/ip_tables_targets ;;
+        ip6tables) _pf=${PPE_PROC_NET:-/proc/net}/ip6_tables_targets ;;
+        *) return 1 ;;
+    esac
+    grep -qx PPE "$_pf" 2>/dev/null
+}
+
+# Разгрузка ускорителя: первые PPE_CONNSKIP пакетов перехватываемых
+# соединений — на процессоре (паритет с FirewallManager._apply_ppe).
+_ppe_start() {
+    _ppc="$1"
+    [ "$PPE_DEOFFLOAD" = "1" ] || return 0
+    _ppe_available "$_ppc" || return 0
+    _ptail="-m connskip --connskip $PPE_CONNSKIP -j PPE"
+    $_ppc -w -t mangle -N $IPT_GROUP_PPE_PRE 2>/dev/null
+    $_ppc -w -t mangle -F $IPT_GROUP_PPE_PRE
+    _fw_unhook "$_ppc" mangle PREROUTING $IPT_GROUP_PPE_PRE
+    $_ppc -w -t mangle -I PREROUTING -j $IPT_GROUP_PPE_PRE
+    $_ppc -w -t mangle -N $IPT_GROUP_PPE_FWD 2>/dev/null
+    $_ppc -w -t mangle -F $IPT_GROUP_PPE_FWD
+    _fw_unhook "$_ppc" mangle FORWARD $IPT_GROUP_PPE_FWD
+    $_ppc -w -t mangle -I FORWARD -j $IPT_GROUP_PPE_FWD
+    for _pp in tcp udp; do
+        if [ "$_pp" = "tcp" ]; then _pports="$PORTS_TCP"; else _pports="$PORTS_UDP"; fi
+        [ -n "$_pports" ] || continue
+        _fw_port_match $_pp dports "$_pports" | while read -r PM; do
+            [ -n "$PM" ] || continue
+            $_ppc -w -t mangle -A $IPT_GROUP_PPE_PRE $PM $_ptail
+            $_ppc -w -t mangle -A $IPT_GROUP_PPE_FWD $PM $_ptail
+        done
+        _fw_port_match $_pp sports "$_pports" | while read -r PM; do
+            [ -n "$PM" ] && $_ppc -w -t mangle -A $IPT_GROUP_PPE_FWD $PM $_ptail
+        done
+    done
+}
+
+_ppe_stop() {
+    _fw_unhook "$1" mangle PREROUTING $IPT_GROUP_PPE_PRE
+    _fw_unhook "$1" mangle FORWARD $IPT_GROUP_PPE_FWD
+    $1 -w -t mangle -F $IPT_GROUP_PPE_PRE 2>/dev/null; $1 -w -t mangle -X $IPT_GROUP_PPE_PRE 2>/dev/null
+    $1 -w -t mangle -F $IPT_GROUP_PPE_FWD 2>/dev/null; $1 -w -t mangle -X $IPT_GROUP_PPE_FWD 2>/dev/null
+}
+
 # Фрагмент ограничителя «первые N пакетов»; пусто, если connbytes недоступен.
 # $1=original|reply $2=limit.
 _fw_cb() {
@@ -194,8 +282,23 @@ _firewall_start() {
             $CMD -w -t nat -A POSTROUTING -j $IPT_GROUP_NAT
     fi
 
+    _ROUTED=""
+    if [ -z "$WAN_IFACES" ]; then
+        if [ "$CMD" = "ip6tables" ]; then _ROUTED=$(_routed_marks 6); else _ROUTED=$(_routed_marks 4); fi
+    fi
+
     for IFACE in $(_iface_list); do
         if [ "$IFACE" = "__ALL__" ]; then OIF=""; IIF=""; else OIF="-o $IFACE"; IIF="-i $IFACE"; fi
+
+        # Пробы GUI и уведённые ip rule клиенты — connmark-исключение.
+        if [ -n "$PROBE_MARK" ]; then
+            $CMD -w -t mangle -A $IPT_GROUP_POST $OIF -m mark --mark $PROBE_MARK -j CONNMARK --set-xmark $MARK_EXCLUDE
+        fi
+        if [ -z "$OIF" ]; then
+            for _RM in $_ROUTED; do
+                $CMD -w -t mangle -A $IPT_GROUP_POST -m mark --mark $_RM -j CONNMARK --set-xmark $MARK_EXCLUDE
+            done
+        fi
 
         if [ -n "$POLICY_MARK" ]; then
             if [ "$POLICY_EXCLUDE" = "1" ]; then
@@ -247,6 +350,8 @@ _firewall_start() {
             done
         fi
     done
+
+    _ppe_start "$CMD"
 }
 
 # Снять все переходы `hook -j chain` (их может быть несколько — дубли от
@@ -275,6 +380,7 @@ _firewall_stop() {
     if [ "$CMD" = "iptables" ]; then
         $CMD -w -t nat -F $IPT_GROUP_NAT 2>/dev/null; $CMD -w -t nat -X $IPT_GROUP_NAT 2>/dev/null
     fi
+    _ppe_stop "$CMD"
 }
 
 # ──────────────────────────── nftables ────────────────────────────
@@ -342,6 +448,18 @@ _nft_firewall_start() {
         '{ type nat hook postrouting priority 100 ; }'
 
     # ─── postrouting (исходящий) ───
+    if [ -n "$PROBE_MARK" ]; then
+        _pm="${PROBE_MARK%%/*}"
+        _nft_rule postrouting "$_oif meta mark and $_pm == $_pm ct mark set ct mark or $_mark_excl"
+    fi
+    if [ -z "$WAN_IFACES" ]; then
+        for _fam in 4 6; do
+            if [ "$_fam" = "4" ]; then _np=ipv4; else _np=ipv6; fi
+            for _RM in $(_routed_marks $_fam); do
+                _nft_rule postrouting "meta nfproto $_np meta mark and ${_RM#*/} == ${_RM%%/*} ct mark set ct mark or $_mark_excl"
+            done
+        done
+    fi
     # EXCLUDE — это CONNMARK, поэтому матчим `ct mark`, а не пакетный
     # `meta mark` (иначе исключённое соединение снова попадёт в очередь).
     _nft_rule postrouting "$_oif ct mark and $_mark_excl == $_mark_excl return"
@@ -466,6 +584,12 @@ def render_run_conf(params: dict) -> str:
         + "POLICY_NAME=%s\n" % q(params.get("policy_name"))
         + "POLICY_MARK=%s\n" % q(params.get("policy_mark"))
         + "POLICY_EXCLUDE=%s\n" % q(params.get("policy_exclude", "0"))
+        # Метка проб GUI (MARK/MASK; пусто — нет), разгрузка ускорителя
+        # PPE Keenetic и пропуск клиентов, уведённых ip rule мимо WAN.
+        + "PROBE_MARK=%s\n" % q(params.get("probe_mark"))
+        + "PPE_DEOFFLOAD=%s\n" % q(params.get("ppe_deoffload", "0"))
+        + "PPE_CONNSKIP=%s\n" % q(params.get("ppe_connskip", 30))
+        + "SKIP_ROUTED_MARKS=%s\n" % q(params.get("skip_routed_marks", "1"))
     )
 
 

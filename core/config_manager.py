@@ -73,6 +73,14 @@ DEFAULT_CONFIG = {
         # — только по IP. Пример: ["my.keenetic.net"]. "*" — проверку
         # выключить совсем.
         "allowed_hosts": [],
+        # Самообновление GUI (core/release_verify.py, приём d2k): auto —
+        # сверить архив выпуска с SHA256SUMS и подпись, если ключ
+        # закреплён; require — ставить только выпуск с проверенной
+        # подписью.
+        "update_verify": "auto",
+        # Перед обновлением — копия кода рядом с приложением; новая версия
+        # не ответила после рестарта — сторож возвращает прежнюю.
+        "update_rollback": True,
     },
 
     # --- Настройки nfqws ---
@@ -90,6 +98,11 @@ DEFAULT_CONFIG = {
         "udp_pkt_in": 3,
         "desync_mark": "0x40000000",
         "desync_mark_postnat": "0x20000000",
+        # Метка собственных проб GUI (SO_MARK на сокете). Firewall пускает
+        # такие соединения мимо NFQUEUE в обе стороны (connmark-исключение),
+        # поэтому «замер без обхода» не требует гасить движок всей сети —
+        # приём d2k (necronicle/d2k, core/meas.c). "" или "0" — выключено.
+        "desync_mark_probe": "0x10000000",
         "user": "nobody",
         "disable_ipv6": True,
         # Включить пер-пакетный отладочный вывод nfqws2 (--debug). Вывод
@@ -121,6 +134,17 @@ DEFAULT_CONFIG = {
         # кроме устройств политики. Только iptables (Keenetic).
         "keenetic_policy": "",
         "keenetic_policy_exclude": False,
+        # Разгрузка аппаратного ускорителя Keenetic (MediaTek PPE): первые
+        # N пакетов каждого перехватываемого соединения держатся на
+        # процессоре (`-j PPE -m connskip`), иначе ответы, повторы и RST
+        # уходят мимо netfilter. auto — ставить, если в прошивке есть цель
+        # PPE; off — не ставить. Приём d2k (files/d2k-ppe-deoffload.sh).
+        "ppe_deoffload": "auto",
+        # При перехвате «на всех интерфейсах» (WAN не задан и не найден)
+        # не уводить в очередь клиентов, чья fwmark выбирает `ip rule` с
+        # другим выходом (VPN Keenetic, туннели): сырые пакеты nfqws2 ушли
+        # бы мимо туннеля в WAN. См. core/route_marks.py.
+        "skip_routed_marks": True,
     },
 
     # --- Фильтрация ---
@@ -211,6 +235,12 @@ DEFAULT_CONFIG = {
         "default_mode": "quick",
         "max_workers": 2,
         "probe_timeout": 10,
+        # После классификации по симптомам задать DPI вопросы «чем режут»
+        # по целям с непрошедшим TLS: ClientHello целиком → разрез на
+        # первом байте → чужое имя на тот же адрес (приём d2k,
+        # core/testers/dpi_differential.py). Отличает «хватит разреза» и
+        # «нужен фейк» от «режут адрес — только туннель».
+        "differential": True,
     },
 
     # --- Strategy Scanner ---

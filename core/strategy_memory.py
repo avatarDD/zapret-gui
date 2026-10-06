@@ -85,6 +85,32 @@ MAX_ARGS = 60
 STALE_DAYS = 45
 
 
+# Семейства доменов (приём d2k, necronicle/d2k core/groups.c): находка на
+# одном имени — гипотеза для соседей по регистрируемому домену. Голос
+# члена семейства живёт 30 дней, неудача — 7: блокировки меняются, и
+# старый провал не должен вечно запрещать то, что уже снова работает.
+FAMILY_VOTE_DAYS = 30
+FAMILY_FAIL_DAYS = 7
+FAMILY_MAX = 10
+
+# Вторые уровни, под которыми регистрируют домены (co.uk, com.ru, msk.ru):
+# полного Public Suffix List на роутере нет — он весит сотни килобайт, а
+# ошибка здесь стоит только порядка проверки, не вердикта.
+_SECOND_LEVEL = frozenset((
+    "ac", "co", "com", "edu", "gov", "go", "ne", "net", "or", "org", "mil",
+    "msk", "spb", "nov", "kiev", "in", "ltd", "plc", "me", "info", "biz",
+))
+# Частные суффиксы: у каждого клиента свой сайт, общего у них — только
+# хостинг, и семейством они не являются.
+_PRIVATE_SUFFIXES = frozenset((
+    "github.io", "gitlab.io", "pages.dev", "workers.dev", "vercel.app",
+    "netlify.app", "herokuapp.com", "appspot.com", "blogspot.com",
+    "cloudfront.net", "azurewebsites.net", "web.app", "firebaseapp.com",
+    "fly.dev", "onrender.com", "r2.dev", "b-cdn.net", "myshopify.com",
+    "wixsite.com", "tumblr.com", "livejournal.com", "narod.ru", "ucoz.ru",
+    "duckdns.org", "ddns.net", "keenetic.pro", "keenetic.link",
+))
+
 _lock = threading.RLock()
 
 # Кеш сетевой метки: ioctl на каждый вызов не нужен, а сеть меняется
@@ -375,6 +401,85 @@ def remember_report(report: dict) -> dict:
     return remember(observations, source="experiment")
 
 
+# ──────────────────────────── семейства ─────────────────────────────
+
+def family_of(domain: str) -> str:
+    """Регистрируемый домен — ключ семейства (``""`` — семейства нет).
+
+    ``rr1---sn-x.googlevideo.com`` → ``googlevideo.com``,
+    ``news.bbc.co.uk`` → ``bbc.co.uk``, ``me.github.io`` → ``me.github.io``
+    (у каждого сайта на частном суффиксе своё семейство). IP-адрес и
+    одиночная метка семейства не имеют.
+    """
+    name = str(domain or "").strip().lower().rstrip(".")
+    labels = [x for x in name.split(".") if x]
+    if len(labels) < 2 or labels[-1].isdigit() or ":" in name:
+        return ""
+    for suffix in _PRIVATE_SUFFIXES:
+        if name == suffix:
+            return ""
+        if name.endswith("." + suffix):
+            size = suffix.count(".") + 2
+            return ".".join(labels[-size:])
+    if len(labels) >= 3 and len(labels[-1]) == 2 and \
+            labels[-2] in _SECOND_LEVEL:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def family_candidates(target: str, records, network_id: str,
+                      now: float = None) -> list:
+    """Что срабатывало у СОСЕДЕЙ ``target`` по семейству в этой сети.
+
+    Голос — один член семейства (не одна запись: десять прогонов на
+    одном имени — это одно мнение), у которого побед больше поражений и
+    который подтверждался не дольше FAMILY_VOTE_DAYS назад. Против —
+    член с поражениями, свежими (FAMILY_FAIL_DAYS). Собственный опыт
+    цели сильнее семьи: argv, который на самой цели проигрывал, из
+    кандидатов убирается. Кандидат — только при голосах > против.
+    """
+    family = family_of(target)
+    if not family:
+        return []
+    now = time.time() if now is None else now
+    target = str(target).strip().lower()
+    own_bad = set()
+    votes = {}
+    for record in records or []:
+        if record.get("network") != network_id:
+            continue
+        member = str(record.get("target") or "")
+        digest = record.get("args_hash", "")
+        wins = int(record.get("wins") or 0)
+        losses = int(record.get("losses") or 0)
+        age = (now - float(record.get("last_seen") or 0)) / 86400.0
+        if member == target:
+            if losses >= wins:
+                own_bad.add(digest)
+            continue
+        if family_of(member) != family:
+            continue
+        item = votes.setdefault(digest, {
+            "family": family, "args": list(record.get("args") or []),
+            "args_hash": digest, "votes": 0, "against": 0,
+            "members": [], "last_seen": 0})
+        if wins > losses and age <= FAMILY_VOTE_DAYS:
+            item["votes"] += 1
+            item["members"].append(member)
+        elif losses >= wins and age <= FAMILY_FAIL_DAYS:
+            item["against"] += 1
+        item["last_seen"] = max(item["last_seen"],
+                                float(record.get("last_seen") or 0))
+        for field in ("strategy_id", "label"):
+            if record.get(field) and not item.get(field):
+                item[field] = record[field]
+    out = [v for k, v in votes.items()
+           if k not in own_bad and v["votes"] > v["against"]]
+    out.sort(key=lambda v: (v["votes"] - v["against"], v["last_seen"]),
+             reverse=True)
+    return out[:FAMILY_MAX]
+
+
 # ──────────────────────────── чтение ────────────────────────────────
 
 def mark_committed(args, targets=None) -> int:
@@ -428,6 +533,13 @@ def lookup(targets=None, limit: int = 20, all_networks: bool = False) -> dict:
     mine.sort(key=_rank, reverse=True)
     others.sort(key=_rank, reverse=True)
     limit = max(1, min(int(limit or 20), 100))
+    # Семейства — только для явно спрошенных целей: «соседи по домену»
+    # без цели не про что.
+    families = {}
+    for name in sorted(wanted):
+        found = family_candidates(name, data["records"], net["id"], now)
+        if found:
+            families[name] = found
     out = {
         "ok": True,
         "network": net,
@@ -437,6 +549,7 @@ def lookup(targets=None, limit: int = 20, all_networks: bool = False) -> dict:
         "known_targets": sorted({r.get("target", "")
                                  for r in data["records"]
                                  if r.get("network") == net["id"]}),
+        "family": families,
     }
     if all_networks:
         out["other_items"] = others[:limit]

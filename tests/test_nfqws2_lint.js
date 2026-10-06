@@ -362,4 +362,16 @@ test('blockcheck2: настоящие ошибки по-прежнему вид�
     assert.ok(warns(r3).some(d => /seqovl/.test(d.message)), 'seqovl=abc — не число');
 });
 
+test('lint: TTL-фейк на QUIC — предупреждение ttl_fake_on_udp', () => {
+    const quic = Lint.analyze('--filter-udp=443 --filter-l7=quic '
+        + '--lua-desync=fake:blob=fake_default_quic:ip_ttl=4:repeats=6');
+    assert.ok(quic.diagnostics.some(d => d.code === 'ttl_fake_on_udp'));
+    const tcp = Lint.analyze('--filter-tcp=443 '
+        + '--lua-desync=fake:blob=fake_default_tls:ip_autottl=-2,3-20');
+    assert.ok(!tcp.diagnostics.some(d => d.code === 'ttl_fake_on_udp'));
+    const noTtl = Lint.analyze('--filter-udp=443 '
+        + '--lua-desync=fake:blob=fake_default_quic:repeats=6');
+    assert.ok(!noTtl.diagnostics.some(d => d.code === 'ttl_fake_on_udp'));
+});
+
 console.log('nfqws2 lint/spec: ' + passed + ' тест(ов) пройдено');

@@ -184,16 +184,20 @@ def probe_many(domains, timeout=None, repeats=1, port=443,
 
 
 def probe_target(domain: str, timeout: int, repeats: int = 1,
-                 port: int = 443, latency: str = MEAN) -> dict:
+                 port: int = 443, latency: str = MEAN,
+                 mark: int = 0) -> dict:
     """Одна цель: ``repeats`` проб, свёрнутых в один вердикт.
 
     ``latency`` — как сворачивать латентность повторов: ``"mean"``
     (по умолчанию, историческое поведение проб) или ``"median"``.
+    ``mark`` — SO_MARK проб (core/probe_mark.py): мимо очереди, то есть
+    замер без обхода при работающем движке.
     """
     attempts = []
     for _ in range(max(1, repeats)):
         try:
-            attempts.append(probe_domain(domain, timeout=timeout, port=port))
+            attempts.append(probe_domain(domain, timeout=timeout, port=port,
+                                         mark=mark))
         except Exception as e:                  # noqa: BLE001 — граница
             # Проба обязана вернуть код, а не исключение: на ней
             # строится вердикт, и «упало» — это тоже ответ.
@@ -292,8 +296,19 @@ def compare(target: str, timeout=None, repeats=1, toggle: bool = True,
     here, there = (WITH, WITHOUT) if running else (WITHOUT, WITH)
     sides = {here: probe_target(domain, timeout, repeats)}
 
+    # Движок работает — сторону «без обхода» меряем помеченной пробой
+    # мимо очереди: обход у остальной сети не пропадает ни на секунду,
+    # и трогать движок (а значит, и разрешение control) не нужно.
+    marked = {"marked": False}
+    if running:
+        from core import probe_mark
+        marked = probe_mark.baseline_mode()
+
     toggled, restore = False, {}
-    if not toggle:
+    if marked.get("marked"):
+        sides[there] = probe_target(domain, timeout, repeats,
+                                    mark=marked["mark"])
+    elif not toggle:
         sides[there] = _unmeasured(
             "переключение движка не запрошено (toggle=false)",
             "вторая сторона измеряется только с разрешением control")
@@ -351,7 +366,13 @@ def compare(target: str, timeout=None, repeats=1, toggle: bool = True,
         "engine_toggled": toggled,
         "repeats": repeats,
         "measured_first": here,
+        # Как мерилась сторона «без обхода»: меткой мимо очереди или
+        # переключением движка (почему не меткой — в without_note).
+        "without_method": "probe_mark" if marked.get("marked")
+                          else ("engine_toggle" if toggled else "none"),
     }
+    if running and not marked.get("marked") and marked.get("reason"):
+        out["without_note"] = marked["reason"]
     if toggled:
         out["restored"] = bool(restore.get("ok"))
         out["restore_error"] = restore.get("error", "")

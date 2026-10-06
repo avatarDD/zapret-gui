@@ -36,7 +36,7 @@ import threading
 import time
 import unittest
 
-from core import nfqws_control, probe_runner, strategy_experiment
+from core import nfqws_control, probe_mark, probe_runner, strategy_experiment
 from core.mcp import registry
 from core.nfqws_session import OWNER_SCANNER, get_nfqws_session
 from core.strategy_experiment import get_experiment_runner
@@ -158,6 +158,11 @@ class ExperimentCase(unittest.TestCase):
                     lambda: (self.nfqws, self.firewall, self.cfg))
         self._patch(probe_runner, "probe_domain", self.fake_probe)
         self.probed = []
+        # Помеченная проба зависит от прав процесса и firewall хоста:
+        # по умолчанию её нет, тест на неё включает её сам.
+        self._patch(probe_mark, "baseline_mode",
+                    lambda firewall=None: {"marked": False, "mark": 0,
+                                           "reason": "тест: метки нет"})
 
         # Синглтон движка общий на процесс: тест обязан отдавать его
         # следующему чистым, иначе «прошлый прогон» протекает в соседний.
@@ -285,6 +290,46 @@ class TestFullCycle(ExperimentCase):
         baseline_probes = [p for p in self.probed if not p[2]]
         self.assertEqual({p[0] for p in baseline_probes},
                          {"a.example", "b.example"})
+
+    def test_marked_baseline_keeps_the_engine_running(self):
+        # Метка проб: baseline меряется мимо очереди, движок для сети не
+        # гасится (приём d2k). Помеченная проба видит «обхода нет».
+        self.nfqws.running = True
+        self.nfqws.args = ["--filter-tcp=443", self.GOOD]
+        self._patch(probe_mark, "baseline_mode",
+                    lambda firewall=None: {"marked": True,
+                                           "mark": 0x10000000,
+                                           "reason": "тест"})
+        marks = []
+
+        def probe(domain, timeout=5, port=443, **kw):
+            marks.append(kw.get("mark", 0))
+            if kw.get("mark"):
+                return ProbeResult(domain=domain, code="tls_rst",
+                                   detail="фейк", resolved_ips=["1.2.3.4"])
+            return self.fake_probe(domain, timeout, port)
+
+        self._patch(probe_runner, "probe_domain", probe)
+        self.start()
+        self.wait_idle()
+        report = get_experiment_runner().get_result()
+        self.assertEqual(report["baseline"]["method"], "probe_mark")
+        self.assertFalse(report["baseline"]["engine_stopped"])
+        self.assertEqual(report["baseline"]["open_without_bypass"], [])
+        # Первые две пробы (baseline) — с меткой, дальше — без.
+        self.assertEqual(marks[:2], [0x10000000, 0x10000000])
+        self.assertTrue(all(m == 0 for m in marks[2:]))
+        # До первого варианта движок не останавливали: первый вызов —
+        # подъём варианта, а не остановка под baseline.
+        self.assertTrue(self.nfqws.calls)
+        self.assertNotEqual(self.nfqws.calls[0][0], "stop")
+
+    def test_unmarked_baseline_stops_the_engine(self):
+        self.start()
+        self.wait_idle()
+        report = get_experiment_runner().get_result()
+        self.assertEqual(report["baseline"]["method"], "engine_stopped")
+        self.assertIn("тест", report["baseline"]["method_note"])
 
     def test_open_target_makes_the_run_untrustworthy(self):
         # Цель, открытая и БЕЗ обхода: сравнивать нечего, и об этом надо

@@ -741,14 +741,29 @@ class ExperimentRunner:
 
         if plan["baseline"]:
             self._set_phase(PHASE_BASELINE)
-            # Мерить «как без обхода» на работающем движке нельзя: это
-            # измерение обхода, а не его отсутствия.
-            stopped = nfqws_control.stop(source=SOURCE)
-            report["baseline"] = self._measure(
-                plan, note=("движок остановлен" if stopped.get("ok")
-                            else "движок не остановился: %s"
-                                 % (stopped.get("error") or "—")))
-            report["baseline"]["engine_stopped"] = bool(stopped.get("ok"))
+            # Мерить «как без обхода» обычной пробой на работающем
+            # движке нельзя: это измерение обхода, а не его отсутствия.
+            # Проба с меткой (core/probe_mark.py) идёт мимо очереди — и
+            # обход у остальной сети не пропадает на время замера. Нет
+            # метки (или правил с её исключением) — гасим движок.
+            from core import probe_mark
+            mode = probe_mark.baseline_mode()
+            if mode["marked"]:
+                report["baseline"] = self._measure(
+                    plan, note="пробы с меткой мимо очереди, движок не "
+                               "останавливался", mark=mode["mark"])
+                report["baseline"]["engine_stopped"] = False
+                report["baseline"]["method"] = "probe_mark"
+            else:
+                stopped = nfqws_control.stop(source=SOURCE)
+                report["baseline"] = self._measure(
+                    plan, note=("движок остановлен" if stopped.get("ok")
+                                else "движок не остановился: %s"
+                                     % (stopped.get("error") or "—")))
+                report["baseline"]["engine_stopped"] = bool(
+                    stopped.get("ok"))
+                report["baseline"]["method"] = "engine_stopped"
+            report["baseline"]["method_note"] = mode["reason"]
         else:
             report["baseline"] = {"measured": False,
                                   "reason": "baseline не запрашивался"}
@@ -878,7 +893,7 @@ class ExperimentRunner:
         nfqws_control.stop(source=SOURCE)
         return out
 
-    def _measure(self, plan: dict, note: str = "") -> dict:
+    def _measure(self, plan: dict, note: str = "", mark: int = 0) -> dict:
         """Пробы по всем целям одним проходом, медиана по повторам.
 
         Снифер (S18) включается ровно на это окно: он должен видеть
@@ -898,7 +913,7 @@ class ExperimentRunner:
                     break
                 row = probe_runner.probe_target(
                     target, timeout=timeout, repeats=plan["repeats"],
-                    latency=probe_runner.MEDIAN)
+                    latency=probe_runner.MEDIAN, mark=mark)
                 row["kbps"] = _kbps(row)
                 rows.append(_compact_probe(row))
                 if row.get("ok"):

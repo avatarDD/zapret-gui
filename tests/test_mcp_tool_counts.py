@@ -117,6 +117,9 @@ from core.mcp import registry
 # журналом вызовов, а наружу уходит только руками человека. Держать его
 # за разрешением значило бы, что модель, нашедшая ошибку при чтении,
 # промолчит о ней.
+# Приёмы d2k: + 1 под `probes` (dpi_classify — дифференциальные вопросы
+# к DPI: целиком → разрез на первом байте → чужое имя на тот же адрес).
+# Состояния не меняет, но выпускает трафик — поэтому `probes`.
 # Разрешение `secrets` своих инструментов не добавляет — как и
 # `self_edit_core`: оно снимает маскировку в ответе (по явному
 # `raw: true`) и запрет на запись секретных полей настроек. Ноль
@@ -126,7 +129,7 @@ BY_SCOPE = {
     "control": 8,
     "strategies_write": 12,
     "config_write": 1,
-    "probes": 12,
+    "probes": 13,
     "experiments": 7,
     "tunnels_write": 10,
     "dangerous": 2,
@@ -292,7 +295,8 @@ class TestToolCounts(unittest.TestCase):
     # S8 — всё, что выпускает трафик с роутера.
     PROBES_TOOLS = [
         "blockcheck2_start", "blockcheck2_stop", "blockcheck_start",
-        "healthcheck_run", "probe_compare", "probe_targets",
+        "dpi_classify", "healthcheck_run", "probe_compare",
+        "probe_targets",
         "scan_start", "scan_stop",
         # S17 — снифер. Сам он пакетов не выпускает, но показывает
         # чужой трафик и ходит с пробами парой («пусти пробу и посмотри,

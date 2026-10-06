@@ -311,6 +311,25 @@ const Nfqws2Lint = (() => {
                     + 'трафику на портах фильтра (исключения netrogat учитываются отдельно). '
                     + 'Чтобы сузить — добавьте --hostlist=… или --hostlist-domains=…' });
         }
+        // TTL-фейк на UDP/QUIC: ICMP time-exceeded от узла, где фейк умер,
+        // NAT роутера доставит клиенту по его же потоку — Safari и
+        // Network.framework (iOS/macOS) рвут QUIC. Тот же код, что у
+        // серверного линтера (core/strategy_lint.py, ttl_fake_on_udp).
+        const isUdp = tokens.some(ct => ct.kind === 'flag' && ct.hasEq
+            && (ct.flag === '--filter-udp'
+                || ((ct.flag === '--filter-l7' || ct.flag === '--payload')
+                    && /\bquic/.test(ct.value || ''))));
+        const ttlFake = tokens.find(ct => ct.kind === 'flag'
+            && ct.flag === '--lua-desync' && ct.hasEq
+            && /(?:^|:)ip6?_(?:auto)?ttl=/.test(ct.value || ''));
+        if (isUdp && ttlFake) {
+            diagnostics.push({ start: ttlFake.tok.start, end: ttlFake.tok.end,
+                severity: SEV.WARN, code: 'ttl_fake_on_udp',
+                message: 'UDP-фейк с пониженным TTL: ICMP «время жизни истекло» '
+                    + 'NAT роутера доставит клиенту, и Safari/iOS/macOS рвут QUIC '
+                    + '(Chrome — нет). Мусорный QUIC Initial сервер отбросит и без TTL.' });
+            if (!ttlFake.diag) ttlFake.diag = SEV.WARN;
+        }
         // порядок: desync должен идти после filter (мягко).
         const di = order.indexOf('desync');
         const fi = order.indexOf('filter');
