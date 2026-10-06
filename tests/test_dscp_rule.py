@@ -54,7 +54,8 @@ class TestDscpBuilder(unittest.TestCase):
         argv = rules[0]
         joined = " ".join(argv)
         self.assertIn("-m dscp --dscp 46", joined)
-        self.assertIn("-j MARK --set-mark 123", joined)
+        # Только своё поле бит метки (core/routing/marks), чужие биты целы.
+        self.assertIn("-j MARK --set-xmark 0x7b/0xfff0000", joined)
         self.assertIn("DSCP_ROUTING_PRE", joined)
         self.assertEqual(argv[0], "iptables")
         # позиция операции -A — индекс 3 (используется для -D в remove)
@@ -68,12 +69,17 @@ if __name__ == "__main__":
 class TestNftDscpFragment(unittest.TestCase):
 
     def test_fragment(self):
-        frag = dscp_rule.build_nft_dscp_fragment(46, 123)
-        self.assertEqual(frag, "ip dscp 0x2e meta mark set 123")
+        frag = dscp_rule.build_nft_dscp_fragment(46, 0x10000)
+        self.assertEqual(frag, "ip dscp 0x2e meta mark set meta mark and "
+                               "0xf000ffff or 0x00010000")
 
     def test_fragment_zero(self):
-        self.assertEqual(dscp_rule.build_nft_dscp_fragment(0, 5),
-                         "ip dscp 0x00 meta mark set 5")
+        self.assertTrue(dscp_rule.build_nft_dscp_fragment(0, 0x20000)
+                        .startswith("ip dscp 0x00 meta mark set "))
+
+    def test_legacy_form_only_for_removal(self):
+        argv = dscp_rule.build_mark_rules("C", 46, 123, legacy=True)[0]
+        self.assertIn("--set-mark", argv)
 
 
 class TestNftDscpMatch(unittest.TestCase):

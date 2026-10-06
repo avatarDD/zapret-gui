@@ -157,7 +157,7 @@ class TestPrepopulateDomains(unittest.TestCase):
         from core.routing import domain_rule
         calls = []
 
-        def fake_prepop(set_name, domain, family, backend):
+        def fake_prepop(set_name, domain, family, backend, ttl=False):
             calls.append((set_name, domain, family))
             return {"ok": True, "added": 1, "domain": domain}
 

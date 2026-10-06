@@ -16,6 +16,7 @@
 """
 
 import subprocess
+import threading
 
 from core.log_buffer import log
 
@@ -90,25 +91,39 @@ def flush_set(name: str) -> dict:
     return {"ok": rc == 0, "error": err.strip() if rc else "", "name": name}
 
 
+def add_entry_argv(name: str, ip: str, timeout: int = 0) -> list:
+    """argv добавления IP. timeout>0 — запись истечёт сама (TTL из DNS +
+    запас); `-exist` обновляет срок уже лежащей записи. 0 — навсегда."""
+    argv = ["ipset", "add", name, ip]
+    if timeout and timeout > 0:
+        argv += ["timeout", str(int(timeout))]
+    return argv + ["-exist"]
+
+
+def add_entry(name: str, ip: str, timeout: int = 0) -> bool:
+    rc, _o, _e = _run(add_entry_argv(name, ip, timeout), timeout=5)
+    return rc == 0
+
+
 # ─────────────────────── iptables wiring ────────────────────────────
 
-def _ensure_chain(table: str, chain: str):
-    """Создать цепочку, если её нет, и вызвать её из table-PREROUTING/OUTPUT."""
-    # iptables -t mangle -N AWG_ROUTING_PRE
-    rc, _o, err = _run(["iptables", "-t", table, "-N", chain])
+def _ensure_chain(table: str, chain: str, cmd: str = "iptables"):
+    """Создать цепочку, если её нет."""
+    rc, _o, err = _run([cmd, "-t", table, "-N", chain])
     chain_existed = (rc != 0 and "already exists" in (err or "").lower())
 
     return chain_existed or rc == 0
 
 
-def _ensure_jump(table: str, parent: str, chain: str):
+def _ensure_jump(table: str, parent: str, chain: str,
+                 cmd: str = "iptables"):
     """В parent-цепочке добавляем -j chain один раз."""
-    rc, out, _e = _run(["iptables", "-t", table, "-S", parent])
+    rc, out, _e = _run([cmd, "-t", table, "-S", parent])
     if rc == 0:
         for line in out.splitlines():
             if line.strip() == "-A %s -j %s" % (parent, chain):
                 return True
-    rc, _o, err = _run(["iptables", "-t", table, "-A", parent, "-j", chain])
+    rc, _o, err = _run([cmd, "-t", table, "-A", parent, "-j", chain])
     if rc != 0:
         log.warning("iptables jump %s→%s: %s" % (parent, chain, err.strip()),
                     source="routing")
@@ -116,52 +131,175 @@ def _ensure_jump(table: str, parent: str, chain: str):
     return True
 
 
+# ─────────── mark-правила: цепочка целиком, одним iptables-restore ───────────
+#
+# Содержимое AWG_ROUTING_PRE/OUT — функция списка «набор → метка». Раньше
+# правила добавлялись и снимались по одной команде: между ними цепочка
+# бывала в промежуточном состоянии, а повторы копили дубли. Теперь
+# список читается из самой цепочки, правится и записывается обратно ЦЕЛИКОМ
+# одним `iptables-restore --noflush` (объявление `:ЦЕПОЧКА` в таком режиме
+# очищает её, и всё содержимое встаёт атомарно) — приём MagiTrickle.
+#
+# На каждую запись три правила (метка — своё поле бит, см. core/routing/marks):
+#   1. connmark → mark: соединение, уже уведённое в туннель, остаётся
+#      в нём, даже когда IP выпал из набора по таймауту (TTL записей);
+#   2. dst в наборе → mark (только своё поле, чужие биты целы);
+#   3. dst в наборе → connmark (для п.1 и для Keenetic, где без
+#      сохранения метки в conntrack маршрутизация не работала —
+#      MagiTrickle: «DO NOT REMOVE»).
+# Первым — `--ctdir REPLY -j RETURN`: ответный трафик не метим.
+
+_HEADER = ["-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN"]
+
+
+def entry_rules(set_name: str, mark: int, mask: int) -> list:
+    """argv-хвосты правил одной записи (без `-A ЦЕПОЧКА`). Чистая."""
+    from core.routing import marks as _marks
+    xmark = "0x%x/0x%x" % (mark, mask)
+    if mask != _marks.MASK:
+        # Запись старого формата (метка целиком): переносим как есть,
+        # пока правило не переприменят.
+        return [["-m", "set", "--match-set", set_name, "dst",
+                 "-j", "MARK", "--set-xmark", xmark]]
+    return [
+        ["-m", "connmark", "--mark", xmark,
+         "-j", "MARK", "--set-xmark", xmark],
+        ["-m", "set", "--match-set", set_name, "dst",
+         "-j", "MARK", "--set-xmark", xmark],
+        ["-m", "set", "--match-set", set_name, "dst",
+         "-j", "CONNMARK", "--set-xmark", xmark],
+    ]
+
+
+def parse_chain_entries(dump: str) -> list:
+    """`iptables -S <цепочка>` → [(set, mark, mask)] в порядке цепочки.
+
+    Записью считается правило `--match-set S dst -j MARK --set-xmark`.
+    `--set-mark N` (старые iptables так и печатают) — это `N/0xffffffff`.
+    """
+    out, seen = [], set()
+    for line in (dump or "").splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[0] != "-A" or "--match-set" not in parts:
+            continue
+        if "MARK" not in parts or "CONNMARK" in parts:
+            continue
+        try:
+            set_name = parts[parts.index("--match-set") + 1]
+            if "--set-xmark" in parts:
+                token = parts[parts.index("--set-xmark") + 1]
+            else:
+                token = parts[parts.index("--set-mark") + 1]
+        except (ValueError, IndexError):
+            continue
+        value, _, mask = token.partition("/")
+        try:
+            mark = int(value, 0)
+            mask = int(mask, 0) if mask else 0xFFFFFFFF
+        except ValueError:
+            continue
+        if set_name in seen:
+            continue
+        seen.add(set_name)
+        out.append((set_name, mark, mask))
+    return out
+
+
+def render_restore(entries: list, chains=None) -> str:
+    """Текст для `iptables-restore --noflush`: наши цепочки целиком."""
+    chains = chains or (PREROUTING_CHAIN, OUTPUT_CHAIN)
+    lines = ["*mangle"]
+    lines += [":%s - [0:0]" % ch for ch in chains]
+    for ch in chains:
+        if entries:
+            lines.append(" ".join(["-A", ch] + _HEADER))
+        for set_name, mark, mask in entries:
+            for tail in entry_rules(set_name, mark, mask):
+                lines.append(" ".join(["-A", ch] + tail))
+    lines.append("COMMIT")
+    return "\n".join(lines) + "\n"
+
+
+def _current_entries(cmd: str) -> list:
+    rc, out, _e = _run([cmd, "-t", "mangle", "-S", PREROUTING_CHAIN])
+    return parse_chain_entries(out) if rc == 0 else []
+
+
+def _restore(cmd: str, text: str) -> tuple:
+    """Записать цепочки; без *-restore — по одной команде (не атомарно)."""
+    try:
+        r = subprocess.run([cmd + "-restore", "--noflush"], input=text,
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode == 0:
+            return True, ""
+        err = (r.stderr or "").strip()
+        if r.returncode != 127:
+            return False, err
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as e:
+        err = str(e)
+    # Фолбэк: та же последовательность обычными командами.
+    errors = []
+    for line in text.splitlines():
+        if line.startswith(":"):
+            ch = line[1:].split()[0]
+            _run([cmd, "-t", "mangle", "-N", ch])
+            _run([cmd, "-t", "mangle", "-F", ch])
+        elif line.startswith("-A "):
+            rc, _o, e = _run([cmd, "-t", "mangle"] + line.split())
+            if rc != 0:
+                errors.append(e.strip())
+    return not errors, "; ".join(errors[:3])
+
+
+_chain_lock = threading.Lock()
+
+
+def _sync_locked(entries: list, family: str) -> dict:
+    cmd = "iptables" if family == "v4" else "ip6tables"
+    _ensure_chain("mangle", PREROUTING_CHAIN, cmd)
+    _ensure_chain("mangle", OUTPUT_CHAIN, cmd)
+    _ensure_jump("mangle", "PREROUTING", PREROUTING_CHAIN, cmd)
+    _ensure_jump("mangle", "OUTPUT", OUTPUT_CHAIN, cmd)
+    ok, err = _restore(cmd, render_restore(entries))
+    return {"ok": ok, "errors": [err] if err else []}
+
+
+def sync_mark_entries(entries: list, family: str = "v4") -> dict:
+    """Переписать наши mangle-цепочки семейства под список записей."""
+    with _chain_lock:
+        return _sync_locked(entries, family)
+
+
 def setup_mark_rule(set_name: str, mark: int, family: str = "v4") -> dict:
     """
-    Добавить (идемпотентно) iptables-правила, маркирующие пакеты,
-    чьи dst-адреса входят в set_name.
+    Добавить (идемпотентно) маркировку пакетов, чьи dst входят в set_name.
 
+    Цепочки переписываются целиком: прочие записи сохраняются, запись
+    этого набора (в том числе старого формата) заменяется новой. Чтение
+    и запись — под одним замком: иначе параллельная правка (сторож
+    после перезаписи netfilter, соседнее правило) потеряла бы запись.
     Возвращает {ok, errors, mark}.
     """
+    from core.routing import marks as _marks
     cmd = "iptables" if family == "v4" else "ip6tables"
-
-    # Цепочки и jump'ы создаём один раз — повторные вызовы тихо ок.
-    _ensure_chain("mangle", PREROUTING_CHAIN)
-    _ensure_chain("mangle", OUTPUT_CHAIN)
-    _ensure_jump("mangle", "PREROUTING", PREROUTING_CHAIN)
-    _ensure_jump("mangle", "OUTPUT",     OUTPUT_CHAIN)
-
-    errors = []
-    rules = [
-        ("mangle", PREROUTING_CHAIN),
-        ("mangle", OUTPUT_CHAIN),
-    ]
-
-    for table, chain in rules:
-        match = ["-m", "set", "--match-set", set_name, "dst",
-                 "-j", "MARK", "--set-mark", str(mark)]
-
-        # Сначала чистим возможный дубликат
-        _run([cmd, "-t", table, "-D", chain] + match)
-
-        rc, _o, err = _run([cmd, "-t", table, "-A", chain] + match)
-        if rc != 0:
-            errors.append("%s -t %s -A %s: %s" % (cmd, table, chain, err.strip()))
-
-    return {"ok": not errors, "mark": mark, "errors": errors}
+    with _chain_lock:
+        entries = [e for e in _current_entries(cmd) if e[0] != set_name]
+        entries.append((set_name, mark, _marks.MASK))
+        res = _sync_locked(entries, family)
+    return {"ok": res["ok"], "mark": mark, "errors": res["errors"]}
 
 
-def teardown_mark_rule(set_name: str, mark: int, family: str = "v4") -> dict:
+def teardown_mark_rule(set_name: str, mark: int = 0,
+                       family: str = "v4") -> dict:
+    """Убрать запись набора из наших цепочек (метка не важна)."""
     cmd = "iptables" if family == "v4" else "ip6tables"
-    rules = [
-        ("mangle", PREROUTING_CHAIN),
-        ("mangle", OUTPUT_CHAIN),
-    ]
-    for table, chain in rules:
-        match = ["-m", "set", "--match-set", set_name, "dst",
-                 "-j", "MARK", "--set-mark", str(mark)]
-        _run([cmd, "-t", table, "-D", chain] + match)
-    return {"ok": True}
+    with _chain_lock:
+        current = _current_entries(cmd)
+        entries = [e for e in current if e[0] != set_name]
+        if len(entries) == len(current):
+            return {"ok": True}
+        res = _sync_locked(entries, family)
+    return {"ok": res["ok"], "errors": res["errors"]}
 
 
 # ─────────────────────── masquerade (nat) ──────────────────────────
@@ -265,18 +403,11 @@ def remove_iface_forward(ifname: str, family: str = "v4") -> dict:
 
 def add_ip_rule_fwmark(mark: int, table: int, family: str = "v4",
                        priority: int = 10100) -> dict:
-    """ip rule add fwmark <mark> lookup <table>."""
-    fam = "-6" if family == "v6" else "-4"
-    # Сначала удаляем дубликат — идемпотентно
-    _run(["ip", fam, "rule", "del", "fwmark", str(mark),
-          "lookup", str(table)])
-    rc, _o, err = _run(["ip", fam, "rule", "add", "fwmark", str(mark),
-                        "lookup", str(table), "priority", str(priority)])
-    return {"ok": rc == 0, "error": err.strip()}
+    """ip rule add fwmark <mark>/<поле меток> lookup <table>."""
+    from core.routing import marks as _marks
+    return _marks.ip_rule_add(mark, table, family=family, priority=priority)
 
 
 def del_ip_rule_fwmark(mark: int, table: int, family: str = "v4") -> dict:
-    fam = "-6" if family == "v6" else "-4"
-    _run(["ip", fam, "rule", "del", "fwmark", str(mark),
-          "lookup", str(table)])
-    return {"ok": True}
+    from core.routing import marks as _marks
+    return _marks.ip_rule_del(mark, table, family=family)

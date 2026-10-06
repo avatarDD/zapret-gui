@@ -41,12 +41,17 @@ const RoutingUnifiedPage = (() => {
     let editing = null;
     let pollTimer = null;
     let _eventsBound = false;
+    let _keyBound = false;
 
     // Фильтр «Через»: '' | 'direct' | 'nfqws2' | kind ('awg'|'singbox'|
     // 'mihomo') | точный метод ('awg:awg0'). Задаётся фильтр-баром,
     // пресетом render(opts.via) или hash-query (#routing?via=awg).
     let viaFilter = '';
     let searchQuery = '';
+    let selected = new Set();   // id выбранных маршрутов (массовые действия)
+    let overlaps = [];          // /api/unified/overlaps
+    let editorDirty = false;    // в форме есть несохранённые правки
+    let importData = null;      // разобранный файл импорта
     // Режим-алиас «AWG-правила»: фиксированный заголовок + подсказка.
     let aliasMode = '';
 
@@ -90,10 +95,18 @@ const RoutingUnifiedPage = (() => {
                                    осталась в старом состоянии.">
                         Переприменить и сбросить лишнее
                     </button>
+                    <button class="btn btn-ghost btn-sm" data-action="exportRoutes"
+                            title="Скачать маршруты файлом (выбранные или все)">Экспорт</button>
+                    <button class="btn btn-ghost btn-sm" data-action="importRoutes"
+                            title="Загрузить маршруты из файла экспорта">Импорт</button>
+                    <input type="file" id="ru-import-file" accept=".json,application/json"
+                           style="display:none;" data-action="importFileChosen">
                     <button class="btn btn-primary btn-sm" data-action="newRoute">+ Маршрут</button>
                 </div>
             </div>
             <div id="ru-banners"></div>
+            <div id="ru-import"></div>
+            <div id="ru-overlaps"></div>
             <div id="ru-editor"></div>
             <div class="card" style="margin-bottom:12px; padding:10px 14px;">
                 <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap;">
@@ -112,6 +125,7 @@ const RoutingUnifiedPage = (() => {
                     </div>
                     <span class="text-muted" style="font-size:12px;" id="ru-count"></span>
                 </div>
+                <div id="ru-bulk" style="display:none; margin-top:8px; gap:8px; align-items:center; flex-wrap:wrap;"></div>
             </div>
             <div id="ru-body">
                 <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
@@ -140,6 +154,8 @@ const RoutingUnifiedPage = (() => {
         if (pollTimer) clearInterval(pollTimer);
         pollTimer = null;
         stopDevicesAuto();
+        editing = null;
+        editorDirty = false;
         // Роутер заменяет #page-container свежим узлом при следующем
         // переходе, поэтому делегированный слушатель теряется — сбрасываем
         // guard, чтобы render() привязал его заново к новому контейнеру.
@@ -216,7 +232,14 @@ const RoutingUnifiedPage = (() => {
             const leg = await API.get('/api/unified/legacy');
             legacyRules = (leg && leg.rules) || [];
         } catch (_) {}
+        try {
+            const ov = await API.get('/api/unified/overlaps');
+            overlaps = (ov && ov.overlaps) || [];
+        } catch (_) { overlaps = []; }
+        const known = new Set(routes.map(r => r.id));
+        selected = new Set([...selected].filter(id => known.has(id)));
         await refreshStatus();
+        renderOverlaps();
         renderBanners();
         renderViaOptions();
         renderEditor();
@@ -425,8 +448,15 @@ const RoutingUnifiedPage = (() => {
         const on = !!st.running;
         const stats = st.stats || {};
         const statsTxt = on
-            ? ` · запросов: ${stats.queries || 0}, совпало: ${stats.matched || 0}, IP добавлено: ${stats.ips_added || 0}`
+            ? ` · запросов: ${stats.queries || 0} (TCP: ${stats.tcp || 0}), совпало: ${stats.matched || 0}, IP добавлено: ${stats.ips_added || 0}, AAAA вырезано: ${stats.aaaa_dropped || 0}`
             : '';
+        const aaaa = st.drop_aaaa || 'routed';
+        const aaaaSel = `<select class="form-control" style="max-width:260px; display:inline-block;"
+                    data-action="setDropAaaa"
+                    title="Туннели WARP/AWG часто без IPv6: получив IPv6-адрес домена из маршрута, клиент пойдёт по IPv6 мимо туннеля. Вырезание AAAA оставляет ему только IPv4 — и трафик идёт в туннель.">
+                <option value="routed" ${aaaa === 'routed' ? 'selected' : ''}>IPv6 доменов маршрутов: вырезать</option>
+                <option value="off" ${aaaa === 'off' ? 'selected' : ''}>IPv6 доменов маршрутов: отдавать</option>
+            </select>`;
         // Каким бэкендом поставлено правило REDIRECT: на fw4-роутерах
         // iptables нет вовсе, и раньше перехват там просто не включался.
         const backendTxt = on && st.backend ? ` · ${esc(st.backend)}` : '';
@@ -437,7 +467,18 @@ const RoutingUnifiedPage = (() => {
                     onclick="RoutingUnifiedPage.toggleDnsIntercept(${on ? 'false' : 'true'})"
                     title="Перехватывать DNS-запросы LAN-клиентов (udp:53 → встроенный прокси поверх штатного резолвера). IP доменов из маршрутов попадают в маршрутизацию в момент запроса клиента — включая CDN-поддомены, как с dnsmasq. Клиенты с включённым DoH перехвату не видны.">
                 ${on ? 'Выключить DNS-перехват' : 'Включить DNS-перехват'}
-            </button>`;
+            </button>
+            ${aaaaSel}`;
+    }
+
+    async function setDropAaaa(mode) {
+        try {
+            const r = await API.post('/api/routing/dns-intercept', { drop_aaaa: mode });
+            dnsIntInfo = { ok: true, status: r.status };
+            Toast.success(mode === 'off' ? 'IPv6-адреса доменов маршрутов отдаются'
+                                         : 'IPv6-адреса доменов маршрутов вырезаются');
+        } catch (e) { Toast.error(e.message); }
+        renderBanners();
     }
 
     /**
@@ -641,13 +682,176 @@ const RoutingUnifiedPage = (() => {
             </div></div>`;
             return;
         }
+        const allSel = visible.every(r => selected.has(r.id));
         box.innerHTML = `<div class="card"><table class="table">
             <thead><tr>
+                <th style="width:24px;"><input type="checkbox" data-action="selectAll"
+                    title="Выбрать все видимые" ${allSel ? 'checked' : ''}></th>
                 <th>Маршрут</th><th>Что</th><th>Через</th>
                 <th>Проверка</th><th></th>
             </tr></thead>
             <tbody>${visible.map(rowHtml).join('')}</tbody>
         </table></div>`;
+        renderBulkBar();
+    }
+
+    // ─────── массовые действия ───────
+
+    function renderBulkBar() {
+        const bar = document.getElementById('ru-bulk');
+        if (!bar) return;
+        if (!selected.size) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+        bar.style.display = 'flex';
+        bar.innerHTML = `
+            <span style="font-size:12px;"><b>Выбрано: ${selected.size}</b></span>
+            <button class="btn btn-ghost btn-sm" data-action="bulk" data-op="enable">Включить</button>
+            <button class="btn btn-ghost btn-sm" data-action="bulk" data-op="disable">Выключить</button>
+            <select id="ru-bulk-method" class="form-control" style="max-width:220px;">
+                ${methodOptions('')}</select>
+            <button class="btn btn-ghost btn-sm" data-action="bulk" data-op="set_method">Сменить метод</button>
+            <button class="btn btn-ghost btn-sm" data-action="exportRoutes">Экспорт выбранных</button>
+            <button class="btn btn-ghost btn-sm" data-action="bulk" data-op="delete"
+                    style="color:var(--error, #e55);">Удалить</button>
+            <button class="btn btn-ghost btn-sm" data-action="clearSelection">Снять выбор</button>`;
+    }
+
+    function toggleSelect(id, on) {
+        if (on) selected.add(id); else selected.delete(id);
+        renderBulkBar();
+    }
+
+    function selectAll(on) {
+        routes.filter(r => matchesVia(r) && matchesSearch(r))
+              .forEach(r => on ? selected.add(r.id) : selected.delete(r.id));
+        renderBody();
+    }
+
+    async function bulk(op) {
+        const ids = [...selected];
+        if (!ids.length) return;
+        const body = { ids, action: op };
+        if (op === 'set_method') {
+            body.method = document.getElementById('ru-bulk-method')?.value || '';
+            if (!body.method) { Toast.warning('Выберите метод'); return; }
+        }
+        if (op === 'delete' && !confirm('Удалить выбранные маршруты (' + ids.length + ')?')) return;
+        try {
+            const r = await API.post('/api/unified/bulk', body);
+            const errs = (r && r.errors) || [];
+            if (errs.length) {
+                Toast.warning('Готово: ' + ((r.done || []).length) + ', ошибки: '
+                    + errs.map(e => e.id + ' — ' + e.error).slice(0, 3).join('; '));
+            } else Toast.success('Готово: ' + ((r.done || []).length));
+            if (op === 'delete') selected.clear();
+        } catch (e) { Toast.error(e.message); }
+        await refresh();
+    }
+
+    // ─────── пересечения ───────
+
+    function overlapsFor(id) {
+        return overlaps.filter(o => o.routes.includes(id));
+    }
+
+    function overlapText(o) {
+        const names = o.routes.map(id => (routes.find(r => r.id === id) || {}).name || id);
+        const what = {
+            domain: `домен ${o.value}`,
+            subdomain: `${o.value} — поддомен ${o.other}`,
+            cidr: o.other ? `сеть ${o.value} внутри ${o.other}` : `сеть ${o.value}`,
+            list: `список ${listLabel(o.value)}`,
+        }[o.kind] || o.value;
+        return what + ': ' + names.join(' ↔ ');
+    }
+
+    function renderOverlaps() {
+        const box = document.getElementById('ru-overlaps');
+        if (!box) return;
+        if (!overlaps.length) { box.innerHTML = ''; return; }
+        const items = overlaps.slice(0, 20).map(o => `<li>${esc(overlapText(o))}</li>`).join('');
+        box.innerHTML = `<details class="card" style="margin-bottom:12px; padding:10px 14px; font-size:12px;">
+            <summary>⚠ Пересечения маршрутов: ${overlaps.length} — один и тот же
+                трафик попадает в несколько маршрутов, и какой победит, решает
+                порядок правил в ядре, а не вы.</summary>
+            <ul style="margin:8px 0 0 18px;">${items}</ul>
+            ${overlaps.length > 20 ? `<div class="text-muted">…и ещё ${overlaps.length - 20}</div>` : ''}
+        </details>`;
+    }
+
+    // ─────── экспорт / импорт ───────
+
+    function exportRoutes() {
+        const ids = [...selected];
+        const url = '/api/unified/export' + (ids.length ? '?ids=' + encodeURIComponent(ids.join(',')) : '');
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'zapret-gui-routes.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }
+
+    function importRoutes() {
+        const inp = document.getElementById('ru-import-file');
+        if (inp) { inp.value = ''; inp.click(); }
+    }
+
+    function importFileChosen(input) {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const data = JSON.parse(String(reader.result || ''));
+                const list = Array.isArray(data) ? data : (data && data.routes);
+                if (!Array.isArray(list) || !list.length) throw new Error('в файле нет маршрутов');
+                importData = data;
+                renderImport(list);
+            } catch (e) { Toast.error('Файл не прочитан: ' + e.message); }
+        };
+        reader.readAsText(file);
+    }
+
+    function renderImport(list) {
+        const box = document.getElementById('ru-import');
+        if (!box) return;
+        if (!list) { box.innerHTML = ''; importData = null; return; }
+        const known = new Set(routes.map(r => r.id));
+        const rows = list.map(r => `
+            <label style="display:flex; gap:6px; align-items:center; font-size:12px;">
+                <input type="checkbox" class="ru-impchk" value="${escAttr(r.id || '')}" checked>
+                <b>${esc(r.name || r.id || '?')}</b>
+                <span class="text-muted">→ ${esc(methodLabel(r.method || 'direct'))}
+                    ${known.has(r.id) ? ' · уже есть' : ''}</span>
+            </label>`).join('');
+        box.innerHTML = `<div class="card" style="margin-bottom:12px;">
+            <div class="card-title">Импорт маршрутов: ${list.length}</div>
+            <div style="display:flex; flex-direction:column; gap:4px; margin:8px 0;">${rows}</div>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <label class="text-muted" style="font-size:12px;">Совпадающие id:
+                    <select id="ru-import-mode" class="form-control" style="max-width:260px; display:inline-block;">
+                        <option value="add">добавить копией</option>
+                        <option value="replace">заменить существующие</option>
+                    </select></label>
+                <button class="btn btn-primary btn-sm" data-action="importConfirm">Импортировать</button>
+                <button class="btn btn-ghost btn-sm" data-action="importCancel">Отмена</button>
+            </div></div>`;
+    }
+
+    async function importConfirm() {
+        if (!importData) return;
+        const ids = Array.from(document.querySelectorAll('.ru-impchk'))
+            .filter(c => c.checked).map(c => c.value).filter(Boolean);
+        const mode = document.getElementById('ru-import-mode')?.value || 'add';
+        try {
+            const r = await API.post('/api/unified/import', { data: importData, mode, ids });
+            const errs = (r && r.errors) || [];
+            if (errs.length) Toast.warning('Импортировано: ' + ((r.imported || []).length)
+                + ', ошибки: ' + errs.map(e => (e.name || e.id) + ' — ' + e.error).slice(0, 3).join('; '));
+            else Toast.success('Импортировано: ' + ((r.imported || []).length));
+            renderImport(null);
+        } catch (e) { Toast.error(e.message); }
+        await refresh();
     }
 
     function _setCount(visible, total) {
@@ -754,8 +958,14 @@ const RoutingUnifiedPage = (() => {
             ? `<button class="btn btn-ghost btn-sm" title="${escAttr(st.suggest_reason||'')}"
                        data-action="scan" data-id="${esc(r.id)}">Подобрать</button>`
             : '';
+        const ov = overlapsFor(r.id);
+        const ovBadge = ov.length
+            ? `<span class="badge badge-warning ru-badge" title="${escAttr(ov.map(overlapText).join('\n'))}">пересекается (${ov.length})</span>`
+            : '';
         return `<tr>
-            <td>${enabledDot} <strong>${esc(r.name)}</strong>
+            <td><input type="checkbox" data-action="selectRow" data-id="${esc(r.id)}"
+                       ${selected.has(r.id) ? 'checked' : ''}></td>
+            <td>${enabledDot} <strong>${esc(r.name)}</strong> ${ovBadge}
                 ${r.failover_enabled ? '<span class="badge badge-info ru-badge" title="При сбое переключится на резервный метод">авто-переключение</span>' : ''}</td>
             <td style="font-size:12px;">${esc(trafficSummary(r))}
                 ${ignoredSelectorsNote(r)}</td>
@@ -841,16 +1051,34 @@ const RoutingUnifiedPage = (() => {
         box.innerHTML = `
             <div class="card" style="margin-bottom:16px;">
                 <div style="display:flex; justify-content:space-between;">
-                    <div class="card-title">${e.id ? 'Редактирование маршрута' : 'Новый маршрут'}</div>
+                    <div class="card-title">${e.id ? 'Редактирование маршрута' : 'Новый маршрут'}
+                        <span id="ru-dirty" class="text-muted" style="font-size:12px; ${editorDirty ? '' : 'display:none;'}"
+                              title="Ctrl+S — сохранить">● не сохранено</span></div>
                     <button class="btn btn-ghost btn-sm" data-action="closeEditor">Закрыть</button>
                 </div>
                 <div style="display:grid; grid-template-columns:150px 1fr; gap:8px 12px; margin-top:8px; align-items:start;">
                     <label class="text-muted" style="padding-top:6px;">Имя</label>
                     <input id="ru-name" class="form-control" style="max-width:320px;" value="${escAttr(e.name)}">
 
+                    <label class="text-muted" style="padding-top:6px;">Вставить список</label>
+                    <div>
+                        <div style="display:flex; gap:8px; align-items:flex-start;">
+                            <textarea id="ru-paste" rows="2" style="width:100%; font-family:monospace; font-size:12px;"
+                                placeholder="Что угодно вперемешку: домены, IP и подсети, geosite:youtube, geoip:ru — по одному на строку"></textarea>
+                            <button class="btn btn-ghost btn-sm" data-action="distributePaste"
+                                    title="Разложить по полям ниже по типу записи">Разложить</button>
+                        </div>
+                    </div>
+
                     <label class="text-muted" style="padding-top:6px;">Домены</label>
-                    <textarea id="ru-domains" rows="3" style="width:100%; font-family:monospace; font-size:12px;"
-                        placeholder="youtube.com, googlevideo.com">${esc((d.domains||[]).join('\n'))}</textarea>
+                    <div>
+                        <textarea id="ru-domains" rows="3" style="width:100%; font-family:monospace; font-size:12px;"
+                            placeholder="youtube.com, googlevideo.com">${esc((d.domains||[]).join('\n'))}</textarea>
+                        <div class="text-muted" style="font-size:11px;">
+                            Домен — вместе с поддоменами. Шаблоны: <code>cdn*.example.com</code>
+                            (wildcard) и <code>regexp:^r[0-9]+\\.example\\.com$</code> — работают только
+                            при включённом перехвате DNS.</div>
+                    </div>
 
                     <label class="text-muted" style="padding-top:6px;">CIDR</label>
                     <textarea id="ru-cidrs" rows="2" style="width:100%; font-family:monospace; font-size:12px;"
@@ -958,18 +1186,31 @@ const RoutingUnifiedPage = (() => {
             : '';
     }
 
-    function newRoute() { editing = blankRoute(); renderEditor(); }
+    function newRoute() {
+        if (!confirmDiscard()) return;
+        editing = blankRoute(); editorDirty = false; renderEditor();
+    }
+
+    function confirmDiscard() {
+        return !editing || !editorDirty
+            || confirm('В форме маршрута есть несохранённые изменения. Отбросить их?');
+    }
 
     async function edit(id) {
+        if (!confirmDiscard()) return;
         try {
             const r = await API.get('/api/unified/routes/' + encodeURIComponent(id));
             if (!r || !r.ok) { Toast.error('не найден'); return; }
+            editorDirty = false;
             editing = r.route;
             editing.devices = editing.devices || [];
             renderEditor();
         } catch (e) { Toast.error(e.message); }
     }
-    function closeEditor() { editing = null; stopDevicesAuto(); renderEditor(); }
+    function closeEditor() {
+        if (!confirmDiscard()) return;
+        editing = null; editorDirty = false; stopDevicesAuto(); renderEditor();
+    }
 
     // ─────── выбор устройств (в редакторе) ───────
 
@@ -1174,6 +1415,70 @@ const RoutingUnifiedPage = (() => {
         return String(v || '').split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
     }
 
+    // Домены: построчно, а внутри строки — ещё и по пробелам/запятым, кроме
+    // regexp:-шаблонов (в regex запятая и пробел — часть выражения).
+    function splitDomains(v) {
+        const out = [];
+        String(v || '').split(/\r?\n/).forEach(line => {
+            const t = line.trim();
+            if (!t) return;
+            if (/^regexp:/i.test(t)) out.push(t);
+            else splitList(t).forEach(x => out.push(x));
+        });
+        return out;
+    }
+
+    /**
+     * Разложить вставленный текст по полям: подсети/IP → CIDR,
+     * geosite:/geoip: → свои поля, остальное (домены и шаблоны) → домены.
+     * Как «импорт правил» MagiTrickle с автоопределением типа.
+     */
+    function classifyEntries(text) {
+        const out = { domains: [], cidrs: [], geosite: [], geoip: [] };
+        const ipLike = /^(\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?|[0-9a-f:]*:[0-9a-f:]*(\/\d{1,3})?)$/i;
+        String(text || '').split(/\r?\n/).forEach(line => {
+            let t = line.replace(/#.*$/, '').trim();
+            if (!t) return;
+            const items = /^regexp:/i.test(t) ? [t] : splitList(t);
+            items.forEach(x => {
+                const low = x.toLowerCase();
+                if (low.startsWith('geosite:')) out.geosite.push(low.slice(8));
+                else if (low.startsWith('geoip:')) out.geoip.push(low.slice(6));
+                else if (ipLike.test(x)) out.cidrs.push(x);
+                else out.domains.push(x.replace(/^https?:\/\//i, '').replace(/\/.*$/, ''));
+            });
+        });
+        return out;
+    }
+
+    function distributePaste() {
+        const ta = document.getElementById('ru-paste');
+        if (!ta || !ta.value.trim()) { Toast.warning('Вставьте список'); return; }
+        const c = classifyEntries(ta.value);
+        const add = (id, items, sep) => {
+            const el = document.getElementById(id);
+            if (!el || !items.length) return;
+            const cur = id === 'ru-domains' ? splitDomains(el.value) : splitList(el.value);
+            const merged = cur.concat(items.filter(x => !cur.includes(x)));
+            el.value = merged.join(sep);
+        };
+        add('ru-domains', c.domains, '\n');
+        add('ru-cidrs', c.cidrs, '\n');
+        add('ru-geosite', c.geosite, ',');
+        add('ru-geoip', c.geoip, ',');
+        ta.value = '';
+        markDirty();
+        Toast.success(`Разложено: доменов ${c.domains.length}, подсетей ${c.cidrs.length}, `
+            + `geosite ${c.geosite.length}, geoip ${c.geoip.length}`);
+    }
+
+    function markDirty() {
+        if (!editing || editorDirty) return;
+        editorDirty = true;
+        const el = document.getElementById('ru-dirty');
+        if (el) el.style.display = '';
+    }
+
     async function save() {
         const listIds = Array.from(document.querySelectorAll('.ru-listchk'))
             .filter(c => c.checked).map(c => c.value);
@@ -1199,7 +1504,7 @@ const RoutingUnifiedPage = (() => {
             dscp: dscp,
             dscp_self: !!document.getElementById('ru-dscp-self')?.checked,
             destination: {
-                domains: splitList(document.getElementById('ru-domains').value),
+                domains: splitDomains(document.getElementById('ru-domains').value),
                 cidrs: splitList(document.getElementById('ru-cidrs').value),
                 list_ids: listIds,
                 geosite: splitList(document.getElementById('ru-geosite').value),
@@ -1215,6 +1520,7 @@ const RoutingUnifiedPage = (() => {
                     Toast.info('Пропущено: ' + r.applied.skipped_selectors.join('; '));
                 }
                 editing = null;
+                editorDirty = false;
                 stopDevicesAuto();
                 await refresh();
             } else Toast.error((r && r.error) || 'ошибка');
@@ -1512,8 +1818,35 @@ const RoutingUnifiedPage = (() => {
                 case 'deleteLegacy': deleteLegacy(el.dataset.id); break;
                 case 'removeDevice': removeDevice(el.dataset.ip); break;
                 case 'addDevice': addDevice(el.dataset.ip, el.dataset.mac, el.dataset.hostname); break;
+                case 'exportRoutes': exportRoutes(); break;
+                case 'importRoutes': importRoutes(); break;
+                case 'importConfirm': importConfirm(); break;
+                case 'importCancel': renderImport(null); break;
+                case 'bulk': bulk(el.dataset.op); break;
+                case 'clearSelection': selected.clear(); renderBody(); break;
+                case 'distributePaste': distributePaste(); break;
             }
         });
+
+        // Любая правка в форме маршрута — «не сохранено»; Ctrl+S сохраняет.
+        container.addEventListener('input', (e) => {
+            if (editing && e.target.closest('#ru-editor')) markDirty();
+        });
+        container.addEventListener('change', (e) => {
+            if (editing && e.target.closest('#ru-editor')) markDirty();
+        });
+        // На document — один раз за жизнь страницы (контейнер меняется при
+        // каждом переходе, а этот слушатель — нет).
+        if (!_keyBound) {
+            _keyBound = true;
+            document.addEventListener('keydown', (e) => {
+                if (!editing || !(e.ctrlKey || e.metaKey)
+                    || (e.key || '').toLowerCase() !== 's') return;
+                if (!document.getElementById('ru-editor')) return;
+                e.preventDefault();
+                save();
+            });
+        }
 
         container.addEventListener('change', (e) => {
             const el = e.target.closest('[data-action]');
@@ -1522,6 +1855,10 @@ const RoutingUnifiedPage = (() => {
             switch (action) {
                 case 'toggleMonitor': toggleMonitor(el.checked); break;
                 case 'setVia': setVia(el.value); break;
+                case 'selectRow': toggleSelect(el.dataset.id, el.checked); break;
+                case 'selectAll': selectAll(el.checked); break;
+                case 'importFileChosen': importFileChosen(el); break;
+                case 'setDropAaaa': setDropAaaa(el.value); break;
                 case 'toggleDevicesAuto': toggleDevicesAuto(el.checked); break;
                 case 'methodChanged':
                     // Запоминаем выбор сразу: renderEditor() рисует
@@ -1571,5 +1908,8 @@ const RoutingUnifiedPage = (() => {
         reapplyAll, previewSweep,
         runDnsmasqSetup, runDnsmasqRevert, toggleDnsIntercept,
         toggleKillSwitch,
+        bulk, exportRoutes, importRoutes, distributePaste,
+        // для тестов: чистые разборщики ввода
+        _classifyEntries: classifyEntries, _splitDomains: splitDomains,
     };
 })();

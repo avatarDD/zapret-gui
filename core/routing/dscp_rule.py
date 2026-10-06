@@ -9,9 +9,11 @@
     3. default-route в этой таблице → target_iface (ставит manager/
        awg_manager). + masquerade на исходящий iface.
 
-fwmark = table_id_for(iface) — у каждого интерфейса уже свой
-стабильный номер таблицы (100..999), используем его же как метку,
-чтобы DSCP-правила на разные туннели не пересекались.
+fwmark — слот поля меток маршрутов на интерфейс (core/routing/marks:
+`--set-xmark value/0x0fff0000`, `ip rule fwmark value/mask`), чтобы
+DSCP-правила на разные туннели не пересекались и не затирали чужие биты
+метки. До этого меткой был номер таблицы целиком (100..999) — такие
+правила (`_legacy_mark`) снимаются при remove и уборщиком.
 
 Свои именованные цепочки (как в ipset_backend) — чужие правила не
 трогаем. Идемпотентно: перед add делаем del.
@@ -77,9 +79,15 @@ def _backend() -> str:
     return "iptables" if rc == 0 else "none"
 
 
+def _mark_for(ifname: str) -> int:
+    from core.routing import marks
+    return marks.mark_for(marks.dscp_key(ifname))
+
+
 def build_nft_dscp_fragment(dscp: int, mark: int) -> str:
     """nft rule-фрагмент маркировки по DSCP (чистая функция)."""
-    return "ip dscp 0x%02x meta mark set %d" % (dscp, mark)
+    from core.routing import marks
+    return "ip dscp 0x%02x %s" % (dscp, marks.nft_set_expr(mark))
 
 
 # nft при выводе нормализует и DSCP (0x2e → ef), и метку (917 → 0x00000395),
@@ -149,13 +157,33 @@ def _ensure_jump(parent: str, chain: str):
 
 # ─────────────────────── pure builder ────────────────────────────────
 
-def build_mark_rules(chain: str, dscp: int, mark: int) -> list:
-    """argv для маркировки пакетов с заданным DSCP (чистая функция)."""
+def build_mark_rules(chain: str, dscp: int, mark: int,
+                     legacy: bool = False) -> list:
+    """argv для маркировки пакетов с заданным DSCP (чистая функция).
+
+    legacy=True — форма прошлых версий (метка целиком), только чтобы
+    её снять."""
+    from core.routing import marks
+    target = (["--set-mark", str(mark)] if legacy
+              else ["--set-xmark", marks.spec(mark)])
     return [[
         "iptables", "-t", "mangle", "-A", chain,
         "-m", "dscp", "--dscp", str(dscp),
-        "-j", "MARK", "--set-mark", str(mark),
-    ]]
+        "-j", "MARK"] + target]
+
+
+def _drop_legacy_ipt(dscp: int, table: int) -> None:
+    """Снять правила прошлых версий: метка = номер таблицы целиком."""
+    for chain in (PREROUTING_CHAIN, OUTPUT_CHAIN):
+        for argv in build_mark_rules(chain, dscp, table, legacy=True):
+            del_argv = list(argv)
+            del_argv[3] = "-D"
+            for _ in range(4):
+                rc, _o, _e = _run(del_argv)
+                if rc != 0:
+                    break
+    _run(["ip", "-4", "rule", "del", "fwmark", str(table),
+          "lookup", str(table)])
 
 
 # ─────────────────────── apply / remove ──────────────────────────────
@@ -168,7 +196,7 @@ def apply_dscp_rule(rule: DscpRoutingRule) -> dict:
 
     ifname = rule.target_iface
     table = _table_id_for(ifname)
-    mark = table
+    mark = _mark_for(ifname)
 
     with _lock:
         if not _iface_exists(ifname):
@@ -198,6 +226,7 @@ def apply_dscp_rule(rule: DscpRoutingRule) -> dict:
             chains.append(OUTPUT_CHAIN)
 
         errors = []
+        _drop_legacy_ipt(rule.dscp, table)
         for chain in chains:
             for argv in build_mark_rules(chain, rule.dscp, mark):
                 # идемпотентно: чистим дубликат (та же команда с -D).
@@ -209,13 +238,11 @@ def apply_dscp_rule(rule: DscpRoutingRule) -> dict:
                     errors.append("%s: %s" % (chain, err.strip()))
 
         # ip rule fwmark → table
-        _run(["ip", "-4", "rule", "del", "fwmark", str(mark),
-              "lookup", str(table)])
-        rc, _o, err = _run(["ip", "-4", "rule", "add", "fwmark", str(mark),
-                            "lookup", str(table),
-                            "priority", str(DSCP_PRIORITY)])
-        if rc != 0:
-            errors.append("ip rule fwmark: %s" % err.strip())
+        from core.routing import marks
+        r = marks.ip_rule_add(mark, table, family="v4",
+                              priority=DSCP_PRIORITY)
+        if not r.get("ok"):
+            errors.append("ip rule fwmark: %s" % r.get("error"))
 
         # masquerade на исходящий iface (как у device/cidr).
         try:
@@ -243,7 +270,7 @@ def _apply_dscp_nft(rule: DscpRoutingRule) -> dict:
     from core.routing import nftset_backend as nfb
     ifname = rule.target_iface
     table = _table_id_for(ifname)
-    mark = table
+    mark = _mark_for(ifname)
     with _lock:
         if not _iface_exists(ifname):
             return {"ok": False, "deferred": True,
@@ -267,14 +294,17 @@ def _apply_dscp_nft(rule: DscpRoutingRule) -> dict:
             # и DSCP, и метку), затем добавляем свежее. Без этого каждое
             # повторное применение (рестарт iface, reapply_all) копило
             # дубликаты.
-            for h in _find_nft_dscp_handles(nfb.TABLE_NAME, chain,
-                                            rule.dscp, mark):
-                _run(["nft", "delete", "rule", "inet", nfb.TABLE_NAME,
-                      chain, "handle", h])
+            for m in (mark, table):     # table — метка прошлых версий
+                for h in _find_nft_dscp_handles(nfb.TABLE_NAME, chain,
+                                                rule.dscp, m):
+                    _run(["nft", "delete", "rule", "inet", nfb.TABLE_NAME,
+                          chain, "handle", h])
             rc, _o, err = _run(["nft", "add", "rule", "inet", nfb.TABLE_NAME,
                                chain] + frag.split())
             if rc != 0:
                 errors.append("%s: %s" % (chain, err.strip()))
+        _run(["ip", "-4", "rule", "del", "fwmark", str(table),
+              "lookup", str(table)])
         nfb.add_ip_rule_fwmark(mark, table, family="v4", priority=DSCP_PRIORITY)
         try:
             from core.routing import masquerade
@@ -293,17 +323,20 @@ def _remove_dscp_nft(rule: DscpRoutingRule) -> dict:
     from core.routing import nftset_backend as nfb
     ifname = rule.target_iface
     table = _table_id_for(ifname)
-    mark = table
+    mark = _mark_for(ifname)
     with _lock:
         for chain in ("prerouting", "output"):
             # Семантический поиск хэндлов (см. _find_nft_dscp_handles):
             # старый код сравнивал наш текст фрагмента с выводом nft и
             # ничего не находил → правила оставались висеть.
-            for h in _find_nft_dscp_handles(nfb.TABLE_NAME, chain,
-                                            rule.dscp, mark):
-                _run(["nft", "delete", "rule", "inet", nfb.TABLE_NAME,
-                      chain, "handle", h])
+            for m in (mark, table):     # table — метка прошлых версий
+                for h in _find_nft_dscp_handles(nfb.TABLE_NAME, chain,
+                                                rule.dscp, m):
+                    _run(["nft", "delete", "rule", "inet", nfb.TABLE_NAME,
+                          chain, "handle", h])
         nfb.del_ip_rule_fwmark(mark, table, family="v4")
+        _run(["ip", "-4", "rule", "del", "fwmark", str(table),
+              "lookup", str(table)])
         try:
             from core.routing import masquerade
             masquerade.remove_if_unused(ifname, excluding_id=rule.id)
@@ -321,15 +354,16 @@ def remove_dscp_rule(rule: DscpRoutingRule) -> dict:
         return _remove_dscp_nft(rule)
     ifname = rule.target_iface
     table = _table_id_for(ifname)
-    mark = table
+    mark = _mark_for(ifname)
     with _lock:
         for chain in (PREROUTING_CHAIN, OUTPUT_CHAIN):
             for argv in build_mark_rules(chain, rule.dscp, mark):
                 del_argv = list(argv)
                 del_argv[3] = "-D"
                 _run(del_argv)
-        _run(["ip", "-4", "rule", "del", "fwmark", str(mark),
-              "lookup", str(table)])
+        _drop_legacy_ipt(rule.dscp, table)
+        from core.routing import marks
+        marks.ip_rule_del(mark, table, family="v4")
         try:
             from core.routing import masquerade
             masquerade.remove_if_unused(ifname, excluding_id=rule.id)

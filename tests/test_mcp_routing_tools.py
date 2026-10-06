@@ -50,7 +50,7 @@ class FakeUnified:
         found = self.routes.get(route_id)
         return dict(found) if found else None
 
-    def save_route(self, data, apply=True):
+    def save_route(self, data, apply=True, **_kw):
         if not str(data.get("method") or "").strip():
             return {"ok": False, "error": "Не выбран метод маршрута"}
         route = dict(data)

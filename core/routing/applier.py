@@ -12,11 +12,28 @@
 Делает безопасный try/except — ошибки не должны мешать up/down.
 """
 
+import threading
+import time
+
 from core.log_buffer import log
+
+
+# Когда правила интерфейса применялись в последний раз: сторож
+# (core/routing/guardian) не повторяет применение, которое AwgManager.up
+# только что сделал сам.
+_last_up = {}
+_last_lock = threading.Lock()
+
+
+def applied_recently(ifname: str, window: float = 15.0) -> bool:
+    with _last_lock:
+        return time.time() - _last_up.get(ifname, 0.0) < window
 
 
 def apply_all_on_interface_up(ifname: str) -> dict:
     """Применить все правила, целевой iface которых = ifname."""
+    with _last_lock:
+        _last_up[ifname] = time.time()
     try:
         from core.routing.manager import get_routing_manager
         res = get_routing_manager().apply_all_for_iface(ifname)

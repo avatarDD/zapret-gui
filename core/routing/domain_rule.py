@@ -74,13 +74,11 @@ def _table_id_for(ifname: str) -> int:
 
 def _mark_for(rule_id: str) -> int:
     """
-    Уникальный mark для каждого правила в диапазоне 0x10000..0x1FFFF.
-    Не пересекается с типовыми пользовательскими марками (0..0xFFFF).
+    Метка правила: свой слот в поле бит маршрутов (core/routing/marks) —
+    без коллизий между правилами и без затирания чужих бит метки.
     """
-    h = 0
-    for ch in rule_id:
-        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return 0x10000 + (h & 0xFFFF)
+    from core.routing import marks
+    return marks.mark_for(marks.rule_key(rule_id))
 
 
 def _backend_for(prefer_nft: bool):
@@ -326,7 +324,8 @@ _PREPOP_MAX_DOMAINS = 500     # как и NDMS-путь; остальное — 
 _PREPOP_WORKERS = 8
 
 
-def _prepopulate_domains(domains, set_v4, set_v6, backend) -> list:
+def _prepopulate_domains(domains, set_v4, set_v6, backend,
+                         ttl: bool = False) -> list:
     """Pre-populate v4+v6 set'ы для списка доменов ограниченным пулом.
 
     `_prepopulate_set` независим (резолв + идемпотентные ipset/nft add без
@@ -350,13 +349,13 @@ def _prepopulate_domains(domains, set_v4, set_v6, backend) -> list:
         # при сохранении маршрута).
         for (s, d, f) in tasks:
             try:
-                results.append(_prepopulate_set(s, d, f, backend))
+                results.append(_prepopulate_set(s, d, f, backend, ttl))
             except Exception as e:
                 results.append({"ok": False, "added": 0, "error": str(e)})
         return results
     workers = min(_PREPOP_WORKERS, len(tasks))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(_prepopulate_set, s, d, f, backend)
+        futs = [ex.submit(_prepopulate_set, s, d, f, backend, ttl)
                 for (s, d, f) in tasks]
         for fu in concurrent.futures.as_completed(futs):
             try:
@@ -367,7 +366,7 @@ def _prepopulate_domains(domains, set_v4, set_v6, backend) -> list:
 
 
 def _prepopulate_set(set_name: str, domain: str, family: str,
-                     backend) -> dict:
+                     backend, ttl: bool = False) -> dict:
     """
     Резолвим домен и кладём IP'шники в set СРАЗУ — без ожидания того,
     что какой-то софт сделает DNS-запрос через dnsmasq.
@@ -390,6 +389,7 @@ def _prepopulate_set(set_name: str, domain: str, family: str,
       - иначе — fallback на системный `socket.getaddrinfo()`.
     """
     ips = []
+    dns_ttl = None
     src = "getaddrinfo"
     try:
         from core.routing import doh_resolver
@@ -397,6 +397,7 @@ def _prepopulate_set(set_name: str, domain: str, family: str,
             r = doh_resolver.resolve(domain, family=family)
             if r.get("ok"):
                 ips = sorted(set(r.get("ips") or []))
+                dns_ttl = r.get("ttl")
                 src = "doh:%s" % (r.get("provider") or "?")
     except Exception as e:
         log.warning("doh prepopulate %s: %s" % (domain, e),
@@ -417,24 +418,23 @@ def _prepopulate_set(set_name: str, domain: str, family: str,
         return {"ok": True, "added": 0, "domain": domain,
                 "family": family}
 
-    import subprocess
+    # ttl=True — набор наполняем МЫ (set-путь без dnsmasq): запись
+    # истечёт сама, если домен перестанет на неё указывать
+    # (core/routing/set_ttl). dnsmasq-путь — бессрочно, как раньше.
+    timeout = 0
+    if ttl:
+        from core.routing import set_ttl
+        timeout = set_ttl.timeout_for(dns_ttl)
     added = 0
     for ip in ips:
-        if backend is nftset_backend:
-            cmd = ["nft", "add", "element", "inet",
-                   nftset_backend.TABLE_NAME, set_name,
-                   "{ %s }" % ip]
-        else:
-            cmd = ["ipset", "add", set_name, ip, "-exist"]
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=3)
-            if r.returncode == 0 or "exist" in (r.stderr or "").lower():
+            if backend.add_entry(set_name, ip, timeout):
                 added += 1
-        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        except Exception:
             continue
     return {"ok": True, "added": added, "domain": domain,
-            "family": family, "ips": ips, "resolver": src}
+            "family": family, "ips": ips, "resolver": src,
+            "timeout": timeout}
 
 
 def _ensure_table_default(ifname: str, table: int, family: str) -> bool:
@@ -606,6 +606,14 @@ def _apply_domain_via_sets(rule: DomainRoutingRule) -> dict:
         if not r1.get("ok"):
             errors.append("create_set %s: %s" % (fam, r1.get("error")))
             continue
+        if backend is nftset_backend and \
+                not nftset_backend.set_has_timeout(r1["name"]):
+            # Набор прошлой версии — без `flags timeout`, записи с TTL в
+            # него не лягут. Пересоздаём (наполнит prepop ниже).
+            r1 = nftset_backend.recreate_with_timeout(r1["name"], fam)
+            if not r1.get("ok"):
+                errors.append("recreate_set %s: %s" % (fam, r1.get("error")))
+                continue
         r2 = backend.setup_mark_rule(r1["name"], mark, family=fam)
         if not r2.get("ok"):
             errors.extend(r2.get("errors") or [r2.get("error", "?")])
@@ -642,7 +650,7 @@ def _apply_domain_via_sets(rule: DomainRoutingRule) -> dict:
                  source="routing")
         prepop_domains = prepop_domains[:_PREPOP_MAX_DOMAINS]
     prepop_results = _prepopulate_domains(
-        prepop_domains, set_base, set_base + "6", backend)
+        prepop_domains, set_base, set_base + "6", backend, ttl=True)
     prepop_added = sum(r.get("added", 0) for r in prepop_results)
     cidr_added = _add_static_cidrs_to_sets(
         geoip_cidrs, set_base, set_base + "6", backend)

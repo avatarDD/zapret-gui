@@ -1134,6 +1134,18 @@ def main():
     # Создаём приложение
     app = create_app(config_dir=args.config)
 
+    # Сторож маршрутизации: правила возвращаются после перезаписи
+    # netfilter прошивкой (хук → SIGUSR2) и при подъёме интерфейса
+    # (netlink). Здесь, а не в create_app: обработчик сигнала ставится
+    # только из главного потока, а тестам, создающим приложение, не нужны
+    # ни хуки в системных каталогах, ни netlink-потоки.
+    try:
+        from core.routing import guardian
+        guardian.start()
+    except Exception as e:
+        from core.log_buffer import log as _glog
+        _glog.warning("routing guardian при boot: %s" % e, source="routing")
+
     # Параметры сервера из конфига или аргументов командной строки
     from core.config_manager import get_config_manager
     from core.log_buffer import log

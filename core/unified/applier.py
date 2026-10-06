@@ -111,6 +111,17 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
             tun_domains += ["geoip:%s" % g
                             for g in (resolved.get("geoip") or [])]
         res = _apply_tunnel(route, target, tun_domains, cidrs)
+        from core.routing import domain_match
+        if domain_match.patterns(domains):
+            try:
+                from core.routing import dns_intercept
+                intercept_on = dns_intercept.is_enabled()
+            except Exception:
+                intercept_on = False
+            if not intercept_on:
+                skipped.append("wildcard/regex работают только при "
+                               "включённом перехвате DNS (Маршрутизация → "
+                               "Перехват DNS)")
         if geo_native:
             geo = _apply_geo(route, method)
             if geo.get("skipped"):
@@ -126,7 +137,11 @@ def apply_route(route: UnifiedRoute, method: str = None) -> dict:
         res["skipped_selectors"] = skipped
         return res
     if kind == "nfqws2":
-        res = _apply_nfqws(route, domains)
+        from core.routing import domain_match
+        res = _apply_nfqws(route, domain_match.plain_domains(domains))
+        if domain_match.patterns(domains):
+            # Хостлист nfqws2 понимает только домены (с поддоменами).
+            skipped.append("wildcard/regex игнорируются для метода nfqws2")
         if has_geo:
             skipped.append("geosite/geoip игнорируются для метода nfqws2")
         if has_src:

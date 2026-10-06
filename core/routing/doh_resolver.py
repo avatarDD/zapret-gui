@@ -163,10 +163,11 @@ def resolve(domain: str, family: str = "v4") -> dict:
 
     for url in settings["providers"]:
         try:
-            ips = _query_json(url, domain, qtype, timeout)
+            ips, ttl = _query_json(url, domain, qtype, timeout,
+                                   with_ttl=True)
             if ips:
                 return {"ok": True, "ips": ips, "provider": url,
-                        "error": ""}
+                        "error": "", "ttl": ttl}
         except Exception as e:
             last_err = str(e)
             continue
@@ -176,11 +177,14 @@ def resolve(domain: str, family: str = "v4") -> dict:
 
 
 def _query_json(provider_url: str, domain: str, qtype: str,
-                timeout: float) -> list:
+                timeout: float, with_ttl: bool = False):
     """
     Один запрос к одному DoH-провайдеру в JSON-формате.
 
-    Возвращает list of IP-строк (может быть пустым, если NXDOMAIN).
+    Возвращает list of IP-строк (может быть пустым, если NXDOMAIN), а с
+    with_ttl=True — (ips, ttl): наименьший TTL ответов нужного типа
+    (None — провайдер TTL не прислал); по нему истекают записи наборов
+    (core/routing/set_ttl).
     """
     qs = urllib.parse.urlencode({"name": domain, "type": qtype})
     url = "%s?%s" % (provider_url, qs)
@@ -196,12 +200,13 @@ def _query_json(provider_url: str, domain: str, qtype: str,
     try:
         data = json.loads(raw.decode("utf-8", errors="replace"))
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return []
+        return ([], None) if with_ttl else []
     if not isinstance(data, dict):
-        return []
+        return ([], None) if with_ttl else []
     # RFC 8484 JSON: {"Status": 0, "Answer": [{"type": 1, "data": "1.2.3.4"}]}
     answers = data.get("Answer") or []
     ips = []
+    ttl = None
     want_type = 1 if qtype == "A" else 28
     for a in answers:
         if not isinstance(a, dict):
@@ -211,4 +216,9 @@ def _query_json(provider_url: str, domain: str, qtype: str,
         ip = (a.get("data") or "").strip()
         if ip:
             ips.append(ip)
-    return ips
+            try:
+                t = int(a.get("TTL"))
+                ttl = t if ttl is None else min(ttl, t)
+            except (TypeError, ValueError):
+                pass
+    return (ips, ttl) if with_ttl else ips

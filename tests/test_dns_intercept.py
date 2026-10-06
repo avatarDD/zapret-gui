@@ -81,6 +81,8 @@ class TestParser(unittest.TestCase):
 class TestHarvest(unittest.TestCase):
 
     def _fresh(self, entry):
+        from core.routing.domain_match import Matcher
+        entry.setdefault("matcher", Matcher(entry.get("domains") or []))
         di = DnsIntercept()
         di._rules_cache = [entry]
         di._rules_at = time.time()
@@ -90,8 +92,9 @@ class TestHarvest(unittest.TestCase):
         di = self._fresh({"id": "r1", "kind": "ipset", "iface": "awg0",
                           "set_v4": "awgr_r1", "set_v6": "awgr_r16",
                           "table": 100, "domains": ["googlevideo.com"]})
+        from core.routing import ipset_backend
         calls = []
-        with mock.patch.object(dns_intercept, "_run",
+        with mock.patch.object(ipset_backend, "_run",
                                side_effect=lambda a, **kw:
                                (calls.append(a), (0, "", ""))[1]):
             di._harvest("rr3---sn-x.googlevideo.com",
@@ -102,7 +105,7 @@ class TestHarvest(unittest.TestCase):
         self.assertTrue(any("awgr_r16 2a00:1450::5" in j for j in joined))
         # Повторный ответ с тем же IP не дёргает ipset заново.
         n = len(calls)
-        with mock.patch.object(dns_intercept, "_run",
+        with mock.patch.object(ipset_backend, "_run",
                                side_effect=lambda a, **kw:
                                (calls.append(a), (0, "", ""))[1]):
             di._harvest("rr3---sn-x.googlevideo.com",
@@ -132,9 +135,12 @@ class TestHarvest(unittest.TestCase):
         di = self._fresh({"id": "r1", "kind": "ipset", "iface": "awg0",
                           "set_v4": "s", "set_v6": "s6", "table": 100,
                           "domains": ["example.com"]})
-        with mock.patch.object(dns_intercept, "_run") as run:
+        from core.routing import ipset_backend
+        with mock.patch.object(dns_intercept, "_run") as run, \
+                mock.patch.object(ipset_backend, "_run") as run2:
             di._harvest("other.org", [("1.1.1.1", "v4")])
         run.assert_not_called()
+        run2.assert_not_called()
         self.assertEqual(di.stats["ips_added"], 0)
 
 
@@ -193,10 +199,12 @@ class TestProxyLoopback(unittest.TestCase):
         t = threading.Thread(target=upstream, daemon=True)
         t.start()
 
+        from core.routing import ipset_backend
+        from core.routing.domain_match import Matcher
         di = DnsIntercept()
         di._rules_cache = [{"id": "r1", "kind": "ipset", "iface": "awg0",
                             "set_v4": "s4", "set_v6": "s6", "table": 100,
-                            "domains": ["example.com"]}]
+                            "matcher": Matcher(["example.com"])}]
         di._rules_at = time.time() + 3600  # кэш «вечно свеж» на время теста
 
         ipset_calls = []
@@ -210,7 +218,7 @@ class TestProxyLoopback(unittest.TestCase):
                               return_value={"ok": True}),
             mock.patch.object(DnsIntercept, "_remove_redirect",
                               return_value=None),
-            mock.patch.object(dns_intercept, "_run",
+            mock.patch.object(ipset_backend, "_run",
                               side_effect=lambda a, **kw:
                               (ipset_calls.append(a), (0, "", ""))[1]),
         ]

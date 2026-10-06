@@ -197,8 +197,9 @@ const HostlistsPage = (() => {
                                     Загрузить
                                 </button>
                             </div>
-                            <div class="form-hint">Текстовый файл — один домен на строку</div>
+                            <div class="form-hint">Текстовый файл — один домен на строку. Разовый импорт: домены добавятся к списку.</div>
                         </div>
+                        <div id="hl-sub-box" style="margin-top:16px;"></div>
                         <div class="form-group" style="margin-top:16px;">
                             <label class="form-label">Или вставьте текст</label>
                             <textarea class="form-textarea" id="hl-import-text" rows="8"
@@ -843,6 +844,12 @@ const HostlistsPage = (() => {
     function showImportModal() {
         const modal = document.getElementById('hl-import-modal');
         if (modal) modal.style.display = 'flex';
+        const box = document.getElementById('hl-sub-box');
+        if (box && typeof ListSubscription !== 'undefined') {
+            ListSubscription.render(box, 'hostlists', activeTab, {
+                onChange: () => { loadTab(activeTab); loadStats(); },
+            });
+        }
     }
 
     function closeImportModal() {

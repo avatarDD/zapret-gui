@@ -307,7 +307,11 @@ def expand_domains(items, force_refresh: bool = False) -> dict:
         "cidrs":   [...],          # все CIDR (raw + развёрнутые geoip)
         "aliases_resolved": [{"kind": "...", "name": "...", "count": N}, ...],
         "aliases_failed":   [{"kind": "...", "name": "..."}, ...],
+        "patterns": [...],         # wildcard/regex (core/routing/domain_match)
       }
+
+    Шаблоны в "domains" не попадают: заранее их не разрезолвить, а
+    dnsmasq и NDMS их не понимают — работают они только в DNS-перехвате.
 
     На неудачные алиасы возвращаемые списки не пополняются — UI должен
     показать предупреждение по `aliases_failed`.
@@ -317,7 +321,9 @@ def expand_domains(items, force_refresh: bool = False) -> dict:
         "cidrs":   [],
         "aliases_resolved": [],
         "aliases_failed":   [],
+        "patterns":         [],
     }
+    from core.routing import domain_match
     seen_d = set()
     seen_c = set()
 
@@ -343,14 +349,18 @@ def expand_domains(items, force_refresh: bool = False) -> dict:
                         seen_c.add(it)
                         out["cidrs"].append(it)
             continue
+        if domain_match.is_pattern(s):
+            if s not in out["patterns"]:
+                out["patterns"].append(s)
+            continue
         # Не алиас — bare-domain или bare-cidr.
         if "/" in s or _looks_like_ip(s):
             if s not in seen_c:
                 seen_c.add(s)
                 out["cidrs"].append(s)
         else:
-            low = s.lower()
-            if low not in seen_d:
+            low = domain_match.normalize_domain(s)
+            if low and low not in seen_d:
                 seen_d.add(low)
                 out["domains"].append(low)
 

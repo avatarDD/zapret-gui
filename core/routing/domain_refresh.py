@@ -12,8 +12,11 @@ device-правила («работает только с выбором уст�
 
 Этот демон раз в interval_min минут заново резолвит домены активных
 правил и пополняет set'ы (или policy-db для iproute-пути) новыми IP.
-Старые записи НЕ удаляем: лишний IP в туннеле безвреден, а чистка
-рвала бы живые соединения при ложном «протухании».
+Старые записи сами не удаляем: в set-пути у записи срок «TTL из DNS +
+запас» (core/routing/set_ttl), и каждый проход его продлевает — IP,
+который домен больше не отдаёт, истекает в ядре сам, а живое соединение
+к нему держится на connmark. В iproute-пути (policy-db) сроков нет —
+там записи, как и раньше, только добавляются.
 
 Правила, которые обслуживает dnsmasq (или NDMS), не трогаем — там
 IP пополняются по живым DNS-запросам.
@@ -98,7 +101,7 @@ def _refresh_sets_rule(rule, kind: str) -> int:
     domains = domains[:domain_rule._PREPOP_MAX_DOMAINS]
     base = domain_rule._set_name_for(rule.id, kind)
     results = domain_rule._prepopulate_domains(
-        domains, base, base + "6", backend)
+        domains, base, base + "6", backend, ttl=True)
     return sum(r.get("added", 0) for r in results)
 
 

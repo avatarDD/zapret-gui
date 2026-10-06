@@ -242,7 +242,7 @@ class TestSweep(unittest.TestCase):
         dels = [c for c in calls if c[3:4] == ["del"]]
         self.assertEqual(len(dels), 2)
         joined = [" ".join(c) for c in dels]
-        self.assertTrue(any("fwmark %d" % 0x1DEAD in j for j in joined))
+        self.assertTrue(any("fwmark 0x1dead" in j for j in joined))
         self.assertTrue(any("from 192.168.1.9" in j for j in joined))
         # живые правила остались нетронутыми
         self.assertFalse(any("192.168.1.5" in j for j in joined))
