@@ -312,6 +312,22 @@ class TestMemory(unittest.TestCase):
                          ["c", "a", "b", "d"])
         self.assertEqual(scanner._memory_ids, ["c"])
 
+    def test_family_after_own_history(self):
+        # Своя история цели — первой, затем находки соседей по домену.
+        scanner = self._scanner()
+        entries = [_entry(x) for x in ("a", "b", "c", "d")]
+        found = {"items": [
+            {"strategy_id": "c", "wins": 3, "losses": 0, "stale": False}],
+            "family": {"youtube.com": [
+                {"strategy_id": "d", "family": "youtube.com", "votes": 2},
+                {"strategy_id": "c", "family": "youtube.com", "votes": 1}]}}
+        with mock.patch("core.strategy_memory.lookup", return_value=found), \
+                mock.patch.object(scanner, "_catalog_entry",
+                                  return_value=None):
+            ordered = scanner._memory_first(entries)
+        self.assertEqual([e.section_id for e in ordered],
+                         ["c", "d", "a", "b"])
+
     def test_resume_uses_saved_memory_order(self):
         scanner = self._scanner(start_index=3)
         entries = [_entry(x) for x in ("a", "b", "c")]

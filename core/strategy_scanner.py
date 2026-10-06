@@ -992,6 +992,22 @@ class StrategyScanner:
                 ids.append(sid)
             if len(ids) >= MEMORY_FIRST_MAX:
                 break
+        # Затем — что открывало соседей по регистрируемому домену в этой
+        # сети (семейство, приём d2k): поддомен CDN той же коробкой
+        # обычно обходится тем же приёмом. Своя история цели — первой.
+        own = len(ids)
+        for item in (found.get("family") or {}).get(
+                str(self._target).strip().lower(), []):
+            if len(ids) >= MEMORY_FIRST_MAX:
+                break
+            sid = str(item.get("strategy_id") or "")
+            if sid and sid not in ids:
+                ids.append(sid)
+        if len(ids) > own:
+            log.info("Память подбора: %d стратегий от соседей по домену "
+                     "%s" % (len(ids) - own,
+                             (found["family"][self._target.strip().lower()]
+                              [0]["family"])), source="scanner")
         return ids
 
     def _catalog_entry(self, strategy_id: str):

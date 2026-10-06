@@ -181,7 +181,9 @@ class TestGuiUpdateRef(unittest.TestCase):
         up = GuiUpdater()
         seen = {}
 
-        def fake_dl(url, dest, transport=""):
+        def fake_dl(url, dest, transport="", quiet=False):
+            if url.endswith(("/SHA256SUMS", "/SHA256SUMS.sig")):
+                return False    # выпуск без списка хешей — старый путь
             seen["url"] = url
             seen["transport"] = transport
             return False    # обрываем до распаковки
@@ -224,7 +226,7 @@ class TestGuiUpdateResultSurvives(unittest.TestCase):
 
     def _failing_updater(self):
         up = GuiUpdater()
-        up._download_file = lambda url, dest, transport="": False
+        up._download_file = lambda url, dest, transport="", quiet=False: False
         return up
 
     def test_failure_is_kept_in_last_result(self):
@@ -247,7 +249,7 @@ class TestGuiUpdateResultSurvives(unittest.TestCase):
 
         seen = {}
 
-        def slow_download(url, dest, transport=""):
+        def slow_download(url, dest, transport="", quiet=False):
             seen["last_result"] = up.get_operation_status()["last_result"]
             return False
 
@@ -262,7 +264,7 @@ class TestGuiUpdateResultSurvives(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def blocking_download(url, dest, transport=""):
+        def blocking_download(url, dest, transport="", quiet=False):
             started.set()
             release.wait(5)
             return False

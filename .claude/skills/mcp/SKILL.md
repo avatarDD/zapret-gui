@@ -35,7 +35,9 @@ description: >-
   активных пробах и тяжёлых прогонах (`core/probe_runner.py`:
   `probe_targets`/`probe_compare` и вердикты
   `bypass_helps`/`no_difference`/`target_down`/`bypass_hurts`/`unknown`,
-  лимиты `mcp.probes`; асинхронный контракт `core/mcp/tools/_jobs.py` —
+  сторона «без обхода» пробой с меткой `SO_MARK` мимо очереди
+  (`core/probe_mark.py`), `dpi_classify` — чем режут
+  (`core/testers/dpi_differential.py`), лимиты `mcp.probes`; асинхронный контракт `core/mcp/tools/_jobs.py` —
   `job_id`, опрос `*_status`, инкремент `*_output` по `offset`; сканер
   стратегий, blockcheck и blockcheck2, healthcheck и матрица
   связности),
@@ -62,7 +64,7 @@ description: >-
   чистые функции, коды `unknown_lua_function`/`blob_unknown`/
   `blob_file_missing`/`blob_declared_after_new`/`lua_init_order`/
   `bare_trick_no_filter`/`l7_filter_without_ports`/`no_desync_action`/
-  `engine_owned_option`, ошибка линтера делает ответ `isError`; сборщик
+  `engine_owned_option`/`ttl_fake_on_udp`, ошибка линтера делает ответ `isError`; сборщик
   вырезает из стратегии опции, которыми владеет GUI — `--user`/`--qnum`/
   `--fwmark`/`--pidfile`/`--writable`/`--debug=@файл`),
   транспорте и авторизации (Bearer-токен, Origin, bind, рейт-лимит,
@@ -357,7 +359,8 @@ UI), и `tools_by_scope`.
 | `healthcheck_status` | read | нет | `tools/blockcheck.py` | history?, limit? | расписание, сервисы, история и `fail_streak`; проб не запускает |
 | `connectivity_matrix` | read | нет | `tools/probes.py` | refresh?, ifaces?, offset?, limit? | матрица «цель × интерфейс»; `refresh` — по `probes` |
 | `probe_targets` | probes | нет | `tools/probes.py` | targets, repeats?, timeout_sec?, port?, offset?, limit? | проба доменов DNS→TCP→TLS→HTTP; коды из `PROBE_CODES`, состояния не меняет |
-| `probe_compare` | probes | **да** | `tools/probes.py` | target, repeats?, timeout_sec?, toggle? | домен с обходом и без; вердикт из пяти; переключение движка требует ещё и `control` |
+| `probe_compare` | probes | **да** | `tools/probes.py` | target, repeats?, timeout_sec?, toggle? | домен с обходом и без; вердикт из пяти. Движок работает и метка проб действует — сторона «без обхода» меряется пробой с `SO_MARK` мимо очереди (`without_method: probe_mark`), движок не трогается и `control` не нужен; иначе переключение движка требует ещё и `control` |
+| `dpi_classify` | probes | нет | `tools/probes.py` | target, repeats?, timeout_sec?, control_sni? | чем режут (приём d2k, `core/testers/dpi_differential.py`): ClientHello целиком → разрез после 1-го байта → чужое имя на тот же IP; вердикты `clear/prefix/opaque/address/response/local_address/unreachable/flaky/inconclusive`, `dpi_classification`+`remediation`; без метки при работающем движке `clear` не выдаётся |
 | `scan_start` | probes | **да** | `tools/scan.py` | target, protocol?, mode?, resume?, dpi_type?, stop_after?, confirm? | запустить подбор стратегий; ответ — `job_id`, сразу. `stop_after` — остановиться после N рабочих (0 — всё), `confirm` — перепроверить лучшие (медиана); `resume` берёт позицию только того же прогона |
 | `scan_stop` | probes | **да** | `tools/scan.py` | — | остановить подбор; проверенное остаётся в `scan_results` |
 | `blockcheck_start` | probes | **да** | `tools/blockcheck.py` | mode?, domains?, timeout_sec? | наш blockcheck в фоне; отчёт потом — `dpi_report` |
@@ -919,6 +922,27 @@ Keenetic (23, 233) и **порт GUI живьём из конфига**. Диа�
 асинхронный контракт не работает вовсе. Остановка — проба: она меняет
 состояние прогона, и право на неё есть у того, кто мог его запустить.
 
+### `dpi_classify` — чем режут (приём d2k)
+
+`core/testers/dpi_differential.py`. Вопросы по порядку, каждый отсекает
+половину: ClientHello целиком → тот же, разрезанный после первого байта
+(пауза 20 мс, TCP_NODELAY) → чужое имя (`control_sni`, по умолчанию
+`example.com`) на тот же IP. Вердикты: `clear`, `prefix` (хватит
+разреза), `opaque` (нужен фейк/seqovl), `address` (только туннель),
+`response` (TLS 1.2: ServerHello пришёл, сертификат оборван),
+`local_address` (все адреса приватные — подмена локально),
+`unreachable`, `flaky` (повторы разошлись), `inconclusive`. Рядом —
+`dpi_classification` + `remediation` (те же словари, что у
+`probe_targets`) и `hint`.
+
+Инварианты: проход триггера — только **ServerHello** (handshake type 2;
+инжектированный алерт не считается), у контроля — любая запись TLS;
+повторы обязаны совпасть; **без метки проб при работающем движке
+`clear` не выдаётся** (`inconclusive` — проба шла сквозь обход). Имена
+режутся `probe_runner.clean_targets` ДО первого пакета. Blockcheck
+вызывает тот же `classify` для целей с непрошедшим TLS
+(`blockcheck.differential`, ≤ 8 целей).
+
 ### `probe_compare` — контракт, на котором строится S10
 
 ```json
@@ -941,6 +965,13 @@ Keenetic (23, 233) и **порт GUI живьём из конфига**. Диа�
 сторона помечается `measured: false` + `reason`, и вердикт —
 `unknown`. Выдуманная вторая половина здесь хуже отсутствующей: на ней
 модель строит весь дальнейший подбор.
+
+**Движок работает — сторона «без обхода» меряется меткой.** Если
+`probe_mark.baseline_mode()` разрешает (метка проб `nfqws.desync_mark_probe`
+ставится, правила firewall её исключают), вторая сторона — проба с
+`SO_MARK` мимо очереди: движок не трогается, `control` не нужен,
+`without_method: "probe_mark"`. Иначе — `"engine_toggle"` (или `"none"`)
+и `without_note` с причиной.
 
 **Переключение движка требует `control` вдобавок к `probes`.** Одна
 сторона измеряется в текущем состоянии устройства, вторая — после
@@ -1046,7 +1077,7 @@ runner.start(
 |---|---|
 | захват | `session.claim(OWNER_EXPERIMENT, timeout=0)` — **в рабочем потоке**; занято → отказ с именем держателя, синхронно |
 | снимок | `session.snapshot()` + тот же снимок **на диск** (`.mcp-experiment.json` рядом с `settings.json`) |
-| baseline | `nfqws_control.stop()` → пробы: что открыто и БЕЗ обхода |
+| baseline | `probe_mark.baseline_mode()`: можно — пробы с `SO_MARK` мимо очереди, движок НЕ останавливается (`baseline.method: probe_mark`); нельзя (метка выключена, нет прав, правила без исключения проб) — `nfqws_control.stop()` → пробы (`method: engine_stopped`, причина — `method_note`) |
 | вариант | dry-run → `nfqws_control.restart(argv)` → `stabilize_sec` → пробы (`repeats`, **медиана**) → хвост лога за окно варианта → `stop()` |
 | ранжирование | `score` формулой сканера, `best` — первый, кто реально что-то починил |
 | решение | `keep_best` → лучший остаётся применённым, поток ждёт `commit` до дедлайна |
@@ -1252,6 +1283,7 @@ TTL отсчитывается от старта прогона и покрыв�
 | `l7_filter_without_ports` | warning | `--filter-l7=tls/http/quic` без портов |
 | `no_desync_action` | warning | в argv нет ни одного `--lua-desync` |
 | `engine_owned_option` | **error** | в стратегии опция, которой владеет GUI (`--user`/`--uid`/`--qnum`/`--fwmark`/`--pidfile`/`--daemon`/`--writable`/`--intercept`/`--dry-run`, `--debug=@файл`) — сборщик её вырежет |
+| `ttl_fake_on_udp` | warning | UDP/QUIC-профиль с `ip_ttl`/`ip6_ttl`/`ip_autottl` в `--lua-desync`: ICMP time-exceeded от узла, где умер фейк, NAT доставляет клиенту — Safari/Network.framework рвут QUIC, Chrome нет (приём d2k, `d2k_icmpguard.h`). Одна находка на профиль; у TCP — мягкая ошибка, не ругаемся |
 
 ### Аргументы стратегии: чем владеет GUI
 
@@ -2172,7 +2204,16 @@ getter'ов, что у `job_wait` (`jobs.KINDS`), — второй реализ�
 * `commit` не добавляет наблюдение, а ставит флаг (`mark_committed`):
   иначе один прогон посчитался бы дважды;
 * наружу — инструмент `strategy_memory` и ресурс
-  `zapret://memory/strategies` (зеркало, как у всех справочников).
+  `zapret://memory/strategies` (зеркало, как у всех справочников);
+* **семейства доменов** (приём d2k, `groups.c`): `family_of` — ключ по
+  регистрируемому домену (короткий список вторых уровней `co.uk`/`msk.ru`
+  и частных суффиксов `github.io`/`pages.dev` вместо полного PSL), а
+  `family_candidates` — argv, которые открывали СОСЕДЕЙ цели в этой сети.
+  Голос — один член семейства с `wins > losses` не старше 30 дней,
+  против — свежий (7 дней) провал; кандидат — при голосах > против, свой
+  провал цели снимает кандидата. `lookup(targets=…)` отдаёт их в
+  `family` (только для явно спрошенных целей), инструмент — тоже, даже
+  когда о самой цели записей нет; сканер ставит их сразу после своих.
 
 Запись в память **никогда не роняет прогон**: обе точки вызова в
 `strategy_experiment` обёрнуты и логируют отказ в debug.
@@ -2214,7 +2255,7 @@ getter'ов, что у `job_wait` (`jobs.KINDS`), — второй реализ�
   `/api/agent/*` живут под общей авторизацией GUI: врезка «MCP со своим
   токеном мимо гейта» действует только на `/api/mcp` — и это намеренно,
   здесь дают инструментам исполняться;
-* **инструментов столько, сколько модель осилит.** 118 объявлений — это
+* **инструментов столько, сколько модель осилит.** 119 объявлений — это
   больше пятнадцати тысяч токенов в каждом запросе. По умолчанию
   (`agent.tools = scenarios`) отдаются инструменты готовых сценариев
   (`prompts.tool_names()`) плюс `BASE_TOOLS` — около тридцати;
@@ -2350,7 +2391,7 @@ S12/S13 (shell, самоправка) отдают сырой текст: кла
 Правила, которые легко нарушить:
 
 - **README называет каждый инструмент.** Не потому что пользователю
-  нужны 118 имён, а потому что он решает, какие разрешения включать, —
+  нужны 119 имён, а потому что он решает, какие разрешения включать, —
   и должен видеть, что именно открывает каждое из них. Группировка в
   README идёт **по разрешению**, а не по домену;
 - **тексты предупреждений — из одного места.** `mcp.warn.*` и

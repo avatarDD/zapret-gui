@@ -79,6 +79,15 @@ def strategy_memory(args: dict) -> dict:
                 "hint": "файл лежит рядом с settings.json и пересоздаётся "
                         "сам: удалить его безопасно"}
 
+    if not found["items"] and found.get("family"):
+        result = _paging.empty(
+            "о самих целях записей нет, но есть находки у соседей по "
+            "домену (family)",
+            "проверьте argv из family первым вариантом "
+            "strategy_experiment_start — голоса соседей не знание о цели",
+            network=found["network"], note=NOTE)
+        result["family"] = found["family"]
+        return result
     if not found["items"]:
         return _paging.empty(
             _why_empty(found),
@@ -101,6 +110,10 @@ def strategy_memory(args: dict) -> dict:
     })
     if args.get("all_networks"):
         result["other_items"] = found.get("other_items") or []
+    if found.get("family"):
+        # Что срабатывало у соседей по регистрируемому домену: гипотеза
+        # с голосами, а не знание о самой цели.
+        result["family"] = found["family"]
     result["hint"] = _hint(result["items"])
     return result
 

@@ -485,6 +485,10 @@ class BlockcheckRunner:
             if not self._is_cancelled:
                 self._set_phase("Классификация DPI...")
                 self._run_classification(report)
+            # --- Дифференциальные вопросы к DPI (приём d2k) ---
+            # Через прокси сеть роутера не видна — спрашивать некого.
+            if not self._is_cancelled and not use_proxy:
+                self._run_differential(report, timeout)
 
             # --- Формирование итогов ---
             report.finished_at = time.time()
@@ -822,8 +826,11 @@ class BlockcheckRunner:
         max_workers: int,
     ) -> None:
         """TCP 16-20KB block detection."""
+        from urllib.parse import urlparse
+
         from core.testers.tcp_test import (
             check_tcp_16_20,
+            check_tcp_tx_volume,
             load_tcp_targets,
             select_tcp_targets,
         )
@@ -911,6 +918,32 @@ class BlockcheckRunner:
                 )
         finally:
             self._shutdown_pool(pool)
+
+        # Исходящий объём (TX-лестница, приём d2k): тест выше меряет
+        # только приём. Две цели разных провайдеров — хватает, чтобы
+        # отличить коробку от капризов одного сервера.
+        tx_hosts, seen = [], set()
+        for t in selected:
+            host = urlparse(t.get("url", "")).hostname or ""
+            if host and host not in seen and urlparse(
+                    t.get("url", "")).scheme == "https":
+                seen.add(host)
+                tx_hosts.append(t)
+        for t in tx_hosts[:self._TX_TARGETS]:
+            if self._is_cancelled:
+                break
+            self._set_progress(completed, total,
+                               "TCP TX: %s" % t.get("name", t.get("id", "?")))
+            try:
+                result = check_tcp_tx_volume(t.get("url", ""))
+            except Exception as e:              # noqa: BLE001 — граница
+                log.debug("TX-лестница %s упала: %s" % (t.get("url"), e),
+                          source="blockcheck")
+                continue
+            result.raw_data.setdefault("target_id", t.get("id", ""))
+            result.raw_data.setdefault("provider", t.get("provider", ""))
+            tcp_results.append(result)
+            self._emit("test_result", {"result": result.to_dict()})
 
         # Агрегируем TCP-результаты в один TargetResult
         if tcp_results:
@@ -1310,16 +1343,98 @@ class BlockcheckRunner:
                     source="blockcheck",
                 )
 
+    # Симптомы, по которым имеет смысл спросить DPI «чем именно»:
+    # всё, где TLS не прошёл и непонятно, лечится ли это десинком.
+    _DIFFERENTIAL_FOR = frozenset((
+        DPIClassification.TLS_DPI.value,
+        DPIClassification.IP_BLOCK.value,
+        DPIClassification.TIMEOUT_DROP.value,
+        DPIClassification.FULL_BLOCK.value,
+        DPIClassification.TCP_RESET.value,
+        DPIClassification.UNKNOWN.value,
+    ))
+    # Вердикты, которые уточняют симптом; flaky/inconclusive/clear —
+    # только примечание, классификацию не трогают.
+    _DIFFERENTIAL_REFINES = frozenset(("prefix", "opaque", "address",
+                                       "response", "local_address"))
+    _DIFFERENTIAL_MAX_TARGETS = 8
+
+    def _run_differential(self, report: BlockcheckReport,
+                          timeout) -> None:
+        """Спросить DPI «чем режут» по целям с непрошедшим TLS.
+
+        База → разрез на первом байте → контроль чужим именем на тот же
+        адрес (core/testers/dpi_differential.py). Симптом «TLS не
+        прошёл» превращается в ответ: хватит ли разреза, нужен ли фейк
+        или режут адрес и поможет только туннель.
+        """
+        cfg = get_config_manager()
+        if not cfg.get("blockcheck", "differential", default=True):
+            return
+        from core.testers import dpi_differential
+
+        targets = [tr for tr in report.targets
+                   if tr.dpi_classification in self._DIFFERENTIAL_FOR
+                   and "." in tr.domain and " " not in tr.domain]
+        if not targets:
+            return
+        self._set_phase("Вопросы к DPI: чем режут (%d)" % min(
+            len(targets), self._DIFFERENTIAL_MAX_TARGETS))
+        per_step = max(2, min(int(timeout or 5), 8))
+        for tr in targets[:self._DIFFERENTIAL_MAX_TARGETS]:
+            if self._is_cancelled:
+                break
+            try:
+                result = dpi_differential.classify(
+                    tr.domain, timeout=per_step, repeats=2)
+            except Exception as e:              # noqa: BLE001 — граница
+                log.debug("Дифференциальная проверка %s упала: %s"
+                          % (tr.domain, e), source="blockcheck")
+                continue
+            tr.differential = result
+            note = "%s: %s" % (result["verdict_text"], result["reason"])
+            if result["verdict"] in self._DIFFERENTIAL_REFINES:
+                tr.dpi_classification = result["dpi_classification"]
+                tr.dpi_detail = note if not tr.dpi_detail else \
+                    "%s; уточнено: %s" % (tr.dpi_detail, note)
+            else:
+                tr.dpi_detail = (tr.dpi_detail + "; " if tr.dpi_detail
+                                 else "") + "вопросы к DPI: " + note
+            self._emit("differential", {"target": tr.domain,
+                                        "result": result})
+
+    # Сколько целей проходит TX-лестницей (исходящий объём).
+    _TX_TARGETS = 2
+
     @staticmethod
     def _classify_tcp_target(tr: TargetResult) -> None:
-        """«TCP 16-20KB»: блок, если хоть одна цель стабильно рвётся в окне."""
+        """«TCP 16-20KB»: блок, если хоть одна цель стабильно рвётся в окне.
+
+        Приём и отправка считаются отдельно: обрыв ОТПРАВЛЕННОГО (TX-
+        лестница) — та же коробка, но лечится не тем же, что обрыв
+        скачивания, и человеку важно знать, какое направление режут.
+        """
+        def _is_tx(t):
+            return (t.raw_data or {}).get("direction") == "tx"
+
         hits = [t for t in tr.results
                 if t.status == TestStatus.FAILED.value
                 and t.error == "TCP_16_20"]
         if hits:
+            rx = [t for t in hits if not _is_tx(t)]
+            tx = [t for t in hits if _is_tx(t)]
+            rx_total = len([t for t in tr.results if not _is_tx(t)])
+            tx_total = len([t for t in tr.results if _is_tx(t)])
+            parts = []
+            if rx:
+                parts.append("обрыв приёма на 16-20 КБ у %d из %d тестовых "
+                             "серверов" % (len(rx), rx_total))
+            if tx:
+                parts.append("обрыв отправки (исходящий объём) у %d из %d"
+                             % (len(tx), tx_total))
             tr.dpi_classification = DPIClassification.TCP_16_20.value
-            tr.dpi_detail = ("Обрыв на 16-20 КБ у %d из %d тестовых серверов"
-                             % (len(hits), len(tr.results)))
+            detail = "; ".join(parts)
+            tr.dpi_detail = detail[:1].upper() + detail[1:]
         else:
             tr.dpi_classification = DPIClassification.NONE.value
             tr.dpi_detail = ""

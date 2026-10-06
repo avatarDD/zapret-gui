@@ -299,7 +299,7 @@ make upstream-offline    # только локальные сверки (идё�
 | `backup.py` | Экспорт/импорт всей конфигурации в один JSON. |
 | `teardown.py` | Снятие всех runtime-артефактов перед удалением. |
 | `selfcheck.py` | Самодиагностика на устройстве: зависимости/движки/конфиг/сеть + прогон тестов. CLI: `python3 -m core.selfcheck`. |
-| `gui_updater.py` | Самообновление GUI из GitHub (выбор версии + транспорт). Предупреждает о локальных правках кода (`local_code_changes`): обновление их затрёт. |
+| `gui_updater.py` | Самообновление GUI из GitHub (выбор версии + транспорт). Предупреждает о локальных правках кода (`local_code_changes`): обновление их затрёт. Выпуск с `SHA256SUMS` ставится его архивом `zapret-gui-linux.tar.gz` после `release_verify.decide`; перед заменой — копия кода `<app>.rollback-<ts>` и сторож `build_rollback_script` (GUI не ответил на `/api/ping` — откат, отметка `<app>.rollback-done`). |
 | `shell_exec.py` | Исполнение команд для MCP: argv без оболочки по safe-списку и `sh -c` под `shell_full`, запреты с нормализацией команды, двухшаговое подтверждение, дедмен-свитч `guard` на диске, фоновые задачи. |
 | `code_editor.py` | Самоправка модулей GUI на устройстве (MCP): границы каталога установки, staging (правка не попадает на диск до применения), слепок дерева на симлинках для настоящего `import`, снимки с манифестом, применение и откат, выгрузка локальных правок патчем. |
 | `code_guard.py` | Сторож самоправки — **отдельный процесс, только stdlib, без единого нашего импорта**: ждёт тела `/api/status` после перезапуска и возвращает прежние файлы, если GUI не вернулся или правку не подтвердили за `commit_ttl_sec`. Запускается `python3 -m core.code_guard`. |
@@ -315,7 +315,7 @@ make upstream-offline    # только локальные сверки (идё�
 | `nfqws_session.py` | Общий мьютекс на nfqws2/firewall + снимок состояния и возврат «как было». Берут все, кто движок МЕНЯЕТ (сканер на весь прогон, `nfqws_control`, сравнение проб); читающие — нет. Межпроцессная часть — lock-файл рядом с `settings.json`. |
 | `zapret_installer.py` | Установка/обновление бинаря nfqws2 (bol-van/zapret2). |
 | `strategy_builder.py` | Менеджер стратегий (единый источник: builtin JSON + пользовательские). Плюс декларативная сборка профиля: `compose_profile_args()` / `compose_profiles()` — описание (фильтр → payload/range → инстансы, порядок по §15 скила) в строку аргументов и в формат, который принимают `save_user_strategy` и `build_nfqws_args`. |
-| `strategy_lint.py` | Линтер профилей nfqws2: чистые функции без I/O (окружение — аргументами). Ловит то, чего `nfqws2 --intercept=0` не ловит в принципе: неизвестную lua-функцию, незаявленный blob, декларацию после `--new`, порядок `--lua-init`, приём без фильтра, опцию, которой владеет GUI (`engine_owned_option`). `error` — «так точно не сработает», `warning` — «подозрительно, но бывает осознанно». |
+| `strategy_lint.py` | Линтер профилей nfqws2: чистые функции без I/O (окружение — аргументами). Ловит то, чего `nfqws2 --intercept=0` не ловит в принципе: неизвестную lua-функцию, незаявленный blob, декларацию после `--new`, порядок `--lua-init`, приём без фильтра, опцию, которой владеет GUI (`engine_owned_option`), UDP/QUIC-фейк с пониженным TTL (`ttl_fake_on_udp`: ICMP time-exceeded рвёт QUIC у Safari). Тот же код — в редакторе (`web/js/utils/nfqws2_lint.js`). `error` — «так точно не сработает», `warning` — «подозрительно, но бывает осознанно». |
 | `strategy_generator.py` | Генерация стратегий «на лету» (параметрические сетки приёмов desync). |
 | `strategy_scanner.py` | Автоперебор стратегий против целей, ранжирование от простых к сложным. Формула ранжирования (`compose_score`) и правило «baseline открыт — кредита нет» (`credit_success`) вынесены на уровень модуля: их же зовёт движок экспериментов. |
 | `strategy_experiment.py` | Эксперименты A/B со стратегиями: варианты (`args`/`strategy_id`/`profiles`), baseline без обхода, пробы с медианой по повторам, дельта к baseline, хвост лога движка по окну варианта, правила-подсказки «почему не сработало» (`HINT_RULES` — данные), по желанию — tcpdump по окну варианта (`capture`) и lua-дамп того, что получил движок (`lua_capture`, `core/lua_capture.py`). Состояние возвращается в `finally`, `keep_best` живёт только до `ttl_sec` (дедмен-свитч), снимок дублируется на диск — `recover_after_restart()` при старте GUI. |
@@ -328,7 +328,10 @@ make upstream-offline    # только локальные сверки (идё�
 | `blob_manager.py` / `blob_registry.py` | Блобы для fake-пакетов (hex, генерация fake ClientHello). |
 | `lua_manager.py` | Lua-скрипты nfqws2. |
 | `hosts_manager.py` | `/etc/hosts`. |
-| `firewall.py` / `firewall_persistence.py` | Правила перенаправления трафика в nfqws2 + их персистентность. `uncovered_filter_ports` — порты профилей стратегии вне перехвата (предупреждение при старте). |
+| `firewall.py` / `firewall_persistence.py` | Правила перенаправления трафика в nfqws2 + их персистентность. `uncovered_filter_ports` — порты профилей стратегии вне перехвата (предупреждение при старте). Приёмы d2k: connmark-исключение для меток проб GUI (`nfqws.desync_mark_probe`) и клиентов `ip rule` мимо WAN (только без привязки к WAN), разгрузка PPE Keenetic в цепочках `nfqws_ppe_pre/_fwd` (`ppe_available` по `/proc/net/ip_tables_targets`). **Каждое новое правило — в обоих путях**: Python (`_apply_ipt_family`/`_apply_nftables`) и shell (`FIREWALL_SH_FUNCTIONS` для автозапуска и reapply-хука; переменные — в `render_run_conf` и шаблоне S99zapret). |
+| `route_marks.py` | Какие fwmark выбирают `ip rule` с другим выходом (VPN, туннель, blackhole): разбор `ip rule`/`ip route` — чистые функции, shell-двойник `_routed_marks`. |
+| `probe_mark.py` | SO_MARK собственных проб с проверкой чтением; `baseline_mode()` решает, можно ли мерить «без обхода», не гася движок (метка ставится и правила с исключением есть). |
+| `release_verify.py` | Проверка выпуска перед самообновлением: `SHA256SUMS`, подпись Ed25519 через `openssl pkeyutl -rawin`, закреплённые `PUBLIC_KEYS`, режимы `auto`/`require`. |
 | `keenetic_policy.py` | Политика доступа Keenetic для перехвата (`firewall.keenetic_policy[_exclude]`, паритет с POLICY_NAME nfqws2-keenetic): метка из `ndmc -c show ip policy`; в shell — `_policy_resolve` в `FIREWALL_SH_FUNCTIONS`. |
 | `asset_importer.py` | Импорт bundled-ассетов (blobs/lua/lists) в рабочие директории. |
 
@@ -346,7 +349,8 @@ make upstream-offline    # только локальные сверки (идё�
 | `block_detector.py` | Фоновой мониторинг: домены из живого DNS (dnsmasq/AdGuard/AF_PACKET), периодическая проба, автодобавление в списки. |
 | `testers/probe.py` | **Общая** быстрая проба DNS→TCP→TLS→HTTP + единый словарь кодов (`PROBE_CODES`) и их привязка к `DPIClassification`. Ею пользуются `block_detector.py` и DNS-фаза `blockcheck.py`. |
 | `testers/tls_tester.py` | HTTPS/TLS-проба через сырой socket (ClientHello-варианты). |
-| `testers/tcp_test.py` | Детект DPI, рвущего TCP на 16–20 КБ. |
+| `testers/tcp_test.py` | Детект DPI, рвущего TCP на 16–20 КБ: приём (`check_tcp_16_20`) и отправка — TX-лестница `check_tcp_tx_volume` (HEAD keep-alive с мусорным заголовком, `raw_data.direction="tx"`). |
+| `testers/dpi_differential.py` | Дифференциальные вопросы к DPI (d2k): целиком → разрез после 1-го байта → чужое имя на тот же IP; разбор ответа по записям TLS и дерево `decide` — чистые функции. Вызывают blockcheck (`_run_differential`) и MCP `dpi_classify`. |
 | `testers/body_tester.py` | Глубокая загрузка тела HTTP(S), детект `FAKE_LEAK`. |
 | `testers/quic_tester.py` | QUIC/HTTP-3 (UDP/443) проба. |
 | `testers/stun_tester.py` | STUN/UDP-связность. |
@@ -462,7 +466,7 @@ MCP то, что уже умеет менеджер, нельзя: разойд�
 | `mcp/schema.py` | Мини-валидатор JSON Schema (stdlib, без `jsonschema`). |
 | `mcp/resources.py` / `mcp/config_docs.py` / `mcp/prompts.py` | Справочники `zapret://…` (живой `nfqws2 -?`, карта `--lua-desync`, каталоги), описания настроек, промты-сценарии. |
 | `mcp/session.py` / `mcp/stdio.py` | Сессии legacy-SSE и stdio-мост (`ssh router zapret-gui mcp --stdio`). |
-| `mcp/tools/*.py` | 118 инструментов по доменам; `_paging.py` и `_jobs.py` — общие формы списка и асинхронной задачи (реестр модули с `_` пропускает), `jobs.py` — `job_wait` (ожидание вместо опроса в цикле), `memory.py` — память подбора, `issues.py` — черновики issue. |
+| `mcp/tools/*.py` | 119 инструментов по доменам; `_paging.py` и `_jobs.py` — общие формы списка и асинхронной задачи (реестр модули с `_` пропускает), `jobs.py` — `job_wait` (ожидание вместо опроса в цикле), `memory.py` — память подбора, `issues.py` — черновики issue. |
 
 Логика, которую MCP **использует, но не содержит**: `nfqws_control.py`
 (старт/стоп/применение стратегии — общий код для UI, CLI и MCP),
@@ -474,7 +478,8 @@ MCP то, что уже умеет менеджер, нельзя: разойд�
 (короткий дамп после движка и его разбор в поля), `lua_capture.py`
 (`--writable` + `zapret-pcap.lua`: что движок получил из очереди),
 `strategy_memory.py` (память подбора: «домен → что сработало у этого
-провайдера», файл рядом с `settings.json`), `catalog_export.py`
+провайдера», файл рядом с `settings.json`; семейства доменов —
+`family_of`/`family_candidates`), `catalog_export.py`
 (argv → секция `catalogs/*.txt`, чистые функции без I/O).
 
 **Подписка на ресурсы.** `resources/subscribe` +
@@ -703,11 +708,26 @@ make release VERSION=X.Y.Z   # бампит версию, ставит тег �
 - `packaging/entware/` и `packaging/openwrt/` — control-файлы и init-
   скрипты пакетов.
 - **CI** (`.github/workflows/`):
-  - `release.yml` — сборка и публикация основного пакета;
+  - `release.yml` — сборка и публикация основного пакета, плюс
+    `SHA256SUMS` всех артефактов и (при секрете `RELEASE_SIGNING_KEY`)
+    его подпись `SHA256SUMS.sig`. По ним самообновление GUI решает,
+    ставить ли `zapret-gui-linux.tar.gz` (`core/release_verify.py`);
   - `build-awg-binaries.yml` — кросс-сборка `amneziawg-go`/`-tools` (тег
     `awg-bin-vX`);
   - `build-singbox-binaries.yml` — сборка sing-box под платформы.
 - Версия — единый источник `core/version.py`.
+- **Ключ подписи выпусков** (делается один раз владельцем репозитория):
+
+  ```bash
+  openssl genpkey -algorithm ed25519 -out release.key   # закрытый — НЕ в git
+  openssl pkey -in release.key -pubout                  # открытый (PEM)
+  ```
+
+  Закрытый — целиком в секрет репозитория `RELEASE_SIGNING_KEY`;
+  открытый — строкой в `core/release_verify.PUBLIC_KEYS`. Пока кортеж
+  пуст, самообновление сверяет только хеш (целостность), а подлинность
+  честно помечает непроверенной. Смена ключа: новый — в `PUBLIC_KEYS`
+  рядом со старым, выпуск, потом старый убрать.
 
 ---
 

@@ -291,6 +291,86 @@ class TestTool(MemoryCase):
 
 
 
+class TestFamilies(MemoryCase):
+    """Семейства доменов (приём d2k): соседи по регистрируемому домену."""
+
+    def test_family_of(self):
+        cases = {
+            "rr1---sn-abc.googlevideo.com": "googlevideo.com",
+            "news.bbc.co.uk": "bbc.co.uk",
+            "x.msk.ru": "x.msk.ru",
+            "me.github.io": "me.github.io",
+            "a.b.me.github.io": "me.github.io",
+            "github.io": "",
+            "1.2.3.4": "",
+            "localhost": "",
+            "WWW.Instagram.COM.": "instagram.com",
+        }
+        for name, want in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(memory.family_of(name), want)
+
+    def test_neighbour_win_is_a_candidate(self):
+        self.observe("rr1.googlevideo.com", ["--good"], strategy_id="s1")
+        self.observe("rr2.googlevideo.com", ["--good"], strategy_id="s1")
+        found = memory.lookup(targets=["rr9.googlevideo.com"])
+        self.assertEqual(found["items"], [])
+        family = found["family"]["rr9.googlevideo.com"]
+        self.assertEqual(family[0]["args"], ["--good"])
+        self.assertEqual(family[0]["votes"], 2)
+        self.assertEqual(family[0]["family"], "googlevideo.com")
+
+    def test_other_family_and_network_do_not_count(self):
+        self.observe("youtube.com", ["--good"])
+        memory.remember([{"target": "rr1.googlevideo.com",
+                          "args": ["--other-net"], "ok": True}],
+                        network={"id": "net-other"})
+        self.assertEqual(memory.lookup(
+            targets=["rr9.googlevideo.com"])["family"], {})
+
+    def test_own_failure_beats_family(self):
+        self.observe("rr1.googlevideo.com", ["--good"])
+        self.observe("rr9.googlevideo.com", ["--good"], ok=False)
+        self.assertEqual(memory.lookup(
+            targets=["rr9.googlevideo.com"])["family"], {})
+
+    def test_fresh_failures_outvote(self):
+        self.observe("a.example.com", ["--x"])
+        self.observe("b.example.com", ["--x"], ok=False)
+        self.assertEqual(memory.lookup(targets=["c.example.com"])["family"],
+                         {})
+
+    def test_old_votes_expire(self):
+        self.observe("a.example.com", ["--x"])
+        data = memory.load()
+        for record in data["records"]:
+            record["last_seen"] = time.time() - 31 * 86400
+        memory.save(data)
+        self.assertEqual(memory.lookup(targets=["c.example.com"])["family"],
+                         {})
+
+    def test_old_failures_stop_blocking(self):
+        self.observe("a.example.com", ["--x"])
+        self.observe("b.example.com", ["--x"], ok=False)
+        data = memory.load()
+        for record in data["records"]:
+            if record["target"] == "b.example.com":
+                record["last_seen"] = time.time() - 8 * 86400
+        memory.save(data)
+        family = memory.lookup(targets=["c.example.com"])["family"]
+        self.assertEqual(family["c.example.com"][0]["votes"], 1)
+
+    def test_tool_reports_family_when_target_is_unknown(self):
+        registry.load_tools()
+        self.observe("a.example.com", ["--x"])
+        answer = registry.call("strategy_memory",
+                               {"targets": ["c.example.com"]},
+                               {})["structuredContent"]
+        self.assertEqual(answer["items"], [])
+        self.assertIn("family", answer)
+        self.assertIn("соседей", answer["reason"])
+
+
 class TestHelpedByStrategy(MemoryCase):
     """«Помогала у вас» в списке стратегий — вместо метки recommended."""
 

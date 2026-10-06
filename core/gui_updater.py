@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -56,6 +58,10 @@ WORK_DIR_NEED_MB = 45
 # (<dir>.new) и только потом переставляем — нужен запас под самый большой
 # каталог поставки плюс небольшой резерв.
 APP_DIR_NEED_MB = 25
+
+# Сколько ждать, прежде чем спросить новую версию «жива ли» (рестарт
+# сервиса и прогрев на слабом роутере — десятки секунд).
+ROLLBACK_HEALTH_WAIT = 90
 
 
 def _http_get_json(url: str, transport: str = "", timeout: int = HTTP_TIMEOUT):
@@ -371,12 +377,17 @@ class GuiUpdater:
     def get_operation_status(self) -> dict:
         """Статус текущей операции (+ итог последней завершённой)."""
         with self._lock:
-            return {
+            out = {
                 "in_progress": self._operation_in_progress,
                 "status": self._operation_status,
                 "progress": self._operation_progress,
                 "last_result": self._last_result,
             }
+        # Сторож вернул прежнюю версию: новая не ответила после рестарта.
+        rolled = last_rollback()
+        if rolled:
+            out["rolled_back"] = rolled
+        return out
 
     # ═══════════════════ INTERNAL ═══════════════════
 
@@ -433,10 +444,12 @@ class GuiUpdater:
 
         # Что качаем: конкретный тэг → ветка → последний релиз (фолбэк main).
         ref_label = ""
+        release_tag = ""
         if tag:
             archive_url = "%s/archive/refs/tags/%s.tar.gz" % (
                 GITHUB_REPO_URL, tag)
             ref_label = "версии %s" % tag
+            release_tag = tag
         elif branch:
             archive_url = "%s/archive/refs/heads/%s.tar.gz" % (
                 GITHUB_REPO_URL, branch)
@@ -447,6 +460,7 @@ class GuiUpdater:
                 archive_url = "%s/archive/refs/tags/%s.tar.gz" % (
                     GITHUB_REPO_URL, latest_tag)
                 ref_label = "последней версии (%s)" % latest_tag
+                release_tag = latest_tag
             else:
                 # Не смогли определить последний релиз (нет сети/лимит) —
                 # тянем main, как делали раньше.
@@ -454,12 +468,33 @@ class GuiUpdater:
                     GITHUB_REPO_URL)
                 ref_label = "ветки main"
 
+        from core import release_verify
+        verify_mode = release_verify.mode()
+        if not release_tag and verify_mode == release_verify.MODE_REQUIRE:
+            msg = ("Обновление на %s не проверяется подписью (это не "
+                   "выпуск), а gui.update_verify=require" % ref_label)
+            log.error(msg, source="gui-updater")
+            return {"ok": False, "message": msg, "version": None}
+
+        backup_dir, guarded = None, False
         try:
             # 1. Скачать архив
             self._set_progress("Загрузка %s%s..." % (
                 ref_label, " через обход" if transport else " с GitHub"), 10)
             archive_path = os.path.join(tmp_dir, "gui.tar.gz")
             os.makedirs(tmp_dir, exist_ok=True)
+
+            # 0. Выпуск с SHA256SUMS — ставим ЕГО архив и сверяем хеш (и
+            # подпись, если ключ закреплён). Старый выпуск без списка —
+            # исходники тэга, как раньше (в режиме require — отказ).
+            sums, sums_path, sig_path = {}, "", ""
+            if release_tag:
+                sums, sums_path, sig_path = self._fetch_release_sums(
+                    release_tag, tmp_dir, transport)
+                if sums.get(release_verify.ARCHIVE_NAME):
+                    archive_url = "%s/releases/download/%s/%s" % (
+                        GITHUB_REPO_URL, release_tag,
+                        release_verify.ARCHIVE_NAME)
 
             self._last_download_error = ""
             if not self._download_file(archive_url, archive_path,
@@ -478,6 +513,27 @@ class GuiUpdater:
                     ),
                     "version": None,
                 }
+
+            verification = release_verify.decide(
+                release_verify.file_sha256(archive_path) if sums else "",
+                sums,
+                release_verify.verify_signature(sums_path, sig_path)
+                if sums else (None, "нет SHA256SUMS"),
+                verify_mode)
+            for warning in verification["warnings"]:
+                log.warning("Обновление GUI: %s" % warning,
+                            source="gui-updater")
+            if not verification["ok"]:
+                log.error("Обновление GUI отклонено: %s"
+                          % verification["message"], source="gui-updater")
+                return {"ok": False,
+                        "message": "Обновление отклонено: %s"
+                                   % verification["message"],
+                        "version": None, "verification": verification}
+            if sums:
+                log.info("Выпуск %s: %s" % (release_tag,
+                                            verification["message"]),
+                         source="gui-updater")
 
             self._set_progress("Распаковка...", 30)
 
@@ -509,8 +565,6 @@ class GuiUpdater:
 
             self._set_progress("Бэкап конфигурации...", 45)
 
-            self._set_progress("Обновление файлов...", 55)
-
             # 4. Копировать новые файлы поверх старых.
             #
             # import/ обязателен: там лежат bundled lua/blob/lists, которые
@@ -531,6 +585,15 @@ class GuiUpdater:
                 "vendor", "tests",
             ]
             files_to_update = ["app.py"]
+
+            # Копия текущего кода на случай отката: новая версия может не
+            # подняться (ошибка импорта, нет зависимости на этой прошивке),
+            # и тогда сторож вернёт прежнюю (приём d2k). Нет места — без
+            # отката, но с предупреждением: обновлять это не мешает.
+            backup_dir = self._backup_for_rollback(
+                app_dir, dirs_to_update, files_to_update)
+
+            self._set_progress("Обновление файлов...", 55)
 
             for d in dirs_to_update:
                 src = os.path.join(src_dir, d)
@@ -614,7 +677,16 @@ class GuiUpdater:
             # F5 в браузере. Планируем рестарт через init-скрипт в
             # detached-режиме — HTTP-ответ успеет уйти клиенту до того,
             # как сервис убьёт сам себя.
+            # Отметка прошлого отката — про прошлое обновление, не это.
+            try:
+                os.unlink(app_dir.rstrip(os.sep) + ".rollback-done")
+            except OSError:
+                pass
             restart_scheduled = self._schedule_service_restart()
+            if backup_dir and restart_scheduled:
+                guarded = self._spawn_rollback_guard(
+                    app_dir, backup_dir, dirs_to_update,
+                    files_to_update, GUI_VERSION, new_version or "")
 
             if restart_scheduled:
                 msg = (
@@ -635,12 +707,17 @@ class GuiUpdater:
                     % (new_version or "?")
                 )
 
+            if guarded:
+                msg += (" Если новая версия не ответит за %d с, прежняя "
+                        "вернётся сама." % ROLLBACK_HEALTH_WAIT)
             return {
                 "ok": True,
                 "message": msg,
                 "version": new_version,
                 "restart_required": True,
                 "restart_scheduled": restart_scheduled,
+                "verification": verification,
+                "rollback_guard": guarded,
             }
 
         except Exception as e:
@@ -651,11 +728,159 @@ class GuiUpdater:
                 "version": None,
             }
         finally:
+            # Копия для отката нужна только сторожу: без него (обновление
+            # сорвалось, рестарт не запланирован) она лишь занимает место.
+            if backup_dir and not guarded:
+                shutil.rmtree(backup_dir, ignore_errors=True)
             # Очистка tmp
             shutil.rmtree(tmp_dir, ignore_errors=True)
             # И недокопированных <dir>.new, если сорвались на середине —
             # место освобождаем сразу, а не до следующей попытки.
             self._cleanup_stale_dirs(app_dir)
+
+    # ── выпуск: SHA256SUMS и подпись ─────────────────────────────
+
+    def _fetch_release_sums(self, tag: str, tmp_dir: str,
+                            transport: str = "") -> tuple:
+        """SHA256SUMS (+ подпись) выпуска → (разбор, путь, путь подписи).
+
+        Нет файла (выпуск старше этой проверки) — ``({}, "", "")``: это
+        не ошибка загрузки, а отсутствие, и шуметь в журнал незачем.
+        """
+        from core import release_verify
+        base = "%s/releases/download/%s" % (GITHUB_REPO_URL, tag)
+        sums_path = os.path.join(tmp_dir, release_verify.SUMS_NAME)
+        if not self._download_file("%s/%s" % (base, release_verify.SUMS_NAME),
+                                   sums_path, transport=transport,
+                                   quiet=True):
+            log.info("Выпуск %s без SHA256SUMS — архив не сверяется" % tag,
+                     source="gui-updater")
+            return {}, "", ""
+        try:
+            with open(sums_path, "r", encoding="utf-8",
+                      errors="replace") as handle:
+                sums = release_verify.parse_sums(handle.read(65536))
+        except OSError:
+            return {}, "", ""
+        sig_path = os.path.join(tmp_dir, release_verify.SIG_NAME)
+        if not self._download_file("%s/%s" % (base, release_verify.SIG_NAME),
+                                   sig_path, transport=transport,
+                                   quiet=True):
+            sig_path = ""
+        return sums, sums_path, sig_path
+
+    # ── откат по проверке здоровья ───────────────────────────────
+
+    @staticmethod
+    def _rollback_enabled() -> bool:
+        try:
+            from core.config_manager import get_config_manager
+            return bool(get_config_manager().get(
+                "gui", "update_rollback", default=True))
+        except Exception:                       # noqa: BLE001
+            return True
+
+    def _backup_for_rollback(self, app_dir: str, dirs, files):
+        """Скопировать текущий код рядом с приложением; путь или None."""
+        if not self._rollback_enabled():
+            return None
+        parent = os.path.dirname(os.path.abspath(app_dir))
+        # Старые копии (сторож упал, питание пропало) — не копим.
+        prefix = os.path.basename(os.path.abspath(app_dir)) + ".rollback-"
+        try:
+            for name in os.listdir(parent):
+                path = os.path.join(parent, name)
+                if name.startswith(prefix) and os.path.isdir(path) and \
+                        time.time() - os.path.getmtime(path) > 86400:
+                    shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
+        need = 0
+        for d in dirs:
+            for root, _dirs, names in os.walk(os.path.join(app_dir, d)):
+                for name in names:
+                    try:
+                        need += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+        free = self._free_mb(parent)
+        if free >= 0 and free * 1024 * 1024 < need * 1.2 + \
+                APP_DIR_NEED_MB * 1024 * 1024:
+            log.warning("Нет места под копию для отката (%d МБ свободно): "
+                        "обновление пойдёт без отката" % free,
+                        source="gui-updater")
+            return None
+        backup = os.path.join(parent, "%s%d" % (prefix, int(time.time())))
+        try:
+            os.makedirs(backup)
+            for d in dirs:
+                src = os.path.join(app_dir, d)
+                if os.path.isdir(src):
+                    shutil.copytree(src, os.path.join(backup, d),
+                                    symlinks=True,
+                                    ignore=shutil.ignore_patterns(
+                                        "__pycache__"))
+            for f in files:
+                src = os.path.join(app_dir, f)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(backup, f))
+        except OSError as e:
+            log.warning("Копия для отката не сделана (%s): обновление "
+                        "пойдёт без отката" % e, source="gui-updater")
+            shutil.rmtree(backup, ignore_errors=True)
+            return None
+        return backup
+
+    @staticmethod
+    def _health_url() -> str:
+        """Адрес /api/ping работающего GUI (bind 0.0.0.0 → петля)."""
+        try:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            host = str(cfg.get("gui", "host", default="127.0.0.1") or "")
+            port = int(cfg.get("gui", "port", default=8080) or 8080)
+        except Exception:                       # noqa: BLE001
+            host, port = "127.0.0.1", 8080
+        if host in ("", "0.0.0.0", "::", "*"):
+            host = "127.0.0.1"
+        if ":" in host:
+            host = "[%s]" % host
+        return "http://%s:%d/api/ping" % (host, port)
+
+    def _spawn_rollback_guard(self, app_dir, backup, dirs, files,
+                              from_version, to_version) -> bool:
+        """Запустить сторожа: через минуту-полторы GUI обязан отвечать.
+
+        Отвечает (любой HTTP-ответ, хоть 401) — копия удаляется, остаётся
+        только новая версия. Молчит три проверки подряд — файлы
+        возвращаются из копии, сервис перезапускается, а рядом с
+        приложением ложится отметка ``.rollback-done`` (её показывает
+        статус обновления).
+        """
+        restart_cmd = self._resolve_restart_command()
+        if not restart_cmd:
+            return False
+        script = build_rollback_script(
+            app_dir=app_dir, backup=backup, dirs=dirs, files=files,
+            restart_cmd=restart_cmd, url=self._health_url(),
+            python=sys.executable or "python3",
+            wait=ROLLBACK_HEALTH_WAIT, from_version=from_version,
+            to_version=to_version)
+        path = os.path.join(backup, "rollback.sh")
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(script)
+            subprocess.Popen(["sh", path], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             start_new_session=True, close_fds=True)
+        except OSError as e:
+            log.warning("Сторож отката не запущен: %s" % e,
+                        source="gui-updater")
+            return False
+        log.info("Сторож отката: проверит GUI через %d с (копия — %s)"
+                 % (ROLLBACK_HEALTH_WAIT, backup), source="gui-updater")
+        return True
 
     def _verify_installed(self, app_dir: str, src_dir: str):
         """
@@ -1005,7 +1230,8 @@ class GuiUpdater:
                 pass
         return None
 
-    def _download_file(self, url: str, dest: str, transport: str = "") -> bool:
+    def _download_file(self, url: str, dest: str, transport: str = "",
+                       quiet: bool = False) -> bool:
         """Скачать файл.
 
         Делегируем core/binary_installer.download_file — зеркало
@@ -1028,8 +1254,9 @@ class GuiUpdater:
             if res.get("ok"):
                 return True
             self._last_download_error = str(res.get("error") or "")
-            log.error("Ошибка загрузки %s: %s" % (url, res.get("error")),
-                      source="gui-updater")
+            if not quiet:
+                log.error("Ошибка загрузки %s: %s" % (url, res.get("error")),
+                          source="gui-updater")
             return False
         except Exception as e:
             self._last_download_error = str(e)
@@ -1104,6 +1331,83 @@ class GuiUpdater:
             return lat_parts > inst_parts
         except Exception:
             return installed.lstrip("v") != latest.lstrip("v")
+
+
+# ═══════════════════════════════════════════════════════════
+#  Сторож отката
+# ═══════════════════════════════════════════════════════════
+
+def build_rollback_script(app_dir, backup, dirs, files, restart_cmd, url,
+                          python="python3", wait=ROLLBACK_HEALTH_WAIT,
+                          from_version="", to_version="",
+                          retries=3, retry_pause=15) -> str:
+    """Текст shell-сторожа отката (чистая функция — её гоняют тесты).
+
+    Живость — любой HTTP-ответ /api/ping (401/403 при включённой
+    авторизации тоже ответ). «Не отвечает» — отказ соединения или
+    таймаут во всех ``retries`` попытках.
+    """
+    q = shlex.quote
+    probe = ("import sys, urllib.request, urllib.error\n"
+             "try:\n"
+             "    urllib.request.urlopen(sys.argv[1], timeout=5)\n"
+             "except urllib.error.HTTPError:\n"
+             "    pass\n"
+             "except Exception:\n"
+             "    sys.exit(1)\n")
+    restore = []
+    for d in dirs:
+        restore.append(
+            'if [ -d "$BACKUP"/%s ]; then rm -rf "$APP_DIR"/%s && '
+            'mv "$BACKUP"/%s "$APP_DIR"/%s; fi' % (q(d), q(d), q(d), q(d)))
+    for f in files:
+        restore.append('[ -f "$BACKUP"/%s ] && mv -f "$BACKUP"/%s '
+                       '"$APP_DIR"/%s' % (q(f), q(f), q(f)))
+    return "\n".join([
+        "#!/bin/sh",
+        "# zapret-gui: проверка после самообновления и откат (сгенерировано).",
+        "APP_DIR=%s" % q(app_dir),
+        "BACKUP=%s" % q(backup),
+        "URL=%s" % q(url),
+        "PY=%s" % q(python),
+        "MARK=\"$APP_DIR.rollback-done\"",
+        "sleep %d" % int(wait),
+        "i=0",
+        "while [ \"$i\" -lt %d ]; do" % int(retries),
+        "    if \"$PY\" -c %s \"$URL\" >/dev/null 2>&1; then" % q(probe),
+        "        rm -rf \"$BACKUP\"",
+        "        exit 0",
+        "    fi",
+        "    i=$((i + 1))",
+        "    sleep %d" % int(retry_pause),
+        "done",
+        "# Новая версия не отвечает — возвращаем прежнюю.",
+    ] + restore + [
+        "find \"$APP_DIR\" -name __pycache__ -type d -prune "
+        "-exec rm -rf {} + 2>/dev/null",
+        "printf 'from=%%s to=%%s at=%%s\\n' %s %s \"$(date +%%s)\" "
+        "> \"$MARK\"" % (q(to_version), q(from_version)),
+        "rm -rf \"$BACKUP\"",
+        "%s >/dev/null 2>&1" % restart_cmd,
+        "exit 0",
+        "",
+    ])
+
+
+def last_rollback(app_dir: str = None) -> dict:
+    """Был ли откат после обновления: ``{from, to, at}`` или ``{}``."""
+    path = (app_dir or _APP_DIR).rstrip(os.sep) + ".rollback-done"
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read(512)
+    except OSError:
+        return {}
+    out = {}
+    for part in text.split():
+        key, _, value = part.partition("=")
+        if key in ("from", "to", "at"):
+            out[key] = value
+    return out
 
 
 # ═══════════════════════════════════════════════════════════

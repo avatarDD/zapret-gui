@@ -40,6 +40,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from core import probe_mark
 from core.models import DPIClassification, remediation_for
 from core.testers.config import (
     KNOWN_BLOCK_IPS,
@@ -377,6 +378,7 @@ def probe_domain(
     port: int = 443,
     max_body: int = PROBE_MAX_BODY,
     verify_cert: bool = True,
+    mark: int = 0,
 ) -> ProbeResult:
     """Проба домена по цепочке DNS → TCP → TLS → HTTP.
 
@@ -386,6 +388,9 @@ def probe_domain(
         port: порт (по умолчанию 443).
         max_body: сколько байт тела читать (для детекции обрыва на 16-20 КБ).
         verify_cert: проверять сертификат (нужно для детекции MITM).
+        mark: SO_MARK сокета (core/probe_mark.py): помеченное соединение
+            firewall пускает мимо очереди — замер без обхода при
+            работающем движке. 0 — без метки.
 
     Returns:
         ProbeResult — код, подпись, DPI-классификация и remediation.
@@ -423,9 +428,13 @@ def probe_domain(
     last_err: Exception | None = None
     for ip in ips[:PROBE_MAX_ADDRS]:
         try:
-            sock = socket.create_connection((ip, port), timeout=timeout)
+            sock = probe_mark.create_connection((ip, port),
+                                                timeout=timeout, mark=mark)
             connected_ip = ip
             break
+        except probe_mark.MarkError:
+            # Без метки проба пошла бы сквозь обход — это не замер.
+            raise
         except Exception as e:      # socket.timeout — подкласс OSError
             # «Нет маршрута» (IPv6 на роутере без IPv6) не перекрывает
             # ответ сети по другому адресу — см. tls_tester.pick_error.

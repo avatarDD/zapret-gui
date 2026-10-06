@@ -9,7 +9,7 @@
 иначе, чем чтение конфига, поэтому лимиты (``mcp.probes``) режут запрос
 до первого пакета, а не после.
 
-Три инструмента:
+Четыре инструмента:
 
 * ``probe_targets`` — быстрая проба списка доменов (DNS → TCP → TLS →
   HTTP). Состояния не меняет вовсе;
@@ -18,6 +18,9 @@
   здесь, кто трогает устройство: вторая сторона измеряется после
   переключения движка, поэтому сверх ``probes`` спрашивается
   ``control``, а исходное состояние возвращается в ``finally``;
+* ``dpi_classify`` — ЧЕМ режут (приём d2k): ClientHello целиком →
+  разрез после первого байта → чужое имя на тот же адрес. Состояния не
+  меняет; пробы метятся ``SO_MARK`` мимо очереди, если можно;
 * ``connectivity_matrix`` — матрица «цель × интерфейс» по туннелям.
   Публикуется в read-наборе: снимок читается всегда, а **новый прогон**
   (``refresh``) — по ``probes``. Тот же приём, что у
@@ -135,9 +138,9 @@ def probe_targets(args: dict) -> dict:
     title="Probe with and without bypass",
     description=("Probe one domain THROUGH nfqws2 and around it; verdict "
                  "is bypass_helps / no_difference / target_down / "
-                 "bypass_hurts / unknown. Toggles the engine, needs "
-                 "`control` too, restores state. / Один домен с обходом "
-                 "и без: помогает ли обход."),
+                 "bypass_hurts / unknown. Running engine: marked probe "
+                 "past the queue; else toggles it (needs `control`) "
+                 "and restores. / Один домен с обходом и без."),
     schema={
         "type": "object",
         "properties": {
@@ -188,7 +191,10 @@ def probe_compare(args: dict) -> dict:
         "requested": wanted,
         "allowed": toggle,
         "permission": "control",
-        "hint": ("переключение движка разрешено" if toggle else
+        "hint": ("сторона без обхода измерена пробой с меткой мимо "
+                 "очереди — движок не переключался"
+                 if result.get("without_method") == "probe_mark" else
+                 "переключение движка разрешено" if toggle else
                  "вторая сторона не измерена: переключение движка "
                  "требует разрешения «control» вдобавок к «probes»"
                  if wanted and not control else
@@ -197,6 +203,91 @@ def probe_compare(args: dict) -> dict:
     result["note"] = NOTE
     result.setdefault("hint", _compare_hint(result))
     return result
+
+
+@tool(
+    name="dpi_classify",
+    scope="probes",
+    mutating=False,
+    title="Ask DPI how it blocks",
+    description=("Differential DPI questions: whole ClientHello -> split "
+                 "after byte 1 -> other SNI on the same IP. Verdict "
+                 "clear/prefix/opaque/address/response/local_address. "
+                 "Changes nothing. / Чем режут: разрез, фейк или туннель."),
+    schema={
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": ("Hostname without scheme or path. / "
+                                "Домен без схемы и пути."),
+                "maxLength": 253,
+            },
+            "repeats": {"type": "integer", "minimum": 1,
+                        "maximum": MAX_REPEATS_SCHEMA, "default": 2,
+                        "description": ("Repeats per question; they must "
+                                        "agree. / Повторов на вопрос — "
+                                        "обязаны совпасть.")},
+            "timeout_sec": {"type": "integer", "minimum": 1, "maximum": 15,
+                            "description": ("Timeout per exchange. / "
+                                            "Таймаут одного обмена.")},
+            "control_sni": {"type": "string", "maxLength": 253,
+                            "description": ("Control name for the same "
+                                            "IP. / Имя-контроль на тот же "
+                                            "адрес.")},
+        },
+        "required": ["target"],
+        "additionalProperties": False,
+    },
+)
+def dpi_classify(args: dict) -> dict:
+    """Дифференциальные вопросы к DPI (core/testers/dpi_differential.py)."""
+    from core import probe_runner
+    from core.testers import dpi_differential
+
+    accepted, rejected = probe_runner.clean_targets(
+        [args.get("target") or ""], 1)
+    if not accepted:
+        return {"ok": False,
+                "error": "не похоже на имя хоста: %s"
+                         % str(args.get("target"))[:80],
+                "rejected": rejected,
+                "hint": "передайте домен без схемы и пути"}
+    control = str(args.get("control_sni") or "").strip()
+    if control:
+        good, _ = probe_runner.clean_targets([control], 1)
+        if not good:
+            return {"ok": False,
+                    "error": "control_sni не похож на имя хоста"}
+        control = good[0]
+    limits = probe_runner.limits()
+    timeout = args.get("timeout_sec") or min(limits["timeout_sec"], 8)
+    result = dpi_differential.classify(
+        accepted[0], timeout=timeout, repeats=args.get("repeats", 2),
+        control_sni=control or dpi_differential.CONTROL_SNI)
+    result["ok"] = True
+    result["note"] = NOTE
+    result["hint"] = DPI_CLASSIFY_HINTS.get(result["verdict"], "")
+    return result
+
+
+# Что делать с вердиктом — короткая подсказка рядом с ответом.
+DPI_CLASSIFY_HINTS = {
+    "clear": "блокировки ClientHello нет — смотрите DNS, объём (16-20 КБ) "
+             "и QUIC: probe_targets",
+    "prefix": "хватит разреза: multisplit/multidisorder по позиции 1 или "
+              "по sni (strategy_compose)",
+    "opaque": "разрез не помогает — нужен фейк (fake, hostfakesplit, "
+              "seqovl); подбор: scan_start или strategy_experiment_start",
+    "address": "десинк не поможет: маршрут через туннель "
+               "(unified_route_save) или другой адрес",
+    "response": "режут ответ TLS 1.2: клиенту — TLS 1.3, иначе туннель",
+    "local_address": "имя подменяется локально (роутер/AdGuard/hosts) — "
+                     "провайдер ни при чём",
+    "unreachable": "до адреса нет TCP: адрес лежит или закрыт — туннель",
+    "flaky": "повторите позже или с repeats=3: ответы разошлись",
+    "inconclusive": "см. reason: чего не хватило для вердикта",
+}
 
 
 @tool(

@@ -55,6 +55,12 @@ const SettingsPage = (() => {
                 { key: 'gui.host',            label: 'Адрес привязки',    type: 'text',   placeholder: '0.0.0.0' },
                 { key: 'gui.port',            label: 'Порт',              type: 'number', placeholder: '8080', min: 1, max: 65535 },
                 { key: 'gui.debug',           label: 'Режим отладки',     type: 'toggle', expert: true },
+                { key: 'gui.update_verify',   label: 'Проверка обновлений', type: 'select', expert: true, options: [
+                    { value: 'auto', label: 'Авто' }, { value: 'require', label: 'Только подписанные' }
+                  ],
+                  hint: 'Самообновление сверяет архив выпуска с SHA256SUMS и, если ключ подписи закреплён, проверяет подпись Ed25519 (нужен openssl). «Только подписанные» — отказ для выпусков без проверенной подписи и для обновления на ветку.' },
+                { key: 'gui.update_rollback', label: 'Откат неудачного обновления', type: 'toggle', expert: true,
+                  hint: 'Перед обновлением сохраняется копия кода. Если после перезапуска GUI не отвечает ~2 минуты — прежняя версия возвращается сама.' },
                 { key: 'gui.auth_enabled',    label: 'Авторизация',       type: 'toggle' },
                 { key: 'gui.auth_user',       label: 'Логин',             type: 'text',   placeholder: 'admin', showIf: 'gui.auth_enabled' },
                 { key: 'gui.auth_password',   label: 'Пароль',            type: 'password', placeholder: '••••••', showIf: 'gui.auth_enabled' },
@@ -93,6 +99,8 @@ const SettingsPage = (() => {
                 { key: 'nfqws.udp_pkt_in',           label: 'UDP пакетов IN',         type: 'number', min: 0, max: 100, expert: true },
                 { key: 'nfqws.desync_mark',          label: 'Desync mark',            type: 'text', placeholder: '0x40000000', expert: true },
                 { key: 'nfqws.desync_mark_postnat',  label: 'Desync mark (postnat)',  type: 'text', placeholder: '0x20000000', expert: true },
+                { key: 'nfqws.desync_mark_probe',    label: 'Метка проб GUI',         type: 'text', placeholder: '0x10000000', expert: true,
+                  hint: 'SO_MARK собственных проверок GUI. Соединения с этой меткой идут мимо NFQUEUE в обе стороны — «замер без обхода» не гасит движок для всей сети. Пусто или 0 — выключено (тогда на замер движок останавливается, как раньше).' },
                 { key: 'nfqws.user',                 label: 'Пользователь',           type: 'text', placeholder: 'nobody', expert: true },
                 { key: 'nfqws.debug',                label: 'Режим отладки nfqws2',   type: 'toggle',
                   hint: 'Добавляет --debug к nfqws2: пер-пакетный лог (грузятся ли lua, объявлены ли блобы, матчится ли пакет цели, какие desync применяются) выводится в журнал на уровне INFO. Применяется при следующем запуске/перезапуске nfqws2. Включайте на время диагностики — лог многословный.' },
@@ -123,6 +131,12 @@ const SettingsPage = (() => {
                   hint: 'Имя политики из «Приоритеты подключений → Политики доступа в интернет». Обход nfqws2 — только для устройств этой политики (или для всех, кроме них — переключатель ниже). Пусто — для всех. Как POLICY_NAME в nfqws2-keenetic; только iptables.' },
                 { key: 'firewall.keenetic_policy_exclude', label: 'Политика: исключить её устройства', type: 'toggle', expert: true,
                   hint: 'Включено — обход для всех, КРОМЕ устройств политики. Выключено — только для них.' },
+                { key: 'firewall.ppe_deoffload',   label: 'Разгрузка ускорителя PPE', type: 'select', expert: true, options: [
+                    { value: 'auto', label: 'Авто' }, { value: 'off', label: 'Выключена' }
+                  ],
+                  hint: 'Keenetic с аппаратным ускорителем (MediaTek PPE): правила -j PPE -m connskip держат первые пакеты каждого перехватываемого соединения на процессоре, иначе ответы, повторы и RST уходят мимо netfilter и nfqws2 их не видит. «Авто» — ставить, если цель PPE есть в прошивке. Скорость основного потока не меняется: после первых пакетов он снова в ускорителе.' },
+                { key: 'firewall.skip_routed_marks', label: 'Не трогать клиентов VPN', type: 'toggle', expert: true,
+                  hint: 'Действует, только когда WAN не задан и не найден (перехват на всех интерфейсах). Клиенты, которых роутер ведёт правилом ip rule по fwmark в другой выход (VPN Keenetic, туннели), идут мимо очереди: иначе фейки nfqws2 ушли бы в WAN мимо туннеля.' },
             ]
         },
         {
