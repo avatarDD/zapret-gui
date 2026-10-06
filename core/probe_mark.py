@@ -29,7 +29,9 @@ connmark-исключение — его пакеты туда и обратно
    идёт напрямую) или среди них есть правило с нашей меткой.
 """
 
+import contextlib
 import socket
+import struct
 import threading
 
 from core.log_buffer import log
@@ -60,11 +62,16 @@ def configured() -> int:
 
 
 def apply(sock, mark: int) -> bool:
-    """Поставить метку на сокет и проверить, что она там действительно есть."""
+    """Поставить метку на сокет и проверить, что она там действительно есть.
+
+    Значение уходит упакованным u32: старший бит (метка песочницы
+    сканера 0x80000000) в int-форму ``setsockopt`` не влезает.
+    """
     if not mark:
         return False
     try:
-        sock.setsockopt(socket.SOL_SOCKET, SO_MARK, int(mark))
+        sock.setsockopt(socket.SOL_SOCKET, SO_MARK,
+                        struct.pack("I", int(mark) & 0xFFFFFFFF))
         got = sock.getsockopt(socket.SOL_SOCKET, SO_MARK)
     except (OSError, ValueError, TypeError):
         return False
@@ -118,6 +125,66 @@ def create_connection(address, timeout=None, mark: int = 0):
             last = e
             sock.close()
     raise last or OSError("нет адресов для %s" % host)
+
+
+# ─────────── пометка всех сокетов потока (для песочницы сканера) ───────────
+#
+# Пробы сканера идут через десяток тестеров (TLS, тело, QUIC, STUN), и
+# каждый создаёт сокеты по-своему — `socket.socket`, `create_connection`,
+# `http.client`. Протаскивать метку параметром через все — значит править
+# каждый и не забыть следующий. Вместо этого `socket.socket.__init__`
+# один раз оборачивается: внутри `with marking(mark):` КАЖДЫЙ новый
+# IPv4/IPv6-сокет ЭТОГО потока получает метку (с проверкой чтением), в
+# других потоках и вне блока поведение прежнее. Класс не подменяется —
+# только его __init__, поэтому `isinstance(x, socket.socket)` и ssl не
+# замечают разницы.
+
+_tls = threading.local()
+_install_lock = threading.Lock()
+_installed = False
+
+
+def _install() -> None:
+    global _installed
+    with _install_lock:
+        if _installed:
+            return
+        original = socket.socket.__init__
+
+        def __init__(self, family=-1, type=-1, proto=-1, fileno=None):
+            original(self, family, type, proto, fileno)
+            mark = getattr(_tls, "mark", 0)
+            if not mark or fileno is not None:
+                return
+            if self.family not in (socket.AF_INET, socket.AF_INET6):
+                return
+            if not apply(self, mark):
+                self.close()
+                raise MarkError("метка 0x%x на сокет не встала (нужен "
+                                "CAP_NET_ADMIN)" % mark)
+
+        socket.socket.__init__ = __init__
+        _installed = True
+
+
+@contextlib.contextmanager
+def marking(mark: int):
+    """Все новые сокеты текущего потока внутри блока — с меткой ``mark``.
+
+    ``mark=0`` — блок ничего не меняет. Метка не встала — сокет не
+    создаётся вовсе (:class:`MarkError`): проба без неё ушла бы мимо
+    нужной очереди, и её результат был бы про другое.
+    """
+    if not mark:
+        yield
+        return
+    _install()
+    previous = getattr(_tls, "mark", 0)
+    _tls.mark = int(mark)
+    try:
+        yield
+    finally:
+        _tls.mark = previous
 
 
 def rules_carry_mark(rules, mark: int) -> bool:

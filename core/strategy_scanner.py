@@ -210,6 +210,17 @@ class StrategyScanner:
         # Путь временного hostlist'а для приёмов (создаётся в _run_scan)
         self._tmp_hostlist: Optional[str] = None
 
+        # Песочница (core/nfqws_sandbox.py): кандидаты — во втором nfqws2,
+        # обход сети не трогается. Решается на старте прогона
+        # (_decide_isolation); причина — в isolation_note статуса.
+        self._isolated = False
+        self._isolation_note = ""
+        self._sandbox = None
+        self._sandbox_mark = 0
+        # Метка проб baseline: при работающем движке сети замер «без
+        # обхода» идёт мимо очереди (core/probe_mark.py).
+        self._baseline_mark = 0
+
         # Saved state (for restoring nfqws after scan)
         # Снимок целиком — из core/nfqws_session; три поля рядом
         # оставлены как есть: по ним читается «а надо ли вообще
@@ -402,6 +413,9 @@ class StrategyScanner:
                 "confirmed_count": len([r for r in working if r.confirmed]),
                 "memory_first": len(self._memory_ids),
                 "rules_reapplied": self._rules_reapplied,
+                # Песочница: кандидаты во втором nfqws2, обход сети цел.
+                "isolated": self._isolated,
+                "isolation_note": self._isolation_note,
             }
 
     def _probe_kind_name(self) -> str:
@@ -528,6 +542,9 @@ class StrategyScanner:
     def _run_scan_locked(self) -> None:
         """Тело сканирования; мьютекс на движок уже наш."""
         started_at = time.time()
+        # Решение о песочнице — этого прогона, а не прошлого: до него
+        # (ранний выход) уборка идёт старым путём.
+        self._isolated, self._isolation_note = False, ""
 
         try:
             # 0. Проверка предпосылок: без lua-скриптов / NFQUEUE сканировать
@@ -565,13 +582,19 @@ class StrategyScanner:
                 source="scanner",
             )
 
-            # 3. Останавливаем текущий nfqws2 если запущен
-            self._stop_current_nfqws()
+            # 3. Песочница или остановка движка сети. В песочнице обход
+            #    сети работает весь подбор; без неё — гасим, как раньше.
+            self._decide_isolation()
+            if not self._isolated:
+                self._stop_current_nfqws()
 
-            # 4. Baseline тест (без обхода)
+            # 4. Baseline тест (без обхода). При работающем движке сети
+            #    пробы идут с меткой мимо очереди.
             self._set_stage(STAGE_BASELINE)
             self._set_phase("Проверка без обхода (baseline)")
-            baseline_accessible = self._run_baseline_test()
+            from core import probe_mark
+            with probe_mark.marking(self._baseline_mark):
+                baseline_accessible = self._run_baseline_test()
 
             if baseline_accessible:
                 log.warning(
@@ -1169,10 +1192,14 @@ class StrategyScanner:
         Returns:
             StrategyProbeResult.
         """
+        from core import probe_mark
         from core.nfqws_manager import get_nfqws_manager
         from core.firewall import get_firewall_manager
 
-        nfqws = get_nfqws_manager()
+        # В песочнице кандидат поднимается во втором nfqws2, а пробы
+        # метятся так, чтобы firewall увёл в его очередь только их.
+        nfqws = self._sandbox if self._isolated else get_nfqws_manager()
+        mark = self._sandbox_mark if self._isolated else 0
         fw = get_firewall_manager()
 
         start_time = time.time()
@@ -1283,7 +1310,8 @@ class StrategyScanner:
                 )
 
             # 6. Проба доступности — глубокая, с детектом 16-20 KB
-            probe = self._deep_probe()
+            with probe_mark.marking(mark):
+                probe = self._deep_probe()
 
             elapsed_ms = (time.time() - start_time) * 1000
 
@@ -1361,16 +1389,28 @@ class StrategyScanner:
         """
         from core.firewall import get_firewall_manager
 
-        if get_firewall_manager().apply_rules():
+        if self._apply_scan_rules(get_firewall_manager()):
             with self._lock:
                 self._rules_reapplied = 0
             return True
         return False
 
+    def _apply_scan_rules(self, fw) -> bool:
+        """Основные правила — или только правила песочницы."""
+        if self._isolated:
+            return fw.apply_sandbox_rules(self._sandbox_queue(),
+                                          self._sandbox_mark)
+        return fw.apply_rules()
+
+    def _sandbox_queue(self) -> int:
+        from core import nfqws_sandbox
+        return nfqws_sandbox.queue_num()
+
     def _ensure_scan_rules(self, fw) -> bool:
         """Правила на месте? Нет — поставить снова (и посчитать это)."""
         try:
-            if fw.is_applied():
+            if (fw.sandbox_rules_applied() if self._isolated
+                    else fw.is_applied()):
                 return True
         except Exception as e:                  # noqa: BLE001 — граница
             log.debug("Проверка правил не удалась: %s" % e,
@@ -1378,7 +1418,7 @@ class StrategyScanner:
         log.warning("Правила перехвата пропали посреди подбора (их "
                     "сбросил системный firewall?) — ставим заново",
                     source="scanner")
-        if not fw.apply_rules():
+        if not self._apply_scan_rules(fw):
             return False
         with self._lock:
             self._rules_reapplied += 1
@@ -2294,6 +2334,47 @@ class StrategyScanner:
         self._saved_nfqws_args = snapshot["nfqws_args"]
         self._saved_firewall_applied = snapshot["firewall_applied"]
 
+    def _decide_isolation(self) -> None:
+        """Песочница или старый путь — и почему (в статус и журнал).
+
+        Песочница — когда она доступна (``nfqws_sandbox.available``) и
+        baseline можно снять, не гася движок сети: движок не работает
+        (замер и так прямой) или метка проб мимо очереди действует.
+        """
+        from core import nfqws_sandbox, probe_mark
+        from core.nfqws_manager import get_nfqws_manager
+
+        self._isolated, self._sandbox, self._sandbox_mark = False, None, 0
+        self._baseline_mark = 0
+        try:
+            avail = nfqws_sandbox.available()
+            if avail["ok"] and get_nfqws_manager().is_running():
+                mode = probe_mark.baseline_mode()
+                if mode["marked"]:
+                    self._baseline_mark = mode["mark"]
+                else:
+                    avail = {"ok": False,
+                             "reason": "baseline без остановки движка "
+                                       "сети невозможен: %s"
+                                       % mode["reason"]}
+        except Exception as e:                  # noqa: BLE001 — граница
+            avail = {"ok": False, "reason": "%s: %s"
+                                            % (type(e).__name__, e)}
+
+        if avail["ok"]:
+            self._sandbox = nfqws_sandbox.NFQWSSandbox(
+                nfqws_sandbox.queue_num())
+            self._sandbox_mark = nfqws_sandbox.mark()
+            self._isolated = True
+            log.info("Подбор в песочнице: %s" % avail["reason"],
+                     source="scanner")
+        else:
+            self._baseline_mark = 0
+            log.info("Подбор без песочницы (%s): обход сети на время "
+                     "подбора остановлен" % avail["reason"],
+                     source="scanner")
+        self._isolation_note = avail["reason"]
+
     def _stop_current_nfqws(self) -> None:
         """Остановить текущий nfqws2 перед сканированием."""
         from core.nfqws_manager import get_nfqws_manager
@@ -2324,7 +2405,8 @@ class StrategyScanner:
         трогаем» остаётся здесь: в этом случае состояние «как было» уже
         обеспечил ``_ensure_cleanup``.
         """
-        if not self._saved_nfqws_running:
+        if not self._saved_nfqws_running or self._isolated:
+            # В песочнице движок сети не трогали — возвращать нечего.
             return
 
         from core.nfqws_session import get_nfqws_session
@@ -2342,8 +2424,23 @@ class StrategyScanner:
         """
         Гарантированная очистка: остановка nfqws2 и снятие firewall.
 
-        Вызывается в finally блоке главного цикла.
+        Вызывается в finally блоке главного цикла. В песочнице — только
+        её процесс и её правила: обход сети остаётся как был.
         """
+        if self._isolated:
+            try:
+                if self._sandbox is not None:
+                    self._sandbox.stop()
+            except Exception as e:              # noqa: BLE001
+                log.warning("Cleanup: песочница не остановилась: %s" % e,
+                            source="scanner")
+            try:
+                from core.firewall import get_firewall_manager
+                get_firewall_manager().remove_sandbox_rules()
+            except Exception as e:              # noqa: BLE001
+                log.warning("Cleanup: правила песочницы не сняты: %s" % e,
+                            source="scanner")
+            return
         try:
             from core.nfqws_manager import get_nfqws_manager
             nfqws = get_nfqws_manager()

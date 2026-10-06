@@ -275,7 +275,15 @@ class NFQWSManager:
 
     Запускает nfqws2 через subprocess.Popen, читает stderr
     в фоновом потоке и пишет в лог-буфер.
+
+    Подкласс ``core/nfqws_sandbox.NFQWSSandbox`` — второй экземпляр для
+    проверки кандидатов сканером: свой PID-файл, своя очередь, свой
+    источник в журнале и каталог состояния z2k.
     """
+
+    # PID-файл этого экземпляра и источник его строк в журнале.
+    PID_PATH = PID_FILE
+    LOG_SOURCE = "nfqws"
 
     def __init__(self):
         self._process = None          # subprocess.Popen
@@ -312,7 +320,7 @@ class NFQWSManager:
             # Уже запущен?
             if self._is_running_locked():
                 log.warning("nfqws2 уже запущен (PID %d)" % self._pid,
-                            source="nfqws")
+                            source=self.LOG_SOURCE)
                 return True
 
             from core.config_manager import get_config_manager
@@ -322,11 +330,11 @@ class NFQWSManager:
 
             # Проверяем бинарник
             if not os.path.isfile(binary):
-                log.error("Бинарник не найден: %s" % binary, source="nfqws")
+                log.error("Бинарник не найден: %s" % binary, source=self.LOG_SOURCE)
                 return False
             if not os.access(binary, os.X_OK):
                 log.error("Бинарник не исполняемый: %s" % binary,
-                          source="nfqws")
+                          source=self.LOG_SOURCE)
                 return False
 
             # Режим отладки: при --debug stderr nfqws2 показываем на INFO.
@@ -353,8 +361,8 @@ class NFQWSManager:
 
             self._warn_uncovered_ports(strategy_args, cfg)
 
-            log.info("Запуск nfqws2...", source="nfqws")
-            log.debug("Команда: %s" % " ".join(full_args), source="nfqws")
+            log.info("Запуск nfqws2...", source=self.LOG_SOURCE)
+            log.debug("Команда: %s" % " ".join(full_args), source=self.LOG_SOURCE)
 
             # nfqws2 с --debug (DLOG) пишет пер-пакетный лог в STDOUT, а
             # ошибки — в STDERR. Раньше stdout уходил в DEVNULL, поэтому при
@@ -374,7 +382,7 @@ class NFQWSManager:
             # nfqws2 запускается под --user (обычно nobody) и при отсутствии
             # каталога Lua делает fallback в /tmp (тоже работает, но теряется
             # при ребуте).
-            state_dir = z2k_state_dir()
+            state_dir = self._state_dir()
             try:
                 os.makedirs(state_dir, mode=0o755, exist_ok=True)
                 # nfqws2 запускается под `--user nobody` — даём ему права на запись
@@ -448,31 +456,36 @@ class NFQWSManager:
                     log.error(
                         "nfqws2 завершился сразу после запуска "
                         "(exit code: %d)" % rc,
-                        source="nfqws"
+                        source=self.LOG_SOURCE
                     )
                     self._log_start_failure_hint()
                     self._cleanup()
                     return False
 
                 log.success(
-                    "nfqws2 запущен (PID %d)" % self._pid, source="nfqws"
+                    "nfqws2 запущен (PID %d)" % self._pid, source=self.LOG_SOURCE
                 )
                 return True
 
             except FileNotFoundError:
                 self._close_out_fds(out_fd, slave_fd)
                 log.error("Не удалось запустить: файл не найден (%s)" % binary,
-                          source="nfqws")
+                          source=self.LOG_SOURCE)
                 return False
             except PermissionError:
                 self._close_out_fds(out_fd, slave_fd)
                 log.error("Не удалось запустить: нет прав (%s)" % binary,
-                          source="nfqws")
+                          source=self.LOG_SOURCE)
                 return False
             except OSError as e:
                 self._close_out_fds(out_fd, slave_fd)
-                log.error("Ошибка запуска nfqws2: %s" % e, source="nfqws")
+                log.error("Ошибка запуска nfqws2: %s" % e, source=self.LOG_SOURCE)
                 return False
+
+    @staticmethod
+    def _state_dir() -> str:
+        """Каталог state.tsv для z2k-state-persist.lua этого экземпляра."""
+        return z2k_state_dir()
 
     @staticmethod
     def _log_start_failure_hint():
@@ -520,12 +533,12 @@ class NFQWSManager:
             result = True
 
             if not self._is_running_locked():
-                log.info("nfqws2 не запущен", source="nfqws")
+                log.info("nfqws2 не запущен", source=self.LOG_SOURCE)
                 self._cleanup()
             else:
                 pid = self._pid
                 log.info("Останавливаем nfqws2 (PID %d)..." % pid,
-                         source="nfqws")
+                         source=self.LOG_SOURCE)
                 result = self._stop_tracked_locked(pid)
 
             # В любом случае добиваем возможные дубли/сироты, чтобы «стоп»
@@ -540,25 +553,25 @@ class NFQWSManager:
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
-            log.info("Процесс уже завершён", source="nfqws")
+            log.info("Процесс уже завершён", source=self.LOG_SOURCE)
             self._cleanup()
             return True
         except PermissionError:
-            log.error("Нет прав для остановки PID %d" % pid, source="nfqws")
+            log.error("Нет прав для остановки PID %d" % pid, source=self.LOG_SOURCE)
             return False
 
         # Ждём завершения (до 3 секунд)
         for _ in range(30):
             time.sleep(0.1)
             if not self._check_pid_alive(pid):
-                log.success("nfqws2 остановлен (SIGTERM)", source="nfqws")
+                log.success("nfqws2 остановлен (SIGTERM)", source=self.LOG_SOURCE)
                 self._cleanup()
                 return True
 
         # Не остановился — SIGKILL
         log.warning(
             "nfqws2 не ответил на SIGTERM, отправляем SIGKILL",
-            source="nfqws"
+            source=self.LOG_SOURCE
         )
         try:
             os.kill(pid, signal.SIGKILL)
@@ -567,12 +580,12 @@ class NFQWSManager:
             pass
 
         if not self._check_pid_alive(pid):
-            log.success("nfqws2 остановлен (SIGKILL)", source="nfqws")
+            log.success("nfqws2 остановлен (SIGKILL)", source=self.LOG_SOURCE)
             self._cleanup()
             return True
 
         log.error("Не удалось остановить nfqws2 (PID %d)" % pid,
-                  source="nfqws")
+                  source=self.LOG_SOURCE)
         return False
 
     def restart(self, args: list = None) -> bool:
@@ -582,14 +595,14 @@ class NFQWSManager:
         Args:
             args: Новые аргументы. Если None — используем предыдущие.
         """
-        log.info("Перезапуск nfqws2...", source="nfqws")
+        log.info("Перезапуск nfqws2...", source=self.LOG_SOURCE)
 
         # Запоминаем аргументы до stop() (который делает cleanup)
         restart_args = args if args is not None else list(self._last_args)
 
         if not self.stop():
             log.error("Не удалось остановить nfqws2 для перезапуска",
-                      source="nfqws")
+                      source=self.LOG_SOURCE)
             return False
 
         time.sleep(0.3)
@@ -1390,6 +1403,10 @@ class NFQWSManager:
         они висят на одной NFQUEUE и мешают друг другу.
         """
         pids = []
+        # Экземпляр-песочница сканера (core/nfqws_sandbox) слушает СВОЮ
+        # очередь и чужим дублем не является: основной менеджер его не
+        # видит — ни для зачистки, ни как «внешний» обход.
+        sandbox = _sandbox_pid()
         try:
             for d in os.listdir("/proc"):
                 if not d.isdigit():
@@ -1404,7 +1421,8 @@ class NFQWSManager:
                     continue
                 argv0 = raw.split(b"\x00", 1)[0].decode(
                     "utf-8", errors="replace")
-                if argv0 and os.path.basename(argv0) in ("nfqws", "nfqws2"):
+                if argv0 and os.path.basename(argv0) in ("nfqws", "nfqws2") \
+                        and pid != sandbox:
                     pids.append(pid)
         except OSError:
             pass
@@ -1426,7 +1444,7 @@ class NFQWSManager:
             "Обнаружены лишние процессы nfqws2 (PID %s) — завершаем во "
             "избежание дублей на NFQUEUE" % ", ".join(
                 str(p) for p in strays),
-            source="nfqws"
+            source=self.LOG_SOURCE
         )
 
         for p in strays:
@@ -1505,7 +1523,7 @@ class NFQWSManager:
             log.info(
                 "Обнаружен работающий nfqws2 (PID %d%s)"
                 % (pid, ", запущен автозапуском" if external else ""),
-                source="nfqws"
+                source=self.LOG_SOURCE
             )
 
     def _start_stderr_reader(self):
@@ -1581,15 +1599,15 @@ class NFQWSManager:
         low = line.lower()
         self._maybe_explain_rawsend(low)
         if "error" in low or "fail" in low:
-            log.error(line, source="nfqws")
+            log.error(line, source=self.LOG_SOURCE)
         elif "warn" in low:
-            log.warning(line, source="nfqws")
+            log.warning(line, source=self.LOG_SOURCE)
         elif self._debug:
             # В debug-режиме поднимаем обычные строки до INFO, чтобы
             # пер-пакетный вывод nfqws2 был виден при диагностике.
-            log.info(line, source="nfqws")
+            log.info(line, source=self.LOG_SOURCE)
         else:
-            log.debug(line, source="nfqws")
+            log.debug(line, source=self.LOG_SOURCE)
 
     def _maybe_explain_rawsend(self, low_line: str) -> None:
         """Один раз на запуск объяснить `rawsend: sendto ... not permitted`.
@@ -1625,7 +1643,7 @@ class NFQWSManager:
         else:
             hint += (" Проверьте вручную: `nft list ruleset | grep -i invalid`"
                      " и `iptables-save | grep -i invalid`.")
-        log.warning(hint, source="nfqws")
+        log.warning(hint, source=self.LOG_SOURCE)
 
     @staticmethod
     def _rawsend_suspects() -> list:
@@ -1659,34 +1677,50 @@ class NFQWSManager:
 
     # ─────────────── PID file ───────────────
 
-    @staticmethod
-    def _write_pid_file(pid: int):
+    @classmethod
+    def _write_pid_file(cls, pid: int):
         """Записать PID-файл."""
         try:
-            os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
-            with open(PID_FILE, "w") as f:
+            os.makedirs(os.path.dirname(cls.PID_PATH), exist_ok=True)
+            with open(cls.PID_PATH, "w") as f:
                 f.write(str(pid))
         except OSError as e:
             log.warning("Не удалось записать PID-файл: %s" % e,
-                        source="nfqws")
+                        source=cls.LOG_SOURCE)
 
-    @staticmethod
-    def _read_pid_file(path: str = PID_FILE):
+    @classmethod
+    def _read_pid_file(cls, path: str = None):
         """Прочитать PID из файла (по умолчанию — из своего)."""
         try:
-            with open(path, "r") as f:
+            with open(path or cls.PID_PATH, "r") as f:
                 return int(f.read().strip())
         except (IOError, OSError, ValueError):
             return None
 
-    @staticmethod
-    def _remove_pid_file():
+    @classmethod
+    def _remove_pid_file(cls):
         """Удалить PID-файл."""
         try:
-            if os.path.exists(PID_FILE):
-                os.remove(PID_FILE)
+            if os.path.exists(cls.PID_PATH):
+                os.remove(cls.PID_PATH)
         except OSError:
             pass
+
+
+# PID-файл экземпляра-песочницы сканера (core/nfqws_sandbox.py). Живёт
+# здесь, а не там: основной менеджер обязан знать его, не импортируя
+# песочницу (та — его подкласс).
+SANDBOX_PID_FILE = "/var/run/zapret-gui-nfqws-sandbox.pid"
+
+
+def _sandbox_pid():
+    """PID живого экземпляра-песочницы или None."""
+    try:
+        with open(SANDBOX_PID_FILE, "r") as f:
+            pid = int(f.read().strip())
+    except (IOError, OSError, ValueError):
+        return None
+    return pid if NFQWSManager._check_pid_alive(pid) else None
 
 
 def resolve_binary(cfg=None) -> str:

@@ -73,11 +73,6 @@ DEFAULT_CONFIG = {
         # — только по IP. Пример: ["my.keenetic.net"]. "*" — проверку
         # выключить совсем.
         "allowed_hosts": [],
-        # Самообновление GUI (core/release_verify.py, приём d2k): auto —
-        # сверить архив выпуска с SHA256SUMS и подпись, если ключ
-        # закреплён; require — ставить только выпуск с проверенной
-        # подписью.
-        "update_verify": "auto",
         # Перед обновлением — копия кода рядом с приложением; новая версия
         # не ответила после рестарта — сторож возвращает прежнюю.
         "update_rollback": True,
@@ -103,6 +98,10 @@ DEFAULT_CONFIG = {
         # поэтому «замер без обхода» не требует гасить движок всей сети —
         # приём d2k (necronicle/d2k, core/meas.c). "" или "0" — выключено.
         "desync_mark_probe": "0x10000000",
+        # Метка проб сканера, которые идут в песочницу — второй nfqws2 на
+        # своей очереди (core/nfqws_sandbox.py). Бит 31: младшие 28 заняты
+        # NDMS, 28 — пробы мимо очереди, 29 — исключение, 30 — пакеты nfqws2.
+        "desync_mark_sandbox": "0x80000000",
         "user": "nobody",
         "disable_ipv6": True,
         # Включить пер-пакетный отладочный вывод nfqws2 (--debug). Вывод
@@ -256,6 +255,13 @@ DEFAULT_CONFIG = {
         # 0 в любом — перепроверки нет. См. StrategyScanner._confirm_best.
         "confirm_top": 3,
         "confirm_repeats": 2,
+        # Проверять кандидатов во втором nfqws2 на своей очереди, не трогая
+        # обход сети (core/nfqws_sandbox.py): auto — когда можно (root для
+        # SO_MARK, известный бэкенд firewall), off — по-старому, с
+        # остановкой движка сети на время подбора.
+        "isolated": "auto",
+        # Очередь песочницы; 0 — основная + 1. С основной совпасть не может.
+        "sandbox_queue_num": 0,
     },
 
     # --- Healthcheck (фоновый watchdog для autocircular) ---

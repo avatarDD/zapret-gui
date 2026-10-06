@@ -351,7 +351,7 @@ UI), и `tools_by_scope`.
 | `lua_script_patch` | strategies_write | **да** | `tools/lists.py` | name, edits?, diff?, force?, apply? | точечная правка (тем же кодом, что `code_patch`); `apply=true` — ещё и `nfqws_restart` |
 | `lua_script_delete` | strategies_write | **да** | `tools/lists.py` | name | удалить пользовательский скрипт; bundled — отказ; в ответе — потерянные функции |
 | `mcp_undo_last` | any_write | **да** | `tools/audit.py` | kind? | откатить последнее изменение по снимку с диска (любой вид) |
-| `scan_status` | read | нет | `tools/scan.py` | job_id? | прогресс подбора: фаза, сколько проверено, `baseline_open`; `job_id` — опционально |
+| `scan_status` | read | нет | `tools/scan.py` | job_id? | прогресс подбора: фаза, сколько проверено, `baseline_open`, `isolated`/`isolation_note` (кандидаты в песочнице — обход сети не тронут); `job_id` — опционально |
 | `scan_results` | read | нет | `tools/scan.py` | failed?, offset?, limit? | что нашёл подбор, лучшие первыми; `failed=true` — что НЕ сработало |
 | `blockcheck_status` | read | нет | `tools/blockcheck.py` | job_id? | прогресс НАШЕГО blockcheck; вердикт — в `dpi_report` |
 | `blockcheck2_status` | read | нет | `tools/blockcheck.py` | job_id? | прогон скрипта bol-van: идёт ли, код выхода, `found`, `highlights` |

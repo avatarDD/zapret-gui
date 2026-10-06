@@ -99,6 +99,17 @@ PPE_CONNSKIP_MIN = 30
 PPE_CONNSKIP_SLACK = 10
 
 
+# ─── Песочница сканера (core/nfqws_sandbox.py) ─────────────────────────
+# Свои цепочки (iptables) и своя таблица (nft): основные правила песочница
+# не трогает, а снимается целиком по имени.
+SANDBOX_CHAINS = (
+    ("mangle", "POSTROUTING", "nfqws_sbx_post"),
+    ("mangle", "PREROUTING", "nfqws_sbx_pre"),
+    ("nat", "POSTROUTING", "nfqws_sbx_nat"),
+)
+NFT_SANDBOX_TABLE = "zapret_gui_sbx"
+
+
 def ppe_mode(cfg) -> str:
     """``auto`` | ``off`` из ``firewall.ppe_deoffload`` (мусор — auto)."""
     value = str(cfg.get("firewall", "ppe_deoffload", default="auto")
@@ -1839,6 +1850,229 @@ class FirewallManager:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
         return rules
+
+    # ──────────────── песочница сканера ────────────────
+    #
+    # Второй nfqws2 (core/nfqws_sandbox.py) слушает свою очередь, и в неё
+    # уходят ТОЛЬКО соединения проб сканера — с меткой песочницы на
+    # сокете. Первый пакет такого соединения ставит connmark
+    # «песочница + EXCLUDE»: песочница по ней ловит ответы, основные
+    # правила (их EXCLUDE-RETURN) — пропускают соединение целиком.
+    # Основные правила при этом не меняются и не снимаются: обход сети
+    # работает весь подбор.
+
+    def apply_sandbox_rules(self, queue_num: int, mark: int) -> bool:
+        """Поставить (переставить) правила песочницы. True — встали."""
+        with self._lock:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            fw_type = self.detect_fw_type()
+            if not fw_type or not mark:
+                return False
+            tcp, _ = strip_management_ports(
+                cfg.get("nfqws", "ports_tcp", default="80,443"), cfg)
+            params = {
+                "queue": int(queue_num),
+                "mark": "0x%x" % (int(mark) & 0xFFFFFFFF),
+                "desync": cfg.get("nfqws", "desync_mark",
+                                  default="0x40000000"),
+                "exclude": cfg.get("nfqws", "desync_mark_postnat",
+                                   default="0x20000000"),
+                "tcp": tcp,
+                "udp": cfg.get("nfqws", "ports_udp", default="443"),
+                "tcp_out": int(cfg.get("nfqws", "tcp_pkt_out", default=20)),
+                "tcp_in": int(cfg.get("nfqws", "tcp_pkt_in", default=10)),
+                "udp_out": int(cfg.get("nfqws", "udp_pkt_out", default=5)),
+                "udp_in": int(cfg.get("nfqws", "udp_pkt_in", default=3)),
+            }
+            if fw_type == "iptables":
+                ok = self._apply_sandbox_ipt("iptables", params)
+                if not cfg.get("nfqws", "disable_ipv6", default=True) \
+                        and shutil.which("ip6tables"):
+                    ok = self._apply_sandbox_ipt("ip6tables", params) and ok
+            else:
+                ok = self._apply_sandbox_nft(params)
+            if ok:
+                log.info("Песочница сканера: соединения с меткой %s → "
+                         "очередь %d" % (params["mark"], params["queue"]),
+                         source="firewall")
+            return ok
+
+    def remove_sandbox_rules(self) -> bool:
+        """Снять правила песочницы (обоих бэкендов, что найдётся)."""
+        with self._lock:
+            ok = True
+            for ipt_cmd in ("iptables", "ip6tables"):
+                if not shutil.which(ipt_cmd):
+                    continue
+                for table, hook, name in SANDBOX_CHAINS:
+                    if ipt_cmd == "ip6tables" and table == "nat":
+                        continue
+                    ok = self._remove_ipt_named_chain(
+                        ipt_cmd, table, hook, name) and ok
+            if shutil.which("nft"):
+                try:
+                    subprocess.run(["nft", "delete", "table", "inet",
+                                    NFT_SANDBOX_TABLE],
+                                   capture_output=True, timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    ok = False
+            return ok
+
+    def sandbox_rules_applied(self) -> bool:
+        """Стоят ли правила песочницы (их мог снести системный firewall)."""
+        fw_type = self.detect_fw_type()
+        if fw_type == "iptables":
+            table, hook, name = SANDBOX_CHAINS[0]
+            return (self._ipt_named_chain_hooked("iptables", table, hook,
+                                                 name)
+                    and bool(self._ipt_chain_lines("iptables", table, name)))
+        if fw_type == "nftables":
+            try:
+                return subprocess.run(
+                    ["nft", "list", "table", "inet", NFT_SANDBOX_TABLE],
+                    capture_output=True, timeout=5).returncode == 0
+            except (subprocess.TimeoutExpired, OSError):
+                return False
+        return False
+
+    def _apply_sandbox_ipt(self, ipt_cmd, p) -> bool:
+        if not self._nfqueue_supported(ipt_cmd):
+            return False
+        use_multiport = self._multiport_supported(ipt_cmd)
+        use_connbytes = self._connbytes_supported(ipt_cmd)
+        sbx = "%s/%s" % (p["mark"], p["mark"])
+        both = "0x%x" % (int(p["mark"], 16) | int(p["exclude"], 0))
+        desync = "%s/%s" % (p["desync"], p["desync"])
+        (_, post_hook, post), (_, pre_hook, pre), (_, nat_hook, nat) = \
+            SANDBOX_CHAINS
+        self._ensure_named_chain(ipt_cmd, "mangle", post_hook, post)
+        self._ensure_named_chain(ipt_cmd, "mangle", pre_hook, pre)
+        if ipt_cmd == "iptables":
+            self._ensure_named_chain(ipt_cmd, "nat", nat_hook, nat)
+
+        nfq = ["-j", "NFQUEUE", "--queue-num", str(p["queue"]),
+               "--queue-bypass"]
+
+        def bases(prefix, proto, direction, ports):
+            if use_multiport:
+                return [prefix + ["-p", proto, "-m", "multiport",
+                                  "--%s" % direction, ports]]
+            single = "--dport" if direction == "dports" else "--sport"
+            return [prefix + ["-p", proto, single, tok.strip()]
+                    for tok in str(ports).split(",") if tok.strip()]
+
+        def window(direction, limit):
+            if not use_connbytes:
+                return []
+            return ["-m", "connbytes", "--connbytes-dir=%s" % direction,
+                    "--connbytes-mode=packets", "--connbytes",
+                    "1:%d" % limit]
+
+        ok = True
+        out = [ipt_cmd, "-t", "mangle", "-A", post]
+        inn = [ipt_cmd, "-t", "mangle", "-A", pre]
+        # Пакеты самой песочницы (её фейки) — дальше, к ACCEPT основных.
+        ok &= self._run_cmd(out + ["-m", "mark", "--mark", desync,
+                                   "-j", "RETURN"])
+        ok &= self._run_cmd(out + ["-m", "mark", "--mark", sbx,
+                                   "-j", "CONNMARK", "--set-xmark",
+                                   "%s/%s" % (both, both)])
+        ok &= self._run_cmd(out + ["-m", "connmark", "!", "--mark", sbx,
+                                   "-j", "RETURN"])
+        ok &= self._run_cmd(inn + ["-m", "connmark", "!", "--mark", sbx,
+                                   "-j", "RETURN"])
+        if p["tcp"]:
+            for base in bases(out, "tcp", "dports", p["tcp"]):
+                ok &= self._run_cmd(base + window("original", p["tcp_out"])
+                                    + nfq)
+                self._run_cmd(base + ["--tcp-flags", "fin", "fin"] + nfq)
+                self._run_cmd(base + ["--tcp-flags", "rst", "rst"] + nfq)
+            for base in bases(inn, "tcp", "sports", p["tcp"]):
+                ok &= self._run_cmd(base + window("reply", p["tcp_in"])
+                                    + nfq)
+                self._run_cmd(base + ["--tcp-flags", "syn,ack", "syn,ack"]
+                              + nfq)
+                self._run_cmd(base + ["--tcp-flags", "fin", "fin"] + nfq)
+                self._run_cmd(base + ["--tcp-flags", "rst", "rst"] + nfq)
+        if p["udp"]:
+            for base in bases(out, "udp", "dports", p["udp"]):
+                ok &= self._run_cmd(base + window("original", p["udp_out"])
+                                    + nfq)
+            for base in bases(inn, "udp", "sports", p["udp"]):
+                ok &= self._run_cmd(base + window("reply", p["udp_in"])
+                                    + nfq)
+        if ipt_cmd == "iptables":
+            # Keenetic UDP fix (§10.3 скила) и для песочницы: основные
+            # правила могут не стоять, если обход сети выключен.
+            self._run_cmd([ipt_cmd, "-t", "nat", "-A", nat,
+                           "-m", "connmark", "--mark", sbx,
+                           "-m", "mark", "--mark", desync, "-p", "udp",
+                           "-j", "MASQUERADE"])
+        return bool(ok)
+
+    def _apply_sandbox_nft(self, p) -> bool:
+        t = NFT_SANDBOX_TABLE
+        sbx, desync = p["mark"], p["desync"]
+        both = "0x%x" % (int(sbx, 16) | int(p["exclude"], 0))
+        q = "queue num %d bypass" % p["queue"]
+        tcp = "{ %s }" % _nft_port_set(p["tcp"]) if p["tcp"] else None
+        udp = "{ %s }" % _nft_port_set(p["udp"]) if p["udp"] else None
+        try:
+            subprocess.run(["nft", "delete", "table", "inet", t],
+                           capture_output=True, timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        # Приоритеты на единицу раньше основной таблицы: connmark
+        # исключения должна стоять до того, как её проверят основные.
+        cmds = [
+            "add table inet %s" % t,
+            "add chain inet %s postrouting { type filter hook postrouting "
+            "priority 149 ; }" % t,
+            "add chain inet %s prerouting { type filter hook prerouting "
+            "priority -151 ; }" % t,
+            "add chain inet %s natpost { type nat hook postrouting "
+            "priority 99 ; }" % t,
+            "add rule inet %s postrouting meta mark and %s == %s return"
+            % (t, desync, desync),
+            "add rule inet %s postrouting meta mark and %s == %s ct mark "
+            "set ct mark or %s" % (t, sbx, sbx, both),
+            "add rule inet %s postrouting ct mark and %s != %s return"
+            % (t, sbx, sbx),
+            "add rule inet %s prerouting ct mark and %s != %s return"
+            % (t, sbx, sbx),
+        ]
+        if tcp:
+            cmds += [
+                "add rule inet %s postrouting tcp dport %s ct original "
+                "packets 1-%d %s" % (t, tcp, p["tcp_out"], q),
+                "add rule inet %s postrouting tcp dport %s tcp flags fin %s"
+                % (t, tcp, q),
+                "add rule inet %s postrouting tcp dport %s tcp flags rst %s"
+                % (t, tcp, q),
+                "add rule inet %s prerouting tcp sport %s ct reply packets "
+                "1-%d %s" % (t, tcp, p["tcp_in"], q),
+                "add rule inet %s prerouting tcp sport %s tcp flags & "
+                "(syn | ack) == syn | ack %s" % (t, tcp, q),
+                "add rule inet %s prerouting tcp sport %s tcp flags fin %s"
+                % (t, tcp, q),
+                "add rule inet %s prerouting tcp sport %s tcp flags rst %s"
+                % (t, tcp, q),
+            ]
+        if udp:
+            cmds += [
+                "add rule inet %s postrouting udp dport %s ct original "
+                "packets 1-%d %s" % (t, udp, p["udp_out"], q),
+                "add rule inet %s prerouting udp sport %s ct reply packets "
+                "1-%d %s" % (t, udp, p["udp_in"], q),
+            ]
+        cmds.append("add rule inet %s natpost ct mark and %s == %s meta "
+                    "mark and %s == %s meta l4proto udp masquerade"
+                    % (t, sbx, sbx, desync, desync))
+        ok = True
+        for cmd in cmds:
+            ok = self._run_cmd(["nft"] + cmd.split()) and ok
+        return ok
 
     # ──────────────── dispatcher ────────────────
 

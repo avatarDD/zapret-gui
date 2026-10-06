@@ -252,6 +252,9 @@ def scan_status(args: dict) -> dict:
         "elapsed_seconds": status.get("elapsed_seconds", 0),
         "error": str(status.get("error") or "")[:200],
         "baseline_open": bool(status.get("baseline_open")),
+        # Песочница: кандидаты во втором nfqws2, обход сети не тронут.
+        "isolated": bool(status.get("isolated")),
+        "isolation_note": str(status.get("isolation_note") or "")[:200],
         "note": NOTE,
     })
     out["hint"] = _status_hint(out)

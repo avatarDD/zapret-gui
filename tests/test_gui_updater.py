@@ -182,7 +182,7 @@ class TestGuiUpdateRef(unittest.TestCase):
         seen = {}
 
         def fake_dl(url, dest, transport="", quiet=False):
-            if url.endswith(("/SHA256SUMS", "/SHA256SUMS.sig")):
+            if url.endswith("/SHA256SUMS"):
                 return False    # выпуск без списка хешей — старый путь
             seen["url"] = url
             seen["transport"] = transport

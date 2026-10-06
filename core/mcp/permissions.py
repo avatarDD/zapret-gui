@@ -163,6 +163,8 @@ DENY_PATHS = frozenset((
     # На них держится перехват и собственный трафик GUI.
     "nfqws.queue_num",
     "nfqws.user",
+    # Очередь песочницы сканера — та же природа, что у queue_num.
+    "scan.sandbox_queue_num",
 ))
 
 # Запрет по префиксу: nfqws.desync_mark, nfqws.desync_mark_postnat.
@@ -189,6 +191,7 @@ ENUMS = {
     "block_detector.dns_source": ["auto", "dnsmasq_log", "adguard_log",
                                   "af_packet"],
     "nfqws.fastpath_workaround": ["auto", "1", "0"],
+    "scan.isolated": ["auto", "off"],
 }
 
 

@@ -817,6 +817,11 @@ Python-пути (`core/firewall.py`), и в shell-пути (`FIREWALL_SH_FUNCTIO
   EXCLUDE` — дальше обычный connmark-RETURN в обе стороны. Сокет пробы
   метит `core/probe_mark.py` (с чтением метки обратно). Так baseline
   эксперимента и `probe_compare` меряют «без обхода», не гася движок.
+* **Метка песочницы сканера** (`nfqws.desync_mark_sandbox`,
+  `0x80000000` — бит 31, единственный свободный). Соединения с ней идут
+  во второй nfqws2 на своей очереди (§13.4a, «Песочница»). В `SO_MARK`
+  она уходит упакованным u32: int-форма `setsockopt` старший бит не
+  принимает.
 * **Клиенты, уведённые `ip rule` мимо WAN** (`firewall.skip_routed_marks`).
   Только когда WAN не задан и не найден (правила без `-o`): fwmark,
   выбирающая правило с blackhole/unreachable/prohibit или lookup в
@@ -1059,11 +1064,28 @@ API: `GET /api/diagnostics/prerequisites`. Проверяет:
 
 Этапы (`status.stage`): `prepare` → `baseline` → `scan` → `confirm` → `done`.
 
+* **Песочница** (`core/nfqws_sandbox.py`, `_decide_isolation`). По
+  умолчанию (`scan.isolated=auto`) кандидат поднимается во **втором**
+  nfqws2 на очереди `scan.sandbox_queue_num` (0 → основная + 1), а
+  основной движок сети и его правила не трогаются. Пробы `_deep_probe`
+  идут внутри `probe_mark.marking(nfqws.desync_mark_sandbox)` — SO_MARK на
+  каждом новом сокете потока; firewall (`apply_sandbox_rules`: цепочки
+  `nfqws_sbx_post/_pre/_nat` в начале hook'ов, или таблица
+  `zapret_gui_sbx` с приоритетами 149/−151) ставит таким соединениям
+  connmark «песочница|EXCLUDE» и уводит их в очередь песочницы; основные
+  правила по EXCLUDE пропускают их целиком. Baseline при работающем
+  движке — под меткой проб мимо очереди (§10.3b). Нет SO_MARK/бэкенда,
+  `scan.isolated=off` или baseline-метка не действует — прежний путь
+  ниже, причина в `isolation_note`. Ограничения: на nft нужен модуль
+  `nft_queue` (как и основным правилам); state.tsv песочницы — свой
+  (`/tmp/zapret-gui-sandbox-state`), circular-кандидаты не пишут в
+  состояние обхода сети.
 * **Правила firewall — один раз на прогон** (`_start_scan_rules` после
-  baseline). На стратегию — только старт/стоп nfqws2 и дешёвый
-  `fw.is_applied()`; пропали (NDMS/fw4 сбросили) — ставятся заново,
-  счётчик `rules_reapplied` виден в статусе. Правила с `bypass`, поэтому
-  между стратегиями пакеты идут мимо очереди, а не в пустоту.
+  baseline; в песочнице — только её правила). На стратегию — только
+  старт/стоп nfqws2 и дешёвая проверка правил (`fw.is_applied()` или
+  `sandbox_rules_applied()`); пропали (NDMS/fw4 сбросили) — ставятся
+  заново, счётчик `rules_reapplied` виден в статусе. Правила с `bypass`,
+  поэтому между стратегиями пакеты идут мимо очереди, а не в пустоту.
 * **UDP: чем проверять** (`udp_probe_kind`): профиль с `udp_l7=quic` —
   настоящий QUIC v1 Initial с ClientHello и SNI
   (`core/testers/quic_initial.py`, чистый Python: AES-128/GCM/HKDF,

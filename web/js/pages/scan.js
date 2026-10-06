@@ -463,6 +463,13 @@ const ScanPage = (() => {
                 + (one ? ', которая уже помогала' : ', которые уже помогали') + ' в вашей сети.';
             notes.push(['info', (data.status === 'running' ? 'Сначала проверяем ' : 'Первыми проверили ') + what]);
         }
+        // Песочница: кандидаты — во втором nfqws2, обход сети работает.
+        if (data.status === 'running' && data.stage && data.stage !== 'prepare') {
+            notes.push(data.isolated
+                ? ['info', 'Кандидаты проверяются в отдельном экземпляре nfqws2 — обход для устройств сети работает как обычно.']
+                : ['warn', 'Обход сети на время подбора остановлен'
+                    + (data.isolation_note ? ' (' + data.isolation_note + ')' : '') + '.']);
+        }
         if (data.rules_reapplied > 0) {
             notes.push(['warn', 'Системный firewall ' + plural(data.rules_reapplied, 'раз', 'раза', 'раз')
                 + ' сбросил наши правила посреди подбора — мы их вернули. Если результаты странные, повторите подбор.']);
