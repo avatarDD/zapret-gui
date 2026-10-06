@@ -6,6 +6,7 @@
 """
 
 import socket
+import struct
 import unittest
 from unittest import mock
 
@@ -21,6 +22,9 @@ class FakeSock:
     def setsockopt(self, level, name, value):
         if self.fail:
             raise PermissionError("нет CAP_NET_ADMIN")
+        if isinstance(value, bytes):
+            # Как ядро: u32 из буфера (метка уходит упакованной).
+            value = struct.unpack("I", value)[0]
         if self.stored is None:
             self.stored = value
 

@@ -469,12 +469,6 @@ class GuiUpdater:
                 ref_label = "ветки main"
 
         from core import release_verify
-        verify_mode = release_verify.mode()
-        if not release_tag and verify_mode == release_verify.MODE_REQUIRE:
-            msg = ("Обновление на %s не проверяется подписью (это не "
-                   "выпуск), а gui.update_verify=require" % ref_label)
-            log.error(msg, source="gui-updater")
-            return {"ok": False, "message": msg, "version": None}
 
         backup_dir, guarded = None, False
         try:
@@ -484,12 +478,11 @@ class GuiUpdater:
             archive_path = os.path.join(tmp_dir, "gui.tar.gz")
             os.makedirs(tmp_dir, exist_ok=True)
 
-            # 0. Выпуск с SHA256SUMS — ставим ЕГО архив и сверяем хеш (и
-            # подпись, если ключ закреплён). Старый выпуск без списка —
-            # исходники тэга, как раньше (в режиме require — отказ).
-            sums, sums_path, sig_path = {}, "", ""
+            # 0. Выпуск с SHA256SUMS — ставим ЕГО архив и сверяем хеш.
+            # Старый выпуск без списка — исходники тэга, как раньше.
+            sums = {}
             if release_tag:
-                sums, sums_path, sig_path = self._fetch_release_sums(
+                sums = self._fetch_release_sums(
                     release_tag, tmp_dir, transport)
                 if sums.get(release_verify.ARCHIVE_NAME):
                     archive_url = "%s/releases/download/%s/%s" % (
@@ -516,10 +509,7 @@ class GuiUpdater:
 
             verification = release_verify.decide(
                 release_verify.file_sha256(archive_path) if sums else "",
-                sums,
-                release_verify.verify_signature(sums_path, sig_path)
-                if sums else (None, "нет SHA256SUMS"),
-                verify_mode)
+                sums)
             for warning in verification["warnings"]:
                 log.warning("Обновление GUI: %s" % warning,
                             source="gui-updater")
@@ -741,11 +731,11 @@ class GuiUpdater:
     # ── выпуск: SHA256SUMS и подпись ─────────────────────────────
 
     def _fetch_release_sums(self, tag: str, tmp_dir: str,
-                            transport: str = "") -> tuple:
-        """SHA256SUMS (+ подпись) выпуска → (разбор, путь, путь подписи).
+                            transport: str = "") -> dict:
+        """SHA256SUMS выпуска → ``{имя: hex}``.
 
-        Нет файла (выпуск старше этой проверки) — ``({}, "", "")``: это
-        не ошибка загрузки, а отсутствие, и шуметь в журнал незачем.
+        Нет файла (выпуск старше этой проверки) — ``{}``: это не ошибка
+        загрузки, а отсутствие, и шуметь в журнал незачем.
         """
         from core import release_verify
         base = "%s/releases/download/%s" % (GITHUB_REPO_URL, tag)
@@ -755,19 +745,13 @@ class GuiUpdater:
                                    quiet=True):
             log.info("Выпуск %s без SHA256SUMS — архив не сверяется" % tag,
                      source="gui-updater")
-            return {}, "", ""
+            return {}
         try:
             with open(sums_path, "r", encoding="utf-8",
                       errors="replace") as handle:
-                sums = release_verify.parse_sums(handle.read(65536))
+                return release_verify.parse_sums(handle.read(65536))
         except OSError:
-            return {}, "", ""
-        sig_path = os.path.join(tmp_dir, release_verify.SIG_NAME)
-        if not self._download_file("%s/%s" % (base, release_verify.SIG_NAME),
-                                   sig_path, transport=transport,
-                                   quiet=True):
-            sig_path = ""
-        return sums, sums_path, sig_path
+            return {}
 
     # ── откат по проверке здоровья ───────────────────────────────
 

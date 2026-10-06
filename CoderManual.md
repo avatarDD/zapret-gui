@@ -309,7 +309,8 @@ make upstream-offline    # только локальные сверки (идё�
 
 | Модуль | Назначение |
 |--------|-----------|
-| `nfqws_manager.py` | Менеджер процесса nfqws2: compose_command, start/stop/restart, PID-мониторинг. `compose_command` вырезает из аргументов стратегии опции, которыми владеет GUI (`strategy_lint.ENGINE_OWNED_OPTIONS`: `--user`/`--qnum`/`--fwmark`/`--pidfile`/`--writable`/`--debug=@файл`, `--hostlist-auto` вне каталогов списков), и добавляет `--writable`, если стратегия пишет pcap (`core/lua_capture.py`). Подхватывает и чужой процесс — поднятый автозапуском (его PID-файл `/var/run/zapret-nfqws.pid`, затем скан `/proc` по демонам); такой помечен `external` в статусе. |
+| `nfqws_manager.py` | Менеджер процесса nfqws2: compose_command, start/stop/restart, PID-мониторинг. `compose_command` вырезает из аргументов стратегии опции, которыми владеет GUI (`strategy_lint.ENGINE_OWNED_OPTIONS`: `--user`/`--qnum`/`--fwmark`/`--pidfile`/`--writable`/`--debug=@файл`, `--hostlist-auto` вне каталогов списков), и добавляет `--writable`, если стратегия пишет pcap (`core/lua_capture.py`). Подхватывает и чужой процесс — поднятый автозапуском (его PID-файл `/var/run/zapret-nfqws.pid`, затем скан `/proc` по демонам); такой помечен `external` в статусе. PID-файл, источник журнала и каталог state.tsv — атрибуты класса (`PID_PATH`, `LOG_SOURCE`, `_state_dir`), чтобы песочница могла быть подклассом; процесс песочницы (`SANDBOX_PID_FILE`) из `_find_nfqws_pids` исключён — зачистка дублей его не убивает. |
+| `nfqws_sandbox.py` | Песочница сканера: `NFQWSSandbox(NFQWSManager)` — второй nfqws2 на своей очереди (`queue_num()`), гасит только свой осиротевший процесс; `available()` — можно ли (SO_MARK, бэкенд firewall, `scan.isolated`). Правила — `FirewallManager.apply_sandbox_rules`/`remove_sandbox_rules`/`sandbox_rules_applied`, пометка проб — `probe_mark.marking`. |
 | `nfqws_reload.py` | Горячая перезагрузка списков в живом nfqws2 (SIGHUP): движок читает `--hostlist`/`--ipset` один раз при старте, поэтому правка файла без сигнала ничего не меняет. |
 | `nfqws_control.py` | Последовательность «firewall → движок → конфиг → автозапуск» одним кодом для UI, CLI и MCP: `start`/`stop`/`restart`/`apply_strategy`/`clear_strategy`/`reload_lists`, `busy()` — кто держит движок. |
 | `nfqws_session.py` | Общий мьютекс на nfqws2/firewall + снимок состояния и возврат «как было». Берут все, кто движок МЕНЯЕТ (сканер на весь прогон, `nfqws_control`, сравнение проб); читающие — нет. Межпроцессная часть — lock-файл рядом с `settings.json`. |
@@ -331,7 +332,7 @@ make upstream-offline    # только локальные сверки (идё�
 | `firewall.py` / `firewall_persistence.py` | Правила перенаправления трафика в nfqws2 + их персистентность. `uncovered_filter_ports` — порты профилей стратегии вне перехвата (предупреждение при старте). Приёмы d2k: connmark-исключение для меток проб GUI (`nfqws.desync_mark_probe`) и клиентов `ip rule` мимо WAN (только без привязки к WAN), разгрузка PPE Keenetic в цепочках `nfqws_ppe_pre/_fwd` (`ppe_available` по `/proc/net/ip_tables_targets`). **Каждое новое правило — в обоих путях**: Python (`_apply_ipt_family`/`_apply_nftables`) и shell (`FIREWALL_SH_FUNCTIONS` для автозапуска и reapply-хука; переменные — в `render_run_conf` и шаблоне S99zapret). |
 | `route_marks.py` | Какие fwmark выбирают `ip rule` с другим выходом (VPN, туннель, blackhole): разбор `ip rule`/`ip route` — чистые функции, shell-двойник `_routed_marks`. |
 | `probe_mark.py` | SO_MARK собственных проб с проверкой чтением; `baseline_mode()` решает, можно ли мерить «без обхода», не гася движок (метка ставится и правила с исключением есть). |
-| `release_verify.py` | Проверка выпуска перед самообновлением: `SHA256SUMS`, подпись Ed25519 через `openssl pkeyutl -rawin`, закреплённые `PUBLIC_KEYS`, режимы `auto`/`require`. |
+| `release_verify.py` | Проверка выпуска перед самообновлением: архив сверяется с `SHA256SUMS` (целостность; подписи выпусков пока нет). |
 | `keenetic_policy.py` | Политика доступа Keenetic для перехвата (`firewall.keenetic_policy[_exclude]`, паритет с POLICY_NAME nfqws2-keenetic): метка из `ndmc -c show ip policy`; в shell — `_policy_resolve` в `FIREWALL_SH_FUNCTIONS`. |
 | `asset_importer.py` | Импорт bundled-ассетов (blobs/lua/lists) в рабочие директории. |
 
@@ -709,25 +710,12 @@ make release VERSION=X.Y.Z   # бампит версию, ставит тег �
   скрипты пакетов.
 - **CI** (`.github/workflows/`):
   - `release.yml` — сборка и публикация основного пакета, плюс
-    `SHA256SUMS` всех артефактов и (при секрете `RELEASE_SIGNING_KEY`)
-    его подпись `SHA256SUMS.sig`. По ним самообновление GUI решает,
+    `SHA256SUMS` всех артефактов: по нему самообновление GUI решает,
     ставить ли `zapret-gui-linux.tar.gz` (`core/release_verify.py`);
   - `build-awg-binaries.yml` — кросс-сборка `amneziawg-go`/`-tools` (тег
     `awg-bin-vX`);
   - `build-singbox-binaries.yml` — сборка sing-box под платформы.
 - Версия — единый источник `core/version.py`.
-- **Ключ подписи выпусков** (делается один раз владельцем репозитория):
-
-  ```bash
-  openssl genpkey -algorithm ed25519 -out release.key   # закрытый — НЕ в git
-  openssl pkey -in release.key -pubout                  # открытый (PEM)
-  ```
-
-  Закрытый — целиком в секрет репозитория `RELEASE_SIGNING_KEY`;
-  открытый — строкой в `core/release_verify.PUBLIC_KEYS`. Пока кортеж
-  пуст, самообновление сверяет только хеш (целостность), а подлинность
-  честно помечает непроверенной. Смена ключа: новый — в `PUBLIC_KEYS`
-  рядом со старым, выпуск, потом старый убрать.
 
 ---
 

@@ -55,10 +55,6 @@ const SettingsPage = (() => {
                 { key: 'gui.host',            label: 'Адрес привязки',    type: 'text',   placeholder: '0.0.0.0' },
                 { key: 'gui.port',            label: 'Порт',              type: 'number', placeholder: '8080', min: 1, max: 65535 },
                 { key: 'gui.debug',           label: 'Режим отладки',     type: 'toggle', expert: true },
-                { key: 'gui.update_verify',   label: 'Проверка обновлений', type: 'select', expert: true, options: [
-                    { value: 'auto', label: 'Авто' }, { value: 'require', label: 'Только подписанные' }
-                  ],
-                  hint: 'Самообновление сверяет архив выпуска с SHA256SUMS и, если ключ подписи закреплён, проверяет подпись Ed25519 (нужен openssl). «Только подписанные» — отказ для выпусков без проверенной подписи и для обновления на ветку.' },
                 { key: 'gui.update_rollback', label: 'Откат неудачного обновления', type: 'toggle', expert: true,
                   hint: 'Перед обновлением сохраняется копия кода. Если после перезапуска GUI не отвечает ~2 минуты — прежняя версия возвращается сама.' },
                 { key: 'gui.auth_enabled',    label: 'Авторизация',       type: 'toggle' },

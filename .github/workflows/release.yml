@@ -11,7 +11,7 @@
 #   zapret-gui-openwrt.apk   — для OpenWrt 25.12+/SNAPSHOT (apk-tools 3)
 #   zapret-gui-linux.tar.gz  — универсальный архив для Linux
 #                              (его же ставит самообновление GUI)
-#   SHA256SUMS[.sig]         — хеши артефактов и подпись Ed25519
+#   SHA256SUMS               — хеши артефактов (их сверяет самообновление)
 # ═══════════════════════════════════════════════════════════════
 
 name: Build & Release
@@ -155,33 +155,14 @@ jobs:
           echo "── Артефакты релиза ──"
           ls -lh release-artifacts/
 
-      # Список хешей и его подпись Ed25519 (приём d2k, files/d2k-update.sh).
-      # Самообновление GUI ставит zapret-gui-linux.tar.gz только при
-      # совпадении хеша, а подпись проверяет закреплённым в
-      # core/release_verify.py ключом. Закрытый ключ — секрет
-      # RELEASE_SIGNING_KEY (PEM от `openssl genpkey -algorithm ed25519`);
-      # нет секрета — публикуется только SHA256SUMS (целостность без
-      # подлинности), и об этом пишется предупреждение.
-      - name: Checksums and signature
-        env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+      # Список хешей (приём d2k, files/d2k-update.sh): самообновление GUI
+      # ставит zapret-gui-linux.tar.gz только при совпадении хеша
+      # (core/release_verify.py). Подпись списка — отдельной задачей.
+      - name: Checksums
         run: |
           cd release-artifacts
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
-          if [ -n "$RELEASE_SIGNING_KEY" ]; then
-            umask 077
-            printf '%s\n' "$RELEASE_SIGNING_KEY" > /tmp/release.key
-            openssl pkeyutl -sign -inkey /tmp/release.key -rawin \
-              -in SHA256SUMS -out SHA256SUMS.sig
-            openssl pkey -in /tmp/release.key -pubout > /tmp/release.pub
-            openssl pkeyutl -verify -pubin -inkey /tmp/release.pub -rawin \
-              -in SHA256SUMS -sigfile SHA256SUMS.sig
-            rm -f /tmp/release.key
-            echo "✓ SHA256SUMS подписан"
-          else
-            echo "::warning::RELEASE_SIGNING_KEY не задан — SHA256SUMS без подписи"
-          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

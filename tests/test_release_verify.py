@@ -1,4 +1,4 @@
-"""Проверка выпуска GUI (SHA256SUMS + Ed25519) и сторож отката (приём d2k)."""
+"""Проверка выпуска GUI (SHA256SUMS) и сторож отката (приём d2k)."""
 
 import hashlib
 import io
@@ -32,103 +32,23 @@ class TestDecide(unittest.TestCase):
                          {"zapret-gui-linux.tar.gz": "a" * 64,
                           "x.ipk": "b" * 64})
 
-    def test_good_and_signed(self):
-        res = rv.decide(self.SHA, self.sums(), (True, "ключ №1"))
-        self.assertTrue(res["ok"] and res["integrity"] and res["authentic"])
+    def test_good(self):
+        res = rv.decide(self.SHA, self.sums())
+        self.assertTrue(res["ok"] and res["integrity"])
 
     def test_hash_mismatch_refused(self):
-        res = rv.decide("b" * 64, self.sums(), (True, "x"))
+        res = rv.decide("b" * 64, self.sums())
         self.assertFalse(res["ok"])
         self.assertIn("хеш", res["message"])
 
-    def test_bad_signature_refused(self):
-        res = rv.decide(self.SHA, self.sums(), (False, "не сходится"))
-        self.assertFalse(res["ok"])
-        self.assertTrue(res["integrity"])
-
-    def test_unverifiable_signature_auto_vs_require(self):
-        auto = rv.decide(self.SHA, self.sums(), (None, "нет ключа"))
-        self.assertTrue(auto["ok"])
-        self.assertFalse(auto["authentic"])
-        self.assertTrue(auto["warnings"])
-        req = rv.decide(self.SHA, self.sums(), (None, "нет ключа"),
-                        rv.MODE_REQUIRE)
-        self.assertFalse(req["ok"])
-
     def test_old_release_without_sums(self):
-        self.assertTrue(rv.decide("", {}, (None, ""))["ok"])
-        self.assertFalse(rv.decide("", {}, (None, ""),
-                                   rv.MODE_REQUIRE)["ok"])
+        res = rv.decide("", {})
+        self.assertTrue(res["ok"])
+        self.assertFalse(res["integrity"])
+        self.assertTrue(res["warnings"])
 
     def test_sums_without_our_archive(self):
-        self.assertFalse(rv.decide(self.SHA, {"other": self.SHA},
-                                   (None, ""))["ok"])
-
-    def test_mode(self):
-        cfg = mock.Mock()
-        cfg.get.return_value = "require"
-        self.assertEqual(rv.mode(cfg), rv.MODE_REQUIRE)
-        cfg.get.return_value = "что-то"
-        self.assertEqual(rv.mode(cfg), rv.MODE_AUTO)
-
-
-def _openssl_ed25519():
-    openssl = shutil.which("openssl")
-    if not openssl:
-        return False
-    r = subprocess.run([openssl, "genpkey", "-algorithm", "ed25519"],
-                       capture_output=True)
-    return r.returncode == 0
-
-
-@unittest.skipUnless(_openssl_ed25519(), "нет openssl с Ed25519")
-class TestSignature(unittest.TestCase):
-    """Подпись проверяется тем же путём, что и на роутере (openssl)."""
-
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="sig-")
-        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
-        self.key = os.path.join(self.dir, "release.key")
-        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519",
-                        "-out", self.key], check=True, capture_output=True)
-        self.pub = subprocess.run(
-            ["openssl", "pkey", "-in", self.key, "-pubout"],
-            check=True, capture_output=True, text=True).stdout
-        self.sums = os.path.join(self.dir, rv.SUMS_NAME)
-        with open(self.sums, "w") as f:
-            f.write("%s  %s\n" % ("c" * 64, rv.ARCHIVE_NAME))
-        self.sig = os.path.join(self.dir, rv.SIG_NAME)
-        # Так же подписывает release.yml.
-        subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", self.key,
-                        "-rawin", "-in", self.sums, "-out", self.sig],
-                       check=True, capture_output=True)
-
-    def test_valid(self):
-        ok, why = rv.verify_signature(self.sums, self.sig, [self.pub])
-        self.assertTrue(ok, why)
-
-    def test_tampered(self):
-        with open(self.sums, "a") as f:
-            f.write("%s  evil\n" % ("d" * 64))
-        self.assertIs(rv.verify_signature(self.sums, self.sig,
-                                          [self.pub])[0], False)
-
-    def test_other_key(self):
-        other = os.path.join(self.dir, "other.key")
-        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519",
-                        "-out", other], check=True, capture_output=True)
-        pub = subprocess.run(["openssl", "pkey", "-in", other, "-pubout"],
-                             check=True, capture_output=True,
-                             text=True).stdout
-        self.assertIs(rv.verify_signature(self.sums, self.sig, [pub])[0],
-                      False)
-        # Ротация ключа: подходит любой из закреплённых.
-        self.assertTrue(rv.verify_signature(self.sums, self.sig,
-                                            [pub, self.pub])[0])
-
-    def test_nothing_to_verify_with(self):
-        self.assertIsNone(rv.verify_signature(self.sums, self.sig, [])[0])
-        self.assertIsNone(rv.verify_signature(self.sums, "", [self.pub])[0])
+        self.assertFalse(rv.decide(self.SHA, {"other": self.SHA})["ok"])
 
 
 def _archive_bytes(version="9.9.9"):
@@ -154,8 +74,6 @@ class TestUpdaterUsesReleaseSums(unittest.TestCase):
                 with open(dest, "w") as f:
                     f.write(sums_text)
                 return True
-            if url.endswith(".sig"):
-                return False
             with open(dest, "wb") as f:
                 f.write(archive)
             return True
@@ -163,7 +81,6 @@ class TestUpdaterUsesReleaseSums(unittest.TestCase):
         with mock.patch.object(up, "_download_file", side_effect=fake_dl), \
                 mock.patch.object(up, "_resolve_latest_tag",
                                   return_value="v9.9.9"), \
-                mock.patch.object(rv, "PUBLIC_KEYS", ()), \
                 mock.patch.object(up, "_replace_dir",
                                   side_effect=AssertionError("ставит")):
             result = up._do_update()

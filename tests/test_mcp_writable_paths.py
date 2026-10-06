@@ -45,7 +45,7 @@ WRITABLE = {
     "nfqws.ports_udp", "nfqws.tcp_pkt_in", "nfqws.tcp_pkt_out",
     "nfqws.udp_pkt_in", "nfqws.udp_pkt_out", "scan.confirm_repeats",
     "scan.confirm_top", "scan.default_mode",
-    "scan.default_protocol", "scan.probe_timeout",
+    "scan.default_protocol", "scan.isolated", "scan.probe_timeout",
     "scan.stabilization_delay", "scan.use_generated",
     "strategy.current_id", "strategy.current_name",
     "strategy.favorites",
