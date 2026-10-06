@@ -99,7 +99,9 @@ class Destination:
 
     def __init__(self, *, domains=None, cidrs=None, list_ids=None,
                  geosite=None, geoip=None):
-        self.domains  = _clean_list(domains, lower=True)
+        # regexp:-шаблон регистр не опускаем: \D и \d — разные классы.
+        self.domains  = _clean_list(domains, lower=True,
+                                    keep_case_prefix="regexp:")
         self.cidrs    = _clean_list(cidrs)
         self.list_ids = _clean_list(list_ids)
         self.geosite  = _clean_list(geosite, lower=True)
@@ -380,7 +382,7 @@ def _hostlist_domains(entries) -> list:
     return out
 
 
-def _clean_list(v, lower=False) -> list:
+def _clean_list(v, lower=False, keep_case_prefix: str = "") -> list:
     if v is None:
         return []
     if isinstance(v, str):
@@ -388,7 +390,8 @@ def _clean_list(v, lower=False) -> list:
     out = []
     for x in v:
         s = str(x or "").strip()
-        if lower:
+        if lower and not (keep_case_prefix
+                          and s.lower().startswith(keep_case_prefix)):
             s = s.lower()
         if s:
             out.append(s)

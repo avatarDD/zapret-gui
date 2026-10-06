@@ -108,16 +108,24 @@ class TestAddDelIpRuleFwmark(unittest.TestCase):
     """add_ip_rule_fwmark/del_ip_rule_fwmark — обёртки вокруг `ip rule`."""
 
     def test_add_returns_ok(self):
-        # Сначала del (best-effort), потом add.
-        runs = [(2, "", ""), (0, "", "")]
-        with mock.patch.object(ipset_backend, "_run", side_effect=runs):
-            r = ipset_backend.add_ip_rule_fwmark(0x100, 200, family="v4")
-            self.assertTrue(r["ok"])
+        # Сначала del (best-effort, обе формы), потом add с маской поля.
+        from core.routing import marks
+        calls = []
+
+        def fake(args, timeout=5):
+            calls.append(args)
+            return (0, "", "") if args[3] == "add" else (2, "", "")
+        with mock.patch.object(marks, "_ip", side_effect=fake):
+            r = ipset_backend.add_ip_rule_fwmark(0x10000, 200, family="v4")
+        self.assertTrue(r["ok"])
+        self.assertIn(["ip", "-4", "rule", "add", "fwmark",
+                       "0x10000/0xfff0000", "lookup", "200",
+                       "priority", "10100"], calls)
 
     def test_del_returns_ok(self):
-        with mock.patch.object(ipset_backend, "_run",
-                               return_value=(0, "", "")):
-            r = ipset_backend.del_ip_rule_fwmark(0x100, 200, family="v4")
+        from core.routing import marks
+        with mock.patch.object(marks, "_ip", return_value=(2, "", "")):
+            r = ipset_backend.del_ip_rule_fwmark(0x10000, 200, family="v4")
             self.assertTrue(r["ok"])
 
 

@@ -391,6 +391,7 @@ make upstream-offline    # только локальные сверки (идё�
 |--------|-----------|
 | `named_lists.py` | Именованные списки доменов/CIDR: `classify_entry`/`parse_entries`, CRUD, `update_fields`. Общее хранилище для единого слоя и nfqws2. |
 | `list_updater.py` | Курируемые списки доменов (podkop-стиль): пресеты itdoginfo, `merge_preserving_manual` (сохраняет ручные правки), фоновый `ListRefresher`. `extra_urls` пресета/списка — доп. источники (подсети сервиса), `source_urls()`; ошибка любого источника откладывает обновление целиком. |
+| `list_subscriptions.py` | Подписки хостлистов и ipset-файлов nfqws2 на URL (`lists.subscriptions`): тот же merge с сохранением ручных правок (снимок источника — `.<имя>.remote` рядом с файлом), пустой ответ не затирает, тикает в `ListRefresher`. API — `api/list_subscriptions.py`, UI — `web/js/components/list_subscription.js`. |
 
 **`core/unified/`** — единый слой «назначение → метод»:
 
@@ -406,6 +407,7 @@ make upstream-offline    # только локальные сверки (идё�
 | `geo_engine.py` | geosite/geoip для `singbox:` — инжекция route-правила через sidecar. |
 | `nfqws_hostlist.py` | Агрегат доменов nfqws2-маршрутов → `--hostlist`. |
 | `scanner_hint.py` | Связка с strategy-scanner (подбор для деградировавшего nfqws2). |
+| `bulk.py` | Много маршрутов сразу: `validate_destination` (домены/шаблоны/CIDR при сохранении из формы, API, MCP, импорта — `save_route(validate=True)`), `find_overlaps` (один трафик в нескольких маршрутах), `bulk` (вкл/выкл/удалить/сменить метод), `export_routes`/`import_routes`. |
 
 **`core/routing/`** — низкоуровневый selective routing (под капотом
 единого слоя и AWG-routing):
@@ -415,11 +417,15 @@ make upstream-offline    # только локальные сверки (идё�
 | `manager.py` | `RoutingManager` — оркестратор. |
 | `rules.py` / `storage.py` | Типы правил + хранилище. |
 | `domain_rule.py` / `device_rule.py` / `dscp_rule.py` | Применение/снятие по типу. |
-| `ipset_backend.py` / `nftset_backend.py` / `ndms_backend.py` | Бэкенды (Entware ipset / OpenWrt nftables / Keenetic-native). `choose_backend()` выбирает. |
+| `ipset_backend.py` / `nftset_backend.py` / `ndms_backend.py` | Бэкенды (Entware ipset / OpenWrt nftables / Keenetic-native). `choose_backend()` выбирает. Mark-правила: iptables — цепочки `AWG_ROUTING_PRE/OUT` целиком одним `iptables-restore --noflush` (`sync_mark_entries`), nft — транзакция `nft -f` по комментарию `awgr:<set>`; на запись три правила (connmark → mark, set → mark, set → connmark), ответный трафик не метится. |
+| `marks.py` | Метки маршрутов: поле бит `0x0FFF0000`, слоты по ключу без коллизий (`routing.mark_slots`), `--set-xmark`/`ip rule fwmark value/mask` (BusyBox `ip` — без маски), распознавание старых меток. |
+| `set_ttl.py` | Срок записи в наборе = TTL из DNS + запас (`routing.set_ttl`): набор не копит чужие IP CDN, живые соединения держатся на connmark. |
+| `domain_match.py` | Записи доменов: домен (с поддоменами), wildcard, `regexp:`; `Matcher`, `plain_domains` (только домены — dnsmasq/NDMS/резолв), `validate_entry`. |
+| `guardian.py` | Сторож: хук netfilter.d/hotplug (`101-zapret-gui-routing.sh`) → SIGUSR2 → `restore_firewall()` после перезаписи netfilter прошивкой; netlink (link/addr) → `apply_all_on_interface_up` для любого движка. Стартует из `main()`, не из `create_app`. |
 | `dnsmasq_integration.py` / `doh_resolver.py` | Domain-routing через dnsmasq + DoH-резолв для pre-population set'ов. |
 | `alias_resolver.py` | `geosite:`/`geoip:` → списки доменов/подсетей. |
 | `masquerade.py` | MASQUERADE/SNAT на исходящий tunnel-интерфейс. |
-| `dns_intercept.py` | Перехват DNS-запросов на роутере (заворот на свой резолвер). |
+| `dns_intercept.py` | Перехват DNS-запросов на роутере (заворот на свой резолвер): UDP и TCP, ответ с адреса запроса (IP_PKTINFO), имена цепочки CNAME, TTL записей, вырезание AAAA доменов маршрутов (`drop_aaaa`), шаблоны wildcard/regex. |
 | `domain_refresh.py` | Фоновый пере-резолв доменных правил: IP за доменом меняются, set'ы протухают. |
 | `sweeper.py` / `doctor.py` | Уборка осиротевших правил/set'ов + диагностика «почему маршрут не работает». |
 
@@ -539,8 +545,9 @@ stdout). Период опроса задаёт сам
 | `blockcheck2_multi.py` | `/api/blockcheck2m` | несколько доменов: start/status/output/stop + `combine` (общая стратегия через `--new`) |
 | `zapret_manager.py` | `/api/zapret` | установка/обновление nfqws2 (+`/releases`) |
 | `hostlists.py` / `lists.py` | `/api/hostlists`, `/api/lists` | домены nfqws2 / именованные списки (+`/curated`) |
+| `list_subscriptions.py` | `/api/{hostlists,ipsets}/<имя>/subscription`, `/api/list-subscriptions` | подписка файла nfqws2 на URL (GET/PUT/DELETE, `/refresh`) |
 | `ipsets.py` / `blobs.py` / `lua_scripts.py` / `hosts.py` | … | IP-списки / блобы / Lua / hosts |
-| `unified.py` | `/api/unified` | единый слой (routes/status/monitor/scan) |
+| `unified.py` | `/api/unified` | единый слой (routes/status/monitor/scan, `overlaps`, `bulk`, `export`/`import`) |
 | `routing.py` | `/api/routing` | selective routing + `/interfaces` |
 | `awg.py` | `/api/awg` | AmneziaWG (configs/up/down/warp/routing) |
 | `singbox.py` | `/api/singbox` | sing-box: configs/outbounds/**proxies**/subscriptions/**pool**/**test**/transparent (scope forward·self)/autostart |
@@ -620,7 +627,8 @@ stdout). Период опроса задаёт сам
 |--------|--------|-----------|
 | Подписки | `subscription_manager.SubscriptionRefresher` | тянет подписки по `interval_hours` (через выбранный транспорт), пересобирает конфиг |
 | Пул серверов | `server_pool.PoolRefresher` | пересобирает `server-pool` по таймеру (транспорт `singbox.pool.transport`) |
-| Курируемые списки | `list_updater.ListRefresher` | обновляет named-lists с `source_url` (транспорт `lists.transport`) |
+| Курируемые списки | `list_updater.ListRefresher` | обновляет named-lists с `source_url` и подписки хостлистов/ipset-файлов nfqws2 (`list_subscriptions.tick`), транспорт `lists.transport` |
+| Сторож маршрутизации | `routing.guardian` | SIGUSR2 от хука netfilter.d → вернуть наши правила netfilter; netlink → применить правила поднявшегося интерфейса |
 | Мониторинг единого слоя | `unified.monitor._MonitorLoop` | TLS-пробы назначений + `failover.step()` |
 | Watchdog AWG | `awg_watchdog` | проба через туннель + handshake-age → рестарт |
 | Watchdog sing-box | `singbox_watchdog` | связь по Clash API → авто-рестарт зависшего инстанса |

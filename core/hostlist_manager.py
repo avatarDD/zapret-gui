@@ -518,6 +518,11 @@ class HostlistManager:
                 os.rename(src, dst)
             log.info(f"Список {old_name}.txt переименован в {new_name}.txt",
                      source="hostlists")
+            try:
+                from core import list_subscriptions
+                list_subscriptions.rename("hostlist", old_name, new_name)
+            except Exception:
+                pass
             return True, ""
         except Exception as e:
             log.error(f"Ошибка переименования {old_name}.txt → {new_name}.txt: {e}",
@@ -550,6 +555,13 @@ class HostlistManager:
             with self._lock:
                 os.remove(filepath)
             log.info(f"Удалён список {name}.txt", source="hostlists")
+            # Подписка удалённого списка не должна достаться новому
+            # списку с тем же именем.
+            try:
+                from core import list_subscriptions
+                list_subscriptions.unsubscribe("hostlist", name)
+            except Exception:
+                pass
             return True, ""
         except Exception as e:
             log.error(f"Ошибка удаления {name}.txt: {e}", source="hostlists")

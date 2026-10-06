@@ -43,9 +43,9 @@ from core.log_buffer import log
 MANAGED_PRIO_MIN = 10000
 MANAGED_PRIO_MAX = 10299
 
-# fwmark domain-правил: _mark_for() выдаёт 0x10000..0x1FFFF.
-DOMAIN_MARK_MIN = 0x10000
-DOMAIN_MARK_MAX = 0x1FFFF
+# fwmark domain/DSCP-правил — поле бит маршрутов (core/routing/marks);
+# метки прошлых версий (0x10000..0x1FFFF и номер таблицы целиком) тоже
+# распознаются как свои и снимаются, раз за ними нет живого правила.
 
 SET_PREFIX = "awgr_"
 
@@ -134,8 +134,8 @@ def collect_expected() -> dict:
         if isinstance(rule, DomainRoutingRule):
             marks.add(domain_rule._mark_for(rule.id))
         elif isinstance(rule, DscpRoutingRule):
-            # fwmark DSCP-правила = id таблицы интерфейса (см. dscp_rule).
-            marks.add(table)
+            from core.routing import dscp_rule
+            marks.add(dscp_rule._mark_for(rule.target_iface))
         elif isinstance(rule, DeviceRoutingRule):
             if rule.source_ip:
                 devices.add((rule.source_ip.strip(), table))
@@ -186,8 +186,8 @@ def _parse_ip_rules(family: str) -> list:
         if not m:
             continue
         entry = {"priority": int(m.group(1)), "family": family,
-                 "src": "", "dst": "", "fwmark": None, "table": "",
-                 "foreign": False}
+                 "src": "", "dst": "", "fwmark": None, "fwmask": None,
+                 "table": "", "foreign": False}
         tokens = m.group(2).split()
         i = 0
         while i < len(tokens):
@@ -201,11 +201,12 @@ def _parse_ip_rules(family: str) -> list:
             elif tok == "to":
                 entry["dst"] = val
             elif tok == "fwmark":
-                try:
-                    entry["fwmark"] = int(val, 0)
-                except ValueError:
+                from core.routing import marks as _marks
+                parsed_mark = _marks.parse(val)
+                if parsed_mark is None:
                     entry["foreign"] = True
                     break
+                entry["fwmark"], entry["fwmask"] = parsed_mark
             else:                      # lookup | table
                 entry["table"] = val
             i += 2
@@ -222,9 +223,17 @@ def _del_argv(entry: dict) -> list:
     if entry["dst"] and entry["dst"] != "all":
         argv += ["to", entry["dst"]]
     if entry["fwmark"] is not None:
-        argv += ["fwmark", str(entry["fwmark"])]
+        argv += ["fwmark", _fwmark_token(entry)]
     argv += ["lookup", str(entry["table"])]
     return argv
+
+
+def _fwmark_token(entry: dict) -> str:
+    from core.routing import marks as _marks
+    mask = entry.get("fwmask")
+    if mask is None or mask == _marks.FULL:
+        return "0x%x" % entry["fwmark"]
+    return "0x%x/0x%x" % (entry["fwmark"], mask)
 
 
 def _describe(entry: dict) -> str:
@@ -234,7 +243,7 @@ def _describe(entry: dict) -> str:
     if entry["dst"] and entry["dst"] != "all":
         bits.append("to %s" % entry["dst"])
     if entry["fwmark"] is not None:
-        bits.append("fwmark 0x%x" % entry["fwmark"])
+        bits.append("fwmark %s" % _fwmark_token(entry))
     return "%s %d: %s lookup %s" % (entry["family"], entry["priority"],
                                     " ".join(bits) or "all", entry["table"])
 
@@ -253,9 +262,13 @@ def _is_orphan_rule(entry: dict, expected: dict, our_tables: set) -> bool:
         return False              # чужая таблица — не наше дело
 
     if entry["fwmark"] is not None:
+        from core.routing import marks as _marks
         mark = entry["fwmark"]
-        ours = (DOMAIN_MARK_MIN <= mark <= DOMAIN_MARK_MAX
-                or mark in our_tables)
+        mask = entry.get("fwmask")
+        if mask is None:
+            mask = _marks.FULL
+        ours = (_marks.is_ours(mark, mask)
+                or (mask == _marks.FULL and mark in our_tables))
         if not ours:
             return False
         return mark not in expected["marks"]

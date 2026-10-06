@@ -195,6 +195,9 @@ const IPSetsPage = (() => {
                             <button class="btn-chip" onclick="IPSetsPage.setASN('63949')">Linode (63949)</button>
                         </div>
                     </div>
+
+                    <!-- Подписка текущего списка на URL (автообновление) -->
+                    <div class="lists-add-section" style="margin-top: 12px;" id="ip-sub-box"></div>
                 </div>
             </div>
 
@@ -523,6 +526,15 @@ const IPSetsPage = (() => {
         }
     }
 
+    function renderSubscription() {
+        const box = document.getElementById('ip-sub-box');
+        if (box && typeof ListSubscription !== 'undefined') {
+            ListSubscription.render(box, 'ipsets', activeTab, {
+                onChange: () => { loadTab(activeTab); loadStats(); },
+            });
+        }
+    }
+
     async function loadTab(name) {
         loading = true;
         const editor = document.getElementById('ip-editor');
@@ -559,6 +571,7 @@ const IPSetsPage = (() => {
         } finally {
             loading = false;
         }
+        renderSubscription();
     }
 
     // ══════════════════ Tab Switching ══════════════════

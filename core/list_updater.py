@@ -462,6 +462,14 @@ def managed_lists() -> list:
             if (it.get("source_url") or "").strip()]
 
 
+def _file_subscriptions() -> list:
+    try:
+        from core import list_subscriptions
+        return list_subscriptions.list_all()
+    except Exception:
+        return []
+
+
 # ─────── background refresher ───────
 
 class ListRefresher:
@@ -474,7 +482,7 @@ class ListRefresher:
         self._stop_evt = threading.Event()
 
     def reconfigure(self):
-        if managed_lists():
+        if managed_lists() or _file_subscriptions():
             self._start()
         else:
             self._stop()
@@ -507,6 +515,13 @@ class ListRefresher:
 
     def _tick(self):
         now = int(time.time())
+        # Подписки хостлистов/ipset-файлов nfqws2 (core/list_subscriptions).
+        try:
+            from core import list_subscriptions
+            list_subscriptions.tick(now)
+        except Exception as e:
+            log.warning("list-refresher: подписки файлов: %s" % e,
+                        source="lists")
         for it in managed_lists():
             interval = int(it.get("interval_hours") or DEFAULT_INTERVAL_HOURS)
             last = int(it.get("last_refresh") or 0)
@@ -522,7 +537,8 @@ class ListRefresher:
     def get_status(self) -> dict:
         with self._lock:
             running = self._thread is not None and self._thread.is_alive()
-        return {"running": running, "managed": len(managed_lists())}
+        return {"running": running, "managed": len(managed_lists()),
+                "file_subscriptions": len(_file_subscriptions())}
 
 
 _refresher = None

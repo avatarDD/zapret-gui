@@ -90,7 +90,13 @@ ip route add <AllowedIPs> dev <iface> table <id>   # если Table != off
   `WG_INTERFACE_FIELDS` + `WG_PEER_FIELDS`, §3) — wg-quick-поля демон не
   понимает.
 - **Маршрутизация GUI** поверх: `target_iface = <iface>`, правила навешивает
-  `core/routing/applier` при подъёме интерфейса.
+  `core/routing/applier` при подъёме интерфейса (из `AwgManager.up` и —
+  для любого движка — из netlink-сторожа `core/routing/guardian`, который
+  не повторяет применение, сделанное за последние 15 с). После перезаписи
+  netfilter прошивкой Keenetic тот же сторож по хуку
+  `101-zapret-gui-routing.sh` возвращает маркировку и masquerade. Метки
+  доменных/DSCP-маршрутов — поле `0x0FFF0000` (`core/routing/marks.py`),
+  чужие биты метки не затираются.
 
 ---
 

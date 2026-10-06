@@ -20,9 +20,16 @@ def get_route(route_id: str):
     return r.to_dict() if r else None
 
 
-def save_route(data: dict, *, apply: bool = True) -> dict:
+def save_route(data: dict, *, apply: bool = True,
+               validate: bool = False) -> dict:
     """Создать/обновить маршрут из dict. Валидирует модель, сохраняет,
-    (опц.) применяет."""
+    (опц.) применяет.
+
+    validate=True (ввод из формы/API/импорта) — домены, шаблоны и CIDR
+    назначения проверяются (core/unified/bulk.validate_destination).
+    Внутренние пересохранения (массовое вкл/выкл, failover) старые
+    маршруты не проверяют: из-за давней опечатки нельзя было бы даже
+    выключить маршрут."""
     try:
         # strict: адрес устройства проверяем на входе из GUI/API —
         # «192.168.0.*» должен вернуться ошибкой в форму, а не осесть в
@@ -30,6 +37,15 @@ def save_route(data: dict, *, apply: bool = True) -> dict:
         route = UnifiedRoute.from_dict(data or {}, strict_devices=True)
     except ValueError as e:
         return {"ok": False, "error": str(e)}
+    if validate:
+        from core.unified.bulk import validate_destination
+        bad = validate_destination(route.destination.to_dict())
+        if bad:
+            more = len(bad) - 5
+            return {"ok": False, "invalid": bad,
+                    "error": "Некорректные записи назначения: %s%s"
+                             % ("; ".join(bad[:5]),
+                                " (и ещё %d)" % more if more > 0 else "")}
     if not route.has_selectors():
         return {"ok": False, "error": "Назначение пустое — укажите домены/"
                                       "CIDR/список/geosite, устройства "

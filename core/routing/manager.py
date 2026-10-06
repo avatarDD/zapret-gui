@@ -275,6 +275,12 @@ class RoutingManager:
                 return {"ok": False, "error": "Правило не найдено"}
             self._remove(rule)
             storage.remove_rule(rule_id)
+            # Слот метки правила свободен (core/routing/marks).
+            try:
+                from core.routing import marks
+                marks.release(marks.rule_key(rule_id))
+            except Exception:
+                pass
             return {"ok": True, "id": rule_id}
 
     # ─────────── apply / remove (одно правило) ───────────

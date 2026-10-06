@@ -18,6 +18,11 @@ REST API единого слоя маршрутизации (core/unified).
   GET    /api/unified/legacy              — legacy-правила core/routing,
                                             ещё не перенесённые в единый слой
   POST   /api/unified/migrate             — перенести их (идемпотентно)
+  GET    /api/unified/overlaps            — пересечения назначений маршрутов
+  POST   /api/unified/bulk                — {ids, action, method?}: enable |
+                                            disable | delete | set_method
+  GET    /api/unified/export[?ids=a,b]    — файл маршрутов (JSON)
+  POST   /api/unified/import              — {data, mode: add|replace, ids?}
 """
 
 from bottle import request, response
@@ -42,7 +47,7 @@ def register(app):
     def unified_routes_create():
         response.content_type = "application/json; charset=utf-8"
         from core.unified import manager
-        r = manager.save_route(_json_body())
+        r = manager.save_route(_json_body(), validate=True)
         if not r.get("ok"):
             response.status = 400
         return r
@@ -63,7 +68,7 @@ def register(app):
         from core.unified import manager
         body = _json_body()
         body["id"] = route_id
-        r = manager.save_route(body)
+        r = manager.save_route(body, validate=True)
         if not r.get("ok"):
             response.status = 400
         return r
@@ -167,3 +172,44 @@ def register(app):
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}
+
+    @app.route("/api/unified/overlaps")
+    def unified_overlaps():
+        response.content_type = "application/json; charset=utf-8"
+        from core.unified import bulk, manager
+        return {"ok": True,
+                "overlaps": bulk.find_overlaps(manager.list_routes())}
+
+    @app.route("/api/unified/bulk", method="POST")
+    def unified_bulk():
+        response.content_type = "application/json; charset=utf-8"
+        body = _json_body()
+        from core.unified import bulk
+        r = bulk.bulk(body.get("ids") or [], body.get("action") or "",
+                      method=body.get("method") or "")
+        if not r.get("ok") and not r.get("done"):
+            response.status = 400
+        return r
+
+    @app.route("/api/unified/export")
+    def unified_export():
+        from core.unified import bulk
+        import json
+        ids = [x for x in (request.query.get("ids") or "").split(",") if x]
+        response.content_type = "application/json; charset=utf-8"
+        response.set_header("Content-Disposition",
+                            'attachment; filename="zapret-gui-routes.json"')
+        return json.dumps(bulk.export_routes(ids), ensure_ascii=False,
+                          indent=2)
+
+    @app.route("/api/unified/import", method="POST")
+    def unified_import():
+        response.content_type = "application/json; charset=utf-8"
+        body = _json_body()
+        from core.unified import bulk
+        r = bulk.import_routes(body.get("data"),
+                               mode=body.get("mode") or "add",
+                               ids=body.get("ids") or None)
+        if not r.get("ok") and not r.get("imported"):
+            response.status = 400
+        return r

@@ -145,11 +145,53 @@ def create_set(name: str, family: str = "v4") -> dict:
     if rc == 0:
         return {"ok": True, "created": False, "name": name}
 
+    # flags timeout — записи с TTL из DNS истекают сами (см.
+    # add_entry_argv); элементы без срока (CIDR geoip) живут вечно.
     rc, _o, err = _run(["nft", "add", "set", "inet", TABLE_NAME, name,
-                        "{ type %s; flags interval; auto-merge; size 1048576; }" % typ])
+                        "{ type %s; flags interval, timeout; auto-merge; "
+                        "size 1048576; }" % typ])
     if rc != 0 and "exists" not in (err or "").lower():
         return {"ok": False, "error": err.strip(), "name": name}
     return {"ok": True, "created": True, "name": name}
+
+
+def set_has_timeout(name: str) -> bool:
+    """Создан ли set с `flags timeout` (наборы прошлых версий — без)."""
+    rc, out, _e = _run(["nft", "list", "set", "inet", TABLE_NAME, name])
+    if rc != 0:
+        return True             # нет set'а — create_set создаст правильный
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("flags "):
+            return "timeout" in line
+    return False
+
+
+def recreate_with_timeout(name: str, family: str = "v4") -> dict:
+    """Пересоздать set прошлой версии (без `flags timeout`).
+
+    Флаги set'а в nft не меняются — только delete + add, а delete не
+    пройдёт, пока на set ссылаются правила: их снимаем первыми (caller
+    после этого ставит mark-правила заново)."""
+    teardown_mark_rule(name)
+    destroy_set(name)
+    return create_set(name, family)
+
+
+def add_entry_argv(name: str, ip: str, timeout: int = 0) -> list:
+    """argv добавления IP; timeout>0 — запись истечёт сама."""
+    elem = ip if not timeout or timeout <= 0 else \
+        "%s timeout %ds" % (ip, int(timeout))
+    return ["nft", "add", "element", "inet", TABLE_NAME, name,
+            "{ %s }" % elem]
+
+
+def add_entry(name: str, ip: str, timeout: int = 0) -> bool:
+    rc, _o, err = _run(add_entry_argv(name, ip, timeout), timeout=5)
+    if rc != 0 and timeout and "timeout" in (err or "").lower():
+        # set без flags timeout (прошлая версия) — кладём бессрочно.
+        rc, _o, err = _run(add_entry_argv(name, ip, 0), timeout=5)
+    return rc == 0 or "exist" in (err or "").lower()
 
 
 def destroy_set(name: str) -> dict:
@@ -165,30 +207,80 @@ def flush_set(name: str) -> dict:
 
 
 # ────────────────────── mark rules ──────────────────────────────────
+#
+# Как в ipset_backend (см. там): своё поле бит метки, три правила на
+# запись — connmark → mark (соединение не меняет маршрут, когда IP выпал
+# из набора по таймауту), dst в наборе → mark, dst в наборе → connmark.
+# Только ORIGINAL-направление. Цепочки общие с DSCP-правилами, поэтому
+# правила записи помечены комментарием `awgr:<set>` и меняются одной
+# транзакцией `nft -f` (удалить старые по handle + добавить новые).
 
-def _rule_exists(chain: str, set_name: str, mark: int, family: str) -> bool:
+
+def _comment(set_name: str) -> str:
+    return "awgr:%s" % set_name
+
+
+def entry_rules(set_name: str, mark: int, family: str = "v4") -> list:
+    """Тексты правил одной записи (без `add rule inet T chain`). Чистая."""
+    from core.routing import marks as _marks
+    daddr = "ip6 daddr" if family == "v6" else "ip daddr"
+    proto = "ipv6" if family == "v6" else "ipv4"
+    tag = 'comment "%s"' % _comment(set_name)
+    return [
+        "meta nfproto %s ct direction original ct mark and 0x%08x == "
+        "0x%08x %s %s" % (proto, _marks.MASK, mark,
+                          _marks.nft_set_expr(mark), tag),
+        "ct direction original %s @%s %s %s"
+        % (daddr, set_name, _marks.nft_set_expr(mark), tag),
+        "ct direction original %s @%s %s %s"
+        % (daddr, set_name, _marks.nft_ct_set_expr(mark), tag),
+    ]
+
+
+def _entry_handles(chain: str, set_name: str) -> list:
+    """Хэндлы правил записи: наши (по комментарию) и старого формата."""
     rc, out, _e = _run(["nft", "-a", "list", "chain", "inet",
                         TABLE_NAME, chain])
     if rc != 0:
-        return False
-    daddr = "ip6 daddr" if family == "v6" else "ip daddr"
-    needle = "%s @%s meta mark set 0x%x" % (daddr, set_name, mark)
-    return needle in out
+        return []
+    tag = '"%s"' % _comment(set_name)
+    ref = "@%s " % set_name
+    handles = []
+    for line in out.splitlines():
+        if "handle" not in line:
+            continue
+        if tag not in line and (ref not in line + " "
+                                or "meta mark set" not in line):
+            continue
+        h = line.rsplit("handle", 1)[1].strip().split()[0]
+        if h.isdigit():
+            handles.append(h)
+    return handles
+
+
+def _nft_batch(lines: list) -> tuple:
+    if not lines:
+        return True, ""
+    try:
+        r = subprocess.run(["nft", "-f", "-"], input="\n".join(lines) + "\n",
+                           capture_output=True, text=True, timeout=20)
+        return r.returncode == 0, (r.stderr or "").strip()
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
 
 
 def setup_mark_rule(set_name: str, mark: int, family: str = "v4") -> dict:
     _ensure_table_and_chains()
-    daddr = "ip6 daddr" if family == "v6" else "ip daddr"
-    errors = []
+    batch = []
     for chain in ("prerouting", "output"):
-        if _rule_exists(chain, set_name, mark, family):
-            continue
-        rule = "%s @%s meta mark set %d" % (daddr, set_name, mark)
-        rc, _o, err = _run(["nft", "add", "rule", "inet", TABLE_NAME,
-                            chain] + rule.split())
-        if rc != 0:
-            errors.append("nft add rule %s: %s" % (chain, err.strip()))
-    return {"ok": not errors, "mark": mark, "errors": errors}
+        for h in _entry_handles(chain, set_name):
+            batch.append("delete rule inet %s %s handle %s"
+                         % (TABLE_NAME, chain, h))
+        for rule in entry_rules(set_name, mark, family):
+            batch.append("add rule inet %s %s %s" % (TABLE_NAME, chain, rule))
+    ok, err = _nft_batch(batch)
+    return {"ok": ok, "mark": mark,
+            "errors": [] if ok else ["nft -f: %s" % err]}
 
 
 def ensure_iface_masquerade(ifname: str) -> dict:
@@ -301,42 +393,26 @@ def remove_iface_forward(ifname: str) -> dict:
     return {"ok": True, "removed": removed, "ifname": ifname}
 
 
-def teardown_mark_rule(set_name: str, mark: int, family: str = "v4") -> dict:
-    """Удаляем по handle: получаем list -a, ищем строку с нашим set."""
-    daddr = "ip6 daddr" if family == "v6" else "ip daddr"
-    needle = "%s @%s meta mark set 0x%x" % (daddr, set_name, mark)
-
+def teardown_mark_rule(set_name: str, mark: int = 0,
+                       family: str = "v4") -> dict:
+    """Снять все правила записи набора (новые и старого формата)."""
+    batch = []
     for chain in ("prerouting", "output"):
-        rc, out, _e = _run(["nft", "-a", "list", "chain", "inet",
-                            TABLE_NAME, chain])
-        if rc != 0:
-            continue
-        for line in out.splitlines():
-            if needle in line and "handle" in line:
-                # ... # handle 42
-                parts = line.rsplit("handle", 1)
-                if len(parts) == 2:
-                    h = parts[1].strip().split()[0]
-                    if h.isdigit():
-                        _run(["nft", "delete", "rule", "inet", TABLE_NAME,
-                              chain, "handle", h])
-    return {"ok": True}
+        for h in _entry_handles(chain, set_name):
+            batch.append("delete rule inet %s %s handle %s"
+                         % (TABLE_NAME, chain, h))
+    ok, err = _nft_batch(batch)
+    return {"ok": ok, "errors": [] if ok else [err]}
 
 
 # ────────────────────── ip rule fwmark ──────────────────────────────
 
 def add_ip_rule_fwmark(mark: int, table: int, family: str = "v4",
                        priority: int = 10100) -> dict:
-    fam = "-6" if family == "v6" else "-4"
-    _run(["ip", fam, "rule", "del", "fwmark", str(mark),
-          "lookup", str(table)])
-    rc, _o, err = _run(["ip", fam, "rule", "add", "fwmark", str(mark),
-                        "lookup", str(table), "priority", str(priority)])
-    return {"ok": rc == 0, "error": err.strip()}
+    from core.routing import marks as _marks
+    return _marks.ip_rule_add(mark, table, family=family, priority=priority)
 
 
 def del_ip_rule_fwmark(mark: int, table: int, family: str = "v4") -> dict:
-    fam = "-6" if family == "v6" else "-4"
-    _run(["ip", fam, "rule", "del", "fwmark", str(mark),
-          "lookup", str(table)])
-    return {"ok": True}
+    from core.routing import marks as _marks
+    return _marks.ip_rule_del(mark, table, family=family)

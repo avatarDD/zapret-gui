@@ -427,7 +427,8 @@ def register(app):
 
     @app.route("/api/routing/dns-intercept", method="POST")
     def routing_dns_intercept_set():
-        """body: {"enabled": bool} — включить/выключить перехват DNS."""
+        """body: {"enabled": bool} — включить/выключить перехват DNS;
+        {"drop_aaaa": "routed"|"off", "tcp": bool} — его параметры."""
         response.content_type = "application/json; charset=utf-8"
         try:
             body = request.json or {}
@@ -435,7 +436,16 @@ def register(app):
             body = {}
         try:
             from core.routing import dns_intercept
-            res = dns_intercept.set_enabled(bool(body.get("enabled")))
+            res = {"ok": True}
+            if "drop_aaaa" in body or "tcp" in body:
+                res = dns_intercept.set_options(
+                    drop_aaaa=body.get("drop_aaaa"),
+                    tcp=body.get("tcp") if "tcp" in body else None)
+                if not res.get("ok"):
+                    response.status = 400
+                    return res
+            if "enabled" in body:
+                res = dns_intercept.set_enabled(bool(body.get("enabled")))
             res["status"] = dns_intercept.get_dns_intercept().status()
             return res
         except Exception as e:

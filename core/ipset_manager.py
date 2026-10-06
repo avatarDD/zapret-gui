@@ -455,6 +455,13 @@ class IPSetManager:
             with self._lock:
                 os.remove(filepath)
             log.info(f"Удалён IP-список {name}.txt", source="ipsets")
+            # Подписка удалённого списка не должна достаться новому
+            # списку с тем же именем.
+            try:
+                from core import list_subscriptions
+                list_subscriptions.unsubscribe("ipset", name)
+            except Exception:
+                pass
             return True, ""
         except Exception as e:
             log.error(f"Ошибка удаления {name}.txt: {e}", source="ipsets")
@@ -502,6 +509,11 @@ class IPSetManager:
                 os.rename(src, dst)
             log.info(f"IP-список {old_name}.txt переименован в {new_name}.txt",
                      source="ipsets")
+            try:
+                from core import list_subscriptions
+                list_subscriptions.rename("ipset", old_name, new_name)
+            except Exception:
+                pass
             return True, ""
         except Exception as e:
             log.error(f"Ошибка переименования {old_name}.txt → {new_name}.txt: {e}",

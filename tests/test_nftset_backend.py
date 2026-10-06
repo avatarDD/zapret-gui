@@ -108,32 +108,37 @@ class TestCreateSet(unittest.TestCase):
             self.assertFalse(r["created"])
 
 
-class TestRuleExists(unittest.TestCase):
-    """_rule_exists ищет нужный паттерн в выводе nft list chain."""
+class TestEntryHandles(unittest.TestCase):
+    """_entry_handles находит правила записи: наши (по комментарию) и
+    старого формата (`@set … meta mark set`), чужие не трогает."""
 
-    def test_match_v4(self):
-        listing = "chain prerouting {\n  ip daddr @set1 meta mark set 0xabcd\n}"
-        with mock.patch.object(nftset_backend, "_run",
-                               return_value=(0, listing, "")):
-            self.assertTrue(
-                nftset_backend._rule_exists(
-                    "prerouting", "set1", 0xabcd, "v4"))
+    LISTING = (
+        "chain prerouting { # handle 1\n"
+        '  ct direction original ip daddr @set1 meta mark set meta mark & '
+        '0xf001ffff | 0x00010000 comment "awgr:set1" # handle 7\n'
+        "  ip daddr @set1 meta mark set 0x0000abcd # handle 8\n"
+        "  ip daddr @set2 meta mark set 0x0000abce # handle 9\n"
+        "  ip dscp ef meta mark set 0x00000395 # handle 10\n"
+        "}")
 
-    def test_match_v6(self):
-        listing = "chain output {\n  ip6 daddr @set2 meta mark set 0x42\n}"
+    def test_finds_new_and_legacy_rules_of_the_set(self):
         with mock.patch.object(nftset_backend, "_run",
-                               return_value=(0, listing, "")):
-            self.assertTrue(
-                nftset_backend._rule_exists(
-                    "output", "set2", 0x42, "v6"))
+                               return_value=(0, self.LISTING, "")):
+            self.assertEqual(
+                nftset_backend._entry_handles("prerouting", "set1"),
+                ["7", "8"])
 
-    def test_no_match(self):
-        listing = "chain prerouting {\n  meta mark set 0x9999\n}"
-        with mock.patch.object(nftset_backend, "_run",
-                               return_value=(0, listing, "")):
-            self.assertFalse(
-                nftset_backend._rule_exists(
-                    "prerouting", "set1", 0xabcd, "v4"))
+    def test_entry_rules_keep_foreign_bits(self):
+        rules = nftset_backend.entry_rules("s", 0x10000, "v4")
+        self.assertEqual(len(rules), 3)
+        self.assertTrue(all('comment "awgr:s"' in r for r in rules))
+        self.assertTrue(all("ct direction original" in r for r in rules))
+        self.assertIn("meta mark set meta mark and 0xf000ffff or "
+                      "0x00010000", rules[1])
+        self.assertIn("ct mark set ct mark and 0xf000ffff or 0x00010000",
+                      rules[2])
+        self.assertIn("ip6 daddr @s6", nftset_backend.entry_rules(
+            "s6", 0x10000, "v6")[1])
 
 
 class TestEnsureIfaceMasquerade(unittest.TestCase):

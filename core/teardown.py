@@ -51,6 +51,13 @@ def _remove_persistence():
         res = fp.remove_hooks()
         if res.get("removed"):
             _log("хуки персистентности удалены: %s" % ", ".join(res["removed"]))
+        # хук сторожа маршрутизации (core/routing/guardian)
+        try:
+            from core.routing import guardian
+            for path in guardian.remove_hooks():
+                _log("удалён %s" % path)
+        except Exception as e:  # noqa: BLE001
+            _log("хук маршрутизации не снят: %s" % e)
         # reapply-скрипт + runtime-conf
         for path in (fp.REAPPLY_SCRIPT, fp.FW_RUN_CONF):
             try:

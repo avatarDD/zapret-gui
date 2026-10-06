@@ -315,7 +315,8 @@ def unified_route_save(args: dict) -> dict:
         merged.update(payload)
         payload = merged
 
-    outcome = unified.save_route(payload, apply=args.get("apply", True))
+    outcome = unified.save_route(payload, apply=args.get("apply", True),
+                                 validate=True)
     if not outcome.get("ok"):
         return {
             "ok": False,
