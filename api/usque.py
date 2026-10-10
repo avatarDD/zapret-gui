@@ -91,7 +91,8 @@ def register(app):
             plat["binary_dir"] = (os.path.dirname(env["binary"])
                                   if env.get("binary") else "/opt/usr/bin")
             env["platform"] = plat
-            env["tun"] = {"available": bool(plat.get("tun_available"))}
+            env["tun"] = {"available": bool(plat.get("tun_available")),
+                          "instructions": plat.get("tun_instructions") or ""}
         except Exception as e:
             env.setdefault("platform", {})
             env.setdefault("tun", {"available": False})

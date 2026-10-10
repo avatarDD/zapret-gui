@@ -110,8 +110,9 @@ class MihomoDetector:
         return out.splitlines()[0].strip()
 
     def detect_tun(self) -> dict:
-        dev_tun = os.path.exists("/dev/net/tun") or os.path.exists("/dev/tun")
-        return {"device": dev_tun, "available": dev_tun}
+        # Вместе с инструкцией «как включить» под эту платформу.
+        from core.awg_platform import tun_status
+        return tun_status()
 
     def _build_report(self) -> dict:
         platform = self.detect_platform()

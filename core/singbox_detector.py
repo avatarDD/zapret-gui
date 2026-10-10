@@ -128,8 +128,9 @@ class SingboxDetector:
         return {"version": version, "tags": tags, "has_clash_api": has_clash}
 
     def detect_tun(self) -> dict:
-        dev_tun = os.path.exists("/dev/net/tun") or os.path.exists("/dev/tun")
-        return {"device": dev_tun, "available": dev_tun}
+        # Вместе с инструкцией «как включить» под эту платформу.
+        from core.awg_platform import tun_status
+        return tun_status()
 
     def _build_report(self) -> dict:
         platform = self.detect_platform()
@@ -154,8 +155,7 @@ class SingboxDetector:
             "met":     tun["available"],
             "blocker": not tun["available"],
             "hint":    "" if tun["available"] else (
-                "TUN недоступен. На Keenetic 5.x нужен компонент "
-                "OpkgTun (см. AWG-инструкции — тот же компонент)."),
+                tun.get("instructions") or "TUN недоступен."),
         })
         items.append({
             "id":    "config_dir",

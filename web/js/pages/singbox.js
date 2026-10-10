@@ -246,7 +246,8 @@ const SingboxDashboardPage = (() => {
                     <div class="text-muted" style="font-size:11px;">TUN</div>
                     <strong>${tun.available
                         ? 'доступен'
-                        : '<span style="color:#e58;">нет</span>'}</strong>
+                        : `<a href="#singbox-setup" style="color:#e58;"
+                              title="${escapeAttr(tun.instructions || '')}">нет — как включить</a>`}</strong>
                 </div>
                 <div>
                     <div class="text-muted" style="font-size:11px;">Конфиги</div>

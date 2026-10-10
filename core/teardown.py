@@ -7,7 +7,8 @@
 чтобы частичная поломка одного шага не мешала остальным:
 
   1. остановка nfqws2 (живой путь под управлением GUI);
-  2. снятие firewall-правил (iptables-цепочки nfqws_post/pre/nat + nft-таблица);
+  2. снятие firewall-правил (iptables-цепочки nfqws_post/pre/nat + nft-таблица,
+     цепочка/таблица zgui_sched расписания устройств);
   3. снятие ndm/hotplug-хуков персистентности + reapply-скрипта;
   4. отключение автозапуска (init.d/S99zapret) — если он установлен.
 
@@ -43,6 +44,11 @@ def _remove_firewall():
         _log("firewall-правила сняты")
     except Exception as e:  # noqa: BLE001
         _log("не удалось снять firewall-правила: %s" % e)
+    try:
+        from core.device_schedule import get_device_scheduler
+        get_device_scheduler().remove_all()
+    except Exception as e:  # noqa: BLE001
+        _log("не удалось снять правила расписания устройств: %s" % e)
 
 
 def _remove_persistence():

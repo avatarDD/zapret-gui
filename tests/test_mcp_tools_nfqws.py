@@ -515,6 +515,28 @@ class TestFirewallStatus(unittest.TestCase):
         payload = call("firewall_status")
         self.assertIn("не применены", payload["hint"])
 
+    def test_device_schedule_is_surfaced_only_when_enabled(self):
+        from core import device_schedule
+        self.manager.get_status = lambda: {"type": "iptables",
+                                           "applied": True, "rules": [],
+                                           "rules_count": 0}
+        self.manager.get_conflicts = lambda r=None: []
+        sched = device_schedule.get_device_scheduler()
+        saved = sched.status
+        try:
+            sched.status = lambda: {"enabled": False}
+            self.assertNotIn("device_schedule", call("firewall_status"))
+            sched.status = lambda: {
+                "enabled": True, "router_time": "Ср 10:00",
+                "active_rules": ["Дети"], "excluded": ["10.0.0.5"],
+                "unresolved": [], "error": "", "backend": "iptables"}
+            payload = call("firewall_status")
+        finally:
+            sched.status = saved
+        self.assertEqual(payload["device_schedule"]["excluded"],
+                         ["10.0.0.5"])
+        self.assertEqual(payload["device_schedule"]["active_rules"], ["Дети"])
+
     def test_unreadable_rules_are_an_error_with_a_hint(self):
         def boom():
             raise OSError("Operation not permitted")

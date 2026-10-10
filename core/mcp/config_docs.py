@@ -194,6 +194,34 @@ DOCS = {
                 "устройств политики, true — для всех, кроме них.",
         "see": ["firewall.keenetic_policy"],
     },
+    "firewall.device_schedule.enabled": {
+        "text": "Расписание обхода по устройствам: в окна правил их "
+                "устройства идут мимо nfqws2 (connmark-исключение, как у "
+                "политики Keenetic), остальные — с обходом всегда. "
+                "Правила держит фоновый планировщик core/device_schedule.py "
+                "(цепочка mangle zgui_sched / таблица inet zgui_sched). "
+                "Меняется на странице «Управление» или POST "
+                "/api/device-schedule; сейчас действующее видно в "
+                "firewall_status → device_schedule.",
+        "see": ["firewall.device_schedule.rules",
+                "firewall.device_schedule.tz_offset"],
+    },
+    "firewall.device_schedule.rules": {
+        "text": "Правила расписания: {name, enabled, devices — IP, подсеть "
+                "или MAC (MAC переводится в IPv4/IPv6 по таблице соседей), "
+                "days — 1..7 с понедельника (пусто — каждый день), from/to "
+                "— ЧЧ:ММ; from > to — окно через полночь, from == to — "
+                "весь день}. Действует на новые соединения.",
+        "empty": "пусто — расписания нет, обход для всех",
+        "see": ["firewall.device_schedule.enabled"],
+    },
+    "firewall.device_schedule.tz_offset": {
+        "text": "Сдвиг часового пояса для расписания («+03:00»), если "
+                "Python на роутере видит UTC (часовой пояс в Entware не "
+                "задан). Пусто — время системы.",
+        "empty": "пусто — локальное время системы",
+        "see": ["firewall.device_schedule.rules"],
+    },
     "firewall.ppe_deoffload": {
         "text": "Разгрузка аппаратного ускорителя Keenetic (MediaTek "
                 "PPE): правила `-j PPE -m connskip` держат первые пакеты "

@@ -144,6 +144,17 @@ DEFAULT_CONFIG = {
         # другим выходом (VPN Keenetic, туннели): сырые пакеты nfqws2 ушли
         # бы мимо туннеля в WAN. См. core/route_marks.py.
         "skip_routed_marks": True,
+        # Расписание по устройствам (core/device_schedule.py): в окна
+        # правил их устройства (IP/подсеть/MAC) идут мимо nfqws2 —
+        # connmark-исключением, как устройства политики. rules: [{name,
+        # enabled, devices: [...], days: [1..7] (пусто — каждый день),
+        # from: "ЧЧ:ММ", to: "ЧЧ:ММ"}]. tz_offset: "" — время системы,
+        # «+03:00» — если часовой пояс в Entware не задан.
+        "device_schedule": {
+            "enabled": False,
+            "tz_offset": "",
+            "rules": [],
+        },
     },
 
     # --- Фильтрация ---

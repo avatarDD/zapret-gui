@@ -121,6 +121,17 @@ const ControlPage = (() => {
                 </div>
             </div>
 
+            <!-- Расписание по устройствам (components/device_schedule.js) -->
+            <div class="card">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                    Расписание по устройствам
+                </div>
+                <div id="device-schedule-body"></div>
+            </div>
+
             <!-- Лог вывода nfqws -->
             <div class="card">
                 <div class="card-title" style="justify-content: space-between;">
@@ -153,6 +164,9 @@ const ControlPage = (() => {
         });
 
         // Начальная загрузка
+        if (typeof DeviceSchedule !== 'undefined') {
+            DeviceSchedule.mount(document.getElementById('device-schedule-body'));
+        }
         fetchStatus();
         fetchLogs();
         startPolling();

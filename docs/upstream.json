@@ -73,14 +73,14 @@
       "id": "mihomo",
       "repo": "MetaCubeX/mihomo",
       "kind": "release",
-      "pinned": "v1.19.31",
-      "verified_at": "2026-09-15",
+      "pinned": "v1.19.32",
+      "verified_at": "2026-10-10",
       "skill": ".claude/skills/mihomo/SKILL.md",
       "mentions": [
         ".claude/skills/mihomo/SKILL.md"
       ],
       "vendored": {},
-      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.30 их 24, конвертируем 6. В v1.19.30 main.go не изменился, в parser.go добавился тип `zerotier` (оверлейная mesh-сеть, аналога в sing-box нет)."
+      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.30 их 24, конвертируем 6. В v1.19.30 main.go не изменился, в parser.go добавился тип `zerotier` (оверлейная mesh-сеть, аналога в sing-box нет). В v1.19.32 main.go и parser.go не изменились; поменялась семантика TUN: стек по умолчанию теперь `mips` (был `gvisor`), у `tun` появился `congestion-controller`, у `load-balance` — `hash-key`. Наши генераторы пишут `stack` явно, код не затронут."
     },
     {
       "id": "amneziawg-go",
