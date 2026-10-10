@@ -91,6 +91,13 @@ def firewall_status(args: dict) -> dict:
         "conflicts_count": len(conflicts),
     })
 
+    # Расписание по устройствам: в его окно устройства идут мимо очереди
+    # намеренно. Без этого «у устройства обход не работает» модель
+    # искала бы в стратегии, а не в расписании.
+    schedule = _safe(_device_schedule_brief, None)
+    if schedule:
+        result["device_schedule"] = schedule
+
     if not status.get("type"):
         result["hint"] = ("ни iptables, ни nft не найдены — перехват "
                           "невозможен")
@@ -107,6 +114,16 @@ def firewall_status(args: dict) -> dict:
 
 
 # ───────────────────────────── частности ────────────────────────────
+
+def _device_schedule_brief():
+    """Сводка расписания (core/device_schedule.py); выключено — None."""
+    from core.device_schedule import get_device_scheduler
+    st = get_device_scheduler().status()
+    if not st.get("enabled"):
+        return None
+    return {key: st.get(key) for key in (
+        "router_time", "active_rules", "excluded", "unresolved", "error")}
+
 
 def _safe(getter, default):
     try:

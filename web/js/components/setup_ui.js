@@ -67,10 +67,26 @@ const SetupUI = (() => {
                     <div class="text-muted">TUN:</div>
                     <div>${tun.available
                             ? '<span style="color:#39c45e;">доступен</span>'
-                            : '<span style="color:#e58;">недоступен</span> — нужна установка TUN-компонента'}
+                            : '<span style="color:#e58;">недоступен</span> — нужно включить TUN (инструкция ниже)'}
                     </div>
                     <div class="text-muted">Firewall:</div>
                     <div>${esc(platform.firewall_backend || 'unknown')}</div>
+                </div>
+            </div>`;
+    }
+
+    /** Как включить TUN — текст от сервера под эту платформу/версию KeenOS.
+     *  Без TUN не запустится конфиг с TUN-inbound, даже если бинарь стоит. */
+    function tunHelpHtml(tun) {
+        if (!tun || tun.available) return '';
+        const text = tun.instructions
+            || 'Нет /dev/net/tun: загрузите модуль ядра tun (kmod-tun).';
+        return `
+            <div class="alert alert-warning" style="margin-top:12px;">
+                <div class="alert-title">Как включить TUN</div>
+                <pre style="font-size:12px; margin:6px 0 0; white-space:pre-wrap;">${esc(text)}</pre>
+                <div class="text-muted" style="font-size:11px; margin-top:6px;">
+                    После включения нажмите «Обновить» на этой странице.
                 </div>
             </div>`;
     }
@@ -372,10 +388,12 @@ const SetupUI = (() => {
                 <div class="alert alert-warning">
                     <div class="alert-title">Что нужно для запуска</div>
                     <ul style="margin:6px 0 0; padding-left:18px; font-size:12px;">
-                        ${!tun.available ? '<li>Установить TUN-компонент (см. AmneziaWG → Установка — компонент одинаковый)</li>' : ''}
+                        ${!tun.available ? '<li>Включить TUN — один раз для всех движков (AmneziaWG, sing-box, mihomo, MASQUE)</li>' : ''}
                         ${!installed ? `<li>Скачать и установить ${esc(opts.binaryLabel)} (кнопка выше)</li>` : ''}
                     </ul>
                 </div>` : ''}
+
+                ${tunHelpHtml(tun)}
             `;
         }
 
@@ -436,7 +454,7 @@ const SetupUI = (() => {
         };
     }
 
-    return { create, environmentCardHtml, progressHtml,
+    return { create, environmentCardHtml, progressHtml, tunHelpHtml,
              normalizeVer, verEqual, esc, escAttr };
 })();
 

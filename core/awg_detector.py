@@ -394,10 +394,8 @@ class AwgDetector:
             "label":   "TUN-интерфейс (/dev/net/tun)",
             "met":     tun["available"],
             "blocker": not tun["available"],
-            "hint":    platform.opkg_tun_instructions()
-                       if isinstance(platform, KeeneticPlatform)
-                          and not tun["available"]
-                       else "",
+            "hint":    platform.tun_instructions()
+                       if not tun["available"] else "",
         })
 
         # OpkgTun на Keenetic 5.x

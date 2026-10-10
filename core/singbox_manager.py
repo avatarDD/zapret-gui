@@ -549,6 +549,13 @@ class SingboxManager:
         if self.is_running(name):
             return {"ok": True, "already_running": True}
 
+        # TUN-inbound без /dev/net/tun: sing-box check это пропускает,
+        # а run падает с невнятным «open /dev/net/tun». Скажем сразу.
+        if (self._detect_singbox_tun_iface(config)
+                and not platform.tun_available()):
+            from core.awg_platform import tun_missing_error
+            return tun_missing_error("sing-box", "sing-box → Установка")
+
         # Режим отладки: подмешиваем overlay с log.level=debug (если билд
         # умеет merge нескольких -c). Тот же набор -c уходит и в check, и в run.
         extra_cfg = self._debug_extra_cfg(binary, config)

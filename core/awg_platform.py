@@ -157,6 +157,26 @@ class AwgPlatform:
         """OpkgTun — отдельный TUN-модуль для Entware на Keenetic KeenOS 5.x."""
         return False
 
+    def tun_instructions(self) -> str:
+        """
+        Как включить TUN на этой платформе — текст для пользователя.
+
+        TUN общий для всех движков (amneziawg-go, sing-box, mihomo,
+        usque): один раз включил — работает у всех. Поэтому текст
+        не привязан к AWG, и его показывают страницы установки всех
+        движков. Базовая версия — для неизвестной платформы.
+        """
+        return (
+            "TUN не найден (/dev/net/tun). Загрузите модуль ядра tun:\n"
+            "  modprobe tun\n"
+            "Если модуля нет — установите пакет с ним (kmod-tun в\n"
+            "OpenWrt/Entware) и повторите."
+        )
+
+    def opkg_tun_instructions(self) -> str:
+        """Старое имя `tun_instructions()` — для api/awg.py и фронта."""
+        return self.tun_instructions()
+
     def supports_iptables_marks(self):
         """Доступны ли iptables MARK + ip rule fwmark для per-device routing."""
         return _cmd_ok(["iptables", "-t", "mangle", "-L", "-n"])
@@ -190,7 +210,7 @@ class AwgPlatform:
         return os.path.exists("/dev/net/tun") or os.path.exists("/dev/tun")
 
     def as_dict(self):
-        return {
+        d = {
             "name":                   self.name,
             "kind":                   self.kind.value if isinstance(
                 self.kind, PlatformKind) else str(self.kind),
@@ -205,6 +225,11 @@ class AwgPlatform:
             "firewall_backend":       self.get_firewall_backend(),
             "tun_available":          self.tun_available(),
         }
+        if not d["tun_available"]:
+            d["tun_instructions"] = self.tun_instructions()
+            # Старое поле, оставляем для совместимости с фронтом.
+            d["opkg_tun_instructions"] = d["tun_instructions"]
+        return d
 
 
 # ───────────────────────── Keenetic / Entware ────────────────────────
@@ -282,8 +307,8 @@ class KeeneticPlatform(AwgPlatform):
         major = self._version_major()
         if major >= 5:
             return (
-                "KeenOS 5.x: для работы AmneziaWG нужен системный\n"
-                "компонент OpkgTun:\n"
+                "KeenOS 5.x: для TUN (AmneziaWG, sing-box, mihomo, MASQUE)\n"
+                "нужен системный компонент OpkgTun:\n"
                 "  1. Откройте веб-интерфейс Keenetic (http://192.168.1.1)\n"
                 "  2. Управление → Общие настройки → Изменить набор компонентов\n"
                 "  3. Включите фильтр «opkg», найдите «Поддержка TUN/TAP для OPKG»\n"
@@ -292,16 +317,13 @@ class KeeneticPlatform(AwgPlatform):
             )
         if major == 4:
             return (
-                "KeenOS 4.x: для работы AmneziaWG нужен TUN-модуль.\n"
+                "KeenOS 4.x: для TUN (AmneziaWG, sing-box, mihomo, MASQUE)\n"
+                "нужен модуль ядра tun.\n"
                 "  Способ 1 (рекомендуется): opkg install kmod-tun\n"
                 "  Способ 2: установите системный компонент «Прокси-сервер\n"
                 "    OpenVPN» через веб-интерфейс — он автоматически\n"
                 "    подтянет TUN.\n"
-                "  После — перезагрузите роутер и повторите установку.\n"
-                "  ВНИМАНИЕ: на KeenOS 4.x пользовательские iptables-цепочки\n"
-                "  могут перетираться при reload-running-config — если\n"
-                "  включён RCI (NDMS), рекомендуется использовать\n"
-                "  NDMS-backend для selective routing."
+                "  После — перезагрузите роутер и повторите установку."
             )
         # Неизвестная или unparsable версия — даём подсказку без
         # привязки к поколению.
@@ -314,23 +336,13 @@ class KeeneticPlatform(AwgPlatform):
             "После — перезагрузите роутер."
         )
 
-    # Алиас сохранён для обратной совместимости с местами, где
-    # «opkg_tun_instructions» используется напрямую (api/awg.py UI).
-    def opkg_tun_instructions(self) -> str:
-        return self.tun_instructions()
-
     def as_dict(self):
+        # tun_instructions (если TUN не виден) кладёт базовый as_dict —
+        # через переопределённый tun_instructions() с версионной развилкой.
         d = super().as_dict()
         d["keenos_version"]   = self._keenos_version
         d["keenos_major"]     = self._version_major()
         d["opkg_tun_installed"] = self.has_opkg_tun()
-        # Инструкции отдаём всегда, если TUN не виден — UI сам решит,
-        # показывать или нет. В as_dict нет смысла фильтровать по
-        # версии — keenos_major уже доступен, фронт сам разветвится.
-        if not self.tun_available():
-            d["tun_instructions"] = self.tun_instructions()
-            # Старое поле, оставляем для совместимости с фронтом.
-            d["opkg_tun_instructions"] = d["tun_instructions"]
         return d
 
 
@@ -350,6 +362,15 @@ class OpenWrtPlatform(AwgPlatform):
 
     def init_script_path(self):
         return os.path.join(self.init_dir, self.init_name)
+
+    def tun_instructions(self) -> str:
+        # OpenWrt до 24.10 — opkg, с 25.x — apk; пакет один и тот же.
+        return (
+            "OpenWrt: TUN даёт пакет kmod-tun.\n"
+            "  opkg update && opkg install kmod-tun   (OpenWrt ≤ 24.10)\n"
+            "  apk update && apk add kmod-tun         (OpenWrt 25.x)\n"
+            "Затем modprobe tun (или перезагрузка) и повторите."
+        )
 
     def supports_nftables(self):
         # OpenWrt 22.03+ использует nftables по умолчанию
@@ -373,6 +394,15 @@ class GenericLinuxPlatform(AwgPlatform):
     def init_script_path(self):
         return os.path.join(self.init_dir, f"{self.init_name}.service")
 
+    def tun_instructions(self) -> str:
+        return (
+            "Linux: загрузите модуль ядра tun:\n"
+            "  sudo modprobe tun\n"
+            "Чтобы он грузился при старте:\n"
+            "  echo tun | sudo tee /etc/modules-load.d/tun.conf\n"
+            "В контейнере (LXC/Docker) /dev/net/tun пробрасывают с хоста."
+        )
+
     def install_init_script(self, content: str):
         path = super().install_init_script(content)
         _cmd_ok(["systemctl", "daemon-reload"])
@@ -382,3 +412,49 @@ class GenericLinuxPlatform(AwgPlatform):
         _cmd_ok(["systemctl", "disable", self.init_name])
         super().remove_init_script()
         _cmd_ok(["systemctl", "daemon-reload"])
+
+
+# ───────────────────────── TUN для всех движков ──────────────────────
+
+def tun_status() -> dict:
+    """
+    Состояние TUN на хосте + инструкция, как его включить.
+
+    TUN — общий ресурс: им пользуются amneziawg-go, sing-box (TUN-inbound),
+    mihomo (`tun:`) и usque. Детект платформы берём у AWG (там версия
+    KeenOS), чтобы на всех страницах установки была одна и та же
+    инструкция, а не отсылка «см. AmneziaWG».
+
+      {"device": bool, "available": bool, "instructions": str}
+    """
+    dev = os.path.exists("/dev/net/tun") or os.path.exists("/dev/tun")
+    out = {"device": dev, "available": dev, "instructions": ""}
+    if dev:
+        return out
+    try:
+        from core.awg_detector import get_awg_detector
+        platform = get_awg_detector().detect_platform()
+    except Exception:
+        platform = AwgPlatform()
+    try:
+        out["instructions"] = platform.tun_instructions()
+    except Exception:
+        out["instructions"] = AwgPlatform().tun_instructions()
+    return out
+
+
+def tun_missing_error(engine: str, setup_hint: str) -> dict:
+    """
+    Ответ `up()` для конфига с TUN на хосте без /dev/net/tun.
+
+    Без этой проверки движок падает через секунду с «open /dev/net/tun:
+    no such file or directory» в логе, а в UI — только «упал при старте».
+    """
+    return {
+        "ok": False,
+        "error": ("В конфиге есть TUN, а TUN на этом устройстве не включён "
+                  "(нет /dev/net/tun) — %s не запустится. Как включить: %s."
+                  % (engine, setup_hint)),
+        "tun_missing": True,
+        "tun_instructions": tun_status().get("instructions", ""),
+    }

@@ -431,6 +431,26 @@ class MihomoManager:
 
     # ─────── lifecycle ───────
 
+    @staticmethod
+    def _config_wants_tun(path: str) -> bool:
+        """Нужен ли конфигу TUN: `tun: {enable: true}` или listener
+        `type: tun`. Не разобрали — False (решит сам mihomo)."""
+        try:
+            from core.clash_yaml import parse_yaml
+            with open(path, "r", encoding="utf-8") as f:
+                data = parse_yaml(f.read())
+        except Exception:
+            return False
+        if not isinstance(data, dict):
+            return False
+        tun = data.get("tun")
+        if isinstance(tun, dict) and tun.get("enable") is True:
+            return True
+        listeners = data.get("listeners")
+        return isinstance(listeners, list) and any(
+            isinstance(item, dict) and item.get("type") == "tun"
+            for item in listeners)
+
     def is_running(self, name: str) -> bool:
         pid = _read_pid(self._platform().pid_path(name))
         return _pid_alive(pid) if pid else False
@@ -475,6 +495,12 @@ class MihomoManager:
             return {"ok": False, "error": "Конфиг %s не найден" % name}
         if self.is_running(name):
             return {"ok": True, "already_running": True}
+
+        # `tun: enable: true` без /dev/net/tun: mihomo -t это пропускает,
+        # а при запуске TUN не поднимается. Скажем сразу.
+        if self._config_wants_tun(config) and not platform.tun_available():
+            from core.awg_platform import tun_missing_error
+            return tun_missing_error("mihomo", "mihomo → Установка")
 
         # Режим отладки: запускаем из launch-конфига с log-level=debug
         # (пользовательский YAML не трогаем). При любой ошибке — обычный.

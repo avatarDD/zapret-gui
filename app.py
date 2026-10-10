@@ -896,6 +896,16 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception:
             pass
 
+        # Расписание обхода по устройствам: окна «эти устройства мимо
+        # nfqws2». Поток живёт всегда (выключено — одно чтение настроек
+        # за тик), первый тик — в нём же, запуск GUI не ждёт.
+        try:
+            from core.device_schedule import get_device_scheduler
+            get_device_scheduler().reconfigure()
+        except Exception as e:
+            log.warning("расписание устройств при boot: %s" % e,
+                        source="firewall")
+
         # AWG-watchdog: автоперезапуск «зависших» туннелей (handshake устарел
         # ИЛИ приём встал). Поднимаем при старте GUI, чтобы защита работала
         # автономно после ребута роутера, а не только когда открыта страница

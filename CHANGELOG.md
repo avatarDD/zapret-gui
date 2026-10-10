@@ -4,6 +4,27 @@
 
 ### Добавлено
 
+- **Расписание обхода по устройствам (issue #381).** На странице
+  «Управление» можно задать окна (дни недели и часы), в которые
+  выбранные устройства идут мимо nfqws2, а остальные — с обходом всегда:
+  например, детские устройства днём без YouTube. Устройство — IP, подсеть
+  или MAC (MAC переводится в IPv4/IPv6 по таблице соседей), окна через
+  полночь поддерживаются, есть ручной сдвиг часового пояса для Entware
+  без TZ. Механизм — connmark-исключение, как у политики Keenetic; свою
+  цепочку `zgui_sched` (iptables) / таблицу `inet zgui_sched` (nftables)
+  планировщик проверяет раз в 30 секунд и возвращает после сброса
+  firewall прошивкой. Настройки — `firewall.device_schedule`; MCP видит
+  действующее расписание в `firewall_status`.
+- **TUN: инструкция «как включить» прямо на страницах установки
+  (issue #386).** sing-box, mihomo и MASQUE отсылали «см. AmneziaWG →
+  Установка», а на OpenWrt и Linux подсказки не было вовсе. Теперь
+  сервер отдаёт текст под платформу (Keenetic 5.x — компонент OpkgTun,
+  4.x — `kmod-tun`, OpenWrt — `opkg`/`apk add kmod-tun`, Linux —
+  `modprobe tun`) и его видно на всех страницах установки. Запуск
+  конфига sing-box с TUN-inbound или mihomo с `tun.enable` на устройстве
+  без `/dev/net/tun` теперь сразу отказывает понятной ошибкой вместо
+  «упал при старте (exit=1)».
+
 - **Маршрутизация: приёмы MagiTrickle (MagiTrickle/MagiTrickle).**
   - **Правила возвращаются после перезаписи firewall.** Keenetic
     пересобирает netfilter при переподключении WAN и смене политик и
@@ -273,6 +294,13 @@
   `.github/ISSUE_TEMPLATE/agent-report.md`.
 
 ### Документация
+
+- **Скил mihomo сверен с v1.19.32 (issue #382).** Стек TUN по
+  умолчанию у апстрима сменился с `gvisor` на `mips` (в `tun:`,
+  `listeners: tun` и `ip-stack: auto` у wireguard/zerotier/easytier),
+  у `tun` появился `congestion-controller`, у `load-balance` — `hash-key:
+  in-user`. CLI (`main.go`) и список типов прокси не изменились; наши
+  генераторы пишут `stack` явно, код не затронут.
 
 - **README: `wget-ssl` на свежем Entware (#378).** Без него `wget`
   не умеет HTTPS и на ссылку релиза отвечает `wget: not an http or ftp

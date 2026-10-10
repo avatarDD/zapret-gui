@@ -34,6 +34,7 @@ def register_routes(app):
     from api.awg import register as reg_awg
     from api.routing import register as reg_routing
     from api.devices import register as reg_devices
+    from api.device_schedule import register as reg_device_schedule
     from api.connectivity import register as reg_connectivity
     from api.singbox import register as reg_singbox
     from api.mihomo import register as reg_mihomo
@@ -77,6 +78,7 @@ def register_routes(app):
     reg_awg(app)
     reg_routing(app)
     reg_devices(app)
+    reg_device_schedule(app)
     reg_connectivity(app)
     reg_singbox(app)
     reg_mihomo(app)

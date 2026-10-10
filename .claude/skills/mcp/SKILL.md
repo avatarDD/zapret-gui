@@ -319,7 +319,7 @@ UI), и `tools_by_scope`.
 | `lists_list` | read | нет | `tools/lists.py` | id?, offset?, limit? | именованные списки единого слоя: домены и CIDR по списку |
 | `blobs_list` | read | нет | `tools/lists.py` | query?, missing_only?, offset?, limit? | реестр blob'ов и **существует ли файл** (`missing_only`); свои блобы — `kind: "user"` |
 | `lua_functions_list` | read | нет | `tools/lists.py` | name?, query?, needs_blob?, offset?, limit? | функции `--lua-desync` с этого устройства: параметры, `needs_blob` |
-| `firewall_status` | read | нет | `tools/firewall.py` | rules?, offset?, limit? | правила NFQUEUE, бэкенд, `queue_numbers`, `conflicts` |
+| `firewall_status` | read | нет | `tools/firewall.py` | rules?, offset?, limit? | правила NFQUEUE, бэкенд, `queue_numbers`, `conflicts`; при включённом расписании по устройствам — `device_schedule` (кто сейчас мимо очереди, `core/device_schedule.py`) |
 | `traffic_recent` | read | нет | `tools/traffic.py` | minutes?, domain?, source?, offset?, limit? | дошёл ли трафик до движка: домен/профиль/вердикт за N минут |
 | `tunnels_status` | read | нет | `tools/tunnels.py` | engine?, logs?, running_only?, instances?, offset?, limit? | шесть движков одним ответом: установлен/запущен/конфиги/трафик/последняя ошибка |
 | `diagnostics_run` | read | нет | `tools/diagnostics.py` | checks?, services?, offset?, limit? | окружение, конфликты, предпосылки; сетевые пробы — по разрешению `probes` |
