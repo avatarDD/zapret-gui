@@ -41,6 +41,12 @@ local state = {}            -- state[askey][hostn] = { strategy = N, ts = T }
 local last_written = {}     -- last_written[askey][hostn] = { strategy = N, ts = T }
 local last_write = 0
 local write_interval = 2    -- seconds (debounce window for flash-friendly writes)
+-- A debounced write must not be lost. persist_if_changed() updates `state`
+-- BEFORE write_state() and skips unchanged hosts afterwards, so a rotation that
+-- landed inside the debounce window (circular rotates within a second on a DPI
+-- RST) stayed in RAM only: state.tsv kept "1", the GUI showed #1 forever and a
+-- restart re-seeded 1. flush_pending() retries it on a later packet.
+local write_pending = false
 
 -- ---------------------------------------------------------------------------
 -- helpers
@@ -219,9 +225,12 @@ end
 local function write_state()
   local now = now_t()
   if now ~= 0 and (now - last_write) < write_interval then
-    return                       -- debounced; the next packet's write flushes it
+    write_pending = true         -- debounced; flush_pending() writes it later
+    return
   end
   last_write = now
+  -- Stays pending until the rename succeeds (no path / foreign lock → retry).
+  write_pending = true
 
   local path = choose_state_file_for_write()
   if not path then return end
@@ -275,8 +284,17 @@ local function write_state()
     -- Record exactly what is now on disk, so the external-edit reconcile can
     -- tell OUR own writes apart from outside edits (webpanel × / manual edit).
     last_written = snapshot_strategies(merged)
+    write_pending = false
   end
   release_lock(lockfile)
+end
+
+-- Write what the debounce held back, once the window has passed.
+local function flush_pending()
+  if not write_pending then return end
+  local now = now_t()
+  if now ~= 0 and (now - last_write) < write_interval then return end
+  write_state()
 end
 
 -- ---------------------------------------------------------------------------
@@ -488,6 +506,13 @@ local function reconcile_external_edits()
   local p_ok = can_read_file(STATE_FILE_PRIMARY)
   local f_ok = can_read_file(STATE_FILE_FALLBACK)
   if not (p_ok or f_ok) then return end
+  -- The primary EXISTS but is unreadable (e.g. rewritten 0600 by root): reading
+  -- only the fallback would mistake every primary row for an operator delete
+  -- and reset the whole live rotation to 1. Same I/O-failure rule as above.
+  if not p_ok then
+    local _, _, code = io.open(STATE_FILE_PRIMARY, "r")
+    if code and code ~= 2 then return end      -- not ENOENT
+  end
   local disk = {}
   if p_ok then merge_state_file_into(STATE_FILE_PRIMARY, disk) end
   if f_ok then merge_state_file_into(STATE_FILE_FALLBACK, disk) end
@@ -611,6 +636,15 @@ if type(circular) == "function" then
            desync.l7payload == "quic_initial" or
            desync.l7payload == "http_req")
         local success_event = successful_state or response_state or quic_candidate_state
+        -- What may PIN the host (sticky revert below) is narrower than what may
+        -- persist it: circular's own success detector (nocheck without failure:
+        -- data past inseq/maxseq) or a positive HTTP reply. A bare ServerHello
+        -- only says the handshake got through — DPI often lets it pass and cuts
+        -- the connection later — and the QUIC candidate is "circular rotated",
+        -- not a success at all. Pinning on those undid every rotation within
+        -- 30s of any handshake on the host, so circular never left #1.
+        local pin_event = successful_state
+          or (response_state and desync.l7payload == "http_reply")
 
         -- Sticky-success revert (THE accuracy fix). orig_circular advances
         -- nstrategy on TCP-level signals (retrans / lua failures) that fire on
@@ -621,7 +655,7 @@ if type(circular) == "function" then
         local sticky_key = (hostn and askey_after)
           and (hostn .. "|" .. tostring(askey_after)) or nil
         _G.Z2K_STICKY_SUCCESS_TS = _G.Z2K_STICKY_SUCCESS_TS or {}
-        if success_event and sticky_key then
+        if pin_event and sticky_key then
           _G.Z2K_STICKY_SUCCESS_TS[sticky_key] = now_f()
         end
         if sticky_key and is_sticky_eligible(askey, hostn) and nstrategy_before_circular and hrec.nstrategy
@@ -637,6 +671,7 @@ if type(circular) == "function" then
         if (success_event or outgoing_initial) and not server_active_event then
           persist_if_changed(askey, hostn, hrec)
         end
+        flush_pending()
       end)
     end
 
@@ -654,8 +689,10 @@ z2k_state_persist = {
   write_state = write_state,
   -- flush(): bypass the debounce and force an immediate write (tests / shutdown).
   flush = function() last_write = 0; write_state() end,
+  flush_pending = function() flush_pending() end,
+  pending = function() return write_pending end,
   state_file = function() return STATE_FILE_PRIMARY end,
   _state = function() return state end,
   _set_interval = function(n) write_interval = tonumber(n) or write_interval end,
-  _reset = function() loaded = false; state = {}; last_write = 0; last_written = {}; last_reconcile = 0; _G.Z2K_STICKY_SUCCESS_TS = {} end,
+  _reset = function() loaded = false; state = {}; last_write = 0; last_written = {}; last_reconcile = 0; write_pending = false; _G.Z2K_STICKY_SUCCESS_TS = {} end,
 }
