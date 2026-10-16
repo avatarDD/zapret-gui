@@ -161,7 +161,8 @@ def probe() -> dict:
     sites = {}
     for t in _targets():
         try:
-            r = check_http(t["url"], timeout=PROBE_TIMEOUT, fresh=True)
+            r = check_http(t["url"], timeout=PROBE_TIMEOUT, fresh=True,
+                           single=True)
             sites[t["display"]] = bool(r.get("ok"))
         except Exception:                           # noqa: BLE001
             sites[t["display"]] = False

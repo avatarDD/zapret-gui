@@ -102,12 +102,15 @@ const AwgDashboardPage = (() => {
             const [cfgsResp, ifsResp, autoResp, envResp] = await Promise.all([
                 API.get('/api/awg/configs'),
                 API.get('/api/awg/interfaces'),
-                API.get('/api/awg/autostart').catch(() => ({ status: {} })),
+                // Не ответил (GUI занят перезапуском движка, firewall) —
+                // null, и галки остаются прежними: пустой ответ рисовал
+                // «автозапуск выключен» у всех туннелей.
+                API.get('/api/awg/autostart').catch(() => null),
                 API.get('/api/awg/environment').catch(() => null),
             ]);
             configs = cfgsResp.configs || [];
             interfaces = ifsResp.interfaces || [];
-            autostart = (autoResp && autoResp.status) || { interfaces: {} };
+            if (autoResp && autoResp.status) autostart = autoResp.status;
             if (!autostart.interfaces) autostart.interfaces = {};
             keeneticRouting = (envResp && envResp.keenetic_routing) || null;
             renderBody();
