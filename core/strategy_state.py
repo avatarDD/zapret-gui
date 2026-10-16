@@ -253,7 +253,11 @@ def _rewrite_locked(path: str, entries: list):
     """Записать entries в path атомарно под уже взятым flock'ом."""
     from core.safe_io import atomic_write_text
     try:
-        atomic_write_text(path, _serialize(entries))
+        # 0644: nfqws2 работает под --user (nobody) и обязан этот файл
+        # читать. С правами mkstemp (0600, владелец root) z2k-state-persist
+        # не видел свой state после каждого сброса из GUI или авто-починки:
+        # reconcile читал только /tmp-fallback и сбрасывал на 1 всё подряд.
+        atomic_write_text(path, _serialize(entries), mode=0o644)
     except Exception as e:
         log.error("strategy_state._rewrite_locked: %s — %s" % (path, e),
                   source="strategy")

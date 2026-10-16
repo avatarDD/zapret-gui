@@ -113,6 +113,12 @@ class TestStateOperations(unittest.TestCase):
             txt = f.read()
         self.assertIn("# key\thost\tstrategy\tts", txt)
 
+    def test_rewrite_stays_readable_for_the_engine(self):
+        # nfqws2 работает под nobody: файл после сброса из GUI обязан
+        # остаться читаемым, иначе z2k-state-persist сбрасывает всё на 1.
+        self.ss.clear_host("youtube.com")
+        self.assertEqual(os.stat(self.state_file).st_mode & 0o777, 0o644)
+
     def test_clear_host_removes_only_that_host(self):
         result = self.ss.clear_host("youtube.com")
         self.assertTrue(result["ok"])
