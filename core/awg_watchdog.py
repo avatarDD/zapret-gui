@@ -348,6 +348,14 @@ def _get_settings() -> dict:
     return result
 
 
+def _config_name(mgr, iface: str) -> str:
+    """Имя конфига для интерфейса: подъём (`up`) ждёт именно его."""
+    try:
+        return mgr._config_for_name(iface) or iface
+    except Exception:
+        return iface
+
+
 def _invalidate_settings_cache():
     """Сбросить кеш настроек — вызывается из set_settings() для немедленного применения."""
     global _settings_cache, _settings_cache_key
@@ -404,6 +412,10 @@ class AwgWatchdog:
         self._zero_state   = {}
         # iface'ы, для которых рестарт уже запущен в фоновом потоке
         self._restart_inflight: set = set()
+        # Конфиги, которые опустил сам watchdog (рестарт: down прошёл, up —
+        # нет). Их поднимаем обратно и без флага автозапуска: туннель был
+        # поднят, пока его не тронули мы.
+        self._took_down: set = set()
 
     # ─── lifecycle ───
 
@@ -624,15 +636,28 @@ class AwgWatchdog:
 
         def _do_restart():
             try:
-                mgr.restart(iface)
+                res = mgr.restart(iface) or {}
                 with self._lock:
                     self._last_restart[iface] = now
+                    if not res.get("ok"):
+                        cfg_name = _config_name(mgr, iface)
+                        self._took_down.add(cfg_name)
+                        self._last_restart[cfg_name] = now
+                        log.warning(
+                            "awg-watchdog: %s не поднялся после рестарта (%s)"
+                            " — буду поднимать заново" % (iface, (
+                                res.get("up") or res).get("message")
+                                or "ошибка"), source="awg")
                     self._probe_fails[iface] = 0
                     self._rx_state.pop(iface, None)
                     self._zero_state.pop(iface, None)
             except Exception as e:
                 log.warning("awg-watchdog: restart %s: %s" % (iface, e),
                             source="awg")
+                # Мог упасть между down и up: лежит — поднимем (поднят —
+                # воскрешение увидит и просто забудет).
+                with self._lock:
+                    self._took_down.add(_config_name(mgr, iface))
             finally:
                 with self._lock:
                     self._restart_inflight.discard(iface)
@@ -657,7 +682,9 @@ class AwgWatchdog:
             wanted = get_awg_autostart_manager().get_enabled_interfaces()
         except Exception as e:
             log.warning("awg-watchdog: список autostart: %s" % e, source="awg")
-            return
+            wanted = []
+        with self._lock:
+            wanted = sorted(set(wanted) | self._took_down)
         if not wanted:
             return
 
@@ -671,6 +698,8 @@ class AwgWatchdog:
                 continue  # конфиг удалён — поднимать нечего
             try:
                 if mgr.is_running(name):
+                    with self._lock:
+                        self._took_down.discard(name)
                     continue
             except Exception:
                 continue
@@ -692,8 +721,10 @@ class AwgWatchdog:
                         source="awg")
                     continue
 
-                log.warning("awg-watchdog: %s (autostart) не поднят — поднимаю"
-                            % name, source="awg")
+                log.warning("awg-watchdog: %s (%s) не поднят — поднимаю"
+                            % (name, "опущен рестартом watchdog'а"
+                               if name in self._took_down else "autostart"),
+                            source="awg")
             try:
                 r = mgr.up(name)
             except Exception as e:
@@ -707,7 +738,10 @@ class AwgWatchdog:
                 self._rx_state.pop(name, None)
                 self._zero_state.pop(name, None)
                 history.append(now)
-            if not r.get("ok"):
+            if r.get("ok"):
+                with self._lock:
+                    self._took_down.discard(name)
+            else:
                 log.warning("awg-watchdog: не удалось поднять %s: %s"
                             % (name, r.get("message", "ошибка")), source="awg")
 

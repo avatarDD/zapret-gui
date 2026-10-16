@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 def _fake_check_http_factory(map_url_to_ok):
     """Возвращает фейковый check_http, который читает map_url_to_ok[url]."""
-    def _fake(url, timeout=5):
+    def _fake(url, timeout=5, **_kw):
         ok = bool(map_url_to_ok.get(url, False))
         return {
             "url": url,
@@ -291,6 +291,125 @@ class TestHealthcheckTick(unittest.TestCase):
             # newest right
             self.assertGreaterEqual(
                 self.hc._history[-1]["ts"], self.hc._history[0]["ts"])
+
+
+class TestHealthcheckKeepsWhatCircularFound(unittest.TestCase):
+    """Сайт не открывался, circular нашёл рабочий приём — проверка с
+    роутера, добившая серию провалов, не должна его стирать."""
+
+    def setUp(self):
+        from core.healthcheck import HealthcheckDaemon
+        from core.config_manager import get_config_manager
+        self.hc = HealthcheckDaemon()
+        self.cfg = get_config_manager()
+        self._saved_hc = dict(self.cfg._config.get("healthcheck") or {})
+        self.cfg._config["healthcheck"] = {
+            "enabled": True, "interval_min": 5, "consecutive_failures": 2,
+            "auto_reset": True, "services": ["youtube", "discord"],
+        }
+        self.urls = {"https://www.youtube.com": False,
+                     "https://discord.com": True}
+
+    def tearDown(self):
+        self.cfg._config["healthcheck"] = self._saved_hc
+
+    def _tick(self, entries):
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(self.urls)), \
+                patch("core.healthcheck._notify"), \
+                patch("core.healthcheck._autopick"), \
+                patch("core.strategy_state.list_entries",
+                      return_value=entries), \
+                patch("core.strategy_state.clear_host",
+                      return_value={"ok": True, "removed": 1}) as clear, \
+                patch("core.strategy_state.flush_clear_hosts"), \
+                patch("core.strategy_state.reload_nfqws") as hup:
+            res = self.hc.run_now()
+        return res, clear, hup
+
+    def test_strategy_found_during_streak_is_not_reset(self):
+        self._tick([])                                  # провал №1, state пуст
+        found = [{"key": "circ", "host": "youtube.com", "strategy": 4,
+                  "ts": 1}]
+        res, clear, hup = self._tick(found)             # провал №2
+        clear.assert_not_called()
+        hup.assert_not_called()
+        yt = [r for r in res["results"] if r["service"] == "youtube"][0]
+        self.assertTrue(yt.get("circular_moved"))
+        # Серия считается заново от найденного состояния.
+        self.assertEqual(self.hc._fail_streak["youtube"], 1)
+
+    def test_rotation_during_streak_is_not_reset(self):
+        e = {"key": "circ", "host": "youtube.com", "ts": 1}
+        self._tick([dict(e, strategy=2)])
+        _res, clear, _hup = self._tick([dict(e, strategy=3)])
+        clear.assert_not_called()
+
+    def test_stuck_strategy_is_reset(self):
+        stuck = [{"key": "circ", "host": "youtube.com", "strategy": 2,
+                  "ts": 1}]
+        self._tick(stuck)
+        _res, clear, hup = self._tick(stuck)
+        self.assertEqual(clear.call_count, 3)
+        hup.assert_called_once()
+
+    def test_moved_then_stuck_is_reset(self):
+        e = {"key": "circ", "host": "youtube.com", "ts": 1}
+        self._tick([])
+        self._tick([dict(e, strategy=4)])               # сдвинулся — серия = 1
+        _res, clear, _hup = self._tick([dict(e, strategy=4)])
+        self.assertEqual(clear.call_count, 3)
+
+    def test_nothing_to_clear_no_sighup(self):
+        with patch("core.diagnostics.check_http",
+                   side_effect=_fake_check_http_factory(self.urls)), \
+                patch("core.healthcheck._notify"), \
+                patch("core.healthcheck._autopick"), \
+                patch("core.strategy_state.list_entries", return_value=[]), \
+                patch("core.strategy_state.clear_host",
+                      return_value={"ok": True, "removed": 0}), \
+                patch("core.strategy_state.reload_nfqws") as hup:
+            self.hc.run_now()
+            self.hc.run_now()
+        hup.assert_not_called()
+
+
+class TestCheckHttpSingle(unittest.TestCase):
+    """Одна проверка — одно соединение: провал curl в сети не повторяется
+    wget'ом и urllib (каждое — ещё один провал хоста для circular)."""
+
+    def _run(self, single, rc, stderr):
+        from core import diagnostics
+        calls = []
+
+        def fake_run(cmd, timeout=10):
+            calls.append(cmd[0])
+            return rc, "", stderr
+        with patch.object(diagnostics, "_find_binary",
+                          side_effect=lambda names: "/bin/" + names[0]), \
+                patch.object(diagnostics, "_run", side_effect=fake_run), \
+                patch("urllib.request.urlopen",
+                      side_effect=OSError("urllib")) as uo:
+            r = diagnostics.check_http("https://blocked.example/", timeout=3,
+                                       fresh=True, single=single)
+        return r, calls, uo.call_count
+
+    def test_single_stops_after_curl_network_failure(self):
+        r, calls, urllib_calls = self._run(True, 28, "timed out")
+        self.assertFalse(r["ok"])
+        self.assertEqual(calls, ["/bin/curl"])
+        self.assertEqual(urllib_calls, 0)
+
+    def test_single_falls_back_when_curl_cannot_do_it(self):
+        # rc=1 «unsupported protocol» — curl до сети не дошёл.
+        _r, calls, urllib_calls = self._run(True, 1, "unsupported")
+        self.assertEqual(calls, ["/bin/curl", "/bin/wget"])
+        self.assertEqual(urllib_calls, 1)
+
+    def test_default_keeps_fallbacks(self):
+        _r, calls, urllib_calls = self._run(False, 28, "timed out")
+        self.assertEqual(calls, ["/bin/curl", "/bin/wget"])
+        self.assertEqual(urllib_calls, 1)
 
 
 class TestHealthcheckDaemonControl(unittest.TestCase):

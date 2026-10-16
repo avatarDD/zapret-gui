@@ -268,19 +268,35 @@ def traceroute_host(host, max_hops=20, port=443, use_tcp=True, timeout=45):
 
 # ─────────────────────── HTTP Check ───────────────────────
 
-def check_http(url, timeout=5, fresh=False):
+# Коды curl «соединение ушло в сеть и не удалось» (DNS, connect, таймаут,
+# TLS-рукопожатие, обрыв/сброс): wget и urllib после них — лишь ещё
+# одно такое же соединение, а не другой способ проверить.
+_CURL_NETWORK_RC = frozenset((5, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92))
+
+
+def check_http(url, timeout=5, fresh=False, single=False):
     """
     HTTP(S) проверка через curl → wget → urllib fallback.
 
     ``fresh=True`` — мимо кеша: замер «до/после» смены стратегии
     (core/safe_apply.py) иначе сравнил бы результат сам с собой.
 
+    ``single=True`` — одно соединение на проверку: если curl есть и до
+    сети дошёл, его провал — итог, без wget и urllib. Нужен фоновым
+    проверкам через работающий обход (мониторинг, замер «до/после»):
+    circular ведёт счёт провалов на хост, общий для всех устройств
+    (``autostate[key][host]`` в zapret-auto.lua), и три провальных
+    соединения одной проверки при ``fails=2`` уводили хост со стратегии,
+    на которой у клиентов сайт открывался.
+
     Returns:
         dict: { url, status_code, ok, response_time, error, tls_version, redirect_url }
     """
     # timeout — часть ключа, как у ping_host: healthcheck (8 с) и
     # диагностика (5 с) иначе делили бы один результат.
-    cache_key = f"http:{url}:{timeout}"
+    # single — тоже: его провал без запасных способов не годится в ответ
+    # обычной проверке.
+    cache_key = f"http:{url}:{timeout}" + (":single" if single else "")
     cached = None if fresh else _cache_get(cache_key)
     if cached:
         return cached
@@ -330,6 +346,11 @@ def check_http(url, timeout=5, fresh=False):
                 return result
         elif stderr:
             result["error"] = stderr.strip()[:200]
+        if single and (rc in _CURL_NETWORK_RC
+                       or (rc is None and stderr == "timeout")):
+            result["response_time"] = round((time.time() - t0) * 1000)
+            _cache_set(cache_key, result)
+            return result
 
     # Попытка 2: wget
     wget_bin = _find_binary(["wget"])

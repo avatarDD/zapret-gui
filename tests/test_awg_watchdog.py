@@ -300,6 +300,77 @@ class TestResurrectDownAutostart(unittest.TestCase):
         mgr.up.assert_not_called()
 
 
+class TestBringsBackWhatItTookDown(unittest.TestCase):
+    """Рестарт watchdog'а опустил туннель, а поднять не смог — туннель
+    поднимается заново и без флага автозапуска: до рестарта он работал."""
+
+    def _settings(self):
+        return {"handshake_timeout_sec": 180, "check_interval_sec": 30,
+                "cooldown_sec": 300, "max_restarts_per_hour": 6,
+                "enabled": True}
+
+    def _restart(self, wd, mgr):
+        threads = []
+        real = awg_watchdog.threading.Thread
+
+        def capture(*a, **kw):
+            t = real(*a, **kw)
+            threads.append(t)
+            return t
+        status = {"peers": [{"latest_handshake": int(time.time()) - 999}]}
+        with mock.patch.object(awg_watchdog.threading, "Thread", capture), \
+                mock.patch("core.notify.event"):
+            wd._maybe_restart(mgr, "opkgtun0", status, self._settings(),
+                              time.time())
+        for t in threads:
+            t.join(5)
+
+    def _mgr(self):
+        mgr = mock.MagicMock()
+        mgr._config_for_name.return_value = "warp-opkgtun0"
+        mgr.restart.return_value = {"ok": False, "up": {"message": "dns"}}
+        mgr.is_running.return_value = False
+        mgr.list_configs.return_value = [{"name": "warp-opkgtun0"}]
+        mgr.up.return_value = {"ok": True}
+        return mgr
+
+    def _no_autostart(self):
+        am = mock.MagicMock()
+        am.get_enabled_interfaces.return_value = []
+        return mock.patch(
+            "core.awg_autostart_manager.get_awg_autostart_manager",
+            return_value=am)
+
+    def test_failed_restart_is_brought_back(self):
+        wd, mgr = awg_watchdog.AwgWatchdog(), self._mgr()
+        self._restart(wd, mgr)
+        self.assertIn("warp-opkgtun0", wd._took_down)
+        with self._no_autostart():
+            # Cooldown после рестарта соблюдается…
+            wd._resurrect_down_autostart(mgr, self._settings(), time.time())
+            mgr.up.assert_not_called()
+            # …а по его истечении туннель поднимается.
+            wd._resurrect_down_autostart(mgr, self._settings(),
+                                         time.time() + 301)
+        mgr.up.assert_called_once_with("warp-opkgtun0")
+        self.assertNotIn("warp-opkgtun0", wd._took_down)
+
+    def test_successful_restart_is_not_tracked(self):
+        wd, mgr = awg_watchdog.AwgWatchdog(), self._mgr()
+        mgr.restart.return_value = {"ok": True}
+        self._restart(wd, mgr)
+        self.assertEqual(wd._took_down, set())
+
+    def test_forgotten_once_running(self):
+        wd, mgr = awg_watchdog.AwgWatchdog(), self._mgr()
+        wd._took_down.add("warp-opkgtun0")
+        mgr.is_running.return_value = True
+        with self._no_autostart():
+            wd._resurrect_down_autostart(mgr, self._settings(), time.time())
+        mgr.up.assert_not_called()
+        self.assertEqual(wd._took_down, set())
+
+
 class TestStatus(unittest.TestCase):
 
     def test_status_includes_required_fields(self):

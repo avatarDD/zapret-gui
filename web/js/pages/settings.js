@@ -889,9 +889,17 @@ const SettingsPage = (() => {
             const changes = {};
             for (const section of SECTIONS) {
                 const sectionKey = section.id;
-                if (!deepEqual(config[sectionKey], originalConfig[sectionKey])) {
-                    changes[sectionKey] = config[sectionKey];
+                // Только изменённые ключи секции, а не вся секция: она
+                // снята при открытии страницы, и целиком перезаписала бы
+                // то, что с тех пор поменяли в другом месте (отладка nfqws2
+                // на «Стратегиях», MCP). Сервер сливает секцию поключево.
+                const cur = config[sectionKey] || {};
+                const orig = originalConfig[sectionKey] || {};
+                const diff = {};
+                for (const k of Object.keys(cur)) {
+                    if (!deepEqual(cur[k], orig[k])) diff[k] = cur[k];
                 }
+                if (Object.keys(diff).length) changes[sectionKey] = diff;
             }
 
             if (Object.keys(changes).length === 0) {

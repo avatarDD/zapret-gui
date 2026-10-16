@@ -150,7 +150,7 @@ class TestHealthcheckTransitions(NotifyCase):
         events = []
         results = iter([False] * 6 + [True, True])
         with mock.patch("core.diagnostics.check_http",
-                        lambda url, timeout=8: {"ok": next(results)}), \
+                        lambda url, timeout=8, **_kw: {"ok": next(results)}), \
                 mock.patch.object(hc, "_notify",
                                   lambda k, t: events.append(k)), \
                 mock.patch("core.strategy_state.clear_host",

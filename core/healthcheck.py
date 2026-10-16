@@ -10,7 +10,9 @@ Healthcheck-демон: фоновый watchdog для autocircular.
      записи в state.tsv по её хостам (через core/strategy_state.clear_host).
      В результате при следующем соединении z2k-state-persist начнёт круг с
      первой стратегии в circular, а не пытается долбиться выученной (которая
-     теперь явно не работает).
+     теперь явно не работает). Только если circular всю серию провалов
+     простоял на одной стратегии: сменил — значит, перебирает сам, и сброс
+     отнял бы найденное (см. _circular_moved).
   3. История последних проверок хранится в ring-буфере (HEALTHCHECK_HISTORY_SIZE)
      и отдаётся через API. Это и журнал работы автопочинки, и подсветка в GUI.
 
@@ -47,6 +49,19 @@ def _notify(kind: str, text: str) -> None:
     # проглотила бы «упал» после быстрого «упал → поднялся».
     from core import notify
     notify.event(kind, text, dedup=False)
+
+
+def _state_of(hosts) -> dict:
+    """{(key, host): strategy} из state.tsv по хостам сервиса — те же
+    точные совпадения, что стирает strategy_state.clear_host."""
+    want = {(h or "").lower().rstrip(".") for h in hosts or [] if h}
+    try:
+        from core import strategy_state
+        return {(e["key"], e["host"]): e["strategy"]
+                for e in strategy_state.list_entries()
+                if e["host"] in want}
+    except Exception:                               # noqa: BLE001
+        return {}
 
 
 def _autopick_status() -> dict:
@@ -107,6 +122,9 @@ class HealthcheckDaemon:
         # Состояние «подряд провалов» по сервисам, чтобы триггерить reset
         # после consecutive_failures штук, а не на одном случайном.
         self._fail_streak = {}     # service_name → int
+        # Что circular знал о хостах сервиса на первом провале серии
+        # (см. _circular_moved): service_name → {(key, host): strategy}.
+        self._streak_state = {}
         # О каких сервисах уже сообщили «не открывается» (core/notify):
         # следующее сообщение — только «снова открывается».
         self._notified_down = set()
@@ -295,6 +313,35 @@ class HealthcheckDaemon:
             with self._lock:
                 self._checking = False
 
+    def _circular_moved(self, name: str, entry: dict) -> bool:
+        """Сменил ли circular стратегию хостов сервиса за серию провалов.
+
+        Сменил — значит, он сам перебирает приёмы, и сброс на первую
+        стратегию лишь отнял бы найденное. Типичная картина: сайт не
+        открывался, человек открыл его, circular нашёл рабочий приём, а
+        следующая проверка (с роутера: свой TLS-стек, свои TCP-метки
+        времени — приём, рабочий у клиента, у роутера может не
+        сработать) добивала серию и стирала его — сайт открывался и
+        через пару минут отваливался снова. Тогда серия начинается
+        заново от нынешнего состояния: сброс — только если circular
+        простоял на одной стратегии все ``consecutive_failures`` проверок.
+        """
+        before = self._streak_state.get(name)
+        now = _state_of(entry["hosts"])
+        if before is None or not now or now == before:
+            return False
+        log.info("Healthcheck: %s не открылся, но circular за это время "
+                 "сам сменил стратегию (%s) — сброс state пропущен"
+                 % (name, ", ".join("%s → #%s" % (h, n) for (_k, h), n
+                                    in sorted(now.items())
+                                    if before.get((_k, h)) != n)),
+                 source="healthcheck")
+        self._fail_streak[name] = 1
+        self._streak_state[name] = now
+        entry["fail_streak"] = 1
+        entry["circular_moved"] = True
+        return True
+
     @staticmethod
     def _build_targets(cfg):
         """Собрать список целей проверки: известные сервисы + кастомные домены.
@@ -367,7 +414,9 @@ class HealthcheckDaemon:
         for tgt in targets:
             # Берём URL цели. timeout — короткий: 8с. Cache check_http ставит
             # TTL 30с, поэтому повторные тики не задавят сеть лишним curl'ом.
-            r = check_http(tgt["url"], timeout=8)
+            # single: одно соединение на проверку — провалы проверки
+            # роутера circular считает наравне с провалами клиентов.
+            r = check_http(tgt["url"], timeout=8, single=True)
             results.append({
                 "service": tgt["key"],
                 "display": tgt["display"],
@@ -401,7 +450,7 @@ class HealthcheckDaemon:
             if control_domain:
                 curl = control_domain if control_domain.startswith(
                     ("http://", "https://")) else "https://" + control_domain
-                cr = check_http(curl, timeout=8)
+                cr = check_http(curl, timeout=8, single=True)
                 control_ok = bool(cr.get("ok"))
                 # Контрольный открылся → связь есть → это DPI, НЕ обвал.
                 global_outage = not control_ok
@@ -424,6 +473,7 @@ class HealthcheckDaemon:
                     _notify("site_up", "✅ %s снова открывается"
                             % entry["display"])
                 self._fail_streak[name] = 0
+                self._streak_state.pop(name, None)
                 entry["fail_streak"] = 0
                 continue
 
@@ -435,6 +485,8 @@ class HealthcheckDaemon:
 
             self._fail_streak[name] = self._fail_streak.get(name, 0) + 1
             entry["fail_streak"] = self._fail_streak[name]
+            if self._fail_streak[name] == 1 or name not in self._streak_state:
+                self._streak_state[name] = _state_of(entry["hosts"])
             if (self._fail_streak[name] >= threshold
                     and name not in self._notified_down):
                 self._notified_down.add(name)
@@ -449,14 +501,17 @@ class HealthcheckDaemon:
                 # пока сайт не открывается.
                 _autopick(entry["display"], entry["hosts"])
 
-            if auto_reset and self._fail_streak[name] >= threshold:
+            if (auto_reset and self._fail_streak[name] >= threshold
+                    and not self._circular_moved(name, entry)):
                 for host in entry["hosts"]:
                     try:
                         res = strategy_state.clear_host(host, flush=False)
                         removed = (res or {}).get("removed", 0)
                         entry["hosts_reset"].append(
                             {"host": host, "removed": removed})
-                        any_resets = True
+                        # SIGHUP движку — только если было что стирать.
+                        if removed:
+                            any_resets = True
                     except Exception as e:
                         log.warning("Healthcheck reset %s: %s" % (host, e),
                                     source="healthcheck")
@@ -470,6 +525,7 @@ class HealthcheckDaemon:
                 # Сбрасываем счётчик чтобы не зацикливаться на reset —
                 # circular должен успеть подобрать.
                 self._fail_streak[name] = 0
+                self._streak_state.pop(name, None)
                 entry["fail_streak"] = 0
 
         if any_resets:
