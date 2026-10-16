@@ -27,14 +27,22 @@
 #      quic_lordfilm, tls_lordfilm, quic_dbankcloud — в import/bin;
 #    • игровой фильтр (в оригиналах закомментирован) не переносится;
 #    • профили по ipset-спискам авторов (ipset_do, ipset_cf_full,
-#      ipset_amazon, ipset_ovh, ipset_as_*) убраны: этих списков у нас нет.
+#      ipset_amazon, ipset_ovh, ipset_as_*) убраны: этих списков у нас нет;
+#    • UDP-шаг «fake:repeats=6:strategy=N» (MartinBacker, дефолт пакета) —
+#      с blob=fake_default_udp: без blob= lua бросает «fake: 'blob' arg
+#      required», и circular через раз попадал на пустой шаг;
+#    • нулевой фейк «tcp_ack=-66000» (MartinBacker, Uvvi2, дефолт) — с
+#      tcp_ts_up: nfqws2 не поднимает метку TCP первой опцией, как nfqws1,
+#      и Linux-сервер отбрасывает такой фейк через раз.
 #
 #  ⚠️ ts-фулинг (tcp_ts=…:tcp_ts_up) работает, только если клиент шлёт
 #  TCP timestamps; в Windows они выключены по умолчанию
 #  (netsh interface tcp set global timestamps=enabled).
 #  ⚠️ Порты: 2053,2083,2087,2096,8443 (discord.media), 1984/5222 (MTProto,
-#  XMPP) и UDP 19294-19344,50000-50100 должны быть в «Настройки → nfqws2 →
-#  TCP/UDP-порты», иначе профиль не увидит ни одного пакета.
+#  XMPP) и UDP 19294-19344,50000-50100 должны попасть в перехват. Это
+#  делает nfqws.ports_from_strategy (по умолчанию да); без неё — дописать
+#  в «Настройки → nfqws2 → TCP/UDP-порты», иначе профиль не увидит ни
+#  одного пакета.
 # ─────────────────────────────────────────────────────────────
 
 [nfqws_menu_martinbacker]
@@ -74,7 +82,7 @@ description = Личный конфиг из nfqws-menu на базе дефол
 --lua-desync=circular:fails=2:time=300:retrans=3:nld=2
 --in-range=x
 --lua-desync=fake:blob=quic_initial:repeats=6:strategy=1
---lua-desync=fake:repeats=6:strategy=2
+--lua-desync=fake:blob=fake_default_udp:repeats=6:strategy=2
 --new
 --filter-udp=443
 --filter-l7=quic
@@ -90,7 +98,7 @@ description = Личный конфиг из nfqws-menu на базе дефол
 --in-range=x
 --lua-desync=fake:blob=tls_clienthello:tls_mod=rnd,dupsid,sni=fonts.google.com:tcp_seq=10000:strategy=1
 --lua-desync=multisplit:pos=1,midsld:seqovl=1:seqovl_pattern=tls_clienthello:tcp_ts_up:strategy=1
---lua-desync=fake:blob=0x00000000:tcp_ack=-66000:tls_mod=rnd,dupsid,sni=www.google.com:repeats=2:strategy=2
+--lua-desync=fake:blob=0x00000000:tcp_ack=-66000:tcp_ts_up:tls_mod=rnd,dupsid,sni=www.google.com:repeats=2:strategy=2
 --lua-desync=multisplit:pos=1,midsld:strategy=2
 --lua-desync=hostfakesplit:host=ozon.ru:midhost=host-2:seqovl=sniext+3:seqovl_pattern=tls_clienthello:badsum:tcp_md5:tcp_ts_up:strategy=3
 --lua-desync=hostfakesplit:tcp_md5:tcp_ts_up:strategy=3
@@ -131,7 +139,7 @@ description = Сток nfqws2-keenetic 1.2.6 (circular из трёх приём�
 --lua-desync=circular:fails=2:time=300:retrans=3:nld=2
 --lua-desync=fake:blob=tls_clienthello:tls_mod=rnd,dupsid,sni=fonts.google.com:tcp_seq=10000:strategy=1
 --lua-desync=multisplit:pos=1,midsld:seqovl=1:seqovl_pattern=tls_clienthello:tcp_ts_up:strategy=1
---lua-desync=fake:blob=0x00000000:tcp_ack=-66000:tls_mod=rnd,dupsid,sni=www.google.com:repeats=2:strategy=2
+--lua-desync=fake:blob=0x00000000:tcp_ack=-66000:tcp_ts_up:tls_mod=rnd,dupsid,sni=www.google.com:repeats=2:strategy=2
 --lua-desync=multisplit:pos=1,midsld:strategy=2
 --lua-desync=hostfakesplit:host=ozon.ru:midhost=host-2:seqovl=sniext+3:seqovl_pattern=tls_clienthello:badsum:tcp_md5:tcp_ts_up:strategy=3
 --lua-desync=hostfakesplit:tcp_md5:tcp_ts_up:strategy=3
@@ -657,7 +665,7 @@ description = Личный конфиг из nfqws-menu: circular дефолта
 --out-range=<n2
 --payload=wireguard_initiation,wireguard_response,wireguard_cookie,mtproto_initial,unknown
 --lua-desync=circular:fails=2:time=300:retrans=3:nld=2
---lua-desync=fake:repeats=6:strategy=1
+--lua-desync=fake:blob=fake_default_udp:repeats=6:strategy=1
 --lua-desync=fake:blob=quic_initial:repeats=6:strategy=2
 --new
 --filter-udp=443
@@ -671,7 +679,7 @@ description = Личный конфиг из nfqws-menu: circular дефолта
 --lua-desync=circular:fails=2:time=300:retrans=3:nld=2
 --lua-desync=fake:blob=tls_clienthello:tls_mod=rnd,dupsid,sni=fonts.google.com:tcp_seq=10000:strategy=1
 --lua-desync=multisplit:pos=1,midsld:seqovl=1:seqovl_pattern=tls_clienthello:tcp_ts_up:strategy=1
---lua-desync=fake:blob=0x00000000:tcp_ack=-66000:tls_mod=rnd,dupsid,sni=www.google.com:repeats=2:strategy=2
+--lua-desync=fake:blob=0x00000000:tcp_ack=-66000:tcp_ts_up:tls_mod=rnd,dupsid,sni=www.google.com:repeats=2:strategy=2
 --lua-desync=multisplit:pos=1,midsld:strategy=2
 --lua-desync=hostfakesplit:host=ozon.ru:midhost=host-2:seqovl=sniext+3:seqovl_pattern=tls_clienthello:badsum:tcp_md5:tcp_ts_up:strategy=3
 --lua-desync=hostfakesplit:tcp_md5:tcp_ts_up:strategy=3

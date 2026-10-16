@@ -565,7 +565,7 @@ bt_handshake utp_bt_handshake`.
 
 | Функция | Поведение |
 |---|---|
-| `fake` | Прямой фейк (отдельный пакет). args: `dir`, `payload` (default `known`), `fooling`, `ipid`, `ipfrag`, `reconstruct`, `rawsend`, **`blob=<name>`**, `optional`, `tls_mod=<mods>`. Сегментация автоматическая (для blob > MSS). |
+| `fake` | Прямой фейк (отдельный пакет). args: `dir`, `payload` (default `known`), `fooling`, `ipid`, `ipfrag`, `reconstruct`, `rawsend`, **`blob=<name>`**, `optional`, `tls_mod=<mods>`. Сегментация автоматическая (для blob > MSS). **`blob=` обязателен**: без него lua бросает `fake: 'blob' arg required` на первом пакете, и приём ничего не шлёт — под circular это пустой шаг ротации (так было в апстрим-пресетах MartinBacker/Uvvi2 и дефолте nfqws2-keenetic: UDP `fake:repeats=6:strategy=N`; у нас — `blob=fake_default_udp`). Линтер — ошибка `fake_without_blob`. У `fakedsplit`/`fakeddisorder`/`hostfakesplit` фейк по умолчанию — `fake_default_tls`, там `blob` не обязателен. |
 | `syndata` | Добавить пейлоад в SYN. arg: `blob` (must fit MTU), `tls_mod`. После не-SYN пакета — instance_cutoff. **Стратегия нулевой фазы.** |
 | `rst` | Отослать пустой RST (или RST+ACK при `rstack`). args: `dir`, `payload`, `fooling`, `ipid`, `ipfrag`, `reconstruct`, `rawsend`. |
 | `tls_client_hello_clone` | Подготовить blob с модифицированным TLS ClientHello. args: `blob`, `fallback`, `sni_del_ext`, `sni_del`, `sni_snt`, `sni_snt_new`, `sni_first`, `sni_last`. |
@@ -858,10 +858,17 @@ Python-пути (`core/firewall.py`), и в shell-пути (`FIREWALL_SH_FUNCTIO
 
 Должны согласовываться с `--filter-tcp=` / `--filter-udp=` в стратегии. Если
 стратегия `--filter-tcp=443`, а в `nfqws.ports_tcp` нет 443 — в очередь не
-придёт ничего. `NFQWSManager.start` пишет в журнал предупреждение с такими
-портами (`firewall.uncovered_filter_ports`, чистая функция; диапазон,
-хоть как-то пересекающийся с перехватом, не считается проблемой). Типичные
-случаи из чата nfqws2-keenetic: Wardogs — UDP 4192, DoT — TCP 853.
+придёт ничего. Поэтому `FirewallManager.apply_rules` (и скрипт автозапуска)
+дописывает в перехват порты фильтров стратегии, которых нет в
+`ports_tcp/udp` (`nfqws.ports_from_strategy`, по умолчанию да;
+`firewall.with_filter_ports` поверх `uncovered_filter_ports` — чистые
+функции; диапазон, хоть как-то пересекающийся с перехватом, не
+расширяется; порты управления всё равно вырезаются). Стратегия —
+та, что поднимается (`nfqws_control.start/restart/apply_strategy`
+передают её аргументы), иначе последний запуск движка или активная.
+При выключенной настройке `NFQWSManager.start` только предупреждает в
+журнале. Типичные случаи: Wardogs — UDP 4192, DoT — TCP 853, пресеты
+nfqws2-keenetic — TCP 1984 (MTProto) и UDP 590-600, 1400.
 
 ### 10.5 Сигналы nfqws2
 
@@ -1451,8 +1458,10 @@ QUIC рвётся, Chrome ICMP не слушает и проходит (поле
     это баг дефолта `--lua-gc` (60 мс вместо 60 с). Обновиться до ≥ 1.0.2 или
     явно задать `--lua-gc=60`.
 21. **Профиль на порт, которого нет в перехвате** (`nfqws.ports_tcp/udp`):
-    UDP 4192 у Wardogs, TCP 853 у DoT. nfqws2 молчит, журнал GUI при
-    запуске называет такие порты (§10.4). Дописать порт в настройки.
+    UDP 4192 у Wardogs, TCP 853 у DoT. nfqws2 молчит. С
+    `nfqws.ports_from_strategy` (по умолчанию) firewall дописывает такие
+    порты сам и пишет об этом в журнал; без неё журнал при запуске
+    называет порты (§10.4) — дописать их в настройки.
 22. **Keenetic с аппаратным fastpath (MT7621, KN-1011)**: многосегментный
     ClientHello не собирается — стратегия на `tls_client_hello` не
     срабатывает. Лечится сборкой nfqws2-keenetic с

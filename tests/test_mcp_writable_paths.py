@@ -42,7 +42,7 @@ WRITABLE = {
     "logging.file_enabled", "logging.level", "logging.max_entries",
     "logging.persist_critical", "logging.persist_min_level",
     "nfqws.debug", "nfqws.disable_ipv6", "nfqws.fastpath_workaround",
-    "nfqws.ports_tcp",
+    "nfqws.ports_from_strategy", "nfqws.ports_tcp",
     "nfqws.ports_udp", "nfqws.tcp_pkt_in", "nfqws.tcp_pkt_out",
     "nfqws.udp_pkt_in", "nfqws.udp_pkt_out", "scan.confirm_repeats",
     "scan.confirm_top", "scan.default_mode",

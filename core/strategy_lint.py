@@ -61,6 +61,7 @@ CODE_ENGINE_OPTION = "engine_owned_option"
 CODE_TTL_FAKE_UDP = "ttl_fake_on_udp"
 CODE_TCP_TS_ONLY = "tcp_ts_only_fooling"
 CODE_BADACK_NO_TS_UP = "badack_without_ts_up"
+CODE_FAKE_NO_BLOB = "fake_without_blob"
 
 # Опции nfqws2, которыми владеет GUI, а не стратегия. Первые четыре —
 # базовые аргументы (``NFQWSManager._build_base_args``): стратегия идёт
@@ -173,6 +174,12 @@ RULES = (
         "severity": SEVERITY_WARNING,
         "title": "фейк маскируется только через tcp_ack, без tcp_ts_up",
         "section": "скил nfqws2-strategies §8.8 (fooling, tcp_ts_up)",
+    },
+    {
+        "code": CODE_FAKE_NO_BLOB,
+        "severity": SEVERITY_ERROR,
+        "title": "fake без blob=",
+        "section": "скил nfqws2-strategies §8 (fake) и §7 (блобы)",
     },
 )
 
@@ -579,6 +586,34 @@ def _check_badack_ts_up(profiles) -> list:
     return out
 
 
+# `fake` без `blob=`: zapret-antidpi.lua на первом же пакете бросает
+# `error("fake: 'blob' arg required")` — приём ничего не шлёт, а под
+# circular это пустой шаг ротации, на котором сайт «то открывается, то
+# нет». Так написано и в апстрим-пресетах (MartinBacker, Uvvi2).
+_BLOB_ARG_RE = re.compile(r"(?:^|:)blob=")
+
+
+def _check_fake_blob(profiles) -> list:
+    """`--lua-desync=fake` без `blob=` (см. выше)."""
+    out = []
+    for index, args in enumerate(profiles):
+        for arg in args:
+            m = _LUA_DESYNC_RE.match(arg)
+            if not m or m.group(1) != "fake":
+                continue
+            if _BLOB_ARG_RE.search(arg[len("--lua-desync="):]):
+                continue
+            out.append(_finding(
+                CODE_FAKE_NO_BLOB,
+                "профиль %d: fake без blob= — lua бросит ошибку «fake: 'blob' "
+                "arg required» на первом пакете, и приём ничего не пошлёт. "
+                "Укажите фейк: blob=fake_default_tls (TLS), "
+                "blob=fake_default_quic или fake_default_udp (UDP), "
+                "blob=fake_default_http (HTTP)" % index,
+                where=arg, profile=index))
+    return out
+
+
 def engine_owned(argv) -> list:
     """Аргументы стратегии, которые движку от неё передавать нельзя.
 
@@ -662,6 +697,7 @@ def lint(argv, known_functions=None, known_blobs=None) -> list:
     findings.extend(_check_ttl_fake_udp(profiles))
     findings.extend(_check_tcp_ts_only(profiles))
     findings.extend(_check_badack_ts_up(profiles))
+    findings.extend(_check_fake_blob(profiles))
 
     # Ошибки первыми: окно ответа у модели конечное, и обрезать надо
     # предупреждения, а не то, из-за чего стратегия не работает.

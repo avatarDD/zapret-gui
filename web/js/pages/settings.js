@@ -75,6 +75,18 @@ const SettingsPage = (() => {
             fields: [],
         },
         {
+            id: 'history',
+            label: 'История',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+            fields: [
+                { key: 'history.enabled',  label: 'Вести историю изменений', type: 'toggle' },
+                { key: 'history.max_days', label: 'Хранить версии, дней',     type: 'number', min: 0, max: 3650,
+                  hint: 'Версии старше уходят сами. 0 — без предела по возрасту (остаются 20 версий на файл и бюджет ниже).' },
+                { key: 'history.max_mb',   label: 'Бюджет хранилища, МБ',    type: 'number', min: 1, max: 512, expert: true,
+                  hint: 'Сверх него уходят самые старые версии. Текущие копии файлов в бюджет не входят.' },
+            ],
+        },
+        {
             id: 'install',
             label: 'Установка',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
@@ -95,6 +107,8 @@ const SettingsPage = (() => {
                 { key: 'nfqws.queue_num',           label: 'Номер очереди NFQUEUE',  type: 'number', min: 0, max: 65535, expert: true },
                 { key: 'nfqws.ports_tcp',            label: 'TCP-порты',              type: 'text', placeholder: '80,443' },
                 { key: 'nfqws.ports_udp',            label: 'UDP-порты',              type: 'text', placeholder: '443' },
+                { key: 'nfqws.ports_from_strategy',  label: 'Добавлять порты стратегии', type: 'toggle',
+                  hint: 'Порты из --filter-tcp/udp активной стратегии, которых нет в списках выше, тоже уходят в перехват' },
                 { key: 'nfqws.tcp_pkt_out',          label: 'TCP пакетов OUT',        type: 'number', min: 1, max: 100, expert: true },
                 { key: 'nfqws.tcp_pkt_in',           label: 'TCP пакетов IN',         type: 'number', min: 0, max: 100, expert: true },
                 { key: 'nfqws.udp_pkt_out',          label: 'UDP пакетов OUT',        type: 'number', min: 1, max: 100, expert: true },

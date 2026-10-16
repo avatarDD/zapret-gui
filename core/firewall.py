@@ -287,6 +287,56 @@ def uncovered_filter_ports(strategy_args, ports_tcp, ports_udp) -> dict:
     return out
 
 
+def with_filter_ports(ports_tcp, ports_udp, strategy_args) -> tuple:
+    """Перехват, дополненный портами фильтров стратегии.
+
+    Каталожные пресеты (дефолт nfqws2-keenetic, MartinBacker из
+    nfqws-menu) держат профили на TCP 1984 и UDP 590-600, 1400 — в
+    апстрим-пакете эти порты стоят в TCP_PORTS/UDP_PORTS, у нас же
+    перехват задаёт ``nfqws.ports_tcp/udp``, и профиль молча не видел ни
+    одного пакета. Добавляем ровно то, что вернул
+    ``uncovered_filter_ports`` (диапазон, хоть как-то пересекающийся с
+    перехватом, не расширяем). Чистая функция.
+
+    Возвращает ``(tcp, udp, added)``: строки портов в синтаксисе firewall
+    («590:600») и добавленное в форме ``uncovered_filter_ports``.
+    """
+    added = uncovered_filter_ports(strategy_args, ports_tcp, ports_udp)
+
+    def join(spec, extra):
+        toks = [t.strip() for t in str(spec or "").split(",") if t.strip()]
+        toks += [t.replace("-", ":") for t in extra]
+        return ",".join(toks)
+
+    return (join(ports_tcp, added["tcp"]), join(ports_udp, added["udp"]),
+            added)
+
+
+def _strategy_args_for_ports() -> list:
+    """Аргументы стратегии, чьи порты дописываются в перехват.
+
+    Последний запуск движка, а если его не было (поднял автозапуск, GUI
+    только стартовал) — активная стратегия из конфига. Тихо: подсказка
+    к перехвату не повод шуметь в журнале при каждом накате правил.
+    """
+    try:
+        from core.nfqws_manager import get_nfqws_manager
+        last = list(getattr(get_nfqws_manager(), "_last_args", None) or [])
+        if last:
+            return last
+        from core.config_manager import get_config_manager
+        from core.strategy_builder import get_strategy_manager
+        current_id = get_config_manager().get("strategy", "current_id",
+                                              default=None)
+        if not current_id:
+            return []
+        sm = get_strategy_manager()
+        strategy = sm.get_strategy(current_id)
+        return list(sm.build_nfqws_args(strategy) or []) if strategy else []
+    except Exception:  # noqa: BLE001 — без портов стратегии, как раньше
+        return []
+
+
 def _nft_port_set(spec: str) -> str:
     """
     Преобразовать iptables/multiport-список портов в nftables-синтаксис.
@@ -478,13 +528,19 @@ class FirewallManager:
         return self._fw_type
 
     def apply_rules(self, queue_num=None, ports_tcp=None,
-                    ports_udp=None, mark=None) -> bool:
+                    ports_udp=None, mark=None, strategy_args=None) -> bool:
         """
         Применить правила NFQUEUE с привязкой к WAN-интерфейсам.
 
         Параметры берутся из аргументов или конфига.
         WAN-интерфейсы берутся из config.interfaces.wan/wan6
         с fallback на авто-определение по таблице маршрутов.
+
+        Порты из конфига дополняются портами ``--filter-tcp/udp``
+        стратегии (``nfqws.ports_from_strategy``, по умолчанию да):
+        ``strategy_args`` — та, что сейчас поднимется; ``None`` —
+        последний запуск движка или активная стратегия. Явно переданные
+        ``ports_tcp``/``ports_udp`` не дополняются.
         """
         with self._lock:
             from core.config_manager import get_config_manager
@@ -493,6 +549,17 @@ class FirewallManager:
             qnum = queue_num or int(cfg.get("nfqws", "queue_num", default=300))
             tcp = ports_tcp or cfg.get("nfqws", "ports_tcp", default="80,443")
             udp = ports_udp or cfg.get("nfqws", "ports_udp", default="443")
+            if (ports_tcp is None and ports_udp is None
+                    and cfg.get("nfqws", "ports_from_strategy", default=True)):
+                if strategy_args is None:
+                    strategy_args = _strategy_args_for_ports()
+                tcp, udp, added = with_filter_ports(tcp, udp, strategy_args)
+                parts = ["%s %s" % (proto.upper(), ", ".join(added[proto]))
+                         for proto in ("tcp", "udp") if added[proto]]
+                if parts:
+                    log.info("В перехват добавлены порты из фильтров "
+                             "стратегии: %s" % "; ".join(parts),
+                             source="firewall")
 
             # Порты управления не уводим в NFQUEUE НИКОГДА — ни из UI, ни
             # из MCP, ни из автозапуска. Очередь без читателя (движок не

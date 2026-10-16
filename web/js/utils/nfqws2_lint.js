@@ -344,6 +344,19 @@ const Nfqws2Lint = (() => {
                 profile.push(ct);
             }
         });
+        // fake без blob= — zapret-antidpi.lua бросает «fake: 'blob' arg
+        // required», приём ничего не шлёт. Зеркало fake_without_blob.
+        tokens.forEach(ct => {
+            if (ct.kind !== 'flag' || ct.flag !== '--lua-desync' || !ct.hasEq) return;
+            const value = String(ct.value || '');
+            if (value.split(':', 1)[0] !== 'fake' || /(?:^|:)blob=/.test(value)) return;
+            diagnostics.push({ start: ct.tok.start, end: ct.tok.end,
+                severity: SEV.ERROR, code: 'fake_without_blob',
+                message: 'fake без blob=: lua бросит ошибку на первом пакете, и приём '
+                    + 'ничего не пошлёт. Укажите фейк: blob=fake_default_tls (TLS), '
+                    + 'fake_default_quic или fake_default_udp (UDP), fake_default_http (HTTP).' });
+            ct.diag = SEV.ERROR;
+        });
         profiles.forEach(prof => {
             const vals = prof.filter(ct => ct.kind === 'flag' && ct.hasEq)
                 .map(ct => ct.flag + '=' + (ct.value || ''));

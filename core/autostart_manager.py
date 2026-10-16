@@ -638,6 +638,7 @@ class AutostartManager:
         # Полная команда nfqws2 (binary + base + lua-init + strategy) —
         # ровно та же, что собирает живой путь NFQWSManager.start().
         full_cmd = []
+        strategy_args = []
         if strategy_id:
             try:
                 strategy = sb.get_strategy(strategy_id)
@@ -658,6 +659,11 @@ class AutostartManager:
         queue_num = int(cfg.get("nfqws", "queue_num", default=300))
         ports_tcp = cfg.get("nfqws", "ports_tcp", default="80,443")
         ports_udp = cfg.get("nfqws", "ports_udp", default="443")
+        # Порты фильтров стратегии — в перехват, как в apply_rules().
+        if cfg.get("nfqws", "ports_from_strategy", default=True):
+            from core.firewall import with_filter_ports
+            ports_tcp, ports_udp, _added = with_filter_ports(
+                ports_tcp, ports_udp, strategy_args)
         # Порты управления (SSH, веб-интерфейс) — мимо очереди, как в
         # FirewallManager.apply_rules(): скрипт ставит правила сам, при
         # загрузке, и без этого `1:65535` в ports_tcp увёл бы SSH в

@@ -340,7 +340,7 @@ const BLOCKCHECK2_SAMPLES = [
     '--payload=quic_initial --lua-desync=fake:blob=fake_default_quic:ip6_hopbyhop:ip6_destopt=0102:repeats=2',
     '--payload=tls_client_hello --lua-desync=fake:blob=fake_default_tls:badsum:fwmark=0x1000:ifout=eth0',
     '--in-range=-s1 --payload=tls_client_hello --lua-desync=oob:urp=midsld:tcp_md5',
-    '--filter-tcp=443 --lua-desync=circular:fails=2:time=60:retrans=3:nld=2:reset --lua-desync=fake:strategy=1',
+    '--filter-tcp=443 --lua-desync=circular:fails=2:time=60:retrans=3:nld=2:reset --lua-desync=fake:blob=fake_default_tls:strategy=1',
 ];
 
 test('blockcheck2: найденные им стратегии без предупреждений', () => {
@@ -410,4 +410,14 @@ test('lint: tcp_ack без tcp_ts_up у фейка → badack_without_ts_up', ()
     assert.ok(!has('--filter-tcp=443 --lua-desync=fake:blob=x:tcp_ack=-66000:tcp_ts_up'));
     assert.ok(!has('--filter-tcp=443 --lua-desync=fake:blob=x:tcp_ack=-66000:tcp_md5'));
     assert.ok(!has('--filter-tcp=443 --lua-desync=multidisorder:pos=1:tcp_ack=-66000'));
+});
+
+test('lint: fake без blob= → fake_without_blob (ошибка)', () => {
+    const hit = t => Lint.analyze(t).diagnostics.find(d => d.code === 'fake_without_blob');
+    const d = hit('--filter-udp=50000 --lua-desync=fake:repeats=6:strategy=2');
+    assert.ok(d);
+    assert.strictEqual(d.severity, 'error');
+    assert.ok(hit('--filter-tcp=443 --lua-desync=fake'));
+    assert.ok(!hit('--filter-udp=50000 --lua-desync=fake:blob=fake_default_udp:repeats=6'));
+    assert.ok(!hit('--filter-tcp=443 --lua-desync=fakedsplit:pos=1:tcp_md5'));
 });

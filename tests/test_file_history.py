@@ -121,6 +121,42 @@ class TestRecord(HistoryCase):
         d = fh.diff(self.entries()[-1]["id"])
         self.assertNotIn("supersecret-value-123", d["diff"])
 
+    def test_settings_version_names_changed_sections(self):
+        # «Не нашёл в истории про awg»: версия settings.json подписана
+        # разделами, которые в ней поменялись.
+        self.cfg.save()
+        fh.checkpoint()
+        self.cfg.set("awg", "autostart", {"interfaces": {"WARPv1_30": False}})
+        self.cfg.set("strategy", "current_id", "x")
+        self.cfg.set("strategy", "last_applied_at", 1)   # отметка — не в счёт
+        self.cfg.save()
+        e = self.entries()[-1]
+        self.assertEqual(e["sections"], ["awg", "strategy"])
+        self.assertEqual(e["label"], "Изменён settings.json: awg, strategy")
+        public = fh.list_entries()["groups"][0]["entries"][0]
+        self.assertEqual(public["sections"], ["awg", "strategy"])
+
+    def test_old_versions_expire(self):
+        self.write("a.txt", "1\n")
+        with fh.operation("старая"):
+            self.write("a.txt", "2\n")
+        for e in self.entries():
+            e["ts"] -= 40 * 86400
+        with fh.operation("новая"):
+            self.write("a.txt", "3\n")
+        labels = [e["label"] for e in self.entries()]
+        self.assertEqual(labels, ["новая"])
+
+    def test_zero_days_means_no_age_limit(self):
+        self.cfg.set("history", "max_days", 0)
+        with fh.operation("старая"):
+            self.write("a.txt", "1\n")
+        for e in self.entries():
+            e["ts"] -= 4000 * 86400
+        with fh.operation("новая"):
+            self.write("a.txt", "2\n")
+        self.assertEqual(len(self.entries()), 2)
+
     def test_remove_and_rename(self):
         self.write("a.txt", "1\n")
         with fh.operation("x"):
