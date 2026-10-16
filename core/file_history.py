@@ -46,7 +46,12 @@ ipset из подписки съел бы весь бюджет истории �
 ``<config_dir>/history/``: ``index.json`` (версии и известные
 отпечатки) и ``objects/<sha256>.gz`` — содержимое, права 0600 (в
 ``settings.json`` токены). Пределы: :data:`PER_FILE` версий на файл и
-``history.max_mb`` на всё хранилище — сверх них уходят самые старые.
+``history.max_mb`` на всё хранилище — сверх них уходят самые старые;
+версии старше ``history.max_days`` дней уходят и без этого.
+
+Версия ``settings.json`` подписана изменёнными разделами («Изменён
+settings.json: awg, strategy»): иначе правка автозапуска AWG терялась
+среди двадцати одинаковых «Изменён settings.json».
 
 В ``settings.json`` правки только полей-отметок (``last_*``,
 ``installed_at``) версией не считаются: статус подписки списков
@@ -71,6 +76,8 @@ from core.log_buffer import log
 PER_FILE = 20
 # Бюджет хранилища по умолчанию (сжатые объекты), МБ.
 DEFAULT_MAX_MB = 8
+# Версии старше — уходят (``history.max_days``; 0 — без предела), дней.
+DEFAULT_MAX_DAYS = 30
 # Файлы крупнее — не отслеживаются.
 MAX_FILE_BYTES = 2 * 1024 * 1024
 # Склейка подряд идущих записей одного файла, сек.
@@ -207,6 +214,15 @@ def _max_bytes() -> int:
     return int(max(1.0, mb) * 1024 * 1024)
 
 
+def _max_age_sec() -> float:
+    """Предел возраста версии, сек (0 — без предела)."""
+    try:
+        days = float(_conf("history", "max_days", DEFAULT_MAX_DAYS))
+    except (TypeError, ValueError):
+        days = DEFAULT_MAX_DAYS
+    return max(0.0, days) * 86400
+
+
 # ─────────────────────────── хранилище ────────────────────────────
 
 def _sha(data) -> str | None:
@@ -315,6 +331,13 @@ def _gc(st: dict, sweep: bool = False) -> None:
         for e in items[:-PER_FILE]:
             drop.add(e["id"])
             _note_trimmed(st, e)
+    max_age = _max_age_sec()
+    if max_age:
+        horizon = time.time() - max_age
+        for e in st["entries"]:
+            if float(e.get("ts") or 0) < horizon and e["id"] not in drop:
+                drop.add(e["id"])
+                _note_trimmed(st, e)
     if drop:
         st["entries"] = [e for e in st["entries"] if e["id"] not in drop]
 
@@ -378,6 +401,16 @@ def operation(label: str, source: str = "gui"):
         _tls.op = None
 
 
+def _strip_volatile(x):
+    """Значение без полей-отметок (``last_*``, ``*_at``) на любой глубине."""
+    if isinstance(x, dict):
+        return {k: _strip_volatile(v) for k, v in x.items()
+                if not _VOLATILE_KEY.search(str(k))}
+    if isinstance(x, list):
+        return [_strip_volatile(v) for v in x]
+    return x
+
+
 def _volatile_only(path: str, old, new) -> bool:
     """settings.json, у которого поменялись только поля-отметки."""
     if old is None or new is None:
@@ -389,21 +422,39 @@ def _volatile_only(path: str, old, new) -> bool:
     except (ValueError, TypeError):
         return False
 
-    def strip(x):
-        if isinstance(x, dict):
-            return {k: strip(v) for k, v in x.items()
-                    if not _VOLATILE_KEY.search(str(k))}
-        if isinstance(x, list):
-            return [strip(v) for v in x]
-        return x
-    return strip(a) == strip(b)
+    return _strip_volatile(a) == _strip_volatile(b)
 
 
-def _label_for(rel: str, before, after) -> str:
+def _changed_sections(path: str, before_sha, after_sha) -> list:
+    """Разделы ``settings.json``, которые разнятся у двух версий.
+
+    Поля-отметки (``last_*``, ``*_at``) не в счёт — как в
+    :func:`_volatile_only`. Не ``settings.json`` или не JSON — пусто.
+    """
+    if not before_sha or not after_sha:
+        return []
+    try:
+        if _norm(path) != _norm(_cfg().path):
+            return []
+        a = json.loads(get_object(before_sha) or b"")
+        b = json.loads(get_object(after_sha) or b"")
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return []
+
+    return sorted(k for k in set(a) | set(b)
+                  if not _VOLATILE_KEY.search(str(k))
+                  and _strip_volatile(a.get(k)) != _strip_volatile(b.get(k)))
+
+
+def _label_for(rel: str, before, after, sections=()) -> str:
     if before is None:
         return "Создан %s" % rel
     if after is None:
         return "Удалён %s" % rel
+    if sections:
+        return "Изменён %s: %s" % (rel, ", ".join(sections))
     return "Изменён %s" % rel
 
 
@@ -424,17 +475,22 @@ def _append(st, path, before_sha, after_sha, source, op=None,
                 # Правка вернула файл как было — версии нет.
                 st["entries"].pop()
                 return None
-            last["label"] = _label_for(rel, last["before"], after_sha)
+            last["sections"] = _changed_sections(path, last["before"],
+                                                 after_sha)
+            last["label"] = _label_for(rel, last["before"], after_sha,
+                                       last["sections"])
             return last
     st["seq"] += 1
+    sections = _changed_sections(path, before_sha, after_sha)
     entry = {"id": st["seq"], "ts": now, "path": path, "file": rel,
-             "before": before_sha, "after": after_sha, "source": source}
+             "before": before_sha, "after": after_sha, "source": source,
+             "sections": sections}
     if op:
         entry.update(op=op["id"], label=op["label"] or _label_for(
-            rel, before_sha, after_sha))
+            rel, before_sha, after_sha, sections))
     else:
         entry.update(op="op-e%d" % st["seq"], auto_op=True,
-                     label=_label_for(rel, before_sha, after_sha))
+                     label=_label_for(rel, before_sha, after_sha, sections))
     st["entries"].append(entry)
     return entry
 
@@ -677,6 +733,7 @@ def start() -> None:
 def _public(e: dict) -> dict:
     out = {k: e.get(k) for k in ("id", "ts", "file", "source", "op",
                                  "label")}
+    out["sections"] = list(e.get("sections") or [])
     out.update(created=e.get("before") is None,
                deleted=e.get("after") is None,
                undone=bool(e.get("undone")))

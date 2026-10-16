@@ -240,7 +240,7 @@ def start(strategy_args=None, source: str = "control") -> dict:
     apply_fw = cfg.get("firewall", "apply_on_start", default=True)
     fw_ok = True
     if apply_fw:
-        fw_ok = fw.apply_rules()
+        fw_ok = fw.apply_rules(strategy_args=args or [])
         if not fw_ok:
             log.warning("Правила firewall не применены, но пробуем "
                         "запустить nfqws2", source=source)
@@ -289,7 +289,7 @@ def restart(strategy_args=None, source: str = "control") -> dict:
         # start(): перехват на пустую очередь диагностика называет
         # ошибкой `rules_without_engine`.
         if nfqws_ok:
-            fw.apply_rules()
+            fw.apply_rules(strategy_args=args or [])
 
     if not nfqws_ok:
         return _fail("Ошибка перезапуска nfqws2", mgr, fw)
@@ -329,7 +329,7 @@ def apply_strategy(strategy_id: str, source: str = "strategies") -> dict:
     apply_fw = cfg.get("firewall", "apply_on_start", default=True)
     if apply_fw:
         fw.remove_rules()
-        fw.apply_rules()
+        fw.apply_rules(strategy_args=args)
 
     ok = mgr.restart(args) if mgr.is_running() else mgr.start(args)
     if not ok:

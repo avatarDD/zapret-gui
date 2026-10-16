@@ -743,7 +743,13 @@ class NFQWSManager:
 
     @staticmethod
     def _warn_uncovered_ports(strategy_args, cfg) -> None:
-        """Предупредить о портах профилей, которых firewall не перехватывает."""
+        """Предупредить о портах профилей, которых firewall не перехватывает.
+
+        При ``nfqws.ports_from_strategy`` (по умолчанию) firewall дописывает
+        их в перехват сам — предупреждать не о чем.
+        """
+        if cfg.get("nfqws", "ports_from_strategy", default=True):
+            return
         try:
             from core.firewall import uncovered_filter_ports
             miss = uncovered_filter_ports(
@@ -759,7 +765,8 @@ class NFQWSManager:
                 "Порты из фильтров стратегии не перехватываются firewall: "
                 "%s. Профили на них не увидят ни одного пакета — добавьте "
                 "порты в «Настройки → nfqws → TCP/UDP-порты» "
-                "(nfqws.ports_tcp / nfqws.ports_udp)." % "; ".join(parts),
+                "(nfqws.ports_tcp / nfqws.ports_udp) или включите "
+                "nfqws.ports_from_strategy." % "; ".join(parts),
                 source="nfqws")
 
     def supports_option(self, option: str, binary: str = None) -> bool:

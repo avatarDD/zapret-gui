@@ -139,9 +139,11 @@ const HistoryPage = (() => {
         box.innerHTML = groups.map(g => {
             const rows = g.entries.map(e => {
                 const state = e.created ? ' (создан)' : e.deleted ? ' (удалён)' : '';
+                // Разделы settings.json, которые поменялись (awg, strategy…).
+                const parts = (e.sections || []).length ? ': ' + e.sections.join(', ') : '';
                 return '<div style="display:flex; justify-content:space-between; gap:8px; align-items:center; padding:4px 0; flex-wrap:wrap;">'
                     + '<span style="font-family:var(--font-mono, monospace); font-size:12px;'
-                    + (e.undone ? ' text-decoration:line-through;' : '') + '">' + esc(e.file) + esc(state) + '</span>'
+                    + (e.undone ? ' text-decoration:line-through;' : '') + '">' + esc(e.file) + esc(parts) + esc(state) + '</span>'
                     + '<span style="display:flex; gap:6px;">'
                     + '<button class="btn btn-ghost btn-sm" onclick="HistoryPage.showDiff(' + e.id + ')">Разница</button>'
                     + '<button class="btn btn-ghost btn-sm" onclick="HistoryPage.restore(' + e.id + ')" title="Вернуть файл к виду до этой правки">Вернуть как было</button>'

@@ -60,6 +60,8 @@ class TestNfqwsMenuCatalog(unittest.TestCase):
                     value = blob_registry.get_blob_value(name)
                     self.assertTrue(value, "%s: блоб %s не в реестре"
                                     % (e.section_id, name))
+                    if value.startswith("0x"):
+                        continue      # инлайновый hex (fake_default_udp)
                     fn = os.path.basename(value.lstrip("@"))
                     self.assertTrue(
                         os.path.exists(os.path.join(ROOT, "import", "bin", fn)),

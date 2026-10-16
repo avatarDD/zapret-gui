@@ -387,6 +387,32 @@ class TestBadackTsUp(unittest.TestCase):
                 ["--filter-tcp=443", "--lua-desync=" + step]), step)
 
 
+class TestFakeWithoutBlob(unittest.TestCase):
+    """fake без blob= — lua бросает ошибку, приём ничего не шлёт."""
+
+    def test_fake_without_blob_is_an_error(self):
+        found = lint.lint(["--filter-udp=50000-50100",
+                           "--lua-desync=circular:fails=2",
+                           "--lua-desync=fake:repeats=6:strategy=2"])
+        hit = [f for f in found if f["code"] == lint.CODE_FAKE_NO_BLOB]
+        self.assertEqual(len(hit), 1)
+        self.assertEqual(hit[0]["severity"], lint.SEVERITY_ERROR)
+        self.assertIn("blob=", hit[0]["message"])
+
+    def test_bare_fake_is_an_error(self):
+        self.assertIn(lint.CODE_FAKE_NO_BLOB, codes(
+            ["--filter-tcp=443", "--lua-desync=fake"]))
+
+    def test_fake_with_blob_or_other_functions_is_fine(self):
+        for step in ("fake:blob=fake_default_udp:repeats=6",
+                     "fake:repeats=6:blob=0x00000000",
+                     # у этих фейк по умолчанию — fake_default_tls
+                     "fakedsplit:pos=1:tcp_md5",
+                     "hostfakesplit:host=www.google.com:tcp_md5"):
+            self.assertNotIn(lint.CODE_FAKE_NO_BLOB, codes(
+                ["--filter-tcp=443", "--lua-desync=" + step]), step)
+
+
 class TestRuleTable(unittest.TestCase):
     """Сама таблица правил остаётся данными и остаётся полной."""
 

@@ -107,7 +107,7 @@ class _Firewall:
         self.applied = applied
         self.calls = []
 
-    def apply_rules(self):
+    def apply_rules(self, **_kw):
         self.calls.append("apply")
         self.applied = True
         return True
