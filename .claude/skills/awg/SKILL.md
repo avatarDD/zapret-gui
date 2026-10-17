@@ -447,7 +447,11 @@ I1 = <b
    роутере без IPv6 не встаёт, а v4 работает).
 9. `ip link set dev <iface> up` — ошибка здесь фатальна: откат и `ok=False`.
 10. маршруты из `AllowedIPs` → `table <id>` (если `Table != off`). `id` —
-   стабильный хэш имени интерфейса в диапазоне **100…999**.
+   стабильный хэш имени интерфейса в диапазоне **100…999**, кроме системных
+   253/254/255 (`default`/`main`/`local`, `RESERVED_TABLE_IDS` в
+   `core/routing/manager.py`): таблицу туннеля `down` целиком флашит, и
+   совпадение с `main`/`local` отрезало бы роутер от сети. Сохранённый в
+   `routing.table_map` системный id выдаётся заново.
 11. снимок состояния `<run_dir>/awg-<iface>.last_up.json` + список добавленных
     маршрутов `<run_dir>/awg-<iface>.routes.json` (чтобы корректно снять при down).
 12. `PostUp`-хуки → `core.routing.applier.apply_all_on_interface_up()`.
@@ -458,13 +462,18 @@ I1 = <b
 SIGKILL) демону по PID → удалить pid-файл и UAPI-сокет → `PostDown` →
 откат auto-dnsmasq (если это был последний AWG-интерфейс).
 
-`restart` = `_do_down(keep_routing=True)` → up. На рестарте правила
-маршрутизации НЕ снимаются (ip rule, доменные set'ы с IP от dnsmasq), а
-blackhole kill-switch'а возвращается в таблицу сразу после `flush` — иначе
-на время рестарта (а при неудачном `up` — навсегда) трафик правил уходил
-мимо туннеля. Явный `down` по-прежнему снимает всё. `restart` интерфейса
-без нашего `.conf` отказывает, ничего не трогая (watchdog такие и вовсе
-пропускает: `has_config_for`).
+`restart` = `_do_down(keep_routing=killswitch.enabled())` → up. С
+включённым kill-switch'ем (`routing.killswitch`) правила маршрутизации на
+рестарте НЕ снимаются (ip rule, доменные set'ы с IP от dnsmasq), а blackhole
+возвращается в таблицу сразу после `flush` — иначе на время рестарта (а при
+неудачном `up` — навсегда) трафик правил уходил бы мимо туннеля. Без
+kill-switch'а (по умолчанию) рестарт — полный down + up, как до 13.10.2026:
+таблица между ними всё равно пуста, а после того изменения на Keenetic
+начались зависания роутера при рестартах watchdog'а. Явный `down` снимает
+всё и сообщает watchdog'у (`awg_watchdog.forget_took_down`), что туннель
+остановлен пользователем. `restart` интерфейса без нашего `.conf`
+отказывает, ничего не трогая (watchdog такие и вовсе пропускает:
+`has_config_for`).
 
 `status(name)` парсит `awg show <iface> dump`
 (per-peer: `latest_handshake` unix-ts, `rx_bytes`, `tx_bytes`).
@@ -595,8 +604,19 @@ blackhole kill-switch'а возвращается в таблицу сразу �
 `handshake_timeout_sec=180`, `check_interval_sec=30`, `cooldown_sec=300`,
 `max_restarts_per_hour=6`, опциональный TCP-`probe` (host:port сквозь туннель).
 `decide_restart()`: рестарт, если возраст handshake ≥ timeout **или** probe
-падает N раз **или** сработал пассивный детектор; учитывает per-iface
-cooldown и rate-limit. Пассивных детекторов два, оба по счётчикам `awg show`:
+падает N раз **или** сработал пассивный детектор. Cooldown и лимит в час —
+один бюджет на **имя конфига** (`_config_name`), общий у рестартов и у
+воскрешения (`_resurrect_down_autostart`); раньше рестарты считались по
+интерфейсу, и при `awg0-opkgtun0`/`opkgtun0` бюджет удваивался.
+
+Возраст handshake — по системным часам, а роутер без RTC грузится с часами
+из прошлого: handshake до синхронизации NTP получает старую метку, и после
+неё выходит «handshake 1032687с назад». `effective_handshake_age()`: возраст
+больше аптайма (или отрицательный) недостоверен — считается по монотонным
+часам с первого взгляда на эту метку.
+
+Пассивных детекторов два, оба по счётчикам `awg show` (у неактивного
+интерфейса их состояние сбрасывается):
 - **rx-stall** (`eval_rx_stall`, `rx_stall_*`, 120 с): tx вырос на ≥4 КБ, а
   rx — не больше чем на 1 КБ (keepalive-шум) → «шлёт, но не принимает»;
 - **zero-rx** (`eval_zero_rx`, `zero_rx_enabled`/`zero_rx_timeout_sec`, 60 с):

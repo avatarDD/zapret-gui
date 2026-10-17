@@ -973,7 +973,16 @@ class AwgManager:
 
     def down(self, name: str) -> dict:
         with self._lock:
-            return self._do_down(name)
+            res = self._do_down(name)
+        # Явный down — решение пользователя. Если перед этим рестарт
+        # watchdog'а не поднял туннель, тот числил его «опущенным мной» и
+        # поднимал бы обратно вопреки остановке.
+        try:
+            from core import awg_watchdog
+            awg_watchdog.forget_took_down(self._config_for_name(name), name)
+        except Exception:
+            pass
+        return res
 
     def _config_for_name(self, name: str) -> str:
         """Вернуть имя КОНФИГА для `name`.
@@ -1015,12 +1024,20 @@ class AwgManager:
                 return {"ok": False, "message":
                         "Конфиг для %s не найден — интерфейс не наш,"
                         " перезапуск невозможен" % name}
-            # Правила маршрутизации на время рестарта НЕ снимаем: ip rule,
-            # доменные set'ы (с IP, выученными dnsmasq) и blackhole
-            # kill-switch'а должны пережить перезапуск. Иначе на время
-            # рестарта — а если `up` не удался, то и насовсем — трафик
-            # правил уходил мимо туннеля, даже с включённым kill-switch.
-            res_down = self._do_down(cfg_name, keep_routing=True)
+            # С kill-switch'ем правила маршрутизации на время рестарта НЕ
+            # снимаем: ip rule, доменные set'ы и blackhole должны пережить
+            # перезапуск, иначе трафик правил на это время (а если `up` не
+            # удался — насовсем) уходил бы мимо туннеля.
+            #
+            # Без kill-switch'а держать правила незачем: таблица туннеля
+            # между down и up всё равно пуста, и трафик идёт через
+            # провайдера. Тут рестарт — прежний полный down + up (правила
+            # вернёт apply_all_on_interface_up), как до 13.10: после того
+            # изменения на Keenetic начались зависания роутера при рестартах
+            # watchdog'а, и путь по умолчанию возвращён к проверенному.
+            from core.routing import killswitch
+            keep = killswitch.enabled()
+            res_down = self._do_down(cfg_name, keep_routing=keep)
             time.sleep(0.3)
             res_up = self._do_up(cfg_name)
             return {

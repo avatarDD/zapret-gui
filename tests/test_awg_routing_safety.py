@@ -150,18 +150,31 @@ class _MgrBase(unittest.TestCase):
 
 class TestRestartKeepsRouting(_MgrBase):
 
-    def test_restart_does_not_remove_routing_rules(self):
+    def _restart(self, killswitch_on):
         with mock.patch.object(self.mgr, "_wg_interfaces",
                                return_value=["awg0"]), \
              mock.patch.object(self.mgr, "_do_up",
                                return_value={"ok": True}), \
              mock.patch("core.routing.applier.remove_all_on_interface_down"
                         ) as remove_all, \
+             mock.patch("core.routing.killswitch.enabled",
+                        return_value=killswitch_on), \
              mock.patch("core.routing.killswitch.present",
-                        return_value=False):
+                        return_value=False), \
+             mock.patch("core.routing.dnsmasq_integration"
+                        ".DnsmasqIntegration"):
             res = self.mgr.restart("awg0")
         self.assertTrue(res["ok"])
-        remove_all.assert_not_called()
+        return remove_all
+
+    def test_restart_does_not_remove_routing_rules(self):
+        # С kill-switch'ем правила переживают рестарт — без утечки.
+        self._restart(killswitch_on=True).assert_not_called()
+
+    def test_restart_without_killswitch_is_full_down_up(self):
+        # Без kill-switch'а — прежний полный down + up (как до 13.10):
+        # держать правила незачем, таблица между down и up всё равно пуста.
+        self._restart(killswitch_on=False).assert_called_once_with("awg0")
 
     def test_explicit_down_still_removes_rules(self):
         with mock.patch.object(self.mgr, "_wg_interfaces", return_value=[]), \
