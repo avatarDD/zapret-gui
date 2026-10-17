@@ -243,6 +243,38 @@ def eval_zero_rx(state, rx_bytes, tx_bytes, now: float, *,
     return ({"since": since, "tx": tx}, (now - since) >= max(0, timeout))
 
 
+def _uptime_sec():
+    """Секунд с загрузки системы или None (нет /proc/uptime)."""
+    try:
+        with open("/proc/uptime") as f:
+            return float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def effective_handshake_age(latest: int, age: int, uptime, seen,
+                            mono: float) -> tuple:
+    """
+    Возраст handshake с поправкой на скачок часов. Чистая.
+
+    `latest_handshake` демон пишет по системным часам. Роутер без RTC
+    грузится с часами из прошлого (Keenetic — на дату сборки прошивки), и
+    handshake до синхронизации NTP получает старую метку. После
+    синхронизации возраст выходит в дни («handshake 1032687с назад») и
+    watchdog зря перезапускает живой туннель.
+
+    Настоящий handshake не может быть старше загрузки (и не может быть
+    в будущем). Такой возраст считаем по монотонным часам — с момента,
+    как впервые увидели эту метку. Возвращает (age, seen): seen —
+    (latest, mono_первого_взгляда) или None, если возраст достоверен.
+    """
+    if uptime is None or 0 <= age <= uptime:
+        return age, None
+    if not seen or seen[0] != latest:
+        seen = (latest, mono)
+    return int(mono - seen[1]), seen
+
+
 def decide_restart(*, handshake_age, handshake_timeout: int,
                    probe_enabled: bool, probe_consecutive_fails: int,
                    probe_threshold: int, rx_stalled: bool = False,
@@ -351,9 +383,10 @@ def _get_settings() -> dict:
 def _config_name(mgr, iface: str) -> str:
     """Имя конфига для интерфейса: подъём (`up`) ждёт именно его."""
     try:
-        return mgr._config_for_name(iface) or iface
+        name = mgr._config_for_name(iface)
     except Exception:
         return iface
+    return name if isinstance(name, str) and name else iface
 
 
 def _invalidate_settings_cache():
@@ -416,6 +449,9 @@ class AwgWatchdog:
         # нет). Их поднимаем обратно и без флага автозапуска: туннель был
         # поднят, пока его не тронули мы.
         self._took_down: set = set()
+        # Возраст handshake, которому нельзя верить (часы прыгнули): {iface:
+        # (latest_handshake, monotonic, с которого его видим)}.
+        self._hs_seen = {}
 
     # ─── lifecycle ───
 
@@ -492,6 +528,12 @@ class AwgWatchdog:
                 continue
             if not entry.get("active"):
                 # Туннель уже не поднят — пользователь сам решил, не лезем.
+                # Состояние детекторов забываем: поднятый вручную туннель
+                # иначе получил бы рестарт на первом же тике по старому
+                # отсчёту «0 байт».
+                self._zero_state.pop(name, None)
+                self._rx_state.pop(name, None)
+                self._hs_seen.pop(name, None)
                 continue
             # Интерфейс без нашего конфига поднят другим инструментом
             # (kernel-AWG от netifd, awg-quick, чужой скрипт): поднять его
@@ -514,8 +556,14 @@ class AwgWatchdog:
     def _maybe_restart(self, mgr, iface: str, status: dict,
                         settings: dict, now: float):
         """Принять решение по одному интерфейсу."""
+        # Cooldown и лимит в час ведём по имени КОНФИГА — тому же ключу,
+        # что у воскрешения (_resurrect_down_autostart). Раньше рестарты
+        # считались по интерфейсу, подъёмы — по конфигу, и при разных
+        # именах (`awg0-opkgtun0` / `opkgtun0`) туннель получал два
+        # бюджета: до 12 циклов down/up в час вместо 6.
+        key = _config_name(mgr, iface)
         # Cooldown — даём время туннелю установить handshake после рестарта.
-        last = self._last_restart.get(iface, 0)
+        last = self._last_restart.get(key, 0)
         if (now - last) < settings["cooldown_sec"]:
             return
 
@@ -537,6 +585,14 @@ class AwgWatchdog:
             except (TypeError, ValueError):
                 pass
         age = (int(now) - latest) if latest > 0 else None
+        if age is not None:
+            age, seen = effective_handshake_age(
+                latest, age, _uptime_sec(), self._hs_seen.get(iface),
+                time.monotonic())
+            if seen is None:
+                self._hs_seen.pop(iface, None)
+            else:
+                self._hs_seen[iface] = seen
 
         # Пассивный детектор «приём встал» (главный сигнал «данные не идут»;
         # ловит зависание даже при свежем handshake, без лишнего трафика).
@@ -608,7 +664,7 @@ class AwgWatchdog:
         # Rate limit: не больше N рестартов в час.
         # MR-28: mutations за self._lock чтобы get_status() не ловил RuntimeError
         with self._lock:
-            history = self._restart_log.setdefault(iface, [])
+            history = self._restart_log.setdefault(key, [])
             history[:] = [ts for ts in history if (now - ts) < 3600]
             if len(history) >= settings["max_restarts_per_hour"]:
                 log.warning(
@@ -638,11 +694,9 @@ class AwgWatchdog:
             try:
                 res = mgr.restart(iface) or {}
                 with self._lock:
-                    self._last_restart[iface] = now
+                    self._last_restart[key] = now
                     if not res.get("ok"):
-                        cfg_name = _config_name(mgr, iface)
-                        self._took_down.add(cfg_name)
-                        self._last_restart[cfg_name] = now
+                        self._took_down.add(key)
                         log.warning(
                             "awg-watchdog: %s не поднялся после рестарта (%s)"
                             " — буду поднимать заново" % (iface, (
@@ -657,7 +711,7 @@ class AwgWatchdog:
                 # Мог упасть между down и up: лежит — поднимем (поднят —
                 # воскрешение увидит и просто забудет).
                 with self._lock:
-                    self._took_down.add(_config_name(mgr, iface))
+                    self._took_down.add(key)
             finally:
                 with self._lock:
                     self._restart_inflight.discard(iface)
@@ -787,6 +841,19 @@ class AwgWatchdog:
 
 _watchdog = None
 _watchdog_lock = threading.Lock()
+
+
+def forget_took_down(*names):
+    """Пользователь сам опустил туннель: не поднимать его как «опущенный
+    рестартом watchdog'а» (AwgManager.down). Без созданного watchdog'а —
+    ничего не делает и не создаёт его."""
+    wd = _watchdog
+    if wd is None:
+        return
+    with wd._lock:
+        for n in names:
+            if n:
+                wd._took_down.discard(n)
 
 
 def get_watchdog() -> AwgWatchdog:

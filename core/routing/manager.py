@@ -46,10 +46,18 @@ def _run(args, timeout=10):
         return 1, "", str(e)
 
 
+# Системные таблицы ядра: default (253), main (254), local (255). Наша
+# таблица туннеля целиком очищается (`ip route flush table <id>`) на каждом
+# down/рестарте — совпади id с main или local, роутер терял бы все маршруты
+# и связь с LAN до перезагрузки. Хэш в 100..999 мог на них попасть.
+RESERVED_TABLE_IDS = frozenset((253, 254, 255))
+
+
 def table_id_for(ifname: str) -> int:
     """
     Стабильный и коллизионно-безопасный id таблицы из имени интерфейса (100..999).
     Сохраняет соответствие в config settings.json для избежания коллизий.
+    Системные таблицы (RESERVED_TABLE_IDS) не выдаются никогда.
     """
     try:
         from core.config_manager import get_config_manager
@@ -61,7 +69,18 @@ def table_id_for(ifname: str) -> int:
         table_map = {}
 
     if ifname in table_map:
-        return int(table_map[ifname])
+        try:
+            stored = int(table_map[ifname])
+        except (TypeError, ValueError):
+            stored = 0
+        if stored > 0 and stored not in RESERVED_TABLE_IDS:
+            return stored
+        # Сохранённый id — системная таблица (выдан до этой проверки) или
+        # мусор: выдаём заново.
+        log.warning("routing: таблица %r для %s недопустима — выдаю новую"
+                    % (table_map[ifname], ifname), source="routing")
+        table_map = dict(table_map)
+        table_map.pop(ifname, None)
 
     # Считаем хэш
     h = 0
@@ -69,8 +88,13 @@ def table_id_for(ifname: str) -> int:
         h = (h * 31 + ord(ch)) & 0xFFFFFFFF
     candidate = 100 + (h % 900)
 
-    # Список уже занятых ID
-    used_ids = set(int(val) for val in table_map.values())
+    # Список уже занятых ID (системные — тоже «заняты»)
+    used_ids = set(RESERVED_TABLE_IDS)
+    for val in table_map.values():
+        try:
+            used_ids.add(int(val))
+        except (TypeError, ValueError):
+            pass
 
     # Если кандидат свободен, берем его
     if candidate not in used_ids:
@@ -81,7 +105,8 @@ def table_id_for(ifname: str) -> int:
         while allocated in used_ids and allocated < 1000:
             allocated += 1
         if allocated >= 1000:
-            allocated = candidate
+            allocated = candidate if candidate not in RESERVED_TABLE_IDS \
+                else 252
 
     # Сохраняем в конфиг
     try:
