@@ -199,6 +199,29 @@ class TestSetsPathFallbackToIproute(unittest.TestCase):
         self.assertEqual(res.get("backend"), "iproute")
         self.assertTrue(res.get("ok"))
 
+    def test_dnsmasq_without_set_support_uses_sets_path(self):
+        # OpenWrt 25.12 (issue #386): штатный dnsmasq без nftset/ipset.
+        # Раньше — отказ «Нет доступного бэкенда» и откат правила из
+        # storage; теперь — set-путь с собственным резолвом.
+        rule = _rule()
+        with mock.patch.object(domain_rule, "_ndms_available",
+                               return_value=False), \
+             mock.patch.object(domain_rule, "_detect_backend",
+                               return_value=(None, "")), \
+             mock.patch.object(domain_rule, "_backend_for",
+                               return_value=ipset_backend), \
+             mock.patch.object(domain_rule, "_apply_domain_via_sets",
+                               return_value={"ok": True,
+                                             "backend": "nftset"}) as sets, \
+             mock.patch("core.routing.dnsmasq_integration.DnsmasqIntegration") \
+                as Dn:
+            Dn.return_value.status.return_value = {"available": True,
+                                                   "running": True}
+            res = domain_rule.apply_domain_rule(rule)
+        sets.assert_called_once()
+        self.assertTrue(res.get("ok"), res)
+        self.assertEqual(res.get("backend"), "nftset")
+
     def test_remove_sets_crash_returns_error_not_raises(self):
         rule = _rule()
         with mock.patch.object(domain_rule, "_ndms_available",

@@ -122,7 +122,14 @@ def _table_default_iface(table: int, family: str = "-4"):
 
 
 def _masquerade_present(ifname: str, family: str = "v4") -> bool:
-    from core.routing import ipset_backend
+    from core.routing import ipset_backend, nftset_backend
+    # masquerade.ensure_for_iface ставит nft-правило, если nft есть, —
+    # иначе iptables. Проверяем оба места.
+    rc, out, _e = _run(["nft", "list", "chain", "inet",
+                        nftset_backend.TABLE_NAME, "postrouting"])
+    if rc == 0 and ('oifname "%s" masquerade' % ifname in out
+                    or "oifname %s masquerade" % ifname in out):
+        return True
     cmd = "iptables" if family == "v4" else "ip6tables"
     rc, out, _e = _run([cmd, "-t", "nat", "-S", ipset_backend.NAT_CHAIN])
     return rc == 0 and ("-o %s -j MASQUERADE" % ifname) in out
@@ -146,6 +153,36 @@ def _route_get_dev(ip: str, mark: int = None):
 
 def _ipset_test(set_name: str, ip: str) -> bool:
     rc, _o, _e = _run(["ipset", "test", set_name, ip])
+    return rc == 0
+
+
+def _nft_set_count(set_name: str):
+    """Число элементов nft-набора нашей таблицы или None, если его нет."""
+    from core.routing import nftset_backend
+    rc, out, _e = _run(["nft", "list", "set", "inet",
+                        nftset_backend.TABLE_NAME, set_name])
+    if rc != 0:
+        return None
+    i = out.find("elements = {")
+    if i < 0:
+        return 0
+    body = out[i + len("elements = {"):]
+    body = body[:body.find("}")] if "}" in body else body
+    return len([x for x in body.replace("\n", " ").split(",") if x.strip()])
+
+
+def _nft_mark_present(set_name: str) -> bool:
+    """Стоят ли mark-правила `daddr @<set>` в нашей nft-таблице."""
+    from core.routing import nftset_backend
+    rc, out, _e = _run(["nft", "list", "table", "inet",
+                        nftset_backend.TABLE_NAME])
+    return rc == 0 and ("@%s " % set_name) in out
+
+
+def _nft_set_test(set_name: str, ip: str) -> bool:
+    from core.routing import nftset_backend
+    rc, _o, _e = _run(["nft", "get", "element", "inet",
+                       nftset_backend.TABLE_NAME, set_name, "{ %s }" % ip])
     return rc == 0
 
 
@@ -191,17 +228,29 @@ def _diagnose_domain_rule(rule, sets_state, iproute_state) -> list:
         kind = sets_state[rule.id]
         checks.append(_check("бэкенд", True, "%s без dnsmasq" % kind))
         set_v4 = domain_rule._set_name_for(rule.id, kind)
-        if kind == "ipset":
+        if kind == "nftset":
+            # nft: свои примитивы. Счётчиков в наших правилах нет —
+            # звено «маркировка видит трафик» здесь не проверить.
+            cnt = _nft_set_count(set_v4)
+            checks.append(_check(
+                "nft set %s" % set_v4, cnt is not None and cnt > 0,
+                "нет такого set'а" if cnt is None else "%d записей" % cnt))
+            found = _nft_mark_present(set_v4)
+            pkts = 0
+            checks.append(_check(
+                "mark-правила в nft", found,
+                "есть" if found else "нет — маркировка не срабатывает"))
+        else:
             cnt = _ipset_count(set_v4)
             checks.append(_check(
                 "ipset %s" % set_v4, cnt is not None and cnt > 0,
                 "нет такого set'а" if cnt is None else "%d IP" % cnt))
-        found, pkts = _mangle_mark_counters(set_v4)
-        checks.append(_check(
-            "mark-правила в mangle", found,
-            ("есть, помечено пакетов: %d" % pkts) if found
-            else "нет — маркировка не срабатывает"))
-        if found:
+            found, pkts = _mangle_mark_counters(set_v4)
+            checks.append(_check(
+                "mark-правила в mangle", found,
+                ("есть, помечено пакетов: %d" % pkts) if found
+                else "нет — маркировка не срабатывает"))
+        if found and kind != "nftset":
             checks.append(_check(
                 "маркировка видит трафик", pkts > 0,
                 "%d пакетов" % pkts if pkts > 0 else
@@ -244,9 +293,9 @@ def _diagnose_domain_rule(rule, sets_state, iproute_state) -> list:
         else:
             ip = ips[0]
             if rule.id in sets_state:
-                in_set = _ipset_test(
-                    domain_rule._set_name_for(rule.id,
-                                              sets_state[rule.id]), ip)
+                kind = sets_state[rule.id]
+                test = _nft_set_test if kind == "nftset" else _ipset_test
+                in_set = test(domain_rule._set_name_for(rule.id, kind), ip)
                 checks.append(_check(
                     "%s (%s) в set'е" % (probe, ip), in_set,
                     "" if in_set else "IP не в set — рефрешер/prepopulate"
@@ -518,19 +567,45 @@ def diagnose() -> dict:
     iproute_state = domain_rule._iproute_state_load()
 
     env = []
+    rc_nft, _o, _e = _run(["nft", "--version"], timeout=3)
     rc_ipset, _o, _e = _run(["ipset", "-v"], timeout=3)
-    env.append(_check("ipset", rc_ipset == 0))
     rc_ipt, _o, _e = _run(["iptables", "-V"], timeout=3)
-    env.append(_check("iptables", rc_ipt == 0))
+    if rc_nft == 0:
+        env.append(_check("nftables", True))
     if rc_ipset == 0 and rc_ipt == 0:
+        env.append(_check("ipset", True))
+        env.append(_check("iptables", True))
         xt_ok, xt_details = _probe_xt_set()
         env.append(_check("iptables -m set (xt_set)", xt_ok, xt_details))
+    elif rc_nft == 0:
+        # OpenWrt 22.03+ (fw4) и современный Linux: iptables/ipset нет и
+        # не нужно — set'ы и метки ставятся в nftables. Раньше отчёт
+        # рисовал тут два ✗ и уводил искать поломку не туда (issue #386).
+        env.append(_check("ipset/iptables", True,
+                          "нет — не нужны, работаем через nftables"))
+    else:
+        env.append(_check("ipset", rc_ipset == 0))
+        env.append(_check("iptables", rc_ipt == 0,
+                          "" if rc_ipt == 0 else
+                          "нет ни iptables, ни nftables — доменам и"
+                          " устройствам нечем ставить метки"))
     try:
         from core.routing import dnsmasq_integration
         st = dnsmasq_integration.DnsmasqIntegration().status()
         env.append(_check("dnsmasq", True,
                           "работает" if st.get("running")
                           else "нет (Keenetic: норм — set-путь/iproute)"))
+        if st.get("running"):
+            dn = dnsmasq_integration.DnsmasqIntegration()
+            if not (dn.supports_nftset() or dn.supports_ipset()):
+                # Штатный dnsmasq OpenWrt: домены маршрутизируются, но
+                # их IP резолвит сам GUI (set-путь + рефрешер), живые
+                # DNS-запросы клиентов в set не попадают.
+                env.append(_check(
+                    "dnsmasq nftset/ipset", True,
+                    "не собран — IP доменов резолвит GUI сам; чтобы в"
+                    " набор попадали и живые DNS-запросы клиентов,"
+                    " поставьте dnsmasq-full"))
         # OpenWrt: dnsmasq в ujail видит только явно прокинутые пути.
         # Include на непрокинутый файл = dnsmasq не стартует вообще,
         # вместе с DHCP и DNS роутера (issue #332).
@@ -581,7 +656,8 @@ def diagnose() -> dict:
     try:
         from core.unified import storage as ustorage
         from core.unified.applier import (_cidr_rule_id, _dev_rule_id,
-                                          _dom_rule_id, active_method)
+                                          _dom_rule_id, _singbox_sees_all,
+                                          active_method)
         from core.unified.model import parse_method
         known = {r.id for r in storage.load_rules()}
         sb_configs = None   # список конфигов sing-box — один раз на отчёт
@@ -628,7 +704,14 @@ def diagnose() -> dict:
                     "%s (основной — %s, переключил failover)"
                     % (method, route.method)))
             resolved = route.destination.resolve()
-            if resolved.get("domains"):
+            # geosite/geoip без нативной обработки в sing-box applier
+            # разворачивает в то же производное domain-правило (см.
+            # applier.apply_route). Без этой проверки маршрут «только
+            # Telegram» из мастера не сверялся вовсе (issue #386).
+            geo_in_rule = bool(resolved.get("geosite")
+                               or resolved.get("geoip")) and not (
+                kind == "singbox" and _singbox_sees_all(_target))
+            if resolved.get("domains") or geo_in_rule:
                 present = _dom_rule_id(route.id) in known
                 checks.append(_check(
                     "производное domain-правило", present,
@@ -642,6 +725,16 @@ def diagnose() -> dict:
                     "" if present else
                     "НЕ создано — apply вернул ошибку и откатился "
                     "(см. лог routing)"))
+            for dev in (route.devices or []):
+                present = _dev_rule_id(route.id, dev.get("ip", "")) in known
+                checks.append(_check(
+                    "device-правило %s" % dev.get("ip", "?"), present,
+                    "" if present else "НЕ создано"))
+            if not checks and not (resolved.get("geosite")
+                                   or resolved.get("geoip")):
+                checks.append(_check(
+                    "назначение", False,
+                    "пустое (нет доменов/CIDR/устройств)"))
             if kind == "singbox":
                 try:
                     if sb_configs is None:
@@ -651,15 +744,6 @@ def diagnose() -> dict:
                 except Exception as e:
                     checks.append(_check("sing-box TUN", True,
                                          "не проверен: %s" % e))
-            for dev in (route.devices or []):
-                present = _dev_rule_id(route.id, dev.get("ip", "")) in known
-                checks.append(_check(
-                    "device-правило %s" % dev.get("ip", "?"), present,
-                    "" if present else "НЕ создано"))
-            if not checks:
-                checks.append(_check(
-                    "назначение", False,
-                    "пустое (нет доменов/CIDR/устройств)"))
             unified_report.append(entry)
     except Exception as e:
         unified_report.append({

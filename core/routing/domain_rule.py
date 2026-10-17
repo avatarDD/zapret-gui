@@ -847,6 +847,46 @@ def _remove_domain_via_iproute(rule: DomainRoutingRule) -> dict:
     return {"ok": True, "backend": "iproute", "removed": len(entries)}
 
 
+def _apply_domain_without_dnsmasq(rule: DomainRoutingRule) -> dict:
+    """Доменное правило, когда наполнять set'ы некому: dnsmasq нет, он не
+    запущен или собран без nftset/ipset.
+
+    Есть ipset/nftables — set + fwmark с собственным резолвом и фоновым
+    обновлением (масштабируется на большие hostlist'ы). Совсем без
+    set-бэкенда или если set-путь не встал — iproute-фолбэк: ip rule на
+    каждый разрезолвленный IP. Вызывается под _lock.
+    """
+    if _backend_for(prefer_nft=True) is not None:
+        try:
+            res = _apply_domain_via_sets(rule)
+            # ok=False БЕЗ deferred — set-путь не сработал (типовой
+            # случай: в ядре Keenetic нет xt_set, и `iptables -m set`
+            # не работает при живом userspace-ipset). Раньше такой
+            # результат уходил в manager.add_rule → rollback: правило
+            # ВЫКИДЫВАЛОСЬ из storage («правил маршрутизации нет» в
+            # doctor). Фолбэк обязателен и здесь, не только при
+            # исключении.
+            if res.get("ok") or res.get("deferred"):
+                return res
+            log.warning("routing: set-путь без dnsmasq не сработал "
+                        "(%s) — фолбэк на ip-route"
+                        % ("; ".join(res.get("errors") or [])
+                           or res.get("error", "?")),
+                        source="routing")
+            # Снять полусозданные артефакты set-пути (state там
+            # ещё не записан — чистим напрямую, best-effort).
+            try:
+                _remove_domain_via_sets(rule)
+            except Exception:
+                pass
+        except Exception as e:
+            # Любой сбой set-пути не должен превращаться в HTTP 500
+            # — откатываемся на проверенный iproute-фолбэк.
+            log.warning("routing: set-путь без dnsmasq упал (%s) — "
+                        "фолбэк на ip-route" % e, source="routing")
+    return _apply_domain_via_iproute(rule)
+
+
 def apply_domain_rule(rule: DomainRoutingRule) -> dict:
     """Применить одно domain-правило."""
     if not isinstance(rule, DomainRoutingRule):
@@ -892,40 +932,23 @@ def apply_domain_rule(rule: DomainRoutingRule) -> dict:
             # наполняя set собственным резолвом с фоновым обновлением
             # (масштабируется на большие hostlist'ы). Совсем без set-бэкенда —
             # прежний iproute-фолбэк: ip rule на каждый разрезолвленный IP.
-            if _backend_for(prefer_nft=True) is not None:
-                try:
-                    res = _apply_domain_via_sets(rule)
-                    # ok=False БЕЗ deferred — set-путь не сработал (типовой
-                    # случай: в ядре Keenetic нет xt_set, и `iptables -m set`
-                    # не работает при живом userspace-ipset). Раньше такой
-                    # результат уходил в manager.add_rule → rollback: правило
-                    # ВЫКИДЫВАЛОСЬ из storage («правил маршрутизации нет» в
-                    # doctor). Фолбэк обязателен и здесь, не только при
-                    # исключении.
-                    if res.get("ok") or res.get("deferred"):
-                        return res
-                    log.warning("routing: set-путь без dnsmasq не сработал "
-                                "(%s) — фолбэк на ip-route"
-                                % ("; ".join(res.get("errors") or [])
-                                   or res.get("error", "?")),
-                                source="routing")
-                    # Снять полусозданные артефакты set-пути (state там
-                    # ещё не записан — чистим напрямую, best-effort).
-                    try:
-                        _remove_domain_via_sets(rule)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    # Любой сбой set-пути не должен превращаться в HTTP 500
-                    # — откатываемся на проверенный iproute-фолбэк.
-                    log.warning("routing: set-путь без dnsmasq упал (%s) — "
-                                "фолбэк на ip-route" % e, source="routing")
-            return _apply_domain_via_iproute(rule)
+            return _apply_domain_without_dnsmasq(rule)
 
         backend, kind = _detect_backend()
         if backend is None:
-            return {"ok": False,
-                    "error": "Нет доступного бэкенда (ipset/nftables)"}
+            # dnsmasq работает, но собран без nftset и без ipset (штатный
+            # `dnsmasq` OpenWrt — эти фичи есть только в dnsmasq-full) или
+            # нет согласованного с ним бэкенда. Раньше здесь был отказ, и
+            # manager откатывал правило из storage: маршрут на странице
+            # есть, а «низкоуровневых правил маршрутизации нет» (issue
+            # #386, OpenWrt 25.12). Наполнять set сам dnsmasq не сможет —
+            # ведём правило тем же путём, что и без dnsmasq: свой резолв +
+            # nft/ipset + фоновый рефрешер.
+            log.info("routing: dnsmasq без nftset/ipset — domain-правило %s"
+                     " идёт собственным резолвом (для живых DNS-запросов"
+                     " клиентов поставьте dnsmasq-full)" % rule.id,
+                     source="routing")
+            return _apply_domain_without_dnsmasq(rule)
 
         # Миграция nft: до v0.19.21 цепочка output создавалась как
         # type=filter — она НЕ триггерит реререйт после изменения mark,

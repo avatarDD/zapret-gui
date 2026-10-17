@@ -214,5 +214,118 @@ class TestSingboxTun(unittest.TestCase):
         checks = doctor._singbox_tun_checks("singbox-tun", configs)
         self.assertFalse(all(c["ok"] for c in checks), checks)
 
+
+class TestNftAndGeo(unittest.TestCase):
+    """OpenWrt 25.12 (issue #386): fw4 без iptables/ipset, штатный dnsmasq
+    без nftset, маршрут мастера «только Telegram» = одни geosite/geoip."""
+
+    def _dn(self, running=True, nftset=False):
+        dn = mock.MagicMock()
+        dn.return_value.status.return_value = {"running": running}
+        dn.return_value.supports_nftset.return_value = nftset
+        dn.return_value.supports_ipset.return_value = False
+        return mock.patch(
+            "core.routing.dnsmasq_integration.DnsmasqIntegration", dn)
+
+    def _run_nft_only(self, args, timeout=5):
+        if args[0] == "nft":
+            return 0, "", ""
+        return 127, "", "not found"
+
+    def _diag(self, routes, rules=(), sees_all=False):
+        from core.routing import domain_rule
+        patches = [
+            mock.patch("core.routing.storage.load_rules",
+                       return_value=list(rules)),
+            mock.patch("core.unified.storage.load_routes",
+                       return_value=routes),
+            mock.patch("core.unified.applier.active_method",
+                       side_effect=lambda r: r.method),
+            mock.patch("core.unified.applier._singbox_sees_all",
+                       return_value=sees_all),
+            mock.patch.object(doctor, "_singbox_tun_checks",
+                              return_value=[doctor._check("sb", True)]),
+            mock.patch.object(domain_rule, "_sets_state_load",
+                              return_value={}),
+            mock.patch.object(domain_rule, "_iproute_state_load",
+                              return_value={}),
+            mock.patch.object(doctor, "_run",
+                              side_effect=self._run_nft_only),
+            self._dn(),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            return doctor.diagnose()
+        finally:
+            for p in patches:
+                p.stop()
+
+    def _route(self):
+        from core.unified.model import UnifiedRoute
+        return UnifiedRoute.from_dict({
+            "id": "route-tg", "name": "Telegram",
+            "method": "singbox:sbtun0",
+            "destination": {"geosite": ["telegram"],
+                            "geoip": ["telegram"]}})
+
+    def test_nft_only_env_not_flagged(self):
+        report = self._diag([])
+        bad = [c for c in report["env"] if not c["ok"]]
+        self.assertEqual(bad, [], report["env"])
+        names = [c["name"] for c in report["env"]]
+        self.assertIn("nftables", names)
+        self.assertIn("dnsmasq nftset/ipset", names)
+
+    def test_geo_only_route_missing_derived_rule_flagged(self):
+        report = self._diag([self._route()])
+        checks = report["unified"][0]["checks"]
+        bad = [c["name"] for c in checks if not c["ok"]]
+        self.assertIn("производное domain-правило", bad)
+        text = doctor.render_text(report)
+        self.assertIn("производные правила не создались", text)
+
+    def test_geo_native_singbox_needs_no_derived_rule(self):
+        report = self._diag([self._route()], sees_all=True)
+        checks = report["unified"][0]["checks"]
+        self.assertTrue(all(c["ok"] for c in checks), checks)
+
+    def test_nftset_rule_chain(self):
+        from core.routing import domain_rule
+        rule = DomainRoutingRule(target_iface="sbtun0",
+                                 domains=["t.me"], rule_id="uni-nft")
+        with mock.patch.object(doctor, "_nft_set_count", return_value=7), \
+             mock.patch.object(doctor, "_nft_mark_present",
+                               return_value=True), \
+             mock.patch.object(doctor, "_nft_set_test",
+                               return_value=True) as test, \
+             mock.patch.object(doctor, "_mangle_mark_counters") as ipt, \
+             mock.patch.object(doctor, "_has_fwmark_rule",
+                               return_value=True), \
+             mock.patch.object(doctor, "_table_default_iface",
+                               return_value="sbtun0"), \
+             mock.patch.object(doctor, "_masquerade_present",
+                               return_value=True), \
+             mock.patch.object(doctor, "_route_get_dev",
+                               return_value="sbtun0"), \
+             mock.patch.object(domain_rule, "_resolve_ips",
+                               return_value=["149.154.167.99"]):
+            checks = doctor._diagnose_domain_rule(
+                rule, {"uni-nft": "nftset"}, {})
+        self.assertTrue(all(c["ok"] for c in checks), checks)
+        ipt.assert_not_called()
+        test.assert_called_once()
+
+    def test_nft_set_count_parses_elements(self):
+        out = ("table inet awg_routing {\n set awgr_x {\n"
+               "  type ipv4_addr\n  flags interval,timeout\n"
+               "  elements = { 1.2.3.4 timeout 1h expires 59m,\n"
+               "               91.108.4.0/22 }\n }\n}\n")
+        with mock.patch.object(doctor, "_run", return_value=(0, out, "")):
+            self.assertEqual(doctor._nft_set_count("awgr_x"), 2)
+        with mock.patch.object(doctor, "_run", return_value=(1, "", "")):
+            self.assertIsNone(doctor._nft_set_count("awgr_x"))
+
+
 if __name__ == "__main__":
     unittest.main()
