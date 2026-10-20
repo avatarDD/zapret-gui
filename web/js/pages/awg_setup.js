@@ -410,20 +410,20 @@ const AwgSetupPage = (() => {
         // Нормализуем перед сравнением, чтобы не считать `v0.2.18` !== `0.2.18`.
         const normalizeVer = v => String(v || '').trim().replace(/^v/i, '').replace(/-\d+$/, '');
         const verEqual = (a, b) => !a || !b || normalizeVer(a) === normalizeVer(b);
-        const goOutdated    = !!(latestGo    && installed.go_version    && !verEqual(installed.go_version,    latestGo));
-        const toolsOutdated = !!(latestTools && installed.tools_version && !verEqual(installed.tools_version, latestTools));
+        // У внешней установки (пакет Entware) версия — из шкалы пакета
+        // (`v0.2.16-1`), а у нашей сборки — своя (`3.1.20260828`): «→»
+        // между ними читался как вечное обновление. Сравниваем только
+        // свою установку — так же, как check_for_updates() и страница
+        // «Обновления».
+        const comparable    = !installed.external;
+        const goOutdated    = comparable && !!(latestGo    && installed.go_version    && !verEqual(installed.go_version,    latestGo));
+        const toolsOutdated = comparable && !!(latestTools && installed.tools_version && !verEqual(installed.tools_version, latestTools));
         const tagOutdated   = !!(latestTag   && installed.tag           && installed.tag !== latestTag);
         // archSupported — у выбранного релиза есть бинарники под нашу арх.
         // Без него не предлагаем обновление: иначе пустой/битый ручной
         // релиз даёт фантомное «доступно обновление» и ошибку установки.
         const updateAvailable = installed.installed && archSupported &&
                                 (goOutdated || toolsOutdated || tagOutdated);
-
-        // Если для external-установки версии так и не определились (бинарь
-        // не отвечает на --version), считаем что предложить переустановку
-        // имеет смысл всегда — но без шильда "обновление".
-        const versionsUnknown = installed.installed && installed.external &&
-                                !installed.go_version && !installed.tools_version;
 
         function verCell(installedVer, latestVer, outdated, source) {
             const cur = installedVer || '?';
@@ -449,15 +449,15 @@ const AwgSetupPage = (() => {
                 title = 'Доступно обновление';
             } else if (installed.external) {
                 kind  = 'info';
-                title = versionsUnknown ? 'Установка вне нашего GUI' : 'Установка вне нашего GUI (актуально)';
+                title = 'Установка вне нашего GUI';
             } else {
                 kind  = 'ok';
                 title = 'Установлено и актуально';
             }
 
             const verLines =
-                `amneziawg-go: ${verCell(installed.go_version, latestGo, goOutdated, installed.go_version_source)}<br>` +
-                `amneziawg-tools: ${verCell(installed.tools_version, latestTools, toolsOutdated, installed.tools_version_source)}`;
+                `amneziawg-go: ${verCell(installed.go_version, comparable ? latestGo : '', goOutdated, installed.go_version_source)}<br>` +
+                `amneziawg-tools: ${verCell(installed.tools_version, comparable ? latestTools : '', toolsOutdated, installed.tools_version_source)}`;
 
             const tagLine = installed.tag
                 ? `<br>Релиз: <span class="awg-mono">${escapeHtml(installed.tag)}</span>` +
@@ -467,7 +467,7 @@ const AwgSetupPage = (() => {
             const pathLine = installed.external
                 ? `<br>amneziawg-go: <span class="awg-mono">${escapeHtml(installed.amneziawg_go || '')}</span>` +
                   `<br>awg: <span class="awg-mono">${escapeHtml(installed.awg || '')}</span>` +
-                  `<br><span class="text-muted" style="font-size: 11px;">GUI ещё не управляет этой установкой — после установки она перейдёт под управление.</span>`
+                  `<br><span class="text-muted" style="font-size: 11px;">GUI ещё не управляет этой установкой — после установки она перейдёт под управление. Версия пакета и версия нашей сборки — разные шкалы, поэтому они не сравниваются; установка перезапишет файлы пакета, а обновление пакета через opkg вернёт пакетные.</span>`
                 : `<br>Каталог: <span class="awg-mono">${escapeHtml(installed.binary_dir || '')}</span>`;
 
             detail = verLines + tagLine + pathLine;

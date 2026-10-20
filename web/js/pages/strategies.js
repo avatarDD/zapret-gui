@@ -8,6 +8,8 @@
 const StrategiesPage = (() => {
     let strategies = [];
     let currentId = null;
+    // Поднят ли движок: выбранная стратегия могла упасть на старте (#411).
+    let engineRunning = true;
     let favorites = [];
     let pollTimer = null;
     let hostlistFiles = [];  // [{name, filename, path, is_builtin}] — для дропдауна в редакторе
@@ -1034,6 +1036,7 @@ const StrategiesPage = (() => {
             // Определяем активную
             const active = strategies.find(s => s.is_active);
             currentId = active ? active.id : null;
+            engineRunning = data.engine_running !== false;
             favorites = strategies.filter(s => s.is_favorite).map(s => s.id);
 
             // Чистим выделение от исчезнувших стратегий (напр. после объединения).
@@ -1065,11 +1068,16 @@ const StrategiesPage = (() => {
         if (!el) return;
 
         if (active) {
+            // Выбрана, но движок не работает — так и говорим, а не
+            // рисуем зелёную точку над упавшим nfqws2.
+            const sub = engineRunning
+                ? escapeHtml(active.description || '')
+                : '<span style="color:var(--error);">nfqws2 не запущен — причина в журнале; примените стратегию заново или запустите на странице «Управление»</span>';
             el.innerHTML = `
-                <span class="status-dot running"></span>
+                <span class="status-dot ${engineRunning ? 'running' : 'stopped'}"></span>
                 <div>
                     <div style="font-weight:500; color:var(--text-heading);">${escapeHtml(active.name)}</div>
-                    <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">${escapeHtml(active.description || '')}</div>
+                    <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">${sub}</div>
                 </div>
                 <div style="margin-left:auto; display:flex; gap:6px;">
                     <button class="btn btn-ghost btn-sm" data-action="showPreview" data-strategy-id="${active.id}" title="Превью команды">
@@ -1303,8 +1311,8 @@ const StrategiesPage = (() => {
                 </div>
                 <div class="strategy-card-args-wrap">${argsBlocks}${author}</div>
                 <div class="strategy-card-actions">
-                    <button class="btn btn-primary btn-sm" data-action="applyStrategy"${isActive ? ' disabled' : ''}>
-                        ${isActive ? '✓ Активна' : 'Применить'}
+                    <button class="btn btn-primary btn-sm" data-action="applyStrategy"${isActive && engineRunning ? ' disabled' : ''}>
+                        ${isActive ? (engineRunning ? '✓ Активна' : 'Применить снова') : 'Применить'}
                     </button>
                     <button class="strategy-card-toggle" data-list-ui-toggle title="Показать параметры">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">
@@ -1351,12 +1359,16 @@ const StrategiesPage = (() => {
             const result = await API.post('/api/strategies/' + sid + '/apply', {});
             if (result.ok) {
                 Toast.success('Стратегия применена: ' + s.name);
-                fetchStrategies();
             } else {
-                Toast.error(result.error || 'Ошибка применения');
+                const why = result.nfqws && result.nfqws.last_error;
+                Toast.error((result.error || 'Ошибка применения') + (why ? ': ' + why : ''));
             }
         } catch (err) {
             Toast.error(err.message);
+        } finally {
+            // И после отказа: прежний движок restart() уже остановил,
+            // список должен показать это, а не «✓ Активна».
+            fetchStrategies();
         }
     }
 

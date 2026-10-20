@@ -353,15 +353,20 @@ def github_latest_release(repo: str) -> dict:
     return github_release(repo)
 
 
-def github_release_by_prefix(repo: str, prefix: str,
-                             transport: str = "") -> dict:
-    """Самый свежий релиз, чей тэг начинается с prefix.
+# Окно поиска наших сборок — ОДНО на проверку обновлений и установщик.
+# Сборки бинарников живут в одном репозитории с плоским потоком релизов
+# GUI (по десятку за неделю), поэтому `opera-bin-*`/`usque-bin-*` быстро
+# уезжают вглубь списка. Раньше проверка смотрела первые 30 релизов, а
+# установщик — первые 50: сборка попадала во второе окно и не попадала в
+# первое, страница «Обновления» подставляла апстрим (opera 1.30.0), а
+# кнопка ставила нашу 1.28.0 — обещанную версию поставить было нельзя.
+# Теперь обе стороны идут через _releases_with_prefix() и листают
+# страницы, пока не найдут сборку.
+RELEASES_PER_PAGE = 100
+RELEASES_MAX_PAGES = 5
 
-    В одном репозитории живут релизы GUI и наши сборки бинарников
-    (usque-bin-*, singbox-bin-*, awg-bin-*), поэтому `latest` тут не
-    годится — он вернёт релиз самого GUI.
-    """
-    url = "https://api.github.com/repos/%s/releases?per_page=50" % repo
+
+def _github_headers() -> dict:
     headers = {"Accept": "application/vnd.github.v3+json",
                "User-Agent": "zapret-gui/ext-installer"}
     try:
@@ -372,23 +377,71 @@ def github_release_by_prefix(repo: str, prefix: str,
             headers["Authorization"] = "token %s" % token
     except Exception:
         pass
-    try:
-        from core.binary_installer import resolve_url
-        from core.download_transport import urlopen_via
-        with urlopen_via(resolve_url(url), transport=transport,
-                         timeout=HTTP_TIMEOUT, headers=headers) as r:
-            data = json.loads(r.read().decode("utf-8"))
-    except Exception as e:
-        return {"error_detail": "GitHub API недоступен: %s" % e}
-    if not isinstance(data, list):
-        return {"error_detail": "Некорректный ответ GitHub releases"}
-    for rel in data:
-        if not isinstance(rel, dict) or rel.get("draft"):
-            continue
-        if (rel.get("tag_name") or "").startswith(prefix):
-            return rel
+    return headers
+
+
+def _releases_with_prefix(repo: str, prefix: str, transport: str = "",
+                          first_only: bool = False) -> dict:
+    """Релизы repo с тэгом на prefix, от новых к старым.
+
+    {"ok": True, "releases": [rel, ...]} или {"ok": False, "error": ...}.
+    first_only — остановиться на первой находке (нужна только последняя
+    сборка). Ошибка сети на дальней странице не роняет найденное раньше.
+    """
+    from core.binary_installer import resolve_url
+    from core.download_transport import urlopen_via
+    headers = _github_headers()
+    found = []
+    for page in range(1, RELEASES_MAX_PAGES + 1):
+        url = ("https://api.github.com/repos/%s/releases?per_page=%d&page=%d"
+               % (repo, RELEASES_PER_PAGE, page))
+        try:
+            with urlopen_via(resolve_url(url), transport=transport,
+                             timeout=HTTP_TIMEOUT, headers=headers) as r:
+                data = json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            if found:
+                break
+            return {"ok": False, "error": "GitHub API недоступен: %s" % e}
+        if not isinstance(data, list):
+            if found:
+                break
+            return {"ok": False,
+                    "error": "Некорректный ответ GitHub releases (не список)"}
+        for rel in data:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            tag = rel.get("tag_name") or ""
+            if tag and (not prefix or tag.startswith(prefix)):
+                found.append(rel)
+                if first_only:
+                    return {"ok": True, "releases": found}
+        if len(data) < RELEASES_PER_PAGE:
+            break
+    return {"ok": True, "releases": found}
+
+
+def github_release_by_prefix(repo: str, prefix: str,
+                             transport: str = "") -> dict:
+    """Самый свежий релиз, чей тэг начинается с prefix.
+
+    В одном репозитории живут релизы GUI и наши сборки бинарников
+    (usque-bin-*, singbox-bin-*, awg-bin-*), поэтому `latest` тут не
+    годится — он вернёт релиз самого GUI.
+
+    Ошибка — {"error_detail": ...}; если сеть ответила, но такой сборки
+    нет, дополнительно "not_found": True: установщик в этом случае уходит
+    на legacy_source, и проверка обновлений должна знать, что это не сбой.
+    """
+    res = _releases_with_prefix(repo, prefix, transport=transport,
+                                first_only=True)
+    if not res.get("ok"):
+        return {"error_detail": res.get("error") or "GitHub API недоступен"}
+    if res["releases"]:
+        return res["releases"][0]
     return {"error_detail": "В репозитории %s нет релиза с префиксом %s"
-                            % (repo, prefix)}
+                            % (repo, prefix),
+            "not_found": True}
 
 
 def _manifest_entry(release: dict, cfg: dict, arch: str,
@@ -1186,42 +1239,40 @@ def list_releases(name: str, transport: str = "", force: bool = False,
         if cached and not force and (now - cached[0]) < 300:
             return cached[1]
 
-    limit = max(1, min(int(limit or 30), 100))
-    url = "https://api.github.com/repos/%s/releases?per_page=%d" % (
-        cfg["repo"], limit)
-    try:
-        from core.binary_installer import resolve_url
-        from core.download_transport import urlopen_via
-        headers = {"Accept": "application/vnd.github.v3+json",
-                   "User-Agent": "zapret-gui/ext-installer"}
-        try:
-            from core.config_manager import get_config_manager
-            token = (get_config_manager().get("github", "token",
-                                              default="") or "").strip()
-            if token:
-                headers["Authorization"] = "token %s" % token
-        except Exception:
-            pass
-        with urlopen_via(resolve_url(url), transport=transport,
-                         timeout=HTTP_TIMEOUT, headers=headers) as r:
-            data = json.loads(r.read().decode("utf-8"))
-    except Exception as e:
-        return {"ok": False, "error": "GitHub API недоступен: %s" % e}
-
-    if not isinstance(data, list):
-        return {"ok": False,
-                "error": "Некорректный ответ GitHub releases (не список)"}
-
     # Наши сборки бинарников живут в одном репозитории с релизами самого
     # GUI, поэтому без фильтра по префиксу в выборе версии usque
-    # оказались бы версии GUI (v0.24.0 и т.п.).
+    # оказались бы версии GUI (v0.24.0 и т.п.). Окно поиска — то же, что
+    # у установщика (_releases_with_prefix), иначе список версий и кнопка
+    # «Установить последнюю» видели бы разные релизы.
     prefix = cfg.get("release_prefix") or ""
+    if prefix:
+        res = _releases_with_prefix(cfg["repo"], prefix, transport=transport)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error")}
+        raw = res["releases"]
+    else:
+        limit = max(1, min(int(limit or 30), 100))
+        url = "https://api.github.com/repos/%s/releases?per_page=%d" % (
+            cfg["repo"], limit)
+        try:
+            from core.binary_installer import resolve_url
+            from core.download_transport import urlopen_via
+            with urlopen_via(resolve_url(url), transport=transport,
+                             timeout=HTTP_TIMEOUT,
+                             headers=_github_headers()) as r:
+                raw = json.loads(r.read().decode("utf-8"))
+        except Exception as e:
+            return {"ok": False, "error": "GitHub API недоступен: %s" % e}
+        if not isinstance(raw, list):
+            return {"ok": False,
+                    "error": "Некорректный ответ GitHub releases (не список)"}
+
     releases = []
-    for rel in data:
+    for rel in raw:
         if not isinstance(rel, dict) or rel.get("draft"):
             continue
         tag = rel.get("tag_name") or ""
-        if not tag or (prefix and not tag.startswith(prefix)):
+        if not tag:
             continue
         releases.append({
             "tag": tag,
@@ -1244,6 +1295,13 @@ def install_local_file(name: str, path: str, orig_name: str = "") -> dict:
     незачем — файл принёс сам администратор роутера; но и молчать об
     этом не будем, отдаём warning.
     """
+    try:
+        return _install_local_file(name, path, orig_name)
+    finally:
+        _refresh_update_row(name)
+
+
+def _install_local_file(name: str, path: str, orig_name: str = "") -> dict:
     cfg = BINARIES.get(name)
     if not cfg:
         return {"ok": False, "error": "Неизвестный бинарник: %s" % name}
@@ -1548,6 +1606,20 @@ def _probe_args(cfg: dict) -> tuple:
     return ("version", "--version", "--help")
 
 
+def _refresh_update_row(name: str) -> None:
+    """Пересчитать строку компонента на странице «Обновления».
+
+    Без этого кеш проверки жил до следующего полного прохода (до суток):
+    поставили opera — а страница ещё час показывала доустановочные
+    «текущую» и «доступно».
+    """
+    try:
+        from core.update_checker import schedule_refresh
+        schedule_refresh(name)
+    except Exception:
+        pass
+
+
 # Какому туннельному движку принадлежит бинарник — для поиска чужих
 # экземпляров того же движка (core/foreign_services).
 _ENGINE_OF = {"usque": "usque", "tgwsproxy": "tgproxy", "tgproto": "tgproxy",
@@ -1570,8 +1642,11 @@ def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
     Чужие экземпляры, которые GUI не ставил, не трогаются — о них
     сообщает поле `foreign_scripts` ответа.
     """
-    res = _install_binary_by_name(name, progress_cb=progress_cb, tag=tag,
-                                  transport=transport, _cfg=_cfg)
+    try:
+        res = _install_binary_by_name(name, progress_cb=progress_cb,
+                                      tag=tag, transport=transport, _cfg=_cfg)
+    finally:
+        _refresh_update_row(name)
     if _cfg is not None or not isinstance(res, dict) or not res.get("ok"):
         return res
     engine = _ENGINE_OF.get(name, "")

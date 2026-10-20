@@ -786,11 +786,20 @@ class AwgInstaller:
             + list(((manifest.get("amneziawg_tools") or {}).get("binaries") or {}).keys())
         ))
 
+        # Сравниваем тэги, только если установка НАША (тэг записан в
+        # settings). У внешней (пакет Entware amneziawg-go и т.п.) тэга нет,
+        # и `"" != latest_tag` держал «доступно обновление» вечно зажжённым,
+        # а показывалось при этом «v0.2.16-1 (версия пакета) → 3.1.20260828
+        # (версия нашей сборки)» — числа из разных шкал. Замена внешней
+        # установки нашей остаётся доступной на странице AWG, но обновлением
+        # она не считается.
+        comparable = bool(installed.get("tag"))
         update_available = (
-            installed["installed"] and arch_supported and
+            installed["installed"] and arch_supported and comparable and
             (latest_tag and installed["tag"] != latest_tag)
         )
         return {
+            "comparable":       comparable,
             "ok":               True,
             "installed":        installed,
             "latest_tag":       latest_tag,
@@ -941,6 +950,12 @@ class AwgInstaller:
         # и /api/awg/environment показывают «не установлен» до перезагрузки.
         try:
             get_awg_detector().get_environment_report(force=True)
+        except Exception:
+            pass
+        # Строка «Обновления» — сразу по факту, а не через сутки.
+        try:
+            from core.update_checker import schedule_refresh
+            schedule_refresh("awg")
         except Exception:
             pass
 

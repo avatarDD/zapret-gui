@@ -909,6 +909,17 @@ nfqws2-keenetic — TCP 1984 (MTProto) и UDP 590-600, 1400.
 | `files/fake/*.bin` | `zapret.bin_path` | Blob-файлы для `--blob=NAME:@…`. |
 | `blockcheck2.sh` / `blockcheck.sh` | `zapret.blockcheck2_path` (иначе автопоиск в `base_path`) | Штатный blockcheck. |
 
+⚠️ **Наши блобы не входят в релиз zapret2.** `tls_clienthello_1.bin`,
+`quic_5.bin` и прочие `@bin/*.bin` из каталогов лежат в `import/bin` и
+попадают в `files/fake` только через `asset_importer` (install.sh, установщик
+zapret2 в GUI, self-update). На «голом» /opt/zapret2 nfqws2 падает
+`cannot access file '…'` → exit 1 (issue #411). Поэтому
+`NFQWSManager.start()` перед запуском вызывает `_ensure_asset_files()`:
+отсутствующий файл из `--blob=…@файл` / `--lua-init=@файл` с тем же именем
+копируется из `import/bin` / `import/lua`, но только в `bin_path` /
+`lua_path`; если взять неоткуда — старт отклоняется, причина уходит в
+`get_status()["last_error"]`, который показывают «Управление» и «Главная».
+
 ⚠️ **Миграция:** до 0.16.3 дефолт `bin_path = /opt/zapret2/bin` был неверным
 (апстрим — `files/fake`), и не было `ipset_path`. `config_manager` лечит
 старые конфиги автоматически.
