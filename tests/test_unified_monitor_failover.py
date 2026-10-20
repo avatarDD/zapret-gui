@@ -252,12 +252,24 @@ class TestUnprobeableRoutes(unittest.TestCase):
 
     def _route(self, **kw):
         from core.unified.model import UnifiedRoute, Destination
-        kw.setdefault("destination", Destination(geosite=["youtube"]))
+        # Категория без известного домена в GEOSITE_PROBES.
+        kw.setdefault("destination", Destination(geosite=["category-xyz"]))
         return UnifiedRoute(name="geo", method="awg:awg0",
                             fallbacks=["nfqws2"], failover_enabled=True, **kw)
 
     def test_probe_returns_none_for_geo_only(self):
         self.assertIsNone(monitor.probe_route(self._route()))
+
+    def test_known_category_probes_its_domain(self):
+        # issue #404: маршрут мастера «Telegram» (geosite+geoip) — монитор
+        # пробует telegram.org, а не молчит.
+        from core.unified.model import Destination
+        route = self._route(destination=Destination(
+            geosite=["telegram"], geoip=["telegram"]))
+        with mock.patch("core.unified.monitor.probe_host",
+                        return_value=True) as ph:
+            self.assertTrue(monitor.probe_route(route))
+        self.assertEqual(ph.call_args[0][0], "telegram.org")
 
     def test_probe_domain_makes_route_probeable(self):
         route = self._route(probe_domain="youtube.com")
