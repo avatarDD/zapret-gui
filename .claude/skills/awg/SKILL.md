@@ -528,8 +528,21 @@ kill-switch'а (по умолчанию) рестарт — полный down + 
   Артефактные архи: `mipsel-softfloat`, `mips-softfloat`, `aarch64`, `armv7`,
   `x86_64`. **Endianness MIPS** определяется по `sys.byteorder` (т.к. `uname -m`
   на mips неоднозначен).
-- **Версия бинаря** — `<bin> --version`/`-v`, regex `v?(\d+(\.\d+){1,3}…)`; fallback
-  `opkg status <pkg>` для Entware.
+- **Версия бинаря** — ТОЛЬКО `<bin> --version`, regex `v?(\d+(\.\d+){1,3}…)`;
+  источник №1 — `opkg status <pkg>` для Entware. 🔴 **Никаких `-v`**: у
+  amneziawg-go (как у wireguard-go) версию печатает лишь `--version`, а любой
+  другой единственный аргумент — ИМЯ ИНТЕРФЕЙСА. `amneziawg-go -v` поднимает
+  userspace-туннель «-v» (демон в фоне, PPID=1, `/var/run/amneziawg/-v.sock`,
+  ~15 МБ RSS навсегда). Старый fallback на `-v` при медленном `--version` так
+  и плодил демонов; уже рождённых убирает `awg_manager.reap_stray_daemons()`
+  на старте GUI, а `_valid_iface_name` не пускает имена с «-» в начале.
+  Версия внешней установки кешируется (`_ext_version_cache`, ключ — путь,
+  отпечаток — mtime+размер; неудача — на 10 мин), иначе каждый опрос статуса
+  запускал `opkg status` + `--version`.
+- **Автозапуск** — общего выключателя нет: решают только
+  `awg.autostart.interfaces.<имя>`. Поле `awg.autostart.enabled` — мёртвое
+  наследие (старый `_section` дописывал его как `false`), при сохранении
+  удаляется; `autostart.enabled` в корне — про nfqws2, не про AWG.
 - **Битый бинарь** (`_probe_binary`): ловим `exec format error`, `cannot execute
   binary`, `syntax error` — типичная ситуация при неверной арх/endianness.
 

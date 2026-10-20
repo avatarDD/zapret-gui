@@ -863,6 +863,14 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception:
             pass
 
+        # Убрать «мусорный» демон amneziawg-go «-v», который порождала
+        # старая проба версии (core/awg_manager.reap_stray_daemons).
+        try:
+            from core.awg_manager import reap_stray_daemons
+            reap_stray_daemons()
+        except Exception:
+            pass
+
         # Автоподъём AWG-интерфейсов при старте GUI (если init-скрипт не
         # установлен — иначе он сам справится при загрузке системы).
         try:

@@ -126,13 +126,43 @@ def stats() -> dict:
 
 # ─────────────────────── probe ───────────────────────────────────────
 
+# Куда стучаться у маршрута без назначения (только устройства/DSCP),
+# если probe_domain не задан: «весь трафик этих устройств» — значит,
+# годится любой заведомо живой узел.
+SOURCE_PROBE_DEFAULT = "www.cloudflare.com"
+
+
+def _connect(host: str, port: int, timeout: float, device: str = ""):
+    """create_connection; с device — сокет привязан к интерфейсу ДО connect."""
+    if not device:
+        return socket.create_connection((host, port), timeout=timeout)
+    from core.download_transport import _bind_to_device
+    last = None
+    for af, st, proto, _cn, sa in socket.getaddrinfo(
+            host, port, 0, socket.SOCK_STREAM):
+        s = socket.socket(af, st, proto)
+        try:
+            s.settimeout(timeout)
+            _bind_to_device(s, device, af)
+            s.connect(sa)
+            return s
+        except OSError as e:
+            last = e
+            s.close()
+    raise last or OSError("нет адресов для %s" % host)
+
+
 def probe_host(host: str, port: int = 443, timeout: float = 4.0,
-               tls: bool = True) -> bool:
-    """TCP(+TLS) проба до host:port. True = достучались/handshake ок."""
+               tls: bool = True, device: str = "") -> bool:
+    """TCP(+TLS) проба до host:port. True = достучались/handshake ок.
+
+    device — пробовать через этот интерфейс (SO_BINDTODEVICE), а не по
+    таблицам маршрутизации роутера.
+    """
     if not host:
         return False
     try:
-        sock = socket.create_connection((host, port), timeout=timeout)
+        sock = _connect(host, port, timeout, device)
     except (OSError, socket.timeout):
         return False
     try:
@@ -172,6 +202,22 @@ def probe_route(route):
     здесь failover, достаточно задать у маршрута probe_domain.
     """
     domain = (route.probe_domain or "").strip()
+    if route.destination.is_empty() and (route.devices
+                                         or route.dscp is not None):
+        # Маршрут только по источнику («эти устройства — целиком в
+        # туннель»). Правила такого маршрута — `ip rule from <устройство>`,
+        # собственный трафик роутера под них не попадает: проба по
+        # обычным таблицам мерила бы провайдера, а не туннель. Поэтому
+        # пробуем через интерфейс текущего метода напрямую. Раньше такой
+        # маршрут шёл в ветку «пробовать нечего» с подсказкой про
+        # geosite/geoip, которых у него нет, и мониторинг молча не делал
+        # ничего.
+        from core.unified import failover
+        from core.unified.model import is_tunnel_method, method_iface
+        method = failover.current_method(route.id) or route.method
+        iface = method_iface(method) if is_tunnel_method(method) else ""
+        return probe_host(domain or SOURCE_PROBE_DEFAULT, port=443,
+                          tls=True, device=iface)
     if not domain:
         resolved = route.destination.resolve()
         domains = resolved.get("domains") or []
@@ -189,6 +235,19 @@ def probe_route(route):
                 return probe_host(host, port=443, tls=False)
             return None
     return probe_host(domain, port=443, tls=True)
+
+
+def can_probe(route) -> bool:
+    """Есть ли у маршрута, куда стучаться (без самой пробы) — для UI."""
+    if (route.probe_domain or "").strip():
+        return True
+    if route.destination.is_empty():
+        return bool(route.devices or route.dscp is not None)
+    resolved = route.destination.resolve()
+    if resolved.get("domains") or resolved.get("cidrs"):
+        return True
+    from core.routing.alias_resolver import probe_domain_for
+    return bool(probe_domain_for(resolved.get("geosite") or []))
 
 
 # ─────────────────────── background loop ─────────────────────────────

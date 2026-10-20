@@ -262,11 +262,45 @@ def _flush_pending() -> None:
                     source="unified")
 
 
+def _safe_can_probe(monitor, route) -> bool:
+    try:
+        return monitor.can_probe(route)
+    except Exception:
+        return True
+
+
+def _device_drift(route, macs) -> list:
+    """Устройства маршрута, которым DHCP с тех пор выдал другой адрес.
+
+    Правило устройства — `ip rule from <ip>`: сменился адрес — трафик
+    устройства молча пошёл мимо туннеля. MAC мы запоминаем при выборе
+    устройства, по нему и сверяемся. Нет MAC или устройство сейчас не
+    видно в сети — молчим: это не рассинхрон, а просто нет данных.
+    """
+    if not macs or not route.devices:
+        return []
+    out = []
+    for dev in route.devices:
+        mac = (dev.get("mac") or "").strip().lower()
+        now_ip = macs.get(mac) if mac else ""
+        if now_ip and now_ip != dev.get("ip"):
+            out.append({"ip": dev.get("ip", ""), "now_ip": now_ip,
+                        "mac": mac, "hostname": dev.get("hostname", "")})
+    return out
+
+
 def status() -> dict:
     """Сводка для UI: маршруты + успешность + активный метод + подсказки."""
     from core.unified import monitor, failover, scanner_hint
     routes = storage.load_routes()
     mon = monitor.stats()
+    macs = None
+    if any(r.devices for r in routes):
+        try:
+            from core.devices_discovery import mac_ip_map
+            macs = mac_ip_map()
+        except Exception:
+            macs = None
     out = []
     for r in routes:
         rid = r.id
@@ -285,6 +319,8 @@ def status() -> dict:
             "monitor": mon.get(rid, {}),
             "suggest_scan": suggestion.get("suggest", False),
             "suggest_reason": suggestion.get("reason", ""),
+            "probeable": _safe_can_probe(monitor, r),
+            "device_drift": _device_drift(r, macs),
         })
     return {"ok": True, "routes": out,
             "monitor_running": monitor.get_monitor().running()}

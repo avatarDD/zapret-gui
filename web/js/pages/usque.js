@@ -178,6 +178,26 @@ const UsquePage = (() => {
         });
     }
 
+    /**
+     * usque, поднятый не GUI (init.d S51usque из Entware и т.п.). Им мы
+     * не управляем, но он держит интерфейс и память, а без этой строки
+     * страница выглядела как «usque на роутере не работает».
+     */
+    function _externalNote(list) {
+        if (!Array.isArray(list) || !list.length) return "";
+        const rows = list.map(e => `<li><code>${esc(e.iface || "?")}</code>
+                (pid ${esc(String(e.pid || "?"))}${e.config ? `, <code>${esc(e.config)}</code>` : ""})</li>`).join("");
+        return `<div class="form-hint" style="margin-top:8px;">
+                    ⚠ Работает usque, запущенный не из GUI:
+                    <ul style="margin:4px 0 4px 18px;">${rows}</ul>
+                    Его поднимает собственный init-скрипт (обычно
+                    <code>/opt/etc/init.d/S51usque</code>). Если этот туннель
+                    вам не нужен — остановите и отключите скрипт: он занимает
+                    интерфейс и память. Профили GUI используют имена
+                    <code>usque*</code> и с ним не конфликтуют.
+                </div>`;
+    }
+
     async function _loadEnv() {
         try {
             const env = await API.get("/api/usque/environment");
@@ -203,6 +223,7 @@ const UsquePage = (() => {
                         Без устройства <code>/dev/net/tun</code> туннель не поднимется.
                         На Keenetic модуль обычно даёт пакет <code>kmod-tun</code>.
                     </div>`}
+                    ${_externalNote(env.external)}
                     <div style="margin-top:10px;">
                         <a class="btn btn-sm" href="#usque-setup">Установка и обновление</a>
                     </div>

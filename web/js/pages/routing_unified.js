@@ -1040,6 +1040,40 @@ const RoutingUnifiedPage = (() => {
                 </div>`;
     }
 
+    /**
+     * Что не так с маршрутом по данным бэкенда (unified status).
+     *
+     *  - проверка включена, а пробовать нечего — замеров не будет вовсе;
+     *  - проверка/автопереключение без резервного метода — при сбое
+     *    туннеля трафику некуда уйти (а одна «проверка» ничего не
+     *    переключает: она только записывает замеры);
+     *  - устройство сменило адрес в DHCP — правило «from <ip>» больше не
+     *    ловит его трафик, и оно молча идёт мимо туннеля.
+     */
+    function routeStatusNotes(r, st) {
+        const notes = [];
+        const watched = r.monitor_enabled || r.failover_enabled;
+        if (watched && st.probeable === false) {
+            notes.push(`проверять нечего — задайте «Probe-домен» (режим эксперта),
+                        иначе проверка и автопереключение не работают`);
+        }
+        if (watched && !(r.fallbacks || []).length) {
+            notes.push(`нет резервного метода: при сбое трафику некуда
+                        переключиться — добавьте резерв (хотя бы «Напрямую»)
+                        и включите автопереключение`);
+        } else if (r.monitor_enabled && !r.failover_enabled) {
+            notes.push(`проверка только наблюдает: без «Автопереключения»
+                        резерв не включится`);
+        }
+        for (const d of (st.device_drift || [])) {
+            notes.push(`устройство ${esc(d.hostname || d.mac)} теперь
+                        ${esc(d.now_ip)}, а правило — на ${esc(d.ip)}: его трафик
+                        идёт мимо маршрута. Откройте маршрут и выберите
+                        устройство заново`);
+        }
+        return notes.map(n => `<div class="text-error" style="font-size:11px; margin-top:2px;">⚠ ${n}</div>`).join('');
+    }
+
     function rowHtml(r, sel, showCheck) {
         const st = statusMap[r.id] || {};
         const active = st.active_method || r.method;
@@ -1074,7 +1108,7 @@ const RoutingUnifiedPage = (() => {
             <td>${enabledDot} <strong>${esc(r.name)}</strong> ${ovBadge}
                 ${r.failover_enabled ? '<span class="badge badge-info ru-badge" title="При сбое переключится на резервный метод">авто-переключение</span>' : ''}</td>
             <td style="font-size:12px;" data-label="Что">${esc(trafficSummary(r))}
-                ${ignoredSelectorsNote(r)}</td>
+                ${ignoredSelectorsNote(r)}${routeStatusNotes(r, st)}</td>
             <td style="font-size:12px;" data-label="Через" title="${escAttr(active)}">
                 ${esc(methodLabel(active))}${active !== r.method ? ` <span class="text-muted">(основной: ${esc(methodLabel(r.method))})</span>` : ''}
                 ${(r.fallbacks||[]).length ? `<br><span class="text-muted" style="font-size:11px;">резерв: ${esc((r.fallbacks||[]).map(methodLabel).join(', '))}</span>` : ''}</td>

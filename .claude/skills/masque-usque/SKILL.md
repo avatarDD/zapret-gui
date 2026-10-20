@@ -236,6 +236,20 @@ Flags:
 > («Config file not found…» / «You may only use the register command…»),
 > но возвращает **rc=0**. Поэтому версию надо брать из **stdout**, а stderr
 > при детекте игнорировать.
+>
+> Сторонние сборки (Entware `usque-keenetic`) бывают разговорчивее, а на
+> нагруженном MIPS `usque version` не всегда успевает за таймаут.
+> `UsqueManager._get_version` поэтому: stdout → строки stderr с «version»,
+> но без «config» → версия пакета (`opkg`/`apk`, `usque-keenetic`/`usque`);
+> ответ кешируется по mtime+размеру бинарника.
+>
+> **Внешний usque.** Entware-скрипт `S51usque` поднимает свой
+> `usque nativetun … --interface-name opkgtun0` — GUI им не управляет.
+> `UsqueManager.find_external()` ищет такие процессы в /proc (не наш
+> дочерний процесс и не наш pid-файл), `detect()` отдаёт их в `external`,
+> `tunnels_status` — в `external_instances` со счётчиками интерфейса, а
+> страница usque пишет предупреждение. Свои профили GUI зовёт `usque*` и с
+> `opkgtun*` не пересекается (`allocate_iface` смотрит /sys/class/net).
 
 ### 3.1.1 Регистрация через прокси: usque уважает `HTTPS_PROXY`
 

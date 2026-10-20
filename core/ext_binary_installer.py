@@ -13,6 +13,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -1903,15 +1904,47 @@ def uninstall_binary(name: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+_VERSION_DIGIT_RE = re.compile(r"\d+\.\d+")
+
+
+def _version_args(binary: str) -> tuple:
+    """Чем спрашивать версию у конкретного бинарника.
+
+    Берём `version_args` из BINARIES (у usque это подкоманда `version`),
+    иначе — только длинные формы `--version`/`-version`. Короткий `-v`
+    из перебора убран намеренно: у части программ это не «версия», а
+    позиционный аргумент или «подробный режим» — amneziawg-go воспринимает
+    `-v` как имя интерфейса и поднимает вечный демон, прокси-клиенты
+    стартуют в режиме verbose. Голую подкоманду `version` пробуем тоже
+    последней: у Go-программ с пакетом flag она безвредна.
+    """
+    for cfg in BINARIES.values():
+        if cfg.get("dest") == binary:
+            args = cfg.get("version_args")
+            if isinstance(args, (list, tuple)) and args:
+                return tuple(args)
+            break
+    return ("--version", "-version", "version")
+
+
 def _get_version(binary: str) -> str:
-    """Получить версию бинарника."""
-    for flag in ["--version", "-version", "-v", "version"]:
+    """Получить версию бинарника.
+
+    Версией считается только короткий вывод с кодом 0 и номером вида
+    «X.Y» в нём. Раньше годился ЛЮБОЙ короткий вывод — в поле версии
+    попадали «unknown flag», путь к конфигу и первая строка лога
+    запустившегося по ошибке демона.
+    """
+    for flag in _version_args(binary):
         try:
-            r = subprocess.run([binary, flag],
-                               capture_output=True, text=True, timeout=5)
-            out = (r.stdout or r.stderr or "").strip()
-            if out and len(out) < 100:
-                return out
+            r = subprocess.run([binary, flag], capture_output=True,
+                               text=True, stdin=subprocess.DEVNULL,
+                               timeout=5)
         except Exception:
-            pass
+            continue
+        if r.returncode != 0:
+            continue
+        out = (r.stdout or r.stderr or "").strip()
+        if out and len(out) < 100 and _VERSION_DIGIT_RE.search(out):
+            return out
     return ""

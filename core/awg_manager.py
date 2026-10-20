@@ -134,7 +134,9 @@ def _pid_is_our_daemon(pid: int, ifname: str = "") -> bool:
 ENDPOINT_BYPASS_PRIORITY = 9990
 
 
-_AWG_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,15}$")
+# Имя не может начинаться с «-»: `amneziawg-go -v` и `ip link ... -v`
+# прочитают его как опцию (см. reap_stray_daemons).
+_AWG_NAME_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-]{0,14}$")
 
 
 def _valid_iface_name(name: str) -> bool:
@@ -2072,6 +2074,85 @@ def _pgrep_first(cmd_parts: list):
         if _argv_has_seq(_pid_argv(pid), cmd_parts):
             return pid
     return None
+
+
+def _is_stray_name(name: str) -> bool:
+    """Имя «интерфейса», которое мог создать только ошибочный вызов.
+
+    Свои туннели мы так не называем (_valid_iface_name), а у amneziawg-go
+    единственный аргумент кроме `--version` — имя интерфейса: прежняя
+    проба версии `amneziawg-go -v` поднимала туннель «-v».
+    """
+    return bool(name) and name.startswith("-")
+
+
+def reap_stray_daemons() -> list:
+    """Убрать «мусорные» userspace-демоны amneziawg-go с именем «-…».
+
+    До исправления проба версии (core/awg_installer._detect_binary_version)
+    при медленном `--version` вызывала `amneziawg-go -v`: демон уходил в
+    фон, создавал интерфейс «-v» и /var/run/amneziawg/-v.sock и жил до
+    перезагрузки (~15 МБ RSS на роутере с 256 МБ ОЗУ). Новая версия так
+    не делает, но уже рождённый демон сам не исчезнет — его и убираем:
+    процесс (SIGTERM, затем SIGKILL), интерфейс и UAPI-сокет.
+
+    Вызывается при старте GUI. Возвращает список убранных имён.
+    """
+    from core.awg_platform import UAPI_SOCKET_DIRS
+
+    names = set()
+    for d in UAPI_SOCKET_DIRS:
+        try:
+            entries = os.listdir(d)
+        except OSError:
+            continue
+        for e in entries:
+            if e.endswith(".sock") and _is_stray_name(e[:-5]):
+                names.add(e[:-5])
+    pids = {}
+    try:
+        all_pids = [int(e) for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
+        all_pids = []
+    for pid in all_pids:
+        argv = _pid_argv(pid)
+        if not argv:
+            continue
+        base = os.path.basename(argv[0])
+        if base not in ("amneziawg-go", "wireguard-go"):
+            continue
+        args = [a for a in argv[1:] if a not in ("-f", "--foreground")]
+        if len(args) == 1 and _is_stray_name(args[0]):
+            names.add(args[0])
+            pids.setdefault(args[0], []).append(pid)
+    if not names:
+        return []
+
+    for name in sorted(names):
+        for pid in pids.get(name, []):
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    break
+                for _ in range(10):
+                    if not _pid_alive(pid):
+                        break
+                    time.sleep(0.1)
+                if not _pid_alive(pid):
+                    break
+        # `dev` обязателен: без него ip примет «-v» за свою опцию.
+        _run(["ip", "link", "del", "dev", name], timeout=5)
+        for d in UAPI_SOCKET_DIRS:
+            try:
+                os.unlink(os.path.join(d, name + ".sock"))
+            except OSError:
+                pass
+        log.warning("awg: убран лишний демон amneziawg-go «%s» (pid %s) — "
+                    "его породила старая проба версии"
+                    % (name, ", ".join(str(p) for p in pids.get(name, []))
+                       or "—"), source="awg")
+    return sorted(names)
 
 
 # ───────────────────────── singleton ─────────────────────────────────

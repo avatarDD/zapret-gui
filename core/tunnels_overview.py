@@ -280,11 +280,30 @@ def _collect_usque(logs: bool) -> dict:
             last_error=_log_error(logs and running and bool(iface),
                                   manager.read_log, iface, LOG_LINES),
             **_traffic(iface if running else "")))
+    # Туннели usque, поднятые не GUI (init.d S51usque из Entware и т.п.):
+    # в instances их нет — управлять ими мы не можем, — но и молчать о них
+    # нельзя: они держат интерфейс и память, а «running: false» про свои
+    # профили читался как «usque на роутере не работает».
+    external = []
+    for ext in info.get("external") or []:
+        iface = ext.get("iface") or ""
+        traffic = _traffic(iface)
+        external.append(instance_record(
+            iface or ("pid %s" % ext.get("pid")),
+            running=True, pid=ext.get("pid"), iface=iface,
+            config=ext.get("config", ""), cmdline=ext.get("cmdline", ""),
+            **traffic))
+    reason = _why_idle(instances, "конфигов usque нет")
+    if external and not any(i["running"] for i in instances):
+        reason = ("свои профили не запущены, но работает usque, поднятый "
+                  "не GUI (%s) — им управляет его init-скрипт"
+                  % ", ".join(e["iface"] or e["name"] for e in external))
     return engine_record(
         "usque", installed=True, version=info.get("version", ""),
         binary=info.get("binary", ""), instances=instances,
         running=any(i["running"] for i in instances),
-        reason=_why_idle(instances, "конфигов usque нет"))
+        external_instances=external,
+        reason=reason)
 
 
 def _collect_tgproxy(logs: bool) -> dict:
