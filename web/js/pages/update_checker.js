@@ -6,6 +6,7 @@
 
 const UpdateCheckerPage = (() => {
     let _pollTimer = null;
+    let _staleRetries = 0;
 
     // Куда вести за установкой/обновлением каждого компонента.
     // Имена — те же, что отдаёт /api/updates (см. core/update_checker).
@@ -148,14 +149,18 @@ const UpdateCheckerPage = (() => {
             const updateCls = r.has_update ? "status-warning" : "";
             // Установка/обновление у каждого компонента своя (со своим
             // прогрессом и проверкой SHA256), поэтому ведём на его
-            // страницу, а не дублируем инсталлятор здесь. Раньше строка
-            // сообщала «← доступно» и на этом всё — куда идти дальше,
-            // пользователь должен был догадываться сам.
+            // страницу, а не дублируем инсталлятор здесь. Кнопка так и
+            // называется — «к обновлению →»: раньше на ней было «Обновить»,
+            // и нажатие, которое лишь открывало другую страницу, выглядело
+            // как сломанное обновление.
             const page = _PAGES[r.name] || "";
+            const label = r.has_update ? "К обновлению →"
+                : (r.installed ? "Открыть" : "К установке →");
             const action = page
                 ? `<button class="btn btn-sm ${r.has_update ? "btn-primary" : ""}"
-                           data-page="${esc(page)}">
-                       ${r.has_update ? "Обновить" : (r.installed ? "Открыть" : "Установить")}
+                           data-page="${esc(page)}"
+                           title="Открыть страницу компонента — установка там">
+                       ${label}
                    </button>`
                 : "";
             // «Установлен: Да» у того, что пользователь не ставил, —
@@ -190,16 +195,40 @@ const UpdateCheckerPage = (() => {
                    </div>`
                 : "";
 
+            // Откуда версии. «Текущая» у внешней установки — версия пакета
+            // Entware, а «последняя» — версия нашей сборки; без пометки
+            // «v0.2.16-1 → 3.1.20260828» читается как обновление.
+            const SRC = {opkg: "пакет opkg", binary: "сам бинарник",
+                         settings: "наша установка"};
+            const curSrc = r.version_source && SRC[r.version_source]
+                ? `<div class="text-muted" style="font-size:11px;margin-top:2px;">${esc(SRC[r.version_source])}</div>`
+                : "";
+            const LSRC = {our: "", pinned: "",
+                          upstream: "апстрим (нашей сборки нет)",
+                          unknown: "источник не ответил"};
+            const latSrc = r.latest_source && LSRC[r.latest_source]
+                ? `<div class="text-muted" style="font-size:11px;margin-top:2px;">${esc(LSRC[r.latest_source])}</div>`
+                : "";
+            const external = r.external
+                ? ` <span class="text-muted" style="font-size:11px;">(внешняя${r.external === "opkg" ? ", opkg" : ""})</span>`
+                : "";
+            const note = r.note
+                ? `<tr><td></td><td colspan="4" class="text-muted" style="font-size:11px;padding-top:0;">${esc(r.note)}</td></tr>`
+                : "";
+            const stale = r.stale
+                ? ` <span class="text-muted" style="font-size:11px;" title="Файл сменился после проверки — строка пересчитывается">↻</span>`
+                : "";
+
             html += `<tr>
                 <td><strong>${esc(r.display_name || r.name)}</strong></td>
-                <td${r.path ? ` title="${esc(r.path)}"` : ""}><span class="status-dot ${installedCls}"></span> ${r.installed ? "Да" : "Нет"}${found}${vanished}</td>
-                <td><code>${esc(r.current || "-")}</code></td>
-                <td><code class="${updateCls}">${esc(r.latest || "-")}</code>${pinned}</td>
+                <td${r.path ? ` title="${esc(r.path)}"` : ""}><span class="status-dot ${installedCls}"></span> ${r.installed ? "Да" : "Нет"}${external}${found}${vanished}</td>
+                <td><code>${esc(r.current || "-")}</code>${stale}${curSrc}</td>
+                <td><code class="${updateCls}">${esc(r.latest || "-")}</code>${pinned}${latSrc}</td>
                 <td>${r.has_update ? '<span style="color:var(--warning);font-weight:600;">← доступно</span>' : ""}
                     ${r.error ? '<span class="text-error" title="' + esc(r.error) + '">⚠</span>' : ""}
                     ${action}
                 </td>
-            </tr>`;
+            </tr>${note}`;
         }
         html += '</tbody></table>';
 
@@ -209,6 +238,17 @@ const UpdateCheckerPage = (() => {
         }
 
         el.innerHTML = html;
+        // Строки, у которых файл сменился после проверки, сервер
+        // пересчитывает в фоне — перечитаем их сами, но не бесконечно.
+        if (results.some(r => r.stale) && !_pollTimer && _staleRetries < 3) {
+            _staleRetries++;
+            _pollTimer = setTimeout(async () => {
+                _pollTimer = null;
+                try { _renderResults(await API.get("/api/updates")); } catch (_) {}
+            }, 5000);
+        } else if (!results.some(r => r.stale)) {
+            _staleRetries = 0;
+        }
         el.querySelectorAll("button[data-page]").forEach(b => {
             b.addEventListener("click", (e) => {
                 window.location.hash = e.currentTarget.getAttribute("data-page");

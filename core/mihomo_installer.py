@@ -280,6 +280,12 @@ class MihomoInstaller:
                 get_mihomo_detector().get_environment_report(force=True)
             except Exception:
                 pass
+            # Строка «Обновления» — сразу по факту, а не через сутки.
+            try:
+                from core.update_checker import schedule_refresh
+                schedule_refresh("mihomo")
+            except Exception:
+                pass
 
     def _do_install(self, arch: str = "", tag: str = "",
                     transport: str = "") -> dict:
@@ -364,6 +370,12 @@ class MihomoInstaller:
         finally:
             try:
                 get_mihomo_detector().get_environment_report(force=True)
+            except Exception:
+                pass
+            # Строка «Обновления» — сразу по факту, а не через сутки.
+            try:
+                from core.update_checker import schedule_refresh
+                schedule_refresh("mihomo")
             except Exception:
                 pass
 

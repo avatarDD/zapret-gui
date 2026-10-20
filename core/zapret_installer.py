@@ -367,6 +367,12 @@ class ZapretInstaller:
         finally:
             with self._lock:
                 self._operation_in_progress = False
+            # Строка «Обновления» — сразу по факту, а не через сутки.
+            try:
+                from core.update_checker import schedule_refresh
+                schedule_refresh("zapret2")
+            except Exception:
+                pass
 
     def update(self, tag: str = "", transport: str = "") -> dict:
         """
@@ -392,6 +398,12 @@ class ZapretInstaller:
         finally:
             with self._lock:
                 self._operation_in_progress = False
+            # Строка «Обновления» — сразу по факту, а не через сутки.
+            try:
+                from core.update_checker import schedule_refresh
+                schedule_refresh("zapret2")
+            except Exception:
+                pass
 
     def get_uninstall_plan(self) -> dict:
         """

@@ -151,6 +151,22 @@ class TestCheckForUpdatesArch(unittest.TestCase):
         self.assertTrue(r["arch_supported"])
         self.assertIn("mipsel-softfloat", r["available_archs"])
 
+    def test_external_install_never_offers_update(self):
+        # Пакет Entware: тэга нашей сборки нет, версия — из opkg. Раньше
+        # `"" != latest_tag` держал «доступно» зажжённым всегда.
+        m = _manifest("awg-bin-go-3.1.20260828", arch="mipsel-softfloat")
+        ext = {"installed": True, "tag": "", "go_version": "v0.2.16-1",
+               "go_version_source": "opkg", "tools_version": "",
+               "external": True}
+        with mock.patch.object(self.inst, "_detect_arch",
+                               return_value="mipsel-softfloat"), \
+             mock.patch.object(self.inst, "get_manifest", return_value=m), \
+             mock.patch.object(self.inst, "get_installed_version",
+                               return_value=ext):
+            r = self.inst.check_for_updates()
+        self.assertFalse(r["update_available"])
+        self.assertFalse(r["comparable"])
+
 
 if __name__ == "__main__":
     unittest.main()

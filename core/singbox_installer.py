@@ -356,6 +356,12 @@ class SingboxInstaller:
                 get_singbox_detector().get_environment_report(force=True)
             except Exception:
                 pass
+            # Строка «Обновления» — сразу по факту, а не через сутки.
+            try:
+                from core.update_checker import schedule_refresh
+                schedule_refresh("singbox")
+            except Exception:
+                pass
 
     def _do_install(self, arch: str = "", tag: str = "",
                     transport: str = "") -> dict:
@@ -451,6 +457,12 @@ class SingboxInstaller:
         finally:
             try:
                 get_singbox_detector().get_environment_report(force=True)
+            except Exception:
+                pass
+            # Строка «Обновления» — сразу по факту, а не через сутки.
+            try:
+                from core.update_checker import schedule_refresh
+                schedule_refresh("singbox")
             except Exception:
                 pass
 

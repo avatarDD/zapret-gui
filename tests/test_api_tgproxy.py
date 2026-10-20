@@ -418,9 +418,11 @@ class TestMtprotoInstalledTag(unittest.TestCase):
         mgr = mock.Mock()
         mgr.detect.return_value = {"installed": True,
                                    "version": installed_version}
+        rel = ({"tag_name": releases[0]["tag"]} if releases else
+               {"error_detail": "нет", "not_found": True})
         with mock.patch("core.update_checker._github_latest") as gl, \
-             mock.patch("core.ext_binary_installer.list_releases",
-                        return_value={"ok": True, "releases": releases}), \
+             mock.patch("core.ext_binary_installer.github_release_by_prefix",
+                        return_value=rel), \
              mock.patch("core.tgproxy_manager.get_mtproxy_client_manager",
                         return_value=mgr):
             return _check_tgproto(), gl
@@ -446,19 +448,29 @@ class TestMtprotoInstalledTag(unittest.TestCase):
         self.assertTrue(res["has_update"])
 
     def test_falls_back_to_upstream_until_first_build(self):
-        """Пока нашего релиза нет, установщик идёт к апстриму — и мы тоже."""
+        """Пока нашего релиза нет, установщик идёт на закреплённый
+        rolling-тэг запасного источника — его и показываем «последней»,
+        не спрашивая /releases/latest апстрима."""
+        res, gl = self._check_with("z2k-classify-rolling", [])
+        gl.assert_not_called()
+        self.assertEqual(res["latest"], "z2k-classify-rolling")
+        self.assertEqual(res["latest_source"], "upstream")
+        self.assertIs(res["has_update"], False)
+
+    def test_lookup_error_does_not_substitute_upstream(self):
+        """Сбой поиска нашей сборки — «неизвестно», а не чужая версия."""
         from core.update_checker import _check_tgproto
         mgr = mock.Mock()
-        mgr.detect.return_value = {"installed": True,
-                                   "version": "z2k-classify-rolling"}
-        with mock.patch("core.update_checker._github_latest",
-                        return_value="z2k-classify-rolling") as gl, \
-             mock.patch("core.ext_binary_installer.list_releases",
-                        return_value={"ok": True, "releases": []}), \
+        mgr.detect.return_value = {"installed": True, "version": "x"}
+        with mock.patch("core.update_checker._github_latest") as gl, \
+             mock.patch("core.ext_binary_installer.github_release_by_prefix",
+                        return_value={"error_detail": "сеть"}), \
              mock.patch("core.tgproxy_manager.get_mtproxy_client_manager",
                         return_value=mgr):
             res = _check_tgproto()
-        gl.assert_called_once()
+        gl.assert_not_called()
+        self.assertEqual(res["latest"], "")
+        self.assertEqual(res["latest_source"], "unknown")
         self.assertIs(res["has_update"], False)
 
 

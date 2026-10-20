@@ -102,18 +102,7 @@ def check_all() -> dict:
     # себя sing-box и mihomo). Гейт здесь делает страницу честной независимо
     # от частных ошибок в инсталляторах.
     for r in results:
-        if r.get("has_update") and not r.get("installed"):
-            r["has_update"] = False
-
-    # Время файла, по которому программа считается установленной. Ответ на
-    # «я ничего не ставил, а лампочка горит» (discussion #102) — это дата
-    # появления файла: по ней видно, когда и, значит, чем он там оказался.
-    for r in results:
-        p = r.get("path") or ""
-        if p and _binary_alive(p):
-            mtime = _path_mtime(p)
-            if mtime:
-                r["path_mtime"] = mtime
+        _finalize_row(r)
 
     updates_count = sum(1 for r in results if r.get("has_update"))
 
@@ -129,6 +118,97 @@ def check_all() -> dict:
         _last_check = time.time()
 
     return _results
+
+
+def _finalize_row(r: dict) -> dict:
+    """Общие для всех строк правки после частной проверки."""
+    if r.get("has_update") and not r.get("installed"):
+        r["has_update"] = False
+    # Время файла, по которому программа считается установленной. Ответ на
+    # «я ничего не ставил, а лампочка горит» (discussion #102) — это дата
+    # появления файла: по ней видно, когда и, значит, чем он там оказался.
+    # Она же — отпечаток для сверки кеша с диском (_revalidate_row).
+    p = r.get("path") or ""
+    if p and _binary_alive(p):
+        mtime = _path_mtime(p)
+        if mtime:
+            r["path_mtime"] = mtime
+    r["checked_at"] = int(time.time())
+    return r
+
+
+# Частная проверка каждой строки — для пересчёта одной строки после
+# установки, без полного прохода по всем движкам.
+_CHECKERS = {
+    "zapret2": lambda: _check_zapret(),
+    "singbox": lambda: _check_singbox(),
+    "mihomo": lambda: _check_mihomo(),
+    "awg": lambda: _check_awg(),
+    "gui": lambda: _check_gui(),
+    "usque": lambda: _check_usque(),
+    "tgwsproxy": lambda: _check_tgwsproxy(),
+    "tgproto": lambda: _check_tgproto(),
+    "opera": lambda: _check_opera(),
+}
+
+_refreshing = set()
+_refreshing_lock = threading.Lock()
+
+
+def refresh_component(name: str) -> dict:
+    """Пересчитать одну строку кеша сейчас же. {} — строки нет в кеше.
+
+    Кеш живёт до следующего полного прохода (до суток), а установка
+    меняет «текущую» немедленно: без пересчёта страница после «Обновить»
+    продолжала показывать доустановочную версию и «← доступно».
+    """
+    fn = _CHECKERS.get(name)
+    if not fn:
+        return {}
+    with _results_lock:
+        rows = (_results or {}).get("results") or []
+        if not any(r.get("name") == name for r in rows):
+            return {}
+    row = _finalize_row(fn())
+    with _results_lock:
+        if not _results:
+            return row
+        rows = [row if r.get("name") == name else r
+                for r in (_results.get("results") or [])]
+        _results["results"] = rows
+        _results["updates_count"] = sum(1 for r in rows if r.get("has_update"))
+    return row
+
+
+def schedule_refresh(name: str) -> bool:
+    """Пересчитать строку в фоне (вызывают установщики). False — не нужно.
+
+    Фоном — потому что частная проверка ходит в GitHub, а установщик не
+    должен ждать её, чтобы отчитаться об успехе.
+    """
+    if name not in _CHECKERS:
+        return False
+    with _results_lock:
+        if not _results:
+            return False        # проверки ещё не было — пересчитывать нечего
+    with _refreshing_lock:
+        if name in _refreshing:
+            return False
+        _refreshing.add(name)
+
+    def _run():
+        try:
+            refresh_component(name)
+        except Exception as e:
+            log.warning("update-checker: пересчёт %s: %s" % (name, e),
+                        source="update_checker")
+        finally:
+            with _refreshing_lock:
+                _refreshing.discard(name)
+
+    threading.Thread(target=_run, daemon=True,
+                     name="update-refresh-%s" % name).start()
+    return True
 
 
 def _binary_alive(path: str) -> bool:
@@ -194,7 +274,18 @@ def _revalidate_row(row: dict) -> dict:
     """
     r = dict(row)
     path = r.get("path") or ""
-    if not r.get("installed") or not path or _binary_alive(path):
+    if not r.get("installed") or not path:
+        return r
+    if _binary_alive(path):
+        # Файл на месте, но мог смениться (обновили на странице движка,
+        # через opkg, руками): тогда «текущая» и «доступно» в кеше —
+        # про прежний файл. Пересчитываем строку в фоне и честно
+        # говорим, что она устарела, а не показываем старое как факт.
+        old = r.get("path_mtime") or 0
+        if old and _path_mtime(path) not in (0, old):
+            r["has_update"] = False
+            r["stale"] = True
+            schedule_refresh(r.get("name") or "")
         return r
     r["installed"] = False
     r["has_update"] = False
@@ -316,17 +407,34 @@ def _check_awg() -> dict:
                     "has_update": False,
                     "error": result.get("error") or "нет манифеста"}
         inst_info = result.get("installed") or {}
-        return {
+        row = {
             "name": "awg",
             "display_name": "AmneziaWG",
             "installed": bool(inst_info.get("installed")),
             "current": inst_info.get("go_version") or "",
             "latest": result.get("latest_go") or "",
+            "latest_source": "our",
             "has_update": bool(result.get("update_available")),
             # У AWG два бинарника; показываем ведущий (amneziawg-go), а
             # если установка записана только в settings — путь пустой.
             "path": inst_info.get("amneziawg_go") or inst_info.get("awg") or "",
         }
+        if inst_info.get("installed") and inst_info.get("external"):
+            # Чужая установка (пакет Entware и т.п.): «текущая» — версия
+            # пакета или самого бинарника, «последняя» — версия нашей
+            # сборки, шкалы разные. Обновлением это не считаем и говорим
+            # почему, иначе «v0.2.16-1 → 3.1.20260828» горело бы вечно.
+            src = inst_info.get("go_version_source") or ""
+            row["external"] = "opkg" if src == "opkg" else "external"
+            row["version_source"] = src
+            row["has_update"] = False
+            row["note"] = ("внешняя установка%s: версии в разных шкалах,"
+                           " сравнивать не с чем. Заменить нашей сборкой"
+                           " можно на странице AmneziaWG — файлы пакета"
+                           " будут перезаписаны" % (
+                               " (пакет amneziawg-go)" if src == "opkg"
+                               else ""))
+        return row
     except Exception as e:
         return {"name": "awg", "display_name": "AmneziaWG",
                 "installed": False, "current": "", "latest": "",
@@ -368,14 +476,16 @@ def _check_usque() -> dict:
         # который отстаёт от самого usque: его последний релиз 0.3.0 несёт
         # usque 4.2.0. В итоге при установленной 4.2.1 «последней» значилась
         # 0.3.0, и GUI предлагал обновиться назад.
-        latest = _latest_from_our_release("usque")
-        return {
+        latest, status = _our_build_latest("usque")
+        current = env.get("version", "")
+        row = {
             "name": "usque",
             "display_name": "usque (WARP/MASQUE)",
             "installed": env.get("installed", False),
-            "current": env.get("version", ""),
+            "current": current,
             "latest": latest,
-            "has_update": _is_newer(latest, env.get("version", "")),
+            "latest_source": "our" if latest else "unknown",
+            "has_update": _is_newer(latest, current),
             # Путь, по которому найден бинарник. «Установлен: Да» у usque —
             # это ровно «в одном из стандартных каталогов лежит исполняемый
             # файл usque»; когда пользователь его не ставил, единственный
@@ -384,6 +494,15 @@ def _check_usque() -> dict:
             # подсказке (discussion #102).
             "path": env.get("binary", ""),
         }
+        if not latest and status == "not_found":
+            # Нашей сборки нет — установщик поставит пакет usque-keenetic
+            # (legacy_source): у него своя шкала версий.
+            row["latest_source"] = "upstream"
+            row["note"] = ("сборка usque-bin-* не найдена — установщик"
+                           " поставит запасной пакет usque-keenetic")
+        if env.get("installed"):
+            _mark_usque_package(row)
+        return row
     except Exception as e:
         return {"name": "usque", "display_name": "usque (WARP/MASQUE)",
                 "installed": False, "current": "", "latest": "",
@@ -406,24 +525,73 @@ def _strip_build_prefix(name: str, value: str) -> str:
     return v.lstrip("vV")
 
 
-def _our_build_latest(name: str) -> str:
-    """Версия последней НАШЕЙ сборки бинарника ('' — сборок ещё нет).
+def _our_build_latest(name: str) -> tuple:
+    """Версия последней НАШЕЙ сборки бинарника и статус поиска.
 
     Это и есть «последняя» с точки зрения пользователя: именно её
-    поставит кнопка «Установить». Спрашивать latest у апстрима значило
-    бы обещать версию, которую установщик не поставит.
+    поставит кнопка «Установить». Ищем ТЕМ ЖЕ github_release_by_prefix(),
+    что и установщик (_install_from_manifest), — с общим окном выборки.
+    Раньше здесь был list_releases() с окном 30 релизов против 50 у
+    установщика: сборка opera-bin-v1.28.0 лежала 48-й, проверка её не
+    видела и подставляла апстрим 1.30.0, а кнопка ставила 1.28.0.
+
+    Статус: "ok" | "not_found" (сеть ответила, сборки нет — установщик
+    уйдёт на legacy_source) | "error" (не узнали; апстрим подставлять
+    нельзя — неизвестно, что поставит кнопка) | "" (у бинарника нет
+    своих сборок).
+    """
+    global _github_any_success
+    try:
+        from core.ext_binary_installer import (BINARIES,
+                                               github_release_by_prefix)
+        cfg = BINARIES.get(name) or {}
+        prefix = cfg.get("release_prefix") or ""
+        repo = cfg.get("repo") or ""
+        if not prefix or not repo:
+            return "", ""
+        rel = github_release_by_prefix(repo, prefix) or {}
+        tag = rel.get("tag_name") or ""
+        if tag.startswith(prefix):
+            _github_any_success = True
+            return _strip_build_prefix(name, tag), "ok"
+        return "", ("not_found" if rel.get("not_found") else "error")
+    except Exception:
+        return "", "error"
+
+
+def _mark_usque_package(row: dict) -> None:
+    """Пометить usque, файлом которого владеет пакет Entware.
+
+    usque-keenetic кладёт бинарник ровно в /opt/usr/bin/usque — туда же,
+    куда ставит наша сборка. Когда сам бинарник версию не называет,
+    usque_manager берёт версию ПАКЕТА (0.3.0), а «последняя» — версия
+    usque в нашей сборке (4.2.1): шкалы разные, и 4.2.1 > 0.3.0 звало
+    «обновиться» вечно. Плюс наша установка перезапишет файл пакета, а
+    `opkg upgrade` потом вернёт пакетный.
     """
     try:
-        from core.ext_binary_installer import BINARIES, list_releases
-        cfg = BINARIES.get(name) or {}
-        if not cfg.get("release_prefix"):
-            return ""
-        rels = list_releases(name)
-        if not rels.get("ok") or not rels.get("releases"):
-            return ""
-        return _strip_build_prefix(name, rels["releases"][0]["tag"])
+        from core.ext_binary_installer import _pkg_version
+        pkg_v = (_pkg_version("usque-keenetic") or "").lstrip("vV")
     except Exception:
-        return ""
+        pkg_v = ""
+    if not pkg_v:
+        return
+    row["external"] = "opkg"
+    current = (row.get("current") or "").lstrip("vV")
+    if current and current == pkg_v:
+        # Версия взята у пакета, а не у бинарника — сравнивать не с чем.
+        row["version_source"] = "opkg"
+        row["has_update"] = False
+        row["note"] = ("%s — версия пакета usque-keenetic, %s — версия"
+                       " usque в нашей сборке; шкалы разные. Установка"
+                       " нашей сборки перезапишет файл пакета, а"
+                       " `opkg upgrade` вернёт пакетный" % (
+                           pkg_v, row.get("latest") or "–"))
+    else:
+        row["version_source"] = "binary"
+        row["note"] = ("файл принадлежит пакету usque-keenetic %s:"
+                       " установка нашей сборки его перезапишет, а"
+                       " `opkg upgrade` вернёт пакетный" % pkg_v)
 
 
 def _check_tgproto() -> dict:
@@ -432,23 +600,42 @@ def _check_tgproto() -> dict:
         from core.tgproxy_manager import get_mtproxy_client_manager
         mgr = get_mtproxy_client_manager()
         detect = mgr.detect()
-        # Сначала наша сборка; если её ещё нет, установщик уходит на
-        # запасной источник — тогда и «последняя» должна быть оттуда.
-        latest = _our_build_latest("tgproto")
-        if not latest:
-            latest = _github_latest("necronicle/z2k")
+        latest, status = _our_build_latest("tgproto")
         # Установленное могло быть записано как полный тэг сборки —
         # приводим обе стороны к одному виду.
         current = _strip_build_prefix("tgproto", detect.get("version") or "")
-        return {
+        row = {
             "name": "tgproto",
             "display_name": "tg-mtproxy-client",
             "installed": detect.get("installed", False),
             "current": current,
             "latest": latest,
+            "latest_source": "our" if latest else "unknown",
             "has_update": bool(latest and current and latest != current),
             "path": detect.get("path", ""),
         }
+        if not latest:
+            if status == "not_found":
+                # Установщик уйдёт на запасной источник, а тот закреплён
+                # на rolling-тэге (BINARIES['tgproto']['legacy_source']) —
+                # «последняя» ровно он, а не /releases/latest апстрима,
+                # который мог отдать чужой релиз или пустоту («–» при
+                # кнопке «Установить»). Номера версии у rolling-сборки нет,
+                # поэтому обновлением её не считаем.
+                from core.ext_binary_installer import BINARIES
+                legacy = (BINARIES.get("tgproto") or {}).get(
+                    "legacy_source") or {}
+                row["latest"] = legacy.get("release_tag") or ""
+                row["latest_source"] = "upstream"
+                row["has_update"] = False
+                row["note"] = ("наша сборка tgproto-bin-* не найдена —"
+                               " установщик поставит rolling-сборку %s"
+                               " без номера версии"
+                               % (legacy.get("repo") or "апстрима"))
+            else:
+                row["note"] = ("не удалось узнать последнюю сборку"
+                               " (GitHub недоступен)")
+        return row
     except Exception as e:
         return {"name": "tgproto", "display_name": "tg-mtproxy-client",
                 "installed": False, "current": "", "latest": "",
@@ -499,6 +686,7 @@ def _check_tgwsproxy() -> dict:
             # иначе «у них 1.4.0, а у меня 0.9.3» выглядит как проглоченная
             # ошибка проверки.
             res["pinned"] = True
+            res["latest_source"] = "pinned"
             res["upstream_latest"] = upstream
             res["pin_reason"] = ("апстрим с v1.0.0 — десктопное приложение"
                                  " без сборок для роутера")
@@ -515,50 +703,39 @@ def _check_opera() -> dict:
         from core.opera_proxy_manager import get_opera_proxy_manager
         mgr = get_opera_proxy_manager()
         env = mgr.detect()
-        # То же правило, что и у tgproto: «последняя» — та, которую
-        # реально поставит кнопка. Наша сборка, а если её ещё нет —
-        # апстрим (туда же уйдёт и установщик через legacy_source).
-        latest = _our_build_latest("opera")
-        if not latest:
+        # «Последняя» — та, которую реально поставит кнопка: наша сборка.
+        # Апстрим — только когда сеть ответила, а сборки нет (туда же
+        # уйдёт установщик через legacy_source, он ставит ПОСЛЕДНИЙ
+        # релиз апстрима). При сбое поиска апстрим не подставляем: так
+        # страница и обещала 1.30.0, пока кнопка ставила нашу 1.28.0.
+        latest, status = _our_build_latest("opera")
+        source = "our" if latest else "unknown"
+        note = ""
+        if not latest and status == "not_found":
             latest = _github_latest("Alexey71/opera-proxy")
+            source = "upstream" if latest else "unknown"
+            note = ("сборка opera-bin-* не найдена — установщик поставит"
+                    " релиз апстрима Alexey71/opera-proxy")
+        elif not latest:
+            note = "не удалось узнать последнюю сборку (GitHub недоступен)"
         current = _strip_build_prefix("opera", env.get("version") or "")
-        return {
+        row = {
             "name": "opera",
             "display_name": "opera-proxy",
             "installed": env.get("installed", False),
             "current": current,
             "latest": latest,
-            "has_update": bool(latest and current and latest != current),
+            "latest_source": source,
+            "has_update": _is_newer(latest, current),
             "path": env.get("binary", ""),
         }
+        if note:
+            row["note"] = note
+        return row
     except Exception as e:
         return {"name": "opera", "display_name": "opera-proxy",
                 "installed": False, "current": "", "latest": "",
                 "has_update": False, "error": str(e)}
-
-
-def _latest_from_our_release(name: str) -> str:
-    """Версия последнего НАШЕГО релиза бинарника `name`.
-
-    Мы собираем часть движков сами и публикуем как `<name>-bin-<версия>`
-    в собственном репозитории — установщик берёт их именно оттуда
-    (`BINARIES[name]["release_prefix"]`). Спрашивать вместо этого чужой
-    репозиторий-донор неверно: он живёт своей жизнью и отстаёт, отчего
-    «последняя» версия оказывается старше установленной.
-    """
-    try:
-        from core.ext_binary_installer import (BINARIES,
-                                               github_release_by_prefix)
-        cfg = BINARIES.get(name) or {}
-        prefix = cfg.get("release_prefix") or ""
-        repo = cfg.get("repo") or ""
-        if not prefix or not repo:
-            return ""
-        rel = github_release_by_prefix(repo, prefix) or {}
-        tag = rel.get("tag_name") or ""
-        return tag[len(prefix):].lstrip("v") if tag.startswith(prefix) else ""
-    except Exception:
-        return ""
 
 
 def _version_tuple(v: str):
