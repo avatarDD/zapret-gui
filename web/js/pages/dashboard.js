@@ -359,17 +359,22 @@ const DashboardPage = (() => {
                 if (data.nfqws.external) parts.push('автозапуск');
                 detail.textContent = parts.join(' · ');
             } else {
-                detail.textContent = '';
+                // Почему не поднялся последний запуск (issue #411).
+                detail.textContent = data.nfqws?.last_error || '';
             }
         }
 
-        // Кнопки быстрых действий
+        // Кнопки быстрых действий: «Стоп» живёт, пока стоят правила
+        // firewall, «Перезапуск» — после неудачного старта (как на
+        // странице «Управление»).
         if (!isActionPending) {
+            const failed = !running && !!data.nfqws?.last_error;
             ['dash-btn-start', 'dash-btn-stop', 'dash-btn-restart'].forEach(id => {
                 const b = document.getElementById(id);
                 if (!b) return;
                 if (id === 'dash-btn-start') b.disabled = running;
-                else b.disabled = !running;
+                else if (id === 'dash-btn-stop') b.disabled = !running && !data.firewall?.applied;
+                else b.disabled = !running && !failed;
             });
         }
 
@@ -703,7 +708,8 @@ const DashboardPage = (() => {
                 const msgs = {start: 'nfqws2 запущен', stop: 'nfqws2 остановлен', restart: 'nfqws2 перезапущен'};
                 Toast.success(msgs[action] || 'OK');
             } else {
-                Toast.error(result.error || 'Ошибка');
+                const why = result.nfqws && result.nfqws.last_error;
+                Toast.error((result.error || 'Ошибка') + (why ? ': ' + why : ''));
             }
         } catch (err) {
             Toast.error(err.message);
