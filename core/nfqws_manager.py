@@ -294,6 +294,7 @@ class NFQWSManager:
         self._stderr_thread = None    # поток чтения вывода
         self._out_fd = None           # master-fd PTY (вывод nfqws2) | None=pipe
         self._exit_code = None        # код выхода последнего процесса
+        self._last_error = ""         # почему не поднялся последний запуск
         self._debug = False           # --debug активен → вывод на уровне INFO
         self._rawsend_explained = False   # подсказку про EPERM даём 1 раз
         self._external = False        # процесс поднят не нами (автозапуск)
@@ -327,12 +328,15 @@ class NFQWSManager:
             cfg = get_config_manager()
 
             binary = cfg.get("zapret", "nfqws_binary")
+            self._last_error = ""
 
             # Проверяем бинарник
             if not os.path.isfile(binary):
+                self._last_error = "бинарник не найден: %s" % binary
                 log.error("Бинарник не найден: %s" % binary, source=self.LOG_SOURCE)
                 return False
             if not os.access(binary, os.X_OK):
+                self._last_error = "бинарник не исполняемый: %s" % binary
                 log.error("Бинарник не исполняемый: %s" % binary,
                           source=self.LOG_SOURCE)
                 return False
@@ -358,6 +362,26 @@ class NFQWSManager:
             # команды: иначе zapret2 падает «failed to register hostlist» с
             # exit 1 ещё до открытия NFQUEUE (см. _ensure_list_files).
             self._ensure_list_files(full_args, self._write_roots(cfg))
+
+            # Blob'ы и lua из команды: недостающие докладываем из bundle
+            # import/, а если взять неоткуда — не запускаем вовсе (issue
+            # #411: «cannot access file …/quic_5.bin» → exit 1).
+            missing = self._ensure_asset_files(
+                full_args,
+                bin_dir=cfg.get("zapret", "bin_path",
+                                default="/opt/zapret2/files/fake"),
+                lua_dir=cfg.get("zapret", "lua_path",
+                                default="/opt/zapret2/lua"))
+            if missing:
+                self._last_error = ("нет файлов стратегии: %s"
+                                    % ", ".join(missing))
+                log.error(
+                    "nfqws2 не запущен: стратегия ссылается на "
+                    "отсутствующие файлы: %s. Выложите ассеты GUI в "
+                    "zapret2: python3 -m core.asset_importer --only runtime"
+                    % ", ".join(missing),
+                    source=self.LOG_SOURCE)
+                return False
 
             self._warn_uncovered_ports(strategy_args, cfg)
 
@@ -453,6 +477,9 @@ class NFQWSManager:
                 if self._process.poll() is not None:
                     rc = self._process.returncode
                     self._exit_code = rc
+                    self._last_error = ("nfqws2 завершился сразу после "
+                                        "запуска (exit code %d), причина "
+                                        "— в журнале" % rc)
                     log.error(
                         "nfqws2 завершился сразу после запуска "
                         "(exit code: %d)" % rc,
@@ -657,6 +684,9 @@ class NFQWSManager:
             "binary": cfg.get("zapret", "nfqws_binary"),
             "last_args": self._last_args,
             "exit_code": self._exit_code,
+            # Почему не поднялся последний запуск — UI показывает это
+            # рядом с «Ошибка», а не одно «не удалось запустить».
+            "last_error": "" if running else self._last_error,
             # Процесс подобран, а не запущен нами: аргументы в last_args
             # тогда не от него, и UI об этом честно говорит.
             "external": bool(running and self._external),
@@ -1158,6 +1188,82 @@ class NFQWSManager:
                 "Не удалось обновить mtime списка '%s': %s" % (path, e),
                 source="nfqws",
             )
+
+    @staticmethod
+    def _asset_refs(argv: list) -> list:
+        """Файлы, которые nfqws2 откроет при разборе опций: (путь, каталог bundle).
+
+        ``--blob=<имя>:[+ofs]@<файл>`` и ``--lua-init=@<файл>`` движок
+        читает сразу и на отсутствующем файле падает с «cannot access
+        file '<файл>'» и кодом 1. Hex-значения (``0x…``) и lua-код строкой
+        файлами не считаются. Каталог bundle — откуда такой файл
+        выкладывает ``core/asset_importer``.
+        """
+        from core import asset_importer
+        refs = []
+        for arg in argv:
+            if not isinstance(arg, str):
+                continue
+            if arg.startswith("--blob="):
+                value = arg[len("--blob="):].split(":", 1)
+                if len(value) < 2 or "@" not in value[1]:
+                    continue
+                refs.append((value[1].split("@", 1)[1],
+                             asset_importer.IMPORT_BIN_DIR))
+            elif arg.startswith("--lua-init=@"):
+                refs.append((arg[len("--lua-init=@"):],
+                             asset_importer.IMPORT_LUA_DIR))
+        return [(path, src) for path, src in refs if path]
+
+    @staticmethod
+    def _ensure_asset_files(argv: list, bin_dir: str = None,
+                            lua_dir: str = None) -> list:
+        """Доложить недостающие blob/lua из bundle; вернуть то, чего нет.
+
+        Голая установка zapret2 (свой /opt/zapret2 без нашего install.sh,
+        запуск ``python3 app.py`` из клона) кладёт в files/fake только
+        апстрим-блобы: tls_clienthello_1.bin, quic_5.bin и прочие наши
+        bin'ы из каталогов там отсутствуют, и любая стратегия с ними
+        падает «cannot access file» (issue #411). Файл с тем же именем
+        лежит в ``import/`` — копируем ровно его, существующие не трогаем
+        (полную синхронизацию с перезаписью делает asset_importer).
+
+        Пишем только в ``bin_dir`` (блобы) и ``lua_dir`` (lua) — туда же,
+        куда их кладёт asset_importer. Копирование идёт от root, а путь
+        приходит из стратегии: в чужой каталог файл не выкладываем, как и
+        ``_ensure_list_files``.
+
+        Returns:
+            Пути, которых нет и после попытки: запускать с ними nfqws2
+            бессмысленно — он завершится сразу же.
+        """
+        from core import asset_importer
+        allowed = {asset_importer.IMPORT_BIN_DIR: bin_dir,
+                   asset_importer.IMPORT_LUA_DIR: lua_dir}
+        missing = []
+        seen = set()
+        for path, src_dir in NFQWSManager._asset_refs(argv):
+            if path in seen or os.path.exists(path):
+                continue
+            seen.add(path)
+            src = os.path.join(src_dir, os.path.basename(path))
+            dst_dir = allowed.get(src_dir)
+            if dst_dir and os.path.isabs(path) \
+                    and os.path.normpath(os.path.dirname(path)) \
+                    == os.path.normpath(dst_dir) \
+                    and os.path.isfile(src):
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    shutil.copy2(src, path)
+                    log.warning(
+                        "Файл '%s' отсутствовал — выложен из комплекта GUI "
+                        "(import/)" % path, source="nfqws")
+                    continue
+                except OSError as e:
+                    log.error("Не удалось выложить '%s': %s" % (path, e),
+                              source="nfqws")
+            missing.append(path)
+        return missing
 
     def _build_base_args(self, cfg) -> list:
         """Собрать базовые аргументы из конфигурации (--user/--fwmark/--qnum).

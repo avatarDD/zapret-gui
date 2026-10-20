@@ -541,8 +541,11 @@ kill-switch'а (по умолчанию) рестарт — полный down + 
   запускал `opkg status` + `--version`.
 - **Автозапуск** — общего выключателя нет: решают только
   `awg.autostart.interfaces.<имя>`. Поле `awg.autostart.enabled` — мёртвое
-  наследие (старый `_section` дописывал его как `false`), при сохранении
-  удаляется; `autostart.enabled` в корне — про nfqws2, не про AWG.
+  наследие (старый `_section` дописывал его как `false`), `_section` стирает
+  его из settings.json при первом чтении. Учитывать его как выключатель
+  нельзя: оно `false` у всех, кто трогал автозапуск. Выключить автоподъём
+  туннеля — снять его галку «автозапуск» на странице AWG.
+  `autostart.enabled` в корне — про nfqws2, не про AWG.
 - **Битый бинарь** (`_probe_binary`): ловим `exec format error`, `cannot execute
   binary`, `syntax error` — типичная ситуация при неверной арх/endianness.
 

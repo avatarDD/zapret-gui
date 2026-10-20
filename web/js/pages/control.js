@@ -185,6 +185,12 @@ const ControlPage = (() => {
 
     function updateUI(data) {
         const running = data.nfqws?.running;
+        // Не поднялся последний запуск — это «Ошибка», а не «Остановлен»
+        // (issue #411: упавший старт выглядел как штатная остановка).
+        const lastError = !running ? (data.nfqws?.last_error || '') : '';
+        const exitCode = data.nfqws?.exit_code;
+        const failed = !running && (!!lastError
+            || (exitCode !== null && exitCode !== undefined && exitCode !== 0));
         const indicator = document.getElementById('control-indicator');
         const icon = document.getElementById('control-icon');
         const label = document.getElementById('control-status-label');
@@ -200,7 +206,7 @@ const ControlPage = (() => {
                 : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="32" height="32"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
         }
         if (label) {
-            label.textContent = running ? 'Работает' : 'Остановлен';
+            label.textContent = running ? 'Работает' : (failed ? 'Ошибка' : 'Остановлен');
             label.className = 'control-status-label ' + (running ? 'text-success' : 'text-error');
         }
         if (detail) {
@@ -215,9 +221,11 @@ const ControlPage = (() => {
                 detail.textContent = parts.join(' · ');
             } else {
                 const ec = data.nfqws?.exit_code;
-                detail.textContent = ec !== null && ec !== undefined
-                    ? 'Последний exit code: ' + ec
-                    : 'nfqws2 не запущен';
+                detail.textContent = lastError
+                    ? lastError
+                    : (ec !== null && ec !== undefined
+                        ? 'Последний exit code: ' + ec
+                        : 'nfqws2 не запущен');
             }
         }
 
@@ -227,8 +235,12 @@ const ControlPage = (() => {
         const btnRestart = document.getElementById('btn-restart');
         if (!isActionPending) {
             if (btnStart) btnStart.disabled = running;
-            if (btnStop) btnStop.disabled = !running;
-            if (btnRestart) btnRestart.disabled = !running;
+            // «Стоп» нужен и без движка, если остались правила firewall:
+            // перехват на пустую очередь — чёрная дыра, снять её должно
+            // быть чем. «Перезапуск» после неудачного старта — вторая
+            // попытка с выбранной стратегией, а не мёртвая кнопка.
+            if (btnStop) btnStop.disabled = !running && !data.firewall?.applied;
+            if (btnRestart) btnRestart.disabled = !running && !failed;
         }
 
         // Стратегия
@@ -343,7 +355,7 @@ const ControlPage = (() => {
             if (result.ok) {
                 Toast.success('nfqws2 запущен');
             } else {
-                Toast.error(result.error || 'Ошибка запуска');
+                Toast.error(failText(result, 'Ошибка запуска'));
             }
         } catch (err) {
             Toast.error(err.message);
@@ -362,7 +374,7 @@ const ControlPage = (() => {
             if (result.ok) {
                 Toast.success('nfqws2 остановлен');
             } else {
-                Toast.error(result.error || 'Ошибка остановки');
+                Toast.error(failText(result, 'Ошибка остановки'));
             }
         } catch (err) {
             Toast.error(err.message);
@@ -381,7 +393,7 @@ const ControlPage = (() => {
             if (result.ok) {
                 Toast.success('nfqws2 перезапущен');
             } else {
-                Toast.error(result.error || 'Ошибка перезапуска');
+                Toast.error(failText(result, 'Ошибка перезапуска'));
             }
         } catch (err) {
             Toast.error(err.message);
@@ -390,6 +402,12 @@ const ControlPage = (() => {
             fetchStatus();
             fetchLogs();
         }
+    }
+
+    // Текст отказа с причиной от движка (нет файлов, exit code …).
+    function failText(result, fallback) {
+        const why = result.nfqws && result.nfqws.last_error;
+        return (result.error || fallback) + (why ? ': ' + why : '');
     }
 
     function setActionPending(pending, action) {

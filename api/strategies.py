@@ -70,7 +70,17 @@ def register(app):
                 s["helped"] = info["wins"]
                 s["helped_targets"] = info["targets"][:5]
 
-        return {"ok": True, "strategies": strategies}
+        # Выбранная стратегия ещё не значит «работает»: движок мог упасть
+        # на старте (issue #411). По этому полю UI не показывает упавшую
+        # стратегию как работающую и даёт применить её заново.
+        try:
+            from core import nfqws_control
+            engine_running = nfqws_control.running()
+        except Exception:                       # noqa: BLE001 — граница
+            engine_running = False
+
+        return {"ok": True, "strategies": strategies,
+                "engine_running": engine_running}
 
     @app.route("/api/strategies/<sid>")
     def api_strategies_get(sid):
