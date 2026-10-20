@@ -131,7 +131,20 @@ const StrategiesPage = (() => {
                 </div>
             </div>
 
-            <!-- Выученные стратегии (z2k-state-persist autocircular) -->
+            <!-- Список стратегий (ListUI рендерит свой поиск/фильтры/пагинацию) -->
+            <div id="strategies-list-host">
+                <div class="text-muted" style="text-align:center; padding:32px;">
+                    <div class="spinner" style="margin:0 auto 12px;"></div>
+                    Загрузка стратегий...
+                </div>
+            </div>
+
+            <!-- Панель массовых действий (объединение выбранных стратегий) -->
+            <div id="strat-bulkbar" class="strat-bulkbar" style="display:none;"></div>
+
+            <!-- Выученные стратегии (z2k-state-persist autocircular). Под
+                 списком, а не над ним: таблица выученного растёт, и до
+                 выбора стратегии приходилось долго листать (issue #406). -->
             <div class="card" id="autocircular-state-card">
                 <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
                     <span style="display:flex; align-items:center; gap:6px;">
@@ -165,17 +178,6 @@ const StrategiesPage = (() => {
                     <span class="text-muted">Загрузка...</span>
                 </div>
             </div>
-
-            <!-- Список стратегий (ListUI рендерит свой поиск/фильтры/пагинацию) -->
-            <div id="strategies-list-host">
-                <div class="text-muted" style="text-align:center; padding:32px;">
-                    <div class="spinner" style="margin:0 auto 12px;"></div>
-                    Загрузка стратегий...
-                </div>
-            </div>
-
-            <!-- Панель массовых действий (объединение выбранных стратегий) -->
-            <div id="strat-bulkbar" class="strat-bulkbar" style="display:none;"></div>
 
             <!-- Модальное окно: редактор стратегии -->
             <div id="strategy-modal" class="modal-backdrop" style="display:none;">

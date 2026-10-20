@@ -9,7 +9,7 @@
     geoip:ru                ← разворачивается в CIDR-список российских IP
 
 Резолвер скачивает соответствующие списки из community-репозиториев
-(по умолчанию — v2fly/domain-list-community и v2fly/geoip), хранит
+(по умолчанию — v2fly/domain-list-community и Loyalsoldier/geoip), хранит
 кэш в `data/aliases/` и автоматически обновляет раз в TTL_HOURS часов.
 
 На бэке используется в `apply_domain_rule()` (и в будущем — для
@@ -61,18 +61,64 @@ def _cache_dir() -> str:
 #
 # geosite-источник: v2fly/domain-list-community (`data/<name>`).
 # Файлы там в кастомном формате с include-директивами; мы их
-# дёргаем построчно, фильтруем `include:`/`regexp:`/`@cn` и берём
-# чистые domain-записи. Этого достаточно для bypass-цели.
+# дёргаем построчно, фильтруем `regexp:`/`@cn` и берём чистые
+# domain-записи, а `include:<list>` догружаем (см. _fetch_geosite):
+# часть категорий — одна строка include (google-gemini →
+# google-deepmind), без этого алиас разворачивался в пустоту (issue #404).
 #
-# geoip-источник: v2fly/geoip (`text/<cc>.txt`) — простые CIDR-списки.
+# geoip-источники: `text/<name>.txt` — простые CIDR-списки. У v2fly/geoip
+# там только страны (ru, us, …) — сервисных списков (telegram, google,
+# cloudflare, …) нет, и geoip:telegram получал 404 (issue #404). Поэтому
+# первым идёт Loyalsoldier/geoip — надмножество v2fly: те же страны плюс
+# сервисы; v2fly — запасной вариант.
 
 DEFAULT_GEOSITE_TEMPLATE = (
     "https://raw.githubusercontent.com/v2fly/domain-list-community/"
     "master/data/{name}"
 )
-DEFAULT_GEOIP_TEMPLATE = (
-    "https://raw.githubusercontent.com/v2fly/geoip/release/text/{name}.txt"
+DEFAULT_GEOIP_TEMPLATES = (
+    "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/"
+    "{name}.txt",
+    "https://raw.githubusercontent.com/v2fly/geoip/release/text/{name}.txt",
 )
+DEFAULT_GEOIP_TEMPLATE = DEFAULT_GEOIP_TEMPLATES[0]
+
+# Сколько файлов geosite догружаем по include: на один алиас. Защита от
+# разрастания (geosite:google тянет десятки подкатегорий) и циклов.
+MAX_GEOSITE_INCLUDES = 32
+
+# Домен для проверки доступности по geosite-категории: маршрут из одних
+# geosite/geoip не даёт монитору и диагностике конкретного адреса, а
+# первый домен развёрнутого списка часто мёртвый (cdn-telegram.org).
+GEOSITE_PROBES = {
+    "youtube": "www.youtube.com",
+    "instagram": "www.instagram.com",
+    "facebook": "www.facebook.com",
+    "telegram": "telegram.org",
+    "discord": "discord.com",
+    "openai": "chatgpt.com",
+    "anthropic": "claude.ai",
+    "google-gemini": "gemini.google.com",
+    "google-deepmind": "gemini.google.com",
+    "twitter": "x.com",
+    "tiktok": "www.tiktok.com",
+    "netflix": "www.netflix.com",
+    "spotify": "open.spotify.com",
+    "twitch": "www.twitch.tv",
+    "reddit": "www.reddit.com",
+    "linkedin": "www.linkedin.com",
+    "github": "github.com",
+    "google": "www.google.com",
+}
+
+
+def probe_domain_for(geosite_names) -> str:
+    """Известный домен для проверки по первой подходящей категории или ''."""
+    for name in geosite_names or []:
+        probe = GEOSITE_PROBES.get(str(name or "").strip().lower())
+        if probe:
+            return probe
+    return ""
 
 # Алиасы, которые мы документируем как «гарантированно работают».
 # Можно использовать любое имя из v2fly-репо — URL подставится из
@@ -146,9 +192,8 @@ def _parse_geosite_body(text: str) -> list:
       - `full:<domain>` без префикса
     Регэкспы, include'ы и тэги — пропускаем.
 
-    include:other-list рекурсивно мы НЕ разворачиваем — иначе можем
-    словить цикл и/или 100k доменов. Если кому-то нужно — пусть
-    явно подключает второй алиас.
+    include:other-list здесь пропускается — их догружает _fetch_geosite
+    (с защитой от циклов и лимитом файлов), см. _geosite_includes.
     """
     out = []
     for raw in text.splitlines():
@@ -179,6 +224,65 @@ def _parse_geosite_body(text: str) -> list:
         if len(out) >= MAX_ITEMS_PER_LIST:
             break
     return out
+
+
+def _geosite_includes(text: str) -> list:
+    """Имена списков из `include:<name>` (атрибуты `@cn` отбрасываются)."""
+    out = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line.startswith("include:"):
+            continue
+        name = line[8:].split("@", 1)[0].strip().lower()
+        if name and re.match(r"^[a-z0-9_\-!.]+$", name) and name not in out:
+            out.append(name)
+    return out
+
+
+def _fetch_geosite(name: str):
+    """
+    Скачать geosite-категорию вместе с её include'ами.
+
+    Возвращает (items, url) — items пустой, если не скачался даже
+    корневой файл. Недоступный include не валит всю категорию.
+    """
+    root_url = DEFAULT_GEOSITE_TEMPLATE.format(name=name)
+    queue = [name]
+    seen = set()
+    items = []
+    seen_items = set()
+    fetched_root = False
+    while queue and len(seen) < MAX_GEOSITE_INCLUDES:
+        cur = queue.pop(0)
+        if cur in seen:
+            continue
+        seen.add(cur)
+        text = _http_get_text(DEFAULT_GEOSITE_TEMPLATE.format(name=cur))
+        if not text:
+            if cur == name:
+                return [], root_url
+            continue
+        if cur == name:
+            fetched_root = True
+        for it in _parse_geosite_body(text):
+            if it not in seen_items:
+                seen_items.add(it)
+                items.append(it)
+        if len(items) >= MAX_ITEMS_PER_LIST:
+            break
+        queue += [n for n in _geosite_includes(text) if n not in seen]
+    return (items[:MAX_ITEMS_PER_LIST] if fetched_root else []), root_url
+
+
+def _fetch_geoip(name: str):
+    """(items, url) с первого источника, где список есть и не пуст."""
+    url = DEFAULT_GEOIP_TEMPLATES[0].format(name=name)
+    for tpl in DEFAULT_GEOIP_TEMPLATES:
+        url = tpl.format(name=name)
+        items = _parse_geoip_body(_http_get_text(url))
+        if items:
+            return items, url
+    return [], url
 
 
 def _parse_geoip_body(text: str) -> list:
@@ -269,21 +373,15 @@ def resolve_alias(kind: str, name: str, force_refresh: bool = False) -> list:
                 items = cached.get("items") or []
                 return list(items)
 
-        url = (DEFAULT_GEOSITE_TEMPLATE if kind == "geosite"
-               else DEFAULT_GEOIP_TEMPLATE).format(name=name)
-        text = _http_get_text(url)
-        if not text:
+        items, url = (_fetch_geosite(name) if kind == "geosite"
+                      else _fetch_geoip(name))
+        if not items:
             # Сеть могла отвалиться — используем устаревший кэш, если есть.
             cached = _read_cache(kind, name)
-            if cached:
+            if cached and cached.get("items"):
                 log.info("alias_resolver: используем устаревший кэш %s:%s"
                          % (kind, name), source="routing")
                 return list(cached.get("items") or [])
-            return []
-
-        items = (_parse_geosite_body(text) if kind == "geosite"
-                 else _parse_geoip_body(text))
-        if not items:
             log.warning("alias_resolver: пустой результат %s:%s"
                         % (kind, name), source="routing")
             return []

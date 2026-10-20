@@ -370,7 +370,26 @@ input:focus, textarea:focus, select:focus {
     color: var(--text-muted);
     padding: 12px 12px 4px;
     font-weight: 600;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
 }
+.nav-section-label:hover { color: var(--text-secondary); }
+/* Шеврон секции — как у веток дерева (.nav-parent .nav-caret). */
+.nav-section-label .nav-caret {
+    margin-left: auto;
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.6;
+    transition: transform var(--transition);
+    flex-shrink: 0;
+}
+.nav-section-label .nav-caret svg { width: 100%; height: 100%; }
+.nav-section-label.open .nav-caret { transform: rotate(90deg); }
 
 /* Sidebar footer */
 .sidebar-footer {

@@ -199,8 +199,11 @@ class TestSourceOnlyRouteProbe(unittest.TestCase):
         from core.unified.model import UnifiedRoute, Destination
         self.assertTrue(monitor.can_probe(self._route()))
         geo = UnifiedRoute(name="g", method="awg:x",
-                           destination=Destination(geosite=["youtube"]))
+                           destination=Destination(geosite=["no-such-category-x"]))
         self.assertFalse(monitor.can_probe(geo))
+        tg = UnifiedRoute(name="t", method="awg:x",
+                          destination=Destination(geosite=["telegram"]))
+        self.assertTrue(monitor.can_probe(tg))
 
     def test_device_drift(self):
         from core.unified.manager import _device_drift

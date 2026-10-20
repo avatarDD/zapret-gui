@@ -188,13 +188,14 @@ def probe_host(host: str, port: int = 443, timeout: float = 4.0,
 
 def probe_route(route):
     """
-    Проба маршрута: берём probe_domain (или первый домен назначения).
+    Проба маршрута: берём probe_domain (или первый домен назначения,
+    или известный домен geosite-категории — alias_resolver.GEOSITE_PROBES).
     Если доменов нет (только CIDR) — пробуем первый IP из cidrs.
 
     Возвращает True/False, либо **None — «пробовать нечего»**. Последнее
     бывает у маршрутов, назначение которых состоит только из geosite/
-    geoip: категории разворачивает движок, конкретного адреса у маршрута
-    нет. Раньше такой маршрут возвращал False, то есть выглядел вечно
+    geoip без известного домена: категории разворачивает движок,
+    конкретного адреса у маршрута нет. Раньше такой маршрут возвращал False, то есть выглядел вечно
     деградировавшим, и failover бесконечно гонял его по всей цепочке
     методов — включая заведомо неподходящие. Ответ None означает «нет
     данных»: замер не пишется, решение не принимается. Чтобы включить
@@ -223,6 +224,11 @@ def probe_route(route):
         if domains:
             domain = domains[0]
         else:
+            # Назначение из одних категорий: известный домен категории
+            # (geosite:telegram → telegram.org), см. GEOSITE_PROBES.
+            from core.routing.alias_resolver import probe_domain_for
+            domain = probe_domain_for(resolved.get("geosite") or [])
+        if not domain:
             cidrs = resolved.get("cidrs") or []
             if cidrs:
                 host = cidrs[0].split("/", 1)[0]
@@ -238,7 +244,10 @@ def can_probe(route) -> bool:
     if route.destination.is_empty():
         return bool(route.devices or route.dscp is not None)
     resolved = route.destination.resolve()
-    return bool(resolved.get("domains") or resolved.get("cidrs"))
+    if resolved.get("domains") or resolved.get("cidrs"):
+        return True
+    from core.routing.alias_resolver import probe_domain_for
+    return bool(probe_domain_for(resolved.get("geosite") or []))
 
 
 # ─────────────────────── background loop ─────────────────────────────
@@ -315,7 +324,8 @@ def _warn_unprobeable(route) -> None:
     _warned_unprobeable.add(route.id)
     log.warning(
         "unified monitor: у маршрута «%s» нечего пробовать (назначение —"
-        " только geosite/geoip). Мониторинг и автопереключение для него"
+        " только geosite/geoip без известного домена). Мониторинг и"
+        " автопереключение для него"
         " не работают: укажите «домен для проверки» в настройках маршрута."
         % (route.name or route.id), source="unified")
 
