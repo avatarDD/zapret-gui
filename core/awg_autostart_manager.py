@@ -63,12 +63,18 @@ class AwgAutostartManager:
         if not isinstance(sec, dict):
             sec = {}
         sec.setdefault("interfaces", {})
-        sec.setdefault("enabled", False)
         return sec
 
     def _save_section(self, sec: dict):
         from core.config_manager import get_config_manager
         cm = get_config_manager()
+        # Общего выключателя у автозапуска AWG нет: решают только флаги
+        # interfaces[<имя>]. Прежняя версия дописывала сюда мёртвое поле
+        # `enabled: false`, его ничто не читало — и в settings.json (а
+        # через MCP и для внешних агентов) оно выглядело как «автозапуск
+        # выключен», хотя watchdog законно поднимал туннели с флагом.
+        sec = dict(sec)
+        sec.pop("enabled", None)
         cm.set("awg", "autostart", sec)
         cm.save()
 

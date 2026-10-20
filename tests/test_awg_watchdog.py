@@ -12,6 +12,22 @@ from unittest import mock
 from core import awg_watchdog
 
 
+# Возраст handshake'а не может превышать аптайм (effective_handshake_age):
+# на свежем раннере CI или в контейнере аптайм — минуты, и «handshake
+# 1000 с назад» обрезался бы до аптайма, ломая тесты рестарта. Сам этот
+# зажим проверяет tests/test_awg_watchdog_clock_budget.py.
+_uptime_patch = mock.patch.object(awg_watchdog, "_uptime_sec",
+                                  return_value=10 ** 7)
+
+
+def setUpModule():
+    _uptime_patch.start()
+
+
+def tearDownModule():
+    _uptime_patch.stop()
+
+
 class FakeConfigManager:
     def __init__(self, data=None):
         self.data = data or {}

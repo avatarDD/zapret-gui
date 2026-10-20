@@ -111,6 +111,58 @@ def _exec_error_text(binary: str, err: OSError) -> str:
     return str(err)
 
 
+_VERSION_TTL = 6 * 3600
+_VERSION_FAIL_TTL = 600
+_VERSION_NUM_RE = re.compile(r"v?(\d+\.\d+(?:\.\d+)*)")
+
+
+def _file_stamp(path: str) -> tuple:
+    try:
+        st = os.stat(path)
+        return (int(st.st_mtime), st.st_size)
+    except (OSError, TypeError):
+        return (0, 0)
+
+
+def _parse_usque_version(text: str, strict: bool) -> str:
+    """Версия из вывода `usque version`.
+
+    Строка «usque version: 4.2.0» → «4.2.0»; «dev» (сборка без ldflags)
+    отдаём как есть. strict=True — для stderr: там же жалоба на config.json
+    с путём, и брать можно только строку с «version» без слова «config».
+    Без strict годится и голая строка-номер («4.2.1» / «v4.2.1»).
+    """
+    for line in (text or "").splitlines():
+        low = line.lower()
+        if "version" in low and ":" in line:
+            if strict and "config" in low:
+                continue
+            value = line.split(":", 1)[1].strip()
+            m = _VERSION_NUM_RE.search(value)
+            if m:
+                return m.group(1)
+            if value and not strict:
+                return value[:50]
+    if not strict:
+        for line in (text or "").splitlines():
+            m = re.fullmatch(r"\s*(?:usque\s+)?v?(\d+\.\d+(?:\.\d+)*)\s*",
+                             line)
+            if m:
+                return m.group(1)
+    return ""
+
+
+def _argv_value(argv: list, names: tuple) -> str:
+    """Значение опции из argv: `-n x`, `--interface-name x` или `--opt=x`."""
+    for i, arg in enumerate(argv):
+        if arg in names and i + 1 < len(argv):
+            return argv[i + 1]
+        for name in names:
+            if name.startswith("--") and arg.startswith(name + "="):
+                return arg.split("=", 1)[1]
+    return ""
+
+
 def debug_enabled() -> bool:
     """Включён ли режим отладки usque (usque.debug_log)."""
     try:
@@ -138,6 +190,8 @@ class UsqueManager:
         # отличает «я сам остановил и не смог поднять» от «туннель остановил
         # пользователь» (API, CLI, MCP, teardown — все идут через stop()).
         self._stop_seq = {}
+        # {binary: ((mtime, size), ts, version)} — см. _get_version.
+        self._version_cache = {}
 
     # ─────── detect ───────
 
@@ -155,7 +209,51 @@ class UsqueManager:
             "binary": binary,
             "version": version,
             "arch": arch,
+            "external": self.find_external(),
         }
+
+    def find_external(self) -> list:
+        """`usque nativetun`, запущенные НЕ нами (init.d Entware и т.п.).
+
+        GUI честно рапортовал «usque остановлен» про свои профили, а на
+        роутере в это время работал туннель, поднятый штатным S51usque на
+        `opkgtun0`: занимал интерфейс и ~15 МБ ОЗУ, но в статусе не
+        значился нигде. Ищем по /proc: бинарник usque + подкоманда
+        nativetun, и при этом ни наш дочерний процесс, ни интерфейс, за
+        которым стоит наш профиль (<config>.run / pid-файл).
+
+        Возвращает [{pid, iface, config, cmdline}], без /proc — [].
+        """
+        try:
+            pids = [int(p) for p in os.listdir("/proc") if p.isdigit()]
+        except OSError:
+            return []
+        with self._lock:
+            own_pids = {p.pid for p in self._processes.values()
+                        if p and p.poll() is None}
+            own_ifaces = set(self._processes)
+        out = []
+        for pid in pids:
+            if pid in own_pids:
+                continue
+            try:
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    raw = f.read()
+            except (IOError, OSError):
+                continue
+            argv = [a.decode("utf-8", "replace")
+                    for a in raw.split(b"\0") if a]
+            if (not argv or os.path.basename(argv[0]) != "usque"
+                    or "nativetun" not in argv):
+                continue
+            iface = _argv_value(argv, ("--interface-name", "-n"))
+            config = _argv_value(argv, ("--config", "-c"))
+            if iface and (iface in own_ifaces
+                          or self._read_pid(self._pid_path(iface)) == pid):
+                continue
+            out.append({"pid": pid, "iface": iface, "config": config,
+                        "cmdline": " ".join(argv)[:300]})
+        return out
 
     def _find_binary(self) -> str:
         """Поиск бинарника usque в стандартных путях.
@@ -191,18 +289,47 @@ class UsqueManager:
         есть. В stderr при этом уходит жалоба на отсутствующий config.json
         (usque читает конфиг даже для version), поэтому stderr игнорируем:
         иначе путь к конфигу попадёт в поле версии.
+
+        Сторонние сборки (пакет Entware usque-keenetic и т.п.) бывают
+        разговорчивее или пишут версию в stderr, а на нагруженном роутере
+        `usque version` может не успеть за таймаут — тогда GUI показывал
+        «установлен, версия: (пусто)». Поэтому: stdout, затем строки
+        stderr с «version» (кроме жалоб на конфиг), затем версия пакета
+        в opkg/apk. Ответ кешируется по mtime+размеру файла: detect()
+        дёргают на каждый опрос статуса.
         """
+        stamp = _file_stamp(binary)
+        hit = self._version_cache.get(binary)
+        if hit and hit[0] == stamp and time.time() - hit[1] < (
+                _VERSION_TTL if hit[2] else _VERSION_FAIL_TTL):
+            return hit[2]
+        version = self._probe_version(binary)
+        self._version_cache[binary] = (stamp, time.time(), version)
+        return version
+
+    @staticmethod
+    def _probe_version(binary: str) -> str:
         try:
             r = subprocess.run([binary, "version"],
-                               capture_output=True, text=True, timeout=5)
+                               capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, timeout=8)
+            stdout, stderr = r.stdout or "", r.stderr or ""
         except Exception:
-            return ""
-        for line in (r.stdout or "").splitlines():
-            if "version:" not in line.lower():
-                continue
-            value = line.split(":", 1)[1].strip()
-            m = re.search(r"v?(\d+\.\d+(?:\.\d+)*)", value)
-            return m.group(1) if m else value[:50]
+            stdout = stderr = ""
+        value = _parse_usque_version(stdout, strict=False)
+        if value:
+            return value
+        value = _parse_usque_version(stderr, strict=True)
+        if value:
+            return value
+        try:
+            from core.ext_binary_installer import _pkg_version
+            for pkg in ("usque-keenetic", "usque"):
+                v = _pkg_version(pkg)
+                if v:
+                    return v.lstrip("vV")
+        except Exception:
+            pass
         return ""
 
     def _get_arch(self, binary: str) -> str:

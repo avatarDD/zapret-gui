@@ -151,40 +151,89 @@ def _opkg_pkg_version(pkg_name: str) -> str:
 
 def _detect_binary_version(path: str) -> str:
     """
-    Спросить у бинарника его версию через `--version` / `-v`.
+    Спросить у бинарника его версию через `--version`.
     Возвращает строку вроде '0.2.17' или '' если не удалось.
 
     Менее надёжно opkg'a: апстрим может зашить дату сборки,
     а не релизный тэг. Используется как fallback.
+
+    Только `--version`, без перебора «запасных» флагов. У amneziawg-go
+    (как у wireguard-go) версию печатает ровно `amneziawg-go --version`,
+    а любой другой единственный аргумент — это ИМЯ ИНТЕРФЕЙСА: прежний
+    запасной `-v` поднимал userspace-туннель «-v», демон уходил в фон
+    (PPID=1), оставлял /var/run/amneziawg/-v.sock и жил до перезагрузки,
+    съедая ~15 МБ. Срабатывало это ровно тогда, когда `--version` не
+    успевал за таймаут — на нагруженном MIPS-роутере это обычное дело.
+    `awg --version` у amneziawg-tools тоже есть, так что второй флаг не
+    нужен и ему.
     """
     if not path or not os.path.isfile(path):
         return ""
-    for flag in ("--version", "-v"):
-        try:
-            r = subprocess.run(
-                [path, flag], capture_output=True, text=True, timeout=4,
-            )
-        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-            continue
-        out = (r.stdout or "") + (r.stderr or "")
-        m = _VERSION_RE.search(out)
-        if m:
-            return m.group(1)
-    return ""
+    try:
+        r = subprocess.run(
+            [path, "--version"], capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, timeout=4,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return ""
+    out = (r.stdout or "") + (r.stderr or "")
+    m = _VERSION_RE.search(out)
+    return m.group(1) if m else ""
+
+
+# Кеш версии внешних бинарников: {(pkg, path): (stamp, ts, (version, src))}.
+#
+# get_installed_version() зовут на каждый опрос статуса (страница AWG,
+# tunnels_status, MCP). Для внешней установки версии в settings.json нет,
+# и раньше каждый такой опрос запускал `opkg status` (на MIPS под нагрузкой
+# он не укладывается в 4 с) и следом `amneziawg-go --version` — отсюда
+# всплески CPU и россыпь короткоживущих процессов в `ps`. Версия меняется
+# только вместе с файлом, поэтому ключ кеша — путь, а отпечаток — mtime и
+# размер бинарника: обновили пакет — отпечаток другой, спросим заново.
+# Неудачу тоже помним, но недолго: opkg мог просто не успеть.
+_EXT_VERSION_TTL = 6 * 3600
+_EXT_VERSION_FAIL_TTL = 600
+_ext_version_cache = {}
+_ext_version_lock = threading.Lock()
+
+
+def _file_stamp(path: str) -> tuple:
+    try:
+        st = os.stat(path)
+        return (int(st.st_mtime), st.st_size)
+    except (OSError, TypeError):
+        return (0, 0)
 
 
 def _resolve_external_version(pkg_name: str, bin_path: str) -> tuple:
     """
     Вернуть (version, source) — самый достоверный источник версии
     для внешнего бинарника. source: 'opkg' | 'binary' | ''.
+
+    Результат кешируется (см. _ext_version_cache): бинарник и opkg
+    спрашиваются один раз, пока файл не поменялся.
     """
+    key = (pkg_name or "", bin_path or "")
+    stamp = _file_stamp(bin_path)
+    now = time.time()
+    with _ext_version_lock:
+        hit = _ext_version_cache.get(key)
+    if hit and hit[0] == stamp:
+        ttl = _EXT_VERSION_TTL if hit[2][0] else _EXT_VERSION_FAIL_TTL
+        if now - hit[1] < ttl:
+            return hit[2]
+
+    result = ("", "")
     v = _opkg_pkg_version(pkg_name)
     if v:
-        return v, "opkg"
-    v = _detect_binary_version(bin_path)
-    if v:
-        return v, "binary"
-    return "", ""
+        result = (v, "opkg")
+    else:
+        v = _detect_binary_version(bin_path)
+        if v:
+            result = (v, "binary")
+    with _ext_version_lock:
+        _ext_version_cache[key] = (stamp, now, result)
+    return result
 
 
 class AwgInstaller:
