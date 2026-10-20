@@ -217,6 +217,22 @@ class TestSourceOnlyRouteProbe(unittest.TestCase):
 
 class TestAwgAutostartNoPhantomFlag(unittest.TestCase):
 
+    def test_stale_enabled_removed_on_read(self):
+        """Старый settings.json с enabled:false: поле стирается, флаги
+        интерфейсов по-прежнему решают."""
+        from core.awg_autostart_manager import AwgAutostartManager
+        cm = mock.Mock()
+        cm.get.return_value = {"enabled": False,
+                               "interfaces": {"WARPv1_30": True}}
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cm):
+            m = AwgAutostartManager()
+            self.assertEqual(m.get_enabled_interfaces(), ["WARPv1_30"])
+        saved = cm.set.call_args[0][2]
+        self.assertNotIn("enabled", saved)
+        self.assertEqual(saved["interfaces"], {"WARPv1_30": True})
+        cm.save.assert_called_once()
+
     def test_save_drops_enabled(self):
         from core.awg_autostart_manager import AwgAutostartManager
         cm = mock.Mock()
