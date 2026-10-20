@@ -460,6 +460,7 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | `mihomo_config.py` / `mihomo_routing.py` / `mihomo_watchdog.py` | Генерация clash-YAML, доменный роутинг mihomo, авто-рестарт зависшего инстанса. |
 | `dns_routing.py` | Правила «домен → свой DNS». Каталог публичных резолверов (DoH/DoT) — в `routing/doh_resolver.py`. |
 | `tunnel_monitor.py` / `tunnel_optimizer.py` | Метрики туннелей (rx/tx, latency) / MTU·PMTU, TCP-буферы, BBR по профилям. |
+| `foreign_services.py` | Сторонние экземпляры движков: чужие init-скрипты (`S51usque`, `S99sing-box`…), чужие процессы (не в pid-файлах наших менеджеров и не потомки GUI), конфликты имён интерфейсов. Отключение скрипта (Entware — снять бит исполнения, procd — `disable`), «передать GUI» (`adopt`: конфиг → профиль GUI → погасить чужое → поднять через `tunnels_control` → автозапуск GUI, откат при неудаче), режим `exclusive`, сторож `ForeignGuard`. Состояние — `foreign-services.json` рядом с `settings.json`. Всё, что меняет систему, — только по действию пользователя. API `api/foreign_services.py`, страница `web/js/pages/foreign_services.js`. |
 | `tunnels_overview.py` | Сводка по всем шести движкам в одной форме записи (установлен/запущен/инстансы/трафик с указанием источника). Используется MCP (`tunnels_status`), доступна UI и CLI. |
 | `auto_remediation.py` | Авто-починка: по сигналам мониторинга поднимает упавшее и переключает метод. |
 | `iface_socks.py` | SOCKS-прокси, привязанный к интерфейсу (`SO_BINDTODEVICE`) — регистрация usque/WARP через уже работающий обход. |
@@ -650,6 +651,7 @@ stdout). Период опроса задаёт сам
 | Healthcheck (autocircular) | `healthcheck` | дёргает референс-домены служб → авто-починка |
 | Трекер трафика прокси | `proxy_traffic` | опрос Clash API `/connections` → суммы per-outbound (пока инстанс жив) |
 | Тестер прокси | `proxy_tester._TestJob` | разовый фоновый прогон (start → poll status) |
+| Сторож сторонних сервисов | `foreign_services.ForeignGuard` | раз в минуту `enforce()`: отключённый через GUI чужой скрипт снова исполняемый (обновился пакет) — отключить; в режиме `exclusive` — все чужие скрипты и процессы движков. Спит, пока отключать нечего |
 
 Общий паттерн «не затирать при пустом»: если внешний источник вернул
 пусто/ошибку — используется прошлый успешный результат (last-good кэш),

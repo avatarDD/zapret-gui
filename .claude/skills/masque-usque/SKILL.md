@@ -177,6 +177,17 @@ fail-closed — расхождение отменяет установку.
 наш автозапуск — получится два процесса и два TUN; это первое, что надо
 проверять при «интерфейсов больше, чем я создавал».
 
+Когда GUI сам ставит пакет (запасной источник `legacy_source`),
+`ext_binary_installer.install_binary_by_name` после установки отключает
+его init-скрипты (`core/foreign_services.neutralize_package_scripts`:
+`opkg files` → снять бит исполнения, запомнить в `foreign-services.json`,
+чтобы обновление пакета не вернуло). `uninstall_binary("usque")` удаляет и
+пакет `usque-keenetic`. Чужой `S51usque`, который GUI не ставил, сам не
+трогается: страница «Сторонние туннели» (`foreign_services.adopt`)
+переносит его конфиг в профиль GUI с тем же именем интерфейса — если на
+это имя не претендует AWG-конфиг (`awg0-opkgtun0.conf`); тогда профиль
+получает новое `usque*`, а ответ предупреждает про правила `warp:opkgtun0`.
+
 Поиск бинарника (`UsqueManager._find_binary`, по порядку):
 `/opt/usr/bin/usque` → `/opt/bin/usque` → `/usr/local/bin/usque` → `/usr/bin/usque`.
 
@@ -248,8 +259,10 @@ Flags:
 > `UsqueManager.find_external()` ищет такие процессы в /proc (не наш
 > дочерний процесс и не наш pid-файл), `detect()` отдаёт их в `external`,
 > `tunnels_status` — в `external_instances` со счётчиками интерфейса, а
-> страница usque пишет предупреждение. Свои профили GUI зовёт `usque*` и с
-> `opkgtun*` не пересекается (`allocate_iface` смотрит /sys/class/net).
+> страница usque пишет предупреждение со ссылкой на «Сторонние туннели»
+> (`core/foreign_services`: передать GUI / отключить скрипт). Свои профили
+> GUI зовёт `usque*` и с `opkgtun*` не пересекается (`allocate_iface`
+> смотрит /sys/class/net).
 
 ### 3.1.1 Регистрация через прокси: usque уважает `HTTPS_PROXY`
 

@@ -71,6 +71,7 @@ const AwgDashboardPage = (() => {
             <div id="awg-tunnels"></div>
             <div id="awg-keenetic-routing"></div>
         `;
+        if (typeof ForeignNote !== 'undefined') ForeignNote.attach(container, 'awg');
         if (typeof Wizard !== 'undefined') Wizard.mountBanner(container, 'awg');
 
         refresh();

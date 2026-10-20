@@ -111,10 +111,34 @@ def _vpn_block(data: dict) -> tuple:
     configured = any((data.get(k) or {}).get("total")
                      for k in ("awg", "singbox", "mihomo")) \
         or bool(data.get("warp"))
+    problems = _foreign_problems(data.get("foreign") or {})
+    level = "warn" if problems else "ok"
     if up:
-        return "ok", "подняты: " + ", ".join(up), []
-    return "ok", ("туннели не подняты" if configured
-                  else "туннели не настроены"), []
+        return level, "подняты: " + ", ".join(up), problems
+    return level, ("туннели не подняты" if configured
+                   else "туннели не настроены"), problems
+
+
+_ENGINE_TITLES = {"usque": "usque", "singbox": "sing-box",
+                  "mihomo": "mihomo", "awg": "AmneziaWG",
+                  "opera": "Opera Proxy", "tgproxy": "Telegram-прокси"}
+
+
+def _foreign_problems(foreign: dict) -> list:
+    """Сторонние экземпляры движков (core/foreign_services.summary)."""
+    out = []
+    engines = foreign.get("engines") or {}
+    if engines:
+        out.append(("warn", "работают или включены в автозапуск сторонние "
+                    "экземпляры туннелей (%s) — GUI ими не управляет"
+                    % _names([_ENGINE_TITLES.get(k, k)
+                              for k in sorted(engines)]),
+                    "foreign-services"))
+    if foreign.get("conflicts"):
+        out.append(("warn", "несколько сервисов претендуют на одно имя "
+                    "интерфейса — после перезагрузки поднимется только "
+                    "первый", "foreign-services"))
+    return out
 
 
 def _monitor_block(data: dict) -> tuple:

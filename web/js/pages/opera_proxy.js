@@ -112,6 +112,7 @@ const OperaProxyPage = (() => {
                 </div>
             </div>
         `;
+        if (typeof ForeignNote !== 'undefined') ForeignNote.attach(container, 'opera');
 
         // MR-69: addEventListener вместо onclick
         document.getElementById("opera-btn-up").addEventListener("click", _start);

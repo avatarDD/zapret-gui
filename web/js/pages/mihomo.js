@@ -109,6 +109,7 @@ const MihomoPage = (() => {
 
             <div id="mh-instances"></div>
         `;
+        if (typeof ForeignNote !== 'undefined') ForeignNote.attach(container, 'mihomo');
         if (typeof Wizard !== 'undefined') Wizard.mountBanner(container, 'mihomo');
         refresh();
         startPolling();

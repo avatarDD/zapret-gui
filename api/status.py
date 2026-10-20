@@ -46,6 +46,28 @@ def _cached_rivals():
     return value
 
 
+_FOREIGN_TTL = 30.0
+_foreign_cache = {"ts": 0.0, "value": {}}
+
+
+def _cached_foreign():
+    """Сводка о сторонних экземплярах туннелей (core/foreign_services).
+
+    Скан /proc и init.d — не для каждого опроса дашборда (раз в 3 с),
+    поэтому с кешем; ошибку не кешируем.
+    """
+    now = time.monotonic()
+    if _foreign_cache["ts"] and now - _foreign_cache["ts"] < _FOREIGN_TTL:
+        return _foreign_cache["value"]
+    try:
+        from core.foreign_services import summary
+        value = summary()
+    except Exception:
+        return _foreign_cache["value"]
+    _foreign_cache.update(ts=now, value=value)
+    return value
+
+
 def _is_private_ip(addr):
     """Проверить, является ли IPv4-адрес приватным (RFC 1918)."""
     try:
@@ -274,6 +296,7 @@ def register(app):
             "block_detector": bd_status,
             "healthcheck": hc_status,
             "rivals": rivals,
+            "foreign": _cached_foreign(),
             "logs": logs_data,
         }
         # «Кратко»: одна строка «всё ли работает» и итог каждого блока.

@@ -687,6 +687,9 @@ BINARIES = {
         "allow_unpinned": True,
         "install_kind": "package",
         "package_name": "tg-ws-proxy",
+        # Init-скрипт пакета — то, через что GUI и ведёт этот движок
+        # (core/tgproxy_manager): отключать его после установки нельзя.
+        "keep_init_scripts": True,
         "dest": "/opt/bin/tg-ws-proxy",
         # Пакет кладёт init-скрипт — он же маркер установки для
         # get_install_status (бинарник может лежать не в dest).
@@ -1545,8 +1548,54 @@ def _probe_args(cfg: dict) -> tuple:
     return ("version", "--version", "--help")
 
 
+# Какому туннельному движку принадлежит бинарник — для поиска чужих
+# экземпляров того же движка (core/foreign_services).
+_ENGINE_OF = {"usque": "usque", "tgwsproxy": "tgproxy", "tgproto": "tgproxy",
+              "opera": "opera"}
+
+
 def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
                            transport: str = "", _cfg: dict = None) -> dict:
+    """
+    Установить бинарник по имени (см. _install_binary_by_name) и прибрать
+    за пакетом.
+
+    Если ставился ПАКЕТ (запасной источник usque — usque-keenetic), он
+    приносит собственный init-скрипт (`S51usque`), который при загрузке
+    поднимал второй туннель параллельно профилям GUI. Пакет поставил сам
+    GUI и ради одного бинарника, поэтому этот скрипт отключается сразу
+    (core/foreign_services.neutralize_package_scripts). Исключение —
+    tg-ws-proxy: его скриптом GUI и управляет (keep_init_scripts).
+
+    Чужие экземпляры, которые GUI не ставил, не трогаются — о них
+    сообщает поле `foreign_scripts` ответа.
+    """
+    res = _install_binary_by_name(name, progress_cb=progress_cb, tag=tag,
+                                  transport=transport, _cfg=_cfg)
+    if _cfg is not None or not isinstance(res, dict) or not res.get("ok"):
+        return res
+    engine = _ENGINE_OF.get(name, "")
+    try:
+        from core import foreign_services
+        pkg = res.get("package") or ""
+        cfg = BINARIES.get(name) or {}
+        if pkg and not cfg.get("keep_init_scripts") and not res.get("noop"):
+            done = foreign_services.neutralize_package_scripts(pkg, engine)
+            if done:
+                res["disabled_package_scripts"] = done
+        if engine:
+            found = foreign_services.engine_foreign(engine)
+            scripts = [s["path"] for s in found["scripts"] if s["enabled"]]
+            if scripts:
+                res["foreign_scripts"] = scripts
+    except Exception as e:                      # noqa: BLE001 — установка
+        log.warning("ext_installer: проверка сторонних скриптов %s: %s"
+                    % (name, e), source="ext_installer")
+    return res
+
+
+def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
+                            transport: str = "", _cfg: dict = None) -> dict:
     """
     Установить бинарник по имени.
 
@@ -1581,8 +1630,8 @@ def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
             log.warning("ext_installer: %s — переключаюсь на запасной"
                         " источник %s" % (name, legacy.get("repo", "?")),
                         source="ext_installer")
-            return install_binary_by_name(name, progress_cb=progress_cb,
-                                          transport=transport, _cfg=legacy)
+            return _install_binary_by_name(name, progress_cb=progress_cb,
+                                           transport=transport, _cfg=legacy)
         return {"ok": False,
                 "error": "Нет сборки %s под архитектуру %s" % (name, arch)}
 
@@ -1809,6 +1858,7 @@ def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
             # по умолчанию.
             return {"ok": True, "binary": dest_path or package_name,
                     "version": version, "tag": tag,
+                    "package": package_name,
                     "sha256_verified": bool(sha256_pinned or
                                             not v_res.get("skipped")),
                     "sha256_pinned": bool(sha256_pinned)}
@@ -1880,12 +1930,21 @@ def uninstall_binary(name: str) -> dict:
     cfg = BINARIES.get(name)
     if not cfg:
         return {"ok": False, "error": "Неизвестный бинарник"}
+    # Пакеты, которые мог поставить GUI: основной (install_kind=package) и
+    # запасной источник (usque-keenetic у usque). Запасной удаляем тоже:
+    # иначе после «Удалить usque» на роутере оставались его бинарник и
+    # init-скрипт S51usque, поднимавший туннель при каждой загрузке.
+    packages = []
+    if cfg.get("install_kind", "binary") == "package":
+        packages.append(cfg.get("package_name", name))
+    legacy = cfg.get("legacy_source") or {}
+    if legacy.get("install_kind") == "package" and legacy.get("package_name"):
+        packages.append(legacy["package_name"])
     try:
-        if cfg.get("install_kind", "binary") == "package":
+        for pkg in packages:
             # Установлено через opkg/apk — удалять надо пакетом, иначе база
             # пакетов продолжит считать его установленным и повторная
             # установка завершится noop («уже актуально») без бинарника.
-            pkg = cfg.get("package_name", name)
             pkg_mgr = _package_manager()
             if pkg_mgr and _pkg_version(pkg):
                 cmd = ([pkg_mgr, "remove", pkg] if pkg_mgr == "opkg"
