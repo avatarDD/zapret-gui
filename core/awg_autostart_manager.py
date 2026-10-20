@@ -62,6 +62,20 @@ class AwgAutostartManager:
         sec = cm.get("awg", "autostart") or {}
         if not isinstance(sec, dict):
             sec = {}
+        if "enabled" in sec:
+            # Мёртвое поле от старых версий (см. _save_section) убираем и
+            # из уже сохранённого settings.json: пока оно там лежит, его
+            # продолжают читать как «автозапуск AWG выключен». Учитывать
+            # его нельзя — оно `false` у каждого, кто хоть раз трогал
+            # автозапуск, и такой «выключатель» погасил бы его всем.
+            sec = dict(sec)
+            sec.pop("enabled", None)
+            try:
+                cm.set("awg", "autostart", sec)
+                cm.save()
+            except Exception as e:
+                log.warning("awg autostart: не удалось убрать поле enabled: %s"
+                            % e, source="awg_autostart")
         sec.setdefault("interfaces", {})
         return sec
 
