@@ -166,3 +166,55 @@ class TestBackupApiRoundtrip(unittest.TestCase):
         status, _b = self.client.post('/api/backup/import',
                                       {'backup': {'format': 'nope'}})
         self.assertTrue(status.startswith('400'))
+
+
+class TestIpsetsAndBlobs(unittest.TestCase):
+
+    def test_collect_skips_builtin(self):
+        im = mock.Mock()
+        im.list_names.return_value = ["my-ipset", "zt-a-ipset"]
+        im.get_ipset.return_value = ["1.2.3.0/24"]
+        bm = mock.Mock()
+        bm.get_blobs.return_value = [{"name": "fake_default_tls",
+                                      "is_builtin": True},
+                                     {"name": "tls1", "is_builtin": False}]
+        bm.get_blob_content.return_value = b"\x01\x02"
+        with mock.patch("core.ipset_manager.get_ipset_manager",
+                        return_value=im), \
+             mock.patch("core.blob_manager.get_blob_manager",
+                        return_value=bm):
+            self.assertEqual(bk._collect_ipsets(),
+                             [{"name": "zt-a-ipset",
+                               "entries": ["1.2.3.0/24"]}])
+            self.assertEqual(bk._collect_blobs(),
+                             [{"name": "tls1", "base64": "AQI="}])
+
+    def test_restore(self):
+        im = mock.Mock()
+        im.list_names.return_value = []
+        im.create_ipset.return_value = (True, "")
+        im.save_ipset.return_value = True
+        bm = mock.Mock()
+        bm.save_blob.return_value = (True, None)
+        bm.is_builtin.side_effect = lambda n: n.startswith("fake_default_")
+        errs = []
+        with mock.patch("core.ipset_manager.get_ipset_manager",
+                        return_value=im), \
+             mock.patch("core.blob_manager.get_blob_manager",
+                        return_value=bm):
+            n = bk._restore_ipsets([{"name": "my-ipset", "entries": []},
+                                    {"name": "zt-a-ipset",
+                                     "entries": ["1.1.1.1"]}], errs)
+            m = bk._restore_blobs([{"name": "tls1", "base64": "AQI="},
+                                   {"name": "fake_default_x",
+                                    "base64": "AQI="},
+                                   {"name": "bad", "base64": "!!"}], errs)
+        self.assertEqual(n, 1)
+        im.create_ipset.assert_called_once_with("zt-a-ipset")
+        self.assertEqual(m, 1)
+        bm.save_blob.assert_called_once_with("tls1", b"\x01\x02")
+        self.assertEqual(len(errs), 1, errs)
+
+    def test_summary_counts(self):
+        s = bk.summary({"format": bk.FORMAT, "ipsets": [{}], "blobs": [{}, {}]})
+        self.assertEqual((s["ipsets"], s["blobs"]), (1, 2))

@@ -316,6 +316,43 @@ def register(app):
         from core.profile_import import import_text
         return import_text(text)
 
+    @app.post("/api/strategies/import-bundle")
+    def api_strategies_import_bundle():
+        """Бандл Zapret2_AutoTuner → стратегия + списки, блобы, lua.
+
+        Body: {"bundle": {…}, "dry_run": true|false,
+               "on_conflict": null|"replace"|"rename"}.
+        dry_run (по умолчанию) — только план: что будет создано и какие
+        имена заняты. Иначе сохраняет (core/bundle_import.apply_bundle);
+        стратегию НЕ применяет — это отдельная кнопка.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        bundle = body.get("bundle") if isinstance(body, dict) else None
+        from core import bundle_import as bi
+        errors, warnings = bi.validate_bundle(bundle)
+        if errors:
+            response.status = 400
+            return {"ok": False, "error": "; ".join(errors),
+                    "warnings": warnings}
+        if body.get("dry_run", True):
+            existing = bi.existing_names()
+            return {"ok": True, "plan": bi.plan_bundle(bundle, existing),
+                    "warnings": warnings}
+        on_conflict = body.get("on_conflict")
+        if on_conflict not in (None, "replace", "rename"):
+            response.status = 400
+            return {"ok": False, "error": "on_conflict: replace или rename"}
+        result = bi.apply_bundle(bundle, on_conflict=on_conflict)
+        if not result.get("ok"):
+            response.status = {"conflict": 409,
+                               "invalid": 400}.get(result.get("error_code"),
+                                                   500)
+        return result
+
     @app.post("/api/strategies/preview")
     def api_strategies_preview():
         """

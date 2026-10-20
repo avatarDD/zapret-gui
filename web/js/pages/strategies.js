@@ -49,6 +49,15 @@ const StrategiesPage = (() => {
                         </svg>
                         Вставить из буфера
                     </button>
+                    <button class="btn btn-ghost" data-action="pickBundleFile" title="Импорт бандла Zapret2_AutoTuner: стратегия вместе со списками, блобами и lua. Стратегия сохраняется, но не применяется">
+                        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        Импорт бандла
+                    </button>
+                    <input type="file" id="bundle-import-file" accept=".json,application/json"
+                           style="display:none" data-action="handleBundleFile">
                     <button class="btn btn-primary" data-action="openCreate">
                         <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -272,6 +281,7 @@ const StrategiesPage = (() => {
             switch (action) {
                 case 'pasteStrategyFromClipboard': pasteStrategyFromClipboard(); break;
                 case 'openCreate': openCreate(); break;
+                case 'pickBundleFile': pickBundleFile(); break;
                 case 'openLogs': openLogs(); break;
                 case 'runHealthcheckNow': runHealthcheckNow(); break;
                 case 'toggleHealthcheckSettings':
@@ -341,6 +351,7 @@ const StrategiesPage = (() => {
                 case 'insertFilter': insertFilter(pidx, e.target); break;
                 case 'insertHostlist': insertHostlist(pidx, e.target); break;
                 case 'updateProfileArgs': updateProfileArgs(pidx, e.target.value); break;
+                case 'handleBundleFile': handleBundleFile(e.target); break;
             }
         });
     }
@@ -2375,6 +2386,64 @@ const StrategiesPage = (() => {
 
 
 
+    // ══════════════════ Импорт бандла AutoTuner ══════════════════
+    // Файл zapret-autotuner-bundle: сначала план (dry_run) — что будет
+    // создано и какие имена заняты, потом подтверждение и запись
+    // (core/bundle_import.py). Стратегия сохраняется, но НЕ применяется.
+
+    function pickBundleFile() {
+        const inp = document.getElementById('bundle-import-file');
+        if (inp) inp.click();
+    }
+
+    async function handleBundleFile(input) {
+        const file = input.files[0];
+        if (!file) return;
+        try {
+            let bundle;
+            try {
+                bundle = JSON.parse(await file.text());
+            } catch (e) {
+                Toast.error('Файл не является JSON: ' + e.message);
+                return;
+            }
+            await importBundle(bundle);
+        } catch (err) {
+            Toast.error('Ошибка импорта бандла: ' + err.message);
+        } finally {
+            input.value = '';
+        }
+    }
+
+    async function importBundle(bundle) {
+        const plan = await API.post('/api/strategies/import-bundle', { bundle, dry_run: true });
+        if (!plan || !plan.ok) {
+            Toast.error((plan && plan.error) || 'Это не бандл AutoTuner');
+            return;
+        }
+        const titles = { hostlist: 'список', ipset: 'IP-список', blob: 'блоб', lua: 'lua', strategy: 'стратегия' };
+        const items = plan.plan.items.map(i => '  • ' + titles[i.kind] + ' ' + i.name).join('\n');
+        const warn = (plan.warnings || []).map(w => '⚠ ' + w).join('\n');
+        let onConflict = null;
+        const conflicts = plan.plan.conflicts || [];
+        if (conflicts.length || plan.plan.builtin_strategy) {
+            const names = conflicts.map(c => titles[c.kind] + ' ' + c.name).join(', ');
+            onConflict = plan.plan.builtin_strategy || !confirm(
+                'Уже есть: ' + names + '.\n\nOK — заменить существующие, Отмена — сохранить под новыми именами.')
+                ? 'rename' : 'replace';
+        }
+        if (!confirm('Импортировать бандл?\n\n' + items + (warn ? '\n\n' + warn : '') +
+                     (onConflict ? '\n\nЗанятые имена: ' + (onConflict === 'replace' ? 'заменить' : 'новые имена') : '') +
+                     '\n\nСтратегия будет сохранена, но не применена.')) return;
+        const r = await API.post('/api/strategies/import-bundle', { bundle, dry_run: false, on_conflict: onConflict });
+        if (r && r.ok) {
+            Toast.success('Сохранено: ' + r.saved.join(', ') + '. Примените стратегию, когда будете готовы.');
+            fetchStrategies();
+        } else {
+            Toast.error((r && r.error) || 'Ошибка импорта бандла');
+        }
+    }
+
     // Копирование в буфер с fallback на execCommand (работает и по http,
     // где navigator.clipboard недоступен).
     // Копирование — через общий Clipboard: он сам уходит на
@@ -2738,6 +2807,8 @@ const StrategiesPage = (() => {
         closePreview,
         copyPreview,
         openCreate,
+        pickBundleFile,
+        handleBundleFile,
         openEdit,
         closeModal,
         addProfile,
