@@ -272,6 +272,29 @@ def _diagnose_domain_rule(rule, sets_state, iproute_state) -> list:
     else:
         checks.append(_check("бэкенд", True,
                              "dnsmasq/NDMS (state этого правила пуст)"))
+        # Набор и fwmark-правило ставит apply_domain_rule и в dnsmasq-пути —
+        # без этих строк отчёт молчал, на каком звене правило не легло.
+        try:
+            _backend, kind = domain_rule._detect_backend()
+        except Exception:                                # noqa: BLE001
+            kind = ""
+        if kind == "nftset":
+            set_v4 = domain_rule._set_name_for(rule.id, kind)
+            cnt = _nft_set_count(set_v4)
+            checks.append(_check(
+                "nft set %s" % set_v4, cnt is not None and cnt > 0,
+                "нет такого set'а" if cnt is None else "%d записей" % cnt))
+        elif kind == "ipset":
+            set_v4 = domain_rule._set_name_for(rule.id, kind)
+            cnt = _ipset_count(set_v4)
+            checks.append(_check(
+                "ipset %s" % set_v4, cnt is not None and cnt > 0,
+                "нет такого set'а" if cnt is None else "%d IP" % cnt))
+        if kind:
+            checks.append(_check(
+                "ip rule fwmark → table %d" % table,
+                _has_fwmark_rule(mark, table),
+                "mark=0x%x" % mark))
 
     dev = _table_default_iface(table)
     checks.append(_check(
@@ -280,22 +303,44 @@ def _diagnose_domain_rule(rule, sets_state, iproute_state) -> list:
     mq = _masquerade_present(ifname)
     checks.append(_check("masquerade на %s" % ifname, mq,
                          "" if mq else
-                         "нет — пакеты уйдут с чужим src и сервер их дропнет"))
+                         "нет — пакеты уйдут с чужим src и сервер их дропнет"
+                         " (нажмите «Переприменить и сбросить лишнее»)"))
 
-    # Контрольный прогон: первый домен правила.
-    domains, _cidrs = domain_rule._expand_rule(rule)
-    if domains:
-        probe = domains[0]
-        ips = domain_rule._resolve_ips(probe, "v4")
+    # Алиас, который не скачался, молча выпадает из набора: geoip:telegram
+    # с 404 оставлял приложение Telegram мимо туннеля (issue #404/#386).
+    from core.routing import alias_resolver
+    try:
+        failed = alias_resolver.expand_domains(
+            rule.domains or []).get("aliases_failed") or []
+    except Exception:                                    # noqa: BLE001
+        failed = []
+    for a in failed:
+        checks.append(_check(
+            "%s:%s" % (a.get("kind"), a.get("name")), False,
+            "список не скачался — его адреса в набор не попали"))
+
+    # Набор, в котором ищем адреса: свой (без dnsmasq) или dnsmasq-путь.
+    set_kind = sets_state.get(rule.id) or ""
+    if not set_kind and rule.id not in iproute_state:
+        try:
+            set_kind = domain_rule._detect_backend()[1]
+        except Exception:                                # noqa: BLE001
+            set_kind = ""
+    set_test = _nft_set_test if set_kind == "nftset" else _ipset_test
+    set_name = (domain_rule._set_name_for(rule.id, set_kind)
+                if set_kind else "")
+
+    # Контрольный прогон: домен, который точно должен резолвиться.
+    domains, cidrs = domain_rule._expand_rule(rule)
+    probe, ips, tried = _pick_probe(rule, domains)
+    if tried:
         if not ips:
-            checks.append(_check("резолв %s" % probe, False,
-                                 "домен не резолвится с роутера"))
+            checks.append(_check("резолв %s" % ", ".join(tried), False,
+                                 "ни один домен не резолвится с роутера"))
         else:
             ip = ips[0]
-            if rule.id in sets_state:
-                kind = sets_state[rule.id]
-                test = _nft_set_test if kind == "nftset" else _ipset_test
-                in_set = test(domain_rule._set_name_for(rule.id, kind), ip)
+            if set_name:
+                in_set = set_test(set_name, ip)
                 checks.append(_check(
                     "%s (%s) в set'е" % (probe, ip), in_set,
                     "" if in_set else "IP не в set — рефрешер/prepopulate"
@@ -306,7 +351,50 @@ def _diagnose_domain_rule(rule, sets_state, iproute_state) -> list:
             checks.append(_check(
                 "route get %s → %s" % (ip, ifname), via == ifname,
                 "уходит через %s" % (via or "?")))
+    # geoip-сети лежат в том же наборе: проверяем первую v4-сеть.
+    v4 = [c for c in cidrs if ":" not in c]
+    if v4 and set_name:
+        ip = v4[0].split("/", 1)[0]
+        in_set = set_test(set_name, ip)
+        checks.append(_check(
+            "%s (geoip) в set'е" % v4[0], in_set,
+            "" if in_set else "сети geoip не в set — переприменить правило"))
     return checks
+
+
+_PROBE_TRIES = 4
+
+
+def _pick_probe(rule, domains):
+    """
+    (домен, его IP, что пробовали) для контрольного прогона правила.
+
+    Раньше брался первый домен развёрнутого списка, а у geosite:telegram
+    это cdn-telegram.org, который не резолвится вовсе, — отчёт рисовал ✗
+    там, где правило в порядке (issue #386). Порядок: явные домены
+    правила, известный домен категории (GEOSITE_PROBES), остальные из
+    развёрнутого списка; первый резолвящийся из нескольких.
+    """
+    from core.routing import alias_resolver, domain_rule
+    explicit, cats = [], []
+    for token in rule.domains or []:
+        kind, name = alias_resolver.parse_alias(str(token))
+        if kind == "geosite":
+            cats.append(name)
+        elif not kind and "/" not in str(token):
+            explicit.append(str(token).strip().lower())
+    cand = []
+    for d in explicit + [alias_resolver.probe_domain_for(cats)] + \
+            list(domains or []):
+        if d and d not in cand and "*" not in d:
+            cand.append(d)
+    tried = []
+    for d in cand[:_PROBE_TRIES]:
+        tried.append(d)
+        ips = domain_rule._resolve_ips(d, "v4")
+        if ips:
+            return d, ips, tried
+    return "", [], tried
 
 
 def _diagnose_cidr_rule(rule) -> list:

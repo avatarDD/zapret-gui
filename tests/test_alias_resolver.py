@@ -146,6 +146,51 @@ class TestResolveAlias(unittest.TestCase):
         # Сеть вернула пусто, но stale-кэш должен спасти.
         self.assertEqual(items, ["old.example.com"])
 
+    def test_geosite_follows_include(self):
+        # issue #404: google-gemini — одна строка include:google-deepmind.
+        bodies = {
+            "google-gemini": "# compat\n\ninclude:google-deepmind\n",
+            "google-deepmind": "deepmind.com\ninclude:google-gemini\n"
+                               "full:gemini.google.com\n",
+        }
+
+        def fake(url, timeout=None):
+            return bodies.get(url.rsplit("/", 1)[-1], "")
+
+        with mock.patch.object(alias_resolver, "_http_get_text",
+                               side_effect=fake), \
+             mock.patch.object(alias_resolver, "_read_cache",
+                               return_value=None), \
+             mock.patch.object(alias_resolver, "_write_cache"):
+            items = alias_resolver.resolve_alias(
+                "geosite", "google-gemini", force_refresh=True)
+        self.assertEqual(items, ["deepmind.com", "gemini.google.com"])
+
+    def test_geoip_falls_back_to_next_source(self):
+        # issue #404: у v2fly/geoip нет telegram.txt — нужен второй источник.
+        calls = []
+
+        def fake(url, timeout=None):
+            calls.append(url)
+            return "" if len(calls) == 1 else "149.154.160.0/20\n"
+
+        with mock.patch.object(alias_resolver, "DEFAULT_GEOIP_TEMPLATES",
+                               ("https://a/{name}.txt",
+                                "https://b/{name}.txt")), \
+             mock.patch.object(alias_resolver, "_http_get_text",
+                               side_effect=fake), \
+             mock.patch.object(alias_resolver, "_read_cache",
+                               return_value=None), \
+             mock.patch.object(alias_resolver, "_write_cache") as mw:
+            items = alias_resolver.resolve_alias(
+                "geoip", "telegram", force_refresh=True)
+        self.assertEqual(items, ["149.154.160.0/20"])
+        self.assertEqual(mw.call_args[0][3], "https://b/telegram.txt")
+
+    def test_default_geoip_source_has_service_lists(self):
+        self.assertIn("Loyalsoldier/geoip",
+                      alias_resolver.DEFAULT_GEOIP_TEMPLATES[0])
+
     def test_invalid_kind(self):
         items = alias_resolver.resolve_alias("nonsense", "foo")
         self.assertEqual(items, [])

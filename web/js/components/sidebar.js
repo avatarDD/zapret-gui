@@ -140,6 +140,32 @@ const Sidebar = (() => {
         return item.simple || item.id === currentPage || _hasActiveChild(item);
     }
 
+    // Свёрнутые секции меню (по метке группы) — как ветки дерева, но
+    // запоминаются на устройстве: длинное меню иначе приходится листать
+    // (issue #406).
+    const COLLAPSED_KEY = 'zapret-gui-nav-collapsed';
+
+    function _collapsed() {
+        try {
+            const v = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]');
+            return Array.isArray(v) ? v : [];
+        } catch (_) { return []; }
+    }
+
+    function _toggleSection(label) {
+        const list = _collapsed();
+        const i = list.indexOf(label);
+        if (i >= 0) list.splice(i, 1); else list.push(label);
+        try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(list)); }
+        catch (_) {}
+        render();
+    }
+
+    // Пункт с открытой сейчас страницей (сам или его ребёнок).
+    function _isActive(item) {
+        return item.id === currentPage || _hasActiveChild(item);
+    }
+
     let currentPage = 'dashboard';
     // Состояние раскрытия родительских пунктов дерева (id → bool).
     const expanded = {};
@@ -259,10 +285,14 @@ const Sidebar = (() => {
 
         nav.innerHTML = '';
         const simple = _simple();
+        const collapsed = _collapsed();
 
         NAV_GROUPS.forEach((group, gi) => {
-            const items = simple ? group.items.filter(_visible) : group.items;
+            let items = simple ? group.items.filter(_visible) : group.items;
             if (items.length === 0) return;
+            // Свёрнутая секция оставляет только открытый сейчас раздел.
+            const folded = !!group.label && collapsed.includes(group.label);
+            if (folded) items = items.filter(_isActive);
 
             // Разделитель между группами (кроме первой)
             if (gi > 0) {
@@ -274,8 +304,23 @@ const Sidebar = (() => {
             // Метка секции
             if (group.label) {
                 const label = document.createElement('div');
-                label.className = 'nav-section-label';
-                label.textContent = group.label;
+                label.className = 'nav-section-label' + (folded ? '' : ' open');
+                label.setAttribute('role', 'button');
+                label.tabIndex = 0;
+                label.setAttribute('aria-expanded', folded ? 'false' : 'true');
+                label.title = folded ? 'Развернуть раздел' : 'Свернуть раздел';
+                label.innerHTML = `
+                    <span class="nav-section-text"></span>
+                    <span class="nav-caret">${ICONS.chevron}</span>
+                `;
+                label.querySelector('.nav-section-text').textContent = group.label;
+                label.addEventListener('click', () => _toggleSection(group.label));
+                label.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        _toggleSection(group.label);
+                    }
+                });
                 nav.appendChild(label);
             }
 

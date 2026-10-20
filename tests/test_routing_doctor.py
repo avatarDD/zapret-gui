@@ -316,6 +316,54 @@ class TestNftAndGeo(unittest.TestCase):
         ipt.assert_not_called()
         test.assert_called_once()
 
+    def test_probe_skips_dead_first_domain(self):
+        # issue #386: первый домен geosite:telegram — cdn-telegram.org, он
+        # не резолвится; проба берёт известный домен категории.
+        from core.routing import domain_rule
+        rule = DomainRoutingRule(target_iface="sbtun0",
+                                 domains=["geosite:telegram"],
+                                 rule_id="uni-x-dom")
+
+        def resolve(d, _fam):
+            return [] if d == "cdn-telegram.org" else ["149.154.167.99"]
+
+        with mock.patch.object(domain_rule, "_resolve_ips",
+                               side_effect=resolve):
+            probe, ips, tried = doctor._pick_probe(
+                rule, ["cdn-telegram.org", "t.me"])
+        self.assertEqual(probe, "telegram.org")
+        self.assertEqual(ips, ["149.154.167.99"])
+
+    def test_dnsmasq_path_checks_set_and_failed_alias(self):
+        from core.routing import alias_resolver, domain_rule
+        rule = DomainRoutingRule(target_iface="sbtun0",
+                                 domains=["t.me", "geoip:telegram"],
+                                 rule_id="uni-d")
+        with mock.patch.object(domain_rule, "_detect_backend",
+                               return_value=(None, "nftset")), \
+             mock.patch.object(doctor, "_nft_set_count", return_value=3), \
+             mock.patch.object(doctor, "_nft_set_test", return_value=True), \
+             mock.patch.object(doctor, "_has_fwmark_rule",
+                               return_value=True), \
+             mock.patch.object(doctor, "_table_default_iface",
+                               return_value="sbtun0"), \
+             mock.patch.object(doctor, "_masquerade_present",
+                               return_value=True), \
+             mock.patch.object(doctor, "_route_get_dev",
+                               return_value="sbtun0") as rg, \
+             mock.patch.object(alias_resolver, "resolve_alias",
+                               return_value=[]), \
+             mock.patch.object(domain_rule, "_resolve_ips",
+                               return_value=["149.154.167.99"]):
+            checks = doctor._diagnose_domain_rule(rule, {}, {})
+        bad = [c["name"] for c in checks if not c["ok"]]
+        self.assertEqual(bad, ["geoip:telegram"])
+        names = " ".join(c["name"] for c in checks)
+        self.assertIn("ip rule fwmark", names)
+        self.assertIn("nft set", names)
+        # route get — с меткой правила, как пойдёт помеченный трафик
+        self.assertIsNotNone(rg.call_args[1].get("mark"))
+
     def test_nft_set_count_parses_elements(self):
         out = ("table inet awg_routing {\n set awgr_x {\n"
                "  type ipv4_addr\n  flags interval,timeout\n"
