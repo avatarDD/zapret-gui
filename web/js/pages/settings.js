@@ -1058,7 +1058,8 @@ const SettingsPage = (() => {
                 'Настройки: ' + (s.has_settings ? 'да' : 'нет') + '\n' +
                 'Стратегии: ' + s.strategies + '\n' +
                 'sing-box: ' + s.singbox + ', mihomo: ' + s.mihomo + '\n' +
-                'Списки доменов: ' + s.hostlists + '\n\n' +
+                'Списки доменов: ' + s.hostlists + '\n' +
+                'IP-списки: ' + (s.ipsets || 0) + ', блобы: ' + (s.blobs || 0) + '\n\n' +
                 (restoreGui ? 'ВКЛ. параметры Web-GUI.\n\n' : '') +
                 'Текущие данные будут перезаписаны.';
             if (!confirm(msg)) return;

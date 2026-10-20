@@ -176,12 +176,28 @@ def adapt_token(tok: str, env: dict) -> tuple:
     return tok, ""
 
 
+def missing_file(tok: str, env: dict):
+    """{"kind", "name"} файла, на который ссылается токен и которого здесь
+    нет (для ``missing_files`` ответа импорта), или None."""
+    new_tok, note = adapt_token(tok, env)
+    if not note:
+        return None
+    opt, _, val = new_tok.partition("=")
+    if opt == "--lua-init":
+        return {"kind": "lua", "name": os.path.basename(val[1:])}
+    if opt == "--blob":
+        return {"kind": "blob", "name": os.path.basename(val.partition(":@")[2])}
+    return {"kind": "ipset" if opt in _IPSET_OPTS else "hostlist",
+            "name": os.path.basename(val)}
+
+
 def convert(text: str, env: dict) -> dict:
     """Разобрать и перенести. Чистая функция (кроме ``env['exists']``).
 
     Returns:
         {"ok", "kind", "kind_title", "profiles": [{"id","name","enabled",
-         "args"}], "warnings": [...], "dropped": [...]}
+         "args"}], "warnings": [...], "dropped": [...],
+         "missing_files": [{"kind": "lua|blob|hostlist|ipset", "name"}]}
     """
     kind = detect(text)
     warnings, dropped = [], []
@@ -211,6 +227,7 @@ def convert(text: str, env: dict) -> dict:
             groups.append((var, part))
 
     profiles = []
+    missing = []        # файлы, которые надо создать (missing_files)
     carry = []          # глобальные --blob/--lua-init — к следующему профилю
     for var, part in groups:
         if any(t.startswith("--dpi-desync") for t in part):
@@ -237,6 +254,7 @@ def convert(text: str, env: dict) -> dict:
             new_tok, note = adapt_token(t, env)
             if note and note not in notes:
                 notes.append(note)
+            _note_missing(t, note, env, missing)
             args.append(new_tok)
         n = len(profiles) + 1
         profiles.append({"id": "import%d" % n,
@@ -252,6 +270,7 @@ def convert(text: str, env: dict) -> dict:
                 new_tok, note = adapt_token(t, env)
                 if note and note not in notes:
                     notes.append(note)
+                _note_missing(t, note, env, missing)
                 decl.append(new_tok)
             first["args"] = " ".join(decl + [first["args"]])
         else:
@@ -264,12 +283,19 @@ def convert(text: str, env: dict) -> dict:
     out = {"ok": bool(profiles), "kind": kind,
            "kind_title": KIND_TITLES.get(kind, kind),
            "profiles": profiles, "warnings": warnings,
-           "dropped": sorted(set(dropped))}
+           "dropped": sorted(set(dropped)), "missing_files": missing}
     if not profiles:
         out["error"] = ("не нашлось ни одного профиля nfqws2 с "
                         "--lua-desync" if kind != "zapret1" else
                         "это конфиг zapret v1 — стратегии nfqws2 в нём нет")
     return out
+
+
+def _note_missing(tok: str, note: str, env: dict, missing: list):
+    if note:
+        item = missing_file(tok, env)
+        if item and item not in missing:
+            missing.append(item)
 
 
 def _profile_name(args: list, n: int, var: str) -> str:

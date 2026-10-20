@@ -163,3 +163,26 @@ class TestArgs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMissingFiles(unittest.TestCase):
+
+    def test_lists_files_to_create(self):
+        r = conv(ZAPRET2.replace("tls_google.bin", "tls_x.bin").replace(
+            "<HOSTLIST> --lua-desync",
+            "--hostlist=/opt/zapret2/lists/zt-yt.txt "
+            "--ipset=/opt/zapret2/ipset/zt-x-ipset.txt --lua-desync"))
+        self.assertIn({"kind": "blob", "name": "tls_x.bin"},
+                      r["missing_files"])
+        self.assertIn({"kind": "hostlist", "name": "zt-yt.txt"},
+                      r["missing_files"])
+        self.assertIn({"kind": "ipset", "name": "zt-x-ipset.txt"},
+                      r["missing_files"])
+
+    def test_present_files_not_listed(self):
+        r = conv(KEENETIC)
+        names = [m["name"] for m in r["missing_files"]]
+        self.assertNotIn("zapret-antidpi.lua", names)
+        self.assertNotIn("other.txt", names)
+        self.assertIn("user.list", names)
+        self.assertEqual(len(names), len(set(names)))

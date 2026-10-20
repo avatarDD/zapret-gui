@@ -11,7 +11,10 @@
   - strategies — пользовательские стратегии (config/strategies/user);
   - singbox    — JSON-конфиги sing-box;
   - mihomo     — YAML-конфиги mihomo;
-  - hostlists  — пользовательские hostlist'ы (домены).
+  - hostlists  — пользовательские hostlist'ы (домены);
+  - ipsets     — пользовательские IP-списки;
+  - blobs      — пользовательские блобы (base64; встроенные и системные
+                 из files/fake не бэкапим — они есть в поставке).
 
 Восстановление переиспользует существующие менеджеры (их валидацию):
 strategy/singbox/mihomo/hostlist managers + config_manager.
@@ -31,13 +34,18 @@ FORMAT = "zapret-gui-backup"
 FORMAT_VERSION = 1
 
 # Все секции бэкапа.
-SECTIONS = ("settings", "strategies", "singbox", "mihomo", "hostlists")
+SECTIONS = ("settings", "strategies", "singbox", "mihomo", "hostlists",
+            "ipsets", "blobs")
 
 # Встроенные hostlist-имена не бэкапим (они дефолтные/восстановятся сами).
 try:
     from core.hostlist_manager import BUILTIN_NAMES as _HL_BUILTIN
 except Exception:
     _HL_BUILTIN = ()
+try:
+    from core.ipset_manager import BUILTIN_NAMES as _IPSET_BUILTIN
+except Exception:
+    _IPSET_BUILTIN = ()
 
 
 # ─────────────────────── build ───────────────────────────────────────
@@ -63,6 +71,10 @@ def build_backup(include=None) -> dict:
         backup["mihomo"] = _collect_engine_configs("mihomo")
     if "hostlists" in sections:
         backup["hostlists"] = _collect_hostlists()
+    if "ipsets" in sections:
+        backup["ipsets"] = _collect_ipsets()
+    if "blobs" in sections:
+        backup["blobs"] = _collect_blobs()
     return backup
 
 
@@ -77,6 +89,8 @@ def summary(backup: dict) -> dict:
         "singbox": len(backup.get("singbox") or []),
         "mihomo": len(backup.get("mihomo") or []),
         "hostlists": len(backup.get("hostlists") or []),
+        "ipsets": len(backup.get("ipsets") or []),
+        "blobs": len(backup.get("blobs") or []),
     }
 
 
@@ -94,6 +108,7 @@ def validate_backup(data) -> list:
         errors.append("format_version должен быть числом")
     for key, typ in (("strategies", list), ("singbox", list),
                      ("mihomo", list), ("hostlists", list),
+                     ("ipsets", list), ("blobs", list),
                      ("settings", dict)):
         if key in data and not isinstance(data[key], typ):
             errors.append("Секция '%s' имеет неверный тип" % key)
@@ -133,6 +148,12 @@ def restore_backup(data: dict, *, sections=None,
     if "hostlists" in want and data.get("hostlists"):
         result["restored"]["hostlists"] = _restore_hostlists(
             data["hostlists"], result["errors"])
+    if "ipsets" in want and data.get("ipsets"):
+        result["restored"]["ipsets"] = _restore_ipsets(
+            data["ipsets"], result["errors"])
+    if "blobs" in want and data.get("blobs"):
+        result["restored"]["blobs"] = _restore_blobs(
+            data["blobs"], result["errors"])
 
     # После восстановления настроек поднимаем/переподнимаем фоновые задачи,
     # чтобы восстановленные подписки/пул/курируемые списки и мониторинг
@@ -218,6 +239,36 @@ def _collect_hostlists() -> list:
         return []
 
 
+def _collect_ipsets() -> list:
+    try:
+        from core.ipset_manager import get_ipset_manager
+        im = get_ipset_manager()
+        return [{"name": n, "entries": im.get_ipset(n)}
+                for n in im.list_names() if n not in _IPSET_BUILTIN]
+    except Exception as e:
+        log.warning("backup: ipsets: %s" % e, source="backup")
+        return []
+
+
+def _collect_blobs() -> list:
+    try:
+        import base64
+        from core.blob_manager import get_blob_manager
+        bm = get_blob_manager()
+        out = []
+        for b in bm.get_blobs():
+            if b.get("is_builtin"):
+                continue
+            data = bm.get_blob_content(b["name"])
+            if data:
+                out.append({"name": b["name"],
+                            "base64": base64.b64encode(data).decode()})
+        return out
+    except Exception as e:
+        log.warning("backup: blobs: %s" % e, source="backup")
+        return []
+
+
 # ─────────────────────── restorers ────────────────────────────────────
 
 def _restore_settings(settings: dict, *, restore_gui: bool, errors: list) -> int:
@@ -288,6 +339,58 @@ def _restore_hostlists(hostlists: list, errors: list) -> int:
             count += 1
     except Exception as e:
         errors.append("hostlists: %s" % e)
+    return count
+
+
+def _restore_ipsets(ipsets: list, errors: list) -> int:
+    count = 0
+    try:
+        from core.ipset_manager import get_ipset_manager
+        im = get_ipset_manager()
+        for s in ipsets:
+            if not isinstance(s, dict) or not s.get("name"):
+                continue
+            name = s["name"]
+            if name in _IPSET_BUILTIN:
+                continue
+            if name not in im.list_names():
+                ok, err = im.create_ipset(name)
+                if not ok:
+                    errors.append("ipset %s: %s" % (name, err))
+                    continue
+            if im.save_ipset(name, s.get("entries") or []):
+                count += 1
+            else:
+                errors.append("ipset %s: не сохранён" % name)
+    except Exception as e:
+        errors.append("ipsets: %s" % e)
+    return count
+
+
+def _restore_blobs(blobs: list, errors: list) -> int:
+    count = 0
+    try:
+        import base64
+        import binascii
+        from core.blob_manager import get_blob_manager
+        bm = get_blob_manager()
+        for b in blobs:
+            if not isinstance(b, dict) or not b.get("name"):
+                continue
+            if bm.is_builtin(b["name"]):
+                continue
+            try:
+                data = base64.b64decode(b.get("base64") or "", validate=True)
+            except (binascii.Error, ValueError):
+                errors.append("blob %s: base64 не разбирается" % b["name"])
+                continue
+            ok, err = bm.save_blob(b["name"], data)
+            if ok:
+                count += 1
+            else:
+                errors.append("blob %s: %s" % (b["name"], err))
+    except Exception as e:
+        errors.append("blobs: %s" % e)
     return count
 
 
