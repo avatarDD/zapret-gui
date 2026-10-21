@@ -1057,8 +1057,14 @@ class UsqueManager:
                 return {"ok": False, "error": str(e),
                         "diagnostic": self._diagnostic(iface)}
 
-    def stop(self, iface: str) -> dict:
-        """Остановить WARP туннель."""
+    def stop(self, iface: str, restore_defaults: bool = True) -> dict:
+        """Остановить WARP туннель.
+
+        restore_defaults=False — не трогать системные defaults в конце.
+        Нужен WARP-in-WARP: он гасит свои слои под собственным замком, а
+        restore_system_defaults(only_if_idle=True) обходит туннели через
+        tunnel_monitor, который спрашивает статус у того же WARP-in-WARP.
+        Defaults тот восстанавливает сам, отпустив замок (issue #416)."""
         if not _VALID_IFACE_RE.match(iface):
             return {"ok": False, "error": "Неверное имя интерфейса: %s" % iface}
 
@@ -1150,11 +1156,12 @@ class UsqueManager:
         self._stderr_threads.pop(iface, None)
 
         # MR-05: Восстанавливаем системные defaults, если нет других активных туннелей
-        try:
-            from core.tunnel_optimizer import restore_system_defaults
-            restore_system_defaults(only_if_idle=True)
-        except Exception:
-            pass
+        if restore_defaults:
+            try:
+                from core.tunnel_optimizer import restore_system_defaults
+                restore_system_defaults(only_if_idle=True)
+            except Exception:
+                pass
 
         log.info("usque: туннель %s остановлен" % iface, source="usque")
         return {"ok": True}

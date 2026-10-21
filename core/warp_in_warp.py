@@ -316,7 +316,12 @@ class WarpInWarpManager:
     self._lock."""
 
     def __init__(self):
-        self._lock = threading.Lock()
+        # RLock, а не Lock: stop()/start() под замком гасят слои, а цепочка
+        # usque stop → restore_system_defaults → tunnel_monitor возвращается
+        # в get_status() того же потока. С обычным Lock поток ждал сам себя
+        # вечно (issue #416). Сам цикл разорван restore_defaults=False,
+        # RLock — страховка от следующего такого пути.
+        self._lock = threading.RLock()
         self._outer_iface = ""
         self._inner_iface = ""
         self._mode = ""
@@ -441,12 +446,10 @@ class WarpInWarpManager:
 
     def _get_status_locked(self) -> dict[str, Any]:
         """То же самое, но без захвата self._lock — для вызова из мест,
-        которые уже держат self._lock (например, start()). self._lock —
-        обычный threading.Lock(), не реентерабельный: повторный `with
-        self._lock:` в том же потоке — гарантированный deadlock. Именно
-        так и произошло при первом прогоне smoke-теста этого файла —
-        start() дергал self.get_status() изнутри своего же `with
-        self._lock:`."""
+        которые уже держат self._lock (например, start()). Когда замок был
+        обычным threading.Lock(), повторный `with self._lock:` в том же
+        потоке давал deadlock (первый прогон smoke-теста, issue #416).
+        Сейчас это RLock, но лишний захват всё равно не нужен."""
         self._restore_runtime_locked()
         mode, outer_iface, inner_iface = (
             self._mode,
@@ -639,7 +642,7 @@ class WarpInWarpManager:
             if not _routes_cover(pinned, v4, v6):
                 for dst, via, v6f, previous in pinned:
                     _restore_route(dst, via, v6f, previous)
-                mgr.stop(outer_iface)
+                mgr.stop(outer_iface, restore_defaults=False)
                 return {"ok": False,
                         "error": "Не удалось закрепить endpoint inner через outer"}
         # Inner — всегда H2/TCP. MTU внешнего TUN у usque — 1280 (другие
@@ -659,7 +662,7 @@ class WarpInWarpManager:
         if not result.get("ok"):
             for dst, via, v6, previous in pinned:
                 _restore_route(dst, via, v6, previous)
-            mgr.stop(outer_iface)
+            mgr.stop(outer_iface, restore_defaults=False)
             return {"ok": False, "error": "Inner: %s" % result.get("error")}
 
         self._outer_iface = outer_iface
@@ -738,7 +741,7 @@ class WarpInWarpManager:
         if not _routes_cover(pinned, v4, v6):
             for dst, via, v6f, previous in pinned:
                 _restore_route(dst, via, v6f, previous)
-            usque_mgr.stop(outer_iface)
+            usque_mgr.stop(outer_iface, restore_defaults=False)
             return {"ok": False,
                     "error": "Не удалось закрепить endpoint AWG через outer MASQUE"}
 
@@ -749,7 +752,7 @@ class WarpInWarpManager:
         if not result.get("ok"):
             for dst, via, v6f, previous in pinned:
                 _restore_route(dst, via, v6f, previous)
-            usque_mgr.stop(outer_iface)
+            usque_mgr.stop(outer_iface, restore_defaults=False)
             return {
                 "ok": False,
                 "error": "Inner AWG: %s" % result.get("message", "ошибка"),
@@ -915,7 +918,7 @@ class WarpInWarpManager:
                 try:
                     from core.usque_manager import get_usque_manager
 
-                    get_usque_manager().stop(inner_iface)
+                    get_usque_manager().stop(inner_iface, restore_defaults=False)
                 except Exception as e:
                     log.warning(
                         "warp-in-warp stop inner(usque): %s" % e, source="warp_in_warp"
@@ -940,7 +943,7 @@ class WarpInWarpManager:
                 try:
                     from core.usque_manager import get_usque_manager
 
-                    get_usque_manager().stop(outer_iface)
+                    get_usque_manager().stop(outer_iface, restore_defaults=False)
                 except Exception as e:
                     log.warning(
                         "warp-in-warp stop outer(usque): %s" % e, source="warp_in_warp"
