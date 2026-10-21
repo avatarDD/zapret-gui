@@ -448,7 +448,7 @@ class WarpInWarpManager:
         """То же самое, но без захвата self._lock — для вызова из мест,
         которые уже держат self._lock (например, start()). Когда замок был
         обычным threading.Lock(), повторный `with self._lock:` в том же
-        потоке давал deadlock (первый прогон smoke-теста, issue #416).
+        потоке давал deadlock (первый прогон smoke-теста; в stop() — #416).
         Сейчас это RLock, но лишний захват всё равно не нужен."""
         self._restore_runtime_locked()
         mode, outer_iface, inner_iface = (
