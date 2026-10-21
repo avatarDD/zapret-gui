@@ -39,18 +39,18 @@
       "id": "zapret2",
       "repo": "bol-van/zapret2",
       "kind": "release",
-      "pinned": "v1.0.5.2",
-      "verified_at": "2026-09-15",
+      "pinned": "v1.0.6",
+      "verified_at": "2026-10-21",
       "skill": ".claude/skills/nfqws2-strategies/SKILL.md",
       "mentions": [
         ".claude/skills/nfqws2-strategies/SKILL.md",
         "web/js/utils/nfqws2_spec.js"
       ],
       "vendored": {
-        "import/lua/zapret-lib.lua": "b67a470f23b00a8d6e732c4e5135a39b224511e0b71809d5f4616adf62674980",
-        "import/lua/zapret-antidpi.lua": "31c9dd75b0bd55e98e5306293f2be81e9d2ecadcbbf9157394ff37dcff7dc85a",
-        "import/lua/zapret-auto.lua": "c2028f544134b0dec33f054ac54fe4f2315d969ba034601456f72017fd5f8528",
-        "import/lua/zapret-obfs.lua": "e9581bfbca846630ada78193641d834e25abc11337ba85467d642c2d8c6fa47f",
+        "import/lua/zapret-lib.lua": "6bf528fef1f0fc3c65e189216fc8a06bb873f6e25d1c29d2bfa4695a09b73440",
+        "import/lua/zapret-antidpi.lua": "6d1fa9168e5de1682fef91fd174f68b58c50f6739ef00f42ca7db2b940b6246d",
+        "import/lua/zapret-auto.lua": "23a9b99a776d868d92f4cc0ee5110f5c1f12fe746620d9c0337022dbc2f52df0",
+        "import/lua/zapret-obfs.lua": "e2d75840a9f1e3bfb74fa7463886932e03eb02ab33c6146d6392d6a231d1cfd5",
         "import/lua/zapret-pcap.lua": "6866c37c92fbc62075accf94228da48af618c7f416edc682eba99b2196e05f45",
         "import/lua/zapret-tests.lua": "82664cb50a751a531b63dce094ac03de5045b16b489e726ff32a9a1034811459"
       },

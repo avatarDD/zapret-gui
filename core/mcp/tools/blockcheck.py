@@ -206,10 +206,11 @@ def blockcheck_status(args: dict) -> dict:
                 "maxItems": 10,
             },
             "scanlevel": {"type": "string",
-                          "enum": ["quick", "standard", "force"],
+                          "enum": ["veryquick", "quick", "standard", "force"],
                           "default": "standard",
-                          "description": ("Depth (env SCANLEVEL). / "
-                                          "Глубина перебора.")},
+                          "description": ("Depth (env SCANLEVEL; veryquick "
+                                          "needs zapret2 1.0.6+). / Глубина "
+                                          "перебора (veryquick — с 1.0.6).")},
             "ipv": {"type": "string", "enum": ["4", "6", "46"],
                     "description": "IP version (env IPVS). / Версия IP."},
             "repeats": {"type": "integer", "minimum": 1, "maximum": 5,

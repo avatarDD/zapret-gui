@@ -21,6 +21,8 @@ class TestHighlightRegex(unittest.TestCase):
             "rutracker.org : nfqws2 --filter-tcp=443 --lua-desync=fake !!!!!"))
         self.assertTrue(_HIGHLIGHT_RE.search("* SUMMARY"))
         self.assertTrue(_HIGHLIGHT_RE.search("  * COMMON"))
+        # zapret2 1.0.6: секция покрытия после COMMON.
+        self.assertTrue(_HIGHLIGHT_RE.search("* COVERAGE"))
 
     def test_ignores_noise(self):
         for noise in (
@@ -28,9 +30,37 @@ class TestHighlightRegex(unittest.TestCase):
             "UNAVAILABLE code=7",
             "!!!!! AVAILABLE !!!!!",
             "* AVAILABLE",
+            # строка секции COVERAGE (1.0.6) — не находка, заголовка хватает
+            "2/3 : nfqws2 --payload=tls_client_hello --lua-desync=fake",
         ):
             self.assertIsNone(_HIGHLIGHT_RE.search(noise),
                               "ложное срабатывание на: %r" % noise)
+
+
+class TestScanlevel(unittest.TestCase):
+    """SCANLEVEL доходит до скрипта; veryquick (zapret2 1.0.6) — допустим."""
+
+    def _env_for(self, level):
+        from unittest import mock
+        r = Blockcheck2Runner()
+        with mock.patch.object(Blockcheck2Runner, "find_script",
+                               staticmethod(lambda: "/nonexistent/bc2.sh")), \
+                mock.patch("core.blockcheck2.subprocess.Popen",
+                           side_effect=OSError("stub")) as popen:
+            res = r.start(scanlevel=level)
+        return res, popen
+
+    def test_veryquick_passed_to_env(self):
+        res, popen = self._env_for("VeryQuick")
+        self.assertFalse(res["ok"])          # Popen-заглушка
+        self.assertEqual(popen.call_args.kwargs["env"]["SCANLEVEL"],
+                         "veryquick")
+
+    def test_unknown_level_rejected(self):
+        res, popen = self._env_for("deep")
+        self.assertFalse(res["ok"])
+        self.assertIn("veryquick", res["error"])
+        popen.assert_not_called()
 
 
 class _FakeProc:

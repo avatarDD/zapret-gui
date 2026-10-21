@@ -58,14 +58,15 @@ const Nfqws2Lint = (() => {
         if (s === '*') return true;
         return s.split(',').every(p => /^~?\d+(-\d+)?$/.test(p.trim()) && p.trim() !== '');
     }
-    // Диапазон --in/out-range: [mode<int>](-|<)[mode<int>] ; одиночный 'a'/'x' тоже ок.
+    // Диапазон --in/out-range: <mode>[<int>][(-|<)<mode>[<int>]] — так его
+    // пишет `nfqws2 -?` с 1.0.6 (разбор packet_range_parse в nfq2/filter.c
+    // не менялся). Граница — буква режима: n/d/s/p/b обязательно с числом,
+    // a/x — без. Пустая левая граница — «с начала» (-d10), пустая правая —
+    // «до конца» (s100-). Без разделителя допустимы только a и x. Голое число
+    // (-10) nfqws2 не примет: у границы нет режима.
     function isRange(s) {
-        if (/^[ax]$/.test(s)) return true;
-        const part = '(?:[axnbsdp]|[nbsdp]\\d+|\\d+)';
-        const re = new RegExp('^(?:' + part + ')?[-<](?:' + part + ')?$');
-        if (re.test(s)) return true;
-        // одиночная граница без разделителя: -d10 уже покрыт (пустая левая часть)
-        return false;
+        const pos = '(?:[nbsdp]\\d+|[ax])';
+        return new RegExp('^(?:[ax]|' + pos + '?[-<]' + pos + '?)$').test(s);
     }
     // Значение --filter-mark: mark[/mask], каждая часть — десятичное
     // число либо 0xHEX (nfqws.c: sscanf "0x%X", затем "%u"). uint32,

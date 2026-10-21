@@ -169,6 +169,11 @@ class TestRunnerEndToEnd(unittest.TestCase):
         out = r.get_output("bb.com")
         self.assertTrue(any("пропущены" in l for l in out["lines"]))
 
+    def test_veryquick_accepted(self):
+        # zapret2 1.0.6: новый SCANLEVEL; старый скрипт ведёт себя как standard.
+        self._run(domains="a.com", concurrency=1, stop_after=0,
+                  scanlevel="veryquick")
+
     def test_sequential(self):
         self._run(domains="a.com bb.com", concurrency=1, stop_after=0)
         self.assertEqual(self._trace()[:4], ["start", "end", "start", "end"])

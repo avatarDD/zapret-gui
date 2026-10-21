@@ -34,7 +34,7 @@ def register(app):
         Body (JSON), все поля опциональны:
             {
               "domains":   ["rutracker.org", ...] | "a.com b.com",
-              "scanlevel": "quick" | "standard" | "force",
+              "scanlevel": "veryquick" | "quick" | "standard" | "force",
               "params":    {"IPVS": "4", "ENABLE_HTTP": "0", "REPEATS": "2"},
               "extra_args": ["--foo"]            // позиционные аргументы скрипта
             }

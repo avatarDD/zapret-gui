@@ -699,7 +699,9 @@ const Help = (() => {
               'Сверху телеметрии «примораживаются» <b>только найденные рабочие ' +
               'стратегии</b> (строки <code>working strategy found … : &lt;движок ' +
               'параметры&gt;</code>) и секции <code>* SUMMARY</code> / ' +
-              '<code>* COMMON</code> (стратегии, рабочие сразу для всех целей). ' +
+              '<code>* COMMON</code> (стратегии, рабочие сразу для всех целей) / ' +
+              '<code>* COVERAGE</code> (zapret2 1.0.6+: на скольких целях из ' +
+              'всех сработала каждая стратегия, <code>N/M</code>). ' +
               'Попытки <code>UNAVAILABLE code=NN</code> и отдельные ' +
               '<code>AVAILABLE</code> в шапку не выносятся — только в общий лог.' +
               '<br><br>' +
@@ -718,13 +720,19 @@ const Help = (() => {
               'протоколы проверять (0/1);' +
               '<br>• <code>HTTP_PORT</code>=80, <code>HTTPS_PORT</code>=443, ' +
               '<code>QUIC_PORT</code>=443 — порты;' +
-              '<br>• <code>SCANLEVEL</code> — quick / standard / force (глубина ' +
-              'перебора); <code>REPEATS</code> — повторов на тест (фильтр ' +
-              'нестабильных); <code>PARALLEL</code>=1 — параллельный прогон;' +
+              '<br>• <code>SCANLEVEL</code> — veryquick / quick / standard / force ' +
+              '(глубина перебора; veryquick — с zapret2 1.0.6, бросает семейство ' +
+              'приёмов после первой удачной вариации); <code>REPEATS</code> — ' +
+              'повторов на тест (фильтр нестабильных); <code>PARALLEL</code>=1 — параллельный прогон;' +
               '<br>• <code>CURL_MAX_TIME</code>=2, <code>CURL_MAX_TIME_QUIC</code>, ' +
               '<code>CURL_MAX_TIME_DOH</code>=2 — таймауты curl (сек); ' +
               '<code>CURL_HTTPS_GET</code>=1 — GET вместо HEAD (см. выше); ' +
               '<code>CURL_VERBOSE</code>=1 — подробный curl;' +
+              '<br>• с zapret2 1.0.6: <code>CURL_PAD</code>=N — добить запрос ' +
+              'мусорными заголовками до N байт (проверка блока по ~16 КБ без ' +
+              'большой загрузки); <code>PACE</code>=мс — не чаще одного запроса ' +
+              'curl за столько миллисекунд (если провайдер режет частые ' +
+              'соединения);' +
               '<br>• <code>SKIP_PKTWS</code> — не тестировать pkt-движок (nfqws2); ' +
               '<code>SKIP_IPBLOCK</code> — пропустить проверку блока по IP; ' +
               '<code>SKIP_DNSCHECK</code> — пропустить проверку подмены DNS;' +

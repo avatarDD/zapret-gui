@@ -48,8 +48,8 @@ import time
 from typing import Any, Optional
 
 from core.log_buffer import log
-from core.blockcheck2 import (Blockcheck2Runner, _ENV_KEY_RE, _HOST_RE,
-                              parse_found_strategy)
+from core.blockcheck2 import (SCANLEVELS, Blockcheck2Runner, _ENV_KEY_RE,
+                              _HOST_RE, parse_found_strategy)
 
 
 MAX_DOMAINS = 32
@@ -316,7 +316,7 @@ class Blockcheck2MultiRunner:
         Args:
             domains: домены (текст через \\r\\n/пробелы или список).
             params: env blockcheck2 (IPVS, REPEATS, ENABLE_*, …).
-            scanlevel: quick|standard|force.
+            scanlevel: veryquick|quick|standard|force.
             concurrency: сколько копий одновременно (1 — по очереди).
             stop_after: N рабочих стратегий на тест, 0 — без остановки.
             pause_bypass: снять обход GUI на время проверки.
@@ -336,8 +336,9 @@ class Blockcheck2MultiRunner:
             return {"ok": False, "error": "concurrency/stop_after — числа"}
         if scanlevel:
             scanlevel = str(scanlevel).strip().lower()
-            if scanlevel not in ("quick", "standard", "force"):
-                return {"ok": False, "error": "scanlevel: quick|standard|force"}
+            if scanlevel not in SCANLEVELS:
+                return {"ok": False,
+                        "error": "scanlevel: " + "|".join(SCANLEVELS)}
         env_extra = {}
         for k, v in (params or {}).items():
             k = str(k).strip()

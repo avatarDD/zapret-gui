@@ -9,7 +9,7 @@
 (GET /api/blockcheck2/output?offset=N).
 
 Скрипт делается неинтерактивным через переменные окружения:
-  BATCH=1, DOMAINS=..., IPVS=4|6|46, SCANLEVEL=quick|standard|force,
+  BATCH=1, DOMAINS=..., IPVS=4|6|46, SCANLEVEL=veryquick|quick|standard|force,
   ENABLE_HTTP, ENABLE_HTTPS_TLS12, ENABLE_HTTPS_TLS13, ENABLE_HTTP3,
   REPEATS, PARALLEL, SKIP_TPWS, SKIP_PKTWS, CURL_VERBOSE, …
 stdin перенаправлен в /dev/null — оставшиеся `read` получают EOF и берут
@@ -48,6 +48,11 @@ _SCRIPT_CANDIDATES = ("blockcheck2.sh", "blockcheck.sh")
 # Лимиты буфера вывода (строк) — телеметрия может быть многословной.
 _MAX_OUTPUT_LINES = 5000
 
+# Уровни SCANLEVEL. veryquick — с zapret2 1.0.6: как quick, плюс семейство
+# приёмов бросается после первой удачной вариации. Старый скрипт его не
+# знает и молча ведёт себя как standard — запуск не ломается.
+SCANLEVELS = ("veryquick", "quick", "standard", "force")
+
 # Разрешённые имена env-переменных параметров (UPPER_SNAKE).
 _ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -60,9 +65,11 @@ _HOST_RE = re.compile(r"^[a-zA-Z0-9.:_-]+$")
 # "UNAVAILABLE", из-за чего старый фильтр ловил мусор). blockcheck печатает
 # найденную стратегию строкой вида:
 #   !!!!! curl_test_http: working strategy found for ipv4 host : nfqws ... !!!!!
-# и финальные секции «* SUMMARY» / «* COMMON» (стратегии, рабочие для всех целей).
+# и финальные секции «* SUMMARY» / «* COMMON» (стратегии, рабочие для всех целей)
+# / «* COVERAGE» (с 1.0.6: «N/M : стратегия» — на скольких целях сработала).
 _HIGHLIGHT_RE = re.compile(
-    r"working\s+strategy\s+found|^\s*\*\s*(?:SUMMARY|COMMON)\b", re.I
+    r"working\s+strategy\s+found|^\s*\*\s*(?:SUMMARY|COMMON|COVERAGE)\b",
+    re.I,
 )
 
 # Структурный разбор строки найденной стратегии для бейджей в GUI. Формат
@@ -207,7 +214,7 @@ class Blockcheck2Runner:
             domains:    домены для проверки (→ env DOMAINS, через пробел).
             params:     прочие env-переменные (IPVS, ENABLE_HTTP, REPEATS…).
             extra_args: дополнительные позиционные аргументы скрипта.
-            scanlevel:  quick|standard|force (→ env SCANLEVEL).
+            scanlevel:  veryquick|quick|standard|force (→ env SCANLEVEL).
 
         Returns:
             dict: { ok, error?, script?, cmd? }.
@@ -242,9 +249,9 @@ class Blockcheck2Runner:
 
             if scanlevel:
                 sl = str(scanlevel).strip().lower()
-                if sl not in ("quick", "standard", "force"):
+                if sl not in SCANLEVELS:
                     return {"ok": False,
-                            "error": "scanlevel: quick|standard|force"}
+                            "error": "scanlevel: " + "|".join(SCANLEVELS)}
                 env["SCANLEVEL"] = sl
 
             dom_list = self._clean_domains(domains)

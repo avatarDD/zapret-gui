@@ -23,7 +23,7 @@ description: >-
    (комментарий перед каждой функцией = спецификация её аргументов),
    `lua/zapret-auto.lua`, `lua/zapret-lib.lua`, `lua/zapret-obfs.lua`,
    `init.d/custom.d.examples.linux/`, `config.default`.
-2. **`nfqws2 -?`** (v1.0.5.2, актуальный релиз на 2026-09) — дамп опций CLI, §3 ниже.
+2. **`nfqws2 -?`** (v1.0.6, актуальный релиз на 2026-10) — дамп опций CLI, §3 ниже.
 3. **nfqws2-keenetic** — поведенческий эталон под Keenetic (НЕ путать пути —
    у них своя раскладка `S51nfqws2` / `/opt/etc/nfqws2/…`; у нас её НЕТ).
 4. **Наш код в `core/`** — `nfqws_manager.py`, `strategy_scanner.py`,
@@ -35,8 +35,15 @@ description: >-
 
 ## 0. Версии zapret2: что изменилось после 0.9.5.2
 
-**Актуальный релиз — v1.0.5.2** (2026-09-15). Предыдущий ориентир этого
-справочника был v1.0.4 (2026-07-31), а до него — v0.9.5.2 (2026-04-30).
+**Актуальный релиз — v1.0.6** (2026-10-21). Предыдущие ориентиры этого
+справочника: v1.0.5.2 (2026-09-15), v1.0.4 (2026-07-31), v0.9.5.2 (2026-04-30).
+
+**1.0.6 — релиз фиксов и blockcheck2, CLI не менялся.** Ни одной новой опции,
+`lua_compat_ver` остаётся 6, таблицы `--filter-l7`/`--payload` те же.
+В `nfqws2 -?` поменялась только запись синтаксиса `--in-range`/`--out-range`
+(§4) — разбор (`packet_range_parse`) прежний. Остальное — фиксы core-lua
+(синхронизированы в бандл, см. 0.2 п.2) и заметные новшества blockcheck2
+(§14.1).
 
 **Главное для нас: в 1.0.5 впервые с 0.9.5.2 появились НОВЫЕ CLI-опции** —
 `--filter-mark` (фильтр профиля по mark пакета) и три инверсии сетевых
@@ -62,6 +69,7 @@ description: >-
 | **1.0.5** | 2026-09-02 | **Новые опции: `--filter-mark=mark[/mask]`** (фильтр профиля по mark пакета) и **инверсии фильтров** `--filter-ssid-neg`, `--ssid-filter-neg`, `--nlm-filter-neg`. **desync-функция может явно вернуть `nil` — это синоним `VERDICT_PASS`** (раньше явный nil был ошибкой). `zapret-lib: luaexec` теперь ПРОБРАСЫВАЕТ вердикт вызванного кода (раньше терял). **TCP-опции: `reconstruct` паддит нулями, `dissect` срезает хвостовые `0x00`** — реконструкция перестала зависеть от того, был ли в исходнике EOL-паддинг. blockcheck2: в Windows вместо `--ipset` используется `--wf-raw-filter`; lua поднят до 5.5.1. |
 | **1.0.5.1** | 2026-09-07 | Оптимизация поиска профиля (сначала быстрые проверки). Поведение не меняется. |
 | **1.0.5.2** | 2026-09-15 | Ещё оптимизации поиска профиля. Плюс (в диапазоне после 1.0.5.1, но без записи в `changes.txt`): автохостлисты больше не становятся «непустыми», если ни один список не перечитался, и фикс выхода по `HUP`. |
+| **1.0.6** | 2026-10-21 | **CLI без изменений.** `zapret-lib`: `quic_tvb` на LuaJIT/Lua ≤5.2 отдаёт 62-битные значения, не влезающие в мантиссу, сырой строкой (`bquic_tvb` её же и пишет обратно) — раньше молча терял точность; `dissect_url` и C-шный детектор DPI-редиректа (`HttpReplyLooksLikeDPIRedirect`) считают `?` и `#` концом домена (`censor.net?x` больше не даёт хост `censor.net?x`); `tls_dissect_handshake` чистит частично заполненный `dis` при неудаче, `tls_client_hello_mod` это проверяет. `zapret-obfs: synhide` на IPv4 без `ghost=` больше не берёт TTL из `ghost6=`. Автохостлисты снова помечаются непустыми, если файл открылся, даже когда чтение потом упало (поправка к 1.0.5.2). `droproot` работает в «частичном root» (`SECBIT_NO_SETUID_FIXUP` вместо `PR_SET_KEEPCAPS` — контейнеры). Доки: `seqovl` у `multidisorder`/`multidisorder_legacy` — маркер (в коде так и было), `tcp_md5` по умолчанию случайный (тоже было), у `circular` задокументирован `key=`. **blockcheck2:** `SCANLEVEL=veryquick`, `CURL_PAD`, `PACE`, секция `* COVERAGE`, сторожевой таймер во всех ОС, уборка хвостов после `kill -9`, фолбэк без `eval` в `custom/10-list.sh` (см. §14.1). |
 
 ### 0.2 Что из этого меняет наши инварианты
 
@@ -76,7 +84,7 @@ description: >-
    проверяемой версии.
    **Единственная защита — держать core-lua дословной копией релиза.**
    Сейчас все шесть файлов (`zapret-lib`, `zapret-antidpi`, `zapret-auto`,
-   `zapret-obfs`, `zapret-pcap`, `zapret-tests`) побайтово равны **v1.0.5.2**;
+   `zapret-obfs`, `zapret-pcap`, `zapret-tests`) побайтово равны **v1.0.6**;
    sha256 запиннены в `tests/test_asset_importer_lua_compat.py`
    (`_UPSTREAM_LUA_TAG` / `_UPSTREAM_LUA_SHA256`), там же — инструкция по
    обновлению на новый релиз. Наши собственные функции живут в отдельных
@@ -88,7 +96,8 @@ description: >-
    `tls_dissect_handshake` (36 → 38), реконструкцию ClientHello **без**
    расширений (раньше в неё всё равно писалась 2-байтовая длина списка) и
    проброс вердикта из `luaexec`. Ни одна версия при этом не менялась:
-   compat остаётся 6.
+   compat остаётся 6. То же с 1.0.6: бандл на 1.0.5.2 откатывал бы
+   `?`/`#` в `dissect_url`, сырые 62-битные `quic_tvb` и фикс `synhide`.
 3. **`--intercept=0` + таймеры** — см. §12.1: валидация больше не гарантирует
    мгновенный выход.
 4. **Недоступный blob** (1.0.4) — инстанс сносится в C-коде, до Lua дело не
@@ -269,10 +278,10 @@ execution plan ещё до входа в Lua** (раньше падало вну
 
 ---
 
-## 3. Полный CLI nfqws2 (`nfqws2 -?`, v1.0.5.2)
+## 3. Полный CLI nfqws2 (`nfqws2 -?`, v1.0.6)
 
-Дамп v1.0.5.2 движка `bol-van/zapret2`. Версия печатается:
-`github version v1.0.5.2 (<git-hash>) lua_compat_ver 6`. Опции с `[0|1]`/
+Дамп v1.0.6 движка `bol-van/zapret2` (набор опций тот же, что в 1.0.5.2).
+Версия печатается: `github version v1.0.6 (<git-hash>) lua_compat_ver 6`. Опции с `[0|1]`/
 `[=val]` имеют необязательный аргумент (без него — дефолт, обычно `=1`).
 
 **Набор опций совпадает с v0.9.5.2**, кроме переименования `--writeable` →
@@ -438,7 +447,17 @@ bt_handshake utp_bt_handshake`.
 
 ## 4. Диапазоны (`--in-range` / `--out-range`)
 
-Формат: `[mode<int>](-|<)[mode<int>]`.
+Формат (как его пишет `nfqws2 -?` с 1.0.6): `<mode>[<int>][(-|<)<mode>[<int>]]`.
+До 1.0.6 справка писала `[(n|a|d|s|p)<int>](-|<)[…]` — разбор
+(`packet_range_parse`, `nfq2/filter.c`) при этом не менялся, справку лишь
+привели к нему.
+
+- Левая граница пустая → «с начала» (`-d10`, `<s1`); правая пустая → «до
+  конца» (`s100-`).
+- Без разделителя допустимы только `a` и `x`.
+- `n`/`d`/`s`/`p`/`b` — **обязательно с числом**; голое число (`-10`) или
+  голая буква (`n-`) — ошибка разбора, nfqws2 не стартует. Линтер редактора
+  (`isRange` в `web/js/utils/nfqws2_lint.js`) повторяет ровно эти правила.
 
 - `-` — верхняя граница **включительная**, `<` — исключительная.
 - `mode`:
@@ -576,7 +595,7 @@ bt_handshake utp_bt_handshake`.
 |---|---|
 | `multisplit` | Нарезать пейлоад по списку маркеров. args: `pos=m1,m2,…` (default `2`), `seqovl=<int>`, `seqovl_pattern=<blob>`, `blob=<replace_payload>`, `optional`, `nodrop`. Поддерживает reasm. |
 | `multidisorder` | То же, но в обратном порядке отправки. `seqovl` может быть маркером. **Не работает с Windows-серверами.** Подходит для `tls_client_hello` с kyber и без. |
-| `multidisorder_legacy` | Поведение из nfqws1 — для backward-compat (использует `blockcheck2.d/standard`). |
+| `multidisorder_legacy` | Поведение из nfqws1 — для backward-compat (использует `blockcheck2.d/standard`). `seqovl` — маркер (как у `multidisorder`). |
 | `fakedsplit` | Split с замешиванием фейков. args: `pos`, `seqovl`, `seqovl_pattern`, `blob`, `optional`, `nodrop`, `nofake1..nofake4`, `pattern=<blob>`. **Требует fooling.** |
 | `fakeddisorder` | Disorder с замешиванием фейков. Аналогично. |
 | `hostfakesplit` | Спец-резатель для `http_req`/`tls_client_hello` вокруг имени хоста. args: `host=<random.template>`, `midhost=<marker>`, `disorder_after=<marker>`, `nofake`, `nofake2`, `blob`, `optional`, `nodrop`. |
@@ -603,7 +622,8 @@ bt_handshake utp_bt_handshake`.
 `ip6_autottl=…`, `ip6_hopbyhop[=hex]`, `ip6_hopbyhop2`, `ip6_destopt`,
 `ip6_destopt2`, `ip6_routing`, `ip6_ah`, `tcp_seq=<±int>`, `tcp_ack=<±int>`,
 `tcp_ts=<±int>` (работает, только если клиент шлёт метки TCP — Windows по
-умолчанию не шлёт; линтер `tcp_ts_only_fooling`), `tcp_md5[=16byte_hex]`, `tcp_flags_set=FIN,SYN,…`,
+умолчанию не шлёт; линтер `tcp_ts_only_fooling`), `tcp_md5[=16byte_hex]`
+(без значения — 16 случайных байт, не нули), `tcp_flags_set=FIN,SYN,…`,
 `tcp_flags_unset=ack`, `tcp_ts_up` (поднять опцию timestamp первой: Linux
 стабильно отбрасывает badack-сегмент — `tcp_ack` без `tcp_seq`, — только если
 метка идёт первой; nfqws1 ставил её первой всегда, nfqws2 сохраняет порядок
@@ -665,6 +685,8 @@ bt_handshake utp_bt_handshake`.
   - `fails`, `retrans`, `maxseq` и др. (см. `automate_failure_check`).
   - Все последующие инстансы помечают `strategy=N` (с 1 непрерывно). `final` —
     финальная стратегия.
+  - `key=<имя>` — имя таблицы внутри `autostate` (задокументировано в 1.0.6):
+    несколько оркестраторов делят одно хранилище хостов под разными ключами.
   - Требует входящих пакетов: `--in-range=-s5556` или больше (детектор успеха
     срабатывает на `s4096`).
   - **Состояние — на хост и общее для всех устройств**
@@ -1234,7 +1256,7 @@ IPVS=4|6|46               # версии IP
 ENABLE_HTTP=1, ENABLE_HTTPS_TLS12=1, ENABLE_HTTPS_TLS13=1, ENABLE_HTTP3=1
 REPEATS=N                 # попыток на стратегию
 PARALLEL=0|1              # внимание: rate-limit
-SCANLEVEL=quick|standard|force
+SCANLEVEL=veryquick|quick|standard|force   # veryquick — с 1.0.6
 BATCH=1                   # без интерактива
 HTTP_PORT, HTTPS_PORT, QUIC_PORT
 SKIP_DNSCHECK=1, SKIP_IPBLOCK=1, SKIP_PKTWS=1
@@ -1247,7 +1269,46 @@ SECURE_DNS=0|1, DOH_SERVER, DOH_SERVERS
 DNSCHECK_DNS, DNSCHECK_DOM, UNBLOCKED_DOM
 MIN_TTL, MAX_TTL
 SIMULATE=1, SIM_SUCCESS_RATE=N    # debug сам blockcheck2
+CURL_PAD=N, PAD_MAX_HEADER=4000   # 1.0.6: добить запрос заголовками X-Pad-NNNN до N байт
+PACE=<мс>                 # 1.0.6: не чаще одного curl за столько мс
 ```
+
+**Новое в 1.0.6** (всё опционально, GUI пробрасывает как обычные env):
+
+- **`SCANLEVEL=veryquick`** — как `quick` (после первой неудачной попытки
+  остальные `REPEATS` не гоняются) **плюс** в `blockcheck2.d/standard` семейство
+  приёмов бросается после первой удачной вариации (fooling, ttl, split-pos…).
+  Самый быстрый ответ «работает ли хоть что-то»; для подбора лучшего приёма —
+  `standard`. Старый скрипт значения не знает и ведёт себя как `standard`.
+  GUI: выпадающие списки обеих вкладок, `SCANLEVELS` в `core/blockcheck2.py`,
+  enum MCP-инструмента `blockcheck2_start`.
+- **`CURL_PAD=N`** — проверка блока «по ~16 КБ» без большой загрузки: запрос
+  раздувается мусорными заголовками (кусками по `PAD_MAX_HEADER`). Альтернатива
+  нашему `CURL_HTTPS_GET=1`, которому нужен реально большой ответ сервера.
+- **`PACE=<мс>`** — пауза между запросами curl (меньше ложных
+  UNAVAILABLE у провайдеров, режущих частые соединения).
+- Итог дополнен секцией **`* COVERAGE`** после `* COMMON`: строки
+  `N/M : <движок> <стратегия>` — на скольких целях из M сработала каждая
+  стратегия, по убыванию. В отличие от COMMON не требует 100 %. Заголовок
+  попадает в `highlights` (§14.2), сами строки — нет: это не находки.
+- Каждый запуск nfqws2 из blockcheck2 получает `--lua-init=<сторожевой
+  таймер>` (`timer_set(...,20000,true)` → `os.exit` через 20 с; раньше — только
+  у winws2 под Cygwin): брошенный pktws сам умирает. ⚠️ Обратная сторона:
+  одна стратегия = один запуск nfqws2 на все `REPEATS` попыток подряд, и
+  всё это обязано уложиться в 20 с. `REPEATS=20` с `PACE=1000` или с
+  `CURL_HTTPS_GET=1` на медленном сайте — и последние попытки идут уже без
+  обхода, рабочая стратегия выглядит как «2/3». Если GUI показывает
+  подозрительно частичную успешность при больших REPEATS — уменьшить
+  REPEATS/PACE или включить `PARALLEL=1`.
+- Хвосты после `kill -9`/краша (временные файлы, таблицы nft
+  `blockcheck2-<pid>`, цепочки `blockcheck2_{in,out}put_<pid>`) убираются при
+  следующем старте — **только если `<pid>` мёртв** (`kill -0`). Имена
+  сменились: `blockcheck<pid>` → `blockcheck2-<pid>`, `/tmp/zapret_parallel_*` →
+  `/tmp/zapret2_parallel_*`. Параллельным копиям мульти-вкладки (§14.2a)
+  уборка не мешает: они в одном PID-пространстве и живы.
+- `custom/10-list.sh`: строка, не прошедшая `eval`, теперь не отбрасывается,
+  а запускается простым делением по пробелам — стратегии с `<`, `(`, `'`
+  можно вставлять как их печатает blockcheck2, без shell-экранирования.
 
 ⚠️ **`PKTWS_EXTRA_POST_1` до 1.0.4 не работал** — в `strategy_append_extra_pktws()`
 была опечатка: проверялась переменная `PKTWS_EXTRA_1`, а подставлялась
@@ -1264,8 +1325,8 @@ does not support …` и **сам выставляет флаг в 0**. Рань
 ### 14.2 Примороженные итоги (`highlights`)
 
 `_HIGHLIGHT_RE` в `blockcheck2.py` ловит **ТОЛЬКО** найденные рабочие
-стратегии (`working strategy found …`) и заголовки `* SUMMARY` / `* COMMON`, с
-дедупом и чисткой `!!!!!`.
+стратегии (`working strategy found …`) и заголовки `* SUMMARY` / `* COMMON` /
+`* COVERAGE` (1.0.6+), с дедупом и чисткой `!!!!!`.
 
 **НЕ примораживать** `AVAILABLE`/`UNAVAILABLE` (вдобавок `AVAILABLE` —
 подстрока `UNAVAILABLE`, на этом горел старый фильтр).

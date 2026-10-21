@@ -7,7 +7,7 @@
  *
  * Опирается на:
  *   - SKILL §0   — что изменилось в zapret2 1.0.x
- *   - SKILL §3   — CLI-опции nfqws2 (v1.0.5.2)
+ *   - SKILL §3   — CLI-опции nfqws2 (v1.0.6)
  *   - SKILL §4   — диапазоны --in-range/--out-range
  *   - SKILL §5/6 — payload-типы и pos-маркеры
  *   - SKILL §8   — desync-функции zapret-antidpi.lua и блоки опций (fooling/…)
@@ -86,7 +86,7 @@ const Nfqws2Spec = (() => {
                 tcp_seq:         { type: 'int', desc: 'Смещение TCP seq (±)', ex: ['-10000', '1'] },
                 tcp_ack:         { type: 'int', desc: 'Смещение TCP ack (±)', ex: ['-1'] },
                 tcp_ts:          { type: 'int', desc: 'Смещение TCP timestamp (±)', ex: ['-5'] },
-                tcp_md5:         { type: 'flag', optval: true, desc: 'TCP MD5 signature (можно =16byte_hex)' },
+                tcp_md5:         { type: 'flag', optval: true, desc: 'TCP MD5 signature: 16 случайных байт, либо свои =16byte_hex' },
                 tcp_flags_set:   { type: 'string', desc: 'Установить флаги: FIN,SYN,…', ex: ['fin,syn'] },
                 tcp_flags_unset: { type: 'string', desc: 'Снять флаги', ex: ['ack'] },
                 tcp_ts_up:       { type: 'flag', desc: 'Поднять опцию TCP timestamp первой (как nfqws1) — нужно для tcp_ack без tcp_seq' },
