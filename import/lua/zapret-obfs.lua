@@ -429,7 +429,7 @@ function synhide(ctx, desync)
 
 	if fl==TH_SYN then
 		-- client sent
-		local ttl = tonumber(desync.dis.ip and desync.arg.ghost or desync.arg.ghost6)
+		local ttl = tonumber(desync.dis.ip and desync.arg.ghost or (desync.dis.ip6 and desync.arg.ghost6))
 		if ttl then
 			DLOG("synhide: punch NAT hole with ttl="..ttl)
 			local dis = deepcopy(desync.dis)

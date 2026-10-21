@@ -8,7 +8,7 @@ import unittest
 from core.blockcheck2_patch import MARK, PATCH_NAMES, PatchError, patch_script
 
 
-# Фрагменты blockcheck2.sh zapret2 v1.0.5.2 — ровно те места, к которым
+# Фрагменты blockcheck2.sh zapret2 v1.0.5.2 (в v1.0.6 дословно те же) — места, к которым
 # привязаны правки (функции дословно, с табами).
 FRAGMENT = '''#!/bin/sh
 

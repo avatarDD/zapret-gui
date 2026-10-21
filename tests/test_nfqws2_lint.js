@@ -80,6 +80,27 @@ test('lint: кривой --filter-mark ловится (nfqws2 с ним не с�
     });
 });
 
+// Синтаксис диапазона — как в `nfqws2 -?` 1.0.6:
+// <mode>[<int>][(-|<)<mode>[<int>]], разбор — packet_range_parse.
+test('lint: --out-range/--in-range принимает всё, что примет nfqws2', () => {
+    ['-d10', '-s5556', '<s1', 's1<d1', 's100-s1000', 's100-', 'n2-n5',
+     'b100<b200', 'a', 'x', '-', 'a-d5'].forEach(v => {
+        const r = Lint.analyze('--out-range=' + v + ' --lua-desync=fake');
+        assert.strictEqual(
+            r.diagnostics.filter(d => /диапазон/.test(d.message)).length, 0,
+            'не должно ругаться: ' + v);
+    });
+});
+
+test('lint: граница диапазона без режима или без числа ловится', () => {
+    // packet_pos_parse: n/d/s/p/b требуют числа, голое число — не режим.
+    ['-10', '5-', 'd', '-d', 'n-', 'q5', 'd10', 's1<d'].forEach(v => {
+        const r = Lint.analyze('--in-range=' + v + ' --lua-desync=fake');
+        assert.ok(r.diagnostics.some(d => /диапазон/.test(d.message)),
+            'должно ругаться: ' + JSON.stringify(v));
+    });
+});
+
 test('spec: nfqws1 НЕ поддерживается', () => {
     assert.ok(!Spec.isKnownFlag('--dpi-desync'));
     assert.ok(!Spec.isKnownFlag('--dpi-desync-split-pos'));
@@ -317,7 +338,8 @@ test('syntax: ошибочный токен обёрнут в .nfq-error', () =>
     assert.ok(/nfq-error/.test(html), 'нет класса ошибки');
 });
 
-// ──────────────── Стратегии из blockcheck2 (zapret2 v1.0.5.2) ────────────────
+// ──────────────── Стратегии из blockcheck2 (zapret2 v1.0.5.2–v1.0.6) ────────────────
+// 1.0.6 новых приёмов не добавил — только обрывы циклов для SCANLEVEL=veryquick.
 // Строки, которые генерирует сам blockcheck2.d/standard, и найденные им
 // рабочие стратегии. Раньше редактор ругался «неизвестный параметр» на
 // fooling/rawsend у multisplit/tcpseg, на seqovl=#var и на forced_cutoff

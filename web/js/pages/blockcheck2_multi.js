@@ -82,6 +82,7 @@ const Blockcheck2MultiPage = (() => {
                         <div class="form-group">
                             <label class="form-label">SCANLEVEL</label>
                             <select class="form-select" id="bcm-scanlevel">
+                                <option value="veryquick" title="zapret2 1.0.6+: как quick, и семейство приёмов бросается после первой удачной вариации">veryquick</option>
                                 <option value="quick">quick</option>
                                 <option value="standard" selected>standard</option>
                                 <option value="force">force</option>

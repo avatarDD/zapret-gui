@@ -62,6 +62,7 @@ const Blockcheck2Page = (() => {
                             <label class="form-label">Уровень сканирования (SCANLEVEL)</label>
                             <select class="form-select" id="bc2-scanlevel">
                                 <option value="">по умолчанию</option>
+                                <option value="veryquick" title="zapret2 1.0.6+: как quick, и семейство приёмов бросается после первой удачной вариации">veryquick</option>
                                 <option value="quick">quick</option>
                                 <option value="standard" selected>standard</option>
                                 <option value="force">force</option>
