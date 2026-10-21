@@ -426,6 +426,11 @@ def tunnel_config_save(args: dict) -> dict:
             "id": {"type": "string", "maxLength": 64,
                    "description": "One subscription id; empty — all of "
                                   "them. / Одна подписка; пусто — все."},
+            "force": {"type": "boolean", "default": False,
+                      "description": "With id: accept a shrunk answer "
+                                     "(was 6+ servers, now 1-2) instead of "
+                                     "keeping the old config. / Принять "
+                                     "«усохшую» подписку."},
         },
         "additionalProperties": False,
     },
@@ -447,7 +452,7 @@ def subscription_refresh(args: dict) -> dict:
                 "hint": "известные подписки: %s" % ", ".join(known)}
 
     if sid:
-        outcome = subs.refresh_one(sid)
+        outcome = subs.refresh_one(sid, force=bool(args.get("force")))
         return {
             "ok": bool(outcome.get("ok")),
             "id": sid,
@@ -456,8 +461,11 @@ def subscription_refresh(args: dict) -> dict:
             "hint": ("конфиг подписки пересобран; чтобы он заработал, "
                      "нужен tunnel_up(engine=\"singbox\", name=…)"
                      if outcome.get("ok")
-                     else "подписка не обновилась: %s"
-                          % outcome.get("error", "")),
+                     else ("подписка «усохла», прежний конфиг оставлен; "
+                           "если так и задумано — force=true"
+                           if outcome.get("shrunk") else
+                           "подписка не обновилась: %s"
+                           % outcome.get("error", ""))),
         }
 
     outcome = subs.refresh_all()

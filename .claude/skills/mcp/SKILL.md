@@ -396,7 +396,7 @@ UI), и `tools_by_scope`.
 | `tunnel_config_get` | tunnels_write | нет | `tools/tunnels.py` | engine, name, raw? | текст конфига sing-box/mihomo/AWG; ключи замаскированы, если не `raw` |
 | `tunnel_config_save` | tunnels_write | **да** | `tools/tunnels.py` | engine, name, text, restart? | переписать конфиг ЦЕЛИКОМ; проверка разбором самого движка; откат — `mcp_undo_last` |
 | `tunnel_settings` | tunnels_write | **да** | `tools/tunnels.py` | engine, debug?, go_memory?, autostart? | одинаковые для AWG/sing-box/mihomo настройки обвязки (`core/engine_common.py`): отладка, GOGC/GOMEMLIMIT, автозапуск конфига + init-скрипт; без полей — только показать; в ответе `before` для отката руками |
-| `subscription_refresh` | tunnels_write | **да** | `tools/tunnels.py` | id? | перекачать подписку (или все) и пересобрать её конфиг |
+| `subscription_refresh` | tunnels_write | **да** | `tools/tunnels.py` | id?, force? | перекачать подписку (или все) и пересобрать её конфиг; «усохший» ответ (было 6+ серверов, пришло 1–2) не принимается без `force` |
 | `pool_refresh` | tunnels_write | **да** | `tools/tunnels.py` | status_only? | пересобрать пул серверов фоном; опрос — `job_wait(kind="pool")` |
 | `unified_route_save` | tunnels_write | **да** | `tools/routing.py` | method, id?, name?, destination?, fallbacks?, devices?, enabled?, monitor_enabled?, failover_enabled?, probe_domain?, priority?, apply? | создать/заменить маршрут ЦЕЛИКОМ; непереданные поля берутся из прежней записи |
 | `unified_route_delete` | tunnels_write | **да** | `tools/routing.py` | id | удалить маршрут и снять его с ядра |

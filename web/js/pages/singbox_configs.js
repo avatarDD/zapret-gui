@@ -1007,14 +1007,22 @@ const SingboxConfigsPage = (() => {
     // ══════════════ tab: subs (saved subscriptions + autorefresh) ══════════════
 
     let subs = [];
-    let subForm = { name: '', url: '', format: 'auto', interval_hours: 6,
-                    group: 'urltest', transport: '' };
+    let subDeviceHwid = '';
+    const SUB_FORM_EMPTY = { name: '', url: '', format: 'auto', interval_hours: 6,
+                             group: 'urltest', transport: '', user_agent: '',
+                             send_hwid: false, hwid: '', crypt4_key: '' };
+    let subForm = Object.assign({}, SUB_FORM_EMPTY);
+    // Пресеты UA: панели отдают формат по User-Agent.
+    const UA_LABELS = [['', 'по умолчанию (zapret-gui)'], ['sing-box', 'sing-box — JSON'],
+                       ['mihomo', 'mihomo — YAML'], ['v2rayn', 'v2rayN — ссылки'],
+                       ['happ', 'Happ — ссылки']];
     let subBusy = false;
 
     async function loadSubs() {
         try {
             const r = await API.get('/api/singbox/subscriptions');
             subs = (r && r.subscriptions) || [];
+            subDeviceHwid = (r && r.device_hwid) || '';
         } catch (e) {
             Toast.error(e.message);
         }
@@ -1051,8 +1059,15 @@ const SingboxConfigsPage = (() => {
                                 каждые ${s.interval_hours || 6}ч ·
                                 outbound'ов: ${s.last_outbounds || 0} ·
                                 обновлено: ${lastRel}
+                                ${s.user_agent ? ' · UA: ' + escapeHtml(s.user_agent) : ''}
+                                ${s.send_hwid ? ' · HWID' : ''}
                                 ${s.last_error ? ' · <span style="color:#e58;">' + escapeHtml(s.last_error) + '</span>' : ''}
                             </div>
+                            ${(s.last_error || '').indexOf('усохла') >= 0 ? `
+                            <button class="btn btn-ghost btn-sm" style="margin-top:4px;" ${subBusy?'disabled':''}
+                                    onclick="SingboxConfigsPage.subsRefresh('${escapeAttr(s.id)}', true)">
+                                Принять как есть
+                            </button>` : ''}
                             <div class="text-muted" style="font-size:11px; margin-top:4px; display:flex; align-items:center; gap:6px;">
                                 качать через:
                                 <select class="form-input" style="width:auto; font-size:11px; padding:2px 6px;"
@@ -1130,6 +1145,38 @@ const SingboxConfigsPage = (() => {
                         </select>
                     </div>
                 </div>
+                <details style="margin-top:8px;">
+                    <summary class="text-muted" style="font-size:12px; cursor:pointer;">
+                        Для панелей провайдера (Remnawave, Marzban, Happ)</summary>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:6px;">
+                        <div>
+                            <label class="form-label">Представляться как (User-Agent):</label>
+                            <select class="form-input"
+                                    onchange="SingboxConfigsPage.subFormSet('user_agent', this.value)">
+                                ${UA_LABELS.map(([v, l]) => `<option value="${v}" ${subForm.user_agent===v?'selected':''}>${l}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">Ключ для happ://crypt4/ (если нужен):</label>
+                            <input type="text" class="form-input" value="${escapeAttr(subForm.crypt4_key)}"
+                                   oninput="SingboxConfigsPage.subFormSet('crypt4_key', this.value)">
+                        </div>
+                    </div>
+                    <label style="display:flex; gap:6px; align-items:center; margin-top:6px; font-size:12px;">
+                        <input type="checkbox" ${subForm.send_hwid?'checked':''}
+                               onchange="SingboxConfigsPage.subFormSet('send_hwid', this.checked)">
+                        Отправлять HWID устройства (x-hwid, модель, ОС) — нужно панелям с лимитом устройств
+                    </label>
+                    <input type="text" class="form-input" style="margin-top:4px;"
+                           placeholder="${escapeAttr(subDeviceHwid ? 'HWID роутера: ' + subDeviceHwid : 'свой HWID (необязательно)')}"
+                           value="${escapeAttr(subForm.hwid)}"
+                           oninput="SingboxConfigsPage.subFormSet('hwid', this.value)">
+                    <p class="text-muted" style="font-size:11px; margin:4px 0 0;">
+                        URL можно вставить и в виде <code>happ://crypt4/…</code>. Если подписка
+                        внезапно «усохла» (было 6+ серверов, пришло 1–2), прежний конфиг остаётся,
+                        а в списке появится кнопка «Принять как есть».
+                    </p>
+                </details>
                 <p class="text-muted" style="font-size:11px; margin:6px 0 0;">
                     <strong>urltest</strong> (рекомендуется): sing-box сам
                     пингует серверы и бесшовно переключается на живой с
@@ -1178,8 +1225,7 @@ const SingboxConfigsPage = (() => {
                 `/api/singbox/subscriptions/${encodeURIComponent(add.id)}/refresh`);
             if (refresh && refresh.ok) {
                 Toast.success(`Загружено ${refresh.outbounds || 0} outbound'ов`);
-                subForm = { name:'', url:'', format:'auto', interval_hours:6,
-                            group:'urltest', transport:'' };
+                subForm = Object.assign({}, SUB_FORM_EMPTY);
             } else {
                 Toast.error((refresh && refresh.error) || 'refresh failed');
             }
@@ -1192,10 +1238,11 @@ const SingboxConfigsPage = (() => {
         }
     }
 
-    async function subsRefresh(sid) {
+    async function subsRefresh(sid, force) {
         subBusy = true; renderTab();
         try {
-            const r = await API.post(`/api/singbox/subscriptions/${encodeURIComponent(sid)}/refresh`);
+            const r = await API.post(`/api/singbox/subscriptions/${encodeURIComponent(sid)}/refresh`,
+                                     force ? { force: true } : {});
             if (r && r.ok) {
                 Toast.success(`Обновлено: ${r.outbounds || 0} outbound'ов (${r.format})`);
             } else {
