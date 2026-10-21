@@ -49,8 +49,6 @@ import json
 import os
 import threading
 import time
-import urllib.error
-import urllib.request
 
 from core.log_buffer import log
 
@@ -61,6 +59,7 @@ DEFAULT_COOLDOWN_H = 24
 # чем бросить домен.
 MAX_PENDING_SEC = 3600
 MAX_PENDING = 200
+MAX_PER_TICK = 10
 MAX_ADDED = 200
 PROXY_TIMEOUT = 8
 STALL_SEC = 15
@@ -126,12 +125,12 @@ def list_entry(domain: str, use_registrable: bool = True) -> str:
     return (domain or "").strip(".").lower()
 
 
-def via_spec(method: str) -> str:
-    """Метод маршрута → спека транспорта для пробы через него ("" — нечем).
+def via_iface(method: str) -> str:
+    """Метод маршрута → интерфейс туннеля для пробы через него ("" — нечем).
 
     Туннельные методы адресуют интерфейс (``awg:awg0``, ``singbox:tun0``,
-    ``warp:wg1``), и проба привязывает сокет к нему — тот же путь, что у
-    скачиваний через ``awg:<iface>`` (``core/download_transport``).
+    ``warp:wg1``); проба привязывает сокет к нему (SO_BINDTODEVICE), как
+    скачивания через ``awg:<iface>`` (``core/download_transport``).
     """
     from core.unified.model import parse_method
     try:
@@ -140,7 +139,7 @@ def via_spec(method: str) -> str:
         return ""
     if kind in ("direct", "nfqws2") or not target:
         return ""
-    return "awg:%s" % target
+    return target
 
 
 def stalled_hosts(connections, now: float, stall_sec: float = STALL_SEC):
@@ -152,8 +151,9 @@ def stalled_hosts(connections, now: float, stall_sec: float = STALL_SEC):
             continue
         meta = c.get("metadata") or {}
         host = str(meta.get("host") or "").strip().lower().strip(".")
-        chains = [str(x) for x in (c.get("chains") or [])]
-        if not host or "DIRECT" not in chains:
+        # mihomo пишет «DIRECT», sing-box — тег исходящего («direct»).
+        chains = [str(x).lower() for x in (c.get("chains") or [])]
+        if not host or "direct" not in chains:
             continue
         try:
             up, down = int(c.get("upload") or 0), int(c.get("download") or 0)
@@ -236,27 +236,62 @@ def _probe_direct(domain: str) -> bool:
         return False
 
 
-def _probe_via(domain: str, spec: str):
+def _iface_up(iface: str) -> bool:
+    return os.path.isdir("/sys/class/net/%s" % iface)
+
+
+def _addresses(domain: str, code: str) -> list:
+    """Адреса для пробы через туннель. DNS-блокировку (NXDOMAIN, 0.0.0.0
+    от провайдера) обходим DoH: резолвер роутера тут и есть отравленный."""
+    from core.block_detector import doh_resolve
+    if code not in ("dns_block", "dns_hijack"):
+        try:
+            import socket
+            ips = [ai[4][0] for ai in socket.getaddrinfo(
+                domain, 443, 0, socket.SOCK_STREAM)]
+            if ips:
+                return ips
+        except (OSError, UnicodeError):
+            pass
+    return doh_resolve(domain)
+
+
+def _probe_via(domain: str, iface: str, code: str = ""):
     """Открывается ли сайт через туннель: True/False, None — туннеля нет.
 
-    Любой HTTP-ответ (и 4xx) — сервер достигнут; судить о странице не
-    наше дело.
+    TLS с SNI домена до его адреса через сокет, привязанный к интерфейсу
+    туннеля, и HEAD: любой ответ сервера — сервер достигнут, судить о
+    странице не наше дело.
     """
-    from core.download_transport import build_opener
-    try:
-        opener = build_opener(spec)
-    except RuntimeError:
+    import socket
+    import ssl
+    from core.download_transport import _connect_bound
+    if not _iface_up(iface):
         return None
-    req = urllib.request.Request("https://%s/" % domain, headers={
-        "User-Agent": "Mozilla/5.0 zapret-gui/smart-detect"})
-    try:
-        with opener.open(req, timeout=PROXY_TIMEOUT) as r:
-            r.read(1024)
-        return True
-    except urllib.error.HTTPError:
-        return True
-    except Exception:                               # noqa: BLE001
+    ips = _addresses(domain, code)
+    if not ips:
         return False
+    ctx = ssl.create_default_context()
+    for ip in ips[:2]:
+        try:
+            raw = _connect_bound(ip, 443, PROXY_TIMEOUT, iface)
+        except OSError:
+            continue
+        try:
+            with ctx.wrap_socket(raw, server_hostname=domain) as tls:
+                tls.sendall(("HEAD / HTTP/1.1\r\nHost: %s\r\nUser-Agent: "
+                             "Mozilla/5.0\r\nConnection: close\r\n\r\n"
+                             % domain).encode("ascii", "ignore"))
+                if tls.recv(16):
+                    return True
+        except (OSError, ssl.SSLError, socket.timeout):
+            continue
+        finally:
+            try:
+                raw.close()
+            except OSError:
+                pass
+    return False
 
 
 def _wan_down() -> bool:
@@ -278,9 +313,14 @@ def _reject(domain: str, reason: str, now: float) -> None:
              source=SOURCE)
 
 
-def _whitelisted(domain: str) -> bool:
+def _whitelist() -> set:
     raw = _cfg().get("block_detector", "whitelist", default=[]) or []
-    wl = {str(d).strip().lower().strip(".") for d in raw if str(d).strip()}
+    return {str(d).strip().lower().strip(".") for d in raw if str(d).strip()}
+
+
+def _whitelisted(domain: str) -> bool:
+    """Домен или его родитель в белом списке детектора."""
+    wl = _whitelist()
     d = domain
     while d:
         if d in wl:
@@ -289,14 +329,40 @@ def _whitelisted(domain: str) -> bool:
     return False
 
 
+def _covers_whitelisted(entry: str) -> bool:
+    """Есть ли в белом списке поддомен ``entry``."""
+    return any(w.endswith("." + entry) for w in _whitelist())
+
+
+def known(domain: str, now: float = None) -> bool:
+    """Домен уже в работе: в очереди, отклонён недавно или добавлен."""
+    now = time.time() if now is None else now
+    domain = (domain or "").strip(".").lower()
+    data = _read()
+    if domain in (data.get("pending") or {}):
+        return True
+    ts = (data.get("rejected") or {}).get(domain)
+    if ts is not None and now - float(ts) < \
+            settings()["cooldown_h"] * 3600:
+        return True
+    return any(r.get("domain") == domain and not r.get("undone")
+               for r in data.get("added") or [])
+
+
 def process(now: float = None) -> list:
-    """Разобрать очередь: кого пора перепроверить. Возвращает итоги."""
+    """Разобрать очередь: кого пора перепроверить. Возвращает итоги.
+
+    За раз — не больше :data:`MAX_PER_TICK` старейших: каждое
+    подтверждение — до двух проб с таймаутами, а идёт это в такте
+    детектора.
+    """
     now = time.time() if now is None else now
     st = settings()
     with _lock:
         pending = dict(_read().get("pending") or {})
-    due = [d for d, p in pending.items()
-           if now - float(p.get("first", now)) >= st["recheck_sec"]]
+    due = sorted((d for d, p in pending.items()
+                  if now - float(p.get("first", now)) >= st["recheck_sec"]),
+                 key=lambda d: pending[d].get("first", 0))[:MAX_PER_TICK]
     if not due:
         return []
     if _wan_down():
@@ -311,25 +377,33 @@ def process(now: float = None) -> list:
 
 def _confirm(domain: str, item: dict, st: dict, now: float) -> str:
     list_id = item.get("list_id") or ""
+    method = _target_method(list_id)
+    iface = via_iface(method)
+    if iface and not _iface_up(iface):
+        # Туннель лежит — нечем подтвердить; прямую пробу не тратим.
+        if now - float(item.get("first", now)) > MAX_PENDING_SEC:
+            _reject(domain, "туннель %s так и не поднялся" % method, now)
+            return "expired"
+        return "waiting_tunnel"
     if _probe_direct(domain):
         _reject(domain, "повторная проба напрямую прошла", now)
         return "recovered"
-    method = _target_method(list_id)
-    spec = via_spec(method)
-    if spec:
-        via = _probe_via(domain, spec)
+    if iface:
+        via = _probe_via(domain, iface, item.get("code") or "")
         if via is None:
-            if now - float(item.get("first", now)) > MAX_PENDING_SEC:
-                _reject(domain, "туннель %s так и не поднялся" % method, now)
-                return "expired"
             return "waiting_tunnel"
         if not via:
             _reject(domain, "через %s тоже не открывается" % method, now)
             return "tunnel_fails"
-    entry = list_entry(domain, st["registrable"])
-    if _whitelisted(entry) or _whitelisted(domain):
+    if _whitelisted(domain):
         _reject(domain, "в исключениях", now)
         return "excluded"
+    entry = list_entry(domain, st["registrable"])
+    if entry != domain and (_whitelisted(entry)
+                            or _covers_whitelisted(entry)):
+        # Регистрируемый домен накрыл бы исключённый поддомен — добавляем
+        # только само имя.
+        entry = domain
     return _add(domain, entry, list_id, method, now)
 
 
@@ -436,39 +510,48 @@ def status() -> dict:
 # ─────────────────────────── Clash API ───────────────────────────────
 
 def _endpoints() -> list:
-    """Clash API запущенных mihomo и sing-box: [{host, port, secret}]."""
+    """Clash API запущенных mihomo и sing-box: [{host, port, secret}].
+
+    Каждый конфиг — сам по себе: битый или удалённый между листингом и
+    чтением не должен прятать соседние.
+    """
+    from core.mihomo_proxies import external_controller_endpoint
     eps = []
     try:
         from core.clash_yaml import parse_yaml
         from core.mihomo_manager import get_mihomo_manager
-        from core.mihomo_proxies import external_controller_endpoint
         mgr = get_mihomo_manager()
         for c in mgr.list_configs() or []:
-            if not mgr.is_running(c["name"]):
+            try:
+                if not mgr.is_running(c["name"]):
+                    continue
+                resp = mgr.get_config(c["name"])
+                cfg = parse_yaml(resp.get("text") or "") \
+                    if resp.get("ok") else {}
+                ep = external_controller_endpoint(cfg or {})
+                if ep:
+                    eps.append(ep)
+            except Exception:                       # noqa: BLE001
                 continue
-            resp = mgr.get_config(c["name"])
-            cfg = parse_yaml(resp.get("text") or "") if resp.get("ok") else {}
-            ep = external_controller_endpoint(cfg or {})
-            if ep:
-                eps.append(ep)
     except Exception:                               # noqa: BLE001 — граница
         pass
     try:
         from core.singbox_manager import get_singbox_manager
         mgr = get_singbox_manager()
         for c in mgr.list_configs() or []:
-            if not mgr.is_running(c["name"]):
+            try:
+                if not mgr.is_running(c["name"]):
+                    continue
+                with open(c["path"], encoding="utf-8") as f:
+                    cfg = json.load(f)
+                api = (cfg.get("experimental") or {}).get("clash_api") or {}
+                ep = external_controller_endpoint({
+                    "external-controller": api.get("external_controller"),
+                    "secret": api.get("secret")})
+                if ep:
+                    eps.append(ep)
+            except Exception:                       # noqa: BLE001
                 continue
-            with open(c["path"], encoding="utf-8") as f:
-                cfg = json.load(f)
-            api = ((cfg.get("experimental") or {}).get("clash_api") or {})
-            ctrl = str(api.get("external_controller") or "")
-            host, _, port = ctrl.rpartition(":")
-            if port.isdigit():
-                if not host or host in ("0.0.0.0", "::", "[::]"):
-                    host = "127.0.0.1"
-                eps.append({"host": host.strip("[]"), "port": int(port),
-                            "secret": api.get("secret") or ""})
     except Exception:                               # noqa: BLE001 — граница
         pass
     return eps
@@ -490,6 +573,8 @@ def clash_candidates(now: float = None) -> list:
         except (ValueError, AttributeError):
             continue
         for h in stalled_hosts(conns, now):
-            if h not in out:
+            # Уже в очереди, отклонён или добавлен — пробовать заново
+            # каждый такт, пока соединение висит, незачем.
+            if h not in out and not known(h, now):
                 out.append(h)
     return out

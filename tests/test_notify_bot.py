@@ -68,6 +68,17 @@ class TestUpdates(unittest.TestCase):
         self.assertIn("editMessageReplyMarkup", methods)
         self.send.assert_called_once_with(ST, "ok")
 
+    def test_action_survives_telegram_errors(self):
+        calls = []
+        self.api.side_effect = RuntimeError("сеть")
+        self.send.side_effect = RuntimeError("сеть")
+        with mock.patch.dict(nb.ACTIONS,
+                             {"smart_undo": lambda a: calls.append(a) or "ok"}):
+            data = nb.receipt("smart_undo", "id1")
+            self.assertEqual(nb.handle_update(self._cb(data), ST),
+                             "smart_undo")
+        self.assertEqual(calls, ["id1"])
+
     def test_stranger_is_denied(self):
         data = nb.receipt("smart_undo", "id1")
         self.assertEqual(nb.handle_update(self._cb(data, user=7), ST),
@@ -93,6 +104,32 @@ class TestUpdates(unittest.TestCase):
         with mock.patch.dict(nb.COMMANDS,
                              {"/status": mock.Mock(side_effect=OSError("x"))}):
             self.assertIn("Не вышло", nb.command_reply("/status"))
+
+
+class TestOffset(unittest.TestCase):
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix="bot-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        p = mock.patch.object(nb, "_offset_path",
+                              return_value=self.dir + "/bot.json")
+        p.start()
+        self.addCleanup(p.stop)
+        nb._state.update(offset=None, token="")
+        self.addCleanup(nb._state.update, offset=None, token="")
+
+    def test_offset_survives_restart_and_resets_for_other_bot(self):
+        upd = {"result": [{"update_id": 41, "message": {"text": "x"}}]}
+        with mock.patch.object(nb, "_api", return_value=upd) as api:
+            nb.poll_once(ST)
+            self.assertEqual(api.call_args.args[2]["offset"], 0)
+            nb._state.update(offset=None)               # «перезапуск»
+            nb.poll_once(ST)
+            self.assertEqual(api.call_args.args[2]["offset"], 42)
+            nb.poll_once(dict(ST, token="OTHER"))
+            self.assertEqual(api.call_args.args[2]["offset"], 0)
 
 
 class TestMarkup(unittest.TestCase):

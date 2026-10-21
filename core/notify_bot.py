@@ -28,6 +28,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import secrets
 import threading
 import time
@@ -43,7 +46,7 @@ PREFIX = "zg:"
 _lock = threading.Lock()
 _receipts = {}          # token → {"action", "arg", "ts"}
 _thread = None
-_state = {"offset": 0, "last_error": ""}
+_state = {"offset": None, "token": "", "last_error": ""}
 
 
 # ─────────────────────────── действия ───────────────────────────────
@@ -70,6 +73,8 @@ def _known_good_rollback(_arg):
     if r.get("ok"):
         return "↩️ Вернул рабочую точку: %s" % (
             ", ".join(r.get("restored") or []) or "всё уже совпадало")
+    if not r.get("restored"):
+        return "Не вышло: %s" % r.get("error", "")
     return "Вернул с ошибками: %s" % r.get("error", "")
 
 
@@ -131,7 +136,7 @@ def _status_text() -> str:
     from api.status import dashboard_status
     from core.dashboard_brief import brief
     data = dashboard_status()
-    b = brief(data)
+    b = data.get("brief") or brief(data)
     icon = {"ok": "✅", "warn": "⚠️", "bad": "❌"}.get(b.get("level"), "ℹ️")
     lines = ["%s %s" % (icon, b.get("line", ""))]
     for key, title in (("nfqws", "Обход"), ("vpn", "Туннели"),
@@ -214,20 +219,27 @@ def handle_update(u: dict, st: dict) -> str:
                 "text": "Кнопка устарела"})
             return "stale"
         action, arg = got
-        _api(st, "answerCallbackQuery", {"callback_query_id": cb.get("id"),
-                                         "text": "Выполняю…"})
+        # Квитанция уже погашена — действие выполняется до любых сетевых
+        # вызовов: сбой ответа Telegram не должен съесть нажатие.
         try:
             result = ACTIONS[action](arg)
         except Exception as e:                      # noqa: BLE001 — граница
             result = "Не вышло: %s" % e
-        # Кнопки под исходным сообщением больше не нужны.
+        for method, payload in (
+                ("answerCallbackQuery", {"callback_query_id": cb.get("id")}),
+                # Кнопки под исходным сообщением больше не нужны.
+                ("editMessageReplyMarkup", {
+                    "chat_id": chat, "message_id": msg.get("message_id"),
+                    "reply_markup": {"inline_keyboard": []}})):
+            try:
+                _api(st, method, payload)
+            except RuntimeError:
+                pass
         try:
-            _api(st, "editMessageReplyMarkup", {
-                "chat_id": chat, "message_id": msg.get("message_id"),
-                "reply_markup": {"inline_keyboard": []}})
-        except RuntimeError:
-            pass
-        _send(st, result)
+            _send(st, result)
+        except RuntimeError as e:
+            log.warning("бот Telegram: ответ не ушёл: %s" % e,
+                        source="notify")
         log.info("бот Telegram: %s — %s" % (action, result), source="notify")
         return action
     msg = u.get("message") or {}
@@ -256,16 +268,57 @@ def active(st: dict) -> bool:
                 and st.get("token") and st.get("chat_id"))
 
 
+def _offset_path() -> str:
+    from core import notify
+    return os.path.join(notify._cfg().config_dir, "notify-bot.json")
+
+
+def _token_id(token: str) -> str:
+    """Отпечаток токена: offset одного бота не годится для другого, а
+    сам токен на диск рядом класть незачем."""
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _load_offset(token: str) -> int:
+    """Сохранённый offset этого бота (0 — нет). Без него после
+    перезапуска Telegram отдал бы ещё раз последнюю, уже разобранную
+    пачку, и команды выполнились бы дважды."""
+    try:
+        with open(_offset_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("bot") == _token_id(token):
+            return int(data.get("offset") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return 0
+
+
+def _save_offset(token: str, offset: int) -> None:
+    from core.safe_io import atomic_write_json
+    try:
+        atomic_write_json(_offset_path(), {"bot": _token_id(token),
+                                           "offset": offset})
+    except OSError:
+        pass
+
+
 def poll_once(st: dict) -> int:
     """Один долгий опрос ``getUpdates``. Возвращает число обновлений."""
+    if _state["offset"] is None or _state["token"] != st["token"]:
+        # Первый опрос или сменили бота — offset его, а не прежнего.
+        _state["offset"] = _load_offset(st["token"])
+        _state["token"] = st["token"]
     body = _api(st, "getUpdates", {
         "offset": _state["offset"], "timeout": POLL_TIMEOUT,
         "allowed_updates": ["message", "callback_query"]},
         timeout=POLL_TIMEOUT + 10)
     updates = body.get("result") or []
     for u in updates:
+        # Сдвигаем и сохраняем ДО разбора: упавший на обновлении бот не
+        # должен разбирать его снова после перезапуска.
         _state["offset"] = max(_state["offset"],
                                int(u.get("update_id") or 0) + 1)
+        _save_offset(st["token"], _state["offset"])
         try:
             handle_update(u, st)
         except Exception as e:                      # noqa: BLE001 — граница

@@ -17,3 +17,6 @@ dist/
 
 # Кэш развёрнутых geosite/geoip-алиасов (core/routing/alias_resolver) — runtime
 /data/aliases/
+
+# Каталоги, которые пишет тест с MagicMock вместо config_dir.
+MagicMock/

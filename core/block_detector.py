@@ -77,14 +77,9 @@ def all_non_public(ips) -> bool:
     return seen
 
 
-def doh_confirms_exists(domain: str, timeout: float = 4.0) -> bool:
-    """Знает ли домен публичный DNS (DoH, мимо провайдера).
-
-    True — у домена есть публичный A-адрес: значит, NXDOMAIN или 0.0.0.0
-    от местного резолвера — действительно блокировка. False — DoH тоже
-    не знает домен или недоступен: не добавляем (лучше пропустить домен,
-    чем засорить список обхода рекламой и опечатками).
-    """
+def doh_resolve(domain: str, timeout: float = 4.0) -> list:
+    """A-адреса домена по публичному DoH (мимо провайдера); [] — не знает
+    или DoH недоступен."""
     import json
     import urllib.parse
     import urllib.request
@@ -103,11 +98,23 @@ def doh_confirms_exists(domain: str, timeout: float = 4.0) -> bool:
             continue
         if not isinstance(data, dict):
             continue
-        ips = [a.get("data") for a in (data.get("Answer") or [])
-               if isinstance(a, dict) and a.get("type") == 1]
-        return bool(ips) and not all_non_public(ips) \
-            and not all(ip in ("0.0.0.0", "127.0.0.1") for ip in ips)
-    return False
+        return [a.get("data") for a in (data.get("Answer") or [])
+                if isinstance(a, dict) and a.get("type") == 1
+                and a.get("data")]
+    return []
+
+
+def doh_confirms_exists(domain: str, timeout: float = 4.0) -> bool:
+    """Знает ли домен публичный DNS (DoH, мимо провайдера).
+
+    True — у домена есть публичный A-адрес: значит, NXDOMAIN или 0.0.0.0
+    от местного резолвера — действительно блокировка. False — DoH тоже
+    не знает домен или недоступен: не добавляем (лучше пропустить домен,
+    чем засорить список обхода рекламой и опечатками).
+    """
+    ips = doh_resolve(domain, timeout)
+    return bool(ips) and not all_non_public(ips) \
+        and not all(ip in ("0.0.0.0", "127.0.0.1") for ip in ips)
 
 
 def _last_unique(items, limit: int) -> list:

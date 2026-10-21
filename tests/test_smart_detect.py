@@ -24,7 +24,7 @@ class SmartCase(unittest.TestCase):
         self.list_id = named_lists.create("blocked")["list"]["id"]
         self.patches = {}
         for name, value in (("_probe_direct", False), ("_probe_via", True),
-                            ("_wan_down", False),
+                            ("_wan_down", False), ("_iface_up", True),
                             ("_target_method", "awg:awg0")):
             p = mock.patch.object(sd, name, return_value=value)
             self.patches[name] = p.start()
@@ -43,12 +43,12 @@ class SmartCase(unittest.TestCase):
 
 class TestPure(unittest.TestCase):
 
-    def test_via_spec(self):
-        self.assertEqual(sd.via_spec("awg:awg0"), "awg:awg0")
-        self.assertEqual(sd.via_spec("singbox:tun0"), "awg:tun0")
-        self.assertEqual(sd.via_spec("nfqws2"), "")
-        self.assertEqual(sd.via_spec("direct"), "")
-        self.assertEqual(sd.via_spec("мусор"), "")
+    def test_via_iface(self):
+        self.assertEqual(sd.via_iface("awg:awg0"), "awg0")
+        self.assertEqual(sd.via_iface("singbox:tun0"), "tun0")
+        self.assertEqual(sd.via_iface("nfqws2"), "")
+        self.assertEqual(sd.via_iface("direct"), "")
+        self.assertEqual(sd.via_iface("мусор"), "")
 
     def test_list_entry(self):
         self.assertEqual(sd.list_entry("cdn.example.co.uk"), "example.co.uk")
@@ -60,6 +60,8 @@ class TestPure(unittest.TestCase):
         conns = [
             {"metadata": {"host": "stuck.com"}, "chains": ["DIRECT"],
              "upload": 500, "download": 0, "start": start},
+            {"metadata": {"host": "singbox.com"}, "chains": ["direct"],
+             "upload": 500, "download": 0, "start": start},
             {"metadata": {"host": "ok.com"}, "chains": ["DIRECT"],
              "upload": 500, "download": 10, "start": start},
             {"metadata": {"host": "proxied.com"}, "chains": ["node", "PROXY"],
@@ -69,7 +71,8 @@ class TestPure(unittest.TestCase):
         ]
         started = sd._parse_ts(start)
         self.assertIsNotNone(started)
-        self.assertEqual(sd.stalled_hosts(conns, started + 40), ["stuck.com"])
+        self.assertEqual(sd.stalled_hosts(conns, started + 40),
+                         ["stuck.com", "singbox.com"])
         self.assertEqual(sd.stalled_hosts(conns, started + 5), [])
 
 
@@ -107,10 +110,35 @@ class TestFlow(SmartCase):
 
     def test_tunnel_down_waits_then_expires(self):
         sd.submit("a.com", self.list_id, now=0)
-        self.patches["_probe_via"].return_value = None
+        self.patches["_iface_up"].return_value = False
         self.assertEqual(sd.process(now=200)[0]["result"], "waiting_tunnel")
+        # Пока туннель лежит, прямую пробу не тратим.
+        self.patches["_probe_direct"].assert_not_called()
         self.assertEqual(sd.process(now=sd.MAX_PENDING_SEC + 10)[0]["result"],
                          "expired")
+
+    def test_dns_code_passed_to_tunnel_probe(self):
+        sd.submit("a.com", self.list_id, code="dns_block", now=0)
+        sd.process(now=200)
+        self.patches["_probe_via"].assert_called_once_with(
+            "a.com", "awg0", "dns_block")
+
+    def test_queue_is_processed_in_batches(self):
+        for i in range(sd.MAX_PER_TICK + 3):
+            sd.submit("d%d.com" % i, self.list_id, now=i)
+        self.assertEqual(len(sd.process(now=500)), sd.MAX_PER_TICK)
+        self.assertEqual(len(sd.process(now=500)), 3)
+
+    def test_whitelisted_subdomain_keeps_exact_name(self):
+        self.cfg.set("block_detector", "whitelist", ["cdn.example.com"])
+        sd.submit("api.example.com", self.list_id, now=0)
+        self.assertEqual(sd.process(now=200)[0]["result"], "added")
+        self.assertEqual(self.domains(), ["api.example.com"])
+
+    def test_known(self):
+        sd.submit("a.com", self.list_id, now=0)
+        self.assertTrue(sd.known("a.com", now=10))
+        self.assertFalse(sd.known("b.com", now=10))
 
     def test_nfqws_route_needs_only_second_direct_fail(self):
         self.patches["_target_method"].return_value = "nfqws2"
