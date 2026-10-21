@@ -118,6 +118,7 @@ const SingboxDashboardPage = (() => {
                 </div>
             </div>
         `;
+        if (typeof ForeignNote !== 'undefined') ForeignNote.attach(container, 'singbox');
         if (typeof Wizard !== 'undefined') Wizard.mountBanner(container, 'singbox');
         refresh();
         startPolling();

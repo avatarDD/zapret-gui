@@ -59,6 +59,7 @@ def register_routes(app):
     from api.mcp import register as reg_mcp
     from api.mcp_ui import register as reg_mcp_ui
     from api.agent import register as reg_agent
+    from api.foreign_services import register as reg_foreign
 
     reg_status(app)
     reg_logs(app)
@@ -107,6 +108,7 @@ def register_routes(app):
     reg_mcp(app)
     reg_mcp_ui(app)
     reg_agent(app)
+    reg_foreign(app)
 
     # MR-56: добавить /api/v1/<path> aliases для всех /api/<path> маршрутов
     from api.v1_compat import register_v1_aliases

@@ -57,6 +57,7 @@ const TgProxyPage = (() => {
                 </div>
             </div>
         `;
+        if (typeof ForeignNote !== 'undefined') ForeignNote.attach(container, 'tgproxy');
 
         _visibilityHandler = () => {
             if (document.hidden) _stopPoll();

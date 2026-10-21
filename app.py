@@ -871,6 +871,17 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception:
             pass
 
+        # Сторонние сервисы движков, которые пользователь отключил через
+        # GUI (или режим «только GUI»): если пакет вернул им автозапуск
+        # или они успели стартовать раньше GUI — погасить ДО автоподъёма
+        # своих туннелей, чтобы освободить интерфейсы (core/foreign_services).
+        try:
+            from core.foreign_services import boot as _foreign_boot
+            _foreign_boot()
+        except Exception as e:
+            log.warning("сторонние сервисы при boot: %s" % e,
+                        source="foreign")
+
         # Автоподъём AWG-интерфейсов при старте GUI (если init-скрипт не
         # установлен — иначе он сам справится при загрузке системы).
         try:
@@ -1239,6 +1250,7 @@ def _graceful_shutdown(log=None):
         ("usque_watchdog",       "core.usque_watchdog",       "get_usque_watchdog",       "_stop"),
         ("warp_in_warp_watchdog","core.warp_in_warp_watchdog","get_warp_in_warp_watchdog","_stop"),
         ("tunnel_monitor",       "core.tunnel_monitor",       "get_tunnel_monitor",  "stop"),
+        ("foreign_guard",        "core.foreign_services",     "get_guard",           "_stop"),
         ("update_checker",       "core.update_checker",       "get_update_checker",  "_stop"),
         ("list_updater",         "core.list_updater",         "get_updater",         "_stop"),
         ("subscription_manager", "core.subscription_manager", "get_refresher",       "_stop"),

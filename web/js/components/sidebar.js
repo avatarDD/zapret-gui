@@ -83,6 +83,7 @@ const Sidebar = (() => {
                 ] },
                 { id: 'tunnel-monitor', label: 'Мониторинг', icon: 'diagnostic' },
                 { id: 'tunnel-optimizer', label: 'Оптимизации', icon: 'settings' },
+                { id: 'foreign-services', label: 'Сторонние туннели', icon: 'diagnostic' },
             ]
         },
         {
