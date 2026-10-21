@@ -5,15 +5,22 @@ core/singbox_autostart.py.
 
 Хранит флаги в settings.json под ключом `mihomo.autostart[name]`.
 Генерит init-скрипт (Entware sh / systemd unit), который при старте
-роутера/Linux поднимает все помеченные конфиги командой
-`mihomo -d <config_dir> -f <config>.yaml`.
+роутера/Linux зовёт `app.py --apply-mihomo-autostart` (как AWG): тот
+поднимает все помеченные конфиги тем же кодом, что и кнопка в GUI.
 """
 
 import os
+import sys
 import threading
 
 from core.log_buffer import log
 from core.mihomo_platform import detect_mihomo_platform
+
+
+# init-скрипт зовёт app.py в CLI-режиме (см. engine_common).
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+APP_PY = os.path.join(APP_DIR, "app.py")
+PYTHON_BIN = sys.executable or "/opt/bin/python3"
 
 
 _lock = threading.Lock()
@@ -72,111 +79,32 @@ def set_autostart(name: str, enabled: bool) -> dict:
     return {"ok": True, "autostart": dict(a)}
 
 
-def _entware_init_script(binary: str, config_dir: str, pids_dir: str,
-                         logs_dir: str, names: list) -> str:
-    names_quoted = " ".join('"%s"' % n for n in names)
-    return f"""#!/bin/sh
-# zapret-gui: mihomo autostart
-# Управляется через web-GUI; не редактируйте вручную.
-
-BINARY="{binary}"
-CONFIG_DIR="{config_dir}"
-PIDS_DIR="{pids_dir}"
-LOGS_DIR="{logs_dir}"
-NAMES={names_quoted}
-
-mkdir -p "$PIDS_DIR" "$LOGS_DIR"
-
-# Прокси под нагрузкой упирается в дефолтные 1024 дескриптора.
-ulimit -n 65536 2>/dev/null || true
-
-start_one() {{
-    name="$1"
-    config="$CONFIG_DIR/$name.yaml"
-    pidfile="$PIDS_DIR/mihomo-$name.pid"
-    logfile="$LOGS_DIR/mihomo-$name.log"
-    if [ ! -f "$config" ]; then
-        echo "mihomo: пропускаем $name — конфига нет"
-        return
-    fi
-    if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-        echo "mihomo: $name уже запущен"
-        return
-    fi
-    echo "mihomo: запускаем $name"
-    setsid "$BINARY" -d "$CONFIG_DIR" -f "$config" >> "$logfile" 2>&1 &
-    echo $! > "$pidfile"
-}}
-
-stop_one() {{
-    name="$1"
-    pidfile="$PIDS_DIR/mihomo-$name.pid"
-    if [ -f "$pidfile" ]; then
-        pid=$(cat "$pidfile")
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "mihomo: останавливаем $name"
-            kill -TERM "$pid"
-            sleep 1
-            kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
-        fi
-        rm -f "$pidfile"
-    fi
-}}
-
-case "$1" in
-    start)   for n in $NAMES; do start_one "$n"; done ;;
-    stop)    for n in $NAMES; do stop_one "$n"; done ;;
-    restart) for n in $NAMES; do stop_one "$n"; done; sleep 1;
-             for n in $NAMES; do start_one "$n"; done ;;
-    status)
-        for n in $NAMES; do
-            pidfile="$PIDS_DIR/mihomo-$n.pid"
-            if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-                echo "$n: running (pid $(cat "$pidfile"))"
-            else
-                echo "$n: stopped"
-            fi
-        done ;;
-    *) echo "Usage: $0 {{start|stop|restart|status}}"; exit 1 ;;
-esac
-"""
-
-
-def _systemd_unit(binary: str, config_dir: str, names: list) -> str:
-    name = names[0] if names else ""
-    return f"""[Unit]
-Description=mihomo autostart (zapret-gui)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart={binary} -d {config_dir} -f {config_dir}/{name}.yaml
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-"""
+def render_script(platform=None) -> str:
+    """Текст init-скрипта под платформу (через app.py, как у AWG)."""
+    from core import engine_common
+    platform = platform or detect_mihomo_platform()
+    return engine_common.render_autostart_script(
+        "mihomo", "mihomo", engine_common.script_flavor(platform.name),
+        log_path=os.path.join(platform.log_dir, "mihomo-autostart.log"),
+        python=PYTHON_BIN, app_py=APP_PY)
 
 
 def regenerate() -> dict:
+    """
+    Создать/обновить init-скрипт под текущий набор autostart-конфигов.
+    """
     platform = detect_mihomo_platform()
     enabled = [n for n, v in list_autostart().items() if v]
     if not enabled:
+        # Если автозапусков не осталось — снимаем init.
         return remove()
+
     from core.mihomo_detector import get_mihomo_detector
     bin_info = get_mihomo_detector().detect_binary()
     if not bin_info.get("installed"):
         return {"ok": False, "error": "mihomo не установлен"}
-    if platform.name == "linux":
-        content = _systemd_unit(bin_info["path"], platform.config_dir, enabled)
-    else:
-        content = _entware_init_script(
-            bin_info["path"], platform.config_dir,
-            platform.run_dir, platform.log_dir, enabled)
-    path = platform.install_init_script(content)
+
+    path = platform.install_init_script(render_script(platform))
     log.info("mihomo: автозапуск установлен (%d конфигов): %s"
              % (len(enabled), path), source="mihomo")
     return {"ok": True, "path": path, "names": enabled}
@@ -193,17 +121,23 @@ def remove() -> dict:
 
 
 def status() -> dict:
-    platform = detect_mihomo_platform()
-    path = platform.init_script_path()
-    return {"installed": os.path.exists(path), "path": path,
-            "autostart": list_autostart()}
+    from core import engine_common
+    return engine_common.autostart_status(
+        "mihomo", detect_mihomo_platform(), list_autostart())
 
 
 def apply_now() -> dict:
+    """Поднять все enabled-конфиги (UI-кнопка, init-скрипт через
+    `app.py --apply-mihomo-autostart`, старт GUI без скрипта)."""
+    from core import engine_common
     from core.mihomo_manager import get_mihomo_manager
-    mgr = get_mihomo_manager()
-    results = []
-    for name, en in list_autostart().items():
-        if en:
-            results.append({"name": name, "result": mgr.up(name)})
-    return {"ok": True, "applied": results}
+    return engine_common.autostart_apply("mihomo", get_mihomo_manager(),
+                                         list_autostart())
+
+
+def stop_now() -> dict:
+    """Погасить отмеченные конфиги (init-скрипт stop)."""
+    from core import engine_common
+    from core.mihomo_manager import get_mihomo_manager
+    return engine_common.autostart_stop(get_mihomo_manager(),
+                                        list_autostart())

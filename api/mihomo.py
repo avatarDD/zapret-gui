@@ -27,6 +27,10 @@ REST API для mihomo (Clash.Meta). По структуре повторяет 
   POST   /api/mihomo/autostart/regenerate
   POST   /api/mihomo/autostart/remove
   POST   /api/mihomo/autostart/apply
+
+  GET    /api/mihomo/traffic                — ?config=<name>
+  POST   /api/mihomo/traffic/reset          — body: {names?: [...]}
+  (go-memory и configs/<name>/diagnostics — в api/engine_wrapper.py)
 """
 
 import re
@@ -747,6 +751,22 @@ def register(app):
                 running = mgr.is_running(name)
         return {"ok": True, "traffic": tracker.snapshot(tags),
                 "controller": controller, "running": running}
+
+    @app.route("/api/mihomo/traffic/reset", method="POST")
+    def mihomo_traffic_reset():
+        """Обнулить счётчики трафика (body: {"names":[...]} либо все) —
+        паритет с /api/singbox/traffic/reset."""
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        names = body.get("names", body.get("tags"))
+        if names is not None and not isinstance(names, list):
+            names = None
+        from core.proxy_traffic import get_mihomo_traffic_tracker
+        get_mihomo_traffic_tracker().reset(names)
+        return {"ok": True}
 
     # ─────── autostart ────────────────────────────────────────────
 

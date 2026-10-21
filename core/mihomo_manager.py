@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 
+from core import engine_common
 from core.log_buffer import log
 from core.mihomo_platform import detect_mihomo_platform
 from core.mihomo_detector import get_mihomo_detector
@@ -429,6 +430,52 @@ class MihomoManager:
             res["reason"] = test_failure_reason(out, err, rc)
         return res
 
+    # ─────── диагностика ───────
+
+    def diagnostics(self, name: str) -> dict:
+        """Снимок инстанса для кнопки «Диагностика» (паритет с AWG)."""
+        if not _valid_name(name):
+            return {"ok": False, "error": "Некорректное имя"}
+        platform = self._platform()
+        path = platform.config_path(name)
+        if not os.path.isfile(path):
+            return {"ok": False, "error": "Конфиг не найден"}
+        binary = get_mihomo_detector().detect_binary()
+        if binary.get("installed"):
+            check = self.validate_via_binary(name)
+            output = (check.get("reason") or check.get("stderr")
+                      or check.get("error") or "").strip()
+        else:
+            check, output = {"ok": None}, "mihomo не установлен"
+        from core.clash_yaml import parse_yaml
+        from core.mihomo_autostart import list_autostart
+        from core.mihomo_proxies import external_controller_endpoint
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                data = parse_yaml(f.read())
+        except Exception:
+            data = None
+        data = data if isinstance(data, dict) else {}
+        tun = data.get("tun") if isinstance(data.get("tun"), dict) else {}
+        tun_iface = ""
+        if tun.get("enable") is True:
+            # Имя по умолчанию у mihomo на Linux — «Meta».
+            tun_iface = str(tun.get("device") or "Meta")
+        pid = _read_pid(platform.pid_path(name))
+        active = self.is_running(name)
+        info = engine_common.proxy_diagnostics(
+            "mihomo", name, pid=pid, active=active, binary=binary,
+            config_path=path,
+            config_check={"ok": check.get("ok"), "output": output},
+            log_path=platform.log_path(name),
+            autostart=bool(list_autostart().get(name)),
+            controller=external_controller_endpoint(data),
+            tun_iface=tun_iface,
+            extra={"mode": str(data.get("mode") or ""),
+                   "debug_launch_config": os.path.isfile(
+                       self._debug_launch_path(name))})
+        return {"ok": True, "diagnostics": info}
+
     # ─────── lifecycle ───────
 
     @staticmethod
@@ -547,6 +594,8 @@ class MihomoManager:
                 close_fds=True,
                 start_new_session=True,
                 preexec_fn=_raise_nofile,
+                # Лимит памяти Go (GOGC/GOMEMLIMIT) — core/engine_common.
+                env=engine_common.launch_env("mihomo"),
             )
         except OSError as e:
             log_fh.close()
@@ -652,18 +701,8 @@ class MihomoManager:
             return None
 
 
-def _tail_file(path: str, lines: int = 80) -> str:
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            block = min(size, lines * 200)
-            f.seek(size - block)
-            data = f.read(block)
-        return "\n".join(data.decode("utf-8", errors="replace")
-                         .splitlines()[-lines:])
-    except (IOError, OSError):
-        return ""
+# Хвост лога — общий для трёх движков (core/engine_common.tail_file).
+_tail_file = engine_common.tail_file
 
 
 _manager = None
