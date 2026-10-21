@@ -97,6 +97,8 @@ const SingboxProxiesPage = (() => {
         backHash: 'singbox-configs',
         backLabel: 'Конфиги',
         testStatusUrl: '/api/singbox/test/status',
+        trafficResetUrl: '/api/singbox/traffic/reset',
+        trafficResetKey: 'tags',
 
         loadConfigs: async () => {
             const r = await API.get('/api/singbox/configs');

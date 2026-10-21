@@ -97,6 +97,8 @@ const MihomoProxiesPage = (() => {
         backHash: 'mihomo',
         backLabel: 'Инстансы',
         testStatusUrl: '/api/mihomo/test/status',
+        trafficResetUrl: '/api/mihomo/traffic/reset',
+        trafficResetKey: 'names',
 
         labels: {
             countWord:    'прокси',
