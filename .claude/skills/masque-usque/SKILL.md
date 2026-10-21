@@ -576,7 +576,7 @@ usque nativetun --config <path> --interface-name <iface> --no-iproute2
 | `allocate_iface(prefix)` | Свободное имя `usque<N>` (≤15 символов), с оглядкой на `/sys/class/net`, pid-файлы и имена чужих туннелей (в т.ч. остановленных AWG). |
 | `iface_for_config(path)` | Имя, **закреплённое** за профилем (`<config>.iface`), или новое с закреплением. Старые `opkgtun<N>` работающих туннелей закрепляются при обновлении GUI. |
 | `start(iface, path, …)` | См. ниже. |
-| `stop(iface)` | SIGTERM всей группе (`start_new_session=True` → `killpg`), затем SIGKILL; чистит pid/`.run`; увеличивает `stop_seq(iface)`. |
+| `stop(iface, restore_defaults=True)` | SIGTERM всей группе (`start_new_session=True` → `killpg`), затем SIGKILL; чистит pid/`.run`; увеличивает `stop_seq(iface)`; в конце `restore_system_defaults(only_if_idle=True)`. WARP-in-WARP зовёт с `restore_defaults=False`: он держит свой замок, а обход туннелей спрашивает его же статус (#416). |
 | `stop_seq(iface)` | Счётчик остановок. По нему watchdog отличает «сам остановил и не поднял» от «остановил пользователь» (§9). |
 | `status(iface)` | `{running, iface_exists, pid, diagnostic}`. |
 | `read_log(iface, lines)` | Хвост stderr из кольцевого буфера в ОЗУ. |
