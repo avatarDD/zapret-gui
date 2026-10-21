@@ -1872,6 +1872,23 @@ def check_strategy_prerequisites():
                     "firewall в zapret-gui ставит =1 автоматически.",
         })
 
+    # 7. Часы: год раньше сборки GUI заведомо неверен (без сети — только
+    #    это; сверку по сети делает core/quick_fix). На таких часах любой
+    #    TLS падает на сертификатах, и сканер показывает 0% на всём.
+    try:
+        from core.quick_fix import evaluate_clock
+        clock = evaluate_clock(time.time(), None)
+    except Exception:
+        clock = None
+    checks["clock"] = clock.get("local_time") if clock else None
+    if clock and clock.get("status") == "error":
+        issues.append({
+            "id": "clock_wrong", "severity": "error",
+            "title": clock["title"], "detail": clock["detail"],
+            "hint": clock["hint"] + " Кнопка — «Быстрый ремонт» в Диагностике.",
+            "fix": {"id": "clock_sync"},
+        })
+
     ok = not any(i["severity"] == "error" for i in issues)
     if not ok:
         log.warning("Предпосылки стратегий: найдены блокеры (%d issue)"

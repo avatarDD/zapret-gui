@@ -132,9 +132,13 @@ from core.mcp import registry
 # напротив него — это его смысл.
 # «Куда пойдёт сайт»: + 1 на чтение (site_trace — сухой прогон домена
 # по слоям; наружу уходит только DNS-запрос, как у страницы).
+# Быстрый ремонт (приём Tachyon): + 1 на чтение (quick_fix_check — сетевая
+# часть спрашивает `probes` по месту, как diagnostics_run) и + 1 под
+# `control` (quick_fix_apply — синхронизировать часы, перезапустить
+# dnsmasq: меняет систему, но не настройки GUI).
 BY_SCOPE = {
-    "read": 41,
-    "control": 8,
+    "read": 42,
+    "control": 9,
     "strategies_write": 12,
     "config_write": 1,
     "probes": 13,
@@ -222,6 +226,8 @@ class TestToolCounts(unittest.TestCase):
         "firewall_status", "traffic_recent",
         # «Куда пойдёт сайт»
         "site_trace",
+        # Быстрый ремонт: часы, DNS, маршрут
+        "quick_fix_check",
         # генератор конфигов WARP/Proton
         "vpngen_options", "vpngen_check",
         # S5 — туннели, диагностика, обновления
@@ -249,7 +255,7 @@ class TestToolCounts(unittest.TestCase):
     CONTROL_TOOLS = [
         "firewall_apply", "firewall_remove", "nfqws_reload_lists",
         "nfqws_restart", "nfqws_start", "nfqws_stop", "scan_apply",
-        "strategy_apply",
+        "strategy_apply", "quick_fix_apply",
     ]
     STRATEGIES_WRITE_TOOLS = [
         "blob_add", "hostlist_edit", "ipset_edit", "lua_script_save",

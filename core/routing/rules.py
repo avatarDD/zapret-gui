@@ -173,18 +173,63 @@ class DeviceRoutingRule(RoutingRule):
     type_name = "device"
 
     def __init__(self, target_iface: str, source_ip: str = "",
-                 mac: str = "", hostname: str = "", **kwargs):
+                 mac: str = "", hostname: str = "", bypass_ports=None,
+                 **kwargs):
         super().__init__(target_iface=target_iface, **kwargs)
         self.source_ip = (source_ip or "").strip()
         self.mac       = (mac or "").strip()
         self.hostname  = (hostname or "").strip()
+        # Порты мимо туннеля («udp:dport:500», «tcp:sport:51413»,
+        # «udp:dport:6881-6889») — см. device_rule.PORT_EXEMPT_PRIORITY.
+        self.bypass_ports = normalize_bypass_ports(bypass_ports)
 
     def to_dict(self) -> dict:
         d = super().to_dict()
         d["source_ip"] = self.source_ip
         d["mac"]       = self.mac
         d["hostname"]  = self.hostname
+        if self.bypass_ports:
+            d["bypass_ports"] = list(self.bypass_ports)
         return d
+
+
+def parse_port_range(token: str) -> str:
+    """«6881-6889» / «51413» → нормальная запись; битое — ValueError.
+
+    Общая для формы маршрута (core/unified/model) и правила устройства.
+    """
+    bounds = [b.strip() for b in str(token or "").split("-")]
+    if not 1 <= len(bounds) <= 2 or not all(b.isdigit() for b in bounds):
+        raise ValueError("Некорректный порт: %s" % token)
+    lo, hi = int(bounds[0]), int(bounds[-1])
+    if not (1 <= lo <= hi <= 65535):
+        raise ValueError("Порт вне диапазона 1–65535: %s" % token)
+    return str(lo) if lo == hi else "%d-%d" % (lo, hi)
+
+
+def normalize_bypass_ports(value) -> list:
+    """Нормализовать исключения по портам: ``proto:dir:port[-port]``.
+
+    proto — tcp/udp, dir — dport (куда идёт пакет устройства) или sport
+    (с какого порта — так отвечают на входящие и шлёт uTP торрент-
+    клиент). Битые записи выбрасываются молча: это производное поле,
+    его собирает единый слой, а не человек.
+    """
+    out = []
+    for raw in (value or []):
+        parts = str(raw or "").strip().lower().split(":")
+        if len(parts) != 3:
+            continue
+        proto, direction, ports = parts
+        if proto not in ("tcp", "udp") or direction not in ("dport", "sport"):
+            continue
+        try:
+            item = "%s:%s:%s" % (proto, direction, parse_port_range(ports))
+        except ValueError:
+            continue
+        if item not in out:
+            out.append(item)
+    return out
 
 
 # ───────────────────────── DSCP / QoS ────────────────────────────────
@@ -266,6 +311,7 @@ def rule_from_dict(d: dict) -> RoutingRule:
             source_ip=d.get("source_ip") or "",
             mac=d.get("mac") or "",
             hostname=d.get("hostname") or "",
+            bypass_ports=d.get("bypass_ports") or [],
             **common,
         )
     if cls is DscpRoutingRule:

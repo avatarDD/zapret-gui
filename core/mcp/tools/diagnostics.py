@@ -515,3 +515,83 @@ def _hint(findings, skipped) -> str:
         parts.append("правила перехвата этот инструмент не смотрит — "
                      "они в firewall_status")
     return "; ".join(parts)
+
+
+@tool(
+    name="quick_fix_check",
+    scope="read",
+    mutating=False,
+    title="System breakages that look like DPI",
+    description=("Clock skew (breaks every TLS check — scans show 0%), "
+                 "router DNS dead, no default route, empty resolv.conf. "
+                 "Network part (HTTP Date, DNS) needs `probes`; without "
+                 "it only local checks run. Each finding names its fix "
+                 "for quick_fix_apply. / Часы, DNS, маршрут — что выглядит "
+                 "как DPI."),
+    schema={
+        "type": "object",
+        "properties": {
+            "fresh": {"type": "boolean", "default": False,
+                      "description": "Bypass the 2-minute cache. / Мимо "
+                                     "кеша."},
+        },
+        "additionalProperties": False,
+    },
+)
+def quick_fix_check(args: dict) -> dict:
+    """Те же проверки, что у блока «Быстрый ремонт» в Диагностике."""
+    from core import quick_fix
+
+    probes = perms_mod.granted("probes")
+    report = quick_fix.check(network=probes, fresh=bool(args.get("fresh")))
+    result = dict(report)
+    if not probes:
+        result["probes"] = {
+            "allowed": False, "permission": "probes",
+            "hint": ("часы сверены только по нижней границе года, DNS не "
+                     "проверялся; сетевые проверки включаются разрешением "
+                     "«probes»")}
+    result["note"] = NOTE
+    return result
+
+
+@tool(
+    name="quick_fix_apply",
+    scope="control",
+    mutating=True,
+    title="Apply a quick fix",
+    description=("Run one fix named by quick_fix_check: `clock_sync` "
+                 "(NTP, else HTTP Date → date -s; goes to the network, "
+                 "so also needs `probes`) or `dns_restart` (restart or "
+                 "start dnsmasq). Not undoable — nothing to roll back. / "
+                 "Выполнить быстрый ремонт."),
+    schema={
+        "type": "object",
+        "properties": {
+            "fix": {"type": "string", "enum": ["clock_sync", "dns_restart"],
+                    "description": "Fix id from quick_fix_check. / Код "
+                                   "ремонта."},
+        },
+        "required": ["fix"],
+        "additionalProperties": False,
+    },
+)
+def quick_fix_apply(args: dict) -> dict:
+    """Выполнить ремонт; после него — свежая проверка, чтобы видеть итог."""
+    from core import quick_fix
+
+    fix = args.get("fix") or ""
+    if fix == "clock_sync" and not perms_mod.granted("probes"):
+        # Синхронизация — это NTP и HTTP наружу: та же граница, что у
+        # сетевой части quick_fix_check.
+        return {"ok": False, "error": "синхронизация времени ходит в сеть",
+                "permission": "probes",
+                "hint": "включите разрешение «probes» в настройках MCP"}
+    result = quick_fix.apply_fix(fix)
+    if result.get("ok"):
+        try:
+            result["after"] = quick_fix.check(
+                network=perms_mod.granted("probes"), fresh=True)
+        except Exception as e:                  # noqa: BLE001 — граница
+            result["after_error"] = "%s: %s" % (type(e).__name__, e)
+    return result

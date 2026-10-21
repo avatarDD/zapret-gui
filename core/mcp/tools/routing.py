@@ -261,6 +261,18 @@ def unified_route_status(args: dict) -> dict:
                 "description": "Route BY SOURCE: whole devices or "
                                "subnets. / Маршрут по источнику.",
             },
+            "bypass": {
+                "type": "object",
+                "properties": {
+                    "wifi_calling": {"type": "boolean"},
+                    "torrent_ports": {"type": "string", "maxLength": 120},
+                },
+                "additionalProperties": False,
+                "description": "For device routes: keep Wi-Fi Calling "
+                               "(UDP 500/4500) and the torrent client's "
+                               "port(s), e.g. \"51413\", off the tunnel. "
+                               "/ Исключения из маршрута устройств.",
+            },
             "enabled": {"type": "boolean", "default": True,
                         "description": "Disabled rules are removed from "
                                        "the kernel. / Выключённое "
@@ -305,7 +317,7 @@ def unified_route_save(args: dict) -> dict:
 
     payload = {key: args[key] for key in (
         "id", "name", "destination", "method", "fallbacks", "devices",
-        "enabled", "monitor_enabled", "failover_enabled", "probe_domain",
+        "bypass", "enabled", "monitor_enabled", "failover_enabled", "probe_domain",
         "priority") if key in args}
     # Правка существующего маршрута — это замена: поля, которых не
     # передали, берём из прежней записи, иначе «поменяй метод» стёрло бы

@@ -326,6 +326,7 @@ UI), и `tools_by_scope`.
 | `diagnostics_run` | read | нет | `tools/diagnostics.py` | checks?, services?, offset?, limit? | окружение, конфликты, предпосылки; сетевые пробы — по разрешению `probes` |
 | `dpi_report` | read | нет | `tools/diagnostics.py` | targets?, offset?, limit? | последняя классификация DPI из blockcheck; **проб не запускает** |
 | `site_trace` | read | нет | `tools/diagnostics.py` | domain, resolve? | куда пойдёт сайт: hosts → DNS-правила → единый слой → списки → профиль nfqws2 по HTTPS/QUIC/HTTP; наружу — только DNS-запрос |
+| `quick_fix_check` | read | нет | `tools/diagnostics.py` | fresh? | системные поломки, похожие на DPI: часы (сверка с HTTP `Date`), DNS роутера против DoH, маршрут по умолчанию, `resolv.conf`; сетевая часть — по `probes`, у находки — код ремонта (`core/quick_fix.py`) |
 | `updates_check` | read | нет | `tools/updates.py` | refresh?, updates_only?, offset?, limit? | версии движков и обновления; по умолчанию из кеша, `refresh` — по `probes` |
 | `config_writable_paths` | read | нет | `tools/config.py` | section?, search?, offset?, limit? | что можно менять: путь, тип, текущее значение, `enum` |
 | `audit_list` | read | нет | `tools/audit.py` | tool?, status?, mutating_only?, offset?, limit? | последние вызовы MCP из журнала, новые первыми, с пометкой «ещё откатывается» |
@@ -341,6 +342,7 @@ UI), и `tools_by_scope`.
 | `nfqws_restart` | control | **да** | `tools/nfqws.py` | — | перезапуск со свежесобранными аргументами активной стратегии |
 | `nfqws_reload_lists` | control | **да** | `tools/nfqws.py` | reason? | SIGHUP: перечитать списки БЕЗ перезапуска; в ответе `signalled` |
 | `strategy_apply` | control | **да** | `tools/nfqws.py` | id | применить стратегию по id; снимок вида `strategy_active` |
+| `quick_fix_apply` | control | **да** | `tools/diagnostics.py` | fix | ремонт по коду из `quick_fix_check`: `clock_sync` (NTP, иначе HTTP `Date` → `date -u -s`), `dns_restart` (init-скрипт dnsmasq); снимка нет — откатывать нечего |
 | `firewall_apply` | control | **да** | `tools/firewall.py` | — | поставить правила NFQUEUE; порты управления исключаются |
 | `firewall_remove` | control | **да** | `tools/firewall.py` | — | снять правила: трафик пойдёт напрямую |
 | `strategy_save` | strategies_write | **да** | `tools/strategies.py` | id, name, description?, protocol?, profiles | создать/перезаписать USER-стратегию; профили заменяются целиком; `validation` — прогон `--intercept=0` |

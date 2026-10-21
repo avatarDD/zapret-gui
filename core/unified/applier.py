@@ -277,6 +277,7 @@ def _apply_tunnel(route, iface, domains, cidrs) -> dict:
         rule = DeviceRoutingRule(
             target_iface=iface, source_ip=dev["ip"],
             mac=dev.get("mac", ""), hostname=dev.get("hostname", ""),
+            bypass_ports=route.bypass_ports(),
             rule_id=rid,
             description="unified:%s" % route.name)
         results.append(_upsert(mgr, rule))

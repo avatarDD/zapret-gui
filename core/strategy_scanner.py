@@ -955,6 +955,22 @@ class StrategyScanner:
                 source="scanner",
             )
 
+        # Часы по сети (core/quick_fix, кеш на пару минут): год в
+        # предпосылках ловит только «1970», а сдвиг на дни ломает TLS
+        # точно так же.
+        try:
+            from core.quick_fix import clock_problem
+            clock = None if any(i.get("id") == "clock_wrong"
+                                for i in pre.get("issues", [])) \
+                else clock_problem(network=True)
+        except Exception:
+            clock = None
+        if clock:
+            log.error("%s: %s. %s" % (clock.get("title", ""),
+                                      clock.get("detail", ""),
+                                      clock.get("hint", "")),
+                      source="scanner")
+
     # ─────────────────── Strategy selection ───────────────────
 
     def _select_strategies(self) -> list[CatalogEntry]:

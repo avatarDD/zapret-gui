@@ -276,3 +276,48 @@ class TestNftSelfScopeApply(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestQuicBlockFragments(unittest.TestCase):
+
+    def test_forward_reject_after_bypass(self):
+        fr = nft.build_quic_block_fragments(family="v4", lan_ifaces=["br0"])
+        self.assertEqual(fr["output"], [])
+        fwd = fr["forward"]
+        self.assertIn("ct status dnat return", fwd[0])
+        self.assertIn("192.168.0.0/16", fwd[1])
+        self.assertEqual(fwd[-1],
+                         'meta nfproto ipv4 iifname "br0" udp dport 443 reject')
+
+    def test_without_lan_ifaces(self):
+        v4 = nft.build_quic_block_fragments(family="v4")["forward"]
+        self.assertIn("ip saddr {", v4[-1])
+        self.assertTrue(v4[-1].endswith("udp dport 443 reject"))
+        v6 = nft.build_quic_block_fragments(family="v6")["forward"]
+        self.assertFalse(any("reject" in x for x in v6))
+
+    def test_self_scope_output_only(self):
+        fr = nft.build_quic_block_fragments(family="v6", scope="self",
+                                            server_ips=["2001:db8::1"], mark=5)
+        self.assertEqual(fr["forward"], [])
+        out = fr["output"]
+        self.assertEqual(out[0], "meta mark 5 return")
+        self.assertTrue(any("ip6 daddr 2001:db8::1 return" in x for x in out))
+        self.assertEqual(out[-1], "meta nfproto ipv6 udp dport 443 reject")
+
+    def test_apply_adds_chain_only_for_redirect(self):
+        calls = []
+
+        def fake_run(argv, timeout=10):
+            calls.append(" ".join(argv))
+            return 0, "", ""
+
+        with mock.patch.object(nft, "_run", side_effect=fake_run):
+            nft.apply(mode="redirect", tcp_port=1100, block_quic=True)
+            self.assertTrue(any("add chain inet %s fwdq" % nft.TABLE in c
+                                for c in calls))
+            self.assertTrue(any("udp dport 443 reject" in c for c in calls))
+            calls.clear()
+            nft.apply(mode="hybrid", tcp_port=1100, udp_port=1102,
+                      block_quic=True)
+            self.assertFalse(any("fwdq" in c for c in calls))

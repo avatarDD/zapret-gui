@@ -178,7 +178,7 @@ class UnifiedRoute:
                  monitor_enabled=False, failover_enabled=False,
                  probe_domain="", route_id="", created_at=0,
                  devices=None, dscp=None, dscp_self=False,
-                 strict_devices=False):
+                 strict_devices=False, bypass=None):
         # os.urandom, а не uuid: на Entware python3-light без модуля uuid
         self.id = route_id or ("route-" + os.urandom(4).hex())
         self.name = (name or "").strip() or self.id
@@ -200,6 +200,24 @@ class UnifiedRoute:
         self.devices = _clean_devices(devices, strict=strict_devices)
         self.dscp = _clean_dscp(dscp)
         self.dscp_self = bool(dscp_self)
+        # Исключения из «всего трафика устройства» (шаблоны Tachyon):
+        # {"wifi_calling": bool, "torrent_ports": "51413,6881-6889"}.
+        self.bypass = _clean_bypass(bypass, strict=strict_devices)
+
+    def bypass_ports(self) -> list:
+        """Исключения по портам для device-правил (``proto:dir:ports``).
+
+        Wi-Fi Calling — IKE/IPsec NAT-T к ePDG оператора (UDP 500, 4500).
+        Торрент-клиент — его порт как ИСТОЧНИК: ответы входящим пирам и
+        uTP идут с него (исходящие TCP к пирам — с случайных портов, их
+        портом не поймать).
+        """
+        out = []
+        if self.bypass.get("wifi_calling"):
+            out += ["udp:dport:500", "udp:dport:4500"]
+        for item in _split_ports(self.bypass.get("torrent_ports", "")):
+            out += ["tcp:sport:%s" % item, "udp:sport:%s" % item]
+        return out
 
     def has_selectors(self) -> bool:
         """Есть ли у маршрута хоть один селектор трафика."""
@@ -228,6 +246,7 @@ class UnifiedRoute:
             "devices": [dict(x) for x in self.devices],
             "dscp": self.dscp,
             "dscp_self": self.dscp_self,
+            "bypass": dict(self.bypass),
         }
 
     @staticmethod
@@ -256,10 +275,48 @@ class UnifiedRoute:
             devices=d.get("devices"),
             dscp=d.get("dscp"),
             dscp_self=d.get("dscp_self", False),
+            bypass=d.get("bypass"),
             strict_devices=strict_devices)
 
 
 # ─────────────────────── helpers ─────────────────────────────────────
+
+def _split_ports(text) -> list:
+    """«51413, 6881 - 6889» → ["51413", "6881-6889"]; битое — ValueError."""
+    import re
+    from core.routing.rules import parse_port_range
+    text = re.sub(r"\s*-\s*", "-", str(text or ""))
+    out = []
+    for token in re.split(r"[,;\s]+", text):
+        if not token:
+            continue
+        item = parse_port_range(token)
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _clean_bypass(v, strict: bool = False) -> dict:
+    """Нормализовать исключения маршрута по устройствам.
+
+    `strict` (сохранение из GUI/API) — битый порт это ошибка формы;
+    при чтении settings.json — порты просто отбрасываются.
+    """
+    if not isinstance(v, dict):
+        return {}
+    out = {}
+    if v.get("wifi_calling"):
+        out["wifi_calling"] = True
+    try:
+        ports = _split_ports(v.get("torrent_ports", ""))
+    except ValueError:
+        if strict:
+            raise
+        ports = []
+    if ports:
+        out["torrent_ports"] = ",".join(ports)
+    return out
+
 
 def _norm_device_ip(raw: str) -> str:
     """

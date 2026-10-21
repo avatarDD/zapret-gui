@@ -971,3 +971,102 @@ class TestSystemRouteConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestQuicBlockRules(unittest.TestCase):
+    """Redirect заворачивает только TCP — QUIC отклоняем на firewall."""
+
+    def test_forward_rejects_udp443_after_bypass(self):
+        flat = _flat(tp.build_quic_block_rules(family="v4",
+                                               lan_ifaces=["br0"]))
+        self.assertTrue(all(" -t filter -A %s " % tp.FILTER_QUIC_FWD in r
+                            for r in flat))
+        reject = [i for i, r in enumerate(flat) if "REJECT" in r]
+        self.assertEqual(len(reject), 1)
+        self.assertIn("-i br0 -p udp --dport 443 -j REJECT", flat[reject[0]])
+        # Приватные сети и проброс портов — раньше отказа.
+        bypass = [i for i, r in enumerate(flat) if "192.168.0.0/16" in r]
+        dnat = [i for i, r in enumerate(flat) if "--ctstate DNAT" in r]
+        self.assertTrue(bypass and bypass[0] < reject[0])
+        self.assertTrue(dnat and dnat[0] < reject[0])
+        # Без proxy_self OUTPUT не трогаем.
+        self.assertFalse(any(tp.FILTER_QUIC_OUT in r for r in flat))
+
+    def test_self_scope_spares_engine_and_servers(self):
+        flat = _flat(tp.build_quic_block_rules(
+            family="v4", scope="self", server_ips=["203.0.113.5"], mark=7))
+        self.assertFalse(any(tp.FILTER_QUIC_FWD in r for r in flat))
+        self.assertIn("--mark 7 -j RETURN", flat[0])
+        self.assertTrue(any("-d 203.0.113.5 -j RETURN" in r for r in flat))
+        self.assertTrue(flat[-1].endswith("-p udp --dport 443 -j REJECT"))
+
+    def test_v6_uses_ip6tables(self):
+        flat = _flat(tp.build_quic_block_rules(family="v6", proxy_self=True,
+                                               lan_ifaces=["br0"]))
+        self.assertTrue(all(r.startswith("ip6tables") for r in flat))
+        self.assertTrue(any(tp.FILTER_QUIC_OUT in r for r in flat))
+        self.assertTrue(any("-i br0" in r and "REJECT" in r for r in flat))
+
+    def test_without_lan_ifaces_v4_matches_private_sources_only(self):
+        flat = _flat(tp.build_quic_block_rules(family="v4"))
+        rejects = [r for r in flat if "REJECT" in r]
+        self.assertEqual(len(rejects), len(tp.LAN_SOURCES_V4))
+        self.assertTrue(all(" -s " in r for r in rejects))
+        # v6: LAN от входящего не отличить — без интерфейсов не трогаем.
+        flat6 = _flat(tp.build_quic_block_rules(family="v6"))
+        self.assertFalse(any("REJECT" in r for r in flat6))
+
+    def test_apply_only_in_redirect_mode(self):
+        calls = []
+
+        def fake_run(argv, timeout=10):
+            calls.append(" ".join(argv))
+            return 0, "", ""
+
+        with mock.patch.object(tp, "_run", side_effect=fake_run), \
+                mock.patch.object(tp, "choose_backend",
+                                  return_value="iptables"), \
+                mock.patch.object(tp, "available", return_value=True), \
+                mock.patch.object(tp, "tproxy_available", return_value=True):
+            tp.apply(mode="redirect", tcp_port=1100, block_quic=True)
+            self.assertTrue(any("-I FORWARD 1 -j %s" % tp.FILTER_QUIC_FWD
+                                in c for c in calls))
+            calls.clear()
+            tp.apply(mode="tproxy", tcp_port=1100, block_quic=True)
+            # Не в redirect — прошлые цепочки снимаются, новых нет.
+            self.assertFalse(any("-N %s" % tp.FILTER_QUIC_FWD in c
+                                 for c in calls))
+            self.assertTrue(any("-X %s" % tp.FILTER_QUIC_FWD in c
+                                for c in calls))
+            calls.clear()
+            tp.apply(mode="redirect", tcp_port=1100, block_quic=False)
+            self.assertTrue(any("-D FORWARD -j %s" % tp.FILTER_QUIC_FWD in c
+                                for c in calls))
+
+    def test_remove_cleans_quic_chains(self):
+        calls = []
+
+        def fake_run(argv, timeout=10):
+            calls.append(" ".join(argv))
+            return 1, "", ""
+
+        nft = mock.Mock()
+        nft.available.return_value = False
+        with mock.patch.object(tp, "_run", side_effect=fake_run), \
+                mock.patch.object(tp, "available", return_value=True), \
+                mock.patch.dict("sys.modules",
+                                {"core.singbox_transparent_nft": nft}):
+            tp.remove(families=("v4",))
+        self.assertTrue(any("-X %s" % tp.FILTER_QUIC_FWD in c for c in calls))
+        self.assertTrue(any("-X %s" % tp.FILTER_QUIC_OUT in c for c in calls))
+
+    def test_reapply_saved_passes_block_quic(self):
+        saved = {"mode": "redirect", "tcp_port": 1100, "block_quic": True}
+        cm = mock.Mock()
+        cm.get.return_value = saved
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cm), \
+                mock.patch.object(tp, "apply",
+                                  return_value={"ok": True}) as ap:
+            tp.reapply_saved()
+        self.assertTrue(ap.call_args.kwargs.get("block_quic"))

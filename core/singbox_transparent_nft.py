@@ -29,7 +29,7 @@ import subprocess
 from core.log_buffer import log
 from core.singbox_transparent import (
     DEFAULT_TPROXY_MARK, DEFAULT_TPROXY_TABLE,
-    DEFAULT_BYPASS_V4, DEFAULT_BYPASS_V6,
+    DEFAULT_BYPASS_V4, DEFAULT_BYPASS_V6, LAN_SOURCES_V4,
 )
 
 TABLE = "sbtproxy"
@@ -208,6 +208,49 @@ def build_dns_hijack_fragments(*, family: str, dns_port: int,
     return frags
 
 
+def build_quic_block_fragments(*, family: str,
+                               lan_ifaces: list = None,
+                               server_ips: list = None,
+                               bypass: list = None,
+                               proxy_self: bool = False,
+                               scope: str = "forward",
+                               mark: int = DEFAULT_TPROXY_MARK) -> dict:
+    """
+    Отклонить QUIC (UDP/443) в redirect-режиме: UDP туда мимо движка,
+    и HTTP/3 проксируемых сайтов шёл бы напрямую. Парно к
+    build_quic_block_rules из iptables-ветки (там — зачем).
+
+    Вернуть {"forward": [...], "output": [...]}: forward — клиенты LAN
+    (цепочка fwdq), output — сама машина (outq; scope='self' или
+    proxy_self), кроме трафика движка (mark) и прокси-серверов.
+    """
+    daddr = _daddr(family)
+    nfproto = "ipv6" if family == "v6" else "ipv4"
+    head = "meta nfproto %s " % nfproto
+    fwd, out = [], []
+    if scope != "self":
+        # Проброс порта на сервер в LAN (входящий QUIC) — не наш случай.
+        fwd.append("%sct status dnat return" % head)
+        fwd.append("%s%s %s return" % (head, daddr, _bypass_set(family, bypass)))
+        # Без lan_ifaces: v4 — источник из частных сетей, v6 — пропуск
+        # (отличить LAN от входящего нечем; см. build_quic_block_rules).
+        if lan_ifaces:
+            prefixes = ['iifname "%s" ' % ifn for ifn in lan_ifaces]
+        elif family == "v4":
+            prefixes = ["ip saddr { %s } " % ", ".join(LAN_SOURCES_V4)]
+        else:
+            prefixes = []
+        for prefix in prefixes:
+            fwd.append("%s%sudp dport 443 reject" % (head, prefix))
+    if scope == "self" or proxy_self:
+        out.append("meta mark %d return" % mark)
+        out.append("%s%s %s return" % (head, daddr, _bypass_set(family, bypass)))
+        for ip in (server_ips or []):
+            out.append("%s%s %s return" % (head, daddr, ip))
+        out.append("%sudp dport 443 reject" % head)
+    return {"forward": fwd, "output": out}
+
+
 def build_ipv6_block_fragment() -> str:
     """
     Anti-leak: дроп всего форвард-IPv6, когда проксируем только v4 (иначе
@@ -283,7 +326,7 @@ def apply(*, mode: str,
           lan_ifaces: list = None, server_ips: list = None,
           bypass: list = None, proxy_self: bool = False,
           dns_hijack_port: int = 0, ipv6_policy: str = "allow",
-          scope: str = "forward") -> dict:
+          scope: str = "forward", block_quic: bool = False) -> dict:
     if not available():
         return {"ok": False, "error": "nft недоступен"}
     if mode not in ("redirect", "tproxy", "hybrid"):
@@ -370,6 +413,23 @@ def apply(*, mode: str,
                 rule_count += 1
                 if rc != 0:
                     errors.append("%s(dns): %s" % (dns_chain, e.strip()))
+
+    # QUIC мимо движка (только redirect: в tproxy/hybrid UDP уже в движке).
+    if block_quic and mode == "redirect":
+        if not self_scope:
+            _chain("fwdq", "{ type filter hook forward priority 0; policy accept; }")
+        if self_scope or proxy_self:
+            _chain("outq", "{ type filter hook output priority 0; policy accept; }")
+        for family in families:
+            frags = build_quic_block_fragments(
+                family=family, lan_ifaces=lan_ifaces, server_ips=server_ips,
+                bypass=bypass, proxy_self=proxy_self, scope=scope, mark=mark)
+            for chain, key in (("fwdq", "forward"), ("outq", "output")):
+                for fr in frags[key]:
+                    rc, _o, e = _run(_nft_add_rule(chain, fr))
+                    rule_count += 1
+                    if rc != 0:
+                        errors.append("%s: %s" % (chain, e.strip()))
 
     # IPv6 anti-leak: если v6 не проксируем и политика drop — глушим
     # форвард-IPv6 (роутер) либо исходящий v6 машины (локальный режим).

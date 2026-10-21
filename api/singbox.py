@@ -1427,7 +1427,8 @@ def register(app):
         Поднять firewall-правила прозрачного проксирования.
         body: mode, tcp_port, udp_port, mark, table, families[],
               lan_ifaces[], server_ips[], bypass[], proxy_self,
-              dns_hijack_port, ipv6_policy,
+              dns_hijack_port, ipv6_policy, block_quic (redirect: отклонять
+              UDP/443, иначе HTTP/3 уходит мимо движка),
               scope ('forward' — LAN-клиенты роутера, 'self' — локальный
               режим: только исходящий трафик этой машины, ПК/1 NIC).
         """
@@ -1453,6 +1454,7 @@ def register(app):
                 dns_hijack_port=int(body.get("dns_hijack_port") or 0),
                 ipv6_policy=(body.get("ipv6_policy") or "allow"),
                 scope=(body.get("scope") or "forward"),
+                block_quic=bool(body.get("block_quic", False)),
             )
         except (TypeError, ValueError) as e:
             response.status = 400

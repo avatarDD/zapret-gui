@@ -18,6 +18,9 @@ API диагностики сети и системы.
   GET  /api/diagnostics/system     — расширенная системная информация
   GET  /api/diagnostics/services   — список доступных сервисов
   GET  /api/diagnostics/site-trace?domain= — «Куда пойдёт сайт»
+  GET  /api/diagnostics/quick-fix?fresh=1  — быстрый ремонт: часы, DNS,
+                                            маршрут, resolv.conf
+  POST /api/diagnostics/quick-fix          — выполнить ремонт (body: {fix})
 
   POST /api/diagnostics/selfcheck         — запустить самодиагностику
                                             (body: {tests, pattern}), фоном
@@ -151,6 +154,28 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core import site_trace
         return site_trace.trace(request.params.get("domain", ""))
+
+    @app.route("/api/diagnostics/quick-fix")
+    def api_diagnostics_quick_fix():
+        """Системные поломки, похожие на DPI (core/quick_fix.py)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core import quick_fix
+        fresh = request.params.get("fresh", "") in ("1", "true")
+        return quick_fix.check(network=True, fresh=fresh)
+
+    @app.route("/api/diagnostics/quick-fix", method="POST")
+    def api_diagnostics_quick_fix_apply():
+        """Выполнить ремонт по коду (clock_sync / dns_restart)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core import quick_fix
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        result = quick_fix.apply_fix(str(body.get("fix") or ""))
+        if result.get("ok"):
+            result["after"] = quick_fix.check(network=True, fresh=True)
+        return result
 
     @app.route("/api/diagnostics/help-report")
     def api_diagnostics_help_report():

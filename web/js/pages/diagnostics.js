@@ -74,6 +74,19 @@ const DiagnosticsPage = (() => {
                 </button>
             </div>
 
+            <!-- Быстрый ремонт (core/quick_fix.py) -->
+            <div class="card" id="diag-quickfix-card">
+                <div class="card-header"><h3 class="card-title">Быстрый ремонт</h3></div>
+                <p class="form-hint" style="margin-top:0;">
+                    Поломки, которые выглядят как «обход не работает», но DPI тут ни при чём:
+                    сбитые часы (TLS падает на сертификатах, подбор показывает 0%),
+                    упавший DNS роутера, пропавший маршрут в интернет.
+                </p>
+                <div id="diag-quickfix-body" class="text-muted">Проверяю…</div>
+                <button class="btn btn-ghost btn-sm" style="margin-top:8px;"
+                        onclick="DiagnosticsPage.loadQuickFix(true)">Проверить снова</button>
+            </div>
+
             <!-- «Куда пойдёт сайт» (core/site_trace.py) -->
             <div class="card" id="diag-trace-card">
                 <div class="card-header"><h3 class="card-title">Куда пойдёт сайт</h3></div>
@@ -318,6 +331,7 @@ const DiagnosticsPage = (() => {
         loadConflicts();
         loadSelfcheckStatus();
         loadMaintenanceCaps();
+        loadQuickFix(false);
 
         // Пришли с главной («Сайт не открывается?»): сразу «Куда пойдёт сайт».
         const site = new URLSearchParams((location.hash.split('?')[1]) || '').get('site');
@@ -1459,6 +1473,64 @@ const DiagnosticsPage = (() => {
         }
     }
 
+    /* ═══════════════════ быстрый ремонт ═══════════════════ */
+    const QUICKFIX_LABELS = {
+        clock_sync: 'Синхронизировать время',
+        dns_restart: 'Перезапустить dnsmasq',
+    };
+
+    async function loadQuickFix(fresh) {
+        const box = document.getElementById('diag-quickfix-body');
+        if (!box) return;
+        box.textContent = 'Проверяю…';
+        try {
+            // Проверка на сломанной сети ждёт таймаутов проб — дольше 15 с.
+            const r = await API.get('/api/diagnostics/quick-fix' + (fresh ? '?fresh=1' : ''), { timeout: 60000 });
+            renderQuickFix(r);
+        } catch (e) {
+            box.textContent = 'Не удалось проверить: ' + e.message;
+        }
+    }
+
+    function renderQuickFix(r) {
+        const box = document.getElementById('diag-quickfix-body');
+        if (!box) return;
+        const findings = (r && r.findings) || [];
+        const color = { ok: 'var(--success, #22c55e)', warning: 'var(--warning, #f59e0b)',
+                        error: 'var(--danger, #ef4444)', unknown: 'var(--text-muted, #888)' };
+        box.innerHTML = findings.map(f => `
+            <div style="display:flex; gap:8px; align-items:flex-start; margin:6px 0;">
+                <span style="width:8px; height:8px; border-radius:50%; margin-top:6px; flex:none;
+                             background:${color[f.status] || color.unknown};"></span>
+                <div style="flex:1; min-width:0;">
+                    <div><b>${_esc(f.title)}</b>${f.detail ? ' <span class="text-muted">— ' + _esc(f.detail) + '</span>' : ''}</div>
+                    ${f.hint && f.status !== 'ok' ? '<div class="form-hint" style="margin:2px 0 0;">' + _esc(f.hint) + '</div>' : ''}
+                </div>
+                ${f.fix ? `<button class="btn btn-primary btn-sm" style="flex:none;"
+                        onclick="DiagnosticsPage.applyQuickFix('${_esc(f.fix)}', this)">${_esc(QUICKFIX_LABELS[f.fix] || f.fix)}</button>` : ''}
+            </div>`).join('') || '<div class="text-muted">Нет данных</div>';
+    }
+
+    async function applyQuickFix(fix, btn) {
+        if (btn) btn.disabled = true;
+        try {
+            // NTP с таймаутом, затем HTTP-запасной путь и свежая проверка.
+            const r = await API.post('/api/diagnostics/quick-fix', { fix }, { timeout: 90000 });
+            if (r && r.ok) {
+                Toast.success(fix === 'clock_sync'
+                    ? 'Время синхронизировано (' + (r.method || '') + ')'
+                    : 'Готово');
+                if (r.after) renderQuickFix(r.after);
+            } else {
+                Toast.error((r && r.error) || 'Не получилось');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
     /* ═══════════════════ отчёт для помощи ═══════════════════ */
     // Оба варианта приходят одним ответом: галочка переключает их на
     // месте и не может получить текст «не того» запроса.
@@ -1571,5 +1643,7 @@ const DiagnosticsPage = (() => {
         closeHelpReport,
         traceSite,
         copyHelpReport,
+        loadQuickFix,
+        applyQuickFix,
     };
 })();

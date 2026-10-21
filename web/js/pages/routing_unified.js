@@ -1163,6 +1163,7 @@ const RoutingUnifiedPage = (() => {
         return { id: '', name: '', enabled: true, method,
                  fallbacks: [], monitor_enabled: false, failover_enabled: false,
                  probe_domain: '', devices: [], dscp: null, dscp_self: false,
+                 bypass: {},
                  destination: { domains: [], cidrs: [], list_ids: [],
                                 geosite: [], geoip: [] } };
     }
@@ -1238,7 +1239,25 @@ const RoutingUnifiedPage = (() => {
                     <label class="text-muted" style="padding-top:6px;"
                            title="Весь трафик с выбранных устройств локальной сети пойдёт через метод маршрута (ip rule from <ip>). Работает только с туннельными методами.">
                         Устройства</label>
-                    <div id="ru-devbox"></div>
+                    <div>
+                        <div id="ru-devbox"></div>
+                        <div style="margin-top:6px; display:flex; flex-direction:column; gap:4px;">
+                            <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center;"
+                                   title="IKE/IPsec к оператору (UDP 500 и 4500) идёт напрямую: через туннель звонки по Wi-Fi обычно не поднимаются — оператор ждёт абонента из своей страны.">
+                                <input type="checkbox" id="ru-bp-wifi" ${(e.bypass || {}).wifi_calling ? 'checked' : ''}>
+                                Wi-Fi Calling мимо туннеля (UDP 500, 4500)
+                            </label>
+                            <label class="text-muted" style="font-size:12px; display:flex; gap:6px; align-items:center; flex-wrap:wrap;"
+                                   title="Порт торрент-клиента (или TorrServer) мимо туннеля: ответы входящим пирам и uTP идут напрямую и не съедают канал туннеля. Порт смотрите в настройках клиента (часто 51413 или 6881).">
+                                Порт торрент-клиента мимо туннеля:
+                                <input id="ru-bp-torrent" class="form-control" style="max-width:180px;"
+                                       placeholder="51413 или 6881-6889" value="${escAttr((e.bypass || {}).torrent_ports || '')}">
+                            </label>
+                            <div class="text-muted" style="font-size:11px;">
+                                Только для устройств выше. Нужно ядро 4.17+ (на старых прошивках исключения не встанут —
+                                об этом будет предупреждение в журнале).</div>
+                        </div>
+                    </div>
 
                     <label class="text-muted expert-only" style="padding-top:6px;"
                            title="Трафик с этой DSCP-меткой (её ставит штатный QoS роутера) уйдёт через метод маршрута. Только для туннельных методов.">
@@ -1944,6 +1963,10 @@ const RoutingUnifiedPage = (() => {
             devices: editing.devices || [],
             dscp: dscp,
             dscp_self: !!document.getElementById('ru-dscp-self')?.checked,
+            bypass: {
+                wifi_calling: !!document.getElementById('ru-bp-wifi')?.checked,
+                torrent_ports: (document.getElementById('ru-bp-torrent')?.value || '').trim(),
+            },
             destination: {
                 domains: splitDomains(document.getElementById('ru-domains').value),
                 cidrs: splitList(document.getElementById('ru-cidrs').value),
