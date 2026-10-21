@@ -49,6 +49,11 @@ def _remove_firewall():
         get_device_scheduler().remove_all()
     except Exception as e:  # noqa: BLE001
         _log("не удалось снять правила расписания устройств: %s" % e)
+    try:
+        from core.device_quota import get_device_quota
+        get_device_quota().remove_all()
+    except Exception as e:  # noqa: BLE001
+        _log("не удалось снять правила квот устройств: %s" % e)
 
 
 def _remove_persistence():

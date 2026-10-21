@@ -1589,9 +1589,9 @@ $ zapret-gui mcp status
 bind:        inherit
 транспорты:  http=вкл  sse=выкл
 
-инструментов: 85 из 127 доступны сейчас
-  read               43
-  control            8
+инструментов: 95 из 140 доступны сейчас
+  read               47
+  control            10
   strategies_write   12
   …
 разрешения:
@@ -1692,17 +1692,18 @@ Desktop и VS Code они видны как готовые команды, мо�
 
 ### Что модель умеет
 
-127 инструментов. Что из них видно клиенту — решают разрешения:
+140 инструментов. Что из них видно клиенту — решают разрешения:
 невыданное не просто запрещено, оно **не публикуется**, и модель о нём
 не знает.
 
-**Чтение — всегда, отдельного разрешения нет** (43):
+**Чтение — всегда, отдельного разрешения нет** (47):
 
 | Инструменты | Про что |
 |---|---|
 | `system_status`, `nfqws_status`, `tunnels_status`, `diagnostics_run`, `connectivity_matrix` | что за устройство, что поднято, что сломано |
 | `tunnel_log`, `tunnel_diagnostics` | лог движка туннеля (sing-box, mihomo, AWG, usque, Opera) и снимок AWG/sing-box/mihomo для разбора: процесс, память, автозапуск, контроллер; ключи под маской |
 | `site_trace` | куда пойдёт сайт: hosts, DNS, единый слой, списки и профиль nfqws2 — без трафика |
+| `quick_fix_check` | поломки, похожие на DPI: сбитые часы, мёртвый DNS роутера, пропавший интернет у провайдера, нет маршрута в интернет (сетевая часть — по `probes`) |
 | `logs_tail`, `traffic_recent`, `firewall_status` | журнал, «дошёл ли трафик до движка», правила перехвата |
 | `vpngen_options` | что умеет генератор конфигов WARP/Proton на этом устройстве |
 | `vpngen_check` | проверить синтаксис конфига AWG/usque/sing-box/mihomo или конфига Proton, не сохраняя (встроенный разбор, затем сам движок, если установлен) |
@@ -1714,12 +1715,17 @@ Desktop и VS Code они видны как готовые команды, мо�
 | `scan_status`, `scan_results`, `blockcheck_status`, `blockcheck2_status`, `blockcheck2_output`, `healthcheck_status` | результаты тяжёлых прогонов (запуск — отдельное разрешение) |
 | `job_wait` | **дождаться** конца долгой операции одним вызовом вместо опроса в цикле: скан, blockcheck, эксперимент, фоновая команда, снифер, сборка пула |
 | `unified_route_list`, `unified_route_status` | маршруты единого слоя: что через какой туннель идёт и каким методом работает **сейчас** (failover мог переключить) |
+| `known_good_status` | рабочая точка туннелей и маршрутов: совпадает ли с ней текущее, что поменялось, какая правка последней сломала сайты |
+| `smart_detect_status` | автообнаружение блокировок: что ждёт подтверждения и что уже добавлено в списки |
+| `device_quota_status` | дневные квоты времени устройств: сколько минут истрачено и осталось, кому интернет закрыт до полуночи |
 | `strategy_memory` | **что уже срабатывало** на этом домене в этой сети: argv, счёт удач и неудач, давность записи |
 | `issue_draft`, `issue_draft_list` | **черновик issue об ошибке в самом GUI**: модель описывает, что видела, сервер дописывает место в коде и команду воспроизведения (см. [Если модель нашла ошибку в GUI](#если-модель-нашла-ошибку-в-gui)) |
 
-**`control` — движок и перехват** (8): `nfqws_start`, `nfqws_stop`,
+**`control` — движок и перехват** (10): `nfqws_start`, `nfqws_stop`,
 `nfqws_restart`, `nfqws_reload_lists` (SIGHUP, без перезапуска),
-`strategy_apply`, `firewall_apply`, `firewall_remove`, `scan_apply`.
+`strategy_apply`, `firewall_apply`, `firewall_remove`, `scan_apply`,
+`quick_fix_apply` (синхронизировать часы, перезапустить dnsmasq),
+`device_quota_grant` (добавить устройству минут на сегодня).
 *Интернет у клиентов на время пропадёт.*
 
 **`strategies_write` — стратегии и списки** (12): `strategy_save`,
@@ -1738,16 +1744,22 @@ Lua-скрипты правятся **на ходу**: модель читает
 (`apply=true`) — иначе правка лежит на диске и не действует, потому что
 lua читается при старте.
 
-**`config_write` — настройки** (1): `config_set`. Пишет **по одному
+**`config_write` — настройки** (2): `config_set`. Пишет **по одному
 листу** и только в разрешённые поддеревья; пути к файлам, порт GUI,
 бэкенд firewall и метки десинка не отдаются на запись никогда.
+`dns_autoselect` — сделать лучший по замеру DNS-сервер сервером «auto»
+для правил «домен → DNS» (откат — `mcp_undo_last`).
 
-**`probes` — трафик наружу** (13): `probe_targets`, `probe_compare`
+**`probes` — трафик наружу** (16): `probe_targets`, `probe_compare`
 (домен с обходом и без), `dpi_classify` (чем режут: хватит ли разреза,
 нужен ли фейк или режут адрес), `scan_start`, `scan_stop`, `blockcheck_start`,
 `blockcheck2_start`, `blockcheck2_stop`, `healthcheck_run`,
 `traffic_capture_start`, `traffic_capture_status`,
-`traffic_capture_result`, `traffic_capture_stop`.
+`traffic_capture_result`, `traffic_capture_stop`, `dns_benchmark`
+(задержка и честность DNS-серверов по UDP, DoH и DoT), `leak_check`
+(внешний IP напрямую и через туннели, резолверы роутера через bash.ws),
+`lan_probe` (сайты с роутера и как клиент LAN — через временный netns в
+мосту LAN; только OpenWrt и Linux).
 *Это заметно провайдеру.*
 
 Снифер (`traffic_capture_*`) отвечает на вопрос, которого раньше не было
@@ -1827,10 +1839,13 @@ pull request. Файлы каталогов при этом не трогают�
 `code_export_patch`, `code_write`, `code_patch`, `code_apply`,
 `code_commit`, `code_rollback`. Подробности — ниже.
 
-**`tunnels_write` — туннели, подписки и маршруты** (13): `tunnel_up`,
+**`tunnels_write` — туннели, подписки и маршруты** (16): `tunnel_up`,
 `tunnel_down`, `tunnel_restart`, `tunnel_config_get`,
 `tunnel_config_save`, `subscription_refresh`, `pool_refresh`,
 `unified_route_save`, `unified_route_delete`, `unified_route_apply`,
+`known_good_promote`, `known_good_rollback` (рабочая точка туннелей и
+маршрутов: отметить текущее рабочим или вернуться к нему),
+`smart_detect_undo` (отменить автодобавление домена в список),
 `vpngen_generate`, `vpngen_proton_servers` (генератор конфигов WARP и
 Proton: регистрирует устройство и сохраняет конфиги AWG/usque/sing-box/
 mihomo; приватные ключи модели не показываются), `tunnel_settings`

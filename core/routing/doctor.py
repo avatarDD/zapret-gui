@@ -453,6 +453,8 @@ def _shadowing_rule(src: str, table: int, priority: int, family: str = "-4"):
         # таблицу.
         if "lookup %d" % table in body:
             continue                       # ведёт туда же, куда и мы
+        if " dport " in body or " sport " in body:
+            continue                       # по портам — забирает не всё
         if body.startswith("from all") or ("from %s" % src) in body:
             return "%d: %s" % (prio, body)
     return ""

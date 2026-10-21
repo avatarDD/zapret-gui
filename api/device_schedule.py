@@ -7,6 +7,11 @@ REST API расписания обхода по устройствам (core/dev
                                действующие правила, адреса мимо обхода)
   POST /api/device-schedule  — сохранить {enabled, tz_offset, rules}
                                и сразу применить
+  GET  /api/device-quota     — квоты времени: настройки и счёт за сегодня
+  POST /api/device-quota     — сохранить {enabled, tz_offset,
+                               active_packets, rules} и применить
+  POST /api/device-quota/grant — {rule, minutes}: добавить минут на
+                               сегодня (core/device_quota.py)
 """
 
 import json
@@ -67,3 +72,61 @@ def register(app):
             response.status = 500
             return {"ok": False, "error": "сохранено, но не применено: %s" % e}
         return _state()
+
+    # ── Дневные квоты времени (core/device_quota.py) ──
+
+    def _quota_state():
+        from core.config_manager import get_config_manager
+        from core.device_quota import get_device_quota, load_settings
+        raw = get_config_manager().get("firewall", "device_quota",
+                                       default={}) or {}
+        work, form, errors = load_settings(raw)
+        return {"ok": True, "settings": dict(work, rules=form, errors=errors),
+                "status": get_device_quota().status()}
+
+    @app.route("/api/device-quota")
+    def device_quota_get():
+        response.content_type = "application/json; charset=utf-8"
+        return _quota_state()
+
+    @app.route("/api/device-quota", method="POST")
+    def device_quota_save():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = json.loads(request.body.read() or b"null")
+        except (ValueError, UnicodeDecodeError):
+            body = None
+        if not isinstance(body, dict) or "rules" not in body:
+            response.status = 400
+            return {"ok": False, "error": "ожидается JSON-объект "
+                                          "{enabled, tz_offset, rules}"}
+        from core.config_manager import get_config_manager
+        from core.device_quota import get_device_quota, normalize_settings
+        try:
+            data = normalize_settings(body)
+        except ValueError as e:
+            response.status = 400
+            return {"ok": False, "error": str(e)}
+        cfg = get_config_manager()
+        cfg.set("firewall", "device_quota", data)
+        if not cfg.save():
+            response.status = 500
+            return {"ok": False, "error": "не удалось сохранить настройки"}
+        q = get_device_quota()
+        q.start()
+        q.tick()
+        return _quota_state()
+
+    @app.route("/api/device-quota/grant", method="POST")
+    def device_quota_grant():
+        response.content_type = "application/json; charset=utf-8"
+        try:
+            body = json.loads(request.body.read() or b"null") or {}
+        except (ValueError, UnicodeDecodeError):
+            body = {}
+        from core.device_quota import get_device_quota
+        r = get_device_quota().grant(str(body.get("rule") or ""),
+                                     body.get("minutes"))
+        if r.get("ok"):
+            r.update(_quota_state())
+        return r

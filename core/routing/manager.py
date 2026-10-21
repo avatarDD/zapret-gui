@@ -393,9 +393,12 @@ class RoutingManager:
             # NDMS device-routing работает только если есть MAC И
             # target_iface — нативный NDMS-объект. Проверка инкап-
             # сулирована в can_handle_device_rule().
+            # Исключения по портам NDMS-политика не умеет — с ними
+            # правило идёт обычным `ip rule from`.
             try:
                 from core.routing import ndms_backend
-                if ndms_backend.can_handle_device_rule(rule):
+                if not rule.bypass_ports and \
+                        ndms_backend.can_handle_device_rule(rule):
                     return ndms_backend.apply_device_rule(rule)
             except Exception as e:
                 log.warning("routing(ndms): device apply упал,"
@@ -425,7 +428,8 @@ class RoutingManager:
         if isinstance(rule, DeviceRoutingRule):
             try:
                 from core.routing import ndms_backend
-                if ndms_backend.can_handle_device_rule(rule):
+                if not rule.bypass_ports and \
+                        ndms_backend.can_handle_device_rule(rule):
                     return ndms_backend.remove_device_rule(rule)
             except Exception as e:
                 log.warning("routing(ndms): device remove упал,"

@@ -51,11 +51,56 @@ DEVICE_PRIORITY = 10200
 LOCAL_EXEMPT_PRIORITY = DEVICE_PRIORITY - 10     # LAN ↔ LAN
 SELF_EXEMPT_PRIORITY = DEVICE_PRIORITY - 20      # сам роутер
 
+# Исключения по портам (приём Tachyon: Wi-Fi Calling и торренты мимо
+# туннеля). «Весь трафик устройства в туннель» ломает две вещи:
+#   * Wi-Fi Calling — IKE/IPsec к ePDG оператора (UDP 500/4500): оператор
+#     ждёт абонента из своей страны, звонок через туннель не поднимается;
+#   * торрент-клиент — входящие пиры приходят через проброс порта на WAN,
+#     а ответ с порта клиента по `from <ip>` уезжает в туннель; uTP шлёт
+#     с того же порта. Плюс торренты съедают канал туннеля.
+# `ip rule from <ip> ipproto <p> dport|sport <n> lookup main` с приоритетом
+# раньше основного правила устройства. Нужны ядро 4.17+ и iproute2 с
+# этими селекторами: на старых прошивках правило не встаёт — основное
+# правило от этого не страдает, а в ответе остаётся предупреждение.
+PORT_EXEMPT_PRIORITY = DEVICE_PRIORITY - 5
+
 
 _lock = threading.Lock()
 
 
 # ───────────────────────── helpers ──────────────────────────────────
+
+def port_exemption_args(src: str, item: str) -> list:
+    """argv-хвост ``ip rule`` для одного исключения ``proto:dir:ports``
+    (без add/del и приоритета): ``from <src> ipproto udp dport 500``."""
+    proto, direction, ports = item.split(":")
+    return ["from", src, "ipproto", proto, direction, ports,
+            "lookup", "main"]
+
+
+def _apply_port_exemptions(src: str, family: str, items: list) -> tuple:
+    """Поставить исключения по портам. → (поставленные, ошибки)."""
+    done, errors = [], []
+    for item in items or []:
+        tail = port_exemption_args(src, item)
+        _run(["ip", family, "rule", "del"] + tail)
+        rc, _o, err = _run(["ip", family, "rule", "add"] + tail
+                           + ["priority", str(PORT_EXEMPT_PRIORITY)])
+        if rc == 0:
+            done.append(item)
+        else:
+            errors.append("%s: %s" % (item, err.strip() or rc))
+    return done, errors
+
+
+def _remove_port_exemptions(src: str, family: str, items: list) -> None:
+    for item in items or []:
+        for _ in range(4):          # дубли от прошлых сбоев
+            rc, _o, _e = _run(["ip", family, "rule", "del"]
+                              + port_exemption_args(src, item))
+            if rc != 0:
+                break
+
 
 def _run(args, timeout=5):
     import subprocess
@@ -333,6 +378,14 @@ def apply_device_rule(rule: DeviceRoutingRule) -> dict:
             return {"ok": False,
                     "error": "ip rule add from %s: %s" % (src, err.strip())}
 
+        ports_done, ports_err = _apply_port_exemptions(
+            src, family, getattr(rule, "bypass_ports", []))
+        if ports_err:
+            log.warning("routing: device-правило %s: исключения по портам "
+                        "не встали (нужно ядро 4.17+ и iproute2 с ipproto/"
+                        "dport): %s" % (rule.id, "; ".join(ports_err)),
+                        source="routing")
+
         # MASQUERADE + FORWARD-accept на AWG-iface (общий helper):
         # device-правило ловит forwarded-трафик LAN-клиента, которому
         # ip rule from перекидывает руль на AWG-таблицу. Без MASQUERADE
@@ -365,6 +418,8 @@ def apply_device_rule(rule: DeviceRoutingRule) -> dict:
             "added":  [{"family": fam, "source": src, "table": table,
                         "iface": ifname, "masquerade": masq_status}],
             "exemptions": exemptions,
+            "bypass_ports": ports_done,
+            "bypass_ports_errors": ports_err,
         }
 
 
@@ -383,6 +438,9 @@ def remove_device_rule(rule: DeviceRoutingRule) -> dict:
     with _lock:
         rc, _o, _e = _run(["ip", family, "rule", "del", "from", src,
                            "lookup", str(table)])
+
+        _remove_port_exemptions(src, family,
+                                getattr(rule, "bypass_ports", []))
 
         # Исключения ставились только у правил на подсеть — и снимаются
         # вместе с ними (issue #333).

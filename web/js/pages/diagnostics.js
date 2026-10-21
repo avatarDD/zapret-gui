@@ -74,6 +74,53 @@ const DiagnosticsPage = (() => {
                 </button>
             </div>
 
+            <!-- Быстрый ремонт (core/quick_fix.py) -->
+            <div class="card" id="diag-quickfix-card">
+                <div class="card-header"><h3 class="card-title">Быстрый ремонт</h3></div>
+                <p class="form-hint" style="margin-top:0;">
+                    Поломки, которые выглядят как «обход не работает», но DPI тут ни при чём:
+                    сбитые часы (TLS падает на сертификатах, подбор показывает 0%),
+                    упавший DNS роутера, пропавший маршрут в интернет.
+                </p>
+                <div id="diag-quickfix-body" class="text-muted">Проверяю…</div>
+                <button class="btn btn-ghost btn-sm" style="margin-top:8px;"
+                        onclick="DiagnosticsPage.loadQuickFix(true)">Проверить снова</button>
+            </div>
+
+            <!-- Утечки IP и DNS (core/leak_check.py) -->
+            <div class="card" id="diag-leak-card">
+                <div class="card-header"><h3 class="card-title">Утечки IP и DNS</h3></div>
+                <p class="form-hint" style="margin-top:0;">
+                    Внешний IP напрямую и через каждый туннель (тот же IP — трафик
+                    идёт мимо туннеля) и какие DNS-серверы видит мир, когда роутер
+                    резолвит имя. Запросы уходят на bash.ws и api.ipify.org, поэтому
+                    проверка — только по кнопке.
+                </p>
+                <div id="diag-leak-body" class="text-muted">Проверки ещё не было.</div>
+                <button class="btn btn-ghost btn-sm" style="margin-top:8px;" id="diag-leak-btn"
+                        onclick="DiagnosticsPage.runLeakCheck()">Проверить</button>
+            </div>
+
+            <!-- Проба «как клиент LAN» (core/lan_probe.py) -->
+            <div class="card" id="diag-lanprobe-card" style="display:none;">
+                <div class="card-header"><h3 class="card-title">Как клиент LAN</h3></div>
+                <p class="form-hint" style="margin-top:0;">
+                    Пробы GUI идут с самого роутера, а телефон ходит другим путём: через
+                    FORWARD, правила по устройствам, transparent-режим. Здесь те же сайты
+                    открываются ещё и из временного «клиента», подключённого к мосту LAN,
+                    и видно, где расходится.
+                </p>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                    <input id="diag-lanprobe-hosts" class="form-input" style="flex:2; min-width:200px;"
+                           placeholder="сайты через пробел">
+                    <input id="diag-lanprobe-addr" class="form-input" style="flex:1; min-width:120px;"
+                           placeholder="адрес клиента (авто)">
+                    <button class="btn btn-ghost btn-sm" id="diag-lanprobe-btn"
+                            onclick="DiagnosticsPage.runLanProbe()">Проверить</button>
+                </div>
+                <div id="diag-lanprobe-body" class="text-muted" style="margin-top:8px;"></div>
+            </div>
+
             <!-- «Куда пойдёт сайт» (core/site_trace.py) -->
             <div class="card" id="diag-trace-card">
                 <div class="card-header"><h3 class="card-title">Куда пойдёт сайт</h3></div>
@@ -318,6 +365,9 @@ const DiagnosticsPage = (() => {
         loadConflicts();
         loadSelfcheckStatus();
         loadMaintenanceCaps();
+        loadQuickFix(false);
+        API.get('/api/diagnostics/leak-check').then(renderLeak).catch(() => {});
+        API.get('/api/diagnostics/lan-probe').then(initLanProbe).catch(() => {});
 
         // Пришли с главной («Сайт не открывается?»): сразу «Куда пойдёт сайт».
         const site = new URLSearchParams((location.hash.split('?')[1]) || '').get('site');
@@ -1459,6 +1509,147 @@ const DiagnosticsPage = (() => {
         }
     }
 
+    /* ═══════════════════ быстрый ремонт ═══════════════════ */
+    const QUICKFIX_LABELS = {
+        clock_sync: 'Синхронизировать время',
+        dns_restart: 'Перезапустить dnsmasq',
+    };
+
+    async function loadQuickFix(fresh) {
+        const box = document.getElementById('diag-quickfix-body');
+        if (!box) return;
+        box.textContent = 'Проверяю…';
+        try {
+            // Проверка на сломанной сети ждёт таймаутов проб — дольше 15 с.
+            const r = await API.get('/api/diagnostics/quick-fix' + (fresh ? '?fresh=1' : ''), { timeout: 60000 });
+            renderQuickFix(r);
+        } catch (e) {
+            box.textContent = 'Не удалось проверить: ' + e.message;
+        }
+    }
+
+    function renderQuickFix(r) {
+        const box = document.getElementById('diag-quickfix-body');
+        if (!box) return;
+        const findings = (r && r.findings) || [];
+        const color = { ok: 'var(--success, #22c55e)', warning: 'var(--warning, #f59e0b)',
+                        error: 'var(--danger, #ef4444)', unknown: 'var(--text-muted, #888)' };
+        box.innerHTML = findings.map(f => `
+            <div style="display:flex; gap:8px; align-items:flex-start; margin:6px 0;">
+                <span style="width:8px; height:8px; border-radius:50%; margin-top:6px; flex:none;
+                             background:${color[f.status] || color.unknown};"></span>
+                <div style="flex:1; min-width:0;">
+                    <div><b>${_esc(f.title)}</b>${f.detail ? ' <span class="text-muted">— ' + _esc(f.detail) + '</span>' : ''}</div>
+                    ${f.hint && f.status !== 'ok' ? '<div class="form-hint" style="margin:2px 0 0;">' + _esc(f.hint) + '</div>' : ''}
+                </div>
+                ${f.fix ? `<button class="btn btn-primary btn-sm" style="flex:none;"
+                        onclick="DiagnosticsPage.applyQuickFix('${_esc(f.fix)}', this)">${_esc(QUICKFIX_LABELS[f.fix] || f.fix)}</button>` : ''}
+            </div>`).join('') || '<div class="text-muted">Нет данных</div>';
+    }
+
+    async function applyQuickFix(fix, btn) {
+        if (btn) btn.disabled = true;
+        try {
+            // NTP с таймаутом, затем HTTP-запасной путь и свежая проверка.
+            const r = await API.post('/api/diagnostics/quick-fix', { fix }, { timeout: 90000 });
+            if (r && r.ok) {
+                Toast.success(fix === 'clock_sync'
+                    ? 'Время синхронизировано (' + (r.method || '') + ')'
+                    : 'Готово');
+                if (r.after) renderQuickFix(r.after);
+            } else {
+                Toast.error((r && r.error) || 'Не получилось');
+            }
+        } catch (e) {
+            Toast.error(e.message);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    /* ═══════════════════ утечки IP и DNS ═══════════════════ */
+    const LEAK_COLORS = { ok: 'var(--success, #22c55e)', warn: 'var(--warning, #f59e0b)',
+                          incomplete: 'var(--text-muted, #888)' };
+
+    function renderLeak(r) {
+        const box = document.getElementById('diag-leak-body');
+        if (!box || !r || !r.ts) return;
+        const color = { ok: 'var(--success, #22c55e)', warning: 'var(--warning, #f59e0b)',
+                        error: 'var(--danger, #ef4444)', unknown: 'var(--text-muted, #888)' };
+        box.innerHTML = `
+            <div style="margin-bottom:6px; color:${LEAK_COLORS[r.level] || ''};"><b>${_esc(r.line || '')}</b>
+                <span class="text-muted" style="font-weight:normal;">· ${_esc(new Date(r.ts * 1000).toLocaleString())}</span></div>
+            ${(r.findings || []).map(f => `
+            <div style="display:flex; gap:8px; align-items:flex-start; margin:6px 0;">
+                <span style="width:8px; height:8px; border-radius:50%; margin-top:6px; flex:none;
+                             background:${color[f.status] || color.unknown};"></span>
+                <div style="flex:1; min-width:0; overflow-wrap:anywhere;">
+                    <div><b>${_esc(f.title)}</b>${f.detail ? ' <span class="text-muted">— ' + _esc(f.detail) + '</span>' : ''}</div>
+                    ${f.hint ? '<div class="form-hint" style="margin:2px 0 0;">' + _esc(f.hint) + '</div>' : ''}
+                </div>
+            </div>`).join('')}`;
+    }
+
+    async function runLeakCheck() {
+        const box = document.getElementById('diag-leak-body');
+        const btn = document.getElementById('diag-leak-btn');
+        if (btn) btn.disabled = true;
+        if (box) box.textContent = 'Проверяю (до полуминуты)…';
+        try {
+            const r = await API.post('/api/diagnostics/leak-check', {}, { timeout: 90000 });
+            if (r && r.ok) renderLeak(r);
+            else if (box) box.textContent = (r && r.error) || 'Не вышло';
+        } catch (e) {
+            if (box) box.textContent = 'Не вышло: ' + e.message;
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    /* ═══════════════════ как клиент LAN ═══════════════════ */
+    function initLanProbe(r) {
+        const card = document.getElementById('diag-lanprobe-card');
+        if (!card || !r) return;
+        card.style.display = '';
+        const hosts = document.getElementById('diag-lanprobe-hosts');
+        if (hosts && !hosts.value) hosts.value = (r.hosts || []).join(' ');
+        if (!r.ok) {
+            document.getElementById('diag-lanprobe-body').textContent = 'Недоступно: ' + (r.reason || '');
+            const btn = document.getElementById('diag-lanprobe-btn');
+            if (btn) btn.disabled = true;
+        }
+    }
+
+    function _probeCell(p) {
+        if (!p) return '—';
+        if (p.ok) return `<span style="color:var(--success, #22c55e);">открылся</span> <span class="text-muted">${_esc(p.ms)} мс</span>`;
+        return `<span style="color:var(--danger, #ef4444);" title="${_esc(p.error || '')}">нет (${_esc(p.stage || '?')})</span>`;
+    }
+
+    async function runLanProbe() {
+        const box = document.getElementById('diag-lanprobe-body');
+        const btn = document.getElementById('diag-lanprobe-btn');
+        const hosts = (document.getElementById('diag-lanprobe-hosts')?.value || '').split(/[\s,]+/).filter(Boolean);
+        const address = (document.getElementById('diag-lanprobe-addr')?.value || '').trim();
+        if (btn) btn.disabled = true;
+        if (box) box.textContent = 'Проверяю…';
+        try {
+            const r = await API.post('/api/diagnostics/lan-probe', { hosts, address }, { timeout: 120000 });
+            if (!r.ok) { box.textContent = r.error || 'Не вышло'; return; }
+            box.innerHTML = `
+                <div style="overflow-x:auto;"><table class="table" style="width:100%; font-size:13px;">
+                    <thead><tr><th>Сайт</th><th>С роутера</th><th>Как клиент ${_esc(r.address)}</th></tr></thead>
+                    <tbody>${r.rows.map(x => `<tr${x.verdict === 'lan_fails' ? ' style="background:rgba(239,68,68,.08);"' : ''}>
+                        <td>${_esc(x.host)}</td><td>${_probeCell(x.router)}</td><td>${_probeCell(x.lan)}</td></tr>`).join('')}</tbody>
+                </table></div>
+                <div class="form-hint">${_esc(r.hint || '')}</div>`;
+        } catch (e) {
+            if (box) box.textContent = 'Не вышло: ' + e.message;
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
     /* ═══════════════════ отчёт для помощи ═══════════════════ */
     // Оба варианта приходят одним ответом: галочка переключает их на
     // месте и не может получить текст «не того» запроса.
@@ -1571,5 +1762,9 @@ const DiagnosticsPage = (() => {
         closeHelpReport,
         traceSite,
         copyHelpReport,
+        loadQuickFix,
+        applyQuickFix,
+        runLeakCheck,
+        runLanProbe,
     };
 })();

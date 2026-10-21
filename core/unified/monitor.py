@@ -299,6 +299,11 @@ class _MonitorLoop:
             if ok is None:
                 _warn_unprobeable(route)
                 continue
+            if not ok and _wan_down():
+                # Провал из-за пропавшего WAN — не провал метода: такие
+                # замеры после возврата интернета увели бы маршрут на
+                # запасной метод (core/reachability).
+                continue
             # Замер принадлежит методу, через который он сделан:
             # успешность считается по каждому методу отдельно.
             record(route.id, ok,
@@ -309,6 +314,11 @@ class _MonitorLoop:
                 except Exception as e:
                     log.warning("unified failover step %s: %s"
                                 % (route.id, e), source="unified")
+
+
+def _wan_down() -> bool:
+    from core import reachability
+    return reachability.wan_down()
 
 
 _loop = _MonitorLoop()

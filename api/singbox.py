@@ -1427,7 +1427,8 @@ def register(app):
         Поднять firewall-правила прозрачного проксирования.
         body: mode, tcp_port, udp_port, mark, table, families[],
               lan_ifaces[], server_ips[], bypass[], proxy_self,
-              dns_hijack_port, ipv6_policy,
+              dns_hijack_port, ipv6_policy, block_quic (redirect: отклонять
+              UDP/443, иначе HTTP/3 уходит мимо движка),
               scope ('forward' — LAN-клиенты роутера, 'self' — локальный
               режим: только исходящий трафик этой машины, ПК/1 NIC).
         """
@@ -1453,6 +1454,7 @@ def register(app):
                 dns_hijack_port=int(body.get("dns_hijack_port") or 0),
                 ipv6_policy=(body.get("ipv6_policy") or "allow"),
                 scope=(body.get("scope") or "forward"),
+                block_quic=bool(body.get("block_quic", False)),
             )
         except (TypeError, ValueError) as e:
             response.status = 400
@@ -1537,11 +1539,14 @@ def register(app):
     @app.route("/api/singbox/subscriptions")
     def singbox_subscriptions_list():
         response.content_type = "application/json; charset=utf-8"
-        from core.subscription_manager import list_subscriptions, get_refresher
+        from core.subscription_manager import (
+            list_subscriptions, get_refresher, device_hwid, UA_PRESETS)
         return {
             "ok": True,
             "subscriptions": list_subscriptions(),
             "refresher": get_refresher().get_status(),
+            "device_hwid": device_hwid(),
+            "user_agents": UA_PRESETS,
         }
 
     @app.route("/api/singbox/subscriptions", method="POST")
@@ -1566,7 +1571,11 @@ def register(app):
         from core.subscription_manager import add_subscription
         return add_subscription(name=name, url=url, fmt=fmt,
                                 interval_hours=interval, group=group,
-                                transport=transport)
+                                transport=transport,
+                                user_agent=body.get("user_agent") or "",
+                                send_hwid=bool(body.get("send_hwid")),
+                                hwid=body.get("hwid") or "",
+                                crypt4_key=body.get("crypt4_key") or "")
 
     @app.route("/api/singbox/subscriptions/<sid>", method="PUT")
     def singbox_subscriptions_update(sid):
@@ -1579,7 +1588,8 @@ def register(app):
         from core.subscription_manager import update_subscription
         kw = {}
         for k in ("name", "url", "format", "interval_hours", "group",
-                  "transport"):
+                  "transport", "user_agent", "send_hwid", "hwid",
+                  "crypt4_key"):
             if k in body:
                 kw[k] = body[k]
         if "interval_hours" in kw:
@@ -1599,7 +1609,11 @@ def register(app):
     def singbox_subscriptions_refresh_one(sid):
         response.content_type = "application/json; charset=utf-8"
         from core.subscription_manager import refresh_one
-        return refresh_one(sid)
+        try:
+            force = bool((request.json or {}).get("force"))
+        except Exception:
+            force = False
+        return refresh_one(sid, force=force)
 
     @app.route("/api/singbox/subscriptions/refresh-all", method="POST")
     def singbox_subscriptions_refresh_all():

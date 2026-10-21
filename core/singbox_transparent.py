@@ -100,6 +100,8 @@ MANGLE_OUT = "SBT_TP_OUT"      # mangle OUTPUT: tproxy для self (через D
 MANGLE_DIV = "SBT_TP_DIV"      # mangle: пометка уже-established tproxy-сокетов
 FILTER_V6OUT = "SBT_V6_OUT"    # filter OUTPUT: anti-leak IPv6 локального режима
 FILTER_V6FWD = "SBT_V6_FWD"    # filter FORWARD: anti-leak IPv6 forward-режима
+FILTER_QUIC_FWD = "SBT_QUIC_FWD"  # filter FORWARD: QUIC клиентов LAN (redirect)
+FILTER_QUIC_OUT = "SBT_QUIC_OUT"  # filter OUTPUT: QUIC самой машины (redirect)
 
 # Области перехвата: forward — трафик LAN-клиентов (роутер, как раньше),
 # self — только исходящий трафик самой машины (ПК/VPS, локальный режим).
@@ -135,6 +137,10 @@ DEFAULT_BYPASS_V4 = [
 DEFAULT_BYPASS_V6 = [
     "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
 ]
+# Откуда приходят клиенты LAN, когда интерфейсы LAN не заданы (v4, адрес
+# в FORWARD ещё до NAT) — для отказа QUIC (build_quic_block_rules).
+LAN_SOURCES_V4 = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                  "100.64.0.0/10"]
 
 # Сообщение, когда на роутере нет netfilter-цели TPROXY (issue #149):
 # у пользователя bypass-RETURN'ы проходят, но `-A ... -j TPROXY` падает с
@@ -433,6 +439,67 @@ def build_ipv6_block_rules(scope: str = "forward",
     return out
 
 
+def build_quic_block_rules(*, family: str = "v4",
+                           lan_ifaces: list = None,
+                           server_ips: list = None,
+                           bypass: list = None,
+                           proxy_self: bool = False,
+                           scope: str = "forward",
+                           mark: int = DEFAULT_TPROXY_MARK) -> list:
+    """
+    Отклонить QUIC (UDP/443) в redirect-режиме (приём Tachyon,
+    ``disable_quic``).
+
+    Redirect заворачивает в движок только TCP. HTTP/3 того же сайта
+    уходит мимо прокси напрямую, и там его режет DPI: страница то
+    грузится (браузер откатился на TCP), то висит (приложение держится
+    за QUIC). Правило ``reject`` в маршрутах самого движка
+    (``reject_quic`` конфига) тут не поможет — UDP до движка не доходит.
+    Отклоняем UDP/443 на firewall: ICMP unreachable возвращается сразу, и
+    клиент без паузы уходит на TCP, который уже идёт в прокси.
+
+      forward — цепочка FILTER_QUIC_FWD в filter/FORWARD: QUIC клиентов
+                LAN (с lan_ifaces, если заданы);
+      self / proxy_self — FILTER_QUIC_OUT в filter/OUTPUT: QUIC самой
+                машины, кроме трафика движка (mark — hysteria2/tuic к
+                серверу идут по UDP/443) и адресов прокси-серверов.
+
+    Локальные и спец-сети (DEFAULT_BYPASS_*) не трогаем. Без lan_ifaces
+    «клиент LAN» для v4 — источник из частных сетей (в FORWARD адрес ещё
+    до NAT), а для v6 отличить LAN от входящего из интернета нечем —
+    там правило ставится только при явных lan_ifaces.
+    """
+    cmd = _ipt(family)
+    bypass = list(DEFAULT_BYPASS_V4 if family == "v4" else DEFAULT_BYPASS_V6) \
+        + list(bypass or [])
+    rules = []
+    if scope != "self":
+        # Проброс порта на сервер в LAN (входящий QUIC) — не наш случай.
+        rules.append([cmd, "-t", "filter", "-A", FILTER_QUIC_FWD,
+                      "-m", "conntrack", "--ctstate", "DNAT", "-j", "RETURN"])
+        rules += build_bypass_rules(FILTER_QUIC_FWD, family, bypass, "filter")
+        if lan_ifaces:
+            sources = [["-i", ifn] for ifn in lan_ifaces]
+        elif family == "v4":
+            sources = [["-s", net] for net in LAN_SOURCES_V4]
+        else:
+            sources = []
+        for match in sources:
+            rules.append([cmd, "-t", "filter", "-A", FILTER_QUIC_FWD]
+                         + match + ["-p", "udp", "--dport", "443",
+                                    "-j", "REJECT"])
+    if scope == "self" or proxy_self:
+        rules.append([cmd, "-t", "filter", "-A", FILTER_QUIC_OUT,
+                      "-m", "mark", "--mark", str(mark), "-j", "RETURN"])
+        rules += build_bypass_rules(FILTER_QUIC_OUT, family, bypass, "filter")
+        for ip in (server_ips or []):
+            rules.append([cmd, "-t", "filter", "-A", FILTER_QUIC_OUT,
+                          "-d", ip, "-j", "RETURN"])
+        rules.append([cmd, "-t", "filter", "-A", FILTER_QUIC_OUT,
+                      "-p", "udp", "--dport", "443", "-j", "REJECT"])
+    return rules
+
+
 def build_dns_hijack_rules(*, family: str = "v4",
                            dns_port: int,
                            lan_ifaces: list = None,
@@ -658,7 +725,8 @@ def apply(*, mode: str,
           dns_hijack_port: int = 0,
           ipv6_policy: str = "allow",
           backend: str = "auto",
-          scope: str = "forward") -> dict:
+          scope: str = "forward",
+          block_quic: bool = False) -> dict:
     """
     Применить прозрачное проксирование.
 
@@ -675,6 +743,8 @@ def apply(*, mode: str,
       scope: 'forward' — трафик LAN-клиентов (роутер, поведение по
              умолчанию); 'self' — локальный режим: только исходящий
              трафик самой машины (ПК/VPS с одной NIC, без LAN-ролей).
+      block_quic: отклонять UDP/443 (только mode='redirect', где UDP
+             мимо движка) — см. build_quic_block_rules.
     """
     if mark == 1:
         mark = get_tproxy_mark()
@@ -696,7 +766,7 @@ def apply(*, mode: str,
             table=table, families=tuple(families), lan_ifaces=lan_ifaces,
             server_ips=server_ips, bypass=bypass, proxy_self=proxy_self,
             dns_hijack_port=dns_hijack_port, ipv6_policy=ipv6_policy,
-            scope=scope)
+            scope=scope, block_quic=block_quic)
 
     # Префлайт TPROXY (issue #149): если режим требует TPROXY, а цели нет
     # ни на одном семействе — не пытаемся ставить правила (иначе сыплем
@@ -808,6 +878,31 @@ def apply(*, mode: str,
                 else:
                     _ensure_jump(family, "nat", "PREROUTING", NAT_PRE)
 
+        if not (block_quic and mode == "redirect"):
+            # Галочку сняли или режим сменили — прошлые REJECT'ы остались
+            # бы в FORWARD/OUTPUT (apply не снимает правил, nft-ветка
+            # пересоздаёт таблицу целиком, здесь — нет).
+            _del_jump(family, "filter", "FORWARD", FILTER_QUIC_FWD)
+            _del_chain(family, "filter", FILTER_QUIC_FWD)
+            _del_jump(family, "filter", "OUTPUT", FILTER_QUIC_OUT)
+            _del_chain(family, "filter", FILTER_QUIC_OUT)
+        else:
+            if not self_scope:
+                _ensure_chain(family, "filter", FILTER_QUIC_FWD)
+                _flush_chain(family, "filter", FILTER_QUIC_FWD)
+            if self_scope or proxy_self:
+                _ensure_chain(family, "filter", FILTER_QUIC_OUT)
+                _flush_chain(family, "filter", FILTER_QUIC_OUT)
+            for argv in build_quic_block_rules(
+                    family=family, lan_ifaces=lan_ifaces,
+                    server_ips=server_ips, bypass=bypass,
+                    proxy_self=proxy_self, scope=scope, mark=mark):
+                _exec(argv)
+            if not self_scope:
+                _ensure_jump(family, "filter", "FORWARD", FILTER_QUIC_FWD)
+            if self_scope or proxy_self:
+                _ensure_jump(family, "filter", "OUTPUT", FILTER_QUIC_OUT)
+
     # IPv6 anti-leak: если v6 не проксируем и политика drop — глушим
     # IPv6, чтобы клиенты (или приложения машины) не ходили мимо.
     if "v6" not in families and ipv6_policy == "drop":
@@ -870,6 +965,11 @@ def remove(*, mark: int = DEFAULT_TPROXY_MARK,
         _del_jump(family, "mangle", "OUTPUT", MANGLE_OUT)
         _del_chain(family, "mangle", MANGLE_PRE)
         _del_chain(family, "mangle", MANGLE_OUT)
+        # filter (QUIC в redirect-режиме)
+        _del_jump(family, "filter", "FORWARD", FILTER_QUIC_FWD)
+        _del_chain(family, "filter", FILTER_QUIC_FWD)
+        _del_jump(family, "filter", "OUTPUT", FILTER_QUIC_OUT)
+        _del_chain(family, "filter", FILTER_QUIC_OUT)
         # filter (anti-leak IPv6)
         if family == "v6":
             _del_jump(family, "filter", "OUTPUT", FILTER_V6OUT)
@@ -924,6 +1024,6 @@ def reapply_saved() -> dict:
     # Отбрасываем неизвестные ключи на случай старого формата.
     allowed = {"mode", "tcp_port", "udp_port", "mark", "table", "families",
                "lan_ifaces", "server_ips", "bypass", "proxy_self",
-               "dns_hijack_port", "ipv6_policy", "scope"}
+               "dns_hijack_port", "ipv6_policy", "scope", "block_quic"}
     params = {k: v for k, v in params.items() if k in allowed}
     return apply(**params)

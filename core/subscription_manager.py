@@ -21,7 +21,11 @@ settings.json layout:
             "last_refresh": 1234567890,
             "last_status": "ok|error",
             "last_error":  "...",
-            "last_outbounds": 12
+            "last_outbounds": 12,
+            "user_agent": ""|"sing-box"|"mihomo"|"v2rayn"|"happ"|"<свой>",
+            "send_hwid": false,
+            "hwid": "",          # свой HWID; пусто — от MAC и модели
+            "crypt4_key": ""     # свой ключ для happ://crypt4/
           }
         }
       }
@@ -42,6 +46,23 @@ DEFAULT_INTERVAL_HOURS = 6
 HTTP_TIMEOUT           = 20
 MAX_DOWNLOAD_BYTES     = 5 * 1024 * 1024
 USER_AGENT             = "zapret-gui/subscription-manager"
+
+# Панели (Remnawave, Marzban, 3x-ui) отдают формат по User-Agent: sing-box
+# получает JSON, mihomo — YAML, v2rayN/Happ — список ссылок. Ключ —
+# пресет из GUI; любое другое значение уходит как есть (свой UA).
+UA_PRESETS = {
+    "":         USER_AGENT,
+    "sing-box": "sing-box/1.11.4",
+    "mihomo":   "mihomo/1.19.2",
+    "v2rayn":   "v2rayN/7.10.0",
+    "happ":     "Happ/3.7.0",
+}
+
+# «Усадка»: была полная подписка, пришли две ноды. Чаще всего это
+# заглушка панели («устройство не привязано», «подписка истекла»), а не
+# настоящий список — заменять ею рабочий конфиг нельзя.
+SHRINK_FROM = 6
+SHRINK_TO   = 2
 
 
 # ─────── settings access ───────
@@ -126,16 +147,36 @@ def _norm_transport(transport) -> str:
         return ""
 
 
+def _norm_user_agent(value) -> str:
+    """Пресет или свой UA: печатные символы, без переводов строк."""
+    v = str(value or "").strip()
+    if v in UA_PRESETS:
+        return v
+    v = "".join(c for c in v if c.isprintable())[:200]
+    return v
+
+
+def _url_ok(url: str) -> bool:
+    from core.happ_crypt4 import is_crypt4
+    if is_crypt4(url):
+        return True
+    return urllib.parse.urlparse(url).scheme in ("http", "https")
+
+
 def add_subscription(name: str, url: str, *,
                      fmt: str = "auto",
                      interval_hours: int = DEFAULT_INTERVAL_HOURS,
                      group: str = "urltest",
-                     transport: str = "") -> dict:
+                     transport: str = "",
+                     user_agent: str = "",
+                     send_hwid: bool = False,
+                     hwid: str = "",
+                     crypt4_key: str = "") -> dict:
     if not name or not url:
         return {"ok": False, "error": "Нужны name и url"}
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return {"ok": False, "error": "URL должен быть http:// или https://"}
+    if not _url_ok(url):
+        return {"ok": False, "error": "URL должен быть http://, https:// "
+                                      "или happ://crypt4/…"}
 
     # os.urandom, а не uuid: на Entware python3-light без модуля uuid
     sid = "sub-" + os.urandom(4).hex()
@@ -149,6 +190,10 @@ def add_subscription(name: str, url: str, *,
             "interval_hours": max(1, int(interval_hours)),
             "group":          _norm_group(group),
             "transport":      _norm_transport(transport),
+            "user_agent":     _norm_user_agent(user_agent),
+            "send_hwid":      bool(send_hwid),
+            "hwid":           str(hwid or "").strip()[:64],
+            "crypt4_key":     str(crypt4_key or "").strip()[:256],
             "last_refresh":   0,
             "last_status":    "",
             "last_error":     "",
@@ -168,6 +213,14 @@ def update_subscription(sid: str, **kwargs) -> dict:
         if sid not in subs or not isinstance(subs[sid], dict):
             return {"ok": False, "error": "Подписка не найдена"}
         sub = subs[sid]
+        if "url" in kwargs and kwargs["url"] is not None:
+            if not _url_ok(str(kwargs["url"])):
+                return {"ok": False, "error": "URL должен быть http://, "
+                                              "https:// или happ://crypt4/…"}
+            if kwargs["url"] != sub.get("url"):
+                # Другая подписка — прежнее число серверов ей не мерка,
+                # иначе защита от усадки отвергла бы новую маленькую.
+                sub["last_outbounds"] = 0
         for k in ("name", "url", "format", "interval_hours"):
             if k in kwargs and kwargs[k] is not None:
                 sub[k] = kwargs[k]
@@ -175,6 +228,14 @@ def update_subscription(sid: str, **kwargs) -> dict:
             sub["group"] = _norm_group(kwargs["group"])
         if "transport" in kwargs and kwargs["transport"] is not None:
             sub["transport"] = _norm_transport(kwargs["transport"])
+        if kwargs.get("user_agent") is not None:
+            sub["user_agent"] = _norm_user_agent(kwargs["user_agent"])
+        if kwargs.get("send_hwid") is not None:
+            sub["send_hwid"] = bool(kwargs["send_hwid"])
+        if kwargs.get("hwid") is not None:
+            sub["hwid"] = str(kwargs["hwid"]).strip()[:64]
+        if kwargs.get("crypt4_key") is not None:
+            sub["crypt4_key"] = str(kwargs["crypt4_key"]).strip()[:256]
         _save_section(subs)
     get_refresher().reconfigure()
     return {"ok": True, "id": sid}
@@ -201,27 +262,55 @@ def remove_subscription(sid: str) -> dict:
 
 # ─────── refresh ───────
 
-def refresh_one(sid: str) -> dict:
+def refresh_one(sid: str, force: bool = False) -> dict:
     """
     Force-refresh одной подписки. Скачивает, парсит, сохраняет
     sing-box-конфиг `imported-subscription-<sid>`.
+
+    ``force`` — принять ответ, даже если подписка «усохла» (см.
+    :data:`SHRINK_FROM`): человек сам решил, что две ноды — правда.
     """
     sub = get_subscription(sid)
     if not sub:
         return {"ok": False, "error": "Подписка не найдена"}
 
+    secrets = _crypt4_secrets(sub)
+    url = _plain_url(sub["url"], secrets)
+    if not url:
+        msg = ("happ://crypt4/ не расшифровалась: укажите ключ "
+               "(crypt4_key) или HWID, к которому панель её привязала")
+        _record_refresh(sid, ok=False, error=msg)
+        return {"ok": False, "error": msg}
     try:
-        text = _fetch(sub["url"], transport=sub.get("transport") or "")
+        text = _fetch(url, transport=sub.get("transport") or "",
+                      headers=request_headers(sub))
     except RuntimeError as e:
         _record_refresh(sid, ok=False, error=str(e))
         return {"ok": False, "error": str(e)}
 
     fmt = sub.get("format") or "auto"
-    outbounds, source_fmt = _parse_payload(text, fmt)
+    outbounds, source_fmt = _parse_payload(expand_crypt4(text, secrets),
+                                           fmt)
     if not outbounds:
         msg = "В подписке не нашлось outbound'ов"
         _record_refresh(sid, ok=False, error=msg)
         return {"ok": False, "error": msg, "format": source_fmt}
+
+    prev = int(sub.get("last_outbounds") or 0)
+    if not force and shrunk(prev, len(outbounds)):
+        msg = ("подписка усохла: было %d серверов, пришло %d — оставлен "
+               "прежний конфиг (обновите вручную с «принять как есть», "
+               "если так и задумано)" % (prev, len(outbounds)))
+        _record_refresh(sid, ok=False, error=msg)
+        log.warning("subscription %s: %s" % (sid, msg), source="singbox")
+        try:
+            from core import notify
+            notify.event("tunnel", "⚠️ Подписка «%s» %s"
+                         % (sub.get("name") or sid, msg))
+        except Exception:
+            pass
+        return {"ok": False, "error": msg, "shrunk": True,
+                "previous": prev, "outbounds": len(outbounds)}
 
     # Собираем sing-box-конфиг с этими outbound'ами + минимальным route
     try:
@@ -318,7 +407,7 @@ def _config_name_for(sid: str) -> str:
 # ─────── fetch + parse ───────
 
 def fetch_outbounds(url: str, fmt: str = "auto",
-                    transport: str = "") -> dict:
+                    transport: str = "", headers=None) -> dict:
     """
     Публичный помощник: скачать URL и распарсить в sing-box outbound'ы.
 
@@ -328,16 +417,18 @@ def fetch_outbounds(url: str, fmt: str = "auto",
     месте. transport — через что качать (см. core/download_transport).
     """
     try:
-        text = _fetch(url, transport=transport)
+        text = (_fetch(url, transport=transport, headers=headers)
+                if headers else _fetch(url, transport=transport))
     except RuntimeError as e:
         return {"ok": False, "outbounds": [], "format": fmt,
                 "error": str(e)}
-    outbounds, source_fmt = _parse_payload(text, fmt or "auto")
+    outbounds, source_fmt = _parse_payload(expand_crypt4(text),
+                                           fmt or "auto")
     return {"ok": True, "outbounds": outbounds or [],
             "format": source_fmt, "error": ""}
 
 
-def _fetch(url: str, transport: str = "") -> str:
+def _fetch(url: str, transport: str = "", headers=None) -> str:
     # Зеркало (install.mirror) применяется к GitHub-URL (источники-«свалки»
     # пула обычно на raw.githubusercontent.com); приватные подписки
     # провайдеров оно не трогает. Транспорт — core/download_transport.
@@ -346,7 +437,7 @@ def _fetch(url: str, transport: str = "") -> str:
     try:
         with urlopen_via(resolve_url(url), transport=transport,
                          timeout=HTTP_TIMEOUT,
-                         headers={"User-Agent": USER_AGENT}) as r:
+                         headers=headers or {"User-Agent": USER_AGENT}) as r:
             raw = r.read(MAX_DOWNLOAD_BYTES + 1)
     except urllib.error.HTTPError as e:
         raise RuntimeError("HTTP %s" % e.code)
@@ -358,6 +449,117 @@ def _fetch(url: str, transport: str = "") -> str:
         raise RuntimeError("подписка > %d МБ"
                            % (MAX_DOWNLOAD_BYTES // (1024 * 1024)))
     return raw.decode("utf-8", errors="replace")
+
+
+# ─────── заголовки устройства, crypt4, усадка ───────
+
+def shrunk(previous: int, current: int) -> bool:
+    """Чистая функция: подписка «усохла» до заглушки."""
+    return previous >= SHRINK_FROM and current <= SHRINK_TO
+
+
+def _read_first(paths) -> str:
+    for p in paths:
+        try:
+            with open(p, "rb") as f:
+                v = f.read(256).replace(b"\0", b"").decode(
+                    "utf-8", "replace").strip()
+            if v:
+                return v
+        except OSError:
+            continue
+    return ""
+
+
+def device_model() -> str:
+    return _read_first(("/tmp/sysinfo/model", "/proc/device-tree/model",
+                        "/sys/class/dmi/id/product_name")) or "Router"
+
+
+def device_os() -> str:
+    if os.path.exists("/etc/openwrt_release"):
+        return "OpenWrt Linux"
+    try:
+        from core.firewall_persistence import is_keenetic
+        if is_keenetic():
+            return "Keenetic Linux"
+    except Exception:
+        pass
+    return "Linux"
+
+
+def device_hwid() -> str:
+    """Стабильный HWID роутера: MD5 от MAC и модели (как у Tachyon),
+    ``xxxx-xxxx-xxxx-xxxx``. Тот же роутер — тот же HWID, и панель не
+    считает каждое обновление новым устройством."""
+    import hashlib
+    names = ["eth0", "br-lan", "br0", "eth1"]
+    try:
+        # Только физические сетевые карты (есть ссылка device): docker*,
+        # veth* и временный veth пробы LAN появляются и исчезают, и HWID
+        # «гулял» бы — панель считала бы роутер новым устройством.
+        names += sorted(n for n in os.listdir("/sys/class/net")
+                        if n not in names and os.path.exists(
+                            "/sys/class/net/%s/device" % n))
+    except OSError:
+        pass
+    mac = _read_first(["/sys/class/net/%s/address" % i for i in names])
+    h = hashlib.md5(("%s-%s" % (mac, device_model())).encode()).hexdigest()
+    return "-".join(h[i:i + 4] for i in range(0, 16, 4))
+
+
+def request_headers(sub: dict) -> dict:
+    """Заголовки запроса подписки: UA и, если включено, HWID устройства
+    (``x-hwid``, ``x-device-os``, ``x-ver-os``, ``x-device-model``) — по
+    ним панели вроде Remnawave считают лимит устройств."""
+    ua = sub.get("user_agent") or ""
+    headers = {"User-Agent": UA_PRESETS.get(ua, ua) or USER_AGENT}
+    if sub.get("send_hwid"):
+        headers.update({
+            "x-hwid": sub.get("hwid") or device_hwid(),
+            "x-device-os": device_os(),
+            "x-ver-os": os.uname().release if hasattr(os, "uname") else "",
+            "x-device-model": device_model(),
+            "Accept-Language": "ru-RU,en,*",
+        })
+    return headers
+
+
+def _crypt4_secrets(sub: dict) -> list:
+    return [sub.get("crypt4_key") or "", sub.get("hwid") or "",
+            device_hwid() if sub.get("send_hwid") else ""]
+
+
+def _plain_url(url: str, secrets=()) -> str:
+    """URL подписки; ``happ://crypt4/`` расшифровывается ("" — не вышло)."""
+    from core.happ_crypt4 import decrypt, is_crypt4
+    if not is_crypt4(url):
+        return url
+    plain = decrypt(url, secrets).strip()
+    return plain if urllib.parse.urlparse(plain).scheme in (
+        "http", "https") else ""
+
+
+def expand_crypt4(text: str, secrets=()) -> str:
+    """Строки ``happ://crypt4/…`` в ответе подписки → их открытый текст
+    (ссылки на серверы). Нерасшифрованные выбрасываются."""
+    from core.happ_crypt4 import decrypt, is_crypt4
+    if "crypt4/" not in (text or ""):
+        # Список ссылок часто приходит целиком в base64.
+        from core.subscription_importer import _maybe_decode_base64
+        decoded = _maybe_decode_base64(text or "")
+        if "crypt4/" not in decoded:
+            return text
+        text = decoded
+    out = []
+    for line in text.splitlines():
+        if is_crypt4(line):
+            plain = decrypt(line, secrets)
+            if plain:
+                out.append(plain)
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def _parse_payload(text: str, fmt: str):

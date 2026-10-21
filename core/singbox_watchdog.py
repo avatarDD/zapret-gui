@@ -259,6 +259,9 @@ class SingboxWatchdog:
             probe_threshold=settings["probe_fail_threshold"])
         if not should:
             return
+        from core import reachability
+        if reachability.hold_restart("singbox", name):
+            return
 
         # Rate limit.
         with self._lock:

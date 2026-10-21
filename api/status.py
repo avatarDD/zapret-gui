@@ -161,151 +161,156 @@ def _detect_interface_roles(interfaces, addr_map):
     return detected
 
 
+def dashboard_status() -> dict:
+    """Объединенный статус для Dashboard: nfqws, system, warp, opera, tgproxy, block_detector, healthcheck, logs."""
+
+    from core.config_manager import get_config_manager
+    from core.system_info import get_system_info
+    from core.nfqws_manager import get_nfqws_manager
+    from core.firewall import get_firewall_manager
+    from core.autostart_manager import get_autostart_manager
+    from core.zapret_installer import get_zapret_installer
+    from core.version import GUI_VERSION
+
+    cfg = get_config_manager()
+    mgr = get_nfqws_manager()
+    fw = get_firewall_manager()
+    am = get_autostart_manager()
+    inst = get_zapret_installer()
+    zapret_version = inst.get_installed_version()
+
+    status_data = {
+        "nfqws": mgr.get_status(),
+        "firewall": fw.get_status(),
+        "strategy": {
+            "id": cfg.get("strategy", "current_id"),
+            "name": cfg.get("strategy", "current_name") or "Не выбрана",
+        },
+        "autostart": am.get_status(),
+        "system": get_system_info(),
+        "zapret": {
+            "installed": zapret_version["installed"],
+            "version": zapret_version["version"],
+        },
+        "gui_version": GUI_VERSION,
+        "timestamp": time.time(),
+    }
+
+    # 2. Статус WARP/MASQUE (usque)
+    warp_configs = []
+    try:
+        from core.usque_manager import get_usque_manager
+        warp_configs = get_usque_manager().list_configs()
+    except Exception:
+        pass
+
+    # 3. Статус Opera Proxy
+    opera_status = {}
+    try:
+        from core.opera_proxy_manager import get_opera_proxy_manager
+        opera_status = get_opera_proxy_manager().status()
+    except Exception:
+        pass
+
+    # 4. Статус Telegram Proxy
+    tg_status = {}
+    try:
+        from core.tgproxy_manager import get_active_engine_status
+        tg_status = get_active_engine_status()
+    except Exception:
+        pass
+
+    # 4b. Основные VPN-движки: AmneziaWG, sing-box, mihomo.
+    # Их не было в дашборде вообще — при поднятом AWG-туннеле раздел
+    # «VPN / Туннели» оставался пустым, хотя это главные движки.
+    # Отдаём компактно: сколько профилей и сколько из них активно.
+    def _engine_summary(loader, active_key):
+        try:
+            configs = loader() or []
+        except Exception:
+            return {"available": False, "total": 0, "active": 0,
+                    "names": []}
+        active = [c for c in configs
+                  if isinstance(c, dict) and c.get(active_key)]
+        return {
+            "available": True,
+            "total": len(configs),
+            "active": len(active),
+            "names": [c.get("iface") or c.get("name") or ""
+                      for c in active][:3],
+        }
+
+    awg_status = _engine_summary(
+        lambda: __import__("core.awg_manager", fromlist=["x"])
+        .get_awg_manager().list_configs(), "active")
+    singbox_status = _engine_summary(
+        lambda: __import__("core.singbox_manager", fromlist=["x"])
+        .get_singbox_manager().list_configs(), "running")
+    mihomo_status = _engine_summary(
+        lambda: __import__("core.mihomo_manager", fromlist=["x"])
+        .get_mihomo_manager().list_configs(), "running")
+
+    # 5. Статус Block Detector
+    bd_status = {}
+    try:
+        from core.block_detector import get_block_detector
+        bd_status = get_block_detector().get_status()
+    except Exception:
+        pass
+
+    # 6. Статус Healthcheck
+    hc_status = {}
+    try:
+        from core.healthcheck import get_healthcheck
+        hc_status = get_healthcheck().get_status()
+    except Exception:
+        pass
+
+    # 6b. Другие обходчики DPI (youtubeUnblock, b4, byedpi, …): вдвоём
+    # с nfqws2 они мешают друг другу, и это первое, что надо видеть
+    # на главной, а не только в «Диагностике». Обход /proc — раз в
+    # 30 секунд, а не на каждый опрос дашборда.
+    rivals = _cached_rivals()
+
+    # 7. Последние логи (15 записей)
+    logs_data = []
+    try:
+        from core.log_buffer import get_log_buffer
+        logs_data = get_log_buffer().get_last(15)
+    except Exception:
+        pass
+
+    result = {
+        "ok": True,
+        "status": status_data,
+        "warp": warp_configs,
+        "opera": opera_status,
+        "tgproxy": tg_status,
+        "awg": awg_status,
+        "singbox": singbox_status,
+        "mihomo": mihomo_status,
+        "block_detector": bd_status,
+        "healthcheck": hc_status,
+        "rivals": rivals,
+        "foreign": _cached_foreign(),
+        "logs": logs_data,
+    }
+    # «Кратко»: одна строка «всё ли работает» и итог каждого блока.
+    try:
+        from core.dashboard_brief import brief
+        result["brief"] = brief(result)
+    except Exception:
+        pass
+    return result
+
+
 def register(app):
 
     @app.route("/api/dashboard/status")
     def api_dashboard_status():
-        """Объединенный статус для Dashboard: nfqws, system, warp, opera, tgproxy, block_detector, healthcheck, logs."""
+        """Объединенный статус для Dashboard (см. dashboard_status)."""
         response.content_type = "application/json; charset=utf-8"
-
-        from core.config_manager import get_config_manager
-        from core.system_info import get_system_info
-        from core.nfqws_manager import get_nfqws_manager
-        from core.firewall import get_firewall_manager
-        from core.autostart_manager import get_autostart_manager
-        from core.zapret_installer import get_zapret_installer
-        from core.version import GUI_VERSION
-
-        cfg = get_config_manager()
-        mgr = get_nfqws_manager()
-        fw = get_firewall_manager()
-        am = get_autostart_manager()
-        inst = get_zapret_installer()
-        zapret_version = inst.get_installed_version()
-
-        status_data = {
-            "nfqws": mgr.get_status(),
-            "firewall": fw.get_status(),
-            "strategy": {
-                "id": cfg.get("strategy", "current_id"),
-                "name": cfg.get("strategy", "current_name") or "Не выбрана",
-            },
-            "autostart": am.get_status(),
-            "system": get_system_info(),
-            "zapret": {
-                "installed": zapret_version["installed"],
-                "version": zapret_version["version"],
-            },
-            "gui_version": GUI_VERSION,
-            "timestamp": time.time(),
-        }
-
-        # 2. Статус WARP/MASQUE (usque)
-        warp_configs = []
-        try:
-            from core.usque_manager import get_usque_manager
-            warp_configs = get_usque_manager().list_configs()
-        except Exception:
-            pass
-
-        # 3. Статус Opera Proxy
-        opera_status = {}
-        try:
-            from core.opera_proxy_manager import get_opera_proxy_manager
-            opera_status = get_opera_proxy_manager().status()
-        except Exception:
-            pass
-
-        # 4. Статус Telegram Proxy
-        tg_status = {}
-        try:
-            from core.tgproxy_manager import get_active_engine_status
-            tg_status = get_active_engine_status()
-        except Exception:
-            pass
-
-        # 4b. Основные VPN-движки: AmneziaWG, sing-box, mihomo.
-        # Их не было в дашборде вообще — при поднятом AWG-туннеле раздел
-        # «VPN / Туннели» оставался пустым, хотя это главные движки.
-        # Отдаём компактно: сколько профилей и сколько из них активно.
-        def _engine_summary(loader, active_key):
-            try:
-                configs = loader() or []
-            except Exception:
-                return {"available": False, "total": 0, "active": 0,
-                        "names": []}
-            active = [c for c in configs
-                      if isinstance(c, dict) and c.get(active_key)]
-            return {
-                "available": True,
-                "total": len(configs),
-                "active": len(active),
-                "names": [c.get("iface") or c.get("name") or ""
-                          for c in active][:3],
-            }
-
-        awg_status = _engine_summary(
-            lambda: __import__("core.awg_manager", fromlist=["x"])
-            .get_awg_manager().list_configs(), "active")
-        singbox_status = _engine_summary(
-            lambda: __import__("core.singbox_manager", fromlist=["x"])
-            .get_singbox_manager().list_configs(), "running")
-        mihomo_status = _engine_summary(
-            lambda: __import__("core.mihomo_manager", fromlist=["x"])
-            .get_mihomo_manager().list_configs(), "running")
-
-        # 5. Статус Block Detector
-        bd_status = {}
-        try:
-            from core.block_detector import get_block_detector
-            bd_status = get_block_detector().get_status()
-        except Exception:
-            pass
-
-        # 6. Статус Healthcheck
-        hc_status = {}
-        try:
-            from core.healthcheck import get_healthcheck
-            hc_status = get_healthcheck().get_status()
-        except Exception:
-            pass
-
-        # 6b. Другие обходчики DPI (youtubeUnblock, b4, byedpi, …): вдвоём
-        # с nfqws2 они мешают друг другу, и это первое, что надо видеть
-        # на главной, а не только в «Диагностике». Обход /proc — раз в
-        # 30 секунд, а не на каждый опрос дашборда.
-        rivals = _cached_rivals()
-
-        # 7. Последние логи (15 записей)
-        logs_data = []
-        try:
-            from core.log_buffer import get_log_buffer
-            logs_data = get_log_buffer().get_last(15)
-        except Exception:
-            pass
-
-        result = {
-            "ok": True,
-            "status": status_data,
-            "warp": warp_configs,
-            "opera": opera_status,
-            "tgproxy": tg_status,
-            "awg": awg_status,
-            "singbox": singbox_status,
-            "mihomo": mihomo_status,
-            "block_detector": bd_status,
-            "healthcheck": hc_status,
-            "rivals": rivals,
-            "foreign": _cached_foreign(),
-            "logs": logs_data,
-        }
-        # «Кратко»: одна строка «всё ли работает» и итог каждого блока.
-        try:
-            from core.dashboard_brief import brief
-            result["brief"] = brief(result)
-        except Exception:
-            pass
-        return result
+        return dashboard_status()
 
     @app.route("/api/status")
     def api_status():

@@ -77,14 +77,9 @@ def all_non_public(ips) -> bool:
     return seen
 
 
-def doh_confirms_exists(domain: str, timeout: float = 4.0) -> bool:
-    """Знает ли домен публичный DNS (DoH, мимо провайдера).
-
-    True — у домена есть публичный A-адрес: значит, NXDOMAIN или 0.0.0.0
-    от местного резолвера — действительно блокировка. False — DoH тоже
-    не знает домен или недоступен: не добавляем (лучше пропустить домен,
-    чем засорить список обхода рекламой и опечатками).
-    """
+def doh_resolve(domain: str, timeout: float = 4.0) -> list:
+    """A-адреса домена по публичному DoH (мимо провайдера); [] — не знает
+    или DoH недоступен."""
     import json
     import urllib.parse
     import urllib.request
@@ -103,11 +98,23 @@ def doh_confirms_exists(domain: str, timeout: float = 4.0) -> bool:
             continue
         if not isinstance(data, dict):
             continue
-        ips = [a.get("data") for a in (data.get("Answer") or [])
-               if isinstance(a, dict) and a.get("type") == 1]
-        return bool(ips) and not all_non_public(ips) \
-            and not all(ip in ("0.0.0.0", "127.0.0.1") for ip in ips)
-    return False
+        return [a.get("data") for a in (data.get("Answer") or [])
+                if isinstance(a, dict) and a.get("type") == 1
+                and a.get("data")]
+    return []
+
+
+def doh_confirms_exists(domain: str, timeout: float = 4.0) -> bool:
+    """Знает ли домен публичный DNS (DoH, мимо провайдера).
+
+    True — у домена есть публичный A-адрес: значит, NXDOMAIN или 0.0.0.0
+    от местного резолвера — действительно блокировка. False — DoH тоже
+    не знает домен или недоступен: не добавляем (лучше пропустить домен,
+    чем засорить список обхода рекламой и опечатками).
+    """
+    ips = doh_resolve(domain, timeout)
+    return bool(ips) and not all_non_public(ips) \
+        and not all(ip in ("0.0.0.0", "127.0.0.1") for ip in ips)
 
 
 def _last_unique(items, limit: int) -> list:
@@ -215,6 +222,13 @@ class BlockDetector:
         """Основной цикл: собрать DNS + пронировать."""
         # Собираем домены из DNS-источника
         new_domains = self._collect_dns_queries()
+        # Второй источник — зависшие прямые соединения mihomo/sing-box
+        # (Clash API, block_detector.smart_clash; core/smart_detect).
+        try:
+            from core import smart_detect
+            stalled = smart_detect.clash_candidates()
+        except Exception:
+            stalled = []
         # Белый список перечитываем каждый такт: правка в настройках иначе
         # ждала перезапуска детектора.
         try:
@@ -227,6 +241,13 @@ class BlockDetector:
                         or not is_probe_candidate(d):
                     continue
                 self._monitored[d] = self._new_entry()
+            for d in stalled:
+                if self._whitelisted(d) or not is_probe_candidate(d):
+                    continue
+                # Зависшее соединение — повод проверить сейчас, а не через
+                # час после прошлой пробы.
+                self._monitored.setdefault(d, self._new_entry())
+                self._monitored[d]["last_checked"] = 0
             self._trim_locked()
 
         # Пронируем домены которые давно не проверялись
@@ -277,6 +298,14 @@ class BlockDetector:
                             res = ProbeResult(domain=domain, code="unknown",
                                               detail=str(e)[:100])
                         _handle(domain, res)
+
+        # Очередь подтверждения Smart Detect: повторные пробы тех, кто
+        # провалился не меньше smart_recheck_sec назад.
+        try:
+            from core import smart_detect
+            smart_detect.process()
+        except Exception as e:
+            log.warning("smart detect: %s" % e, source="block_detector")
 
     def _collect_dns_queries(self) -> list:
         """Собрать уникальные домены из DNS-источника."""
@@ -562,6 +591,18 @@ class BlockDetector:
             log.debug("block-detector: %s (%s) не добавлен — DoH домен тоже "
                       "не знает (фильтр рекламы/опечатка)"
                       % (domain, result.code), source="block_detector")
+            return
+
+        # Smart Detect: один провал — ещё не блокировка. Домен встаёт в
+        # очередь и попадёт в список, только если и повторная проба
+        # напрямую провалится, а через метод маршрута откроется
+        # (core/smart_detect.py).
+        if cfg.get("block_detector", "smart_confirm", default=True):
+            try:
+                from core import smart_detect
+                smart_detect.submit(domain, list_id, result.code)
+            except Exception as e:
+                log.warning("smart detect: %s" % e, source="block_detector")
             return
 
         try:

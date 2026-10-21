@@ -515,3 +515,220 @@ def _hint(findings, skipped) -> str:
         parts.append("правила перехвата этот инструмент не смотрит — "
                      "они в firewall_status")
     return "; ".join(parts)
+
+
+@tool(
+    name="quick_fix_check",
+    scope="read",
+    mutating=False,
+    title="System breakages that look like DPI",
+    description=("Clock skew (TLS checks fail, scans show 0%), dead "
+                 "router DNS, ISP uplink down, no default route, empty "
+                 "resolv.conf. `wan` — uplink verdict; watchdogs hold "
+                 "restarts while it is down. Network checks need "
+                 "`probes`. Findings name a fix for quick_fix_apply. / "
+                 "Часы, DNS, WAN, маршрут."),
+    schema={
+        "type": "object",
+        "properties": {
+            "fresh": {"type": "boolean", "default": False,
+                      "description": "Bypass the 2-minute cache. / Мимо "
+                                     "кеша."},
+        },
+        "additionalProperties": False,
+    },
+)
+def quick_fix_check(args: dict) -> dict:
+    """Те же проверки, что у блока «Быстрый ремонт» в Диагностике."""
+    from core import quick_fix
+
+    probes = perms_mod.granted("probes")
+    report = quick_fix.check(network=probes, fresh=bool(args.get("fresh")))
+    result = dict(report)
+    from core import reachability
+    result["wan"] = reachability.status()
+    if not probes:
+        result["probes"] = {
+            "allowed": False, "permission": "probes",
+            "hint": ("часы сверены только по нижней границе года, DNS не "
+                     "проверялся; сетевые проверки включаются разрешением "
+                     "«probes»")}
+    result["note"] = NOTE
+    return result
+
+
+@tool(
+    name="quick_fix_apply",
+    scope="control",
+    mutating=True,
+    title="Apply a quick fix",
+    description=("Run one fix named by quick_fix_check: `clock_sync` "
+                 "(NTP, else HTTP Date → date -s; goes to the network, "
+                 "so also needs `probes`) or `dns_restart` (restart or "
+                 "start dnsmasq). Not undoable — nothing to roll back. / "
+                 "Выполнить быстрый ремонт."),
+    schema={
+        "type": "object",
+        "properties": {
+            "fix": {"type": "string", "enum": ["clock_sync", "dns_restart"],
+                    "description": "Fix id from quick_fix_check. / Код "
+                                   "ремонта."},
+        },
+        "required": ["fix"],
+        "additionalProperties": False,
+    },
+)
+def quick_fix_apply(args: dict) -> dict:
+    """Выполнить ремонт; после него — свежая проверка, чтобы видеть итог."""
+    from core import quick_fix
+
+    fix = args.get("fix") or ""
+    if fix == "clock_sync" and not perms_mod.granted("probes"):
+        # Синхронизация — это NTP и HTTP наружу: та же граница, что у
+        # сетевой части quick_fix_check.
+        return {"ok": False, "error": "синхронизация времени ходит в сеть",
+                "permission": "probes",
+                "hint": "включите разрешение «probes» в настройках MCP"}
+    result = quick_fix.apply_fix(fix)
+    if result.get("ok"):
+        try:
+            result["after"] = quick_fix.check(
+                network=perms_mod.granted("probes"), fresh=True)
+        except Exception as e:                  # noqa: BLE001 — граница
+            result["after_error"] = "%s: %s" % (type(e).__name__, e)
+    return result
+
+
+# ───────────── DNS: замер серверов и утечки ─────────────
+
+def _mask_ip(ip: str) -> str:
+    """Внешний адрес — персональные данные: без ``secrets`` последний
+    октет скрыт (как в отчёте для помощи)."""
+    if perms_mod.granted("secrets") or not ip:
+        return ip
+    if "." in ip:
+        return ip.rsplit(".", 1)[0] + ".x"
+    return ip.rsplit(":", 2)[0] + ":x"
+
+
+@tool(
+    name="dns_benchmark",
+    scope="probes",
+    mutating=False,
+    title="Benchmark DNS resolvers",
+    description=("Latency and success of every DNS preset from the "
+                 "router: UDP/53 (what dnsmasq rules use), DoH, DoT; "
+                 "`spoofed` — UDP answers are rewritten by the ISP. "
+                 "`best` is what dns_autoselect would pick. Takes ~10-20 s."
+                 " / Замер DNS-серверов."),
+    schema={"type": "object", "properties": {
+        "fresh": {"type": "boolean", "default": True,
+                  "description": "false — last result without probing. / "
+                                 "Без нового замера."}},
+            "additionalProperties": False},
+)
+def dns_benchmark(args: dict) -> dict:
+    from core import dns_bench
+    res = (dns_bench.benchmark() if args.get("fresh", True)
+           else dns_bench.last())
+    res = dict(res)
+    res["hint"] = res.get("hint") or (
+        "правила с сервером «auto» берут лучший; выбрать его — "
+        "dns_autoselect")
+    return res
+
+
+@tool(
+    name="dns_autoselect",
+    scope="config_write",
+    mutating=True,
+    title="Pick the best DNS for auto rules",
+    description=("Benchmark DNS presets (needs `probes`) or reuse the last"
+                 " result, store the fastest honest one as "
+                 "dns_routing.auto_server and rebuild dnsmasq rules that "
+                 "use dns=\"auto\". Undo: mcp_undo_last. / Выбрать лучший "
+                 "DNS для «auto»."),
+    schema={"type": "object", "properties": {
+        "fresh": {"type": "boolean", "default": True,
+                  "description": "false — use the last benchmark. / По "
+                                 "последнему замеру."}},
+            "additionalProperties": False},
+)
+def dns_autoselect(args: dict) -> dict:
+    from core import dns_bench
+    from core.mcp import audit
+    fresh = bool(args.get("fresh", True))
+    # Без прежнего замера и fresh=false тоже замеряет — та же граница.
+    if (fresh or not dns_bench.has_result()) \
+            and not perms_mod.granted("probes"):
+        return {"ok": False, "error": "замер ходит в сеть",
+                "permission": "probes",
+                "hint": "включите «probes» или вызовите с fresh=false "
+                        "(по последнему замеру)"}
+    res = dns_bench.autoselect(fresh=fresh)
+    if res.get("ok") and res.get("changed"):
+        undo = audit.snapshot(audit.KIND_CONFIG, "dns_routing.auto_server",
+                              res.get("previous") or "", res["best"],
+                              tool="dns_autoselect")
+        res["undo"] = undo or None
+    res["hint"] = ("правила с dns=\"auto\" теперь идут на %s"
+                   % res["best"] if res.get("ok") else
+                   "сервер не выбран: %s" % res.get("error", ""))
+    return res
+
+
+@tool(
+    name="leak_check",
+    scope="probes",
+    mutating=False,
+    title="IP and DNS leak check",
+    description=("External IP directly and through every tunnel transport "
+                 "(same IP = traffic bypasses it, or the whole router "
+                 "already goes through it) and which resolvers the "
+                 "router's DNS reaches (bash.ws). level=incomplete — not "
+                 "everything was checked. / Утечки IP и DNS."),
+    schema={"type": "object", "properties": {
+        "fresh": {"type": "boolean", "default": True,
+                  "description": "false — last result. / Последний итог."}},
+            "additionalProperties": False},
+)
+def leak_check(args: dict) -> dict:
+    from core import leak_check as lc
+    import copy
+    # Копия: маска не должна попасть в итог, который видит GUI.
+    res = copy.deepcopy(lc.run() if args.get("fresh", True) else lc.last())
+    import re
+    for f in res.get("findings") or []:
+        if f.get("id") in ("ip_direct", "ip_tunnel"):
+            f["detail"] = re.sub(r"\d+\.\d+\.\d+\.\d+"
+                                 r"|[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{0,4}){2,}",
+                                 lambda m: _mask_ip(m.group(0)),
+                                 f.get("detail", ""))
+    if isinstance(res.get("isp"), dict):
+        res["isp"] = dict(res["isp"], ip=_mask_ip(res["isp"].get("ip", "")))
+    return res
+
+
+@tool(
+    name="lan_probe",
+    scope="probes",
+    mutating=False,
+    title="Probe sites as a LAN client",
+    description=("Open sites (DNS, TCP, TLS) from the router AND from a "
+                 "temporary netns plugged into the LAN bridge, i.e. the "
+                 "path a phone takes (FORWARD, per-device rules, "
+                 "transparent proxy). verdict lan_fails — only clients "
+                 "break. Linux/OpenWrt only. / Проба как клиент LAN."),
+    schema={"type": "object", "properties": {
+        "hosts": {"type": "array", "maxItems": 10,
+                  "items": {"type": "string", "maxLength": 253},
+                  "description": "Sites; empty — defaults. / Сайты."},
+        "address": {"type": "string", "maxLength": 43,
+                    "description": "Client IPv4 in the LAN subnet; empty "
+                                   "— free one near the end. / Адрес."}},
+            "additionalProperties": False},
+)
+def lan_probe(args: dict) -> dict:
+    from core import lan_probe as lp
+    return lp.run(args.get("hosts") or None,
+                  address=str(args.get("address") or ""))

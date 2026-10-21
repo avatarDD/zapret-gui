@@ -58,6 +58,11 @@ const BlockDetectorPage = (() => {
                 </div>
             </div>
 
+            <div class="card" id="bd-smart-card" style="display:none;">
+                <div class="card-title">Автодобавление</div>
+                <div id="bd-smart"></div>
+            </div>
+
             <div class="card">
                 <div class="bd-status-head">
                     <div class="card-title" style="margin:0;">Результаты</div>
@@ -102,7 +107,7 @@ const BlockDetectorPage = (() => {
         if (_inFlight || document.hidden) return;
         _inFlight = true;
         try {
-            await Promise.all([_loadStatus(), _loadResults()]);
+            await Promise.all([_loadStatus(), _loadResults(), _loadSmart()]);
         } finally {
             _inFlight = false;
         }
@@ -164,6 +169,53 @@ const BlockDetectorPage = (() => {
             const el = document.getElementById("bd-status");
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(String(e))}</div>`;
         }
+    }
+
+    // Smart Detect: что ждёт подтверждения и что добавлено (с отменой).
+    async function _loadSmart() {
+        const card = document.getElementById("bd-smart-card");
+        const box = document.getElementById("bd-smart");
+        if (!card || !box) return;
+        let st;
+        try { st = await API.get("/api/block-detector/smart"); }
+        catch (_) { return; }
+        const pending = st.pending || [];
+        const added = st.added || [];
+        if (!pending.length && !added.length) { card.style.display = "none"; return; }
+        card.style.display = "";
+        const conf = (st.settings || {}).confirm;
+        const head = conf
+            ? `<div class="form-hint">Домен попадает в список, только если через
+                ${Math.round(((st.settings || {}).recheck_sec || 120) / 60)} мин он снова не
+                открывается напрямую, а через туннель маршрута — открывается. В список
+                идёт сам сайт (example.co.uk), а не каждый его поддомен.</div>`
+            : `<div class="form-hint">Подтверждение выключено: домены добавляются сразу.</div>`;
+        const pend = pending.length ? `<div style="margin-top:8px;">Ждут проверки:
+            ${pending.map(p => `<code>${esc(p.domain)}</code>`).join(", ")}</div>` : "";
+        const rows = added.map(a => `<tr>
+                <td>${esc(a.entry)}${a.entry !== a.domain ? ` <span class="text-muted">(${esc(a.domain)})</span>` : ""}</td>
+                <td class="text-muted">${esc(a.list_id)}${a.method ? " · " + esc(a.method) : ""}</td>
+                <td class="text-muted">${_timeAgo(a.ts)}</td>
+                <td style="white-space:nowrap;">${a.undone ? '<span class="text-muted">отменено</span>' : `
+                    <button class="btn btn-ghost btn-sm" data-smart-undo="${esc(a.id).replace(/"/g, "&quot;")}">Отменить</button>
+                    <button class="btn btn-ghost btn-sm" data-smart-exclude="${esc(a.id).replace(/"/g, "&quot;")}">Исключить</button>`}</td>
+            </tr>`).join("");
+        box.innerHTML = head + pend + (rows ? `<table class="table" style="margin-top:8px;">
+            <tbody>${rows}</tbody></table>` : "");
+        box.querySelectorAll("[data-smart-undo]").forEach(b =>
+            b.onclick = () => _smartUndo(b.dataset.smartUndo, false));
+        box.querySelectorAll("[data-smart-exclude]").forEach(b =>
+            b.onclick = () => _smartUndo(b.dataset.smartExclude, true));
+    }
+
+    async function _smartUndo(id, exclude) {
+        try {
+            const r = await API.post("/api/block-detector/smart/undo", { id, exclude });
+            if (!r.ok) throw new Error(r.error || "не вышло");
+            Toast.success(exclude ? r.entry + " убран и больше не будет добавляться"
+                                  : r.entry + " убран из списка");
+        } catch (e) { Toast.error(e.message); }
+        _loadSmart();
     }
 
     async function _loadResults() {

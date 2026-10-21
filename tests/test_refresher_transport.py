@@ -199,7 +199,8 @@ class TestSubscriptionTransport(unittest.TestCase):
             res = sm.refresh_one(sid)
         self.assertFalse(res["ok"])
         f.assert_called_once_with("https://prov/sub",
-                                  transport="mihomo:main")
+                                  transport="mihomo:main",
+                                  headers={"User-Agent": sm.USER_AGENT})
         # Ошибка зафиксирована в last_error.
         self.assertEqual(sm.get_subscription(sid)["last_status"], "error")
 

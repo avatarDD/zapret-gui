@@ -33,6 +33,14 @@ def _merged(body: dict) -> dict:
     # Пустое поле токена — «не менять»; удалить — явным флагом.
     if body.get("clear_token"):
         st["token"] = ""
+    if "interactive" in body:
+        st["interactive"] = bool(body["interactive"])
+    if "allowed_users" in body:
+        raw = body["allowed_users"]
+        if isinstance(raw, str):
+            raw = raw.replace(",", " ").split()
+        st["allowed_users"] = [str(u).strip() for u in (raw or [])
+                               if str(u).strip()]
     return st
 
 
@@ -49,7 +57,13 @@ def register(app):
         st = notify.settings()
         has_token = bool(st.pop("token"))
         st["has_token"] = has_token
-        return {"ok": True, "settings": st, "status": notify.status()}
+        status = notify.status()
+        try:
+            from core import notify_bot
+            status["bot"] = notify_bot.status()
+        except Exception:
+            pass
+        return {"ok": True, "settings": st, "status": status}
 
     @app.route("/api/notify/settings", method="POST")
     def api_notify_save():
@@ -68,12 +82,21 @@ def register(app):
         cfg.set("notify", "telegram", {
             "enabled": bool(body.get("enabled", st["enabled"])),
             "token": st["token"], "chat_id": st["chat_id"],
-            "transport": st["transport"], "proxy": st["proxy"]})
+            "transport": st["transport"], "proxy": st["proxy"],
+            "interactive": st["interactive"],
+            "allowed_users": st["allowed_users"]})
         cfg.set("notify", "events", {k: bool(events.get(k, True))
                                      for k in notify.EVENTS})
         if not cfg.save():
             response.status = 500
             return {"ok": False, "error": "настройки не сохранены"}
+        # Бот: включили — поднять опрос; выключили — поток сам выйдет
+        # после текущего опроса.
+        try:
+            from core import notify_bot
+            notify_bot.start()
+        except Exception:
+            pass
         return {"ok": True}
 
     @app.route("/api/notify/test", method="POST")

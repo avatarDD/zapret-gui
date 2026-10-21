@@ -30,9 +30,16 @@ WRITABLE = {
     "block_detector.auto_add_list_id", "block_detector.dns_source",
     "block_detector.enabled", "block_detector.interval_sec",
     "block_detector.probe_timeout", "block_detector.whitelist",
+    # Smart Detect: подтверждение перед автодобавлением — обратимо и
+    # только строже прежнего поведения.
+    "block_detector.smart_clash", "block_detector.smart_confirm",
+    "block_detector.smart_cooldown_h", "block_detector.smart_recheck_sec",
+    "block_detector.smart_registrable",
     "blockcheck.default_mode", "blockcheck.differential",
     "blockcheck.max_workers",
-    "blockcheck.probe_timeout", "dns_routing.rules", "filter.mode",
+    "blockcheck.probe_timeout", "dns_routing.auto_bench_hours",
+    "dns_routing.auto_server", "dns_routing.auto_server_at",
+    "dns_routing.rules", "filter.mode",
     "filter.protect_excluded", "healthcheck.auto_reset",
     "healthcheck.autopick.min_interval_h", "healthcheck.autopick.mode",
     "healthcheck.consecutive_failures", "healthcheck.control_domain",

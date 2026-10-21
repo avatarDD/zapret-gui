@@ -1167,6 +1167,29 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception as e:
             log.warning("Уведомления при boot: %s" % e, source="notify")
 
+        # Рабочая точка туннелей и маршрутов: окно наблюдения за правками.
+        try:
+            from core import known_good
+            known_good.start()
+        except Exception as e:
+            log.warning("Рабочая точка туннелей при boot: %s" % e,
+                        source="known-good")
+
+        # Дневные квоты времени устройств (core/device_quota.py).
+        try:
+            from core.device_quota import get_device_quota
+            get_device_quota().start()
+        except Exception as e:
+            log.warning("Квоты устройств при boot: %s" % e,
+                        source="firewall")
+
+        # Перезамер DNS-серверов для правил «auto» (core/dns_bench.py).
+        try:
+            from core import dns_bench
+            dns_bench.start()
+        except Exception as e:
+            log.warning("Замер DNS при boot: %s" % e, source="dns_routing")
+
         # Применение с проверкой, прерванное перезапуском: продолжить
         # ожидание подтверждения или откатить (core/safe_apply.py).
         try:

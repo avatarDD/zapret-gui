@@ -354,7 +354,7 @@ def config_set(args: dict) -> dict:
 
     undo = audit.snapshot(audit.KIND_CONFIG, path, before, value,
                           tool="config_set")
-    applied = _apply_live(parts[0])
+    applied = _apply_live(parts[0], ".".join(parts))
     result = {
         "ok": True,
         "path": path,
@@ -455,7 +455,7 @@ def config_writable_paths(args: dict) -> dict:
     return result
 
 
-def _apply_live(section: str) -> str:
+def _apply_live(section: str, path: str = "") -> str:
     """Применить настройку «вживую» там, где это умеет сам GUI.
 
     Ровно то же, что делает ``PUT /api/config`` после записи секции:
@@ -464,6 +464,17 @@ def _apply_live(section: str) -> str:
     СЕЙЧАС, иначе воспроизводить проблему нечем. Движков это не
     касается: их старт и перезапуск — разрешение ``control`` (S7).
     """
+    if path in ("dns_routing.rules", "dns_routing.auto_server") \
+            or (section == "dns_routing" and path.startswith(
+                "dns_routing.rules.")):
+        # Правила и сервер «auto» живут в dnsmasq: без пересборки
+        # dns-routing.conf запись (и её откат) не действовала бы.
+        try:
+            from core.dns_routing import get_dns_routing_manager
+            r = get_dns_routing_manager().apply()
+            return "dns_routing" if r.get("ok") else ""
+        except Exception:                       # noqa: BLE001 — граница
+            return ""
     if section != "logging":
         return ""
     try:
@@ -507,7 +518,7 @@ def _undo_config(snapshot: dict) -> dict:
         return {"ok": False,
                 "error": "не удалось сохранить settings.json — откат не "
                          "выполнен"}
-    applied = _apply_live(parts[0])
+    applied = _apply_live(parts[0], ".".join(parts))
     out = {"ok": True, "undone_from": current}
     if applied:
         out["applied_live"] = applied

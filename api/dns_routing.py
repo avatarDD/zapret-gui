@@ -8,6 +8,9 @@ API-модуль Per-domain DNS routing.
   DELETE /api/dns-routing/rules/<domain> — удалить правило
   POST /api/dns-routing/apply      — применить правила (dnsmasq)
   GET  /api/dns-routing/servers    — доступные DNS-серверы
+  GET  /api/dns-routing/bench      — последний замер серверов
+  POST /api/dns-routing/bench      — замерить серверы (core/dns_bench)
+  POST /api/dns-routing/autoselect — замерить и сделать лучший «auto»
 """
 
 
@@ -63,3 +66,22 @@ def register(app):
         from core.dns_routing import get_dns_routing_manager
         mgr = get_dns_routing_manager()
         return {"ok": True, "servers": mgr.get_available_servers()}
+
+    @app.route("/api/dns-routing/bench", method="GET")
+    def dns_bench_last():
+        from core import dns_bench
+        return dns_bench.last()
+
+    @app.route("/api/dns-routing/bench", method="POST")
+    def dns_bench_run():
+        from core import dns_bench
+        return dns_bench.benchmark()
+
+    @app.route("/api/dns-routing/autoselect", method="POST")
+    def dns_autoselect():
+        from core import dns_bench
+        try:
+            fresh = bool((request.json or {}).get("fresh", True))
+        except Exception:
+            fresh = True
+        return dns_bench.autoselect(fresh=fresh)

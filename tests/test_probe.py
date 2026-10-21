@@ -319,8 +319,11 @@ class TestDetectorUsesSharedProbe(unittest.TestCase):
         from core import named_lists
 
         cfg = mock.MagicMock()
+        # smart_confirm=False — фильтры прямого добавления; очередь
+        # подтверждения проверяется в test_smart_detect.py.
         cfg.get.side_effect = lambda *a, **kw: (
-            True if a[1] == "auto_add_enabled" else "my-list")
+            True if a[1] == "auto_add_enabled"
+            else False if a[1] == "smart_confirm" else "my-list")
         with mock.patch("core.config_manager.get_config_manager", return_value=cfg), \
              mock.patch.object(named_lists, "add_entries",
                                return_value={"ok": True, "added": 1}) as add:
@@ -335,8 +338,11 @@ class TestDetectorUsesSharedProbe(unittest.TestCase):
 
     def _auto_add_cfg(self):
         cfg = mock.MagicMock()
+        # smart_confirm=False — фильтры прямого добавления; очередь
+        # подтверждения проверяется в test_smart_detect.py.
         cfg.get.side_effect = lambda *a, **kw: (
-            True if a[1] == "auto_add_enabled" else "my-list")
+            True if a[1] == "auto_add_enabled"
+            else False if a[1] == "smart_confirm" else "my-list")
         return cfg
 
     def test_auto_add_skips_lan_names(self):
@@ -375,6 +381,21 @@ class TestDetectorUsesSharedProbe(unittest.TestCase):
                 self.det._maybe_auto_add("site.com", probe.ProbeResult(
                     domain="site.com", code="dns_block"))
             add.assert_called_once_with("my-list", ["site.com"])
+
+    def test_auto_add_goes_through_smart_queue(self):
+        from core import named_lists, smart_detect
+        cfg = mock.MagicMock()
+        cfg.get.side_effect = lambda *a, **kw: (
+            True if a[1] in ("auto_add_enabled", "smart_confirm")
+            else "my-list")
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cfg), \
+             mock.patch.object(named_lists, "add_entries") as add, \
+             mock.patch.object(smart_detect, "submit") as sub:
+            self.det._maybe_auto_add(
+                "y.com", probe.ProbeResult(domain="y.com", code="tls_rst"))
+        add.assert_not_called()
+        sub.assert_called_once_with("y.com", "my-list", "tls_rst")
 
     def test_whitelist_covers_subdomains(self):
         self.det._whitelist = {"google.com"}

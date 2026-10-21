@@ -660,6 +660,11 @@ class AwgWatchdog:
             zero_rx=zero_rx)
         if not should:
             return
+        # Лежит WAN, а не туннель: рестарт ничего не даст и съест лимит
+        # (core/reachability — три сигнала вместо одного).
+        from core import reachability
+        if reachability.hold_restart("awg", iface):
+            return
 
         # Rate limit: не больше N рестартов в час.
         # MR-28: mutations за self._lock чтобы get_status() не ловил RuntimeError

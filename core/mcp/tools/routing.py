@@ -261,6 +261,18 @@ def unified_route_status(args: dict) -> dict:
                 "description": "Route BY SOURCE: whole devices or "
                                "subnets. / Маршрут по источнику.",
             },
+            "bypass": {
+                "type": "object",
+                "properties": {
+                    "wifi_calling": {"type": "boolean"},
+                    "torrent_ports": {"type": "string", "maxLength": 120},
+                },
+                "additionalProperties": False,
+                "description": "For device routes: keep Wi-Fi Calling "
+                               "(UDP 500/4500) and the torrent client's "
+                               "port(s), e.g. \"51413\", off the tunnel. "
+                               "/ Исключения из маршрута устройств.",
+            },
             "enabled": {"type": "boolean", "default": True,
                         "description": "Disabled rules are removed from "
                                        "the kernel. / Выключённое "
@@ -305,7 +317,7 @@ def unified_route_save(args: dict) -> dict:
 
     payload = {key: args[key] for key in (
         "id", "name", "destination", "method", "fallbacks", "devices",
-        "enabled", "monitor_enabled", "failover_enabled", "probe_domain",
+        "bypass", "enabled", "monitor_enabled", "failover_enabled", "probe_domain",
         "priority") if key in args}
     # Правка существующего маршрута — это замена: поля, которых не
     # передали, берём из прежней записи, иначе «поменяй метод» стёрло бы
@@ -557,3 +569,125 @@ def _undo_unified_route(snapshot: dict) -> dict:
 
 
 audit.register_undo(audit.KIND_UNIFIED_ROUTE, _undo_unified_route)
+
+
+# ───────────── рабочая точка туннелей и маршрутов (known-good) ─────────────
+
+@tool(
+    name="known_good_status",
+    scope="read",
+    mutating=False,
+    title="Last known-good tunnels and routes",
+    description=("Known-good point of tunnel configs (AWG, sing-box, "
+                 "mihomo) and routing rules: when it was taken, whether "
+                 "the current state matches it, what changed, the change "
+                 "being observed and the last change that broke sites. "
+                 "/ Рабочая точка туннелей и маршрутов."),
+    schema={"type": "object", "properties": {},
+            "additionalProperties": False},
+)
+def known_good_status(args: dict) -> dict:
+    """Сводка рабочей точки без текстов конфигов (в них ключи)."""
+    from core import known_good
+    return dict(known_good.status(), ok=True,
+                hint=("правка судится пробами сайтов мониторинга после "
+                      "окна наблюдения; вернуть — known_good_rollback, "
+                      "принять текущее — known_good_promote"))
+
+
+@tool(
+    name="known_good_promote",
+    scope="tunnels_write",
+    mutating=True,
+    title="Mark tunnels and routes as working",
+    description=("Take the current tunnel configs and routing rules as "
+                 "the new known-good point (monitoring sites are probed "
+                 "and stored for later comparison). / Отметить текущее "
+                 "рабочим."),
+    schema={
+        "type": "object",
+        "properties": {
+            "note": {"type": "string", "maxLength": 200,
+                     "description": "Why. / Пометка."},
+        },
+        "additionalProperties": False,
+    },
+)
+def known_good_promote(args: dict) -> dict:
+    from core import known_good
+    res = known_good.promote(str(args.get("note") or "через MCP"))
+    res["hint"] = ("рабочая точка обновлена; прежнюю этим не вернуть — "
+                   "снимка для mcp_undo_last нет")
+    return res
+
+
+@tool(
+    name="known_good_rollback",
+    scope="tunnels_write",
+    mutating=True,
+    title="Roll tunnels and routes back to known-good",
+    description=("Restore tunnel configs and routing rules from the "
+                 "known-good point: changed files are rewritten, running "
+                 "tunnels restarted, routing re-applied. Configs added "
+                 "since stay. / Вернуть рабочую точку."),
+    schema={"type": "object", "properties": {},
+            "additionalProperties": False},
+)
+def known_good_rollback(args: dict) -> dict:
+    from core import known_good
+    res = known_good.rollback(reason="MCP")
+    res["hint"] = ("проверьте сайты (unified_route_status); вернуть "
+                   "правку обратно нельзя — снимка нет")
+    return res
+
+
+# ───────────── Smart Detect: автодобавление в списки ─────────────
+
+@tool(
+    name="smart_detect_status",
+    scope="read",
+    mutating=False,
+    title="Block auto-detection queue",
+    description=("Smart Detect: domains awaiting confirmation (second "
+                 "direct probe, then a probe through the route's tunnel) "
+                 "and recent auto-additions to lists with their ids for "
+                 "smart_detect_undo. / Очередь и добавленное "
+                 "автообнаружением."),
+    schema={"type": "object", "properties": {},
+            "additionalProperties": False},
+)
+def smart_detect_status(args: dict) -> dict:
+    from core import smart_detect
+    return dict(smart_detect.status(), ok=True, note=NOTE)
+
+
+@tool(
+    name="smart_detect_undo",
+    scope="tunnels_write",
+    mutating=True,
+    title="Undo a block auto-detection",
+    description=("Remove a domain Smart Detect added to a list; with "
+                 "`exclude` also put it on the detector whitelist so it "
+                 "is never added again. / Отменить автодобавление."),
+    schema={
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "maxLength": 300,
+                   "description": "Addition id from smart_detect_status. "
+                                  "/ Id добавления."},
+            "exclude": {"type": "boolean", "default": False,
+                        "description": "Also whitelist it. / И в "
+                                       "исключения."},
+        },
+        "required": ["id"],
+        "additionalProperties": False,
+    },
+)
+def smart_detect_undo(args: dict) -> dict:
+    from core import smart_detect
+    rec_id = str(args.get("id") or "")
+    res = (smart_detect.exclude(rec_id) if args.get("exclude")
+           else smart_detect.undo(rec_id))
+    if not res.get("ok"):
+        res["hint"] = "id — из smart_detect_status().added[].id"
+    return res

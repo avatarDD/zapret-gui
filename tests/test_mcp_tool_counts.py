@@ -132,18 +132,38 @@ from core.mcp import registry
 # напротив него — это его смысл.
 # «Куда пойдёт сайт»: + 1 на чтение (site_trace — сухой прогон домена
 # по слоям; наружу уходит только DNS-запрос, как у страницы).
+# Быстрый ремонт (приём Tachyon): + 1 на чтение (quick_fix_check — сетевая
+# часть спрашивает `probes` по месту, как diagnostics_run) и + 1 под
+# `control` (quick_fix_apply — синхронизировать часы, перезапустить
+# dnsmasq: меняет систему, но не настройки GUI).
+# Рабочая точка туннелей и маршрутов (приём Tachyon): + 1 на чтение
+# (known_good_status) и + 2 под `tunnels_write` (known_good_promote,
+# known_good_rollback — переписывают конфиги туннелей и маршруты).
+# Smart Detect (приём Tachyon): + 1 на чтение (smart_detect_status) и
+# + 1 под `tunnels_write` (smart_detect_undo — правит именованный список,
+# который кормит маршруты).
 # Одна обвязка AWG/sing-box/mihomo: + 2 на чтение (tunnel_log — хвост
 # лога движка, tunnel_diagnostics — снимок для разбора, секреты под
 # маской) и + 1 под `tunnels_write` (tunnel_settings — отладка, память
 # Go и автозапуск конфига).
+# DNS и утечки (приём Tachyon): + 2 под `probes` (dns_benchmark — замер
+# резолверов, leak_check — внешний IP и резолверы через bash.ws: оба
+# выпускают трафик наружу) и + 1 под `config_write` (dns_autoselect —
+# пишет dns_routing.auto_server, откат через mcp_undo_last).
+# Квоты времени устройств (приём Tachyon): + 1 на чтение
+# (device_quota_status) и + 1 под `control` (device_quota_grant —
+# открывает устройству интернет до полуночи: правило перехвата, а не
+# настройка).
+# Проба «как клиент LAN» (приём Tachyon): + 1 под `probes` (lan_probe —
+# временный netns в мосту LAN, трафик наружу).
 BY_SCOPE = {
-    "read": 43,
-    "control": 8,
+    "read": 47,
+    "control": 10,
     "strategies_write": 12,
-    "config_write": 1,
-    "probes": 13,
+    "config_write": 2,
+    "probes": 16,
     "experiments": 7,
-    "tunnels_write": 13,
+    "tunnels_write": 16,
     "dangerous": 2,
     "shell_readonly": 11,
     "shell_full": 3,
@@ -226,6 +246,12 @@ class TestToolCounts(unittest.TestCase):
         "firewall_status", "traffic_recent",
         # «Куда пойдёт сайт»
         "site_trace",
+        # Быстрый ремонт: часы, DNS, маршрут
+        "quick_fix_check",
+        # Рабочая точка туннелей и маршрутов
+        "known_good_status",
+        # Smart Detect: очередь подтверждения и автодобавленное
+        "smart_detect_status", "device_quota_status",
         # генератор конфигов WARP/Proton
         "vpngen_options", "vpngen_check",
         # S5 — туннели, диагностика, обновления
@@ -255,7 +281,7 @@ class TestToolCounts(unittest.TestCase):
     CONTROL_TOOLS = [
         "firewall_apply", "firewall_remove", "nfqws_reload_lists",
         "nfqws_restart", "nfqws_start", "nfqws_stop", "scan_apply",
-        "strategy_apply",
+        "strategy_apply", "quick_fix_apply", "device_quota_grant",
     ]
     STRATEGIES_WRITE_TOOLS = [
         "blob_add", "hostlist_edit", "ipset_edit", "lua_script_save",
@@ -283,6 +309,10 @@ class TestToolCounts(unittest.TestCase):
         "vpngen_generate", "vpngen_proton_servers",
         # обвязка движков: отладка, память Go, автозапуск.
         "tunnel_settings",
+        # рабочая точка туннелей и маршрутов
+        "known_good_promote", "known_good_rollback",
+        # отмена автодобавления Smart Detect
+        "smart_detect_undo",
     ]
     # S10 — движок экспериментов: и мутирующие, и опрос под одним
     # разрешением.
@@ -318,8 +348,8 @@ class TestToolCounts(unittest.TestCase):
     # S8 — всё, что выпускает трафик с роутера.
     PROBES_TOOLS = [
         "blockcheck2_start", "blockcheck2_stop", "blockcheck_start",
-        "dpi_classify", "healthcheck_run", "probe_compare",
-        "probe_targets",
+        "dns_benchmark", "dpi_classify", "healthcheck_run",
+        "lan_probe", "leak_check", "probe_compare", "probe_targets",
         "scan_start", "scan_stop",
         # S17 — снифер. Сам он пакетов не выпускает, но показывает
         # чужой трафик и ходит с пробами парой («пусти пробу и посмотри,

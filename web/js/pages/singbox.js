@@ -18,6 +18,7 @@ const SingboxDashboardPage = (() => {
     let tpForm = {                   // форма прозрачного проксирования
         mode: 'tproxy', tcp_port: 1100, udp_port: 1102,
         proxy_self: false, dns_hijack_port: 0, ipv6_policy: 'allow',
+        block_quic: false,           // redirect: отклонять UDP/443 (QUIC мимо движка)
         scope: 'forward',            // 'forward' — LAN-клиенты, 'self' — эта машина
         inject_config: '',
     };
@@ -165,6 +166,7 @@ const SingboxDashboardPage = (() => {
                     proxy_self: !!s.proxy_self,
                     dns_hijack_port: s.dns_hijack_port || 0,
                     ipv6_policy: s.ipv6_policy || 'allow',
+                    block_quic: !!s.block_quic,
                     scope: s.scope || 'forward',
                 });
                 tpScopeAutoSet = true;
@@ -594,6 +596,15 @@ const SingboxDashboardPage = (() => {
                     ${opt('drop', tpForm.ipv6_policy, 'Глушить v6 (anti-leak)')}
                 </select>
 
+                ${tpForm.mode === 'redirect' ? `
+                <label class="text-muted">QUIC</label>
+                <label class="text-muted" style="display:flex; align-items:center; gap:6px;"
+                       title="Redirect заворачивает только TCP: HTTP/3 (QUIC, UDP/443) тех же сайтов уходит напрямую, где его режет DPI. Отклонённый QUIC браузер и приложения сразу повторяют по TCP — а он уже идёт через прокси.">
+                    <input type="checkbox" ${tpForm.block_quic ? 'checked' : ''}
+                           onchange="SingboxDashboardPage.setTp('block_quic', this.checked)">
+                    Отклонять QUIC (UDP/443), чтобы сайты шли по TCP через прокси
+                </label>` : ''}
+
                 ${selfScope ? `
                 <label class="text-muted">Трафик машины</label>
                 <span class="text-muted" style="font-size:12px;">
@@ -633,12 +644,12 @@ const SingboxDashboardPage = (() => {
     }
 
     function setTp(key, value) {
-        if (key === 'proxy_self') tpForm.proxy_self = !!value;
+        if (key === 'proxy_self' || key === 'block_quic') tpForm[key] = !!value;
         else if (['tcp_port', 'udp_port', 'dns_hijack_port'].includes(key))
             tpForm[key] = parseInt(value, 10) || 0;
         else tpForm[key] = value;
         // Смена области меняет состав формы (строка proxy_self / подсказки).
-        if (key === 'scope') renderTransparent();
+        if (key === 'scope' || key === 'mode') renderTransparent();
     }
 
     async function applyTransparent() {
@@ -650,6 +661,7 @@ const SingboxDashboardPage = (() => {
                 proxy_self: tpForm.proxy_self,
                 dns_hijack_port: tpForm.dns_hijack_port,
                 ipv6_policy: tpForm.ipv6_policy,
+                block_quic: tpForm.mode === 'redirect' && tpForm.block_quic,
                 scope: tpForm.scope,
             });
             if (r && r.ok) {
