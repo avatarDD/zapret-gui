@@ -58,7 +58,10 @@ class TestUplink(unittest.TestCase):
     def test_down_needs_two_misses(self):
         with _net(False, False):
             self.assertEqual(rc.uplink(force=True)["state"], "suspect")
-            self.assertFalse(rc.hold_restart("awg", "awg0"))
+            # Под подозрением рестарт тоже откладывается (без сообщения):
+            # иначе каждый сторож тратил бы его в начале каждого обрыва.
+            self.assertTrue(rc.hold_restart("awg", "awg0"))
+            self.assertEqual(rc.status()["held"], [])
             self.assertEqual(rc.uplink(force=True)["state"], "down")
         self.assertTrue(rc.wan_down())
 

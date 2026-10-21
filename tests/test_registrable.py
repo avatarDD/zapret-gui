@@ -3,6 +3,9 @@
 
 import unittest
 
+from unittest import mock
+
+from core import registrable as rg
 from core.registrable import parse_rules, registrable
 
 
@@ -38,3 +41,12 @@ class TestRegistrable(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNoSnapshot(unittest.TestCase):
+    def test_missing_psl_returns_exact_name(self):
+        # Снимок не прочитался: не «co.uk», а само имя.
+        with mock.patch.object(rg, "_load", return_value=(set(), set(),
+                                                          set())):
+            self.assertEqual(rg.registrable("api.example.co.uk"),
+                             "api.example.co.uk")

@@ -22,6 +22,8 @@ class SmartCase(unittest.TestCase):
         self.cfg = cm._config_manager
         from core import named_lists
         self.list_id = named_lists.create("blocked")["list"]["id"]
+        self.cfg.set("block_detector", "auto_add_enabled", True)
+        self.cfg.set("block_detector", "auto_add_list_id", self.list_id)
         self.patches = {}
         for name, value in (("_probe_direct", False), ("_probe_via", True),
                             ("_wan_down", False), ("_iface_up", True),
@@ -175,3 +177,21 @@ class TestFlow(SmartCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStaleQueue(SmartCase):
+    """Автодобавление выключили или сменили список — набранная очередь в
+    списки не попадает."""
+
+    def test_disabled_auto_add_drops_queue(self):
+        sd.submit("a.example.com", self.list_id, now=0)
+        self.cfg.set("block_detector", "auto_add_enabled", False)
+        self.assertEqual(sd.process(now=10 ** 6), [])
+        self.assertEqual(self.domains(), [])
+        self.assertEqual(sd.status().get("pending", []), [])
+
+    def test_changed_list_drops_old_items(self):
+        sd.submit("a.example.com", self.list_id, now=0)
+        self.cfg.set("block_detector", "auto_add_list_id", "other")
+        self.assertEqual(sd.process(now=10 ** 6), [])
+        self.assertEqual(self.domains(), [])

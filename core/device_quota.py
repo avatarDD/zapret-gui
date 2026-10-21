@@ -335,6 +335,7 @@ class DeviceQuota:
         self._saved_at = 0.0
         self._addrs = {}            # ключ правила → его адреса
         self._blocked = set()
+        self._own_sig = _state_sig()
 
     # ── настройки ──
 
@@ -392,6 +393,7 @@ class DeviceQuota:
                 self._blocked = set()
                 return {"action": "off"}
             date, day = local_date(st["tz_offset"], now)
+            self._sync_from_disk()
             self._roll_day(date)
             rules = [r for r in st["rules"] if applies_today(r, day)]
             needs_mac = any(_MAC_RE.match(d) for r in rules
@@ -439,6 +441,25 @@ class DeviceQuota:
         _write_state({"date": self._date, "used": self._used,
                       "extra": self._extra,
                       "notified": sorted(self._notified)})
+        self._own_sig = _state_sig()
+
+    def _sync_from_disk(self) -> None:
+        """Подхватить счёт, записанный другим процессом (``zapret-gui mcp
+        --stdio``, CLI: их device_quota_grant пишет файл), — иначе GUI
+        своим следующим сохранением затёр бы добавленные минуты."""
+        sig = _state_sig()
+        if sig == self._own_sig:
+            return
+        self._own_sig = sig
+        st = _read_state()
+        if str(st.get("date") or "") != self._date:
+            return
+        self._extra = _minutes_map(st.get("extra"))
+        for k, v in _minutes_map(st.get("used")).items():
+            self._used[k] = max(v, int(self._used.get(k, 0)))
+        notified = st.get("notified")
+        if isinstance(notified, list):
+            self._notified = set(n for n in notified if isinstance(n, str))
 
     def _notify(self, rule: dict) -> None:
         title = rule.get("name") or ", ".join(
@@ -480,12 +501,16 @@ class DeviceQuota:
         st = self.settings()
         key = rule_key(r)
         with self._lock:
+            self._sync_from_disk()
             self._roll_day(local_date(st["tz_offset"], now)[0])
             self._extra[key] = int(self._extra.get(key, 0)) + minutes
             if minutes > 0:
                 self._notified.discard(key)
             self._save(now)
-        self.tick(now)
+        if self._thread is not None:
+            self.tick(now)
+        # Иначе это отдельный процесс (MCP через stdio, CLI): правила
+        # firewall держит процесс GUI — он прочтёт файл на своём тике.
         return {"ok": True, "rule": r.get("name") or key,
                 "left": left_minutes(r, self._used.get(key, 0),
                                      self._extra.get(key, 0))}
@@ -560,9 +585,10 @@ class DeviceQuota:
                                         block["6"])])
             self._last_error = "" if ok else "iptables: правила не встали"
         if ok:
-            # Цепочка пересобрана — счётчики с нуля; прежние значения
-            # дали бы отрицательную разницу.
-            self._prev = {}
+            # Цепочка пересобрана — счётчики с нуля. Ноль и есть точка
+            # отсчёта: с пустым _prev минута после каждой пересборки (а
+            # она бывает часто — адреса IPv6 меняются) не считалась бы.
+            self._prev = {a: 0 for a in count["4"] + count["6"]}
             self._installed = want
         else:
             log.warning("квоты устройств: %s" % self._last_error,
@@ -636,6 +662,14 @@ class DeviceQuota:
                     "running": bool(self._thread and self._thread.is_alive()),
                     "backend": self._backend, "error": self._last_error,
                     "active_packets": st["active_packets"], "rules": rows}
+
+
+def _state_sig():
+    try:
+        st = os.stat(_state_path())
+        return st.st_size, st.st_mtime_ns
+    except OSError:
+        return None
 
 
 def _minutes_map(value) -> dict:

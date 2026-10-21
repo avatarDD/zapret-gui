@@ -495,8 +495,12 @@ def device_hwid() -> str:
     import hashlib
     names = ["eth0", "br-lan", "br0", "eth1"]
     try:
+        # Только физические сетевые карты (есть ссылка device): docker*,
+        # veth* и временный veth пробы LAN появляются и исчезают, и HWID
+        # «гулял» бы — панель считала бы роутер новым устройством.
         names += sorted(n for n in os.listdir("/sys/class/net")
-                        if n != "lo" and n not in names)
+                        if n not in names and os.path.exists(
+                            "/sys/class/net/%s/device" % n))
     except OSError:
         pass
     mac = _read_first(["/sys/class/net/%s/address" % i for i in names])

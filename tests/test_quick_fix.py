@@ -210,8 +210,11 @@ class TestCheckAndFix(unittest.TestCase):
         q = qf.build_dns_query("ya.ru", 0x1234)
         self.assertEqual(q[:2], b"\x12\x34")
         self.assertIn(b"\x02ya\x02ru\x00", q)
+        # Настоящий ответ: вопрос и A-запись со сжатым именем.
         reply = (b"\x12\x34" + b"\x81\x80" + b"\x00\x01\x00\x01"
-                 + b"\x00\x00\x00\x00")
+                 + b"\x00\x00\x00\x00" + q[12:]
+                 + b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04"
+                 + bytes([87, 250, 250, 242]))
         self.assertTrue(qf.dns_reply_ok(reply, 0x1234))
         self.assertFalse(qf.dns_reply_ok(reply, 0x9999))
         nx = reply[:2] + b"\x81\x83" + reply[4:]

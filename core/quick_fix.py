@@ -319,20 +319,20 @@ def _resolve(domain: str, timeout: float) -> bool:
 
 
 def build_dns_query(domain: str, qid: int) -> bytes:
-    """Минимальный DNS-запрос A (RD=1) — чтобы спросить резолвер по IP."""
-    header = struct.pack("!HHHHHH", qid, 0x0100, 1, 0, 0, 0)
-    qname = b"".join(bytes([len(p)]) + p.encode("ascii")
-                     for p in domain.strip(".").split(".")) + b"\x00"
-    return header + qname + struct.pack("!HH", 1, 1)
+    """DNS-запрос A (RD=1) — чтобы спросить резолвер по IP. Формат один на
+    весь GUI: ``core.dns_bench.build_query``."""
+    from core.dns_bench import build_query
+    return build_query(domain, qid)
 
 
 def dns_reply_ok(data: bytes, qid: int) -> bool:
-    """Ответ на наш запрос, без ошибки и хотя бы с одной записью."""
-    if len(data) < 12:
+    """Ответ на наш запрос, без ошибки и хотя бы с одной A-записью."""
+    from core.dns_bench import parse_response
+    try:
+        rcode, ips = parse_response(data, qid)
+    except ValueError:
         return False
-    rid, flags, _qd, ancount = struct.unpack("!HHHH", data[:8])
-    return rid == qid and bool(flags & 0x8000) and (flags & 0x000F) == 0 \
-        and ancount > 0
+    return rcode == 0 and bool(ips)
 
 
 def _public_dns_alive(timeout: float = 2.0) -> bool:

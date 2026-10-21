@@ -66,6 +66,10 @@ def registrable(domain: str, rules: tuple = None) -> str:
         return ""
     labels = d.split(".")
     exact, wild, exc = rules or _load()
+    if not (exact or wild or exc):
+        # Снимок PSL не прочитался: «последняя метка + одна» вернула бы
+        # co.uk или github.io. Безопаснее точное имя.
+        return d
     suffix_len = 1
     for i in range(len(labels)):
         cand = ".".join(labels[i:])

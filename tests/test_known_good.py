@@ -48,6 +48,13 @@ class KnownGoodCase(unittest.TestCase):
         cm._config_manager = cm.ConfigManager(config_dir=self.dir)
         cm._config_manager.load()
         self.cfg = cm._config_manager
+        for name, value in (("RECHECK_PAUSE", 0),):
+            p = mock.patch.object(kg, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch.object(kg, "_wan_unsteady", return_value=False)
+        self.wan_unsteady = p.start()
+        self.addCleanup(p.stop)
         self.mgrs = {}
         for kind in kg.KINDS:
             d = os.path.join(self.dir, kind)
@@ -288,3 +295,41 @@ class TestActions(KnownGoodCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCrossChecks(KnownGoodCase):
+    """Стыки с reachability и config_manager (финальное ревью)."""
+
+    def _edit_and_wait(self):
+        kg.tick(now=0)
+        self._write(self.awg, "B")
+        kg.tick(now=100)
+
+    def test_one_flaky_probe_is_rechecked(self):
+        self._edit_and_wait()
+        self.probe_mock.side_effect = [_probe("a"), _probe("abc")]
+        self.assertEqual(kg.tick(now=800)["action"], "promoted")
+
+    def test_wan_suspect_postpones_instead_of_failing(self):
+        self._edit_and_wait()
+        self.probe_mock.return_value = _probe("a")
+        self.wan_unsteady.return_value = True
+        self.assertEqual(kg.tick(now=800)["action"], "wan_down")
+        self.assertNotIn("last_failure", kg.status())
+
+    def test_config_fallback_is_not_judged(self):
+        self._edit_and_wait()
+        with mock.patch.object(type(self.cfg), "fallback",
+                               new_callable=mock.PropertyMock,
+                               return_value=True):
+            self.assertEqual(kg.tick(now=800)["action"], "config_broken")
+
+    def test_rollback_keeps_file_mode(self):
+        self.cfg.set("known_good", "auto_rollback", True)
+        kg.tick(now=0)
+        self._write(self.awg, "B")
+        os.chmod(self.awg, 0o644)
+        kg.tick(now=100)
+        self.probe_mock.return_value = _probe("a")
+        self.assertEqual(kg.tick(now=800)["action"], "rolled_back")
+        self.assertEqual(os.stat(self.awg).st_mode & 0o777, 0o644)

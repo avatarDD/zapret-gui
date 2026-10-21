@@ -358,8 +358,25 @@ def process(now: float = None) -> list:
     """
     now = time.time() if now is None else now
     st = settings()
+    cfg = _cfg()
+    enabled = bool(cfg.get("block_detector", "auto_add_enabled",
+                           default=False)) and st["confirm"]
+    cur_list = cfg.get("block_detector", "auto_add_list_id", default="")
     with _lock:
-        pending = dict(_read().get("pending") or {})
+        data = _read()
+        pending = dict(data.get("pending") or {})
+        # Автодобавление выключили или сменили список — очередь, набранная
+        # для прежних настроек, в списки попадать не должна.
+        stale = [d for d, p in pending.items()
+                 if not enabled or (p.get("list_id") or "") != cur_list]
+        if stale:
+            for d in stale:
+                pending.pop(d, None)
+            data["pending"] = pending
+            _write(data)
+            log.info("smart detect: из очереди убрано %d (автодобавление "
+                     "выключено или сменён список)" % len(stale),
+                     source=SOURCE)
     due = sorted((d for d, p in pending.items()
                   if now - float(p.get("first", now)) >= st["recheck_sec"]),
                  key=lambda d: pending[d].get("first", 0))[:MAX_PER_TICK]

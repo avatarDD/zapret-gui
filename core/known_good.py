@@ -54,6 +54,8 @@ MAX_FILE_BYTES = 256 * 1024
 MAX_FAILED = 20
 # Как часто обновлять пробу рабочей точки, пока состояние с ней совпадает.
 PROBE_REFRESH = 3600
+# Перепроба после провала окна, сек.
+RECHECK_PAUSE = 10
 
 KINDS = ("awg", "singbox", "mihomo")
 
@@ -278,6 +280,16 @@ def _wan_down() -> bool:
     return reachability.wan_down()
 
 
+def _wan_unsteady() -> bool:
+    """Свежий замер: WAN лежит или под подозрением."""
+    from core import reachability
+    try:
+        return reachability.uplink(force=True)["state"] in ("down",
+                                                             "suspect")
+    except Exception:                               # noqa: BLE001 — граница
+        return False
+
+
 def _notify(text: str, buttons=None) -> None:
     try:
         from core import notify
@@ -317,6 +329,10 @@ def tick(now: float = None) -> dict:
     st = settings()
     if not st["enabled"]:
         return {"action": "disabled"}
+    if getattr(_cfg(), "fallback", False):
+        # settings.json не прочитался, в памяти умолчания без маршрутов:
+        # это не правка пользователя, и делать её рабочей точкой нельзя.
+        return {"action": "config_broken"}
     from core import safe_apply
     if safe_apply.active():
         # Идёт проверка стратегии — её пробы и её откат важнее.
@@ -369,6 +385,15 @@ def tick(now: float = None) -> dict:
     if _wan_down():
         return {"action": "wan_down"}
     probe = _probe()
+    with _lock:
+        good_probe = (_read().get("good") or {}).get("probe") or {}
+    if not judge(good_probe, probe)["promote"]:
+        # Один провал — ещё не приговор: обрыв WAN в первые секунды
+        # «suspect», а не «down», и один сайт мог просто не ответить.
+        if _wan_unsteady():
+            return {"action": "wan_down"}
+        time.sleep(RECHECK_PAUSE)
+        probe = _probe()
     with _lock:
         data = _read()
         good = data.get("good") or {}
@@ -523,7 +548,13 @@ def rollback(reason: str = "") -> dict:
         if now == meta.get("text"):
             continue
         try:
-            atomic_write_text(path, meta.get("text", ""))
+            # Права прежнего файла: менеджеры пишут конфиги обычным open()
+            # (0644), а mkstemp дал бы 0600.
+            try:
+                fmode = os.stat(path).st_mode & 0o777
+            except OSError:
+                fmode = 0o600
+            atomic_write_text(path, meta.get("text", ""), mode=fmode)
         except OSError as e:
             errors.append("%s: %s" % (path, e))
             continue

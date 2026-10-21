@@ -6,6 +6,7 @@
 """
 
 import calendar
+import json
 import time
 import unittest
 from unittest import mock
@@ -152,7 +153,9 @@ class TestTick(unittest.TestCase):
         def install(count, block):
             self.installed.append((count, block))
             if (count, block) != self.q._installed:
-                self.q._prev = {}
+                # Как в настоящем _install: новая цепочка считает с нуля.
+                self.q._prev = {x: 0 for x in count["4"] + count["6"]}
+                self.counter = 0
             self.q._installed = (count, block)
 
         self.q._install = install
@@ -188,13 +191,15 @@ class TestTick(unittest.TestCase):
         self.assertEqual(self.q.status(now=t)["rules"][0]["used"], 0)
 
     def test_extra_ticks_do_not_count(self):
-        t = self.run_minutes(3, ts(21, 10))         # used = 1
+        self.settings["rules"][0]["minutes"] = 100
+        t = self.run_minutes(3, ts(21, 10))         # used = 2
         for _ in range(5):                          # сохранения формы
             self.counter += 500
             self.q.tick(now=t)
-        self.assertEqual(self.q.status(now=t)["rules"][0]["used"], 1)
+        self.assertEqual(self.q.status(now=t)["rules"][0]["used"], 2)
 
     def test_grant_unblocks(self):
+        self.q._thread = mock.Mock()            # процесс GUI с потоком квот
         t = self.run_minutes(4, ts(21, 10))
         r = self.q.grant("Дети", 15, now=t)
         self.assertTrue(r["ok"])
@@ -235,3 +240,45 @@ class TestMcp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class TestCrossProcess(TestTick):
+    """device_quota_grant из другого процесса (MCP через stdio, CLI) пишет
+    файл; GUI подхватывает его на своём тике и не затирает."""
+
+    def test_grant_from_other_process_is_picked_up(self):
+        disk = {}
+        sig = [0]
+
+        def write(data):
+            disk.clear()
+            disk.update(json.loads(json.dumps(data)))
+            sig[0] += 1
+
+        with mock.patch.object(dq, "_write_state", side_effect=write), \
+                mock.patch.object(dq, "_read_state",
+                                  side_effect=lambda: json.loads(
+                                      json.dumps(disk))), \
+                mock.patch.object(dq, "_state_sig",
+                                  side_effect=lambda: sig[0]):
+            self.q._own_sig = sig[0]
+            t = self.run_minutes(4, ts(21, 10))
+            self.assertTrue(self.q.status(now=t)["rules"][0]["blocked"])
+            other = dq.DeviceQuota()            # «другой процесс»
+            self.assertTrue(other.grant("Дети", 30, now=t)["ok"])
+            self.q.tick(now=t + 60, count=True)
+            st = self.q.status(now=t + 60)["rules"][0]
+            self.assertEqual(st["extra"], 30)
+            self.assertFalse(st["blocked"])
+            self.q._save(t + 60)
+            self.assertEqual(list(disk["extra"].values()), [30])
+
+    def test_rebuild_does_not_lose_a_minute(self):
+        self.settings["rules"][0]["minutes"] = 100
+        t = self.run_minutes(3, ts(21, 10))     # used = 2
+        # Адреса сменились — цепочка пересобрана, счётчики с нуля.
+        self.q._install({"4": ["192.168.1.7", "192.168.1.8"], "6": []},
+                        {"4": [], "6": []})
+        self.run_minutes(1, t)
+        self.assertEqual(self.q.status(now=t)["rules"][0]["used"], 3)

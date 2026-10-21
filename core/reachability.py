@@ -231,7 +231,14 @@ def hold_restart(source: str, target: str = "") -> bool:
     узнаёт одним сообщением отсюда.
     """
     if not wan_down():
-        return False
+        try:
+            suspect = uplink()["state"] == "suspect"
+        except Exception:                       # noqa: BLE001 — граница
+            suspect = False
+        # Первый промах простоя: ещё не «лежит», но и рестартовать рано —
+        # иначе каждый сторож тратил бы рестарт в начале каждого обрыва.
+        # Следующий цикл сторожа спросит снова, уже после подтверждения.
+        return suspect
     key = "%s %s" % (source, target) if target else source
     with _lock:
         first = key not in _state["held"]

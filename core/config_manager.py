@@ -717,10 +717,18 @@ class ConfigManager:
         self._broken_sig = None
         self._broken_copy = ""
         self._save_blocked = False
+        # Последняя загрузка не прочла settings.json — в памяти умолчания.
+        self._fallback = False
 
     @property
     def path(self) -> str:
         return self._config_path
+
+    @property
+    def fallback(self) -> bool:
+        """settings.json не прочитался: в памяти умолчания, а не настройки
+        пользователя. Фоновые «судьи» (known_good) в это время молчат."""
+        return self._fallback
 
     @property
     def config_dir(self) -> str:
@@ -751,6 +759,7 @@ class ConfigManager:
                     # Мержим: saved перезаписывает дефолты
                     self._deep_merge(self._config, saved)
                     self._save_blocked = False
+                    self._fallback = False
                     # Миграция legacy путей под фактический layout zapret2
                     if self._migrate_legacy_paths():
                         self._save_locked()
@@ -769,6 +778,7 @@ class ConfigManager:
                     self._config["gui"]["auth_password"] = secrets.token_hex(8)
                     kept, fresh = self._keep_broken()
                     self._save_blocked = not kept
+                    self._fallback = True
                     if fresh or first_load:
                         log.error(f"Ошибка чтения конфигурации: {e}",
                                   source="config")
