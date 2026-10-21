@@ -387,12 +387,19 @@ def autoselect(fresh: bool = True) -> dict:
     best = res.get("best") or ""
     cm = _cfg()
     prev = cm.get("dns_routing", "auto_server", default="") or ""
+    prev_at = cm.get("dns_routing", "auto_server_at", default=0) or 0
     if not best:
         return {"ok": False, "best": "", "previous": prev,
                 "error": res.get("hint") or "подходящего сервера нет"}
     cm.set("dns_routing", "auto_server", best)
     cm.set("dns_routing", "auto_server_at", int(time.time()))
-    cm.save()
+    if not cm.save():
+        # Диск полон или только для чтения: выбор живёт до перезапуска,
+        # а сказать «выбран» значило бы соврать.
+        cm.set("dns_routing", "auto_server", prev)
+        cm.set("dns_routing", "auto_server_at", prev_at)
+        return {"ok": False, "best": best, "previous": prev,
+                "error": "не удалось сохранить настройки (место на диске?)"}
     out = {"ok": True, "best": best, "previous": prev,
            "changed": best != prev, "applied": None}
     if best != prev:

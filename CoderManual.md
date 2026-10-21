@@ -786,6 +786,13 @@ make lint
 
 - Харнесс API-тестов — `tests/_wsgi_client.py` (`WSGIClient` +
   `build_test_app()`): гоняет реальные роуты через WSGI без сети.
+- **Отказы окружения** — `tests/test_fault_injection.py` (приём Tachyon):
+  диск кончился (`ENOSPC` в `fsync` атомарной записи), битые файлы
+  состояния и `settings.json`, чужой процесс на PID из pid-файла,
+  протухший lock `state.tsv.lock`, падающий тик фонового потока, нет
+  или зависла команда (`nft`, `ip netns`), оборванная и переполненная
+  загрузка. Новый модуль с файлом состояния, фоновым потоком или
+  внешней командой — добавь туда свой случай.
 - Юнит-тесты конфиг-зависимых модулей мокают `get_config_manager`
   (фейк с `get/set/save/load`); пример — `tests/test_named_lists.py`,
   `tests/test_server_pool.py`.

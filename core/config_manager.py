@@ -19,9 +19,11 @@ import os
 import json
 import copy
 import secrets
+import shutil
 import threading
+import time
 from core.log_buffer import log
-from core.safe_io import atomic_write_json
+from core.safe_io import atomic_write_bytes, atomic_write_json
 
 
 # Путь по умолчанию для конфигурации
@@ -710,6 +712,11 @@ class ConfigManager:
         self._lock = threading.Lock()
         self._config = {}
         self._loaded = False
+        # Нечитаемый settings.json: копия рядом (см. _keep_broken) и запрет
+        # записи, если копию сделать не удалось.
+        self._broken_sig = None
+        self._broken_copy = ""
+        self._save_blocked = False
 
     @property
     def path(self) -> str:
@@ -739,18 +746,39 @@ class ConfigManager:
                 try:
                     with open(self._config_path, "r", encoding="utf-8") as f:
                         saved = json.load(f)
+                    if not isinstance(saved, dict):
+                        raise ValueError("корень settings.json — не объект")
                     # Мержим: saved перезаписывает дефолты
                     self._deep_merge(self._config, saved)
+                    self._save_blocked = False
                     # Миграция legacy путей под фактический layout zapret2
                     if self._migrate_legacy_paths():
                         self._save_locked()
                     if first_load:
                         log.info(f"Конфигурация загружена: {self._config_path}",
                                  source="config")
-                except (json.JSONDecodeError, IOError) as e:
-                    log.error(f"Ошибка чтения конфигурации: {e}", source="config")
-                    log.warning("Используются настройки по умолчанию",
-                                source="config")
+                except (ValueError, IOError, AttributeError, TypeError) as e:
+                    # ValueError — и битый JSON, и не-UTF-8 мусор, и корень
+                    # не-объект; AttributeError/TypeError — миграция споткнулась
+                    # о раздел не того типа. Дефолты на месте битого файла
+                    # первым же save() стёрли бы его навсегда: сначала копия
+                    # рядом, а не вышло — запись запрещена.
+                    self._config = copy.deepcopy(DEFAULT_CONFIG)
+                    # Не известный всем «admin»: файл с умолчаниями может
+                    # сохраниться, как при первой установке.
+                    self._config["gui"]["auth_password"] = secrets.token_hex(8)
+                    kept, fresh = self._keep_broken()
+                    self._save_blocked = not kept
+                    if fresh or first_load:
+                        log.error(f"Ошибка чтения конфигурации: {e}",
+                                  source="config")
+                        log.warning(
+                            "Используются настройки по умолчанию; %s" % (
+                                "испорченный файл сохранён как %s" % kept
+                                if kept else "копию испорченного файла "
+                                "сделать не удалось — сохранение настроек "
+                                "отключено, чтобы его не затереть"),
+                            source="config")
             else:
                 if first_load:
                     log.info("Конфигурация не найдена, создаём с дефолтами",
@@ -830,6 +858,11 @@ class ConfigManager:
         записи на роутере усекали бы ``settings.json``, и при следующем
         старте ``load()`` молча падал бы в дефолты (потеря всей конфигурации).
         """
+        if self._save_blocked:
+            log.error("Настройки не сохранены: %s не читается, а его копию "
+                      "сделать не удалось — запись затёрла бы его"
+                      % self._config_path, source="config")
+            return False
         try:
             os.makedirs(self._config_dir, exist_ok=True)
             atomic_write_json(self._config_path, self._config)
@@ -976,6 +1009,52 @@ class ConfigManager:
                 else:
                     del override[key]
 
+    def _keep_broken(self) -> str:
+        """Копия нечитаемого settings.json рядом (``.broken-<время>``).
+
+        → (путь копии или "", сделана ли она сейчас). load() зовут часто,
+        а CLI и MCP заводят свои менеджеры: тот же испорченный файл не
+        копируется второй раз — ни этим процессом (размер и время
+        изменения), ни другим (совпадает содержимое прежней копии).
+        """
+        try:
+            st = os.stat(self._config_path)
+        except OSError:
+            return "", False
+        sig = (st.st_size, st.st_mtime_ns)
+        if self._broken_sig == sig and self._broken_copy:
+            return self._broken_copy, False
+        try:
+            with open(self._config_path, "rb") as f:
+                blob = f.read()
+        except OSError:
+            return "", False
+        directory, base = os.path.split(self._config_path)
+        try:
+            names = sorted(os.listdir(directory or "."))
+        except OSError:
+            names = []
+        for name in names:
+            if not name.startswith(base + ".broken-"):
+                continue
+            other = os.path.join(directory, name)
+            try:
+                if os.path.getsize(other) == len(blob):
+                    with open(other, "rb") as f:
+                        if f.read() == blob:
+                            self._broken_sig, self._broken_copy = sig, other
+                            return other, False
+            except OSError:
+                continue
+        dst = "%s.broken-%s" % (self._config_path,
+                                time.strftime("%Y%m%d-%H%M%S"))
+        try:
+            atomic_write_bytes(dst, blob)
+        except OSError:
+            return "", False
+        self._broken_sig, self._broken_copy = sig, dst
+        return dst, True
+
     @staticmethod
     def _deep_merge(base: dict, override: dict):
         """
@@ -983,12 +1062,24 @@ class ConfigManager:
         Новые ключи из base сохраняются (для обратной совместимости).
         """
         for key, value in override.items():
-            if (key in base
-                    and isinstance(base[key], dict)
-                    and isinstance(value, dict)):
-                ConfigManager._deep_merge(base[key], value)
+            if key in base and isinstance(base[key], dict):
+                if isinstance(value, dict):
+                    ConfigManager._deep_merge(base[key], value)
+                else:
+                    # Раздел не того типа ({"nfqws": null}) — остаётся
+                    # умолчание: иначе код, ждущий словарь, упал бы на
+                    # первом .get().
+                    if key not in _type_warned:      # load() зовут часто
+                        _type_warned.add(key)
+                        log.warning("settings.json: «%s» — не объект, "
+                                    "взято значение по умолчанию" % key,
+                                    source="config")
             else:
                 base[key] = value
+
+
+# Разделы не того типа, о которых уже предупредили (см. _deep_merge).
+_type_warned = set()
 
 
 # === Глобальный экземпляр ===

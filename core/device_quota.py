@@ -322,9 +322,11 @@ class DeviceQuota:
         self._stop = threading.Event()
         st = _read_state()
         self._date = str(st.get("date") or "")
-        self._used = dict(st.get("used") or {})
-        self._extra = dict(st.get("extra") or {})
-        self._notified = set(st.get("notified") or [])
+        self._used = _minutes_map(st.get("used"))
+        self._extra = _minutes_map(st.get("extra"))
+        notified = st.get("notified")
+        self._notified = set(n for n in notified if isinstance(n, str)) \
+            if isinstance(notified, list) else set()
         self._prev = {}             # адрес → пакеты на прошлом тике
         self._installed = None      # (count, block), что сейчас стоит
         self._maybe_installed = True
@@ -634,6 +636,17 @@ class DeviceQuota:
                     "running": bool(self._thread and self._thread.is_alive()),
                     "backend": self._backend, "error": self._last_error,
                     "active_packets": st["active_packets"], "rules": rows}
+
+
+def _minutes_map(value) -> dict:
+    """Счёт из файла состояния: битое значение — как будто его нет."""
+    out = {}
+    for k, v in (value.items() if isinstance(value, dict) else ()):
+        try:
+            out[str(k)] = int(v)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return out
 
 
 def _uniq(items) -> list:
