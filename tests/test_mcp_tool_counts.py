@@ -150,12 +150,18 @@ from core.mcp import registry
 # резолверов, leak_check — внешний IP и резолверы через bash.ws: оба
 # выпускают трафик наружу) и + 1 под `config_write` (dns_autoselect —
 # пишет dns_routing.auto_server, откат через mcp_undo_last).
+# Квоты времени устройств (приём Tachyon): + 1 на чтение
+# (device_quota_status) и + 1 под `control` (device_quota_grant —
+# открывает устройству интернет до полуночи: правило перехвата, а не
+# настройка).
+# Проба «как клиент LAN» (приём Tachyon): + 1 под `probes` (lan_probe —
+# временный netns в мосту LAN, трафик наружу).
 BY_SCOPE = {
-    "read": 46,
-    "control": 9,
+    "read": 47,
+    "control": 10,
     "strategies_write": 12,
     "config_write": 2,
-    "probes": 15,
+    "probes": 16,
     "experiments": 7,
     "tunnels_write": 16,
     "dangerous": 2,
@@ -245,7 +251,7 @@ class TestToolCounts(unittest.TestCase):
         # Рабочая точка туннелей и маршрутов
         "known_good_status",
         # Smart Detect: очередь подтверждения и автодобавленное
-        "smart_detect_status",
+        "smart_detect_status", "device_quota_status",
         # генератор конфигов WARP/Proton
         "vpngen_options", "vpngen_check",
         # S5 — туннели, диагностика, обновления
@@ -275,7 +281,7 @@ class TestToolCounts(unittest.TestCase):
     CONTROL_TOOLS = [
         "firewall_apply", "firewall_remove", "nfqws_reload_lists",
         "nfqws_restart", "nfqws_start", "nfqws_stop", "scan_apply",
-        "strategy_apply", "quick_fix_apply",
+        "strategy_apply", "quick_fix_apply", "device_quota_grant",
     ]
     STRATEGIES_WRITE_TOOLS = [
         "blob_add", "hostlist_edit", "ipset_edit", "lua_script_save",
@@ -343,7 +349,7 @@ class TestToolCounts(unittest.TestCase):
     PROBES_TOOLS = [
         "blockcheck2_start", "blockcheck2_stop", "blockcheck_start",
         "dns_benchmark", "dpi_classify", "healthcheck_run",
-        "leak_check", "probe_compare", "probe_targets",
+        "lan_probe", "leak_check", "probe_compare", "probe_targets",
         "scan_start", "scan_stop",
         # S17 — снифер. Сам он пакетов не выпускает, но показывает
         # чужой трафик и ходит с пробами парой («пусти пробу и посмотри,

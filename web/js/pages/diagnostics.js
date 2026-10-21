@@ -101,6 +101,26 @@ const DiagnosticsPage = (() => {
                         onclick="DiagnosticsPage.runLeakCheck()">Проверить</button>
             </div>
 
+            <!-- Проба «как клиент LAN» (core/lan_probe.py) -->
+            <div class="card" id="diag-lanprobe-card" style="display:none;">
+                <div class="card-header"><h3 class="card-title">Как клиент LAN</h3></div>
+                <p class="form-hint" style="margin-top:0;">
+                    Пробы GUI идут с самого роутера, а телефон ходит другим путём: через
+                    FORWARD, правила по устройствам, transparent-режим. Здесь те же сайты
+                    открываются ещё и из временного «клиента», подключённого к мосту LAN,
+                    и видно, где расходится.
+                </p>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                    <input id="diag-lanprobe-hosts" class="form-input" style="flex:2; min-width:200px;"
+                           placeholder="сайты через пробел">
+                    <input id="diag-lanprobe-addr" class="form-input" style="flex:1; min-width:120px;"
+                           placeholder="адрес клиента (авто)">
+                    <button class="btn btn-ghost btn-sm" id="diag-lanprobe-btn"
+                            onclick="DiagnosticsPage.runLanProbe()">Проверить</button>
+                </div>
+                <div id="diag-lanprobe-body" class="text-muted" style="margin-top:8px;"></div>
+            </div>
+
             <!-- «Куда пойдёт сайт» (core/site_trace.py) -->
             <div class="card" id="diag-trace-card">
                 <div class="card-header"><h3 class="card-title">Куда пойдёт сайт</h3></div>
@@ -347,6 +367,7 @@ const DiagnosticsPage = (() => {
         loadMaintenanceCaps();
         loadQuickFix(false);
         API.get('/api/diagnostics/leak-check').then(renderLeak).catch(() => {});
+        API.get('/api/diagnostics/lan-probe').then(initLanProbe).catch(() => {});
 
         // Пришли с главной («Сайт не открывается?»): сразу «Куда пойдёт сайт».
         const site = new URLSearchParams((location.hash.split('?')[1]) || '').get('site');
@@ -1585,6 +1606,50 @@ const DiagnosticsPage = (() => {
         }
     }
 
+    /* ═══════════════════ как клиент LAN ═══════════════════ */
+    function initLanProbe(r) {
+        const card = document.getElementById('diag-lanprobe-card');
+        if (!card || !r) return;
+        card.style.display = '';
+        const hosts = document.getElementById('diag-lanprobe-hosts');
+        if (hosts && !hosts.value) hosts.value = (r.hosts || []).join(' ');
+        if (!r.ok) {
+            document.getElementById('diag-lanprobe-body').textContent = 'Недоступно: ' + (r.reason || '');
+            const btn = document.getElementById('diag-lanprobe-btn');
+            if (btn) btn.disabled = true;
+        }
+    }
+
+    function _probeCell(p) {
+        if (!p) return '—';
+        if (p.ok) return `<span style="color:var(--success, #22c55e);">открылся</span> <span class="text-muted">${_esc(p.ms)} мс</span>`;
+        return `<span style="color:var(--danger, #ef4444);" title="${_esc(p.error || '')}">нет (${_esc(p.stage || '?')})</span>`;
+    }
+
+    async function runLanProbe() {
+        const box = document.getElementById('diag-lanprobe-body');
+        const btn = document.getElementById('diag-lanprobe-btn');
+        const hosts = (document.getElementById('diag-lanprobe-hosts')?.value || '').split(/[\s,]+/).filter(Boolean);
+        const address = (document.getElementById('diag-lanprobe-addr')?.value || '').trim();
+        if (btn) btn.disabled = true;
+        if (box) box.textContent = 'Проверяю…';
+        try {
+            const r = await API.post('/api/diagnostics/lan-probe', { hosts, address }, { timeout: 120000 });
+            if (!r.ok) { box.textContent = r.error || 'Не вышло'; return; }
+            box.innerHTML = `
+                <div style="overflow-x:auto;"><table class="table" style="width:100%; font-size:13px;">
+                    <thead><tr><th>Сайт</th><th>С роутера</th><th>Как клиент ${_esc(r.address)}</th></tr></thead>
+                    <tbody>${r.rows.map(x => `<tr${x.verdict === 'lan_fails' ? ' style="background:rgba(239,68,68,.08);"' : ''}>
+                        <td>${_esc(x.host)}</td><td>${_probeCell(x.router)}</td><td>${_probeCell(x.lan)}</td></tr>`).join('')}</tbody>
+                </table></div>
+                <div class="form-hint">${_esc(r.hint || '')}</div>`;
+        } catch (e) {
+            if (box) box.textContent = 'Не вышло: ' + e.message;
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
     /* ═══════════════════ отчёт для помощи ═══════════════════ */
     // Оба варианта приходят одним ответом: галочка переключает их на
     // месте и не может получить текст «не того» запроса.
@@ -1700,5 +1765,6 @@ const DiagnosticsPage = (() => {
         loadQuickFix,
         applyQuickFix,
         runLeakCheck,
+        runLanProbe,
     };
 })();

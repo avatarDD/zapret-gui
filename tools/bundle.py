@@ -61,6 +61,7 @@ JS_FILES = [
     "js/components/confirm.js",
     "js/components/setup_ui.js",
     "js/components/device_schedule.js",
+    "js/components/device_quota.js",
     "js/components/proxy_table.js",
     # pages
     "js/pages/dashboard.js",

@@ -132,6 +132,17 @@ const ControlPage = (() => {
                 <div id="device-schedule-body"></div>
             </div>
 
+            <!-- Квоты времени по устройствам (components/device_quota.js) -->
+            <div class="card">
+                <div class="card-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M5 22h14M5 2h14M17 22v-4.17a2 2 0 0 0-.59-1.42L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22M7 2v4.17a2 2 0 0 0 .59 1.42L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2"/>
+                    </svg>
+                    Квоты времени
+                </div>
+                <div id="device-quota-body"></div>
+            </div>
+
             <!-- Лог вывода nfqws -->
             <div class="card">
                 <div class="card-title" style="justify-content: space-between;">
@@ -166,6 +177,9 @@ const ControlPage = (() => {
         // Начальная загрузка
         if (typeof DeviceSchedule !== 'undefined') {
             DeviceSchedule.mount(document.getElementById('device-schedule-body'));
+        }
+        if (typeof DeviceQuota !== 'undefined') {
+            DeviceQuota.mount(document.getElementById('device-quota-body'));
         }
         fetchStatus();
         fetchLogs();

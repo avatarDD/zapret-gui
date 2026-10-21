@@ -97,6 +97,10 @@ def firewall_status(args: dict) -> dict:
     schedule = _safe(_device_schedule_brief, None)
     if schedule:
         result["device_schedule"] = schedule
+    # Квоты: устройство без интернета может быть просто «на сегодня всё».
+    quota = _safe(_device_quota_brief, None)
+    if quota:
+        result["device_quota"] = quota
 
     if not status.get("type"):
         result["hint"] = ("ни iptables, ни nft не найдены — перехват "
@@ -123,6 +127,16 @@ def _device_schedule_brief():
         return None
     return {key: st.get(key) for key in (
         "router_time", "active_rules", "excluded", "unresolved", "error")}
+
+
+def _device_quota_brief():
+    """Кому сейчас закрыт интернет по квоте; выключено — None."""
+    from core.device_quota import get_device_quota
+    st = get_device_quota().status()
+    if not st.get("enabled"):
+        return None
+    return {"blocked": [r["name"] or r["key"] for r in st["rules"]
+                        if r["blocked"]], "error": st.get("error") or ""}
 
 
 def _safe(getter, default):
@@ -292,3 +306,60 @@ def _engine_running() -> bool:
 
 # Откат правил объявляется на импорте, как и у остальных мутирующих.
 audit.register_undo(audit.KIND_FIREWALL, _undo_firewall)
+
+
+# ───────────────────── дневные квоты времени ─────────────────────
+
+@tool(
+    name="device_quota_status",
+    scope="read",
+    mutating=False,
+    title="Daily device time quotas",
+    description=("Per-rule minutes used today, left, and whether the "
+                 "device is blocked now (REJECT/DROP until local "
+                 "midnight). A minute counts when the device sent "
+                 "≥ active_packets packets. Rules: config_get "
+                 "firewall.device_quota. / Квоты времени устройств."),
+    schema={"type": "object", "properties": {},
+            "additionalProperties": False},
+)
+def device_quota_status(args: dict) -> dict:
+    from core.device_quota import get_device_quota
+    st = get_device_quota().status()
+    st["ok"] = True
+    st["hint"] = ("добавить минут на сегодня — device_quota_grant; правила "
+                  "меняются на странице «Управление»")
+    return st
+
+
+@tool(
+    name="device_quota_grant",
+    scope="control",
+    mutating=True,
+    title="Add minutes to a device quota",
+    description=("Give a quota rule extra minutes for today (negative "
+                 "takes them back); a blocked device is let back in at "
+                 "once. `rule` — rule name, device IP/MAC or key from "
+                 "device_quota_status. Resets at midnight. / Добавить "
+                 "минут на сегодня."),
+    schema={
+        "type": "object",
+        "properties": {
+            "rule": {"type": "string", "maxLength": 200,
+                     "description": "Rule name, device or key. / Правило."},
+            "minutes": {"type": "integer", "minimum": -1440,
+                        "maximum": 1440,
+                        "description": "Minutes to add. / Минут."},
+        },
+        "required": ["rule", "minutes"],
+        "additionalProperties": False,
+    },
+)
+def device_quota_grant(args: dict) -> dict:
+    from core.device_quota import get_device_quota
+    res = get_device_quota().grant(str(args.get("rule") or ""),
+                                   args.get("minutes"))
+    res["hint"] = ("до полуночи; вернуть — тот же вызов с обратным "
+                   "знаком" if res.get("ok") else
+                   "имена правил — device_quota_status")
+    return res

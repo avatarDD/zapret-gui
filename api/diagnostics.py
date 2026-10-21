@@ -23,6 +23,8 @@ API диагностики сети и системы.
   POST /api/diagnostics/quick-fix          — выполнить ремонт (body: {fix})
   GET  /api/diagnostics/leak-check         — последняя проверка утечек
   POST /api/diagnostics/leak-check         — проверить утечки IP и DNS
+  GET  /api/diagnostics/lan-probe          — доступна ли проба «как клиент LAN»
+  POST /api/diagnostics/lan-probe          — проба через netns (body: {hosts, address})
 
   POST /api/diagnostics/selfcheck         — запустить самодиагностику
                                             (body: {tests, pattern}), фоном
@@ -191,6 +193,28 @@ def register(app):
         response.content_type = "application/json; charset=utf-8"
         from core import leak_check
         return leak_check.run()
+
+    @app.route("/api/diagnostics/lan-probe")
+    def api_diagnostics_lan_probe_available():
+        response.content_type = "application/json; charset=utf-8"
+        from core import lan_probe
+        return dict(lan_probe.availability(),
+                    hosts=list(lan_probe.DEFAULT_HOSTS))
+
+    @app.route("/api/diagnostics/lan-probe", method="POST")
+    def api_diagnostics_lan_probe():
+        """Сайты с роутера и как клиент LAN (core/lan_probe.py)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core import lan_probe
+        try:
+            body = request.json or {}
+        except Exception:
+            body = {}
+        hosts = body.get("hosts") or None
+        if isinstance(hosts, str):
+            hosts = hosts.replace(",", " ").split()
+        return lan_probe.run(hosts if isinstance(hosts, list) else None,
+                             address=str(body.get("address") or ""))
 
     @app.route("/api/diagnostics/help-report")
     def api_diagnostics_help_report():

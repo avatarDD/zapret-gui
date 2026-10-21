@@ -235,6 +235,33 @@ DOCS = {
         "empty": "пусто — локальное время системы",
         "see": ["firewall.device_schedule.rules"],
     },
+    "firewall.device_quota.enabled": {
+        "text": "Дневные квоты времени для устройств: N минут интернета в "
+                "день, потом REJECT/DROP в цепочке FORWARD zgui_quota "
+                "(таблица inet zgui_quota) до полуночи. Счёт и «добавить "
+                "минут» — device_quota_status / device_quota_grant.",
+        "see": ["firewall.device_quota.rules",
+                "firewall.device_quota.active_packets"],
+    },
+    "firewall.device_quota.rules": {
+        "text": "Правила квот: {name, enabled, devices — IP, подсеть или "
+                "MAC, names — подписи, minutes — минут в день (1..1440), "
+                "days — 1..7 (пусто — каждый день)}. Правило опознаётся по "
+                "набору устройств: два правила с одним набором нельзя.",
+        "empty": "пусто — квот нет",
+        "see": ["firewall.device_quota.enabled"],
+    },
+    "firewall.device_quota.tz_offset": {
+        "text": "Сдвиг часового пояса для полуночи квот («+03:00»), если "
+                "Python на роутере видит UTC. Пусто — время системы.",
+        "empty": "пусто — локальное время системы",
+    },
+    "firewall.device_quota.active_packets": {
+        "text": "Сколько пакетов от устройства за минуту делают её "
+                "«в сети». Лежащий телефон с push-соединениями шлёт "
+                "единицы пакетов — время у него не идёт.",
+        "unit": "пакетов в минуту",
+    },
     "firewall.ppe_deoffload": {
         "text": "Разгрузка аппаратного ускорителя Keenetic (MediaTek "
                 "PPE): правила `-j PPE -m connskip` держат первые пакеты "

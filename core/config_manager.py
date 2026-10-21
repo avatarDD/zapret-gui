@@ -159,6 +159,16 @@ DEFAULT_CONFIG = {
             "tz_offset": "",
             "rules": [],
         },
+        # Дневные квоты времени (core/device_quota.py): rules: [{name,
+        # enabled, devices, names, minutes — минут в день, days: [1..7]
+        # (пусто — каждый день)}]. Минута засчитывается, если устройство
+        # отправило за неё не меньше active_packets пакетов.
+        "device_quota": {
+            "enabled": False,
+            "tz_offset": "",
+            "active_packets": 30,
+            "rules": [],
+        },
     },
 
     # --- Фильтрация ---
@@ -338,6 +348,7 @@ DEFAULT_CONFIG = {
             "safe_apply": True,
             "known_good": True,
             "smart_detect": True,
+            "device_quota": True,
             "autopick": True,
             "update": True,
         },

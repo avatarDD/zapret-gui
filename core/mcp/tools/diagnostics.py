@@ -707,3 +707,28 @@ def leak_check(args: dict) -> dict:
     if isinstance(res.get("isp"), dict):
         res["isp"] = dict(res["isp"], ip=_mask_ip(res["isp"].get("ip", "")))
     return res
+
+
+@tool(
+    name="lan_probe",
+    scope="probes",
+    mutating=False,
+    title="Probe sites as a LAN client",
+    description=("Open sites (DNS, TCP, TLS) from the router AND from a "
+                 "temporary netns plugged into the LAN bridge, i.e. the "
+                 "path a phone takes (FORWARD, per-device rules, "
+                 "transparent proxy). verdict lan_fails — only clients "
+                 "break. Linux/OpenWrt only. / Проба как клиент LAN."),
+    schema={"type": "object", "properties": {
+        "hosts": {"type": "array", "maxItems": 10,
+                  "items": {"type": "string", "maxLength": 253},
+                  "description": "Sites; empty — defaults. / Сайты."},
+        "address": {"type": "string", "maxLength": 43,
+                    "description": "Client IPv4 in the LAN subnet; empty "
+                                   "— free one near the end. / Адрес."}},
+            "additionalProperties": False},
+)
+def lan_probe(args: dict) -> dict:
+    from core import lan_probe as lp
+    return lp.run(args.get("hosts") or None,
+                  address=str(args.get("address") or ""))

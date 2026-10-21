@@ -1175,6 +1175,14 @@ def create_app(config_dir: str = None) -> Bottle:
             log.warning("Рабочая точка туннелей при boot: %s" % e,
                         source="known-good")
 
+        # Дневные квоты времени устройств (core/device_quota.py).
+        try:
+            from core.device_quota import get_device_quota
+            get_device_quota().start()
+        except Exception as e:
+            log.warning("Квоты устройств при boot: %s" % e,
+                        source="firewall")
+
         # Перезамер DNS-серверов для правил «auto» (core/dns_bench.py).
         try:
             from core import dns_bench
