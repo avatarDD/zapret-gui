@@ -146,12 +146,16 @@ from core.mcp import registry
 # лога движка, tunnel_diagnostics — снимок для разбора, секреты под
 # маской) и + 1 под `tunnels_write` (tunnel_settings — отладка, память
 # Go и автозапуск конфига).
+# DNS и утечки (приём Tachyon): + 2 под `probes` (dns_benchmark — замер
+# резолверов, leak_check — внешний IP и резолверы через bash.ws: оба
+# выпускают трафик наружу) и + 1 под `config_write` (dns_autoselect —
+# пишет dns_routing.auto_server, откат через mcp_undo_last).
 BY_SCOPE = {
     "read": 46,
     "control": 9,
     "strategies_write": 12,
-    "config_write": 1,
-    "probes": 13,
+    "config_write": 2,
+    "probes": 15,
     "experiments": 7,
     "tunnels_write": 16,
     "dangerous": 2,
@@ -338,8 +342,8 @@ class TestToolCounts(unittest.TestCase):
     # S8 — всё, что выпускает трафик с роутера.
     PROBES_TOOLS = [
         "blockcheck2_start", "blockcheck2_stop", "blockcheck_start",
-        "dpi_classify", "healthcheck_run", "probe_compare",
-        "probe_targets",
+        "dns_benchmark", "dpi_classify", "healthcheck_run",
+        "leak_check", "probe_compare", "probe_targets",
         "scan_start", "scan_stop",
         # S17 — снифер. Сам он пакетов не выпускает, но показывает
         # чужой трафик и ходит с пробами парой («пусти пробу и посмотри,

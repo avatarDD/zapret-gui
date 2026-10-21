@@ -87,6 +87,20 @@ const DiagnosticsPage = (() => {
                         onclick="DiagnosticsPage.loadQuickFix(true)">Проверить снова</button>
             </div>
 
+            <!-- Утечки IP и DNS (core/leak_check.py) -->
+            <div class="card" id="diag-leak-card">
+                <div class="card-header"><h3 class="card-title">Утечки IP и DNS</h3></div>
+                <p class="form-hint" style="margin-top:0;">
+                    Внешний IP напрямую и через каждый туннель (тот же IP — трафик
+                    идёт мимо туннеля) и какие DNS-серверы видит мир, когда роутер
+                    резолвит имя. Запросы уходят на bash.ws и api.ipify.org, поэтому
+                    проверка — только по кнопке.
+                </p>
+                <div id="diag-leak-body" class="text-muted">Проверки ещё не было.</div>
+                <button class="btn btn-ghost btn-sm" style="margin-top:8px;" id="diag-leak-btn"
+                        onclick="DiagnosticsPage.runLeakCheck()">Проверить</button>
+            </div>
+
             <!-- «Куда пойдёт сайт» (core/site_trace.py) -->
             <div class="card" id="diag-trace-card">
                 <div class="card-header"><h3 class="card-title">Куда пойдёт сайт</h3></div>
@@ -332,6 +346,7 @@ const DiagnosticsPage = (() => {
         loadSelfcheckStatus();
         loadMaintenanceCaps();
         loadQuickFix(false);
+        API.get('/api/diagnostics/leak-check').then(renderLeak).catch(() => {});
 
         // Пришли с главной («Сайт не открывается?»): сразу «Куда пойдёт сайт».
         const site = new URLSearchParams((location.hash.split('?')[1]) || '').get('site');
@@ -1531,6 +1546,45 @@ const DiagnosticsPage = (() => {
         }
     }
 
+    /* ═══════════════════ утечки IP и DNS ═══════════════════ */
+    const LEAK_COLORS = { ok: 'var(--success, #22c55e)', warn: 'var(--warning, #f59e0b)',
+                          incomplete: 'var(--text-muted, #888)' };
+
+    function renderLeak(r) {
+        const box = document.getElementById('diag-leak-body');
+        if (!box || !r || !r.ts) return;
+        const color = { ok: 'var(--success, #22c55e)', warning: 'var(--warning, #f59e0b)',
+                        error: 'var(--danger, #ef4444)', unknown: 'var(--text-muted, #888)' };
+        box.innerHTML = `
+            <div style="margin-bottom:6px; color:${LEAK_COLORS[r.level] || ''};"><b>${_esc(r.line || '')}</b>
+                <span class="text-muted" style="font-weight:normal;">· ${_esc(new Date(r.ts * 1000).toLocaleString())}</span></div>
+            ${(r.findings || []).map(f => `
+            <div style="display:flex; gap:8px; align-items:flex-start; margin:6px 0;">
+                <span style="width:8px; height:8px; border-radius:50%; margin-top:6px; flex:none;
+                             background:${color[f.status] || color.unknown};"></span>
+                <div style="flex:1; min-width:0; overflow-wrap:anywhere;">
+                    <div><b>${_esc(f.title)}</b>${f.detail ? ' <span class="text-muted">— ' + _esc(f.detail) + '</span>' : ''}</div>
+                    ${f.hint ? '<div class="form-hint" style="margin:2px 0 0;">' + _esc(f.hint) + '</div>' : ''}
+                </div>
+            </div>`).join('')}`;
+    }
+
+    async function runLeakCheck() {
+        const box = document.getElementById('diag-leak-body');
+        const btn = document.getElementById('diag-leak-btn');
+        if (btn) btn.disabled = true;
+        if (box) box.textContent = 'Проверяю (до полуминуты)…';
+        try {
+            const r = await API.post('/api/diagnostics/leak-check', {}, { timeout: 90000 });
+            if (r && r.ok) renderLeak(r);
+            else if (box) box.textContent = (r && r.error) || 'Не вышло';
+        } catch (e) {
+            if (box) box.textContent = 'Не вышло: ' + e.message;
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
     /* ═══════════════════ отчёт для помощи ═══════════════════ */
     // Оба варианта приходят одним ответом: галочка переключает их на
     // месте и не может получить текст «не того» запроса.
@@ -1645,5 +1699,6 @@ const DiagnosticsPage = (() => {
         copyHelpReport,
         loadQuickFix,
         applyQuickFix,
+        runLeakCheck,
     };
 })();

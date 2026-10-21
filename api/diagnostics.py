@@ -21,6 +21,8 @@ API диагностики сети и системы.
   GET  /api/diagnostics/quick-fix?fresh=1  — быстрый ремонт: часы, DNS,
                                             маршрут, resolv.conf
   POST /api/diagnostics/quick-fix          — выполнить ремонт (body: {fix})
+  GET  /api/diagnostics/leak-check         — последняя проверка утечек
+  POST /api/diagnostics/leak-check         — проверить утечки IP и DNS
 
   POST /api/diagnostics/selfcheck         — запустить самодиагностику
                                             (body: {tests, pattern}), фоном
@@ -176,6 +178,19 @@ def register(app):
         if result.get("ok"):
             result["after"] = quick_fix.check(network=True, fresh=True)
         return result
+
+    @app.route("/api/diagnostics/leak-check")
+    def api_diagnostics_leak_check_last():
+        response.content_type = "application/json; charset=utf-8"
+        from core import leak_check
+        return leak_check.last()
+
+    @app.route("/api/diagnostics/leak-check", method="POST")
+    def api_diagnostics_leak_check():
+        """Утечки IP и DNS (core/leak_check.py): ходит на bash.ws."""
+        response.content_type = "application/json; charset=utf-8"
+        from core import leak_check
+        return leak_check.run()
 
     @app.route("/api/diagnostics/help-report")
     def api_diagnostics_help_report():

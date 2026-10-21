@@ -341,6 +341,7 @@ UI), и `tools_by_scope`.
 | `issue_draft` | read | нет | `tools/issues.py` | title, kind?, tool?, component?, crash_id?, actual?, expected?, steps?, evidence?, args?, severity?, include_targets? | черновик issue об ошибке САМОГО GUI; место в коде, трассировку и repro сервер дописывает сам |
 | `issue_draft_list` | read | нет | `tools/issues.py` | id?, status?, offset?, limit? | черновики (новые первыми) + падения без черновика; с `id` — текст и ссылка |
 | `config_set` | config_write | **да** | `tools/config.py` | path, value | записать ОДНУ настройку; ответ — дифф «было/стало», список заменяется целиком |
+| `dns_autoselect` | config_write | **да** | `tools/diagnostics.py` | fresh? | замер DNS-пресетов (при `fresh` — ещё и `probes`) или последний замер → лучший честный по UDP в `dns_routing.auto_server`; правила с `dns="auto"` пересобираются в dnsmasq (`core/dns_bench.py`); снимок `config` — откат `mcp_undo_last` |
 | `nfqws_start` | control | **да** | `tools/nfqws.py` | — | правила перехвата + движок с активной стратегией; обратное — `nfqws_stop` |
 | `nfqws_stop` | control | **да** | `tools/nfqws.py` | — | остановить движок и снять правила |
 | `nfqws_restart` | control | **да** | `tools/nfqws.py` | — | перезапуск со свежесобранными аргументами активной стратегии |
@@ -375,6 +376,8 @@ UI), и `tools_by_scope`.
 | `blockcheck2_start` | probes | **да** | `tools/blockcheck.py` | domains?, scanlevel?, ipv?, repeats?, http?, tls12?, tls13?, http3? | оригинальный скрипт zapret2 (DOMAINS/SCANLEVEL/REPEATS/…) |
 | `blockcheck2_stop` | probes | **да** | `tools/blockcheck.py` | — | прибить скрипт; собранная телеметрия остаётся читаемой |
 | `healthcheck_run` | probes | **да** | `tools/blockcheck.py` | — | разовый прогон healthcheck в фоне; результат — в `healthcheck_status` |
+| `dns_benchmark` | probes | нет | `tools/diagnostics.py` | fresh? | задержка и доля ответов каждого DNS-пресета с роутера: UDP/53 (то, чем ходит dnsmasq), DoH, DoT; `spoofed` — UDP-ответ подменён (сверка с DoH по заблокированному домену); `best` — что выберет `dns_autoselect` (`core/dns_bench.py`) |
+| `leak_check` | probes | нет | `tools/diagnostics.py` | fresh? | внешний IP напрямую и через каждый транспорт (AWG, прокси sing-box/mihomo), резолверы роутера через bash.ws; `level=incomplete` — проверено не всё; без `secrets` последний октет IP скрыт (`core/leak_check.py`) |
 | `traffic_capture_start` | probes | **да** | `tools/traffic.py` | iface?, host?, port?, proto?, packets?, seconds? | короткий дамп после движка; argv фиксирован, ответ — `run_id`, сразу |
 | `traffic_capture_status` | probes | нет | `tools/traffic.py` | run_id? | идёт ли дамп и сколько успел снять |
 | `traffic_capture_result` | probes | нет | `tools/traffic.py` | run_id?, summary_only?, with_sni_only?, offset?, limit? | пакеты полями (флаги, TTL, длина, SNI) + сводка: разрезан ли ClientHello, разные ли TTL |

@@ -1589,7 +1589,7 @@ $ zapret-gui mcp status
 bind:        inherit
 транспорты:  http=вкл  sse=выкл
 
-инструментов: 89 из 134 доступны сейчас
+инструментов: 92 из 137 доступны сейчас
   read               46
   control            9
   strategies_write   12
@@ -1692,7 +1692,7 @@ Desktop и VS Code они видны как готовые команды, мо�
 
 ### Что модель умеет
 
-134 инструментов. Что из них видно клиенту — решают разрешения:
+137 инструментов. Что из них видно клиенту — решают разрешения:
 невыданное не просто запрещено, оно **не публикуется**, и модель о нём
 не знает.
 
@@ -1742,16 +1742,20 @@ Lua-скрипты правятся **на ходу**: модель читает
 (`apply=true`) — иначе правка лежит на диске и не действует, потому что
 lua читается при старте.
 
-**`config_write` — настройки** (1): `config_set`. Пишет **по одному
+**`config_write` — настройки** (2): `config_set`. Пишет **по одному
 листу** и только в разрешённые поддеревья; пути к файлам, порт GUI,
 бэкенд firewall и метки десинка не отдаются на запись никогда.
+`dns_autoselect` — сделать лучший по замеру DNS-сервер сервером «auto»
+для правил «домен → DNS» (откат — `mcp_undo_last`).
 
-**`probes` — трафик наружу** (13): `probe_targets`, `probe_compare`
+**`probes` — трафик наружу** (15): `probe_targets`, `probe_compare`
 (домен с обходом и без), `dpi_classify` (чем режут: хватит ли разреза,
 нужен ли фейк или режут адрес), `scan_start`, `scan_stop`, `blockcheck_start`,
 `blockcheck2_start`, `blockcheck2_stop`, `healthcheck_run`,
 `traffic_capture_start`, `traffic_capture_status`,
-`traffic_capture_result`, `traffic_capture_stop`.
+`traffic_capture_result`, `traffic_capture_stop`, `dns_benchmark`
+(задержка и честность DNS-серверов по UDP, DoH и DoT), `leak_check`
+(внешний IP напрямую и через туннели, резолверы роутера через bash.ws).
 *Это заметно провайдеру.*
 
 Снифер (`traffic_capture_*`) отвечает на вопрос, которого раньше не было

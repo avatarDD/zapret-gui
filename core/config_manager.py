@@ -459,6 +459,11 @@ DEFAULT_CONFIG = {
     # Кастомный DNS для конкретных хостов (обход DNS-подмены ISP).
     "dns_routing": {
         "rules": [],  # [{domain, dns, description, enabled}]
+        # Сервер «auto» для правил: лучший по замеру (core/dns_bench).
+        "auto_server": "",
+        "auto_server_at": 0,
+        # Перезамер, пока есть правила с «auto»; 0 — только вручную.
+        "auto_bench_hours": 24,
     },
 
     # --- Auto-Remediation ---

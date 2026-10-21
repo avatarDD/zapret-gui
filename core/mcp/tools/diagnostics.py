@@ -597,3 +597,113 @@ def quick_fix_apply(args: dict) -> dict:
         except Exception as e:                  # noqa: BLE001 — граница
             result["after_error"] = "%s: %s" % (type(e).__name__, e)
     return result
+
+
+# ───────────── DNS: замер серверов и утечки ─────────────
+
+def _mask_ip(ip: str) -> str:
+    """Внешний адрес — персональные данные: без ``secrets`` последний
+    октет скрыт (как в отчёте для помощи)."""
+    if perms_mod.granted("secrets") or not ip:
+        return ip
+    if "." in ip:
+        return ip.rsplit(".", 1)[0] + ".x"
+    return ip.rsplit(":", 2)[0] + ":x"
+
+
+@tool(
+    name="dns_benchmark",
+    scope="probes",
+    mutating=False,
+    title="Benchmark DNS resolvers",
+    description=("Latency and success of every DNS preset from the "
+                 "router: UDP/53 (what dnsmasq rules use), DoH, DoT; "
+                 "`spoofed` — UDP answers are rewritten by the ISP. "
+                 "`best` is what dns_autoselect would pick. Takes ~10-20 s."
+                 " / Замер DNS-серверов."),
+    schema={"type": "object", "properties": {
+        "fresh": {"type": "boolean", "default": True,
+                  "description": "false — last result without probing. / "
+                                 "Без нового замера."}},
+            "additionalProperties": False},
+)
+def dns_benchmark(args: dict) -> dict:
+    from core import dns_bench
+    res = (dns_bench.benchmark() if args.get("fresh", True)
+           else dns_bench.last())
+    res = dict(res)
+    res["hint"] = res.get("hint") or (
+        "правила с сервером «auto» берут лучший; выбрать его — "
+        "dns_autoselect")
+    return res
+
+
+@tool(
+    name="dns_autoselect",
+    scope="config_write",
+    mutating=True,
+    title="Pick the best DNS for auto rules",
+    description=("Benchmark DNS presets (needs `probes`) or reuse the last"
+                 " result, store the fastest honest one as "
+                 "dns_routing.auto_server and rebuild dnsmasq rules that "
+                 "use dns=\"auto\". Undo: mcp_undo_last. / Выбрать лучший "
+                 "DNS для «auto»."),
+    schema={"type": "object", "properties": {
+        "fresh": {"type": "boolean", "default": True,
+                  "description": "false — use the last benchmark. / По "
+                                 "последнему замеру."}},
+            "additionalProperties": False},
+)
+def dns_autoselect(args: dict) -> dict:
+    from core import dns_bench
+    from core.mcp import audit
+    fresh = bool(args.get("fresh", True))
+    # Без прежнего замера и fresh=false тоже замеряет — та же граница.
+    if (fresh or not dns_bench.has_result()) \
+            and not perms_mod.granted("probes"):
+        return {"ok": False, "error": "замер ходит в сеть",
+                "permission": "probes",
+                "hint": "включите «probes» или вызовите с fresh=false "
+                        "(по последнему замеру)"}
+    res = dns_bench.autoselect(fresh=fresh)
+    if res.get("ok") and res.get("changed"):
+        undo = audit.snapshot(audit.KIND_CONFIG, "dns_routing.auto_server",
+                              res.get("previous") or "", res["best"],
+                              tool="dns_autoselect")
+        res["undo"] = undo or None
+    res["hint"] = ("правила с dns=\"auto\" теперь идут на %s"
+                   % res["best"] if res.get("ok") else
+                   "сервер не выбран: %s" % res.get("error", ""))
+    return res
+
+
+@tool(
+    name="leak_check",
+    scope="probes",
+    mutating=False,
+    title="IP and DNS leak check",
+    description=("External IP directly and through every tunnel transport "
+                 "(same IP = traffic bypasses it, or the whole router "
+                 "already goes through it) and which resolvers the "
+                 "router's DNS reaches (bash.ws). level=incomplete — not "
+                 "everything was checked. / Утечки IP и DNS."),
+    schema={"type": "object", "properties": {
+        "fresh": {"type": "boolean", "default": True,
+                  "description": "false — last result. / Последний итог."}},
+            "additionalProperties": False},
+)
+def leak_check(args: dict) -> dict:
+    from core import leak_check as lc
+    import copy
+    # Копия: маска не должна попасть в итог, который видит GUI.
+    res = copy.deepcopy(lc.run() if args.get("fresh", True) else lc.last())
+    import re
+    for f in res.get("findings") or []:
+        if f.get("id") in ("ip_direct", "ip_tunnel"):
+            f["detail"] = re.sub(r"\d+\.\d+\.\d+\.\d+"
+                                 r"|[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{0,4}){2,}",
+                                 lambda m: _mask_ip(m.group(0)),
+                                 f.get("detail", ""))
+    if isinstance(res.get("isp"), dict):
+        res["isp"] = dict(res["isp"], ip=_mask_ip(res["isp"].get("ip", "")))
+    return res

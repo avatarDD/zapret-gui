@@ -1175,6 +1175,13 @@ def create_app(config_dir: str = None) -> Bottle:
             log.warning("Рабочая точка туннелей при boot: %s" % e,
                         source="known-good")
 
+        # Перезамер DNS-серверов для правил «auto» (core/dns_bench.py).
+        try:
+            from core import dns_bench
+            dns_bench.start()
+        except Exception as e:
+            log.warning("Замер DNS при boot: %s" % e, source="dns_routing")
+
         # Применение с проверкой, прерванное перезапуском: продолжить
         # ожидание подтверждения или откатить (core/safe_apply.py).
         try:

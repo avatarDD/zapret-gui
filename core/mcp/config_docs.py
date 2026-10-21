@@ -594,6 +594,28 @@ DOCS = {
                 "description, enabled}.",
         "empty": "пустой список — правил нет, DNS работает как обычно",
     },
+    "dns_routing.auto_server": {
+        "text": "Какой пресет стоит за сервером «auto» в правилах: лучший "
+                "по последнему замеру (dns_benchmark/dns_autoselect). "
+                "Ставит автовыбор; правка руками тоже работает.",
+        "unit": "cloudflare | google | adguard | quad9 | yandex | comss | "
+                "geohide",
+        "empty": "пусто — до первого замера «auto» означает Cloudflare",
+        "see": ["dns_routing.auto_bench_hours"],
+    },
+    "dns_routing.auto_server_at": {
+        "text": "Когда последний раз выбирали сервер «auto» (unix-время). "
+                "0 — ни разу: фоновый перезамер сработает при первой "
+                "возможности.",
+        "unit": "секунды unix",
+    },
+    "dns_routing.auto_bench_hours": {
+        "text": "Как часто перемерять DNS-серверы, пока есть правила с "
+                "«auto». Замер идёт с роутера и выпускает пару десятков "
+                "запросов к каждому серверу.",
+        "unit": "часы",
+        "empty": "0 — только вручную",
+    },
 
     # ──────────────────────────── logging ───────────────────────────
     "logging.level": {

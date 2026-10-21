@@ -479,7 +479,9 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | `tgproxy_manager.py` / `tgproxy_redirect.py` | Telegram Tunnel: оба движка (`tg-ws-proxy-go`, резервный `tg-mtproxy-client`), секрет и `tg://proxy`, заворот CIDR датацентров. |
 | `opera_proxy_manager.py` / `opera_proxy_watchdog.py` / `opera_proxy_chain.py` | Opera VPN (SurfEasy): локальный HTTP/SOCKS5-прокси, сторож с TCP-пробой, цепочка через другой транспорт. |
 | `mihomo_config.py` / `mihomo_routing.py` / `mihomo_watchdog.py` | Генерация clash-YAML, доменный роутинг mihomo, авто-рестарт зависшего инстанса. |
-| `dns_routing.py` | Правила «домен → свой DNS». Каталог публичных резолверов (DoH/DoT) — в `routing/doh_resolver.py`. |
+| `dns_routing.py` | Правила «домен → свой DNS». Каталог публичных резолверов (DoH/DoT) — в `routing/doh_resolver.py`. Псевдосервер `auto` → `auto_server()` (лучший по замеру, до замера — Cloudflare). |
+| `dns_bench.py` | Замер DNS-пресетов: свой разбор DNS-пакетов (`build_query`/`parse_response`), `udp_query`/`doh_query`/`dot_query`, подмена (`_spoofed`: UDP против DoH по `SPOOF_PROBE`), чистый `pick_best`; `autoselect()` пишет `dns_routing.auto_server` и пересобирает правила с `auto`; фоновый `tick()` раз в 10 мин (перезамер раз в `auto_bench_hours`, пока есть правила `auto` и жив WAN). API `/api/dns-routing/bench`, `/autoselect`; MCP `dns_benchmark`, `dns_autoselect`. |
+| `leak_check.py` | Утечки IP и DNS: внешний IP напрямую и через транспорты `download_transport`, резолверы роутера через bash.ws (`dns_leak`); чистые `parse_ip`, `parse_dns_report`, `evaluate` (`level` ok/warn/bad/incomplete — неполная проверка никогда не «ok»). API `/api/diagnostics/leak-check`, MCP `leak_check`. |
 | `tunnel_monitor.py` / `tunnel_optimizer.py` | Метрики туннелей (rx/tx, latency) / MTU·PMTU, TCP-буферы, BBR по профилям. |
 | `foreign_services.py` | Сторонние экземпляры движков: чужие init-скрипты (`S51usque`, `S99sing-box`…), чужие процессы (не в pid-файлах наших менеджеров и не потомки GUI), конфликты имён интерфейсов. Отключение скрипта (Entware — снять бит исполнения, procd — `disable`), «передать GUI» (`adopt`: конфиг → профиль GUI → погасить чужое → поднять через `tunnels_control` → автозапуск GUI, откат при неудаче), режим `exclusive`, сторож `ForeignGuard`. Состояние — `foreign-services.json` рядом с `settings.json`. Всё, что меняет систему, — только по действию пользователя. API `api/foreign_services.py`, страница `web/js/pages/foreign_services.js`. |
 | `tunnels_overview.py` | Сводка по всем шести движкам в одной форме записи (установлен/запущен/инстансы/трафик с указанием источника). Используется MCP (`tunnels_status`), доступна UI и CLI. |
@@ -591,12 +593,12 @@ stdout). Период опроса задаёт сам
 | `usque.py` / `warp_in_warp.py` | `/api/usque`, `/api/warp-in-warp` | WARP/MASQUE: регистрация, туннели, установка / двойной туннель |
 | `tgproxy.py` | `/api/tgproxy` | Telegram Tunnel: оба движка, секрет и `tg://proxy`-ссылка, установка/удаление |
 | `opera_proxy.py` | `/api/opera-proxy` | Opera Proxy: настройки, страны, старт/стоп, установка |
-| `dns_routing.py` | `/api/dns-routing` | правила «домен → свой DNS» |
+| `dns_routing.py` | `/api/dns-routing` | правила «домен → свой DNS», замер серверов (`/bench`) и автовыбор (`/autoselect`, `core/dns_bench.py`) |
 | `tunnel_monitor.py` / `tunnel_optimizer.py` | … | трафик по туннелям / MTU·буферы·BBR |
 | `update_checker.py` | `/api/updates` | проверка обновлений всех движков разом |
 | `block_detector.py` / `auto_remediation.py` / `geosite.py` | … | фоновой детектор блокировок / авто-починка / импорт geosite |
 | `connectivity.py` / `devices.py` | … | матрица связности / устройства LAN |
-| `diagnostics.py` | `/api/diagnostics` | ping/http/dns/conflicts/**known-conflicts**/firewall/system/**selfcheck**/**help-report** («Отчёт для помощи», `core/help_report.py`: оба варианта маски одним ответом)/**site-trace** («Куда пойдёт сайт», `core/site_trace.py`: разбор профилей и выбор профиля — чистые функции, слои — ввод-вывод; тот же ответ у MCP `site_trace`) |
+| `diagnostics.py` | `/api/diagnostics` | ping/http/dns/conflicts/**known-conflicts**/firewall/system/**selfcheck**/**help-report** («Отчёт для помощи», `core/help_report.py`: оба варианта маски одним ответом)/**site-trace** («Куда пойдёт сайт», `core/site_trace.py`: разбор профилей и выбор профиля — чистые функции, слои — ввод-вывод; тот же ответ у MCP `site_trace`)/**leak-check** (утечки IP и DNS, `core/leak_check.py`) |
 | `notify.py` | `/api/notify` | уведомления в Telegram: настройки (токен не отдаётся), пробное сообщение, поиск чата, отправка очереди |
 | `history.py` | `/api/history`, `/api/safe-apply` | история файлов (список, diff, restore, undo, scan) / применение с проверкой (start, confirm, rollback, mark-working, restore-working) |
 | `healthcheck.py` | `/api/healthcheck` | autocircular-демон: enable/disable/run/status/config |

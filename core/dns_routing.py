@@ -38,6 +38,11 @@ DNS_SERVERS = {
     "geohide": {"doh": "https://dns.geohide.ru:444/dns-query", "dot": "dns.geohide.ru:853", "ip": "45.155.204.190"},
 }
 
+# Псевдосервер: лучший по последнему замеру (core/dns_bench), до замера —
+# Cloudflare.
+AUTO = "auto"
+AUTO_FALLBACK = "cloudflare"
+
 SERVER_TITLES = {
     "cloudflare": "Cloudflare",
     "google": "Google",
@@ -85,7 +90,7 @@ class DnsRoutingManager:
                 return {"ok": False, "error": "Правило для %s уже существует" % domain}
 
         # Валидация DNS-сервера
-        if dns_server not in DNS_SERVERS:
+        if dns_server not in DNS_SERVERS and dns_server != AUTO:
             # Пробуем как IP/URL
             if not re.match(r"^\d+\.\d+\.\d+\.\d+$", dns_server) and \
                not dns_server.startswith("https://"):
@@ -151,7 +156,7 @@ class DnsRoutingManager:
                     continue
 
                 # Валидация DNS-сервера
-                if dns_server not in DNS_SERVERS:
+                if dns_server not in DNS_SERVERS and dns_server != AUTO:
                     if not re.match(r"^\d+\.\d+\.\d+\.\d+$", dns_server) and \
                        not dns_server.startswith("https://"):
                         errors.append("Неизвестный DNS: %s" % dns_server)
@@ -304,6 +309,8 @@ class DnsRoutingManager:
 
     def _resolve_server(self, server: str) -> str:
         """Разрешить имя DNS-сервера в IP (с кешем MR-83)."""
+        if server == AUTO:
+            server = auto_server()
         if server in DNS_SERVERS:
             return DNS_SERVERS[server]["ip"]
         # Если это уже IP
@@ -365,9 +372,24 @@ class DnsRoutingManager:
         dnsmasq шлёт этим серверам обычный DNS на порт 53 (``server=``
         DoH не умеет). ``doh`` остаётся отдельным полем.
         """
+        best = auto_server()
+        auto = {"id": AUTO,
+                "name": "Авто: лучший по замеру (сейчас %s)"
+                        % SERVER_TITLES.get(best, best),
+                "ip": DNS_SERVERS[best]["ip"], "doh": ""}
+        # «Авто» — последним: первый пункт списка в GUI выбран по
+        # умолчанию, а «Авто» включает фоновые замеры — только осознанно.
         return [{"id": k, "name": SERVER_TITLES.get(k, k),
                  "ip": v.get("ip", ""), "doh": v.get("doh", "")}
-                for k, v in DNS_SERVERS.items()]
+                for k, v in DNS_SERVERS.items()] + [auto]
+
+
+def auto_server() -> str:
+    """Id сервера за псевдосервером ``auto``."""
+    from core.config_manager import get_config_manager
+    best = get_config_manager().get("dns_routing", "auto_server",
+                                    default="") or ""
+    return best if best in DNS_SERVERS else AUTO_FALLBACK
 
 
 # ─────── singleton ───────
