@@ -58,6 +58,12 @@ def update_route(route: UnifiedRoute):
     add_route(route)
 
 
+def replace_all(items: list) -> None:
+    """Заменить весь список маршрутов (возврат рабочей точки)."""
+    with _lock:
+        _save([dict(r) for r in items if isinstance(r, dict)])
+
+
 def remove_route(route_id: str) -> bool:
     with _lock:
         items = _all_raw()

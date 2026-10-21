@@ -145,6 +145,14 @@ def step(route) -> dict:
         return {"switched": False, "method": cur, "reason": decision["reason"]}
 
     new_method = decision["method"]
+    if new_method != cur and current_method(route.id):
+        # Деградация из-за пропавшего WAN — не повод менять метод: все
+        # методы сейчас одинаково мертвы, а после возврата интернета
+        # маршрут остался бы на запасном (core/reachability).
+        from core import reachability
+        if reachability.hold_restart("unified", route.id):
+            return {"switched": False, "method": cur,
+                    "reason": "интернет у провайдера пропал"}
     if new_method == cur:
         # Первый шаг: активный метод ещё не зафиксирован, но он совпадает
         # с основным. Просто запоминаем его. Переприменять маршрут здесь

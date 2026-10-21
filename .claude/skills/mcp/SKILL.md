@@ -326,13 +326,14 @@ UI), и `tools_by_scope`.
 | `diagnostics_run` | read | нет | `tools/diagnostics.py` | checks?, services?, offset?, limit? | окружение, конфликты, предпосылки; сетевые пробы — по разрешению `probes` |
 | `dpi_report` | read | нет | `tools/diagnostics.py` | targets?, offset?, limit? | последняя классификация DPI из blockcheck; **проб не запускает** |
 | `site_trace` | read | нет | `tools/diagnostics.py` | domain, resolve? | куда пойдёт сайт: hosts → DNS-правила → единый слой → списки → профиль nfqws2 по HTTPS/QUIC/HTTP; наружу — только DNS-запрос |
-| `quick_fix_check` | read | нет | `tools/diagnostics.py` | fresh? | системные поломки, похожие на DPI: часы (сверка с HTTP `Date`), DNS роутера против DoH, маршрут по умолчанию, `resolv.conf`; сетевая часть — по `probes`, у находки — код ремонта (`core/quick_fix.py`) |
+| `quick_fix_check` | read | нет | `tools/diagnostics.py` | fresh? | системные поломки, похожие на DPI: часы (сверка с HTTP `Date`), DNS роутера против публичных резолверов, WAN провайдера (`core/reachability.py`; поле `wan` — вердикт, по которому сторожа откладывают рестарты), маршрут по умолчанию, `resolv.conf`; сетевая часть — по `probes`, у находки — код ремонта (`core/quick_fix.py`) |
 | `updates_check` | read | нет | `tools/updates.py` | refresh?, updates_only?, offset?, limit? | версии движков и обновления; по умолчанию из кеша, `refresh` — по `probes` |
 | `config_writable_paths` | read | нет | `tools/config.py` | section?, search?, offset?, limit? | что можно менять: путь, тип, текущее значение, `enum` |
 | `audit_list` | read | нет | `tools/audit.py` | tool?, status?, mutating_only?, offset?, limit? | последние вызовы MCP из журнала, новые первыми, с пометкой «ещё откатывается» |
 | `job_wait` | read | нет | `tools/jobs.py` | kind, job_id?, timeout_sec? | ЖДАТЬ конца долгой операции одним вызовом; разрешение спрашивается по виду операции |
 | `unified_route_list` | read | нет | `tools/routing.py` | id?, method?, search?, enabled_only?, offset?, limit? | маршруты единого слоя: назначение → метод, fallback'и, приоритет |
 | `unified_route_status` | read | нет | `tools/routing.py` | id?, offset?, limit? | какой метод РАБОТАЕТ сейчас (`active_method`), статистика монитора, советы сканера |
+| `known_good_status` | read | нет | `tools/routing.py` | — | рабочая точка туннелей (AWG, sing-box, mihomo) и маршрутов: когда снята, совпадает ли текущее, что изменилось, какая правка наблюдается и какая последней сломала сайты (`core/known_good.py`); тексты конфигов не отдаются |
 | `strategy_memory` | read | нет | `tools/memory.py` | targets?, all_networks?, offset?, limit? | что уже срабатывало на домене В ЭТОЙ сети: argv, +удач/−неудач, давность |
 | `issue_draft` | read | нет | `tools/issues.py` | title, kind?, tool?, component?, crash_id?, actual?, expected?, steps?, evidence?, args?, severity?, include_targets? | черновик issue об ошибке САМОГО GUI; место в коде, трассировку и repro сервер дописывает сам |
 | `issue_draft_list` | read | нет | `tools/issues.py` | id?, status?, offset?, limit? | черновики (новые первыми) + падения без черновика; с `id` — текст и ссылка |
@@ -396,6 +397,8 @@ UI), и `tools_by_scope`.
 | `unified_route_save` | tunnels_write | **да** | `tools/routing.py` | method, id?, name?, destination?, fallbacks?, devices?, enabled?, monitor_enabled?, failover_enabled?, probe_domain?, priority?, apply? | создать/заменить маршрут ЦЕЛИКОМ; непереданные поля берутся из прежней записи |
 | `unified_route_delete` | tunnels_write | **да** | `tools/routing.py` | id | удалить маршрут и снять его с ядра |
 | `unified_route_apply` | tunnels_write | **да** | `tools/routing.py` | id | разложить ОДИН маршрут заново (домены резолвятся заново) |
+| `known_good_promote` | tunnels_write | **да** | `tools/routing.py` | note? | текущие конфиги туннелей и маршруты — новая рабочая точка (с пробой сайтов мониторинга); снимка для отката нет |
+| `known_good_rollback` | tunnels_write | **да** | `tools/routing.py` | — | вернуть конфиги туннелей и маршруты к рабочей точке: изменённые файлы переписываются, поднятые туннели перезапускаются, маршруты раскладываются заново; добавленные после конфиги остаются |
 | `vpngen_options` | read | нет | `tools/vpngen.py` | — | что умеет генератор конфигов WARP/Proton: провайдеры, движки (и установлены ли), пресеты, транспорты; сети не трогает |
 | `vpngen_check` | read | нет | `tools/vpngen.py` | target, text | синтаксис конфига (awg/usque/singbox/mihomo/proton-import) без сохранения: встроенный разбор, затем `sing-box check`/`mihomo -t`, если движок установлен; сети не трогает |
 | `vpngen_proton_servers` | tunnels_write | нет | `tools/vpngen.py` | transport?, country?, refresh? | бесплатные серверы Proton через сервис proton-generation; ничего не меняет, но ходит в сеть |

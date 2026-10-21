@@ -181,6 +181,9 @@ class UsqueWatchdog:
             self._fail_counts[iface] = fails
 
             if fails >= _DEFAULT_CONSECUTIVE_FAILURES:
+                from core import reachability
+                if reachability.hold_restart("usque", iface):
+                    continue
                 self._do_restart(mgr, iface, c.get("name", ""))
 
     def _rate_limited(self, iface, now):

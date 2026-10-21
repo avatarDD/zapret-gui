@@ -569,3 +569,73 @@ def _undo_unified_route(snapshot: dict) -> dict:
 
 
 audit.register_undo(audit.KIND_UNIFIED_ROUTE, _undo_unified_route)
+
+
+# ───────────── рабочая точка туннелей и маршрутов (known-good) ─────────────
+
+@tool(
+    name="known_good_status",
+    scope="read",
+    mutating=False,
+    title="Last known-good tunnels and routes",
+    description=("Known-good point of tunnel configs (AWG, sing-box, "
+                 "mihomo) and routing rules: when it was taken, whether "
+                 "the current state matches it, what changed, the change "
+                 "being observed and the last change that broke sites. "
+                 "/ Рабочая точка туннелей и маршрутов."),
+    schema={"type": "object", "properties": {},
+            "additionalProperties": False},
+)
+def known_good_status(args: dict) -> dict:
+    """Сводка рабочей точки без текстов конфигов (в них ключи)."""
+    from core import known_good
+    return dict(known_good.status(), ok=True,
+                hint=("правка судится пробами сайтов мониторинга после "
+                      "окна наблюдения; вернуть — known_good_rollback, "
+                      "принять текущее — known_good_promote"))
+
+
+@tool(
+    name="known_good_promote",
+    scope="tunnels_write",
+    mutating=True,
+    title="Mark tunnels and routes as working",
+    description=("Take the current tunnel configs and routing rules as "
+                 "the new known-good point (monitoring sites are probed "
+                 "and stored for later comparison). / Отметить текущее "
+                 "рабочим."),
+    schema={
+        "type": "object",
+        "properties": {
+            "note": {"type": "string", "maxLength": 200,
+                     "description": "Why. / Пометка."},
+        },
+        "additionalProperties": False,
+    },
+)
+def known_good_promote(args: dict) -> dict:
+    from core import known_good
+    res = known_good.promote(str(args.get("note") or "через MCP"))
+    res["hint"] = ("рабочая точка обновлена; прежнюю этим не вернуть — "
+                   "снимка для mcp_undo_last нет")
+    return res
+
+
+@tool(
+    name="known_good_rollback",
+    scope="tunnels_write",
+    mutating=True,
+    title="Roll tunnels and routes back to known-good",
+    description=("Restore tunnel configs and routing rules from the "
+                 "known-good point: changed files are rewritten, running "
+                 "tunnels restarted, routing re-applied. Configs added "
+                 "since stay. / Вернуть рабочую точку."),
+    schema={"type": "object", "properties": {},
+            "additionalProperties": False},
+)
+def known_good_rollback(args: dict) -> dict:
+    from core import known_good
+    res = known_good.rollback(reason="MCP")
+    res["hint"] = ("проверьте сайты (unified_route_status); вернуть "
+                   "правку обратно нельзя — снимка нет")
+    return res

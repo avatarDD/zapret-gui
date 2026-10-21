@@ -327,10 +327,23 @@ DEFAULT_CONFIG = {
             "site_down": True,
             "site_up": True,
             "tunnel": True,
+            "wan": True,
             "safe_apply": True,
+            "known_good": True,
             "autopick": True,
             "update": True,
         },
+    },
+
+    # Рабочая точка туннелей и маршрутов (core/known_good.py): правка
+    # конфигов AWG/sing-box/mihomo или маршрутов единого слоя судится
+    # пробами сайтов после окна наблюдения.
+    "known_good": {
+        "enabled": True,
+        "window_sec": 600,
+        # Сломалось — вернуть самим (один раз на рабочую точку); иначе
+        # только уведомление с предложением вернуть.
+        "auto_rollback": False,
     },
 
     # История изменений файлов (core/file_history.py): settings.json,

@@ -256,6 +256,9 @@ class WarpInWarpWatchdog:
                 self._last_health = "unhealthy"
             self._fail_count += 1
             if self._fail_count >= _DEFAULT_CONSECUTIVE_FAILURES:
+                from core import reachability
+                if reachability.hold_restart("warp_in_warp"):
+                    return
                 self._do_restart(mgr)
 
     def _do_restart(self, mgr: Any) -> None:

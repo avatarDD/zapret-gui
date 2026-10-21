@@ -522,12 +522,12 @@ def _hint(findings, skipped) -> str:
     scope="read",
     mutating=False,
     title="System breakages that look like DPI",
-    description=("Clock skew (breaks every TLS check — scans show 0%), "
-                 "router DNS dead, no default route, empty resolv.conf. "
-                 "Network part (HTTP Date, DNS) needs `probes`; without "
-                 "it only local checks run. Each finding names its fix "
-                 "for quick_fix_apply. / Часы, DNS, маршрут — что выглядит "
-                 "как DPI."),
+    description=("Clock skew (TLS checks fail, scans show 0%), dead "
+                 "router DNS, ISP uplink down, no default route, empty "
+                 "resolv.conf. `wan` — uplink verdict; watchdogs hold "
+                 "restarts while it is down. Network checks need "
+                 "`probes`. Findings name a fix for quick_fix_apply. / "
+                 "Часы, DNS, WAN, маршрут."),
     schema={
         "type": "object",
         "properties": {
@@ -545,6 +545,8 @@ def quick_fix_check(args: dict) -> dict:
     probes = perms_mod.granted("probes")
     report = quick_fix.check(network=probes, fresh=bool(args.get("fresh")))
     result = dict(report)
+    from core import reachability
+    result["wan"] = reachability.status()
     if not probes:
         result["probes"] = {
             "allowed": False, "permission": "probes",

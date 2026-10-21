@@ -200,6 +200,38 @@ def evaluate_default_route(route_lines: list) -> dict:
                      "проверьте подключение к провайдеру (WAN).")
 
 
+def evaluate_uplink(up: dict) -> dict:
+    """Вердикт по замеру WAN из ``core.reachability.uplink``."""
+    base = {"id": "uplink", "fix": None}
+    state = (up or {}).get("state")
+    if state == "up":
+        return dict(base, status="ok", title="Интернет у провайдера есть",
+                    detail="Отвечают и отечественные, и зарубежные адреса",
+                    hint="")
+    if state == "foreign_blocked":
+        return dict(base, status="warning",
+                    title="Зарубежные адреса напрямую не отвечают",
+                    detail="Отечественные адреса доступны, 1.1.1.1 и "
+                           "8.8.8.8 — нет",
+                    hint="Провайдер режет зарубеж (белые списки?): "
+                         "без туннеля зарубежные сайты не откроются.")
+    if state == "suspect":
+        return dict(base, status="warning",
+                    title="Интернет у провайдера, похоже, пропал",
+                    detail="Последний замер: не ответил ни один адрес",
+                    hint="Один промах ещё не авария (потеря пакетов, "
+                         "перегруженный роутер); если повторится — "
+                         "сторожа отложат перезапуски туннелей.")
+    if state == "down":
+        return dict(base, status="error",
+                    title="Интернет у провайдера пропал",
+                    detail="Не ответил ни один адрес напрямую",
+                    hint="Сторожа туннелей не перезапускают их, пока WAN "
+                         "лежит. Проверьте кабель, модем и баланс.")
+    return dict(base, status="unknown", title="WAN не проверен",
+                detail="", hint="")
+
+
 def evaluate_resolv_conf(text) -> dict:
     """Есть ли в ``/etc/resolv.conf`` хоть один ``nameserver``."""
     base = {"id": "resolv_conf", "fix": None}
@@ -354,6 +386,8 @@ def check(network: bool = True, fresh: bool = False) -> dict:
         system = {d: _resolve(d, DNS_TIMEOUT) for d in DNS_PROBE_DOMAINS}
         doh = None if all(system.values()) else _public_dns_alive()
         findings.append(evaluate_dns(system, doh))
+        from core import reachability
+        findings.append(evaluate_uplink(reachability.uplink()))
     findings.append(evaluate_default_route(_route_lines()))
     findings.append(evaluate_resolv_conf(_read("/etc/resolv.conf")))
     report = {"ok": True, "network": network, "checked_at": now,

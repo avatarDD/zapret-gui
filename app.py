@@ -1065,6 +1065,14 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception as e:
             log.warning("Уведомления при boot: %s" % e, source="notify")
 
+        # Рабочая точка туннелей и маршрутов: окно наблюдения за правками.
+        try:
+            from core import known_good
+            known_good.start()
+        except Exception as e:
+            log.warning("Рабочая точка туннелей при boot: %s" % e,
+                        source="known-good")
+
         # Применение с проверкой, прерванное перезапуском: продолжить
         # ожидание подтверждения или откатить (core/safe_apply.py).
         try:

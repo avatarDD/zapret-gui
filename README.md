@@ -1696,13 +1696,13 @@ Desktop и VS Code они видны как готовые команды, мо�
 невыданное не просто запрещено, оно **не публикуется**, и модель о нём
 не знает.
 
-**Чтение — всегда, отдельного разрешения нет** (42):
+**Чтение — всегда, отдельного разрешения нет** (43):
 
 | Инструменты | Про что |
 |---|---|
 | `system_status`, `nfqws_status`, `tunnels_status`, `diagnostics_run`, `connectivity_matrix` | что за устройство, что поднято, что сломано |
 | `site_trace` | куда пойдёт сайт: hosts, DNS, единый слой, списки и профиль nfqws2 — без трафика |
-| `quick_fix_check` | поломки, похожие на DPI: сбитые часы, мёртвый DNS роутера, нет маршрута в интернет (сетевая часть — по `probes`) |
+| `quick_fix_check` | поломки, похожие на DPI: сбитые часы, мёртвый DNS роутера, пропавший интернет у провайдера, нет маршрута в интернет (сетевая часть — по `probes`) |
 | `logs_tail`, `traffic_recent`, `firewall_status` | журнал, «дошёл ли трафик до движка», правила перехвата |
 | `vpngen_options` | что умеет генератор конфигов WARP/Proton на этом устройстве |
 | `vpngen_check` | проверить синтаксис конфига AWG/usque/sing-box/mihomo или конфига Proton, не сохраняя (встроенный разбор, затем сам движок, если установлен) |
@@ -1714,6 +1714,7 @@ Desktop и VS Code они видны как готовые команды, мо�
 | `scan_status`, `scan_results`, `blockcheck_status`, `blockcheck2_status`, `blockcheck2_output`, `healthcheck_status` | результаты тяжёлых прогонов (запуск — отдельное разрешение) |
 | `job_wait` | **дождаться** конца долгой операции одним вызовом вместо опроса в цикле: скан, blockcheck, эксперимент, фоновая команда, снифер, сборка пула |
 | `unified_route_list`, `unified_route_status` | маршруты единого слоя: что через какой туннель идёт и каким методом работает **сейчас** (failover мог переключить) |
+| `known_good_status` | рабочая точка туннелей и маршрутов: совпадает ли с ней текущее, что поменялось, какая правка последней сломала сайты |
 | `strategy_memory` | **что уже срабатывало** на этом домене в этой сети: argv, счёт удач и неудач, давность записи |
 | `issue_draft`, `issue_draft_list` | **черновик issue об ошибке в самом GUI**: модель описывает, что видела, сервер дописывает место в коде и команду воспроизведения (см. [Если модель нашла ошибку в GUI](#если-модель-нашла-ошибку-в-gui)) |
 
@@ -1828,10 +1829,12 @@ pull request. Файлы каталогов при этом не трогают�
 `code_export_patch`, `code_write`, `code_patch`, `code_apply`,
 `code_commit`, `code_rollback`. Подробности — ниже.
 
-**`tunnels_write` — туннели, подписки и маршруты** (12): `tunnel_up`,
+**`tunnels_write` — туннели, подписки и маршруты** (14): `tunnel_up`,
 `tunnel_down`, `tunnel_restart`, `tunnel_config_get`,
 `tunnel_config_save`, `subscription_refresh`, `pool_refresh`,
 `unified_route_save`, `unified_route_delete`, `unified_route_apply`,
+`known_good_promote`, `known_good_rollback` (рабочая точка туннелей и
+маршрутов: отметить текущее рабочим или вернуться к нему),
 `vpngen_generate`, `vpngen_proton_servers` (генератор конфигов WARP и
 Proton: регистрирует устройство и сохраняет конфиги AWG/usque/sing-box/
 mihomo; приватные ключи модели не показываются).

@@ -23,6 +23,11 @@ REST API единого слоя маршрутизации (core/unified).
                                             disable | delete | set_method
   GET    /api/unified/export[?ids=a,b]    — файл маршрутов (JSON)
   POST   /api/unified/import              — {data, mode: add|replace, ids?}
+  GET    /api/unified/known-good          — рабочая точка туннелей и маршрутов
+  POST   /api/unified/known-good/promote  — {note?}: текущее — рабочее
+  POST   /api/unified/known-good/rollback — вернуть рабочую точку
+  POST   /api/unified/known-good/settings — {enabled, window_sec,
+                                            auto_rollback}
 """
 
 from bottle import request, response
@@ -211,5 +216,40 @@ def register(app):
                                mode=body.get("mode") or "add",
                                ids=body.get("ids") or None)
         if not r.get("ok") and not r.get("imported"):
+            response.status = 400
+        return r
+
+    # ── Рабочая точка туннелей и маршрутов (core/known_good.py) ──
+
+    @app.route("/api/unified/known-good")
+    def unified_known_good():
+        response.content_type = "application/json; charset=utf-8"
+        from core import known_good
+        return dict(known_good.status(), ok=True)
+
+    @app.route("/api/unified/known-good/promote", method="POST")
+    def unified_known_good_promote():
+        response.content_type = "application/json; charset=utf-8"
+        from core import known_good
+        r = known_good.promote(str(_json_body().get("note") or ""))
+        if not r.get("ok"):
+            response.status = 400
+        return r
+
+    @app.route("/api/unified/known-good/rollback", method="POST")
+    def unified_known_good_rollback():
+        response.content_type = "application/json; charset=utf-8"
+        from core import known_good
+        r = known_good.rollback(reason="вручную")
+        if not r.get("ok") and not r.get("restored"):
+            response.status = 400
+        return r
+
+    @app.route("/api/unified/known-good/settings", method="POST")
+    def unified_known_good_settings():
+        response.content_type = "application/json; charset=utf-8"
+        from core import known_good
+        r = known_good.save_settings(_json_body())
+        if not r.get("ok"):
             response.status = 400
         return r

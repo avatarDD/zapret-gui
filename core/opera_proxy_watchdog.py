@@ -153,6 +153,11 @@ class OperaProxyWatchdog:
         else:
             self._fail_count += 1
             if self._fail_count >= _DEFAULT_CONSECUTIVE_FAILURES:
+                # Процесс жив, не отвечает прокси: при лежащем WAN это не
+                # его вина (умерший процесс выше поднимаем всегда).
+                from core import reachability
+                if reachability.hold_restart("opera_proxy"):
+                    return
                 log.warning("opera-proxy-watchdog: прокси не отвечает на %s, рестарт"
                             % bind, source="opera_proxy")
                 self._do_restart(mgr)

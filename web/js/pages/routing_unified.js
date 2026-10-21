@@ -30,6 +30,7 @@ const RoutingUnifiedPage = (() => {
     let dnsmasqInfo = null;   // /api/routing/dnsmasq/status
     let dnsIntInfo = null;    // /api/routing/dns-intercept (перехват :53)
     let killSwitch = null;    // /api/routing/killswitch (null — ещё не знаем)
+    let knownGood = null;     // /api/unified/known-good (рабочая точка)
     let ndmsInfo = null;      // /api/routing/ndms/status
     let environment = null;   // /api/awg/environment (платформа/firewall)
     let netEnv = null;        // /api/network/environment (роутер / ПК 1 NIC)
@@ -189,7 +190,7 @@ const RoutingUnifiedPage = (() => {
     async function loadAux() {
         try {
             const [ifResp, listResp, cfgResp, dnResp, ndmsResp, envResp,
-                   netResp, legResp, hlResp, iplResp] =
+                   netResp, legResp, hlResp, iplResp, kgResp] =
                 await Promise.all([
                     API.get('/api/routing/interfaces').catch(() => null),
                     API.get('/api/lists').catch(() => null),
@@ -201,12 +202,14 @@ const RoutingUnifiedPage = (() => {
                     API.get('/api/unified/legacy').catch(() => null),
                     API.get('/api/hostlists').catch(() => null),
                     API.get('/api/ipsets').catch(() => null),
+                    API.get('/api/unified/known-good').catch(() => null),
                 ]);
             dnsIntInfo = await API.get('/api/routing/dns-intercept')
                 .catch(() => null);
             const ks = await API.get('/api/routing/killswitch')
                 .catch(() => null);
             killSwitch = ks && ks.ok ? !!ks.enabled : null;
+            knownGood = kgResp;
             interfaces  = (ifResp && ifResp.interfaces) || [];
             interfaceNotes = (ifResp && ifResp.notes) || [];
             namedLists  = (listResp && listResp.lists) || [];
@@ -423,6 +426,11 @@ const RoutingUnifiedPage = (() => {
             killSwitch === null ? '' :
                 chip(ksOn ? 'ok' : 'off', 'Kill-switch', ksOn ? 'вкл' : 'выкл',
                      'Что делать с трафиком, пока туннель перезапускается'),
+            knownGood && knownGood.ok && knownGood.has_good
+                ? chip(knownGood.matches_good ? 'ok' : 'warn', 'Рабочая точка',
+                       knownGood.matches_good ? 'совпадает' : 'есть правки',
+                       'Последнее состояние туннелей и маршрутов, при котором сайты открывались')
+                : '',
             netEnv && netEnv.profile === 'pc'
                 ? `<span class="ru-chip ru-chip-off">🖥 Локальный режим</span>` : '',
         ].join('');
@@ -457,6 +465,7 @@ const RoutingUnifiedPage = (() => {
                         : 'Выключен: пока туннель перезапускается, трафик маршрутов на несколько секунд уходит через провайдера.'}</p>
                     <div class="ru-set-controls">${killSwitchHtml()}</div>
                 </section>`}
+                ${knownGoodHtml()}
                 ${pcModeHtml() ? `<div class="ru-set-wide">${pcModeHtml()}</div>` : ''}
             </div>
         </details>`;
@@ -464,6 +473,107 @@ const RoutingUnifiedPage = (() => {
         if (d) d.addEventListener('toggle', () => {
             try { localStorage.setItem('ru-settings-open', d.open ? '1' : '0'); } catch (_) {}
         });
+    }
+
+    // Рабочая точка туннелей и маршрутов (core/known_good.py): правка
+    // конфигов туннелей или маршрутов судится пробами сайтов после окна
+    // наблюдения; сломала — предлагаем вернуть.
+    function knownGoodHtml() {
+        const kg = knownGood;
+        if (!kg || !kg.ok) return '';
+        const st = kg.settings || {};
+        const fmt = (ts) => ts ? new Date(ts * 1000).toLocaleString() : '—';
+        let state;
+        if (!st.enabled) {
+            state = 'Наблюдение выключено.';
+        } else if (!kg.has_good) {
+            state = 'Рабочая точка появится через минуту после запуска.';
+        } else {
+            const g = kg.good || {};
+            const pr = g.probe || {};
+            state = `Снята ${esc(fmt(g.ts))}`
+                + (g.verified === false ? ' (без проверки — нет сайтов мониторинга)'
+                   : ` (открывалось ${pr.ok || 0} из ${pr.total || 0})`) + '. ';
+            if (kg.matches_good) {
+                state += 'Текущее состояние с ней совпадает.';
+            } else {
+                const ch = kg.changes || {};
+                const parts = [];
+                if (ch.routes_changed) parts.push('маршруты');
+                (ch.files_changed || []).forEach(x => parts.push(x));
+                (ch.files_added || []).forEach(x => parts.push(x + ' (новый)'));
+                state += 'С тех пор изменено: ' + esc(parts.join(', ') || 'конфиги') + '.';
+                if (kg.candidate) {
+                    state += ` Проверка — через ${Math.ceil((kg.candidate.judged_in_sec || 0) / 60)} мин.`;
+                }
+            }
+        }
+        const lf = kg.last_failure;
+        const fail = lf ? `<p class="text-warning">${esc(fmt(lf.ts))}: после правки
+            перестали открываться ${esc((lf.lost || []).join(', '))}.</p>` : '';
+        return `<section class="ru-set">
+            <h4>Рабочая точка туннелей и маршрутов</h4>
+            <p class="text-muted">После правки конфига туннеля или маршрута роутер
+                ждёт ${Math.round((st.window_sec || 600) / 60)} мин и проверяет сайты
+                мониторинга. Ничего не потерялось — состояние становится рабочим;
+                потерялось — уведомит и предложит вернуть.</p>
+            <p class="text-muted">${state}</p>
+            ${fail}
+            <label class="ru-set-toggle">
+                <input type="checkbox" ${st.auto_rollback ? 'checked' : ''}
+                       onchange="RoutingUnifiedPage.setKnownGood({auto_rollback: this.checked})">
+                Возвращать самому, если правка сломала сайты
+            </label>
+            <div class="ru-set-controls">
+                <button class="btn btn-ghost btn-sm"
+                        onclick="RoutingUnifiedPage.promoteKnownGood()">Отметить текущее рабочим</button>
+                ${kg.has_good && !kg.matches_good ? `<button class="btn btn-ghost btn-sm"
+                        onclick="RoutingUnifiedPage.rollbackKnownGood()">Вернуть рабочую точку</button>` : ''}
+            </div>
+        </section>`;
+    }
+
+    async function reloadKnownGood() {
+        knownGood = await API.get('/api/unified/known-good').catch(() => null);
+        renderSettings();
+    }
+
+    async function setKnownGood(patch) {
+        try {
+            const r = await API.post('/api/unified/known-good/settings', patch);
+            if (!r || !r.ok) throw new Error((r && r.error) || 'не удалось');
+        } catch (e) { Toast.error(e.message); }
+        await reloadKnownGood();
+    }
+
+    async function promoteKnownGood() {
+        try {
+            const r = await API.post('/api/unified/known-good/promote', {},
+                                     { timeout: 120000 });
+            if (!r || !r.ok) throw new Error((r && r.error) || 'не удалось');
+            Toast.success('Текущее состояние отмечено рабочим');
+        } catch (e) { Toast.error(e.message); }
+        await reloadKnownGood();
+    }
+
+    async function rollbackKnownGood() {
+        if (!confirm('Вернуть конфиги туннелей и маршруты к рабочей точке?\n\n'
+                     + 'Изменённые конфиги перезапишутся, поднятые туннели'
+                     + ' перезапустятся, удалённые после неё вернутся.'
+                     + ' Конфиги, добавленные после, останутся.')) {
+            return;
+        }
+        try {
+            const r = await API.post('/api/unified/known-good/rollback', {},
+                                     { timeout: 120000 });
+            if (!r || (!r.ok && !(r.restored || []).length)) {
+                throw new Error((r && r.error) || 'не удалось');
+            }
+            if (r.ok) Toast.success('Возвращено: ' + ((r.restored || []).join(', ') || 'всё уже совпадало'));
+            else Toast.error('Возвращено с ошибками: ' + r.error);
+        } catch (e) { Toast.error(e.message); }
+        await loadAux();
+        await refresh();
     }
 
     // Локальный режим (задача №5): ПК/VPS без LAN-ролей — правила
@@ -2451,6 +2561,7 @@ const RoutingUnifiedPage = (() => {
         reapplyAll, previewSweep,
         runDnsmasqSetup, runDnsmasqRevert, toggleDnsIntercept,
         toggleKillSwitch,
+        setKnownGood, promoteKnownGood, rollbackKnownGood,
         bulk, exportRoutes, importRoutes, distributePaste,
         // для тестов: чистые разборщики ввода
         _classifyEntries: classifyEntries, _splitDomains: splitDomains,

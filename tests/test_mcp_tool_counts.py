@@ -136,14 +136,17 @@ from core.mcp import registry
 # часть спрашивает `probes` по месту, как diagnostics_run) и + 1 под
 # `control` (quick_fix_apply — синхронизировать часы, перезапустить
 # dnsmasq: меняет систему, но не настройки GUI).
+# Рабочая точка туннелей и маршрутов (приём Tachyon): + 1 на чтение
+# (known_good_status) и + 2 под `tunnels_write` (known_good_promote,
+# known_good_rollback — переписывают конфиги туннелей и маршруты).
 BY_SCOPE = {
-    "read": 42,
+    "read": 43,
     "control": 9,
     "strategies_write": 12,
     "config_write": 1,
     "probes": 13,
     "experiments": 7,
-    "tunnels_write": 12,
+    "tunnels_write": 14,
     "dangerous": 2,
     "shell_readonly": 11,
     "shell_full": 3,
@@ -228,6 +231,8 @@ class TestToolCounts(unittest.TestCase):
         "site_trace",
         # Быстрый ремонт: часы, DNS, маршрут
         "quick_fix_check",
+        # Рабочая точка туннелей и маршрутов
+        "known_good_status",
         # генератор конфигов WARP/Proton
         "vpngen_options", "vpngen_check",
         # S5 — туннели, диагностика, обновления
@@ -281,6 +286,8 @@ class TestToolCounts(unittest.TestCase):
         # генератор конфигов: серверы Proton (сеть, без изменений) и
         # генерация с сохранением.
         "vpngen_generate", "vpngen_proton_servers",
+        # рабочая точка туннелей и маршрутов
+        "known_good_promote", "known_good_rollback",
     ]
     # S10 — движок экспериментов: и мутирующие, и опрос под одним
     # разрешением.

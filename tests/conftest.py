@@ -13,3 +13,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import core.unified.manager as _unified_manager  # noqa: E402
 
 _unified_manager.AUTO_REAPPLY = False
+
+# Сторожа перед рестартом спрашивают «не лежит ли WAN» (core.reachability)
+# — это TCP-соединения наружу. В тестах сеть недоступна или медленная, и
+# каждый тест сторожа ждал бы таймаутов, а то и решал бы, что WAN лежит.
+# По умолчанию WAN «жив»; тесты самого модуля подменяют _connect сами.
+import core.reachability as _reachability  # noqa: E402
+
+_reachability._connect = lambda addr, timeout=None: True
+# Поток «ждём возвращения WAN» в тестах не нужен: возвращение они
+# проверяют явным замером.
+_reachability.WATCH_RECOVERY = False
