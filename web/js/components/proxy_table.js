@@ -26,6 +26,8 @@
  *       loadItems(ctx, name) -> {items:[{id,type,address,raw}], activeId, running?, extra?},
  *       loadTraffic(ctx, name) -> {traffic:{id:{up,down}}, extra?} | null,
  *       startTest(ctx, selectedOnly) -> r,     testStatusUrl: '…/test/status',
+ *       trafficResetUrl: '…/traffic/reset',    // кнопка «Сбросить трафик»
+ *       trafficResetKey: 'tags' | 'names',     // имя списка в теле запроса
  *       exportLinks(ctx) -> r,  importLinks(ctx, text) -> r,
  *       deleteItems(ctx, ids) -> r,  activate(ctx, id),
  *       // хуки отображения (все опциональны):
@@ -317,6 +319,12 @@ const ProxyTable = (() => {
                                     onclick="${G}.deleteSelected()" title="Delete">
                                 Удалить
                             </button>
+                            ${opts.trafficResetUrl ? `
+                            <button class="btn btn-ghost btn-sm" ${state.busy ? 'disabled' : ''}
+                                    onclick="${G}.resetTraffic()"
+                                    title="Обнулить счётчики трафика выделенных (без выделения — всех)">
+                                Сбросить трафик
+                            </button>` : ''}
                             ${opts.toolbarExtraHtml ? (opts.toolbarExtraHtml(state) || '') : ''}
                         </div>
                     </div>
@@ -767,6 +775,29 @@ const ProxyTable = (() => {
             keyHandler = pasteHandler = null;
         }
 
+        async function resetTraffic() {
+            // Без выделения — все прокси ЭТОГО конфига: пустой список
+            // бэкенд понял бы как «все счётчики движка», включая чужие
+            // конфиги.
+            const sel = [...state.selected];
+            const ids = sel.length ? sel : state.items.map(i => i.id);
+            if (!ids.length) { Toast.info('Нет прокси'); return; }
+            const what = sel.length ? `выделенных (${sel.length})`
+                                    : `всех прокси конфига «${state.configName}»`;
+            if (!confirm(`Обнулить счётчики трафика ${what}?`)) return;
+            const body = { [opts.trafficResetKey || 'tags']: ids };
+            try {
+                const r = await API.post(opts.trafficResetUrl, body);
+                if (r && r.ok) {
+                    Toast.success('Счётчики трафика обнулены');
+                    await loadTraffic();
+                    renderBody();
+                } else {
+                    Toast.error((r && r.error) || 'не удалось');
+                }
+            } catch (e) { Toast.error(e.message); }
+        }
+
         // ══════════════ public API ══════════════
 
         const api = {
@@ -774,6 +805,7 @@ const ProxyTable = (() => {
             sortBy, onRowClick, toggleRow, toggleAll,
             test, copySelected, togglePasteBox, importPasteBox,
             deleteSelected, activate, activateSelected, activateIdx,
+            resetTraffic,
         };
         // Движко-специфичные методы адаптера (enableClashApi, toggleDebug…)
         // — оборачиваем, чтобы получали ctx первым аргументом.

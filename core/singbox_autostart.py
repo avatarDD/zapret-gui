@@ -5,12 +5,12 @@
 Дублирует паттерн `core/awg_autostart_manager.py`, но проще:
 sing-box — один бинарь + JSON-конфиг, один процесс на инстанс.
 
-Генерирует init-скрипт, который при старте роутера/Linux
-поднимает все инсталляции, помеченные `autostart=True` в
-settings.json под ключом `singbox.autostart[name]`.
+Генерирует init-скрипт, который при старте роутера/Linux зовёт
+`app.py --apply-singbox-autostart` (как AWG): тот поднимает все
+инсталляции, помеченные `autostart=True` в settings.json под ключом
+`singbox.autostart[name]`, тем же кодом, что и кнопка в GUI.
 """
 
-import json
 import os
 import sys
 import threading
@@ -87,136 +87,14 @@ def set_autostart(name: str, enabled: bool) -> dict:
 
 # ─────── init-script generator ───────
 
-def _entware_init_script(binary: str, configs_dir: str,
-                         pids_dir: str, logs_dir: str,
-                         names: list) -> str:
-    """
-    Init-скрипт под Entware (Keenetic / OpenWrt-Entware). BusyBox-shell.
-
-    На старте дополнительно переприменяет firewall прозрачного
-    проксирования (если настроен), на остановке — снимает его, вызывая
-    app.py в CLI-режиме. Так правила переживают перезагрузку.
-    """
-    names_quoted = " ".join('"%s"' % n for n in names)
-    return f"""#!/bin/sh
-# zapret-gui: sing-box autostart
-# Управляется через web-GUI; не редактируйте вручную.
-
-BINARY="{binary}"
-CONFIGS_DIR="{configs_dir}"
-PIDS_DIR="{pids_dir}"
-LOGS_DIR="{logs_dir}"
-PYTHON="{PYTHON_BIN}"
-APP_PY="{APP_PY}"
-NAMES={names_quoted}
-
-mkdir -p "$PIDS_DIR" "$LOGS_DIR"
-
-# Поднимаем лимит дескрипторов: прокси-движок под нагрузкой упирается
-# в дефолтные 1024 и роняет коннекты "too many open files".
-ulimit -n 65536 2>/dev/null || true
-
-reapply_transparent() {{
-    [ -f "$APP_PY" ] || return 0
-    "$PYTHON" "$APP_PY" --apply-singbox-transparent >> "$LOGS_DIR/transparent.log" 2>&1 || true
-}}
-remove_transparent() {{
-    [ -f "$APP_PY" ] || return 0
-    "$PYTHON" "$APP_PY" --remove-singbox-transparent >> "$LOGS_DIR/transparent.log" 2>&1 || true
-}}
-
-start_one() {{
-    name="$1"
-    config="$CONFIGS_DIR/$name.json"
-    pidfile="$PIDS_DIR/singbox-$name.pid"
-    logfile="$LOGS_DIR/singbox-$name.log"
-    if [ ! -f "$config" ]; then
-        echo "sing-box: пропускаем $name — конфига нет"
-        return
-    fi
-    if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-        echo "sing-box: $name уже запущен"
-        return
-    fi
-    echo "sing-box: запускаем $name"
-    setsid "$BINARY" run -c "$config" >> "$logfile" 2>&1 &
-    echo $! > "$pidfile"
-}}
-
-stop_one() {{
-    name="$1"
-    pidfile="$PIDS_DIR/singbox-$name.pid"
-    if [ -f "$pidfile" ]; then
-        pid=$(cat "$pidfile")
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "sing-box: останавливаем $name"
-            kill -TERM "$pid"
-            sleep 1
-            kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
-        fi
-        rm -f "$pidfile"
-    fi
-}}
-
-case "$1" in
-    start)
-        for n in $NAMES; do start_one "$n"; done
-        reapply_transparent
-        ;;
-    stop)
-        remove_transparent
-        for n in $NAMES; do stop_one "$n"; done
-        ;;
-    restart)
-        remove_transparent
-        for n in $NAMES; do stop_one "$n"; done
-        sleep 1
-        for n in $NAMES; do start_one "$n"; done
-        reapply_transparent
-        ;;
-    status)
-        for n in $NAMES; do
-            pidfile="$PIDS_DIR/singbox-$n.pid"
-            if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-                echo "$n: running (pid $(cat "$pidfile"))"
-            else
-                echo "$n: stopped"
-            fi
-        done
-        ;;
-    *)
-        echo "Usage: $0 {{start|stop|restart|status}}"
-        exit 1
-        ;;
-esac
-"""
-
-
-def _systemd_unit(binary: str, configs_dir: str, pids_dir: str,
-                  logs_dir: str, names: list) -> str:
-    """
-    Простой systemd-юнит. Запускает первый sing-box-инстанс из списка
-    (если их несколько — следующий старт делается через `systemctl
-    start sing-box-gui@<name>`, который unit-template — позже).
-    """
-    name = names[0] if names else ""
-    return f"""[Unit]
-Description=sing-box autostart (zapret-gui)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart={binary} run -c {configs_dir}/{name}.json
-ExecStartPost=-{PYTHON_BIN} {APP_PY} --apply-singbox-transparent
-ExecStopPost=-{PYTHON_BIN} {APP_PY} --remove-singbox-transparent
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-"""
+def render_script(platform=None) -> str:
+    """Текст init-скрипта под платформу (через app.py, как у AWG)."""
+    from core import engine_common
+    platform = platform or detect_singbox_platform()
+    return engine_common.render_autostart_script(
+        "singbox", "sing-box", engine_common.script_flavor(platform.name),
+        log_path=os.path.join(platform.log_dir, "singbox-autostart.log"),
+        python=PYTHON_BIN, app_py=APP_PY)
 
 
 def regenerate() -> dict:
@@ -234,16 +112,7 @@ def regenerate() -> dict:
     if not bin_info.get("installed"):
         return {"ok": False, "error": "sing-box не установлен"}
 
-    if platform.name == "linux":
-        content = _systemd_unit(
-            bin_info["path"], platform.config_dir,
-            platform.run_dir, platform.log_dir, enabled)
-    else:
-        content = _entware_init_script(
-            bin_info["path"], platform.config_dir,
-            platform.run_dir, platform.log_dir, enabled)
-
-    path = platform.install_init_script(content)
+    path = platform.install_init_script(render_script(platform))
     log.info("singbox: автозапуск установлен (%d конфигов): %s"
              % (len(enabled), path), source="singbox")
     return {"ok": True, "path": path, "names": enabled}
@@ -260,24 +129,18 @@ def remove() -> dict:
 
 
 def status() -> dict:
-    platform = detect_singbox_platform()
-    path = platform.init_script_path()
-    return {
-        "installed":   os.path.exists(path),
-        "path":        path,
-        "autostart":   list_autostart(),
-    }
+    from core import engine_common
+    return engine_common.autostart_status(
+        "singbox", detect_singbox_platform(), list_autostart())
 
 
 def apply_now() -> dict:
-    """Поднять все enabled-конфиги прямо сейчас (для UI-кнопки)."""
+    """Поднять все enabled-конфиги (UI-кнопка, init-скрипт через
+    `app.py --apply-singbox-autostart`, старт GUI без скрипта)."""
+    from core import engine_common
     from core.singbox_manager import get_singbox_manager
-    mgr = get_singbox_manager()
-    results = []
-    for name, en in list_autostart().items():
-        if not en:
-            continue
-        results.append({"name": name, "result": mgr.up(name)})
+    result = engine_common.autostart_apply("singbox", get_singbox_manager(),
+                                           list_autostart())
     # Прозрачное проксирование (firewall) не переживает перезагрузку —
     # переприменяем из сохранённых настроек вместе с движком.
     transparent = None
@@ -286,4 +149,22 @@ def apply_now() -> dict:
         transparent = reapply_saved()
     except Exception as e:
         log.warning("singbox: reapply transparent: %s" % e, source="singbox")
-    return {"ok": True, "applied": results, "transparent": transparent}
+    result["transparent"] = transparent
+    return result
+
+
+def stop_now() -> dict:
+    """Снять прозрачное проксирование и погасить отмеченные конфиги
+    (init-скрипт stop через `app.py --stop-singbox-autostart`)."""
+    from core import engine_common
+    from core.singbox_manager import get_singbox_manager
+    transparent = None
+    try:
+        from core.singbox_transparent import remove as tp_remove
+        transparent = tp_remove()
+    except Exception as e:
+        log.warning("singbox: remove transparent: %s" % e, source="singbox")
+    result = engine_common.autostart_stop(get_singbox_manager(),
+                                          list_autostart())
+    result["transparent"] = transparent
+    return result

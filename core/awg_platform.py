@@ -363,6 +363,19 @@ class OpenWrtPlatform(AwgPlatform):
     def init_script_path(self):
         return os.path.join(self.init_dir, self.init_name)
 
+    def install_init_script(self, content: str):
+        path = super().install_init_script(content)
+        # rc.common: `enable` ставит симлинк в /etc/rc.d — без него скрипт
+        # при загрузке не запускается.
+        _cmd_ok([path, "enable"])
+        return path
+
+    def remove_init_script(self):
+        path = self.init_script_path()
+        if os.path.exists(path):
+            _cmd_ok([path, "disable"])
+        super().remove_init_script()
+
     def tun_instructions(self) -> str:
         # OpenWrt до 24.10 — opkg, с 25.x — apk; пакет один и тот же.
         return (
@@ -406,6 +419,8 @@ class GenericLinuxPlatform(AwgPlatform):
     def install_init_script(self, content: str):
         path = super().install_init_script(content)
         _cmd_ok(["systemctl", "daemon-reload"])
+        # Без enable юнит лежит на диске, но при загрузке не запускается.
+        _cmd_ok(["systemctl", "enable", self.init_name])
         return path
 
     def remove_init_script(self):
