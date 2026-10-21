@@ -1,0 +1,11 @@
+{
+  "pending": {
+    "y.com": {
+      "first": 1792580189.7880874,
+      "list_id": "my-list",
+      "code": "tls_rst",
+      "source": "dns"
+    }
+  },
+  "added": []
+}

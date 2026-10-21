@@ -64,6 +64,7 @@ EVENTS = {
     "wan":        "Пропал или вернулся интернет у провайдера",
     "safe_apply": "Применение стратегии с проверкой откачено",
     "known_good": "Правка туннелей или маршрутов что-то сломала",
+    "smart_detect": "Автообнаружение добавило домен в список",
     "autopick":   "Автоподбор стратегии",
     "update":     "Вышло обновление",
 }
@@ -87,6 +88,10 @@ def settings() -> dict:
             "chat_id": str(tg.get("chat_id") or "").strip(),
             "transport": str(tg.get("transport") or "").strip(),
             "proxy": str(tg.get("proxy") or "").strip(),
+            "interactive": bool(tg.get("interactive")),
+            "allowed_users": [str(u).strip() for u in
+                              (tg.get("allowed_users") or [])
+                              if str(u).strip()],
             "events": {k: bool(events.get(k, True)) for k in EVENTS}}
 
 
@@ -124,8 +129,13 @@ def _host() -> str:
     return platform.node() or ""
 
 
-def event(kind: str, text: str, dedup: bool = True) -> bool:
+def event(kind: str, text: str, dedup: bool = True,
+          buttons: list | None = None) -> bool:
     """Поставить уведомление, если включено и этот вид не выключен.
+
+    ``buttons`` — ``[{"text", "action", "arg"}]``: кнопки под сообщением
+    (действия — ``core.notify_bot.ACTIONS``). Видны, только если бот
+    двусторонний (``notify.telegram.interactive``).
 
     Безопасно звать откуда угодно: ничего не бросает и не ждёт сети.
     ``dedup=False`` — для источника, который сам шлёт только переходы
@@ -148,7 +158,14 @@ def event(kind: str, text: str, dedup: bool = True) -> bool:
                     return False
                 _recent[text] = now
             queue = _load_queue()
-            queue.append({"ts": now, "kind": kind, "text": text})
+            item = {"ts": now, "kind": kind, "text": text}
+            if buttons:
+                item["buttons"] = [
+                    {"text": str(b.get("text") or ""),
+                     "action": str(b.get("action") or ""),
+                     "arg": str(b.get("arg") or "")}
+                    for b in buttons if isinstance(b, dict)]
+            queue.append(item)
             _save_queue(queue)
         _ensure_worker()
         _wake.set()
@@ -174,14 +191,15 @@ class Rejected(RuntimeError):
     значит задержать всё, что за ним."""
 
 
-def _call(st: dict, method: str, payload: dict | None = None) -> dict:
+def _call(st: dict, method: str, payload: dict | None = None,
+          timeout: float = TIMEOUT) -> dict:
     """Вызов Bot API. Ошибка — RuntimeError без токена в тексте."""
     url = "%s/bot%s/%s" % (API, st["token"], method)
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, headers={
         "Content-Type": "application/json"} if data else {})
     try:
-        with _opener(st).open(req, timeout=TIMEOUT) as r:
+        with _opener(st).open(req, timeout=timeout) as r:
             body = json.loads(r.read().decode("utf-8", "replace") or "{}")
     except urllib.error.HTTPError as e:
         try:
@@ -305,11 +323,14 @@ def _flush() -> dict:
             msg = fresh[0]
         when = time.strftime("%H:%M", time.localtime(msg["ts"]))
         late = " (%s)" % when if time.time() - msg["ts"] > 120 else ""
+        payload = {"chat_id": st["chat_id"],
+                   "text": format_text(msg["text"] + late, host),
+                   "disable_web_page_preview": True}
+        markup = _markup(st, msg.get("buttons"))
+        if markup:
+            payload["reply_markup"] = markup
         try:
-            _call(st, "sendMessage", {
-                "chat_id": st["chat_id"],
-                "text": format_text(msg["text"] + late, host),
-                "disable_web_page_preview": True})
+            _call(st, "sendMessage", payload)
         except Rejected as e:
             log.warning("уведомление отвергнуто и выброшено: %s" % e,
                         source="notify")
@@ -322,6 +343,25 @@ def _flush() -> dict:
         sent += 1
     return {"ok": not error, "sent": sent, "error": error,
             "pending": len(_load_queue())}
+
+
+def _markup(st: dict, buttons):
+    """Кнопки сообщения → ``inline_keyboard`` (или None).
+
+    Квитанция на каждую кнопку выдаётся в момент отправки
+    (``core.notify_bot``): после перезапуска старые кнопки честно
+    отвечают «устарела», а не делают неизвестно что.
+    """
+    if not buttons or not st.get("interactive"):
+        return None
+    try:
+        from core import notify_bot
+        row = [{"text": b["text"],
+                "callback_data": notify_bot.receipt(b["action"], b["arg"])}
+               for b in buttons if b.get("action") in notify_bot.ACTIONS]
+    except Exception:                               # noqa: BLE001
+        return None
+    return {"inline_keyboard": [row]} if row else None
 
 
 def status() -> dict:
@@ -359,7 +399,13 @@ def _ensure_worker() -> None:
 
 
 def start() -> None:
-    """Из загрузки приложения: дослать то, что не ушло до перезапуска."""
+    """Из загрузки приложения: дослать то, что не ушло до перезапуска,
+    и поднять двусторонний бот, если он включён."""
     if _load_queue():
         _ensure_worker()
         _wake.set()
+    try:
+        from core import notify_bot
+        notify_bot.start()
+    except Exception as e:                          # noqa: BLE001 — граница
+        log.warning("бот Telegram: %s" % e, source="notify")

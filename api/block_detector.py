@@ -8,6 +8,9 @@ API-модуль Block Detector (DNS-мониторинг + автообнару
   POST /api/block-detector/probe    — пронировать домен
   POST /api/block-detector/start    — запустить мониторинг
   POST /api/block-detector/stop     — остановить
+  GET  /api/block-detector/smart    — Smart Detect: очередь и добавленное
+  POST /api/block-detector/smart/undo — {id, exclude?}: убрать из списка
+                                        (и внести в исключения)
 """
 
 
@@ -90,3 +93,22 @@ def register(app):
         cfg.save()
         get_block_detector().stop()
         return {"ok": True, "running": False}
+
+    # ── Smart Detect (core/smart_detect.py) ──
+
+    @app.route("/api/block-detector/smart", method="GET")
+    def bd_smart():
+        from core import smart_detect
+        return dict(smart_detect.status(), ok=True)
+
+    @app.route("/api/block-detector/smart/undo", method="POST")
+    def bd_smart_undo():
+        from bottle import response
+        from core import smart_detect
+        data = request.json or {}
+        rec_id = str(data.get("id") or "")
+        res = (smart_detect.exclude(rec_id) if data.get("exclude")
+               else smart_detect.undo(rec_id))
+        if not res.get("ok"):
+            response.status = 400
+        return res

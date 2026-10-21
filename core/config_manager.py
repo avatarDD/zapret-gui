@@ -321,6 +321,13 @@ DEFAULT_CONFIG = {
             "chat_id": "",
             "transport": "",
             "proxy": "",
+            # Двусторонний бот (core/notify_bot.py): кнопки под
+            # уведомлениями и команды /status, /report. Читает getUpdates
+            # долгим опросом — поэтому выключен, пока не включат.
+            "interactive": False,
+            # Кому бот подчиняется (id пользователей Telegram). Пусто — в
+            # личном чате только его владелец (chat_id), в группе — никто.
+            "allowed_users": [],
         },
         # Какие события слать (всё, что не выключено явно).
         "events": {
@@ -330,6 +337,7 @@ DEFAULT_CONFIG = {
             "wan": True,
             "safe_apply": True,
             "known_good": True,
+            "smart_detect": True,
             "autopick": True,
             "update": True,
         },
@@ -528,6 +536,18 @@ DEFAULT_CONFIG = {
         "auto_add_list_id": "",  # целевой named list для автодобавления
         "whitelist": [],        # домены-исключения
         "interval_sec": 300,
+        # Smart Detect (core/smart_detect.py): в список — только после
+        # повторной прямой пробы и пробы через метод маршрута.
+        "smart_confirm": True,
+        "smart_recheck_sec": 120,
+        # В список — регистрируемый домен по PSL (api.example.co.uk →
+        # example.co.uk), а не точное имя хоста.
+        "smart_registrable": True,
+        # Второй источник кандидатов — зависшие прямые соединения в
+        # Clash API запущенных mihomo/sing-box.
+        "smart_clash": False,
+        # Сколько часов не пробовать снова домен, который не подтвердился.
+        "smart_cooldown_h": 24,
     },
 
     # --- MCP-сервер (Model Context Protocol) ---

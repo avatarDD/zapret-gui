@@ -639,3 +639,55 @@ def known_good_rollback(args: dict) -> dict:
     res["hint"] = ("проверьте сайты (unified_route_status); вернуть "
                    "правку обратно нельзя — снимка нет")
     return res
+
+
+# ───────────── Smart Detect: автодобавление в списки ─────────────
+
+@tool(
+    name="smart_detect_status",
+    scope="read",
+    mutating=False,
+    title="Block auto-detection queue",
+    description=("Smart Detect: domains awaiting confirmation (second "
+                 "direct probe, then a probe through the route's tunnel) "
+                 "and recent auto-additions to lists with their ids for "
+                 "smart_detect_undo. / Очередь и добавленное "
+                 "автообнаружением."),
+    schema={"type": "object", "properties": {},
+            "additionalProperties": False},
+)
+def smart_detect_status(args: dict) -> dict:
+    from core import smart_detect
+    return dict(smart_detect.status(), ok=True, note=NOTE)
+
+
+@tool(
+    name="smart_detect_undo",
+    scope="tunnels_write",
+    mutating=True,
+    title="Undo a block auto-detection",
+    description=("Remove a domain Smart Detect added to a list; with "
+                 "`exclude` also put it on the detector whitelist so it "
+                 "is never added again. / Отменить автодобавление."),
+    schema={
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "maxLength": 300,
+                   "description": "Addition id from smart_detect_status. "
+                                  "/ Id добавления."},
+            "exclude": {"type": "boolean", "default": False,
+                        "description": "Also whitelist it. / И в "
+                                       "исключения."},
+        },
+        "required": ["id"],
+        "additionalProperties": False,
+    },
+)
+def smart_detect_undo(args: dict) -> dict:
+    from core import smart_detect
+    rec_id = str(args.get("id") or "")
+    res = (smart_detect.exclude(rec_id) if args.get("exclude")
+           else smart_detect.undo(rec_id))
+    if not res.get("ok"):
+        res["hint"] = "id — из smart_detect_status().added[].id"
+    return res

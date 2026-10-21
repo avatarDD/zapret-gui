@@ -278,10 +278,10 @@ def _wan_down() -> bool:
     return reachability.wan_down()
 
 
-def _notify(text: str) -> None:
+def _notify(text: str, buttons=None) -> None:
     try:
         from core import notify
-        notify.event("known_good", text)
+        notify.event("known_good", text, buttons=buttons)
     except Exception:                               # noqa: BLE001
         pass
 
@@ -407,7 +407,8 @@ def tick(now: float = None) -> dict:
                 "result": res}
     _notify("⚠️ После правки туннелей/маршрутов перестали открываться %s. "
             "Вернуть рабочую точку: «Маршрутизация → Рабочая точка»."
-            % lost)
+            % lost, buttons=[{"text": "Вернуть рабочую точку",
+                              "action": "known_good_rollback", "arg": ""}])
     return {"action": "failed", "lost": verdict["lost"]}
 
 

@@ -334,6 +334,7 @@ UI), и `tools_by_scope`.
 | `unified_route_list` | read | нет | `tools/routing.py` | id?, method?, search?, enabled_only?, offset?, limit? | маршруты единого слоя: назначение → метод, fallback'и, приоритет |
 | `unified_route_status` | read | нет | `tools/routing.py` | id?, offset?, limit? | какой метод РАБОТАЕТ сейчас (`active_method`), статистика монитора, советы сканера |
 | `known_good_status` | read | нет | `tools/routing.py` | — | рабочая точка туннелей (AWG, sing-box, mihomo) и маршрутов: когда снята, совпадает ли текущее, что изменилось, какая правка наблюдается и какая последней сломала сайты (`core/known_good.py`); тексты конфигов не отдаются |
+| `smart_detect_status` | read | нет | `tools/routing.py` | — | Smart Detect: домены в очереди подтверждения (повторная прямая проба, затем через туннель маршрута) и последние автодобавления с id для отмены (`core/smart_detect.py`) |
 | `strategy_memory` | read | нет | `tools/memory.py` | targets?, all_networks?, offset?, limit? | что уже срабатывало на домене В ЭТОЙ сети: argv, +удач/−неудач, давность |
 | `issue_draft` | read | нет | `tools/issues.py` | title, kind?, tool?, component?, crash_id?, actual?, expected?, steps?, evidence?, args?, severity?, include_targets? | черновик issue об ошибке САМОГО GUI; место в коде, трассировку и repro сервер дописывает сам |
 | `issue_draft_list` | read | нет | `tools/issues.py` | id?, status?, offset?, limit? | черновики (новые первыми) + падения без черновика; с `id` — текст и ссылка |
@@ -399,6 +400,7 @@ UI), и `tools_by_scope`.
 | `unified_route_apply` | tunnels_write | **да** | `tools/routing.py` | id | разложить ОДИН маршрут заново (домены резолвятся заново) |
 | `known_good_promote` | tunnels_write | **да** | `tools/routing.py` | note? | текущие конфиги туннелей и маршруты — новая рабочая точка (с пробой сайтов мониторинга); снимка для отката нет |
 | `known_good_rollback` | tunnels_write | **да** | `tools/routing.py` | — | вернуть конфиги туннелей и маршруты к рабочей точке: изменённые файлы переписываются, поднятые туннели перезапускаются, маршруты раскладываются заново; добавленные после конфиги остаются |
+| `smart_detect_undo` | tunnels_write | **да** | `tools/routing.py` | id, exclude? | убрать автодобавленный домен из списка; `exclude` — ещё и в белый список детектора |
 | `vpngen_options` | read | нет | `tools/vpngen.py` | — | что умеет генератор конфигов WARP/Proton: провайдеры, движки (и установлены ли), пресеты, транспорты; сети не трогает |
 | `vpngen_check` | read | нет | `tools/vpngen.py` | target, text | синтаксис конфига (awg/usque/singbox/mihomo/proton-import) без сохранения: встроенный разбор, затем `sing-box check`/`mihomo -t`, если движок установлен; сети не трогает |
 | `vpngen_proton_servers` | tunnels_write | нет | `tools/vpngen.py` | transport?, country?, refresh? | бесплатные серверы Proton через сервис proton-generation; ничего не меняет, но ходит в сеть |

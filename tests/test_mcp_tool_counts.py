@@ -139,14 +139,17 @@ from core.mcp import registry
 # Рабочая точка туннелей и маршрутов (приём Tachyon): + 1 на чтение
 # (known_good_status) и + 2 под `tunnels_write` (known_good_promote,
 # known_good_rollback — переписывают конфиги туннелей и маршруты).
+# Smart Detect (приём Tachyon): + 1 на чтение (smart_detect_status) и
+# + 1 под `tunnels_write` (smart_detect_undo — правит именованный список,
+# который кормит маршруты).
 BY_SCOPE = {
-    "read": 43,
+    "read": 44,
     "control": 9,
     "strategies_write": 12,
     "config_write": 1,
     "probes": 13,
     "experiments": 7,
-    "tunnels_write": 14,
+    "tunnels_write": 15,
     "dangerous": 2,
     "shell_readonly": 11,
     "shell_full": 3,
@@ -233,6 +236,8 @@ class TestToolCounts(unittest.TestCase):
         "quick_fix_check",
         # Рабочая точка туннелей и маршрутов
         "known_good_status",
+        # Smart Detect: очередь подтверждения и автодобавленное
+        "smart_detect_status",
         # генератор конфигов WARP/Proton
         "vpngen_options", "vpngen_check",
         # S5 — туннели, диагностика, обновления
@@ -288,6 +293,8 @@ class TestToolCounts(unittest.TestCase):
         "vpngen_generate", "vpngen_proton_servers",
         # рабочая точка туннелей и маршрутов
         "known_good_promote", "known_good_rollback",
+        # отмена автодобавления Smart Detect
+        "smart_detect_undo",
     ]
     # S10 — движок экспериментов: и мутирующие, и опрос под одним
     # разрешением.

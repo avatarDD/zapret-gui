@@ -462,6 +462,19 @@ const SettingsPage = (() => {
                     <label class="form-label">Что присылать</label>
                     <div id="ntf-events"></div>
                 </div>
+                <div class="form-group">
+                    <label class="settings-toggle-row" style="display:flex; gap:8px; align-items:center;">
+                        <input type="checkbox" id="ntf-interactive"> Кнопки и команды (двусторонний бот)
+                    </label>
+                    <div class="form-hint">Под уведомлениями появятся кнопки «Отменить»/«Исключить»
+                        (автообнаружение) и «Вернуть рабочую точку» (туннели и маршруты), а бот
+                        будет отвечать на /status и /report. Бот читает входящие сообщения —
+                        не включайте, если этот же бот обслуживает другой скрипт.</div>
+                    <input class="form-input" id="ntf-users" placeholder="id пользователей через запятую (необязательно)"
+                           style="margin-top:6px;">
+                    <div class="form-hint">Кому бот подчиняется. Пусто — только вам в личном чате
+                        (id совпадает с chat_id); для группы перечислите id явно.</div>
+                </div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
                     <button class="btn btn-primary btn-sm" onclick="SettingsPage.notifySave()">Сохранить</button>
                     <button class="btn btn-ghost btn-sm" onclick="SettingsPage.notifyTest()">Отправить пробное</button>
@@ -483,6 +496,8 @@ const SettingsPage = (() => {
             chat_id: v('ntf-chat').trim(),
             transport: v('ntf-transport'),
             proxy: v('ntf-proxy').trim(),
+            interactive: !!(document.getElementById('ntf-interactive') || {}).checked,
+            allowed_users: v('ntf-users').trim(),
             events,
         };
     }
@@ -498,6 +513,9 @@ const SettingsPage = (() => {
             if (en) en.checked = !!st.enabled;
             set('ntf-chat', st.chat_id);
             set('ntf-proxy', st.proxy);
+            set('ntf-users', (st.allowed_users || []).join(', '));
+            const inter = document.getElementById('ntf-interactive');
+            if (inter) inter.checked = !!st.interactive;
             const hint = document.getElementById('ntf-token-hint');
             if (hint) hint.textContent = st.has_token
                 ? 'Токен сохранён. Оставьте поле пустым, чтобы его не менять.' : '';
@@ -520,8 +538,11 @@ const SettingsPage = (() => {
             }
             const box = document.getElementById('ntf-status');
             if (box) {
+                const bot = status.bot || {};
                 box.textContent = (status.pending ? 'В очереди: ' + status.pending + '. ' : '')
-                    + (status.last_error ? 'Последняя ошибка: ' + status.last_error : '');
+                    + (status.last_error ? 'Последняя ошибка: ' + status.last_error + '. ' : '')
+                    + (st.interactive ? (bot.running ? 'Бот слушает команды.' : 'Бот не запущен.')
+                       + (bot.last_error ? ' Ошибка бота: ' + bot.last_error : '') : '');
             }
         } catch (e) {
             Toast.error('Уведомления: ' + e.message);
