@@ -16,6 +16,8 @@ const MihomoPage = (() => {
     let configs = [];
     let env = null;
     let autostart = {};
+    let autostartStatus = null;        // /api/mihomo/autostart (.status) целиком
+    let debugEnabled = false;          // /api/mihomo/debug (log-level=debug при запуске)
     let busy = {};
     let editing = null;   // {name, text} | null   (null = редактор закрыт)
 
@@ -108,10 +110,13 @@ const MihomoPage = (() => {
             </div>
 
             <div id="mh-instances"></div>
+
+            <div class="card" id="mh-go-memory" style="margin-top:16px;"></div>
         `;
         if (typeof ForeignNote !== 'undefined') ForeignNote.attach(container, 'mihomo');
         if (typeof Wizard !== 'undefined') Wizard.mountBanner(container, 'mihomo');
         refresh();
+        EngineTools.mountGoMemory('mh-go-memory', 'mihomo');
         startPolling();
     }
 
@@ -125,17 +130,23 @@ const MihomoPage = (() => {
         // Каждый запрос гасим по отдельности: один упавший эндпоинт не
         // должен оставлять остальные карточки в «Загрузка…».
         let optsErr = '';
-        const [envResp, cfgsResp, autoResp, optsResp, wdResp] = await Promise.all([
+        const [envResp, cfgsResp, autoResp, optsResp, wdResp, dbgResp] = await Promise.all([
             API.get('/api/mihomo/environment').catch(() => null),
             API.get('/api/mihomo/configs').catch(() => null),
             API.get('/api/mihomo/autostart').catch(() => null),
             API.get('/api/mihomo/routing/options')
                 .catch(e => { optsErr = e.message || String(e); return null; }),
             API.get('/api/mihomo/watchdog').catch(() => null),
+            API.get('/api/mihomo/debug').catch(() => null),
         ]);
         env       = envResp || null;
         configs   = (cfgsResp && cfgsResp.configs) || [];
-        autostart = (autoResp && autoResp.status && autoResp.status.autostart) || {};
+        // Не ответил — оставляем прежнее (иначе у всех «автозапуск выкл»).
+        if (autoResp && autoResp.status) {
+            autostartStatus = autoResp.status;
+            autostart = autoResp.status.autostart || {};
+        }
+        if (dbgResp && dbgResp.ok) debugEnabled = !!dbgResp.enabled;
         if (optsResp && optsResp.ok) {
             routingOpts = optsResp;
             routingOptsError = '';
@@ -208,10 +219,22 @@ const MihomoPage = (() => {
                     <div class="text-muted" style="font-size:11px;">Конфиги</div>
                     <strong>${configs.length} <span class="text-muted">(активно ${active})</span></strong>
                 </div>
+                <div class="expert-only">
+                    <div class="text-muted" style="font-size:11px;">Отладка</div>
+                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"
+                           title="log-level=debug при запуске — видно, почему конфиг/прокси не работает. Применяется при следующем (пере)запуске инстанса.">
+                        <input type="checkbox" ${debugEnabled ? 'checked' : ''}
+                               onchange="MihomoPage.toggleDebug(this.checked)">
+                        <strong>${debugEnabled ? 'вкл' : 'выкл'}</strong>
+                    </label>
+                </div>
                 <div style="margin-left:auto; display:flex; gap:8px;">
                     ${installBtn}
                 </div>
             </div>
+            ${autostartStatus ? `<div style="margin-top:10px;">
+                ${EngineTools.autostartLineHtml('mihomo', autostartStatus, 'MihomoPage.refresh')}
+            </div>` : ''}
         `;
     }
 
@@ -253,7 +276,7 @@ const MihomoPage = (() => {
                             ${autoOn ? ' · автозапуск' : ''}
                         </div>
                     </div>
-                    <div style="display:flex; gap:6px;">
+                    <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
                         ${upBtn}
                         <button class="btn btn-ghost btn-sm" ${isBusy ? 'disabled' : ''}
                                 onclick="MihomoPage.restart('${escapeAttr(c.name)}')">Restart</button>
@@ -262,6 +285,11 @@ const MihomoPage = (() => {
                                    onchange="MihomoPage.toggleAuto('${escapeAttr(c.name)}', this.checked)">
                             автозапуск
                         </label>
+                        <button class="btn btn-ghost btn-sm"
+                                onclick="EngineTools.showLog('mihomo', '${escapeAttr(c.name)}')">Лог</button>
+                        <button class="btn btn-ghost btn-sm"
+                                title="Процесс, память, проверка конфига, external-controller, TUN, хвосты логов — для баг-репорта"
+                                onclick="EngineTools.showDiagnostics('mihomo', '${escapeAttr(c.name)}')">Диагностика</button>
                         <button class="btn btn-ghost btn-sm"
                                 onclick="MihomoPage.edit('${escapeAttr(c.name)}')">Редактировать</button>
                         <button class="btn btn-ghost btn-sm"
@@ -439,6 +467,12 @@ rules:
             }
         } catch (e) { Toast.error(`${name}: ${e.message}`); }
         finally { busy[name] = false; await refresh(); }
+    }
+
+    async function toggleDebug(on) {
+        const v = await EngineTools.setDebug('mihomo', on);
+        if (v !== null) debugEnabled = v;
+        renderSummary();
     }
 
     async function toggleAuto(name, enabled) {
@@ -856,7 +890,7 @@ rules:
 
     return {
         render, destroy, refresh,
-        up, down, restart, toggleAuto,
+        up, down, restart, toggleAuto, toggleDebug,
         newConfig, edit, closeEditor, save, validate, del,
         setDomain, toggleDomainHostlist, toggleDomainList, toggleDomainIpset,
         createDomainRouting, setSource, createSourceRouting,

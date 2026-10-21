@@ -65,6 +65,7 @@ def _raise_nofile():
     except (ValueError, OSError):
         pass
 
+from core import engine_common
 from core.log_buffer import log
 from core.singbox_platform import detect_singbox_platform
 from core.singbox_config import parse_conf, render_conf, validate
@@ -496,6 +497,37 @@ class SingboxManager:
                 pass
         return {"ok": rc == 0, "error": (err or "").strip(), "returncode": rc}
 
+    # ─────── диагностика ───────
+
+    def diagnostics(self, name: str) -> dict:
+        """Снимок инстанса для кнопки «Диагностика» (паритет с AWG)."""
+        if not _valid_name(name):
+            return {"ok": False, "error": "Некорректное имя"}
+        platform = self._platform()
+        path = platform.config_path(name)
+        if not os.path.isfile(path):
+            return {"ok": False, "error": "Конфиг не найден"}
+        binary = get_singbox_detector().detect_binary()
+        check = (self.validate_via_binary(name) if binary.get("installed")
+                 else {"ok": None, "error": "sing-box не установлен"})
+        parsed = (self.get_config(name) or {}).get("parsed") or {}
+        from core.singbox_config import clash_api_endpoint
+        from core.singbox_autostart import list_autostart
+        pid = _read_pid(platform.pid_path(name))
+        active = self.is_running(name)
+        info = engine_common.proxy_diagnostics(
+            "singbox", name, pid=pid, active=active, binary=binary,
+            config_path=path,
+            config_check={"ok": check.get("ok"),
+                          "output": (check.get("stderr") or
+                                     check.get("error") or "").strip()},
+            log_path=platform.log_path(name),
+            autostart=bool(list_autostart().get(name)),
+            controller=clash_api_endpoint(parsed),
+            tun_iface=self._detect_singbox_tun_iface(path),
+            extra={"dns_in_port": self._config_dns_in_port(name)})
+        return {"ok": True, "diagnostics": info}
+
     # ─────── lifecycle ───────
 
     def is_running(self, name: str) -> bool:
@@ -594,6 +626,8 @@ class SingboxManager:
                 close_fds=True,
                 start_new_session=True,
                 preexec_fn=_raise_nofile,
+                # Лимит памяти Go (GOGC/GOMEMLIMIT) — core/engine_common.
+                env=engine_common.launch_env("singbox"),
             )
         except OSError as e:
             log_fh.close()
@@ -727,19 +761,8 @@ class SingboxManager:
 
 # ─────── helpers ───────
 
-def _tail_file(path: str, lines: int = 80) -> str:
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            # Прикинем: 200 байт на строку с запасом.
-            block = min(size, lines * 200)
-            f.seek(size - block)
-            data = f.read(block)
-        text = data.decode("utf-8", errors="replace")
-        return "\n".join(text.splitlines()[-lines:])
-    except (IOError, OSError):
-        return ""
+# Хвост лога — общий для трёх движков (core/engine_common.tail_file).
+_tail_file = engine_common.tail_file
 
 
 # ─────── singleton ───────

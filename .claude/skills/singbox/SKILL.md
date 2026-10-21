@@ -619,4 +619,10 @@ TUN, sing-box по fake-IP восстанавливает домен и прок
 - PID/лог/overlay: `platform.run_dir` (`/opt/var/run/sing-box/` | `/var/run/sing-box/`):
   `singbox-<name>.pid`, `<name>.log`, `_zg-debug.json`.
 - last-good кэш пула: `.server_pool_cache.json` рядом с settings.json.
-- Автозапуск: `singbox_autostart` (init-скрипт платформы).
+- Автозапуск: `singbox_autostart` — тонкая обёртка над общим
+  `engine_common` (тот же init-скрипт, что у AWG/mihomo: зовёт
+  `app.py --apply-singbox-autostart`, флейворы systemd/OpenWrt/Entware,
+  `enable` после установки; `apply_now` заодно возвращает прозрачный
+  прокси). Общая обвязка — `GET|POST /api/singbox/go-memory`,
+  `GET /api/singbox/configs/<name>/diagnostics`; MCP — `tunnel_log`,
+  `tunnel_diagnostics`, `tunnel_settings`.

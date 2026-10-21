@@ -340,6 +340,91 @@ def _apply_awg_autostart_on_boot():
     t.start()
 
 
+def _proxy_autostart_module(engine: str):
+    """core/singbox_autostart или core/mihomo_autostart — у них один API."""
+    if engine == "singbox":
+        from core import singbox_autostart as mod
+    elif engine == "mihomo":
+        from core import mihomo_autostart as mod
+    else:
+        raise ValueError("неизвестный движок: %s" % engine)
+    return mod
+
+
+def _apply_proxy_autostart_on_boot(engine: str):
+    """
+    Автозапуск sing-box / mihomo при старте GUI — паритет с
+    _apply_awg_autostart_on_boot:
+      * init-скрипта нет (не записался, движок ставили позже) — поднять
+        отмеченные конфиги самим;
+      * скрипт есть, но старого формата (запускал бинарь напрямую, на
+        systemd — только первый конфиг) — пересоздать: при следующей
+        загрузке он поднимет всё через app.py.
+
+    Запускается в фоновом потоке.
+    """
+    import threading
+    import time
+
+    def _do_apply():
+        from core.log_buffer import log
+        try:
+            time.sleep(1.5)
+            mod = _proxy_autostart_module(engine)
+            enabled = [n for n, v in mod.list_autostart().items() if v]
+            if not enabled:
+                return
+            st = mod.status()
+            if st.get("installed") and st.get("up_to_date"):
+                return
+            if st.get("installed"):
+                # Скрипт старого образца в эту загрузку мог поднять не всё
+                # (systemd — только первый конфиг): пересоздаём и
+                # доподнимаем сами (запущенные apply_now пропустит).
+                r = mod.regenerate()
+                log.info("%s: init-скрипт автозапуска обновлён до запуска "
+                         "через app.py: %s"
+                         % (engine, r.get("path") or r.get("error")),
+                         source=engine)
+            log.info("Автоподъём %s при старте GUI: %s"
+                     % (engine, ", ".join(enabled)), source=engine)
+            mod.apply_now()
+        except Exception as e:
+            log.error("Ошибка автозапуска %s: %s" % (engine, e),
+                      source=engine)
+
+    t = threading.Thread(target=_do_apply, daemon=True,
+                         name="%s-autostart-boot" % engine)
+    t.start()
+
+
+def _run_proxy_autostart_cli(args, engine: str, stop: bool = False):
+    """
+    CLI-режим автозапуска sing-box / mihomo: вызывается init-скриптом
+    (core/engine_common.render_autostart_script). Как у AWG — без Bottle:
+    поднять/погасить отмеченные конфиги тем же кодом, что и кнопка в GUI.
+    """
+    from core.config_manager import init_config
+    from core.log_buffer import log
+
+    init_config(args.config)
+    try:
+        mod = _proxy_autostart_module(engine)
+        result = mod.stop_now() if stop else mod.apply_now()
+        ok = bool(result.get("ok", False))
+        log.info("CLI %s autostart %s: %s"
+                 % (engine, "stop" if stop else "apply",
+                    "ok" if ok else "часть конфигов не поднялась"),
+                 source=engine)
+        sys.exit(0 if ok else 1)
+    except Exception as e:
+        try:
+            log.error("CLI %s autostart: %s" % (engine, e), source=engine)
+        except Exception:
+            pass
+        sys.exit(2)
+
+
 def _apply_usque_autostart_on_boot():
     """
     Поднять WARP/MASQUE туннели при старте GUI, если:
@@ -889,6 +974,23 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception:
             pass
 
+        # Логи движков (AWG/sing-box/mihomo) не растут без предела.
+        try:
+            from core.engine_common import start_log_guard
+            start_log_guard()
+        except Exception as e:
+            log.warning("сторож логов движков: %s" % e, source="engines")
+
+        # То же для sing-box и mihomo (паритет с AWG): без init-скрипта
+        # поднять отмеченные конфиги, со скриптом старого формата —
+        # пересоздать его.
+        for _engine in ("singbox", "mihomo"):
+            try:
+                _apply_proxy_autostart_on_boot(_engine)
+            except Exception as e:
+                log.warning("%s autostart при boot: %s" % (_engine, e),
+                            source=_engine)
+
         # Поднять фоновый мониторинг единого слоя, если есть маршруты с
         # включённым мониторингом/автопереключением (переживает рестарт GUI).
         try:
@@ -1171,6 +1273,15 @@ def main():
         "--stop-awg-autostart", action="store_true",
         help="CLI-режим: опустить все поднятые AWG-интерфейсы и выйти"
     )
+    for _engine, _label in (("singbox", "sing-box"), ("mihomo", "mihomo")):
+        parser.add_argument(
+            "--apply-%s-autostart" % _engine, action="store_true",
+            help="CLI-режим: поднять отмеченные конфиги %s (вызывается "
+                 "init-скриптом при загрузке) и выйти" % _label)
+        parser.add_argument(
+            "--stop-%s-autostart" % _engine, action="store_true",
+            help="CLI-режим: погасить отмеченные конфиги %s и выйти"
+                 % _label)
     parser.add_argument(
         "--apply-singbox-transparent", action="store_true",
         help="CLI-режим: переприменить firewall прозрачного "
@@ -1187,6 +1298,12 @@ def main():
     if args.apply_awg_autostart or args.stop_awg_autostart:
         _run_awg_autostart_cli(args, stop=args.stop_awg_autostart)
         return
+    for _engine in ("singbox", "mihomo"):
+        _apply = getattr(args, "apply_%s_autostart" % _engine)
+        _stop = getattr(args, "stop_%s_autostart" % _engine)
+        if _apply or _stop:
+            _run_proxy_autostart_cli(args, _engine, stop=_stop)
+            return
     if args.apply_singbox_transparent or args.remove_singbox_transparent:
         _run_singbox_transparent_cli(
             args, remove=args.remove_singbox_transparent)

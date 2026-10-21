@@ -39,6 +39,7 @@ from core.awg_config import (
 )
 from core.awg_detector import get_awg_detector
 from core.awg_installer import get_awg_installer
+from core import engine_common
 from core.log_buffer import log
 
 
@@ -186,26 +187,157 @@ class AwgManager:
 
     def _amneziawg_go_env(self):
         """
-        Окружение для запуска amneziawg-go. Если в настройках включён лимит
-        памяти Go (awg.go_mem_enabled) — добавляем GOGC/GOMEMLIMIT, чтобы
-        userspace-демон не разрастался и не доводил слабый роутер до OOM.
+        Окружение для запуска amneziawg-go (см. core/engine_common):
+          * лимит памяти Go (awg.go_mem_enabled) — GOGC/GOMEMLIMIT, чтобы
+            userspace-демон не разрастался и не доводил слабый роутер до OOM;
+          * режим отладки (awg.debug_log) — LOG_LEVEL=verbose.
         Возвращает None (наследовать окружение) либо dict.
         """
+        from core import engine_common
+        extra = ({"LOG_LEVEL": "verbose"}
+                 if engine_common.debug_enabled("awg") else None)
+        return engine_common.launch_env("awg", extra)
+
+    # ─────────── проверка связи через туннель ───────────
+
+    def probe(self, name: str, host: str = "", port: int = 0,
+              timeout: float = 4.0) -> dict:
+        """TCP-соединение host:port С ПРИВЯЗКОЙ к интерфейсу туннеля.
+
+        Аналог «теста задержки» sing-box/mihomo: у AWG один peer, поэтому
+        проверяем не список серверов, а сам туннель — той же пробой, что
+        и сторож (core/awg_watchdog.probe_via_iface). По умолчанию цель —
+        хост/порт пробы сторожа. result: ok | fail | cant_bind (сокет не
+        удалось привязать к интерфейсу — результат был бы недостоверен).
+        """
+        from core import awg_watchdog
+        if not _valid_iface_name(name):
+            return {"ok": False, "error": "Некорректное имя"}
+        ifname = self._iface_for_name(name) or name
+        if not self.is_running(ifname):
+            return {"ok": False, "name": name, "iface": ifname,
+                    "needs_running": True,
+                    "error": "Туннель %s не поднят" % name}
+        settings = awg_watchdog._get_settings()
+        host = (host or settings.get("probe_host")
+                or awg_watchdog.DEFAULT_PROBE_HOST)
         try:
-            from core.config_manager import get_config_manager
-            cm = get_config_manager()
-            if not cm.get("awg", "go_mem_enabled", default=False):
-                return None
-            gogc = int(cm.get("awg", "go_gogc", default=50) or 0)
-            memmb = int(cm.get("awg", "go_memlimit_mb", default=0) or 0)
-        except Exception:
-            return None
-        env = dict(os.environ)
-        if gogc > 0:
-            env["GOGC"] = str(gogc)
-        if memmb > 0:
-            env["GOMEMLIMIT"] = "%dMiB" % memmb
-        return env
+            port = int(port or settings.get("probe_port")
+                       or awg_watchdog.DEFAULT_PROBE_PORT)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Некорректный порт"}
+        t0 = time.monotonic()
+        res = awg_watchdog.probe_via_iface(host, port, ifname, timeout)
+        delay_ms = int((time.monotonic() - t0) * 1000)
+        verdict = {True: "ok", False: "fail", None: "cant_bind"}[res]
+        out = {"ok": res is True, "name": name, "iface": ifname,
+               "target": "%s:%d" % (host, port), "result": verdict}
+        if res is True:
+            out["delay_ms"] = delay_ms
+        elif res is False:
+            out["error"] = ("Нет соединения с %s:%d через %s за %.0f с"
+                            % (host, port, ifname, timeout))
+        else:
+            out["error"] = ("Не удалось привязать сокет к %s (нет прав или "
+                            "особенность платформы) — проверка недостоверна"
+                            % ifname)
+        return out
+
+    # ─────────── отладка и лог демона ───────────
+
+    def get_debug(self) -> dict:
+        from core import engine_common
+        return {"ok": True, "enabled": engine_common.debug_enabled("awg")}
+
+    def set_debug(self, enabled: bool) -> dict:
+        from core import engine_common
+        return engine_common.set_debug("awg", enabled)
+
+    # Порог, после которого лог демона начинается заново (см. _spawn_go;
+    # пока демон работает, размер держит engine_common.start_log_guard).
+    LOG_MAX_BYTES = engine_common.LOG_MAX_BYTES
+
+    def _log_path(self, iface: str) -> str:
+        return os.path.join(self._platform().log_dir, "awg-%s.log" % iface)
+
+    def read_log(self, name: str, lines: int = 200) -> dict:
+        """Хвост лога демона amneziawg-go (пишется в режиме отладки).
+
+        Форма ответа — как у sing-box/mihomo (`read_log`), чтобы UI, MCP и
+        сводка туннелей читали логи трёх движков одинаково.
+        """
+        from core import engine_common
+        if not _valid_iface_name(name):
+            return {"ok": False, "error": "Некорректное имя"}
+        # Демон запускается под именем конфига (см. _do_up) — по нему же
+        # и назван лог.
+        path = self._log_path(name)
+        try:
+            lines = max(1, min(2000, int(lines)))
+        except (TypeError, ValueError):
+            lines = 200
+        debug = self.get_debug()["enabled"]
+        if not os.path.isfile(path):
+            return {"ok": True, "name": name, "path": path, "exists": False,
+                    "log": "", "debug": debug}
+        return {"ok": True, "name": name, "path": path, "exists": True,
+                "log": engine_common.tail_file(path, lines), "debug": debug}
+
+    def _spawn_go(self, bin_go: str, ifname: str):
+        """Запустить демон amneziawg-go, вернуть (rc, stderr).
+
+        Без LOG_LEVEL демон форкается с stdout/stderr в /dev/null — тогда
+        хватает обычного `_run` с перехватом вывода. С LOG_LEVEL (отладка)
+        фоновый демон НАСЛЕДУЕТ stdout/stderr родителя: на трубе `_run`
+        ждал бы EOF до таймаута, поэтому вывод сразу ведём в лог-файл, а
+        текст ошибки старта берём из его прироста.
+        """
+        env = self._amneziawg_go_env()
+        if not (env and env.get("LOG_LEVEL")):
+            rc, _out, err = _run([bin_go, ifname], timeout=15, env=env)
+            return rc, err
+        path = self._log_path(ifname)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            # verbose-лог демона растёт с каждым handshake: больше
+            # LOG_MAX_BYTES — начинаем файл заново (демон этого
+            # интерфейса сейчас не запущен, файл никто не держит).
+            big = (os.path.isfile(path)
+                   and os.path.getsize(path) > self.LOG_MAX_BYTES)
+            fh = open(path, "wb" if big else "ab")
+        except OSError as e:
+            log.warning("awg: лог отладки %s недоступен (%s) — запуск без "
+                        "него" % (path, e), source="awg_manager")
+            env.pop("LOG_LEVEL", None)
+            rc, _out, err = _run([bin_go, ifname], timeout=15, env=env)
+            return rc, err
+        try:
+            fh.write(("--- %s amneziawg-go %s (LOG_LEVEL=%s) ---\n"
+                      % (time.strftime("%Y-%m-%d %H:%M:%S"), ifname,
+                         env["LOG_LEVEL"])).encode())
+            fh.flush()
+            start = fh.tell()
+            try:
+                r = subprocess.run([bin_go, ifname], stdin=subprocess.DEVNULL,
+                                   stdout=fh, stderr=fh, timeout=15, env=env)
+                rc = r.returncode
+            except FileNotFoundError as e:
+                return 127, str(e)
+            except subprocess.TimeoutExpired as e:
+                return 124, "timeout: %s" % e
+            except OSError as e:
+                return 1, str(e)
+        finally:
+            fh.close()
+        if rc == 0:
+            return 0, ""
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                err = f.read(4096).decode("utf-8", errors="replace")
+        except OSError:
+            err = ""
+        return rc, err
 
     def _awg_bin(self):
         info = get_awg_installer().get_installed_version()
@@ -964,7 +1096,32 @@ class AwgManager:
         except Exception as e:
             info["errors"].append("log_buffer: %s" % e)
 
+        # Обвязка — те же поля, что в диагностике sing-box/mihomo
+        # (core/engine_common): память демона, отладка, лимит Go, лог.
+        try:
+            info["wrapper"] = self._wrapper_snapshot(name, ifname)
+        except Exception as e:
+            info["errors"].append("wrapper: %s" % e)
+
         return info
+
+    def _wrapper_snapshot(self, name: str, ifname: str) -> dict:
+        from core import engine_common
+        pid = _read_pid(self._pid_path(ifname))
+        try:
+            from core.awg_autostart_manager import get_awg_autostart_manager
+            autostart = get_awg_autostart_manager().is_enabled(name)
+        except Exception:
+            autostart = None
+        return {
+            "process": engine_common.process_info(pid) if pid else {},
+            "debug": engine_common.debug_enabled("awg"),
+            "go_memory": engine_common.go_memory_get("awg"),
+            "autostart": autostart,
+            "daemon_log_path": self._log_path(name),
+            "daemon_log_tail": engine_common.tail_file(self._log_path(name),
+                                                       60),
+        }
 
     # ─────────── up / down ───────────
 
@@ -1106,8 +1263,7 @@ class AwgManager:
         # UAPI-сокета: на Keenetic он лежит не в /var/run/wireguard/, из-за
         # чего socket-polling из Development ложно истекал таймаутом и убивал
         # уже поднятый демон (регрессия, ронявшая AWG).
-        rc, _out, err = _run([bin_go, ifname], timeout=15,
-                             env=self._amneziawg_go_env())
+        rc, err = self._spawn_go(bin_go, ifname)
         if rc != 0:
             msg = "Не удалось запустить amneziawg-go: %s" % err.strip()
             low = (err or "").lower()

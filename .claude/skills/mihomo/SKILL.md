@@ -475,16 +475,25 @@ inline `RULE-SET`↔развёрнутые `DOMAIN-SUFFIX`) и берёт **пе
 
 ## 14. Автозапуск (`mihomo_autostart`)
 
-Флаги в `settings.json` → `mihomo.autostart = {<name>: true}`. Init-скрипт:
-- **Entware/OpenWrt**: sh со `start_one`/`stop_one`, `ulimit -n 65536`,
-  `setsid <bin> -d <config_dir> -f <config> &` + ручной PID-файл; действия
-  `start|stop|restart|status`.
-- **systemd**: `.service` (`LimitNOFILE=65536`). ⚠️ текущая реализация systemd-юнита
-  поднимает **только первый** включённый конфиг — для нескольких нужен отдельный
-  юнит на конфиг.
+Флаги в `settings.json` → `mihomo.autostart = {<name>: true}`. Init-скрипт
+общий для AWG/sing-box/mihomo (`engine_common.render_autostart_script`): он
+только зовёт `app.py --apply-mihomo-autostart` / `--stop-mihomo-autostart`,
+а поднимает конфиги сам менеджер — с теми же `launch_env` (GOGC/GOMEMLIMIT),
+логом и PID, что и кнопка в GUI. Флейворы: systemd (oneshot, `ExecStart=-`,
+каждый конфиг отдельно — один упавший не валит остальные), OpenWrt
+(`rc.common`, START=96, + `enable`), Entware (sh). Ненайденный конфиг
+пропускается, не считается ошибкой. При старте GUI устаревший скрипт
+пересоздаётся (`engine_common.script_is_current`) и конфиги поднимаются.
 
-`regenerate()` пишет/ставит скрипт, `apply_now()` поднимает включённые сразу,
-`remove()` удаляет скрипт.
+`regenerate()` пишет/ставит скрипт (или снимает, если флагов нет),
+`apply_now()` поднимает включённые сразу, `remove()` удаляет скрипт,
+`status()` — `engine_common.autostart_status`.
+
+Остальная общая обвязка (`core/engine_common.py`, `api/engine_wrapper.py`):
+`GET|POST /api/mihomo/go-memory` (лимит памяти Go),
+`GET /api/mihomo/configs/<name>/diagnostics` (процесс, бинарь, проверка
+конфига, контроллер, TUN, хвост лога), `POST /api/mihomo/traffic/reset`;
+MCP — `tunnel_log`, `tunnel_diagnostics`, `tunnel_settings`.
 
 ---
 

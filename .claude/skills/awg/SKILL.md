@@ -49,6 +49,13 @@ description: >-
    (WARP), `core/ndms/wg_discovery.py` (нативный WG Keenetic),
    `core/awg_watchdog.py`, `core/awg_autostart_manager.py` +
    `core/awg_init_script.py`, `api/awg.py`, `web/js/pages/awg_*.js`.
+   Общая с sing-box/mihomo обвязка — `core/engine_common.py` +
+   `api/engine_wrapper.py`: лимит памяти Go (`/api/awg/go-memory`), режим
+   отладки (`/api/awg/debug` → `LOG_LEVEL=verbose` демона, лог в
+   `<log_dir>/awg-<iface>.log`, `/api/awg/configs/<name>/log`), проверка
+   связи через туннель (`POST /api/awg/configs/<name>/test`, та же проба,
+   что у сторожа), блок `wrapper` в диагностике; MCP — `tunnel_log`,
+   `tunnel_diagnostics`, `tunnel_settings`.
 
 > ⚠️ **Версия протокола — главный источник «handshake есть, трафика нет».**
 > AmneziaWG несовместим между мажорными версиями обфускации (§2.3). Если

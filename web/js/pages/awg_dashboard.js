@@ -13,6 +13,7 @@ const AwgDashboardPage = (() => {
     let interfaces = [];
     let autostart = { interfaces: {}, script_installed: false, script_path: '' };
     let keeneticRouting = null;
+    let debugEnabled = false;        // /api/awg/debug (LOG_LEVEL=verbose при подъёме)
     let busy = {};
 
     // ══════════════ render ══════════════
@@ -76,7 +77,7 @@ const AwgDashboardPage = (() => {
 
         refresh();
         loadWatchdog();
-        loadGoMemory();
+        EngineTools.mountGoMemory('awg-go-memory', 'awg');
         startPolling();
     }
 
@@ -100,7 +101,7 @@ const AwgDashboardPage = (() => {
 
     async function refresh() {
         try {
-            const [cfgsResp, ifsResp, autoResp, envResp] = await Promise.all([
+            const [cfgsResp, ifsResp, autoResp, envResp, dbgResp] = await Promise.all([
                 API.get('/api/awg/configs'),
                 API.get('/api/awg/interfaces'),
                 // Не ответил (GUI занят перезапуском движка, firewall) —
@@ -108,12 +109,14 @@ const AwgDashboardPage = (() => {
                 // «автозапуск выключен» у всех туннелей.
                 API.get('/api/awg/autostart').catch(() => null),
                 API.get('/api/awg/environment').catch(() => null),
+                API.get('/api/awg/debug').catch(() => null),
             ]);
             configs = cfgsResp.configs || [];
             interfaces = ifsResp.interfaces || [];
             if (autoResp && autoResp.status) autostart = autoResp.status;
             if (!autostart.interfaces) autostart.interfaces = {};
             keeneticRouting = (envResp && envResp.keenetic_routing) || null;
+            if (dbgResp && dbgResp.ok) debugEnabled = !!dbgResp.enabled;
             renderBody();
         } catch (err) {
             const body = document.getElementById('awg-summary-body');
@@ -129,13 +132,8 @@ const AwgDashboardPage = (() => {
         const totalCfg = configs.length;
         const activeCount = configs.filter(c => c.active).length;
         const peerCount = interfaces.reduce((s, i) => s + (i.peers || []).length, 0);
-        const autoCount = Object.values(autostart.interfaces || {}).filter(Boolean).length;
-        const scriptInstalled = !!autostart.script_installed;
         const summary = document.getElementById('awg-summary-body');
         if (summary) {
-            const scriptInfo = scriptInstalled
-                ? `<span class="text-running">установлен</span>${autostart.script_path ? ` <span class="text-muted" style="font-size:11px;">(${escapeHtml(autostart.script_path)})</span>` : ''}`
-                : `<span class="text-muted">не установлен</span>`;
             summary.innerHTML = `
                 <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-end;">
                     <div><div class="text-muted" style="font-size:12px;">Конфигов</div>
@@ -144,15 +142,18 @@ const AwgDashboardPage = (() => {
                          <div style="font-size: 20px; font-weight: 600;">${activeCount}</div></div>
                     <div><div class="text-muted" style="font-size:12px;">Peers всего</div>
                          <div style="font-size: 20px; font-weight: 600;">${peerCount}</div></div>
-                    <div><div class="text-muted" style="font-size:12px;">Автозапуск</div>
-                         <div style="font-size: 14px;">${autoCount} интерф., скрипт: ${scriptInfo}</div></div>
-                    <div style="margin-left:auto; display:flex; gap:6px;">
-                        ${scriptInstalled
-                            ? `<button class="btn btn-ghost btn-sm" onclick="AwgDashboardPage.regenerateScript()">Пересоздать скрипт</button>
-                               <button class="btn btn-ghost btn-sm" onclick="AwgDashboardPage.removeScript()">Удалить скрипт</button>`
-                            : `<button class="btn btn-ghost btn-sm" ${autoCount===0?'disabled title="Включите autostart хотя бы у одного интерфейса"':''}
-                                       onclick="AwgDashboardPage.installScript()">Установить init-скрипт</button>`}
+                    <div class="expert-only">
+                        <div class="text-muted" style="font-size:12px;">Отладка</div>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"
+                               title="LOG_LEVEL=verbose у amneziawg-go, вывод демона — в лог (кнопка «Лог»). Применяется при следующем подъёме туннеля.">
+                            <input type="checkbox" ${debugEnabled ? 'checked' : ''}
+                                   onchange="AwgDashboardPage.toggleDebug(this.checked)">
+                            <strong>${debugEnabled ? 'вкл' : 'выкл'}</strong>
+                        </label>
                     </div>
+                </div>
+                <div style="margin-top:10px;">
+                    ${EngineTools.autostartLineHtml('awg', autostart, 'AwgDashboardPage.refresh')}
                 </div>
             `;
         }
@@ -348,6 +349,16 @@ const AwgDashboardPage = (() => {
                                     : `<button class="btn btn-primary btn-sm" ${inUse?'disabled':''}
                                                onclick="AwgDashboardPage.up('${escapeAttr(cfg.name)}')">Start</button>`))
                             }
+                            ${active && !cfg.native && !cfg.orphan
+                                ? `<button class="btn btn-ghost btn-sm" ${inUse?'disabled':''}
+                                           title="TCP-соединение через туннель (цель — как у проверки авто-переподключения)"
+                                           onclick="AwgDashboardPage.probe('${escapeAttr(cfg.name)}')">Проверить связь</button>`
+                                : ''}
+                            ${cfg.orphan || cfg.native
+                                ? ''
+                                : `<button class="btn btn-ghost btn-sm"
+                                           title="Лог демона amneziawg-go (пишется в режиме отладки)"
+                                           onclick="EngineTools.showLog('awg', '${escapeAttr(cfg.name)}')">Лог</button>`}
                             <button class="btn btn-ghost btn-sm"
                                     title="Снимок awg show + ip rule/route + последние логи — для диагностики проблем с маршрутизацией"
                                     onclick="AwgDashboardPage.diagnostics('${escapeAttr(cfg.name)}')">
@@ -409,7 +420,8 @@ const AwgDashboardPage = (() => {
         busy[name] = true;
         try {
             const data = await API.get(
-                `/api/awg/configs/${encodeURIComponent(name)}/diagnostics`
+                `/api/awg/configs/${encodeURIComponent(name)}/diagnostics`,
+                { timeout: 30000 }
             );
             if (!data || !data.ok) {
                 Toast.error((data && data.error) || 'Ошибка диагностики');
@@ -424,55 +436,14 @@ const AwgDashboardPage = (() => {
     }
 
     function showDiagnosticsModal(name, d) {
-        const text = formatDiagnostics(d);
-
-        // Минимальный модал — оверлей + контент, без зависимостей.
-        const overlay = document.createElement('div');
-        overlay.style.cssText =
-            'position:fixed;inset:0;background:rgba(0,0,0,0.55);' +
-            'display:flex;align-items:center;justify-content:center;' +
-            'z-index:10000;padding:24px;';
-        overlay.addEventListener('click', e => {
-            if (e.target === overlay) document.body.removeChild(overlay);
-        });
-
-        const box = document.createElement('div');
-        box.style.cssText =
-            'background:var(--bg-card,#1f1f1f);color:var(--text,#eaeaea);' +
-            'max-width:1000px;width:100%;max-height:85vh;' +
-            'display:flex;flex-direction:column;border-radius:8px;' +
-            'box-shadow:0 8px 28px rgba(0,0,0,0.5);overflow:hidden;';
-
-        const header = document.createElement('div');
-        header.style.cssText =
-            'padding:12px 16px;border-bottom:1px solid var(--border,#333);' +
-            'display:flex;justify-content:space-between;align-items:center;gap:12px;';
-        header.innerHTML =
-            '<strong style="font-size:14px;">Диагностика AWG: ' +
-            escapeHtml(name) + '</strong>' +
-            '<div style="display:flex;gap:8px;">' +
-                '<button class="btn btn-ghost btn-sm" id="awgDiagCopy">Копировать</button>' +
-                '<button class="btn btn-ghost btn-sm" id="awgDiagClose">Закрыть</button>' +
-            '</div>';
-
-        const body = document.createElement('pre');
-        body.style.cssText =
-            'margin:0;padding:14px 16px;overflow:auto;flex:1;' +
-            'background:var(--bg-input,#111);font-family:ui-monospace,' +
-            'SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;' +
-            'white-space:pre-wrap;word-break:break-word;';
-        body.textContent = text;
-
-        box.appendChild(header);
-        box.appendChild(body);
-        overlay.appendChild(box);
-        document.body.appendChild(overlay);
-
-        document.getElementById('awgDiagClose').onclick =
-            () => document.body.removeChild(overlay);
-        document.getElementById('awgDiagCopy').onclick = async () => {
-            await Clipboard.copyWithToast(text);
-        };
+        EngineTools.textModal('Диагностика AWG: ' + name, formatDiagnostics(d),
+            async () => {
+                const r = await API.get(
+                    `/api/awg/configs/${encodeURIComponent(name)}/diagnostics`,
+                    { timeout: 30000 });
+                if (!r || !r.ok) throw new Error((r && r.error) || 'Ошибка диагностики');
+                return formatDiagnostics(r.diagnostics || {});
+            });
     }
 
     function formatDiagnostics(d) {
@@ -525,6 +496,10 @@ const AwgDashboardPage = (() => {
                 lines.push('  config[0..32]: ' + (il.config_prefix || ''));
                 lines.push('  show  [0..32]: ' + (il.show_prefix   || ''));
             }
+        }
+        if (d.wrapper) {
+            EngineTools.wrapperLines(d.wrapper.process, d.wrapper)
+                .forEach(l => lines.push(l));
         }
         if (d.errors && d.errors.length) {
             lines.push('errors:   ' + d.errors.join('; '));
@@ -651,6 +626,11 @@ const AwgDashboardPage = (() => {
                  lu.routes && lu.routes.table_v6);
         }
 
+        if (d.wrapper && d.wrapper.daemon_log_tail) {
+            push('amneziawg-go log (' + (d.wrapper.daemon_log_path || '') + ')',
+                 d.wrapper.daemon_log_tail);
+        }
+
         if (d.log_tail && d.log_tail.length) {
             lines.push('── log tail (awg/routing, последние ' +
                        d.log_tail.length + ') ──');
@@ -689,40 +669,28 @@ const AwgDashboardPage = (() => {
         }
     }
 
-    async function installScript() {
-        try {
-            const data = await API.post('/api/awg/autostart/install');
-            if (data.ok) Toast.success(data.message || 'Скрипт установлен');
-            else Toast.error(data.error || 'Ошибка установки');
-        } catch (err) {
-            Toast.error(err.message);
-        } finally {
-            await refresh();
-        }
+    async function toggleDebug(on) {
+        const v = await EngineTools.setDebug('awg', on);
+        if (v !== null) debugEnabled = v;
+        renderBody();
     }
 
-    async function removeScript() {
-        if (!confirm('Удалить init-скрипт автозапуска AWG?')) return;
+    async function probe(name) {
+        if (busy[name]) return;
+        busy[name] = true;
+        renderBody();
         try {
-            const data = await API.post('/api/awg/autostart/remove');
-            if (data.ok) Toast.success(data.message || 'Скрипт удалён');
-            else Toast.error(data.error || 'Ошибка удаления');
+            const r = await API.post(`/api/awg/configs/${encodeURIComponent(name)}/test`, {});
+            if (r && r.ok) {
+                Toast.success(`${name}: связь через туннель есть (${r.target}, ${r.delay_ms} мс)`);
+            } else {
+                Toast.error(`${name}: ${(r && r.error) || 'нет связи'}`, 10000);
+            }
         } catch (err) {
             Toast.error(err.message);
         } finally {
-            await refresh();
-        }
-    }
-
-    async function regenerateScript() {
-        try {
-            const data = await API.post('/api/awg/autostart/regenerate');
-            if (data.ok) Toast.success(data.message || 'Скрипт пересоздан');
-            else Toast.error(data.error || 'Ошибка');
-        } catch (err) {
-            Toast.error(err.message);
-        } finally {
-            await refresh();
+            busy[name] = false;
+            renderBody();
         }
     }
 
@@ -876,76 +844,9 @@ const AwgDashboardPage = (() => {
         } catch (e) { Toast.error(e.message); }
     }
 
-    // ══════════════ лимит памяти amneziawg-go ══════════════
-
-    let _gomem = null;
-
-    async function loadGoMemory() {
-        try {
-            const r = await API.get('/api/awg/go-memory');
-            _gomem = (r && r.ok) ? r : null;
-        } catch (_) { _gomem = null; }
-        renderGoMemory();
-    }
-
-    function renderGoMemory() {
-        const box = document.getElementById('awg-go-memory');
-        if (!box) return;
-        const s = _gomem || {};
-        const on = !!s.enabled;
-        box.innerHTML = `
-            <div class="card-title">Лимит памяти amneziawg-go</div>
-            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer;">
-                <input type="checkbox" id="gomem-on" ${on ? 'checked' : ''}
-                       onchange="AwgDashboardPage.saveGoMemory()">
-                <span>Ограничивать память userspace-демона</span>
-            </label>
-            <p class="text-muted" style="font-size:12px; margin:6px 0 0;">
-                На роутерах с малым ОЗУ amneziawg-go (Go) может разрастаться и
-                доводить систему до нехватки памяти — частая причина внезапной
-                перезагрузки роутера. Лимит (GOGC/GOMEMLIMIT) удерживает
-                потребление в рамках. Применяется при следующем подъёме туннеля.
-            </p>
-            <div id="gomem-adv" style="margin-top:10px; ${on ? '' : 'display:none;'}">
-                <div style="display:grid; grid-template-columns:240px 1fr; gap:6px 12px; max-width:560px; align-items:center;">
-                    <label class="text-muted" style="font-size:12px;">GOGC (меньше = экономнее, чаще GC)</label>
-                    <input type="number" id="gomem-gogc" class="form-control" style="max-width:100px;"
-                           min="10" max="200" value="${escapeAttr(s.gogc || 50)}">
-                    <label class="text-muted" style="font-size:12px;">GOMEMLIMIT, МиБ (0 = не задавать)</label>
-                    <input type="number" id="gomem-mb" class="form-control" style="max-width:100px;"
-                           min="0" max="1024" value="${escapeAttr(s.memlimit_mb || 64)}">
-                </div>
-                <div style="margin-top:8px;">
-                    <button class="btn btn-ghost btn-sm" onclick="AwgDashboardPage.saveGoMemory()">Сохранить параметры</button>
-                </div>
-            </div>
-        `;
-    }
-
-    async function saveGoMemory() {
-        const on = !!(document.getElementById('gomem-on') || {}).checked;
-        const gogc = (document.getElementById('gomem-gogc') || {}).value;
-        const mb = (document.getElementById('gomem-mb') || {}).value;
-        const payload = { enabled: on };
-        if (gogc) payload.gogc = parseInt(gogc, 10) || 50;
-        if (mb !== undefined && mb !== '') payload.memlimit_mb = parseInt(mb, 10) || 0;
-        try {
-            const r = await API.post('/api/awg/go-memory', payload);
-            if (r && r.ok) {
-                _gomem = r;
-                Toast.success(on ? 'Лимит памяти включён (применится при подъёме туннеля)'
-                                 : 'Лимит памяти выключен');
-                renderGoMemory();
-            } else {
-                Toast.error((r && r.error) || 'ошибка');
-            }
-        } catch (e) { Toast.error(e.message); }
-    }
-
     return {
         render, destroy, refresh, up, down, restart, diagnostics,
-        toggleAutostart, installScript, removeScript, regenerateScript,
+        toggleAutostart, toggleDebug, probe,
         loadWatchdog, saveWatchdog,
-        loadGoMemory, saveGoMemory,
     };
 })();

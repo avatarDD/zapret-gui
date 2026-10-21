@@ -12,6 +12,7 @@ const SingboxDashboardPage = (() => {
     let configs = [];
     let env = null;
     let autostart = {};
+    let autostartStatus = null;      // /api/singbox/autostart (.status) целиком
     let busy = {};
     let transparent = null;          // /api/singbox/transparent/status
     let tpForm = {                   // форма прозрачного проксирования
@@ -118,10 +119,13 @@ const SingboxDashboardPage = (() => {
                     <div class="page-loading"><div class="spinner"></div><span>Загрузка...</span></div>
                 </div>
             </div>
+
+            <div class="card" id="sb-go-memory" style="margin-top:16px;"></div>
         `;
         if (typeof ForeignNote !== 'undefined') ForeignNote.attach(container, 'singbox');
         if (typeof Wizard !== 'undefined') Wizard.mountBanner(container, 'singbox');
         refresh();
+        EngineTools.mountGoMemory('sb-go-memory', 'singbox');
         startPolling();
     }
 
@@ -144,7 +148,12 @@ const SingboxDashboardPage = (() => {
             ]);
             env       = envResp || null;
             configs   = (cfgsResp && cfgsResp.configs) || [];
-            autostart = (autoResp && autoResp.status && autoResp.status.autostart) || {};
+            // Не ответил — оставляем прежнее: пустой ответ рисовал бы
+            // «автозапуск выключен» у всех конфигов.
+            if (autoResp && autoResp.status) {
+                autostartStatus = autoResp.status;
+                autostart = autoResp.status.autostart || {};
+            }
             transparent = tpResp || null;
             debugEnabled = !!(dbgResp && dbgResp.enabled);
             if (fiResp && fiResp.ok) fakeipOpts = fiResp;
@@ -274,6 +283,9 @@ const SingboxDashboardPage = (() => {
                     ${installBtn}
                 </div>
             </div>
+            ${autostartStatus ? `<div style="margin-top:10px;">
+                ${EngineTools.autostartLineHtml('singbox', autostartStatus, 'SingboxDashboardPage.refresh')}
+            </div>` : ''}
         `;
     }
 
@@ -325,15 +337,26 @@ const SingboxDashboardPage = (() => {
                             ${autoOn ? ' · автозапуск' : ''}
                         </div>
                     </div>
-                    <div style="display:flex; gap:6px;">
+                    <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
                         ${upBtn}
                         <button class="btn btn-ghost btn-sm" ${isBusy ? 'disabled' : ''}
                                 onclick="SingboxDashboardPage.restart('${escapeAttr(c.name)}')">
                             Restart
                         </button>
+                        <label class="text-muted" style="font-size:11px; display:flex; align-items:center; gap:4px;"
+                               title="Поднимать этот конфиг при загрузке системы">
+                            <input type="checkbox" ${autoOn ? 'checked' : ''} ${isBusy ? 'disabled' : ''}
+                                   onchange="SingboxDashboardPage.toggleAuto('${escapeAttr(c.name)}', this.checked)">
+                            автозапуск
+                        </label>
                         <button class="btn btn-ghost btn-sm"
                                 onclick="SingboxDashboardPage.showLog('${escapeAttr(c.name)}')">
                             Лог
+                        </button>
+                        <button class="btn btn-ghost btn-sm"
+                                title="Процесс, память, проверка конфига, clash_api, TUN, хвосты логов — для баг-репорта"
+                                onclick="EngineTools.showDiagnostics('singbox', '${escapeAttr(c.name)}')">
+                            Диагностика
                         </button>
                         <button class="btn btn-ghost btn-sm"
                                 onclick="window.location.hash='singbox-configs?edit=${encodeURIComponent(c.name)}'">
@@ -427,21 +450,21 @@ const SingboxDashboardPage = (() => {
         }
     }
 
+    async function toggleAuto(name, enabled) {
+        try {
+            const r = await API.post(`/api/singbox/autostart/${encodeURIComponent(name)}`,
+                                     { enabled: !!enabled });
+            if (r && r.ok) Toast.success(`автозапуск ${name}: ${enabled ? 'вкл' : 'выкл'}`);
+            else Toast.error((r && r.error) || 'ошибка');
+        } catch (e) { Toast.error(e.message); }
+        finally { await refresh(); }
+    }
+
     // Переключить режим отладки (глобально). Применяется при следующем
     // (пере)запуске инстанса.
     async function toggleDebug(checked) {
-        try {
-            const r = await API.post('/api/singbox/debug', { enabled: !!checked });
-            if (r && r.ok) {
-                debugEnabled = !!r.enabled;
-                Toast.success('Режим отладки ' + (debugEnabled ? 'включён' : 'выключен') +
-                    '. Перезапустите инстанс, чтобы применить.');
-            } else {
-                Toast.error((r && r.error) || 'ошибка');
-            }
-        } catch (e) {
-            Toast.error(e.message);
-        }
+        const v = await EngineTools.setDebug('singbox', checked);
+        if (v !== null) debugEnabled = v;
         renderSummary();
     }
 
@@ -1126,7 +1149,7 @@ const SingboxDashboardPage = (() => {
 
     return {
         render, destroy, refresh,
-        up, down, restart,
+        up, down, restart, toggleAuto,
         toggleDebug, showLog, copyLog,
         setFakeip, toggleFakeipHostlist, createFakeip,
         setLite, createLiteRoute,

@@ -385,6 +385,20 @@ make upstream-offline    # только локальные сверки (идё�
 `*_detector` (детект окружения) → `*_installer` (бинарь) → `*_manager`
 (CRUD конфигов + up/down) → `*_autostart` (init-скрипт).
 
+Обвязка у трёх движков **одна** — `core/engine_common.py`: лимит памяти Go
+(`<engine>.go_mem_enabled/go_gogc/go_memlimit_mb` → `GOGC`/`GOMEMLIMIT` в
+`launch_env`), режим отладки (`<engine>.debug_log`), init-скрипт
+автозапуска через `app.py --apply-/--stop-<engine>-autostart`
+(`render_autostart_script`, флейворы systemd/OpenWrt/Entware, `enable`
+после установки), `autostart_status/apply/stop`, снимок для разбора
+(`proxy_diagnostics`, `process_info`: RSS, потоки, аптайм) и
+лог-гард (`start_log_guard`: обрезка логов движков больше 2 МиБ).
+`singbox_autostart`/`mihomo_autostart` — тонкие обёртки над ним, AWG
+пользуется теми же функциями из `awg_manager`. Новая возможность одного
+движка добавляется сюда и сразу всем трём — UI (`components/engine_tools.js`),
+REST (`api/engine_wrapper.py`) и MCP (`tunnel_log`, `tunnel_diagnostics`,
+`tunnel_settings`) уже общие.
+
 | Группа | Модули |
 |--------|--------|
 | **sing-box** | `singbox_platform`, `singbox_detector`, `singbox_installer`, `singbox_manager`, `singbox_autostart`, `singbox_config` (парсер/валидатор/билдеры outbound'ов + `make_urltest_outbound`/`make_selector_outbound`/`wrap_in_group`), `singbox_transparent` (iptables TProxy/Redirect/Hybrid + `scope='self'` для ПК с 1 NIC), `singbox_transparent_nft` (nftables), `singbox_fakeip` (TUN+FakeIP «умный доменный роутинг»), `singbox_watchdog` (авто-рестарт зависшего инстанса по Clash API). |
@@ -571,7 +585,8 @@ stdout). Период опроса задаёт сам
 | `routing.py` | `/api/routing` | selective routing + `/interfaces` |
 | `awg.py` | `/api/awg` | AmneziaWG (configs/up/down/warp/routing) |
 | `singbox.py` | `/api/singbox` | sing-box: configs/outbounds/**proxies**/subscriptions/**pool**/**test**/transparent (scope forward·self)/autostart |
-| `mihomo.py` | `/api/mihomo` | mihomo: configs/**proxies**/test/traffic/debug/install (+releases·local)/autostart |
+| `mihomo.py` | `/api/mihomo` | mihomo: configs/**proxies**/test/traffic (+reset)/debug/install (+releases·local)/autostart |
+| `engine_wrapper.py` | `/api/{awg,singbox,mihomo}/…` | общая обвязка трёх движков: `go-memory`, `configs/<name>/diagnostics` (sing-box, mihomo), у AWG — `debug`, `configs/<name>/log`, `configs/<name>/test` |
 | `usque.py` / `warp_in_warp.py` | `/api/usque`, `/api/warp-in-warp` | WARP/MASQUE: регистрация, туннели, установка / двойной туннель |
 | `tgproxy.py` | `/api/tgproxy` | Telegram Tunnel: оба движка, секрет и `tg://proxy`-ссылка, установка/удаление |
 | `opera_proxy.py` | `/api/opera-proxy` | Opera Proxy: настройки, страны, старт/стоп, установка |
@@ -654,6 +669,7 @@ stdout). Период опроса задаёт сам
 | Мониторинг единого слоя | `unified.monitor._MonitorLoop` | TLS-пробы назначений + `failover.step()` |
 | Watchdog AWG | `awg_watchdog` | проба через туннель + handshake-age → рестарт |
 | Watchdog sing-box | `singbox_watchdog` | связь по Clash API → авто-рестарт зависшего инстанса |
+| Лог-гард движков | `engine_common.start_log_guard` | раз в 10 минут обрезает логи AWG/sing-box/mihomo больше 2 МиБ до последних 256 КиБ |
 | Healthcheck (autocircular) | `healthcheck` | дёргает референс-домены служб → авто-починка |
 | Трекер трафика прокси | `proxy_traffic` | опрос Clash API `/connections` → суммы per-outbound (пока инстанс жив) |
 | Тестер прокси | `proxy_tester._TestJob` | разовый фоновый прогон (start → poll status) |

@@ -142,14 +142,18 @@ from core.mcp import registry
 # Smart Detect (приём Tachyon): + 1 на чтение (smart_detect_status) и
 # + 1 под `tunnels_write` (smart_detect_undo — правит именованный список,
 # который кормит маршруты).
+# Одна обвязка AWG/sing-box/mihomo: + 2 на чтение (tunnel_log — хвост
+# лога движка, tunnel_diagnostics — снимок для разбора, секреты под
+# маской) и + 1 под `tunnels_write` (tunnel_settings — отладка, память
+# Go и автозапуск конфига).
 BY_SCOPE = {
-    "read": 44,
+    "read": 46,
     "control": 9,
     "strategies_write": 12,
     "config_write": 1,
     "probes": 13,
     "experiments": 7,
-    "tunnels_write": 15,
+    "tunnels_write": 16,
     "dangerous": 2,
     "shell_readonly": 11,
     "shell_full": 3,
@@ -258,6 +262,8 @@ class TestToolCounts(unittest.TestCase):
         "strategy_memory",
         # Черновики issue об ошибках самого GUI.
         "issue_draft", "issue_draft_list",
+        # Обвязка движков: лог и снимок для разбора.
+        "tunnel_diagnostics", "tunnel_log",
     ]
 
     # S7 — мутирующие наборы. Список имён рядом с числом: две записи об
@@ -291,6 +297,8 @@ class TestToolCounts(unittest.TestCase):
         # генератор конфигов: серверы Proton (сеть, без изменений) и
         # генерация с сохранением.
         "vpngen_generate", "vpngen_proton_servers",
+        # обвязка движков: отладка, память Go, автозапуск.
+        "tunnel_settings",
         # рабочая точка туннелей и маршрутов
         "known_good_promote", "known_good_rollback",
         # отмена автодобавления Smart Detect
