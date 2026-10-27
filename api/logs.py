@@ -63,7 +63,6 @@ def register(app):
         # Устанавливаем заголовки SSE ДО входа в генератор
         response.content_type = "text/event-stream"
         response.set_header("Cache-Control", "no-cache")
-        response.set_header("Connection", "keep-alive")
         response.set_header("X-Accel-Buffering", "no")
 
         # Возвращаем генератор — Bottle обработает как chunked response

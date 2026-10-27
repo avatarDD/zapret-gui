@@ -359,6 +359,22 @@ class TestSSEStream(_SSEBase):
         # Сессия названа и в заголовке: клиенту так удобнее, нам — тоже.
         self.assertIn(stream.headers["mcp-session-id"], endpoint)
 
+    def test_no_hop_by_hop_headers(self):
+        # wsgiref (сервер GUI) на hop-by-hop заголовке вроде
+        # «Connection: keep-alive» падает AssertionError-ом, и вместо
+        # потока клиент получает 500 «Critical error». Тестовый клиент
+        # такого не ловит — проверяем явно, и для потока логов тоже.
+        from wsgiref.util import is_hop_by_hop
+        for path, head in (("/api/mcp/sse",
+                            {"Authorization": "Bearer " + TOKEN}),
+                           ("/api/logs/stream", {})):
+            with self.subTest(path=path):
+                stream = _Stream(self.client.app, path=path, headers=head)
+                self.addCleanup(stream.close)
+                self.assertEqual(stream.code, 200)
+                bad = [k for k in stream.headers if is_hop_by_hop(k)]
+                self.assertEqual(bad, [])
+
     def test_message_is_delivered_into_the_stream(self):
         stream = self.open_stream()
         session_id = self.session_of(stream)

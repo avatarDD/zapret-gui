@@ -195,7 +195,6 @@ def register(app):
         # Заголовки — до входа в генератор (как в api/logs.py).
         response.content_type = "text/event-stream"
         response.set_header("Cache-Control", "no-cache")
-        response.set_header("Connection", "keep-alive")
         response.set_header("X-Accel-Buffering", "no")
         response.set_header(SESSION_HEADER, sess.id)
         return _sse_stream(sess)
