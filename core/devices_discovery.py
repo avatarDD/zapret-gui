@@ -81,6 +81,21 @@ def _is_valid_ip(ip: str) -> bool:
         return False
 
 
+def _is_host_ip(ip: str) -> bool:
+    """Валидный IPv4, который может быть адресом устройства.
+
+    0.0.0.0 NDM отдаёт для хостов, которые сейчас не в сети («адрес
+    неизвестен»); правило `from 0.0.0.0` ловит не устройство, а пакеты
+    без адреса. Broadcast/loopback/multicast — тоже не устройства.
+    """
+    if not _is_valid_ip(ip):
+        return False
+    first = int(ip.split(".", 1)[0])
+    if ip in ("0.0.0.0", "255.255.255.255"):
+        return False
+    return first != 0 and first != 127 and not (224 <= first <= 239)
+
+
 def _read_file(path: str) -> str:
     try:
         with open(path, "r", errors="replace") as f:
@@ -110,7 +125,7 @@ def _parse_lease_line(line: str) -> dict:
     hostname = parts[3].strip()
     if hostname == "*":
         hostname = ""
-    if not mac or not _is_valid_ip(ip):
+    if not mac or not _is_host_ip(ip):
         return {}
     return {
         "ip":         ip,
@@ -205,12 +220,14 @@ def _extract_ndm_hosts(data) -> list:
             continue
         mac = _normalize_mac(h.get("mac") or "")
         ip  = (h.get("ip") or "").strip()
-        if not mac and not _is_valid_ip(ip):
+        if not _is_host_ip(ip):
+            ip = ""                 # 0.0.0.0 = хост сейчас не в сети
+        if not mac and not ip:
             continue
         # Предпочитаем "name" (заданное в админке), затем "hostname".
         name = (h.get("name") or h.get("hostname") or "").strip()
         out.append({
-            "ip":         ip if _is_valid_ip(ip) else "",
+            "ip":         ip,
             "mac":        mac,
             "hostname":   name,
             "source":     "ndm",
@@ -238,11 +255,13 @@ def _parse_ndm_hosts_yaml(text: str) -> list:
             return
         mac = _normalize_mac(cur.get("mac", ""))
         ip  = (cur.get("ip") or "").strip()
-        if not mac and not _is_valid_ip(ip):
+        if not _is_host_ip(ip):
+            ip = ""
+        if not mac and not ip:
             return
         name = (cur.get("name") or cur.get("hostname") or "").strip()
         out.append({
-            "ip":         ip if _is_valid_ip(ip) else "",
+            "ip":         ip,
             "mac":        mac,
             "hostname":   name,
             "source":     "ndm",
@@ -349,7 +368,7 @@ def _read_arp() -> list:
         # MAC из нулей — невалидная запись.
         if not mac or mac == "00:00:00:00:00:00":
             continue
-        if not _is_valid_ip(ip):
+        if not _is_host_ip(ip):
             continue
         out.append({
             "ip":         ip,
@@ -380,13 +399,83 @@ def mac_ip_map() -> dict:
     return out
 
 
-def list_devices() -> list:
+def _router_side() -> tuple:
+    """(свои адреса, шлюзы по умолчанию, интерфейсы шлюзов) роутера.
+
+    Свои адреса и шлюз провайдера — не устройства LAN: правило
+    `from <адрес роутера>` уводит в туннель ответы самого роутера (и его
+    веб-интерфейс перестаёт открываться), а шлюз провайдера через LAN
+    вообще не ходит. Соседи на интерфейсе шлюза (WAN) — тоже сторона
+    провайдера, а не домашняя сеть.
+    """
+    own, gws, wan = set(), set(), set()
+    home_ifaces = set()
+    rc, out, _e = _run(["ip", "-4", "-o", "addr", "show"])
+    if rc == 0:
+        for m in re.finditer(r"^\d+:\s+(\S+)\s+inet\s+"
+                             r"(\d+\.\d+\.\d+\.\d+)/", out, re.M):
+            iface, ip = m.group(1).split("@", 1)[0], m.group(2)
+            own.add(ip)
+            if _is_home_lan(ip):
+                home_ifaces.add(iface)
+    rc, out, _e = _run(["ip", "-4", "route", "show", "default"])
+    if rc == 0:
+        for line in out.splitlines():
+            m = re.search(r"\bvia\s+(\d+\.\d+\.\d+\.\d+)", line)
+            if m:
+                gws.add(m.group(1))
+            m = re.search(r"\bdev\s+(\S+)", line)
+            # Маршрут по умолчанию через домашнюю сеть (точка доступа,
+            # ПК, роутер за роутером) — этот интерфейс и есть LAN.
+            if m and m.group(1) not in home_ifaces:
+                wan.add(m.group(1))
+    return own, gws, wan
+
+
+def _is_home_lan(ip: str) -> bool:
+    """192.168/16 и 172.16/12 — адреса домашней LAN. 10/8 и 100.64/10
+    сюда не входят: их часто выдаёт на WAN провайдер."""
+    a, b = (int(p) for p in ip.split(".")[:2])
+    return (a == 192 and b == 168) or (a == 172 and 16 <= b <= 31)
+
+
+def router_addresses() -> set:
+    """Адреса, которые нельзя брать устройством: сам роутер и его шлюзы."""
+    own, gws, _wan = _router_side()
+    return own | gws
+
+
+def _drop_router_side(devices: list) -> list:
+    """Убрать из списка сам роутер, его шлюз и соседей со стороны WAN."""
+    own, gws, wan = _router_side()
+    lan, wan_side = [], []
+    for d in devices:
+        ip = d.get("ip") or ""
+        if ip and (ip in own or ip in gws):
+            continue
+        if ip and d.get("iface") and d["iface"] in wan:
+            wan_side.append(d)
+        else:
+            lan.append(d)
+    # Маршрут по умолчанию идёт через сам мост LAN (точка доступа, ПК с
+    # одной сетевой картой) — тогда «сторона провайдера» и есть LAN.
+    if not any(d.get("ip") for d in lan):
+        lan.extend(wan_side)
+    return lan
+
+
+def list_devices(include_offline: bool = False) -> list:
     """
     Вернуть список всех видимых устройств LAN, сгруппированных по IP.
 
     Приоритет hostname: NDM (Keenetic) → DHCP-leases → ARP.
-    NDM-данные мерджатся как по IP, так и по MAC, поскольку в JSON-выводе
-    ndmq IP может быть пустым (хост зарегистрирован, но не в сети сейчас).
+    NDM-данные мерджатся сперва по MAC (он у устройства постоянный), и
+    только потом по IP: адреса переезжают между устройствами, и склейка
+    по одному IP приписывала имя одного устройства MAC'у другого.
+    Хосты NDM без адреса (0.0.0.0 — сейчас не в сети) возвращаются
+    только при `include_offline=True`, с пустым ip и `offline=True`:
+    правило на них создать нельзя, но UI может показать, что они есть.
+    Сам роутер, его шлюз и соседи со стороны WAN в список не попадают.
     """
     ndm    = _read_ndm_hosts()
     leases = _read_leases()
@@ -409,29 +498,38 @@ def list_devices() -> list:
         else:
             by_ip[d["ip"]] = dict(d)
 
-    # 3) NDM — обогащаем hostname. Сверка идёт по IP, при пустом IP —
-    #    по MAC (бывает у Keenetic для статических резерваций).
+    # 3) NDM — обогащаем hostname. Сверка по MAC, при его отсутствии —
+    #    по IP, но только если MAC'и не противоречат друг другу.
     by_mac = {rec.get("mac"): rec for rec in by_ip.values() if rec.get("mac")}
+    offline = []
     for d in ndm:
         target = None
-        if d["ip"] and d["ip"] in by_ip:
-            target = by_ip[d["ip"]]
-        elif d["mac"] and d["mac"] in by_mac:
+        if d["mac"] and d["mac"] in by_mac:
             target = by_mac[d["mac"]]
+        elif d["ip"] and d["ip"] in by_ip:
+            cand = by_ip[d["ip"]]
+            if not d["mac"] or not cand.get("mac") \
+                    or cand.get("mac") == d["mac"]:
+                target = cand
         if target is not None:
             # NDM считаем авторитетным источником имени.
             if d["hostname"]:
                 target["hostname"] = d["hostname"]
+            if d["mac"] and not target.get("mac"):
+                target["mac"] = d["mac"]
+                by_mac[d["mac"]] = target
             cur_src = target.get("source", "")
             if "ndm" not in cur_src:
                 target["source"] = (cur_src + "+ndm").lstrip("+")
-        else:
-            # Новый хост, не виден ни в leases, ни в ARP. Добавим, если
-            # у него есть IP — иначе строка без IP мало полезна для UI.
-            if d["ip"]:
-                by_ip[d["ip"]] = dict(d)
-                if d["mac"]:
-                    by_mac[d["mac"]] = by_ip[d["ip"]]
+        elif d["ip"] and d["ip"] not in by_ip:
+            # Новый хост, не виден ни в leases, ни в ARP.
+            by_ip[d["ip"]] = dict(d)
+            if d["mac"]:
+                by_mac[d["mac"]] = by_ip[d["ip"]]
+        elif not d["ip"] and d["mac"]:
+            rec = dict(d)
+            rec["offline"] = True
+            offline.append(rec)
 
     # 4) Реверс-DNS / mDNS — заполняет hostname, если он всё ещё пуст.
     #    На Debian-клиенте (без своего DHCP-сервера) leases и NDM —
@@ -462,7 +560,7 @@ def list_devices() -> list:
             if "oui" not in cur_src:
                 rec["source"] = (cur_src + "+oui").lstrip("+")
 
-    out = list(by_ip.values())
+    out = _drop_router_side(list(by_ip.values()))
     # Стабильная сортировка по IPv4 (числовая).
     def _ip_key(rec):
         try:
@@ -470,6 +568,9 @@ def list_devices() -> list:
         except ValueError:
             return (999, 999, 999, 999)
     out.sort(key=_ip_key)
+    if include_offline:
+        out.extend(sorted(offline, key=lambda r: (r["hostname"] or "~",
+                                                   r["mac"])))
     return out
 
 
@@ -629,7 +730,7 @@ def _reverse_lookup(ip: str) -> str:
 
 def get_device_by_ip(ip: str) -> dict:
     """Найти одно устройство по IP. Вернёт {} если нет."""
-    if not _is_valid_ip(ip):
+    if not _is_host_ip(ip):
         return {}
     for d in list_devices():
         if d["ip"] == ip:

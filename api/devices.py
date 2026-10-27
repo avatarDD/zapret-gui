@@ -4,7 +4,9 @@ REST API для обнаружения устройств LAN.
 
 Маршруты:
   GET /api/devices            — текущий список устройств
-                                  (DHCP-leases + ARP, merged)
+                                  (DHCP-leases + ARP + NDM, merged;
+                                  хосты NDM не в сети — с ip="" и
+                                  offline=true)
   GET /api/devices/sources    — диагностика источников
 """
 
@@ -19,7 +21,7 @@ def register(app):
         try:
             from core.devices_discovery import list_devices, sources_status
             return {"ok": True,
-                    "devices": list_devices(),
+                    "devices": list_devices(include_offline=True),
                     "sources": sources_status()}
         except Exception as e:
             response.status = 500

@@ -343,6 +343,27 @@ def _norm_device_ip(raw: str) -> str:
     return str(ipaddress.ip_address(s))
 
 
+def _not_a_device(ip: str) -> str:
+    """Причина, по которой одиночный адрес не годится в устройства, или ''.
+
+    0.0.0.0 — так NDM помечает хост, который сейчас не в сети; правило
+    `from 0.0.0.0` ловит не устройство, а пакеты без адреса. Подсети не
+    трогаем — у правила на подсеть свои исключения для LAN и роутера.
+    Адреса самого роутера проверяет manager.save_route: они меняются, и
+    проверять их при чтении settings.json нельзя.
+    """
+    if "/" in ip:
+        return ""
+    addr = ipaddress.ip_address(ip)
+    if addr.is_unspecified:
+        return ("%s — не адрес устройства: так роутер помечает устройство,"
+                " которое сейчас не в сети. Подключите его и выберите"
+                " заново" % ip)
+    if addr.is_loopback or addr.is_multicast or ip == "255.255.255.255":
+        return "%s — не адрес устройства в сети" % ip
+    return ""
+
+
 def _clean_devices(v, strict: bool = False) -> list:
     """
     Нормализовать список устройств-источников:
@@ -373,6 +394,11 @@ def _clean_devices(v, strict: bool = False) -> list:
                 raise ValueError("Некорректный IP или подсеть устройства: %s"
                                  " (примеры: 192.168.1.50, 192.168.1.0/24)"
                                  % ip)
+            continue
+        why = _not_a_device(ip)
+        if why:
+            if strict:
+                raise ValueError(why)
             continue
         entry = by_ip.get(ip)
         if entry is None:
