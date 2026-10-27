@@ -1851,7 +1851,12 @@ const RoutingUnifiedPage = (() => {
                         const inRoute = chosen.some(x => x.ip === dv.ip);
                         const used = usedBy[dv.ip];
                         let action;
-                        if (inRoute) {
+                        if (!dv.ip) {
+                            // Хост NDM без адреса (роутер отдаёт 0.0.0.0):
+                            // правило «с адреса» на него создать нельзя.
+                            action = `<span class="text-muted" style="font-size:11px;"
+                                title="Роутер знает устройство, но адреса у него сейчас нет. Подключите его к сети и обновите список.">нет IP — не в сети</span>`;
+                        } else if (inRoute) {
                             action = `<button class="btn btn-ghost btn-sm"
                                 data-action="removeDevice" data-ip="${escAttr(dv.ip)}">Убрать</button>`;
                         } else {
@@ -1860,7 +1865,7 @@ const RoutingUnifiedPage = (() => {
                                 + (used ? `<div class="text-muted" style="font-size:10px;">в «${esc(used)}»</div>` : '');
                         }
                         return `<tr>
-                            <td style="font-family:monospace;">${esc(dv.ip)}</td>
+                            <td style="font-family:monospace;">${dv.ip ? esc(dv.ip) : '<span class="text-muted">—</span>'}</td>
                             <td style="font-family:monospace;">${esc(dv.mac || '—')}</td>
                             <td>${esc(dv.hostname || '')}</td>
                             <td><span class="text-muted" style="font-size:11px;">${esc(dv.source || '')}</span></td>
@@ -1965,6 +1970,11 @@ const RoutingUnifiedPage = (() => {
         if (!looksLikeAddress(ip)) {
             Toast.error('Нужен IP (192.168.1.50) или подсеть '
                       + '(192.168.1.0/24)');
+            return;
+        }
+        if (/^0+(\.0+){3}(\/32)?$/.test(ip)) {
+            Toast.error('0.0.0.0 — не адрес устройства: так роутер помечает '
+                      + 'устройства, которые сейчас не в сети');
             return;
         }
         const known = devices.find(d => d.ip === ip) || {};
