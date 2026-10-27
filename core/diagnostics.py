@@ -274,6 +274,36 @@ def traceroute_host(host, max_hops=20, port=443, use_tcp=True, timeout=45):
 _CURL_NETWORK_RC = frozenset((5, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92))
 
 
+# «SSL connection using TLSv1.3 / …» (OpenSSL, wolfSSL, GnuTLS) и
+# «mbedTLS: TLSv1.2 Handshake complete, …» (mbedTLS — curl OpenWrt).
+# Строки «TLSv1.0 (OUT), TLS header» — версия записи, а не сессии.
+_CURL_TLS_RE = re.compile(
+    r"^\* (?:SSL connection using|mbedTLS:)\s+(TLSv1(?:\.[0-3])?|SSLv3)\b",
+    re.M)
+
+
+def _curl_tls_version(stderr):
+    """Версия TLS из вывода ``curl -v``; None — http:// или не нашлась.
+
+    При редиректах (-L) берём последнюю: это соединение дало ответ.
+    """
+    found = _CURL_TLS_RE.findall(stderr or "")
+    return found[-1] if found else None
+
+
+def _curl_error(stderr):
+    """Причина провала из вывода ``curl -sS -v``.
+
+    С -v в stderr ещё и журнал соединения (строки с ``*``, ``>``, ``<``,
+    ``{``, ``}``); сама ошибка — строка ``curl: (N) …``.
+    """
+    lines = [l.strip() for l in (stderr or "").splitlines()]
+    errs = [l for l in lines if l.startswith("curl:")]
+    if not errs:
+        errs = [l for l in lines if l and l[0] not in "*><{}"]
+    return ("\n".join(errs) or (stderr or "").strip())[:200]
+
+
 def check_http(url, timeout=5, fresh=False, single=False):
     """
     HTTP(S) проверка через curl → wget → urllib fallback.
@@ -315,11 +345,17 @@ def check_http(url, timeout=5, fresh=False, single=False):
     curl_bin = _find_binary(["curl"])
     if curl_bin:
         t0 = time.time()
+        # Версию TLS у curl через --write-out не получить: переменной
+        # `ssl_version` в нём нет вовсе, и каждый вызов писал в stderr
+        # «unknown --write-out variable», которое затем вставало в error
+        # вместо настоящей причины провала. Берём её из -v того же
+        # соединения (_curl_tls_version), второй коннект не нужен.
         cmd = [
             curl_bin,
             "-sS",                      # silent но показать ошибки
+            "-v",                       # версия TLS — из журнала рукопожатия
             "-o", "/dev/null",           # не выводить тело
-            "-w", "%{http_code}|%{ssl_version}|%{redirect_url}|%{time_total}",
+            "-w", "%{http_code}|%{redirect_url}|%{time_total}",
             "-L",                        # следовать редиректам
             "--max-time", str(timeout),
             "--connect-timeout", str(timeout),
@@ -330,22 +366,22 @@ def check_http(url, timeout=5, fresh=False, single=False):
 
         if rc == 0 and stdout:
             parts = stdout.strip().split("|")
-            if len(parts) >= 4:
+            if len(parts) >= 3:
                 try:
                     result["status_code"] = int(parts[0])
                 except ValueError:
                     pass
-                result["tls_version"] = parts[1] if parts[1] else None
-                result["redirect_url"] = parts[2] if parts[2] else None
+                result["tls_version"] = _curl_tls_version(stderr)
+                result["redirect_url"] = parts[1] if parts[1] else None
                 try:
-                    result["response_time"] = round(float(parts[3]) * 1000)
+                    result["response_time"] = round(float(parts[2]) * 1000)
                 except ValueError:
                     result["response_time"] = round((time.time() - t0) * 1000)
                 result["ok"] = 200 <= result["status_code"] < 400
                 _cache_set(cache_key, result)
                 return result
         elif stderr:
-            result["error"] = stderr.strip()[:200]
+            result["error"] = _curl_error(stderr)
         if single and (rc in _CURL_NETWORK_RC
                        or (rc is None and stderr == "timeout")):
             result["response_time"] = round((time.time() - t0) * 1000)
