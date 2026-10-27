@@ -5817,3 +5817,21 @@ body.expert-mode .expert-note { display: none !important; }
     cursor: pointer; user-select: none;
 }
 .nav-view-switch:hover { color: var(--text-primary); text-decoration: underline; }
+
+/* WARP-in-WARP: схема «Устройства → inner ⇢ внутри ⇢ outer → Интернет»
+   (web/js/components/wiw_chain.js). */
+.wiw-flow {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin-top: 8px; font-size: 13px;
+}
+.wiw-node {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    padding: 4px 10px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--bg-input);
+}
+.wiw-node.wiw-inner { border-color: var(--success); }
+.wiw-node.wiw-outer { border-color: var(--info); }
+.wiw-kind { font-size: 11px; color: var(--text-muted); }
+.wiw-arrow { color: var(--text-muted); white-space: nowrap; }
+.wiw-end { color: var(--text-secondary); }
+.wiw-badge { margin-left: 4px; }

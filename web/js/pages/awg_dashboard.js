@@ -14,6 +14,8 @@ const AwgDashboardPage = (() => {
     let autostart = { interfaces: {}, script_installed: false, script_path: '' };
     let keeneticRouting = null;
     let debugEnabled = false;        // /api/awg/debug (LOG_LEVEL=verbose при подъёме)
+    let wiwChains = [];              // собранные WARP-in-WARP (/api/awg/interfaces)
+    let routes = null;               // маршруты единого слоя — куда ведут; null = не узнали
     let busy = {};
 
     // ══════════════ render ══════════════
@@ -69,6 +71,7 @@ const AwgDashboardPage = (() => {
 
             <div class="card" id="awg-watchdog" style="margin-bottom: 16px;"></div>
             <div class="card" id="awg-go-memory" style="margin-bottom: 16px;"></div>
+            <div id="awg-wiw"></div>
             <div id="awg-tunnels"></div>
             <div id="awg-keenetic-routing"></div>
         `;
@@ -101,7 +104,7 @@ const AwgDashboardPage = (() => {
 
     async function refresh() {
         try {
-            const [cfgsResp, ifsResp, autoResp, envResp, dbgResp] = await Promise.all([
+            const [cfgsResp, ifsResp, autoResp, envResp, dbgResp, routesResp] = await Promise.all([
                 API.get('/api/awg/configs'),
                 API.get('/api/awg/interfaces'),
                 // Не ответил (GUI занят перезапуском движка, firewall) —
@@ -110,9 +113,16 @@ const AwgDashboardPage = (() => {
                 API.get('/api/awg/autostart').catch(() => null),
                 API.get('/api/awg/environment').catch(() => null),
                 API.get('/api/awg/debug').catch(() => null),
+                // Для карточки WARP-in-WARP: ведёт ли хоть один маршрут
+                // во внутренний туннель.
+                API.get('/api/unified/routes').catch(() => null),
             ]);
             configs = cfgsResp.configs || [];
             interfaces = ifsResp.interfaces || [];
+            // Связки, где хотя бы один слой — AmneziaWG.
+            wiwChains = (ifsResp.wiw_chains || []).filter(ch =>
+                ch.outer_kind === 'awg' || ch.inner_kind === 'awg');
+            routes = (routesResp && routesResp.routes) || null;
             if (autoResp && autoResp.status) autostart = autoResp.status;
             if (!autostart.interfaces) autostart.interfaces = {};
             keeneticRouting = (envResp && envResp.keenetic_routing) || null;
@@ -202,6 +212,7 @@ const AwgDashboardPage = (() => {
         });
         wrap.innerHTML = cards.join('');
 
+        renderWiw();
         renderKeeneticRouting();
         loadSparklines();
     }
@@ -224,6 +235,20 @@ const AwgDashboardPage = (() => {
                 }
             } catch (_) { /* график — не критично */ }
         }
+    }
+
+    // Карточка WARP-in-WARP: какой туннель внутри какого и куда вести
+    // маршруты. Без неё на странице просто два одинаковых WARP-туннеля.
+    function renderWiw() {
+        const box = document.getElementById('awg-wiw');
+        if (!box) return;
+        if (!wiwChains.length || typeof WiwChain === 'undefined') {
+            box.innerHTML = '';
+            return;
+        }
+        box.innerHTML = wiwChains.map(ch =>
+            `<div style="margin-bottom: 12px;">${WiwChain.cardHtml(ch, routes)}</div>`
+        ).join('');
     }
 
     function renderKeeneticRouting() {
@@ -325,6 +350,7 @@ const AwgDashboardPage = (() => {
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="display:flex; align-items: center; gap: 8px;">
                         <strong>${escapeHtml(cfg.name)}</strong> ${orphan} ${ifaceLabel}
+                        ${typeof WiwChain !== 'undefined' ? WiwChain.badgeHtml(wiwChains, cfg.name) : ''}
                         <span style="display:flex; gap: 6px; align-items: center; margin-left: 8px;">
                             ${statusBadge}
                         </span>

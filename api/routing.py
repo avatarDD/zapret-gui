@@ -113,7 +113,12 @@ def register(app):
              {"name": "usque0", "source": "usque", "type": "usque-tun"},
              {"name": "mihomo-tun", "source": "mihomo", "type": "mihomo-tun"},
              ...],
-           "notes": [{"source": "mihomo", "text": "<почему цели нет>"}]}
+           "notes": [{"source": "mihomo", "text": "<почему цели нет>"}],
+           "wiw_chains": [{"engine": "awg", "outer": "warp1",
+                           "inner": "warp2", ...}]}
+
+        `wiw_chains` — собранные WARP-in-WARP (core/wiw_chain.py): по ним
+        UI подписывает, какой туннель внутренний, а какой внешний.
 
         `notes` — подсказки о движках, которые запущены, но интерфейса не
         дают (например mihomo без секции `tun`): без них список выглядит
@@ -256,7 +261,17 @@ def register(app):
                 log.warning("routing/interfaces: mihomo не добавлен: %s"
                             % e, source="routing")
 
-            return {"ok": True, "interfaces": result, "notes": notes}
+            wiw = []
+            try:
+                from core.wiw_chain import chains as _wiw_chains
+                wiw = _wiw_chains()
+            except Exception as e:
+                from core.log_buffer import log
+                log.warning("routing/interfaces: WARP-in-WARP не прочитан: %s"
+                            % e, source="routing")
+
+            return {"ok": True, "interfaces": result, "notes": notes,
+                    "wiw_chains": wiw}
         except Exception as e:
             response.status = 500
             return {"ok": False, "error": str(e)}
