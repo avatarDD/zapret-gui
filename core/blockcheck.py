@@ -1350,7 +1350,8 @@ class BlockcheckRunner:
     # Вердикты, которые уточняют симптом; flaky/inconclusive/clear —
     # только примечание, классификацию не трогают.
     _DIFFERENTIAL_REFINES = frozenset(("prefix", "opaque", "address",
-                                       "response", "local_address"))
+                                       "response", "local_address",
+                                       "private_record"))
     _DIFFERENTIAL_MAX_TARGETS = 8
 
     def _run_differential(self, report: BlockcheckReport,

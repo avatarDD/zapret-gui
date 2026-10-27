@@ -693,12 +693,11 @@ def _usque_iface(manager, name: str) -> str:
     scope="read",
     mutating=False,
     title="Tunnel diagnostics",
-    description=("Bug-report snapshot of one sing-box, mihomo or "
-                 "AmneziaWG config: process (RSS, threads, uptime), "
-                 "binary, config check, autostart, controller/TUN, Go "
-                 "memory limit, debug mode, log tail; for AWG also routes "
-                 "and rules. Secrets masked. Untrusted data. / Снимок "
-                 "состояния туннеля для разбора."),
+    description=("Bug-report snapshot of a sing-box, mihomo or AWG "
+                 "config: process, binary, config check, TUN, Go memory, "
+                 "log tail, AWG routes/rules. Secrets masked. Too big — "
+                 "by sections (`sections_omitted`, `sections`). Untrusted "
+                 "data. / Снимок туннеля; большой — по разделам."),
     schema={
         "type": "object",
         "properties": {
@@ -706,6 +705,16 @@ def _usque_iface(manager, name: str) -> str:
                        "description": "Which engine. / Какой движок."},
             "name": {"type": "string", "maxLength": 64,
                      "description": "Config name. / Имя конфига."},
+            "sections": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 64},
+                "maxItems": 32,
+                "description": ("Only these top-level keys of "
+                                "`diagnostics` (e.g. routes, rules, "
+                                "setconf_text, log_tail); names are in "
+                                "`sections_all`. / Только эти разделы "
+                                "снимка."),
+            },
         },
         "required": ["engine", "name"],
         "additionalProperties": False,
@@ -741,10 +750,93 @@ def tunnel_diagnostics(args: dict) -> dict:
     # тех, что реестр маскирует как свободный текст.
     for key in [k for k in info if k.endswith("_text")]:
         info[key] = redact.redact_text(info[key])
-    return {"ok": True, "engine": engine, "name": name,
-            "diagnostics": info, "note": NOTE,
-            "hint": ("лог целиком — tunnel_log(engine, name); режим "
-                     "отладки и память — tunnel_settings")}
+    hint = ("лог целиком — tunnel_log(engine, name); режим отладки и "
+            "память — tunnel_settings")
+    wanted = [str(x).strip() for x in (args.get("sections") or [])
+              if str(x).strip()]
+    if wanted:
+        unknown = [k for k in wanted if k not in info]
+        if unknown:
+            return {"ok": False, "engine": engine, "name": name,
+                    "error": "таких разделов нет: %s" % ", ".join(unknown),
+                    "sections_all": list(info)}
+        info = {k: info[k] for k in wanted}
+    fitted, omitted, trimmed = _fit_diagnostics(info)
+    out = {"ok": True, "engine": engine, "name": name,
+           "diagnostics": fitted, "note": NOTE, "hint": hint}
+    if omitted or trimmed or wanted:
+        out["sections_all"] = list(dict(result.get("diagnostics") or {}))
+    if omitted:
+        # Реестр иначе заменил бы ответ целиком на «слишком большой»
+        # (registry._truncated), а сузить снимок было нечем.
+        out["sections_omitted"] = omitted
+        out["hint"] = ("снимок больше лимита ответа: отданы разделы, что "
+                       "влезли; остальные — tunnel_diagnostics(engine, "
+                       "name, sections=[%s])"
+                       % ", ".join('"%s"' % k for k in list(omitted)[:3]))
+    if trimmed:
+        out["sections_trimmed"] = trimmed
+    return out
+
+
+# Длинная строка внутри раздела, который один не влезает в ответ,
+# режется до стольких символов (с пометкой), шаг за шагом вдвое.
+DIAG_STR_START = 8192
+DIAG_STR_MIN = 256
+
+
+def _fit_diagnostics(info: dict):
+    """Разделы снимка, что влезают в лимит ответа, по порядку.
+
+    Возвращает ``(влезло, {раздел: байт} невлезших, [урезанные])``.
+    Раздел, который не влезает даже один (огромный лог или setconf с
+    I1-блобом), отдаётся с обрезанными длинными строками — иначе через
+    MCP его не получить никогда.
+    """
+    budget = _paging.response_budget()
+    sizes = {k: _paging._size({k: v}) for k, v in info.items()}
+    if sum(sizes.values()) <= budget:
+        return info, {}, []
+    fitted, omitted, used = {}, {}, 0
+    for key, value in info.items():
+        if used + sizes[key] <= budget:
+            fitted[key] = value
+            used += sizes[key]
+        else:
+            omitted[key] = sizes[key]
+    trimmed = []
+    if not fitted and omitted:
+        # Ни один раздел не влез целиком — первый отдаём урезанным.
+        key = next(iter(omitted))
+        cap = DIAG_STR_START
+        value = _trim_strings(info[key], cap)
+        while cap > DIAG_STR_MIN and _paging._size({key: value}) > budget:
+            cap //= 2
+            value = _trim_strings(info[key], cap)
+        if _paging._size({key: value}) <= budget:
+            fitted[key] = value
+            omitted.pop(key)
+            trimmed.append(key)
+    return fitted, omitted, trimmed
+
+
+def _trim_strings(value, cap: int):
+    """Копия значения, где строки длиннее ``cap`` обрезаны (хвост — в
+    логах самое свежее, поэтому оставляем его)."""
+    if isinstance(value, str):
+        if len(value) <= cap:
+            return value
+        return "…[обрезано %d симв.]\n%s" % (len(value) - cap,
+                                             value[-cap:])
+    if isinstance(value, dict):
+        return {k: _trim_strings(v, cap) for k, v in value.items()}
+    if isinstance(value, list):
+        items = [_trim_strings(v, cap) for v in value]
+        if len(items) > 200:
+            items = ["…[обрезано %d записей]" % (len(items) - 200)] \
+                + items[-200:]
+        return items
+    return value
 
 
 @tool(

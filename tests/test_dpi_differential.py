@@ -210,10 +210,32 @@ class TestNetwork(unittest.TestCase):
 
     def test_local_address(self):
         with mock.patch.object(dd, "_pick_ip",
-                               return_value=(["10.171.171.171"], True)):
+                               return_value=(["10.171.171.171"], True)), \
+                mock.patch.object(dd, "_public_ips",
+                                  return_value=["104.21.32.39"]):
             result = dd.classify("rutracker.org", mark=0)
         self.assertEqual(result["verdict"], dd.LOCAL_ADDRESS)
         self.assertEqual(result["remediation"], "dns")
+        self.assertIn("104.21.32.39", result["reason"])
+
+    def test_local_address_doh_silent(self):
+        with mock.patch.object(dd, "_pick_ip",
+                               return_value=(["10.171.171.171"], True)), \
+                mock.patch.object(dd, "_public_ips", return_value=[]):
+            result = dd.classify("rutracker.org", mark=0)
+        self.assertEqual(result["verdict"], dd.LOCAL_ADDRESS)
+        self.assertIn("не проверено", result["reason"])
+
+    def test_private_record_of_domain_itself(self):
+        # kinozal.tv: 127.0.0.1 отдаёт и публичный DoH — подмены нет.
+        with mock.patch.object(dd, "_pick_ip",
+                               return_value=(["127.0.0.1"], True)), \
+                mock.patch.object(dd, "_public_ips",
+                                  return_value=["127.0.0.1"]):
+            result = dd.classify("kinozal.tv", mark=0)
+        self.assertEqual(result["verdict"], dd.PRIVATE_RECORD)
+        self.assertEqual(result["remediation"], "none")
+        self.assertIn("сам домен", result["reason"])
 
 
 @unittest.skipUnless(shutil.which("openssl"), "нет openssl")

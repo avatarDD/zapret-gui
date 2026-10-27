@@ -28,6 +28,7 @@ ipset/nftset+fwmark:
 одного правила всегда вызывают full rewrite managed-файла.
 """
 
+import re
 import threading
 
 from core.log_buffer import log
@@ -126,11 +127,12 @@ def _detect_backend():
     return None, ""
 
 
-def _all_domain_rules():
-    """Все enabled DomainRoutingRule из storage."""
+def _all_domain_rules(exclude: str = ""):
+    """Все enabled DomainRoutingRule из storage (кроме ``exclude``)."""
     from core.routing import storage
     return [r for r in storage.load_rules()
-            if isinstance(r, DomainRoutingRule) and r.enabled]
+            if isinstance(r, DomainRoutingRule) and r.enabled
+            and r.id != exclude]
 
 
 def _expand_rule(rule):
@@ -209,10 +211,18 @@ def _add_static_cidrs_to_sets(cidrs, set_v4, set_v6, backend) -> int:
     return added
 
 
-def _rebuild_managed_dnsmasq():
-    """Перегенерить managed-файл по всем активным domain-правилам."""
+def _rebuild_managed_dnsmasq(exclude: str = ""):
+    """Перегенерить managed-файл по всем активным domain-правилам.
+
+    ``exclude`` — id снимаемого правила. Менеджер удаляет правило из
+    storage ПОСЛЕ снятия (routing.manager.remove_rule), и без исключения
+    пересборка видела бы его живым: блок `# rule <id>` и `nftset=`
+    переписывались обратно, а последний доменный маршрут не снимал
+    `conf-file=` из dnsmasq.conf.
+    """
     dn = dnsmasq_integration.DnsmasqIntegration()
     set_kind = _choose_set_kind(dn)
+    rules = _all_domain_rules(exclude)
 
     blocks = []
     # Если dnsmasq не умеет ни nftset, ни ipset (или нет соответствующего
@@ -224,7 +234,7 @@ def _rebuild_managed_dnsmasq():
         log.warning("dnsmasq собран без nftset и без ipset (или нет nft/ipset"
                     " в системе) — managed-файл без set-директив, domain-"
                     "роутинг через iproute-фолбэк", source="routing")
-    for r in (_all_domain_rules() if set_kind else []):
+    for r in (rules if set_kind else []):
         domains = _expand_rule_domains(r)
         if not domains:
             continue
@@ -243,7 +253,7 @@ def _rebuild_managed_dnsmasq():
     # маршрут, а данные о нём остались», и любая последующая правка/
     # удаление файла руками роняет dnsmasq при старте вместе с DHCP
     # (issue #332).
-    if not blocks and not _all_domain_rules():
+    if not blocks and not rules:
         rm = dn.remove_include()
         if not rm.get("ok"):
             log.warning("dnsmasq include cleanup: %s" % rm.get("error"),
@@ -1126,7 +1136,9 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
     if _ndms_available() and _is_native_ndms_iface(rule.target_iface):
         try:
             from core.routing import ndms_backend
-            return ndms_backend.remove_domain_rule(rule)
+            res = ndms_backend.remove_domain_rule(rule)
+            _drop_managed_block(rule.id)
+            return res
         except Exception as e:
             log.warning("routing(ndms): remove упал, fallback на dnsmasq: %s"
                         % e, source="routing")
@@ -1134,17 +1146,21 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
     # Если правило применялось через ip-route (userspace-туннель без
     # dnsmasq) — снимаем тем же путём.
     if rule.id in _iproute_state_load():
-        return _remove_domain_via_iproute(rule)
+        res = _remove_domain_via_iproute(rule)
+        _drop_managed_block(rule.id)
+        return res
 
     # Set-путь без dnsmasq (Keenetic с ipset/nft) — симметрично apply.
     if rule.id in _sets_state_load():
         with _lock:
             try:
-                return _remove_domain_via_sets(rule)
+                res = _remove_domain_via_sets(rule)
             except Exception as e:
                 log.warning("routing: снятие set-правила %s упало: %s"
                             % (rule.id, e), source="routing")
                 return {"ok": False, "error": str(e)}
+        _drop_managed_block(rule.id)
+        return res
 
     with _lock:
         backend, kind = _detect_backend()
@@ -1152,7 +1168,7 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
             # Бэкенд недоступен — всё равно перегенерим managed-файл,
             # чтобы dnsmasq не пытался писать в несуществующий set.
             return {"ok": True, "skipped": True,
-                    "dnsmasq": _rebuild_managed_dnsmasq()}
+                    "dnsmasq": _rebuild_managed_dnsmasq(exclude=rule.id)}
 
         mark = _mark_for(rule.id)
         ifname = rule.target_iface
@@ -1171,10 +1187,31 @@ def remove_domain_rule(rule: DomainRoutingRule) -> dict:
         from core.routing import masquerade
         masquerade.remove_if_unused(ifname, excluding_id=rule.id)
 
-        dn_res = _rebuild_managed_dnsmasq()
+        dn_res = _rebuild_managed_dnsmasq(exclude=rule.id)
         log.info("routing: domain-правило %s снято" % rule.id,
                  source="routing")
         return {"ok": True, "dnsmasq": dn_res, "backend": kind}
+
+
+def _drop_managed_block(rule_id: str) -> None:
+    """Убрать блок правила из managed-файла, если он там остался.
+
+    NDMS-, iproute- и set-путь dnsmasq не трогают, но правило могло
+    раньше применяться через dnsmasq (сменился бэкенд, туннель стал
+    нативным) — тогда его `# rule <id>` жил в файле до ручного sweep.
+    """
+    try:
+        dn = dnsmasq_integration.DnsmasqIntegration()
+        text = dnsmasq_integration._read_file(
+            dn.managed_file_path(dn.find_main_config()))
+        if not re.search(r"^# rule %s$" % re.escape(rule_id), text or "",
+                         re.M):
+            return
+        with _lock:
+            _rebuild_managed_dnsmasq(exclude=rule_id)
+    except Exception as e:                      # noqa: BLE001 — граница
+        log.warning("dnsmasq managed-файл после снятия %s: %s"
+                    % (rule_id, e), source="routing")
 
 
 def reapply_all_domain_rules() -> dict:

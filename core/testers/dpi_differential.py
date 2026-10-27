@@ -24,6 +24,9 @@
 
 * ``local_address`` — имя разрешается в приватный адрес: подменяет
   роутер, AdGuard или собственный редирект, провайдер ни при чём;
+* ``private_record`` — приватный адрес отдаёт сам домен: публичный DoH
+  (мимо местного резолвера) отвечает тем же. Чинить DNS-настройками
+  роутера нечего — так опубликовано у владельца имени;
 * ``response`` — запрос проходит, режут ОТВЕТ: в TLS 1.2 сертификат
   едет открытым текстом, и DPI убивает поток после ServerHello.
 
@@ -64,6 +67,7 @@ OPAQUE = "opaque"
 ADDRESS = "address"
 RESPONSE = "response"
 LOCAL_ADDRESS = "local_address"
+PRIVATE_RECORD = "private_record"
 UNREACHABLE = "unreachable"
 FLAKY = "flaky"
 INCONCLUSIVE = "inconclusive"
@@ -80,6 +84,8 @@ VERDICTS = {
               "открытым текстом) — разрезом запроса не лечится",
     LOCAL_ADDRESS: "имя разрешается в приватный адрес: подменяет роутер, "
                    "AdGuard или локальный редирект — провайдер ни при чём",
+    PRIVATE_RECORD: "приватный адрес публикует сам домен — публичный DoH "
+                    "отвечает тем же; ни провайдер, ни роутер ни при чём",
     UNREACHABLE: "до адреса нет даже TCP",
     FLAKY: "повторы разошлись — измерению верить нельзя",
     INCONCLUSIVE: "вердикта нет: данных не хватило",
@@ -95,6 +101,7 @@ DPI_BY_VERDICT = {
     ADDRESS: DPIClassification.IP_BLOCK,
     UNREACHABLE: DPIClassification.IP_BLOCK,
     LOCAL_ADDRESS: DPIClassification.DNS_FAKE,
+    PRIVATE_RECORD: DPIClassification.NONE,
     FLAKY: DPIClassification.UNKNOWN,
     INCONCLUSIVE: DPIClassification.UNKNOWN,
 }
@@ -343,6 +350,39 @@ def _pick_ip(domain: str, port: int):
     return ips, local
 
 
+def _public_ips(domain: str, timeout: float) -> list:
+    """A-адреса по публичному DoH — мимо роутера и провайдера.
+
+    ``[]`` — DoH не ответил или не знает имя: сравнить не с чем.
+    """
+    from core.block_detector import doh_resolve
+    try:
+        return doh_resolve(domain, timeout=timeout)
+    except Exception:                           # noqa: BLE001 — граница
+        return []
+
+
+def _private_reason(domain: str, ips: list, timeout: float):
+    """Чей приватный адрес: местной подмены или самого домена.
+
+    Местный резолвер (роутер, AdGuard, hosts) и сам домен дают один и
+    тот же симптом — 127.0.0.1 или 10.x. Различает их публичный DoH:
+    ответил тоже приватным — так опубликовано у владельца имени.
+    """
+    from core.block_detector import all_non_public
+    shown = ", ".join(ips[:3])
+    public = _public_ips(domain, min(float(timeout or 4), 4.0))
+    if public and all_non_public(public):
+        return PRIVATE_RECORD, ("публичный DoH тоже отдаёт %s — так "
+                                "отвечает сам домен" % ", ".join(public[:3]))
+    if public:
+        return LOCAL_ADDRESS, ("локально %s, а публичный DoH — %s"
+                               % (shown, ", ".join(public[:3])))
+    return LOCAL_ADDRESS, ("все адреса приватные: %s (публичный DoH не "
+                           "ответил — не проверено, не сам ли домен так "
+                           "отвечает)" % shown)
+
+
 def classify(domain: str, port: int = 443, timeout: float = 5.0,
              repeats: int = 2, control_sni: str = CONTROL_SNI,
              mark=None, check_tls12: bool = True) -> dict:
@@ -403,8 +443,8 @@ def classify(domain: str, port: int = 443, timeout: float = 5.0,
     if not ips:
         return _result(INCONCLUSIVE, "нет адресов")
     if local:
-        return _result(LOCAL_ADDRESS, "все адреса приватные: %s"
-                       % ", ".join(ips[:3]), ips[0])
+        verdict, reason = _private_reason(domain, ips, timeout)
+        return _result(verdict, reason, ips[0])
     ip = ips[0]
 
     def _ask(name, hello, split_at=0, passed=trigger_passed, tls12=False):

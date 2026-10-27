@@ -157,6 +157,50 @@ class TestTunnelDiagnostics(Base):
                         {"engine": "mihomo", "name": "main"}, perms={})
         self.assertTrue(out["diagnostics"]["active"])
 
+    def _big(self):
+        fake = mock.Mock()
+        fake.diagnostics.return_value = {
+            "name": "main",
+            "active": True,
+            "routes": {"table_v4": "x" * 20000},
+            "log_tail": ["line %d %s" % (i, "y" * 100) for i in range(400)],
+            "errors": [],
+        }
+        self.manager(fake)
+        p = mock.patch("core.mcp.tools._paging.response_budget",
+                       return_value=8 * 1024)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_oversize_snapshot_comes_by_sections(self):
+        self._big()
+        out = self.data("tunnel_diagnostics",
+                        {"engine": "awg", "name": "main"}, perms={})
+        self.assertTrue(out["ok"], out)
+        self.assertNotIn("truncated", out)
+        self.assertTrue(out["diagnostics"]["active"])
+        self.assertIn("routes", out["sections_omitted"])
+        self.assertIn("log_tail", out["sections_omitted"])
+        self.assertIn("sections=", out["hint"])
+
+    def test_omitted_section_reachable_trimmed(self):
+        self._big()
+        out = self.data("tunnel_diagnostics",
+                        {"engine": "awg", "name": "main",
+                         "sections": ["routes"]}, perms={})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(list(out["diagnostics"]), ["routes"])
+        self.assertEqual(out["sections_trimmed"], ["routes"])
+        self.assertIn("обрезано", out["diagnostics"]["routes"]["table_v4"])
+
+    def test_unknown_section_lists_all(self):
+        self._big()
+        out = self.data("tunnel_diagnostics",
+                        {"engine": "awg", "name": "main",
+                         "sections": ["nope"]}, perms={})
+        self.assertFalse(out["ok"])
+        self.assertIn("routes", out["sections_all"])
+
     def test_unknown_config_lists_known(self):
         fake = mock.Mock()
         fake.diagnostics.return_value = {"ok": False,
