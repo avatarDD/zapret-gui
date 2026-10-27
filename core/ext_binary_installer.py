@@ -82,6 +82,66 @@ def _package_manager() -> str:
     return ""
 
 
+APK_ARCH_FILE = "/etc/apk/arch"
+
+_APK_BAD_ARCH_RE = re.compile(r"uninstallable\s+arch:\s*(\S+)")
+
+
+def _apk_add_arch(pkg_arch: str) -> bool:
+    """Дописать арку в /etc/apk/arch (если её там ещё нет)."""
+    try:
+        with open(APK_ARCH_FILE, encoding="utf-8", errors="replace") as f:
+            current = f.read()
+    except OSError:
+        current = ""
+    if pkg_arch in current.split():
+        return True
+    try:
+        with open(APK_ARCH_FILE, "a", encoding="utf-8") as f:
+            if current and not current.endswith("\n"):
+                f.write("\n")
+            f.write(pkg_arch + "\n")
+    except OSError as e:
+        log.warning("ext_installer: не удалось дописать %s в %s: %s"
+                    % (pkg_arch, APK_ARCH_FILE, e), source="ext_installer")
+        return False
+    return True
+
+
+def _run_pkg_install(pkg_mgr: str, install_cmd: list):
+    """Запустить установку пакета; для apk — с повтором при чужой арке.
+
+    Апстрим собирает .apk не под каждый таргет OpenWrt: для aarch64 есть
+    только `aarch64_generic`, а у BPI-R4/MT7981/MT7622 таргет
+    `aarch64_cortex-a53` — и apk отказывает: «uninstallable arch:
+    aarch64_generic» (issue #421). Сборка под generic на cortex-a53
+    работает (это то же семейство), не хватает лишь того, чтобы apk
+    признал её арку. Если арка пакета из ТОГО ЖЕ семейства, что и
+    система, дописываем её в /etc/apk/arch (apk 3 читает оттуда список
+    допустимых арок) и повторяем. Именно в файл, а не разовым `--arch`:
+    иначе уже установленный пакет станет «uninstallable» для следующих
+    `apk add/upgrade` и сломает их.
+    """
+    proc = subprocess.run(install_cmd, capture_output=True, text=True,
+                          timeout=600)
+    if proc.returncode == 0 or pkg_mgr != "apk":
+        return proc
+    m = _APK_BAD_ARCH_RE.search((proc.stderr or "") + (proc.stdout or ""))
+    if not m:
+        return proc
+    pkg_arch = m.group(1).rstrip(":,;")
+    host = detect_arch()
+    if not host or _arch_from_name(pkg_arch) != host:
+        return proc
+    if not _apk_add_arch(pkg_arch):
+        return proc
+    log.info("ext_installer: арка пакета %s совместима с %s — добавлена в %s,"
+             " повторяю установку" % (pkg_arch, host, APK_ARCH_FILE),
+             source="ext_installer")
+    return subprocess.run(install_cmd, capture_output=True, text=True,
+                          timeout=600)
+
+
 # ─────── Архитектуры ───────
 
 # Разрядность наших архитектур — для проверки правдоподобия детекта.
@@ -1337,8 +1397,7 @@ def _install_local_file(name: str, path: str, orig_name: str = "") -> dict:
         else:
             install_cmd = [pkg_mgr, "install", "--force-reinstall", pkg_path]
         try:
-            proc = subprocess.run(install_cmd, capture_output=True,
-                                  text=True, timeout=600)
+            proc = _run_pkg_install(pkg_mgr, install_cmd)
         except (subprocess.SubprocessError, OSError) as e:
             return {"ok": False, "error": "Установка пакета: %s" % e}
         if proc.returncode != 0:
@@ -1918,7 +1977,7 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
             install_cmd.append(tmp_path)
             if pkg_mgr == "opkg":
                 install_cmd.insert(2, "--force-reinstall")
-            proc = subprocess.run(install_cmd, capture_output=True, text=True, timeout=600)
+            proc = _run_pkg_install(pkg_mgr, install_cmd)
             if proc.returncode != 0:
                 return {
                     "ok": False,

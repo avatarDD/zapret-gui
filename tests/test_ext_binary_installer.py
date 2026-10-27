@@ -949,3 +949,69 @@ class TestOwnBuildsConfig(unittest.TestCase):
             gr.return_value = {"error_detail": "stop"}
             ebi.install_binary_by_name("tgproto")
         self.assertEqual(gr.call_args.args[0], "necronicle/z2k")
+
+
+class TestApkForeignArchRetry(unittest.TestCase):
+    """issue #421: BPI-R4 (aarch64_cortex-a53) и пакет aarch64_generic —
+    apk отказывает «uninstallable arch», а сборка там работает."""
+
+    ERR = ("ERROR: unable to select packages:\n"
+           "  tg-ws-proxy-0.9.3-r1:\n"
+           "    error: uninstallable\n"
+           "    arch: aarch64_generic\n")
+    ERR_ONE_LINE = ("ERROR: unable to select packages: tg-ws-proxy-0.9.3-r1:"
+                    " error: uninstallable arch: aarch64_generic satisfies:"
+                    " world[tg-ws-proxy><Q1A0>]")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.arch_file = os.path.join(self.tmp, "arch")
+        with open(self.arch_file, "w") as f:
+            f.write("aarch64_cortex-a53\n")
+        p = mock.patch.object(ebi, "APK_ARCH_FILE", self.arch_file)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def _run(self, first_err, host):
+        fail = mock.Mock(returncode=1, stdout="", stderr=first_err)
+        ok = mock.Mock(returncode=0, stdout="OK", stderr="")
+        with mock.patch.object(ebi, "detect_arch", return_value=host), \
+             mock.patch("subprocess.run", side_effect=[fail, ok]) as run:
+            proc = ebi._run_pkg_install("apk", ["apk", "add", "x.apk"])
+        return proc, run
+
+    def test_same_family_retried_and_arch_persisted(self):
+        proc, run = self._run(self.ERR_ONE_LINE, "aarch64")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(run.call_count, 2)
+        with open(self.arch_file) as f:
+            self.assertEqual(f.read().split(),
+                             ["aarch64_cortex-a53", "aarch64_generic"])
+
+    def test_multiline_apk_output(self):
+        """Настоящий вывод apk 3 — многострочный."""
+        proc, run = self._run(self.ERR, "aarch64")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(proc.returncode, 0)
+
+    def test_foreign_family_not_retried(self):
+        proc, run = self._run(self.ERR_ONE_LINE.replace(
+            "aarch64_generic", "mipsel_24kc"), "aarch64")
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(run.call_count, 1)
+        with open(self.arch_file) as f:
+            self.assertNotIn("mipsel_24kc", f.read())
+
+    def test_arch_not_duplicated(self):
+        with open(self.arch_file, "a") as f:
+            f.write("aarch64_generic\n")
+        self._run(self.ERR_ONE_LINE, "aarch64")
+        with open(self.arch_file) as f:
+            self.assertEqual(f.read().split().count("aarch64_generic"), 1)
+
+    def test_opkg_not_retried(self):
+        fail = mock.Mock(returncode=1, stdout="", stderr=self.ERR_ONE_LINE)
+        with mock.patch("subprocess.run", return_value=fail) as run:
+            ebi._run_pkg_install("opkg", ["opkg", "install", "x.ipk"])
+        self.assertEqual(run.call_count, 1)
