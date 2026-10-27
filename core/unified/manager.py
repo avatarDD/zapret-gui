@@ -38,6 +38,13 @@ def save_route(data: dict, *, apply: bool = True,
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     if validate:
+        bad_dev = _router_devices(route)
+        if bad_dev:
+            return {"ok": False,
+                    "error": "%s — адрес самого роутера или его шлюза:"
+                             " такое правило увело бы в туннель трафик"
+                             " роутера. Уберите его из устройств"
+                             % ", ".join(bad_dev)}
         from core.unified.bulk import validate_destination
         bad = validate_destination(route.destination.to_dict())
         if bad:
@@ -267,6 +274,24 @@ def _safe_can_probe(monitor, route) -> bool:
         return monitor.can_probe(route)
     except Exception:
         return True
+
+
+def _router_devices(route) -> list:
+    """Одиночные адреса устройств маршрута, принадлежащие самому роутеру.
+
+    Правило `from <адрес роутера>` уводит в туннель ответы роутера — и
+    веб-интерфейс перестаёт открываться из LAN; шлюз провайдера через
+    LAN не ходит вовсе. Подсети не трогаем: у них свои исключения.
+    """
+    if not route.devices:
+        return []
+    try:
+        from core.devices_discovery import router_addresses
+        own = router_addresses()
+    except Exception:
+        return []
+    return [d["ip"] for d in route.devices
+            if "/" not in d["ip"] and d["ip"] in own]
 
 
 def _device_drift(route, macs) -> list:
