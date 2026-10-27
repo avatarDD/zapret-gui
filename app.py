@@ -961,6 +961,16 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception:
             pass
 
+        # Блоки удалённых доменных маршрутов в managed-файле dnsmasq
+        # (остались от версий, где удаление его не пересобирало): без
+        # этого они жили до ручного «Переприменить», а dnsmasq на каждом
+        # резолве ругался на несуществующий nftset.
+        try:
+            from core.routing import sweeper as _sweeper
+            _sweeper.sweep_dnsmasq()
+        except Exception as e:
+            log.warning("dnsmasq sweep при boot: %s" % e, source="routing")
+
         # Убрать «мусорный» демон amneziawg-go «-v», который порождала
         # старая проба версии (core/awg_manager.reap_stray_daemons).
         try:

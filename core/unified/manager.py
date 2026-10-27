@@ -67,6 +67,7 @@ def save_route(data: dict, *, apply: bool = True,
         applied = applier.apply_route(route)
     elif not route.enabled:
         applier.remove_route(route)
+        _sweep_dnsmasq("disable")
     _sync_monitor()
     log.info("unified: сохранён маршрут %s (%s → %s)"
              % (route.id, route.name, route.method), source="unified")
@@ -95,16 +96,21 @@ def delete_route(route_id: str) -> dict:
         monitor.clear(route_id)
     except Exception:
         pass
-    # Остатки в dnsmasq (блок `# rule …`, `conf-file=`) — в том числе от
-    # маршрутов, удалённых раньше мимо этого пути, — сразу, а не только
-    # по кнопке «Переприменить».
+    _sweep_dnsmasq("delete")
+    _sync_monitor()
+    return {"ok": True, "id": route_id}
+
+
+def _sweep_dnsmasq(what: str) -> None:
+    """Остатки в dnsmasq (блок `# rule …`, `conf-file=`) — в том числе от
+    маршрутов, удалённых раньше мимо этого пути, — сразу, а не только по
+    кнопке «Переприменить». Иначе dnsmasq на каждом резолве домена пишет
+    «nftset … No such file or directory» в набор, которого уже нет."""
     try:
         from core.routing import sweeper
         sweeper.sweep_dnsmasq()
     except Exception as e:
-        log.warning("unified delete: dnsmasq: %s" % e, source="unified")
-    _sync_monitor()
-    return {"ok": True, "id": route_id}
+        log.warning("unified %s: dnsmasq: %s" % (what, e), source="unified")
 
 
 def apply_route_by_id(route_id: str) -> dict:
