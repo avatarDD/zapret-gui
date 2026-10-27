@@ -364,7 +364,8 @@ DOCS = {
                 "разрез на первом байте → чужое имя на тот же адрес. "
                 "Уточняет итог: prefix (хватит разреза), opaque (нужен "
                 "фейк), address (только туннель), response (режут ответ "
-                "TLS 1.2), local_address (подмена DNS локально). Приём "
+                "TLS 1.2), local_address (подмена DNS локально), "
+                "private_record (приватный адрес у самого домена). Приём "
                 "d2k; до 8 целей, по 2 повтора на вопрос.",
         "see": ["blockcheck.probe_timeout", "nfqws.desync_mark_probe"],
     },

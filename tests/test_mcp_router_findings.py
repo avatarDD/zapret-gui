@@ -272,3 +272,106 @@ class TestDirectProbeBindsWan(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRemoveDomainRuleCleansDnsmasq(unittest.TestCase):
+    """Удалённый доменный маршрут не оставляет блок и conf-file= в dnsmasq.
+
+    routing.manager.remove_rule снимает правило ДО удаления из storage, и
+    пересборка managed-файла раньше видела его живым — блок `# rule <id>`
+    переписывался обратно, а `conf-file=` не снимался.
+    """
+
+    def _dn(self):
+        dn = mock.Mock()
+        dn.remove_include.return_value = {"ok": True, "removed_include": True}
+        dn.restart.return_value = {"ok": True}
+        dn.reload.return_value = {"ok": True}
+        return dn
+
+    def test_rebuild_excludes_rule_being_removed(self):
+        from core.routing import domain_rule
+        from core.routing.rules import DomainRoutingRule
+        rule = DomainRoutingRule(target_iface="awg0", domains=["t.me"],
+                                 rule_id="uni-route-ae11239a-dom")
+        dn = self._dn()
+        with mock.patch.object(domain_rule.dnsmasq_integration,
+                               "DnsmasqIntegration", return_value=dn), \
+                mock.patch.object(domain_rule, "_choose_set_kind",
+                                  return_value="nftset"), \
+                mock.patch("core.routing.storage.load_rules",
+                           return_value=[rule]):
+            res = domain_rule._rebuild_managed_dnsmasq(exclude=rule.id)
+        self.assertTrue(res["ok"], res)
+        dn.remove_include.assert_called_once()
+        dn.write_managed_file.assert_not_called()
+
+    def test_dnsmasq_path_passes_exclude(self):
+        from core.routing import domain_rule
+        from core.routing.rules import DomainRoutingRule
+        rule = DomainRoutingRule(target_iface="awg0", domains=["t.me"],
+                                 rule_id="uni-x-dom")
+        backend = mock.Mock()
+        with mock.patch.object(domain_rule, "_ndms_available",
+                               return_value=False), \
+                mock.patch.object(domain_rule, "_iproute_state_load",
+                                  return_value={}), \
+                mock.patch.object(domain_rule, "_sets_state_load",
+                                  return_value={}), \
+                mock.patch.object(domain_rule, "_detect_backend",
+                                  return_value=(backend, "nftset")), \
+                mock.patch.object(domain_rule, "_table_id_for",
+                                  return_value=200), \
+                mock.patch.object(domain_rule, "_mark_for",
+                                  return_value=0x100), \
+                mock.patch("core.routing.masquerade.remove_if_unused"), \
+                mock.patch.object(domain_rule, "_rebuild_managed_dnsmasq",
+                                  return_value={"ok": True}) as rebuild:
+            domain_rule.remove_domain_rule(rule)
+        rebuild.assert_called_once_with(exclude="uni-x-dom")
+
+    def test_sets_path_drops_old_dnsmasq_block(self):
+        from core.routing import domain_rule
+        from core.routing.rules import DomainRoutingRule
+        rule = DomainRoutingRule(target_iface="awg0", domains=["t.me"],
+                                 rule_id="uni-y-dom")
+        with mock.patch.object(domain_rule, "_ndms_available",
+                               return_value=False), \
+                mock.patch.object(domain_rule, "_iproute_state_load",
+                                  return_value={}), \
+                mock.patch.object(domain_rule, "_sets_state_load",
+                                  return_value={rule.id: "ipset"}), \
+                mock.patch.object(domain_rule, "_remove_domain_via_sets",
+                                  return_value={"ok": True}), \
+                mock.patch.object(domain_rule.dnsmasq_integration,
+                                  "DnsmasqIntegration",
+                                  return_value=self._dn()), \
+                mock.patch.object(domain_rule.dnsmasq_integration,
+                                  "_read_file",
+                                  return_value="# rule uni-y-dom\n"
+                                               "ipset=/t.me/x\n"), \
+                mock.patch.object(domain_rule, "_rebuild_managed_dnsmasq",
+                                  return_value={"ok": True}) as rebuild:
+            domain_rule.remove_domain_rule(rule)
+        rebuild.assert_called_once_with(exclude="uni-y-dom")
+
+    def test_sweeper_flags_file_without_rules(self):
+        from core.routing import dnsmasq_integration, domain_rule, sweeper
+        with mock.patch.object(dnsmasq_integration, "_read_file",
+                               return_value="# Managed by zapret-gui\n"), \
+                mock.patch.object(domain_rule, "_all_domain_rules",
+                                  return_value=[]):
+            self.assertIn("правил нет", sweeper._stale_dnsmasq_reason())
+
+    def test_delete_route_sweeps_dnsmasq(self):
+        from core.unified import manager
+        route = mock.Mock(id="uni-route-z")
+        with mock.patch("core.unified.storage.get_route",
+                        return_value=route), \
+                mock.patch("core.unified.storage.remove_route"), \
+                mock.patch("core.unified.applier.remove_route"), \
+                mock.patch.object(manager, "_sync_monitor"), \
+                mock.patch("core.routing.sweeper.sweep_dnsmasq",
+                           return_value=([], [])) as sweep:
+            self.assertTrue(manager.delete_route("uni-route-z")["ok"])
+        sweep.assert_called_once()

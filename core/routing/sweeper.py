@@ -370,12 +370,47 @@ def _stale_dnsmasq_reason() -> str:
     gone = sorted(ids - live)
     if gone:
         return "блоки удалённых правил: %s" % ", ".join(gone)
+    if not live:
+        # Доменных правил нет, а файл (и `conf-file=` на него) живёт.
+        return "доменных правил нет, а managed-файл подключён"
     kind = domain_rule._choose_set_kind(dn)
     for directive in ("nftset", "ipset"):
         if re.search(r"^%s=" % directive, text, re.M) and kind != directive:
             return ("директивы %s= без поддержки (dnsmasq/бэкенд: %s)"
                     % (directive, kind or "нет"))
     return ""
+
+
+def sweep_dnsmasq(dry_run: bool = False):
+    """Пересобрать managed-файл dnsmasq, если в нём блоки мёртвых правил.
+
+    Возвращает (найдено, ошибки). Дёшево: читает один файл и пересобирает
+    его (с рестартом dnsmasq) только при найденном мусоре, поэтому
+    вызывается и после удаления маршрута, а не только из полного sweep.
+    """
+    found, errors = [], []
+    try:
+        reason = _stale_dnsmasq_reason()
+    except Exception as e:
+        return found, ["dnsmasq managed-файл: %s" % e]
+    if not reason:
+        return found, errors
+    found.append(reason)
+    if dry_run:
+        return found, errors
+    from core.routing import domain_rule
+    try:
+        with domain_rule._lock:
+            res = domain_rule._rebuild_managed_dnsmasq()
+        if not res.get("ok"):
+            errors.append("dnsmasq managed-файл: %s"
+                          % (res.get("error") or "не пересобран"))
+    except Exception as e:
+        errors.append("dnsmasq managed-файл: %s" % e)
+    if not errors:
+        log.info("routing: managed-файл dnsmasq пересобран (%s)" % reason,
+                 source="routing")
+    return found, errors
 
 
 def sweep(dry_run: bool = False) -> dict:
@@ -464,24 +499,8 @@ def sweep(dry_run: bool = False) -> dict:
             killswitch.ensure(table, families=held)
 
     # 4) managed-файл dnsmasq с блоками мёртвых правил.
-    found_dnsmasq = []
-    try:
-        reason = _stale_dnsmasq_reason()
-    except Exception as e:
-        reason = ""
-        errors.append("dnsmasq managed-файл: %s" % e)
-    if reason:
-        found_dnsmasq.append(reason)
-        if not dry_run:
-            from core.routing import domain_rule
-            try:
-                with domain_rule._lock:
-                    res = domain_rule._rebuild_managed_dnsmasq()
-                if not res.get("ok"):
-                    errors.append("dnsmasq managed-файл: %s"
-                                  % (res.get("error") or "не пересобран"))
-            except Exception as e:
-                errors.append("dnsmasq managed-файл: %s" % e)
+    found_dnsmasq, dn_errors = sweep_dnsmasq(dry_run)
+    errors.extend(dn_errors)
 
     total = (len(found_rules) + len(found_sets) + len(found_tables)
              + len(found_dnsmasq))

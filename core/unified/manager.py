@@ -95,6 +95,14 @@ def delete_route(route_id: str) -> dict:
         monitor.clear(route_id)
     except Exception:
         pass
+    # Остатки в dnsmasq (блок `# rule …`, `conf-file=`) — в том числе от
+    # маршрутов, удалённых раньше мимо этого пути, — сразу, а не только
+    # по кнопке «Переприменить».
+    try:
+        from core.routing import sweeper
+        sweeper.sweep_dnsmasq()
+    except Exception as e:
+        log.warning("unified delete: dnsmasq: %s" % e, source="unified")
     _sync_monitor()
     return {"ok": True, "id": route_id}
 

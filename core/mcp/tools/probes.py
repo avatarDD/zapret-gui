@@ -212,7 +212,8 @@ def probe_compare(args: dict) -> dict:
     title="Ask DPI how it blocks",
     description=("Differential DPI questions: whole ClientHello -> split "
                  "after byte 1 -> other SNI on the same IP. Verdict "
-                 "clear/prefix/opaque/address/response/local_address. "
+                 "clear/prefix/opaque/address/response/local_address/"
+                 "private_record. "
                  "Changes nothing. / Чем режут: разрез, фейк или туннель."),
     schema={
         "type": "object",
@@ -284,6 +285,8 @@ DPI_CLASSIFY_HINTS = {
     "response": "режут ответ TLS 1.2: клиенту — TLS 1.3, иначе туннель",
     "local_address": "имя подменяется локально (роутер/AdGuard/hosts) — "
                      "провайдер ни при чём",
+    "private_record": "так отвечает сам домен: DNS-настройками и обходом "
+                      "не лечится — нужен другой адрес сайта (зеркало)",
     "unreachable": "до адреса нет TCP: адрес лежит или закрыт — туннель",
     "flaky": "повторите позже или с repeats=3: ответы разошлись",
     "inconclusive": "см. reason: чего не хватило для вердикта",
