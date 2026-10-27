@@ -105,6 +105,19 @@ class ThreadedWSGIServer(ServerAdapter):
                 if exc_type in (BrokenPipeError, ConnectionResetError,
                                 ConnectionAbortedError):
                     return  # тихо игнорируем разрыв соединения
+                # Сюда попадает всё, что упало мимо Bottle: клиент при
+                # этом получает закрытое соединение без единого байта
+                # (в браузере — ERR_EMPTY_RESPONSE). stderr на роутере
+                # мало кто читает, поэтому дублируем в журнал GUI —
+                # его видно и на странице логов, и через MCP logs_tail.
+                try:
+                    from core.log_buffer import log as _log
+                    _log.error("HTTP: запрос от %s оборван без ответа: "
+                               "%s: %s" % (client_address[0],
+                                           exc_type.__name__, exc_value),
+                               source="app")
+                except Exception:
+                    pass
                 super().handle_error(request, client_address)
 
         handler_cls = QuietHandler if self.quiet else WSGIRequestHandler
