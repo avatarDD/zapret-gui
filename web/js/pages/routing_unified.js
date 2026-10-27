@@ -22,6 +22,7 @@ const RoutingUnifiedPage = (() => {
     let statusMap = {};       // id → status entry из /api/unified/status
     let interfaces = [];      // /api/routing/interfaces (ndms/singbox/активные awg)
     let interfaceNotes = [];  // почему ожидаемой цели нет в списке методов
+    let wiwChains = [];       // собранные WARP-in-WARP (кто inner, кто outer)
     let awgConfigs = [];      // /api/awg/configs (цели даже для лежащих туннелей)
     let namedLists = [];
     let hostLists = [];       // /api/hostlists — nfqws2-хостлисты (id `hl:имя`)
@@ -212,6 +213,7 @@ const RoutingUnifiedPage = (() => {
             knownGood = kgResp;
             interfaces  = (ifResp && ifResp.interfaces) || [];
             interfaceNotes = (ifResp && ifResp.notes) || [];
+            wiwChains = (ifResp && ifResp.wiw_chains) || [];
             namedLists  = (listResp && listResp.lists) || [];
             // nfqws2-хостлисты как выбираемые списки маршрутизации (id `hl:имя`).
             // Domain-движок разворачивает их через Destination.resolve().
@@ -305,7 +307,7 @@ const RoutingUnifiedPage = (() => {
             if (!c.name || seen.has(c.name)) return;
             seen.add(c.name);
             out.push({ token: 'awg:' + c.name, kind: 'awg', name: c.name,
-                       active: !!c.active, label: `Туннель ${methodLabel('awg:' + c.name)}${c.active ? '' : ' (сейчас не поднят)'}` });
+                       active: !!c.active, label: `Туннель ${methodLabel('awg:' + c.name)}${wiwSuffix('awg:' + c.name)}${c.active ? '' : ' (сейчас не поднят)'}` });
         });
         interfaces.forEach(i => {
             if (!i.name || seen.has(i.name)) return;
@@ -315,9 +317,29 @@ const RoutingUnifiedPage = (() => {
                         : i.source === 'usque' ? ' · usque/MASQUE' : '';
             out.push({ token: kind + ':' + i.name, kind, name: i.name,
                        active: !!i.active,
-                       label: `Туннель ${methodLabel(kind + ':' + i.name)}${extra}${i.active ? '' : ' (сейчас не поднят)'}` });
+                       label: `Туннель ${methodLabel(kind + ':' + i.name)}${extra}${wiwSuffix(kind + ':' + i.name)}${i.active ? '' : ' (сейчас не поднят)'}` });
         });
         return out;
+    }
+
+    /** « — WARP-in-WARP: внутренний…» к подписи цели; пусто вне связки. */
+    function wiwSuffix(token) {
+        if (typeof WiwChain === 'undefined') return '';
+        const t = WiwChain.roleText(wiwChains, token);
+        return t ? ' — ' + t : '';
+    }
+
+    /** Схема каждой собранной связки WARP-in-WARP — кто куда идёт. */
+    function wiwCardsHtml() {
+        if (typeof WiwChain === 'undefined' || !wiwChains.length) return '';
+        return wiwChains.map(ch =>
+            `<div style="margin-bottom:12px;">${WiwChain.cardHtml(ch, routes, { onRouting: true })}</div>`
+        ).join('');
+    }
+
+    function wiwNote(token) {
+        return typeof WiwChain === 'undefined' ? ''
+            : WiwChain.methodNoteHtml(wiwChains, token);
     }
 
     function methodOptions(selected) {
@@ -401,7 +423,7 @@ const RoutingUnifiedPage = (() => {
         const box = document.getElementById('ru-banners');
         if (!box) return;
         const infra = infraParts();
-        box.innerHTML = legacyBannerHtml() + infra.alert;
+        box.innerHTML = legacyBannerHtml() + infra.alert + wiwCardsHtml();
         renderSettings(infra);
     }
 
@@ -1221,6 +1243,7 @@ const RoutingUnifiedPage = (() => {
                 ${ignoredSelectorsNote(r)}${routeStatusNotes(r, st)}</td>
             <td style="font-size:12px;" data-label="Через" title="${escAttr(active)}">
                 ${esc(methodLabel(active))}${active !== r.method ? ` <span class="text-muted">(основной: ${esc(methodLabel(r.method))})</span>` : ''}
+                ${wiwNote(active)}
                 ${(r.fallbacks||[]).length ? `<br><span class="text-muted" style="font-size:11px;">резерв: ${esc((r.fallbacks||[]).map(methodLabel).join(', '))}</span>` : ''}</td>
             ${showCheck ? `<td style="font-size:12px;" data-label="Проверка">${check}</td>` : ''}
             <td><div class="ru-actions">
@@ -1446,13 +1469,13 @@ const RoutingUnifiedPage = (() => {
         const hasSrc = (editing.devices || []).length || dscpRaw !== '';
         const kind = _kindOf(sel.value);
         const tunnel = ['awg', 'singbox', 'mihomo', 'warp'].includes(kind);
-        box.innerHTML = (hasSrc && !tunnel)
+        box.innerHTML = wiwNote(sel.value) + ((hasSrc && !tunnel)
             ? `<div class="text-error" style="font-size:11px; margin-top:4px; max-width:420px;">
                    ⚠ Устройства и DSCP работают только с туннельными методами.
                    С методом «${esc(sel.value)}» маршрут сохранится, но трафик
                    выбранных устройств останется идти через провайдера.
                </div>`
-            : '';
+            : '');
     }
 
     function newRoute() {
@@ -1626,10 +1649,15 @@ const RoutingUnifiedPage = (() => {
         // сервисы-geosite (они разворачиваются только для туннелей).
         const onlyGeo = st.what === 'sites' && st.services.length
             && !st.domains.length && !st.list_ids.length;
-        const out = methodTargets().map(t => ({
-            token: t.token, title: methodLabel(t.token),
-            desc: t.active ? 'Туннель запущен' : 'Туннель сейчас не запущен — маршрут заработает, когда он поднимется',
-            badge: t.active ? 'работает' : '' }));
+        const out = methodTargets().map(t => {
+            const role = typeof WiwChain === 'undefined' ? ''
+                : WiwChain.roleText(wiwChains, t.token);
+            return {
+                token: t.token, title: methodLabel(t.token),
+                desc: (role ? role + '. ' : '')
+                    + (t.active ? 'Туннель запущен' : 'Туннель сейчас не запущен — маршрут заработает, когда он поднимется'),
+                badge: t.active ? 'работает' : '' };
+        });
         if (st.what === 'sites') {
             out.push({ token: 'nfqws2', title: 'Обход DPI без VPN',
                        desc: onlyGeo ? 'Для сервисов из списка не подходит — нужен туннель или свои сайты'

@@ -381,7 +381,13 @@ def register(app):
     def awg_interfaces_list():
         response.content_type = "application/json; charset=utf-8"
         from core.awg_manager import get_awg_manager
-        return {"ok": True, "interfaces": get_awg_manager().list_interfaces()}
+        try:
+            from core.wiw_chain import chains as _wiw_chains
+            wiw = _wiw_chains()
+        except Exception:
+            wiw = []
+        return {"ok": True, "interfaces": get_awg_manager().list_interfaces(),
+                "wiw_chains": wiw}
 
     # ─────────── Keypair ───────────────────────────────────────
 

@@ -32,6 +32,11 @@ const AwgWarpPage = (() => {
     // ══════════════ render ══════════════
 
     function render(container) {
+        // #awg-warp?tab=wiw — прямая ссылка на вкладку (карточка
+        // WARP-in-WARP на #awg ведёт сюда).
+        const m = (window.location.hash || '').match(/[?&]tab=(import|generate|wiw)\b/);
+        if (m) activeTab = m[1];
+
         container.innerHTML = `
             <div class="page-header">
                 <div>
@@ -68,6 +73,10 @@ const AwgWarpPage = (() => {
         `;
 
         renderTab();
+        if (activeTab === 'wiw') {
+            loadWiwData();
+            startWiwRefresh();
+        }
     }
 
     function destroy() {
@@ -308,11 +317,12 @@ const AwgWarpPage = (() => {
 
         const intro = `
             <p class="text-muted" style="margin: 0 0 12px 0;">
-                Двойной туннель: пользовательский трафик идёт сначала
-                через <strong>outer</strong> (первый WARP, наружу через WAN),
-                а внутри него — через <strong>inner</strong> (второй WARP).
-                Внешний IP меняется дважды — это помогает обойти ограничения,
-                настроенные под одиночный WARP.
+                Двойной туннель: трафик заходит во <strong>inner</strong>
+                (внутренний WARP), а UDP самого inner'а до Cloudflare идёт
+                внутри <strong>outer</strong> (внешний WARP, наружу через WAN).
+                Провайдер видит только outer, Cloudflare на выходе — только
+                inner. Это помогает обойти ограничения, настроенные под
+                одиночный WARP.
             </p>
             <div style="padding:12px 14px; background: rgba(91,158,244,0.06);
                         border-left:3px solid var(--accent, #5b9ef4); border-radius:6px;
@@ -323,11 +333,14 @@ const AwgWarpPage = (() => {
                         <strong>два разных</strong> WARP-конфига.</li>
                     <li>Здесь выберите <strong>outer</strong> (первый, через WAN)
                         и <strong>inner</strong> (второй, пойдёт внутри outer)
-                        и нажмите «Поднять».</li>
+                        и нажмите «Создать двойной туннель».</li>
                     <li>Связка сама поднимет оба туннеля и пропишет маршрут до
-                        endpoint'а inner через outer. После этого весь обычный
-                        трафик идёт через inner — отдельные правила маршрутизации
-                        добавлять не нужно.</li>
+                        endpoint'а inner через outer.</li>
+                    <li>На странице <a href="#routing">«Маршрутизация»</a>
+                        заведите маршрут с методом <strong>inner</strong> — он
+                        подписан там «WARP-in-WARP: внутренний». Сам по себе
+                        трафик в туннели не идёт; маршрут в <strong>outer</strong>
+                        дал бы одиночный WARP.</li>
                 </ol>
                 <div class="text-muted" style="margin-top:8px; font-size:12px;">
                     Отключение — кнопкой разбора связки ниже (вернёт оба туннеля
@@ -424,6 +437,8 @@ const AwgWarpPage = (() => {
                             margin-bottom: 4px;">
                     ${escapeHtml(healthText)}
                 </div>
+                ${typeof WiwChain !== 'undefined' ? WiwChain.diagramHtml({
+                    inner, outer, inner_kind: 'awg', outer_kind: 'awg' }) : ''}
                 <div style="display:grid; grid-template-columns: max-content 1fr;
                             gap: 4px 12px; font-size: 12px;">
                     <div>Outer:</div>

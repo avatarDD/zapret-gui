@@ -146,6 +146,11 @@ const WarpInWarpPage = (() => {
                 </div>
                 ${st.outer_iface ? `<div class="detail-row">Outer: <code>${esc(st.outer_iface)}</code></div>` : ""}
                 ${st.inner_iface ? `<div class="detail-row">Inner: <code>${esc(st.inner_iface)}</code></div>` : ""}
+                ${st.inner_iface ? `<div class="form-hint" style="margin-top:6px;">
+                    Трафик сам в туннель не идёт: на странице
+                    <a href="#routing">«Маршрутизация»</a> выберите методом
+                    <code>${esc(st.inner_iface)}</code> (подписан «WARP-in-WARP:
+                    внутренний»). Маршрут в outer — это одиночный туннель.</div>` : ""}
             `;
             // Обновляем схему
             const innerLabel = document.getElementById("wiw-inner-label");
