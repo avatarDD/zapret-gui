@@ -348,6 +348,36 @@ def _drop_nftset_refs(name: str) -> None:
 
 # ─────────────────────────── sweep ───────────────────────────────────
 
+# ─────────────────────── managed-файл dnsmasq ────────────────────────
+
+def _stale_dnsmasq_reason() -> str:
+    """
+    Почему managed-файл dnsmasq устарел ('' — в порядке или его нет).
+
+    Файл перегенерируется только при apply/remove domain-правила. Если
+    маршрут исчез мимо этого пути (пересоздание unified-маршрута, ручная
+    правка settings.json, смена прошивки), в файле навсегда оставался блок
+    с мёртвым id — а с ним и `nftset=` на роутере, где nft давно нет.
+    """
+    from core.routing import dnsmasq_integration, domain_rule
+    dn = dnsmasq_integration.DnsmasqIntegration()
+    path = dn.managed_file_path(dn.find_main_config())
+    text = dnsmasq_integration._read_file(path)
+    if not text:
+        return ""
+    ids = set(re.findall(r"^# rule (\S+)", text, re.M))
+    live = {r.id for r in domain_rule._all_domain_rules()}
+    gone = sorted(ids - live)
+    if gone:
+        return "блоки удалённых правил: %s" % ", ".join(gone)
+    kind = domain_rule._choose_set_kind(dn)
+    for directive in ("nftset", "ipset"):
+        if re.search(r"^%s=" % directive, text, re.M) and kind != directive:
+            return ("директивы %s= без поддержки (dnsmasq/бэкенд: %s)"
+                    % (directive, kind or "нет"))
+    return ""
+
+
 def sweep(dry_run: bool = False) -> dict:
     """
     Найти (и, если не dry_run, снять) артефакты без живого правила.
@@ -433,11 +463,34 @@ def sweep(dry_run: bool = False) -> dict:
         if held:
             killswitch.ensure(table, families=held)
 
-    total = len(found_rules) + len(found_sets) + len(found_tables)
+    # 4) managed-файл dnsmasq с блоками мёртвых правил.
+    found_dnsmasq = []
+    try:
+        reason = _stale_dnsmasq_reason()
+    except Exception as e:
+        reason = ""
+        errors.append("dnsmasq managed-файл: %s" % e)
+    if reason:
+        found_dnsmasq.append(reason)
+        if not dry_run:
+            from core.routing import domain_rule
+            try:
+                with domain_rule._lock:
+                    res = domain_rule._rebuild_managed_dnsmasq()
+                if not res.get("ok"):
+                    errors.append("dnsmasq managed-файл: %s"
+                                  % (res.get("error") or "не пересобран"))
+            except Exception as e:
+                errors.append("dnsmasq managed-файл: %s" % e)
+
+    total = (len(found_rules) + len(found_sets) + len(found_tables)
+             + len(found_dnsmasq))
     if total:
-        log.info("routing sweep%s: ip rule %d, set %d, таблиц %d"
+        log.info("routing sweep%s: ip rule %d, set %d, таблиц %d%s"
                  % (" (dry-run)" if dry_run else "", len(found_rules),
-                    len(found_sets), len(found_tables)),
+                    len(found_sets), len(found_tables),
+                    (", dnsmasq: %s" % found_dnsmasq[0])
+                    if found_dnsmasq else ""),
                  source="routing")
 
     return {
@@ -446,6 +499,7 @@ def sweep(dry_run: bool = False) -> dict:
         "ip_rules": found_rules,
         "sets":     found_sets,
         "tables":   found_tables,
+        "dnsmasq":  found_dnsmasq,
         "total":    total,
         "errors":   errors,
     }

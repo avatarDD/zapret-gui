@@ -85,6 +85,11 @@ fi
 cleanup_firewall_shell() {
     rm -f /opt/etc/ndm/netfilter.d/100-zapret-gui.sh 2>/dev/null || true
     rm -f /etc/hotplug.d/firewall/90-zapret-gui 2>/dev/null || true
+    # OpenWrt fw4: drop-in, пропускавший форвард LAN → наши туннели.
+    if [ -f /usr/share/nftables.d/chain-pre/forward_lan/30-zapret-gui.nft ]; then
+        rm -f /usr/share/nftables.d/chain-pre/forward_lan/30-zapret-gui.nft
+        command -v fw4 >/dev/null 2>&1 && fw4 -q reload 2>/dev/null || true
+    fi
     for CMD in iptables ip6tables; do
         command -v "$CMD" >/dev/null 2>&1 || continue
         for CHAIN in nfqws_post nfqws_pre; do

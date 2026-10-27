@@ -697,7 +697,7 @@ class AwgWatchdog:
 
         def _do_restart():
             try:
-                res = mgr.restart(iface) or {}
+                res = mgr.restart(iface, reason="watchdog: %s" % reason) or {}
                 with self._lock:
                     self._last_restart[key] = now
                     if not res.get("ok"):

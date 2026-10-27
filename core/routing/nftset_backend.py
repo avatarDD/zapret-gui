@@ -15,12 +15,29 @@ nftset=, которая на лету заполняет именованный 
 Имя нашей nft-таблицы — "awg_routing" (никогда не трогаем чужие).
 """
 
+import os
+import re
 import subprocess
 
 from core.log_buffer import log
 
 
 TABLE_NAME = "awg_routing"
+
+# OpenWrt fw4: форвард «lan → интерфейс без зоны» отклоняет таблица fw4
+# (forward_lan пропускает только в зоны из forwarding, остальное уходит в
+# handle_reject). Наш accept в своей таблице этого не отменяет: verdict
+# drop/reject любой базовой цепочки на хуке окончательный. Свою таблицу
+# fw4 мы не трогаем — кладём drop-in, который fw4 сам вставляет в начало
+# forward_lan при каждой сборке ruleset'а (/usr/share/nftables.d/
+# chain-pre/<цепочка>/*.nft), и переcобираем fw4 только когда файл
+# изменился. Без этого на OpenWrt 22.03+ туннель AWG/sing-box поднят,
+# маршрут стоит, а трафик LAN-устройств в него не проходит (issue #386).
+FW4_ZONE_CHAIN = "forward_lan"
+FW4_INCLUDE = ("/usr/share/nftables.d/chain-pre/%s/30-zapret-gui.nft"
+               % FW4_ZONE_CHAIN)
+FW4_COMMENT = "zapret-gui: lan -> tunnel"
+_FW4_LINE_RE = re.compile(r'^\s*oifname\s+"([^"]+)"\s+accept\b')
 
 
 def _run(args, timeout=10):
@@ -365,11 +382,101 @@ def ensure_iface_forward(ifname: str) -> dict:
             continue
         _run(["nft", "add", "rule", "inet", TABLE_NAME, "forward",
               direction, ifname, "accept"])
+    fw4 = fw4_sync_forward(ifname, True)
+    if not fw4.get("ok"):
+        log.warning("routing: fw4 не пропустит LAN → %s: %s"
+                    % (ifname, fw4.get("error") or "reload не удался"),
+                    source="routing")
     return {"ok": True, "ifname": ifname}
+
+
+def fw4_present() -> bool:
+    """Есть ли на роутере fw4 с зоной lan (OpenWrt 22.03+)."""
+    rc, _o, _e = _run(["nft", "list", "chain", "inet", "fw4",
+                       FW4_ZONE_CHAIN], timeout=5)
+    return rc == 0
+
+
+def fw4_forward_allowed(ifname: str) -> bool:
+    """Пропускает ли fw4 форвард lan → ifname: наш drop-in уже в
+    forward_lan или интерфейс упомянут в таблице fw4 (стоит в зоне —
+    тогда его oifname есть в accept_to_<зона>). Без fw4 — True."""
+    rc, out, _e = _run(["nft", "list", "table", "inet", "fw4"], timeout=5)
+    if rc != 0:
+        return True
+    return ('"%s"' % ifname) in out
+
+
+def _fw4_include_ifaces() -> list:
+    try:
+        with open(FW4_INCLUDE) as f:
+            lines = f.read().splitlines()
+    except (IOError, OSError):
+        return []
+    out = []
+    for line in lines:
+        m = _FW4_LINE_RE.match(line)
+        if m and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def _fw4_reload() -> bool:
+    for cmd in (["fw4", "-q", "reload"], ["/etc/init.d/firewall", "reload"]):
+        rc, _o, err = _run(cmd, timeout=30)
+        if rc == 0:
+            return True
+        if rc != 127:
+            log.warning("fw4 reload: %s" % (err or "").strip(),
+                        source="routing")
+            return False
+    return False
+
+
+def fw4_sync_forward(ifname: str, allow: bool) -> dict:
+    """
+    Добавить/убрать ifname в drop-in fw4 (см. FW4_INCLUDE).
+
+    Идемпотентно: fw4 пересобирается только при изменении файла, поэтому
+    вызов на каждом тике guardian'а ничего не стоит. Без fw4 — no-op.
+    """
+    if not fw4_present():
+        return {"ok": True, "skipped": True}
+    have = _fw4_include_ifaces()
+    want = list(have)
+    if allow and ifname not in want:
+        want.append(ifname)
+    elif not allow and ifname in want:
+        want.remove(ifname)
+    if want == have:
+        return {"ok": True, "changed": False}
+    try:
+        if want:
+            os.makedirs(os.path.dirname(FW4_INCLUDE), exist_ok=True)
+            tmp = FW4_INCLUDE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write("# Managed by zapret-gui — do not edit by hand.\n"
+                        "# Форвард из LAN в туннели zapret-gui (fw4 иначе"
+                        " отклоняет его: у интерфейсов нет зоны).\n")
+                for name in want:
+                    f.write('oifname "%s" accept comment "%s"\n'
+                            % (name, FW4_COMMENT))
+            os.replace(tmp, FW4_INCLUDE)
+        else:
+            os.remove(FW4_INCLUDE)
+    except (IOError, OSError) as e:
+        return {"ok": False, "error": "fw4 drop-in: %s" % e}
+    ok = _fw4_reload()
+    log.info("routing: fw4 — форвард lan → %s %s%s"
+             % (ifname, "разрешён" if allow else "снят",
+                "" if ok else " (fw4 reload не удался)"),
+             source="routing")
+    return {"ok": ok, "changed": True}
 
 
 def remove_iface_forward(ifname: str) -> dict:
     """Удалить наши forward-accept правила по ifname (по handle)."""
+    fw4_sync_forward(ifname, False)
     rc, out, _e = _run(["nft", "-a", "list", "chain", "inet",
                         TABLE_NAME, "forward"])
     if rc != 0:

@@ -89,6 +89,7 @@ class TestDiagnose(unittest.TestCase):
                               return_value="awg0" if healthy else "eth0"),
             mock.patch.object(doctor, "_run",
                               return_value=(0, "", "")),
+            mock.patch.object(doctor, "_forward_check", return_value=None),
         ]
 
     def _run_diag(self, healthy):
@@ -308,6 +309,8 @@ class TestNftAndGeo(unittest.TestCase):
                                return_value=True), \
              mock.patch.object(doctor, "_route_get_dev",
                                return_value="sbtun0"), \
+             mock.patch.object(doctor, "_forward_check",
+                               return_value=None), \
              mock.patch.object(domain_rule, "_resolve_ips",
                                return_value=["149.154.167.99"]):
             checks = doctor._diagnose_domain_rule(
@@ -351,6 +354,8 @@ class TestNftAndGeo(unittest.TestCase):
                                return_value=True), \
              mock.patch.object(doctor, "_route_get_dev",
                                return_value="sbtun0") as rg, \
+             mock.patch.object(doctor, "_forward_check",
+                               return_value=None), \
              mock.patch.object(alias_resolver, "resolve_alias",
                                return_value=[]), \
              mock.patch.object(domain_rule, "_resolve_ips",

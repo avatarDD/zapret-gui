@@ -149,6 +149,29 @@ def _detect_family_and_normalize(ip: str):
         return None, None
 
 
+def _unusable_source(src: str) -> str:
+    """
+    Почему source нельзя ставить в `ip rule from` ('' — можно).
+
+    `from 0.0.0.0` — не «мёртвое» правило, а перехват всего роутера: у
+    локального сокета без bind первый route lookup идёт с saddr 0.0.0.0,
+    и /32 на 0.0.0.0 с ним совпадает. Так устройство, чей IP не
+    разрешился (NDM отдаёт 0.0.0.0 офлайн-хостам), уводило в туннель DNS
+    роутера, его пробы WAN и `ip route get` — сайты по имени переставали
+    открываться, WAN «падал», а WAN IP показывал адрес туннеля.
+    """
+    try:
+        net = ipaddress.ip_network(src, strict=False)
+    except (ValueError, TypeError):
+        return "некорректный адрес"
+    addr = net.network_address
+    if net.prefixlen == 0 or addr.is_unspecified:
+        return "неразрешённый адрес (%s)" % src
+    if addr.is_loopback or addr.is_multicast or addr.is_link_local:
+        return "служебный адрес (%s)" % src
+    return ""
+
+
 def _is_subnet(src: str) -> bool:
     """`src` — это подсеть (шире одного хоста), а не один адрес?"""
     try:
@@ -334,6 +357,14 @@ def apply_device_rule(rule: DeviceRoutingRule) -> dict:
     if fam is None:
         return {"ok": False,
                 "error": "Некорректный source_ip: %s" % rule.source_ip}
+
+    bad = _unusable_source(src)
+    if bad:
+        log.warning("routing: device-правило %s пропущено: %s — устройство"
+                    " не в сети или его адрес не определился"
+                    % (rule.id, bad), source="routing")
+        return {"ok": False, "skipped": True,
+                "error": "Адрес устройства не определён: %s" % bad}
 
     ifname = rule.target_iface
     table = _table_id_for(ifname)

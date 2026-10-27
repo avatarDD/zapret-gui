@@ -204,7 +204,11 @@ class TestMaybeRestart(unittest.TestCase):
         status = {"peers": [{"latest_handshake": now - 1000}]}
         wd._maybe_restart(mgr, "awg0", status, self._settings(),
                           now=now)
-        mgr.restart.assert_called_once_with("awg0")
+        mgr.restart.assert_called_once()
+        self.assertEqual(mgr.restart.call_args[0], ("awg0",))
+        # Причина рестарта уходит в журнал менеджера (наблюдение из MCP:
+        # «опущен/поднят» без объяснения, кто и зачем).
+        self.assertIn("watchdog", mgr.restart.call_args[1].get("reason", ""))
 
     def test_cooldown_blocks_restart(self):
         wd  = self._watchdog()
@@ -599,7 +603,8 @@ class TestMaybeRestartRxStall(unittest.TestCase):
         status = {"peers": [{"latest_handshake": int(now) - 5,
                              "rx_bytes": 1000, "tx_bytes": 7000}]}
         wd._maybe_restart(mgr, "awg0", status, self._settings(), now=now)
-        mgr.restart.assert_called_once_with("awg0")
+        mgr.restart.assert_called_once()
+        self.assertEqual(mgr.restart.call_args[0], ("awg0",))
 
     def test_no_restart_when_rx_progresses(self):
         wd  = awg_watchdog.AwgWatchdog()
@@ -814,7 +819,8 @@ class TestMaybeRestartProbeTriState(unittest.TestCase):
         with mock.patch("core.awg_watchdog.probe_via_iface", return_value=False):
             wd._maybe_restart(mgr, "awg0", self._status(now),
                               self._settings(), now=now)
-        mgr.restart.assert_called_once_with("awg0")
+        mgr.restart.assert_called_once()
+        self.assertEqual(mgr.restart.call_args[0], ("awg0",))
         self.assertEqual(wd._probe_last.get("awg0"), "fail")
 
     def test_ok_probe_resets_fails(self):
@@ -932,7 +938,8 @@ class TestMaybeRestartZeroRx(unittest.TestCase):
         wd._maybe_restart(mgr, "awg0", self._status(0, 2000),
                           self._settings(), now=now + 61)
         self._join()
-        mgr.restart.assert_called_once_with("awg0")
+        mgr.restart.assert_called_once()
+        self.assertEqual(mgr.restart.call_args[0], ("awg0",))
         self.assertNotIn("awg0", wd._zero_state)
 
     def test_disabled_holds(self):

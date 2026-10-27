@@ -113,6 +113,7 @@ def check_all() -> dict:
             "ok": True,
             "results": results,
             "updates_count": updates_count,
+            "incomplete": _incomplete_rows(results),
             "checked_at": int(time.time()),
         }
         _last_check = time.time()
@@ -120,10 +121,42 @@ def check_all() -> dict:
     return _results
 
 
+def _short(text: str, limit: int = 200) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _incomplete_rows(results: list) -> list:
+    """Строки, у которых «последнюю» узнать не удалось.
+
+    Признак per-row: глобальный _github_any_success гасится одним удачным
+    запросом (теги opera/usque), и частичный сбой не был виден нигде.
+    """
+    return [r.get("display_name") or r.get("name") for r in results
+            if r.get("latest_source") == "unknown"]
+
+
 def _finalize_row(r: dict) -> dict:
     """Общие для всех строк правки после частной проверки."""
     if r.get("has_update") and not r.get("installed"):
         r["has_update"] = False
+    if not r.get("error"):
+        r.pop("error", None)
+    # Пустая «последняя» без пометки читалась как «обновлений нет», хотя
+    # на деле источник не ответил (DNS, обрыв ответа). Строку, которая
+    # сама не назвала источник, помечаем «источник не ответил» и
+    # переносим причину в подпись — ⚠ с подсказкой при наведении на
+    # телефоне не видно.
+    if not r.get("latest") and not r.get("latest_source"):
+        r["latest_source"] = "unknown"
+        if r.get("error") and not r.get("note"):
+            r["note"] = ("последнюю версию узнать не удалось: %s"
+                         % _short(r["error"]))
+    if (r.get("installed") and not (r.get("current") or "").strip()
+            and not r.get("note")):
+        r["note"] = ("установленную версию узнать не удалось — бинарник"
+                     " не ответил на запрос версии (таймаут или ошибка"
+                     " запуска, подробности в журнале)")
     # Время файла, по которому программа считается установленной. Ответ на
     # «я ничего не ставил, а лампочка горит» (discussion #102) — это дата
     # появления файла: по ней видно, когда и, значит, чем он там оказался.
@@ -177,6 +210,7 @@ def refresh_component(name: str) -> dict:
                 for r in (_results.get("results") or [])]
         _results["results"] = rows
         _results["updates_count"] = sum(1 for r in rows if r.get("has_update"))
+        _results["incomplete"] = _incomplete_rows(rows)
     return row
 
 
@@ -337,6 +371,7 @@ def _check_zapret() -> dict:
             # «что нашли» он годится только при installed.
             "path": (installed.get("binary_path", "")
                      if installed.get("installed") else ""),
+            "error": latest.get("error") or "",
         }
     except Exception as e:
         return {"name": "zapret2", "display_name": "zapret2",
@@ -358,6 +393,10 @@ def _check_singbox() -> dict:
             "latest": result.get("latest", {}).get("version", ""),
             "has_update": result.get("has_update", False),
             "path": result.get("installed", {}).get("path", ""),
+            # Без ok манифест/релиз не получен — причина уходит в строку,
+            # а не теряется (раньше оставалось только «–»).
+            "error": ("" if result.get("ok") else
+                      result.get("error") or "источник не ответил"),
         }
     except Exception as e:
         return {"name": "singbox", "display_name": "sing-box",
@@ -379,6 +418,10 @@ def _check_mihomo() -> dict:
             "latest": result.get("latest", {}).get("version", ""),
             "has_update": result.get("has_update", False),
             "path": result.get("installed", {}).get("path", ""),
+            # Без ok манифест/релиз не получен — причина уходит в строку,
+            # а не теряется (раньше оставалось только «–»).
+            "error": ("" if result.get("ok") else
+                      result.get("error") or "источник не ответил"),
         }
     except Exception as e:
         return {"name": "mihomo", "display_name": "mihomo",
@@ -457,6 +500,7 @@ def _check_gui() -> dict:
             "has_update": bool(latest.get("version") and
                                installed.get("version") and
                                latest["version"] != installed["version"]),
+            "error": latest.get("error") or "",
         }
     except Exception as e:
         return {"name": "gui", "display_name": "Zapret Web-GUI",
