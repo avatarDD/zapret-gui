@@ -1170,7 +1170,13 @@ class AwgManager:
         except Exception:
             return False
 
-    def restart(self, name: str) -> dict:
+    def restart(self, name: str, reason: str = "") -> dict:
+        """Перезапуск (down + up). reason попадает в журнал рядом с
+        «опущен/поднят»: без него рестарт сторожа, рестарт из веба и
+        рестарт после правки конфига выглядели одинаково."""
+        log.info("Перезапуск интерфейса %s: %s"
+                 % (name, reason or "причина не указана"),
+                 source="awg_manager")
         with self._lock:
             # Принимаем и имя конфига, и имя интерфейса (как status()).
             cfg_name = self._config_for_name(name)

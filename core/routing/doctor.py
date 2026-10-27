@@ -271,7 +271,8 @@ def _diagnose_domain_rule(rule, sets_state, iproute_state) -> list:
             "%d правил в policy-db" % live))
     else:
         checks.append(_check("бэкенд", True,
-                             "dnsmasq/NDMS (state этого правила пуст)"))
+                             "набор наполняет dnsmasq (nftset/ipset)"
+                             " или NDMS"))
         # Набор и fwmark-правило ставит apply_domain_rule и в dnsmasq-пути —
         # без этих строк отчёт молчал, на каком звене правило не легло.
         try:
@@ -305,6 +306,9 @@ def _diagnose_domain_rule(rule, sets_state, iproute_state) -> list:
                          "" if mq else
                          "нет — пакеты уйдут с чужим src и сервер их дропнет"
                          " (нажмите «Переприменить и сбросить лишнее»)"))
+    fw = _forward_check(ifname)
+    if fw:
+        checks.append(fw)
 
     # Алиас, который не скачался, молча выпадает из набора: geoip:telegram
     # с 404 оставлял приложение Telegram мимо туннеля (issue #404/#386).
@@ -403,14 +407,39 @@ def _diagnose_cidr_rule(rule) -> list:
     table = table_id_for(rule.target_iface)
     lines = _ip_rule_lines("-4") + _ip_rule_lines("-6")
     want = [c for c, _f in rule.cidr_families()]
-    live = sum(1 for line in lines if "lookup %d" % table in line)
+    # Считаем только `to <сеть>` этого правила: в ту же таблицу ведут и
+    # fwmark-правила доменного маршрута, и отчёт писал «12 правил
+    # (ожидалось до 10)» там, где всё в порядке.
+    import ipaddress
+
+    def _net(text):
+        try:
+            return ipaddress.ip_network(text.strip(), strict=False)
+        except (ValueError, TypeError):
+            return None
+
+    want_set = {_net(c) for c in want} - {None}
+    live = 0
+    for line in lines:
+        parts = line.split()
+        if "lookup" not in parts or "to" not in parts:
+            continue
+        i, j = parts.index("to"), parts.index("lookup")
+        if (i + 1 < len(parts) and j + 1 < len(parts)
+                and parts[j + 1] == str(table)
+                and _net(parts[i + 1]) in want_set):
+            live += 1
     checks.append(_check(
         "ip rule to → table %d" % table, live > 0,
-        "%d правил (ожидалось до %d)" % (live, len(want))))
+        "%d из %d сетей" % (live, len(want))))
     dev = _table_default_iface(table)
     checks.append(_check(
         "default-route в table %d" % table, dev == rule.target_iface,
         ("dev %s" % dev) if dev else "нет default"))
+    if live:
+        fw = _forward_check(rule.target_iface)
+        if fw:
+            checks.append(fw)
     if want:
         probe_ip = want[0].split("/")[0]
         via = _route_get_dev(probe_ip)
@@ -427,6 +456,43 @@ def _forward_accept_present(ifname: str, family: str = "v4") -> bool:
     if rc != 0:
         return False
     return ("-o %s -j ACCEPT" % ifname) in out
+
+
+def _forward_check(ifname: str, family: str = "v4"):
+    """
+    Звено «firewall пропускает форвард LAN → туннель» или None, если
+    проверить нечем.
+
+    На OpenWrt fw4 интерфейс без зоны получает reject в forward_lan, и
+    наш accept в своей таблице этого не отменяет: туннель поднят,
+    маршрут стоит, `route get` показывает туннель — а трафик устройств
+    не проходит (issue #386). На iptables смотрим ACCEPT в FORWARD.
+    """
+    from core.routing import nftset_backend
+    try:
+        from core.routing.manager import _is_ndms_native_iface
+        if _is_ndms_native_iface(ifname):
+            return None                # форвард нативных ведёт сам NDMS
+    except Exception:                                    # noqa: BLE001
+        pass
+    if nftset_backend.fw4_present():
+        ok = nftset_backend.fw4_forward_allowed(ifname)
+        return _check(
+            "fw4 пропускает LAN → %s" % ifname, ok,
+            "" if ok else
+            "нет — у интерфейса нет зоны fw4, и форвард из LAN"
+            " отклоняется (с самого роутера при этом работает). Нажмите"
+            " «Переприменить и сбросить лишнее» или добавьте %s в зону"
+            " wan в LuCI" % ifname)
+    rc, _o, _e = _run(["iptables" if family == "v4" else "ip6tables",
+                       "-t", "filter", "-S", "FORWARD"])
+    if rc != 0:
+        return None
+    fw = _forward_accept_present(ifname, family)
+    return _check(
+        "форвард LAN→%s разрешён" % ifname, fw,
+        "" if fw else "нет ACCEPT в FORWARD — трафик С УСТРОЙСТВ режется"
+                      " (с самого роутера при этом работает)")
 
 
 def _shadowing_rule(src: str, table: int, priority: int, family: str = "-4"):
@@ -518,12 +584,11 @@ def _diagnose_device_rule(rule) -> list:
         "" if mq else "нет — пакеты уйдут с адресом устройства (192.168.x.y),"
                       " и сервер туннеля их отбросит"))
 
-    # 4. FORWARD-ACCEPT: политика FORWARD на роутерах — DROP.
-    fw = _forward_accept_present(ifname, fam)
-    checks.append(_check(
-        "форвард LAN→%s разрешён" % ifname, fw,
-        "" if fw else "нет ACCEPT в FORWARD — трафик С УСТРОЙСТВ режется"
-                      " (с самого роутера при этом работает)"))
+    # 4. FORWARD-ACCEPT: политика FORWARD на роутерах — DROP, на
+    #    OpenWrt fw4 — reject для интерфейса без зоны.
+    fw = _forward_check(ifname, fam)
+    if fw:
+        checks.append(fw)
 
     # 5. Куда уходит трафик, пока туннель перезапускается.
     #

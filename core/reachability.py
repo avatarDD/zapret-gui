@@ -29,7 +29,9 @@
 ## Как меряем WAN
 
 TCP-соединение по IP — без DNS (DNS роутера может лежать отдельно, это
-другая поломка, см. ``core/quick_fix``) и без TLS (часы). Отечественные
+другая поломка, см. ``core/quick_fix``) и без TLS (часы), привязанное к
+интерфейсу default из таблицы main (иначе маршруты туннелей уводили
+пробу «напрямую» в туннель, см. :func:`_connect`). Отечественные
 цели — DNS Яндекса по TCP/53, зарубежные — 1.1.1.1 и 8.8.8.8 на 443.
 Хоть один ответ — WAN жив. Результат кешируется на ``CACHE_TTL``: шесть
 сторожей за один тик не должны слать по шесть проб.
@@ -69,6 +71,7 @@ _probe_lock = threading.Lock()
 _state = {"ts": 0.0, "result": None, "down_streak": 0, "first_miss": 0.0,
           "outage_since": 0.0, "held": {}}
 _watcher = None
+_wan_dev_cache = [0.0, ""]
 
 
 # ─────────────────────────── чистая логика ───────────────────────────
@@ -91,16 +94,68 @@ def classify(direct_domestic, direct_foreign, tunnel_foreign) -> str:
 
 # ───────────────────────────── замер ─────────────────────────────────
 
-def _connect(addr, timeout: float = CONNECT_TIMEOUT) -> bool:
+def _wan_dev() -> str:
+    """Интерфейс default-маршрута в таблице main ('' — не нашли).
+
+    Кешируется на CACHE_TTL: за один замер _connect зовётся до четырёх раз.
+    """
+    now = time.time()
+    with _lock:
+        if now - _wan_dev_cache[0] < CACHE_TTL:
+            return _wan_dev_cache[1]
+    dev = ""
     try:
-        sock = socket.create_connection(addr, timeout=timeout)
+        import subprocess
+        r = subprocess.run(["ip", "-4", "route", "show", "table", "main",
+                            "default"], capture_output=True, text=True,
+                           timeout=3)
+        parts = ((r.stdout or "").strip().splitlines() or [""])[0].split()
+        if r.returncode == 0 and "dev" in parts:
+            i = parts.index("dev")
+            dev = parts[i + 1] if i + 1 < len(parts) else ""
+    except (OSError, ValueError):
+        dev = ""
+    with _lock:
+        _wan_dev_cache[:] = [now, dev]
+    return dev
+
+
+def _connect(addr, timeout: float = CONNECT_TIMEOUT) -> bool:
+    return _tcp_probe(addr, timeout)
+
+
+def _tcp_probe(addr, timeout: float = CONNECT_TIMEOUT) -> bool:
+    """TCP-соединение к addr НАПРЯМУЮ через WAN.
+
+    Проба «напрямую» обязана идти мимо policy-routing: CIDR-маршрут на
+    1.1.1.1 или правило `from 0.0.0.0` уводили её в таблицу туннеля, и
+    WAN «падал» вместе с туннелем — а сторожа, видя «WAN лежит», туннель
+    уже не перезапускали. SO_BINDTODEVICE на интерфейс default из main:
+    в таблице туннеля для этого интерфейса маршрута нет, и ядро идёт
+    дальше, до main. Без прав (не root) — обычное соединение, как раньше.
+    """
+    dev = _wan_dev()
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        if dev:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET,
+                                getattr(socket, "SO_BINDTODEVICE", 25),
+                                dev.encode() + b"\0")
+            except OSError:
+                pass
+        sock.connect(addr)
+        return True
     except OSError:
         return False
-    try:
-        sock.close()
-    except OSError:
-        pass
-    return True
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 def _any(targets) -> bool:
@@ -263,3 +318,4 @@ def reset() -> None:
     with _lock:
         _state.update(ts=0.0, result=None, down_streak=0, first_miss=0.0,
                       outage_since=0.0, held={})
+        _wan_dev_cache[:] = [0.0, ""]

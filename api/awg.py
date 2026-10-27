@@ -346,7 +346,8 @@ def register(app):
     def awg_iface_restart(name):
         response.content_type = "application/json; charset=utf-8"
         from core.awg_manager import get_awg_manager
-        result = get_awg_manager().restart(name)
+        result = get_awg_manager().restart(
+            name, reason="по запросу из веб-интерфейса")
         if not result.get("ok"):
             response.status = 500
         return result

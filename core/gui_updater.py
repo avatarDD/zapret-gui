@@ -12,6 +12,7 @@ Singleton: get_gui_updater()
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -45,6 +46,15 @@ HTTP_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 300       # архив всего GUI — на роутере качается долго
 REMOTE_VERSION_CACHE_TTL = 300  # 5 минут
 RELEASES_CACHE_TTL = 300
+
+# Поиск последнего GUI-релиза. Страница на 100 релизов с описаниями —
+# это ~1.1 МБ JSON, и на медленном канале роутера она рвётся посередине
+# (IncompleteRead). GUI-релиз почти всегда в первой двадцатке, поэтому
+# берём страницы по 20 (~200 КБ) — окно по-прежнему 200 релизов.
+LATEST_PER_PAGE = 20
+LATEST_MAX_PAGES = 10
+FETCH_ATTEMPTS = 3
+FETCH_BACKOFF = (2, 4)
 
 # Сколько места нужно рабочему каталогу обновления: архив исходников
 # (~4 МБ) + распакованное дерево (~15 МБ) + запас на рост репозитория.
@@ -1260,26 +1270,10 @@ class GuiUpdater:
         список релизов и выбираем новейший с тэгом-семвером, отбрасывая
         бинарные.
         """
-        for page in (1, 2):
+        for page in range(1, LATEST_MAX_PAGES + 1):
             url = ("https://api.github.com/repos/avatarDD/zapret-gui/"
-                   "releases?per_page=100&page=%d" % page)
-            req = Request(url, headers={
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "zapret-gui/%s" % GUI_VERSION,
-            })
-            try:
-                with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-            except HTTPError as e:
-                if e.code == 403:
-                    raise Exception("Лимит запросов GitHub API исчерпан. "
-                                    "Попробуйте позже.")
-                raise Exception("GitHub API вернул HTTP %d" % e.code)
-            except URLError as e:
-                from core.binary_installer import github_unreachable_message
-                raise Exception(github_unreachable_message(e))
-            except json.JSONDecodeError:
-                raise Exception("Ошибка разбора ответа GitHub API")
+                   "releases?per_page=%d&page=%d" % (LATEST_PER_PAGE, page))
+            data = self._get_releases_page(url)
 
             if not isinstance(data, list) or not data:
                 break
@@ -1289,10 +1283,54 @@ class GuiUpdater:
                 tag = (rel.get("tag_name") or "").strip()
                 if _GUI_TAG_RE.match(tag):
                     return rel
-            if len(data) < 100:
+            if len(data) < LATEST_PER_PAGE:
                 break
 
         raise Exception("Не найден GUI-релиз (тэг vX.Y.Z) среди релизов")
+
+    @staticmethod
+    def _get_releases_page(url: str):
+        """
+        Одна страница списка релизов с повтором при обрыве.
+
+        На медленном канале (mipsel, Keenetic) ответ рвётся посередине —
+        IncompleteRead, таймаут чтения, сброс соединения — и проходит со
+        следующей попытки. Раньше первый же обрыв давал ERROR и пустую
+        «последнюю» на странице «Обновления». Повторяем такие сбои, как
+        github_release() в ext_binary_installer: 3 попытки, пауза 2 и 4 с.
+        HTTP-ошибки (лимит API, 404) не повторяем — ответ не изменится.
+        """
+        req = Request(url, headers={
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "zapret-gui/%s" % GUI_VERSION,
+        })
+        msg = ""
+        for attempt in range(FETCH_ATTEMPTS):
+            if attempt:
+                time.sleep(FETCH_BACKOFF[min(attempt - 1,
+                                             len(FETCH_BACKOFF) - 1)])
+            try:
+                with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except HTTPError as e:
+                if e.code == 403:
+                    raise Exception("Лимит запросов GitHub API исчерпан. "
+                                    "Попробуйте позже.")
+                raise Exception("GitHub API вернул HTTP %d" % e.code)
+            except json.JSONDecodeError:
+                raise Exception("Ошибка разбора ответа GitHub API")
+            except URLError as e:
+                from core.binary_installer import github_unreachable_message
+                msg = github_unreachable_message(e)
+            except (http.client.HTTPException, OSError) as e:
+                # IncompleteRead — подкласс HTTPException; socket.timeout и
+                # ConnectionResetError — OSError.
+                msg = "ответ GitHub оборвался: %s" % e
+            if attempt < FETCH_ATTEMPTS - 1:
+                log.warning("GitHub: %s — попытка %d/%d, повторяю"
+                            % (msg, attempt + 1, FETCH_ATTEMPTS),
+                            source="gui-updater")
+        raise Exception("%s (после %d попыток)" % (msg, FETCH_ATTEMPTS))
 
     def _is_newer_version(self, installed: str, latest: str) -> bool:
         """Проверить, является ли latest более новой версией."""

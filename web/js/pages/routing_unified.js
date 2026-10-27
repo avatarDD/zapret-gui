@@ -2219,7 +2219,8 @@ const RoutingUnifiedPage = (() => {
             const lines = []
                 .concat((r.ip_rules || []).map(x => 'ip rule: ' + x))
                 .concat((r.sets || []).map(x => 'набор: ' + x))
-                .concat((r.tables || []).map(x => 'таблица: ' + x));
+                .concat((r.tables || []).map(x => 'таблица: ' + x))
+                .concat((r.dnsmasq || []).map(x => 'dnsmasq: ' + x));
             if (!lines.length) {
                 Toast.success('Лишнего в ядре нет — всё соответствует маршрутам');
                 return;

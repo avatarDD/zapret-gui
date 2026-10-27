@@ -129,10 +129,23 @@ const UpdateCheckerPage = (() => {
         }
 
         const updatesCount = data.updates_count || 0;
+        // Строки, где источник не ответил: без этого частичный сбой
+        // (часть запросов к GitHub прошла) выглядел как «всё актуально».
+        const incomplete = data.incomplete || [];
+        const incompleteNote = incomplete.length
+            ? `<div style="margin-top:4px;font-weight:400;font-size:12px;">
+                   Не удалось узнать последнюю версию: ${esc(incomplete.join(", "))}.
+                   Проверьте доступ к api.github.com (или зеркало в «Настройках»).
+               </div>`
+            : "";
         let header = '';
         if (updatesCount > 0) {
             header = `<div style="margin-bottom:12px;padding:8px 12px;background:var(--warning-bg,#fff3cd);border-radius:6px;font-weight:600;">
-                Найдено обновлений: ${updatesCount}
+                Найдено обновлений: ${updatesCount}${incompleteNote}
+            </div>`;
+        } else if (incomplete.length) {
+            header = `<div style="margin-bottom:12px;padding:8px 12px;background:var(--warning-bg,#fff3cd);border-radius:6px;font-weight:600;">
+                Проверка неполная — обновлений не найдено среди ответивших источников${incompleteNote}
             </div>`;
         } else {
             header = `<div style="margin-bottom:12px;padding:8px 12px;background:var(--success-bg,#d4edda);border-radius:6px;">

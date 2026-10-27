@@ -238,25 +238,45 @@ def _get_wan_ip() -> str:
     """
     Локальный адрес, с которого уходит трафик в интернет.
 
-    Это `src` из `ip route get 8.8.8.8`, то есть адрес НАШЕГО исходящего
-    интерфейса, а не публичный IP: за NAT/CGNAT он будет серым. В UI
-    подписан соответственно.
+    Адрес интерфейса, держащего default в таблице main, — то есть НАШЕГО
+    исходящего интерфейса, а не публичный IP: за NAT/CGNAT он будет
+    серым. В UI подписан соответственно.
+
+    Раньше брался `src` из `ip route get 8.8.8.8`, но этот запрос идёт
+    через policy-routing: правило маршрута (CIDR/домен с 8.8.8.8, а то и
+    `from 0.0.0.0`) уводило его в таблицу туннеля, и «WAN IP» показывал
+    адрес AWG (172.16.0.2). `ip route get` остаётся запасным путём, когда
+    default в main нет.
 
     Возвращает пустую строку, когда определить не удалось (нет `ip`, нет
     маршрута). Раньше здесь возвращался символ «—» — оформление в данных,
     из-за чего его нельзя было отличить от реального значения.
     """
-    try:
-        result = subprocess.run(
-            ["ip", "route", "get", "8.8.8.8"],
-            capture_output=True, text=True, timeout=3
-        )
-        if result.returncode == 0:
-            parts = result.stdout.split()
-            if "src" in parts:
-                idx = parts.index("src")
-                if idx + 1 < len(parts):
-                    return parts[idx + 1]
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
-    return ""
+    def _ip(args):
+        try:
+            r = subprocess.run(["ip"] + args, capture_output=True,
+                               text=True, timeout=3)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return ""
+        return r.stdout if r.returncode == 0 else ""
+
+    def _after(parts, key):
+        if key in parts:
+            idx = parts.index(key)
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+        return ""
+
+    line = (_ip(["-4", "route", "show", "table", "main", "default"])
+            .strip().splitlines() or [""])[0].split()
+    src = _after(line, "src")
+    if src:
+        return src
+    dev = _after(line, "dev")
+    if dev:
+        for row in _ip(["-4", "-o", "addr", "show", "dev", dev,
+                        "scope", "global"]).splitlines():
+            addr = _after(row.split(), "inet")
+            if addr:
+                return addr.split("/", 1)[0]
+    return _after(_ip(["route", "get", "8.8.8.8"]).split(), "src")
