@@ -12,6 +12,13 @@
 Entware (S99zapret-gui) → OpenWrt procd → systemd. Перезагрузка на
 Keenetic идёт через ndmc (штатный путь прошивки, с корректным
 размонтированием), с фолбэком на обычный reboot.
+
+Успех перезагрузки проверяется по boot_id ядра, а не по «GUI снова
+ответил»: если команда молча не сработала (нет прав, busybox из Entware
+не достучался до init прошивки), GUI просто продолжает отвечать, и без
+сравнения boot_id страница рапортовала бы об успешной перезагрузке.
+Вывод команды пишется в /tmp (это RAM — после настоящей перезагрузки
+файла уже нет, а при сбое в нём видна причина).
 """
 
 import os
@@ -27,6 +34,14 @@ _OPENWRT_INIT = "/etc/init.d/zapret-gui"
 # закрыть соединение. Полсекунды мало на медленном роутере, 2 с хватает с
 # запасом и не выглядит зависанием.
 _DELAY_SEC = 2
+
+# Вывод команды перезагрузки. /tmp — tmpfs и на OpenWrt, и на Keenetic:
+# flash не трогаем, а после удачной перезагрузки файл исчезает сам.
+_REBOOT_LOG = "/tmp/zapret-gui-reboot.log"
+
+_NDMC_PATHS = ("/bin/ndmc", "/usr/bin/ndmc", "/sbin/ndmc", "/usr/sbin/ndmc")
+_REBOOT_PATHS = ("/sbin/reboot", "/usr/sbin/reboot", "/bin/reboot",
+                 "/opt/sbin/reboot")
 
 
 def _detached(command: str) -> dict:
@@ -61,20 +76,76 @@ def restart_command() -> str:
     return ""
 
 
+def _ndmc() -> str:
+    """Путь к ndmc (Keenetic) или ''. PATH демона может не содержать /bin."""
+    found = shutil.which("ndmc")
+    if found:
+        return found
+    for path in _NDMC_PATHS:
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def _reboot_binary() -> str:
+    """Системный reboot. Прошивочный (/sbin) раньше Entware-шного (/opt):
+    busybox из Entware шлёт сигнал «чужому» init и может не сработать."""
+    for path in _REBOOT_PATHS:
+        if os.path.isfile(path):
+            return path
+    return shutil.which("reboot") or ""
+
+
 def reboot_command() -> str:
     """Чем перезагружать устройство ('' — нечем).
 
     На Keenetic правильный путь — ndmc: прошивка сама корректно гасит
-    сервисы и размонтирует USB. `reboot` там тоже работает, но грубее.
+    сервисы и размонтирует USB. `reboot` там тоже работает, но грубее,
+    поэтому идёт запасным вариантом через `||`: если ndmc вернул ошибку,
+    роутер всё равно перезагрузится. На OpenWrt `reboot` — это сигнал
+    procd, который штатно гасит службы и перезагружает систему.
     """
-    if shutil.which("ndmc"):
-        return 'ndmc -c "system reboot"'
-    for path in ("/sbin/reboot", "/usr/sbin/reboot", "/opt/sbin/reboot"):
-        if os.path.isfile(path):
-            return path
-    if shutil.which("reboot"):
-        return "reboot"
+    ndmc = _ndmc()
+    reboot = _reboot_binary()
+    parts = []
+    if ndmc:
+        parts.append('%s -c "system reboot"' % ndmc)
+    if reboot:
+        parts.append(reboot)
+    return " || ".join(parts)
+
+
+def boot_id() -> str:
+    """Идентификатор текущей загрузки ядра ('' — не удалось узнать).
+
+    Меняется при каждой перезагрузке — по нему GUI отличает «роутер
+    перезагрузился» от «команда не сработала, GUI просто жив».
+    Фолбэк — время загрузки из /proc/stat (btime).
+    """
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            v = f.read().strip()
+            if v:
+                return v
+    except OSError:
+        pass
+    try:
+        with open("/proc/stat") as f:
+            for line in f:
+                if line.startswith("btime "):
+                    return "btime-" + line.split()[1]
+    except (OSError, IndexError):
+        pass
     return ""
+
+
+def last_reboot_output() -> str:
+    """Хвост вывода последней команды перезагрузки этой загрузки ('' — нет)."""
+    try:
+        with open(_REBOOT_LOG, errors="replace") as f:
+            return f.read()[-2000:].strip()
+    except OSError:
+        return ""
 
 
 def restart_gui() -> dict:
@@ -100,12 +171,17 @@ def reboot_device() -> dict:
     if not cmd:
         return {"ok": False,
                 "error": "Не найдена команда перезагрузки (ndmc/reboot)."}
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        return {"ok": False,
+                "error": "GUI запущен не от root — перезагрузить роутер "
+                         "нельзя. Команда: %s" % cmd}
     log.warning("Запрошена ПЕРЕЗАГРУЗКА устройства: %s" % cmd,
                 source="system")
-    res = _detached(cmd)
+    res = _detached("( %s ) >%s 2>&1" % (cmd, _REBOOT_LOG))
     if not res.get("ok"):
         return res
     return {"ok": True, "command": cmd, "delay_sec": _DELAY_SEC,
+            "boot_id": boot_id(),
             "message": "Устройство перезагружается. Это займёт 1–2 минуты."}
 
 
@@ -119,4 +195,6 @@ def capabilities() -> dict:
         "reboot": bool(reboot),
         "restart_command": restart,
         "reboot_command": reboot,
+        "boot_id": boot_id(),
+        "reboot_output": last_reboot_output(),
     }

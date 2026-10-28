@@ -587,7 +587,7 @@ const DiagnosticsPage = (() => {
             }
             _lockMaintenance();
             Toast.info(r.message || 'Устройство перезагружается…');
-            _waitForGui('Перезагрузка…');
+            _waitForGui('Перезагрузка…', r.boot_id || '');
         } catch (e) {
             Toast.error(e.message);
         }
@@ -599,10 +599,17 @@ const DiagnosticsPage = (() => {
      * Без этого пользователь остаётся на мёртвой вкладке и не понимает,
      * прошла команда или нет: соединение рвётся ПО ЗАМЫСЛУ, и обычная
      * обработка ошибки здесь только путает.
+     *
+     * bootId — boot_id ядра ДО перезагрузки. Если он задан, «GUI ответил»
+     * ещё не успех: ответ с тем же boot_id значит, что роутер не
+     * перезагружался (команда не сработала или ещё гасит службы).
+     * Через NOT_REBOOTED_MS такого ответа считаем перезагрузку
+     * несостоявшейся и показываем вывод команды.
      */
-    function _waitForGui(label) {
+    function _waitForGui(label, bootId) {
         const startedAt = Date.now();
         const LIMIT_MS = 5 * 60 * 1000;
+        const NOT_REBOOTED_MS = 60 * 1000;
         const tick = async () => {
             const waited = Math.round((Date.now() - startedAt) / 1000);
             _setMaintenanceStatus(`${label} ждём ответа ${_humanSeconds(waited)}`);
@@ -614,6 +621,26 @@ const DiagnosticsPage = (() => {
             try {
                 const r = await fetch('/api/system/control',
                                       { cache: 'no-store' });
+                if (r.ok && bootId) {
+                    let c = null;
+                    try { c = await r.json(); } catch (_) { /* не JSON */ }
+                    if (c && c.boot_id && c.boot_id === bootId) {
+                        if (Date.now() - startedAt > NOT_REBOOTED_MS) {
+                            const out = c.reboot_output
+                                ? ' Вывод команды: ' + c.reboot_output : '';
+                            const msg = 'Роутер НЕ перезагрузился: GUI '
+                                + 'отвечает без перезагрузки ядра.' + out;
+                            Toast.error('Роутер не перезагрузился');
+                            // Вернуть кнопки; статус ставим после, иначе
+                            // loadMaintenanceCaps его затрёт.
+                            loadMaintenanceCaps().then(
+                                () => _setMaintenanceStatus(msg));
+                            return;
+                        }
+                        setTimeout(tick, 3000);
+                        return;
+                    }
+                }
                 if (r.ok) {
                     _setMaintenanceStatus('Готово, обновляем страницу…');
                     setTimeout(() => window.location.reload(), 800);

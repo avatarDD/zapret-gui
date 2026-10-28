@@ -44,11 +44,31 @@ class TestCommandSelection(unittest.TestCase):
             self.assertEqual(system_control.restart_command(), "")
 
     def test_keenetic_reboot_prefers_ndmc(self):
-        """На Keenetic ndmc гасит сервисы и размонтирует USB штатно."""
+        """На Keenetic ndmc гасит сервисы и размонтирует USB штатно,
+        а reboot остаётся запасным, если ndmc вернул ошибку."""
         with mock.patch("core.system_control.shutil.which",
-                        side_effect=lambda b: "/opt/bin/ndmc" if b == "ndmc" else None):
+                        side_effect=lambda b: "/bin/ndmc" if b == "ndmc" else None), \
+             mock.patch("core.system_control.os.path.isfile",
+                        side_effect=lambda p: p == "/sbin/reboot"):
             self.assertEqual(system_control.reboot_command(),
-                             'ndmc -c "system reboot"')
+                             '/bin/ndmc -c "system reboot" || /sbin/reboot')
+
+    def test_ndmc_found_outside_path(self):
+        """PATH демона может не содержать /bin — ищем ndmc по путям."""
+        with mock.patch("core.system_control.shutil.which",
+                        return_value=None), \
+             mock.patch("core.system_control.os.path.isfile",
+                        side_effect=lambda p: p == "/bin/ndmc"):
+            self.assertEqual(system_control.reboot_command(),
+                             '/bin/ndmc -c "system reboot"')
+
+    def test_firmware_reboot_preferred_over_entware(self):
+        with mock.patch("core.system_control.shutil.which",
+                        return_value=None), \
+             mock.patch("core.system_control.os.path.isfile",
+                        side_effect=lambda p: p in ("/sbin/reboot",
+                                                    "/opt/sbin/reboot")):
+            self.assertEqual(system_control.reboot_command(), "/sbin/reboot")
 
     def test_reboot_falls_back_to_plain_binary(self):
         with mock.patch("core.system_control.shutil.which",
@@ -78,11 +98,28 @@ class TestDetachedExecution(unittest.TestCase):
     def test_reboot_is_delayed_and_detached(self):
         with mock.patch("core.system_control.reboot_command",
                         return_value='ndmc -c "system reboot"'), \
+             mock.patch("core.system_control.os.geteuid", return_value=0), \
+             mock.patch("core.system_control.boot_id", return_value="b1"), \
              mock.patch("core.system_control.subprocess.Popen") as popen:
             res = system_control.reboot_device()
 
         self.assertTrue(res["ok"])
-        self.assertIn("system reboot", popen.call_args.args[0][2])
+        # boot_id нужен GUI, чтобы отличить перезагрузку от «команда не
+        # сработала, а GUI просто жив».
+        self.assertEqual(res["boot_id"], "b1")
+        script = popen.call_args.args[0][2]
+        self.assertIn("system reboot", script)
+        # Вывод уходит в /tmp — при сбое видна причина.
+        self.assertIn("/tmp/zapret-gui-reboot.log", script)
+
+    def test_reboot_refused_without_root(self):
+        with mock.patch("core.system_control.reboot_command",
+                        return_value="/sbin/reboot"), \
+             mock.patch("core.system_control.os.geteuid", return_value=1000), \
+             mock.patch("core.system_control.subprocess.Popen") as popen:
+            res = system_control.reboot_device()
+        self.assertFalse(res["ok"])
+        popen.assert_not_called()
 
     def test_missing_method_does_not_spawn_anything(self):
         with mock.patch("core.system_control.restart_command",
@@ -103,7 +140,7 @@ class TestSystemControlApi(unittest.TestCase):
         r = self.client.get_json("/api/system/control")
         self.assertTrue(r["ok"])
         for key in ("restart_gui", "reboot", "restart_command",
-                    "reboot_command"):
+                    "reboot_command", "boot_id", "reboot_output"):
             self.assertIn(key, r)
 
     def test_reboot_requires_confirmation(self):
