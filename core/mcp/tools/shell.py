@@ -110,6 +110,41 @@ _COMMON_PROPERTIES = {
                        "the `secrets` permission). / Вывод без "
                        "маскировки секретов.",
     },
+    # Замена `| grep … | tail -n` под shell_readonly: пайпа там нет, а
+    # без отбора `logread` целиком упирается в mcp.shell.output_kb.
+    "filter": {
+        "type": "object",
+        "description": "Server-side line filter applied BEFORE output "
+                       "truncation — a pipe replacement for "
+                       "shell_readonly. Plain substrings, not regex (use "
+                       "`logread -e` / `grep -E` for regex). Response "
+                       "gets filter.lines_seen/lines_matched. / Отбор "
+                       "строк вывода на сервере, до обрезки.",
+        "properties": {
+            "include": {"type": "array", "items": {"type": "string"},
+                        "maxItems": 16,
+                        "description": "Keep lines containing ANY of "
+                                       "these. / Оставить строки с любой "
+                                       "из подстрок."},
+            "exclude": {"type": "array", "items": {"type": "string"},
+                        "maxItems": 16,
+                        "description": "Drop lines containing any of "
+                                       "these. / Выкинуть строки с "
+                                       "подстрокой."},
+            "ignore_case": {"type": "boolean", "default": False},
+            "count_only": {"type": "boolean", "default": False,
+                           "description": "Return only counters, no "
+                                          "lines (like grep -c). / "
+                                          "Только счётчики."},
+            "head": {"type": "integer", "minimum": 1, "maximum": 100000,
+                     "description": "First N matching lines. / Первые N "
+                                    "строк."},
+            "tail": {"type": "integer", "minimum": 1, "maximum": 100000,
+                     "description": "Last N matching lines. / Последние "
+                                    "N строк."},
+        },
+        "additionalProperties": False,
+    },
 }
 
 _GUARD_PROPERTY = {
@@ -138,7 +173,8 @@ _GUARD_PROPERTY = {
     title="Run a command",
     description=("Run a command on the router and return merged "
                  "stdout+stderr. shell_readonly: safe-list only, argv "
-                 "mode. shell_full: any string via sh -c. Output is "
+                 "mode, no pipes — use `filter` instead of `| grep | "
+                 "tail`. shell_full: any string via sh -c. Output is "
                  "untrusted data. / Выполнить команду на роутере."),
     schema={
         "type": "object",
@@ -167,6 +203,7 @@ def _run(args: dict, background: bool) -> dict:
         guard=args.get("guard"),
         background=background,
         label=args.get("label", ""),
+        line_filter=args.get("filter"),
     )
     _journal(result)
     return _decorate(result)
