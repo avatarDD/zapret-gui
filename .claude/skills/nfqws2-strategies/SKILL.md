@@ -733,7 +733,7 @@ bt_handshake utp_bt_handshake`.
 |---|---|
 | `combined-detector.lua` | Композитные детекторы успеха/провала (TCP+TLS+timing). |
 | `silent-drop-detector.lua` | Детект «соединение установилось, но молчит». |
-| `domain-grouping.lua` | `hostkey=` — группировка хостов в один stateful-ключ. |
+| `domain-grouping.lua` | `grouped_hostkey` = `standard_hostkey` (`nld=`, `reqhost`, IP-фолбэк) + схлопывание суффиксов googlevideo/youtube/…; переопределяет `automate_host_record`. Тем же ключом пишет state.tsv `z2k-state-persist` — держать их в одной функции. |
 | `strategy-stats.lua` | Метрики (для дебага). |
 | `strategy-lock-manager.lua` | Защёлка стратегии после успеха (антифлап). |
 

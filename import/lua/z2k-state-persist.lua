@@ -306,6 +306,7 @@ local allowed_hostkey_funcs = {
   sld_hostkey = true,
   tld_hostkey = true,
   z2k_nohost_key = true,
+  grouped_hostkey = true,
 }
 
 local function get_hostkey_func(desync)
@@ -316,6 +317,11 @@ local function get_hostkey_func(desync)
     if type(f) == "function" then return f end
     return nil
   end
+  -- Default key MUST match the rotator's. domain-grouping.lua (orchestrator
+  -- bundle) overrides automate_host_record() with grouped_hostkey(); keying
+  -- state here by plain standard_hostkey made rotation and persistence use
+  -- different autostate records for any subdomain it groups differently.
+  if type(grouped_hostkey) == "function" then return grouped_hostkey end
   if type(standard_hostkey) == "function" then return standard_hostkey end
   return nil
 end

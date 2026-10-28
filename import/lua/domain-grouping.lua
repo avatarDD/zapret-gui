@@ -41,28 +41,45 @@ function get_grouped_hostname(hostname)
     return hostname
 end
 
+-- Hostkey for circular's per-host record: the upstream key (standard_hostkey,
+-- which honours nld=, reqhost and falls back to the target ip), then narrowed by
+-- get_grouped_hostname. The grouping rules only collapse deeper names into a
+-- base domain, so they compose with nld=2.
+--
+-- This is the ONE place the default key is built. z2k-state-persist.lua keys
+-- state.tsv through the same function (if this script is loaded), so rotation
+-- and persistence always touch the same autostate[askey][hostkey] record.
+-- Previously this override built its own key from host_or_ip(), ignoring nld=
+-- and hostkey=: circular rotated "a.b.c" while persist wrote/seeded "b.c", so a
+-- learned strategy for any subdomain outside the list below never reached disk.
+function grouped_hostkey(desync)
+    local hostkey = standard_hostkey(desync)
+    if not hostkey then return nil end
+    local grouped = get_grouped_hostname(hostkey)
+    if grouped ~= hostkey then
+        DLOG("domain-grouping: " .. hostkey .. " -> " .. grouped)
+    end
+    return grouped
+end
+
 -- Override automate_host_record to use grouped hostname
-local original_automate_host_record = automate_host_record
 function automate_host_record(desync)
     local hostkey, askey
 
-    -- Get hostname
-    if desync.arg.reqhost then
-        hostkey = desync.track and desync.track.hostname
+    -- Explicit hostkey= (e.g. z2k_nohost_key for hostless pools) wins, exactly
+    -- as in upstream zapret-auto.lua; otherwise use the grouped key.
+    if desync.arg.hostkey then
+        if type(_G[desync.arg.hostkey])~="function" then
+            error("automate: invalid hostkey function '"..desync.arg.hostkey.."'")
+        end
+        hostkey = _G[desync.arg.hostkey](desync)
     else
-        hostkey = host_or_ip(desync)
+        hostkey = grouped_hostkey(desync)
     end
 
     if not hostkey then
         DLOG("automate: host record key unavailable")
         return nil
-    end
-
-    -- Apply grouping
-    local grouped = get_grouped_hostname(hostkey)
-    if grouped ~= hostkey then
-        DLOG("domain-grouping: " .. hostkey .. " -> " .. grouped)
-        hostkey = grouped
     end
 
     askey = (desync.arg.key and #desync.arg.key>0) and desync.arg.key or desync.func_instance
