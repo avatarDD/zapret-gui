@@ -365,10 +365,23 @@ def _apply_nfqws(route, domains) -> dict:
         agg = nfqws_hostlist.rebuild()
     except Exception as e:
         log.warning("unified nfqws aggregate: %s" % e, source="unified")
-    return {"ok": ok, "hostlist": name, "domains": len(domains),
-            "aggregate": agg,
-            "note": ("включите nfqws.unified_hostlist, чтобы стратегия "
-                     "применялась к этим доменам автоматически")}
+    out = {"ok": ok, "hostlist": name, "domains": len(domains),
+           "aggregate": agg}
+    try:
+        from core.unified import nfqws_hostlist
+        feature_on = nfqws_hostlist.enabled()
+    except Exception:
+        feature_on = False
+    if not feature_on:
+        # Без флага агрегат никто не читает: nfqws2 работает со своей
+        # стратегией как раньше, а маршрут сам по себе на него не влияет.
+        out["effective"] = False
+        out["note"] = ("nfqws.unified_hostlist выключен — стратегия nfqws2 "
+                       "применяется как раньше, этот список она не читает. "
+                       "Включите настройку (Настройки → nfqws2 → «Единый "
+                       "слой: ограничить домены») и перезапустите nfqws2 — "
+                       "он стартует с --hostlist этих доменов")
+    return out
 
 
 def _remove_hostlist(route_id):

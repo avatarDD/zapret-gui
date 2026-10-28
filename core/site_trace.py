@@ -372,6 +372,8 @@ def _unified_layer(domain: str) -> list:
         maybe = not hit and bool(route.destination.geosite)
         if hit or maybe:
             method = active_method(route)
+            pending = (bool(hit) and is_tunnel_method(method)
+                       and not _in_kernel(route.id, hit))
             out.append({"id": getattr(route, "id", ""), "name": route.name,
                         "method": method,
                         "failover": method != route.method,
@@ -381,8 +383,29 @@ def _unified_layer(domain: str) -> list:
                         "tunnel": is_tunnel_method(method),
                         "match": hit or "geosite: %s" % ", ".join(
                             route.destination.geosite),
-                        "maybe": maybe})
+                        "maybe": maybe,
+                        "pending": pending})
     return out
+
+
+def _in_kernel(route_id: str, entry: str) -> bool:
+    """Попала ли запись в разложенное доменное правило маршрута.
+
+    Маршрут на списке раскладывается снимком: в производное правило
+    (`uni-<id>-dom`) уходят домены на момент применения. Домен, добавленный
+    в список после, совпадает с маршрутом «по намерению», но в dnsmasq и
+    nft его ещё нет — трафик идёт напрямую. Нет данных — не пугаем.
+    """
+    try:
+        from core.routing import storage as rstorage
+        from core.unified.applier import _dom_rule_id
+        rule = rstorage.get_rule(_dom_rule_id(route_id))
+    except Exception:                               # noqa: BLE001
+        return True
+    if rule is None:
+        return False
+    return entry.lstrip("^") in {str(d).lower().lstrip("^")
+                                 for d in getattr(rule, "domains", [])}
 
 
 def _lists_layer(domain: str, read=None) -> dict:
@@ -533,22 +556,26 @@ def summarize(t: dict) -> list:
             lines.append("DNS: спрашивается у %s (правило %s)"
                          % (d["server"], d["rule"]))
     tunnels = [r for r in t.get("routes") or [] if r["tunnel"]
-               and not r["maybe"]]
+               and not r["maybe"] and not r.get("pending")]
     if t.get("blocked"):
         lines.append("Итог: hosts отправляет сайт в никуда — он не "
                      "откроется, обход тут ни при чём")
         return lines
     for r in t.get("routes") or []:
-        lines.append("Единый слой: «%s» → %s (%s)%s%s%s" % (
+        lines.append("Единый слой: «%s» → %s (%s)%s%s%s%s" % (
             r["name"] or r["id"], r["method"], r["match"],
             " — сейчас запасной метод" if r.get("failover") else "",
             " — только для устройств: %s" % ", ".join(r["devices"])
             if r.get("devices") else "",
-            " — возможно, решает движок по geosite" if r["maybe"] else ""))
+            " — возможно, решает движок по geosite" if r["maybe"] else "",
+            " — но в ядро ещё НЕ разложен: трафик идёт мимо туннеля, "
+            "переприменить — unified_route_apply" if r.get("pending")
+            else ""))
     methods = sorted({r["method"] for r in tunnels})
     if len(methods) > 1:
         lines.append("Итог: трафик уходит в один из туннелей (%s) — "
-                     "какой победит, зависит от приоритета маршрутов; "
+                     "побеждает маршрут, применённый последним (поле "
+                     "priority этого не решает) — уберите перекрытие; "
                      "nfqws2 его не видит" % ", ".join(methods))
         return lines
     if tunnels:

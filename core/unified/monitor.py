@@ -202,6 +202,18 @@ def probe_route(route):
     здесь failover, достаточно задать у маршрута probe_domain.
     """
     domain = (route.probe_domain or "").strip()
+    # Интерфейса туннеля нет — метод не работает, что бы ни ответил
+    # сайт: собственная проба роутера идёт по его таблицам и при
+    # лежащем туннеле доходит напрямую. Без этой проверки маршрут через
+    # пропавший интерфейс навсегда числился здоровым, и failover не
+    # включался.
+    from core.unified import failover as _failover
+    from core.unified.model import (iface_present, is_tunnel_method,
+                                    method_iface)
+    current = _failover.current_method(route.id) or route.method
+    if is_tunnel_method(current) and can_probe(route) and \
+            not iface_present(method_iface(current)):
+        return False
     if route.destination.is_empty() and (route.devices
                                          or route.dscp is not None):
         # Маршрут только по источнику («эти устройства — целиком в

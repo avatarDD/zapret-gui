@@ -189,7 +189,9 @@ class TestSourceOnlyRouteProbe(unittest.TestCase):
     def test_probes_through_tunnel_iface(self):
         from core.unified import monitor
         with mock.patch.object(monitor, "probe_host",
-                               return_value=True) as ph:
+                               return_value=True) as ph, \
+                mock.patch("core.unified.model.iface_present",
+                           return_value=True):
             self.assertTrue(monitor.probe_route(self._route()))
         self.assertEqual(ph.call_args.kwargs["device"], "WARPv1_30")
         self.assertEqual(ph.call_args.args[0], monitor.SOURCE_PROBE_DEFAULT)

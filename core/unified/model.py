@@ -80,6 +80,14 @@ def method_iface(method: str) -> str:
         return ""
 
 
+def iface_present(iface: str) -> bool:
+    """Есть ли сетевой интерфейс в системе прямо сейчас."""
+    name = str(iface or "").strip()
+    if not name or "/" in name or name in (".", ".."):
+        return False
+    return os.path.exists(os.path.join("/sys/class/net", name))
+
+
 def is_tunnel_method(method: str) -> bool:
     """True, если метод — туннель (маршрутизируется через iface).
 

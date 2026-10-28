@@ -215,6 +215,12 @@ def unified_route_status(args: dict) -> dict:
     if switched:
         parts.append("failover увёл трафик на запасной метод — %s"
                      % "; ".join(switched[:3]))
+    missing = ["%s: интерфейса %s нет" % (r.get("name") or r.get("id"),
+                                          r.get("iface_missing"))
+               for r in routes if r.get("iface_missing")]
+    if missing:
+        parts.append("туннель не поднят — трафик маршрута идёт мимо "
+                     "него: %s (tunnels_status)" % "; ".join(missing[:3]))
     suggest = [r.get("name") or r.get("id") for r in routes
                if r.get("suggest_scan")]
     if suggest:
@@ -288,7 +294,12 @@ def unified_route_status(args: dict) -> dict:
                              "description": "Domain the monitor probes. / "
                                             "Домен для проверки."},
             "priority": {"type": "integer",
-                         "description": "Rule priority. / Приоритет."},
+                         "description": "Sort label only: it does NOT "
+                                        "decide which of two overlapping "
+                                        "routes wins (the one applied "
+                                        "last does) — avoid overlaps. / "
+                                        "Метка сортировки, перекрытия "
+                                        "не разрешает."},
             "apply": {"type": "boolean", "default": True,
                       "description": "Lay the rule into the kernel right "
                                      "away. / Применить сразу."},
@@ -330,27 +341,78 @@ def unified_route_save(args: dict) -> dict:
     outcome = unified.save_route(payload, apply=args.get("apply", True),
                                  validate=True)
     if not outcome.get("ok"):
-        return {
+        failed = {
             "ok": False,
             "error": outcome.get("error", "маршрут не сохранён"),
             "hint": "методы: direct, nfqws2, awg:<iface>, "
                     "singbox:<iface>, mihomo:<iface>, warp:<iface>; "
                     "какие интерфейсы есть — tunnels_status()",
         }
+        if outcome.get("unknown_lists"):
+            failed["unknown_lists"] = outcome["unknown_lists"]
+            failed["hint"] = ("списки: hl:<имя> — hostlists_list(), "
+                              "ipl:<имя> — ipsets_list()")
+        return failed
 
     route = outcome.get("route") or {}
     undo = audit.snapshot(audit.KIND_UNIFIED_ROUTE, route.get("id", ""),
                           before, route, tool="unified_route_save")
-    return {
+    overlaps = _overlaps_with(route)
+    result = {
         "ok": True,
         "id": route.get("id", ""),
         "created": before is None,
         "route": route,
-        "applied": outcome.get("applied"),
+        "applied": _compact(outcome.get("applied")),
         "undo": undo or None,
         "note": NOTE,
         "hint": _save_hint(route, outcome),
     }
+    if overlaps:
+        result["overlaps"] = overlaps[:20]
+        result["warning"] = (
+            "назначение пересекается с маршрутами %s: в ядре побеждает "
+            "маршрут, применённый последним, — поле priority этого не "
+            "решает. Уберите общее из одного из них"
+            % ", ".join(sorted({rid for o in overlaps for rid in o["routes"]
+                                if rid != route.get("id")})[:5]))
+        result["hint"] = result["warning"] + ". " + result["hint"]
+    return result
+
+
+# Сколько элементов длинного списка оставлять в ответе save: geosite
+# разворачивается в сотни доменов и адресов, и ответ переваливал за
+# mcp.limits.response_kb — обрезка выкидывала route и undo целиком.
+_LIST_KEEP = 10
+
+
+def _compact(value):
+    """Длинные списки в ответе применения → первые элементы + счётчик."""
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if isinstance(item, list) and len(item) > 2 * _LIST_KEEP:
+                out[key] = [_compact(x) for x in item[:_LIST_KEEP]]
+                out[key + "_total"] = len(item)
+            else:
+                out[key] = _compact(item)
+        return out
+    if isinstance(value, list):
+        return [_compact(x) for x in value]
+    return value
+
+
+def _overlaps_with(route: dict) -> list:
+    """Пересечения назначения маршрута с другими включёнными маршрутами."""
+    if not route.get("enabled", True):
+        return []
+    try:
+        from core.unified import manager as unified
+        from core.unified.bulk import find_overlaps
+        found = find_overlaps(unified.list_routes() or [])
+    except Exception:                           # noqa: BLE001 — граница
+        return []
+    return [o for o in found if route.get("id") in o.get("routes", [])]
 
 
 @tool(
@@ -542,6 +604,10 @@ def _save_hint(route: dict, outcome: dict) -> str:
         return ("маршрут сохранён, но применить не удалось: %s — "
                 "обычно это погашенный туннель (tunnels_status)"
                 % applied.get("error", ""))
+    if isinstance(applied, dict) and applied.get("effective") is False:
+        return ("маршрут сохранён, но nfqws2 его не видит: %s "
+                "(config_set path='nfqws.unified_hostlist' value=true, "
+                "затем nfqws_restart)" % applied.get("note", ""))
     return ("маршрут сохранён и разложен; что из него РАБОТАЕТ — "
             "unified_route_status(). Откат — mcp_undo_last")
 

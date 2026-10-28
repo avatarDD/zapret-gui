@@ -267,14 +267,18 @@ class TestUnprobeableRoutes(unittest.TestCase):
         route = self._route(destination=Destination(
             geosite=["telegram"], geoip=["telegram"]))
         with mock.patch("core.unified.monitor.probe_host",
-                        return_value=True) as ph:
+                        return_value=True) as ph, \
+                mock.patch("core.unified.model.iface_present",
+                           return_value=True):
             self.assertTrue(monitor.probe_route(route))
         self.assertEqual(ph.call_args[0][0], "telegram.org")
 
     def test_probe_domain_makes_route_probeable(self):
         route = self._route(probe_domain="youtube.com")
         with mock.patch("core.unified.monitor.probe_host",
-                        return_value=True) as ph:
+                        return_value=True) as ph, \
+                mock.patch("core.unified.model.iface_present",
+                           return_value=True):
             self.assertTrue(monitor.probe_route(route))
         ph.assert_called_once()
 
