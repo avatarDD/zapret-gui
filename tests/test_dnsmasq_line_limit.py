@@ -33,16 +33,16 @@ class TestSplitDomainDirectives(unittest.TestCase):
     def test_short_list_stays_one_line(self):
         lines = di.split_domain_directives(
             "nftset=/", ["google.com", "youtube.com"],
-            "/inet#awg_routing#awgr_a,inet#awg_routing#awgr_a6")
+            "/4#inet#awg_routing#awgr_a,6#inet#awg_routing#awgr_a6")
         self.assertEqual(len(lines), 1)
         self.assertEqual(
             lines[0],
             "nftset=/google.com/youtube.com/"
-            "inet#awg_routing#awgr_a,inet#awg_routing#awgr_a6")
+            "4#inet#awg_routing#awgr_a,6#inet#awg_routing#awgr_a6")
 
     def test_long_list_is_split_and_every_line_fits(self):
         doms = ["sub%03d.example-domain-name.com" % i for i in range(300)]
-        suffix = "/inet#awg_routing#awgr_abcd1234,inet#awg_routing#awgr_abcd12346"
+        suffix = "/4#inet#awg_routing#awgr_abcd1234,6#inet#awg_routing#awgr_abcd12346"
         lines = di.split_domain_directives("nftset=/", doms, suffix)
         self.assertGreater(len(lines), 1)
         for ln in lines:
@@ -120,8 +120,8 @@ class TestManagedFileLines(unittest.TestCase):
         # Оба set'а (v4 и v6) остались в КАЖДОЙ директиве.
         for ln in text.splitlines():
             if ln.startswith("nftset=/"):
-                self.assertTrue(ln.endswith("inet#awg_routing#awgr_deadbeef,"
-                                            "inet#awg_routing#awgr_deadbeef6"))
+                self.assertTrue(ln.endswith("4#inet#awg_routing#awgr_deadbeef,"
+                                            "6#inet#awg_routing#awgr_deadbeef6"))
 
     def test_ipset_block_with_many_domains(self):
         text = self._write([{

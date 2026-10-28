@@ -158,7 +158,7 @@ class TestDnsmasqIpsetV6(unittest.TestCase):
             text = open(managed, encoding="utf-8").read()
             self.assertIn(
                 "nftset=/example.com/sub.example.com/"
-                "inet#awg_routing#awg_r1,inet#awg_routing#awg_r16", text)
+                "4#inet#awg_routing#awg_r1,6#inet#awg_routing#awg_r16", text)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

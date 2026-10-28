@@ -36,7 +36,7 @@ class TestNormalizeDomains(unittest.TestCase):
                 "10.0.0.0/8", "1.2.3.4", "*.wild.example.org",
                 "geosite:youtube", "plain.com", "www.keep.com"]),
             ["example.com", "example.org", "host.net", "10.0.0.0/8",
-             "1.2.3.4", "*.wild.example.org", "geosite:youtube",
+             "1.2.3.4", "wild.example.org", "geosite:youtube",
              "plain.com", "www.keep.com"])
 
     def test_path_error_speaks_of_domain(self):
@@ -158,18 +158,37 @@ class TestDevicesByMac(unittest.TestCase):
 
 class TestReleaseTables(unittest.TestCase):
 
-    def test_dead_iface_number_is_returned(self):
-        route = UnifiedRoute(route_id="r1", method="awg:nosuchiface",
-                             fallbacks=["awg:awg_warp"],
+    def _prune(self, table_map, engines):
+        cfg = mock.Mock()
+        cfg.get.return_value = dict(table_map)
+        route = UnifiedRoute(route_id="r1", method="awg:awg_warp",
                              destination=Destination(domains=["a.com"]))
-        with mock.patch("core.routing.storage.load_rules", return_value=[]), \
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cfg), \
+                mock.patch("core.routing.storage.load_rules", return_value=[]), \
                 mock.patch("core.unified.storage.load_routes",
-                           return_value=[]), \
+                           return_value=[route]), \
                 mock.patch("core.unified.model.iface_present",
                            side_effect=lambda i: i == "awg_warp"), \
-                mock.patch("core.routing.manager.release_table") as rel:
-            manager._release_tables(route)
-        rel.assert_called_once_with("nosuchiface")
+                mock.patch.object(manager, "_engine_ifaces",
+                                  side_effect=engines), \
+                mock.patch("core.routing.manager.release_table",
+                           return_value=True) as rel:
+            freed = manager.prune_table_map()
+        return freed, rel
+
+    def test_dead_names_are_released(self):
+        freed, _rel = self._prune(
+            {"awg_warp": 130, "proton": 234, "nosuchiface": 278, "sb1": 302},
+            lambda kind: {"proton"} if kind == "awg" else set())
+        self.assertEqual(sorted(freed), ["nosuchiface", "sb1"])
+
+    def test_unreadable_engine_keeps_everything(self):
+        freed, rel = self._prune({"nosuchiface": 278},
+                                 lambda kind: None if kind == "mihomo"
+                                 else set())
+        self.assertEqual(freed, [])
+        rel.assert_not_called()
 
 
 class TestProbeDeadIface(unittest.TestCase):
@@ -295,6 +314,99 @@ class TestSiteTracePending(unittest.TestCase):
         lines = site_trace.summarize({"routes": new})
         self.assertIn("НЕ разложен", " ".join(lines))
         self.assertFalse(any("уходит в туннель" in x for x in lines))
+
+
+class TestStatusWithMissingIface(unittest.TestCase):
+
+    def test_monitor_marked_stale_and_trace_honest(self):
+        from core import site_trace
+        from core.unified import monitor
+        route = UnifiedRoute(route_id="r1", name="m", method="awg:proton",
+                             destination=Destination(domains=["a.com"]))
+        with mock.patch("core.unified.storage.load_routes",
+                        return_value=[route]), \
+                mock.patch.object(monitor, "stats", return_value={
+                    "r1": {"samples": 1, "rate": 1.0, "last_ok": True}}), \
+                mock.patch("core.unified.model.iface_present",
+                           return_value=False), \
+                mock.patch("core.unified.failover.current_method",
+                           return_value=None), \
+                mock.patch("core.unified.scanner_hint.suggest_for_route",
+                           return_value={}):
+            row = manager.status()["routes"][0]
+            trace = site_trace._unified_layer("a.com")
+        self.assertEqual(row["iface_missing"], "proton")
+        self.assertTrue(row["monitor"]["stale"])
+        self.assertFalse(row["monitor"]["healthy"])
+        lines = " ".join(site_trace.summarize({"routes": trace}))
+        self.assertIn("интерфейса proton сейчас нет", lines)
+        self.assertNotIn("уходит в туннель", lines)
+
+
+class TestPriority(unittest.TestCase):
+
+    def test_overlap_domain_vs_list(self):
+        hm = mock.Mock()
+        hm.get_hostlist.return_value = ["example.com", "other.org"]
+        routes = [
+            {"id": "a", "enabled": True, "method": "awg:awg_warp",
+             "destination": {"list_ids": ["hl:other2"]}},
+            {"id": "b", "enabled": True, "method": "direct",
+             "destination": {"domains": ["example.com"]}},
+        ]
+        with mock.patch("core.hostlist_manager.get_hostlist_manager",
+                        return_value=hm):
+            plain = bulk.find_overlaps(routes)
+            resolved = bulk.find_overlaps(routes, resolve=True)
+        self.assertEqual(plain, [])
+        self.assertEqual(resolved[0]["value"], "example.com")
+
+    def test_shared_list_not_repeated_per_domain(self):
+        hm = mock.Mock()
+        hm.get_hostlist.return_value = ["x.com", "y.com"]
+        routes = [{"id": i, "enabled": True, "method": "awg:a",
+                   "destination": {"list_ids": ["hl:other2"]}}
+                  for i in ("a", "b")]
+        with mock.patch("core.hostlist_manager.get_hostlist_manager",
+                        return_value=hm):
+            found = bulk.find_overlaps(routes, resolve=True)
+        self.assertEqual([f["kind"] for f in found], ["list"])
+
+    def test_higher_priority_rival_is_reapplied_after(self):
+        low = UnifiedRoute(route_id="low", method="awg:proton", priority=0,
+                           destination=Destination(domains=["x.com"]))
+        high = UnifiedRoute(route_id="high", method="awg:awg_warp",
+                            priority=10,
+                            destination=Destination(domains=["x.com"]))
+        with mock.patch("core.unified.storage.load_routes",
+                        return_value=[low, high]), \
+                mock.patch("core.unified.applier.apply_route") as ap:
+            self.assertEqual(manager._reassert_priority(low), ["high"])
+            ap.assert_called_once_with(high)
+            ap.reset_mock()
+            self.assertEqual(manager._reassert_priority(high), [])
+            ap.assert_not_called()
+
+    def test_apply_all_orders_by_priority(self):
+        from core.unified import applier
+        a = UnifiedRoute(route_id="a", method="direct", priority=5,
+                         destination=Destination(domains=["x.com"]))
+        b = UnifiedRoute(route_id="b", method="direct", priority=1,
+                         destination=Destination(domains=["x.com"]))
+        order = []
+        with mock.patch("core.unified.storage.load_routes",
+                        return_value=[a, b]), \
+                mock.patch.object(applier, "apply_route",
+                                  side_effect=lambda r: order.append(r.id)):
+            applier.apply_all()
+        self.assertEqual(order, ["b", "a"])
+
+    def test_cidr_rule_priority(self):
+        from core.unified.applier import cidr_rule_priority
+        self.assertEqual(cidr_rule_priority(0), 10000)
+        self.assertEqual(cidr_rule_priority(3), 9997)
+        self.assertEqual(cidr_rule_priority(777), 9991)
+        self.assertEqual(cidr_rule_priority(-5), 10000)
 
 
 if __name__ == "__main__":

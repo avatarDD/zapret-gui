@@ -294,12 +294,12 @@ def unified_route_status(args: dict) -> dict:
                              "description": "Domain the monitor probes. / "
                                             "Домен для проверки."},
             "priority": {"type": "integer",
-                         "description": "Sort label only: it does NOT "
-                                        "decide which of two overlapping "
-                                        "routes wins (the one applied "
-                                        "last does) — avoid overlaps. / "
-                                        "Метка сортировки, перекрытия "
-                                        "не разрешает."},
+                         "description": "Which of overlapping routes "
+                                        "wins: the higher one is laid "
+                                        "into the kernel last. Equal "
+                                        "priority — the last applied "
+                                        "wins. / Старший побеждает при "
+                                        "пересечении."},
             "apply": {"type": "boolean", "default": True,
                       "description": "Lay the rule into the kernel right "
                                      "away. / Применить сразу."},
@@ -371,9 +371,9 @@ def unified_route_save(args: dict) -> dict:
     if overlaps:
         result["overlaps"] = overlaps[:20]
         result["warning"] = (
-            "назначение пересекается с маршрутами %s: в ядре побеждает "
-            "маршрут, применённый последним, — поле priority этого не "
-            "решает. Уберите общее из одного из них"
+            "назначение пересекается с маршрутами %s: общие адреса уходят "
+            "в маршрут со старшим priority, при равном — в применённый "
+            "последним. Задайте priority или уберите общее из одного из них"
             % ", ".join(sorted({rid for o in overlaps for rid in o["routes"]
                                 if rid != route.get("id")})[:5]))
         result["hint"] = result["warning"] + ". " + result["hint"]
@@ -409,7 +409,7 @@ def _overlaps_with(route: dict) -> list:
     try:
         from core.unified import manager as unified
         from core.unified.bulk import find_overlaps
-        found = find_overlaps(unified.list_routes() or [])
+        found = find_overlaps(unified.list_routes() or [], resolve=True)
     except Exception:                           # noqa: BLE001 — граница
         return []
     return [o for o in found if route.get("id") in o.get("routes", [])]
