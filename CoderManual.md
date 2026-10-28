@@ -291,6 +291,8 @@ make upstream-offline    # только локальные сверки (идё�
 | `platform_dirs.py` | Пути под платформу (Entware `/opt` vs OpenWrt/Linux) — единый источник для всех менеджеров. |
 | `kmod_manager.py` | Модули ядра (`nfnetlink_queue`, `xt_*`, `tun`) — детект и загрузка. |
 | `update_checker.py` | Проверка обновлений ВСЕХ движков за один проход + фоновой демон по расписанию. Обновление предлагается только для установленного. |
+| `flash_wear.py` | Износ постоянной памяти и объём записи: носители по `/proc/mounts` (loop-оверлей OpenWrt → eMMC), износ eMMC (`life_time`/`pre_eol_info`), UBI (`max_ec`, плохие блоки — оценка), SMART; учёт записи по `/proc/diskstats` в корзины дней (чистые `account`/`summarize`, сброс базы по `boot_id`), «кто пишет» по `/proc/<pid>/io`. Синглтон `get_flash_stats()`: замер раз в минуту в `/tmp`, на flash — раз в `flash.stats_flush_hours` и в `stop()`. Ввод-вывод через `root` — тесты подменяют `/proc` и `/sys`. |
+| `flash_saver.py` | Рычаги «ОЗУ вместо flash» (секция `flash` + `logging.persist_critical` + `history.enabled`), профили `PRESETS`, `apply()` — `vm.dirty_*`, `noatime`, ext4 `commit=` (откатывает только своё, что применено — в `/tmp`), дескриптор `RamLogDir` для `log_dir` платформ Keenetic, `counters_flush_sec()` для `proxy_traffic`, подсказки `hints()` (своп, журнал OpenWrt в файл) и обратимые `action()`. |
 | `system_control.py` | Перезапуск GUI и перезагрузка роутера (отложенно, в отвязанном процессе; на Keenetic — через `ndmc`). |
 | `download_transport.py` | «Через что» качать (когда GitHub заблокирован напрямую): `direct`/`awg[:iface]`/`singbox[:cfg]`/`mihomo[:cfg]` → `urlopen_via`. Используется установщиками и рефрешерами. |
 | `network_env.py` | Детект окружения: `router` (форвардим LAN) vs `pc` (одна NIC, заворачиваем только себя). Override `network.profile`. |
@@ -601,6 +603,7 @@ stdout). Период опроса задаёт сам
 | `block_detector.py` / `auto_remediation.py` / `geosite.py` | … | фоновой детектор блокировок / авто-починка / импорт geosite |
 | `connectivity.py` / `devices.py` | … | матрица связности / устройства LAN |
 | `diagnostics.py` | `/api/diagnostics` | ping/http/dns/conflicts/**known-conflicts**/firewall/system/**selfcheck**/**help-report** («Отчёт для помощи», `core/help_report.py`: оба варианта маски одним ответом)/**site-trace** («Куда пойдёт сайт», `core/site_trace.py`: разбор профилей и выбор профиля — чистые функции, слои — ввод-вывод; тот же ответ у MCP `site_trace`)/**leak-check** (утечки IP и DNS, `core/leak_check.py`)/**lan-probe** («как клиент LAN», `core/lan_probe.py`) |
+| `flash.py` | `/api/flash` | «Память (flash)»: `status` (носители, износ, запись, «кто пишет», настройки, профили, подсказки — одним ответом), `settings` (PUT, сохранить и применить), `action`, `stats/reset` |
 | `notify.py` | `/api/notify` | уведомления в Telegram: настройки (токен не отдаётся), пробное сообщение, поиск чата, отправка очереди |
 | `history.py` | `/api/history`, `/api/safe-apply` | история файлов (список, diff, restore, undo, scan) / применение с проверкой (start, confirm, rollback, mark-working, restore-working) |
 | `healthcheck.py` | `/api/healthcheck` | autocircular-демон: enable/disable/run/status/config |
@@ -675,6 +678,7 @@ stdout). Период опроса задаёт сам
 | Watchdog AWG | `awg_watchdog` | проба через туннель + handshake-age → рестарт |
 | Watchdog sing-box | `singbox_watchdog` | связь по Clash API → авто-рестарт зависшего инстанса |
 | Лог-гард движков | `engine_common.start_log_guard` | раз в 10 минут обрезает логи AWG/sing-box/mihomo больше 2 МиБ до последних 256 КиБ |
+| Учёт записи на flash | `flash_wear.FlashStats` | раз в минуту `/proc/diskstats` → корзины дней в `/tmp`, на flash — раз в `flash.stats_flush_hours`; `stop()` из `_graceful_shutdown` сохраняет |
 | Healthcheck (autocircular) | `healthcheck` | дёргает референс-домены служб → авто-починка |
 | Трекер трафика прокси | `proxy_traffic` | опрос Clash API `/connections` → суммы per-outbound (пока инстанс жив) |
 | Тестер прокси | `proxy_tester._TestJob` | разовый фоновый прогон (start → poll status) |

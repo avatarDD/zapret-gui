@@ -164,6 +164,8 @@ class TrafficTracker:
         self._running = False
         self._targets_fn = targets_fn or running_clash_targets
         self._state_path_fn = state_path_fn or _state_path
+        self._saved_at = 0.0
+        self._dirty = False
         self._load()
 
     # ─────── persistence ───────
@@ -186,6 +188,8 @@ class TrafficTracker:
                 }
 
     def _save(self):
+        self._saved_at = time.time()
+        self._dirty = False
         path = self._state_path_fn()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -266,7 +270,18 @@ class TrafficTracker:
             if k not in active_keys:
                 del self._conn[k]
         if changed:
+            # Опрос раз в 2 с, а run_dir на Entware — flash (/opt/var/run):
+            # пишем не чаще flash.counters_flush_sec, остаток — в flush().
+            from core.flash_saver import counters_flush_sec
             with self._lock:
+                self._dirty = True
+                if time.time() - self._saved_at >= counters_flush_sec():
+                    self._save()
+
+    def flush(self):
+        """Сохранить несохранённые суммы (штатная остановка GUI)."""
+        with self._lock:
+            if self._dirty:
                 self._save()
 
     # ─────── public ───────

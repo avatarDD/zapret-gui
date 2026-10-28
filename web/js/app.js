@@ -44,6 +44,7 @@ const App = (() => {
         'warp-in-warp':    WarpInWarpPage,
         'tunnel-monitor':  TunnelMonitorPage,
         'tunnel-optimizer': TunnelOptimizerPage,
+        flash:             FlashPage,
         'foreign-services': ForeignServicesPage,
         'dns-routing':      DnsRoutingPage,
         tgproxy:           TgProxyPage,

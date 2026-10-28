@@ -473,6 +473,32 @@ DEFAULT_CONFIG = {
         "profile": "balanced",  # low_latency | balanced | throughput
     },
 
+    # --- Постоянная память: износ и снижение записи ---
+    # core/flash_wear.py (статистика записи) и core/flash_saver.py (рычаги
+    # «ОЗУ вместо flash»). Готовые наборы — flash_saver.PRESETS.
+    "flash": {
+        "stats_enabled": True,
+        # Статистика записи на flash — раз в столько часов (и при штатной
+        # остановке GUI); в ОЗУ — каждую минуту. 0 — на flash не писать.
+        "stats_flush_hours": 6,
+        # Ресурс стирания блока NAND для оценки износа UBI; 0 — по типу
+        # (SLC 100 000, MLC 3 000).
+        "nand_endurance": 0,
+        # Логи AWG/sing-box/mihomo в /tmp вместо /opt/var/log (Entware).
+        "engine_logs_ram": False,
+        # Счётчики трафика прокси — на диск не чаще, сек.
+        "counters_flush_sec": 300,
+        # vm.dirty_*: держать изменённые страницы в ОЗУ до writeback_sec.
+        "lazy_writeback": False,
+        "writeback_sec": 60,
+        # Перемонтировать постоянные ФС с noatime.
+        "noatime": False,
+        # ext4 commit=N (0 — не трогать, у ядра 5 с).
+        "ext4_commit_sec": 0,
+        # Прежний log_file OpenWrt, если журнал перенесли в ОЗУ.
+        "syslog_prev_file": "",
+    },
+
     # --- Per-domain DNS Routing ---
     # Кастомный DNS для конкретных хостов (обход DNS-подмены ISP).
     "dns_routing": {

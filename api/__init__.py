@@ -56,6 +56,7 @@ def register_routes(app):
     from api.warp_in_warp import register as reg_warp_in_warp
     from api.tunnel_monitor import register as reg_tunnel_monitor
     from api.tunnel_optimizer import register as reg_tunnel_optimizer
+    from api.flash import register as reg_flash
     from api.dns_routing import register as reg_dns_routing
     from api.mcp import register as reg_mcp
     from api.mcp_ui import register as reg_mcp_ui
@@ -106,6 +107,7 @@ def register_routes(app):
     reg_warp_in_warp(app)
     reg_tunnel_monitor(app)
     reg_tunnel_optimizer(app)
+    reg_flash(app)
     reg_dns_routing(app)
     reg_mcp(app)
     reg_mcp_ui(app)
