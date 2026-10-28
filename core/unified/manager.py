@@ -30,6 +30,11 @@ def save_route(data: dict, *, apply: bool = True,
     Внутренние пересохранения (массовое вкл/выкл, failover) старые
     маршруты не проверяют: из-за давней опечатки нельзя было бы даже
     выключить маршрут."""
+    if validate:
+        data = _normalize_input(data)
+        why = _resolve_devices(data)
+        if why:
+            return {"ok": False, "error": why}
     try:
         # strict: адрес устройства проверяем на входе из GUI/API —
         # «192.168.0.*» должен вернуться ошибкой в форму, а не осесть в
@@ -53,6 +58,24 @@ def save_route(data: dict, *, apply: bool = True,
                     "error": "Некорректные записи назначения: %s%s"
                              % ("; ".join(bad[:5]),
                                 " (и ещё %d)" % more if more > 0 else "")}
+        # Проверяем только то, что появилось в этой правке: маршрут,
+        # чей туннель или список давно удалили, должен оставаться
+        # редактируемым (выключить, сменить метод).
+        previous = storage.get_route(route.id)
+        from core.unified.bulk import unknown_list_ids
+        old_lists = set(previous.destination.list_ids) if previous else set()
+        missing = unknown_list_ids([lid for lid in route.destination.list_ids
+                                    if lid not in old_lists])
+        if missing:
+            first = missing[0]
+            return {"ok": False, "unknown_lists": missing,
+                    "error": "Списка «%s» нет%s" % (
+                        first["id"],
+                        " — есть: %s" % ", ".join(first["available"][:15])
+                        if first["available"] else "")}
+        why = _unknown_iface(route, previous)
+        if why:
+            return {"ok": False, "error": why}
     if not route.has_selectors():
         return {"ok": False, "error": "Назначение пустое — укажите домены/"
                                       "CIDR/список/geosite, устройства "
@@ -72,6 +95,166 @@ def save_route(data: dict, *, apply: bool = True,
     log.info("unified: сохранён маршрут %s (%s → %s)"
              % (route.id, route.name, route.method), source="unified")
     return {"ok": True, "route": route.to_dict(), "applied": applied}
+
+
+def _normalize_input(data) -> dict:
+    """Домены назначения, вставленные как URL, → имена сайтов."""
+    data = dict(data or {})
+    dest = data.get("destination")
+    if isinstance(dest, dict) and dest.get("domains"):
+        from core.unified.bulk import normalize_domains
+        domains = dest["domains"]
+        if isinstance(domains, str):
+            domains = [domains]
+        dest = dict(dest)
+        dest["domains"] = normalize_domains(domains)
+        data["destination"] = dest
+    return data
+
+
+def _resolve_devices(data: dict) -> str:
+    """Устройства, заданные только MAC или именем, → их текущий IP.
+
+    Правило устройства — `ip rule from <ip>`, поэтому запись без адреса
+    модель отбрасывает. Раньше так молча пропадал весь фильтр по
+    источнику: маршрут «для одного устройства» сохранялся без устройств
+    и (вместе с назначением) действовал на всю сеть. Не нашли адрес —
+    ошибка, а не пустой фильтр.
+    """
+    devices = data.get("devices")
+    if not isinstance(devices, list):
+        return ""
+    need = [i for i, d in enumerate(devices) if isinstance(d, dict)
+            and not str(d.get("ip") or "").strip()
+            and (str(d.get("mac") or "").strip()
+                 or str(d.get("hostname") or "").strip())]
+    if not need:
+        return ""
+    try:
+        from core import devices_discovery as dd
+        by_mac = {str(m).lower(): ip
+                  for m, ip in (dd.mac_ip_map() or {}).items()}
+        by_name = {}
+        if any(not str(devices[i].get("mac") or "").strip() for i in need):
+            for dev in dd.list_devices() or []:
+                name = str(dev.get("hostname") or "").strip().lower()
+                if name and dev.get("ip"):
+                    by_name.setdefault(name, dev["ip"])
+    except Exception:
+        by_mac, by_name = {}, {}
+    out, missing = list(devices), []
+    for i in need:
+        dev = dict(devices[i])
+        mac = str(dev.get("mac") or "").strip()
+        name = str(dev.get("hostname") or "").strip()
+        ip = ""
+        if mac:
+            ip = by_mac.get(mac.lower().replace("-", ":"), "")
+        if not ip and name:
+            ip = by_name.get(name.lower(), "")
+        if not ip:
+            missing.append(mac or name)
+            continue
+        dev["ip"] = ip
+        out[i] = dev
+    if missing:
+        return ("Устройство %s не найдено в сети: IP по MAC/имени не "
+                "определился. Укажите ip устройства (оно должно быть "
+                "подключено)" % ", ".join(missing[:5]))
+    data["devices"] = out
+    return ""
+
+
+# Выключатель для тестов (tests/conftest.py): интерфейсов туннелей в
+# тестовом окружении нет, проверяется механизм отдельно.
+CHECK_IFACES = True
+
+_ENGINE_TITLES = {"awg": "AmneziaWG", "singbox": "sing-box",
+                  "mihomo": "mihomo", "warp": "usque (WARP)"}
+
+
+def _engine_ifaces(kind: str):
+    """Интерфейсы из конфигов движка; None — перечень не получен."""
+    try:
+        if kind == "awg":
+            from core.awg_manager import get_awg_manager
+            return {c.get("iface") or c.get("name", "")
+                    for c in get_awg_manager().list_configs() or []}
+        if kind == "singbox":
+            from core.singbox_manager import get_singbox_manager
+            return {c.get("tun_iface") or ""
+                    for c in get_singbox_manager().list_configs() or []}
+        if kind == "mihomo":
+            from core.mihomo_manager import get_mihomo_manager
+            return {c.get("tun_iface") or ""
+                    for c in get_mihomo_manager().list_configs() or []}
+        if kind == "warp":
+            from core.usque_manager import get_usque_manager
+            mgr = get_usque_manager()
+            names = {c.get("iface") or ""
+                     for c in mgr.list_configs() or []}
+            names |= {e.get("iface") or ""
+                      for e in (mgr.detect() or {}).get("external") or []}
+            return names
+    except Exception:
+        return None
+    return None
+
+
+def _unknown_iface(route, previous=None) -> str:
+    """Причина отказа, если метод маршрута смотрит в несуществующий
+    интерфейс, иначе ''.
+
+    Опечатка («awg:nosuchiface») сохранялась как туннель, который
+    «временно не поднят»: dnsmasq получал nftset в наборы, которых нет,
+    монитор мерил прямой путь и считал маршрут здоровым, а имя навсегда
+    занимало номер таблицы. Интерфейс годится, если он есть в системе
+    или в конфигах своего движка (туннель настроен, но сейчас лежит).
+    """
+    if not CHECK_IFACES:
+        return ""
+    from core.unified.model import iface_present, parse_method
+    old = set(previous.method_chain()) if previous else set()
+    for method in route.method_chain():
+        if method in old:
+            continue
+        try:
+            kind, iface = parse_method(method)
+        except ValueError:
+            continue
+        if kind not in _ENGINE_TITLES or iface_present(iface):
+            continue
+        known = _engine_ifaces(kind)
+        if known is None or iface in known:
+            continue
+        known = sorted(k for k in known if k)
+        return ("Интерфейса «%s» нет ни в системе, ни среди конфигов %s%s"
+                % (iface, _ENGINE_TITLES[kind],
+                   " (есть: %s)" % ", ".join(known[:15]) if known
+                   else " — конфигов нет"))
+    return ""
+
+
+def _release_tables(route) -> None:
+    """Вернуть номера таблиц интерфейсов, которые больше никому не нужны.
+
+    `routing.table_map` закрепляет номер за именем навсегда — это верно
+    для живых туннелей (номер стабилен между перезапусками), но имя,
+    которого нет ни в системе, ни у одного правила, держало номер вечно.
+    """
+    try:
+        from core.routing import storage as rstorage
+        from core.routing.manager import release_table
+        from core.unified.model import iface_present, method_iface
+        used = {getattr(r, "target_iface", "") for r in rstorage.load_rules()}
+        for other in storage.load_routes():
+            used |= {method_iface(m) for m in other.method_chain()}
+        for method in route.method_chain():
+            iface = method_iface(method)
+            if iface and iface not in used and not iface_present(iface):
+                release_table(iface)
+    except Exception as e:
+        log.debug("unified: освобождение таблиц: %s" % e, source="unified")
 
 
 def _sync_monitor():
@@ -97,6 +280,7 @@ def delete_route(route_id: str) -> dict:
     except Exception:
         pass
     _sweep_dnsmasq("delete")
+    _release_tables(route)
     _sync_monitor()
     return {"ok": True, "id": route_id}
 
@@ -248,6 +432,21 @@ def reapply_routes_for(refs) -> dict:
             "applied": done}
 
 
+def reapply_now(refs) -> dict:
+    """Переприменить зависящие от списков маршруты сразу, а не по таймеру.
+
+    Для правки из MCP: `zapret-gui mcp call` — короткий процесс, и
+    отложенный поток notify_list_changed умирал вместе с ним, не успев
+    сработать: домен добавлялся в список, а в dnsmasq/nft не попадал
+    до ручного unified_route_apply. Заодно ответ правки может сказать,
+    какие маршруты обновились.
+    """
+    refs = {str(r or "").strip() for r in refs or [] if r}
+    with _pending_lock:
+        _pending_refs.difference_update(refs)
+    return reapply_routes_for(refs)
+
+
 def notify_list_changed(ref: str) -> None:
     """Сообщить, что содержимое списка ref изменилось.
 
@@ -288,6 +487,16 @@ def _safe_can_probe(monitor, route) -> bool:
         return monitor.can_probe(route)
     except Exception:
         return True
+
+
+def _iface_missing(method: str) -> str:
+    """Интерфейс туннельного метода, которого сейчас нет в системе, или ''."""
+    from core.unified.model import iface_present, is_tunnel_method, \
+        method_iface
+    if not is_tunnel_method(method):
+        return ""
+    iface = method_iface(method)
+    return "" if iface_present(iface) else iface
 
 
 def _router_devices(route) -> list:
@@ -359,6 +568,7 @@ def status() -> dict:
             "suggest_scan": suggestion.get("suggest", False),
             "suggest_reason": suggestion.get("reason", ""),
             "probeable": _safe_can_probe(monitor, r),
+            "iface_missing": _iface_missing(active),
             "device_drift": _device_drift(r, macs),
         })
     return {"ok": True, "routes": out,

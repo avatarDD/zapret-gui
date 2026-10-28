@@ -41,6 +41,11 @@ def validate_destination(dest: dict) -> list:
         e = str(entry or "").strip()
         if not e or e.lower().startswith(_ALIAS_PREFIXES):
             continue
+        if (not domain_match.is_pattern(e) and "/" in e
+                and not _looks_like_ip(e.split("/", 1)[0])):
+            errors.append("%s: домен с путём — укажите только имя сайта"
+                          % e)
+            continue
         if not domain_match.is_pattern(e) and ("/" in e or _looks_like_ip(e)):
             # Адрес в поле доменов движок принимает как CIDR
             # (alias_resolver.expand_domains) — проверяем как сеть.
@@ -61,6 +66,77 @@ def validate_destination(dest: dict) -> list:
         except ValueError:
             errors.append("%s: не IP-адрес и не подсеть" % e)
     return errors
+
+
+def normalize_domains(entries) -> list:
+    """Адреса из браузера → имена сайтов. Чистая.
+
+    «https://www.example.com/path» вставляют в поле доменов так же часто,
+    как в хостлист, а хостлист (hostlist_manager.normalize_domain) такую
+    запись понимает. Здесь — то же для маршрута: схема, путь, порт и
+    «www.» отбрасываются, но только у записей, похожих на URL (схема или
+    путь после имени). Подсети («10.0.0.0/8»), шаблоны и geosite:/geoip:
+    не трогаем.
+    """
+    from core.routing import domain_match
+    from core.routing.alias_resolver import _looks_like_ip
+    out = []
+    for entry in entries or []:
+        e = str(entry or "").strip()
+        low = e.lower()
+        has_scheme = "://" in low or low.startswith("//")
+        if (not e or low.startswith(_ALIAS_PREFIXES)
+                or (domain_match.is_pattern(e) and not has_scheme)):
+            out.append(e)
+            continue
+        if not has_scheme and ("/" not in e
+                               or _looks_like_ip(e.split("/", 1)[0])):
+            out.append(e)
+            continue
+        host = low.split("://", 1)[1] if "://" in low else low.lstrip("/")
+        for sep in ("/", "?", "#"):
+            host = host.split(sep, 1)[0]
+        host = host.rsplit("@", 1)[-1]
+        if not host.startswith("["):
+            host = host.split(":", 1)[0]
+        if host.startswith("www."):
+            host = host[4:]
+        out.append(host.strip(".") or e)
+    return out
+
+
+def unknown_list_ids(list_ids) -> list:
+    """Ссылки на списки, которых нет: [{"id", "available"}, …].
+
+    Опечатка в имени («hl:nosuchlist») давала маршрут без единого
+    домена — сохранённый, «включённый» и не делающий ничего. Если
+    перечень списков прочитать не удалось — ничего не отвергаем.
+    """
+    out = []
+    for lid in list_ids or []:
+        lid = str(lid or "").strip()
+        try:
+            if lid.startswith("hl:"):
+                from core.hostlist_manager import get_hostlist_manager
+                names = get_hostlist_manager().list_names() or []
+                if lid[3:] not in names:
+                    out.append({"id": lid, "available":
+                                ["hl:%s" % n for n in names
+                                 if not n.startswith("unified")]})
+            elif lid.startswith("ipl:"):
+                from core.ipset_manager import get_ipset_manager
+                names = get_ipset_manager().list_names() or []
+                if lid[4:] not in names:
+                    out.append({"id": lid,
+                                "available": ["ipl:%s" % n for n in names]})
+            else:
+                from core import named_lists
+                if not named_lists.get(lid):
+                    out.append({"id": lid, "available": [
+                        i.get("id") for i in named_lists.list_all() or []]})
+        except Exception:
+            continue
+    return out
 
 
 # ─────────────────────── пересечения ─────────────────────────────────

@@ -119,6 +119,27 @@ def table_id_for(ifname: str) -> int:
     return allocated
 
 
+def release_table(ifname: str) -> bool:
+    """Забыть номер таблицы интерфейса (его больше нет ни у одного правила).
+
+    Вызывающий отвечает за то, что правил с этой таблицей не осталось:
+    уборщик (core/routing/sweeper) узнаёт свои таблицы по table_map.
+    """
+    try:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+        table_map = cfg.get("routing", "table_map", default={}) or {}
+        if not isinstance(table_map, dict) or ifname not in table_map:
+            return False
+        table_map = dict(table_map)
+        table_map.pop(ifname, None)
+        cfg.set("routing", "table_map", table_map)
+        cfg.save()
+        return True
+    except Exception:
+        return False
+
+
 def _iface_exists(ifname: str) -> bool:
     rc, _o, _e = _run(["ip", "link", "show", "dev", ifname])
     return rc == 0

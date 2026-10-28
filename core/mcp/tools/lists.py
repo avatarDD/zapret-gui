@@ -536,7 +536,8 @@ def hostlist_edit(args: dict) -> dict:
     saved = list(manager.get_hostlist(name) or [])
     return _list_result(audit.KIND_HOSTLIST, "hostlist_edit", name, mode,
                         before, saved, rejected,
-                        what="доменов", empties_filter=True)
+                        what="доменов", empties_filter=True,
+                        route_ref="hl:%s" % name)
 
 
 @tool(
@@ -613,7 +614,8 @@ def ipset_edit(args: dict) -> dict:
 
     saved = list(manager.get_ipset(name) or [])
     return _list_result(audit.KIND_IPSET, "ipset_edit", name, mode,
-                        before, saved, rejected, what="записей")
+                        before, saved, rejected, what="записей",
+                        route_ref="ipl:%s" % name)
 
 
 @tool(
@@ -1480,8 +1482,30 @@ def _too_many(after):
     }
 
 
+def _reapply_routes(ref: str) -> list:
+    """Маршруты единого слоя на списке ref — переприменить сразу.
+
+    Менеджер списков откладывает это на таймер, а вызов из
+    `zapret-gui mcp call` живёт меньше таймера: без синхронного шага
+    новый домен не доходил до dnsmasq и nft, а site_trace уже обещал
+    туннель.
+    """
+    if not ref:
+        return []
+    try:
+        from core.unified import manager as unified
+        if not unified.routes_using([ref]):
+            return []
+        done = unified.reapply_now([ref]).get("applied") or []
+    except Exception:                           # noqa: BLE001 — граница
+        return []
+    return [{"id": d["id"],
+             "ok": bool((d.get("result") or {}).get("ok", True))}
+            for d in done]
+
+
 def _list_result(kind, tool_name, name, mode, before, after, rejected,
-                 what, empties_filter=False) -> dict:
+                 what, empties_filter=False, route_ref="") -> dict:
     """Ответ правки списка: дифф, снимок, SIGHUP и предупреждения.
 
     ``before`` отдаём ЦЕЛИКОМ (с обрезкой по потолку окна): после
@@ -1518,9 +1542,17 @@ def _list_result(kind, tool_name, name, mode, before, after, rejected,
         "reloaded": bool(pids),
         "undo": undo or None,
         "note": NOTE,
-        "hint": "записано; движок уведомлён по SIGHUP (списки перечитаны "
-                "без перезапуска). Откат — mcp_undo_last",
+        "hint": ("записано; движок уведомлён по SIGHUP (списки перечитаны "
+                 "без перезапуска)" if pids else
+                 "записано; nfqws2 не запущен — SIGHUP слать некому, "
+                 "список прочитается при старте") + ". Откат — mcp_undo_last",
     }
+    routes = _reapply_routes(route_ref) if result["changed"] else None
+    if routes:
+        result["routes_reapplied"] = routes
+        result["hint"] = ("маршруты на этом списке переприменены (%s). "
+                          % ", ".join(r["id"] for r in routes[:5])
+                          + result["hint"])
     if rejected:
         result["rejected"] = rejected[:50]
         result["rejected_count"] = len(rejected)
@@ -1531,10 +1563,6 @@ def _list_result(kind, tool_name, name, mode, before, after, rejected,
         result["replaced"] = True
         result["hint"] = ("список заменён ЦЕЛИКОМ, а не дополнен: "
                           "прежнее содержимое — в поле before. "
-                          + result["hint"])
-    if not pids:
-        result["hint"] = ("nfqws2 не запущен — SIGHUP слать некому; "
-                          "список прочитается при старте. "
                           + result["hint"])
     if empties_filter and not after:
         # Пустой hostlist — не «ничего не изменилось», а выключенный
