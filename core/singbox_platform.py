@@ -15,6 +15,7 @@ from core.awg_platform import (
     PlatformKind,
     is_keenetic, is_openwrt, is_linux_generic,
 )
+from core.flash_saver import RamLogDir
 
 
 def _cmd_ok(args, timeout=5):
@@ -119,7 +120,9 @@ class KeeneticSingbox(SingboxPlatform):
     binary_dir = "/opt/usr/sbin"
     config_dir = "/opt/etc/sing-box"
     run_dir    = "/opt/var/run/sing-box"
-    log_dir    = "/opt/var/log"
+    # /opt на Entware — постоянный носитель; flash.engine_logs_ram
+    # уводит логи в ОЗУ (core/flash_saver.py).
+    log_dir    = RamLogDir("/opt/var/log")
     init_dir   = "/opt/etc/init.d"
     init_name  = "sing-box-gui"
     init_priority = "S52"

@@ -18,6 +18,8 @@ import enum
 import os
 import subprocess
 
+from core.flash_saver import RamLogDir
+
 
 # Каталоги UAPI-сокетов amneziawg-go, в порядке приоритета.
 #
@@ -241,7 +243,9 @@ class KeeneticPlatform(AwgPlatform):
     binary_dir = "/opt/usr/sbin"
     config_dir = "/opt/etc/amneziawg"
     run_dir    = "/opt/var/run/awg"
-    log_dir    = "/opt/var/log"
+    # /opt на Entware — постоянный носитель; flash.engine_logs_ram
+    # уводит логи в ОЗУ (core/flash_saver.py).
+    log_dir    = RamLogDir("/opt/var/log")
     init_dir   = "/opt/etc/init.d"
     init_name  = "amneziawg-gui"
     init_priority = "S51"

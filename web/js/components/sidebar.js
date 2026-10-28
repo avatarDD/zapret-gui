@@ -114,6 +114,8 @@ const Sidebar = (() => {
                 { simple: true, id: 'history', label: 'История изменений', icon: 'log' },
                 { id: 'zapret',      label: 'Zapret2 (установка)', icon: 'zapret' },
                 { id: 'autostart',   label: 'Автозапуск',  icon: 'autostart' },
+                // Износ flash и рычаги «ОЗУ вместо постоянной памяти».
+                { id: 'flash',       label: 'Память (flash)', icon: 'hosts' },
                 { id: 'mcp',         label: 'MCP-сервер',  icon: 'mcp' },
                 { id: 'agent',       label: 'Агент',       icon: 'agent' },
                 { simple: true, id: 'settings', label: 'Настройки',   icon: 'settings' },

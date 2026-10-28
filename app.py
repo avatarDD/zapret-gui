@@ -997,6 +997,16 @@ def create_app(config_dir: str = None) -> Bottle:
         except Exception:
             pass
 
+        # Постоянная память: учёт записи и рычаги «ОЗУ вместо flash»
+        # (отложенная запись ядра, noatime) — после перезагрузки заново.
+        try:
+            from core.flash_saver import apply_on_boot as _flash_apply
+            _flash_apply()
+            from core.flash_wear import get_flash_stats
+            get_flash_stats().start()
+        except Exception as e:
+            log.warning("flash при boot: %s" % e, source="flash")
+
         # Логи движков (AWG/sing-box/mihomo) не растут без предела.
         try:
             from core.engine_common import start_log_guard
@@ -1419,6 +1429,10 @@ def _graceful_shutdown(log=None):
         ("subscription_manager", "core.subscription_manager", "get_refresher",       "_stop"),
         ("server_pool",          "core.server_pool",          "get_pool",            "_stop"),
         ("strategy_scanner",     "core.strategy_scanner",     "get_strategy_scanner","stop"),
+        # Отложенные записи на flash — сохранить перед выходом.
+        ("proxy_traffic",        "core.proxy_traffic",        "get_traffic_tracker", "flush"),
+        ("mihomo_traffic",       "core.proxy_traffic",        "get_mihomo_traffic_tracker", "flush"),
+        ("flash_stats",          "core.flash_wear",           "get_flash_stats",     "stop"),
     ]
 
     for name, module_path, factory_fn, stop_method in _stops:
