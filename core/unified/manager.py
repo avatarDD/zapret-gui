@@ -88,6 +88,9 @@ def save_route(data: dict, *, apply: bool = True,
     applied = None
     if apply and route.enabled:
         applied = applier.apply_route(route)
+        reasserted = _reassert_priority(route)
+        if reasserted and isinstance(applied, dict):
+            applied["reapplied_by_priority"] = reasserted
     elif not route.enabled:
         applier.remove_route(route)
         _sweep_dnsmasq("disable")
@@ -235,26 +238,90 @@ def _unknown_iface(route, previous=None) -> str:
     return ""
 
 
-def _release_tables(route) -> None:
+def prune_table_map() -> list:
     """Вернуть номера таблиц интерфейсов, которые больше никому не нужны.
 
     `routing.table_map` закрепляет номер за именем навсегда — это верно
     для живых туннелей (номер стабилен между перезапусками), но имя,
-    которого нет ни в системе, ни у одного правила, держало номер вечно.
+    которого нет ни в системе, ни у одного правила или маршрута, ни в
+    конфигах движков (опечатка прошлых версий: «nosuchiface», «sb1»),
+    держало номер вечно, а секция routing через MCP закрыта на запись.
+    Если перечень конфигов какого-то движка не прочитался — не трогаем
+    ничего: лучше лишний номер, чем отобранный у лежащего туннеля.
+    Возвращает освобождённые имена.
     """
     try:
+        from core.config_manager import get_config_manager
         from core.routing import storage as rstorage
         from core.routing.manager import release_table
         from core.unified.model import iface_present, method_iface
+        table_map = get_config_manager().get("routing", "table_map",
+                                             default={}) or {}
+        if not isinstance(table_map, dict) or not table_map:
+            return []
         used = {getattr(r, "target_iface", "") for r in rstorage.load_rules()}
         for other in storage.load_routes():
             used |= {method_iface(m) for m in other.method_chain()}
-        for method in route.method_chain():
-            iface = method_iface(method)
-            if iface and iface not in used and not iface_present(iface):
-                release_table(iface)
+        candidates = [name for name in table_map
+                      if name not in used and not iface_present(name)]
+        if not candidates:
+            return []
+        for kind in _ENGINE_TITLES:
+            known = _engine_ifaces(kind)
+            if known is None:
+                return []
+            used |= known
+        freed = [name for name in candidates
+                 if name not in used and release_table(name)]
+        if freed:
+            log.info("unified: освобождены таблицы несуществующих "
+                     "интерфейсов: %s" % ", ".join(freed), source="unified")
+        return freed
     except Exception as e:
         log.debug("unified: освобождение таблиц: %s" % e, source="unified")
+        return []
+
+
+def _reassert_priority(route) -> list:
+    """Переприменить пересекающиеся маршруты с бОльшим priority.
+
+    В ядре из двух маршрутов на один адрес побеждает тот, чьи правила
+    стоят в цепочке позже, то есть применённый последним. Чтобы решал
+    priority, а не порядок правок, после сохранения маршрута те, что
+    с ним пересекаются и стоят выше, раскладываются заново — по
+    возрастанию priority, и последним в цепочке оказывается старший.
+    """
+    if not route.enabled:
+        return []
+    try:
+        from core.unified.bulk import find_overlaps
+        routes = {r.id: r for r in storage.load_routes()}
+        rivals = set()
+        for item in find_overlaps([r.to_dict() for r in routes.values()],
+                                  resolve=True):
+            if route.id in item["routes"]:
+                rivals |= set(item["routes"]) - {route.id}
+        higher = sorted((routes[rid] for rid in rivals
+                         if rid in routes and routes[rid].enabled
+                         and routes[rid].priority > route.priority),
+                        key=_apply_order)
+    except Exception as e:
+        log.debug("unified: порядок по priority: %s" % e, source="unified")
+        return []
+    done = []
+    for other in higher:
+        try:
+            applier.apply_route(other)
+            done.append(other.id)
+        except Exception as e:                  # noqa: BLE001 — граница
+            log.warning("unified: переприменение %s по priority: %s"
+                        % (other.id, e), source="unified")
+    return done
+
+
+def _apply_order(route):
+    """Ключ порядка раскладки: старший priority — последним (побеждает)."""
+    return (route.priority, route.created_at)
 
 
 def _sync_monitor():
@@ -280,7 +347,7 @@ def delete_route(route_id: str) -> dict:
     except Exception:
         pass
     _sweep_dnsmasq("delete")
-    _release_tables(route)
+    prune_table_map()
     _sync_monitor()
     return {"ok": True, "id": route_id}
 
@@ -354,6 +421,7 @@ def reapply_all() -> dict:
     except Exception:
         pass
 
+    out["tables_freed"] = prune_table_map()
     _sync_monitor()
     out["ok"] = all(
         (out.get(k) or {}).get("ok", True)
@@ -558,17 +626,26 @@ def status() -> dict:
             suggestion = scanner_hint.suggest_for_route(r)
         except Exception:
             suggestion = {}
+        missing = _iface_missing(active)
+        mon_row = dict(mon.get(rid, {}) or {})
+        if missing and mon_row:
+            # Последний замер мог пройти, пока интерфейс был (или мимо
+            # него — собственная проба роутера идёт по его таблицам).
+            # Сейчас метод заведомо не работает: показывать rate 1.0 и
+            # last_ok как текущее здоровье нельзя.
+            mon_row["stale"] = True
+            mon_row["healthy"] = False
         out.append({
             "id": rid, "name": r.name, "enabled": r.enabled,
             "method": r.method, "active_method": active,
             "fallbacks": r.fallbacks,
             "monitor_enabled": r.monitor_enabled,
             "failover_enabled": r.failover_enabled,
-            "monitor": mon.get(rid, {}),
+            "monitor": mon_row,
             "suggest_scan": suggestion.get("suggest", False),
             "suggest_reason": suggestion.get("reason", ""),
             "probeable": _safe_can_probe(monitor, r),
-            "iface_missing": _iface_missing(active),
+            "iface_missing": missing,
             "device_drift": _device_drift(r, macs),
         })
     return {"ok": True, "routes": out,

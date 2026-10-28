@@ -374,6 +374,11 @@ def _unified_layer(domain: str) -> list:
             method = active_method(route)
             pending = (bool(hit) and is_tunnel_method(method)
                        and not _in_kernel(route.id, hit))
+            missing = ""
+            if is_tunnel_method(method):
+                from core.unified.model import iface_present, method_iface
+                iface = method_iface(method)
+                missing = "" if iface_present(iface) else iface
             out.append({"id": getattr(route, "id", ""), "name": route.name,
                         "method": method,
                         "failover": method != route.method,
@@ -384,7 +389,9 @@ def _unified_layer(domain: str) -> list:
                         "match": hit or "geosite: %s" % ", ".join(
                             route.destination.geosite),
                         "maybe": maybe,
-                        "pending": pending})
+                        "pending": pending,
+                        "priority": getattr(route, "priority", 0),
+                        "iface_missing": missing})
     return out
 
 
@@ -556,13 +563,14 @@ def summarize(t: dict) -> list:
             lines.append("DNS: спрашивается у %s (правило %s)"
                          % (d["server"], d["rule"]))
     tunnels = [r for r in t.get("routes") or [] if r["tunnel"]
-               and not r["maybe"] and not r.get("pending")]
+               and not r["maybe"] and not r.get("pending")
+               and not r.get("iface_missing")]
     if t.get("blocked"):
         lines.append("Итог: hosts отправляет сайт в никуда — он не "
                      "откроется, обход тут ни при чём")
         return lines
     for r in t.get("routes") or []:
-        lines.append("Единый слой: «%s» → %s (%s)%s%s%s%s" % (
+        lines.append("Единый слой: «%s» → %s (%s)%s%s%s%s%s" % (
             r["name"] or r["id"], r["method"], r["match"],
             " — сейчас запасной метод" if r.get("failover") else "",
             " — только для устройств: %s" % ", ".join(r["devices"])
@@ -570,13 +578,26 @@ def summarize(t: dict) -> list:
             " — возможно, решает движок по geosite" if r["maybe"] else "",
             " — но в ядро ещё НЕ разложен: трафик идёт мимо туннеля, "
             "переприменить — unified_route_apply" if r.get("pending")
-            else ""))
+            else "",
+            " — но интерфейса %s сейчас нет: туннель не поднят, трафик "
+            "идёт мимо него (tunnels_status)" % r["iface_missing"]
+            if r.get("iface_missing") else ""))
     methods = sorted({r["method"] for r in tunnels})
     if len(methods) > 1:
-        lines.append("Итог: трафик уходит в один из туннелей (%s) — "
-                     "побеждает маршрут, применённый последним (поле "
-                     "priority этого не решает) — уберите перекрытие; "
-                     "nfqws2 его не видит" % ", ".join(methods))
+        top = max(r.get("priority", 0) for r in tunnels)
+        winners = [r for r in tunnels if r.get("priority", 0) == top]
+        if len({r["method"] for r in winners}) == 1:
+            lines.append("Итог: трафик уходит в туннель %s — у маршрута "
+                         "«%s» старший priority (%d) из пересекающихся; "
+                         "nfqws2 его не видит" % (
+                             winners[0]["method"],
+                             winners[0]["name"] or winners[0]["id"], top))
+        else:
+            lines.append("Итог: трафик уходит в один из туннелей (%s) — "
+                         "priority у маршрутов равный, побеждает "
+                         "применённый последним; задайте priority. nfqws2 "
+                         "его не видит" % ", ".join(
+                             sorted({r["method"] for r in winners})))
         return lines
     if tunnels:
         scoped = all(r.get("devices") for r in tunnels)

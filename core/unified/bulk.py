@@ -91,6 +91,11 @@ def normalize_domains(entries) -> list:
             continue
         if not has_scheme and ("/" not in e
                                or _looks_like_ip(e.split("/", 1)[0])):
+            # «*.example.com» и «example.com.» в ядро и dnsmasq уходят как
+            # «example.com» (domain_match: это одно и то же) — храним так
+            # же, чтобы маршрут показывал то, что реально разложено.
+            if e.startswith("*.") or e.endswith("."):
+                e = domain_match.normalize_domain(e) or e
             out.append(e)
             continue
         host = low.split("://", 1)[1] if "://" in low else low.lstrip("/")
@@ -141,20 +146,31 @@ def unknown_list_ids(list_ids) -> list:
 
 # ─────────────────────── пересечения ─────────────────────────────────
 
-def find_overlaps(routes: list) -> list:
-    """Пересечения назначений включённых маршрутов. Чистая.
+def find_overlaps(routes: list, resolve: bool = False) -> list:
+    """Пересечения назначений включённых маршрутов.
 
     routes — список dict (UnifiedRoute.to_dict()). Возвращает
     [{kind: domain|subdomain|cidr|list, value, other, routes: [id, id]}].
+
+    resolve=False — чистая, сравнивает только записанное в маршрутах.
+    resolve=True — домены и CIDR списков (`hl:`/`ipl:`/именованных)
+    раскрываются: «example.com» в одном маршруте и список с ним в другом
+    — тоже пересечение. Пары, уже пойманные как общий список, по его
+    доменам не дублируются.
     """
     from core.routing import domain_match
     enabled = [r for r in routes or [] if r.get("enabled", True)]
     out = []
     seen = set()
+    # Пары маршрутов с общим списком: домены этого списка у них совпадут
+    # все до одного — второй раз (по каждому домену) их не перечисляем.
+    same_list = set()
 
     def _add(kind, value, other, ids):
         ids = sorted(set(ids))
         if len(ids) < 2:
+            return
+        if kind != "list" and frozenset(ids) in same_list:
             return
         key = (kind, value, other, tuple(ids))
         if key in seen:
@@ -163,11 +179,21 @@ def find_overlaps(routes: list) -> list:
         out.append({"kind": kind, "value": value, "other": other,
                     "routes": ids})
 
+    flat = {r["id"]: _flat_destination(r, resolve) for r in enabled}
+
+    # Один и тот же список в нескольких маршрутах.
+    lists = {}
+    for r in enabled:
+        for lid in (r.get("destination") or {}).get("list_ids") or []:
+            lists.setdefault(lid, set()).add(r["id"])
+    for lid, ids in lists.items():
+        _add("list", lid, "", ids)
+        same_list |= {frozenset((a, b)) for a in ids for b in ids if a != b}
+
     # Домены: точные дубли и «домен ↔ поддомен».
     owners = {}
     for r in enabled:
-        dest = r.get("destination") or {}
-        for d in domain_match.plain_domains(dest.get("domains")):
+        for d in domain_match.plain_domains(flat[r["id"]]["domains"]):
             owners.setdefault(d, set()).add(r["id"])
     for d, ids in owners.items():
         if len(ids) > 1:
@@ -184,7 +210,7 @@ def find_overlaps(routes: list) -> list:
     # CIDR: одинаковые и вложенные сети.
     nets = []
     for r in enabled:
-        for c in (r.get("destination") or {}).get("cidrs") or []:
+        for c in flat[r["id"]]["cidrs"]:
             try:
                 nets.append((ipaddress.ip_network(str(c).strip(),
                                                   strict=False), r["id"]))
@@ -200,15 +226,25 @@ def find_overlaps(routes: list) -> list:
                 _add("cidr", str(na), str(nb), [ra, rb])
             elif nb.subnet_of(na):
                 _add("cidr", str(nb), str(na), [ra, rb])
-
-    # Один и тот же список в нескольких маршрутах.
-    lists = {}
-    for r in enabled:
-        for lid in (r.get("destination") or {}).get("list_ids") or []:
-            lists.setdefault(lid, set()).add(r["id"])
-    for lid, ids in lists.items():
-        _add("list", lid, "", ids)
     return out
+
+
+def _flat_destination(route: dict, resolve: bool) -> dict:
+    """Домены и CIDR маршрута: записанные или (resolve) с доменами списков.
+
+    CIDR списков не раскрываем: IP-списки сервисов — тысячи подсетей, а
+    сравнение сетей попарное, на роутере это секунды на каждое сохранение.
+    """
+    dest = route.get("destination") or {}
+    domains = dest.get("domains") or []
+    if resolve and dest.get("list_ids"):
+        try:
+            from core.unified.model import Destination
+            domains = Destination.from_dict(dest).resolve().get(
+                "domains") or []
+        except Exception:
+            pass
+    return {"domains": domains, "cidrs": dest.get("cidrs") or []}
 
 
 # ─────────────────────── массовые действия ───────────────────────────

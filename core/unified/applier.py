@@ -263,6 +263,7 @@ def _apply_tunnel(route, iface, domains, cidrs) -> dict:
         rule = CidrRoutingRule(
             target_iface=iface, cidrs=cidrs,
             rule_id=_cidr_rule_id(route.id),
+            priority=cidr_rule_priority(route.priority),
             description="unified:%s" % route.name)
         results.append(_upsert(mgr, rule))
     else:
@@ -303,6 +304,24 @@ def _apply_tunnel(route, iface, domains, cidrs) -> dict:
     ok = all(r.get("ok", False) or r.get("deferred") for r in results) \
         if results else True
     return {"ok": ok, "iface": iface, "applied": results}
+
+
+def cidr_rule_priority(route_priority: int) -> int:
+    """Приоритет `ip rule to <cidr>` из priority маршрута.
+
+    Доменные правила решает порядок в цепочке nft (старший маршрут
+    раскладывается последним), а CIDR-правила — номер `ip rule`: при
+    равном номере ядро берёт добавленное первым. Старшему маршруту —
+    меньший номер, но не ниже 9991: 9990 — обход для endpoint'ов
+    туннелей (awg_manager.ENDPOINT_BYPASS_PRIORITY), его перекрывать
+    нельзя. Поэтому ступеней девять; priority 0 — прежние 10000.
+    """
+    from core.routing.rules import DEFAULT_PRIORITY
+    try:
+        p = int(route_priority or 0)
+    except (TypeError, ValueError):
+        p = 0
+    return DEFAULT_PRIORITY - max(0, min(p, 9))
 
 
 def _upsert(mgr, rule) -> dict:
@@ -405,7 +424,11 @@ def apply_all() -> dict:
     """Применить все enabled-маршруты единого слоя."""
     from core.unified import storage
     results = []
-    for route in storage.load_routes():
+    # Старший priority — последним: при пересечении в ядре побеждает
+    # маршрут, чьи правила в цепочке позже (manager._reassert_priority).
+    routes = sorted(storage.load_routes(),
+                    key=lambda r: (r.priority, r.created_at))
+    for route in routes:
         if not route.enabled:
             remove_route(route)
             continue

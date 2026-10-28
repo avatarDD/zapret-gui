@@ -734,8 +734,16 @@ class DnsmasqIntegration:
                 # домен и писал только в v6-set — IPv4 к проксируемым доменам
                 # шёл мимо туннеля (маскировалось pre-population'ом до первой
                 # смены IP у CDN).
-                spec_v4 = "%s#%s#%s" % (fam, table, name)
-                spec_v6 = "%s#%s#%s6" % (fam, table, name)
+                #
+                # Префиксы `4#`/`6#` (man dnsmasq: «(6|4)#[<family>#]<table>
+                # #<set>») — каждому set'у только свои адреса. Без них dnsmasq
+                # пытался добавить КАЖДЫЙ адрес в оба set'а: v4-адрес в
+                # ipv6_addr-set nft разбирал как имя хоста и на каждый адрес
+                # писал в syslog «Could not resolve hostname: Name has no
+                # usable address» — вставка в свой set при этом проходила,
+                # а кольцевой буфер забивался шумом и терял настоящие ошибки.
+                spec_v4 = "4#%s#%s#%s" % (fam, table, name)
+                spec_v6 = "6#%s#%s#%s6" % (fam, table, name)
                 # Длинный список доменов НЕЛЬЗЯ класть в одну строку: у
                 # dnsmasq лимит 1024 байта на строку конфига, за ним он не
                 # стартует и уносит с собой DHCP/DNS (см. DNSMASQ_MAX_LINE,
