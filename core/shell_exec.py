@@ -69,6 +69,7 @@ root. Матчинг идёт по **нормализованной** строк
    фоновых.
 """
 
+import collections
 import json
 import os
 import re
@@ -439,8 +440,14 @@ def _as_text(command) -> str:
 # ──────────────────────────── safe-список ───────────────────────────
 
 def _cmd(letters="", flags=(), value_flags=None, numeric=False, first=None,
-         deny=(), args=0, require=(), forbid=""):
-    """Описание разрешённой команды (данные, а не код)."""
+         deny=(), args=0, require=(), forbid="", verbs=None):
+    """Описание разрешённой команды (данные, а не код).
+
+    ``verbs`` — белый список ВТОРОГО слова (``ip route show``). Он
+    нужен там, где программа понимает сокращения: iproute2 и tc читают
+    ``a`` как ``add``, ``d`` как ``delete``, ``s`` как ``set``, и
+    чёрный список глаголов (``deny``) такие формы пропускает.
+    """
     return {
         "letters": set(letters),
         "flags": set(flags),
@@ -451,6 +458,7 @@ def _cmd(letters="", flags=(), value_flags=None, numeric=False, first=None,
         "args": int(args),
         "require": set(require),
         "forbid": re.compile(forbid) if forbid else None,
+        "verbs": set(verbs) if verbs else None,
     }
 
 
@@ -458,18 +466,32 @@ def _cmd(letters="", flags=(), value_flags=None, numeric=False, first=None,
 _NET_WRITE = ("add", "del", "delete", "set", "change", "replace", "flush",
               "append", "save", "restore", "up", "down", "exec")
 
+# Читающие глаголы iproute2/tc — БЕЛЫЙ список: обе программы понимают
+# префиксы (`ip r d default` = `ip route delete default`), так что
+# перечислять запретные формы бесполезно.
+_READ_VERBS = ("show", "list", "ls", "lst", "get")
+
+# Куда безопасно «скачать»: в никуда или в stdout. Без этого `wget`
+# пишет файл в рабочий каталог, а `curl -o` — куда скажут.
+_SINKS = ("-", "/dev/null")
+
 # Что разрешено под `shell_readonly`. Список **курируемый**: команда
 # сюда попадает, только если ею нельзя ни писать, ни исполнять чужое.
-# Поэтому здесь нет `find` (-exec/-delete), `awk` (system()),
-# `sed` (-i, w), `env`, `nc`, `wget` и самого `sh`: одна пропущенная
-# опция у них превращает «чтение» в root-доступ.
+# Поэтому здесь нет `awk` (system()), `sed` (-i, w), `env`, `nc` и
+# самого `sh`: одна пропущенная опция у них превращает «чтение» в
+# root-доступ. `find`, `wget` и `tc` есть, но только белым списком
+# опций: `-exec`/`-delete`, запись в файл и меняющие глаголы туда не
+# входят.
 SAFE_COMMANDS = {
     # ── система ──
     "uname": _cmd(letters="asnrvmpio"),
     "uptime": _cmd(letters="ps"),
     "free": _cmd(letters="bkmghwt"),
+    # Позиционный аргумент — только формат `+…`: `date 0101000025`
+    # у busybox и GNU date УСТАНАВЛИВАЕТ время.
     "date": _cmd(flags=("-u", "-R", "-I", "--utc", "--rfc-3339"),
-                 value_flags={"-d": "word", "--date": "word"}, args=1),
+                 value_flags={"-d": "word", "--date": "word"}, args=1,
+                 forbid=r"^[^+]"),
     "hostname": _cmd(letters="fs"),
     "id": _cmd(letters="unGgrZ", args=1),
     "mount": _cmd(letters="l"),
@@ -497,6 +519,20 @@ SAFE_COMMANDS = {
                               "-C": "int", "-e": "word",
                               "--include": "word", "--exclude": "word"},
                  args=10),
+    # Только тесты и печать: `-exec`/`-execdir`/`-ok`/`-delete`/
+    # `-fprint*` не входят в белый список и отбиваются как флаги.
+    "find": _cmd(flags=("-L", "-H", "-P", "-xdev", "-print", "-print0",
+                        "-ls", "-o", "-or", "-a", "-and", "-not",
+                        "-prune", "-depth", "-follow", "-empty"),
+                 value_flags={"-name": "word", "-iname": "word",
+                              "-path": "word", "-ipath": "word",
+                              "-regex": "word", "-type": "word",
+                              "-maxdepth": "int", "-mindepth": "int",
+                              "-size": "word", "-mtime": "word",
+                              "-mmin": "word", "-newer": "word",
+                              "-perm": "word", "-user": "word",
+                              "-group": "word"},
+                 args=8),
     # ── процессы ──
     "ps": _cmd(letters="aeflxwuo", value_flags={"-o": "word"},
                first=("aux", "ax", "auxw", "auxww", "w", "ww", "axjf", "ef"),
@@ -506,11 +542,17 @@ SAFE_COMMANDS = {
                 value_flags={"-n": "int", "-d": "int"},
                 require=("-n",)),
     # ── сеть: состояние ──
-    "ip": _cmd(letters="sdorn46bc",
+    # Без `-b` (batch-файл команд) и `-n` (у iproute2 это `-netns`,
+    # который съедает следующее слово и сдвигает разбор).
+    "ip": _cmd(letters="sdor46cjp",
                first=("addr", "address", "a", "link", "l", "route", "r",
                       "ro", "rule", "ru", "neigh", "n", "neighbour",
                       "neighbor", "tunnel", "tun", "maddr", "mroute"),
-               deny=_NET_WRITE, args=8),
+               verbs=_READ_VERBS, deny=_NET_WRITE, args=12),
+    "tc": _cmd(letters="sdjpg",
+               first=("qdisc", "class", "filter", "action", "actions",
+                      "chain"),
+               verbs=_READ_VERBS, deny=_NET_WRITE, args=10),
     "ifconfig": _cmd(letters="a", args=1,
                      deny=("up", "down", "add", "del", "netmask", "mtu",
                            "promisc", "-promisc", "hw", "broadcast",
@@ -518,7 +560,7 @@ SAFE_COMMANDS = {
     "route": _cmd(letters="ne", deny=("add", "del", "delete", "flush")),
     "arp": _cmd(letters="an", args=2),
     "netstat": _cmd(letters="anptuwlrxes"),
-    "ss": _cmd(letters="antuplrsxemi46", args=2),
+    "ss": _cmd(letters="antuplrsxemi46", args=12),
     "conntrack": _cmd(letters="L", require=("-L",),
                       value_flags={"-p": "word", "-s": "word",
                                    "-d": "word", "-o": "word"}),
@@ -529,9 +571,12 @@ SAFE_COMMANDS = {
                       require=("-L", "-S"), args=2),
     "iptables-save": _cmd(flags=("-c",), value_flags={"-t": "word"}),
     "ip6tables-save": _cmd(flags=("-c",), value_flags={"-t": "word"}),
+    # nft склеивает argv в одну строку и разбирает её как скрипт:
+    # `ruleset;flush` в одном аргументе — это две команды. Поэтому
+    # в аргументах нет ни разделителей, ни пробелов, ни блоков.
     "nft": _cmd(letters="ansjt", first=("list",), deny=("add", "delete",
                 "flush", "insert", "replace", "create", "destroy", "reset",
-                "rename", "import"), args=6),
+                "rename", "import"), args=8, forbid=r"[\s;#{}]"),
     # ── сеть: пробы ──
     "nslookup": _cmd(args=2),
     "dig": _cmd(letters="x46", value_flags={"-t": "word", "-p": "int"},
@@ -551,16 +596,43 @@ SAFE_COMMANDS = {
     "traceroute6": _cmd(letters="nIU", args=1,
                         value_flags={"-m": "int", "-q": "int",
                                      "-w": "int", "-p": "int"}),
+    # `-o` только в никуда; `-w` — без `%output{…}` (curl 8.3+ пишет
+    # им в файл) и без `@файла`.
     "curl": _cmd(letters="sSILkv46f",
                  flags=("--head", "--silent", "--show-error", "--location",
-                        "--insecure", "--compressed", "--fail"),
-                 value_flags={"-m": "int", "--max-time": "int",
+                        "--insecure", "--compressed", "--fail",
+                        "--http1.1", "--http2", "--tlsv1.2", "--tlsv1.3",
+                        "--no-keepalive"),
+                 value_flags={"-o": "sink", "--output": "sink",
+                              "-w": "writeout", "--write-out": "writeout",
+                              "--tls-max": "word",
+                              "-m": "int", "--max-time": "int",
                               "--connect-timeout": "int", "-A": "word",
                               "--user-agent": "word", "-H": "word",
                               "--header": "word", "--resolve": "word",
                               "--interface": "word", "-x": "word",
                               "--proxy": "word"},
                  args=1),
+    # busybox wget, uclient-fetch и GNU wget: без `-O -`/`-O /dev/null`
+    # или `--spider` они сохраняют файл в рабочий каталог — требуем.
+    "wget": _cmd(letters="qS46",
+                 flags=("--spider", "--no-check-certificate", "--quiet",
+                        "--server-response"),
+                 value_flags={"-O": "sink", "--output-document": "sink",
+                              "-T": "int", "--timeout": "int",
+                              "-t": "int", "--tries": "int",
+                              "-U": "word", "--user-agent": "word",
+                              "--header": "word"},
+                 require=("-O", "--output-document", "--spider"), args=1),
+    "uclient-fetch": _cmd(letters="q46",
+                          flags=("--spider", "--no-check-certificate",
+                                 "--quiet"),
+                          value_flags={"-O": "sink",
+                                       "--output-document": "sink",
+                                       "-T": "int", "--timeout": "int",
+                                       "-U": "word", "--user-agent": "word"},
+                          require=("-O", "--output-document", "--spider"),
+                          args=1),
     # ── туннели и пакеты ──
     "wg": _cmd(first=("show", "showconf"), args=3,
                deny=("set", "setconf", "addconf", "syncconf", "genkey",
@@ -636,6 +708,13 @@ def check_safe(argv) -> dict:
         return {"safe": False, "command": name,
                 "reason": "у «%s» слишком много аргументов (максимум %d)"
                           % (name, spec["args"])}
+    if len(positionals) > 1 and spec["verbs"] is not None \
+            and positionals[1] not in spec["verbs"]:
+        return {"safe": False, "command": name,
+                "reason": "«%s %s %s» — не читающая форма команды "
+                          "(разрешены: %s; нужно разрешение shell_full)"
+                          % (name, positionals[0], positionals[1],
+                             ", ".join(sorted(spec["verbs"])))}
     if positionals and spec["first"] is not None \
             and positionals[0] not in spec["first"]:
         return {"safe": False, "command": name,
@@ -683,6 +762,12 @@ def _check_flag(spec, token):
 def _check_value(kind, value) -> bool:
     if kind == "int":
         return bool(value) and str(value).isdigit()
+    if kind == "sink":
+        return str(value) in _SINKS
+    if kind == "writeout":
+        text = str(value)
+        return bool(text) and not text.startswith("@") \
+            and "%output" not in text and "\n" not in text
     return bool(value) and not re.search(r"\s", str(value))
 
 
@@ -842,6 +927,145 @@ class _Collector:
             return self.total > self.limit
 
 
+# Потолки фильтра вывода: он работает в потоке чтения, и строк в
+# include/exclude должно быть столько, чтобы проход по выводу
+# оставался линейным и дешёвым на слабом роутере.
+FILTER_MAX_TERMS = 16
+FILTER_MAX_TERM_LEN = 200
+FILTER_MAX_LINES = 100000
+# Строка длиннее этого режется на куски: иначе один `cat` бинарника
+# без переводов строки держал бы в памяти весь файл.
+FILTER_LINE_BYTES = 65536
+
+
+def parse_filter(raw) -> tuple:
+    """Проверить ``filter`` из аргументов: ``(конфиг или None, отказ)``.
+
+    Фильтр — замена пайпу ``| grep … | tail`` под ``shell_readonly``:
+    строки отбираются **подстрокой**, не регулярным выражением. Регэксп
+    от модели в потоке чтения — это катастрофический backtracking на
+    ровном месте, а подстрока проходит вывод линейно. Регулярные
+    выражения есть у самих программ: ``logread -e``, ``grep -E``.
+    """
+    if not raw:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, _refusal("filter должен быть объектом",
+                              "filter={\"include\": [\"dnsmasq\"], "
+                              "\"tail\": 50}")
+    conf = {"include": [], "exclude": [],
+            "ignore_case": bool(raw.get("ignore_case")),
+            "count_only": bool(raw.get("count_only")),
+            "head": 0, "tail": 0}
+    for key in ("include", "exclude"):
+        terms = raw.get(key) or []
+        if isinstance(terms, str):
+            terms = [terms]
+        if not isinstance(terms, list) or len(terms) > FILTER_MAX_TERMS:
+            return None, _refusal(
+                "filter.%s — список не длиннее %d строк"
+                % (key, FILTER_MAX_TERMS), "")
+        for term in terms:
+            term = str(term)
+            if not term or len(term) > FILTER_MAX_TERM_LEN:
+                return None, _refusal(
+                    "filter.%s: пустая строка или длиннее %d символов"
+                    % (key, FILTER_MAX_TERM_LEN), "")
+            conf[key].append(term.lower() if conf["ignore_case"] else term)
+    for key in ("head", "tail"):
+        value = raw.get(key) or 0
+        if not isinstance(value, int) or isinstance(value, bool) \
+                or not 0 <= value <= FILTER_MAX_LINES:
+            return None, _refusal(
+                "filter.%s — целое от 1 до %d" % (key, FILTER_MAX_LINES), "")
+        conf[key] = value
+    if conf["head"] and conf["tail"]:
+        return None, _refusal("filter.head и filter.tail вместе не "
+                              "задаются", "оставьте одно из двух")
+    return conf, None
+
+
+class _LineFilter:
+    """Построчный фильтр перед :class:`_Collector`.
+
+    Стоит ДО обрезки: иначе ``logread`` на 109 КБ обрезался бы до
+    хвоста ``output_kb``, и фильтр видел бы только его. Отобранные
+    строки уходят в сборщик; ``count_only`` не отдаёт ни одной, только
+    счётчики.
+    """
+
+    def __init__(self, collector, conf):
+        self.collector = collector
+        self.conf = conf
+        self.partial = b""
+        self.seen = 0
+        self.matched = 0
+        self.bytes_in = 0
+        self.tail = collections.deque(maxlen=conf["tail"] or None) \
+            if conf["tail"] else None
+        self.lock = threading.Lock()
+
+    @property
+    def total(self):
+        return self.collector.total
+
+    def pump(self, stream):
+        try:
+            _Collector.pump(self, stream)
+        finally:
+            self.finish()
+
+    def add(self, chunk: bytes):
+        with self.lock:
+            self.bytes_in += len(chunk)
+            data = self.partial + chunk
+            lines = data.split(b"\n")
+            self.partial = lines.pop()
+            while len(self.partial) > FILTER_LINE_BYTES:
+                lines.append(self.partial[:FILTER_LINE_BYTES])
+                self.partial = self.partial[FILTER_LINE_BYTES:]
+            for line in lines:
+                self._line(line)
+
+    def finish(self):
+        with self.lock:
+            if self.partial:
+                self._line(self.partial)
+                self.partial = b""
+            if self.tail:
+                self.collector.add(b"".join(self.tail))
+                self.tail.clear()
+
+    def _line(self, line: bytes):
+        self.seen += 1
+        text = line.decode("utf-8", "replace")
+        if self.conf["ignore_case"]:
+            text = text.lower()
+        include, exclude = self.conf["include"], self.conf["exclude"]
+        if include and not any(term in text for term in include):
+            return
+        if exclude and any(term in text for term in exclude):
+            return
+        self.matched += 1
+        if self.conf["count_only"]:
+            return
+        if self.tail is not None:
+            self.tail.append(line + b"\n")
+        elif not self.conf["head"] or self.matched <= self.conf["head"]:
+            self.collector.add(line + b"\n")
+
+    def stats(self) -> dict:
+        with self.lock:
+            return {"lines_seen": self.seen, "lines_matched": self.matched,
+                    "bytes_seen": self.bytes_in}
+
+
+def _reader(collector, plan):
+    """Чем читать вывод: сборщиком или фильтром перед ним."""
+    conf = plan.get("filter")
+    return _LineFilter(collector, conf) if conf else collector
+
+
 def environ() -> dict:
     """Окружение команды: минимальное и БЕЗ переменных процесса GUI."""
     return dict(BASE_ENV)
@@ -881,6 +1105,7 @@ def execute(plan: dict, timeout_sec: int = 0, workdir: str = "") -> dict:
 def _run_sync(plan, timeout, cwd, conf) -> dict:
     started = time.time()
     collector = _Collector(conf["output_kb"] * 1024, keep="tail")
+    reader_sink = _reader(collector, plan)
     try:
         proc = _spawn(plan, cwd)
     except (OSError, ValueError) as e:
@@ -892,7 +1117,7 @@ def _run_sync(plan, timeout, cwd, conf) -> dict:
                         output="", truncated=False, timed_out=False,
                         duration_ms=0)
 
-    reader = threading.Thread(target=collector.pump, args=(proc.stdout,),
+    reader = threading.Thread(target=reader_sink.pump, args=(proc.stdout,),
                               daemon=True)
     reader.start()
     timed_out = False
@@ -903,8 +1128,11 @@ def _run_sync(plan, timeout, cwd, conf) -> dict:
         kill_process(proc)
     reader.join(timeout=KILL_GRACE_SEC)
 
-    return _result(plan, proc.returncode, collector, timed_out, started,
-                   timeout, cwd)
+    result = _result(plan, proc.returncode, collector, timed_out, started,
+                     timeout, cwd)
+    if reader_sink is not collector:
+        result["filter"] = dict(reader_sink.stats(), **plan["filter"])
+    return result
 
 
 def _result(plan, returncode, collector, timed_out, started, timeout,
@@ -1030,6 +1258,7 @@ def start_job(plan: dict, timeout_sec: int = 0, workdir: str = "",
         "workdir": cwd,
         "proc": proc,
         "collector": collector,
+        "reader": _reader(collector, plan),
     }
     with _jobs_lock:
         _JOBS[job["job_id"]] = job
@@ -1046,7 +1275,7 @@ def start_job(plan: dict, timeout_sec: int = 0, workdir: str = "",
 def _watch_job(job):
     """Дождаться конца фоновой команды, собрав её вывод."""
     proc = job["proc"]
-    reader = threading.Thread(target=job["collector"].pump,
+    reader = threading.Thread(target=job["reader"].pump,
                               args=(proc.stdout,), daemon=True)
     reader.start()
     try:
@@ -1109,7 +1338,7 @@ def job_stop(job_id: str) -> dict:
 
 
 def _job_view(job) -> dict:
-    return {
+    view = {
         "ok": True,
         "job_id": job["job_id"],
         "command": job["command"],
@@ -1127,6 +1356,10 @@ def _job_view(job) -> dict:
         "workdir": job["workdir"],
         "timeout_sec": job["timeout_sec"],
     }
+    if job.get("reader") is not None \
+            and job["reader"] is not job["collector"]:
+        view["filter"] = job["reader"].stats()
+    return view
 
 
 def _job(job_id):
@@ -1561,7 +1794,7 @@ def reset_guards():
 
 def run_command(command="", argv=None, *, full=False, timeout_sec=0,
                 workdir="", guard=None, background=False, label="",
-                scope="") -> dict:
+                scope="", line_filter=None) -> dict:
     """Проверить команду и выполнить её (или вернуть, чего не хватает).
 
     Порядок проверок неслучаен: **запрет** (не обходится ничем) →
@@ -1570,9 +1803,14 @@ def run_command(command="", argv=None, *, full=False, timeout_sec=0,
     guard'а, модель получала бы токен, подтверждала — и только тогда
     узнавала, что нужен ещё и дедмен.
     """
+    filter_conf, refusal = parse_filter(line_filter)
+    if refusal:
+        return refusal
     plan, refusal = plan_command(command, argv, full=full)
     if refusal:
         return refusal
+    if filter_conf:
+        plan["filter"] = filter_conf
 
     deny = deny_reason(plan["normalized"])
     if deny:
@@ -1603,6 +1841,7 @@ def run_command(command="", argv=None, *, full=False, timeout_sec=0,
             payload={"argv": plan["argv"], "mode": plan["mode"],
                      "display": plan["display"], "safe": plan["safe"],
                      "normalized": plan["normalized"],
+                     "filter": plan.get("filter"),
                      "timeout_sec": timeout_sec, "workdir": workdir,
                      "background": background, "label": label,
                      "guard": checked})
@@ -1618,7 +1857,8 @@ def run_pending(record: dict) -> dict:
             "argv": list(payload.get("argv") or []),
             "display": payload.get("display", ""),
             "safe": bool(payload.get("safe")),
-            "normalized": payload.get("normalized", "")}
+            "normalized": payload.get("normalized", ""),
+            "filter": payload.get("filter")}
     if not plan["argv"]:
         return _refusal("подтверждать нечего: в токене нет команды", "")
     result = _execute_plan(plan, payload.get("timeout_sec", 0),

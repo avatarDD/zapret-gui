@@ -33,6 +33,8 @@
 инструмента, а вызывающие — где оно лежит.
 """
 
+import os
+
 from core.log_buffer import log
 from core.mcp import permissions as perms_mod
 from core.mcp import prompts
@@ -51,6 +53,11 @@ PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 SERVER_NAME = "zapret-gui"
+
+# Корень установки GUI (на роутере — не /opt): называем его модели,
+# чтобы `find`/`grep` по исходникам шли сразу туда.
+APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 
 # Сколько инструментов отдаём за одну страницу tools/list (размер
 # страницы задаёт реестр — он же нарезает список).
@@ -277,6 +284,14 @@ def _instructions(granted, tools_count, can_subscribe=False) -> str:
             "guard={revert_cmd, ttl_sec}; confirm the run_id afterwards "
             "or the revert fires by itself. / Отказ с confirm_token — "
             "это второй шаг, а не провал.")
+        # Без этой строки модель ищет код GUI в /opt и, не найдя,
+        # гадает о его поведении по описаниям инструментов.
+        lines.append(
+            "zapret-gui itself is installed in %s — find/grep its "
+            "sources there. Under shell_readonly there are no pipes: "
+            "pass filter={include, exclude, count_only, tail} to "
+            "shell_exec instead. / Код GUI лежит в %s; вместо пайпа — "
+            "аргумент filter." % (APP_DIR, APP_DIR))
     if any(name.startswith("self_edit") for name in granted):
         # Разрыв соединения на code_apply — норма, а не сбой. Без этой
         # врезки модель читает ошибку транспорта как «правка не

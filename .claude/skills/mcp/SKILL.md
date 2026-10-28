@@ -415,8 +415,8 @@ UI), и `tools_by_scope`.
 | `vpngen_proton_servers` | tunnels_write | нет | `tools/vpngen.py` | transport?, country?, refresh? | бесплатные серверы Proton через сервис proton-generation; ничего не меняет, но ходит в сеть |
 | `vpngen_generate` | tunnels_write | **да** | `tools/vpngen.py` | provider, protocol?, targets?, source?, config?, transport?, server_id?, country?, port?, license?, options?, names? | зарегистрировать WARP (WireGuard/MASQUE) или взять сервер Proton (через сервис или `source=import` + `config` — WireGuard-конфиг из аккаунта Proton) и СОХРАНИТЬ конфиги под awg/usque/singbox/mihomo; ключи в ответе скрыты; откат удаляет созданное |
 | `unified_reapply_all` | dangerous | **да** | `tools/routing.py` | — | sweep протухших `ip rule`/таблиц + переприменение ВСЕЙ маршрутизации |
-| `shell_exec` | shell_readonly | **да** | `tools/shell.py` | command?, argv?, timeout_sec?, workdir?, guard? | команда на роутере; safe-список и argv — по `shell_readonly`, произвольная строка (`sh -c`) — по `shell_full` |
-| `shell_exec_async` | shell_readonly | **да** | `tools/shell.py` | command?, argv?, timeout_sec?, workdir?, label?, guard? | то же фоном: ответ — `job_id`, сразу |
+| `shell_exec` | shell_readonly | **да** | `tools/shell.py` | command?, argv?, timeout_sec?, workdir?, filter?, guard? | команда на роутере; safe-список и argv — по `shell_readonly`, произвольная строка (`sh -c`) — по `shell_full`; `filter` — отбор строк вместо пайпа |
+| `shell_exec_async` | shell_readonly | **да** | `tools/shell.py` | command?, argv?, timeout_sec?, workdir?, filter?, label?, guard? | то же фоном: ответ — `job_id`, сразу |
 | `shell_job_status` | shell_readonly | нет | `tools/shell.py` | job_id? | состояние фоновой команды; без `job_id` — список всех |
 | `shell_job_output` | shell_readonly | нет | `tools/shell.py` | job_id, offset? | вывод фоновой команды инкрементально: `offset` → `next_offset` |
 | `shell_job_stop` | shell_readonly | **да** | `tools/shell.py` | job_id | прибить фоновую команду; собранный вывод остаётся читаемым |
@@ -1397,19 +1397,49 @@ argv-режимом. Задание требовало «только argv-ре�
 ### Safe-список — данные, а не цепочка `if`
 
 `SAFE_COMMANDS`: имя → `{letters, flags, value_flags, numeric, first,
-deny, args, require, forbid}`. `letters` — склеиваемые однобуквенные
+verbs, deny, args, require, forbid}`. `letters` — склеиваемые однобуквенные
 флаги (`iptables -nvL` разбирается на `-n`,`-v`,`-L`), `value_flags` —
 флаги со значением в обеих формах (`-n 1` и `-n1`), `first` —
 допустимый первый позиционный аргумент (`nft list`, `wg show`),
-`deny` — глаголы, превращающие читающую команду в меняющую
-(`ip … set`, `route del`), `require` — что обязано быть (`ping -c`,
-`iptables -L/-S`).
+`verbs` — БЕЛЫЙ список второго слова (`ip route show|get`, `tc qdisc
+show`), `deny` — глаголы, превращающие читающую команду в меняющую
+(`route del`), `require` — что обязано быть (`ping -c`,
+`iptables -L/-S`, `wget -O`), `forbid` — регэксп запретного
+позиционного аргумента.
 
-**Чего в списке нет и почему:** `find` (`-exec`, `-delete`), `awk`
-(`system()`, `print > file`), `sed` (`-i`, `w`), `env`, `nc`, `wget`,
-`sh`. У каждой из них одна пропущенная опция превращает «чтение» в
-root-доступ, а список расширяется **здесь, в скиле**, а не наспех в
-коде.
+**Грабли, на которых safe-список уже стоял:**
+
+- iproute2 и tc понимают **префиксы глаголов**: `ip r d default` —
+  это `ip route delete`, `ip link s eth0 …` — `set`, `tc qdisc a` —
+  `add`. Чёрный список `deny` их не ловит, поэтому у `ip`/`tc` —
+  `verbs` (`show`, `list`, `ls`, `lst`, `get`). У `ip` нет `-b`
+  (batch-файл) и `-n` (`-netns` съедает слово и сдвигает разбор);
+- `nft` склеивает argv в одну строку и разбирает её как скрипт:
+  `["nft", "list", "ruleset;flush", "ruleset"]` — две команды. В
+  аргументах `nft` запрещены пробелы, `;`, `#`, `{}`;
+- `date 0101000025` **ставит** время — позиционный аргумент только
+  `+формат`;
+- `wget`/`uclient-fetch` без `-O` пишут файл в рабочий каталог: нужен
+  `-O -`, `-O /dev/null` или `--spider` (тип значения `sink`); у `curl`
+  `-o` — тоже только `sink`, а `-w` без `@файла` и `%output{…}`
+  (curl 8.3+ пишет им в файл);
+- `find` — только тесты и печать: `-exec`, `-execdir`, `-ok`,
+  `-delete`, `-fprint*`, `-fls` не в белом списке.
+
+**Чего в списке нет и почему:** `awk` (`system()`, `print > file`),
+`sed` (`-i`, `w`), `env`, `nc`, `sh`. У каждой из них одна пропущенная
+опция превращает «чтение» в root-доступ, а список расширяется **здесь,
+в скиле**, а не наспех в коде.
+
+**Пайпа нет — есть `filter`.** `shell_exec(…, filter={include, exclude,
+ignore_case, count_only, head|tail})` отбирает строки вывода
+**подстрокой** в потоке чтения (`_LineFilter`), ДО обрезки по
+`output_kb`: `logread` на сотню килобайт считается целиком. Регэкспов
+от модели в фильтре нет намеренно — катастрофический backtracking в
+потоке чтения на роутере; регэксп есть у самих программ (`logread -e`,
+`grep -E`). В ответе `filter.lines_seen`/`lines_matched`. Путь к коду
+GUI модель узнаёт из `instructions` (`server.APP_DIR`), иначе ищет
+его в `/opt`.
 
 ### Три уровня защиты, и они разные
 

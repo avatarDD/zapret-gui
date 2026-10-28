@@ -299,6 +299,130 @@ class TestJournal(unittest.TestCase):
         self.assertTrue(entry["mutating"])
 
 
+class TestReadonlyDiagnostics(unittest.TestCase):
+    """Сетевая диагностика под ``shell_readonly`` — и её границы.
+
+    Расширение safe-списка ради ``ip route get … mark``, ``tc``,
+    ``find`` и пробного ``wget`` не должно открыть запись: у iproute2
+    и tc глаголы сокращаются (``ip r d`` = ``ip route delete``), nft
+    разбирает argv как скрипт, ``date ММДДччмм`` ставит время.
+    """
+
+    def safe(self, *argv):
+        return shell_exec.check_safe(list(argv))["safe"]
+
+    def test_route_lookup_with_mark_is_allowed(self):
+        self.assertTrue(self.safe("ip", "route", "get", "1.1.1.1", "from",
+                                  "192.168.1.10", "iif", "br-lan", "mark",
+                                  "0x40000000"))
+        self.assertTrue(self.safe("ip", "-j", "rule", "show"))
+        self.assertTrue(self.safe("ip", "-s", "link"))
+
+    def test_abbreviated_write_verbs_are_refused(self):
+        for argv in (("ip", "r", "d", "default"),
+                     ("ip", "route", "a", "10.0.0.0/8", "dev", "lo"),
+                     ("ip", "a", "a", "10.0.0.1/24", "dev", "br-lan"),
+                     ("ip", "link", "s", "eth0", "mtu", "100"),
+                     ("ip", "route", "prepend", "default", "dev", "lo"),
+                     ("ip", "-b", "route"),
+                     ("ip", "-n", "route", "a", "a", "1.2.3.4/32"),
+                     ("tc", "qdisc", "a", "dev", "eth0", "root", "netem"),
+                     ("tc", "-b", "qdisc")):
+            self.assertFalse(self.safe(*argv), argv)
+
+    def test_tc_reads(self):
+        self.assertTrue(self.safe("tc", "-s", "qdisc", "show", "dev",
+                                  "eth0"))
+        self.assertTrue(self.safe("tc", "filter", "show", "dev", "eth0",
+                                  "ingress"))
+        self.assertFalse(self.safe("tc", "exec", "bpf"))
+
+    def test_nft_script_injection_is_refused(self):
+        self.assertTrue(self.safe("nft", "-a", "list", "chain", "inet",
+                                  "fw4", "mangle_prerouting"))
+        self.assertFalse(self.safe("nft", "list", "ruleset;flush",
+                                   "ruleset"))
+        self.assertFalse(self.safe("nft", "list", "ruleset\nflush"))
+        self.assertFalse(self.safe("nft", "list", "table inet x"))
+
+    def test_date_cannot_set_the_clock(self):
+        self.assertTrue(self.safe("date", "+%s"))
+        self.assertFalse(self.safe("date", "0101000025"))
+
+    def test_find_is_read_only(self):
+        self.assertTrue(self.safe("find", "/opt", "-maxdepth", "3",
+                                  "-name", "*.py", "-type", "f"))
+        for flag in ("-exec", "-execdir", "-ok", "-delete", "-fprint",
+                     "-fls"):
+            self.assertFalse(self.safe("find", "/", flag, "x"), flag)
+
+    def test_fetch_only_to_nowhere(self):
+        self.assertTrue(self.safe("wget", "-q", "-O", "/dev/null", "-T",
+                                  "5", "https://example.com"))
+        self.assertTrue(self.safe("wget", "--spider", "http://x"))
+        self.assertTrue(self.safe("uclient-fetch", "-O-", "http://x"))
+        self.assertFalse(self.safe("wget", "http://x"))
+        self.assertFalse(self.safe("wget", "-O", "/etc/passwd",
+                                   "http://x"))
+        self.assertFalse(self.safe("wget", "-P", "/tmp", "http://x"))
+        self.assertTrue(self.safe("curl", "-s", "-o", "/dev/null", "-w",
+                                  "%{http_code} %{time_total}",
+                                  "https://example.com"))
+        self.assertFalse(self.safe("curl", "-o", "/tmp/x", "http://x"))
+        self.assertFalse(self.safe("curl", "--output=/tmp/x", "http://x"))
+        self.assertFalse(self.safe("curl", "-w", "%output{/tmp/x}",
+                                   "http://x"))
+
+
+class TestOutputFilter(unittest.TestCase):
+    """``filter`` — замена ``| grep | tail`` без оболочки."""
+
+    def setUp(self):
+        self.box = Sandbox(self, RO)
+        lines = []
+        for i in range(5000):
+            tag = "dnsmasq[1]: failed" if i % 10 == 0 else "kernel: ok"
+            lines.append("%05d %s" % (i, tag))
+        self.path = self.box.write("log.txt", "\n".join(lines) + "\n")
+
+    def run_filter(self, flt):
+        return self.box.data("shell_exec", {"argv": ["cat", self.path],
+                                            "filter": flt})
+
+    def test_filter_sees_the_whole_output_not_the_truncated_tail(self):
+        result = self.run_filter({"include": ["dnsmasq"],
+                                  "count_only": True})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["filter"]["lines_seen"], 5000)
+        self.assertEqual(result["filter"]["lines_matched"], 500)
+        self.assertEqual(result["output"], "")
+
+    def test_tail_head_and_exclude(self):
+        tail = self.run_filter({"include": ["DNSMASQ"], "ignore_case": True,
+                                "tail": 2})
+        self.assertEqual(tail["output"].splitlines(),
+                         ["04980 dnsmasq[1]: failed",
+                          "04990 dnsmasq[1]: failed"])
+        head = self.run_filter({"exclude": ["dnsmasq"], "head": 1})
+        self.assertEqual(head["output"], "00001 kernel: ok\n")
+
+    def test_bad_filter_is_refused(self):
+        result = self.box.data("shell_exec", {"argv": ["cat", self.path],
+                                              "filter": {"head": 1,
+                                                         "tail": 1}})
+        self.assertFalse(result["ok"])
+
+    def test_async_job_is_filtered_too(self):
+        start = self.box.data("shell_exec_async",
+                              {"argv": ["cat", self.path],
+                               "filter": {"include": ["failed"],
+                                          "tail": 1}})
+        job = _wait_done(self, start["job_id"])
+        self.assertEqual(job["filter"]["lines_matched"], 500)
+        out = shell_exec.job_output(start["job_id"])
+        self.assertEqual(out["output"], "04990 dnsmasq[1]: failed\n")
+
+
 def _sleep(seconds):
     import time
     time.sleep(seconds)
