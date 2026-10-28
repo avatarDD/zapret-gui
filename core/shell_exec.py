@@ -440,13 +440,16 @@ def _as_text(command) -> str:
 # ──────────────────────────── safe-список ───────────────────────────
 
 def _cmd(letters="", flags=(), value_flags=None, numeric=False, first=None,
-         deny=(), args=0, require=(), forbid="", verbs=None):
+         deny=(), args=0, require=(), forbid="", verbs=None, hints=None):
     """Описание разрешённой команды (данные, а не код).
 
     ``verbs`` — белый список ВТОРОГО слова (``ip route show``). Он
     нужен там, где программа понимает сокращения: iproute2 и tc читают
     ``a`` как ``add``, ``d`` как ``delete``, ``s`` как ``set``, и
     чёрный список глаголов (``deny``) такие формы пропускает.
+
+    ``hints`` — флаг → подсказка вместо общего «нужно shell_full»,
+    когда у флага есть читающая замена (``logread -n`` → ``-l N``).
     """
     return {
         "letters": set(letters),
@@ -459,6 +462,7 @@ def _cmd(letters="", flags=(), value_flags=None, numeric=False, first=None,
         "require": set(require),
         "forbid": re.compile(forbid) if forbid else None,
         "verbs": set(verbs) if verbs else None,
+        "hints": dict(hints or {}),
     }
 
 
@@ -497,7 +501,11 @@ SAFE_COMMANDS = {
     "mount": _cmd(letters="l"),
     "lsmod": _cmd(),
     "dmesg": _cmd(flags=("-T", "-x", "-k", "-u")),
-    "logread": _cmd(value_flags={"-l": "int", "-e": "word"}),
+    # `-e` — регэксп по тексту сообщения, пробелы в нём законны
+    # (`-e "Oct 28 19:2"`): argv идёт без оболочки.
+    "logread": _cmd(value_flags={"-l": "int", "-e": "text"},
+                    hints={"-n": "у logread хвост задаётся -l N; отбор "
+                                 "строк — -e или аргумент filter"}),
     "sysctl": _cmd(letters="an", args=4, forbid=r"="),
     # ── файлы ──
     "ls": _cmd(letters="laAhtrS1dRinFC", args=8),
@@ -516,7 +524,7 @@ SAFE_COMMANDS = {
                                               "--max-depth": "int"}, args=4),
     "grep": _cmd(letters="inrRvcloEFqswxahHz",
                  value_flags={"-m": "int", "-A": "int", "-B": "int",
-                              "-C": "int", "-e": "word",
+                              "-C": "int", "-e": "text",
                               "--include": "word", "--exclude": "word"},
                  args=10),
     # Только тесты и печать: `-exec`/`-execdir`/`-ok`/`-delete`/
@@ -681,10 +689,11 @@ def check_safe(argv) -> dict:
         if len(token) > 1 and token.startswith("-"):
             verdict, need_value, marks = _check_flag(spec, token)
             if not verdict:
+                hint = spec["hints"].get(token.partition("=")[0])
                 return {"safe": False, "command": name,
-                        "reason": "флаг %s у «%s» не разрешён "
-                                  "(нужно разрешение shell_full)"
-                                  % (token, name)}
+                        "reason": "флаг %s у «%s» не разрешён (%s)"
+                                  % (token, name,
+                                     hint or "нужно разрешение shell_full")}
             seen.update(marks)
             if need_value:
                 if index >= len(rest):
@@ -762,6 +771,8 @@ def _check_flag(spec, token):
 def _check_value(kind, value) -> bool:
     if kind == "int":
         return bool(value) and str(value).isdigit()
+    if kind == "text":
+        return bool(value) and "\n" not in str(value)
     if kind == "sink":
         return str(value) in _SINKS
     if kind == "writeout":
@@ -807,8 +818,10 @@ def plan_command(command="", argv=None, full=False) -> tuple:
             return None, _refusal(
                 "в команде есть метасимволы оболочки (пайп, редирект, "
                 "подстановка) — под shell_readonly они не выполняются",
-                "уберите их или включите разрешение shell_full; для "
-                "одиночной команды передайте argv=[\"ls\", \"-la\"]")
+                "вместо «| grep … | tail» передайте shell_exec аргумент "
+                "filter={\"include\": [\"…\"], \"tail\": 50} (или "
+                "count_only=true вместо grep -c); для одиночной команды "
+                "— argv=[\"ls\", \"-la\"]. Остальное — shell_full")
         return {"mode": "shell", "argv": ["sh", "-c", text],
                 "display": text, "safe": False,
                 "normalized": normalize_text(text)}, None
