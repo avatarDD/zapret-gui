@@ -345,6 +345,24 @@ class TestReadonlyDiagnostics(unittest.TestCase):
         self.assertFalse(self.safe("nft", "list", "ruleset\nflush"))
         self.assertFalse(self.safe("nft", "list", "table inet x"))
 
+    def test_log_patterns_may_contain_spaces(self):
+        self.assertTrue(self.safe("logread", "-l", "50", "-e",
+                                  "Oct 28 19:2"))
+        self.assertTrue(self.safe("grep", "-e", "no usable address",
+                                  "/tmp/x"))
+        self.assertFalse(self.safe("logread", "-e", "a\nb"))
+
+    def test_logread_n_points_to_the_readonly_form(self):
+        verdict = shell_exec.check_safe(["logread", "-n", "50"])
+        self.assertFalse(verdict["safe"])
+        self.assertIn("-l N", verdict["reason"])
+        self.assertNotIn("shell_full", verdict["reason"])
+
+    def test_pipe_refusal_points_to_filter(self):
+        result = shell_exec.run_command("logread | tail -n 20")
+        self.assertFalse(result["ok"])
+        self.assertIn("filter", result["hint"])
+
     def test_date_cannot_set_the_clock(self):
         self.assertTrue(self.safe("date", "+%s"))
         self.assertFalse(self.safe("date", "0101000025"))
