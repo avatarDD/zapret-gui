@@ -1,0 +1,28 @@
+name: Cleanup Actions storage
+
+on:
+  push:
+    branches: [claude/project-thread-vtcybx]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete artifacts and caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ids=$(gh api --paginate "repos/$REPO/actions/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .id')
+          n=0
+          for id in $ids; do gh api -X DELETE "repos/$REPO/actions/artifacts/$id" && n=$((n+1)); done
+          echo "Deleted $n artifacts"
+          cids=$(gh api --paginate "repos/$REPO/actions/caches?per_page=100" --jq '.actions_caches[].id')
+          m=0
+          for id in $cids; do gh api -X DELETE "repos/$REPO/actions/caches/$id" && m=$((m+1)); done
+          echo "Deleted $m caches"
