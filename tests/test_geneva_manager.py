@@ -86,6 +86,9 @@ class TestValidation(unittest.TestCase):
         self.assertEqual(clean["proto"], "tcp,udp")
         self.assertIs(clean["autostart"], True)
         self.assertEqual(clean["log_level"], "debug")
+        # Путь к программе, запускаемой от root, по HTTP не меняется.
+        self.assertNotIn("binary", gm.validate_settings(
+            {"binary": "/tmp/evil"}))
         for bad in ({"proto": "icmp"}, {"firewall": "pf"},
                     {"iface": "eth0; rm -rf /"}, {"log_level": "loud"}):
             with self.assertRaises(ValueError, msg=bad):

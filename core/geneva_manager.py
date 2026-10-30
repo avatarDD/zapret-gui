@@ -301,11 +301,8 @@ def validate_settings(data: dict) -> dict:
         clean["first"] = _as_int(data["first"], "Первые N пакетов", 0, 1000)
     if "autostart" in data:
         clean["autostart"] = _as_bool(data["autostart"], "autostart")
-    if "binary" in data:
-        binary = str(data["binary"] or "").strip()
-        if binary and not binary.startswith("/"):
-            raise ValueError("Путь к бинарнику — абсолютный")
-        clean["binary"] = binary
+    # ``binary`` сюда намеренно не входит: путь к программе, которую GUI
+    # запускает от root, не меняется по HTTP — только в settings.json.
     return clean
 
 
@@ -1338,6 +1335,9 @@ class GenevaManager:
             binary, err = self._ready_binary()
             if not binary:
                 return {"ok": False, "error": err}
+            if params["probe"] == "https" and not shutil.which("curl"):
+                return {"ok": False, "error": "для пробы https нужен curl "
+                        "(opkg install curl) — или выберите tls"}
             p = paths()
             try:
                 _write_atomic(p["candidates"], "\n".join(items) + "\n")

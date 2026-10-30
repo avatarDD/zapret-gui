@@ -128,8 +128,9 @@ def geneva_status(args: dict) -> dict:
         "properties": {
             "country": {"type": "string", "maxLength": 32,
                         "description": "china, india, kazakhstan, iran…"},
-            "test": {"type": "string", "maxLength": 16,
-                     "description": "http, https, dns, smtp, ftp…"},
+            "test": {"type": "string", "maxLength": 64,
+                     "description": ("http, https, dns_tcp, "
+                                     "kazakhstan_injected_https…")},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100,
                       "default": 30},
         },
@@ -231,6 +232,9 @@ def geneva_search_status(args: dict) -> dict:
         out["hint"] = "сайт открывается без обхода — подбирать нечего"
     elif out.get("can_resume"):
         out["hint"] = "поиск прерван — geneva_search_start(resume=true)"
+    elif out.get("can_extend") and not out.get("results"):
+        out["hint"] = ("рабочих не нашлось — продлить: geneva_search_start("
+                       "resume=true, more_generations=N)")
     elif out.get("status") == "done" and out.get("results"):
         out["hint"] = ("рабочие — с avg_fitness > 0; сделать рабочей — "
                        "geneva_set_strategy(strategy=…)")

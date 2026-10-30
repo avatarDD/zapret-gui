@@ -408,8 +408,9 @@ const GenevaPage = (() => {
                     throw e;
                 }
             }
-            if (res.warning) Toast.warning ? Toast.warning(res.warning) : Toast.error(res.warning);
-            else Toast.success(`Обход идёт через ${name}`);
+            if (res.warning) Toast.warning(res.warning);
+            else if (res.started) Toast.success(`Обход идёт через ${name}`);
+            else Toast.info(`${name} выбран движком, но не запущен — запустите его, когда будет стратегия`);
         } catch (e) {
             Toast.error(errText(e));
         }
