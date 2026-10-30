@@ -34,7 +34,7 @@ const Blockcheck2Page = (() => {
 
     function render(container) {
         // Заголовок и вкладки рисует StrategyScanHubPage: эта страница —
-        // вкладка «Официальный (blockcheck2.sh)».
+        // вкладка «nfqws2: blockcheck2.sh».
         container.innerHTML = `
             <!-- Статус скрипта -->
             <div class="card" id="bc2-script-card">

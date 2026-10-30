@@ -267,6 +267,39 @@ class TestPauseForSearch(_Case):
         self.assertFalse(self.nf.running)
 
 
+class TestSharedLock(unittest.TestCase):
+    """Один замок с GenevaManager: иначе switch и start_search
+    брали два замка в разном порядке и вставали навсегда."""
+
+    def test_uses_manager_lock(self):
+        import threading
+        from core.geneva_manager import GenevaManager
+        mgr = GenevaManager()
+        with mock.patch("core.geneva_manager.get_geneva_manager",
+                        return_value=mgr):
+            self.assertIs(be._engine_lock(), mgr._lock)
+            # Поток держит замок менеджера (как start_search) — другой
+            # поток не войдёт в участок bypass_engine, пока тот не отпустит.
+            entered = threading.Event()
+            with mgr._lock:
+                t = threading.Thread(target=lambda: (
+                    be._engine_lock().acquire(), entered.set(),
+                    be._engine_lock().release()))
+                t.start()
+                self.assertFalse(entered.wait(0.2))
+                # А тот же поток входит повторно (RLock): pause_for_search
+                # из-под замка менеджера не виснет.
+                with be._engine_lock():
+                    pass
+            self.assertTrue(entered.wait(2))
+            t.join(2)
+
+    def test_fallback_without_manager_lock(self):
+        with mock.patch("core.geneva_manager.get_geneva_manager",
+                        return_value=object()):
+            self.assertIs(be._engine_lock(), be._fallback_lock)
+
+
 class TestNfqwsGuards(_Case):
 
     def test_refusal(self):

@@ -42,16 +42,16 @@ const Sidebar = (() => {
             ]
         },
         {
-            // Здесь только подбор стратегий; «что и как заблокировано» —
-            // в группе «Диагностика» (раздел «Диагностика блокировок»).
+            // По задачам, а не по движкам: у nfqws2 и geneva_c одни и те же
+            // задачи, движок — вкладка внутри (components/engine_tabs.js).
+            // «Что и как заблокировано» — в группе «Диагностика».
             label: 'Обход DPI',
             items: [
+                { simple: true, id: 'bypass', label: 'Движок обхода', icon: 'settings' },
                 { simple: true, id: 'control', label: 'Управление', icon: 'play' },
                 { simple: true, id: 'strategies', label: 'Стратегии',  icon: 'strategy' },
-                // Вкладки: официальный blockcheck2.sh + перебор по нашему каталогу.
+                // Вкладки: blockcheck2.sh, несколько доменов, каталог, geneva_c.
                 { simple: true, id: 'scan', label: 'Подбор стратегий', icon: 'scan' },
-                // Выбор движка (nfqws2 или geneva_c), телеметрия и подбор geneva.
-                { simple: true, id: 'geneva', label: 'Движок обхода (geneva)', icon: 'strategy' },
             ]
         },
         {

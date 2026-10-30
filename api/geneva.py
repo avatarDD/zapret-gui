@@ -56,9 +56,13 @@ def register(app):
     @app.route("/api/geneva/status", method="GET")
     def geneva_status():
         from core.bypass_engine import get_active
+        from core.update_checker import geneva_release_info
         mgr = _mgr()
+        det = mgr.detect()
+        # Что поставит «Установить/Обновить»: закреплённый релиз.
+        det["release"] = geneva_release_info(det.get("version", ""))
         return {"ok": True, "active_engine": get_active(),
-                "detect": mgr.detect(), "engine": mgr.status(),
+                "detect": det, "engine": mgr.status(),
                 "search": mgr.search_status()}
 
     @app.route("/api/geneva/install", method="POST")
@@ -70,7 +74,11 @@ def register(app):
             cfg = get_config_manager()
             cfg.set("geneva", "installed_tag", res.get("tag", ""))
             cfg.save()
-            res["detect"] = _mgr().detect()
+            mgr = _mgr()
+            res["detect"] = mgr.detect()
+            # Работающий процесс — ещё старый бинарник (файл заменён
+            # через rename): новая версия заработает после перезапуска.
+            res["restart_needed"] = mgr.is_running()
         return _reply(res, 502)
 
     @app.route("/api/geneva/config", method="GET")

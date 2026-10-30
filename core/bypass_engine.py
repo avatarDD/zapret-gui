@@ -36,7 +36,23 @@ from core.log_buffer import log
 ENGINES = ("nfqws2", "geneva")
 ENGINE_NAMES = {"nfqws2": "nfqws2 (zapret2)", "geneva": "geneva_c (Geneva)"}
 
-_lock = threading.RLock()
+_fallback_lock = threading.RLock()
+
+
+def _engine_lock():
+    """Общий мьютекс с :class:`GenevaManager`.
+
+    Свой замок здесь давал взаимную блокировку: ``switch`` брал его и шёл
+    в ``gm.start()`` (замок менеджера), а ``start_search`` под замком
+    менеджера звал ``pause_for_search`` (этот замок). Один RLock на оба
+    модуля — порядок захвата больше не важен.
+    """
+    try:
+        from core.geneva_manager import get_geneva_manager
+        lock = getattr(get_geneva_manager(), "_lock", None)
+    except Exception:                           # noqa: BLE001 — граница
+        lock = None
+    return lock if lock is not None else _fallback_lock
 
 
 def _cfg():
@@ -216,7 +232,7 @@ def switch(target: str, start: bool = True) -> dict:
         target = "geneva"
     if target not in ENGINES:
         return {"ok": False, "error": "движок: nfqws2 или geneva"}
-    with _lock:
+    with _engine_lock():
         current = get_active()
         busy = _nfqws_busy()
         if busy:
@@ -335,7 +351,7 @@ def pause_for_search() -> str:
     либо ``"busy"`` — nfqws2 держит другая операция (сканер, blockcheck),
     и трогать его нельзя.
     """
-    with _lock:
+    with _engine_lock():
         from core.geneva_manager import get_geneva_manager
         gm = get_geneva_manager()
         if gm.is_running():
@@ -362,7 +378,7 @@ def resume_after_search(engine: str) -> None:
     Только если этот движок по-прежнему активный: переключили движок во
     время подбора — поднимать прежний значило бы запустить оба.
     """
-    with _lock:
+    with _engine_lock():
         if engine not in ENGINES or get_active() != engine:
             return
         if engine == "geneva":
@@ -401,7 +417,7 @@ def hold_geneva_for(owner: str) -> str:
 
 def release_geneva_hold(owner: str) -> None:
     """Вернуть geneva после :func:`hold_geneva_for` — если он ещё выбран."""
-    with _lock:
+    with _engine_lock():
         if not is_geneva_active():
             return
         from core.geneva_manager import get_geneva_manager

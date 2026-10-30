@@ -1117,8 +1117,10 @@ class GenevaManager:
             return {"ok": True, "running": False, "forced": not clean}
 
     def restart(self) -> dict:
-        self.stop()
-        return self.start()
+        # Под замком: иначе между stop и start успеет чужой start/switch.
+        with self._lock:
+            self.stop()
+            return self.start()
 
     def control(self, cmd: str, **params) -> dict:
         """Команда в управляющий сокет живого движка."""
@@ -1401,8 +1403,15 @@ class GenevaManager:
             # не должен принять его за прерывание.
             st["stop_requested"] = True
             self._job_state = st
-            clean = _terminate(pid, sub, wait=30.0)
-            self._finish_job(None if clean else -9)
+            self._save_search_state(st)
+        # Ждём выхода (до 30 с) без замка: иначе опрос статуса страницы
+        # и MCP висит дольше своего таймаута.
+        clean = _terminate(pid, sub, wait=30.0)
+        with self._lock:
+            # Монитор мог уже дописать итог (или запустили новую задачу):
+            # повторный _finish_job превратил бы «остановлен» в «готово».
+            if self._job_state is st and st.get("status") == "running":
+                self._finish_job(None if clean else -9)
             return {"ok": True, "forced": not clean,
                     "can_resume": self.can_resume()}
 

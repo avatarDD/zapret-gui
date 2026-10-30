@@ -11,7 +11,9 @@ description: >-
   --resume, база оценок db.jsonl, пробы tls/http/https, пауза обхода на
   время подбора, продолжение с прерванного места), проверке стратегий `eval`,
   библиотеке Geneva (`library --json`), языке стратегий Geneva, телеметрии
-  на странице «Движок обхода» (web/js/pages/geneva.js), установке бинарника
+  в разделе «Обход DPI» (web/js/pages/geneva.js, вкладки движков в
+  web/js/components/engine_tabs.js), строке geneva на странице «Обновления»,
+  установке бинарника
   из релиза с sha256 (BINARIES["geneva"]), MCP-инструментах geneva_* и
   bypass_engine_*, а также диагностике «geneva запущен, а обхода нет /
   правила пропали / подбор не стартует / exit 4, 5, 7». Источник истины —
@@ -39,7 +41,9 @@ geneva_c**, и в каждый момент работает ровно один
    - `core/bypass_engine.py`: выбор движка и снимки;
    - `api/geneva.py`: REST;
    - `core/mcp/tools/geneva.py`: MCP;
-   - `web/js/pages/geneva.js`: страница;
+   - `web/js/pages/geneva.js`: части интерфейса geneva (`sections`);
+   - `web/js/components/engine_tabs.js`: раздел «Обход DPI» по задачам;
+   - `core/update_checker.py`: `_check_geneva`, `geneva_release_info`;
    - `core/ext_binary_installer.py`: `BINARIES["geneva"]`;
    - `core/config_manager.py`: секции `bypass` и `geneva`;
    - `core/nfqws_control.py`: `_engine_refusal`;
@@ -213,7 +217,25 @@ action   := name["{" params "}"]["(" left "," right ")"]
 он в каталоге конфига вместе с найденными стратегиями, а на странице
 «Подбор стратегий» появляется кнопка «Продолжить прерванный подбор».
 
-## 6. Телеметрия (status / страница «Движок обхода»)
+## 6. Интерфейс и телеметрия
+
+Раздел «Обход DPI» устроен по задачам, движок — вкладка внутри задачи
+(`engine_tabs.js`; без `?engine=` открывается активный движок).
+`GenevaPage.render(container, {sections})` рисует нужные части:
+
+| Пункт меню | Хеш | Части geneva |
+|---|---|---|
+| Движок обхода | `#bypass` (старый `#geneva` — алиас) | `engines` |
+| Управление → geneva_c | `#control?engine=geneva` | `engine`, `settings` |
+| Стратегии → geneva_c | `#strategies?engine=geneva` | `library` (своё поле сайта для eval и итог проверки) |
+| Подбор стратегий → geneva_c | `#scan?tab=geneva` | `search` |
+
+«Обновления»: строка `geneva`. «Последняя» — закреплённый релиз
+(`latest_source: pinned`, апстримный тег рядом). Сборка не из релиза
+(версия — хэш коммита) обновлением не считается. Кнопка ведёт в
+`#control?engine=geneva`, там же «Обновить до …»
+(`detect.release.has_update` в `/api/geneva/status`).
+
 
 `GET /api/geneva/status` одним ответом отдаёт `detect`, `engine` и
 `search`. Страница опрашивает его и `/api/bypass/engine` раз в 3 с.

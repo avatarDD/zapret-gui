@@ -81,15 +81,34 @@ const GenevaPage = (() => {
 
     /* ───────── разметка ───────── */
 
-    async function render(container) {
+    // Части страницы. Раздел «Обход DPI» собирает их по задачам:
+    // «Движок обхода» — engines, «Управление» → geneva_c — engine и
+    // settings, «Стратегии» → geneva_c — library, «Подбор стратегий» →
+    // geneva_c — search (web/js/components/engine_tabs.js).
+    const ALL_SECTIONS = ['engines', 'engine', 'search', 'library', 'settings'];
+    let _sections = new Set(ALL_SECTIONS);
+    let _renderToken = 0;
+
+    async function render(container, opts) {
+        opts = opts || {};
+        const token = ++_renderToken;
+        _stopPoll();
+        if (_visibilityHandler) {
+            document.removeEventListener('visibilitychange', _visibilityHandler);
+            _visibilityHandler = null;
+        }
         _formFilled = false;
         _settingsFilled = false;
-        container.innerHTML = `
+        _sections = new Set(opts.sections || ALL_SECTIONS);
+        const S = id => _sections.has(id);
+        const header = opts.header === false ? '' : `
             <div class="page-header">
-                <h1>Движок обхода</h1>
-                <span class="page-subtitle">Чем обходить блокировки на роутере: nfqws2 или geneva_c</span>
-            </div>
-
+                <h1>${esc(opts.title || 'Движок обхода')}</h1>
+                <span class="page-subtitle">${esc(opts.subtitle || 'Чем обходить блокировки на роутере: nfqws2 или geneva_c')}</span>
+            </div>`;
+        container.innerHTML = `
+            ${header}
+            ${S('engines') ? `
             <div class="card-grid">
                 <div class="card">
                     <div class="card-title">Чем обходить блокировки</div>
@@ -101,10 +120,16 @@ const GenevaPage = (() => {
                             стратегия и прогресс подбора сохраняются — вернуться
                             можно в любой момент.
                         </div>
+                        <div class="gv-next">
+                            Дальше — по задаче, у каждой вкладки nfqws2 и geneva_c:
+                            <a href="#control">Управление</a> ·
+                            <a href="#strategies">Стратегии</a> ·
+                            <a href="#scan">Подбор стратегий</a>
+                        </div>
                     </div>
                 </div>
-            </div>
-
+            </div>` : ''}
+            ${S('engine') ? `
             <div class="card-grid">
                 <div class="card">
                     <div class="card-title">Движок geneva_c</div>
@@ -129,11 +154,11 @@ const GenevaPage = (() => {
                         <div id="gv-log-box"></div>
                     </div>
                 </div>
-            </div>
-
+            </div>` : ''}
+            ${S('search') ? `
             <div class="card-grid">
                 <div class="card">
-                    <div class="card-title">Подбор стратегии</div>
+                    <div class="card-title">Подбор стратегии geneva_c</div>
                     <div class="card-body">
                         <div class="form-hint" style="margin-bottom:10px;">
                             Генетический алгоритм Geneva сам составляет стратегии,
@@ -191,8 +216,8 @@ const GenevaPage = (() => {
                         <div id="gv-search"></div>
                     </div>
                 </div>
-            </div>
-
+            </div>` : ''}
+            ${S('library') ? `
             <div class="card-grid">
                 <div class="card">
                     <div class="card-title">Библиотека Geneva</div>
@@ -200,10 +225,11 @@ const GenevaPage = (() => {
                         <div class="form-hint" style="margin-bottom:8px;">
                             Стратегии из исследований Geneva с долей успеха в той
                             стране, где их нашли. В вашей сети их стоит проверить:
-                            выберите несколько и нажмите «Проверить на моей сети»
-                            (сайт — из формы подбора).
+                            укажите заблокированный сайт, отметьте несколько и
+                            нажмите «Проверить на моей сети».
                         </div>
                         <div class="gv-row" style="margin-bottom:8px;">
+                            <input id="gv-lib-host" class="form-control" style="max-width:220px;" placeholder="заблокированный сайт">
                             <select id="gv-lib-country" class="form-control" style="max-width:200px;">
                                 <option value="">Все страны</option>
                             </select>
@@ -213,10 +239,11 @@ const GenevaPage = (() => {
                             <button class="btn btn-ghost" id="gv-btn-eval">Проверить выбранные на моей сети</button>
                         </div>
                         <div id="gv-library">Загрузка...</div>
+                        ${S('search') ? '' : '<div id="gv-search"></div>'}
                     </div>
                 </div>
-            </div>
-
+            </div>` : ''}
+            ${S('settings') ? `
             <div class="card-grid expert-only">
                 <div class="card">
                     <div class="card-title">Настройки движка geneva</div>
@@ -268,7 +295,7 @@ const GenevaPage = (() => {
                     </div>
                 </div>
             </div>
-            ${typeof Expert !== 'undefined' ? Expert.noteHtml('Настройки движка geneva (порты, интерфейс, firewall) скрыты') : ''}
+            ${typeof Expert !== 'undefined' ? Expert.noteHtml('Настройки движка geneva (порты, интерфейс, firewall) скрыты') : ''}` : ''}
         `;
 
         const on = (id, fn) => {
@@ -287,9 +314,13 @@ const GenevaPage = (() => {
         on('gv-btn-forget', _forgetSearch);
         on('gv-btn-eval', _evalSelected);
         on('gv-btn-settings', _saveSettings);
-        document.getElementById('gv-size').addEventListener('change', _toggleCustomSize);
-        document.getElementById('gv-lib-country').addEventListener('change', _renderLibrary);
-        document.getElementById('gv-lib-test').addEventListener('change', _renderLibrary);
+        const onChange = (id, fn) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', fn);
+        };
+        onChange('gv-size', _toggleCustomSize);
+        onChange('gv-lib-country', _renderLibrary);
+        onChange('gv-lib-test', _renderLibrary);
         container.addEventListener('click', _delegatedClick);
 
         _visibilityHandler = () => {
@@ -298,11 +329,16 @@ const GenevaPage = (() => {
         };
         document.addEventListener('visibilitychange', _visibilityHandler);
 
-        await Promise.all([_refresh(), _loadConfig(), _loadLibrary()]);
+        await Promise.all([_refresh(), _loadConfig(),
+                           S('library') ? _loadLibrary() : null]);
+        // Пока ждали ответы, со страницы ушли (destroy) или её
+        // перерисовали: опрос от старого рендера тёк бы вечно.
+        if (token !== _renderToken) return;
         _startPoll();
     }
 
     function destroy() {
+        _renderToken++;
         _stopPoll();
         if (_visibilityHandler) {
             document.removeEventListener('visibilitychange', _visibilityHandler);
@@ -326,7 +362,7 @@ const GenevaPage = (() => {
         try {
             const [st, engines] = await Promise.all([
                 API.get('/api/geneva/status'),
-                API.get('/api/bypass/engine'),
+                _sections.has('engines') ? API.get('/api/bypass/engine') : null,
             ]);
             _last = st;
             _renderEngines(engines);
@@ -365,7 +401,7 @@ const GenevaPage = (() => {
         if (nf.scan_resume && nf.scan_resume.next_index) {
             const r = nf.scan_resume;
             nfLines.push(`<div class="text-muted">Прерванный подбор: ${esc(r.target)}, с ${r.next_index + 1}-й,
-                найдено ${r.working_count} — <a href="#scan">продолжить</a></div>`);
+                найдено ${r.working_count} — <a href="#scan?tab=catalog">продолжить</a></div>`);
         }
         const s = ge.search || {};
         const geLines = [
@@ -374,9 +410,9 @@ const GenevaPage = (() => {
             `<div class="text-muted">Автозапуск: ${ge.autostart ? 'да' : 'нет'}</div>`,
         ];
         if (s.running) {
-            geLines.push(`<div class="text-muted">Идёт подбор: ${s.kind === 'evolve' ? `поколение ${s.generation} из ${s.generations}` : 'проверка стратегий'}</div>`);
+            geLines.push(`<div class="text-muted">Идёт подбор: ${s.kind === 'evolve' ? `поколение ${s.generation} из ${s.generations}` : 'проверка стратегий'} — <a href="#scan?tab=geneva">открыть</a></div>`);
         } else if (s.can_resume) {
-            geLines.push(`<div class="text-muted">Подбор для ${esc(s.target)} прерван — можно продолжить ниже</div>`);
+            geLines.push(`<div class="text-muted">Подбор для ${esc(s.target)} прерван — <a href="#scan?tab=geneva">продолжить</a></div>`);
         }
         box.innerHTML = tile('nfqws2', 'nfqws2', o.active === 'nfqws2', nf.running, nfLines)
                       + tile('geneva', 'geneva_c', o.active === 'geneva', ge.running, geLines);
@@ -432,9 +468,14 @@ const GenevaPage = (() => {
                 </div>`;
             return;
         }
-        el.innerHTML = `<div class="text-muted" style="font-size:12px;margin-bottom:6px;">
-            geneva ${esc(d.version)} · ${esc(d.arch)} · ${esc(d.binary)}
-            ${d.hint ? `<div class="text-error">${esc(d.hint)}</div>` : ''}</div>`;
+        const rel = d.release || {};
+        const update = rel.has_update
+            ? `<button class="btn btn-primary btn-sm" data-action="install">Обновить до ${esc(rel.latest)}</button>`
+            : '';
+        el.innerHTML = `<div class="text-muted gv-row" style="font-size:12px;margin-bottom:6px;">
+            <span>geneva ${esc(d.version)} · ${esc(d.arch)} · ${esc(d.binary)}</span>
+            ${update}</div>
+            ${d.hint ? `<div class="text-error" style="font-size:12px;">${esc(d.hint)}</div>` : ''}`;
     }
 
     function _renderEngine(e, active, d) {
@@ -461,7 +502,7 @@ const GenevaPage = (() => {
                 <span class="text-muted">порты ${esc(e.ports)} / ${esc(e.proto)}</span>
             </div>
             ${active !== 'geneva' ? `<div class="form-hint">Сейчас обход идёт через nfqws2. Чтобы запустить geneva,
-                выберите его в плитке выше — nfqws2 остановится.</div>` : ''}
+                выберите его в разделе <a href="#bypass">«Движок обхода»</a> — nfqws2 остановится.</div>` : ''}
             ${verdict ? `<div class="gv-verdict"><span class="status-dot ${verdict[0]}"></span>${esc(verdict[1])}</div>` : ''}
             ${e.running && st.pkts_out !== undefined ? `
             <div class="gv-stats">
@@ -491,7 +532,7 @@ const GenevaPage = (() => {
         const pauseBtn = document.getElementById('gv-btn-pause');
         if (startBtn) {
             startBtn.disabled = !!e.running || !d.installed || active !== 'geneva';
-            startBtn.title = active !== 'geneva' ? 'Сначала выберите geneva_c движком обхода (плитка выше)' : '';
+            startBtn.title = active !== 'geneva' ? 'Сначала выберите geneva_c в разделе «Движок обхода»' : '';
         }
         if (stopBtn) stopBtn.disabled = !e.running;
         if (pauseBtn) {
@@ -503,8 +544,10 @@ const GenevaPage = (() => {
     async function _engineAction(action) {
         try {
             const res = await API.post('/api/geneva/' + action, {}, { timeout: 30000 });
-            Toast.success(action === 'start' ? (res.ready ? 'geneva запущен' : 'geneva запущен, правила ставятся')
-                                             : 'geneva остановлен');
+            const started = res.ready ? 'запущен' : 'запущен, правила ставятся';
+            Toast.success(action === 'start' ? 'geneva ' + started
+                        : action === 'restart' ? 'geneva перезапущен' + (res.ready ? '' : ', правила ставятся')
+                        : 'geneva остановлен');
         } catch (e) {
             Toast.error(errText(e));
         }
@@ -557,6 +600,12 @@ const GenevaPage = (() => {
         try {
             const res = await API.post('/api/geneva/install', {}, { timeout: 180000 });
             Toast.success('geneva установлен: ' + (res.version || res.tag || ''));
+            if (res.restart_needed) {
+                const ok = await Confirm.show('Перезапустить geneva?',
+                    'Движок работает на прежней версии — новая заработает после перезапуска.',
+                    { confirmLabel: 'Перезапустить' });
+                if (ok) await _engineAction('restart');
+            }
         } catch (e) {
             Toast.error(errText(e));
         }
@@ -569,21 +618,25 @@ const GenevaPage = (() => {
     const SIZES = { quick: [20, 8], normal: [30, 15], deep: [60, 30] };
 
     function _toggleCustomSize() {
-        const v = document.getElementById('gv-size').value;
+        const sel = document.getElementById('gv-size');
+        if (!sel) return;
+        const v = sel.value;
         document.querySelectorAll('.gv-custom-size').forEach(el => el.classList.toggle('hidden', v !== 'custom'));
     }
 
     function _searchParams() {
-        const size = document.getElementById('gv-size').value;
+        const val = (id, dflt) => { const el = document.getElementById(id); return el ? el.value : dflt; };
+        const size = val('gv-size', 'normal');
         let [population, generations] = SIZES[size] || [
-            parseInt(document.getElementById('gv-population').value, 10) || 30,
-            parseInt(document.getElementById('gv-generations').value, 10) || 15];
+            parseInt(val('gv-population'), 10) || 30,
+            parseInt(val('gv-generations'), 10) || 15];
+        const pause = document.getElementById('gv-pause');
         return {
-            host: (document.getElementById('gv-host').value || '').trim(),
-            probe: document.getElementById('gv-probe').value,
+            host: (val('gv-host', '') || '').trim(),
+            probe: val('gv-probe', 'tls'),
             population, generations,
-            workers: parseInt(document.getElementById('gv-workers').value, 10) || 1,
-            pause_bypass: !!document.getElementById('gv-pause').checked,
+            workers: parseInt(val('gv-workers'), 10) || 1,
+            pause_bypass: pause ? !!pause.checked : true,
         };
     }
 
@@ -663,7 +716,7 @@ const GenevaPage = (() => {
         const box = document.getElementById('gv-search');
         if (!box) return;
         const p = s.params || {};
-        if (!_formFilled && p.host) {
+        if (!_formFilled && p.host && document.getElementById('gv-host')) {
             _formFilled = true;
             document.getElementById('gv-host').value = p.host;
             document.getElementById('gv-probe').value = p.probe || 'tls';
@@ -753,8 +806,8 @@ const GenevaPage = (() => {
     function _renderLibrary() {
         const box = document.getElementById('gv-library');
         if (!box) return;
-        const country = document.getElementById('gv-lib-country').value;
-        const test = document.getElementById('gv-lib-test').value;
+        const country = (document.getElementById('gv-lib-country') || {}).value || '';
+        const test = (document.getElementById('gv-lib-test') || {}).value || '';
         const items = _library.filter(i => (!country || i.country === country) && (!test || i.test === test))
                               .sort((a, b) => (b.rate || 0) - (a.rate || 0));
         if (!items.length) {
@@ -765,7 +818,7 @@ const GenevaPage = (() => {
             <tr><th class="gv-col-pick"></th><th>Успех</th><th>Где</th><th>Описание</th><th>Стратегия</th><th></th></tr>
             ${items.map(i => `
                 <tr><td class="gv-col-pick">${i.server_side ? '' : `<input type="checkbox" class="gv-lib-pick" value="${esc(i.strategy)}">`}</td>
-                    <td>${esc(i.rate)}%</td>
+                    <td style="white-space:nowrap;">${esc(i.rate)}%</td>
                     <td>${esc(i.country)} / ${esc(i.test)}${i.server_side ? ' <span class="badge badge-muted">server-side</span>' : ''}</td>
                     <td>${esc(i.description)}</td>
                     <td class="gv-mono gv-ellipsis" title="${esc(i.strategy)}">${esc(i.strategy)}</td>
@@ -781,10 +834,14 @@ const GenevaPage = (() => {
             return;
         }
         const params = _searchParams();
+        const libHost = document.getElementById('gv-lib-host');
+        if (libHost && libHost.value.trim()) params.host = libHost.value.trim();
         if (!params.host) {
-            Toast.error('Укажите заблокированный сайт в форме подбора');
+            Toast.error('Укажите заблокированный сайт');
             return;
         }
+        delete params.population;
+        delete params.generations;
         try {
             const res = await API.post('/api/geneva/eval', Object.assign({ strategies: picked }, params), { timeout: 60000 });
             Toast.success('Проверяю ' + picked.length + ' стратегий' +
@@ -814,6 +871,8 @@ const GenevaPage = (() => {
                 set('gv-host', s.host);
                 set('gv-probe', s.probe || 'tls');
             }
+            const libHost = document.getElementById('gv-lib-host');
+            if (libHost && !libHost.value && s.host) libHost.value = s.host;
             const pause = document.getElementById('gv-pause');
             if (pause && s.pause_bypass === false) pause.checked = false;
             _settingsFilled = true;
@@ -821,7 +880,7 @@ const GenevaPage = (() => {
     }
 
     async function _saveSettings() {
-        const val = id => document.getElementById(id).value;
+        const val = id => (document.getElementById(id) || {}).value;
         const body = {
             ports: val('gv-ports'), proto: val('gv-proto'), iface: val('gv-iface'),
             firewall: val('gv-firewall'), first: parseInt(val('gv-first'), 10) || 0,

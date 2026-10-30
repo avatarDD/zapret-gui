@@ -18,30 +18,46 @@
  *     правками GUI: домены параллельно, ранняя остановка, общая
  *     стратегия через --new (core/blockcheck2_multi).
  *
- * Хеш: #scan (официальный), #scan?tab=multi и #scan?tab=catalog.
+ * Хеш: #scan (официальный), #scan?tab=multi, #scan?tab=catalog и
+ * #scan?tab=geneva (генетический подбор движка geneva_c).
  */
 
 const StrategyScanHubPage = (() => {
 
     const TABS = {
         official: {
-            label: 'Официальный (blockcheck2.sh)',
+            label: 'nfqws2: blockcheck2.sh',
             help:  'blockcheck2',
             desc:  'Штатный скрипт zapret2 с потоковой телеметрией — эталонный перебор.',
             page:  () => (typeof Blockcheck2Page !== 'undefined' ? Blockcheck2Page : null),
         },
         multi: {
-            label: 'Несколько доменов',
+            label: 'nfqws2: несколько доменов',
             help:  'blockcheck2_multi',
             desc:  'Клон blockcheck2.sh: домены параллельно, остановка после N рабочих стратегий, общая стратегия через --new.',
             page:  () => (typeof Blockcheck2MultiPage !== 'undefined' ? Blockcheck2MultiPage : null),
         },
         catalog: {
-            label: 'По каталогу zapret-gui',
+            label: 'nfqws2: по каталогу',
             help:  'scan',
             desc:  'Наш перебор стратегий из каталогов: найденное применяется в один клик.',
             page:  () => (typeof ScanPage !== 'undefined' ? ScanPage : null),
         },
+        // Второй движок обхода: генетический подбор geneva_c. Те же задача
+        // и раздел, другой движок — поэтому вкладка здесь, а не свой пункт
+        // меню (web/js/components/engine_tabs.js).
+        geneva: {
+            label: 'geneva_c: генетический',
+            help:  '',
+            desc:  'Подбор стратегии для движка geneva_c: генетический алгоритм, продолжение после перезагрузки.',
+            page:  () => (typeof GenevaPage !== 'undefined' ? GenevaSearchView : null),
+        },
+    };
+
+    // Вкладка geneva — часть страницы GenevaPage (только подбор).
+    const GenevaSearchView = {
+        render: c => GenevaPage.render(c, { sections: ['search'], header: false }),
+        destroy: () => GenevaPage.destroy(),
     };
 
     let activeTab = 'official';
@@ -91,6 +107,10 @@ const StrategyScanHubPage = (() => {
             };
             window.addEventListener('hashchange', hashHandler);
         }
+
+        // На телефоне полоса вкладок листается вбок: активную — в кадр.
+        const act = container.querySelector('.tabs-bar .tab-btn.active');
+        if (act && act.scrollIntoView) act.scrollIntoView({ block: 'nearest', inline: 'center' });
 
         _mount();
     }
