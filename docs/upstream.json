@@ -60,27 +60,27 @@
       "id": "sing-box",
       "repo": "SagerNet/sing-box",
       "kind": "release",
-      "pinned": "v1.14.3",
-      "verified_at": "2026-10-12",
+      "pinned": "v1.14.4",
+      "verified_at": "2026-10-30",
       "skill": ".claude/skills/singbox/SKILL.md",
       "mentions": [
         ".claude/skills/singbox/SKILL.md"
       ],
       "vendored": {},
-      "note": "sing-box ломает совместимость по минорам, поэтому §9 скила — таблица «что удалено в какой версии» — сверена с docs/deprecated.md и docs/migration.md апстрима. Актуальная линия — 1.14 (стабильная с 2026-08-31, ставит её наш установщик); всё, что помечено deprecated в 1.14, апстрим обещает удалить только в 1.16. Наш генератор чужих полей не выдаёт, но пользовательские конфиги — выдают, отсюда pre-flight `sing-box check`. 1.14.3 схему не тронул (option/ и include/ без новых полей, deprecated.md/migration.md только сокращены), но поменял умолчание TUN `dns_mode`: без `auto_route` теперь `disabled`, а не `hijack` (sing-tun 0e9e4a5). Наш TUN без auto_route перехватывает DNS явным правилом hijack-dns, код не затронут."
+      "note": "sing-box ломает совместимость по минорам, поэтому §9 скила — таблица «что удалено в какой версии» — сверена с docs/deprecated.md и docs/migration.md апстрима. Актуальная линия — 1.14 (стабильная с 2026-08-31, ставит её наш установщик); всё, что помечено deprecated в 1.14, апстрим обещает удалить только в 1.16. Наш генератор чужих полей не выдаёт, но пользовательские конфиги — выдают, отсюда pre-flight `sing-box check`. 1.14.3 схему не тронул (option/ и include/ без новых полей, deprecated.md/migration.md только сокращены), но поменял умолчание TUN `dns_mode`: без `auto_route` теперь `disabled`, а не `hijack` (sing-tun 0e9e4a5). Наш TUN без auto_route перехватывает DNS явным правилом hijack-dns, код не затронут. 1.14.4 схему почти не тронул, но удалил rule action `direct` (был нерабочим) и стал отвергать повтор тега в outbounds групп selector/urltest — генератор групп теперь убирает повторы (singbox_config._unique_tags). Пример FakeIP inet6_range сменён на 2001:2::/48; мы остаёмся на fc00::/18 (скил §9.1)."
     },
     {
       "id": "mihomo",
       "repo": "MetaCubeX/mihomo",
       "kind": "release",
-      "pinned": "v1.19.32",
-      "verified_at": "2026-10-10",
+      "pinned": "v1.19.33",
+      "verified_at": "2026-10-30",
       "skill": ".claude/skills/mihomo/SKILL.md",
       "mentions": [
         ".claude/skills/mihomo/SKILL.md"
       ],
       "vendored": {},
-      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.30 их 24, конвертируем 6. В v1.19.30 main.go не изменился, в parser.go добавился тип `zerotier` (оверлейная mesh-сеть, аналога в sing-box нет). В v1.19.32 main.go и parser.go не изменились; поменялась семантика TUN: стек по умолчанию теперь `mips` (был `gvisor`), у `tun` появился `congestion-controller`, у `load-balance` — `hash-key`. Наши генераторы пишут `stack` явно, код не затронут."
+      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.30 их 24, конвертируем 6. В v1.19.30 main.go не изменился, в parser.go добавился тип `zerotier` (оверлейная mesh-сеть, аналога в sing-box нет). В v1.19.32 main.go и parser.go не изменились; поменялась семантика TUN: стек по умолчанию теперь `mips` (был `gvisor`), у `tun` появился `congestion-controller`, у `load-balance` — `hash-key`. Наши генераторы пишут `stack` явно, код не затронут. В v1.19.33 main.go и parser.go снова не изменились; у TUN появился `dns-mode` (пусто = прежнее поведение), наш make_tun() его не пишет."
     },
     {
       "id": "amneziawg-go",
@@ -125,14 +125,14 @@
       "id": "opera-proxy",
       "repo": "Alexey71/opera-proxy",
       "kind": "release",
-      "pinned": "v1.30.0",
-      "verified_at": "2026-09-22",
+      "pinned": "v1.31.0",
+      "verified_at": "2026-10-30",
       "skill": ".claude/skills/opera-proxy/SKILL.md",
       "mentions": [
         ".claude/skills/opera-proxy/SKILL.md"
       ],
       "vendored": {},
-      "note": "Апстрим релизится раз в 1–2 недели и добавляет флаги между версиями, а ставим мы «последний релиз» — то есть расхождение скила с реальностью накапливается быстрее всех. Проверять чаще прочих. v1.29.0→v1.30.0 тронул ТОЛЬКО go.mod/go.sum: набор флагов сверен прогоном -h на скачанной сборке v1.30.0 (46 флагов, тот же, что на v1.28.0). Но «только зависимости» здесь не равно «ничего не изменилось»: main.go пустым импортом тянет golang.org/x/crypto/x509roots/fallback, и на Entware без ca-certificates доверие к api2.sec-tunnel.com держится именно на этом вшитом наборе корней — он в v1.30.0 обновлён. Вместе с пином едут sha256 в ext_binary_installer BINARIES[opera][legacy_source]: запасной путь ставит ПОСЛЕДНИЙ релиз апстрима, и отставший pinned_tag означает скачивание без сверки хэша."
+      "note": "Апстрим релизится раз в 1–2 недели и добавляет флаги между версиями, а ставим мы «последний релиз» — то есть расхождение скила с реальностью накапливается быстрее всех. Проверять чаще прочих. v1.29.0→v1.30.0 тронул ТОЛЬКО go.mod/go.sum: набор флагов сверен прогоном -h на скачанной сборке v1.30.0 (46 флагов, тот же, что на v1.28.0). Но «только зависимости» здесь не равно «ничего не изменилось»: main.go пустым импортом тянет golang.org/x/crypto/x509roots/fallback, и на Entware без ca-certificates доверие к api2.sec-tunnel.com держится именно на этом вшитом наборе корней — он в v1.30.0 обновлён. Вместе с пином едут sha256 в ext_binary_installer BINARIES[opera][legacy_source]: запасной путь ставит ПОСЛЕДНИЙ релиз апстрима, и отставший pinned_tag означает скачивание без сверки хэша. v1.31.0 — снова только go.mod/go.sum (Go 1.27.3, x/net 0.61.0, новый снимок x509roots/fallback); флаги не менялись, sha256 пересчитаны."
     },
     {
       "id": "tg-ws-proxy-go",

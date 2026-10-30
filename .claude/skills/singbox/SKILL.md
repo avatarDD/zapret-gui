@@ -28,7 +28,7 @@ description: >-
 1. **sing-box.sagernet.org** — официальная документация конфигурации и CLI;
    `sagernet/sing-box` (Go-исходники) — окончательная истина по схемам.
    §9 сверен с `docs/deprecated.md` + `docs/migration.md` + `docs/changelog.md`
-   апстрима на **v1.14.3** (2026-10-09). **1.14 вышла из беты 2026-08-31
+   апстрима на **v1.14.4** (2026-10-23). **1.14 вышла из беты 2026-08-31
    (v1.14.0) и теперь это актуальная линия**; 1.13 продолжает получать фиксы
    (последняя — `v1.13.21`, 2026-08-30: паники в system-стеке и websocket,
    TUN loopback protection, зависание URLTest), но новых полей конфига в неё
@@ -337,7 +337,7 @@ endpoint заменил старый `type:wireguard` outbound (он deprecated 
 | 1.11 | **УДАЛЁН** `rule_set_ipcidr_match_source`. deprecated: спец-outbounds **`block`**/**`dns`**; inbound-поля `sniff*`/`domain_strategy`; outbound `wireguard`; `override_address`/`override_port` у direct; TUN `gso` | rule-actions `reject`/`hijack-dns`/`sniff`/`resolve`; `endpoints` для WG; route-опции для override | `block` убран из `make_minimal_config`; sniff/dns-hijack через route |
 | **1.12** | **УДАЛЕНЫ `geoip`/`geosite`** (как route-матчеры) и слитые в 1.10 TUN-поля; формат `dns` переписан на типизированные серверы (legacy-`address` пока принимается); deprecated legacy-ECH поля (`pq_signature_schemes_enabled`, `dynamic_record_sizing_disabled` — уже не работают) | `rule_set`; `type:udp/tcp/tls/…` | geo — через ipset/rule-set; DNS см. §7 |
 | **1.13** | **УДАЛЕНЫ** `block`/`dns` outbounds, legacy inbound-поля (`sniff*`/`domain_strategy`), старый outbound `type:wireguard`, **`override_address`/`override_port` у direct**, **TUN `gso`** | как deprecated в 1.11 | issue #149 — генератор чистый; `validate()` держит block/dns в «известных типах» только для ЧТЕНИЯ старых чужих конфигов |
-| **1.14** (стабильная с 2026-08-31; текущая — 1.14.3) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`). Новые deprecated — **удаление обещано в 1.16**, не сейчас: inline `tls.acme` → `certificate_provider`; address-filter поля DNS-правил (`ip_cidr`/`ip_is_private` без `match_response`) и `rule_set_ip_cidr_accept_empty` → action `evaluate` + `match_response`; `independent_cache` (кэш и так ключуется по транспорту); `store_rdrc` → `store_dns`; legacy `strategy` в DNS rule action; `download_detour` у remote rule-set → `http_client`; неявный HTTP-клиент по умолчанию → явные `http_clients` + `route.default_http_client` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed; `independent_cache` не задаём (`singbox_config.py:755`) |
+| **1.14** (стабильная с 2026-08-31; текущая — 1.14.4) | **УДАЛЁН legacy-формат `dns`** (address-серверы / `type:legacy`). Новые deprecated — **удаление обещано в 1.16**, не сейчас: inline `tls.acme` → `certificate_provider`; address-filter поля DNS-правил (`ip_cidr`/`ip_is_private` без `match_response`) и `rule_set_ip_cidr_accept_empty` → action `evaluate` + `match_response`; `independent_cache` (кэш и так ключуется по транспорту); `store_rdrc` → `store_dns`; legacy `strategy` в DNS rule action; `download_detour` у remote rule-set → `http_client`; неявный HTTP-клиент по умолчанию → явные `http_clients` + `route.default_http_client` | typed DNS-серверы (§7) | на 1.14+ `dns.servers[].address` не запустится — генерить только typed; `independent_cache` не задаём (`singbox_config.py:755`) |
 
 > Симптомы по версиям: на 1.12+ — падение на `{"geosite":…}`/`{"geoip":…}` в
 > route или на legacy-DNS уже на 1.14; на 1.13 — `FATAL ... legacy inbound
@@ -389,7 +389,40 @@ systemd-resolved — и всё это даже у TUN без `auto_route`. Дл�
 смене DNS-серверов, чтение TUN (system-стек) больше не останавливается на
 ошибке записи, UDP-фрагментация и нулевая контрольная сумма UDP, проверка
 GSO у TUN, local DNS-сервер учитывает глобальные DNS systemd-resolved,
-закрытие простаивающих соединений неиспользуемых outbound'ов:
+закрытие простаивающих соединений неиспользуемых outbound'ов.
+
+**1.14.4 (2026-10-23)** — снова «fixes and improvements», `docs/deprecated.md`
+не тронут, новых полей нет. Что поменялось в схеме (`option/`):
+- **удалён rule action `direct`** (коммит «Remove unimplemented direct rule
+  action»): он был в enum и в `schema.json`, но никогда не работал. Теперь
+  `{"action":"direct", …}` в `route.rules` — ошибка разбора `unknown rule
+  action`, конфиг не стартует. Наш генератор его не выдаёт (направить в
+  direct — это `{"action":"route","outbound":"direct"}`); в чужих конфигах
+  чинится так же;
+- ряд полей стал `omitempty` (`server_port`, `name` у пользователей
+  shadowsocks/trojan/vless/vmess, `password` у shadowsocks-outbound,
+  `security` у vmess) — это меняет только вывод `sing-box format`, разбор
+  прежний;
+- пример FakeIP `inet6_range` в документации и `schema.json` сменён с
+  `fc00::/18` на `2001:2::/48` (IPv6-аналог бенчмарк-сети `198.18.0.0/15`).
+  Умолчания движка это не меняет. **Мы осознанно остаёмся на `fc00::/18`**
+  (`singbox_config.FAKEIP_INET6`): по таблице политик RFC 6724 ULA-адрес
+  клиент ставит ниже IPv4, поэтому на роутерах без IPv6 у клиентов
+  (большинство наших) в ход идёт fake-IPv4. Адрес из `2001:2::/48` выглядит
+  глобальным и предпочитается IPv4 — у клиента с глобальным IPv6 это
+  переведёт трафик в fake-IPv6, не проверенный нами путь. Переезжать —
+  только вместе с e2e-проверкой IPv6-клиента.
+
+Фиксы 1.14.4, заметные нам: DNS address-filter правила проверяются и на
+попадании в кэш (раньше кэшированный ответ проскакивал мимо `ip_cidr`-
+фильтра), IPv6-правило интерфейса у TUN **без `auto_route`** (наш случай
+единого слоя), `fallback_delay` у direct-outbound больше не игнорируется,
+параллельный dial идёт в порядке разрешённых адресов, flow-table TUN и
+system-стек больше не держат закрытые TCP-сессии (утечка памяти на роутере),
+отказ от дублирующихся тегов в группах `selector`/`urltest` (раньше молча
+принимались), обновлены встроенные корневые сертификаты, Go 1.26.10.
+
+Что нового в самой линии 1.14:
 
 - **JSON Schema конфига** — команда `sing-box schema` + поле
   `$schema` (см. §2).
