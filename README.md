@@ -985,7 +985,7 @@ sha256 каждой сборки, и хэш сверяется строго (н�
 `/opt/usr/bin/opera-proxy`. Поддержаны **aarch64, x86_64, mipsel, mips и
 armv7**; на других архитектурах установка откажет с явным сообщением.
 Если нашей сборки нет — запасной источник: релизы самого Alexey71
-(закреплённая версия `v1.30.0`). Выход новых версий отслеживает раздел
+(закреплённая версия `v1.31.0`). Выход новых версий отслеживает раздел
 «Обновления». Наружу сам клиент ходит в API SurfEasy
 (`api2.sec-tunnel.com`) и на прокси-узлы `*.sec-tunnel.com`.
 
@@ -2326,7 +2326,7 @@ GUI сам по себе — это Python/JS-код; «тяжёлые» бин�
 | **Сервисы-генераторы WARP** (запасной источник) | `*.warp-api.cfd` (те же, что у warp-generation.github.io) | Генератор конфигов → «Откуда брать ключи: сервис» |
 | **usque** | сборка в наших Releases (тег `usque-bin-v*`, sha256 из `manifest.json` релиза); upstream-код — [Diniboy1123/usque](https://github.com/Diniboy1123/usque). Запасной источник — [side-effect-tm/usque-keenetic](https://github.com/side-effect-tm/usque-keenetic) | WARP/MASQUE → «Установить» |
 | **Cloudflare WARP по MASQUE** | `consumer-masque.cloudflareclient.com` + узлы WARP (443/udp, при `Restricted` — 443/tcp) | WARP/MASQUE — регистрация сессии и сам трафик |
-| **opera-proxy** | сборка в наших Releases (тег `opera-bin-*`, sha256 из `manifest.json` релиза); upstream-код — [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy), он же запасной источник (`v1.30.0`) | Opera Proxy → «Установить» |
+| **opera-proxy** | сборка в наших Releases (тег `opera-bin-*`, sha256 из `manifest.json` релиза); upstream-код — [Alexey71/opera-proxy](https://github.com/Alexey71/opera-proxy), он же запасной источник (`v1.31.0`) | Opera Proxy → «Установить» |
 | **Opera VPN (SurfEasy)** | `api2.sec-tunnel.com` + узлы `*.sec-tunnel.com` | Opera Proxy — регистрация устройства, список стран, сам трафик |
 | **tg-ws-proxy** (пакет `.ipk`/`.apk`) | [spatiumstas/tg-ws-proxy-go](https://github.com/spatiumstas/tg-ws-proxy-go) (Releases, закреплён **0.9.3** — дальше апстрим настольный; sha256 сверяется) | Telegram Tunnel → «Установить» |
 | **tg-mtproxy-client** (резервный движок Telegram) | сборка в наших Releases (тег `tgproto-bin-v*`, sha256 из `manifest.json`); upstream-код — [necronicle/z2k](https://github.com/necronicle/z2k) (`mtproxy-client/`) | Telegram Tunnel → резервный движок |

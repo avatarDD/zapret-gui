@@ -74,11 +74,11 @@ description: >-
 | `-ext-ctl <addr>` | переопределить external-controller | нет (через YAML) |
 | `-ext-ui`, `-secret`, `-m` | UI/секрет/geodata-режим | нет |
 
-Таблица — только то, что вызываем мы; полный список шире. В v1.19.32 есть
+Таблица — только то, что вызываем мы; полный список шире. В v1.19.33 есть
 ещё `-config` (конфиг base64-строкой), `-ext-ctl-tls`/`-ext-ctl-unix`/
 `-ext-ctl-pipe`/`-ext-ctl-routing-mark`, `-post-up`/`-post-down` (скрипты),
 `-age-secret-key`. Почти все дублируются переменными `CLASH_*` — сверено с
-`main.go` mihomo v1.19.32 (с 1.19.29 не изменился).
+`main.go` mihomo v1.19.33 (с 1.19.29 не изменился).
 
 Запуск у нас: `mihomo -d <config_dir> -f <config.yaml>` в новой сессии
 (`start_new_session`), `stdin=DEVNULL`, stdout/stderr → лог-файл,
@@ -225,7 +225,7 @@ Linux+nftables, вместе с `auto-route`), `auto-detect-interface`, `dns-hij
 `strict-route`, `route-address` / `route-address-set` /
 `route-exclude-address-set` (последние два — только nftables при
 `auto-route`+`auto-redirect`), `gso`/`gso-max-size` (дефолт 65536),
-`disable-icmp-forwarding`, `congestion-controller` (с v1.19.32: `cubic`/`reno`/
+`dns-mode` (с v1.19.33, см. ниже), `disable-icmp-forwarding`, `congestion-controller` (с v1.19.32: `cubic`/`reno`/
 `bbr`/`bbr3`, действует только на стеке `mips`),
 `endpoint-independent-nat`, `udp-timeout` (300 c),
 `iproute2-table-index` (2022) / `iproute2-rule-index` (9000), устаревшие
@@ -254,6 +254,19 @@ Linux+nftables, вместе с `auto-route`), `auto-detect-interface`, `dns-hij
 > `make_tun()` всегда пишет `stack` явно. Если в диагностике «на новой версии
 > стало хуже / по-другому» конфиг без `stack` — первым делом задать стек явно.
 
+> 🆕 **`dns-mode` — с v1.19.33** (`RawTun`, `listener/config/tun.go`, а также
+> `listeners: - type: tun` и REST `PATCH /configs`). Проброс в sing-tun того
+> же `DNSMode`, что у sing-box `dns_mode`: `disabled` — системный DNS не
+> трогать, `native` — сделать адрес TUN системным DNS, `hijack` — плюс
+> перехват чужого :53 (на Linux требует `auto-redirect`). **Пусто = прежнее
+> поведение**: на Linux/Windows `hijack` при `auto-route`, иначе `disabled`.
+> Любое другое значение — ошибка старта `invalid dns-mode` (проверяется в
+> `listener/sing_tun/server.go`, `mihomo -t` её тоже поймает). Нас не
+> задевает: `make_tun()` поле не пишет, а DNS перехватывает явный
+> `dns-hijack`, который от `dns-mode` не зависит. На mihomo < 1.19.33 ключ
+> `dns-mode` молча игнорируется (неизвестное YAML-поле), поэтому задавать
+> его в генераторе без гейта по версии бессмысленно.
+
 > **`device` по умолчанию — `Meta`, а не `utun`.** В
 > `listener/sing_tun/server.go`: `var InterfaceName = "Meta"`, и
 > `CalculateInterfaceName()` на не-darwin возвращает это имя как есть (префикс
@@ -276,7 +289,7 @@ Linux+nftables, вместе с `auto-route`), `auto-detect-interface`, `dns-hij
 
 `sniffer` определяет домен по содержимому соединения (TLS SNI / HTTP Host),
 когда его неоткуда взять иначе. Ключи и **дефолты сверены с
-`config/config.go` v1.19.32** (`DefaultRawConfig`):
+`config/config.go` v1.19.33** (`DefaultRawConfig`; в 1.19.33 дефолты не менялись):
 
 | Ключ | Дефолт | Смысл |
 |------|--------|-------|
@@ -372,7 +385,7 @@ mihomo. Мини-парсер YAML + реестр конвертеров `_CLASH
 | `easytier` | Оверлейная mesh-сеть, добавлена в **v1.19.31**, у sing-box аналога нет |
 | `direct`, `dns`, `reject` | Служебные, при импорте узлов не нужны |
 
-Список типов сверен с `adapter/parser.go` mihomo v1.19.32 и каталогами
+Список типов сверен с `adapter/parser.go` mihomo v1.19.33 и каталогами
 `docs/configuration/outbound/` + `docs/configuration/endpoint/` sing-box
 v1.14.1. Апстрим mihomo добавляет протоколы заметно быстрее — при следующей
 сверке проверять, не появился ли аналог у обоих (так и вышло со `snell` и
@@ -380,7 +393,7 @@ v1.14.1. Апстрим mihomo добавляет протоколы замет�
 `grep -oE 'case "[a-z0-9]+"' adapter/parser.go | sort -u`: 27 веток, из них
 3 служебных (`direct`/`dns`/`reject`) → **24 типа прокси**, конвертируем 6.
 (На v1.19.30 было 23 — прибавился `easytier`; в v1.19.32 `parser.go` не
-менялся — по-прежнему 24.)
+менялся, в v1.19.33 тоже — по-прежнему 24.)
 
 > Нюанс YAML: `short-id: 01` парсится как int `1` — конвертер обрабатывает это
 > best-effort, чтобы не потерять ведущий ноль. `proxy-groups`/`rules` при таком

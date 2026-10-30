@@ -1001,7 +1001,7 @@ BINARIES = {
         "legacy_source": {
             "repo": "Alexey71/opera-proxy",
             "release_tag": "",
-            "pinned_tag": "v1.30.0",
+            "pinned_tag": "v1.31.0",
             "allow_unpinned": True,
             "dest": "/opt/usr/bin/opera-proxy",
             "arch_map": {
@@ -1015,18 +1015,18 @@ BINARIES = {
                 # бинарник опубликован.
                 "armv7": "opera-proxy.linux-arm",
             },
-            # sha256 сборок v1.30.0 (посчитаны с релизных URL; процедура
-            # сверена — хэш v1.28.0 amd64, посчитанный так же, совпал с
-            # прежним манифестом). Пин обязан ехать за релизом: установщик
+            # sha256 сборок v1.31.0 (посчитаны с релизных URL; процедура
+            # сверена — хэш v1.30.0 amd64, посчитанный так же, совпал с
+            # прежним пином). Пин обязан ехать за релизом: установщик
             # ставит ПОСЛЕДНИЙ релиз, и пока pinned_tag отставал, скачанное
             # не с чем было сверять — файл принимался «как есть» (по HTTPS,
             # но без хэша).
             "sha256_map": {
-                "aarch64": "167d174f9aac2bffbdf69a1ce0d203b1e6ac36fbf1eaa2408395195f56540941",
-                "x86_64": "04a0412c9e3b55be78c483cfd2aaca415a0b77dca09befd7c990da1a28f431a8",
-                "mipsel": "334a657d5e128d5112d91600148fc6f50c44c78d0df2dcee82a3eba6f3da89ac",
-                "mips": "890075dca0120f922f22f6a1e36ce4a5118278b666a4769ee06b6afca0f1ce78",
-                "armv7": "d34e41bbc3f2c34c7fe6fe932c033b6b3b02c1b5e0d822da1bd59c59062bcc30",
+                "aarch64": "fe1e72f1bfb2302350fff82cf0710859699118ae47d5b541d99c5f13aebcb935",
+                "x86_64": "e539c6f583c23715d16810925307d74b136aa1f7bc256d586a52e63d03b0346d",
+                "mipsel": "8824d1ba1751bc51701bde5d775212efe5260625aa2688d8124f8ba7058a8e69",
+                "mips": "00964bb3d9719abd17c86ca977ff84bb0a7b8a383268a06b9b365be9b791072d",
+                "armv7": "bcfc4d23491ac60a6727909c1f618615f4a5ff85459e59422e53b35b475cd77b",
             },
         },
     },
