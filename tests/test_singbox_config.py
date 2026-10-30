@@ -265,6 +265,12 @@ class TestSelectorAndUrltest(unittest.TestCase):
         self.assertEqual(ob["interval"], "30s")
         self.assertEqual(ob["tolerance"], 20)
 
+    def test_groups_drop_duplicate_tags(self):
+        # sing-box 1.14.4 не стартует с повтором тега в группе.
+        for make in (make_selector_outbound, make_urltest_outbound):
+            ob = make("g", ["a", "b", "a", "c", "b"])
+            self.assertEqual(ob["outbounds"], ["a", "b", "c"])
+
 
 class TestListUserOutboundTags(unittest.TestCase):
 

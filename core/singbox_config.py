@@ -1199,6 +1199,15 @@ def make_tuic_outbound(tag: str, server: str, port: int,
     return out
 
 
+def _unique_tags(tags) -> list:
+    """Теги группы без повторов, порядок сохраняется.
+
+    С sing-box 1.14.4 повтор тега в `outbounds` у selector/urltest —
+    ошибка старта («duplicate tag»), раньше молча принимался.
+    """
+    return list(dict.fromkeys(tags))
+
+
 def make_selector_outbound(tag: str, outbounds: list,
                            default: str = "") -> dict:
     """
@@ -1213,7 +1222,7 @@ def make_selector_outbound(tag: str, outbounds: list,
     out = {
         "type": "selector",
         "tag":  tag,
-        "outbounds": list(outbounds),
+        "outbounds": _unique_tags(outbounds),
     }
     if default and default in outbounds:
         out["default"] = default
@@ -1239,7 +1248,7 @@ def make_urltest_outbound(tag: str, outbounds: list,
     return {
         "type":      "urltest",
         "tag":       tag,
-        "outbounds": list(outbounds),
+        "outbounds": _unique_tags(outbounds),
         "url":       url,
         "interval":  interval,
         "tolerance": int(tolerance),
