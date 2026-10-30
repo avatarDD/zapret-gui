@@ -6,6 +6,7 @@ GET /api/interfaces — список интерфейсов + авто-опре�
 GET /api/network/environment — профиль окружения (роутер / ПК с 1 NIC).
 """
 
+import json
 import os
 import re
 import subprocess
@@ -82,21 +83,63 @@ def _is_private_ip(addr):
         return False
 
 
-def _detect_interface_roles(interfaces, addr_map):
+def _openwrt_networks():
     """
-    Авто-определение ролей WAN/WAN6/LAN по маршрутам и адресам.
+    Логические сети OpenWrt (wan, wan6, lan, …) по устройствам.
 
-    Аналог логики zapret2:
-      WAN  — интерфейс с IPv4 default route (/proc/net/route)
-      WAN6 — интерфейс с IPv6 default route; fallback на WAN
-      LAN  — bridge (br-*) или приватная подсеть, отличная от WAN
+    В LuCI пользователь видит «wan»/«lan», а в списке ядра — eth1,
+    pppoe-wan, br-lan; без сопоставления непонятно, какой из них
+    внешний. Источник — `ubus call network.interface dump`
+    (l3_device и device: у PPPoE это pppoe-wan и eth1), fallback —
+    `uci -q show network`. Возвращает {устройство: [сети]}; вне OpenWrt
+    или при ошибке — {}.
     """
-    detected = {"wan": "", "wan6": "", "lan": ""}
-    iface_names = {i["name"] for i in interfaces}
+    result = {}
 
-    # --- WAN (IPv4): default route ---
+    def add(dev, net):
+        dev = (dev or "").strip()
+        if not dev or not net or net == "loopback":
+            return
+        nets = result.setdefault(dev, [])
+        if net not in nets:
+            nets.append(net)
+
+    rc, out = _run_cmd(["ubus", "call", "network.interface", "dump"])
+    if rc == 0 and out:
+        try:
+            data = json.loads(out)
+        except ValueError:
+            data = {}
+        for item in data.get("interface") or []:
+            if not isinstance(item, dict):
+                continue
+            net = item.get("interface") or ""
+            add(item.get("l3_device"), net)
+            add(item.get("device"), net)
+        if result:
+            return result
+
+    rc, out = _run_cmd(["uci", "-q", "show", "network"])
+    if rc == 0 and out:
+        for line in out.split("\n"):
+            m = re.match(
+                r"network\.([\w-]+)\.(device|ifname)='?([^']*)'?$",
+                line.strip())
+            if not m:
+                continue
+            for dev in m.group(3).split():
+                add(dev, m.group(1))
+    return result
+
+
+def _default_route_ifaces(iface_names):
+    """
+    Интерфейсы с маршрутом по умолчанию: (IPv4-набор, IPv6-набор).
+    Ровно по нему zapret2 определяет IFACE_WAN/IFACE_WAN6.
+    """
+    # --- IPv4 ---
     # Способ 1: /proc/net/route (как в zapret2 init.d скриптах)
-    wan_ifaces = set()
+    v4 = set()
     try:
         with open("/proc/net/route", "r") as f:
             for line in f.readlines()[1:]:
@@ -106,30 +149,77 @@ def _detect_interface_roles(interfaces, addr_map):
                         and parts[1] == "00000000"
                         and parts[7] == "00000000"
                         and parts[0] in iface_names):
-                    wan_ifaces.add(parts[0])
+                    v4.add(parts[0])
     except (IOError, OSError):
         pass
 
     # Способ 2 (fallback): ip route show default
-    if not wan_ifaces:
+    if not v4:
         rc, out = _run_cmd(["ip", "route", "show", "default"])
         if rc == 0 and out:
             for line in out.split("\n"):
                 m = re.search(r"dev\s+(\S+)", line)
                 if m and m.group(1) in iface_names:
-                    wan_ifaces.add(m.group(1))
+                    v4.add(m.group(1))
 
-    if wan_ifaces:
-        detected["wan"] = " ".join(sorted(wan_ifaces))
-
-    # --- WAN6 (IPv6): default route ---
-    wan6_ifaces = set()
+    # --- IPv6 ---
+    v6 = set()
     rc, out = _run_cmd(["ip", "-6", "route", "show", "default"])
     if rc == 0 and out:
         for line in out.split("\n"):
             m = re.search(r"dev\s+(\S+)", line)
             if m and m.group(1) in iface_names:
-                wan6_ifaces.add(m.group(1))
+                v6.add(m.group(1))
+    return v4, v6
+
+
+def _annotate_external(interfaces, routes, networks):
+    """
+    Пометить внешние интерфейсы, чтобы в настройках было видно, какой
+    из них WAN. Каждому интерфейсу добавляется:
+
+      networks      — логические сети OpenWrt (["wan"], ["lan"], …);
+      default_route — семейства маршрута по умолчанию (["ipv4", "ipv6"]);
+      external      — внешний. Если OpenWrt знает сети wan*, решают
+                      они: маршрут по умолчанию через VPN (wg0, tun0)
+                      не делает туннель внешним интерфейсом. Иначе —
+                      есть маршрут по умолчанию.
+    """
+    v4, v6 = routes
+
+    def is_wan(nets):
+        return any(n.lower().startswith("wan") for n in nets)
+
+    by_network = any(is_wan(n) for n in networks.values())
+    for iface in interfaces:
+        name = iface["name"]
+        nets = list(networks.get(name, []))
+        dr = []
+        if name in v4:
+            dr.append("ipv4")
+        if name in v6:
+            dr.append("ipv6")
+        iface["networks"] = nets
+        iface["default_route"] = dr
+        iface["external"] = is_wan(nets) if by_network else bool(dr)
+
+
+def _detect_interface_roles(interfaces, addr_map, routes=None):
+    """
+    Авто-определение ролей WAN/WAN6/LAN по маршрутам и адресам.
+
+    Аналог логики zapret2:
+      WAN  — интерфейс с IPv4 default route (/proc/net/route)
+      WAN6 — интерфейс с IPv6 default route; fallback на WAN
+      LAN  — bridge (br-*) или приватная подсеть, отличная от WAN
+    """
+    detected = {"wan": "", "wan6": "", "lan": ""}
+    if routes is None:
+        routes = _default_route_ifaces({i["name"] for i in interfaces})
+    wan_ifaces, wan6_ifaces = routes
+
+    if wan_ifaces:
+        detected["wan"] = " ".join(sorted(wan_ifaces))
 
     if wan6_ifaces:
         detected["wan6"] = " ".join(sorted(wan6_ifaces))
@@ -392,7 +482,8 @@ def register(app):
         Список сетевых интерфейсов + авто-определение WAN/WAN6/LAN.
 
         Возвращает:
-          interfaces — [{name, state, addresses}]
+          interfaces — [{name, state, addresses, networks,
+                         default_route, external}]
           detected   — авто-определённые роли {wan, wan6, lan}
         """
         response.content_type = "application/json; charset=utf-8"
@@ -462,8 +553,10 @@ def register(app):
         for iface in interfaces:
             iface["addresses"] = addr_map.get(iface["name"], [])
 
-        # Авто-определение ролей
-        detected = _detect_interface_roles(interfaces, addr_map)
+        # Авто-определение ролей и пометка внешних интерфейсов
+        routes = _default_route_ifaces({i["name"] for i in interfaces})
+        detected = _detect_interface_roles(interfaces, addr_map, routes)
+        _annotate_external(interfaces, routes, _openwrt_networks())
 
         return {
             "ok": True,
