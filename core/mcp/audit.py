@@ -101,6 +101,11 @@ KIND_CODE = "code"
 # означает, что маршрута не было и откат его удалит.
 KIND_TUNNEL_CONFIG = "tunnel_config"
 KIND_UNIFIED_ROUTE = "unified_route"
+# geneva_c: ``geneva_strategy`` — прежняя рабочая стратегия geneva
+# (откат вернёт её и в живой движок); ``bypass_engine`` — прежний
+# активный движок обхода (откат переключит обратно).
+KIND_GENEVA_STRATEGY = "geneva_strategy"
+KIND_BYPASS_ENGINE = "bypass_engine"
 
 # Ротация журнала: сколько записей хранить, если mcp.audit.keep не
 # прочитался или задан бессмысленно.

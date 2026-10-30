@@ -51,6 +51,7 @@ def register_routes(app):
     from api.tgproxy import register as reg_tgproxy
     from api.block_detector import register as reg_block_detector
     from api.opera_proxy import register as reg_opera_proxy
+    from api.geneva import register as reg_geneva
     from api.update_checker import register as reg_update_checker
     from api.auto_remediation import register as reg_auto_remediation
     from api.warp_in_warp import register as reg_warp_in_warp
@@ -102,6 +103,7 @@ def register_routes(app):
     reg_tgproxy(app)
     reg_block_detector(app)
     reg_opera_proxy(app)
+    reg_geneva(app)
     reg_update_checker(app)
     reg_auto_remediation(app)
     reg_warp_in_warp(app)

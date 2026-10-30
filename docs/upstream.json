@@ -193,6 +193,19 @@
       ],
       "vendored": {},
       "note": "Генератор core/vpngen повторяет логику warp-generation (регистрация WARP, маски I1, сервисы-генераторы warp-api.cfd) и proton-generation (сессия/серверы/сертификат через api-proton.workers.dev). Своего кода оттуда мы не вендорим: сверяем API-вызовы и форматы. Пин — дата сверки клиентского кода (коммит 5c4f201 warp-generation, faf19d4 proton-generation). При дрейфе смотреть worker.js (тела запросов к Cloudflare) и script.js (адреса сервисов и порты)."
+    },
+    {
+      "id": "geneva_c",
+      "repo": "avatarDD/geneva_c",
+      "kind": "release",
+      "pinned": "v1.0.0",
+      "verified_at": "2026-10-30",
+      "skill": ".claude/skills/geneva/SKILL.md",
+      "mentions": [
+        ".claude/skills/geneva/SKILL.md"
+      ],
+      "vendored": {},
+      "note": "Второй движок обхода. Вместе с пином едут sha256 в ext_binary_installer BINARIES[geneva] (по SHA256SUMS релиза) и proto в geneva_manager.PROTO: смена proto в апстриме ломает разбор событий и сокета, менеджер такой бинарник не запустит. Набор флагов run/evolve/eval сверен с исходниками v1.0.0 (src/cmd_run.c, src/cmd_eval.c, src/cmd_evolve.c)."
     }
   ]
 }

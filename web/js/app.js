@@ -24,6 +24,7 @@ const App = (() => {
         // «Подбор стратегий» — вкладки «Официальный (blockcheck2.sh)»
         // (Blockcheck2Page) и «По каталогу zapret-gui» (ScanPage).
         scan:        StrategyScanHubPage,
+        geneva:      GenevaPage,
         logs:        LogsPage,
         autostart:   AutostartPage,
         zapret:      ZapretManagerPage,

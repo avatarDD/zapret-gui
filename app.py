@@ -206,6 +206,13 @@ def _apply_saved_strategy_on_boot():
             reapply_if_missing()
 
             cfg = get_config_manager()
+            # Обход идёт через geneva_c: nfqws2 при загрузке не поднимаем
+            # (geneva поднимает core/bypass_engine.boot_apply).
+            from core.bypass_engine import is_geneva_active
+            if is_geneva_active():
+                log.info("Движок обхода — geneva_c, автоприменение nfqws2 "
+                         "пропущено", source="autostart")
+                return
             if not cfg.get("autostart", "enabled", default=False):
                 return
 
@@ -1120,6 +1127,16 @@ def create_app(config_dir: str = None) -> Bottle:
             get_update_checker().reconfigure()
         except Exception as e:
             log.warning("update-checker при boot: %s" % e, source="update_checker")
+
+        # geneva_c: подхватить живые процессы, дописать итог прерванного
+        # подбора и поднять движок, если обход выбран через geneva.
+        try:
+            import threading as _geneva_thr
+            from core.bypass_engine import boot_apply as _geneva_boot
+            _geneva_thr.Thread(target=_geneva_boot, daemon=True,
+                             name="geneva-boot").start()
+        except Exception as e:
+            log.warning("geneva при boot: %s" % e, source="geneva")
 
         # Opera Proxy watchdog: авто-рестарт если процесс упал.
         try:

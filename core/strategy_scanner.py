@@ -69,6 +69,8 @@ NFQWS_CRASH_BACKOFF = 1.0       # пауза между попытками
 # Остановка после N рабочих: потолок, чтобы «найти 1000» не выглядело
 # как режим.
 MAX_STOP_AFTER = 50
+# Сколько найденных стратегий хранит resume-файл (лучшие по score).
+RESUME_KEEP_WORKING = 20
 
 # Перепроверка лучших: сколько лучших и сколько раз ещё (по умолчанию;
 # переопределяются scan.confirm_top / scan.confirm_repeats).
@@ -375,6 +377,15 @@ class StrategyScanner:
             self._memory_ids = []
             self._entries_by_id = {}
 
+        # Продолжение прерванного прогона: API отдал start_index только
+        # для того же списка (get_resume_index), значит и найденное тогда
+        # относится к этому прогону.
+        if start_index > 0 and not custom:
+            restored = self._restore_working()
+            if restored:
+                log.info("Resume: возвращено найденных ранее стратегий — %d"
+                         % restored, source="scanner")
+
         log.info(
             "Запуск сканирования: target=%s, protocol=%s, mode=%s"
             % (self._target, self._protocol, self._mode),
@@ -464,6 +475,11 @@ class StrategyScanner:
                 "confirmed_count": len([r for r in working if r.confirmed]),
                 "memory_first": len(self._memory_ids),
                 "rules_reapplied": self._rules_reapplied,
+                # Прерванный прогон на диске (переживает перезагрузку):
+                # по нему страница показывает «Продолжить», даже когда
+                # сканер в памяти «idle».
+                "saved_resume": (self.saved_resume_info()
+                                 if self._status != STATUS_RUNNING else {}),
                 # Песочница: кандидаты во втором nfqws2, обход сети цел.
                 "isolated": self._isolated,
                 "isolation_note": self._isolation_note,
@@ -2875,8 +2891,17 @@ class StrategyScanner:
                 return custom
         except Exception:
             pass
-        import tempfile
-        return os.path.join(tempfile.gettempdir(), "zapret-gui-scan-resume.json")
+        # Рядом с settings.json, а не в /tmp: «Продолжить» должно пережить
+        # перезагрузку роутера и перезапуск GUI — ради этого файл и
+        # пишется. Пишется он не чаще раза в 5 стратегий или 10 с.
+        try:
+            from core.platform_dirs import config_dir
+            return os.path.join(config_dir(), "state", "scan",
+                                "resume.json")
+        except Exception:
+            import tempfile
+            return os.path.join(tempfile.gettempdir(),
+                                "zapret-gui-scan-resume.json")
 
     def _tmp_hostlist_path(self) -> str:
         try:
@@ -2914,13 +2939,66 @@ class StrategyScanner:
                 "working_count": len(
                     [r for r in self._results if r.success]
                 ),
+                # Найденное до остановки: после «Продолжить» оно снова в
+                # результатах, а не только числом «нашли 3».
+                "working": [
+                    r.to_dict() for r in sorted(
+                        (r for r in self._results if r.success),
+                        key=lambda r: -float(r.score or 0))
+                ][:RESUME_KEEP_WORKING],
             }
 
         try:
-            with open(resume_file, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(resume_file), exist_ok=True)
+            tmp = resume_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False)
+            os.replace(tmp, resume_file)
         except (IOError, OSError):
-            pass  # tmp может быть недоступен — не критично
+            pass  # каталог может быть недоступен — не критично
+
+    def saved_resume_info(self) -> dict:
+        """Сохранённый прерванный подбор — для кнопки «Продолжить».
+
+        Нужен после перезапуска GUI или роутера: статус сканера в памяти
+        тогда ``idle``, и по нему одному продолжать было бы нечего.
+        """
+        state = self._load_resume_state()
+        try:
+            next_index = int(state.get("next_index", 0))
+        except (TypeError, ValueError):
+            next_index = 0
+        if not state or next_index <= 0:
+            return {}
+        return {
+            "target": state.get("target", ""),
+            "protocol": state.get("protocol", ""),
+            "mode": state.get("mode", ""),
+            "dpi_type": state.get("dpi_type", ""),
+            "next_index": next_index,
+            "working_count": int(state.get("working_count") or 0),
+            "timestamp": state.get("timestamp"),
+        }
+
+    def _restore_working(self) -> int:
+        """Вернуть в результаты найденное прерванным прогоном."""
+        restored = []
+        for item in self._load_resume_state().get("working") or []:
+            if not isinstance(item, dict) or not item.get("success"):
+                continue
+            try:
+                fields = {k: item[k] for k in (
+                    "strategy_id", "strategy_name", "target", "success",
+                    "latency_ms", "error", "http_code", "timestamp",
+                    "protocol", "throughput_kbps", "body_passed",
+                    "success_rate", "score", "checks", "passes",
+                    "confirmed", "from_memory", "raw_data") if k in item}
+                restored.append(StrategyProbeResult(**fields))
+            except (TypeError, ValueError):
+                continue
+        with self._lock:
+            self._results.extend(restored)
+        return len(restored)
 
     def _load_resume_state(self) -> dict:
         """
