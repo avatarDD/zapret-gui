@@ -56,9 +56,13 @@ def register(app):
     @app.route("/api/geneva/status", method="GET")
     def geneva_status():
         from core.bypass_engine import get_active
+        from core.update_checker import geneva_release_info
         mgr = _mgr()
+        det = mgr.detect()
+        # Что поставит «Установить/Обновить»: закреплённый релиз.
+        det["release"] = geneva_release_info(det.get("version", ""))
         return {"ok": True, "active_engine": get_active(),
-                "detect": mgr.detect(), "engine": mgr.status(),
+                "detect": det, "engine": mgr.status(),
                 "search": mgr.search_status()}
 
     @app.route("/api/geneva/install", method="POST")

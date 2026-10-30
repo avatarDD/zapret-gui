@@ -93,6 +93,8 @@ def check_all() -> dict:
     results.append(_check_tgproto())
     # opera-proxy
     results.append(_check_opera())
+    # geneva_c (второй движок обхода DPI)
+    results.append(_check_geneva())
 
     # Единое правило страницы «Обновления»: обновлять можно только то, что
     # УСТАНОВЛЕНО. Каждый инсталлятор считает has_update сам, и стоит одному
@@ -182,6 +184,7 @@ _CHECKERS = {
     "tgwsproxy": lambda: _check_tgwsproxy(),
     "tgproto": lambda: _check_tgproto(),
     "opera": lambda: _check_opera(),
+    "geneva": lambda: _check_geneva(),
 }
 
 _refreshing = set()
@@ -778,6 +781,65 @@ def _check_opera() -> dict:
         return row
     except Exception as e:
         return {"name": "opera", "display_name": "opera-proxy",
+                "installed": False, "current": "", "latest": "",
+                "has_update": False, "error": str(e)}
+
+
+def geneva_release_info(current: str = "") -> dict:
+    """Что поставит кнопка geneva и есть ли смысл её предлагать.
+
+    «Последняя» — ЗАКРЕПЛЁННЫЙ релиз из BINARIES['geneva']: sha256 в
+    манифесте сверены именно для него, и установщик ставит его же.
+    Апстримный тег показываем рядом, чтобы «у них новее» не выглядело
+    проглоченной ошибкой. Сборка не из релиза (версия — хэш коммита,
+    `3477eee`) обновлением не считается: сравнивать её не с чем.
+    """
+    from core.ext_binary_installer import BINARIES
+    cfg = BINARIES.get("geneva") or {}
+    pinned = (cfg.get("release_tag") or "").strip()
+    latest = pinned.lstrip("vV")
+    current = (current or "").strip().lstrip("vV")
+    # Строго «1.0.0»: хэш «3477eee» начинается с цифр, и _version_tuple
+    # принял бы его за версию 3477.
+    release_build = bool(re.match(r"^\d+\.\d+(\.\d+)*$", current))
+    return {
+        "latest": latest,
+        "tag": pinned,
+        "release_build": release_build,
+        "has_update": bool(current and release_build
+                           and _is_newer(latest, current)),
+    }
+
+
+def _check_geneva() -> dict:
+    """Проверить geneva_c."""
+    try:
+        from core.geneva_manager import get_geneva_manager
+        det = get_geneva_manager().detect()
+        current = det.get("version", "") or ""
+        info = geneva_release_info(current)
+        upstream = _github_latest("avatarDD/geneva_c")
+        row = {
+            "name": "geneva",
+            "display_name": "geneva_c (движок обхода)",
+            "installed": det.get("installed", False),
+            "current": current,
+            "latest": info["latest"],
+            "has_update": info["has_update"],
+            "path": det.get("binary", ""),
+            "pinned": True,
+            "latest_source": "pinned",
+            "upstream_latest": upstream,
+            "pin_reason": "sha256 сверены для этой версии",
+        }
+        if det.get("installed") and current and not info["release_build"]:
+            row["note"] = ("установлена сборка не из релиза (%s) — "
+                           "сравнивать с релизом не с чем" % current)
+        elif det.get("installed") and not det.get("proto_ok"):
+            row["note"] = det.get("hint") or "несовместимая версия geneva"
+        return row
+    except Exception as e:
+        return {"name": "geneva", "display_name": "geneva_c (движок обхода)",
                 "installed": False, "current": "", "latest": "",
                 "has_update": False, "error": str(e)}
 

@@ -5874,6 +5874,8 @@ body.expert-mode .expert-note { display: none !important; }
 }
 .gv-form .form-control { width: 100%; min-width: 0; }
 .gv-grow { flex: 1 1 260px; min-width: 0; }
+.gv-custom-size .gv-row { flex-wrap: nowrap; margin: 0; }
+.gv-custom-size .gv-row .form-control { flex: 1 1 0; min-width: 0; }
 .gv-check {
     display: inline-flex;
     align-items: flex-start;
@@ -5895,6 +5897,8 @@ body.expert-mode .expert-note { display: none !important; }
     white-space: nowrap;
 }
 .gv-scroll { max-height: 520px; overflow: auto; }
+/* На телефоне таблица листается вбок внутри блока, а не сжимается в столбик. */
+.gv-scroll table { min-width: 640px; }
 .gv-col-pick { width: 32px; }
 .gv-note { font-size: 12px; color: var(--text-muted); margin: 6px 0; }
 .gv-verdict { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 8px 0; }
@@ -5943,3 +5947,21 @@ body.expert-mode .expert-note { display: none !important; }
 @media (max-width: 600px) {
     .gv-ellipsis { max-width: 220px; }
 }
+
+/* ===== Раздел «Обход DPI»: вкладки движков (components/engine_tabs.js) ===== */
+.engine-tabs {
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    margin-bottom: 16px;
+}
+.engine-tabs .badge { font-size: 10px; }
+.engine-tabs-link {
+    margin-left: auto;
+    padding: 0 14px;
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.engine-tabs-link:hover { color: var(--accent); }
+.gv-next { margin-top: 10px; font-size: 13px; color: var(--text-secondary); }

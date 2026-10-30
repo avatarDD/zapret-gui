@@ -9,8 +9,9 @@ const App = (() => {
     // Реестр страниц: id → { render(container), destroy?() }
     const pages = {
         dashboard:   DashboardPage,
-        control:     ControlPage,
-        strategies:  StrategiesPage,
+        bypass:      BypassPage,
+        control:     ControlHubPage,
+        strategies:  StrategiesHubPage,
         hostlists:   HostlistsPage,
         ipsets:      IPSetsPage,
         lua:         LuaScriptsPage,
@@ -21,10 +22,9 @@ const App = (() => {
         // «Диагностика блокировок» — вкладки «Тест доступности»
         // (BlockcheckPage) и «Мониторинг DNS» (BlockDetectorPage).
         blockcheck:  BlockcheckHubPage,
-        // «Подбор стратегий» — вкладки «Официальный (blockcheck2.sh)»
-        // (Blockcheck2Page) и «По каталогу zapret-gui» (ScanPage).
+        // «Подбор стратегий» — вкладки «nfqws2: blockcheck2.sh»
+        // (Blockcheck2Page) и «nfqws2: по каталогу» (ScanPage).
         scan:        StrategyScanHubPage,
-        geneva:      GenevaPage,
         logs:        LogsPage,
         autostart:   AutostartPage,
         zapret:      ZapretManagerPage,
@@ -65,6 +65,8 @@ const App = (() => {
     const HASH_ALIASES = {
         'block-detector': 'blockcheck?tab=monitor',
         'blockcheck2':    'scan',
+        // Страница geneva разошлась по задачам раздела «Обход DPI».
+        'geneva':         'bypass',
     };
 
     let currentPage = null;

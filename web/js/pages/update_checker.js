@@ -26,6 +26,8 @@ const UpdateCheckerPage = (() => {
         "tgwsproxy": "tgproxy?focus=tgwsproxy",
         "tgproto":   "tgproxy?focus=mtproto",
         "opera":     "opera-proxy",
+        // Установка и обновление geneva — в карточке движка.
+        "geneva":    "control?engine=geneva",
     };
 
     async function render(container) {

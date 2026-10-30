@@ -83,7 +83,7 @@ const ScanPage = (() => {
         container.innerHTML = `
             <div class="page-container">
                 <!-- Заголовок и вкладки рисует StrategyScanHubPage: эта
-                     страница — вкладка «По каталогу zapret-gui». -->
+                     страница — вкладка «nfqws2: по каталогу». -->
 
                 <div class="card" id="scan-controls">
                     <div class="card-title">
