@@ -209,9 +209,9 @@ const SettingsPage = (() => {
                     { value: 'router', label: 'Роутер (есть LAN)' },
                     { value: 'pc',     label: 'ПК / VPS (одна сетевая карта)' },
                 ]},
-                { key: 'interfaces.wan',   label: 'WAN (IFACE_WAN)',    type: 'text', placeholder: 'Авто-определение' },
-                { key: 'interfaces.wan6',  label: 'WAN6 (IFACE_WAN6)',  type: 'text', placeholder: 'Авто-определение' },
-                { key: 'interfaces.lan',   label: 'LAN (IFACE_LAN)',    type: 'text', placeholder: 'Авто-определение' },
+                { key: 'interfaces.wan',   label: 'WAN — внешний (IFACE_WAN)',    type: 'text', placeholder: 'Авто-определение' },
+                { key: 'interfaces.wan6',  label: 'WAN6 — внешний IPv6 (IFACE_WAN6)',  type: 'text', placeholder: 'Авто-определение' },
+                { key: 'interfaces.lan',   label: 'LAN — локальная сеть (IFACE_LAN)',    type: 'text', placeholder: 'Авто-определение' },
             ]
         },
         {
@@ -651,7 +651,7 @@ const SettingsPage = (() => {
                             Назначение ролей сетевым интерфейсам
                         </h3>
                         <div style="font-size: 12px; color: var(--text-secondary);">
-                            Кликните на бейджи WAN / WAN6 / LAN для назначения роли. Соответствует IFACE_WAN, IFACE_WAN6, IFACE_LAN в конфиге zapret2.
+                            WAN — внешний интерфейс (в сторону провайдера), LAN — локальная сеть. Кликните на бейджи WAN / WAN6 / LAN для назначения роли. Соответствует IFACE_WAN, IFACE_WAN6, IFACE_LAN в конфиге zapret2.
                         </div>
                     </div>
                     <button class="btn btn-ghost btn-sm" data-action="refreshInterfaces" title="Обновить список">
@@ -1242,9 +1242,13 @@ const SettingsPage = (() => {
         const wan6List = _getRoleIfaces('wan6');
         const lanList  = _getRoleIfaces('lan');
 
-        let html = '';
+        // Внешние интерфейсы — наверх: их и ищут глазами в первую очередь
+        const ifaces = _allInterfaces.slice().sort((a, b) =>
+            (b.external ? 1 : 0) - (a.external ? 1 : 0));
 
-        _allInterfaces.forEach(iface => {
+        let html = _renderExternalSummary(ifaces.filter(i => i.external));
+
+        ifaces.forEach(iface => {
             const name = iface.name;
             const stateColor = iface.state === 'up' ? 'var(--success)' :
                                iface.state === 'down' ? 'var(--error)' : 'var(--text-muted)';
@@ -1257,6 +1261,9 @@ const SettingsPage = (() => {
                 const ipv4 = iface.addresses.filter(a => a.family === 'ipv4');
                 if (ipv4.length > 0) addrText = ipv4.map(a => a.address).join(', ');
             }
+
+            const ext = !!iface.external;
+            const markers = _renderIfaceMarkers(iface);
 
             // Имеет ли хотя бы одну роль
             const hasRole = wanList.includes(name) || wan6List.includes(name) || lanList.includes(name);
@@ -1284,8 +1291,8 @@ const SettingsPage = (() => {
                 <div style="
                     display: flex; align-items: center; gap: 10px;
                     padding: 8px 12px; margin-bottom: 2px;
-                    background: ${hasRole ? 'rgba(91,158,244,0.04)' : 'transparent'};
-                    border: 1px solid ${hasRole ? 'rgba(91,158,244,0.2)' : 'var(--border)'};
+                    background: ${ext ? ROLES.wan.bg.replace('0.15', '0.06') : (hasRole ? 'rgba(91,158,244,0.04)' : 'transparent')};
+                    border: 1px solid ${ext ? ROLES.wan.color : (hasRole ? 'rgba(91,158,244,0.2)' : 'var(--border)')};
                     border-radius: var(--radius);
                     transition: all 0.15s;
                 ">
@@ -1302,6 +1309,7 @@ const SettingsPage = (() => {
                             ">${stateText}</span>
                             ${addrText ? `<span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">${addrText}</span>` : ''}
                         </div>
+                        ${markers}
                     </div>
                     <div style="display:flex; gap:4px; flex-shrink:0;">
                         ${badges}
@@ -1311,6 +1319,56 @@ const SettingsPage = (() => {
         });
 
         container.innerHTML = html;
+    }
+
+    /** Строка-сводка над списком: какой интерфейс внешний и почему. */
+    function _renderExternalSummary(externals) {
+        const wan = ROLES.wan;
+        if (externals.length === 0) {
+            return `<div style="font-size:12px; color:var(--text-secondary); padding:8px 12px; margin-bottom:8px;
+                        border:1px dashed var(--border); border-radius:var(--radius);">
+                Внешний интерфейс (WAN) не определён: нет маршрута по умолчанию
+                и сети OpenWrt «wan». Назначьте роль WAN вручную.</div>`;
+        }
+        const assigned = _getRoleIfaces('wan');
+        const mismatch = assigned.length > 0 &&
+            !externals.some(i => assigned.includes(i.name));
+        const names = externals.map(i => `<b style="font-family:var(--font-mono);">${escapeAttr(i.name)}</b>`).join(', ');
+        return `<div style="font-size:12px; color:var(--text-primary); padding:8px 12px; margin-bottom:8px;
+                    background:${wan.bg}; border:1px solid ${wan.color}; border-radius:var(--radius);">
+            <span style="color:${wan.color}; font-weight:700;">Внешний интерфейс (WAN):</span> ${names}
+            <span style="color:var(--text-secondary);"> — смотрит в сторону провайдера (интернет).</span>
+            ${mismatch ? `<div style="margin-top:4px; color:var(--warning, ${wan.color});">
+                Роль WAN сейчас назначена другому интерфейсу (${escapeAttr(assigned.join(' '))}) — проверьте, что так и задумано.</div>` : ''}
+        </div>`;
+    }
+
+    /** Пометки под именем интерфейса: «внешний», сеть OpenWrt, маршрут по умолчанию. */
+    function _renderIfaceMarkers(iface) {
+        const chip = (text, color, bg, title) => `<span title="${escapeAttr(title)}" style="
+            display:inline-block; font-size:10px; font-weight:600; padding:1px 6px; border-radius:3px;
+            color:${color}; background:${bg}; border:1px solid ${color === 'var(--text-muted)' ? 'var(--border)' : color};
+        ">${escapeAttr(text)}</span>`;
+        const parts = [];
+        if (iface.external) {
+            parts.push(chip('ВНЕШНИЙ', ROLES.wan.color, ROLES.wan.bg,
+                'Внешний интерфейс — в сторону провайдера (интернет)'));
+        }
+        (iface.networks || []).forEach(net => {
+            const isWan = /^wan/i.test(net);
+            const isLan = /^lan/i.test(net);
+            const color = isWan ? ROLES.wan.color : (isLan ? ROLES.lan.color : 'var(--text-muted)');
+            parts.push(chip('OpenWrt: ' + net, color, 'transparent',
+                'Логическая сеть OpenWrt (Сеть → Интерфейсы в LuCI)'));
+        });
+        const dr = iface.default_route || [];
+        if (dr.length) {
+            const fam = dr.map(f => f === 'ipv6' ? 'IPv6' : 'IPv4').join(' + ');
+            parts.push(chip('маршрут по умолчанию ' + fam, 'var(--text-muted)', 'transparent',
+                'Через этот интерфейс идёт маршрут по умолчанию (default route)'));
+        }
+        if (!parts.length) return '';
+        return `<div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">${parts.join('')}</div>`;
     }
 
     // ══════════════════ Utils ══════════════════
