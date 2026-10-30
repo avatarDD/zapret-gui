@@ -341,6 +341,12 @@ UI), и `tools_by_scope`.
 | `strategy_memory` | read | нет | `tools/memory.py` | targets?, all_networks?, offset?, limit? | что уже срабатывало на домене В ЭТОЙ сети: argv, +удач/−неудач, давность |
 | `issue_draft` | read | нет | `tools/issues.py` | title, kind?, tool?, component?, crash_id?, actual?, expected?, steps?, evidence?, args?, severity?, include_targets? | черновик issue об ошибке САМОГО GUI; место в коде, трассировку и repro сервер дописывает сам |
 | `issue_draft_list` | read | нет | `tools/issues.py` | id?, status?, offset?, limit? | черновики (новые первыми) + падения без черновика; с `id` — текст и ссылка |
+| `bypass_engine_status` | read | нет | `tools/geneva.py` | — | какой движок обхода активен (`bypass.engine`: nfqws2 / geneva), оба движка, снимки рабочих настроек из `state/engines.json`, прерванный подбор nfqws2 (`scan_resume`) и geneva |
+| `geneva_status` | read | нет | `tools/geneva.py` | — | geneva_c: бинарник и `proto`, движок (`status`/`stats` из управляющего сокета, `verdict` working/not_firing/no_traffic, срабатывания деревьев), лента событий, подбор |
+| `geneva_library` | read | нет | `tools/geneva.py` | country?, test?, limit? | `geneva library --json` без эталона «\/», по убыванию `rate` |
+| `geneva_check` | read | нет | `tools/geneva.py` | strategy | `geneva check --json`: каноническая форма или текст ошибки разбора |
+| `geneva_db_top` | read | нет | `tools/geneva.py` | target?, limit? | `geneva db top --json` по базе `state/geneva/db.jsonl`; цель — `проба:хост` |
+| `geneva_search_status` | read | нет | `tools/geneva.py` | — | `search.json` + события задачи: поколение, лучший фитнес, baseline, последние оценки, `results`, `can_resume` |
 | `config_set` | config_write | **да** | `tools/config.py` | path, value | записать ОДНУ настройку; ответ — дифф «было/стало», список заменяется целиком |
 | `dns_autoselect` | config_write | **да** | `tools/diagnostics.py` | fresh? | замер DNS-пресетов (при `fresh` — ещё и `probes`) или последний замер → лучший честный по UDP в `dns_routing.auto_server`; правила с `dns="auto"` пересобираются в dnsmasq (`core/dns_bench.py`); снимок `config` — откат `mcp_undo_last` |
 | `nfqws_start` | control | **да** | `tools/nfqws.py` | — | правила перехвата + движок с активной стратегией; обратное — `nfqws_stop` |
@@ -350,6 +356,10 @@ UI), и `tools_by_scope`.
 | `strategy_apply` | control | **да** | `tools/nfqws.py` | id | применить стратегию по id; снимок вида `strategy_active` |
 | `quick_fix_apply` | control | **да** | `tools/diagnostics.py` | fix | ремонт по коду из `quick_fix_check`: `clock_sync` (NTP, иначе HTTP `Date` → `date -u -s`), `dns_restart` (init-скрипт dnsmasq); снимка нет — откатывать нечего |
 | `device_quota_grant` | control | **да** | `tools/firewall.py` | rule, minutes | добавить (или забрать) правилу квоты минут на сегодня; заблокированному устройству интернет открывается сразу, до полуночи (`core/device_quota.py`); откат — тот же вызов с обратным знаком |
+| `bypass_engine_set` | control | **да** | `tools/geneva.py` | engine, start? | `core/bypass_engine.switch`: снимок уходящего, стоп (у nfqws2 — и S99zapret), старт выбранного, откат при неудаче; снимок вида `bypass_engine` |
+| `geneva_start` | control | **да** | `tools/geneva.py` | — | `geneva run` с рабочей стратегией; отказ `engine_nfqws2`, если активен nfqws2; обратное — `geneva_stop` |
+| `geneva_stop` | control | **да** | `tools/geneva.py` | — | SIGTERM (правила снимает сам geneva), после SIGKILL — `geneva fw down` |
+| `geneva_set_strategy` | control | **да** | `tools/geneva.py` | strategy, source? | рабочая стратегия geneva; живому движку — `set_strategy` в сокет без перезапуска; снимок вида `geneva_strategy` |
 | `firewall_apply` | control | **да** | `tools/firewall.py` | — | поставить правила NFQUEUE; порты управления исключаются |
 | `firewall_remove` | control | **да** | `tools/firewall.py` | — | снять правила: трафик пойдёт напрямую |
 | `strategy_save` | strategies_write | **да** | `tools/strategies.py` | id, name, description?, protocol?, profiles | создать/перезаписать USER-стратегию; профили заменяются целиком; `validation` — прогон `--intercept=0` |
@@ -374,6 +384,9 @@ UI), и `tools_by_scope`.
 | `dpi_classify` | probes | нет | `tools/probes.py` | target, repeats?, timeout_sec?, control_sni? | чем режут (приём d2k, `core/testers/dpi_differential.py`): ClientHello целиком → разрез после 1-го байта → чужое имя на тот же IP; вердикты `clear/prefix/opaque/address/response/local_address/unreachable/flaky/inconclusive`, `dpi_classification`+`remediation`; без метки при работающем движке `clear` не выдаётся |
 | `scan_start` | probes | **да** | `tools/scan.py` | target, protocol?, mode?, resume?, dpi_type?, stop_after?, confirm?, custom? | запустить подбор стратегий; ответ — `job_id`, сразу. `stop_after` — остановиться после N рабочих (0 — всё), `confirm` — перепроверить лучшие (медиана); `resume` берёт позицию только того же прогона; `custom` — своя стратегия текстом вместо каталога (`core/custom_candidates.py`: только шаги `--lua-desync`, до 10 кандидатов, неизвестная функция/blob отбрасывается до запуска, режим `custom`) |
 | `scan_stop` | probes | **да** | `tools/scan.py` | — | остановить подбор; проверенное остаётся в `scan_results` |
+| `geneva_search_start` | probes | **да** | `tools/geneva.py` | host?, probe?, port?, population?, generations?, workers?, runs?, timeout?, pause_bypass?, resume?, more_generations? | `geneva evolve` в фоне, checkpoint и база в `state/geneva/`; `resume` — продолжить сохранённый поиск (те же параметры); на время прогона обход приостановлен и возвращается сам |
+| `geneva_search_stop` | probes | **да** | `tools/geneva.py` | — | SIGTERM подбору: checkpoint остаётся, `can_resume` |
+| `geneva_eval_start` | probes | **да** | `tools/geneva.py` | strategies, host, probe?, port?, workers?, runs?, timeout?, pause_bypass? | `geneva eval -f` по списку (до 64), итог в `geneva_search_status.results` |
 | `blockcheck_start` | probes | **да** | `tools/blockcheck.py` | mode?, domains?, timeout_sec? | наш blockcheck в фоне; отчёт потом — `dpi_report` |
 | `blockcheck2_start` | probes | **да** | `tools/blockcheck.py` | domains?, scanlevel?, ipv?, repeats?, http?, tls12?, tls13?, http3? | оригинальный скрипт zapret2 (DOMAINS/SCANLEVEL/REPEATS/…) |
 | `blockcheck2_stop` | probes | **да** | `tools/blockcheck.py` | — | прибить скрипт; собранная телеметрия остаётся читаемой |

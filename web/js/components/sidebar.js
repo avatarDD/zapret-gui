@@ -33,7 +33,7 @@ const Sidebar = (() => {
     };
 
     // Группы с разделителями. Порядок — по логике использования:
-    // Главная → обход DPI (nfqws2) → VPN/туннели → списки/данные →
+    // Главная → обход DPI (nfqws2 / geneva_c) → VPN/туннели → списки/данные →
     // диагностика → система.
     const NAV_GROUPS = [
         {
@@ -44,12 +44,14 @@ const Sidebar = (() => {
         {
             // Здесь только подбор стратегий; «что и как заблокировано» —
             // в группе «Диагностика» (раздел «Диагностика блокировок»).
-            label: 'Обход DPI (nfqws2)',
+            label: 'Обход DPI',
             items: [
                 { simple: true, id: 'control', label: 'Управление', icon: 'play' },
                 { simple: true, id: 'strategies', label: 'Стратегии',  icon: 'strategy' },
                 // Вкладки: официальный blockcheck2.sh + перебор по нашему каталогу.
                 { simple: true, id: 'scan', label: 'Подбор стратегий', icon: 'scan' },
+                // Выбор движка (nfqws2 или geneva_c), телеметрия и подбор geneva.
+                { simple: true, id: 'geneva', label: 'Движок обхода (geneva)', icon: 'strategy' },
             ]
         },
         {

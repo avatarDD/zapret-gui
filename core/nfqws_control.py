@@ -232,6 +232,9 @@ def start(strategy_args=None, source: str = "control") -> dict:
         source: чем помечать строки журнала.
     """
     mgr, fw, cfg = _managers()
+    refused = _engine_refusal(source, mgr, fw)
+    if refused:
+        return refused
 
     args = _as_args(strategy_args)
     if args is None:
@@ -276,6 +279,9 @@ def stop(source: str = "control") -> dict:
 def restart(strategy_args=None, source: str = "control") -> dict:
     """Перезапустить nfqws2 и переприменить правила firewall."""
     mgr, fw, cfg = _managers()
+    refused = _engine_refusal(source, mgr, fw)
+    if refused:
+        return refused
 
     args = _as_args(strategy_args)
     if args is None:
@@ -309,6 +315,9 @@ def apply_strategy(strategy_id: str, source: str = "strategies") -> dict:
     from core.strategy_builder import get_strategy_manager
 
     mgr, fw, cfg = _managers()
+    refused = _engine_refusal(source, mgr, fw)
+    if refused:
+        return refused
     sm = get_strategy_manager()
 
     strategy = sm.get_strategy(strategy_id)
@@ -425,6 +434,24 @@ def _done(mgr, fw, **extra) -> dict:
            "firewall": _status(fw)}
     out.update(extra)
     return out
+
+
+def _engine_refusal(source: str, mgr, fw):
+    """Активный движок обхода — geneva_c: nfqws2 рядом не поднимаем.
+
+    Два движка на одних портах пропускали бы каждый пакет через оба
+    (core/bypass_engine). Переключение движка ходит с
+    ``source="engine_switch"`` и мимо проверки.
+    """
+    try:
+        from core.bypass_engine import nfqws_refusal
+        refusal = nfqws_refusal(source)
+    except Exception:                           # noqa: BLE001 — граница
+        refusal = {}
+    if not refusal:
+        return None
+    return _fail(refusal["error"], mgr, fw, error_code=refusal["error_code"],
+                 hint=refusal["hint"])
 
 
 def _fail(error, mgr, fw, **extra) -> dict:

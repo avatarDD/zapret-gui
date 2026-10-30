@@ -61,6 +61,16 @@ OWNER_FREEZE = "freeze"
 
 # Человеческие названия для текстов отказа. Владелец, которого здесь
 # нет, покажется как есть: выдуманное описание хуже сырого имени.
+# Кто гоняет nfqws2 (или пробы) по живой сети. На их время движок
+# geneva_c останавливается — иначе пакеты проходили бы через оба движка
+# и результат проверки врал бы, — а после возвращается
+# (core/bypass_engine.hold_geneva_for). Идущий подбор geneva для них —
+# «занято»: его пробы исказил бы nfqws2. OWNER_PROBE здесь нет: его
+# «с обходом и без» переключает nfqws2 через nfqws_control, а тот при
+# активном geneva отказывает сам (bypass_engine.nfqws_refusal).
+NETWORK_OWNERS = (OWNER_SCANNER, OWNER_EXPERIMENT, OWNER_BLOCKCHECK,
+                  OWNER_FREEZE)
+
 OWNER_TEXT = {
     OWNER_SCANNER: "подбор стратегий",
     OWNER_EXPERIMENT: "эксперимент со стратегиями",
@@ -68,6 +78,7 @@ OWNER_TEXT = {
     OWNER_PROBE: "сравнение «с обходом и без»",
     OWNER_UI: "управление обходом",
     OWNER_FREEZE: "проба «обрыв на 16 КБ»",
+    "geneva": "подбор стратегии geneva_c",
 }
 
 # Имя lock-файла рядом с settings.json.
@@ -154,6 +165,27 @@ class NfqwsSession:
         асинхронная задача). Освобождение обязательно: без него движок
         останется занятым до конца процесса.
         """
+        hold = self._claim(owner, timeout=timeout, reason=reason)
+        if hold.nested or hold.owner not in NETWORK_OWNERS:
+            return hold
+        # Движок geneva останавливаем уже под захватом (никто другой не
+        # стартует nfqws2 между проверкой и остановкой), но вне
+        # self._cond: остановка процесса — секунды.
+        try:
+            from core.bypass_engine import hold_geneva_for
+            held = hold_geneva_for(hold.owner)
+        except Exception as e:                  # noqa: BLE001 — граница
+            log.warning("geneva не приостановлен: %s" % e, source="session")
+            held = ""
+        if held == "busy":
+            hold.release()
+            raise SessionBusy({"owner": "geneva", "since": time.time(),
+                               "reason": "пробы geneva исказил бы nfqws2",
+                               "pid": os.getpid()})
+        hold.geneva_paused = held == "paused"
+        return hold
+
+    def _claim(self, owner: str, timeout: float = 0.0, reason: str = ""):
         owner = str(owner or "").strip() or OWNER_UI
         me = threading.get_ident()
         deadline = time.monotonic() + max(0.0, float(timeout or 0.0))
@@ -485,12 +517,14 @@ class _Hold:
     мьютекс «протекает» ровно в тех сценариях, ради которых он нужен.
     """
 
-    __slots__ = ("session", "owner", "nested", "_released")
+    __slots__ = ("session", "owner", "nested", "geneva_paused",
+                 "_released")
 
     def __init__(self, session, owner: str, nested: bool):
         self.session = session
         self.owner = owner
         self.nested = nested
+        self.geneva_paused = False
         self._released = False
 
     @property
@@ -502,6 +536,12 @@ class _Hold:
             return
         self._released = True
         self.session._free()
+        if self.geneva_paused:
+            try:
+                from core.bypass_engine import release_geneva_hold
+                release_geneva_hold(self.owner)
+            except Exception as e:              # noqa: BLE001 — граница
+                log.warning("geneva не возвращён: %s" % e, source="session")
 
     def __enter__(self):
         return self.session

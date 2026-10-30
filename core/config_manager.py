@@ -549,6 +549,45 @@ DEFAULT_CONFIG = {
         "installed_arch": "",
     },
 
+    # --- Движок обхода DPI на роутере (core/bypass_engine) ---
+    # Какой движок обходит блокировки: nfqws2 (zapret2) или geneva_c.
+    # Одновременно работает один: два движка на одних портах пропускали
+    # бы каждый пакет через оба.
+    "bypass": {
+        "engine": "nfqws2",  # nfqws2 | geneva
+    },
+
+    # --- geneva_c (avatarDD/geneva_c, core/geneva_manager) ---
+    # Порт Geneva на C: исполняет стратегии Geneva (geneva run) и
+    # подбирает их генетическим алгоритмом (geneva evolve). Checkpoint
+    # подбора и база оценок — в <каталог конфига>/state/geneva/.
+    "geneva": {
+        "binary": "",          # пусто — искать в /opt/usr/bin, /opt/bin, …
+        "autostart": False,    # поднимать при загрузке, если движок — geneva
+        "strategy": "",        # рабочая стратегия (каноническая строка)
+        "strategy_source": "",  # library | search | manual
+        "ports": "80,443",     # порты сервиса на удалённой стороне
+        "proto": "tcp",        # tcp | udp | tcp,udp
+        "iface": "",           # WAN-интерфейс (пусто — весь трафик)
+        "queue": 310,          # NFQUEUE (nfqws2 держит 300–303)
+        "firewall": "auto",    # auto | nft | iptables
+        "first": 0,            # только первые N пакетов соединения (0 — все)
+        "log_level": "info",
+        # Последние параметры подбора (форма на странице их помнит).
+        "search": {
+            "probe": "tls",    # tls | http | https (curl, полная загрузка)
+            "host": "",
+            "port": 0,
+            "population": 30,
+            "generations": 15,
+            "workers": 1,
+            "runs": 1,
+            "timeout": 5,
+            "pause_bypass": True,
+        },
+        "installed_tag": "",
+    },
+
     # --- Telegram MTProto Proxy (tgwsproxy / mtproto) ---
     # Два движка:
     #   tgwsproxy — tg-ws-proxy-go, основной

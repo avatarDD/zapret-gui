@@ -1030,6 +1030,39 @@ BINARIES = {
             },
         },
     },
+
+    # geneva_c — официальный релиз апстрима (avatarDD/geneva_c): статические
+    # musl-сборки zig под каждую архитектуру роутера и SHA256SUMS рядом.
+    # Тег закреплён: имена ассетов версионные (geneva-1.0.0-linux-<арка>),
+    # а хэши ниже посчитаны для этой версии (сверены с SHA256SUMS релиза
+    # и с digest ассетов в GitHub API). В тарболе, кроме бинарника, лежат
+    # LICENSE/README/packaging — нужный файл выбирает archive_member.
+    # Обновление: новый тег, имена и хэши — вместе с docs/upstream.json.
+    "geneva": {
+        "repo": "avatarDD/geneva_c",
+        "release_tag": "v1.0.0",
+        "pinned_tag": "v1.0.0",
+        "install_kind": "binary",
+        "dest": "/opt/usr/bin/geneva",
+        "archive_member": "geneva",
+        # `geneva version` (флага --version тоже хватило бы, но подкоманда —
+        # контракт апстрима: docs/PROTOCOL.md).
+        "version_args": ("version",),
+        "arch_map": {
+            "aarch64": "geneva-1.0.0-linux-aarch64.tar.gz",
+            "armv7": "geneva-1.0.0-linux-armv7.tar.gz",
+            "mips": "geneva-1.0.0-linux-mips.tar.gz",
+            "mipsel": "geneva-1.0.0-linux-mipsel.tar.gz",
+            "x86_64": "geneva-1.0.0-linux-x86_64.tar.gz",
+        },
+        "sha256_map": {
+            "aarch64": "0aa01c463423f39fc57072616ad7e66a0fa28daa272ba693e1c1ce3f54cdc88d",
+            "armv7": "d2abda6e8579ac2ced00bbc803257b3016f50a0474a878774aac80e2847822ab",
+            "mips": "bd51d0f228865eb4cf96c1a6e9a9c38cbaadd5cddf20706180a7919327f38e4d",
+            "mipsel": "fd8de56e56b6deea5b9d74941355092e8d9e2514102902fb431a973f6d4af678",
+            "x86_64": "c0a29e7e3344d0c49f1cf89341b71b359264a09372e20727d6d68c818f45b022",
+        },
+    },
 }
 
 
@@ -1539,7 +1572,7 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def _unpack_if_needed(path: str) -> tuple:
+def _unpack_if_needed(path: str, member_name: str = "") -> tuple:
     """
     (путь_к_бинарнику, временный_ли, ошибка) — распаковать .gz/.tar.gz.
 
@@ -1547,6 +1580,10 @@ def _unpack_if_needed(path: str) -> tuple:
     сначала спросить про '.gz', тарбол «распакуется» в сам tar-архив,
     который потом ляжет на место бинарника (и получится ровно тот самый
     «Exec format error»).
+
+    ``member_name`` — базовое имя нужного файла в тарболе (``archive_member``
+    в BINARIES). Без него берётся первый файл: в релизе geneva_c это
+    LICENSE, а бинарник лежит рядом с README и packaging/.
     """
     if path.endswith(".tar.gz") or path.endswith(".tgz"):
         import tarfile
@@ -1555,6 +1592,9 @@ def _unpack_if_needed(path: str) -> tuple:
             with tarfile.open(path, "r:gz") as tar:
                 for member in tar.getmembers():
                     if not member.isfile() or member.name.startswith("."):
+                        continue
+                    if member_name and \
+                            os.path.basename(member.name) != member_name:
                         continue
                     member_path = os.path.realpath(
                         os.path.join(extract_dir, member.name))
@@ -1565,6 +1605,8 @@ def _unpack_if_needed(path: str) -> tuple:
                     return member_path, True, ""
         except (OSError, tarfile.TarError) as e:
             return "", False, "Распаковка архива: %s" % e
+        if member_name:
+            return "", False, "В архиве нет файла %s" % member_name
         return "", False, "В архиве нет файлов"
 
     if path.endswith(".gz"):
@@ -1595,7 +1637,8 @@ def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
         return {"ok": False, "error": "Каталог %s: %s"
                                       % (os.path.dirname(dest), e)}
 
-    src, tmp_made, err = _unpack_if_needed(tmp_path)
+    src, tmp_made, err = _unpack_if_needed(
+        tmp_path, cfg.get("archive_member", ""))
     if err:
         return {"ok": False, "error": err}
 
@@ -1682,7 +1725,7 @@ def _refresh_update_row(name: str) -> None:
 # Какому туннельному движку принадлежит бинарник — для поиска чужих
 # экземпляров того же движка (core/foreign_services).
 _ENGINE_OF = {"usque": "usque", "tgwsproxy": "tgproxy", "tgproto": "tgproxy",
-              "opera": "opera"}
+              "opera": "opera", "geneva": "geneva"}
 
 
 def install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
@@ -2005,7 +2048,8 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
         # _unpack_if_needed не даёт «распаковать» тарбол в самого себя и
         # положить tar-архив на место бинарника (MR-143: защита от
         # zip-slip осталась там же).
-        final_path, unpacked_tmp, unpack_err = _unpack_if_needed(tmp_path)
+        final_path, unpacked_tmp, unpack_err = _unpack_if_needed(
+            tmp_path, cfg.get("archive_member", ""))
         if unpack_err:
             return {"ok": False, "error": unpack_err}
 

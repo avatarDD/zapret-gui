@@ -12,6 +12,8 @@ const ScanPage = (() => {
     /* ───────── state ───────── */
     let pollTimer = null;
     let lastStatus = null;
+    // Поля прерванного подбора с диска уже подставлены в форму.
+    let _savedResumeApplied = false;
 
     // Быстрый выбор цели: домен + протокол, который для неё обычно нужен.
     // Хостинги — одна цель на всех: блокировка по сети провайдера рвёт
@@ -73,6 +75,7 @@ const ScanPage = (() => {
     /* ───────── lifecycle ───────── */
 
     function render(container) {
+        _savedResumeApplied = false;
         const chips = QUICK_TARGETS.map((t, i) =>
             `<button type="button" class="btn-chip" onclick="ScanPage.pickTarget(${i})">${escapeHtml(t.label)}</button>`
         ).join('');
@@ -586,8 +589,12 @@ const ScanPage = (() => {
     function updateUI(data) {
         const isRunning = data.status === 'running';
         const isIdle = data.status === 'idle';
-        const canResume = data.mode !== 'custom' && (data.status === 'cancelled'
-            || (data.status === 'completed' && data.stopped_early));
+        // Прерванный подбор с диска: после перезапуска GUI или роутера
+        // статус сканера «idle», но позиция и найденное сохранены.
+        const saved = (isIdle && data.saved_resume && data.saved_resume.next_index > 0)
+            ? data.saved_resume : null;
+        const canResume = !!saved || (data.mode !== 'custom' && (data.status === 'cancelled'
+            || (data.status === 'completed' && data.stopped_early)));
 
         const btnStart = document.getElementById('scan-btn-start');
         const btnStop = document.getElementById('scan-btn-stop');
@@ -599,7 +606,18 @@ const ScanPage = (() => {
         if (btnStop) btnStop.classList.toggle('hidden', !isRunning);
         if (btnResume) btnResume.classList.toggle('hidden', !canResume);
         setElText('scan-btn-resume-label',
-                  data.stopped_early ? 'Искать дальше' : 'Продолжить с места остановки');
+                  saved ? `Продолжить прерванный подбор (${saved.target}, с ${saved.next_index + 1}-й, найдено ${saved.working_count})`
+                        : (data.stopped_early ? 'Искать дальше' : 'Продолжить с места остановки'));
+        // Поля прерванного прогона — один раз: «Продолжить» сверяет цель,
+        // протокол и режим, а дальше человек вправе их поменять.
+        if (saved && !_savedResumeApplied) {
+            _savedResumeApplied = true;
+            setValue('scan-target', saved.target);
+            setValue('scan-protocol', saved.protocol);
+            setValue('scan-mode', saved.mode);
+            toggleCustom();
+            refreshHints();
+        }
 
         ['scan-target', 'scan-protocol', 'scan-mode', 'scan-stop-after', 'scan-confirm', 'scan-parallel', 'scan-community', 'scan-custom'].forEach(id => {
             const el = document.getElementById(id);

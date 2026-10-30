@@ -156,12 +156,19 @@ from core.mcp import registry
 # настройка).
 # Проба «как клиент LAN» (приём Tachyon): + 1 под `probes` (lan_probe —
 # временный netns в мосту LAN, трафик наружу).
+# geneva_c и выбор движка обхода: + 6 на чтение (bypass_engine_status,
+# geneva_status, geneva_library, geneva_check, geneva_db_top,
+# geneva_search_status — ни пакета, ни записи), + 4 под `control`
+# (bypass_engine_set, geneva_start, geneva_stop, geneva_set_strategy —
+# движок и его рабочая стратегия, как nfqws_*/strategy_apply) и + 3 под
+# `probes` (geneva_search_start/_stop, geneva_eval_start — трафик к
+# заблокированному сайту и пауза обхода на время прогона).
 BY_SCOPE = {
-    "read": 47,
-    "control": 10,
+    "read": 53,
+    "control": 14,
     "strategies_write": 12,
     "config_write": 2,
-    "probes": 16,
+    "probes": 19,
     "experiments": 7,
     "tunnels_write": 16,
     "dangerous": 2,
@@ -274,6 +281,9 @@ class TestToolCounts(unittest.TestCase):
         "issue_draft", "issue_draft_list",
         # Обвязка движков: лог и снимок для разбора.
         "tunnel_diagnostics", "tunnel_log",
+        # geneva_c и выбор движка обхода.
+        "bypass_engine_status", "geneva_check", "geneva_db_top",
+        "geneva_library", "geneva_search_status", "geneva_status",
     ]
 
     # S7 — мутирующие наборы. Список имён рядом с числом: две записи об
@@ -282,6 +292,8 @@ class TestToolCounts(unittest.TestCase):
         "firewall_apply", "firewall_remove", "nfqws_reload_lists",
         "nfqws_restart", "nfqws_start", "nfqws_stop", "scan_apply",
         "strategy_apply", "quick_fix_apply", "device_quota_grant",
+        "bypass_engine_set", "geneva_set_strategy", "geneva_start",
+        "geneva_stop",
     ]
     STRATEGIES_WRITE_TOOLS = [
         "blob_add", "hostlist_edit", "ipset_edit", "lua_script_save",
@@ -351,6 +363,7 @@ class TestToolCounts(unittest.TestCase):
         "dns_benchmark", "dpi_classify", "healthcheck_run",
         "lan_probe", "leak_check", "probe_compare", "probe_targets",
         "scan_start", "scan_stop",
+        "geneva_eval_start", "geneva_search_start", "geneva_search_stop",
         # S17 — снифер. Сам он пакетов не выпускает, но показывает
         # чужой трафик и ходит с пробами парой («пусти пробу и посмотри,
         # что из неё вышло»), поэтому разрешение то же.
