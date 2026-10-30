@@ -74,7 +74,11 @@ def register(app):
             cfg = get_config_manager()
             cfg.set("geneva", "installed_tag", res.get("tag", ""))
             cfg.save()
-            res["detect"] = _mgr().detect()
+            mgr = _mgr()
+            res["detect"] = mgr.detect()
+            # Работающий процесс — ещё старый бинарник (файл заменён
+            # через rename): новая версия заработает после перезапуска.
+            res["restart_needed"] = mgr.is_running()
         return _reply(res, 502)
 
     @app.route("/api/geneva/config", method="GET")

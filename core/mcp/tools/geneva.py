@@ -450,7 +450,14 @@ def _undo_geneva_strategy(snapshot: dict) -> dict:
         cfg = get_config_manager()
         cfg.set("geneva", "strategy", "")
         cfg.save()
-        return {"ok": True, "undone_to": ""}
+        out = {"ok": True, "undone_to": ""}
+        if _mgr().is_running():
+            # Пустую стратегию в живой движок не отправить, а молча
+            # останавливать обход откат не вправе — говорим как есть.
+            out["note"] = ("стратегия в настройках сброшена; работающий "
+                           "geneva остаётся на текущей до остановки "
+                           "(geneva_stop)")
+        return out
     res = _mgr().set_strategy(before, source="manual")
     return {"ok": bool(res.get("ok")), "error": res.get("error", ""),
             "undone_to": before}

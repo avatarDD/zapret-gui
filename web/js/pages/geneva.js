@@ -87,9 +87,16 @@ const GenevaPage = (() => {
     // geneva_c — search (web/js/components/engine_tabs.js).
     const ALL_SECTIONS = ['engines', 'engine', 'search', 'library', 'settings'];
     let _sections = new Set(ALL_SECTIONS);
+    let _renderToken = 0;
 
     async function render(container, opts) {
         opts = opts || {};
+        const token = ++_renderToken;
+        _stopPoll();
+        if (_visibilityHandler) {
+            document.removeEventListener('visibilitychange', _visibilityHandler);
+            _visibilityHandler = null;
+        }
         _formFilled = false;
         _settingsFilled = false;
         _sections = new Set(opts.sections || ALL_SECTIONS);
@@ -324,10 +331,14 @@ const GenevaPage = (() => {
 
         await Promise.all([_refresh(), _loadConfig(),
                            S('library') ? _loadLibrary() : null]);
+        // Пока ждали ответы, со страницы ушли (destroy) или её
+        // перерисовали: опрос от старого рендера тёк бы вечно.
+        if (token !== _renderToken) return;
         _startPoll();
     }
 
     function destroy() {
+        _renderToken++;
         _stopPoll();
         if (_visibilityHandler) {
             document.removeEventListener('visibilitychange', _visibilityHandler);
@@ -533,8 +544,10 @@ const GenevaPage = (() => {
     async function _engineAction(action) {
         try {
             const res = await API.post('/api/geneva/' + action, {}, { timeout: 30000 });
-            Toast.success(action === 'start' ? (res.ready ? 'geneva запущен' : 'geneva запущен, правила ставятся')
-                                             : 'geneva остановлен');
+            const started = res.ready ? 'запущен' : 'запущен, правила ставятся';
+            Toast.success(action === 'start' ? 'geneva ' + started
+                        : action === 'restart' ? 'geneva перезапущен' + (res.ready ? '' : ', правила ставятся')
+                        : 'geneva остановлен');
         } catch (e) {
             Toast.error(errText(e));
         }
@@ -587,6 +600,12 @@ const GenevaPage = (() => {
         try {
             const res = await API.post('/api/geneva/install', {}, { timeout: 180000 });
             Toast.success('geneva установлен: ' + (res.version || res.tag || ''));
+            if (res.restart_needed) {
+                const ok = await Confirm.show('Перезапустить geneva?',
+                    'Движок работает на прежней версии — новая заработает после перезапуска.',
+                    { confirmLabel: 'Перезапустить' });
+                if (ok) await _engineAction('restart');
+            }
         } catch (e) {
             Toast.error(errText(e));
         }

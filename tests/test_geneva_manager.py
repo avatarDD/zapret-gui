@@ -511,6 +511,42 @@ class TestSearch(_StubCase):
             self.assertTrue(wait_for(lambda: not fresh.job_running(), 40))
             self.assertEqual(fresh.search_status()["status"], "done")
 
+    def test_stop_waits_without_lock_and_keeps_stopped(self):
+        """Ожидание выхода — без замка; итог, дописанный монитором за это
+        время, второй раз не переписывается."""
+        import threading
+        with mock.patch.dict(os.environ, {"GENEVA_STUB_GEN_DELAY": "0.4"}):
+            self.assertTrue(self.mgr.start_search(
+                {"host": "blocked.example", "generations": 50})["ok"])
+            self.assertTrue(wait_for(
+                lambda: self.mgr.search_status()["generation"] >= 1))
+        real = gm._terminate
+        seen = {}
+
+        def terminate(pid, sub, wait=0.0):
+            clean = real(pid, sub, wait=wait)
+            # «Монитор» из другого потока: замок свободен, он дописывает
+            # итог раньше stop_search.
+            def monitor():
+                seen["free"] = self.mgr._lock.acquire(timeout=2)
+                if seen["free"]:
+                    try:
+                        self.mgr._finish_job(None)
+                    finally:
+                        self.mgr._lock.release()
+            t = threading.Thread(target=monitor)
+            t.start()
+            t.join(5)
+            return clean
+
+        with mock.patch.object(gm, "_terminate", side_effect=terminate):
+            res = self.mgr.stop_search()
+        self.assertTrue(res["ok"])
+        self.assertTrue(seen.get("free"), "stop_search держал замок")
+        st = self.mgr.search_status()
+        self.assertEqual(st["status"], "stopped")
+        self.assertTrue(st["can_resume"])
+
     def test_interrupted_when_process_vanished(self):
         with mock.patch.dict(os.environ, {"GENEVA_STUB_GEN_DELAY": "0.4"}):
             self.assertTrue(self.mgr.start_search(
