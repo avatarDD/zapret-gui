@@ -5837,6 +5837,18 @@ body.expert-mode .expert-note { display: none !important; }
 .wiw-badge { margin-left: 4px; }
 
 /* ===== Движок обхода: nfqws2 / geneva_c (pages/geneva.js) ===== */
+/* geneva: рабочие стратегии */
+.gv-found-row { padding: 10px 0; border-bottom: 1px solid var(--border, #333); }
+.gv-found-row:last-child { border-bottom: none; }
+.gv-found-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin-bottom: 4px; font-size: 0.9em; }
+.gv-found-strategy { white-space: pre-wrap; word-break: break-all; }
+.gv-found-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.gv-lib-details > summary { cursor: pointer; list-style: none; }
+.gv-lib-details > summary::-webkit-details-marker { display: none; }
+.gv-lib-details > summary::before { content: "▸ "; }
+.gv-lib-details[open] > summary::before { content: "▾ "; }
+
 /* geneva «Авто» */
 .gv-auto-head { display: flex; align-items: center; gap: 12px; }
 .gv-auto-switch { margin-left: auto; display: inline-flex; align-items: center;

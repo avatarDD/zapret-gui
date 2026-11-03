@@ -85,7 +85,7 @@ const GenevaPage = (() => {
     // «Движок обхода» — engines, «Управление» → geneva_c — engine и
     // settings, «Стратегии» → geneva_c — library, «Подбор стратегий» →
     // geneva_c — search (web/js/components/engine_tabs.js).
-    const ALL_SECTIONS = ['auto', 'engines', 'engine', 'search', 'library', 'settings'];
+    const ALL_SECTIONS = ['auto', 'engines', 'engine', 'search', 'found', 'library', 'settings'];
     // Режим «Авто»: показывать и сервисы без проблем (галочка).
     let _autoAll = false;
     let _autoBusy = false;
@@ -236,10 +236,20 @@ const GenevaPage = (() => {
                     </div>
                 </div>
             </div>` : ''}
-            ${S('library') ? `
+            ${S('found') ? `
             <div class="card-grid">
                 <div class="card">
-                    <div class="card-title">Библиотека Geneva</div>
+                    <div class="card-title">${esc(_tr('geneva.found.title'))}</div>
+                    <div class="card-body">
+                        <div class="form-hint" style="margin-bottom:8px;">${esc(_tr('geneva.found.about'))}</div>
+                        <div id="gv-found">${esc(_tr('common.loading'))}</div>
+                    </div>
+                </div>
+            </div>` : ''}
+            ${S('library') ? `
+            <div class="card-grid">
+                <details class="card gv-lib-details" id="gv-lib-details" ${S('found') ? '' : 'open'}>
+                    <summary class="card-title">${esc(_tr(S('found') ? 'geneva.found.library' : 'geneva.found.library_title'))}</summary>
                     <div class="card-body">
                         <div class="form-hint" style="margin-bottom:8px;">
                             Стратегии из исследований Geneva с долей успеха в той
@@ -260,7 +270,7 @@ const GenevaPage = (() => {
                         <div id="gv-library">Загрузка...</div>
                         ${S('search') ? '' : '<div id="gv-search"></div>'}
                     </div>
-                </div>
+                </details>
             </div>` : ''}
             ${S('settings') ? `
             <div class="card-grid expert-only">
@@ -350,8 +360,19 @@ const GenevaPage = (() => {
         };
         document.addEventListener('visibilitychange', _visibilityHandler);
 
+        // Библиотека исследований под «Стратегиями» свёрнута: geneva
+        // library зовём, только когда её раскрыли.
+        const libDetails = document.getElementById('gv-lib-details');
+        let libLoaded = false;
+        const loadLib = () => {
+            if (libLoaded || !libDetails || !libDetails.open) return null;
+            libLoaded = true;
+            return _loadLibrary();
+        };
+        if (libDetails) libDetails.addEventListener('toggle', loadLib);
         await Promise.all([_refresh(), _loadConfig(),
-                           S('library') ? _loadLibrary() : null]);
+                           S('library') ? loadLib() : null,
+                           S('found') ? _loadFound() : null]);
         // Пока ждали ответы, со страницы ушли (destroy) или её
         // перерисовали: опрос от старого рендера тёк бы вечно.
         if (token !== _renderToken) return;
@@ -532,6 +553,73 @@ const GenevaPage = (() => {
             Toast.error(errText(e));
         }
         _refresh();
+    }
+
+    /* ───────── рабочие стратегии (вкладка «Стратегии») ───────── */
+
+    async function _loadFound() {
+        const box = document.getElementById('gv-found');
+        if (!box) return;
+        try {
+            _renderFound(await API.get('/api/geneva/found'));
+        } catch (e) {
+            box.innerHTML = `<div class="text-error">${esc(errText(e))}</div>`;
+        }
+    }
+
+    const FOUND_CHIPS = 8;
+
+    function _renderFound(res) {
+        const box = document.getElementById('gv-found');
+        if (!box || !res) return;
+        const items = res.items || [];
+        if (!items.length) {
+            box.innerHTML = `<div class="text-muted">${esc(_tr('geneva.found.empty'))}</div>`;
+            return;
+        }
+        box.innerHTML = items.map((r, i) => {
+            const names = (r.services || []).map(x => x.name);
+            const chips = names.slice(0, FOUND_CHIPS).map(n =>
+                `<span class="badge badge-ghost">${esc(n)}</span>`).join(' ');
+            const more = names.length > FOUND_CHIPS
+                ? ` <span class="text-muted">${esc(_tr('geneva.found.more', { n: names.length - FOUND_CHIPS }))}</span>` : '';
+            const targets = (r.targets || []).length
+                ? `<div class="text-muted">${esc(_tr('geneva.found.search', { targets: r.targets.slice(0, 6).join(', ') }))}</div>` : '';
+            const badges = [];
+            if (r.auto) badges.push(`<span class="badge badge-success">${esc(_tr('geneva.found.auto', { n: names.length }))}</span>`);
+            if (r.degraded) badges.push(`<span class="badge badge-warning">${esc(_tr('geneva.found.degraded', { n: r.degraded }))}</span>`);
+            if ((r.targets || []).length) badges.push(`<span class="badge badge-info">${esc(_tr('geneva.found.manual'))}</span>`);
+            if (r.working) badges.push(`<span class="badge badge-accent">${esc(_tr('geneva.found.working'))}</span>`);
+            const when = r.last ? `<span class="text-muted">${esc(_tr('geneva.found.last', { when: fmtDate(r.last) }))}</span>` : '';
+            const fit = r.fitness !== null && r.fitness !== undefined
+                ? `<span class="text-muted">${esc(_tr('geneva.found.fitness', { f: Math.round(r.fitness) }))}</span>` : '';
+            const use = res.auto_enabled || r.working ? '' :
+                `<button class="btn btn-ghost btn-sm" data-use="${esc(r.strategy)}">${esc(_tr('geneva.found.use'))}</button>`;
+            return `<div class="gv-found-row">
+                <div class="gv-found-head">${badges.join(' ')} ${fit} ${when}</div>
+                <div class="gv-mono gv-found-strategy">${esc(r.strategy)}</div>
+                ${chips ? `<div class="gv-found-chips">${chips}${more}</div>` : ''}
+                ${targets}
+                <div class="gv-actions">
+                    <button class="btn btn-ghost btn-sm" data-copy="${i}">${esc(_tr('geneva.found.copy'))}</button>
+                    ${use}
+                </div>
+            </div>`;
+        }).join('');
+        box.dataset.strategies = JSON.stringify(items.map(r => r.strategy));
+    }
+
+    function _copyFound(i) {
+        const box = document.getElementById('gv-found');
+        let list = [];
+        try { list = JSON.parse((box && box.dataset.strategies) || '[]'); } catch (e) { list = []; }
+        const text = list[Number(i)];
+        if (!text) return;
+        if (typeof Clipboard !== 'undefined' && Clipboard.copyWithToast) {
+            Clipboard.copyWithToast(text);
+        } else if (navigator.clipboard) {
+            navigator.clipboard.writeText(text).then(() => Toast.success(_tr('geneva.found.copied')));
+        }
     }
 
     /* ───────── выбор движка ───────── */
@@ -1066,6 +1154,7 @@ const GenevaPage = (() => {
         if (!t) return;
         if (t.dataset.switch) return _switchEngine(t.dataset.switch);
         if (t.dataset.autoReset) return _autoReset(t.dataset.autoReset);
+        if (t.dataset.copy !== undefined) return _copyFound(t.dataset.copy);
         if (t.dataset.action === 'install') return _install();
         if (t.dataset.use) return _setStrategy(t.dataset.use, 'search');
         if (t.dataset.useLib) return _setStrategy(t.dataset.useLib, 'library');

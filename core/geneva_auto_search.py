@@ -313,7 +313,7 @@ class AutoSearch:
 
     def _run(self, s: ga.Service, running: list) -> SearchResult:
         found = self._found(s)
-        cands = ga.candidates_for(s, running, found)
+        cands = self._checked(ga.candidates_for(s, running, found))
         if self._pr().judge(s) is None:
             return self._by_traffic(s, cands)
         argv = probe_argv(s, python=self._python, script=self._script,
@@ -388,6 +388,28 @@ class AutoSearch:
             return win
         return SearchResult(s.key, NOT_FOUND, tried=tried,
                             detail="ни одна стратегия не прошла")
+
+    def _checked(self, cands: list) -> list:
+        """Только то, что разбирает установленный geneva (``geneva
+        check``): одна неразбираемая строка уронила бы весь ``eval -f``
+        кодом 3. Канонический вид — как его напечатает geneva."""
+        check = getattr(self._gm(), "check_strategy", None)
+        if check is None:
+            return cands
+        out = []
+        for c in cands:
+            try:
+                r = check(c)
+            except Exception:                       # noqa: BLE001
+                r = {"ok": True, "strategy": c}
+            if r.get("ok"):
+                canon = r.get("strategy") or c
+                if canon not in out:
+                    out.append(canon)
+            else:
+                log.info("geneva-auto: кандидат пропущен (%s): %s"
+                         % (r.get("error", ""), c[:120]), source="geneva")
+        return out
 
     def _found(self, s: ga.Service) -> list:
         try:

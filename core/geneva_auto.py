@@ -878,7 +878,28 @@ def describe_target(t: Target) -> str:
 
 
 # ───────────────────────────── кандидаты (AutoCandidates) ───────────
-# Скопированы из AutoCandidates AutoTuner: все проходят geneva check.
+# Предустановленные — найдены подбором «Авто» на живых сетях (провайдеры
+# РФ, ТСПУ) и сработали на десятках сервисов: с них подбор начинается
+# сразу после установки, и большинство сайтов, QUIC и STUN получают обход
+# без генетического поиска. Не сработали — дальше шаблоны и evolve.
+# fragment{tcp:34:True:17} — сегменты по 34 байта с перекрытием 17:
+# SNI разрезан, а сервер собирает поток как обычно. У найденного
+# оригинала была ещё входящая ветка [TCP:seq:2285867905:4]-tamper{…} —
+# она срабатывает только на пакете с этим номером последовательности,
+# то есть никогда, поэтому её нет.
+
+AUTO_PRESETS_TCP = (
+    r"[TCP:flags:PA]-fragment{tcp:34:True:17}-| \/",
+    r"[TCP:flags:PA]-fragment{tcp:-1:False}-| \/",
+)
+
+AUTO_PRESETS_UDP = (
+    r"[UDP:sport:*]-duplicate(tamper{UDP:load:corrupt},)-| \/",
+    r"[UDP:sport:*]-duplicate(tamper{UDP:load:corrupt}(duplicate,),)-| \/",
+)
+
+# Остальные скопированы из AutoCandidates AutoTuner: все проходят geneva
+# check.
 
 AUTO_CANDIDATES_TCP = (
     r"[TCP:flags:PA]-fragment{tcp:-1:True}-| \/",
@@ -921,13 +942,14 @@ def _fits(s: Service, strategy: str) -> bool:
 def candidates_for(s: Service, running=(), found=()) -> list:
     """Что пробовать: стратегии работающих групп того же транспорта
     (сервис вступит в группу, а не откроет новую), найденные раньше,
-    затем классика."""
+    предустановленные, затем классика."""
     if s.kind == DNS:
-        classics = AUTO_CANDIDATES_DNS + AUTO_CANDIDATES_UDP
+        classics = AUTO_CANDIDATES_DNS + AUTO_PRESETS_UDP + \
+            AUTO_CANDIDATES_UDP
     elif s.transport == "udp":
-        classics = AUTO_CANDIDATES_UDP
+        classics = AUTO_PRESETS_UDP + AUTO_CANDIDATES_UDP
     else:
-        classics = AUTO_CANDIDATES_TCP
+        classics = AUTO_PRESETS_TCP + AUTO_CANDIDATES_TCP
     from core.geneva_manager import check_strategy_text
     out = []
     for c in list(x for x in running if _fits(s, x)) + \
@@ -955,3 +977,85 @@ def search_target(s: Service) -> str:
     if s.kind == WEB:
         return "https:%s" % (s.host or s.name)
     return "replay:%s:%d" % (s.address, s.port)
+
+
+# ───────────────────────────── найденные стратегии ──────────────────
+
+def _target_text(target: str) -> str:
+    """``https:www.x.org`` → ``www.x.org``, ``replay:1.2.3.4:53`` →
+    ``1.2.3.4:53``: цель базы оценок человеческим языком."""
+    t = str(target or "")
+    for prefix in ("https:", "http:", "tls:", "replay:", "dns:", "tcp:"):
+        if t.startswith(prefix):
+            return t[len(prefix):]
+    return t
+
+
+def found_strategies(services, db_items=(), working: str = "") -> list:
+    """Стратегии, которые РАБОТАЮТ в этой сети, для страницы «Стратегии».
+
+    Источники — только проверенное у пользователя: сервисы режима «Авто»
+    с обходом (``applied``/``degraded``) и оценки ручного подбора с
+    успехами (``geneva db top``). Библиотека исследований и шаблоны сюда
+    не входят. Строка — одна стратегия: где работает, лучшая оценка,
+    когда последний раз подтверждена; первыми — те, что держат больше
+    сервисов.
+    """
+    rows = {}
+
+    def row(strategy):
+        strategy = str(strategy or "").strip()
+        if not strategy:
+            return None
+        if strategy not in rows:
+            rows[strategy] = {"strategy": strategy, "services": [],
+                              "targets": [], "auto": False,
+                              "degraded": 0, "fitness": None, "last": 0.0,
+                              "working": strategy == (working or "").strip()}
+        return rows[strategy]
+
+    for s in services or []:
+        if isinstance(s, dict):
+            s = Service.from_dict(s)
+        if s.status not in (APPLIED, DEGRADED) or not s.strategy:
+            continue
+        r = row(s.strategy)
+        r["auto"] = True
+        r["services"].append({"key": s.key, "name": s.name or s.key,
+                              "kind": s.kind, "status": s.status})
+        if s.status == DEGRADED:
+            r["degraded"] += 1
+        if s.fitness:
+            r["fitness"] = max(r["fitness"] or s.fitness, s.fitness)
+        r["last"] = max(r["last"], float(s.applied_at or 0))
+    for it in db_items or []:
+        try:
+            ok = int(it.get("ok") or 0)
+        except (TypeError, ValueError):
+            ok = 0
+        if ok <= 0:
+            continue
+        r = row(it.get("strategy"))
+        if r is None:
+            continue
+        text = _target_text(it.get("target", ""))
+        if text and text not in r["targets"]:
+            r["targets"].append(text)
+        best = it.get("best_fitness")
+        try:
+            best = float(best) if best is not None else None
+        except (TypeError, ValueError):
+            best = None
+        if best is not None:
+            r["fitness"] = best if r["fitness"] is None \
+                else max(r["fitness"], best)
+        try:
+            r["last"] = max(r["last"], float(it.get("last_ok") or 0))
+        except (TypeError, ValueError):
+            pass
+    out = list(rows.values())
+    for r in out:
+        r["services"].sort(key=lambda x: x["name"])
+    out.sort(key=lambda r: (-len(r["services"]), -len(r["targets"]),
+                            -(r["fitness"] or 0), r["strategy"]))
+    return out

@@ -392,3 +392,63 @@ class TestCandidates(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPresetsAndFound(unittest.TestCase):
+
+    def test_presets_first_and_valid(self):
+        from core.geneva_manager import check_strategy_text
+        for s in ga.AUTO_PRESETS_TCP + ga.AUTO_PRESETS_UDP:
+            self.assertEqual(check_strategy_text(s), s)
+        web_s = ga.Service(key="web:a", kind=ga.WEB, transport="tcp")
+        self.assertEqual(ga.candidates_for(web_s)[:2],
+                         list(ga.AUTO_PRESETS_TCP))
+        self.assertEqual(ga.AUTO_PRESETS_TCP[0],
+                         "[TCP:flags:PA]-fragment{tcp:34:True:17}-| \\/")
+        quic = ga.Service(key="quic:a", kind=ga.QUIC, transport="udp")
+        self.assertEqual(ga.candidates_for(quic)[:2],
+                         list(ga.AUTO_PRESETS_UDP))
+        dns = ga.Service(key="dns:a", kind=ga.DNS, transport="udp")
+        cands = ga.candidates_for(dns)
+        self.assertEqual(cands[0], ga.AUTO_CANDIDATES_DNS[0])
+        self.assertIn(ga.AUTO_PRESETS_UDP[0], cands)
+        # найденное в сети — раньше предустановленных
+        found = "[TCP:flags:PA]-fragment{tcp:8:True}-| \\/"
+        self.assertEqual(ga.candidates_for(web_s, found=[found])[0], found)
+        self.assertEqual(len(set(ga.candidates_for(web_s))),
+                         len(ga.candidates_for(web_s)))
+
+    def test_found_strategies(self):
+        def svc(key, strat, status=ga.APPLIED, at=10.0, fit=396):
+            return ga.Service(key=key, name=key.split(":", 1)[1],
+                              status=status, strategy=strat, fitness=fit,
+                              applied_at=at)
+        a, b = "[TCP:flags:PA]-fragment{tcp:34:True:17}-| \\/", \
+            "[UDP:sport:*]-duplicate(tamper{UDP:load:corrupt},)-| \\/"
+        services = [svc("web:youtube.com", a), svc("web:x.com", a, at=30),
+                    svc("quic:ytimg.com", b, status=ga.DEGRADED),
+                    svc("web:rus.ec", None, status=ga.SEARCHING),
+                    svc("web:ok.example", "S", status=ga.WATCHING)]
+        db = [{"strategy": "[TCP:flags:PA]-fragment{tcp:-1:False}-| \\/",
+               "target": "https:rutor.info", "ok": 2, "best_fitness": 398,
+               "last_ok": 50},
+              {"strategy": a, "target": "replay:1.2.3.4:53", "ok": 1},
+              {"strategy": "[TCP:flags:S]-drop-| \\/",
+               "target": "https:x", "ok": 0}]
+        rows = ga.found_strategies(services, db, working=b)
+        self.assertEqual([r["strategy"] for r in rows],
+                         [a, b, "[TCP:flags:PA]-fragment{tcp:-1:False}-| \\/"])
+        top = rows[0]
+        self.assertEqual([x["name"] for x in top["services"]],
+                         ["x.com", "youtube.com"])
+        self.assertEqual((top["auto"], top["targets"], top["last"]),
+                         (True, ["1.2.3.4:53"], 30.0))
+        self.assertEqual((rows[1]["degraded"], rows[1]["working"]),
+                         (1, True))
+        manual = rows[2]
+        self.assertEqual((manual["auto"], manual["targets"],
+                          manual["fitness"]), (False, ["rutor.info"], 398))
+        # без успехов, без обхода и библиотека — не попадают
+        self.assertNotIn("[TCP:flags:S]-drop-| \\/",
+                         [r["strategy"] for r in rows])
+        self.assertEqual(ga.found_strategies([], []), [])

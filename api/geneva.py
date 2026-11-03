@@ -14,6 +14,8 @@ API движка geneva_c и выбора движка обхода.
   POST /api/geneva/check          — разобрать стратегию {strategy}
   GET  /api/geneva/library        — готовые стратегии Geneva
   GET  /api/geneva/db             — лучшие из базы оценок (?target=&limit=)
+  GET  /api/geneva/found          — рабочие стратегии этой сети: сервисы
+                                     «Авто» с обходом + удачный подбор
   POST /api/geneva/search/start   — подбор {host, probe, ...} или {resume: true}
   POST /api/geneva/search/stop    — остановить (checkpoint сохранится)
   GET  /api/geneva/search/status  — прогресс подбора
@@ -210,6 +212,11 @@ def register(app):
             lines = 200
         which = "job" if request.query.get("which") == "job" else "run"
         return _mgr().read_log(lines=lines, which=which)
+
+    @app.route("/api/geneva/found", method="GET")
+    def geneva_found():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        return get_geneva_auto_manager().found()
 
     @app.route("/api/geneva/auto", method="GET")
     def geneva_auto_status():

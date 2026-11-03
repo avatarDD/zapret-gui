@@ -95,5 +95,23 @@ const i18n_ru = {
     "geneva.auto.as.searching": "подбор обхода",
     "geneva.auto.as.applied": "обход работает",
     "geneva.auto.as.degraded": "обход ослаб",
-    "geneva.auto.as.not_found": "обход не найден"
+    "geneva.auto.as.not_found": "обход не найден",
+
+    // ─── geneva: рабочие стратегии (вкладка «Стратегии», секция found).
+    "geneva.found.title": "Рабочие стратегии",
+    "geneva.found.about": "Только то, что проверено в вашей сети: стратегии, которые сейчас держат обход в режиме «Авто», и найденные подбором. Под каждой — где она работает.",
+    "geneva.found.empty": "Рабочих стратегий пока нет. Включите режим «Авто» — он сам найдёт и применит их, — или запустите подбор на вкладке «Подбор стратегий».",
+    "geneva.found.auto": "«Авто»: {n}",
+    "geneva.found.degraded": "ослабла: {n}",
+    "geneva.found.manual": "найдена подбором",
+    "geneva.found.working": "рабочая",
+    "geneva.found.last": "подтверждена {when}",
+    "geneva.found.fitness": "оценка {f}",
+    "geneva.found.more": "и ещё {n}",
+    "geneva.found.search": "подбор: {targets}",
+    "geneva.found.use": "Сделать рабочей",
+    "geneva.found.copy": "Копировать",
+    "geneva.found.copied": "Скопировано",
+    "geneva.found.library": "Справочно: стратегии из исследований Geneva",
+    "geneva.found.library_title": "Библиотека Geneva"
 };

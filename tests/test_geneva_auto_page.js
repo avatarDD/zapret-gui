@@ -53,7 +53,7 @@ const AUTO_ON = {
     problems: [], journal: [{ ts: 1, level: 'info', text: 'режим включён' }],
 };
 
-function makeSandbox({ auto, lang = 'ru', confirm = true, enableFails = true }) {
+function makeSandbox({ auto, found, lang = 'ru', confirm = true, enableFails = true }) {
     const elements = new Map();
     const calls = { get: [], post: [], confirm: 0 };
     const document = {
@@ -74,6 +74,7 @@ function makeSandbox({ auto, lang = 'ru', confirm = true, enableFails = true }) 
             get(url) {
                 calls.get.push(url);
                 if (url.startsWith('/api/geneva/auto')) return Promise.resolve(auto);
+                if (url === '/api/geneva/found') return Promise.resolve(found || { ok: true, items: [] });
                 if (url === '/api/geneva/status') {
                     return Promise.resolve({ ok: true, detect: {}, engine: {}, search: {} });
                 }
@@ -172,4 +173,45 @@ test('сброс сервиса', async () => {
     await root.handlers.click[0]({ target: { closest: () => btn } });
     assert.strictEqual(JSON.stringify(env.calls.post.at(-1)),
                        '["/api/geneva/auto/reset",{"key":"web:blocked.example"}]');
+});
+
+const FOUND = {
+    ok: true, auto_enabled: false, working: '',
+    items: [
+        { strategy: '[TCP:flags:PA]-fragment{tcp:34:True:17}-| \\/', auto: true,
+          services: [{ name: 'youtube.com' }, { name: 'x.com' }], targets: [],
+          degraded: 0, fitness: 396, last: 1700000000, working: false },
+        { strategy: '[TCP:flags:PA]-fragment{tcp:-1:False}-| \\/', auto: false,
+          services: [], targets: ['rutor.info'], degraded: 0, fitness: 398,
+          last: 0, working: true },
+    ],
+};
+
+test('вкладка «Стратегии»: только рабочие, библиотека — по раскрытию', async () => {
+    const env = makeSandbox({ auto: { ok: true, enabled: false }, found: FOUND });
+    const root = await (async () => {
+        const c = makeElement('root');
+        await env.page.render(c, { sections: ['found', 'library'] });
+        return c;
+    })();
+    assert.match(root.innerHTML, /Рабочие стратегии/);
+    assert.match(root.innerHTML, /Справочно: стратегии из исследований Geneva/);
+    assert.ok(!env.calls.get.includes('/api/geneva/library'),
+              'библиотека не грузится, пока блок свёрнут');
+    const html = env.elements.get('gv-found').innerHTML;
+    assert.match(html, /fragment\{tcp:34:True:17\}/);
+    assert.match(html, /«Авто»: 2/);
+    assert.match(html, /youtube\.com/);
+    assert.match(html, /подбор: rutor\.info/);
+    assert.match(html, /badge-accent">рабочая/);
+    // «Сделать рабочей» — у нерабочей, у рабочей кнопки нет
+    assert.strictEqual((html.match(/data-use=/g) || []).length, 1);
+    assert.strictEqual((html.match(/data-copy=/g) || []).length, 2);
+});
+
+test('вкладка «Стратегии»: пусто', async () => {
+    const env = makeSandbox({ auto: { ok: true, enabled: false } });
+    const c = makeElement('root');
+    await env.page.render(c, { sections: ['found'] });
+    assert.match(env.elements.get('gv-found').innerHTML, /Рабочих стратегий пока нет/);
 });
