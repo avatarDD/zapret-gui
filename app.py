@@ -1446,6 +1446,8 @@ def _graceful_shutdown(log=None):
         ("subscription_manager", "core.subscription_manager", "get_refresher",       "_stop"),
         ("server_pool",          "core.server_pool",          "get_pool",            "_stop"),
         ("strategy_scanner",     "core.strategy_scanner",     "get_strategy_scanner","stop"),
+        # geneva «Авто»: правила и группы снимаются, включённость остаётся
+        ("geneva_auto",          "core.geneva_auto_manager",  "get_geneva_auto_manager", "shutdown"),
         # Отложенные записи на flash — сохранить перед выходом.
         ("proxy_traffic",        "core.proxy_traffic",        "get_traffic_tracker", "flush"),
         ("mihomo_traffic",       "core.proxy_traffic",        "get_mihomo_traffic_tracker", "flush"),

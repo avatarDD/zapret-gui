@@ -123,6 +123,13 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
   мы всё равно ставим обход на паузу (§4).
 - **Метка 0x20000000** у пакетов, которые geneva отправляет сам. Правила
   geneva их пропускают, иначе получилась бы петля.
+- **Менеджер «Авто»** (`core/geneva_auto_manager.py`,
+  `get_geneva_auto_manager()`): поток `geneva-auto`, `tick()` — срез,
+  захват протокола, подтверждение, подбор, применение, `stats`,
+  сохранение `state/geneva/auto.json`. Пока режим включён, `start()`,
+  `start_search()`, `start_eval()` отвечают `error_code: geneva_auto`;
+  `bypass_engine.switch("nfqws2")` выключает режим, `hold_geneva_for`
+  ставит его на паузу (`suspend`/`resume`), `boot_apply` зовёт `boot()`.
 - **Группы «Авто»** — по процессу на стратегию, очереди 340–347
   (`geneva.auto.max_groups`, по умолчанию 4). Трафик выбирают правила
   zapret-gui: адреса сервисов группы (наборы на «очередь + порты»), DHT —
