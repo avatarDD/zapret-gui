@@ -21,6 +21,14 @@ API движка geneva_c и выбора движка обхода.
   POST /api/geneva/eval           — проверить список стратегий {strategies, host}
   GET  /api/geneva/log            — хвост лога (?which=run|job&lines=)
 
+Режим «Авто» (core/geneva_auto_manager):
+  GET  /api/geneva/auto           — состояние (?all=1 — все сервисы)
+  POST /api/geneva/auto/enable    — включить {confirm}; без confirm при
+                                     нужном переключении движка — 409
+                                     error_code need_confirm
+  POST /api/geneva/auto/disable   — выключить
+  POST /api/geneva/auto/reset     — забыть сервис {key}
+
 Выбор движка:
   GET  /api/bypass/engine         — оба движка и какой активен
   POST /api/bypass/engine         — переключить {engine: nfqws2|geneva, start}
@@ -41,7 +49,8 @@ def _body() -> dict:
 def _reply(res: dict, fail_status: int = 400) -> dict:
     if not res.get("ok"):
         response.status = 409 if res.get("error_code") in (
-            "busy", "engine_nfqws2", "engine_geneva") else fail_status
+            "busy", "engine_nfqws2", "engine_geneva", "geneva_auto",
+            "need_confirm") else fail_status
     return res
 
 
@@ -201,6 +210,34 @@ def register(app):
             lines = 200
         which = "job" if request.query.get("which") == "job" else "run"
         return _mgr().read_log(lines=lines, which=which)
+
+    @app.route("/api/geneva/auto", method="GET")
+    def geneva_auto_status():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        show_all = str(request.query.get("all") or "") in ("1", "true")
+        out = get_geneva_auto_manager().status(all_services=show_all)
+        out["ok"] = True
+        return out
+
+    @app.route("/api/geneva/auto/enable", method="POST")
+    def geneva_auto_enable():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        confirm = _body().get("confirm") is True
+        return _reply(get_geneva_auto_manager().enable(confirm=confirm))
+
+    @app.route("/api/geneva/auto/disable", method="POST")
+    def geneva_auto_disable():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        return _reply(get_geneva_auto_manager().disable("с веб-страницы"))
+
+    @app.route("/api/geneva/auto/reset", method="POST")
+    def geneva_auto_reset():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        key = str(_body().get("key") or "").strip()
+        if not key:
+            response.status = 400
+            return {"ok": False, "error": "не указан сервис (key)"}
+        return _reply(get_geneva_auto_manager().reset(key), 404)
 
     @app.route("/api/bypass/engine", method="GET")
     def bypass_engine_get():

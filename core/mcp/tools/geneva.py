@@ -473,3 +473,162 @@ def _undo_bypass_engine(snapshot: dict) -> dict:
 
 audit.register_undo(audit.KIND_GENEVA_STRATEGY, _undo_geneva_strategy)
 audit.register_undo(audit.KIND_BYPASS_ENGINE, _undo_bypass_engine)
+
+
+# ───────────────────────────── режим «Авто» ─────────────────────────
+# Сам находит заблокированные сервисы и подбирает каждому стратегию
+# (core/geneva_auto_manager). Чтение — состояние; включение меняет движок
+# обхода всей сети, поэтому идёт в два шага: первый вызов отдаёт
+# confirm_token и последствия, второй (тот же инструмент с токеном,
+# shell_confirm или кнопка на странице MCP) включает.
+
+def _auto():
+    from core.geneva_auto_manager import get_geneva_auto_manager
+    return get_geneva_auto_manager()
+
+
+@tool(
+    name="geneva_auto_status",
+    scope="read",
+    mutating=False,
+    title="geneva Auto mode status",
+    description=("geneva Auto mode: enabled, phase, services found "
+                 "(status, reason, applied strategy), running strategy "
+                 "groups with packet counters, current search, problems, "
+                 "log. `all` adds services that work fine. / Режим «Авто» "
+                 "geneva: сервисы, группы, подбор, журнал."),
+    schema={
+        "type": "object",
+        "properties": {
+            "all": {"type": "boolean", "default": False,
+                    "description": ("Include working services too. / "
+                                    "Показать и сервисы без проблем.")},
+        },
+        "additionalProperties": False,
+    },
+)
+def geneva_auto_status(args: dict) -> dict:
+    """Состояние режима «Авто» (журнал — последние 30 строк)."""
+    st = _auto().status(all_services=bool(args.get("all")))
+    st["journal"] = st.get("journal", [])[-30:]
+    st["ok"] = True
+    st["note"] = NOTE
+    if not st.get("enabled"):
+        st["hint"] = ("включить — geneva_auto_enable (два шага: токен, "
+                      "затем подтверждение)")
+    return st
+
+
+def _auto_consequences() -> str:
+    from core import bypass_engine as be
+    parts = ["zapret-gui начнёт следить за соединениями роутера, сам "
+             "подтверждать блокировки пробами, подбирать и применять "
+             "стратегии geneva к трафику заблокированных сервисов"]
+    if not be.is_geneva_active():
+        parts.append("движок обхода переключится с nfqws2 на geneva_c: "
+                     "nfqws2 остановится, его автозапуск выключится")
+    try:
+        if _mgr().is_running():
+            parts.append("одиночный geneva run с рабочей стратегией "
+                         "будет остановлен")
+    except Exception:                               # noqa: BLE001
+        pass
+    return "; ".join(parts)
+
+
+def _auto_enable_confirmed(record: dict) -> dict:
+    res = _auto().enable(confirm=True)
+    audit.note(action="geneva_auto_enable", ok=bool(res.get("ok")),
+               error=res.get("error", ""))
+    res["reverse"] = "geneva_auto_disable"
+    return res
+
+
+@tool(
+    name="geneva_auto_enable",
+    scope="control",
+    mutating=True,
+    title="Enable geneva Auto mode",
+    description=("Turn on the geneva Auto mode. Two steps: the first "
+                 "call returns confirm_token and the consequences (engine "
+                 "switch to geneva_c); call again with confirm_token, or "
+                 "the user confirms on the MCP page. Reverse: "
+                 "geneva_auto_disable. / Включить режим «Авто»."),
+    schema={
+        "type": "object",
+        "properties": {
+            "confirm_token": {
+                "type": "string", "maxLength": 64,
+                "description": ("One-shot token from the first call "
+                                "(60 s). / Токен подтверждения."),
+            },
+        },
+        "additionalProperties": False,
+    },
+)
+def geneva_auto_enable(args: dict) -> dict:
+    """Первый шаг — токен и последствия, второй — включение."""
+    from core import shell_exec as shell
+    token = str(args.get("confirm_token") or "").strip()
+    if token:
+        record, refusal = shell.take_confirm(token)
+        if refusal:
+            return refusal
+        if record.get("kind") != "geneva_auto_enable":
+            return {"ok": False, "error": "этот токен подтверждает другое "
+                    "действие (%s)" % record.get("kind"),
+                    "hint": "передайте его в shell_confirm"}
+        return _auto_enable_confirmed(record)
+    if _auto().running:
+        return {"ok": True, "already": True, "enabled": True}
+    return shell.pending_confirm(
+        "geneva_auto_enable", "включить режим «Авто» geneva",
+        _auto_consequences(), scope="control",
+        action=_auto_enable_confirmed,
+        rules=({"code": "geneva_auto"},))
+
+
+@tool(
+    name="geneva_auto_disable",
+    scope="control",
+    mutating=True,
+    title="Disable geneva Auto mode",
+    description=("Turn off the geneva Auto mode: the search stops, all "
+                 "strategy groups and their firewall rules are removed. "
+                 "What was found is kept. Reverse: geneva_auto_enable. / "
+                 "Выключить режим «Авто»."),
+    schema={"type": "object", "properties": {},
+            "additionalProperties": False},
+)
+def geneva_auto_disable(args: dict) -> dict:
+    res = _auto().disable("по запросу MCP")
+    audit.note(action="geneva_auto_disable")
+    res["reverse"] = "geneva_auto_enable"
+    return res
+
+
+@tool(
+    name="geneva_auto_reset",
+    scope="control",
+    mutating=True,
+    title="Reset a service in geneva Auto mode",
+    description=("Forget what the Auto mode knows about one service "
+                 "(key from geneva_auto_status): its bypass is removed "
+                 "and watching starts over. / Сбросить сервис в режиме "
+                 "«Авто»."),
+    schema={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "minLength": 1, "maxLength": 300,
+                    "description": ("Service key, e.g. web:example.com, "
+                                    "dns:1.2.3.4. / Ключ сервиса.")},
+        },
+        "required": ["key"],
+        "additionalProperties": False,
+    },
+)
+def geneva_auto_reset(args: dict) -> dict:
+    res = _auto().reset(str(args.get("key") or ""))
+    audit.note(action="geneva_auto_reset", key=str(args.get("key") or ""),
+               ok=bool(res.get("ok")))
+    return res

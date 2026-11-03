@@ -85,7 +85,10 @@ const GenevaPage = (() => {
     // «Движок обхода» — engines, «Управление» → geneva_c — engine и
     // settings, «Стратегии» → geneva_c — library, «Подбор стратегий» →
     // geneva_c — search (web/js/components/engine_tabs.js).
-    const ALL_SECTIONS = ['engines', 'engine', 'search', 'library', 'settings'];
+    const ALL_SECTIONS = ['auto', 'engines', 'engine', 'search', 'library', 'settings'];
+    // Режим «Авто»: показывать и сервисы без проблем (галочка).
+    let _autoAll = false;
+    let _autoBusy = false;
     let _sections = new Set(ALL_SECTIONS);
     let _renderToken = 0;
 
@@ -108,6 +111,22 @@ const GenevaPage = (() => {
             </div>`;
         container.innerHTML = `
             ${header}
+            ${S('auto') ? `
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title gv-auto-head">
+                        <span>${esc(_tr('geneva.auto.title'))}</span>
+                        <label class="gv-auto-switch">
+                            <input type="checkbox" id="gv-auto-toggle">
+                            <span id="gv-auto-toggle-label">${esc(_tr('geneva.auto.off_short'))}</span>
+                        </label>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-hint" style="margin-bottom:8px;">${esc(_tr('geneva.auto.about'))}</div>
+                        <div id="gv-auto">${esc(_tr('common.loading'))}</div>
+                    </div>
+                </div>
+            </div>` : ''}
             ${S('engines') ? `
             <div class="card-grid">
                 <div class="card">
@@ -314,6 +333,8 @@ const GenevaPage = (() => {
         on('gv-btn-forget', _forgetSearch);
         on('gv-btn-eval', _evalSelected);
         on('gv-btn-settings', _saveSettings);
+        const toggle = document.getElementById('gv-auto-toggle');
+        if (toggle) toggle.addEventListener('change', () => _autoToggle(toggle.checked));
         const onChange = (id, fn) => {
             const el = document.getElementById(id);
             if (el) el.addEventListener('change', fn);
@@ -360,11 +381,13 @@ const GenevaPage = (() => {
         if (_inFlight || document.hidden) return;
         _inFlight = true;
         try {
-            const [st, engines] = await Promise.all([
+            const [st, engines, auto] = await Promise.all([
                 API.get('/api/geneva/status'),
                 _sections.has('engines') ? API.get('/api/bypass/engine') : null,
+                _sections.has('auto') ? API.get('/api/geneva/auto' + (_autoAll ? '?all=1' : '')) : null,
             ]);
             _last = st;
+            _renderAuto(auto);
             _renderEngines(engines);
             _renderDetect(st.detect || {});
             _renderEngine(st.engine || {}, st.active_engine, st.detect || {});
@@ -375,6 +398,140 @@ const GenevaPage = (() => {
         } finally {
             _inFlight = false;
         }
+    }
+
+    /* ───────── режим «Авто» ───────── */
+
+    /** Перевод с подстановкой; ключа нет в словаре — сам ключ. */
+    function _tr(key, vars) {
+        return (typeof i18n !== 'undefined') ? i18n.t(key, vars || {}) : key;
+    }
+
+    const AUTO_BADGE = {
+        applied: 'badge-success', degraded: 'badge-warning',
+        searching: 'badge-info', blocked: 'badge-danger',
+        suspected: 'badge-warning', not_found: 'badge-danger',
+        ip_blocked: 'badge-danger', fallback: 'badge-muted',
+        not_blocked: 'badge-muted', watching: 'badge-muted',
+    };
+
+    function _renderAuto(a) {
+        const box = document.getElementById('gv-auto');
+        if (!box || !a) return;
+        const toggle = document.getElementById('gv-auto-toggle');
+        const label = document.getElementById('gv-auto-toggle-label');
+        if (toggle && !_autoBusy) toggle.checked = !!a.enabled;
+        if (label) label.textContent = _tr(a.enabled ? 'geneva.auto.on' : 'geneva.auto.off_short');
+        if (!a.enabled) {
+            box.innerHTML = `<div class="text-muted">${esc(_tr('geneva.auto.off'))}</div>`
+                + _autoProblems(a);
+            return;
+        }
+        const c = a.counts || {};
+        const applied = (c.applied || 0) + (c.degraded || 0);
+        const busy = (c.suspected || 0) + (c.blocked || 0) + (c.searching || 0);
+        const nobypass = (c.not_found || 0) + (c.ip_blocked || 0);
+        const phase = a.running ? _tr('geneva.auto.phase.' + (a.phase || 'watching'))
+                                : _tr('geneva.auto.waiting');
+        const searchLine = a.search && a.search.running && a.search.name
+            ? ` · ${esc(a.search.name)}: ${esc(_tr('geneva.auto.phase.searching'))}` : '';
+        const rows = (a.services || []).map(s => {
+            const trying = s.status === 'searching' && a.search && a.search.key === s.key
+                && a.search.strategy ? _tr('geneva.auto.trying', { strategy: a.search.strategy }) : '';
+            const status = _tr('geneva.auto.as.' + s.status);
+            return `<tr>
+                <td title="${esc(s.key)}">${esc(s.name || s.key)}</td>
+                <td><span class="badge ${AUTO_BADGE[s.status] || 'badge-muted'}">${esc(status === 'geneva.auto.as.' + s.status ? s.status_text : status)}</span></td>
+                <td class="text-muted">${esc(trying || s.why || '')}</td>
+                <td class="gv-mono gv-ellipsis" title="${esc(s.strategy || '')}">${esc(s.strategy || '—')}</td>
+                <td><button class="btn btn-ghost btn-sm" data-auto-reset="${esc(s.key)}" title="${esc(_tr('geneva.auto.reset_tip'))}">${esc(_tr('geneva.auto.reset'))}</button></td>
+            </tr>`;
+        }).join('');
+        const table = rows ? `
+            <div class="table-wrap"><table class="table gv-auto-table">
+                <thead><tr>
+                    <th>${esc(_tr('geneva.auto.col_service'))}</th>
+                    <th>${esc(_tr('geneva.auto.col_status'))}</th>
+                    <th>${esc(_tr('geneva.auto.col_why'))}</th>
+                    <th>${esc(_tr('geneva.auto.col_strategy'))}</th>
+                    <th></th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table></div>` : `<div class="text-muted">${esc(_tr('geneva.auto.empty'))}</div>`;
+        const groups = (a.groups || []).map(g => {
+            const st = g.stats || {}, rate = g.rate || {};
+            return `<li><span class="badge badge-ghost">${esc(_tr('geneva.auto.queue', { queue: g.queue }))}</span>
+                <span class="gv-mono">${esc(g.strategy)}</span>
+                <div class="text-muted">${esc((g.services || []).length)} · ${esc((g.targets || []).join('; '))}</div>
+                <div class="text-muted">${esc(_tr('geneva.auto.counters', {
+                    pkts: num((st.pkts_out || 0) + (st.pkts_in || 0)),
+                    rate: (rate.pkts_out || 0) + (rate.pkts_in || 0),
+                    triggered: num(st.triggered || 0) }))}${g.error ? ' · <span class="text-error">' + esc(g.error) + '</span>' : ''}</div>
+            </li>`;
+        }).join('');
+        // Опрос перерисовывает карточку: раскрытые блоки не должны
+        // захлопываться сами.
+        const opened = new Set(Array.from(box.querySelectorAll
+            ? box.querySelectorAll('details[open]') : []).map(d => d.dataset.k));
+        const journal = (a.journal || []).slice(-60).reverse().map(j =>
+            `<div class="gv-auto-log-${esc(j.level)}"><span class="text-muted">${esc(fmtTime(j.ts))}</span> ${esc(j.text)}</div>`).join('');
+        box.innerHTML = `
+            <div class="gv-auto-status"><strong>${esc(phase)}</strong>${searchLine}</div>
+            <div class="text-muted">${esc(_tr('geneva.auto.summary', {
+                total: a.total || 0, applied, busy, nobypass, flows: a.connections || 0 }))}</div>
+            ${_autoProblems(a)}
+            <label class="gv-check"><input type="checkbox" id="gv-auto-all" ${_autoAll ? 'checked' : ''}>
+                ${esc(_tr('geneva.auto.show_all'))}</label>
+            ${table}
+            <details class="gv-auto-details" data-k="groups" ${opened.has('groups') ? 'open' : ''}><summary>${esc(_tr('geneva.auto.groups'))} (${(a.groups || []).length})</summary>
+                ${groups ? `<ul class="gv-auto-groups">${groups}</ul>` : `<div class="text-muted">${esc(_tr('geneva.auto.no_groups'))}</div>`}
+            </details>
+            <details class="gv-auto-details" data-k="log" ${opened.has('log') ? 'open' : ''}><summary>${esc(_tr('geneva.auto.log'))}</summary>
+                <div class="gv-auto-log">${journal}</div>
+            </details>`;
+        const all = document.getElementById('gv-auto-all');
+        if (all) all.addEventListener('change', () => { _autoAll = all.checked; _refresh(); });
+    }
+
+    function _autoProblems(a) {
+        const list = a.problems || [];
+        return list.length ? `<div class="text-error">${list.map(esc).join('<br>')}</div>` : '';
+    }
+
+    async function _autoToggle(on) {
+        _autoBusy = true;
+        try {
+            if (!on) {
+                await API.post('/api/geneva/auto/disable', {}, { timeout: 60000 });
+                Toast.info(_tr('geneva.auto.disabled'));
+                return;
+            }
+            try {
+                await API.post('/api/geneva/auto/enable', {}, { timeout: 60000 });
+            } catch (e) {
+                if (!(e.data && e.data.error_code === 'need_confirm')) throw e;
+                const ok = await Confirm.show(_tr('geneva.auto.confirm_title'),
+                    esc(_tr('geneva.auto.confirm_text')),
+                    { confirmLabel: _tr('geneva.auto.confirm_ok') });
+                if (!ok) return;
+                await API.post('/api/geneva/auto/enable', { confirm: true }, { timeout: 90000 });
+            }
+            Toast.success(_tr('geneva.auto.enabled'));
+        } catch (e) {
+            Toast.error(errText(e) + (e.data && e.data.hint ? ' — ' + e.data.hint : ''));
+        } finally {
+            _autoBusy = false;
+            _refresh();
+        }
+    }
+
+    async function _autoReset(key) {
+        try {
+            await API.post('/api/geneva/auto/reset', { key });
+        } catch (e) {
+            Toast.error(errText(e));
+        }
+        _refresh();
     }
 
     /* ───────── выбор движка ───────── */
@@ -908,6 +1065,7 @@ const GenevaPage = (() => {
         const t = ev.target.closest('button');
         if (!t) return;
         if (t.dataset.switch) return _switchEngine(t.dataset.switch);
+        if (t.dataset.autoReset) return _autoReset(t.dataset.autoReset);
         if (t.dataset.action === 'install') return _install();
         if (t.dataset.use) return _setStrategy(t.dataset.use, 'search');
         if (t.dataset.useLib) return _setStrategy(t.dataset.useLib, 'library');

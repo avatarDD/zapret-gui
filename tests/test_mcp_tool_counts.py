@@ -163,9 +163,13 @@ from core.mcp import registry
 # движок и его рабочая стратегия, как nfqws_*/strategy_apply) и + 3 под
 # `probes` (geneva_search_start/_stop, geneva_eval_start — трафик к
 # заблокированному сайту и пауза обхода на время прогона).
+# Режим «Авто» geneva: + 1 на чтение (geneva_auto_status) и + 3 под
+# `control` (geneva_auto_enable — в два шага с confirm_token, потому что
+# переключает движок обхода всей сети; geneva_auto_disable;
+# geneva_auto_reset — забыть один сервис).
 BY_SCOPE = {
-    "read": 53,
-    "control": 14,
+    "read": 54,
+    "control": 17,
     "strategies_write": 12,
     "config_write": 2,
     "probes": 19,
@@ -284,6 +288,7 @@ class TestToolCounts(unittest.TestCase):
         # geneva_c и выбор движка обхода.
         "bypass_engine_status", "geneva_check", "geneva_db_top",
         "geneva_library", "geneva_search_status", "geneva_status",
+        "geneva_auto_status",
     ]
 
     # S7 — мутирующие наборы. Список имён рядом с числом: две записи об
@@ -293,7 +298,8 @@ class TestToolCounts(unittest.TestCase):
         "nfqws_restart", "nfqws_start", "nfqws_stop", "scan_apply",
         "strategy_apply", "quick_fix_apply", "device_quota_grant",
         "bypass_engine_set", "geneva_set_strategy", "geneva_start",
-        "geneva_stop",
+        "geneva_stop", "geneva_auto_enable", "geneva_auto_disable",
+        "geneva_auto_reset",
     ]
     STRATEGIES_WRITE_TOOLS = [
         "blob_add", "hostlist_edit", "ipset_edit", "lua_script_save",

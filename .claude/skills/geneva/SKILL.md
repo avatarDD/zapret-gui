@@ -284,13 +284,19 @@ action   := name["{" params "}"]["(" left "," right ")"]
 ## 7. REST и MCP
 
 REST: см. docstring `api/geneva.py`, все пути под `/api/geneva/*`, плюс
-`/api/bypass/engine`.
+`/api/bypass/engine`. Режим «Авто»: `GET /api/geneva/auto[?all=1]`,
+`POST /api/geneva/auto/enable {confirm}` (без `confirm: true` при нужном
+переключении движка — 409 `need_confirm`), `POST …/disable`,
+`POST …/reset {key}`. Карточка «Авто» — секция `auto` страницы
+`web/js/pages/geneva.js` (раздел «Обход DPI» и вкладка «Управление →
+geneva_c»), тексты — `geneva.auto.*` в `web/js/i18n/*`.
 
 MCP (`core/mcp/tools/geneva.py`):
 
 | Инструмент | Scope | Меняет |
 |---|---|---|
 | `bypass_engine_status` | read | нет |
+| `geneva_auto_status` | read | нет |
 | `geneva_status` | read | нет |
 | `geneva_library` | read | нет |
 | `geneva_check` | read | нет |
@@ -303,6 +309,9 @@ MCP (`core/mcp/tools/geneva.py`):
 | `geneva_search_start` | probes | да |
 | `geneva_search_stop` | probes | да |
 | `geneva_eval_start` | probes | да |
+| `geneva_auto_enable` | control | да, в два шага: токен, затем тот же инструмент с `confirm_token` (или `shell_confirm`, или кнопка на странице MCP) |
+| `geneva_auto_disable` | control | да |
+| `geneva_auto_reset` | control | да |
 
 Подбор отнесён к `probes`, потому что он шлёт пробы в сеть и на время
 останавливает обход.

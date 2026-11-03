@@ -5837,6 +5837,21 @@ body.expert-mode .expert-note { display: none !important; }
 .wiw-badge { margin-left: 4px; }
 
 /* ===== Движок обхода: nfqws2 / geneva_c (pages/geneva.js) ===== */
+/* geneva «Авто» */
+.gv-auto-head { display: flex; align-items: center; gap: 12px; }
+.gv-auto-switch { margin-left: auto; display: inline-flex; align-items: center;
+    gap: 6px; font-weight: normal; cursor: pointer; }
+.gv-auto-status { margin-bottom: 4px; }
+.gv-auto-table td { vertical-align: top; }
+.gv-auto-table .gv-ellipsis { max-width: 260px; }
+.gv-auto-details { margin-top: 10px; }
+.gv-auto-details summary { cursor: pointer; font-weight: 600; }
+.gv-auto-groups { list-style: none; padding: 0; margin: 8px 0 0; }
+.gv-auto-groups li { padding: 6px 0; border-bottom: 1px solid var(--border, #333); }
+.gv-auto-log { max-height: 280px; overflow-y: auto; font-size: 0.9em; margin-top: 6px; }
+.gv-auto-log-warning { color: var(--warning, #d29922); }
+.gv-auto-log-error { color: var(--error, #f85149); }
+
 .gv-engines {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
