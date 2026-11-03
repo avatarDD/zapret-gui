@@ -586,6 +586,14 @@ DEFAULT_CONFIG = {
             "pause_bypass": True,
         },
         "installed_tag": "",
+        # Режим «Авто» (core/geneva_auto*): сам находит заблокированные
+        # сервисы и подбирает каждому стратегию.
+        "auto": {
+            "enabled": False,
+            "max_groups": 4,   # geneva run одновременно (1–8), очереди 340+
+            "workers": 4,      # параллельных проб в подборе (1–8)
+            "exclude": [],     # адреса серверов туннелей: не наблюдать
+        },
     },
 
     # --- Telegram MTProto Proxy (tgwsproxy / mtproto) ---
