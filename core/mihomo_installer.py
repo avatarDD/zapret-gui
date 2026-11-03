@@ -237,10 +237,24 @@ class MihomoInstaller:
     def get_installed_version(self) -> dict:
         bin_info = get_mihomo_detector().detect_binary()
         state = _read_state()
+        version = bin_info.get("version", "")
+        # Бинарник не ответил на `-v` (таймаут на медленной флешке) — берём
+        # версию, записанную нашим же установщиком, если файл тот же:
+        # путь совпадает и он не новее записи (иначе его заменили мимо нас).
+        if (not version and bin_info.get("installed")
+                and state.get("version")
+                and state.get("binary") == bin_info.get("path")):
+            try:
+                mtime = os.path.getmtime(bin_info["path"])
+            except OSError:
+                mtime = None
+            if mtime is not None and mtime <= (state.get("installed_at")
+                                               or 0) + 60:
+                version = state["version"]
         return {
             "installed":    bin_info.get("installed", False),
             "path":         bin_info.get("path", ""),
-            "version":      bin_info.get("version", ""),
+            "version":      version,
             "tag":          state.get("tag", ""),
             "installed_at": state.get("installed_at", 0),
         }

@@ -33,7 +33,7 @@ geneva_c**, и в каждый момент работает ровно один
 1. **Сам бинарник** нужной версии: `geneva version --json` (поле `proto`
    должно быть `1`), `geneva <команда> --help`.
 2. **[avatarDD/geneva_c](https://github.com/avatarDD/geneva_c)**, релиз
-   **v1.0.0**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
+   **v1.1.1**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
    сокет), `docs/EVAL.md` (пробы и fitness), `docs/INTEGRATION.md`
    (встраивание), `.claude/skills/geneva/SKILL.md` (карта репозитория).
 3. **Наш код**:
@@ -288,8 +288,8 @@ MCP (`core/mcp/tools/geneva.py`):
 
 `BINARIES["geneva"]` в `core/ext_binary_installer.py`:
 
-- репозиторий `avatarDD/geneva_c`, `pinned_tag` v1.0.0;
-- ассеты `geneva-1.0.0-linux-<arch>.tar.gz` для aarch64, armv7, mips,
+- репозиторий `avatarDD/geneva_c`, `pinned_tag` v1.1.1;
+- ассеты `geneva-1.1.1-linux-<arch>.tar.gz` для aarch64, armv7, mips,
   mipsel и x86_64;
 - sha256 сверены с `SHA256SUMS` релиза.
 

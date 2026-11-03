@@ -44,7 +44,6 @@ import http.client
 import json
 import os
 import socket
-import ssl
 import urllib.request
 
 from core.log_buffer import log

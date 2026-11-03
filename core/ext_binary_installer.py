@@ -1033,15 +1033,15 @@ BINARIES = {
 
     # geneva_c — официальный релиз апстрима (avatarDD/geneva_c): статические
     # musl-сборки zig под каждую архитектуру роутера и SHA256SUMS рядом.
-    # Тег закреплён: имена ассетов версионные (geneva-1.0.0-linux-<арка>),
+    # Тег закреплён: имена ассетов версионные (geneva-1.1.1-linux-<арка>),
     # а хэши ниже посчитаны для этой версии (сверены с SHA256SUMS релиза
     # и с digest ассетов в GitHub API). В тарболе, кроме бинарника, лежат
     # LICENSE/README/packaging — нужный файл выбирает archive_member.
     # Обновление: новый тег, имена и хэши — вместе с docs/upstream.json.
     "geneva": {
         "repo": "avatarDD/geneva_c",
-        "release_tag": "v1.0.0",
-        "pinned_tag": "v1.0.0",
+        "release_tag": "v1.1.1",
+        "pinned_tag": "v1.1.1",
         "install_kind": "binary",
         "dest": "/opt/usr/bin/geneva",
         "archive_member": "geneva",
@@ -1049,18 +1049,18 @@ BINARIES = {
         # контракт апстрима: docs/PROTOCOL.md).
         "version_args": ("version",),
         "arch_map": {
-            "aarch64": "geneva-1.0.0-linux-aarch64.tar.gz",
-            "armv7": "geneva-1.0.0-linux-armv7.tar.gz",
-            "mips": "geneva-1.0.0-linux-mips.tar.gz",
-            "mipsel": "geneva-1.0.0-linux-mipsel.tar.gz",
-            "x86_64": "geneva-1.0.0-linux-x86_64.tar.gz",
+            "aarch64": "geneva-1.1.1-linux-aarch64.tar.gz",
+            "armv7": "geneva-1.1.1-linux-armv7.tar.gz",
+            "mips": "geneva-1.1.1-linux-mips.tar.gz",
+            "mipsel": "geneva-1.1.1-linux-mipsel.tar.gz",
+            "x86_64": "geneva-1.1.1-linux-x86_64.tar.gz",
         },
         "sha256_map": {
-            "aarch64": "0aa01c463423f39fc57072616ad7e66a0fa28daa272ba693e1c1ce3f54cdc88d",
-            "armv7": "d2abda6e8579ac2ced00bbc803257b3016f50a0474a878774aac80e2847822ab",
-            "mips": "bd51d0f228865eb4cf96c1a6e9a9c38cbaadd5cddf20706180a7919327f38e4d",
-            "mipsel": "fd8de56e56b6deea5b9d74941355092e8d9e2514102902fb431a973f6d4af678",
-            "x86_64": "c0a29e7e3344d0c49f1cf89341b71b359264a09372e20727d6d68c818f45b022",
+            "aarch64": "23524dd93bbf4f833f584d0c718d5ca7ad0a8410f4c4f58a5ab6da28817adffe",
+            "armv7": "a0cff7257981cc6977e4590198a8a30a373f284988cea7549430e25d68c8d1e7",
+            "mips": "ccf2c869cc64fbe71fdac920a31112d51db0a9d5d8e74cba8b78ac26484659b2",
+            "mipsel": "0adf5adad169c23e245d32c87bdcd452b8d863ce19245376695e28f08189961c",
+            "x86_64": "b33a4cbac29b44e7f976231c23978bb77f13171a1a825f3b1a42263fc7634417",
         },
     },
 }

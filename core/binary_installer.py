@@ -136,6 +136,14 @@ def github_unreachable_message(exc, what: str = "GitHub") -> str:
     reason = getattr(exc, "reason", None) or exc
     text = str(reason).strip() or exc.__class__.__name__
     low = text.lower()
+    # Сломанный SSL в самом Python («unknown url type: https», «libssl.so.3:
+    # ... Structure needs cleaning») — не сеть: зеркало и туннель тут не
+    # помогут, советовать их бессмысленно.
+    from core.ssl_health import looks_like_ssl_error, ssl_problem
+    if looks_like_ssl_error(text):
+        problem = ssl_problem()
+        if problem:
+            return "Нет доступа к %s. %s" % (what, problem)
     if "handshake" in low or "timed out" in low or "timeout" in low:
         cause = ("похоже, соединение с GitHub блокируется или сильно"
                  " замедляется провайдером — TLS-рукопожатие не завершилось")
