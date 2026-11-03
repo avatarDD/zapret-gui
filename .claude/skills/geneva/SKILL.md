@@ -105,6 +105,7 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
 | `stop()` (крайний случай) | `geneva fw down` с теми же `-p/--proto/-q/--firewall/-i/--mark` из `run.args.json` | root |
 | `start_search()` | `geneva evolve --probe tls\|http\|exec --host H ... --population N --generations M -q 311 --checkpoint search.ckpt --db db.jsonl --target T -e job-events.jsonl [--resume]` | root |
 | `start_eval()` | `geneva eval -f candidates.txt --host H ... -q 311` | root |
+| `auto_apply({q: стратегия})` (группы «Авто») | `geneva run -f <rt>/auto/qQ.strategy -q Q --firewall none -p 1-65535 --proto tcp,udp --mark 0x20000000 -c unix:<rt>/auto/qQ.sock -e <rt>/auto/qQ.jsonl --stats-interval 5 …`, Q = 340..347; правила — `core/geneva_auto_fw` (таблица `inet zapret_geneva_auto` или цепочки `ZGGA_POST/ZGGA_PRE` + ipset `geneva_auto_Q_n_v4/v6`) | root |
 | `start_auto_job("eval")` («Авто», быстрые кандидаты) | `geneva eval --probe exec --cmd "python3 core/geneva_auto_probe_cli.py … --lports {lports}" --injected-contains INJECTED -f state/geneva/auto/candidates.txt --workers N -q 311` | root |
 | `start_auto_job("evolve")` («Авто», сервис) | `geneva evolve --probe exec --cmd … --protos TCP\|UDP,IP\|UDP,IP,DNS,DNSQR --population 20 --generations 10 --workers N -q 311 --checkpoint state/geneva/auto/<sha1>.ckpt --db db.jsonl --target https:<host>\|replay:<ip>:<port> [--resume]` | root |
 | `check_strategy()` | `geneva check --json -f -` | нет |
@@ -122,6 +123,13 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
   мы всё равно ставим обход на паузу (§4).
 - **Метка 0x20000000** у пакетов, которые geneva отправляет сам. Правила
   geneva их пропускают, иначе получилась бы петля.
+- **Группы «Авто»** — по процессу на стратегию, очереди 340–347
+  (`geneva.auto.max_groups`, по умолчанию 4). Трафик выбирают правила
+  zapret-gui: адреса сервисов группы (наборы на «очередь + порты»), DHT —
+  по исходному кортежу conntrack, первые 12 исходящих и 6 входящих
+  пакетов, пропуск метки `0x20000000` и портов оценщика 30000–30511.
+  Без адресов правила нет: «все порты» процесса безопасны только поэтому.
+  Нет `ipset` или `xt_connbytes` (iptables) — ошибка с подсказкой.
 - **Задания «Авто»** занимают тот же слот задачи, что ручной подбор
   (`job.pid`), но пишут своё состояние (`state/geneva/auto/search.json`,
   `owner: "auto"`) и свои checkpoint'ы на сервис: «Продолжить» ручного
