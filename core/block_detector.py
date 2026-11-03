@@ -16,6 +16,10 @@ Block Detector: DNS-мониторинг + автообнаружение бло
 же обрыв одинаково и считают одинаковый remediation (zapret/tunnel/dns).
 Здесь остаётся то, чего в blockcheck нет: сбор доменов из живого DNS,
 периодичность и автодобавление в списки.
+
+Заодно детектор ведёт карту «IP → имя» из DNS-ответов (:func:`ip_names`).
+Её читает наблюдение режима «Авто» geneva (``core/geneva_auto_observer``):
+в conntrack имён нет, а второй сниффер DNS на роутере не нужен.
 """
 
 from __future__ import annotations
@@ -115,6 +119,162 @@ def doh_confirms_exists(domain: str, timeout: float = 4.0) -> bool:
     ips = doh_resolve(domain, timeout)
     return bool(ips) and not all_non_public(ips) \
         and not all(ip in ("0.0.0.0", "127.0.0.1") for ip in ips)
+
+
+# ─────── карта «IP → имя» из DNS-ответов ───────
+# Наблюдение «Авто» geneva видит в conntrack только адреса. Имя сайта
+# берётся из тех же DNS-источников, что у детектора: ответы dnsmasq,
+# AdGuard Home и AF_PACKET. Имя — вопрос запроса, а не цель CNAME:
+# пользователю нужен «youtube.com», а не «googlevideo.com».
+
+NAMES_MAX = 4096                  # адресов в карте
+NAMES_LIFE = 24 * 3600            # запись старше суток забывается
+_names_lock = threading.Lock()
+_names = {}                       # ip -> (name, ts)
+_collect_lock = threading.Lock()  # один сбор DNS за раз (AF_PACKET)
+_last_collect = 0.0
+
+
+def remember_names(pairs, now: float = None) -> int:
+    """``[(ip, имя), …]`` в карту. Возвращает, сколько записано."""
+    import ipaddress
+    now = time.time() if now is None else now
+    n = 0
+    with _names_lock:
+        for ip, name in pairs or []:
+            name = (name or "").strip().strip(".").lower()
+            if not name or not is_probe_candidate(name):
+                continue
+            try:
+                ip = str(ipaddress.ip_address(str(ip).strip()))
+            except ValueError:
+                continue
+            _names.pop(ip, None)          # свежие — в конце словаря
+            _names[ip] = (name, now)
+            n += 1
+        if len(_names) > NAMES_MAX:
+            for ip in list(_names)[:len(_names) - NAMES_MAX]:
+                del _names[ip]
+    return n
+
+
+def ip_names(now: float = None) -> dict:
+    """Копия карты ``{ip: имя}`` без устаревших записей."""
+    now = time.time() if now is None else now
+    with _names_lock:
+        for ip in [ip for ip, (_n, ts) in _names.items()
+                   if now - ts > NAMES_LIFE]:
+            del _names[ip]
+        return {ip: name for ip, (name, _ts) in _names.items()}
+
+
+def forget_names() -> None:
+    """Очистить карту (нужно тестам)."""
+    global _last_collect
+    with _names_lock:
+        _names.clear()
+    _last_collect = 0.0
+
+
+def _read_dns_name(buf: bytes, offset: int) -> tuple:
+    """Имя из DNS-сообщения с учётом сжатия: ``(имя, смещение после)``."""
+    labels = []
+    jumped = False
+    seen = set()
+    start = offset
+    while offset < len(buf):
+        ln = buf[offset]
+        if ln == 0:
+            offset += 1
+            break
+        if ln & 0xC0 == 0xC0:
+            if offset + 1 >= len(buf):
+                break
+            ptr = ((ln & 0x3F) << 8) | buf[offset + 1]
+            if ptr in seen:
+                break
+            seen.add(ptr)
+            if not jumped:
+                start = offset + 2
+                jumped = True
+            offset = ptr
+            continue
+        offset += 1
+        label = buf[offset:offset + ln]
+        try:
+            labels.append(label.decode("idna", errors="ignore"))
+        except Exception:
+            labels.append(label.decode("utf-8", errors="ignore"))
+        offset += ln
+    return ".".join([p for p in labels if p]), (start if jumped else offset)
+
+
+def parse_dns_answers(dns: bytes) -> list:
+    """Чистая функция: DNS-ответ → ``[(ip, имя вопроса), …]`` по A/AAAA.
+
+    Любая неожиданность — пустой список: сюда приезжают чужие пакеты.
+    """
+    import struct
+    out = []
+    try:
+        if len(dns) < 12:
+            return []
+        flags, qd, an = struct.unpack("!HHH", dns[2:8])
+        if not flags & 0x8000 or qd < 1 or an < 1:
+            return []
+        offset = 12
+        qname = ""
+        for i in range(qd):
+            name, offset = _read_dns_name(dns, offset)
+            if i == 0:
+                qname = name.lower().strip(".")
+            offset += 4
+        if not qname:
+            return []
+        for _ in range(min(an, 64)):
+            _name, offset = _read_dns_name(dns, offset)
+            if offset + 10 > len(dns):
+                break
+            rtype, _cls, _ttl, rdlen = struct.unpack(
+                "!HHIH", dns[offset:offset + 10])
+            offset += 10
+            rdata = dns[offset:offset + rdlen]
+            offset += rdlen
+            if rtype == 1 and len(rdata) == 4:
+                out.append((socket.inet_ntop(socket.AF_INET, rdata), qname))
+            elif rtype == 28 and len(rdata) == 16:
+                out.append((socket.inet_ntop(socket.AF_INET6, rdata), qname))
+    except (IndexError, ValueError, OSError):
+        return out
+    return out
+
+
+# «reply» — ответ сервера, «cached» — из кеша dnsmasq (частый случай).
+_DNSMASQ_REPLY_RE = re.compile(r"\b(?:reply|cached)\s+(\S+)\s+is\s+(\S+)")
+_DNSMASQ_QUERY_RE = re.compile(r"\bquery\[")
+
+
+def parse_dnsmasq_replies(lines) -> list:
+    """Чистая функция: строки лога dnsmasq → ``[(ip, имя), …]``.
+
+    Цепочка CNAME (``reply a is <CNAME>``, затем ``reply b is 1.2.3.4``)
+    отдаёт адрес первому имени цепочки.
+    """
+    out = []
+    head = ""
+    for line in lines or []:
+        if _DNSMASQ_QUERY_RE.search(line):
+            head = ""
+            continue
+        m = _DNSMASQ_REPLY_RE.search(line)
+        if not m:
+            continue
+        name, value = m.group(1).lower(), m.group(2)
+        if value == "<CNAME>":
+            head = head or name
+            continue
+        out.append((value, head or name))
+    return out
 
 
 def _last_unique(items, limit: int) -> list:
@@ -221,7 +381,10 @@ class BlockDetector:
     def _tick(self):
         """Основной цикл: собрать DNS + пронировать."""
         # Собираем домены из DNS-источника
-        new_domains = self._collect_dns_queries()
+        global _last_collect
+        with _collect_lock:
+            _last_collect = time.time()
+            new_domains = self._collect_dns_queries()
         # Второй источник — зависшие прямые соединения mihomo/sing-box
         # (Clash API, block_detector.smart_clash; core/smart_detect).
         try:
@@ -351,10 +514,12 @@ class BlockDetector:
                     f.readline()  # пропустить possibly-truncated first line
                 data = f.read().decode("utf-8", errors="replace")
             # Парсим: "reply <domain> is <ip>"
-            for line in data.splitlines():
+            lines = data.splitlines()
+            for line in lines:
                 m = re.search(r"reply\s+(\S+)\s+is\s+", line)
                 if m:
                     domains.append(m.group(1).lower())
+            remember_names(parse_dnsmasq_replies(lines))
         except Exception:
             pass
         return _last_unique(domains, 50)
@@ -379,9 +544,19 @@ class BlockDetector:
                     continue
                 try:
                     entry = json.loads(line)
-                    domain = entry.get("domain", "")
+                    # Новый формат querylog: «QH» и ответ base64 в
+                    # «Answer»; старый — «domain».
+                    domain = entry.get("domain", "") or entry.get("QH", "")
                     if domain:
-                        domains.append(domain.lower())
+                        domains.append(str(domain).lower())
+                    answer = entry.get("Answer")
+                    if answer:
+                        import base64
+                        try:
+                            raw = base64.b64decode(answer)
+                        except (ValueError, TypeError):
+                            raw = b""
+                        remember_names(parse_dns_answers(raw))
                 except json.JSONDecodeError:
                     pass
         except Exception:
@@ -401,37 +576,6 @@ class BlockDetector:
             log.warning("block-detector: AF_PACKET недоступен: %s" % e,
                         source="block_detector")
             return []
-
-        def _read_dns_name(buf: bytes, offset: int) -> tuple[str, int]:
-            labels = []
-            jumped = False
-            seen = set()
-            start = offset
-            while offset < len(buf):
-                ln = buf[offset]
-                if ln == 0:
-                    offset += 1
-                    break
-                if ln & 0xC0 == 0xC0:
-                    if offset + 1 >= len(buf):
-                        break
-                    ptr = ((ln & 0x3F) << 8) | buf[offset + 1]
-                    if ptr in seen:
-                        break
-                    seen.add(ptr)
-                    if not jumped:
-                        start = offset + 2
-                        jumped = True
-                    offset = ptr
-                    continue
-                offset += 1
-                label = buf[offset:offset + ln]
-                try:
-                    labels.append(label.decode("idna", errors="ignore"))
-                except Exception:
-                    labels.append(label.decode("utf-8", errors="ignore"))
-                offset += ln
-            return ".".join([p for p in labels if p]), (start if jumped else offset)
 
         domains = []
         deadline = time.time() + 1.0
@@ -469,6 +613,8 @@ class BlockDetector:
                     continue
                 flags = struct.unpack("!H", dns[2:4])[0]
                 qr = (flags >> 15) & 1
+                if qr == 1:
+                    remember_names(parse_dns_answers(dns))
                 # Нам интересны и запросы, и ответы: у провайдера может быть
                 # виден только ответ в перехвате, а имя домена всё равно нужно.
                 offset = 12
@@ -618,6 +764,33 @@ class BlockDetector:
 
     # ─────── public API ───────
 
+    def refresh_names(self, min_interval: float = 10.0) -> dict:
+        """Снять свежие DNS-ответы тем же источником и вернуть карту имён.
+
+        Зовёт наблюдение «Авто» geneva раз в срез, даже когда сам
+        детектор выключен. Один сбор за раз: AF_PACKET-сниффер не
+        запускается вторым экземпляром рядом с тактом детектора, а
+        вызов чаще ``min_interval`` отдаёт уже собранное.
+        """
+        global _last_collect
+        if time.time() - _last_collect >= min_interval and \
+                _collect_lock.acquire(blocking=False):
+            try:
+                _last_collect = time.time()
+                # Без AF_PACKET (не root) сбор только писал бы
+                # предупреждение в журнал каждые 15 с.
+                if self._get_dns_source() not in ("dnsmasq_log",
+                                                  "adguard_log") \
+                        and not self._af_packet_ok():
+                    return ip_names()
+                self._collect_dns_queries()
+            except Exception as e:                  # noqa: BLE001
+                log.debug("block-detector: имена DNS: %s" % e,
+                          source="block_detector")
+            finally:
+                _collect_lock.release()
+        return ip_names()
+
     def get_status(self) -> dict:
         """Статус детектора."""
         with self._lock:
@@ -656,6 +829,15 @@ class BlockDetector:
             "dns_source": source,
             "dns_source_available": source_ok,
         }
+
+    def _af_packet_ok(self) -> bool:
+        """``_af_packet_available`` с памятью на 10 минут."""
+        now = time.time()
+        cached = getattr(self, "_af_ok_cache", None)
+        if cached is None or now - cached[0] > 600:
+            cached = (now, self._af_packet_available())
+            self._af_ok_cache = cached
+        return cached[1]
 
     def _af_packet_available(self) -> bool:
         """Можно ли открыть AF_PACKET-сокет (нужен root)."""

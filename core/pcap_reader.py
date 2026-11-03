@@ -55,19 +55,25 @@ class PcapError(ValueError):
     """Файл не похож на pcap (или обрезан на заголовке)."""
 
 
-def read_file(path: str, limit: int = MAX_PACKETS) -> dict:
+def read_file(path: str, limit: int = MAX_PACKETS,
+              payloads: bool = False) -> dict:
     """Разобрать pcap-файл: ``{linktype, packets, total, truncated}``."""
     with open(path, "rb") as f:
         data = f.read()
-    return read_bytes(data, limit=limit)
+    return read_bytes(data, limit=limit, payloads=payloads)
 
 
-def read_bytes(data: bytes, limit: int = MAX_PACKETS) -> dict:
+def read_bytes(data: bytes, limit: int = MAX_PACKETS,
+               payloads: bool = False) -> dict:
     """Разобрать содержимое pcap-файла, уже прочитанное в память.
 
     Обрезанный файл — норма, а не ошибка: tcpdump прибивают по таймеру,
     и последний пакет может оказаться недописанным. Такой хвост просто
     не попадает в список.
+
+    ``payloads=True`` кладёт в запись ещё и ``payload`` — байты L4 после
+    заголовка TCP/UDP. Нужно повтору первых пакетов режима «Авто»
+    geneva; наружу (MCP, UI) такие записи не отдаются.
     """
     if len(data) < 24:
         raise PcapError("файл короче заголовка pcap (%d байт)" % len(data))
@@ -104,6 +110,8 @@ def read_bytes(data: bytes, limit: int = MAX_PACKETS) -> dict:
         # Снятый снапшот короче пакета — значит, часть payload'а не
         # записана, и «SNI не найден» может означать «не доехал».
         record["snapped"] = caplen < origlen
+        if payloads and "error" not in record:
+            record["payload"] = l4_payload(payload, linktype)
         packets.append(record)
 
     return {
@@ -168,6 +176,35 @@ def _packet(raw: bytes, linktype: int) -> dict:
     if version == 6:
         return _ipv6(payload)
     return {"error": "не IP-пакет (версия %d)" % version}
+
+
+def l4_payload(raw: bytes, linktype: int) -> bytes:
+    """Байты после заголовка TCP/UDP (без IPv6 extension-заголовков)."""
+    data, error = _strip_link(raw, linktype)
+    if error or not data:
+        return b""
+    version = data[0] >> 4
+    if version == 4:
+        ihl = (data[0] & 0x0F) * 4
+        if len(data) < 20 or ihl < 20:
+            return b""
+        total = struct.unpack(">H", data[2:4])[0]
+        if struct.unpack(">H", data[6:8])[0] & 0x1FFF:
+            return b""                  # не первый фрагмент
+        proto, body = data[9], data[ihl:total if total >= ihl else None]
+    elif version == 6:
+        if len(data) < 40:
+            return b""
+        plen = struct.unpack(">H", data[4:6])[0]
+        proto, body = data[6], data[40:40 + plen]
+    else:
+        return b""
+    if proto == 6 and len(body) >= 20:
+        off = (body[12] >> 4) * 4
+        return bytes(body[off:]) if off >= 20 else b""
+    if proto == 17 and len(body) >= 8:
+        return bytes(body[8:])
+    return b""
 
 
 def _strip_link(raw: bytes, linktype: int):
