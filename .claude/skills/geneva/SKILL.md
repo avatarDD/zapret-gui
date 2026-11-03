@@ -16,9 +16,15 @@ description: >-
   установке бинарника
   из релиза с sha256 (BINARIES["geneva"]), MCP-инструментах geneva_* и
   bypass_engine_*, а также диагностике «geneva запущен, а обхода нет /
-  правила пропали / подбор не стартует / exit 4, 5, 7». Источник истины —
-  сам бинарник и docs/ в avatarDD/geneva_c, привязка — core/geneva_manager.py,
-  core/bypass_engine.py, api/geneva.py, core/mcp/tools/geneva.py.
+  правила пропали / подбор не стартует / exit 4, 5, 7», а также о режиме
+  «Авто» (сам находит заблокированные сервисы любых протоколов по
+  conntrack, подтверждает пробой без обхода, подбирает стратегию eval/evolve
+  параллельными воркерами и применяет её отдельным geneva run на очереди
+  340+ только к адресам сервиса; core/geneva_auto*.py, состояние
+  state/geneva/auto.json, geneva.auto.*, /api/geneva/auto*, geneva_auto_*).
+  Источник истины — сам бинарник и docs/ в avatarDD/geneva_c, привязка —
+  core/geneva_manager.py, core/bypass_engine.py, core/geneva_auto*.py,
+  api/geneva.py, core/mcp/tools/geneva.py.
 ---
 
 # geneva_c — справочник для zapret-gui
@@ -351,3 +357,117 @@ MCP (`core/mcp/tools/geneva.py`):
   `PUT /api/geneva/config` живой движок подхватит их только перезапуском
   (`restart_needed` в ответе). Стратегия меняется на лету через сокет
   (`set_strategy`).
+
+## 10. Режим «Авто»
+
+Пользователь включает один переключатель (карточка «Авто» в «Обход DPI»,
+`POST /api/geneva/auto/enable`, MCP `geneva_auto_enable`), дальше всё
+решает zapret-gui. Перенос режима из Zapret2_AutoTuner (§9 его скила):
+алгоритм, пороги и состояния — оттуда, наблюдение, пробы и firewall —
+свои, под роутер. Отличия от эталона помечены в коде словом «отличие».
+
+| Модуль | Что делает |
+|---|---|
+| `core/geneva_auto.py` | чистое ядро: `Service`/`Sample`, пороги одним блоком, книга `Book` (переходы AutoBook), `plan_groups`/`target`, шаблоны `AUTO_CANDIDATES_*`, `candidates_for`, `protos_for`, `search_target` |
+| `core/geneva_auto_observer.py` | срез conntrack → `Sample`: разбор строк, фильтр «свой/чужой», оценка `judge`, ключи `classify`, протокол и replay из захвата `analyze_capture` |
+| `core/geneva_auto_probes.py` | пробы без обхода и с обходом, fitness для geneva |
+| `core/geneva_auto_probe_cli.py` | проба для `geneva eval/evolve --probe exec` (скрипт, порт воркера из `{lports}`) |
+| `core/geneva_auto_search.py` | подбор одного сервиса в своём потоке |
+| `core/geneva_auto_fw.py` | правила групп: `build_auto_rules`, `ipt_commands`, `teardown_commands` |
+| `core/geneva_auto_apply.py` | очереди групп, процессы + правила, пробная группа, `stats` |
+| `core/geneva_auto_manager.py` | цикл `geneva-auto`, состояние, включение/выключение, пауза |
+
+1. **Наблюдение — conntrack, не pcap.** Срез раз в 15 с из
+   `/proc/net/nf_conntrack` (иначе `conntrack -L -o extended`, IPv4 и
+   `-f ipv6`). На время режима `nf_conntrack_acct=1` и
+   `nf_conntrack_timestamp=1`, прежние значения возвращаются. Нет ни
+   таблицы, ни утилиты — `conntrack_tool_missing` («поставьте
+   conntrack»), ядро без conntrack — `conntrack_unsupported`.
+   Пропускается: не интернет (RFC1918, CGNAT, loopback, multicast),
+   входящие (клиент не локальный), ct mark `0x30000000` (исключение и
+   пробы), порты 30000–30575 (оценщик geneva и пробы «Авто»), ответ не от
+   сервера (REDIRECT/DNAT в локальный прокси), ответ на адрес туннельного
+   интерфейса (awg, wg, nwg, tun…), серверы туннелей (`awg/wg show all
+   endpoints`, `geneva.auto.exclude`). TPROXY в conntrack не виден —
+   такие серверы только через `exclude`.
+2. **Оценка соединения по счётчикам** (данные — `bytes − packets ×
+   заголовок`, у TCP с запасом на опции): SYN без ответа ≥ 3 с и ≥ 2 SYN →
+   нет соединения; ESTABLISHED, ответ ≤ 3 пакетов и ≤ 100 Б данных, ≥ 5 с,
+   клиент слал данные (и повторял или порт 80/443) → «данных нет»;
+   CLOSE (RST) при ответе < 200 Б → сброс; данные ответа 8–32 КБ и
+   «зависли» между срезами → обрыв на 16 КБ; ответ ≥ 2 КБ → успех;
+   `[OFFLOAD]` — малые счётчики ничего не значат. UDP: ответ — успех,
+   `[UNREPLIED]` ≥ 5 с при ≥ 2 запросах (DNS — 1) — провал; долгий поток
+   после первого вердикта судится приростом за срез. Одно TCP-соединение
+   — один провал (потом только «успех»-поправка).
+3. **Ключи** — как в ядре: `web:<домен>`, `quic:<домен>` (UDP 443 с
+   именем), `dns:<ip>`, `ep:<app>:<tcp|udp>:<ip>:<port>`,
+   `port:<tcp|udp>:<клиент>:<порт>`. Имя — карта «IP → имя» детектора
+   блокировок (`block_detector.ip_names`/`refresh_names`: dnsmasq
+   `reply`/`cached`, AdGuard, AF_PACKET) и SNI из захвата. DHT без
+   захвата — «веер» (с одного UDP-порта к ≥ 8 адресам) → `p2p`. Ключ `ep:`
+   липкий: узнанный позже протокол его не меняет.
+4. **Протокол и replay** подозрительного endpoint/P2P — фоном короткий
+   захват (`traffic_capture.capture_first`: фиксированный argv tcpdump,
+   `-i any`, адрес + порт, 16 пакетов, снапшот 1500, файл удаляется,
+   payload'ы из прогона стираются). Разбор: DHT, OpenVPN (опкод 7/10),
+   TLS (+SNI), HTTP, QUIC Initial, Discord, STUN/ICE, DNS, DTLS,
+   WireGuard; MTProto — нет (нужен AES). Replay — только
+   `REPLAYABLE_APPS`, у TCP — ровно первое сообщение.
+5. **Подтверждение** (`AutoProbes.check`): сайт — загрузка страницы с
+   увиденного IP с SNI/Host (≥ 64 КБ или весь ответ, без зависания,
+   сертификат проверяется, без CA-бандла — без проверки), таймаут
+   соединения → `ip_blocked`; прочее — повтор replay (две попытки),
+   STUN — свежий Binding Request, DNS без replay — свежий запрос (отличие).
+   Без обхода: `SO_MARK` (метка проб nfqws2 | `0x20000000`), мимо очередей;
+   с обходом — без метки, через группу. Все пробы — с портов 30512–30575.
+   Ошибка самой пробы → `unknown`.
+6. **Подбор** (по одному, приоритет web → dns → endpoint → quic → DHT):
+   до 12 быстрых кандидатов (группы, `db_top` цели с успехами, шаблоны)
+   одним `geneva eval --workers N` **параллельно** (`geneva.auto.workers`,
+   4); никто не прошёл — `evolve` (20 × 10, `--protos` по транспорту,
+   свой checkpoint `state/geneva/auto/<sha1>.ckpt`, следующий раз
+   `--resume` +5 поколений); до 3 прошедших — пробной группой на трафике
+   сервиса и пробой с обходом. Без пробы — кандидат за кандидатом, успех —
+   поток клиента за 50 с. Проба `exec` различает только ok/reset+INJECTED/
+   прочее (+400/−360/−400): точный `external` — один воркер. Слот задачи
+   общий с ручным подбором; ручной «Стоп» даёт `busy`, не `not_found`.
+7. **Применение.** Группа = стратегия = свой `geneva run --firewall none`
+   на очереди 340..340+N−1 (`geneva.auto.max_groups`, 4, до 8). Стратегия
+   сохраняет очередь и процесс; смена — `set_strategy`; упавший
+   поднимается при следующем применении (при изменении плана и раз в
+   2 мин). Правила — `core/geneva_auto_fw`: nft-таблица
+   `inet zapret_geneva_auto` (атомарная замена) или mangle
+   `ZGGA_POST/ZGGA_PRE` + ipset `geneva_auto_<Q>_<n>_v4/v6`; наборы на
+   «очередь + порты»; `ct original packets 1-12` / `ct reply packets 1-6`;
+   DHT — по `ct original saddr/proto-src` и направлению; пропуск метки
+   `0x20000000` и портов оценщика. Без адресов правил нет. Нет ipset или
+   xt_connbytes — режим выключается с причиной. Пробная стратегия
+   применена, только если её процесс жив и правила встали (`trial_ok`).
+8. **Цикл и состояние.** `tick()`: срез → захват протокола →
+   подтверждение одного → подбор → применение → `stats` → сохранение
+   (`state/geneva/auto.json`: переход — сразу, иначе ≤ раза в минуту,
+   пустой срез не пишет). Ошибка среза — повтор через 15→30→…→300 с.
+   Сохранённый «в подборе» при загрузке — `blocked` (исправление
+   эталона). Журнал — 300 строк в ОЗУ + `log_buffer`.
+9. **Взаимоисключения.** Включение: geneva установлен, nfqws2 свободен,
+   conntrack есть; переключение движка и остановка одиночного run — после
+   подтверждения (REST 409 `need_confirm`, MCP — `confirm_token`). При
+   «Авто» `start()`, `start_search()`, `start_eval()` →
+   `error_code: geneva_auto`; `switch("nfqws2")` выключает режим;
+   `hold_geneva_for` (сканер, blockcheck) — `suspend`, после — `resume`.
+   Правила и группы снимаются при выключении, выходе GUI (`shutdown`) и
+   при загрузке с выключенным режимом (`boot`).
+
+Подводные камни:
+
+- Нет `nf_conntrack_acct` (старое ядро, запрещено) — видно только «нет
+  соединения»; проблема в `status().problems`.
+- Аппаратный offload (Keenetic hwnat, OpenWrt flow offloading) замораживает
+  счётчики: зависания такого потока не видны, успех — только по
+  большому ответу.
+- Порты 30000–30575 не должны попадать в правила групп (иначе пробы
+  подбора пойдут через чужую стратегию), а 30512–30575 — в срез.
+- Проверка с обходом идёт с самого роутера: правила групп обязаны
+  ловить и локальный трафик (postrouting/prerouting, а не только forward).
+

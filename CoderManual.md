@@ -492,6 +492,27 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | `auto_remediation.py` | Авто-починка: по сигналам мониторинга поднимает упавшее и переключает метод. |
 | `iface_socks.py` | SOCKS-прокси, привязанный к интерфейсу (`SO_BINDTODEVICE`) — регистрация usque/WARP через уже работающий обход. |
 
+### 5.7a geneva_c и режим «Авто»
+
+Справочник — скил [`geneva`](.claude/skills/geneva/SKILL.md) (§1–9 —
+движок, §10 — «Авто»).
+
+| Модуль | Назначение |
+|--------|-----------|
+| `geneva_manager.py` | Процессы geneva: одиночный `geneva run` (очередь 310), задачи подбора `evolve`/`eval` (311) — ручные и «Авто» (`start_auto_job`, своё состояние `state/geneva/auto/`), группы «Авто» (`auto_apply`/`auto_groups`/`auto_stats`/`auto_stop_all`, очереди 340–347). Аргументы — только чистые `build_*_args`. |
+| `bypass_engine.py` | Какой движок обходит (nfqws2 / geneva), переключение со снимками, пауза на подбор; учитывает «Авто» (`overview`, `switch`, `hold_geneva_for`, `boot_apply`). |
+| `geneva_auto.py` | «Авто», чистое ядро: модель, пороги, книга `Book` (машина состояний), план групп, шаблоны стратегий. Без I/O. |
+| `geneva_auto_observer.py` | «Авто», наблюдение: срез conntrack, оценка соединений, ключи сервисов, протокол из захвата. Чистые функции + класс `Observer`. |
+| `geneva_auto_probes.py` / `geneva_auto_probe_cli.py` | «Авто», пробы без обхода и с обходом, fitness; CLI-проба для `--probe exec`. |
+| `geneva_auto_search.py` | «Авто», подбор одного сервиса: параллельный `eval`, `evolve` с продолжением, проверка на трафике. |
+| `geneva_auto_fw.py` / `geneva_auto_apply.py` | «Авто», правила групп (nft/iptables, golden-тесты) и применение групп (очереди, процессы, `stats`). |
+| `geneva_auto_manager.py` | «Авто», цикл `geneva-auto`, `auto.json`, включение/выключение, пауза; `get_geneva_auto_manager()`. |
+
+Правило: пороги и переходы — в ядре (`geneva_auto.py`), не в менеджере;
+I/O — только в observer/probes/fw/apply/manager; всё внешнее у классов
+подменяется аргументами конструктора (так устроены тесты
+`tests/test_geneva_auto_*.py`).
+
 ### 5.8 MCP-сервер: `core/mcp/`
 
 Единственный подпакет `core/`, у которого есть **внешний потребитель —
@@ -838,6 +859,8 @@ make lint
 | новый фоновый воркер | синглтон с `reconfigure()` + регистрация в boot-хуках `app.py` |
 | новую настройку | `DEFAULT_CONFIG` в `config_manager.py` |
 | поддержку новой платформы/бэкенда | `*_platform.py` движка + `routing.choose_backend()` |
+| порог, переход или шаблон стратегии режима «Авто» geneva | `core/geneva_auto.py` (константы одним блоком, `Book`, `AUTO_CANDIDATES_*`) + `tests/test_geneva_auto_core.py` + §10 скила `geneva` |
+| новый протокол по первому пакету для «Авто» | `geneva_auto_observer.detect_app` (+ `REPLAYABLE_APPS` в ядре, если ответ на повтор осмыслен) |
 
 ---
 
