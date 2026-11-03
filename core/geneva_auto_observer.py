@@ -19,7 +19,8 @@
   перенаправленные на сам роутер (REDIRECT/TPROXY sing-box и mihomo:
   ответ идёт не от сервера), пробы GUI и geneva (connmark-исключение
   ``0x20000000`` и метка проб ``0x10000000`` в ``mark=``, блок
-  локальных портов оценщика geneva 30000–30511), трафик в туннели
+  локальных портов оценщика geneva 30000–30511 и проб «Авто»
+  30512–30575), трафик в туннели
   zapret-gui (ответ приходит на адрес туннельного интерфейса: awg, wg,
   nwg, tun, …) и внешние соединения туннелей (адреса серверов из
   ``awg/wg show all endpoints`` и настройки ``geneva.auto.exclude``);
@@ -106,6 +107,11 @@ _HDR = {("tcp", 4): 60, ("tcp", 6): 80, ("udp", 4): 28, ("udp", 6): 48}
 SKIP_CT_MARK = 0x20000000 | 0x10000000   # исключение (пробы) | метка проб
 PROBE_PORT_BASE = 30000                  # блок портов оценщика geneva_c
 PROBE_PORT_COUNT = 64 * 8                # 64 на воркера, до 8 воркеров
+# Сразу за ним — исходные порты проб самого «Авто» (core/geneva_auto_probes):
+# проба без обхода и проверка с обходом не должны попасть в срез как
+# трафик пользователя (ct mark в режиме geneva никто не ставит).
+AUTO_PROBE_PORTS = (PROBE_PORT_BASE + PROBE_PORT_COUNT,
+                    PROBE_PORT_BASE + PROBE_PORT_COUNT + 63)
 
 # Туннельные интерфейсы: ответ на их адрес — трафик ушёл в туннель.
 TUNNEL_PREFIXES = ("awg", "wg", "nwg", "tun", "tap", "utun", "usque",
@@ -340,8 +346,9 @@ class Local:
 
 
 def is_probe_port(port: int) -> bool:
-    """Порт из блока проб оценщика geneva: не трафик пользователя."""
-    return PROBE_PORT_BASE <= int(port) < PROBE_PORT_BASE + PROBE_PORT_COUNT
+    """Порт из блока проб оценщика geneva или проб «Авто»: не трафик
+    пользователя."""
+    return PROBE_PORT_BASE <= int(port) <= AUTO_PROBE_PORTS[1]
 
 
 def skip_reason(c: Conn, local) -> str:
