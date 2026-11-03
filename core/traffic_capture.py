@@ -250,7 +250,9 @@ def _run(run, path, seconds, caps):
 
     try:
         from core import pcap_reader
-        run.report = pcap_reader.read_file(path, limit=HARD_MAX_PACKETS)
+        run.report = pcap_reader.read_file(
+            path, limit=HARD_MAX_PACKETS,
+            payloads=bool(caps.get("payloads")))
     except FileNotFoundError:
         run.error = run.error or "tcpdump не создал файл дампа"
     except Exception as e:                      # noqa: BLE001 — граница
@@ -268,6 +270,59 @@ def _run(run, path, seconds, caps):
              % (run.id, len(run.report.get("packets") or []),
                 (", ошибка: " + run.error) if run.error else ""),
              source="capture")
+
+
+def capture_first(*, host: str, port: int, proto: str, packets: int = 16,
+                  seconds: int = 20, iface: str = "any") -> dict:
+    """Синхронно снять первые пакеты одного сервиса, с payload'ами.
+
+    Для режима «Авто» geneva (``core/geneva_auto_observer``): протокол
+    по первому пакету (WireGuard, OpenVPN, DHT, STUN, QUIC) и ``replay``
+    conntrack не даёт. argv тот же фиксированный, что у :func:`start`;
+    фильтр — адрес, порт и протокол из разобранных полей. Снапшот полный
+    (QUIC Initial — 1200+ байт), потолки — жёсткие потолки модуля, а не
+    настройки MCP. Файл удаляется всегда. Возвращает ``{"packets": […],
+    "error": ""}``; занятый снифер — ``CaptureError``.
+    """
+    info = available()
+    if not info.get("available"):
+        raise CaptureError(info.get("reason", "tcpdump недоступен"))
+    current = latest()
+    if current and current.running:
+        raise CaptureError("дамп уже идёт (%s)" % current.id)
+    if not host or not _is_address(host) or "/" in host:
+        raise CaptureError("host: нужен один IP")
+    iface = "any" if iface == "any" else _iface(iface)
+    packets = _clamp(packets, 16, 64)
+    seconds = _clamp(seconds, 20, 60)
+    expression = _filter(host, port, proto)
+    caps = {"keep_file": False, "payloads": True,
+            "snaplen": HARD_MAX_SNAPLEN}
+    handle, path = tempfile.mkstemp(prefix="zapret-auto-", suffix=".pcap")
+    os.close(handle)
+    argv = [info["binary"], "-i", iface, "-nn", "-p",
+            "-s", str(HARD_MAX_SNAPLEN), "-c", str(packets),
+            "-U", "-w", path] + expression
+    params = {"iface": iface, "host": host, "port": port, "proto": proto,
+              "packets": packets, "seconds": seconds,
+              "snaplen": HARD_MAX_SNAPLEN, "filter": " ".join(expression),
+              "purpose": "geneva-auto"}
+    run = _Run("capture-%s" % os.urandom(4).hex(), params, argv)
+    with _lock:
+        _runs.append(run)
+        del _runs[:-KEEP]
+    _run(run, path, seconds, caps)
+    out = {"packets": packets_of(run), "error": run.error}
+    # payload'ы чужих соединений не остаются в памяти прогона: его
+    # снимок виден через MCP (capture_status).
+    for item in (run.report or {}).get("packets") or []:
+        item.pop("payload", None)
+    return out
+
+
+def packets_of(run) -> list:
+    """Пакеты прогона копиями (с payload'ами, если их снимали)."""
+    return [dict(p) for p in (run.report or {}).get("packets") or []]
 
 
 def stop() -> dict:
