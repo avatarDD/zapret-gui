@@ -105,13 +105,16 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
 | `stop()` (крайний случай) | `geneva fw down` с теми же `-p/--proto/-q/--firewall/-i/--mark` из `run.args.json` | root |
 | `start_search()` | `geneva evolve --probe tls\|http\|exec --host H ... --population N --generations M -q 311 --checkpoint search.ckpt --db db.jsonl --target T -e job-events.jsonl [--resume]` | root |
 | `start_eval()` | `geneva eval -f candidates.txt --host H ... -q 311` | root |
+| `start_auto_job("eval")` («Авто», быстрые кандидаты) | `geneva eval --probe exec --cmd "python3 core/geneva_auto_probe_cli.py … --lports {lports}" --injected-contains INJECTED -f state/geneva/auto/candidates.txt --workers N -q 311` | root |
+| `start_auto_job("evolve")` («Авто», сервис) | `geneva evolve --probe exec --cmd … --protos TCP\|UDP,IP\|UDP,IP,DNS,DNSQR --population 20 --generations 10 --workers N -q 311 --checkpoint state/geneva/auto/<sha1>.ckpt --db db.jsonl --target https:<host>\|replay:<ip>:<port> [--resume]` | root |
 | `check_strategy()` | `geneva check --json -f -` | нет |
 | `library()` | `geneva library --json` | нет |
 | `db_top()` | `geneva db --db db.jsonl top --json` (печатает JSONL) | нет |
 | `detect()` | `geneva version --json` | нет |
 
 Точные аргументы собирают чистые функции `build_run_args`,
-`build_evolve_args`, `build_eval_args`, `fw_down_args` и `_probe_args`. Они
+`build_evolve_args`, `build_eval_args`, `build_auto_eval_args`,
+`build_auto_evolve_args`, `fw_down_args` и `_probe_args`. Они
 покрыты тестами, и аргументы правят только в них.
 
 - **Очереди NFQUEUE.** nfqws2 держит 300–303, `run` 310, оценщик 311. Две
@@ -119,6 +122,11 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
   мы всё равно ставим обход на паузу (§4).
 - **Метка 0x20000000** у пакетов, которые geneva отправляет сам. Правила
   geneva их пропускают, иначе получилась бы петля.
+- **Задания «Авто»** занимают тот же слот задачи, что ручной подбор
+  (`job.pid`), но пишут своё состояние (`state/geneva/auto/search.json`,
+  `owner: "auto"`) и свои checkpoint'ы на сервис: «Продолжить» ручного
+  поиска их не подхватит. Обход на паузу не ставится. Проба `exec`
+  различает только ok (+400), `reset`/`INJECTED` (−360) и прочее (−400).
 - **Проба `https`** у нас означает `--probe exec` с `curl -sf --local-port {lports}`
   (блок портов воркера), полная загрузка страницы. TLS-проба geneva не
   завершает рукопожатие, а `curl` без `-f` засчитывает HTTP-ошибку как

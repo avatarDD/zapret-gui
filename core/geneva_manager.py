@@ -178,6 +178,14 @@ def paths() -> dict:
         "job_pid": os.path.join(rt, "job.pid"),
         "job_events": os.path.join(rt, "job-events.jsonl"),
         "job_log": os.path.join(rt, "job.log"),
+        # Подбор режима «Авто» (core/geneva_auto_search): своё состояние,
+        # свои checkpoint'ы на каждый сервис — ручной поиск на странице
+        # (search.json, search.ckpt) он не трогает. База оценок общая:
+        # цели у сервисов свои (https:<host>, replay:<ip>:<port>).
+        "auto": os.path.join(st, "auto"),
+        "auto_search": os.path.join(st, "auto", "search.json"),
+        "auto_candidates": os.path.join(st, "auto", "candidates.txt"),
+        "auto_runtime": os.path.join(rt, "auto"),
     }
 
 
@@ -440,6 +448,86 @@ def build_eval_args(binary: str, params: dict, p: dict) -> list:
         "-e", p["job_events"],
         "--log-file", p["job_log"],
         "--quiet"]
+
+
+AUTO_JOB_LIMITS = {
+    "population": (4, 200),
+    "generations": (1, 200),
+    "workers": (1, 8),
+    "timeout": (2, 60),
+}
+
+
+def validate_auto_job(params: dict) -> dict:
+    """Параметры задания «Авто»: проба — команда от zapret-gui (``exec``),
+    остальное — в пределах ``AUTO_JOB_LIMITS``."""
+    out = {}
+    cmd = str(params.get("cmd") or "")
+    if not cmd or "\n" in cmd or "\r" in cmd or len(cmd) > 2048:
+        raise ValueError("auto: команда пробы")
+    out["cmd"] = cmd
+    target = str(params.get("target") or "")
+    if not target or not re.match(r"^[A-Za-z0-9:.\[\]_-]{1,300}$", target):
+        raise ValueError("auto: цель в базе оценок")
+    out["target"] = target
+    protos = str(params.get("protos") or "TCP")
+    if not re.match(r"^[A-Z]{2,6}(,[A-Z]{2,6}){0,5}$", protos):
+        raise ValueError("auto: --protos")
+    out["protos"] = protos
+    for key, (lo, hi) in AUTO_JOB_LIMITS.items():
+        if key in params:
+            out[key] = _as_int(params[key], key, lo, hi)
+    out.setdefault("population", 20)
+    out.setdefault("generations", 10)
+    out.setdefault("workers", 1)
+    out.setdefault("timeout", 20)
+    ckpt = str(params.get("checkpoint") or "")
+    out["checkpoint"] = ckpt
+    out["key"] = str(params.get("key") or "")[:300]
+    return out
+
+
+def build_auto_eval_args(binary: str, params: dict, p: dict) -> list:
+    """``geneva eval`` быстрых кандидатов «Авто»: проба ``exec`` с
+    локальных портов воркеров, воркеры параллельно."""
+    return [binary, "eval",
+            "--probe", "exec", "--cmd", params["cmd"],
+            "--timeout", str(params["timeout"]),
+            "--injected-contains", "INJECTED",
+            "-f", p["auto_candidates"],
+            "--workers", str(params["workers"]),
+            "--runs", "1",
+            "-q", str(EVAL_QUEUE),
+            "--mark", MARK,
+            "-e", p["job_events"],
+            "--log-file", p["job_log"],
+            "--quiet"]
+
+
+def build_auto_evolve_args(binary: str, params: dict, p: dict,
+                           resume: bool = False) -> list:
+    """``geneva evolve`` для одного сервиса «Авто»: свой checkpoint,
+    общая база оценок с целью сервиса, ``--protos`` по транспорту."""
+    args = [binary, "evolve",
+            "--probe", "exec", "--cmd", params["cmd"],
+            "--timeout", str(params["timeout"]),
+            "--injected-contains", "INJECTED",
+            "--protos", params["protos"],
+            "--population", str(params["population"]),
+            "--generations", str(params["generations"]),
+            "--workers", str(params["workers"]),
+            "--runs", "1",
+            "-q", str(EVAL_QUEUE),
+            "--mark", MARK,
+            "--checkpoint", params["checkpoint"],
+            "--db", p["db"],
+            "--target", params["target"],
+            "-e", p["job_events"],
+            "--log-file", p["job_log"],
+            "--quiet"]
+    if resume:
+        args.append("--resume")
+    return args
 
 
 # ─────────────────────── события и телеметрия ───────────────────────
@@ -840,6 +928,7 @@ class GenevaManager:
         # пропажа — повод перезапускать (иначе вечный перезапуск там,
         # где проверить правила нельзя).
         self._fw_seen = False
+        self._auto_state = {}
 
     # ─────── бинарник ───────
 
@@ -1236,8 +1325,11 @@ class GenevaManager:
         return _read_json(paths()["search"])
 
     def _save_search_state(self, state: dict) -> None:
+        # Задание «Авто» пишет своё: «Продолжить» ручного поиска на
+        # странице не должно подхватить чужой checkpoint.
+        key = "auto_search" if state.get("owner") == "auto" else "search"
         try:
-            _write_atomic(paths()["search"],
+            _write_atomic(paths()[key],
                           json.dumps(state, ensure_ascii=False, indent=1))
         except OSError as e:
             log.warning("geneva: search.json не записан: %s" % e,
@@ -1391,6 +1483,108 @@ class GenevaManager:
                 "paused_engine": state.get("paused_engine", ""),
                 "params": params}
 
+    # ─────── задания режима «Авто» ───────
+
+    def auto_job_running(self) -> bool:
+        with self._lock:
+            return self.job_running() and \
+                self._job_state.get("owner") == "auto"
+
+    def start_auto_job(self, kind: str, params: dict, strategies=None,
+                       resume: bool = False) -> dict:
+        """Запустить ``eval`` или ``evolve`` для сервиса «Авто».
+
+        Тот же слот задачи, что у ручного подбора (``_launch_job``): два
+        оценщика на одной очереди 311 не уживутся. Обход не ставится на
+        паузу — группы «Авто» продолжают работать, у оценщика свои
+        локальные порты. Ответ ``busy`` — слот занят (ручной подбор
+        на странице): «Авто» подождёт.
+        """
+        with self._lock:
+            if self.job_running():
+                return {"ok": False, "busy": True,
+                        "error": "подбор уже идёт"}
+            try:
+                params = validate_auto_job(params or {})
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            binary, err = self._ready_binary()
+            if not binary:
+                return {"ok": False, "error": err}
+            p = paths()
+            os.makedirs(p["auto"], exist_ok=True)
+            if kind == "eval":
+                items = []
+                for x in strategies or []:
+                    try:
+                        items.append(check_strategy_text(x))
+                    except ValueError:
+                        continue
+                if not items:
+                    return {"ok": False, "error": "нет стратегий"}
+                try:
+                    _write_atomic(p["auto_candidates"],
+                                  "\n".join(items[:64]) + "\n")
+                except OSError as e:
+                    return {"ok": False, "error": "кандидаты: %s" % e}
+                args = build_auto_eval_args(binary, params, p)
+                total = len(items[:64])
+            elif kind == "evolve":
+                if not params["checkpoint"]:
+                    return {"ok": False, "error": "auto: checkpoint"}
+                if resume and not os.path.isfile(params["checkpoint"]):
+                    resume = False
+                if not resume:
+                    _remove(params["checkpoint"])
+                args = build_auto_evolve_args(binary, params, p,
+                                              resume=resume)
+                total = 0
+            else:
+                return {"ok": False, "error": "auto: kind"}
+            state = {"kind": kind, "owner": "auto", "status": "running",
+                     "params": dict(params, pause_bypass=False),
+                     "started_at": time.time(), "finished_at": None,
+                     "resumed": bool(resume), "gen": -1,
+                     "best_fitness": None, "best": "", "results": [],
+                     "exit_code": None, "target": params["target"],
+                     "total": total, "paused_engine": ""}
+            return self._launch_job(args, state, state["params"])
+
+    def auto_job_status(self) -> dict:
+        """Ход и итог последнего задания «Авто» (идущего или законченного)."""
+        with self._lock:
+            pid = self._job_pid()
+            st = self._job_state
+            if st.get("owner") == "auto":
+                if pid:
+                    self._pump_job()
+                elif st.get("status") == "running":
+                    rc = self._job_proc.poll() if self._job_proc else None
+                    self._finish_job(rc)
+            if self._job_state.get("owner") == "auto":
+                st = self._job_state
+            else:
+                st = self._auto_state or _read_json(paths()["auto_search"])
+            return {
+                "running": bool(pid) and st.get("status") == "running",
+                "kind": st.get("kind", ""),
+                "status": st.get("status", "idle") if st else "idle",
+                "key": (st.get("params") or {}).get("key", ""),
+                "target": st.get("target", ""),
+                "generation": int(st.get("gen", -1)) + 1,
+                "generations": int((st.get("params") or {}).get(
+                    "generations") or 0),
+                "done": int(st.get("done") or 0),
+                "total": int(st.get("total") or 0),
+                "best": st.get("best", ""),
+                "best_fitness": st.get("best_fitness"),
+                "results": list(st.get("results") or []),
+                "exit_code": st.get("exit_code"),
+                "error": st.get("error", ""),
+                "started_at": st.get("started_at"),
+                "finished_at": st.get("finished_at"),
+            }
+
     def stop_search(self) -> dict:
         """SIGTERM: evolve сохраняет checkpoint и выходит после шага."""
         with self._lock:
@@ -1506,6 +1700,10 @@ class GenevaManager:
         self._save_search_state(st)
         _remove(p["job_pid"])
         self._job_proc = None
+        if st.get("owner") == "auto":
+            # Страница подбора снова показывает ручной поиск.
+            self._auto_state = st
+            self._job_state = self.search_state()
         log.info("geneva: %s закончен — %s"
                  % ("подбор" if st.get("kind") == "evolve" else "проверка",
                     st["status"]), source="geneva")
@@ -1540,6 +1738,7 @@ class GenevaManager:
             gen_done = int(st.get("gen", -1)) + 1
             out = {
                 "running": bool(pid),
+                "owner": st.get("owner", "manual") if st else "manual",
                 "kind": st.get("kind", ""),
                 "status": st.get("status", "idle") if st else "idle",
                 "params": params,
@@ -1644,6 +1843,11 @@ class GenevaManager:
             st = self.search_state()
             if st:
                 self._job_state = st
+            auto = _read_json(paths()["auto_search"])
+            if auto.get("status") == "running" and self.job_running():
+                # Идёт задание «Авто»: события — в его состояние.
+                self._job_state = auto
+                st = {}
             if self.job_running() or self.is_running():
                 self._ensure_monitor()
             elif st.get("status") == "running":
@@ -1651,6 +1855,12 @@ class GenevaManager:
             elif st.get("paused_engine") and not st.get("restored"):
                 self._restore_paused(st)
                 self._save_search_state(st)
+            if auto.get("status") == "running" and not self.job_running():
+                # Питание пропало посреди подбора «Авто»: дописать итог.
+                auto["status"] = "interrupted"
+                auto["finished_at"] = time.time()
+                self._save_search_state(auto)
+                self._auto_state = auto
 
 
 def summarize_stats(stats: dict) -> dict:
