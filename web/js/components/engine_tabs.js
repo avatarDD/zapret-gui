@@ -139,7 +139,7 @@ const EngineTabs = (() => {
 /* Страницы раздела «Обход DPI». */
 
 const BypassPage = {
-    render: c => GenevaPage.render(c, { sections: ['engines'] }),
+    render: c => GenevaPage.render(c, { sections: ['auto', 'engines'] }),
     destroy: () => GenevaPage.destroy(),
 };
 
@@ -147,7 +147,7 @@ const ControlHubPage = EngineTabs.make({
     pageId: 'control',
     nfqws: () => (typeof ControlPage !== 'undefined' ? ControlPage : null),
     geneva: {
-        sections: ['engine', 'settings'],
+        sections: ['auto', 'engine', 'settings'],
         title: 'Управление',
         subtitle: 'Запуск, остановка, рабочая стратегия и телеметрия geneva_c',
     },

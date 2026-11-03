@@ -342,6 +342,7 @@ UI), и `tools_by_scope`.
 | `issue_draft` | read | нет | `tools/issues.py` | title, kind?, tool?, component?, crash_id?, actual?, expected?, steps?, evidence?, args?, severity?, include_targets? | черновик issue об ошибке САМОГО GUI; место в коде, трассировку и repro сервер дописывает сам |
 | `issue_draft_list` | read | нет | `tools/issues.py` | id?, status?, offset?, limit? | черновики (новые первыми) + падения без черновика; с `id` — текст и ссылка |
 | `bypass_engine_status` | read | нет | `tools/geneva.py` | — | какой движок обхода активен (`bypass.engine`: nfqws2 / geneva), оба движка, снимки рабочих настроек из `state/engines.json`, прерванный подбор nfqws2 (`scan_resume`) и geneva |
+| `geneva_auto_status` | read | нет | `tools/geneva.py` | all? | режим «Авто» (`core/geneva_auto_manager.status`): включён, фаза, сервисы (по умолчанию с проблемой или обходом), группы со `stats`, текущий подбор, проблемы, журнал (30 строк) |
 | `geneva_status` | read | нет | `tools/geneva.py` | — | geneva_c: бинарник и `proto`, движок (`status`/`stats` из управляющего сокета, `verdict` working/not_firing/no_traffic, срабатывания деревьев), лента событий, подбор |
 | `geneva_library` | read | нет | `tools/geneva.py` | country?, test?, limit? | `geneva library --json` без эталона «\/», по убыванию `rate` |
 | `geneva_check` | read | нет | `tools/geneva.py` | strategy | `geneva check --json`: каноническая форма или текст ошибки разбора |
@@ -359,6 +360,9 @@ UI), и `tools_by_scope`.
 | `bypass_engine_set` | control | **да** | `tools/geneva.py` | engine, start? | `core/bypass_engine.switch`: снимок уходящего, стоп (у nfqws2 — и S99zapret), старт выбранного, откат при неудаче; снимок вида `bypass_engine` |
 | `geneva_start` | control | **да** | `tools/geneva.py` | — | `geneva run` с рабочей стратегией; отказ `engine_nfqws2`, если активен nfqws2; обратное — `geneva_stop` |
 | `geneva_stop` | control | **да** | `tools/geneva.py` | — | SIGTERM (правила снимает сам geneva), после SIGKILL — `geneva fw down` |
+| `geneva_auto_enable` | control | **да** | `tools/geneva.py` | confirm_token? | включить «Авто» в два шага: `shell.pending_confirm` (токен, последствия — переключение движка, остановка одиночного run), затем тот же инструмент с токеном, `shell_confirm` или кнопка на странице MCP → `enable(confirm=True)` |
+| `geneva_auto_disable` | control | **да** | `tools/geneva.py` | — | выключить «Авто»: подбор прерван, группы и правила сняты, книга сервисов остаётся |
+| `geneva_auto_reset` | control | **да** | `tools/geneva.py` | key | забыть сервис: обход снят, наблюдение заново |
 | `geneva_set_strategy` | control | **да** | `tools/geneva.py` | strategy, source? | рабочая стратегия geneva; живому движку — `set_strategy` в сокет без перезапуска; снимок вида `geneva_strategy` |
 | `firewall_apply` | control | **да** | `tools/firewall.py` | — | поставить правила NFQUEUE; порты управления исключаются |
 | `firewall_remove` | control | **да** | `tools/firewall.py` | — | снять правила: трафик пойдёт напрямую |
