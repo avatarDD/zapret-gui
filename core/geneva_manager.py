@@ -59,6 +59,11 @@ PROTO = 1
 # (evolve/eval) — 311. Так движки не делят одну очередь.
 RUN_QUEUE = 310
 EVAL_QUEUE = 311
+# Группы режима «Авто»: свой ``geneva run`` на каждую стратегию, очереди
+# 340..340+N-1 (N — geneva.auto.max_groups, до 8). Правила ставит
+# zapret-gui (core/geneva_auto_fw), у процессов ``--firewall none``.
+AUTO_QUEUE_BASE = 340
+AUTO_QUEUE_MAX = 8
 
 # Метка пакетов, которые geneva отправляет сама: та же, что zapret-gui
 # исключает из правил nfqws2 (docs/INTEGRATION.md geneva_c).
@@ -485,6 +490,47 @@ def validate_auto_job(params: dict) -> dict:
     out["checkpoint"] = ckpt
     out["key"] = str(params.get("key") or "")[:300]
     return out
+
+
+def auto_group_paths(queue: int) -> dict:
+    """Файлы процесса группы «Авто» — в ОЗУ, как у ``geneva run``."""
+    rt = os.path.join(runtime_dir(), "auto")
+    base = os.path.join(rt, "q%d" % int(queue))
+    return {"dir": rt, "pid": base + ".pid", "socket": base + ".sock",
+            "events": base + ".jsonl", "log": base + ".log",
+            "strategy": base + ".strategy"}
+
+
+def build_auto_run_args(binary: str, queue: int, gp: dict) -> list:
+    """argv ``geneva run`` группы: все порты и оба протокола — отбор
+    трафика делают правила zapret-gui по адресам сервисов, без них в
+    очередь ничего не придёт."""
+    return [binary, "run",
+            "-f", gp["strategy"],
+            "-q", str(int(queue)),
+            "--firewall", "none",
+            "-p", "1-65535",
+            "--proto", "tcp,udp",
+            "--mark", MARK,
+            "-c", "unix:" + gp["socket"],
+            "-e", gp["events"],
+            "--stats-interval", "5",
+            "-l", "info",
+            "--log-file", gp["log"],
+            "--quiet"]
+
+
+def _wait_ready_events(proc, events_path: str, timeout: float) -> bool:
+    """Ждать события ``ready`` в файле событий процесса (или его выхода)."""
+    reader = EventReader(events_path)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if any(ev.get("ev") == "ready" for ev in reader.read_new()):
+            return True
+        if proc.poll() is not None:
+            return False
+        time.sleep(0.1)
+    return False
 
 
 def build_auto_eval_args(binary: str, params: dict, p: dict) -> list:
@@ -929,6 +975,7 @@ class GenevaManager:
         # где проверить правила нельзя).
         self._fw_seen = False
         self._auto_state = {}
+        self._auto_procs = {}
 
     # ─────── бинарник ───────
 
@@ -1584,6 +1631,144 @@ class GenevaManager:
                 "started_at": st.get("started_at"),
                 "finished_at": st.get("finished_at"),
             }
+
+    # ─────── процессы групп «Авто» ───────
+
+    def auto_group_pid(self, queue: int):
+        pid = _read_pid(auto_group_paths(queue)["pid"])
+        if pid and pid_alive(pid, "run"):
+            return pid
+        return None
+
+    def auto_groups(self) -> dict:
+        """``{очередь: {"pid", "strategy"}}`` живых процессов групп."""
+        out = {}
+        for q in range(AUTO_QUEUE_BASE, AUTO_QUEUE_BASE + AUTO_QUEUE_MAX):
+            pid = self.auto_group_pid(q)
+            if not pid:
+                continue
+            try:
+                with open(auto_group_paths(q)["strategy"], "r",
+                          encoding="utf-8") as f:
+                    strat = f.read().strip()
+            except OSError:
+                strat = ""
+            out[q] = {"pid": pid, "strategy": strat}
+        return out
+
+    def auto_apply(self, plan: dict) -> dict:
+        """Привести процессы групп к ``plan`` (``{очередь: стратегия}``).
+
+        Живой процесс с той же стратегией не трогается; другая стратегия
+        на той же очереди меняется командой ``set_strategy`` (без
+        перезапуска), при отказе — перезапуском; упавший поднимается
+        заново; очереди не из плана останавливаются. Возвращает
+        ``{"ok", "queues": {q: {"pid", "action", "error"}}}``.
+        """
+        with self._lock:
+            out = {}
+            ok = True
+            binary = ""
+            for q in list(self.auto_groups()):
+                if q not in plan:
+                    self._auto_stop(q)
+                    out[q] = {"pid": None, "action": "stopped"}
+            for q, strategy in sorted(plan.items()):
+                q = int(q)
+                if not AUTO_QUEUE_BASE <= q < AUTO_QUEUE_BASE + \
+                        AUTO_QUEUE_MAX:
+                    out[q] = {"pid": None, "action": "error",
+                              "error": "очередь вне 340–347"}
+                    ok = False
+                    continue
+                try:
+                    strategy = check_strategy_text(strategy)
+                except ValueError as e:
+                    out[q] = {"pid": None, "action": "error",
+                              "error": str(e)}
+                    ok = False
+                    continue
+                gp = auto_group_paths(q)
+                pid = self.auto_group_pid(q)
+                if pid:
+                    cur = self.auto_groups().get(q, {}).get("strategy")
+                    if cur == strategy:
+                        out[q] = {"pid": pid, "action": "kept"}
+                        continue
+                    try:
+                        r = control_request(gp["socket"], "set_strategy",
+                                            strategy=strategy)
+                    except ControlError as e:
+                        r = {"ok": False, "error": str(e)}
+                    if r.get("ok"):
+                        _write_atomic(gp["strategy"], strategy + "\n")
+                        out[q] = {"pid": pid, "action": "switched"}
+                        continue
+                    self._auto_stop(q)
+                if not binary:
+                    binary, err = self._ready_binary()
+                    if not binary:
+                        return {"ok": False, "error": err, "queues": out}
+                res = self._auto_spawn(binary, q, strategy)
+                out[q] = res
+                ok = ok and res.get("action") == "started"
+            return {"ok": ok, "queues": out}
+
+    def _auto_spawn(self, binary: str, q: int, strategy: str) -> dict:
+        gp = auto_group_paths(q)
+        try:
+            os.makedirs(gp["dir"], exist_ok=True)
+            _write_atomic(gp["strategy"], strategy + "\n")
+            trim_file(gp["events"], 0)
+            trim_file(gp["log"], 0)
+            proc = _spawn(build_auto_run_args(binary, q, gp), gp["log"])
+        except OSError as e:
+            return {"pid": None, "action": "error",
+                    "error": "Запуск geneva: %s" % e}
+        _write_pid(gp["pid"], proc.pid)
+        self._auto_procs[q] = proc
+        ready = _wait_ready_events(proc, gp["events"], timeout=6.0)
+        if proc.poll() is not None:
+            _remove(gp["pid"])
+            tail = " | ".join(tail_lines(gp["log"], 3))
+            return {"pid": None, "action": "error",
+                    "error": "geneva (очередь %d) завершился при запуске: "
+                             "%s%s" % (q, exit_text(proc.returncode),
+                                       (" — " + tail) if tail else "")}
+        return {"pid": proc.pid, "action": "started", "ready": ready}
+
+    def _auto_stop(self, q: int) -> None:
+        gp = auto_group_paths(q)
+        pid = _read_pid(gp["pid"])
+        if pid and pid_alive(pid, "run"):
+            _terminate(pid, "run", wait=5.0)
+        proc = self._auto_procs.pop(q, None)
+        if proc is not None:
+            try:
+                proc.wait(timeout=1)
+            except Exception:                       # noqa: BLE001
+                pass
+        _remove(gp["pid"])
+        _remove(gp["socket"])
+
+    def auto_stop_all(self) -> None:
+        """Остановить все группы «Авто» (правила снимает
+        core/geneva_auto_fw)."""
+        with self._lock:
+            for q in range(AUTO_QUEUE_BASE, AUTO_QUEUE_BASE + AUTO_QUEUE_MAX):
+                if _read_pid(auto_group_paths(q)["pid"]) or \
+                        q in self._auto_procs:
+                    self._auto_stop(q)
+
+    def auto_stats(self, queue: int) -> dict:
+        """Счётчики группы через управляющий сокет (``stats``)."""
+        if not self.auto_group_pid(queue):
+            return {"ok": False, "error": "группа не запущена"}
+        try:
+            return control_request(auto_group_paths(queue)["socket"],
+                                   "stats")
+        except ControlError as e:
+            return {"ok": False, "error": str(e)}
 
     def stop_search(self) -> dict:
         """SIGTERM: evolve сохраняет checkpoint и выходит после шага."""
