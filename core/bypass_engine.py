@@ -163,6 +163,11 @@ def overview() -> dict:
             "running", "kind", "status", "generation", "generations",
             "percent", "best_fitness", "target", "can_resume")},
     }
+    try:
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        ge["auto"] = get_geneva_auto_manager().summary()
+    except Exception:                           # noqa: BLE001 — граница
+        ge["auto"] = {}
     return {"ok": True, "active": active, "names": ENGINE_NAMES,
             "nfqws2": nf, "geneva": ge,
             "history": (snaps.get("history") or [])[-10:]}
@@ -232,6 +237,12 @@ def switch(target: str, start: bool = True) -> dict:
         target = "geneva"
     if target not in ENGINES:
         return {"ok": False, "error": "движок: nfqws2 или geneva"}
+    auto = _auto()
+    if target == "nfqws2" and auto is not None and \
+            auto.settings()["enabled"]:
+        # «Авто» живёт только на geneva: переключение его выключает
+        # (подбор прерывается, группы и правила снимаются).
+        auto.disable("движок переключён на nfqws2")
     with _engine_lock():
         current = get_active()
         busy = _nfqws_busy()
@@ -251,8 +262,20 @@ def switch(target: str, start: bool = True) -> dict:
         return _to_nfqws(current, start, snaps, gm)
 
 
+def _auto():
+    try:
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        return get_geneva_auto_manager()
+    except Exception:                           # noqa: BLE001 — граница
+        return None
+
+
 def _to_geneva(current: str, start: bool, snaps: dict, gm) -> dict:
     det = gm.detect()
+    auto = _auto()
+    if start and auto is not None and auto.settings()["enabled"]:
+        # Обход geneva — это режим «Авто», одиночный run не нужен.
+        start = False
     if start:
         if not det.get("installed"):
             return {"ok": False, "error": "geneva не установлен",
@@ -406,6 +429,10 @@ def hold_geneva_for(owner: str) -> str:
     """
     from core.geneva_manager import get_geneva_manager
     gm = get_geneva_manager()
+    auto = _auto()
+    if auto is not None and auto.running:
+        # группы «Авто» снимаются на время, наблюдение идёт дальше
+        return "paused" if auto.suspend(owner) else ""
     if gm.job_running():
         return "busy"
     if not gm.is_running():
@@ -417,6 +444,10 @@ def hold_geneva_for(owner: str) -> str:
 
 def release_geneva_hold(owner: str) -> None:
     """Вернуть geneva после :func:`hold_geneva_for` — если он ещё выбран."""
+    auto = _auto()
+    if auto is not None and auto.suspended:
+        auto.resume(owner)
+        return
     with _engine_lock():
         if not is_geneva_active():
             return
@@ -454,6 +485,14 @@ def boot_apply() -> None:
     except Exception as e:                      # noqa: BLE001 — граница
         log.warning("geneva: восстановление после старта: %s" % e,
                     source="geneva")
+    auto = _auto()
+    if auto is not None:
+        try:
+            auto.boot()
+        except Exception as e:                  # noqa: BLE001 — граница
+            log.warning("geneva-auto при старте: %s" % e, source="geneva")
+        if auto.settings()["enabled"]:
+            return
     if not is_geneva_active():
         return
     cfg = _cfg()

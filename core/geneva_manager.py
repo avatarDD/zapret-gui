@@ -492,6 +492,22 @@ def validate_auto_job(params: dict) -> dict:
     return out
 
 
+def _auto_refusal() -> dict:
+    """Отказ одиночному ``geneva run`` и ручному подбору при «Авто»."""
+    try:
+        from core.geneva_auto_manager import auto_enabled
+        if not auto_enabled():
+            return {}
+    except Exception:                               # noqa: BLE001
+        return {}
+    return {"ok": False, "error_code": "geneva_auto",
+            "error": "Включён режим «Авто»: geneva сам подбирает и "
+                     "применяет стратегии",
+            "hint": "выключите «Авто» в разделе «Обход DPI», чтобы "
+                    "запустить geneva с одной стратегией или подобрать её "
+                    "вручную"}
+
+
 def auto_group_paths(queue: int) -> dict:
     """Файлы процесса группы «Авто» — в ОЗУ, как у ``geneva run``."""
     rt = os.path.join(runtime_dir(), "auto")
@@ -1135,6 +1151,9 @@ class GenevaManager:
 
     def start(self, strategy: str = "") -> dict:
         """Поднять ``geneva run`` с рабочей (или переданной) стратегией."""
+        refusal = _auto_refusal()
+        if refusal:
+            return refusal
         with self._lock:
             if self.is_running():
                 return {"ok": False, "error": "geneva уже запущен",
@@ -1401,6 +1420,9 @@ class GenevaManager:
     def start_search(self, params: dict = None, resume: bool = False,
                      more_generations: int = 0) -> dict:
         """Запустить ``geneva evolve`` (или продолжить сохранённый поиск)."""
+        refusal = _auto_refusal()
+        if refusal:
+            return refusal
         with self._lock:
             if self.job_running():
                 return {"ok": False, "error": "подбор уже идёт"}
@@ -1456,6 +1478,9 @@ class GenevaManager:
 
     def start_eval(self, strategies: list, params: dict = None) -> dict:
         """Проверить список готовых стратегий (``geneva eval -f``)."""
+        refusal = _auto_refusal()
+        if refusal:
+            return refusal
         with self._lock:
             if self.job_running():
                 return {"ok": False, "error": "подбор или проверка уже идёт"}
