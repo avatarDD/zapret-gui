@@ -25,8 +25,8 @@ class TestReleaseInfo(unittest.TestCase):
 
     def test_pinned_release(self):
         info = uc.geneva_release_info("")
-        self.assertEqual(info["tag"], "v1.0.0")
-        self.assertEqual(info["latest"], "1.0.0")
+        self.assertEqual(info["tag"], "v1.1.1")
+        self.assertEqual(info["latest"], "1.1.1")
         self.assertFalse(info["has_update"])
 
     def test_older_release_has_update(self):
@@ -35,8 +35,8 @@ class TestReleaseInfo(unittest.TestCase):
         self.assertTrue(info["has_update"])
 
     def test_same_or_newer_release(self):
-        self.assertFalse(uc.geneva_release_info("1.0.0")["has_update"])
-        self.assertFalse(uc.geneva_release_info("v1.0.0")["has_update"])
+        self.assertFalse(uc.geneva_release_info("1.1.1")["has_update"])
+        self.assertFalse(uc.geneva_release_info("v1.1.1")["has_update"])
         self.assertFalse(uc.geneva_release_info("1.2.0")["has_update"])
 
     def test_commit_hash_is_not_a_version(self):
@@ -58,7 +58,7 @@ class TestCheckRow(unittest.TestCase):
         row = self._row({"installed": False, "version": "", "binary": ""})
         self.assertEqual(row["name"], "geneva")
         self.assertFalse(row["installed"])
-        self.assertEqual(row["latest"], "1.0.0")
+        self.assertEqual(row["latest"], "1.1.1")
         self.assertTrue(row["pinned"])
         self.assertEqual(row["upstream_latest"], "v1.1.0")
 

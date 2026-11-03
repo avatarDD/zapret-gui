@@ -103,6 +103,13 @@ def check_all() -> dict:
     # «Обновить» для того, чего на роутере нет (discussion #102: так вели
     # себя sing-box и mihomo). Гейт здесь делает страницу честной независимо
     # от частных ошибок в инсталляторах.
+    # Сломанный SSL в Python роняет ВСЕ запросы к GitHub разом, и каждая
+    # строка повторяла свой вариант одной причины («libssl.so.3: ...
+    # Structure needs cleaning», «unknown url type: https», да ещё с советом
+    # про зеркало, который тут не поможет). Причину говорим один раз
+    # сверху, а в строках — коротко и одинаково.
+    ssl_error = _apply_ssl_problem(results)
+
     for r in results:
         _finalize_row(r)
 
@@ -116,11 +123,37 @@ def check_all() -> dict:
             "results": results,
             "updates_count": updates_count,
             "incomplete": _incomplete_rows(results),
+            "ssl_error": ssl_error,
             "checked_at": int(time.time()),
         }
         _last_check = time.time()
 
     return _results
+
+
+SSL_ROW_NOTE = ("последнюю версию узнать не удалось: в Python не работает"
+                " SSL, поэтому https недоступен (причина и что делать —"
+                " в сообщении над таблицей)")
+
+
+def _apply_ssl_problem(results: list) -> str:
+    """Если SSL в Python сломан — описание поломки, а строкам с ошибкой
+    от неё — одна короткая подпись. '' — SSL в порядке."""
+    from core.ssl_health import looks_like_ssl_error, ssl_problem
+    problem = ssl_problem()
+    if not problem:
+        return ""
+    for r in results:
+        if r.get("latest"):
+            continue
+        # Без SSL ни один запрос к GitHub не проходит, и что бы ни сказал
+        # частный проверяльщик (AWG, например, глотает сетевую ошибку и
+        # пишет «не найден релиз с manifest.json»), причина одна.
+        r["error"] = problem
+        note = r.get("note") or ""
+        if not note or looks_like_ssl_error(note):
+            r["note"] = SSL_ROW_NOTE
+    return problem
 
 
 def _short(text: str, limit: int = 200) -> str:
@@ -205,7 +238,9 @@ def refresh_component(name: str) -> dict:
         rows = (_results or {}).get("results") or []
         if not any(r.get("name") == name for r in rows):
             return {}
-    row = _finalize_row(fn())
+    row = fn()
+    _apply_ssl_problem([row])
+    row = _finalize_row(row)
     with _results_lock:
         if not _results:
             return row

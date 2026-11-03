@@ -155,6 +155,16 @@ const UpdateCheckerPage = (() => {
             </div>`;
         }
 
+        // SSL в Python сломан (на Keenetic — «libssl.so.3: ... Structure
+        // needs cleaning»): ни один запрос к GitHub не пройдёт, а совет про
+        // зеркало и туннель не поможет. Причину и что делать — один раз здесь.
+        if (data.ssl_error) {
+            header = `<div style="margin-bottom:12px;padding:8px 12px;background:var(--error-bg,#f8d7da);border-radius:6px;">
+                <div style="font-weight:600;">Проверка невозможна: в Python не работает SSL</div>
+                <div style="margin-top:4px;font-size:12px;">${esc(data.ssl_error)}</div>
+            </div>` + header;
+        }
+
         let html = header + '<table class="table"><thead><tr>';
         html += '<th>Компонент</th><th>Установлен</th><th>Текущая</th><th>Последняя</th><th></th>';
         html += '</tr></thead><tbody>';
