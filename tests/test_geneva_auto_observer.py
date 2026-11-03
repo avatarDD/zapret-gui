@@ -198,7 +198,27 @@ class TestFilter(unittest.TestCase):
                                        rdst="172.16.0.2"), loc), "tunnel")
         loc.exclude.add("162.159.192.1")
         self.assertEqual(self.skip(udp("162.159.192.1", 2408, src=WAN),
-                                   loc), "tunnel_server")
+                                   loc), "excluded")
+
+    def test_tunnel_servers_observed_and_labelled(self):
+        """Сервер AWG/WG zapret-gui: подключение роутера к нему — тоже
+        сервис «Авто» (geneva поможет, если его блокируют)."""
+        loc = local()
+        loc.servers.add("162.159.192.1")
+        line = udp("162.159.192.1", 2408, src=WAN, op=3, ob_=444, rp=0,
+                   rb=0, unreplied=True, delta=6)
+        self.assertEqual(self.skip(line, loc), "")
+        got = ob.build_samples(ob.parse_table([line]), 100.0, {}, local=loc)
+        self.assertEqual(got[0].health, ga.FAILED)
+        self.assertTrue(got[0].name.startswith("Туннель: "))
+
+    def test_help_tunnels_off_excludes_servers(self):
+        loc = local()
+        loc.servers.add("162.159.192.1")
+        o = ob.Observer(reader=lambda: [], local=lambda: loc)
+        self.assertNotIn("162.159.192.1", o.local().exclude)
+        o.help_tunnels = False
+        self.assertIn("162.159.192.1", o.local().exclude)
 
 
 class TestJudge(unittest.TestCase):

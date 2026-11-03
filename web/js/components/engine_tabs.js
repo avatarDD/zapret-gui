@@ -157,8 +157,8 @@ const StrategiesHubPage = EngineTabs.make({
     pageId: 'strategies',
     nfqws: () => (typeof StrategiesPage !== 'undefined' ? StrategiesPage : null),
     geneva: {
-        sections: ['library'],
+        sections: ['found', 'library'],
         title: 'Стратегии',
-        subtitle: 'Готовые стратегии Geneva: проверить на своей сети и сделать рабочей',
+        subtitle: 'Стратегии geneva, которые работают в вашей сети',
     },
 });

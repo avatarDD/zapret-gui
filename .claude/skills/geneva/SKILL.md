@@ -387,9 +387,14 @@ MCP (`core/mcp/tools/geneva.py`):
    входящие (клиент не локальный), ct mark `0x30000000` (исключение и
    пробы), порты 30000–30575 (оценщик geneva и пробы «Авто»), ответ не от
    сервера (REDIRECT/DNAT в локальный прокси), ответ на адрес туннельного
-   интерфейса (awg, wg, nwg, tun…), серверы туннелей (`awg/wg show all
-   endpoints`, `geneva.auto.exclude`). TPROXY в conntrack не виден —
-   такие серверы только через `exclude`.
+   интерфейса (awg, wg, nwg, tun…) — это трафик ВНУТРИ туннеля — и
+   `geneva.auto.exclude`. Внешние соединения туннелей и прокси (роутер →
+   сервер AWG/WG/sing-box/mihomo/usque) наблюдаются, как обычные
+   (`geneva.auto.help_tunnels`, по умолчанию да): заблокированное
+   подключение к VPN получает свою стратегию. Серверы из `awg/wg show all
+   endpoints` попадают в `Local.servers` — только для подписи «Туннель:
+   …»; при `help_tunnels: false` они исключаются. TPROXY в conntrack не
+   виден — такие серверы только через `exclude`.
 2. **Оценка соединения по счётчикам** (данные — `bytes − packets ×
    заголовок`, у TCP с запасом на опции): SYN без ответа ≥ 3 с и ≥ 2 SYN →
    нет соединения; ESTABLISHED, ответ ≤ 3 пакетов и ≤ 100 Б данных, ≥ 5 с,
@@ -423,7 +428,10 @@ MCP (`core/mcp/tools/geneva.py`):
    с обходом — без метки, через группу. Все пробы — с портов 30512–30575.
    Ошибка самой пробы → `unknown`.
 6. **Подбор** (по одному, приоритет web → dns → endpoint → quic → DHT):
-   до 12 быстрых кандидатов (группы, `db_top` цели с успехами, шаблоны)
+   до 12 быстрых кандидатов (группы, `db_top` цели с успехами,
+   предустановленные `AUTO_PRESETS_TCP/UDP` — найдены «Авто» на сетях РФ,
+   затем шаблоны), прошедших `geneva check` (неразбираемый кандидат
+   уронил бы весь `eval -f` кодом 3)
    одним `geneva eval --workers N` **параллельно** (`geneva.auto.workers`,
    4); никто не прошёл — `evolve` (20 × 10, `--protos` по транспорту,
    свой checkpoint `state/geneva/auto/<sha1>.ckpt`, следующий раз
@@ -459,8 +467,19 @@ MCP (`core/mcp/tools/geneva.py`):
    Правила и группы снимаются при выключении, выходе GUI (`shutdown`) и
    при загрузке с выключенным режимом (`boot`).
 
+Вкладка «Стратегии → geneva_c» — секция `found`:
+`GET /api/geneva/found` → `GenevaAutoManager.found()` →
+`geneva_auto.found_strategies(services, db_items, working)`: только
+проверенное в этой сети (сервисы «Авто» `applied`/`degraded` и записи
+`db top` с `ok > 0`), сгруппировано по стратегии, с сервисами и целями.
+Библиотека исследований — секция `library` в свёрнутом `<details>`,
+`geneva library` зовётся при раскрытии.
+
 Подводные камни:
 
+- Прокси на 443 с Reality: проба страницы по имени сервера из DNS может
+  счесть его заблокированным, хотя подключение работает (Reality отвечает
+  чужим сертификатом); такой сервер — в `geneva.auto.exclude`.
 - Нет `nf_conntrack_acct` (старое ядро, запрещено) — видно только «нет
   соединения»; проблема в `status().problems`.
 - Аппаратный offload (Keenetic hwnat, OpenWrt flow offloading) замораживает

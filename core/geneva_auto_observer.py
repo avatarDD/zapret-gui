@@ -22,8 +22,13 @@
   локальных портов оценщика geneva 30000–30511 и проб «Авто»
   30512–30575), трафик в туннели
   zapret-gui (ответ приходит на адрес туннельного интерфейса: awg, wg,
-  nwg, tun, …) и внешние соединения туннелей (адреса серверов из
-  ``awg/wg show all endpoints`` и настройки ``geneva.auto.exclude``);
+  nwg, tun, …) и адреса из настройки ``geneva.auto.exclude``.
+  **Внешние** соединения туннелей и прокси (роутер → сервер AmneziaWG,
+  WireGuard, sing-box, mihomo, usque) наблюдаются, как любой трафик: если
+  до сервера VPN или прокси не достучаться из-за DPI, «Авто» подберёт
+  стратегию и для него (``geneva.auto.help_tunnels``, по умолчанию да;
+  ``false`` — прежнее поведение, серверы из ``awg/wg show all endpoints``
+  исключаются). Такие сервисы подписаны «Туннель: …»;
 * **оценка соединения** — :func:`judge`, перенос ``AutoObserver.Judge``
   на счётчики conntrack (пороги одним блоком ниже);
 * **имя сайта** — карта «IP → имя» из DNS-ответов, которую ведёт
@@ -342,7 +347,8 @@ class Local:
     own: set = field(default_factory=set)          # адреса роутера
     nets: list = field(default_factory=list)       # сети LAN (IPv6 GUA)
     tunnel: set = field(default_factory=set)       # адреса туннелей
-    exclude: set = field(default_factory=set)      # серверы туннелей
+    exclude: set = field(default_factory=set)      # не наблюдать
+    servers: set = field(default_factory=set)      # серверы туннелей
 
 
 def is_probe_port(port: int) -> bool:
@@ -369,7 +375,7 @@ def skip_reason(c: Conn, local) -> str:
         if c.rdst and c.rdst in local.tunnel:
             return "tunnel"
         if c.dst in local.exclude:
-            return "tunnel_server"
+            return "excluded"
     return ""
 
 
@@ -848,6 +854,9 @@ def build_samples(conns, now: float, tracks: dict, *, local=None,
         if kind == ga.ENDPOINT:
             skey = (c.proto, c.dst, c.dport)
             key = sticky.setdefault(skey, key)
+        if local is not None and c.dst in local.servers:
+            # внешнее соединение туннеля zapret-gui: видно, чьё оно
+            shown = "Туннель: " + shown
 
         verdict = None
         t = tr.first
@@ -969,7 +978,7 @@ class Observer:
 
     def __init__(self, *, reader=None, names=None, local=None,
                  capture=None, clock=time.time, sysctl_dir=SYSCTL_DIR,
-                 exclude=()):
+                 exclude=(), help_tunnels: bool = True):
         self._reader = reader
         self._names = names
         self._local = local
@@ -977,6 +986,9 @@ class Observer:
         self._clock = clock
         self._sysctl_dir = sysctl_dir
         self._exclude = set(exclude or ())
+        # Внешние соединения туннелей наблюдаются (geneva поможет и им);
+        # False — серверы туннелей исключаются, как раньше.
+        self.help_tunnels = bool(help_tunnels)
         self._saved = {}                 # sysctl → прежнее значение
         self._tracks = {}
         self._sticky = {}
@@ -1107,10 +1119,14 @@ class Observer:
                 cached = self._read_local()
                 self._local_cache = (now, cached)
             loc = cached
-        if self._exclude:
+        extra = set(self._exclude)
+        if not self.help_tunnels:
+            extra |= set(loc.servers)
+        if extra:
             loc = Local(own=set(loc.own), nets=list(loc.nets),
                         tunnel=set(loc.tunnel),
-                        exclude=set(loc.exclude) | self._exclude)
+                        exclude=set(loc.exclude) | extra,
+                        servers=set(loc.servers))
         return loc
 
     @staticmethod
@@ -1126,11 +1142,11 @@ class Observer:
             if shutil.which(tool):
                 _rc, text = _run([tool, "show", "all", "endpoints"],
                                  timeout=5)
-                loc.exclude |= parse_wg_endpoints(text)
+                loc.servers |= parse_wg_endpoints(text)
         return loc
 
     def set_exclude(self, ips) -> None:
-        """Адреса серверов туннелей из настроек (``geneva.auto.exclude``)."""
+        """Адреса, которые не наблюдать (``geneva.auto.exclude``)."""
         self._exclude = {_norm_ip(str(x)) for x in ips or []} - {""}
 
     def names(self) -> dict:

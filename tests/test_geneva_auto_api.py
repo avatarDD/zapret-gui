@@ -95,6 +95,15 @@ class TestRest(_Base):
                           content_type="application/json")
         self.assertEqual(self.auto.calls[-1], ("enable", False))
 
+    def test_found(self):
+        self.auto.found = lambda: {"ok": True, "items": [
+            {"strategy": "S", "services": [{"name": "youtube.com"}]}],
+            "working": "", "auto_enabled": True}
+        data = self.client.get_json("/api/geneva/found")
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["items"][0]["services"][0]["name"],
+                         "youtube.com")
+
     def test_disable_and_reset(self):
         self.assertTrue(self.client.post_json("/api/geneva/auto/disable",
                                               {})["ok"])

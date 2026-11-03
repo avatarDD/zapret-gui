@@ -92,5 +92,23 @@ const i18n_en = {
     "geneva.auto.as.searching": "searching",
     "geneva.auto.as.applied": "bypassed",
     "geneva.auto.as.degraded": "bypass weakened",
-    "geneva.auto.as.not_found": "no bypass yet"
+    "geneva.auto.as.not_found": "no bypass yet",
+
+    // ─── geneva: рабочие стратегии (вкладка «Стратегии», секция found).
+    "geneva.found.title": "Working strategies",
+    "geneva.found.about": "Only what is proven on your network: strategies that keep a bypass up in the Auto mode right now and those found by a search. Each shows where it works.",
+    "geneva.found.empty": "No working strategies yet. Turn on the Auto mode — it finds and applies them itself — or run a search on the «Strategy search» tab.",
+    "geneva.found.auto": "Auto: {n}",
+    "geneva.found.degraded": "weakened: {n}",
+    "geneva.found.manual": "found by a search",
+    "geneva.found.working": "working",
+    "geneva.found.last": "confirmed {when}",
+    "geneva.found.fitness": "fitness {f}",
+    "geneva.found.more": "and {n} more",
+    "geneva.found.search": "search: {targets}",
+    "geneva.found.use": "Make it working",
+    "geneva.found.copy": "Copy",
+    "geneva.found.copied": "Copied",
+    "geneva.found.library": "For reference: strategies from Geneva research",
+    "geneva.found.library_title": "Geneva library"
 };

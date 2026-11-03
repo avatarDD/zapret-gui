@@ -201,6 +201,26 @@ class TestScenario(_Base):
         self.assertEqual(self.obs.restored, 1)
         self.assertFalse(am.auto_settings(self.cfg)["enabled"])
 
+    def test_found_from_book_and_db_even_when_off(self):
+        m = self.manager()
+        m.load()
+        self.obs.slices = [[dns_fail(95, i) for i in range(3)], []]
+        m.tick(100.0)
+        m.tick(115.0)                        # применено, сохранено
+        self.gm.db_top.return_value = {"ok": True, "items": [
+            {"strategy": "[TCP:flags:PA]-fragment{tcp:-1:False}-| \\/",
+             "target": "https:rutor.info", "ok": 3}]}
+        self.cfg.set("geneva", "strategy", STRAT)
+        fresh = self.manager()               # режим не запущен: из файла
+        res = fresh.found()
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["items"][0]["strategy"], STRAT)
+        self.assertTrue(res["items"][0]["working"])
+        self.assertEqual(res["items"][0]["services"][0]["key"],
+                         "dns:" + DNS_IP)
+        self.assertEqual(res["items"][1]["targets"], ["rutor.info"])
+        self.gm.db_top.assert_called_with("", 50)
+
     def test_not_blocked_and_ip_blocked(self):
         m = self.manager()
         m.load()

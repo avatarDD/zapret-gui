@@ -80,6 +80,7 @@ def auto_settings(cfg=None) -> dict:
 
     excl = raw.get("exclude") or []
     return {"enabled": bool(raw.get("enabled", False)),
+            "help_tunnels": bool(raw.get("help_tunnels", True)),
             "max_groups": num("max_groups", ga.MAX_GROUPS, 1,
                               ga.MAX_GROUPS_LIMIT),
             "workers": num("workers", 4, 1, 8),
@@ -329,6 +330,7 @@ class GenevaAutoManager:
         self.load()
         obs = self.observer()
         obs.set_exclude(self.settings()["exclude"])
+        obs.help_tunnels = self.settings()["help_tunnels"]
         acct = obs.enable_accounting()
         if not acct.get("nf_conntrack_acct", True):
             self.problems = ["учёт пакетов conntrack не включился: "
@@ -681,6 +683,37 @@ class GenevaAutoManager:
                 "max_groups": st["max_groups"], "workers": st["workers"],
                 "journal": list(self.journal)[-100:],
             }
+
+    def services_snapshot(self) -> list:
+        """Сервисы книги: из памяти, если режим работает, иначе из
+        ``auto.json`` (страница «Стратегии» видна и при выключенном
+        режиме — найденное не пропадает)."""
+        with self._lock:
+            if self.running or self.book.services:
+                return [s.clone() for s in self.book.services]
+        try:
+            with open(self._path_or_default(), "r",
+                      encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return []
+        items = data.get("services") if isinstance(data, dict) else None
+        return [ga.Service.from_dict(x) for x in items or []
+                if isinstance(x, dict)]
+
+    def found(self) -> dict:
+        """Рабочие стратегии этой сети: «Авто» + ручной подбор."""
+        db = {}
+        try:
+            db = self.gm().db_top("", 50) or {}
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: db_top: %s" % e, source="geneva")
+        working = str(self.cfg().get("geneva", "strategy",
+                                     default="") or "")
+        items = ga.found_strategies(self.services_snapshot(),
+                                    db.get("items") or [], working)
+        return {"ok": True, "items": items, "working": working,
+                "auto_enabled": self.settings()["enabled"]}
 
     def summary(self) -> dict:
         """Коротко для ``bypass_engine.overview``."""

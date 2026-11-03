@@ -399,6 +399,24 @@ class TestAutoSearch(unittest.TestCase):
                               web_service())
         self.assertEqual((res.outcome, res.strategy), (gs.APPLIED, good))
 
+    def test_candidates_checked_by_geneva(self):
+        """Неразбираемый кандидат не уходит в eval (иначе код 3 уронил
+        бы весь быстрый круг); канонический вид — от geneva."""
+        g = FakeGeneva(eval_results=[])
+        bad = ga.AUTO_PRESETS_TCP[0]
+
+        def check(c):
+            if c == bad:
+                return {"ok": False, "error": "parse error"}
+            return {"ok": True, "strategy": c + " "}
+
+        g.check_strategy = check
+        self.run_search(self.search(g, FakeProbes()), web_service())
+        cands = g.jobs[0][2]
+        self.assertNotIn(bad, cands)
+        self.assertNotIn(bad + " ", cands)
+        self.assertTrue(all(c.endswith(" ") for c in cands))
+
     def test_replay_file_for_replayable_service(self):
         s = ga.Service(key="ep:openvpn:udp:93.184.216.40:1194",
                        kind=ga.ENDPOINT, transport="udp", app="openvpn",
@@ -427,7 +445,9 @@ class TestAutoSearch(unittest.TestCase):
         self.assertEqual(res.outcome, gs.APPLIED)
         self.assertEqual(res.strategy, self.trials[1])
         self.assertEqual(g.jobs, [])            # ни eval, ни evolve
-        self.assertEqual(res.strategy, ga.AUTO_CANDIDATES_UDP[1])
+        # второй кандидат: вторая предустановленная UDP-стратегия
+        self.assertEqual(res.strategy, ga.candidates_for(wg_service())[1])
+        self.assertEqual(res.strategy, ga.AUTO_PRESETS_UDP[1])
 
     def test_unprobed_without_traffic_source(self):
         res = self.run_search(self.search(FakeGeneva(), FakeProbes()),
