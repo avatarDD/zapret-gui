@@ -387,6 +387,66 @@ class TestScenario(_Base):
             self.assertTrue(done.wait(5))
         self.assertIn("opkg", m.problems[0])
 
+    def applied_manager(self):
+        m = self.manager()
+        m.load()
+        m.book = ga.Book([ga.Service(
+            key="dns:" + DNS_IP, kind=ga.DNS, transport="udp",
+            status=ga.APPLIED, strategy=STRAT, applied_at=1,
+            addresses=[{"ip": DNS_IP, "seen": 1}]).to_dict()])
+        m.tick(100.0)
+        return m
+
+    def test_rules_removed_by_firmware_restored_at_once(self):
+        """Keenetic: NDMS снёс ZGGA_* — правила ставятся заново на
+        следующем срезе (не через APPLY_EVERY), без пробы и без отказа
+        от стратегии."""
+        m = self.applied_manager()
+        n = len(self.fwf.applied)
+        s = m.book.find("dns:" + DNS_IP)
+        s.status = ga.DEGRADED              # провалы за время без правил
+        self.fwf.lost = ["iptables POSTROUTING → ZGGA_POST"]
+        m.tick(115.0)
+        self.assertEqual(len(self.fwf.applied), n + 1)
+        self.assertEqual((s.status, s.applied_at), (ga.APPLIED, 115.0))
+        self.assertEqual(self.probes.calls, [])
+        self.assertEqual(m.status()["rules_lost"], 1)
+        self.assertIn("поставлены заново", m.journal[-1]["text"])
+        # повтор в течение получаса — без новой записи журнала
+        size = len(m.journal)
+        self.fwf.lost = ["ipset geneva_auto_340_0_v4"]
+        m.tick(130.0)
+        self.assertEqual(len(self.fwf.applied), n + 2)
+        self.assertEqual(len(m.journal), size)
+        self.assertEqual(m.rules_lost, 2)
+        # всё на месте — ничего не делается
+        m.tick(145.0)
+        self.assertEqual(len(self.fwf.applied), n + 2)
+
+    def test_reassert_from_netfilter_hook(self):
+        m = self.applied_manager()
+        self.assertFalse(m.reassert_rules())       # режим не запущен
+        with mock.patch.object(type(m), "running",
+                               new_callable=mock.PropertyMock,
+                               return_value=True):
+            self.fwf.lost = ["iptables PREROUTING → ZGGA_PRE"]
+            self.assertTrue(m.reassert_rules())
+            self.assertFalse(m.reassert_rules())
+
+    def test_apply_error_retried_next_slice(self):
+        m = self.applied_manager()
+        n = len(self.fwf.applied)
+        res = {"ok": False, "error": "iptables: No chain"}
+        with mock.patch.object(self.applier, "apply_services",
+                               return_value=res) as call:
+            m._applied_sig = None
+            m.tick(115.0)
+            m.tick(130.0)                  # первый повтор — сразу
+            m.tick(145.0)                  # дальше — раз в APPLY_EVERY
+            self.assertEqual(call.call_count, 2)
+        self.assertEqual(len(self.fwf.applied), n)
+        self.assertEqual(m.problems, ["iptables: No chain"])
+
     def test_slice_error_backoff(self):
         m = self.manager()
         m.load()

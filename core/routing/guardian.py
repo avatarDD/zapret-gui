@@ -368,6 +368,19 @@ def _restore_loop():
         except Exception as e:
             log.warning("routing: восстановление после netfilter: %s" % e,
                         source="routing")
+        _reassert_geneva_auto()
+
+
+def _reassert_geneva_auto():
+    """Группы geneva «Авто» — свои цепочки ZGGA_* и наборы в mangle, их
+    прошивка сносит так же. Режим проверяет их и каждый срез; по хуку —
+    сразу, без ожидания среза."""
+    try:
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        get_geneva_auto_manager().reassert_rules()
+    except Exception as e:
+        log.debug("routing: geneva «Авто» после netfilter: %s" % e,
+                  source="routing")
 
 
 # ─────────────────────── netlink ─────────────────────────────────────

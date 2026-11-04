@@ -757,6 +757,25 @@ class Book:
         if s is not None and s.status == SEARCHING:
             _move(s, BLOCKED, now, "подбор прерван, продолжу")
 
+    def rules_restored(self, now: float) -> int:
+        """Правила групп были снесены извне (прошивка) и поставлены
+        заново: провалы до этого момента — без обхода, а не вина
+        стратегии. ``APPLIED`` считает провалы с ``now``, ``DEGRADED``
+        возвращается в ``APPLIED`` без пробы (проба «с обходом» в окне
+        без правил отвергла бы рабочую стратегию). Отличие от эталона:
+        на ПК чужого сноса правил нет. Возвращает число вернувшихся."""
+        back = 0
+        for s in self._services.values():
+            if not s.strategy or s.status not in (APPLIED, DEGRADED):
+                continue
+            s.applied_at = now
+            if s.status == DEGRADED:
+                s.next_check = None
+                _move(s, APPLIED, now, "правила обхода были сняты прошивкой "
+                      "и поставлены заново")
+                back += 1
+        return back
+
     def counts(self) -> dict:
         out = {}
         for s in self._services.values():

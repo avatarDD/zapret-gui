@@ -88,7 +88,11 @@ MAX_LINES = 30000                 # строк таблицы за срез (р�
 MAX_TRACKED = 20000               # соединений в памяти наблюдателя
 
 SYSCTL_DIR = "/proc/sys/net/netfilter"
-SYSCTLS = ("nf_conntrack_acct", "nf_conntrack_timestamp")
+# be_liberal — как у nfqws2-пути (core/firewall.py): без него conntrack
+# считает out-of-window сегменты десинка (tamper seq, fragment)
+# INVALID. Пишется в /proc, а не через sysctl: на Keenetic утилиты нет.
+SYSCTLS = ("nf_conntrack_acct", "nf_conntrack_timestamp",
+           "nf_conntrack_tcp_be_liberal")
 
 # Оценка соединения (AutoObserver.Judge на счётчиках conntrack).
 TCP_NO_CONN_AGE = 3.0             # SYN без ответа: нет соединения

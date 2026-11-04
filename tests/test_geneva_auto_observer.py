@@ -674,17 +674,26 @@ class TestObserverIO(unittest.TestCase):
     def test_accounting_enabled_and_restored(self):
         with tempfile.TemporaryDirectory() as d:
             for name, val in (("nf_conntrack_acct", "0"),
-                              ("nf_conntrack_timestamp", "1")):
+                              ("nf_conntrack_timestamp", "1"),
+                              ("nf_conntrack_tcp_be_liberal", "0")):
                 with open(os.path.join(d, name), "w") as f:
                     f.write(val + "\n")
             o = ob.Observer(reader=lambda: [], sysctl_dir=d)
             self.assertEqual(o.enable_accounting(),
                              {"nf_conntrack_acct": True,
-                              "nf_conntrack_timestamp": True})
+                              "nf_conntrack_timestamp": True,
+                              "nf_conntrack_tcp_be_liberal": True})
             self.assertEqual(open(os.path.join(d, "nf_conntrack_acct"))
                              .read(), "1")
-            self.assertEqual(o.saved_sysctls, {"nf_conntrack_acct": "0"})
+            # десинк geneva: out-of-window сегменты не INVALID
+            self.assertEqual(open(os.path.join(
+                d, "nf_conntrack_tcp_be_liberal")).read(), "1")
+            self.assertEqual(o.saved_sysctls,
+                             {"nf_conntrack_acct": "0",
+                              "nf_conntrack_tcp_be_liberal": "0"})
             o.restore()
+            self.assertEqual(open(os.path.join(
+                d, "nf_conntrack_tcp_be_liberal")).read(), "0")
             self.assertEqual(open(os.path.join(d, "nf_conntrack_acct"))
                              .read(), "0")
             self.assertEqual(open(os.path.join(d, "nf_conntrack_timestamp"))
@@ -703,7 +712,8 @@ class TestObserverIO(unittest.TestCase):
                             clock=lambda: 100.0, sysctl_dir=d)
             self.assertEqual(o.enable_accounting(),
                              {"nf_conntrack_acct": None,
-                              "nf_conntrack_timestamp": None})
+                              "nf_conntrack_timestamp": None,
+                              "nf_conntrack_tcp_be_liberal": None})
             self.assertEqual(o.saved_sysctls, {})
             o.slice()
             self.assertEqual(o.last_stats["connections"], 1)

@@ -51,6 +51,7 @@ from __future__ import annotations
 import ipaddress
 import shutil
 import subprocess
+import time
 
 from core import geneva_auto as ga
 from core.log_buffer import log
@@ -63,6 +64,8 @@ EVAL_PORTS = (30000, 30511)       # блок оценщика geneva (8 ворк
 # Мимо групп: оценщик и проба без обхода (идут сразу за ним).
 SKIP_PORTS = (EVAL_PORTS[0], 30543)
 SET_TIMEOUT_SEC = 7 * 86400
+APPLY_RETRIES = 1                 # повтор при гонке с прошивкой
+RETRY_DELAY = 1.0
 PRIO_POST = 151                   # после NAT (srcnat 100), рядом с nfqws2
 PRIO_PRE = -149
 QUEUES = range(ga.QUEUE_BASE, ga.QUEUE_BASE + ga.MAX_GROUPS_LIMIT)
@@ -336,7 +339,22 @@ def _backend() -> str:
                         "Entware: opkg install iptables; OpenWrt: nftables")
 
 
+def _wait_flag(argv) -> list:
+    """``-w`` для iptables/ip6tables (как у nfqws2-пути): без него вызов
+    в момент, когда NDMS пересобирает таблицы, падает на xtables-lock."""
+    if argv[0] not in ("iptables", "ip6tables"):
+        return []
+    try:
+        from core.firewall import FirewallManager
+        return FirewallManager._iptables_wait_flag(
+            shutil.which(argv[0]) or argv[0])
+    except Exception:                               # noqa: BLE001
+        return []
+
+
 def _run(argv, stdin=None):
+    argv = list(argv)
+    argv[1:1] = _wait_flag(argv)
     try:
         r = subprocess.run(argv, input=stdin, capture_output=True,
                            text=True, timeout=20)
@@ -387,17 +405,101 @@ def apply(queues: dict, backend: str = "") -> dict:
                     "error": "nft не принял правила: %s" % err[:300]}
         return {"ok": True, "backend": backend}
     has_v6 = shutil.which("ip6tables") is not None
-    for argv, must in ipt_commands(queues):
-        if argv[0] == "ip6tables" and not has_v6:
+    failed = None
+    for attempt in range(1 + APPLY_RETRIES):
+        if attempt:
+            # Keenetic: NDMS пересобирает mangle (iptables-restore) прямо
+            # во время применения — цепочка исчезает между двумя вызовами
+            # («-F … No chain» сразу после «-N»). Это гонка, а не отказ:
+            # пересобрать всё ещё раз, а не снимать правила всех групп.
+            log.warning("geneva-auto: %s: %s — повторяю применение"
+                        % (" ".join(failed[0]), failed[1]), source="geneva")
+            time.sleep(RETRY_DELAY)
+        failed = None
+        for argv, must in ipt_commands(queues):
+            if argv[0] == "ip6tables" and not has_v6:
+                continue
+            ok, err = _run(argv)
+            if not ok and must:
+                failed = (argv, err)
+                break
+        if failed is None:
+            return {"ok": True, "backend": backend}
+    argv, err = failed
+    log.error("geneva-auto: %s: %s" % (" ".join(argv), err), source="geneva")
+    remove(backend)
+    return {"ok": False, "backend": backend,
+            "error": "%s: %s" % (argv[0], err[:300])}
+
+
+def expected(queues: dict) -> dict:
+    """Что должно стоять (iptables): ``{(ipt, цепочка): число правил}`` и
+    имена наборов — для :func:`present` (чистая)."""
+    rules, sets = {}, set()
+    for argv, _must in ipt_commands(queues):
+        if argv[0] == "ipset" and argv[1] == "swap":
+            sets.add(argv[3])
+        elif argv[0] in ("iptables", "ip6tables") and argv[3] == "-A":
+            key = (argv[0], argv[4])
+            rules[key] = rules.get(key, 0) + 1
+    return {"rules": rules, "sets": sets}
+
+
+def missing(queues: dict, dumps: dict, sets) -> list:
+    """Чего не хватает: ``dumps`` — ``{ipt: вывод «-t mangle -S»}``
+    (семейство без бинарника не передаётся), ``sets`` — ``ipset list -n``
+    (чистая)."""
+    want = expected(queues)
+    out = []
+    for ipt, dump in sorted(dumps.items()):
+        lines = [x.strip() for x in str(dump or "").splitlines()]
+        for chain, hook in ((CHAIN_POST, "POSTROUTING"),
+                            (CHAIN_PRE, "PREROUTING")):
+            if "-A %s -j %s" % (hook, chain) not in lines:
+                out.append("%s %s → %s" % (ipt, hook, chain))
+            n = sum(1 for x in lines if x.startswith("-A %s " % chain))
+            need = want["rules"].get((ipt, chain), 0)
+            if n < need:
+                out.append("%s %s: %d из %d правил" % (ipt, chain, n, need))
+    have = set(sets or ())
+    out += ["ipset %s" % name for name in sorted(want["sets"] - have)]
+    return out
+
+
+def present(queues: dict, backend: str = "") -> list:
+    """Правила групп на месте? Пустой список — да, иначе чего нет.
+
+    Прошивка (Keenetic NDMS) пересобирает таблицы и сносит наши цепочки;
+    режим проверяет это каждый срез и ставит правила заново. Сбой самой
+    проверки — «на месте»: лишнего переприменения без причины не будет.
+    """
+    if not queues:
+        return []
+    try:
+        backend = backend or _backend()
+    except FirewallError:
+        return []
+    if backend == "nft":
+        ok, out = _run(["nft", "list", "table", "inet", TABLE])
+        if ok:
+            return [] if ("chain post" in out and "chain pre" in out) \
+                else ["nft: цепочки таблицы %s" % TABLE]
+        return ["nft: таблица %s" % TABLE] if "No such file" in out else []
+    dumps = {}
+    for ipt in ("iptables", "ip6tables"):
+        if ipt == "ip6tables" and not shutil.which(ipt):
             continue
-        ok, err = _run(argv)
-        if not ok and must:
-            log.error("geneva-auto: %s: %s" % (" ".join(argv), err),
-                      source="geneva")
-            remove(backend)
-            return {"ok": False, "backend": backend,
-                    "error": "%s: %s" % (argv[0], err[:300])}
-    return {"ok": True, "backend": backend}
+        ok, out = _run([ipt, "-t", "mangle", "-S"])
+        if not ok:
+            return []
+        dumps[ipt] = out
+    sets = []
+    if shutil.which("ipset"):
+        ok, out = _run(["ipset", "list", "-n"])
+        if not ok:
+            return []
+        sets = out.split()
+    return missing(queues, dumps, sets)
 
 
 def remove(backend: str = "") -> None:
