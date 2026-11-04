@@ -572,6 +572,19 @@ class TestEnable(_Base):
         self.assertFalse(m.running)
         self.assertTrue(am.auto_settings(self.cfg)["enabled"])  # остаётся
 
+    def test_update_settings_from_page(self):
+        m = self.manager()
+        res = m.update_settings({"workers": 6, "max_groups": 2})
+        self.assertEqual((res["workers"], res["max_groups"]), (6, 2))
+        self.assertEqual(am.auto_settings(self.cfg)["workers"], 6)
+        self.assertEqual(m.search().workers, 6)
+        self.assertEqual(m.applier().max_groups, 2)
+        self.assertEqual(m.status()["workers"], 6)
+        for bad in ({"workers": 0}, {"workers": 9}, {"max_groups": "3"},
+                    {"workers": True}):
+            self.assertFalse(m.update_settings(bad)["ok"], bad)
+        self.assertEqual(am.auto_settings(self.cfg)["workers"], 6)
+
     def test_settings_limits(self):
         self.cfg.set("geneva", "auto", {"max_groups": 99, "workers": 0,
                                         "exclude": "x"})

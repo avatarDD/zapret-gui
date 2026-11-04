@@ -813,6 +813,40 @@ class GenevaAutoManager:
         return {"ok": True, "items": items, "working": working,
                 "auto_enabled": self.settings()["enabled"]}
 
+    # ── настройки со страницы ──
+
+    def update_settings(self, values: dict) -> dict:
+        """``workers`` (1–8) и ``max_groups`` (1–8) с карточки «Авто».
+        Новое число воркеров действует со следующего круга подбора,
+        число групп — со следующего применения."""
+        cfg = self.cfg()
+        raw = dict(cfg.get("geneva", "auto", default={}) or {})
+        limits = {"workers": (1, 8), "max_groups": (1, ga.MAX_GROUPS_LIMIT)}
+        for key, (lo, hi) in limits.items():
+            if key not in (values or {}):
+                continue
+            v = values[key]
+            if isinstance(v, bool) or not isinstance(v, int) or \
+                    not lo <= v <= hi:
+                return {"ok": False, "error_code": "bad_value",
+                        "error": "%s: целое от %d до %d" % (key, lo, hi)}
+            raw[key] = v
+        cfg.set("geneva", "auto", raw)
+        cfg.save()
+        st = self.settings()
+        with self._lock:
+            if self._applier is not None:
+                self._applier.max_groups = st["max_groups"]
+            if self._search is not None:
+                self._search.workers = st["workers"]
+            self._applied_sig = None        # число групп могло смениться
+        self.note("настройки: проверок одновременно %d, стратегий "
+                  "одновременно %d" % (st["workers"], st["max_groups"]),
+                  en="settings: %d parallel checks, %d strategies at once"
+                  % (st["workers"], st["max_groups"]))
+        return {"ok": True, "workers": st["workers"],
+                "max_groups": st["max_groups"]}
+
     # ── обмен найденными стратегиями ──
 
     def _proven(self, skip_key: str = "") -> list:

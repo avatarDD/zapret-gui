@@ -35,6 +35,7 @@ API движка geneva_c и выбора движка обхода.
                                      error_code need_confirm
   POST /api/geneva/auto/disable   — выключить
   POST /api/geneva/auto/reset     — забыть сервис {key}
+  POST /api/geneva/auto/settings  — {workers 1–8, max_groups 1–8}
   GET  /api/geneva/nat-offload    — ускорение NAT роутера (OpenWrt, Keenetic)
   POST /api/geneva/nat-offload    — включить/выключить {enabled, confirm}
 
@@ -272,6 +273,11 @@ def register(app):
     def geneva_auto_disable():
         from core.geneva_auto_manager import get_geneva_auto_manager
         return _reply(get_geneva_auto_manager().disable("с веб-страницы"))
+
+    @app.route("/api/geneva/auto/settings", method="POST")
+    def geneva_auto_settings():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        return _reply(get_geneva_auto_manager().update_settings(_body()))
 
     @app.route("/api/geneva/auto/reset", method="POST")
     def geneva_auto_reset():
