@@ -6009,3 +6009,5 @@ body.expert-mode .expert-note { display: none !important; }
     border-top: 1px solid var(--border);
 }
 .gv-auto-settings .btn, .gv-auto-settings .form-hint { grid-column: 1 / -1; justify-self: start; }
+.gv-auto-settings .gv-auto-wide { grid-column: 1 / -1; }
+.gv-auto-settings textarea { font-family: var(--font-mono, monospace); resize: vertical; }

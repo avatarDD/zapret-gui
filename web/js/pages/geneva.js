@@ -129,6 +129,14 @@ const GenevaPage = (() => {
                             <input id="gv-auto-workers" type="number" min="1" max="8" class="form-control" value="4">
                             <label class="form-label" for="gv-auto-groups">${esc(_tr('geneva.auto.max_groups'))}</label>
                             <input id="gv-auto-groups" type="number" min="1" max="8" class="form-control" value="4">
+                            <label class="gv-check gv-auto-wide">
+                                <input type="checkbox" id="gv-auto-tunnels" checked>
+                                <span>${esc(_tr('geneva.auto.help_tunnels'))}</span>
+                            </label>
+                            <div class="form-hint gv-auto-wide">${esc(_tr('geneva.auto.help_tunnels_hint'))}</div>
+                            <label class="form-label gv-auto-wide" for="gv-auto-exclude">${esc(_tr('geneva.auto.exclude'))}</label>
+                            <textarea id="gv-auto-exclude" class="form-control gv-auto-wide" rows="3" spellcheck="false" placeholder="203.0.113.5&#10;2001:db8::1"></textarea>
+                            <div class="form-hint gv-auto-wide">${esc(_tr('geneva.auto.exclude_hint'))}</div>
                             <button class="btn btn-ghost btn-sm" data-action="auto-settings">${esc(_tr('common.save'))}</button>
                             <div class="form-hint">${esc(_tr('geneva.auto.settings_hint'))}</div>
                         </div>
@@ -641,14 +649,24 @@ const GenevaPage = (() => {
         const g = document.getElementById('gv-auto-groups');
         if (w && a.workers) w.value = a.workers;
         if (g && a.max_groups) g.value = a.max_groups;
+        const t = document.getElementById('gv-auto-tunnels');
+        if (t && typeof a.help_tunnels === 'boolean') t.checked = a.help_tunnels;
+        const x = document.getElementById('gv-auto-exclude');
+        if (x && Array.isArray(a.exclude)) x.value = a.exclude.join('\n');
         _autoSettingsShown = true;
     }
 
     async function _saveAutoSettings() {
         const w = parseInt((document.getElementById('gv-auto-workers') || {}).value, 10);
         const g = parseInt((document.getElementById('gv-auto-groups') || {}).value, 10);
+        const t = document.getElementById('gv-auto-tunnels');
+        const x = document.getElementById('gv-auto-exclude');
+        const body = { workers: w, max_groups: g };
+        if (t) body.help_tunnels = !!t.checked;
+        if (x) body.exclude = x.value;
         try {
-            const res = await API.post('/api/geneva/auto/settings', { workers: w, max_groups: g });
+            const res = await API.post('/api/geneva/auto/settings', body);
+            if (x && Array.isArray(res.exclude)) x.value = res.exclude.join('\n');
             Toast.success(_tr('geneva.auto.settings_saved', { workers: res.workers, groups: res.max_groups }));
         } catch (e) {
             Toast.error(errText(e));
