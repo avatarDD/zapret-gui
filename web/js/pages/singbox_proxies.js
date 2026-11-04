@@ -19,6 +19,10 @@
 
 const SingboxProxiesPage = (() => {
 
+    // Автогенерённые конфиги подписок: imported-sub-<id> (и старое
+    // imported-subscription-<id>, которое не влезало в 32 символа, #451).
+    const isSubConfig = (name) => /^imported-sub(scription)?-/.test(name || '');
+
     const esc = ProxyTable.esc;
     const cfgUrl = (name, tail) =>
         `/api/singbox/configs/${encodeURIComponent(name)}${tail || ''}`;
@@ -107,12 +111,12 @@ const SingboxProxiesPage = (() => {
 
         // По умолчанию — первый «не подписочный», иначе первый.
         pickDefaultConfig: (configs) => {
-            const own = configs.find(c => !c.name.startsWith('imported-subscription-'));
+            const own = configs.find(c => !isSubConfig(c.name));
             return (own || configs[0] || {}).name || '';
         },
 
         configOptionLabel: (c) =>
-            (c.name.startsWith('imported-subscription-') ? ' (подписка)' : '')
+            (isSubConfig(c.name) ? ' (подписка)' : '')
             + (c.running ? ' ●' : ''),
 
         loadItems: async (ctx, configName) => {

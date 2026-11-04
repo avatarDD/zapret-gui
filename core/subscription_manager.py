@@ -6,7 +6,7 @@
 от одноразовых `core/subscription_importer.py` и
 `core/clash_yaml.py`, здесь храним URL подписки в settings.json
 и фоновой поток раз в N часов перетягивает её → перегенерирует
-конфиг `imported-subscription-<id>` для каждой подписки.
+конфиг `imported-sub-<id>` для каждой подписки.
 
 settings.json layout:
     {
@@ -252,7 +252,9 @@ def remove_subscription(sid: str) -> dict:
     # Параллельно удалим связанный sing-box-конфиг.
     try:
         from core.singbox_manager import get_singbox_manager
-        get_singbox_manager().delete_config(_config_name_for(sid))
+        mgr = get_singbox_manager()
+        for name in (_config_name_for(sid), LEGACY_CONFIG_PREFIX + sid):
+            mgr.delete_config(name)
     except Exception:
         pass
 
@@ -265,7 +267,7 @@ def remove_subscription(sid: str) -> dict:
 def refresh_one(sid: str, force: bool = False) -> dict:
     """
     Force-refresh одной подписки. Скачивает, парсит, сохраняет
-    sing-box-конфиг `imported-subscription-<sid>`.
+    sing-box-конфиг `imported-sub-<sid>`.
 
     ``force`` — принять ответ, даже если подписка «усохла» (см.
     :data:`SHRINK_FROM`): человек сам решил, что две ноды — правда.
@@ -400,8 +402,18 @@ def _record_refresh(sid: str, *, ok: bool, count: int = 0,
         _save_section(subs)
 
 
+# Имя sing-box-конфига подписки. singbox_manager пускает имена только до
+# 32 символов, а sid — «sub-» + 8 hex = 12 символов. Прежний префикс
+# «imported-subscription-» (22) давал 34 символа, и save_config()
+# отклонял каждое обновление (issue #451). «imported-sub-» + sid = 25.
+CONFIG_PREFIX = "imported-sub-"
+# Старый префикс: такие конфиги сохраниться не могли, но удаляем их
+# вместе с подпиской на случай ручного создания.
+LEGACY_CONFIG_PREFIX = "imported-subscription-"
+
+
 def _config_name_for(sid: str) -> str:
-    return "imported-subscription-%s" % sid
+    return CONFIG_PREFIX + sid
 
 
 # ─────── fetch + parse ───────
