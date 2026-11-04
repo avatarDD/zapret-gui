@@ -464,11 +464,18 @@ AUTO_JOB_LIMITS = {
 
 
 def validate_auto_job(params: dict) -> dict:
-    """Параметры задания «Авто»: проба — команда от zapret-gui (``exec``),
+    """Параметры задания «Авто»: проба — команда от zapret-gui (``exec``)
+    или ответы самого zapret-gui (``external``, geneva_c 1.2),
     остальное — в пределах ``AUTO_JOB_LIMITS``."""
     out = {}
+    probe = str(params.get("probe") or "exec")
+    if probe not in ("exec", "external"):
+        raise ValueError("auto: проба")
+    out["probe"] = probe
     cmd = str(params.get("cmd") or "")
-    if not cmd or "\n" in cmd or "\r" in cmd or len(cmd) > 2048:
+    if probe == "external":
+        cmd = ""
+    elif not cmd or "\n" in cmd or "\r" in cmd or len(cmd) > 2048:
         raise ValueError("auto: команда пробы")
     out["cmd"] = cmd
     target = str(params.get("target") or "")
@@ -549,13 +556,20 @@ def _wait_ready_events(proc, events_path: str, timeout: float) -> bool:
     return False
 
 
-def build_auto_eval_args(binary: str, params: dict, p: dict) -> list:
-    """``geneva eval`` быстрых кандидатов «Авто»: проба ``exec`` с
-    локальных портов воркеров, воркеры параллельно."""
-    return [binary, "eval",
-            "--probe", "exec", "--cmd", params["cmd"],
+def _auto_probe_args(params: dict) -> list:
+    """Проба заданий «Авто»: ``external`` — отвечает zapret-gui
+    (:class:`ExternalAnswerer`), иначе — команда ``exec``."""
+    if params.get("probe") == "external":
+        return ["--probe", "external"]
+    return ["--probe", "exec", "--cmd", params["cmd"],
             "--timeout", str(params["timeout"]),
-            "--injected-contains", "INJECTED",
+            "--injected-contains", "INJECTED"]
+
+
+def build_auto_eval_args(binary: str, params: dict, p: dict) -> list:
+    """``geneva eval`` быстрых кандидатов «Авто»: проба с локальных
+    портов воркеров, воркеры параллельно."""
+    return [binary, "eval"] + _auto_probe_args(params) + [
             "-f", p["auto_candidates"],
             "--workers", str(params["workers"]),
             "--runs", "1",
@@ -570,10 +584,7 @@ def build_auto_evolve_args(binary: str, params: dict, p: dict,
                            resume: bool = False) -> list:
     """``geneva evolve`` для одного сервиса «Авто»: свой checkpoint,
     общая база оценок с целью сервиса, ``--protos`` по транспорту."""
-    args = [binary, "evolve",
-            "--probe", "exec", "--cmd", params["cmd"],
-            "--timeout", str(params["timeout"]),
-            "--injected-contains", "INJECTED",
+    args = [binary, "evolve"] + _auto_probe_args(params) + [
             "--protos", params["protos"],
             "--population", str(params["population"]),
             "--generations", str(params["generations"]),
@@ -751,6 +762,100 @@ class EventReader:
         return out
 
 
+def external_answer(req_id, result) -> str:
+    """Строка ответа на ``eval_request`` (docs/EVAL.md geneva_c):
+    ``result`` — ``(fitness, detail)`` или ``bool``."""
+    if isinstance(result, bool):
+        ans = {"id": req_id, "ok": result}
+    else:
+        fit, detail = result
+        ans = {"id": req_id, "fitness": float(fit),
+               "detail": str(detail or "")[:200]}
+    return json.dumps(ans, ensure_ascii=False) + "\n"
+
+
+class ExternalAnswerer:
+    """Контроллер ``--probe external``: читает ``eval_request`` из файла
+    событий задания и отвечает в stdin процесса.
+
+    Каждый запрос пробуется в своём потоке (до ``workers`` разом): с
+    geneva_c 1.2 запросы воркеров приходят одновременно, ответы идут по
+    ``id`` в любом порядке. ``probe(lports)`` → ``(fitness, detail)``;
+    исключение пробы — ``failed`` (−400), а не зависший воркер. Поток
+    выходит вместе с процессом; stdin закрывается — geneva останавливает
+    поиск.
+    """
+
+    POLL = 0.05
+
+    def __init__(self, proc, events_path: str, probe, workers: int = 1):
+        self._proc = proc
+        self._probe = probe
+        self._reader = EventReader(events_path)
+        self._sem = threading.Semaphore(max(1, int(workers or 1)) + 1)
+        self._wlock = threading.Lock()
+        self._seen = set()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name="geneva-external")
+
+    def start(self) -> "ExternalAnswerer":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            for ev in self._reader.read_new():
+                if ev.get("ev") != "eval_request":
+                    continue
+                rid = ev.get("id")
+                if rid in self._seen:
+                    continue
+                self._seen.add(rid)
+                self._sem.acquire()
+                threading.Thread(target=self._answer,
+                                 args=(rid, str(ev.get("lports") or "")),
+                                 daemon=True,
+                                 name="geneva-external-probe").start()
+            if self._proc.poll() is not None:
+                break
+            self._stop.wait(self.POLL)
+        self._close()
+
+    def _answer(self, rid, lports: str) -> None:
+        try:
+            try:
+                res = self._probe(lports)
+            except Exception as e:                  # noqa: BLE001
+                res = (-400, "failed: %s" % e)
+            self._write(external_answer(rid, res))
+        finally:
+            self._sem.release()
+
+    def _write(self, line: str) -> None:
+        with self._wlock:
+            f = self._proc.stdin
+            if f is None or f.closed:
+                return
+            try:
+                f.write(line.encode("utf-8"))
+                f.flush()
+            except (OSError, ValueError):
+                pass
+
+    def _close(self) -> None:
+        with self._wlock:
+            f = self._proc.stdin
+            try:
+                if f is not None and not f.closed:
+                    f.close()
+            except OSError:
+                pass
+
+
 def trim_file(path: str, limit: int) -> bool:
     """Обнулить файл в ОЗУ, если он перерос ``limit`` (O_APPEND у писателя)."""
     try:
@@ -898,12 +1003,18 @@ def pid_alive(pid, subcommand: str = "") -> bool:
     return not subcommand or (len(words) > 1 and words[1] == subcommand)
 
 
-def _spawn(args: list, log_path: str) -> subprocess.Popen:
-    """Запустить отдельным сеансом: процесс переживает перезапуск GUI."""
+def _spawn(args: list, log_path: str,
+           stdin_pipe: bool = False) -> subprocess.Popen:
+    """Запустить отдельным сеансом: процесс переживает перезапуск GUI.
+
+    ``stdin_pipe`` — ответы внешней пробы идут в stdin: такой процесс
+    перезапуск GUI не переживёт (stdin закроется, geneva остановит
+    поиск, checkpoint останется)."""
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     out = open(log_path, "ab")
     try:
-        return subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out,
+        return subprocess.Popen(args, stdin=subprocess.PIPE if stdin_pipe
+                                else subprocess.DEVNULL, stdout=out,
                                 stderr=subprocess.STDOUT,
                                 start_new_session=True, close_fds=True)
     finally:
@@ -992,6 +1103,7 @@ class GenevaManager:
         self._fw_seen = False
         self._auto_state = {}
         self._auto_procs = {}
+        self._job_answerer = None
 
     # ─────── бинарник ───────
 
@@ -1516,7 +1628,8 @@ class GenevaManager:
                      "target": search_target(params), "paused_engine": ""}
             return self._launch_job(args, state, params)
 
-    def _launch_job(self, args: list, state: dict, params: dict) -> dict:
+    def _launch_job(self, args: list, state: dict, params: dict,
+                    answer=None) -> dict:
         p = paths()
         paused = ""
         if params.get("pause_bypass", True) and not state.get(
@@ -1538,11 +1651,18 @@ class GenevaManager:
         self._job_feed.clear()
         self._job_evals.clear()
         try:
-            proc = _spawn(args, p["job_log"])
+            proc = _spawn(args, p["job_log"], stdin_pipe=answer is not None)
         except OSError as e:
             self._restore_paused(state)
             return {"ok": False, "error": "Запуск geneva: %s" % e}
         self._job_proc = proc
+        if self._job_answerer is not None:
+            self._job_answerer.stop()
+        self._job_answerer = None
+        if answer is not None:
+            self._job_answerer = ExternalAnswerer(
+                proc, p["job_events"], answer,
+                workers=params.get("workers", 1)).start()
         _write_pid(p["job_pid"], proc.pid)
         state["pid"] = proc.pid
         self._job_state = state
@@ -1563,8 +1683,13 @@ class GenevaManager:
                 self._job_state.get("owner") == "auto"
 
     def start_auto_job(self, kind: str, params: dict, strategies=None,
-                       resume: bool = False) -> dict:
+                       resume: bool = False, answer=None) -> dict:
         """Запустить ``eval`` или ``evolve`` для сервиса «Авто».
+
+        ``answer(lports)`` → ``(fitness, detail)`` — проба ``external``
+        (geneva_c 1.2, ``external_workers``): на каждый ``eval_request``
+        отвечает zapret-gui (:class:`ExternalAnswerer`). Без неё —
+        команда ``exec`` из ``params["cmd"]``.
 
         Тот же слот задачи, что у ручного подбора (``_launch_job``): два
         оценщика на одной очереди 311 не уживутся. Обход не ставится на
@@ -1576,8 +1701,13 @@ class GenevaManager:
             if self.job_running():
                 return {"ok": False, "busy": True,
                         "error": "подбор уже идёт"}
+            params = dict(params or {})
+            if answer is not None:
+                params["probe"] = "external"
+            elif params.get("probe") == "external":
+                return {"ok": False, "error": "auto: external без пробы"}
             try:
-                params = validate_auto_job(params or {})
+                params = validate_auto_job(params)
             except ValueError as e:
                 return {"ok": False, "error": str(e)}
             binary, err = self._ready_binary()
@@ -1620,7 +1750,8 @@ class GenevaManager:
                      "best_fitness": None, "best": "", "results": [],
                      "exit_code": None, "target": params["target"],
                      "total": total, "paused_engine": ""}
-            return self._launch_job(args, state, state["params"])
+            return self._launch_job(args, state, state["params"],
+                                    answer=answer)
 
     def auto_job_status(self) -> dict:
         """Ход и итог последнего задания «Авто» (идущего или законченного)."""
@@ -1910,6 +2041,9 @@ class GenevaManager:
         self._save_search_state(st)
         _remove(p["job_pid"])
         self._job_proc = None
+        if self._job_answerer is not None:
+            self._job_answerer.stop()
+            self._job_answerer = None
         if st.get("owner") == "auto":
             # Страница подбора снова показывает ручной поиск.
             self._auto_state = st

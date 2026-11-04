@@ -27,9 +27,15 @@
    ``geneva run`` на адреса сервиса), через 1 с — проба с обходом. Первая
    рабочая — итог ``applied``.
 
-Обе задачи geneva идут пробой ``exec``: команда
-:mod:`core.geneva_auto_probe_cli` делает ту же пробу, что подтверждение
-(:mod:`core.geneva_auto_probes`), с порта воркера.
+Обе задачи geneva делают ту же пробу, что подтверждение
+(:mod:`core.geneva_auto_probes`), с порта воркера. С geneva_c 1.2 (фича
+``external_workers`` в ``geneva version --json``) — пробой ``external``:
+geneva пишет ``eval_request`` с блоком портов воркера, zapret-gui
+пробует в своём процессе и отвечает фитнесом по ``id``, все воркеры
+разом. Python не запускается на каждую оценку (на роутере это секунды
+на старт интерпретатора), а фитнес точный: «нет ответа» (−400) и «поток
+сломан» (−480) geneva различает. Без фичи — пробой ``exec``: команда
+:mod:`core.geneva_auto_probe_cli` с той же пробой, шкала грубее.
 
 Сервис без пробы (WireGuard, DHT, ICE/Discord): кандидаты по одному
 применяются пробной группой, успех — успешный поток самого клиента
@@ -63,6 +69,7 @@ JOB_POLL = 2.0
 EXEC_TIMEOUT_WEB = 16         # страница — 12 с, с запасом на запуск python
 EXEC_TIMEOUT_REPLAY = 10
 DEFAULT_WORKERS = 4
+EXTERNAL_FEATURE = "external_workers"   # geneva_c 1.2: external и N воркеров
 MAX_WORKERS = 8
 # Имя хоста уходит в команду ``sh -c`` (в кавычках shlex) — и всё равно
 # только такое: оно пришло из DNS-ответа или SNI, то есть от чужих.
@@ -104,37 +111,67 @@ def probe_script() -> str:
                         "geneva_auto_probe_cli.py")
 
 
+def probe_spec(s: ga.Service):
+    """Что пробовать у сервиса (:func:`core.geneva_auto_probe_cli.measure`)
+    или ``None`` — пробы нет. Адрес — новейший адрес сервиса."""
+    from core import geneva_auto_probes as pr
+    if not s.address:
+        return None
+    spec = {"ip": s.address, "port": s.port}
+    if s.kind == ga.WEB:
+        host = s.host or s.name
+        if not _HOST_RE.match(host or ""):
+            return None
+        spec.update(kind="web", host=host, tls=s.port != 80)
+        return spec
+    plan = pr.replay_plan(s)
+    if plan is None:
+        return None
+    payloads, udp, fresh = plan
+    spec.update(kind="replay", udp=bool(udp), fresh=fresh or "",
+                payloads=[] if fresh else list(payloads))
+    return spec
+
+
 def probe_argv(s: ga.Service, *, python: str, script: str,
                replay_file: str = ""):
     """argv пробы ``exec`` для сервиса или ``None`` — пробы нет.
 
     ``{lports}`` подставит geneva. Адреса — новейший адрес сервиса.
     """
-    from core import geneva_auto_probes as pr
-    if not s.address:
+    spec = probe_spec(s)
+    if spec is None:
         return None
-    argv = [python, script, "--ip", s.address, "--port", str(s.port),
+    argv = [python, script, "--ip", spec["ip"], "--port", str(spec["port"]),
             "--lports", "{lports}"]
-    if s.kind == ga.WEB:
-        host = s.host or s.name
-        if not _HOST_RE.match(host or ""):
-            return None
-        return argv + ["--kind", "web", "--host", host,
-                       "--tls", "0" if s.port == 80 else "1"]
-    plan = pr.replay_plan(s)
-    if plan is None:
-        return None
-    payloads, udp, fresh = plan
+    if spec["kind"] == "web":
+        return argv + ["--kind", "web", "--host", spec["host"],
+                       "--tls", "1" if spec["tls"] else "0"]
     argv += ["--kind", "replay"]
-    if udp:
+    if spec["udp"]:
         argv.append("--udp")
-    if fresh:
-        argv += ["--fresh", fresh]
-    elif payloads:
+    if spec["fresh"]:
+        argv += ["--fresh", spec["fresh"]]
+    elif spec["payloads"]:
         if not replay_file:
             return None
         argv += ["--replay-file", replay_file]
     return argv
+
+
+def external_probe(spec: dict, measure=None):
+    """Проба для ``--probe external``: ``lports`` (``"30000-30063"``) →
+    ``(fitness, detail)``. Та же, что у скрипта ``exec``, но в процессе
+    zapret-gui и с точным фитнесом: «нет ответа» (−400) и «сломан
+    поток» (−480) geneva теперь различает."""
+    if measure is None:
+        from core.geneva_auto_probe_cli import measure
+    from core.geneva_auto_probe_cli import parse_lports
+
+    def probe(lports: str):
+        fit, outcome, detail = measure(spec, parse_lports(lports))
+        return fit, ("%s: %s" % (outcome, detail))[:200]
+    return probe
 
 
 def command_text(argv) -> str:
@@ -145,8 +182,9 @@ def command_text(argv) -> str:
 
 def job_params(s: ga.Service, *, cmd: str, workers: int,
                checkpoint: str = "", generations: int = ga.GENERATIONS,
-               key: str = "") -> dict:
+               key: str = "", probe: str = "exec") -> dict:
     return {
+        "probe": probe,
         "cmd": cmd,
         "target": ga.search_target(s),
         "protos": ga.protos_for(s),
@@ -208,7 +246,8 @@ class AutoSearch:
     def __init__(self, *, geneva=None, probes=None, trial=None,
                  ok_since=None, workers=DEFAULT_WORKERS,
                  python: str = sys.executable, script: str = "",
-                 clock=time.time, paths=None):
+                 clock=time.time, paths=None, external=None,
+                 measure=None):
         self._geneva = geneva
         self._probes = probes
         self._trial = trial
@@ -218,6 +257,10 @@ class AutoSearch:
         self._script = script or probe_script()
         self._clock = clock
         self._paths = paths
+        # ``None`` — по фиче установленного geneva; ``measure`` — проба
+        # для external (тесты подменяют)
+        self._use_external = external
+        self._measure = measure
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -336,11 +379,18 @@ class AutoSearch:
                             if len(rounds) > 1 else []) if rounds else []
         if self._pr().judge(s) is None:
             return self._by_traffic(s, flat)
-        argv = probe_argv(s, python=self._python, script=self._script,
-                          replay_file=self._replay_file(s))
-        if argv is None:
+        spec = probe_spec(s)
+        if spec is None:
             return self._by_traffic(s, flat)
-        cmd = command_text(argv)
+        if self._external():
+            # geneva_c 1.2+: проба в процессе, ответы по id в любом порядке
+            cmd = external_probe(spec, self._measure)
+        else:
+            argv = probe_argv(s, python=self._python, script=self._script,
+                              replay_file=self._replay_file(s))
+            if argv is None:
+                return self._by_traffic(s, flat)
+            cmd = command_text(argv)
         tried = list(s.rejected or ())
 
         # 1. все известные кандидаты: сначала проверенные в этой сети,
@@ -471,6 +521,17 @@ class AutoSearch:
         return [str(i.get("strategy") or "") for i in res.get("items") or []
                 if isinstance(i, dict) and i.get("strategy")]
 
+    def _external(self) -> bool:
+        """Установленный geneva отвечает внешней пробе с несколькими
+        воркерами (``external_workers``, geneva_c 1.2)."""
+        if self._use_external is not None:
+            return bool(self._use_external)
+        try:
+            feats = self._gm().detect().get("features") or []
+        except Exception:                           # noqa: BLE001
+            return False
+        return EXTERNAL_FEATURE in feats
+
     def _replay_file(self, s: ga.Service) -> str:
         if not s.replay:
             return ""
@@ -490,15 +551,20 @@ class AutoSearch:
              generations=ga.GENERATIONS, resume=False):
         """Задание geneva до конца; ``None`` — прервано, ``{"busy"}`` —
         слот занят."""
-        params = job_params(s, cmd=cmd, checkpoint=checkpoint,
+        probe = cmd if callable(cmd) else None
+        params = job_params(s, cmd="" if probe else cmd,
+                            checkpoint=checkpoint,
                             generations=generations,
                             workers=min(self.workers, len(strategies))
-                            if strategies else self.workers)
+                            if strategies else self.workers,
+                            probe="external" if probe else "exec")
         gm = self._gm()
         # карточка «Авто» показывает, сколько проверок идёт разом
-        self._set(workers=params["workers"], done=0)
+        self._set(workers=params["workers"], done=0,
+                  probe=params["probe"])
+        kw = {"answer": probe} if probe else {}
         r = gm.start_auto_job(kind, params, strategies=strategies,
-                              resume=resume)
+                              resume=resume, **kw)
         if not r.get("ok"):
             if r.get("busy"):
                 return {"busy": True, "error": r.get("error", "")}
