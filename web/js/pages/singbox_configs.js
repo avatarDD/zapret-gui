@@ -9,6 +9,10 @@
 
 const SingboxConfigsPage = (() => {
 
+    // Автогенерённые конфиги подписок: imported-sub-<id> (и старое
+    // imported-subscription-<id>, которое не влезало в 32 символа, #451).
+    const isSubConfig = (name) => /^imported-sub(scription)?-/.test(name || '');
+
     let activeTab = 'list';
     let configs = [];
     let env = null;
@@ -527,8 +531,8 @@ const SingboxConfigsPage = (() => {
     async function loadBuilder() {
         if (!builderTarget && configs.length) {
             // По умолчанию выбираем первый, который НЕ
-            // imported-subscription-* (это автогенерёные подписочные).
-            const own = configs.find(c => !c.name.startsWith('imported-subscription-'));
+            // imported-sub-* (это автогенерёные подписочные).
+            const own = configs.find(c => !isSubConfig(c.name));
             builderTarget = (own || configs[0]).name;
         }
         if (builderTarget) {
@@ -555,7 +559,7 @@ const SingboxConfigsPage = (() => {
         // Список конфигов в выпадушке + кнопка «Новый конфиг».
         const cfgOpts = configs.map(c =>
             `<option value="${escapeAttr(c.name)}" ${c.name === builderTarget ? 'selected':''}>
-                ${escapeHtml(c.name)}${c.name.startsWith('imported-subscription-') ? ' (подписка)' : ''}
+                ${escapeHtml(c.name)}${isSubConfig(c.name) ? ' (подписка)' : ''}
             </option>`
         ).join('');
 
@@ -1095,7 +1099,7 @@ const SingboxConfigsPage = (() => {
                 <h3 style="margin-top:0;">Новая подписка с автообновлением</h3>
                 <p class="text-muted" style="font-size:12px;">
                     Подписка скачивается раз в N часов; outbound'ы сохраняются
-                    в конфиг <code>imported-subscription-&lt;id&gt;</code>.
+                    в конфиг <code>imported-sub-&lt;id&gt;</code>.
                     Поддерживаются форматы: <strong>uri</strong> (base64/plain
                     text-URI), <strong>clash</strong> (YAML с секцией proxies),
                     <strong>singbox-json</strong> (готовый sing-box config).

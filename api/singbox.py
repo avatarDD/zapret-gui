@@ -510,7 +510,7 @@ def _resolve_test_outbounds(body: dict):
     Источник серверов для теста (по приоритету):
       1) body["outbounds"] — готовый список;
       2) body["config"]    — имя сохранённого конфига (server-pool,
-                              imported-subscription-*, любой);
+                              imported-sub-*, любой);
       3) body["url"]       — скачать и распарсить подписку «на лету».
     Возвращает list (возможно пустой) либо None, если ничего не задано.
     """
