@@ -250,6 +250,11 @@ const GenevaPage = (() => {
                     <div class="card-title">${esc(_tr('geneva.found.title'))}</div>
                     <div class="card-body">
                         <div class="form-hint" style="margin-bottom:8px;">${esc(_tr('geneva.found.about'))}</div>
+                        <div class="gv-actions" style="margin-bottom:8px;">
+                            <button class="btn btn-ghost btn-sm" data-action="found-export">${esc(_tr('geneva.found.export'))}</button>
+                            <button class="btn btn-ghost btn-sm" data-action="found-import">${esc(_tr('geneva.found.import'))}</button>
+                            <input type="file" id="gv-found-file" accept=".json,.txt,application/json,text/plain" hidden>
+                        </div>
                         <div id="gv-found">${esc(_tr('common.loading'))}</div>
                     </div>
                 </div>
@@ -353,6 +358,11 @@ const GenevaPage = (() => {
         on('gv-btn-settings', _saveSettings);
         const toggle = document.getElementById('gv-auto-toggle');
         if (toggle) toggle.addEventListener('change', () => _autoToggle(toggle.checked));
+        const ffile = document.getElementById('gv-found-file');
+        if (ffile) ffile.addEventListener('change', () => {
+            _importFound(ffile.files && ffile.files[0]);
+            ffile.value = '';
+        });
         const nat = document.getElementById('gv-nat-toggle');
         if (nat) nat.addEventListener('change', () => _natToggle(nat.checked));
         const onChange = (id, fn) => {
@@ -465,8 +475,11 @@ const GenevaPage = (() => {
         const nobypass = (c.not_found || 0) + (c.ip_blocked || 0);
         const phase = a.running ? _tr('geneva.auto.phase.' + (a.phase || 'watching'))
                                 : _tr('geneva.auto.waiting');
-        const searchLine = a.search && a.search.running && a.search.name
-            ? ` · ${esc(a.search.name)}: ${esc(_tr('geneva.auto.phase.searching'))}` : '';
+        const sr = a.search || {};
+        const par = sr.running && sr.workers
+            ? ` (${esc(_tr('geneva.auto.parallel', { done: sr.done || 0, total: sr.total || '?', workers: sr.workers }))})` : '';
+        const searchLine = sr.running && sr.name
+            ? ` · ${esc(sr.name)}: ${esc(_tr('geneva.auto.phase.searching'))}${par}` : '';
         const rows = (a.services || []).map(s => {
             const trying = s.status === 'searching' && a.search && a.search.key === s.key
                 && a.search.strategy ? _tr('geneva.auto.trying', { strategy: a.search.strategy }) : '';
@@ -653,6 +666,7 @@ const GenevaPage = (() => {
             if (r.degraded) badges.push(`<span class="badge badge-warning">${esc(_tr('geneva.found.degraded', { n: r.degraded }))}</span>`);
             if ((r.targets || []).length) badges.push(`<span class="badge badge-info">${esc(_tr('geneva.found.manual'))}</span>`);
             if (r.working) badges.push(`<span class="badge badge-accent">${esc(_tr('geneva.found.working'))}</span>`);
+            if (r.imported) badges.push(`<span class="badge badge-ghost">${esc(_tr('geneva.found.imported'))}</span>`);
             const when = r.last ? `<span class="text-muted">${esc(_tr('geneva.found.last', { when: fmtDate(r.last) }))}</span>` : '';
             const fit = r.fitness !== null && r.fitness !== undefined
                 ? `<span class="text-muted">${esc(_tr('geneva.found.fitness', { f: Math.round(r.fitness) }))}</span>` : '';
@@ -666,10 +680,60 @@ const GenevaPage = (() => {
                 <div class="gv-actions">
                     <button class="btn btn-ghost btn-sm" data-copy="${i}">${esc(_tr('geneva.found.copy'))}</button>
                     ${use}
+                    ${r.imported ? `<button class="btn btn-ghost btn-sm" data-forget="${i}">${esc(_tr('geneva.found.forget'))}</button>` : ''}
                 </div>
             </div>`;
         }).join('');
         box.dataset.strategies = JSON.stringify(items.map(r => r.strategy));
+    }
+
+    async function _exportFound() {
+        try {
+            const doc = await API.get('/api/geneva/found/export');
+            const data = typeof doc === 'string' ? doc : JSON.stringify(doc, null, 1);
+            const blob = new Blob([data], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'geneva-strategies.json';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+        } catch (e) {
+            Toast.error(errText(e));
+        }
+    }
+
+    async function _importFound(file) {
+        if (!file) return;
+        if (file.size > 512 * 1024) {
+            Toast.error(_tr('geneva.found.import_big'));
+            return;
+        }
+        try {
+            const text = await file.text();
+            let data = text;
+            try { data = JSON.parse(text); } catch (e) { data = text; }
+            const res = await API.post('/api/geneva/found/import', { data });
+            Toast.success(_tr('geneva.found.imported_n', { n: res.accepted, added: res.added }));
+            if ((res.errors || []).length) Toast.info(res.errors.slice(0, 3).join('; '));
+        } catch (e) {
+            Toast.error(errText(e));
+        }
+        _loadFound();
+    }
+
+    async function _forgetImported(i) {
+        const box = document.getElementById('gv-found');
+        let list = [];
+        try { list = JSON.parse((box && box.dataset.strategies) || '[]'); } catch (e) { list = []; }
+        const strategy = list[Number(i)];
+        if (!strategy) return;
+        try {
+            await API.post('/api/geneva/found/forget', { strategy });
+        } catch (e) {
+            Toast.error(errText(e));
+        }
+        _loadFound();
     }
 
     function _copyFound(i) {
@@ -1218,6 +1282,13 @@ const GenevaPage = (() => {
         if (t.dataset.switch) return _switchEngine(t.dataset.switch);
         if (t.dataset.autoReset) return _autoReset(t.dataset.autoReset);
         if (t.dataset.copy !== undefined) return _copyFound(t.dataset.copy);
+        if (t.dataset.forget !== undefined) return _forgetImported(t.dataset.forget);
+        if (t.dataset.action === 'found-export') return _exportFound();
+        if (t.dataset.action === 'found-import') {
+            const f = document.getElementById('gv-found-file');
+            if (f) f.click();
+            return;
+        }
         if (t.dataset.action === 'install') return _install();
         if (t.dataset.use) return _setStrategy(t.dataset.use, 'search');
         if (t.dataset.useLib) return _setStrategy(t.dataset.useLib, 'library');

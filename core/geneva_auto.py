@@ -97,7 +97,10 @@ MAX_SERVICES = 300
 MAX_ADDRESSES = 64
 MAX_PORTS = 8
 MAX_TIMES = 200                   # отметок времени в одном списке
-MAX_QUICK_CANDIDATES = 12
+MAX_REJECTED = 20                 # отвергнутых стратегий у сервиса
+REDEGRADE = 30 * MINUTE           # снова ослабла после «проба прошла»
+MAX_QUICK_CANDIDATES = 64        # в одном круге перебора (eval)
+MAX_CANDIDATES = 192             # всех кругов вместе
 OUT_PACKETS = 12                  # пакетов соединения через geneva
 IN_PACKETS = 6
 POPULATION = 20
@@ -188,6 +191,8 @@ class Service:
     next_check: float = None
     attempts: int = 0
     suspicions: int = 0
+    restored_at: float = None   # проба с обходом вернула в applied
+    rejected: list = field(default_factory=list)  # не работают у устройств
 
     # ── свойства ──
 
@@ -247,6 +252,8 @@ class Service:
             "no_connections": list(self.no_connections),
             "next_check": self.next_check, "attempts": self.attempts,
             "suspicions": self.suspicions,
+            "restored_at": self.restored_at,
+            "rejected": list(self.rejected),
         }
 
     @classmethod
@@ -317,6 +324,9 @@ class Service:
             next_check=opt("next_check"),
             attempts=int(num("attempts")),
             suspicions=int(num("suspicions")),
+            restored_at=opt("restored_at"),
+            rejected=[str(x) for x in d.get("rejected") or []
+                      if isinstance(x, str) and x][-MAX_REJECTED:],
         )
 
 
@@ -409,6 +419,25 @@ def _move(s: Service, to: str, now: float, why: str) -> None:
         s.since = now
     if why:
         s.why = why
+
+
+def handshake_seen(s: Service) -> bool:
+    """Адрес сервиса отвечает: в окне есть успехи или (TCP) провалы
+    после рукопожатия — «соединение есть, данных нет», сброс, обрыв.
+    Отказ «нет соединения» сюда не входит, он — в ``no_connections``.
+
+    Отличие: в эталоне «блокировка по IP» ставится по одной пробе, у
+    которой не установилось соединение. На ПК проба идёт с того же
+    адреса, что и браузер; на роутере проба — с самого роутера, и таймаут
+    её connect (метка, маршрут, временная «чёрная дыра» ТСПУ на весь
+    адрес после заблокированного ClientHello) противоречит тому, что
+    устройства сети соединяются. Тогда это блокировка по содержимому, и
+    geneva может помочь."""
+    return bool(s.oks) or (s.transport == "tcp" and bool(s.fails))
+
+
+IP_REACHABLE_WHY = ("адрес отвечает — соединения устанавливаются, "
+                    "блокировка по содержимому")
 
 
 def _trim(s: Service, now: float) -> None:
@@ -537,6 +566,14 @@ class Book:
             sus, why = suspicious(s)
             due = s.next_check is None or now >= s.next_check
             st = s.status
+            if st == IP_BLOCKED and handshake_seen(s):
+                # устройства соединяются с адресом: это не блокировка по
+                # IP (в т.ч. сервисы, сохранённые так прежней версией)
+                s.next_check = None
+                _move(s, BLOCKED, now, IP_REACHABLE_WHY)
+                out.append("%s: адрес отвечает, это не блокировка по IP — "
+                           "ищу обход" % s.name)
+                continue
             if st in (WATCHING, FALLBACK) or (
                     st in (NOT_BLOCKED, IP_BLOCKED) and due):
                 if not sus:
@@ -558,11 +595,15 @@ class Book:
                 if not sus:
                     _move(s, WATCHING, now, "")
             elif st == APPLIED and s.applied_at is not None:
-                at = s.applied_at
+                # Провалы после последнего успеха. Отличие: в эталоне —
+                # «ни одного успеха с применения», и сайт, который
+                # проработал 10 минут и сломался, оставался «работает»,
+                # пока старые успехи не уходили из окна.
+                at = max([s.applied_at] + [t for t in s.oks
+                                           if t > s.applied_at])
                 fails = sum(1 for t in s.fails if t > at) + \
                     sum(1 for t in s.no_connections if t > at)
-                oks = sum(1 for t in s.oks if t > at)
-                if oks == 0 and fails >= threshold(s):
+                if fails >= threshold(s):
                     _move(s, DEGRADED, now, "обход перестал работать: " +
                           s.why)
                     s.next_check = None
@@ -606,16 +647,38 @@ class Book:
         if s is None:
             return ""
         degraded = s.status == DEGRADED
+        if result == C_NOT_BLOCKED and degraded and s.strategy and \
+                s.restored_at is not None and now - s.restored_at < REDEGRADE:
+            # Проба роутера с обходом проходит, а устройства снова не
+            # открывают: стратегия работает только для самого роутера
+            # (ускорение NAT, другой путь трафика). Отличие от эталона:
+            # там это вечный круг «ослабла → проба прошла → работает».
+            bad = s.strategy
+            if bad not in s.rejected:
+                s.rejected = (s.rejected + [bad])[-MAX_REJECTED:]
+            s.restored_at = None
+            s.next_check = None
+            _move(s, BLOCKED, now, "проба роутера проходит, у устройств — "
+                  "нет: ищу другую стратегию")
+            return ("%s: стратегия помогает роутеру, но не устройствам — "
+                    "ищу другую" % s.name)
         if result == C_NOT_BLOCKED and degraded:
             s.fails = []
             s.no_connections = []
             s.applied_at = now
+            s.restored_at = now
             _move(s, APPLIED, now, "проверка с обходом прошла")
             return "%s: с обходом открывается, оставляю стратегию" % s.name
         if result == C_NOT_BLOCKED:
             s.next_check = now + NOT_BLOCKED_PAUSE
             _move(s, NOT_BLOCKED, now, "без обхода открывается")
             return "%s: без обхода открывается, это не блокировка" % s.name
+        if result == C_IP_BLOCKED and handshake_seen(s):
+            result = C_BLOCKED
+            s.next_check = None
+            _move(s, BLOCKED, now, IP_REACHABLE_WHY)
+            return ("%s: проба не соединилась, но устройства соединяются — "
+                    "блокировка по содержимому, ищу обход" % s.name)
         if result == C_IP_BLOCKED:
             s.next_check = now + IP_BLOCKED_PAUSE
             _move(s, IP_BLOCKED, now, "блокировка по адресу: geneva не "
@@ -644,6 +707,7 @@ class Book:
         s.strategy = strategy
         s.fitness = float(fitness or 0)
         s.applied_at = now
+        s.restored_at = None
         s.attempts = 0
         s.next_check = None
         s.fails = []
@@ -661,12 +725,26 @@ class Book:
         _move(s, NOT_FOUND, now, "обход не найден, следующая попытка "
               "через %d ч" % round(pause / HOUR))
 
+    def wake_not_found(self, strategy: str, now: float) -> int:
+        """Нашлась новая рабочая стратегия — сервисы «не найдено» того же
+        транспорта подбираются сразу, а не через свою паузу: в первом
+        круге их подбора она будет первой. Отличие: в эталоне они ждут
+        паузу. Счётчик попыток не сбрасывается — пауза дальше растёт."""
+        n = 0
+        for s in self._services.values():
+            if s.status == NOT_FOUND and _fits(s, strategy):
+                s.next_check = now
+                n += 1
+        return n
+
     def reset(self, key: str, now: float) -> bool:
         s = self.find(key)
         if s is None:
             return False
         s.strategy = None
         s.applied_at = None
+        s.restored_at = None
+        s.rejected = []
         s.next_check = None
         s.attempts = 0
         s.fails = []
@@ -939,6 +1017,59 @@ def _fits(s: Service, strategy: str) -> bool:
     if s.transport == "udp" or s.kind == DNS:
         return "[udp:" in low or "[ip:" in low or "[dns" in low
     return "[tcp:" in low or "[ip:" in low
+
+
+def candidate_rounds(s: Service, running=(), found=(), proven=(),
+                     library=()) -> list:
+    """Круги перебора до генетического подбора: ``[[проверенные],
+    [остальные]]`` (пустые круги выброшены).
+
+    1. **проверенные в этой сети** — стратегии работающих групп того же
+       транспорта (сервис вступит в группу, а не откроет новую), найденные
+       раньше для этой цели (``found``), затем работающие для других
+       сервисов и импортированные (``proven`` — уже по рангу: больше
+       сервисов и успехов — раньше);
+    2. **все остальные** — стартовый набор, шаблоны и вся библиотека
+       исследований Geneva (``library``) для транспорта.
+
+    Отличие от эталона: там один круг до 12 кандидатов и без библиотеки.
+    Здесь перебираются все известные стратегии, но второй круг
+    запускается, только если проверенные не подошли.
+    """
+    from core.geneva_manager import check_strategy_text
+    if s.kind == DNS:
+        classics = AUTO_CANDIDATES_DNS + AUTO_PRESETS_UDP + \
+            AUTO_CANDIDATES_UDP
+    elif s.transport == "udp":
+        classics = AUTO_PRESETS_UDP + AUTO_CANDIDATES_UDP
+    else:
+        classics = AUTO_PRESETS_TCP + AUTO_CANDIDATES_TCP
+    # отвергнутые для этого сервиса (помогали роутеру, но не устройствам)
+    seen = set(s.rejected or ())
+    total = [0]
+
+    def take(items, cap) -> list:
+        out = []
+        for c in items:
+            if not c or not _fits(s, c):
+                continue
+            try:
+                c = check_strategy_text(c)
+            except ValueError:
+                continue
+            if c in seen:
+                continue
+            if len(out) >= cap or total[0] >= MAX_CANDIDATES:
+                break
+            seen.add(c)
+            out.append(c)
+            total[0] += 1
+        return out
+
+    first = take(list(running) + list(found) + list(proven),
+                 MAX_QUICK_CANDIDATES)
+    rest = take(list(classics) + list(library), MAX_CANDIDATES)
+    return [r for r in (first, rest) if r]
 
 
 def candidates_for(s: Service, running=(), found=()) -> list:

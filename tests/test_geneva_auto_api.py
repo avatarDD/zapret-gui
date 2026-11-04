@@ -104,6 +104,30 @@ class TestRest(_Base):
         self.assertEqual(data["items"][0]["services"][0]["name"],
                          "youtube.com")
 
+    def test_found_export_import_forget(self):
+        self.auto.export_found = lambda: {"format": "zapret-gui/geneva-strategies",
+                                          "version": 1, "items": []}
+        got = []
+        self.auto.import_strategies = lambda data: (
+            got.append(data), {"ok": True, "accepted": 1, "added": 1})[1]
+        self.auto.remove_imported = lambda st: (
+            {"ok": True} if st == "S" else
+            {"ok": False, "error_code": "not_found", "error": "нет"})
+        status, body = self.client._call("GET", "/api/geneva/found/export")
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(json.loads(body)["format"],
+                         "zapret-gui/geneva-strategies")
+        self.assertTrue(self.client.post_json(
+            "/api/geneva/found/import", {"data": "A\nB"})["ok"])
+        self.assertEqual(got[-1], "A\nB")
+        self.assertTrue(self.client.post_json(
+            "/api/geneva/found/forget", {"strategy": "S"})["ok"])
+        status, _ = self.client._call(
+            "POST", "/api/geneva/found/forget",
+            body=json.dumps({"strategy": "Z"}).encode(),
+            content_type="application/json")
+        self.assertTrue(status.startswith("404"), status)
+
     def test_disable_and_reset(self):
         self.assertTrue(self.client.post_json("/api/geneva/auto/disable",
                                               {})["ok"])

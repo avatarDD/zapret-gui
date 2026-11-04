@@ -60,6 +60,7 @@ const i18n_en = {
     "geneva.auto.trying": "trying: {strategy}",
     "geneva.auto.groups": "Running strategies",
     "geneva.auto.log": "Auto mode log",
+    "geneva.auto.parallel": "checked {done} of {total}, in parallel: {workers}",
     "geneva.nat.label": "Router NAT acceleration (flow offloading)",
     "geneva.nat.hint": "While acceleration is on, geneva and Auto see only the start of device connections, so bypass works only for the router itself. Turning it off lowers NAT throughput on weak routers.",
     "geneva.nat.software": "software",
@@ -109,7 +110,7 @@ const i18n_en = {
 
     // ─── geneva: рабочие стратегии (вкладка «Стратегии», секция found).
     "geneva.found.title": "Working strategies",
-    "geneva.found.about": "Only what is proven on your network: strategies that keep a bypass up in the Auto mode right now and those found by a search. Each shows where it works.",
+    "geneva.found.about": "Only what is proven on your network: strategies that keep a bypass up in the Auto mode right now and those found by a search. Each shows where it works. Export saves them to a file for another user (no device addresses); Import takes such a file or text with one strategy per line, and Auto tries imported ones right after its own working ones.",
     "geneva.found.empty": "No working strategies yet. Turn on the Auto mode — it finds and applies them itself — or run a search on the «Strategy search» tab.",
     "geneva.found.auto": "Auto: {n}",
     "geneva.found.degraded": "weakened: {n}",
@@ -121,6 +122,12 @@ const i18n_en = {
     "geneva.found.search": "search: {targets}",
     "geneva.found.use": "Make it working",
     "geneva.found.copy": "Copy",
+    "geneva.found.export": "Export",
+    "geneva.found.import": "Import",
+    "geneva.found.imported": "imported",
+    "geneva.found.forget": "Remove",
+    "geneva.found.import_big": "File is larger than 512 KB",
+    "geneva.found.imported_n": "Accepted strategies: {n}, new: {added}. Auto will try them right after its own working ones.",
     "geneva.found.copied": "Copied",
     "geneva.found.library": "For reference: strategies from Geneva research",
     "geneva.found.library_title": "Geneva library"

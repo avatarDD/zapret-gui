@@ -58,6 +58,7 @@ from core.log_buffer import log
 TRIAL_SETTLE = 1.0            # после применения пробной группы
 UNPROBED_WAIT = 50.0          # сервис без пробы: успешный поток клиента
 VERIFY_TOP = 3                # сколько прошедших проверять на трафике
+BY_TRAFFIC_EXTRA = 12         # без пробы: столько непроверенных после проверенных
 JOB_POLL = 2.0
 EXEC_TIMEOUT_WEB = 16         # страница — 12 с, с запасом на запуск python
 EXEC_TIMEOUT_REPLAY = 10
@@ -250,8 +251,11 @@ class AutoSearch:
         with self._lock:
             return self._thread is not None and self._thread.is_alive()
 
-    def start(self, s: ga.Service, running=()) -> bool:
-        """Начать подбор ``s`` фоном. ``False`` — уже идёт другой."""
+    def start(self, s: ga.Service, running=(), proven=()) -> bool:
+        """Начать подбор ``s`` фоном. ``False`` — уже идёт другой.
+
+        ``proven`` — стратегии, работающие в этой сети для других
+        сервисов, и импортированные, уже по рангу (их пробуют первыми)."""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return False
@@ -262,7 +266,8 @@ class AutoSearch:
                               "phase": "start", "strategy": "",
                               "started_at": self._clock()}
             self._thread = threading.Thread(
-                target=self._main, args=(snap, list(running or ())),
+                target=self._main, args=(snap, list(running or ()),
+                                         list(proven or ())),
                 name="geneva-auto-search", daemon=True)
             self._thread.start()
             return True
@@ -298,9 +303,9 @@ class AutoSearch:
         with self._lock:
             self._progress.update(kw)
 
-    def _main(self, s: ga.Service, running: list) -> None:
+    def _main(self, s: ga.Service, running: list, proven=()) -> None:
         try:
-            res = self._run(s, running)
+            res = self._run(s, running, proven)
         except Exception as e:                      # noqa: BLE001
             log.warning("geneva-auto: подбор %s: %s" % (s.name, e),
                         source="geneva")
@@ -311,21 +316,38 @@ class AutoSearch:
             self._result = res
             self._progress["phase"] = "done"
 
-    def _run(self, s: ga.Service, running: list) -> SearchResult:
+    def _run(self, s: ga.Service, running: list, proven=()) -> SearchResult:
         found = self._found(s)
-        cands = self._checked(ga.candidates_for(s, running, found))
+        rounds = [self._checked(r) for r in ga.candidate_rounds(
+            s, running, found, list(proven) + self._db_proven(),
+            self._library())]
+        rounds = [r for r in rounds if r]
+        if len(rounds) == 2 and len(rounds[0]) % max(1, self.workers):
+            # воркеры круга проверенных не простаивают: добираем его
+            # первыми из остальных до кратного числа воркеров
+            w = max(1, self.workers)
+            room = w - len(rounds[0]) % w
+            rounds[0] += rounds[1][:room]
+            rounds[1] = rounds[1][room:]
+            rounds = [r for r in rounds if r]
+        # без пробы кандидат стоит UNPROBED_WAIT на живом трафике: весь
+        # каталог занял бы часы — проверенные и первые из остальных
+        flat = rounds[0] + (rounds[1][:BY_TRAFFIC_EXTRA]
+                            if len(rounds) > 1 else []) if rounds else []
         if self._pr().judge(s) is None:
-            return self._by_traffic(s, cands)
+            return self._by_traffic(s, flat)
         argv = probe_argv(s, python=self._python, script=self._script,
                           replay_file=self._replay_file(s))
         if argv is None:
-            return self._by_traffic(s, cands)
+            return self._by_traffic(s, flat)
         cmd = command_text(argv)
-        tried = []
+        tried = list(s.rejected or ())
 
-        # 1. быстрые кандидаты — параллельно
-        if cands:
-            self._set(phase="quick", total=len(cands))
+        # 1. все известные кандидаты: сначала проверенные в этой сети,
+        # потом остальные — каждый круг параллельно (eval --workers N)
+        for n, cands in enumerate(rounds):
+            self._set(phase="quick" if n == 0 else "catalog",
+                      total=len(cands))
             st = self._job("eval", s, cmd, strategies=cands)
             if st is None:
                 return SearchResult(s.key, CANCELLED)
@@ -337,10 +359,11 @@ class AutoSearch:
             if st.get("status") == "stopped":
                 # остановили со страницы ручного подбора: не «не найдено»
                 return SearchResult(s.key, BUSY, detail="подбор остановлен")
-            good = passing(st.get("results"))
+            good = passing(st.get("results"), skip=tried)
             tried += [x for x, _ in good]
             win = self._verify(s, good)
             if win is not None:
+                win.tried = tried
                 return win
             if self._stop.is_set():
                 return SearchResult(s.key, CANCELLED)
@@ -350,7 +373,8 @@ class AutoSearch:
         memo_path = os.path.join(self._p()["auto"], slug(s.key) + ".json")
         memo = _read_json(memo_path)
         gens, resume = next_generations(memo, os.path.isfile(ckpt))
-        self._set(phase="evolve", generations=gens)
+        self._set(phase="evolve", generations=gens,
+                  total=ga.POPULATION * gens)
         st = self._job("evolve", s, cmd, checkpoint=ckpt, generations=gens,
                        resume=resume)
         if st is not None and resume and st.get("status") == "error":
@@ -423,6 +447,30 @@ class AutoSearch:
         return [i.get("strategy") for i in top.get("items") or []
                 if i.get("strategy") and int(i.get("ok") or 0) > 0]
 
+    def _db_proven(self) -> list:
+        """Стратегии с успехами на любых целях базы оценок (ручной
+        подбор и «Авто»): больше успехов — раньше."""
+        try:
+            top = self._gm().db_top("", 50) or {}
+        except Exception:                           # noqa: BLE001
+            return []
+        items = [i for i in top.get("items") or []
+                 if i.get("strategy") and _int(i.get("ok")) > 0]
+        items.sort(key=lambda i: -_int(i.get("ok")))
+        return [i["strategy"] for i in items]
+
+    def _library(self) -> list:
+        """Вся библиотека исследований Geneva (``geneva library``)."""
+        lib = getattr(self._gm(), "library", None)
+        if lib is None:
+            return []
+        try:
+            res = lib() or {}
+        except Exception:                           # noqa: BLE001
+            return []
+        return [str(i.get("strategy") or "") for i in res.get("items") or []
+                if isinstance(i, dict) and i.get("strategy")]
+
     def _replay_file(self, s: ga.Service) -> str:
         if not s.replay:
             return ""
@@ -447,6 +495,8 @@ class AutoSearch:
                             workers=min(self.workers, len(strategies))
                             if strategies else self.workers)
         gm = self._gm()
+        # карточка «Авто» показывает, сколько проверок идёт разом
+        self._set(workers=params["workers"], done=0)
         r = gm.start_auto_job(kind, params, strategies=strategies,
                               resume=resume)
         if not r.get("ok"):
@@ -516,6 +566,13 @@ class AutoSearch:
             return SearchResult(s.key, CANCELLED, tried=tried)
         return SearchResult(s.key, NOT_FOUND, tried=tried,
                             detail="ни с одной стратегией поток не прошёл")
+
+
+def _int(v) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _read_json(path: str) -> dict:
