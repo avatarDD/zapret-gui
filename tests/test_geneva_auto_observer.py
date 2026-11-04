@@ -212,6 +212,51 @@ class TestFilter(unittest.TestCase):
         self.assertEqual(got[0].health, ga.FAILED)
         self.assertTrue(got[0].name.startswith("Туннель: "))
 
+    def test_yggdrasil_is_not_internet(self):
+        """issue #456: Yggdrasil (0200::/7) — оверлей, не интернет:
+        его узлы и DNS не наблюдаются и не помечаются «блокировкой»."""
+        for ip in ("200:1234:5678::1", "202:a2a5:dead::53",
+                   "301:9e8a:1::1", "3ff:ffff::1"):
+            self.assertFalse(ob.is_internet(ip), ip)
+        self.assertTrue(ob.is_internet("2a00:1450:4001::65"))
+        self.assertTrue(ob.is_internet("400::1"))
+        ygg = "201:abcd:1234::1"
+        line = udp("302:db60:5c13::53", 53, src=ygg, op=3, ob_=210, rp=0,
+                   rb=0, unreplied=True, delta=10)
+        loc = local()
+        loc.own.add(ygg)
+        self.assertEqual(self.skip(line, loc), "not_internet")
+        self.assertEqual(ob.build_samples(ob.parse_table([line]), 100.0,
+                                          {}, local=loc), [])
+
+    def test_ipv6_off(self):
+        """«Отключить IPv6»: IPv6 не наблюдается, IPv4 — как прежде."""
+        loc = local()
+        loc.ipv6 = False
+        self.assertEqual(self.skip(CONNTRACK_TOOL, loc), "ipv6_off")
+        self.assertEqual(self.skip(OPENWRT, loc), "")
+        self.assertEqual(ob.Observer(reader=lambda: [], local=local,
+                                     ipv6=False).local().ipv6, False)
+        self.assertEqual(ob.Observer(reader=lambda: [], local=local,
+                                     ipv6=True).local().ipv6, True)
+
+    def test_ipv6_follows_setting(self):
+        o = ob.Observer(reader=lambda: [], local=local)
+
+        class Cfg:
+            value = True
+
+            def get(self, *keys, default=None):
+                if keys == ("nfqws", "disable_ipv6"):
+                    return self.value
+                return default
+        cfg = Cfg()
+        with mock.patch("core.config_manager.get_config_manager",
+                        return_value=cfg):
+            self.assertFalse(o.local().ipv6)
+            cfg.value = False
+            self.assertTrue(o.local().ipv6)
+
     def test_help_tunnels_off_excludes_servers(self):
         loc = local()
         loc.servers.add("162.159.192.1")
@@ -707,10 +752,15 @@ class TestObserverIO(unittest.TestCase):
             "7: ppp0    inet 81.200.10.5 peer 10.0.0.1/32 scope global\n"
             "7: ppp0    inet6 2a02:6b8:ffff::5/64 scope global\n"
             "9: awg0    inet 172.16.0.2/32 scope global awg0\n"
-            "10: nwg1    inet6 2606:4700:110::2/128 scope global\n")
+            "10: nwg1    inet6 2606:4700:110::2/128 scope global\n"
+            "11: ygg0    inet6 201:abcd:1234::1/7 scope global\n"
+            "12: tun0    inet6 202:1111:2222::1/7 scope global\n"
+            "13: mesh0    inet6 203:5555::1/7 scope global\n")
         loc = ob.parse_ip_addr(text, wan=["ppp0"])
         self.assertIn("192.168.1.1", loc.own)
-        self.assertEqual(loc.tunnel, {"172.16.0.2", "2606:4700:110::2"})
+        self.assertEqual(loc.tunnel, {"172.16.0.2", "2606:4700:110::2",
+                                      "201:abcd:1234::1",
+                                      "202:1111:2222::1"})
         self.assertEqual([str(n) for n in loc.nets], ["2a02:6b8:1::/64"])
         self.assertTrue(ob.is_local_client("2a02:6b8:1::77", loc))
         self.assertFalse(ob.is_local_client("2a02:6b8:ffff::77", loc))

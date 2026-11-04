@@ -127,7 +127,15 @@ AUTO_BYPASS_PORTS = (AUTO_PROBE_PORTS[0] + 32, AUTO_PROBE_PORTS[1])
 # Туннельные интерфейсы: ответ на их адрес — трафик ушёл в туннель.
 TUNNEL_PREFIXES = ("awg", "wg", "nwg", "tun", "tap", "utun", "usque",
                    "sing", "sbox", "mihomo", "meta", "clash", "warp",
-                   "opkgtun", "ovpn", "ipsec", "xfrm", "l2tp", "gre")
+                   "opkgtun", "ovpn", "ipsec", "xfrm", "l2tp", "gre",
+                   "ygg")
+
+# Оверлейные сети IPv6 поверх интернета, не интернет: Yggdrasil
+# (0200::/7, интерфейс ygg0/tun0). Python считает их «глобальными», но
+# трафик к ним идёт в зашифрованном туннеле Yggdrasil, DPI его не видит,
+# и geneva там помочь не может (issue #456). Узлы и DNS Yggdrasil не
+# наблюдаются.
+OVERLAY_NETS = (ipaddress.ip_network("200::/7"),)
 
 P2P_FANOUT = 8                    # узлов с одного UDP-порта: это P2P
 
@@ -319,12 +327,25 @@ def _int_any(v) -> int:
 # ───────────────────────────── что наше ─────────────────────────────
 
 def is_internet(ip: str) -> bool:
-    """Адрес в интернете: не RFC1918/CGNAT/loopback/link-local/multicast."""
+    """Адрес в интернете: не RFC1918/CGNAT/loopback/link-local/multicast
+    и не оверлейная сеть (:data:`OVERLAY_NETS`, Yggdrasil)."""
     try:
         a = ipaddress.ip_address(ip)
     except ValueError:
         return False
-    return a.is_global and not a.is_multicast
+    if not a.is_global or a.is_multicast:
+        return False
+    return not is_overlay(a)
+
+
+def is_overlay(a) -> bool:
+    """Адрес оверлейной сети IPv6 (Yggdrasil 0200::/7)."""
+    if isinstance(a, str):
+        try:
+            a = ipaddress.ip_address(a)
+        except ValueError:
+            return False
+    return a.version == 6 and any(a in n for n in OVERLAY_NETS)
 
 
 def is_local_client(ip: str, local) -> bool:
@@ -355,6 +376,7 @@ class Local:
     tunnel: set = field(default_factory=set)       # адреса туннелей
     exclude: set = field(default_factory=set)      # не наблюдать
     servers: set = field(default_factory=set)      # серверы туннелей
+    ipv6: bool = True                              # наблюдать IPv6
 
 
 def is_probe_port(port: int) -> bool:
@@ -365,6 +387,9 @@ def is_probe_port(port: int) -> bool:
 
 def skip_reason(c: Conn, local) -> str:
     """Почему соединение не наблюдается; ``""`` — наблюдается."""
+    if local is not None and not local.ipv6 and c.family == 6:
+        # «Отключить IPv6» (nfqws.disable_ipv6): IPv6 движки не трогают
+        return "ipv6_off"
     if not is_internet(c.dst):
         return "not_internet"
     if not is_local_client(c.src, local):
@@ -926,7 +951,8 @@ def parse_ip_addr(text: str, wan=()) -> Local:
             loc.tunnel.add(ip)
             continue
         if iface.version == 6 and iface.ip.is_global and ifname not in wan \
-                and iface.network.prefixlen < 128:
+                and iface.network.prefixlen < 128 \
+                and not is_overlay(iface.ip):
             loc.nets.append(iface.network)
     return loc
 
@@ -1031,7 +1057,8 @@ class Observer:
 
     def __init__(self, *, reader=None, names=None, local=None,
                  capture=None, clock=time.time, sysctl_dir=SYSCTL_DIR,
-                 exclude=(), help_tunnels: bool = True, sniffer=None):
+                 exclude=(), help_tunnels: bool = True, sniffer=None,
+                 ipv6=None):
         self._reader = reader
         # Сборщик имён (core/name_sniffer): DNS-ответы и SNI всё время
         # режима. Отличие: в AutoTuner имена даёт захват всего трафика ПК.
@@ -1045,6 +1072,9 @@ class Observer:
         # Внешние соединения туннелей наблюдаются (geneva поможет и им);
         # False — серверы туннелей исключаются, как раньше.
         self.help_tunnels = bool(help_tunnels)
+        # Наблюдать IPv6: None — по настройке «Отключить IPv6»
+        # (nfqws.disable_ipv6, общая для движков обхода).
+        self._ipv6 = ipv6
         self._saved = {}                 # sysctl → прежнее значение
         self._tracks = {}
         self._sticky = {}
@@ -1190,12 +1220,26 @@ class Observer:
         extra = set(self._exclude)
         if not self.help_tunnels:
             extra |= set(loc.servers)
-        if extra:
+        v6 = loc.ipv6 and self.ipv6_enabled()
+        if extra or v6 != loc.ipv6:
             loc = Local(own=set(loc.own), nets=list(loc.nets),
                         tunnel=set(loc.tunnel),
                         exclude=set(loc.exclude) | extra,
-                        servers=set(loc.servers))
+                        servers=set(loc.servers), ipv6=v6)
         return loc
+
+    def ipv6_enabled(self) -> bool:
+        """Наблюдать ли IPv6: явное значение или настройка
+        ``nfqws.disable_ipv6`` (выключено — IPv6 не трогает ни один
+        движок, «Авто» тоже)."""
+        if self._ipv6 is not None:
+            return bool(self._ipv6)
+        try:
+            from core.config_manager import get_config_manager
+            cfg = get_config_manager()
+            return not cfg.get("nfqws", "disable_ipv6", default=True)
+        except Exception:                           # noqa: BLE001
+            return True
 
     @staticmethod
     def _read_local() -> Local:
