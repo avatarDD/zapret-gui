@@ -768,6 +768,8 @@ class GenevaAutoManager:
                 "problems": list(self.problems),
                 "offload": self.offload,
                 "max_groups": st["max_groups"], "workers": st["workers"],
+                "help_tunnels": st["help_tunnels"],
+                "exclude": st["exclude"],
                 "journal": list(self.journal)[-100:],
             }
 
@@ -816,21 +818,53 @@ class GenevaAutoManager:
     # ── настройки со страницы ──
 
     def update_settings(self, values: dict) -> dict:
-        """``workers`` (1–8) и ``max_groups`` (1–8) с карточки «Авто».
-        Новое число воркеров действует со следующего круга подбора,
-        число групп — со следующего применения."""
+        """Настройки с карточки «Авто»: ``workers`` (1–8), ``max_groups``
+        (1–8), ``help_tunnels`` (bool) и ``exclude`` (адреса серверов,
+        списком или текстом через пробел, запятую или строку). Новое
+        число воркеров действует со следующего круга подбора, число
+        групп — со следующего применения, исключения — со следующего
+        среза."""
+        import ipaddress
+        values = values if isinstance(values, dict) else {}
         cfg = self.cfg()
         raw = dict(cfg.get("geneva", "auto", default={}) or {})
+
+        def bad(text):
+            return {"ok": False, "error_code": "bad_value", "error": text}
+
         limits = {"workers": (1, 8), "max_groups": (1, ga.MAX_GROUPS_LIMIT)}
         for key, (lo, hi) in limits.items():
-            if key not in (values or {}):
+            if key not in values:
                 continue
             v = values[key]
             if isinstance(v, bool) or not isinstance(v, int) or \
                     not lo <= v <= hi:
-                return {"ok": False, "error_code": "bad_value",
-                        "error": "%s: целое от %d до %d" % (key, lo, hi)}
+                return bad("%s: целое от %d до %d" % (key, lo, hi))
             raw[key] = v
+        if "help_tunnels" in values:
+            if not isinstance(values["help_tunnels"], bool):
+                return bad("help_tunnels: true или false")
+            raw["help_tunnels"] = values["help_tunnels"]
+        if "exclude" in values:
+            v = values["exclude"]
+            if isinstance(v, str):
+                v = v.replace(",", " ").split()
+            if not isinstance(v, list):
+                return bad("exclude: список адресов")
+            out = []
+            for x in v:
+                x = str(x).strip()
+                if not x:
+                    continue
+                try:
+                    a = str(ipaddress.ip_address(x))
+                except ValueError:
+                    return bad("exclude: не IP-адрес: %s" % x[:60])
+                if a not in out:
+                    out.append(a)
+            if len(out) > 256:
+                return bad("exclude: не больше 256 адресов")
+            raw["exclude"] = out
         cfg.set("geneva", "auto", raw)
         cfg.save()
         st = self.settings()
@@ -839,13 +873,24 @@ class GenevaAutoManager:
                 self._applier.max_groups = st["max_groups"]
             if self._search is not None:
                 self._search.workers = st["workers"]
+            if self._observer is not None:
+                self._observer.set_exclude(st["exclude"])
+                self._observer.help_tunnels = st["help_tunnels"]
             self._applied_sig = None        # число групп могло смениться
         self.note("настройки: проверок одновременно %d, стратегий "
-                  "одновременно %d" % (st["workers"], st["max_groups"]),
-                  en="settings: %d parallel checks, %d strategies at once"
-                  % (st["workers"], st["max_groups"]))
+                  "одновременно %d, туннели %s, исключено адресов %d"
+                  % (st["workers"], st["max_groups"],
+                     "под защитой" if st["help_tunnels"] else "не трогать",
+                     len(st["exclude"])),
+                  en="settings: %d parallel checks, %d strategies at once, "
+                  "tunnels %s, %d excluded addresses"
+                  % (st["workers"], st["max_groups"],
+                     "protected" if st["help_tunnels"] else "left alone",
+                     len(st["exclude"])))
         return {"ok": True, "workers": st["workers"],
-                "max_groups": st["max_groups"]}
+                "max_groups": st["max_groups"],
+                "help_tunnels": st["help_tunnels"],
+                "exclude": st["exclude"]}
 
     # ── обмен найденными стратегиями ──
 

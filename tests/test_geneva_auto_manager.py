@@ -585,6 +585,27 @@ class TestEnable(_Base):
             self.assertFalse(m.update_settings(bad)["ok"], bad)
         self.assertEqual(am.auto_settings(self.cfg)["workers"], 6)
 
+    def test_update_tunnels_and_exclude(self):
+        m = self.manager()
+        obs = m.observer()
+        res = m.update_settings({"help_tunnels": False,
+                                 "exclude": "203.0.113.5, 2001:DB8::1\n"
+                                            "203.0.113.5"})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["exclude"], ["203.0.113.5", "2001:db8::1"])
+        st = am.auto_settings(self.cfg)
+        self.assertFalse(st["help_tunnels"])
+        self.assertEqual(st["exclude"], ["203.0.113.5", "2001:db8::1"])
+        self.assertFalse(obs.help_tunnels)
+        self.assertIn("203.0.113.5", obs.exclude)
+        self.assertEqual(m.status()["exclude"], st["exclude"])
+        self.assertTrue(m.update_settings({"exclude": []})["ok"])
+        self.assertEqual(obs.exclude, [])
+        for bad in ({"help_tunnels": "no"}, {"exclude": "example.com"},
+                    {"exclude": 5}):
+            self.assertFalse(m.update_settings(bad)["ok"], bad)
+        self.assertFalse(am.auto_settings(self.cfg)["help_tunnels"])
+
     def test_settings_limits(self):
         self.cfg.set("geneva", "auto", {"max_groups": 99, "workers": 0,
                                         "exclude": "x"})
