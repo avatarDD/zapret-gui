@@ -409,7 +409,13 @@ MCP (`core/mcp/tools/geneva.py`):
    в срезе) уводит установленные соединения клиентов мимо netfilter:
    geneva не видит их ClientHello, а проба с роутера проходит. Режим
    ничего не меняет сам, а показывает предупреждение (`status().offload`,
-   журнал, карточка).
+   журнал, карточка). Переключатель внизу карточки «Авто» —
+   `core/nat_offload.py`, `GET/POST /api/geneva/nat-offload {enabled,
+   confirm}` (без `confirm: true` — 409 `need_confirm`): OpenWrt — `uci`
+   `flow_offloading`/`_hw` + `uci commit firewall` + reload firewall,
+   Keenetic — `ndmc` `[no] ppe software|hardware` + `system configuration
+   save`. Включение возвращает то, что было до выключения
+   (`geneva.nat_offload_saved`).
 2. **Оценка соединения по счётчикам** (данные — `bytes − packets ×
    заголовок`, у TCP с запасом на опции): SYN без ответа ≥ 3 с и ≥ 2 SYN →
    нет соединения; ESTABLISHED, ответ ≤ 3 пакетов и ≤ 100 Б данных, ≥ 5 с,

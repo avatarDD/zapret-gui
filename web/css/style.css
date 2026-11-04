@@ -5992,3 +5992,9 @@ body.expert-mode .expert-note { display: none !important; }
 }
 .engine-tabs-link:hover { color: var(--accent); }
 .gv-next { margin-top: 10px; font-size: 13px; color: var(--text-secondary); }
+
+.gv-nat {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border, rgba(127,127,127,.25));
+}

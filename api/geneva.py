@@ -30,6 +30,8 @@ API движка geneva_c и выбора движка обхода.
                                      error_code need_confirm
   POST /api/geneva/auto/disable   — выключить
   POST /api/geneva/auto/reset     — забыть сервис {key}
+  GET  /api/geneva/nat-offload    — ускорение NAT роутера (OpenWrt, Keenetic)
+  POST /api/geneva/nat-offload    — включить/выключить {enabled, confirm}
 
 Выбор движка:
   GET  /api/bypass/engine         — оба движка и какой активен
@@ -245,6 +247,35 @@ def register(app):
             response.status = 400
             return {"ok": False, "error": "не указан сервис (key)"}
         return _reply(get_geneva_auto_manager().reset(key), 404)
+
+    @app.route("/api/geneva/nat-offload", method="GET")
+    def geneva_nat_offload_get():
+        from core.nat_offload import get_nat_offload
+        return dict(get_nat_offload().status(), ok=True)
+
+    @app.route("/api/geneva/nat-offload", method="POST")
+    def geneva_nat_offload_set():
+        from core.nat_offload import get_nat_offload
+        body = _body()
+        if body.get("confirm") is not True:
+            # меняется конфигурация роутера: только с подтверждением
+            response.status = 409
+            return {"ok": False, "error_code": "need_confirm",
+                    "error": "нужно подтверждение (confirm: true)"}
+        if not isinstance(body.get("enabled"), bool):
+            response.status = 400
+            return {"ok": False, "error": "enabled: true или false"}
+        res = get_nat_offload().set(body["enabled"])
+        if not res.get("ok"):
+            response.status = 400 if res.get("error_code") == \
+                "unsupported" else 500
+        else:
+            try:
+                from core.geneva_auto_manager import get_geneva_auto_manager
+                get_geneva_auto_manager().recheck_offload()
+            except Exception:                       # noqa: BLE001
+                pass
+        return res
 
     @app.route("/api/bypass/engine", method="GET")
     def bypass_engine_get():
