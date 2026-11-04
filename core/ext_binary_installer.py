@@ -772,6 +772,9 @@ def verify_installed_binary(path: str, probe_args=("version", "--version",
 # ─────── Конкретные установщики ───────
 
 # Конфигурация каждого бинарника
+# Закреплённая версия geneva_c: из неё строятся тег и имена ассетов.
+GENEVA_VERSION = "1.2.0"
+
 BINARIES = {
     # tg-ws-proxy ЗАКРЕПЛЁН на 0.9.3 — и это вынужденно.
     #
@@ -1033,15 +1036,16 @@ BINARIES = {
 
     # geneva_c — официальный релиз апстрима (avatarDD/geneva_c): статические
     # musl-сборки zig под каждую архитектуру роутера и SHA256SUMS рядом.
-    # Тег закреплён: имена ассетов версионные (geneva-1.1.1-linux-<арка>),
-    # а хэши ниже посчитаны для этой версии (сверены с SHA256SUMS релиза
-    # и с digest ассетов в GitHub API). В тарболе, кроме бинарника, лежат
-    # LICENSE/README/packaging — нужный файл выбирает archive_member.
-    # Обновление: новый тег, имена и хэши — вместе с docs/upstream.json.
+    # Тег закреплён: имена ассетов версионные (geneva-<версия>-linux-<арка>)
+    # и строятся из GENEVA_VERSION, хэши ниже посчитаны для этой версии
+    # (сверены с SHA256SUMS релиза и с digest ассетов в GitHub API). В
+    # тарболе, кроме бинарника, лежат LICENSE/README/packaging — нужный
+    # файл выбирает archive_member.
+    # Обновление: GENEVA_VERSION и хэши — вместе с docs/upstream.json.
     "geneva": {
         "repo": "avatarDD/geneva_c",
-        "release_tag": "v1.1.1",
-        "pinned_tag": "v1.1.1",
+        "release_tag": "v" + GENEVA_VERSION,
+        "pinned_tag": "v" + GENEVA_VERSION,
         "install_kind": "binary",
         "dest": "/opt/usr/bin/geneva",
         "archive_member": "geneva",
@@ -1049,18 +1053,15 @@ BINARIES = {
         # контракт апстрима: docs/PROTOCOL.md).
         "version_args": ("version",),
         "arch_map": {
-            "aarch64": "geneva-1.1.1-linux-aarch64.tar.gz",
-            "armv7": "geneva-1.1.1-linux-armv7.tar.gz",
-            "mips": "geneva-1.1.1-linux-mips.tar.gz",
-            "mipsel": "geneva-1.1.1-linux-mipsel.tar.gz",
-            "x86_64": "geneva-1.1.1-linux-x86_64.tar.gz",
+            arch: "geneva-%s-linux-%s.tar.gz" % (GENEVA_VERSION, arch)
+            for arch in ("aarch64", "armv7", "mips", "mipsel", "x86_64")
         },
         "sha256_map": {
-            "aarch64": "23524dd93bbf4f833f584d0c718d5ca7ad0a8410f4c4f58a5ab6da28817adffe",
-            "armv7": "a0cff7257981cc6977e4590198a8a30a373f284988cea7549430e25d68c8d1e7",
-            "mips": "ccf2c869cc64fbe71fdac920a31112d51db0a9d5d8e74cba8b78ac26484659b2",
-            "mipsel": "0adf5adad169c23e245d32c87bdcd452b8d863ce19245376695e28f08189961c",
-            "x86_64": "b33a4cbac29b44e7f976231c23978bb77f13171a1a825f3b1a42263fc7634417",
+            "aarch64": "bdb6b560d6062953c1e7b220a702c0b4767f9429ea564bdb5812fd81fae86bda",
+            "armv7": "9a1c0f195da4d4c2cd54a760b7f57fc11e96d537b797ab567e0003475c065bf6",
+            "mips": "8f6f5bc00cb9b3c29816fbf9b78fb2e710fef7ca8487cf2cf7e6dec2546df525",
+            "mipsel": "f11b444267540ec219840c25b9c79fcc47aaceec39b8c4cf58b604ed73069825",
+            "x86_64": "4e669693a68dabbc5dc1e12b776ed95e3f153dc22b397f249ff7d91ea3c9d2e3",
         },
     },
 }

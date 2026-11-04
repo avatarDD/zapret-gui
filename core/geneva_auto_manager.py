@@ -50,6 +50,8 @@ SLICE = 15.0
 APPLY_EVERY = 120.0
 SAVE_EVERY = 60.0
 MAX_BACKOFF = 300.0
+# Предупреждение об учёте пакетов: ставится и снимается по срезу.
+ACCT_PROBLEM = "в таблице conntrack нет счётчиков пакетов"
 JOURNAL_SIZE = 300
 IDENTIFY_RETRY = 3600.0
 SEARCH_WAIT_BUSY = 60.0         # слот geneva занят ручным подбором
@@ -109,6 +111,8 @@ class GenevaAutoManager:
         self.journal = deque(maxlen=JOURNAL_SIZE)
         self.phase = "off"
         self.problems = []
+        self._acct_write_failed = False
+        self._acct_missing = False
         self.slices = 0
         self.last_slice = {}
         self._trial = None
@@ -336,11 +340,11 @@ class GenevaAutoManager:
         obs.set_exclude(self.settings()["exclude"])
         obs.help_tunnels = self.settings()["help_tunnels"]
         acct = obs.enable_accounting()
-        if not acct.get("nf_conntrack_acct", True):
-            self.problems = ["учёт пакетов conntrack не включился: "
-                             "зависания соединений не видны"]
-        else:
-            self.problems = []
+        # Предупреждение — только по данным среза (_check_accounting):
+        # на Keenetic NDMS 14.x sysctl нет, а счётчики в таблице есть.
+        self._acct_write_failed = acct.get("nf_conntrack_acct") is False
+        self._acct_missing = False
+        self.problems = []
         obs.seed_keys(s.key for s in self.book.services)
         self.phase = "starting"
         self._applied_sig = None
@@ -453,6 +457,28 @@ class GenevaAutoManager:
                     self.note(msg, "warning")
             stop.wait(wait)
 
+    def _check_accounting(self, stats: dict) -> None:
+        """Есть ли учёт пакетов — по срезу, а не по sysctl. Предупреждение,
+        когда в таблице есть соединения, но ни у одного нет ``packets=``;
+        снимается, как только счётчики появились."""
+        total = int(stats.get("connections", 0) or 0)
+        if not total or "counted" not in stats:
+            return
+        missing = int(stats.get("counted", 0) or 0) == 0
+        msg = ACCT_PROBLEM + (" (запись nf_conntrack_acct=1 не прошла)"
+                              if self._acct_write_failed else "") + \
+            ": зависания соединений не видны"
+        with self._lock:
+            rest = [p for p in self.problems
+                    if not p.startswith(ACCT_PROBLEM)]
+            self.problems = rest + [msg] if missing else rest
+            became = missing and not self._acct_missing
+            self._acct_missing = missing
+        if became:
+            self.note(msg, "warning",
+                      en="conntrack has no packet counters: stalled "
+                         "connections are not visible")
+
     def tick(self, now: float = None) -> None:
         """Одна итерация цикла (тесты зовут её напрямую)."""
         now = self._clock() if now is None else now
@@ -476,6 +502,7 @@ class GenevaAutoManager:
                 self._identify_at = {k: v for k, v in
                                      self._identify_at.items() if k in keep}
             self._learn(obs, now)
+        self._check_accounting(obs.last_stats or {})
         # вне замка: на Keenetic это запуск ndmc
         self._check_offload()
         if self.phase in ("starting", "error"):

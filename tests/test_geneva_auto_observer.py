@@ -7,8 +7,10 @@
 * OpenWrt (ядро 5.15/6.6, nft): ``ipv4 2 tcp 6 … zone=0 delta-time=…``,
   флаги ``[OFFLOAD]``/``[HW_OFFLOAD]`` при flow offloading;
 * Keenetic (ядро 4.9, Entware): ``/proc/net/nf_conntrack`` без ``zone=``
-  и ``delta-time=``, без учёта пакетов, пока не включён
-  ``nf_conntrack_acct``;
+  и ``delta-time=``. В NDMS 14.x счётчики ``packets=``/``bytes=`` есть
+  всегда, а sysctl ``nf_conntrack_acct``/``nf_conntrack_timestamp`` нет
+  вовсе; строки без счётчиков (``KEENETIC``) — старые прошивки и ядра с
+  выключенным учётом;
 * ``conntrack -L -o extended`` (conntrack-tools) и старый
   ``/proc/net/ip_conntrack`` без префикса семейства.
 
@@ -72,6 +74,12 @@ KEENETIC = (
     "ipv4     2 tcp      6 118 SYN_SENT src=192.168.1.33 dst=93.184.216.9 "
     "sport=61022 dport=443 [UNREPLIED] src=93.184.216.9 dst=81.200.10.5 "
     "sport=443 dport=61022 mark=0 use=2")
+# Keenetic 14.3.0 (NDMS, 4.9-ndm-5): счётчики есть, sysctl acct нет.
+KEENETIC_ACCT = (
+    "ipv4     2 tcp      6 1191 ESTABLISHED src=192.168.1.81 "
+    "dst=152.32.227.164 sport=40288 dport=8883 packets=550 bytes=41856 "
+    "src=152.32.227.164 dst=100.126.167.138 sport=8883 dport=40288 "
+    "packets=551 bytes=40917 [ASSURED] [FASTNAT] mark=0 nmark=0 use=2")
 KEENETIC_UDP = (
     "ipv4     2 udp      17 29 src=192.168.1.33 dst=93.184.216.20 "
     "sport=51820 dport=51820 packets=3 bytes=444 [UNREPLIED] "
@@ -636,6 +644,42 @@ class TestObserverIO(unittest.TestCase):
                              .read(), "0")
             self.assertEqual(open(os.path.join(d, "nf_conntrack_timestamp"))
                              .read().strip(), "1")
+            self.assertEqual(o.saved_sysctls, {})
+
+    def test_keenetic_ndms_counters_without_sysctl(self):
+        """NDMS 14.x: sysctl учёта нет, счётчики в таблице есть — файла
+        нет (None), а не «не включился» (False); срез видит учёт."""
+        c = ob.parse_line(KEENETIC_ACCT)
+        self.assertTrue(c.counted)
+        self.assertEqual((c.opackets, c.rpackets), (550, 551))
+        with tempfile.TemporaryDirectory() as d:
+            o = ob.Observer(reader=lambda: [KEENETIC_ACCT],
+                            names=lambda: {}, local=local,
+                            clock=lambda: 100.0, sysctl_dir=d)
+            self.assertEqual(o.enable_accounting(),
+                             {"nf_conntrack_acct": None,
+                              "nf_conntrack_timestamp": None})
+            self.assertEqual(o.saved_sysctls, {})
+            o.slice()
+            self.assertEqual(o.last_stats["connections"], 1)
+            self.assertEqual(o.last_stats["counted"], 1)
+
+    def test_accounting_write_failed(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "nf_conntrack_acct")
+            with open(path, "w") as f:
+                f.write("0\n")
+            o = ob.Observer(reader=lambda: [], sysctl_dir=d)
+            real = open
+
+            def ro(p, mode="r", *a, **kw):
+                if p == path and "w" in mode:
+                    raise PermissionError("read-only")
+                return real(p, mode, *a, **kw)
+            with mock.patch("builtins.open", ro):
+                got = o.enable_accounting()
+            self.assertIs(got["nf_conntrack_acct"], False)
+            self.assertIsNone(got["nf_conntrack_timestamp"])
             self.assertEqual(o.saved_sysctls, {})
 
     def test_slice_and_identify(self):

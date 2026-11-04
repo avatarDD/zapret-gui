@@ -12,7 +12,9 @@
   На время режима включаются ``net.netfilter.nf_conntrack_acct=1``
   (счётчики ``packets=``/``bytes=``) и ``nf_conntrack_timestamp=1``
   (возраст ``delta-time=``); прежние значения возвращаются при
-  выключении (:meth:`Observer.restore`);
+  выключении (:meth:`Observer.restore`). Где этих sysctl нет (Keenetic
+  NDMS 14.x), учёт ядром не управляется; есть ли счётчики, решает срез
+  (``last_stats["counted"]``), а не наличие файлов;
 * **что берём** — только трафик в интернет от клиентов LAN и самого
   роутера. Пропускаются: адреса не из интернета (RFC1918, CGNAT,
   loopback, multicast), входящие соединения (клиент не локальный),
@@ -811,9 +813,12 @@ def build_samples(conns, now: float, tracks: dict, *, local=None,
     st.setdefault("skipped", {})
     st.setdefault("offload", 0)
     st.setdefault("samples", 0)
+    st.setdefault("counted", 0)
     kept = []
     for c in conns:
         st["connections"] += 1
+        if c.counted:
+            st["counted"] += 1
         why = skip_reason(c, local)
         if why:
             st["skipped"][why] = st["skipped"].get(why, 0) + 1
@@ -1125,7 +1130,11 @@ class Observer:
     def enable_accounting(self) -> dict:
         """``nf_conntrack_acct=1`` и ``nf_conntrack_timestamp=1`` на время
         режима; прежние значения запоминаются для :meth:`restore`.
-        Возвращает ``{sysctl: включено ли}``."""
+        Возвращает ``{sysctl: True | False | None}``: ``True`` — включено,
+        ``False`` — файл есть, но запись не прошла (права, RO), ``None`` —
+        файла нет: ядро не даёт управлять учётом (Keenetic NDMS 14.x:
+        счётчики ``packets=`` в таблице есть всегда). Есть ли учёт на
+        деле, видно только по срезу: ``last_stats["counted"]``."""
         out = {}
         for name in SYSCTLS:
             path = os.path.join(self._sysctl_dir, name)
@@ -1133,7 +1142,7 @@ class Observer:
                 with open(path) as f:
                     old = f.read().strip()
             except OSError:
-                out[name] = False
+                out[name] = None
                 continue
             if old != "1":
                 try:

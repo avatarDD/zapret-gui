@@ -375,6 +375,25 @@ class TestUpdatesCheck(unittest.TestCase):
         data = call("updates_check", {"updates_only": True})
         self.assertEqual([r["name"] for r in data["items"]], ["a"])
 
+    def test_pinned_row_keeps_upstream_truth(self):
+        # geneva: «последняя» — пин; про вышедший апстримный релиз должны
+        # сказать поля строки, фильтр updates_only и подсказка.
+        self._patch_cache([
+            {"name": "geneva", "installed": True, "current": "1.2.0",
+             "latest": "1.2.0", "has_update": False, "pinned": True,
+             "latest_source": "pinned", "upstream_latest": "v1.3.0",
+             "upstream_newer": True,
+             "pin_reason": "sha256 сверены для этой версии"},
+            {"name": "b", "installed": True, "has_update": False}])
+        data = call("updates_check", {"updates_only": True})
+        self.assertEqual([r["name"] for r in data["items"]], ["geneva"])
+        row = data["items"][0]
+        self.assertEqual(row["upstream_latest"], "v1.3.0")
+        self.assertTrue(row["upstream_newer"])
+        self.assertTrue(row["pinned"])
+        self.assertEqual(row["latest_source"], "pinned")
+        self.assertIn("geneva 1.3.0", data["hint"])
+
     def test_stale_cache_is_marked(self):
         self._patch_cache([], checked_at=1)
         data = call("updates_check")
