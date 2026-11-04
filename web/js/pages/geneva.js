@@ -124,6 +124,14 @@ const GenevaPage = (() => {
                     <div class="card-body">
                         <div class="form-hint" style="margin-bottom:8px;">${esc(_tr('geneva.auto.about'))}</div>
                         <div id="gv-auto">${esc(_tr('common.loading'))}</div>
+                        <div class="gv-auto-settings">
+                            <label class="form-label" for="gv-auto-workers">${esc(_tr('geneva.auto.workers'))}</label>
+                            <input id="gv-auto-workers" type="number" min="1" max="8" class="form-control" value="4">
+                            <label class="form-label" for="gv-auto-groups">${esc(_tr('geneva.auto.max_groups'))}</label>
+                            <input id="gv-auto-groups" type="number" min="1" max="8" class="form-control" value="4">
+                            <button class="btn btn-ghost btn-sm" data-action="auto-settings">${esc(_tr('common.save'))}</button>
+                            <div class="form-hint">${esc(_tr('geneva.auto.settings_hint'))}</div>
+                        </div>
                         <div id="gv-nat" class="gv-nat" hidden>
                             <label class="gv-check">
                                 <input type="checkbox" id="gv-nat-toggle">
@@ -430,6 +438,7 @@ const GenevaPage = (() => {
             ]);
             _last = st;
             _renderAuto(auto);
+            _renderAutoSettings(auto);
             _renderEngines(engines);
             _renderDetect(st.detect || {});
             _renderEngine(st.engine || {}, st.active_engine, st.detect || {});
@@ -619,6 +628,30 @@ const GenevaPage = (() => {
         } finally {
             if (t) t.disabled = false;
             _refresh();
+        }
+    }
+
+    let _autoSettingsShown = false;
+
+    function _renderAutoSettings(a) {
+        // поля заполняются с сервера один раз: опрос не должен затирать
+        // то, что пользователь сейчас вводит
+        if (_autoSettingsShown || !a) return;
+        const w = document.getElementById('gv-auto-workers');
+        const g = document.getElementById('gv-auto-groups');
+        if (w && a.workers) w.value = a.workers;
+        if (g && a.max_groups) g.value = a.max_groups;
+        _autoSettingsShown = true;
+    }
+
+    async function _saveAutoSettings() {
+        const w = parseInt((document.getElementById('gv-auto-workers') || {}).value, 10);
+        const g = parseInt((document.getElementById('gv-auto-groups') || {}).value, 10);
+        try {
+            const res = await API.post('/api/geneva/auto/settings', { workers: w, max_groups: g });
+            Toast.success(_tr('geneva.auto.settings_saved', { workers: res.workers, groups: res.max_groups }));
+        } catch (e) {
+            Toast.error(errText(e));
         }
     }
 
@@ -1284,6 +1317,7 @@ const GenevaPage = (() => {
         if (t.dataset.copy !== undefined) return _copyFound(t.dataset.copy);
         if (t.dataset.forget !== undefined) return _forgetImported(t.dataset.forget);
         if (t.dataset.action === 'found-export') return _exportFound();
+        if (t.dataset.action === 'auto-settings') return _saveAutoSettings();
         if (t.dataset.action === 'found-import') {
             const f = document.getElementById('gv-found-file');
             if (f) f.click();

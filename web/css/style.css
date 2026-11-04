@@ -5998,3 +5998,14 @@ body.expert-mode .expert-note { display: none !important; }
     padding-top: 10px;
     border-top: 1px solid var(--border, rgba(127,127,127,.25));
 }
+
+.gv-auto-settings {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 90px;
+    gap: 6px 10px;
+    align-items: center;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+.gv-auto-settings .btn, .gv-auto-settings .form-hint { grid-column: 1 / -1; justify-self: start; }

@@ -128,6 +128,19 @@ class TestRest(_Base):
             content_type="application/json")
         self.assertTrue(status.startswith("404"), status)
 
+    def test_settings_route(self):
+        self.auto.update_settings = lambda v: (
+            {"ok": True, "workers": v["workers"], "max_groups": 4}
+            if v.get("workers") == 6 else
+            {"ok": False, "error_code": "bad_value", "error": "x"})
+        self.assertEqual(self.client.post_json(
+            "/api/geneva/auto/settings", {"workers": 6})["workers"], 6)
+        status, _ = self.client._call(
+            "POST", "/api/geneva/auto/settings",
+            body=json.dumps({"workers": 99}).encode(),
+            content_type="application/json")
+        self.assertTrue(status.startswith("400"), status)
+
     def test_disable_and_reset(self):
         self.assertTrue(self.client.post_json("/api/geneva/auto/disable",
                                               {})["ok"])
