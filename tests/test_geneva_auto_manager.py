@@ -104,8 +104,9 @@ class FakeSearch:
     def busy(self):
         return False
 
-    def start(self, s, running=()):
+    def start(self, s, running=(), proven=()):
         self.started.append((s.key, list(running)))
+        self.proven = list(proven)
         self._result = gs.SearchResult(s.key, self.outcome,
                                        strategy=self.strategy, fitness=396)
         return True
@@ -200,6 +201,33 @@ class TestScenario(_Base):
         self.assertTrue(self.gmf.stopped_all)
         self.assertEqual(self.obs.restored, 1)
         self.assertFalse(am.auto_settings(self.cfg)["enabled"])
+
+    def test_share_export_import_and_proven_order(self):
+        m = self.manager()
+        m.load()
+        self.obs.slices = [[dns_fail(95, i) for i in range(3)], []]
+        m.tick(100.0)
+        m.tick(115.0)                        # STRAT применена к резолверу
+        self.gm.db_top.return_value = {"ok": True, "items": []}
+        doc = m.export_found()
+        self.assertEqual(doc["format"], "zapret-gui/geneva-strategies")
+        self.assertEqual(doc["items"][0]["strategy"], STRAT)
+        self.assertNotIn("key", json.dumps(doc))           # без ключей
+        imp = "[TCP:flags:PA]-fragment{tcp:-1:False}-| \\/"
+        res = m.import_strategies("# от друга\n%s\nне стратегия\n" % imp)
+        self.assertTrue(res["ok"])
+        self.assertEqual((res["added"], len(res["errors"])), (1, 1))
+        self.assertEqual(m.import_strategies(doc)["added"], 1)
+        found = m.found()["items"]
+        self.assertTrue(any(r.get("imported") and r["strategy"] == imp
+                            for r in found))
+        # рабочие у других сервисов — раньше импортированных
+        proven = m._proven("web:other.example")
+        self.assertEqual(proven[0], STRAT)
+        self.assertIn(imp, proven)
+        self.assertFalse(m.import_strategies("мусор")["ok"])
+        self.assertTrue(m.remove_imported(imp)["ok"])
+        self.assertNotIn(imp, m._proven(""))
 
     def test_found_from_book_and_db_even_when_off(self):
         m = self.manager()

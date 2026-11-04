@@ -351,11 +351,36 @@ class TestAutoSearch(unittest.TestCase):
         p = FakeProbes(works={b})
         res = self.run_search(self.search(g, p), web_service())
         self.assertEqual((res.outcome, res.strategy), (gs.APPLIED, b))
-        self.assertEqual([j[0] for j in g.jobs], ["eval", "evolve"])
-        evo = g.jobs[1][1]
+        # круг проверенных, круг всех остальных, затем evolve
+        self.assertEqual([j[0] for j in g.jobs], ["eval", "eval", "evolve"])
+        evo = g.jobs[2][1]
         self.assertEqual((evo["generations"], evo["protos"]), (10, "TCP"))
         self.assertTrue(evo["checkpoint"].startswith(self.paths["auto"]))
         self.assertEqual(self.trials, [a, b])
+
+    def test_proven_first_then_whole_catalog(self):
+        lib = ["[TCP:flags:PA]-tamper{TCP:window:replace:7}-| \\/",
+               "[UDP:sport:*]-drop-| \\/"]
+        g = FakeGeneva(eval_results=[{"strategy": "X", "avg_fitness": -400}])
+        g.library = lambda: {"ok": True,
+                             "items": [{"strategy": x} for x in lib]}
+        proven = ["[TCP:flags:PA]-tamper{TCP:window:replace:5}-| \\/",
+                  "[TCP:flags:PA]-tamper{TCP:window:replace:6}-| \\/"]
+        search = self.search(g, FakeProbes())
+        self.assertTrue(search.start(web_service(), (), proven))
+        self.assertTrue(wait_for(lambda: not search.busy, 10))
+        evals = [j[2] for j in g.jobs if j[0] == "eval"]
+        self.assertEqual(len(evals), 2)
+        first, rest = evals
+        # найденные для цели, затем проверенные у других; круг добран до
+        # кратного числа воркеров
+        self.assertEqual(first[:3], ["[TCP:flags:PA]-duplicate-| \\/"]
+                         + proven)
+        self.assertEqual(len(first) % 4, 0)
+        # библиотека исследований — во втором круге, чужой транспорт — нет
+        self.assertIn(lib[0], rest)
+        self.assertNotIn(lib[1], rest + first)
+        self.assertFalse(set(first) & set(rest))
 
     def test_not_found_and_resume_next_time(self):
         g = FakeGeneva(evolve_results=[])

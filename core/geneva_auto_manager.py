@@ -426,7 +426,8 @@ class GenevaAutoManager:
             self._trial = (service, strategy) if strategy else None
             services = [s.clone() for s in self.book.services]
             res = self.applier().apply_services(services, trial=self._trial)
-            self._applied_sig = self._plan_sig(services, self._trial)
+            self._applied_sig = self._plan_sig(
+                services, self._trial, self.applier().max_groups)
             self._applied_at = self._clock()
             return bool(res.get("trial_ok")) if strategy else True
 
@@ -461,7 +462,6 @@ class GenevaAutoManager:
             before = self._statuses()
             self.slices += 1
             self.last_slice = dict(obs.last_stats or {})
-            self._check_offload()
             for x in samples:
                 if x.health == ga.OK:
                     self._ok_times[x.key] = max(
@@ -476,6 +476,8 @@ class GenevaAutoManager:
                 self._identify_at = {k: v for k, v in
                                      self._identify_at.items() if k in keep}
             self._learn(obs, now)
+        # вне замка: на Keenetic это запуск ndmc
+        self._check_offload()
         if self.phase in ("starting", "error"):
             self.phase = "watching"
             with self._lock:
@@ -560,10 +562,11 @@ class GenevaAutoManager:
             if s is None:
                 return
             running = [g.strategy for g in self.applier().queues.values()]
+            proven = self._proven(s.key)
             snap = s.clone()
             self.book.searching(s.key, now)
             self._dirty = True
-        if search.start(snap, running):
+        if search.start(snap, running, proven):
             self.phase = "searching"
             self.note("%s: подбор стратегии" % snap.name,
                       en="%s: searching" % snap.name)
@@ -580,6 +583,12 @@ class GenevaAutoManager:
             self.note("%s: обход найден: %s" % (name, res.strategy), "info",
                       en="%s: bypass found" % name)
             self._applied_sig = None
+            woken = self.book.wake_not_found(res.strategy, now)
+            if woken:
+                self.note("новая рабочая стратегия: повторный подбор для "
+                          "«не найдено» без ожидания (%d)" % woken,
+                          en="new working strategy: retrying %d not-found "
+                          "services now" % woken)
         elif res.outcome == gs.NOT_FOUND:
             self.book.not_found(res.key, now)
             self.note("%s: обход не найден (%s)" % (name, res.detail),
@@ -600,10 +609,12 @@ class GenevaAutoManager:
         self._dirty = True
 
     @staticmethod
-    def _plan_sig(services, trial=None) -> str:
+    def _plan_sig(services, trial=None, max_groups=ga.MAX_GROUPS) -> str:
         # С пробной группой: план без неё и план с ней — разные правила,
-        # и смена пробы без смены книги должна применяться сразу.
-        groups = ga.plan_groups(services, trial=trial)
+        # и смена пробы без смены книги должна применяться сразу. Предел
+        # групп — как у Applier: иначе группы сверх 4 не попадали в
+        # подпись, и их смена ждала повтора раз в 120 с.
+        groups = ga.plan_groups(services, trial=trial, max_groups=max_groups)
         return json.dumps([g.to_dict() for g in groups], sort_keys=True)
 
     def _check_offload(self) -> None:
@@ -635,17 +646,17 @@ class GenevaAutoManager:
 
     def recheck_offload(self) -> None:
         """После переключения на странице: без ожидания 20 срезов."""
-        with self._lock:
-            self._offload_checked = 0
-            if self.running:
-                self._check_offload()
-            else:
-                self.offload = False
+        self._offload_checked = 0
+        if self.running:
+            self._check_offload()
+        else:
+            self.offload = False
 
     def _apply(self, now: float) -> None:
         with self._lock:
             services = [s.clone() for s in self.book.services]
-            sig = self._plan_sig(services, self._trial)
+            sig = self._plan_sig(services, self._trial,
+                                 self.applier().max_groups)
             if sig == self._applied_sig and \
                     now - self._applied_at < APPLY_EVERY:
                 return
@@ -761,8 +772,62 @@ class GenevaAutoManager:
                                      default="") or "")
         items = ga.found_strategies(self.services_snapshot(),
                                     db.get("items") or [], working)
+        have = {r["strategy"] for r in items}
+        for imp in self.imports().load():
+            if imp["strategy"] in have:
+                continue
+            items.append({"strategy": imp["strategy"], "imported": True,
+                          "services": [{"name": n} for n in
+                                       imp.get("services") or []],
+                          "targets": [], "auto": False, "degraded": 0,
+                          "fitness": None,
+                          "last": float(imp.get("imported_at") or 0),
+                          "working": imp["strategy"] == working.strip()})
         return {"ok": True, "items": items, "working": working,
                 "auto_enabled": self.settings()["enabled"]}
+
+    # ── обмен найденными стратегиями ──
+
+    def _proven(self, skip_key: str = "") -> list:
+        """Проверенные кандидаты по рангу: работающие у других сервисов
+        (больше сервисов — раньше), затем импортированные."""
+        services = [s for s in self.book.services if s.key != skip_key]
+        out = [r["strategy"] for r in ga.found_strategies(services, [], "")]
+        out += [i["strategy"] for i in self.imports().load()
+                if i["strategy"] not in out]
+        return out
+
+    def imports(self):
+        from core.geneva_share import ImportStore
+        path = os.path.join(os.path.dirname(self._path_or_default()),
+                            "auto", "imported.json")
+        return ImportStore(path, clock=self._clock)
+
+    def export_found(self) -> dict:
+        from core.geneva_share import build_export
+        rows = [r for r in self.found()["items"] if not r.get("imported")]
+        return build_export(rows, self._clock())
+
+    def import_strategies(self, payload) -> dict:
+        from core.geneva_share import parse_import
+        rows, errors = parse_import(payload)
+        if not rows:
+            return {"ok": False, "error_code": "nothing_to_import",
+                    "error": "; ".join(errors[:5]) or
+                    "в файле нет стратегий", "errors": errors}
+        res = self.imports().add(rows)
+        self.note("импортировано стратегий: %d (новых %d)"
+                  % (len(rows), res["added"]),
+                  en="imported strategies: %d (new %d)"
+                  % (len(rows), res["added"]))
+        return {"ok": True, "accepted": len(rows), "added": res["added"],
+                "total": res["total"], "errors": errors}
+
+    def remove_imported(self, strategy: str) -> dict:
+        if not self.imports().remove(str(strategy or "").strip()):
+            return {"ok": False, "error_code": "not_found",
+                    "error": "такой импортированной стратегии нет"}
+        return {"ok": True}
 
     def summary(self) -> dict:
         """Коротко для ``bypass_engine.overview``."""

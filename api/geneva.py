@@ -16,6 +16,11 @@ API движка geneva_c и выбора движка обхода.
   GET  /api/geneva/db             — лучшие из базы оценок (?target=&limit=)
   GET  /api/geneva/found          — рабочие стратегии этой сети: сервисы
                                      «Авто» с обходом + удачный подбор
+                                     + импортированные
+  GET  /api/geneva/found/export   — они же файлом для обмена (JSON)
+  POST /api/geneva/found/import   — принять файл {data} (JSON экспорта
+                                     или текст «стратегия на строку»)
+  POST /api/geneva/found/forget   — убрать импортированную {strategy}
   POST /api/geneva/search/start   — подбор {host, probe, ...} или {resume: true}
   POST /api/geneva/search/stop    — остановить (checkpoint сохранится)
   GET  /api/geneva/search/status  — прогресс подбора
@@ -219,6 +224,35 @@ def register(app):
     def geneva_found():
         from core.geneva_auto_manager import get_geneva_auto_manager
         return get_geneva_auto_manager().found()
+
+    @app.route("/api/geneva/found/export", method="GET")
+    def geneva_found_export():
+        import json as _json
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        doc = get_geneva_auto_manager().export_found()
+        response.content_type = "application/json; charset=utf-8"
+        response.set_header("Content-Disposition",
+                            'attachment; filename="geneva-strategies.json"')
+        return _json.dumps(doc, ensure_ascii=False, indent=1)
+
+    @app.route("/api/geneva/found/import", method="POST")
+    def geneva_found_import():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        body = _body()
+        data = body.get("data") if body else None
+        if data is None:
+            try:
+                data = request.body.read(512 * 1024 + 1).decode(
+                    "utf-8", "replace")
+            except Exception:                       # noqa: BLE001
+                data = ""
+        return _reply(get_geneva_auto_manager().import_strategies(data))
+
+    @app.route("/api/geneva/found/forget", method="POST")
+    def geneva_found_forget():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        return _reply(get_geneva_auto_manager().remove_imported(
+            _body().get("strategy") or ""), 404)
 
     @app.route("/api/geneva/auto", method="GET")
     def geneva_auto_status():

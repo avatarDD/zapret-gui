@@ -120,12 +120,53 @@ class TestBookTransitions(unittest.TestCase):
         b.evaluate(ga.WINDOW + 10)                  # провалы вне окна
         self.assertEqual(b.services[0].status, ga.WATCHING)
 
+    def no_connection_book(self):
+        b = ga.Book()
+        b.feed([web(t=90 + i, health=ga.NO_CONNECTION) for i in range(3)],
+               100)
+        b.evaluate(100)
+        return b
+
+    def test_ip_block_needs_no_handshake(self):
+        # устройства соединяются («соединение есть, данных нет»), а проба
+        # роутера не соединилась — это не блокировка по IP
+        b = self.suspected_book()
+        s = b.next_to_confirm(100)
+        self.assertIn("устройства соединяются",
+                      b.confirmed(s.key, ga.C_IP_BLOCKED, 100))
+        self.assertEqual(s.status, ga.BLOCKED)
+        self.assertEqual(s.why, ga.IP_REACHABLE_WHY)
+        # сохранённый прежней версией ip_blocked с такими провалами
+        b = self.suspected_book()
+        s = b.services[0]
+        s.status, s.next_check = ga.IP_BLOCKED, 10 ** 9
+        self.assertTrue(b.evaluate(101))
+        self.assertEqual(s.status, ga.BLOCKED)
+        # UDP-провалы (нет ответа) рукопожатием не считаются
+        u = self.suspected_book(2, kind="udp")
+        su = u.next_to_confirm(100)
+        u.confirmed(su.key, ga.C_IP_BLOCKED, 100)
+        self.assertEqual(su.status, ga.IP_BLOCKED)
+
+    def test_new_strategy_wakes_not_found(self):
+        b = self.suspected_book()
+        s = b.services[0]
+        b.not_found(s.key, 100)
+        self.assertGreater(s.next_check, 100)
+        self.assertEqual(b.wake_not_found(
+            "[UDP:sport:*]-drop-| \\/", 200), 0)          # чужой транспорт
+        self.assertEqual(b.wake_not_found(
+            "[TCP:flags:PA]-drop-| \\/", 200), 1)
+        b.evaluate(200)
+        self.assertEqual(s.status, ga.BLOCKED)
+
     def test_confirm_branches(self):
         for result, status, pause in (
                 (ga.C_NOT_BLOCKED, ga.NOT_BLOCKED, ga.NOT_BLOCKED_PAUSE),
                 (ga.C_IP_BLOCKED, ga.IP_BLOCKED, ga.IP_BLOCKED_PAUSE),
                 (ga.C_BLOCKED, ga.BLOCKED, None)):
-            b = self.suspected_book()
+            b = self.no_connection_book() if result == ga.C_IP_BLOCKED \
+                else self.suspected_book()
             s = b.next_to_confirm(100)
             self.assertIsNotNone(s)
             self.assertTrue(b.confirmed(s.key, result, 100))
@@ -191,6 +232,42 @@ class TestBookTransitions(unittest.TestCase):
         b.evaluate(320)
         b.confirmed(s.key, ga.C_UNKNOWN, 320)
         self.assertEqual(s.status, ga.BLOCKED)
+
+    def test_breaks_after_working_for_a_while(self):
+        b = self.suspected_book()
+        s = b.services[0]
+        b.applied(s.key, "S", 396, 200)
+        b.feed([web(t=210 + i, health=ga.OK) for i in range(5)], 215)
+        b.evaluate(215)
+        self.assertEqual(s.status, ga.APPLIED)
+        # проработал и сломался: успехи ещё в окне, но после них — провалы
+        b.feed([web(t=300 + i) for i in range(3)], 310)
+        b.evaluate(310)
+        self.assertEqual(s.status, ga.DEGRADED)
+
+    def test_router_only_strategy_rejected(self):
+        b = self.suspected_book()
+        s = b.services[0]
+        b.applied(s.key, "[TCP:flags:PA]-drop-| \\/", 396, 200)
+        b.feed([web(t=210 + i) for i in range(3)], 215)
+        b.evaluate(215)
+        self.assertEqual(s.status, ga.DEGRADED)
+        b.confirmed(s.key, ga.C_NOT_BLOCKED, 220)      # проба роутера: ок
+        self.assertEqual(s.status, ga.APPLIED)
+        b.feed([web(t=230 + i) for i in range(3)], 240)
+        b.evaluate(240)
+        self.assertEqual(s.status, ga.DEGRADED)
+        line = b.confirmed(s.key, ga.C_NOT_BLOCKED, 245)
+        self.assertIn("не устройствам", line)
+        self.assertEqual(s.status, ga.BLOCKED)
+        self.assertEqual(s.rejected, ["[TCP:flags:PA]-drop-| \\/"])
+        # подбор её больше не предложит; сохраняется
+        rounds = ga.candidate_rounds(s, running=[s.rejected[0]])
+        self.assertNotIn(s.rejected[0], sum(rounds, []))
+        self.assertEqual(ga.Service.from_dict(s.to_dict()).rejected,
+                         s.rejected)
+        b.reset(s.key, 300)
+        self.assertEqual(s.rejected, [])
 
     def test_not_found_backoff(self):
         b = self.suspected_book()
