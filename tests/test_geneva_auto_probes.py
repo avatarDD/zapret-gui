@@ -518,6 +518,20 @@ class TestAutoProbes(unittest.TestCase):
         self.assertEqual(calls[0][3], {"tls": True, "ports": (1, 2)})
         self.assertIn("соединение", text)
 
+    def test_baseline_and_bypass_use_separate_port_halves(self):
+        calls = []
+
+        def page(ip, port, host, **kw):
+            calls.append(kw["ports"])
+            return pr.PageResult(error=pr.P_CONNECT_TIMEOUT)
+
+        p = pr.AutoProbes(page=page, mark=lambda: 0, ports=(1, 2),
+                          bypass_ports=(3, 4))
+        s = self.svc(kind=ga.WEB, host="www.site.example.org", ports=[443])
+        p.check(s)
+        p.check(s, through_bypass=True)
+        self.assertEqual(calls, [(1, 2), (3, 4)])
+
     def test_replay_two_tries(self):
         calls = []
 
@@ -597,6 +611,12 @@ class TestObserverSkipsProbePorts(unittest.TestCase):
         self.assertEqual((lo, hi), (30512, 30575))
         self.assertTrue(ob.is_probe_port(lo) and ob.is_probe_port(hi))
         self.assertFalse(ob.is_probe_port(hi + 1))
+        # без обхода — первая половина, её пропускают правила групп
+        self.assertEqual(ob.AUTO_BASELINE_PORTS, (30512, 30543))
+        self.assertEqual(ob.AUTO_BYPASS_PORTS, (30544, 30575))
+        from core import geneva_auto_fw as fw
+        self.assertEqual(fw.SKIP_PORTS[1], ob.AUTO_BASELINE_PORTS[1])
+        self.assertLess(fw.SKIP_PORTS[1], ob.AUTO_BYPASS_PORTS[0])
 
 
 if __name__ == "__main__":

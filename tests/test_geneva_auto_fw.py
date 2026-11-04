@@ -63,8 +63,8 @@ table inet zapret_geneva_auto {
 \tchain post {
 \t\ttype filter hook postrouting priority 151; policy accept;
 \t\tmeta mark & 0x20000000 == 0x20000000 return
-\t\ttcp sport 30000-30511 return
-\t\tudp sport 30000-30511 return
+\t\ttcp sport 30000-30543 return
+\t\tudp sport 30000-30543 return
 \t\tip daddr @geneva_auto_340_0_v4 tcp dport { 443-444, 8443 } ct original packets 1-12 queue num 340 bypass
 \t\tip6 daddr @geneva_auto_340_0_v6 tcp dport { 443-444, 8443 } ct original packets 1-12 queue num 340 bypass
 \t\tip daddr @geneva_auto_340_1_v4 tcp dport { 53 } ct original packets 1-12 queue num 340 bypass
@@ -74,8 +74,8 @@ table inet zapret_geneva_auto {
 \tchain pre {
 \t\ttype filter hook prerouting priority -149; policy accept;
 \t\tmeta mark & 0x20000000 == 0x20000000 return
-\t\ttcp dport 30000-30511 return
-\t\tudp dport 30000-30511 return
+\t\ttcp dport 30000-30543 return
+\t\tudp dport 30000-30543 return
 \t\tip saddr @geneva_auto_340_0_v4 tcp sport { 443-444, 8443 } ct reply packets 1-6 queue num 340 bypass
 \t\tip6 saddr @geneva_auto_340_0_v6 tcp sport { 443-444, 8443 } ct reply packets 1-6 queue num 340 bypass
 \t\tip saddr @geneva_auto_340_1_v4 tcp sport { 53 } ct reply packets 1-6 queue num 340 bypass
@@ -141,7 +141,7 @@ class TestIptablesRules(unittest.TestCase):
             "iptables -t mangle -I POSTROUTING 1 -j ZGGA_POST",
             "iptables -t mangle -A ZGGA_POST -m mark --mark "
             "0x20000000/0x20000000 -j RETURN",
-            "iptables -t mangle -A ZGGA_POST -p tcp --sport 30000:30511 "
+            "iptables -t mangle -A ZGGA_POST -p tcp --sport 30000:30543 "
             "-j RETURN",
             "iptables -t mangle -A ZGGA_POST -p tcp -m set --match-set "
             "geneva_auto_340_0_v4 dst --dport 443:444 -m connbytes "

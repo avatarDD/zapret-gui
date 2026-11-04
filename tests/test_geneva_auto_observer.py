@@ -794,3 +794,30 @@ class TestDnsNames(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOffload(unittest.TestCase):
+
+    def test_openwrt_config(self):
+        on = ("config defaults\n\toption syn_flood '1'\n"
+              "\toption flow_offloading '1'\n\nconfig zone\n"
+              "\toption name 'lan'\n")
+        self.assertTrue(ob.openwrt_offload(on))
+        self.assertTrue(ob.openwrt_offload(
+            "config defaults\n\toption flow_offloading_hw \"1\"\n"))
+        self.assertFalse(ob.openwrt_offload(
+            "config defaults\n\toption flow_offloading '0'\n"))
+        # чужая секция — не offload роутера
+        self.assertFalse(ob.openwrt_offload(
+            "config zone\n\toption flow_offloading '1'\n"))
+        self.assertFalse(ob.openwrt_offload(""))
+
+    def test_from_slice_or_file(self):
+        import tempfile
+        self.assertTrue(ob.offload_enabled({"offload": 3}, path="/nonexistent"))
+        self.assertFalse(ob.offload_enabled({"offload": 0},
+                                            path="/nonexistent"))
+        with tempfile.NamedTemporaryFile("w", suffix=".cfg") as f:
+            f.write("config defaults\n\toption flow_offloading '1'\n")
+            f.flush()
+            self.assertTrue(ob.offload_enabled({}, path=f.name))

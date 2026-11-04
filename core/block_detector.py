@@ -779,10 +779,14 @@ class BlockDetector:
                 _last_collect = time.time()
                 # Без AF_PACKET (не root) сбор только писал бы
                 # предупреждение в журнал каждые 15 с.
-                if self._get_dns_source() not in ("dnsmasq_log",
-                                                  "adguard_log") \
-                        and not self._af_packet_ok():
-                    return ip_names()
+                source = self._get_dns_source()
+                if source not in ("dnsmasq_log", "adguard_log"):
+                    # Постоянный сборщик имён уже слушает DNS и SNI:
+                    # секундный сниффер рядом с ним ничего не добавит.
+                    from core.name_sniffer import get_name_sniffer
+                    if get_name_sniffer().running or \
+                            not self._af_packet_ok():
+                        return ip_names()
                 self._collect_dns_queries()
             except Exception as e:                  # noqa: BLE001
                 log.debug("block-detector: имена DNS: %s" % e,
