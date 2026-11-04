@@ -93,7 +93,7 @@ class GenevaAutoManager:
 
     def __init__(self, *, observer=None, probes=None, search=None,
                  applier=None, geneva=None, cfg=None, clock=time.time,
-                 path: str = ""):
+                 path: str = "", nat=None):
         self._observer = observer
         self._probes = probes
         self._search = search
@@ -117,6 +117,7 @@ class GenevaAutoManager:
         self._applied_sig = None
         self.offload = False
         self._offload_checked = 0
+        self._nat = nat
         self._applied_at = 0.0
         self._saved_at = 0.0
         self._dirty = False
@@ -615,7 +616,8 @@ class GenevaAutoManager:
         self._offload_checked = self.slices or 1
         try:
             from core.geneva_auto_observer import offload_enabled
-            on = offload_enabled(self.last_slice)
+            on = offload_enabled(self.last_slice) if seen else \
+                self._offload_config()
         except Exception:                           # noqa: BLE001
             on = False
         if on and not self.offload:
@@ -623,6 +625,22 @@ class GenevaAutoManager:
                                                    OFFLOAD_TEXT_EN)
             self.note(OFFLOAD_TEXT, "warning", en=OFFLOAD_TEXT_EN)
         self.offload = on
+
+    def _offload_config(self) -> bool:
+        """Ускорение включено в настройках роутера (OpenWrt/Keenetic)."""
+        if self._nat is None:
+            from core.nat_offload import get_nat_offload
+            self._nat = get_nat_offload()
+        return bool(self._nat.status().get("enabled"))
+
+    def recheck_offload(self) -> None:
+        """После переключения на странице: без ожидания 20 срезов."""
+        with self._lock:
+            self._offload_checked = 0
+            if self.running:
+                self._check_offload()
+            else:
+                self.offload = False
 
     def _apply(self, now: float) -> None:
         with self._lock:

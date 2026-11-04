@@ -124,6 +124,14 @@ const GenevaPage = (() => {
                     <div class="card-body">
                         <div class="form-hint" style="margin-bottom:8px;">${esc(_tr('geneva.auto.about'))}</div>
                         <div id="gv-auto">${esc(_tr('common.loading'))}</div>
+                        <div id="gv-nat" class="gv-nat" hidden>
+                            <label class="gv-check">
+                                <input type="checkbox" id="gv-nat-toggle">
+                                <span>${esc(_tr('geneva.nat.label'))}</span>
+                                <span id="gv-nat-state" class="text-muted"></span>
+                            </label>
+                            <div class="form-hint">${esc(_tr('geneva.nat.hint'))}</div>
+                        </div>
                     </div>
                 </div>
             </div>` : ''}
@@ -345,6 +353,8 @@ const GenevaPage = (() => {
         on('gv-btn-settings', _saveSettings);
         const toggle = document.getElementById('gv-auto-toggle');
         if (toggle) toggle.addEventListener('change', () => _autoToggle(toggle.checked));
+        const nat = document.getElementById('gv-nat-toggle');
+        if (nat) nat.addEventListener('change', () => _natToggle(nat.checked));
         const onChange = (id, fn) => {
             const el = document.getElementById(id);
             if (el) el.addEventListener('change', fn);
@@ -371,6 +381,7 @@ const GenevaPage = (() => {
         };
         if (libDetails) libDetails.addEventListener('toggle', loadLib);
         await Promise.all([_refresh(), _loadConfig(),
+                           S('auto') ? _loadNat() : null,
                            S('library') ? loadLib() : null,
                            S('found') ? _loadFound() : null]);
         // Пока ждали ответы, со страницы ушли (destroy) или её
@@ -543,6 +554,57 @@ const GenevaPage = (() => {
             Toast.error(errText(e) + (e.data && e.data.hint ? ' — ' + e.data.hint : ''));
         } finally {
             _autoBusy = false;
+            _refresh();
+        }
+    }
+
+    /* ───────── ускорение NAT роутера ───────── */
+    // Опросом не читается: на Keenetic состояние — запуск ndmc.
+
+    function _renderNat(n) {
+        const box = document.getElementById('gv-nat');
+        if (!box) return;
+        box.hidden = !(n && n.supported);
+        if (box.hidden) return;
+        const t = document.getElementById('gv-nat-toggle');
+        if (t) t.checked = !!n.enabled;
+        const st = document.getElementById('gv-nat-state');
+        if (st) {
+            const parts = [];
+            if (n.software) parts.push(_tr('geneva.nat.software'));
+            if (n.hardware) parts.push(_tr('geneva.nat.hardware'));
+            st.textContent = ' — ' + (parts.length ? parts.join(', ') : _tr('geneva.nat.off'));
+        }
+    }
+
+    async function _loadNat() {
+        try {
+            _renderNat(await API.get('/api/geneva/nat-offload'));
+        } catch (e) {
+            _renderNat(null);
+        }
+    }
+
+    async function _natToggle(on) {
+        const t = document.getElementById('gv-nat-toggle');
+        const ok = await Confirm.show(_tr('geneva.nat.confirm_title'),
+            esc(_tr(on ? 'geneva.nat.confirm_on' : 'geneva.nat.confirm_off')),
+            { confirmLabel: _tr(on ? 'geneva.nat.turn_on' : 'geneva.nat.turn_off') });
+        if (!ok) {
+            if (t) t.checked = !on;
+            return;
+        }
+        if (t) t.disabled = true;
+        try {
+            const res = await API.post('/api/geneva/nat-offload',
+                { enabled: on, confirm: true }, { timeout: 60000 });
+            _renderNat(res);
+            Toast.success(_tr(on ? 'geneva.nat.done_on' : 'geneva.nat.done_off'));
+        } catch (e) {
+            Toast.error(errText(e));
+            await _loadNat();
+        } finally {
+            if (t) t.disabled = false;
             _refresh();
         }
     }
