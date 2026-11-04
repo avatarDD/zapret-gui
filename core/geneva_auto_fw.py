@@ -24,9 +24,10 @@ nftables (таблица ``inet zapret_geneva_auto``):
   направлению: после NAT адрес клиента в пакете уже другой;
 * в начале обеих цепочек — пропуск метки geneva ``0x20000000`` (свои
   пакеты движков и проба без обхода) и блока портов оценщика
-  30000–30511 (подбор идёт своей очередью 311). Порты проб «Авто»
-  (30512–30575) не пропускаются: проверка с обходом обязана пройти
-  через группу.
+  30000–30511 (подбор идёт своей очередью 311), а также портов пробы
+  «Авто» без обхода 30512–30543: метка есть только у её исходящих
+  пакетов, ответы узнаются по порту. Порты пробы с обходом
+  (30544–30575) не пропускаются: она обязана пройти через группу.
 
 iptables (таблица ``mangle``, цепочки ``ZGGA_POST``/``ZGGA_PRE``,
 ``ip6tables`` — то же): ``ipset`` ``hash:ip timeout`` с теми же
@@ -59,6 +60,8 @@ CHAIN_POST = "ZGGA_POST"
 CHAIN_PRE = "ZGGA_PRE"
 MARK = "0x20000000"
 EVAL_PORTS = (30000, 30511)       # блок оценщика geneva (8 воркеров × 64)
+# Мимо групп: оценщик и проба без обхода (идут сразу за ним).
+SKIP_PORTS = (EVAL_PORTS[0], 30543)
 SET_TIMEOUT_SEC = 7 * 86400
 PRIO_POST = 151                   # после NAT (srcnat 100), рядом с nfqws2
 PRIO_PRE = -149
@@ -178,7 +181,7 @@ def _nft_script(items) -> str:
                       "\t\ttimeout 7d",
                       "\t\telements = { %s }" % ", ".join(it[fam]),
                       "\t}"]
-    lo, hi = EVAL_PORTS
+    lo, hi = SKIP_PORTS
     for chain, hook, prio, direction in (
             ("post", "postrouting", PRIO_POST, "original"),
             ("pre", "prerouting", PRIO_PRE, "reply")):
@@ -251,7 +254,7 @@ def ipt_commands(queues: dict) -> list:
                      for ip in it[fam]]
             cmds += [(["ipset", "swap", tmp, name], True),
                      (["ipset", "destroy", tmp], False)]
-    lo, hi = EVAL_PORTS
+    lo, hi = SKIP_PORTS
     for ipt, fam in (("iptables", "v4"), ("ip6tables", "v6")):
         for chain, hook, direction in ((CHAIN_POST, "POSTROUTING", "original"),
                                        (CHAIN_PRE, "PREROUTING", "reply")):

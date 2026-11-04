@@ -31,7 +31,9 @@
 метка geneva ``0x20000000`` (её пропускают правила ``geneva run`` и групп
 «Авто»). Проба с обходом идёт без метки — через правила группы. Обе —
 с исходных портов блока ``AUTO_PROBE_PORTS``, который наблюдение не
-считает трафиком пользователя. Оценка для подбора — с порта, который дал
+считает трафиком пользователя: без обхода — ``AUTO_BASELINE_PORTS``
+(правила групп пропускают их по порту, ведь у входящих ответов метки
+нет), с обходом — ``AUTO_BYPASS_PORTS``. Оценка для подбора — с порта, который дал
 geneva (его правила оценщика ловят этот порт), без метки.
 
 Чистые функции (вердикт и fitness по итогу пробы, разбор ответа HTTP,
@@ -51,7 +53,8 @@ import time
 from dataclasses import dataclass
 
 from core import geneva_auto as ga
-from core.geneva_auto_observer import AUTO_PROBE_PORTS
+from core.geneva_auto_observer import (AUTO_BASELINE_PORTS,
+                                       AUTO_BYPASS_PORTS)
 
 # ───────────────────────────── пороги ───────────────────────────────
 
@@ -725,11 +728,13 @@ class AutoProbes:
     """Пробы режима «Авто» (IAutoProbes). Подменяется в тестах."""
 
     def __init__(self, *, page=probe_page, replay=probe_replay,
-                 mark=baseline_mark, ports=AUTO_PROBE_PORTS):
+                 mark=baseline_mark, ports=AUTO_BASELINE_PORTS,
+                 bypass_ports=AUTO_BYPASS_PORTS):
         self._page = page
         self._replay = replay
         self._mark = mark
         self._ports = ports
+        self._bypass_ports = bypass_ports
 
     def check(self, s: ga.Service, through_bypass: bool = False):
         """Сервис сейчас: ``(AutoConfirm, текст)``.
@@ -744,13 +749,14 @@ class AutoProbes:
             return ga.C_UNKNOWN, "нет адреса"
         from core import probe_mark
         mark = 0 if through_bypass else self._mark()
+        ports = self._bypass_ports if through_bypass else self._ports
         try:
             # Метка — только без обхода (marking(0) ничего не делает);
             # исходный порт из блока проб «Авто» — всегда.
             with probe_mark.marking(mark):
                 if s.kind == ga.WEB:
                     r = self._page(address, s.port, s.host or s.name,
-                                   tls=s.port != 80, ports=self._ports)
+                                   tls=s.port != 80, ports=ports)
                     return page_confirm(r), r.text()
                 plan = replay_plan(s)
                 if plan is None:
@@ -760,7 +766,7 @@ class AutoProbes:
                 results = []
                 for _ in range(REPLAY_TRIES):
                     r = self._replay(address, s.port, payloads, udp=udp,
-                                     fresh=fresh, ports=self._ports)
+                                     fresh=fresh, ports=ports)
                     results.append(r)
                     if r.ok:
                         break

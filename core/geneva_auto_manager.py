@@ -115,6 +115,8 @@ class GenevaAutoManager:
         self._ok_times = {}
         self._identify_at = {}
         self._applied_sig = None
+        self.offload = False
+        self._offload_checked = 0
         self._applied_at = 0.0
         self._saved_at = 0.0
         self._dirty = False
@@ -143,7 +145,8 @@ class GenevaAutoManager:
     def observer(self):
         if self._observer is None:
             from core.geneva_auto_observer import Observer
-            self._observer = Observer()
+            from core.name_sniffer import get_name_sniffer
+            self._observer = Observer(sniffer=get_name_sniffer())
         return self._observer
 
     def probes(self):
@@ -422,7 +425,7 @@ class GenevaAutoManager:
             self._trial = (service, strategy) if strategy else None
             services = [s.clone() for s in self.book.services]
             res = self.applier().apply_services(services, trial=self._trial)
-            self._applied_sig = self._plan_sig(services)
+            self._applied_sig = self._plan_sig(services, self._trial)
             self._applied_at = self._clock()
             return bool(res.get("trial_ok")) if strategy else True
 
@@ -441,9 +444,11 @@ class GenevaAutoManager:
                 self.phase = "error"
                 msg = "срез не удался: %s (повтор через %d с)" % (
                     e, int(wait))
-                if not self.problems or self.problems[-1] != msg:
+                with self._lock:
+                    repeat = bool(self.problems) and self.problems[-1] == msg
+                    self.problems = [msg]
+                if not repeat:
                     self.note(msg, "warning")
-                self.problems = [msg]
             stop.wait(wait)
 
     def tick(self, now: float = None) -> None:
@@ -455,6 +460,7 @@ class GenevaAutoManager:
             before = self._statuses()
             self.slices += 1
             self.last_slice = dict(obs.last_stats or {})
+            self._check_offload()
             for x in samples:
                 if x.health == ga.OK:
                     self._ok_times[x.key] = max(
@@ -471,8 +477,9 @@ class GenevaAutoManager:
             self._learn(obs, now)
         if self.phase in ("starting", "error"):
             self.phase = "watching"
-            self.problems = [p for p in self.problems
-                             if not p.startswith("срез не удался")]
+            with self._lock:
+                self.problems = [p for p in self.problems
+                                 if not p.startswith("срез не удался")]
         if not self._suspended:
             self._confirm(now)
             self._searching(now)
@@ -592,14 +599,35 @@ class GenevaAutoManager:
         self._dirty = True
 
     @staticmethod
-    def _plan_sig(services) -> str:
-        groups = ga.plan_groups(services)
+    def _plan_sig(services, trial=None) -> str:
+        # С пробной группой: план без неё и план с ней — разные правила,
+        # и смена пробы без смены книги должна применяться сразу.
+        groups = ga.plan_groups(services, trial=trial)
         return json.dumps([g.to_dict() for g in groups], sort_keys=True)
+
+    def _check_offload(self) -> None:
+        """Ускорение NAT: раз в 20 срезов (и сразу, если в срезе есть
+        потоки ``[OFFLOAD]``) — предупреждение в ``problems`` и журнал."""
+        seen = int(self.last_slice.get("offload", 0) or 0) > 0
+        if not seen and self.slices - self._offload_checked < 20 and \
+                self._offload_checked:
+            return
+        self._offload_checked = self.slices or 1
+        try:
+            from core.geneva_auto_observer import offload_enabled
+            on = offload_enabled(self.last_slice)
+        except Exception:                           # noqa: BLE001
+            on = False
+        if on and not self.offload:
+            from core.geneva_auto_observer import (OFFLOAD_TEXT,
+                                                   OFFLOAD_TEXT_EN)
+            self.note(OFFLOAD_TEXT, "warning", en=OFFLOAD_TEXT_EN)
+        self.offload = on
 
     def _apply(self, now: float) -> None:
         with self._lock:
             services = [s.clone() for s in self.book.services]
-            sig = self._plan_sig(services)
+            sig = self._plan_sig(services, self._trial)
             if sig == self._applied_sig and \
                     now - self._applied_at < APPLY_EVERY:
                 return
@@ -610,12 +638,14 @@ class GenevaAutoManager:
             # Нет ipset/connbytes/nft — это не пройдёт само: режим
             # выключается с понятной причиной, а не повторяет попытку.
             msg = "%s — %s" % (res.get("error", ""), res.get("hint", ""))
-            self.problems = [msg]
+            with self._lock:
+                self.problems = [msg]
             self.note("правила firewall не встали: %s" % msg, "error")
             threading.Thread(target=self.disable, args=(msg,),
                              daemon=True).start()
         elif not res.get("ok") and res.get("error"):
-            self.problems = [res["error"]]
+            with self._lock:
+                self.problems = [res["error"]]
 
     def _poll_stats(self) -> None:
         try:
@@ -680,6 +710,7 @@ class GenevaAutoManager:
                 "total": len(self.book.services),
                 "services": items, "groups": groups, "search": search,
                 "problems": list(self.problems),
+                "offload": self.offload,
                 "max_groups": st["max_groups"], "workers": st["workers"],
                 "journal": list(self.journal)[-100:],
             }

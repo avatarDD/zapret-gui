@@ -63,6 +63,7 @@ const i18n_ru = {
     "geneva.auto.trying": "пробую: {strategy}",
     "geneva.auto.groups": "Работающие стратегии",
     "geneva.auto.log": "Журнал режима «Авто»",
+    "geneva.auto.offload": "Включено ускорение NAT (flow offloading): установленные соединения клиентов идут мимо netfilter, и geneva не видит их ClientHello — найденные стратегии сработают только для самого роутера. Выключите его: OpenWrt — «Сеть → Межсетевой экран → Программная/аппаратная разгрузка потоков» (flow_offloading, flow_offloading_hw); Keenetic — аппаратное ускорение (hwnat/PPE).",
     "geneva.auto.show_all": "Показать и сервисы, у которых всё в порядке",
     "geneva.auto.reset": "Сбросить",
     "geneva.auto.reset_tip": "Забыть, что известно о сервисе: обход снимается, наблюдение начинается заново",

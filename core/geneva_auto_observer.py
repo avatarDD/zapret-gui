@@ -2,8 +2,8 @@
 """
 Режим «Авто» geneva: наблюдение за трафиком через роутер (conntrack).
 
-В AutoTuner наблюдение — захват всего трафика ПК срезами по 15 с и
-разбор потоков (``AutoObserver``). На роутере pcap всего трафика не
+Отличие: в AutoTuner наблюдение — захват всего трафика ПК срезами по
+15 с и разбор потоков (``AutoObserver``). На роутере pcap всего трафика не
 нужен: ядро и так ведёт каждое соединение в conntrack, со счётчиками
 пакетов и байт в обе стороны. Отсюда и берётся срез:
 
@@ -117,6 +117,12 @@ PROBE_PORT_COUNT = 64 * 8                # 64 на воркера, до 8 вор
 # трафик пользователя (ct mark в режиме geneva никто не ставит).
 AUTO_PROBE_PORTS = (PROBE_PORT_BASE + PROBE_PORT_COUNT,
                     PROBE_PORT_BASE + PROBE_PORT_COUNT + 63)
+# Две половины блока: проба без обхода и проба с обходом. Правила групп
+# пропускают первую половину по порту: SO_MARK есть только у исходящих
+# пакетов пробы, а её ответы без порта ушли бы в очередь живой группы,
+# и входящая часть стратегии сделала бы «доступно без обхода».
+AUTO_BASELINE_PORTS = (AUTO_PROBE_PORTS[0], AUTO_PROBE_PORTS[0] + 31)
+AUTO_BYPASS_PORTS = (AUTO_PROBE_PORTS[0] + 32, AUTO_PROBE_PORTS[1])
 
 # Туннельные интерфейсы: ответ на их адрес — трафик ушёл в туннель.
 TUNNEL_PREFIXES = ("awg", "wg", "nwg", "tun", "tap", "utun", "usque",
@@ -941,6 +947,53 @@ def parse_wg_endpoints(text: str) -> set:
     return out
 
 
+OPENWRT_FIREWALL = "/etc/config/firewall"
+OFFLOAD_TEXT = (
+    "включено ускорение NAT (flow offloading): установленные соединения "
+    "клиентов идут мимо netfilter, и geneva не видит их ClientHello — "
+    "найденные стратегии сработают только для самого роутера. Выключите "
+    "его: OpenWrt — «Сеть → Межсетевой экран → Программная/аппаратная "
+    "разгрузка потоков» (flow_offloading, flow_offloading_hw); Keenetic — "
+    "аппаратное ускорение (hwnat/PPE)")
+OFFLOAD_TEXT_EN = (
+    "NAT acceleration (flow offloading) is on: established client "
+    "connections bypass netfilter and geneva never sees their ClientHello, "
+    "so strategies work only for the router itself. Turn it off "
+    "(OpenWrt: Network → Firewall → software/hardware flow offloading; "
+    "Keenetic: hardware NAT/PPE)")
+
+
+def openwrt_offload(text: str) -> bool:
+    """``/etc/config/firewall`` OpenWrt: в ``defaults`` включён
+    ``flow_offloading`` или ``flow_offloading_hw``."""
+    section = ""
+    for raw in (text or "").splitlines():
+        parts = raw.split()
+        if not parts:
+            continue
+        if parts[0] == "config":
+            section = parts[1].strip("'\"") if len(parts) > 1 else ""
+        elif parts[0] == "option" and section == "defaults" and \
+                len(parts) >= 3 and parts[1] in ("flow_offloading",
+                                                 "flow_offloading_hw"):
+            if parts[2].strip("'\"") in ("1", "on", "true", "yes"):
+                return True
+    return False
+
+
+def offload_enabled(stats: dict = None, path: str = OPENWRT_FIREWALL) -> bool:
+    """Ускорение NAT мешает «Авто»: потоки ``[OFFLOAD]`` в срезе или
+    включённый offload в конфигурации OpenWrt. Отличие: на ПК AutoTuner
+    такой проблемы нет."""
+    if stats and int(stats.get("offload", 0) or 0) > 0:
+        return True
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return openwrt_offload(f.read())
+    except OSError:
+        return False
+
+
 def install_hint() -> str:
     return ("поставьте пакет conntrack: «opkg install conntrack» (Entware, "
             "OpenWrt до 24.10), «apk add conntrack» (OpenWrt 25+), "
@@ -978,8 +1031,11 @@ class Observer:
 
     def __init__(self, *, reader=None, names=None, local=None,
                  capture=None, clock=time.time, sysctl_dir=SYSCTL_DIR,
-                 exclude=(), help_tunnels: bool = True):
+                 exclude=(), help_tunnels: bool = True, sniffer=None):
         self._reader = reader
+        # Сборщик имён (core/name_sniffer): DNS-ответы и SNI всё время
+        # режима. Отличие: в AutoTuner имена даёт захват всего трафика ПК.
+        self._sniffer = sniffer
         self._names = names
         self._local = local
         self._capture = capture
@@ -1090,10 +1146,22 @@ class Observer:
                     out[name] = False
                     continue
             out[name] = True
+        if self._sniffer is not None:
+            try:
+                out["names"] = bool(self._sniffer.start("geneva-auto"))
+            except Exception as e:                  # noqa: BLE001
+                log.debug("geneva-auto: сборщик имён: %s" % e,
+                          source="geneva")
+                out["names"] = False
         return out
 
     def restore(self) -> None:
-        """Вернуть sysctl, как было до режима."""
+        """Вернуть sysctl, как было до режима; остановить сборщик имён."""
+        if self._sniffer is not None:
+            try:
+                self._sniffer.stop("geneva-auto")
+            except Exception:                       # noqa: BLE001
+                pass
         for name, old in list(self._saved.items()):
             try:
                 with open(os.path.join(self._sysctl_dir, name), "w") as f:

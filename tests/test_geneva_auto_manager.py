@@ -300,6 +300,39 @@ class TestScenario(_Base):
         self.assertTrue(m._trial_cb(s, None))
         self.assertEqual(self.fwf.applied[-1], {})
 
+    def test_trial_is_part_of_applied_plan(self):
+        m = self.manager()
+        m.load()
+        m.book.feed([dns_fail(98)], 100.0)
+        s = m.book.find("dns:" + DNS_IP)
+        self.assertTrue(m._trial_cb(s, STRAT))
+        n = len(self.fwf.applied)
+        m._apply(101.0)                    # тот же план с пробой — повтора нет
+        self.assertEqual(len(self.fwf.applied), n)
+        m._trial = None                    # проба снята мимо _trial_cb
+        m._apply(102.0)                    # — план другой, применяется сразу
+        self.assertEqual(len(self.fwf.applied), n + 1)
+        self.assertEqual(self.fwf.applied[-1], {})
+
+    def test_offload_warning(self):
+        m = self.manager()
+        m.load()
+        self.obs.slices = [[web_ok(96)], [web_ok(110)]]
+        m.tick(100.0)
+        self.assertFalse(m.status()["offload"])
+        self.obs.last_stats = {}
+        orig = self.obs.slice
+
+        def with_offload(now=None):
+            out = orig(now)
+            self.obs.last_stats["offload"] = 2
+            return out
+        self.obs.slice = with_offload
+        m.tick(115.0)
+        st = m.status()
+        self.assertTrue(st["offload"])
+        self.assertTrue(any("offloading" in j["text"] for j in m.journal))
+
     def test_trial_after_disable_does_not_reapply(self):
         m = self.manager()
         m.load()

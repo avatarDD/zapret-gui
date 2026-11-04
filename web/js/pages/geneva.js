@@ -515,7 +515,8 @@ const GenevaPage = (() => {
     }
 
     function _autoProblems(a) {
-        const list = a.problems || [];
+        const list = (a.problems || []).slice();
+        if (a.offload) list.unshift(_tr('geneva.auto.offload'));
         return list.length ? `<div class="text-error">${list.map(esc).join('<br>')}</div>` : '';
     }
 

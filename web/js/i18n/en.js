@@ -60,6 +60,7 @@ const i18n_en = {
     "geneva.auto.trying": "trying: {strategy}",
     "geneva.auto.groups": "Running strategies",
     "geneva.auto.log": "Auto mode log",
+    "geneva.auto.offload": "NAT acceleration (flow offloading) is on: established client connections bypass netfilter and geneva never sees their ClientHello, so strategies work only for the router itself. Turn it off (OpenWrt: Network \u2192 Firewall \u2192 software/hardware flow offloading; Keenetic: hardware NAT/PPE).",
     "geneva.auto.show_all": "Show the services that work fine too",
     "geneva.auto.reset": "Reset",
     "geneva.auto.reset_tip": "Forget what is known about the service: its bypass goes, watching starts over",
