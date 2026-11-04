@@ -436,6 +436,72 @@ class TestScenario(_Base):
         self.assertEqual(m.suspended, "")
 
 
+class TestAccounting(_Base):
+    """Плашка про учёт пакетов — по данным среза, не по sysctl."""
+
+    def started(self, acct):
+        self.obs.enable_accounting = lambda: acct
+        m = self.manager()
+        m.load()
+        with mock.patch.object(am.threading.Thread, "start"):
+            m._start()
+        return m
+
+    def stats(self, counted, total=40):
+        def sl(now=None):
+            self.obs.last_stats = {"connections": total, "observed": 0,
+                                   "counted": counted}
+            return []
+        self.obs.slice = sl
+
+    def acct(self, m):
+        return [p for p in m.problems if p.startswith(am.ACCT_PROBLEM)]
+
+    def test_keenetic_no_sysctl_but_counters(self):
+        m = self.started({"nf_conntrack_acct": None,
+                          "nf_conntrack_timestamp": None})
+        self.assertEqual(m.problems, [])
+        self.stats(counted=12)
+        m.tick(100.0)
+        self.assertEqual(m.problems, [])
+
+    def test_no_counters_warns_then_clears(self):
+        m = self.started({"nf_conntrack_acct": None,
+                          "nf_conntrack_timestamp": None})
+        self.stats(counted=0)
+        m.tick(100.0)
+        m.tick(115.0)
+        self.assertEqual(len(self.acct(m)), 1)
+        self.assertNotIn("не прошла", self.acct(m)[0])
+        warned = [j for j in m.journal
+                  if j["text"].startswith(am.ACCT_PROBLEM)]
+        self.assertEqual(len(warned), 1)        # не на каждом срезе
+        self.stats(counted=3)
+        m.tick(130.0)
+        self.assertEqual(self.acct(m), [])
+
+    def test_write_failed_named_honestly(self):
+        m = self.started({"nf_conntrack_acct": False,
+                          "nf_conntrack_timestamp": True})
+        self.assertEqual(m.problems, [])        # ждём срез
+        self.stats(counted=0)
+        m.tick(100.0)
+        self.assertIn("запись nf_conntrack_acct=1 не прошла",
+                      self.acct(m)[0])
+
+    def test_write_failed_but_counters_present(self):
+        m = self.started({"nf_conntrack_acct": False})
+        self.stats(counted=5)
+        m.tick(100.0)
+        self.assertEqual(m.problems, [])
+
+    def test_empty_table_decides_nothing(self):
+        m = self.started({"nf_conntrack_acct": None})
+        self.stats(counted=0, total=0)
+        m.tick(100.0)
+        self.assertEqual(m.problems, [])
+
+
 class TestEnable(_Base):
 
     def test_needs_confirm_to_switch_engine(self):

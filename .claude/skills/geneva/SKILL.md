@@ -39,7 +39,7 @@ geneva_c**, и в каждый момент работает ровно один
 1. **Сам бинарник** нужной версии: `geneva version --json` (поле `proto`
    должно быть `1`), `geneva <команда> --help`.
 2. **[avatarDD/geneva_c](https://github.com/avatarDD/geneva_c)**, релиз
-   **v1.1.1**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
+   **v1.2.0**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
    сокет), `docs/EVAL.md` (пробы и fitness), `docs/INTEGRATION.md`
    (встраивание), `.claude/skills/geneva/SKILL.md` (карта репозитория).
 3. **Наш код**:
@@ -338,10 +338,17 @@ MCP (`core/mcp/tools/geneva.py`):
 
 `BINARIES["geneva"]` в `core/ext_binary_installer.py`:
 
-- репозиторий `avatarDD/geneva_c`, `pinned_tag` v1.1.1;
-- ассеты `geneva-1.1.1-linux-<arch>.tar.gz` для aarch64, armv7, mips,
-  mipsel и x86_64;
+- репозиторий `avatarDD/geneva_c`, `pinned_tag` v1.2.0 (из
+  `GENEVA_VERSION`);
+- ассеты `geneva-<GENEVA_VERSION>-linux-<arch>.tar.gz` для aarch64, armv7,
+  mips, mipsel и x86_64 — имена строятся из версии, вручную меняются
+  только хэши;
 - sha256 сверены с `SHA256SUMS` релиза.
+
+Страница «Обновления» и `updates_check`: «последняя» — пин; апстримный
+релиз новее пина — `upstream_newer` (жёлтая строка на странице, строка в
+`updates_only` и в `hint` MCP), `has_update` он не зажигает: кнопка ставит
+только пин.
 
 Первый файл архива — LICENSE, поэтому установщик достаёт член `geneva`
 (`archive_member`). Бинарник ставится в `/opt/usr/bin/geneva`. Новая
@@ -392,7 +399,9 @@ MCP (`core/mcp/tools/geneva.py`):
 1. **Наблюдение — conntrack, не pcap.** Срез раз в 15 с из
    `/proc/net/nf_conntrack` (иначе `conntrack -L -o extended`, IPv4 и
    `-f ipv6`). На время режима `nf_conntrack_acct=1` и
-   `nf_conntrack_timestamp=1`, прежние значения возвращаются. Нет ни
+   `nf_conntrack_timestamp=1`, прежние значения возвращаются. Есть ли
+   учёт, решает срез (`last_stats.counted`), а не sysctl: в Keenetic
+   NDMS 14.x этих файлов нет, а `packets=` в таблице есть всегда. Нет ни
    таблицы, ни утилиты — `conntrack_tool_missing` («поставьте
    conntrack»), ядро без conntrack — `conntrack_unsupported`.
    Пропускается: не интернет (RFC1918, CGNAT, loopback, multicast),
@@ -531,8 +540,11 @@ MCP (`core/mcp/tools/geneva.py`):
 - Прокси на 443 с Reality: проба страницы по имени сервера из DNS может
   счесть его заблокированным, хотя подключение работает (Reality отвечает
   чужим сертификатом); такой сервер — в `geneva.auto.exclude`.
-- Нет `nf_conntrack_acct` (старое ядро, запрещено) — видно только «нет
-  соединения»; проблема в `status().problems`.
+- В таблице нет `packets=` (учёт выключен, запись `nf_conntrack_acct`
+  не прошла) — видно только «нет соединения»; проблема в
+  `status().problems` ставится по срезу и снимается, когда счётчики
+  появились. Нет файла sysctl при счётчиках в таблице (Keenetic NDMS
+  14.x) — не проблема.
 - Аппаратный offload (Keenetic hwnat, OpenWrt flow offloading) замораживает
   счётчики: зависания такого потока не видны, успех — только по
   большому ответу.

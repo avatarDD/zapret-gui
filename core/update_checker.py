@@ -866,6 +866,10 @@ def _check_geneva() -> dict:
             "latest_source": "pinned",
             "upstream_latest": upstream,
             "pin_reason": "sha256 сверены для этой версии",
+            # Апстрим выпустил релиз новее закреплённого: кнопка его не
+            # поставит (имена ассетов и хэши — под пин), но молчать об
+            # этом нельзя — иначе «1.1.1 = 1.1.1» выглядит как «новее нет».
+            "upstream_newer": _is_newer(upstream, info["latest"]),
         }
         if det.get("installed") and current and not info["release_build"]:
             row["note"] = ("установлена сборка не из релиза (%s) — "

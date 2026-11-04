@@ -212,7 +212,16 @@ const UpdateCheckerPage = (() => {
             // колонке «последняя» стоит наш закреплённый тег — и здесь же
             // объясняем, почему он ниже апстримного, иначе это выглядит как
             // сломанная проверка обновлений (discussion #102).
-            const pinned = r.pinned
+            // upstream_newer (geneva): апстрим выпустил релиз новее пина,
+            // а кнопка его ещё не ставит — это не «так задумано», а «вышла
+            // новая версия, придёт с обновлением GUI»; серой подписью это
+            // не читалось.
+            const pinned = r.pinned && r.upstream_newer
+                ? `<div class="text-warning" style="font-size:11px;margin-top:2px;">
+                       у апстрима вышла ${esc(r.upstream_latest)}; GUI ставит
+                       проверенную ${esc(r.latest)}, новая придёт с обновлением zapret-gui
+                   </div>`
+                : r.pinned
                 ? `<div class="text-muted" style="font-size:11px;margin-top:2px;">
                        закреплено${r.upstream_latest
                            ? ", у апстрима " + esc(r.upstream_latest) : ""}${
