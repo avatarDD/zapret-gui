@@ -317,3 +317,19 @@ class TestMarksInPlace(unittest.TestCase):
         self.assertTrue(self._check(dump, pre, out))
         self.assertFalse(self._check(dump, pre, ""))       # OUTPUT снесли
         self.assertFalse(self._check("", pre, out))        # записей нет
+
+
+class TestGenevaAutoReassert(unittest.TestCase):
+    """Хук netfilter.d (NDMS пересобрал таблицы) будит и geneva «Авто»:
+    его цепочки ZGGA_* в mangle сносятся так же."""
+
+    def test_calls_manager_and_swallows_errors(self):
+        m = mock.Mock()
+        with mock.patch("core.geneva_auto_manager.get_geneva_auto_manager",
+                        return_value=m):
+            guardian._reassert_geneva_auto()
+        m.reassert_rules.assert_called_once_with()
+        m.reassert_rules.side_effect = RuntimeError("x")
+        with mock.patch("core.geneva_auto_manager.get_geneva_auto_manager",
+                        return_value=m):
+            guardian._reassert_geneva_auto()       # без исключения

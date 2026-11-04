@@ -259,12 +259,111 @@ class TestFwApply(unittest.TestCase):
         with mock.patch("core.firewall.get_firewall_manager",
                         return_value=fwm), \
                 mock.patch.object(fw.shutil, "which", return_value="/x"), \
+                mock.patch.object(fw, "RETRY_DELAY", 0), \
                 mock.patch.object(fw, "_run", run):
             r = fw.apply(groups(), backend="iptables")
         self.assertFalse(r["ok"])
-        # после ошибки — снятие всего
+        # после ошибки (и повтора) — снятие всего
         self.assertIn(["iptables", "-t", "mangle", "-X", "ZGGA_POST"],
                       [c[0] for c in self.calls])
+
+    def test_iptables_race_with_firmware_retried(self):
+        """Keenetic: NDMS снёс цепочку между «-N» и «-F» — применение
+        повторяется целиком, а не снимает правила всех групп."""
+        fwm = mock.Mock()
+        fwm._connbytes_supported.return_value = True
+        fails = [1]
+
+        def run(argv, stdin=None):
+            self.calls.append((argv, stdin))
+            if argv[3:5] == ["-F", "ZGGA_POST"] and fails[0]:
+                fails[0] -= 1
+                return False, "No chain/target/match by that name."
+            return True, ""
+
+        with mock.patch("core.firewall.get_firewall_manager",
+                        return_value=fwm), \
+                mock.patch.object(fw.shutil, "which", return_value="/x"), \
+                mock.patch.object(fw, "RETRY_DELAY", 0), \
+                mock.patch.object(fw, "_run", run):
+            r = fw.apply(groups(), backend="iptables")
+        self.assertTrue(r["ok"], r)
+        argvs = [c[0] for c in self.calls]
+        self.assertNotIn(["iptables", "-t", "mangle", "-X", "ZGGA_POST"],
+                         argvs)
+        self.assertEqual(argvs.count(["iptables", "-t", "mangle", "-F",
+                                      "ZGGA_POST"]), 2)
+
+
+class TestFwPresent(unittest.TestCase):
+    """Проверка, что правила групп на месте (снос прошивкой)."""
+
+    def full(self, q):
+        """Вывод «-t mangle -S» и наборы — как после apply."""
+        dumps = {"iptables": [], "ip6tables": []}
+        sets = []
+        for argv, _m in fw.ipt_commands(q):
+            if argv[0] == "ipset" and argv[1] == "swap":
+                sets.append(argv[3])
+            elif argv[0] in dumps and argv[3] in ("-A", "-I"):
+                rule = argv[3:]
+                if rule[0] == "-I":
+                    rule = ["-A", rule[1]] + rule[3:]
+                dumps[argv[0]].append(" ".join(rule))
+        return {k: "\n".join(v) for k, v in dumps.items()}, sets
+
+    def test_all_in_place(self):
+        dumps, sets = self.full(groups())
+        self.assertEqual(fw.missing(groups(), dumps, sets), [])
+
+    def test_chain_jump_rules_and_sets_lost(self):
+        dumps, sets = self.full(groups())
+        # NDMS пересобрал mangle: цепочек и переходов нет, наборы целы
+        dumps["iptables"] = "-P PREROUTING ACCEPT\n-A PREROUTING -j _NDM_X"
+        lost = fw.missing(groups(), dumps, sets)
+        self.assertIn("iptables POSTROUTING → ZGGA_POST", lost)
+        self.assertTrue(any(x.startswith("iptables ZGGA_PRE: 0 из")
+                            for x in lost), lost)
+        self.assertFalse(any(x.startswith("ip6tables") for x in lost))
+        self.assertEqual(fw.missing(groups(), self.full(groups())[0],
+                                    sets[1:]),
+                         ["ipset %s" % sets[0]])
+
+    def test_present_runs_and_fails_safe(self):
+        dumps, sets = self.full(groups())
+
+        def run(argv, stdin=None):
+            if argv[0] == "ipset":
+                return True, "\n".join(sets)
+            return True, dumps[argv[0]]
+
+        with mock.patch.object(fw, "_run", run), \
+                mock.patch.object(fw.shutil, "which", return_value="/x"):
+            self.assertEqual(fw.present(groups(), backend="iptables"), [])
+            self.assertEqual(fw.present({}, backend="iptables"), [])
+        with mock.patch.object(fw, "_run",
+                               lambda a, stdin=None: (False, "lock")), \
+                mock.patch.object(fw.shutil, "which", return_value="/x"):
+            # сбой самой проверки — не повод переприменять
+            self.assertEqual(fw.present(groups(), backend="iptables"), [])
+        with mock.patch.object(fw, "_run", lambda a, stdin=None: (
+                False, "Error: No such file or directory")):
+            self.assertTrue(fw.present(groups(), backend="nft"))
+
+    def test_wait_flag_added_for_iptables_only(self):
+        seen = []
+
+        def sp_run(argv, **kw):
+            seen.append(argv)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(fw.subprocess, "run", sp_run), \
+                mock.patch("core.firewall.FirewallManager."
+                           "_iptables_wait_flag", return_value=["-w", "5"]):
+            fw._run(["iptables", "-t", "mangle", "-S"])
+            fw._run(["ipset", "list", "-n"])
+        self.assertEqual(seen, [["iptables", "-w", "5", "-t", "mangle", "-S"],
+                                ["ipset", "list", "-n"]])
 
 
 class TestAssignQueues(unittest.TestCase):
@@ -338,6 +437,11 @@ class FakeFW:
         self.ok = ok
         self.applied = []
         self.removed = 0
+        self.lost = []               # что «снесла прошивка» для present()
+
+    def present(self, queues):
+        out, self.lost = self.lost, []
+        return out
 
     def apply(self, queues):
         self.applied.append(dict(queues))

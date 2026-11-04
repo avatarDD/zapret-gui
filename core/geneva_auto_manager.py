@@ -50,6 +50,7 @@ SLICE = 15.0
 APPLY_EVERY = 120.0
 SAVE_EVERY = 60.0
 MAX_BACKOFF = 300.0
+LOST_NOTE_EVERY = 1800.0        # «правила снесены» в журнал — не чаще
 # Предупреждение об учёте пакетов: ставится и снимается по срезу.
 ACCT_PROBLEM = "в таблице conntrack нет счётчиков пакетов"
 JOURNAL_SIZE = 300
@@ -129,6 +130,10 @@ class GenevaAutoManager:
         self._backoff = 0.0
         self._suspended = ""
         self.group_stats = {}
+        self._apply_failures = 0
+        self.rules_lost = 0              # сколько раз правила сносили извне
+        self._lost_noted_at = None
+        self._lost_unnoted = 0
 
     # ── зависимости ──
 
@@ -511,6 +516,7 @@ class GenevaAutoManager:
                 self.problems = [p for p in self.problems
                                  if not p.startswith("срез не удался")]
         if not self._suspended:
+            self._check_rules(now)
             self._confirm(now)
             self._searching(now)
             self._apply(now)
@@ -690,6 +696,15 @@ class GenevaAutoManager:
             res = self.applier().apply_services(services, trial=self._trial)
             self._applied_sig = sig
             self._applied_at = now
+            if res.get("ok"):
+                self._apply_failures = 0
+            elif not res.get("hint"):
+                # Сбой без подсказки — чаще всего гонка с прошивкой: первый
+                # повтор на следующем срезе, а не через APPLY_EVERY (всё это
+                # время группы жили бы без правил).
+                if not self._apply_failures:
+                    self._applied_sig = None
+                self._apply_failures += 1
         if not res.get("ok") and res.get("hint"):
             # Нет ipset/connbytes/nft — это не пройдёт само: режим
             # выключается с понятной причиной, а не повторяет попытку.
@@ -702,6 +717,55 @@ class GenevaAutoManager:
         elif not res.get("ok") and res.get("error"):
             with self._lock:
                 self.problems = [res["error"]]
+
+    def _check_rules(self, now: float) -> bool:
+        """Правила групп снесены извне (Keenetic NDMS пересобирает
+        таблицы и вместе со своими правилами удаляет наши цепочки и
+        наборы) — поставить заново сразу, не ждать ``APPLY_EVERY``.
+        Провалы за время без правил не идут в счёт стратегии
+        (:meth:`ga.Book.rules_restored`). ``True`` — правила пропадали."""
+        try:
+            lost = self.applier().missing()
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: проверка правил: %s" % e,
+                      source="geneva")
+            return False
+        if not lost:
+            return False
+        with self._lock:
+            self._applied_sig = None
+        self._apply(now)
+        ok = bool((getattr(self.applier(), "last", None) or {}).get("ok"))
+        with self._lock:
+            back = self.book.rules_restored(now) if ok else 0
+            self.rules_lost += 1
+            self._dirty = self._dirty or bool(back)
+            self._lost_unnoted += 1
+            if self._lost_noted_at is not None and \
+                    now - self._lost_noted_at < LOST_NOTE_EVERY:
+                return True
+            times, self._lost_unnoted = self._lost_unnoted, 0
+            self._lost_noted_at = now
+        what = ", ".join(lost[:3]) + (" …" if len(lost) > 3 else "")
+        more = " (за полчаса — %d раз)" % times if times > 1 else ""
+        if ok:
+            self.note("правила обхода сняты извне (%s) — поставлены заново"
+                      "%s" % (what, more), "warning",
+                      en="bypass rules were removed by the firmware — "
+                         "restored")
+        else:
+            self.note("правила обхода сняты извне (%s), заново не встали"
+                      "%s" % (what, more), "warning",
+                      en="bypass rules were removed by the firmware — "
+                         "restore failed")
+        return True
+
+    def reassert_rules(self) -> bool:
+        """Из сторожа маршрутизации (хук netfilter.d прошивки): проверить
+        и вернуть правила групп, не дожидаясь среза."""
+        if not self.running or self._suspended or self._stop.is_set():
+            return False
+        return self._check_rules(self._clock())
 
     def _poll_stats(self) -> None:
         try:
@@ -760,6 +824,7 @@ class GenevaAutoManager:
                 "enabled": st["enabled"], "running": self.running,
                 "phase": self.phase, "suspended": self._suspended,
                 "slices": self.slices,
+                "rules_lost": self.rules_lost,
                 "connections": int(self.last_slice.get("connections", 0)),
                 "observed": int(self.last_slice.get("observed", 0)),
                 "counts": self.book.counts(),

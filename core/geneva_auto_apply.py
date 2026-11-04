@@ -168,6 +168,15 @@ class Applier:
                 for g in self.queues.values())
         return out
 
+    def missing(self) -> list:
+        """Чего из правил живых групп нет (снесла прошивка); пусто — всё
+        на месте или групп нет."""
+        with self._lock:
+            if not self.queues:
+                return []
+            check = getattr(self._fwm(), "present", None)
+            return list(check(self.queues) or []) if check else []
+
     def clear(self) -> None:
         """Снять правила и остановить все группы (правила — первыми:
         пакеты не должны ждать в очереди, которой уже нет)."""

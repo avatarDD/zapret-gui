@@ -269,6 +269,30 @@ class TestBookTransitions(unittest.TestCase):
         b.reset(s.key, 300)
         self.assertEqual(s.rejected, [])
 
+    def test_rules_restored_forgives_gap(self):
+        """Прошивка снесла правила: провалы в окне без правил — не вина
+        стратегии; DEGRADED возвращается без пробы, и следующий снос не
+        делает из рабочей стратегии «помогает только роутеру»."""
+        b = self.suspected_book()
+        s = b.services[0]
+        b.applied(s.key, "S", 396, 200)
+        b.feed([web(t=210 + i) for i in range(3)], 215)
+        b.evaluate(215)
+        self.assertEqual(s.status, ga.DEGRADED)
+        self.assertEqual(b.rules_restored(216), 1)
+        self.assertEqual((s.status, s.applied_at), (ga.APPLIED, 216))
+        self.assertIsNone(s.restored_at)
+        b.evaluate(217)                       # старые провалы не в счёт
+        self.assertEqual(s.status, ga.APPLIED)
+        b.feed([web(t=220 + i) for i in range(3)], 225)
+        b.evaluate(225)                       # а новые — в счёт
+        self.assertEqual(s.status, ga.DEGRADED)
+        self.assertEqual(s.rejected, [])
+        # без стратегии и не применённые — не трогаются
+        b2 = self.suspected_book()
+        self.assertEqual(b2.rules_restored(300), 0)
+        self.assertEqual(b2.services[0].status, ga.SUSPECTED)
+
     def test_not_found_backoff(self):
         b = self.suspected_book()
         s = b.services[0]
