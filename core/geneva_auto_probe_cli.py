@@ -13,10 +13,12 @@ geneva запускает эту команду на каждый прогон �
 ``exec``): 0 — ``ok`` (+400); вывод со словом ``reset`` — ``reset``
 (−360); вывод с ``INJECTED`` (``--injected-contains INJECTED``) —
 ``injected`` (−360); иначе — ``failed`` (−400). Тоньше шкала ``exec`` не
-различает: «нет ответа» и «сервер закрыл» здесь обе −400. Отличие от
-эталона, где проба встроена в geneva и fitness точнее: точный
-``external`` возможен только с одним воркером, а «Авто» ставит скорость
-(параллельные воркеры) выше тонкости шкалы.
+различает: «нет ответа» и «сервер закрыл» здесь обе −400.
+
+С geneva_c 1.2 (фича ``external_workers``) «Авто» этот скрипт не
+запускает: та же проба (:func:`measure`) идёт внутри zapret-gui как
+``--probe external`` с несколькими воркерами, и geneva получает точный
+фитнес. Скрипт остаётся для сборок geneva без этой фичи.
 
 Запуск — скриптом (``python3 <app>/core/geneva_auto_probe_cli.py …``):
 geneva зовёт ``sh -c`` из своего каталога, ``-m`` там не сработал бы.
@@ -54,6 +56,30 @@ def verdict(fitness: int, outcome: str):
     return 1, outcome or "failed"
 
 
+def measure(spec: dict, ports):
+    """Проба сервиса с блока портов ``ports`` (``(lo, hi)``):
+    ``(fitness, outcome, detail)`` по шкале geneva.
+
+    ``spec`` — :func:`core.geneva_auto_search.probe_spec`: ``kind``
+    (``web``/``replay``), ``ip``, ``port``, у сайта ``host`` и ``tls``, у
+    повтора ``udp``, ``fresh`` и ``payloads`` (байты первых пакетов);
+    ``timeout`` — необязательно."""
+    from core import geneva_auto_probes as pr
+    kw = {"timeout": spec["timeout"]} if spec.get("timeout") else {}
+    if spec.get("kind") == "web":
+        r = pr.probe_page(spec["ip"], int(spec["port"]),
+                          spec.get("host") or spec["ip"],
+                          tls=bool(spec.get("tls", True)), ports=ports, **kw)
+        fit, outcome = pr.page_fitness(r)
+    else:
+        r = pr.probe_replay(spec["ip"], int(spec["port"]),
+                            spec.get("payloads") or [],
+                            udp=bool(spec.get("udp")),
+                            fresh=spec.get("fresh") or "", ports=ports, **kw)
+        fit, outcome = pr.replay_fitness(r)
+    return fit, outcome, r.text()
+
+
 def run(argv) -> int:
     ap = argparse.ArgumentParser(prog="geneva_auto_probe")
     ap.add_argument("--kind", choices=("web", "replay"), required=True)
@@ -69,33 +95,23 @@ def run(argv) -> int:
     a = ap.parse_args(argv)
 
     from core import geneva_auto as ga
-    from core import geneva_auto_probes as pr
 
     try:
         ports = parse_lports(a.lports)
     except ValueError:
         print("failed: bad lports %s" % a.lports)
         return 1
-    if a.kind == "web":
-        kw = {"timeout": a.timeout} if a.timeout else {}
-        r = pr.probe_page(a.ip, a.port, a.host or a.ip, tls=bool(a.tls),
-                          ports=ports, **kw)
-        fit, outcome = pr.page_fitness(r)
-        detail = r.text()
-    else:
-        payloads = []
-        if a.replay_file:
-            try:
-                with open(a.replay_file, "r", encoding="ascii") as f:
-                    payloads = ga.from_base64(f.read().strip())
-            except OSError as e:
-                print("failed: replay file: %s" % e)
-                return 1
-        kw = {"timeout": a.timeout} if a.timeout else {}
-        r = pr.probe_replay(a.ip, a.port, payloads, udp=a.udp,
-                            fresh=a.fresh, ports=ports, **kw)
-        fit, outcome = pr.replay_fitness(r)
-        detail = r.text()
+    spec = {"kind": a.kind, "ip": a.ip, "port": a.port, "host": a.host,
+            "tls": bool(a.tls), "udp": a.udp, "fresh": a.fresh,
+            "timeout": a.timeout}
+    if a.kind == "replay" and a.replay_file:
+        try:
+            with open(a.replay_file, "r", encoding="ascii") as f:
+                spec["payloads"] = ga.from_base64(f.read().strip())
+        except OSError as e:
+            print("failed: replay file: %s" % e)
+            return 1
+    fit, outcome, detail = measure(spec, ports)
     code, word = verdict(fit, outcome)
     print("%s: %s" % (word, detail))
     return code

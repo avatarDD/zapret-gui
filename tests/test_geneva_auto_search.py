@@ -86,6 +86,37 @@ class TestPure(unittest.TestCase):
         self.assertIn("'/a b/p.py'", cmd)
         self.assertIn("{lports}", cmd)
 
+    def test_probe_spec(self):
+        self.assertEqual(gs.probe_spec(web_service()),
+                         {"ip": "93.184.216.7", "port": 443, "kind": "web",
+                          "host": "www.blocked.example", "tls": True})
+        s = ga.Service(key="ep:openvpn:udp:x", kind=ga.ENDPOINT,
+                       transport="udp", app="openvpn",
+                       replay=ga.to_base64([b"\x38abc"]),
+                       addresses=[{"ip": "93.184.216.40", "seen": 1}],
+                       ports=[1194])
+        spec = gs.probe_spec(s)
+        # первые пакеты — в самой пробе, файл для external не нужен
+        self.assertEqual((spec["kind"], spec["udp"], spec["fresh"],
+                          spec["payloads"]),
+                         ("replay", True, "", [b"\x38abc"]))
+        self.assertIsNone(gs.probe_spec(wg_service()))
+        self.assertIsNone(gs.probe_spec(web_service(host="a b")))
+
+    def test_external_probe(self):
+        seen = []
+
+        def measure(spec, ports):
+            seen.append((spec["host"], ports))
+            return -480, "timeout", "tls: no answer"
+
+        probe = gs.external_probe(gs.probe_spec(web_service()), measure)
+        self.assertEqual(probe("30064-30127"),
+                         (-480, "timeout: tls: no answer"))
+        self.assertEqual(seen, [("www.blocked.example", (30064, 30127))])
+        with self.assertRaises(ValueError):
+            probe("80-90")
+
     def test_passing(self):
         res = [{"strategy": "A", "avg_fitness": 395},
                {"strategy": "B", "avg_fitness": -400},
@@ -148,14 +179,81 @@ class TestAutoJobArgs(unittest.TestCase):
         self.assertEqual(a[a.index("--target") + 1], "replay:1.2.3.4:53")
         self.assertEqual(a[-1], "--resume")
 
+    def test_external(self):
+        params = gm.validate_auto_job({
+            "probe": "external", "cmd": "ignored", "target": "https:x.org",
+            "workers": 4, "checkpoint": "/st/auto/a.ckpt"})
+        self.assertEqual((params["probe"], params["cmd"]), ("external", ""))
+        for a in (gm.build_auto_eval_args("/bin/geneva", params, self.p),
+                  gm.build_auto_evolve_args("/bin/geneva", params, self.p)):
+            self.assertEqual(a[2:4], ["--probe", "external"])
+            # фитнес ставит zapret-gui: ни команды, ни таймаута exec
+            for opt in ("--cmd", "--injected-contains", "--timeout"):
+                self.assertNotIn(opt, a)
+            self.assertEqual(a[a.index("--workers") + 1], "4")
+            self.assertEqual(a[a.index("-e") + 1], "/rt/e.jsonl")
+        self.assertEqual(self.params["probe"], "exec")
+
     def test_validation(self):
         for bad in ({"cmd": "", "target": "x"},
                     {"cmd": "a\nb", "target": "x"},
                     {"cmd": "a", "target": "x; rm"},
                     {"cmd": "a", "target": "x", "protos": "tcp;"},
-                    {"cmd": "a", "target": "x", "workers": 99}):
+                    {"cmd": "a", "target": "x", "workers": 99},
+                    {"probe": "tls", "cmd": "a", "target": "x"}):
             with self.assertRaises(ValueError):
                 gm.validate_auto_job(bad)
+
+
+class _FakeProc:
+    def __init__(self):
+        r, w = os.pipe()
+        self.stdin = os.fdopen(w, "wb")
+        self.out = os.fdopen(r, "rb")
+        self.code = None
+
+    def poll(self):
+        return self.code
+
+
+class TestExternalAnswerer(unittest.TestCase):
+
+    def test_answers_by_id_in_finish_order(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, tmp, True)
+        events = os.path.join(tmp, "e.jsonl")
+        proc = _FakeProc()
+        self.addCleanup(proc.out.close)
+        slow = threading.Event()
+
+        def probe(lports):
+            if lports == "30000-30063":
+                slow.wait(5)
+                return 400, "ok"
+            return -360, "reset"
+
+        a = gm.ExternalAnswerer(proc, events, probe, workers=2).start()
+        with open(events, "a") as f:
+            f.write(json.dumps({"ev": "start", "mode": "eval"}) + "\n")
+            for i, lp in ((1, "30000-30063"), (2, "30064-30127")):
+                f.write(json.dumps({"ev": "eval_request", "id": i,
+                                    "strategy": "x", "run": 0,
+                                    "lports": lp}) + "\n")
+        first = json.loads(proc.out.readline())
+        self.assertEqual(first, {"id": 2, "fitness": -360.0,
+                                 "detail": "reset"})
+        slow.set()
+        self.assertEqual(json.loads(proc.out.readline())["id"], 1)
+        proc.code = 0                      # процесс вышел — stdin закрыт
+        a._thread.join(5)
+        self.assertFalse(a._thread.is_alive())
+        self.assertTrue(proc.stdin.closed)
+
+    def test_answer_line(self):
+        self.assertEqual(json.loads(gm.external_answer(3, True)),
+                         {"id": 3, "ok": True})
+        self.assertEqual(json.loads(gm.external_answer(4, (-480, "x" * 300)))
+                         ["detail"], "x" * 200)
 
 
 class TestManagerAutoJobs(_StubCase):
@@ -211,6 +309,54 @@ class TestManagerAutoJobs(_StubCase):
         self.assertIn("--resume", [c for c in self.calls()
                                    if c.startswith("evolve")][-1])
 
+    def test_external_eval_answers_every_worker(self):
+        """geneva_c 1.2: запросы воркеров разом, у каждого свой блок
+        портов; фитнес — из ответа zapret-gui."""
+        asked = []
+        both = threading.Barrier(2, timeout=5)
+
+        def answer(lports):
+            asked.append(lports)
+            both.wait()                       # оба запроса в полёте разом
+            return (400, "ok") if lports.startswith("30000") \
+                else (-480, "timeout")
+
+        r = self.mgr.start_auto_job(
+            "eval", self.params(cmd=""), answer=answer,
+            strategies=["[TCP:flags:PA]-drop-| \\/",
+                        "[TCP:flags:S]-drop-| \\/"])
+        self.assertTrue(r["ok"], r)
+        st = self.wait_auto()
+        self.assertEqual(st["status"], "done")
+        self.assertEqual(sorted(asked), ["30000-30063", "30064-30127"])
+        self.assertEqual([x["avg_fitness"] for x in st["results"]],
+                         [398, -480])
+        call = [c for c in self.calls() if c.startswith("eval")][-1]
+        self.assertIn("--probe external", call)
+        self.assertNotIn("--cmd", call)
+
+    def test_external_evolve_baseline_open(self):
+        ckpt = os.path.join(gm.paths()["auto"], "s.ckpt")
+        r = self.mgr.start_auto_job("evolve", self.params(
+            checkpoint=ckpt, generations=2), answer=lambda lp: (400, "ok"))
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.wait_auto()["status"], "not_blocked")
+
+    def test_external_probe_error_is_failed(self):
+        def answer(lports):
+            raise OSError("no route")
+
+        r = self.mgr.start_auto_job("eval", self.params(), answer=answer,
+                                    strategies=["[TCP:flags:PA]-drop-| \\/"])
+        self.assertTrue(r["ok"], r)
+        st = self.wait_auto()
+        self.assertEqual([x["avg_fitness"] for x in st["results"]], [-400])
+
+    def test_external_without_answer_refused(self):
+        r = self.mgr.start_auto_job("eval", self.params(probe="external"),
+                                    strategies=["[TCP:flags:PA]-drop-| \\/"])
+        self.assertFalse(r["ok"])
+
     def test_busy_while_manual_search(self):
         with mock.patch("core.bypass_engine.pause_for_search",
                         return_value=""), \
@@ -241,6 +387,7 @@ class FakeGeneva:
         self.evolve_status = evolve_status
         self.busy = busy
         self.jobs = []
+        self.answers = []
         self.last = {}
 
     def db_top(self, target, limit):
@@ -248,11 +395,13 @@ class FakeGeneva:
             {"strategy": "[TCP:flags:PA]-duplicate-| \\/", "ok": 2},
             {"strategy": "[TCP:flags:PA]-drop-| \\/", "ok": 0}]}
 
-    def start_auto_job(self, kind, params, strategies=None, resume=False):
+    def start_auto_job(self, kind, params, strategies=None, resume=False,
+                       answer=None):
         if self.busy:
             return {"ok": False, "busy": True, "error": "подбор уже идёт"}
         self.jobs.append((kind, dict(params), list(strategies or []),
                           resume))
+        self.answers.append(answer)
         if kind == "eval":
             self.last = {"running": False, "status": "done",
                          "results": self.eval_results}
@@ -341,6 +490,34 @@ class TestAutoSearch(unittest.TestCase):
         self.assertEqual(params["workers"], 4)
         self.assertIn("{lports}", params["cmd"])
         self.assertEqual(p.checks, [(good, True)])  # проба через обход
+
+    def test_external_probe_when_geneva_has_feature(self):
+        good = "[TCP:flags:PA]-fragment{tcp:8:True}-| \\/"
+        g = FakeGeneva(eval_results=[{"strategy": good, "avg_fitness": 396}])
+        g.detect = lambda: {"features": ["nfqueue", gs.EXTERNAL_FEATURE]}
+        measured = []
+
+        def measure(spec, ports):
+            measured.append(ports)
+            return 400, "ok", "page"
+
+        res = self.run_search(self.search(g, FakeProbes(works={good}),
+                                          measure=measure), web_service())
+        self.assertEqual(res.outcome, gs.APPLIED)
+        params = g.jobs[0][1]
+        self.assertEqual((params["probe"], params["cmd"]), ("external", ""))
+        self.assertEqual(g.answers[0]("30128-30191"), (400, "ok: page"))
+        self.assertEqual(measured, [(30128, 30191)])
+        # без повтора в файле: для external он не нужен
+        self.assertFalse(os.path.isdir(self.paths["auto_runtime"]))
+
+    def test_exec_probe_without_feature(self):
+        g = FakeGeneva(eval_results=[])
+        g.detect = lambda: {"features": ["nfqueue"]}
+        self.run_search(self.search(g, FakeProbes()), web_service())
+        self.assertEqual(g.jobs[0][1]["probe"], "exec")
+        self.assertIn("{lports}", g.jobs[0][1]["cmd"])
+        self.assertIsNone(g.answers[0])
 
     def test_evolve_when_quick_fails_then_second_verified(self):
         a, b = ("[TCP:flags:PA]-tamper{TCP:window:replace:1}-| \\/",

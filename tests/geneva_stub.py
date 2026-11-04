@@ -13,6 +13,11 @@ version / check / library / db / fw / run / evolve / eval, события JSONL
   GENEVA_STUB_BASELINE    "open" — цель не заблокирована (exit 7)
   GENEVA_STUB_GEN_DELAY   пауза на поколение, с (0.05)
   GENEVA_STUB_IGNORE_TERM 1 — `run` не выходит по SIGTERM (проверка SIGKILL)
+  GENEVA_STUB_EXTERNAL    1 — фича `external_workers` (geneva_c 1.2)
+
+`--probe external` у eval/evolve: запросы `eval_request` всех воркеров
+пишутся разом (у каждого свой блок `lports`), ответы читаются из stdin
+по `id` в любом порядке, фитнес оценки — из ответа.
 """
 
 import json
@@ -71,7 +76,9 @@ def on_term(signum, frame):
 def cmd_version():
     print(json.dumps({"version": "1.0.0", "proto": int(
         os.environ.get("GENEVA_STUB_PROTO", "1")), "os": "linux",
-        "arch": "x86_64", "features": ["nfqueue", "nft", "iptables"]}))
+        "arch": "x86_64", "features": ["nfqueue", "nft", "iptables"] + (
+            ["external_workers"] if os.environ.get("GENEVA_STUB_EXTERNAL")
+            == "1" else [])}))
     return 0
 
 
@@ -227,6 +234,15 @@ def cmd_evolve():
             ev.emit("baseline", blocked=False, outcome="ok")
             ev.emit("exit", code=7, reason="not_blocked")
             return 7
+        if opt("--probe") == "external":
+            base = external_round(ev, [""])
+            if base is None:
+                ev.emit("exit", code=2, reason="error")
+                return 2
+            if base[0][0] > 0:
+                ev.emit("baseline", blocked=False, outcome="ok")
+                ev.emit("exit", code=7, reason="not_blocked")
+                return 7
         ev.emit("baseline", blocked=True, outcome="reset")
     best = "[TCP:flags:PA]-duplicate-| \\/"
     while gen < gens:
@@ -236,9 +252,20 @@ def cmd_evolve():
         if stop.is_set():
             ev.emit("exit", code=0, reason="signal")
             return 0
-        ev.emit("eval", strategy=best, fitness=380, outcome="ok")
-        ev.emit("eval", strategy="[TCP:flags:S]-drop-| \\/", fitness=-400,
-                outcome="reset")
+        if opt("--probe") == "external":
+            res = external_round(ev, [best, "[TCP:flags:S]-drop-| \\/"])
+            if res is None:
+                ev.emit("exit", code=2, reason="error")
+                return 2
+            for s, (fit, detail) in zip(
+                    [best, "[TCP:flags:S]-drop-| \\/"], res):
+                ev.emit("eval", strategy=s, fitness=fit,
+                        outcome="ok" if fit > 0 else "failed",
+                        detail=detail)
+        else:
+            ev.emit("eval", strategy=best, fitness=380, outcome="ok")
+            ev.emit("eval", strategy="[TCP:flags:S]-drop-| \\/",
+                    fitness=-400, outcome="reset")
         ev.emit("generation", gen=gen, best_fitness=380, avg_fitness=-10,
                 unique=4, best=best)
         time.sleep(delay)
@@ -253,11 +280,56 @@ def cmd_evolve():
     return 0
 
 
+_ext_id = [0]
+
+
+def external_round(ev, strategies):
+    """Запросы воркеров разом, ответы по id в любом порядке:
+    ``[(fitness, detail)]`` в порядке стратегий или ``None`` (stdin
+    закрыт)."""
+    workers = int(opt("--workers", "1"))
+    out = []
+    for at in range(0, len(strategies), workers):
+        chunk = strategies[at:at + workers]
+        want = {}
+        for w, s in enumerate(chunk):
+            _ext_id[0] += 1
+            lo = 30000 + 64 * w
+            want[_ext_id[0]] = at + w
+            ev.emit("eval_request", id=_ext_id[0], strategy=s, run=0,
+                    lports="%d-%d" % (lo, lo + 63))
+        got = {}
+        while len(got) < len(want):
+            line = sys.stdin.readline()
+            if not line:
+                return None
+            ans = json.loads(line)
+            if ans.get("id") in want:
+                fit = ans.get("fitness")
+                if fit is None:
+                    fit = 400 if ans.get("ok") else -400
+                got[want[ans["id"]]] = (fit, ans.get("detail", ""))
+        out += [got[i] for i in sorted(got)]
+    return out
+
+
 def cmd_eval():
     ev = Events(opt("-e"))
     with open(opt("-f")) as f:
         items = [line.strip() for line in f if line.strip()]
     ev.emit("start", mode="eval", proto=1, pid=os.getpid())
+    if opt("--probe") == "external":
+        res = external_round(ev, items)
+        if res is None:
+            ev.emit("exit", code=2, reason="error")
+            return 2
+        for s, (fit, detail) in zip(items, res):
+            ev.emit("eval", strategy=s, fitness=fit - 2 if fit > 0 else fit,
+                    outcome="ok" if fit > 0 else "failed", runs=1,
+                    detail=detail)
+        ev.emit("exit", code=0 if any(f > 0 for f, _ in res) else 1,
+                reason="done")
+        return 0 if any(f > 0 for f, _ in res) else 1
     for i, s in enumerate(items):
         ok = i == 0
         ev.emit("eval", strategy=s, fitness=380 if ok else -400,

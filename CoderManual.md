@@ -503,7 +503,7 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | `bypass_engine.py` | Какой движок обходит (nfqws2 / geneva), переключение со снимками, пауза на подбор; учитывает «Авто» (`overview`, `switch`, `hold_geneva_for`, `boot_apply`). |
 | `geneva_auto.py` | «Авто», чистое ядро: модель, пороги, книга `Book` (машина состояний), план групп, шаблоны стратегий. Без I/O. |
 | `geneva_auto_observer.py` | «Авто», наблюдение: срез conntrack, оценка соединений, ключи сервисов, протокол из захвата. Чистые функции + класс `Observer`. |
-| `geneva_auto_probes.py` / `geneva_auto_probe_cli.py` | «Авто», пробы без обхода и с обходом, fitness; CLI-проба для `--probe exec`. |
+| `geneva_auto_probes.py` / `geneva_auto_probe_cli.py` | «Авто», пробы без обхода и с обходом, fitness; `measure()` — проба подбора для `--probe external` (geneva_c 1.2, ответы — `geneva_manager.ExternalAnswerer`), CLI-скрипт — для `--probe exec` на старых geneva. |
 | `geneva_auto_search.py` | «Авто», подбор одного сервиса: параллельный `eval`, `evolve` с продолжением, проверка на трафике. |
 | `geneva_auto_fw.py` / `geneva_auto_apply.py` | «Авто», правила групп (nft/iptables, golden-тесты) и применение групп (очереди, процессы, `stats`). |
 | `geneva_auto_manager.py` | «Авто», цикл `geneva-auto`, `auto.json`, включение/выключение, пауза; `get_geneva_auto_manager()`. |

@@ -112,8 +112,8 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
 | `start_search()` | `geneva evolve --probe tls\|http\|exec --host H ... --population N --generations M -q 311 --checkpoint search.ckpt --db db.jsonl --target T -e job-events.jsonl [--resume]` | root |
 | `start_eval()` | `geneva eval -f candidates.txt --host H ... -q 311` | root |
 | `auto_apply({q: стратегия})` (группы «Авто») | `geneva run -f <rt>/auto/qQ.strategy -q Q --firewall none -p 1-65535 --proto tcp,udp --mark 0x20000000 -c unix:<rt>/auto/qQ.sock -e <rt>/auto/qQ.jsonl --stats-interval 5 …`, Q = 340..347; правила — `core/geneva_auto_fw` (таблица `inet zapret_geneva_auto` или цепочки `ZGGA_POST/ZGGA_PRE` + ipset `geneva_auto_Q_n_v4/v6`) | root |
-| `start_auto_job("eval")` («Авто», быстрые кандидаты) | `geneva eval --probe exec --cmd "python3 core/geneva_auto_probe_cli.py … --lports {lports}" --injected-contains INJECTED -f state/geneva/auto/candidates.txt --workers N -q 311` | root |
-| `start_auto_job("evolve")` («Авто», сервис) | `geneva evolve --probe exec --cmd … --protos TCP\|UDP,IP\|UDP,IP,DNS,DNSQR --population 20 --generations 10 --workers N -q 311 --checkpoint state/geneva/auto/<sha1>.ckpt --db db.jsonl --target https:<host>\|replay:<ip>:<port> [--resume]` | root |
+| `start_auto_job("eval")` («Авто», быстрые кандидаты) | `geneva eval --probe external -f state/geneva/auto/candidates.txt --workers N -q 311 -e job-events.jsonl` (stdin — ответы `ExternalAnswerer`); без фичи `external_workers` — `--probe exec --cmd "python3 core/geneva_auto_probe_cli.py … --lports {lports}" --injected-contains INJECTED` | root |
+| `start_auto_job("evolve")` («Авто», сервис) | `geneva evolve --probe external\|exec … --protos TCP\|UDP,IP\|UDP,IP,DNS,DNSQR --population 20 --generations 10 --workers N -q 311 --checkpoint state/geneva/auto/<sha1>.ckpt --db db.jsonl --target https:<host>\|replay:<ip>:<port> [--resume]` | root |
 | `check_strategy()` | `geneva check --json -f -` | нет |
 | `library()` | `geneva library --json` | нет |
 | `db_top()` | `geneva db --db db.jsonl top --json` (печатает JSONL) | нет |
@@ -147,8 +147,19 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
 - **Задания «Авто»** занимают тот же слот задачи, что ручной подбор
   (`job.pid`), но пишут своё состояние (`state/geneva/auto/search.json`,
   `owner: "auto"`) и свои checkpoint'ы на сервис: «Продолжить» ручного
-  поиска их не подхватит. Обход на паузу не ставится. Проба `exec`
-  различает только ok (+400), `reset`/`INJECTED` (−360) и прочее (−400).
+  поиска их не подхватит. Обход на паузу не ставится.
+- **Проба заданий «Авто».** Если в `geneva version --json` есть фича
+  `external_workers` (geneva_c 1.2+) — `--probe external`: geneva пишет
+  `eval_request` (`id`, `lports`) в файл событий задания,
+  `ExternalAnswerer` в процессе GUI пробует сервис с блока портов воркера
+  (`geneva_auto_probe_cli.measure`, в своём потоке на запрос, до N
+  разом) и пишет в stdin `{"id":N,"fitness":F,"detail":"…"}` — по `id`, в
+  любом порядке. Фитнес точный (−360/−400/−480 по шкале geneva), python на
+  каждую оценку не запускается. Процесс с пайпом в stdin перезапуск GUI не
+  переживает: stdin закрывается, geneva останавливает поиск (checkpoint
+  остаётся). Без фичи — `--probe exec` со скриптом
+  `geneva_auto_probe_cli.py`: шкала только ok (+400), `reset`/`INJECTED`
+  (−360) и прочее (−400).
 - **Проба `https`** у нас означает `--probe exec` с `curl -sf --local-port {lports}`
   (блок портов воркера), полная загрузка страницы. TLS-проба geneva не
   завершает рукопожатие, а `curl` без `-f` засчитывает HTTP-ошибку как
@@ -379,7 +390,7 @@ MCP (`core/mcp/tools/geneva.py`):
 | `core/geneva_auto.py` | чистое ядро: `Service`/`Sample`, пороги одним блоком, книга `Book` (переходы AutoBook), `plan_groups`/`target`, шаблоны `AUTO_CANDIDATES_*`, `candidates_for`, `protos_for`, `search_target` |
 | `core/geneva_auto_observer.py` | срез conntrack → `Sample`: разбор строк, фильтр «свой/чужой», оценка `judge`, ключи `classify`, протокол и replay из захвата `analyze_capture` |
 | `core/geneva_auto_probes.py` | пробы без обхода и с обходом, fitness для geneva |
-| `core/geneva_auto_probe_cli.py` | проба для `geneva eval/evolve --probe exec` (скрипт, порт воркера из `{lports}`) |
+| `core/geneva_auto_probe_cli.py` | проба «Авто» с блока портов воркера: `measure()` — для `--probe external` (в процессе GUI), скрипт — для `--probe exec` без фичи `external_workers` |
 | `core/geneva_auto_search.py` | подбор одного сервиса в своём потоке |
 | `core/geneva_auto_fw.py` | правила групп: `build_auto_rules`, `ipt_commands`, `teardown_commands` |
 | `core/geneva_auto_apply.py` | очереди групп, процессы + правила, пробная группа, `stats` |
@@ -485,8 +496,9 @@ MCP (`core/mcp/tools/geneva.py`):
    свой checkpoint `state/geneva/auto/<sha1>.ckpt`, следующий раз
    `--resume` +5 поколений); до 3 прошедших — пробной группой на трафике
    сервиса и пробой с обходом. Без пробы — кандидат за кандидатом, успех —
-   поток клиента за 50 с. Проба `exec` различает только ok/reset+INJECTED/
-   прочее (+400/−360/−400): точный `external` — один воркер. Слот задачи
+   поток клиента за 50 с. Проба — `external` с N воркерами (geneva_c 1.2,
+   `external_workers`, точный фитнес), без фичи — `exec` (ok/reset+INJECTED/
+   прочее, +400/−360/−400). Слот задачи
    общий с ручным подбором; ручной «Стоп» даёт `busy`, не `not_found`.
 7. **Применение.** Группа = стратегия = свой `geneva run --firewall none`
    на очереди 340..340+N−1 (`geneva.auto.max_groups`, 4, до 8). Стратегия
