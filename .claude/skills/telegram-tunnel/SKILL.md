@@ -498,7 +498,7 @@ chmod +x tg-mtproxy-client-linux-amd64
 #   -tunnel-secret string
 #       Shared secret for tunnel auth (build-injected; ...) (default "63d91c...")
 #   -tunnel-url string
-#       Tunnel relay WebSocket URL (default "wss://213.176.74.63.nip.io/ws")
+#       Tunnel relay WebSocket URL (default "wss://<domain>/ws")
 ```
 
 Никакого реверса не нужно: Go сам показывает дефолты флагов. Полученные
