@@ -906,10 +906,10 @@ class NFQWSManager:
         except Exception:
             unified_args = []
 
-        return self._dedup_lua_init(
+        return self._dedup_list_files(self._dedup_lua_init(
             [binary] + base_args + writable + lua_args + unified_args
             + strategy_args
-        )
+        ))
 
     def dry_run(self, strategy_args: list, timeout: float = 8.0) -> dict:
         """Проверить стратегию через `nfqws2 --intercept=0` без поднятия NFQUEUE.
@@ -1391,6 +1391,68 @@ class NFQWSManager:
             _add(out, _FOOL_EXT_LUA_FILE)
 
         return out
+
+    @staticmethod
+    def _dedup_list_files(args: list) -> list:
+        """Убрать повторную регистрацию одного файла списка в профиле.
+
+        С zapret2 1.0.7 RegisterHostlist/RegisterIpset (nfq2/hostlist.c,
+        nfq2/ipset.c) отказывают, если тот же файл уже есть в этом профиле
+        в списке того же типа, — nfqws2 печатает «failed to register
+        hostlist» и завершается с кодом 1. До 1.0.7 повтор молча
+        игнорировался, поэтому он мог годами жить в пользовательской
+        стратегии или складываться из нашей подмешки и списка самой
+        стратегии. Повтор ничего не добавляет, и мы его убираем.
+
+        Тип списка: ``--hostlist`` и ``--hostlist-auto`` — один (оба
+        include), ``--hostlist-exclude``, ``--ipset``, ``--ipset-exclude`` —
+        свои. Если файл в профиле — автолист, обычный ``--hostlist`` на
+        него лишний (автолист и так его читает) и убирается он, а не
+        ``--hostlist-auto``. Граница профиля — ``--new``/``--template``.
+        Сравнение — по нормализованному пути, как ``realpath`` у nfqws2.
+        """
+        kinds = (("--hostlist-auto=", "hl"), ("--hostlist-exclude=", "hlx"),
+                 ("--hostlist=", "hl"), ("--ipset-exclude=", "ipx"),
+                 ("--ipset=", "ip"))
+
+        def parse(arg):
+            if not isinstance(arg, str):
+                return None
+            for flag, kind in kinds:
+                if arg.startswith(flag) and arg[len(flag):]:
+                    path = os.path.realpath(arg[len(flag):])
+                    return flag, (kind, path)
+            return None
+
+        def boundary(arg):
+            return isinstance(arg, str) and (
+                arg in ("--new", "--template")
+                or arg.startswith(("--new=", "--template=")))
+
+        drop = set()
+        profile = []                     # индексы аргументов профиля
+        for index in range(len(args) + 1):
+            if index < len(args) and not boundary(args[index]):
+                profile.append(index)
+                continue
+            items = [(i, parse(args[i])) for i in profile]
+            items = [(i, item) for i, item in items if item]
+            auto = {key for _i, (flag, key) in items
+                    if flag == "--hostlist-auto="}
+            seen = set()
+            for i, (flag, key) in items:
+                if (key in seen or (flag == "--hostlist=" and key in auto)):
+                    drop.add(i)
+                    continue
+                seen.add(key)
+            profile = []
+        if not drop:
+            return args
+        for index in sorted(drop):
+            log.warning("Повтор списка в профиле убран: %s (nfqws2 1.0.7+ "
+                        "не запускается с одним файлом дважды)" % args[index],
+                        source="nfqws")
+        return [a for i, a in enumerate(args) if i not in drop]
 
     @staticmethod
     def _dedup_lua_init(args: list) -> list:

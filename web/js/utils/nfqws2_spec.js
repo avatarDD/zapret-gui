@@ -7,7 +7,7 @@
  *
  * Опирается на:
  *   - SKILL §0   — что изменилось в zapret2 1.0.x
- *   - SKILL §3   — CLI-опции nfqws2 (v1.0.6)
+ *   - SKILL §3   — CLI-опции nfqws2 (v1.0.7)
  *   - SKILL §4   — диапазоны --in-range/--out-range
  *   - SKILL §5/6 — payload-типы и pos-маркеры
  *   - SKILL §8   — desync-функции zapret-antidpi.lua и блоки опций (fooling/…)

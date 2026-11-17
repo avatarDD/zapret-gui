@@ -74,11 +74,13 @@ description: >-
 | `-ext-ctl <addr>` | переопределить external-controller | нет (через YAML) |
 | `-ext-ui`, `-secret`, `-m` | UI/секрет/geodata-режим | нет |
 
-Таблица — только то, что вызываем мы; полный список шире. В v1.19.33 есть
+Таблица — только то, что вызываем мы; полный список шире. В v1.19.34 есть
 ещё `-config` (конфиг base64-строкой), `-ext-ctl-tls`/`-ext-ctl-unix`/
 `-ext-ctl-pipe`/`-ext-ctl-routing-mark`, `-post-up`/`-post-down` (скрипты),
 `-age-secret-key`. Почти все дублируются переменными `CLASH_*` — сверено с
-`main.go` mihomo v1.19.33 (с 1.19.29 не изменился).
+`main.go` mihomo v1.19.34 (с 1.19.29 не изменился). Подкоманда
+`mihomo generate` в v1.19.34 научилась `ss-password <128|256|512>` (пароль
+для shadowsocks 2022); мы её не вызываем.
 
 Запуск у нас: `mihomo -d <config_dir> -f <config.yaml>` в новой сессии
 (`start_new_session`), `stdin=DEVNULL`, stdout/stderr → лог-файл,
@@ -289,7 +291,7 @@ Linux+nftables, вместе с `auto-route`), `auto-detect-interface`, `dns-hij
 
 `sniffer` определяет домен по содержимому соединения (TLS SNI / HTTP Host),
 когда его неоткуда взять иначе. Ключи и **дефолты сверены с
-`config/config.go` v1.19.33** (`DefaultRawConfig`; в 1.19.33 дефолты не менялись):
+`config/config.go` v1.19.34** (`DefaultRawConfig`; в 1.19.33 и 1.19.34 дефолты не менялись):
 
 | Ключ | Дефолт | Смысл |
 |------|--------|-------|
@@ -378,14 +380,14 @@ mihomo. Мини-парсер YAML + реестр конвертеров `_CLASH
 | `wireguard` | В sing-box это не outbound, а **`endpoint`** (outbound удалён в 1.13) — нужен отдельный путь, см. скил `singbox` §5.3 |
 | `tailscale` | Тоже не outbound: в sing-box это endpoint/service |
 | `ssr` | Аналога нет: ShadowsocksR из sing-box выпилен ещё в 1.6 |
-| `snell` | **Появился у sing-box в 1.14** (`outbound/snell`, реализация `sing-snell`) — с этой версии конвертер написать можно, раньше было некуда |
+| `snell` | **Появился у sing-box в 1.14** (`outbound/snell`, реализация `sing-snell`) — с этой версии конвертер написать можно, раньше было некуда. ⚠️ mihomo v1.19.34 добавил Snell **v6** (`version: 6` + `mode: default/unshaped/unsafe-raw`, obfs `http`/`tls` на v6 запрещены): при написании конвертера сверять, какие версии понимает sing-snell |
 | `mieru`, `masque`, `shadowquic`, `trusttunnel`, `sudoku`, `rematch` | Протоколы, которые есть только у mihomo |
 | `openvpn` | У sing-box с **1.14** есть, но как **`endpoint`** (`openvpn-client`/`openvpn-server`), а не outbound — путь как у `wireguard` |
 | `zerotier` | Оверлейная mesh-сеть (добавлен в v1.19.30; в v1.19.31 у него появился `identity-secret`), у sing-box аналога нет вовсе |
 | `easytier` | Оверлейная mesh-сеть, добавлена в **v1.19.31**, у sing-box аналога нет |
 | `direct`, `dns`, `reject` | Служебные, при импорте узлов не нужны |
 
-Список типов сверен с `adapter/parser.go` mihomo v1.19.33 и каталогами
+Список типов сверен с `adapter/parser.go` mihomo v1.19.34 и каталогами
 `docs/configuration/outbound/` + `docs/configuration/endpoint/` sing-box
 v1.14.1. Апстрим mihomo добавляет протоколы заметно быстрее — при следующей
 сверке проверять, не появился ли аналог у обоих (так и вышло со `snell` и
@@ -393,7 +395,7 @@ v1.14.1. Апстрим mihomo добавляет протоколы замет�
 `grep -oE 'case "[a-z0-9]+"' adapter/parser.go | sort -u`: 27 веток, из них
 3 служебных (`direct`/`dns`/`reject`) → **24 типа прокси**, конвертируем 6.
 (На v1.19.30 было 23 — прибавился `easytier`; в v1.19.32 `parser.go` не
-менялся, в v1.19.33 тоже — по-прежнему 24.)
+менялся, в v1.19.33 и v1.19.34 тоже — по-прежнему 24.)
 
 > Нюанс YAML: `short-id: 01` парсится как int `1` — конвертер обрабатывает это
 > best-effort, чтобы не потерять ведущий ноль. `proxy-groups`/`rules` при таком

@@ -216,6 +216,18 @@ class TestAwgHeaderRange(unittest.TestCase):
         self.assertTrue(self._errors_for("Jmin = abc", "Jmin"))
         self.assertTrue(self._errors_for("S1 = 1-2", "S1"))
 
+    def test_jmin_greater_than_jmax_rejected(self):
+        # amneziawg-go v3.1.20261116 отвергает jmin > jmax (device/uapi.go)
+        self.assertTrue(self._errors_for("Jmin = 80\nJmax = 40", "Jmin"))
+        self.assertEqual(self._errors_for("Jmin = 40\nJmax = 40", "Jmin"), [])
+        self.assertEqual(self._errors_for("Jmin = 40\nJmax = 70", "Jmin"), [])
+
+    def test_negative_tag_length_rejected(self):
+        # и отрицательную длину в <r>/<rc>/<rd>/<dz> (device/obf.go)
+        for tag in ("<r -5>", "<rc -1>", "<rd -2>", "<dz -3>"):
+            self.assertTrue(self._errors_for("I2 = <b 0xc0ff>%s" % tag, "I2"), tag)
+        self.assertEqual(self._errors_for("I2 = <b 0xc0ff><r 16><rd 4>", "I2"), [])
+
 
 class TestSetconfZeroObfuscation(unittest.TestCase):
     """

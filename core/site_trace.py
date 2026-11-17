@@ -144,17 +144,25 @@ def parse_profile(args) -> dict:
 def domain_hit(domain: str, entries) -> str:
     """Какая запись покрывает домен ("" — никакая).
 
-    Как nfqws2: запись покрывает сам домен и поддомены, ``^`` в начале —
-    только сам домен.
+    Как nfqws2 (nfq2/hostlist.c SearchHostList): имя проверяется от самого
+    длинного к TLD, первая найденная запись решает. Запись покрывает сам
+    домен и поддомены, ``^`` в начале — только сам домен. С zapret2 1.0.7
+    ``!`` в начале — локальное исключение: «com» и «!vk.com» покрывают
+    *.com, кроме vk.com и его поддоменов. Префиксы сочетаются в любом
+    порядке.
     """
     entries = set(entries or ())
-    if "^" + domain in entries or domain in entries:
-        return "^" + domain if "^" + domain in entries else domain
     parts = domain.split(".")
-    for i in range(1, len(parts)):
-        parent = ".".join(parts[i:])
-        if parent in entries:
-            return parent
+    for i in range(len(parts)):
+        name = ".".join(parts[i:])
+        full = i == 0
+        if ("!" + name) in entries or (full and (
+                "!^" + name in entries or "^!" + name in entries)):
+            return ""
+        if full and "^" + name in entries:
+            return "^" + name
+        if name in entries:
+            return name
     return ""
 
 
