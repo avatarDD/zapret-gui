@@ -659,6 +659,9 @@ class HostlistManager:
         обычно вставляют руками:
           - «^example.com» — строгое совпадение без поддоменов, префикс
             сохраняется (www при этом не срезается: запись точная);
+          - «!example.com» — локальное исключение (zapret2 1.0.7+): «com» и
+            «!vk.com» в одном списке — всё *.com, кроме vk.com. Сочетается
+            с «^» в любом порядке, пишется как «!^example.com»;
           - «*.example.com» и «.example.com» → «example.com»: wildcard'ов
             nfqws2 не знает, а поддомены покрывает сам;
           - кириллица (IDN) → punycode: nfqws2 сравнивает с SNI/Host, где
@@ -676,8 +679,15 @@ class HostlistManager:
 
         text = text.strip().lower()
 
-        strict = text.startswith("^")
-        if strict:
+        # Префиксы nfqws2 (nfq2/hostlist.c addpool) в любом порядке:
+        # «^» — без поддоменов, «!» (zapret2 1.0.7+) — локальное исключение
+        # из этого же списка. Пишем их в одном порядке: «!^имя».
+        strict = exempt = False
+        while text[:1] in ("^", "!"):
+            if text[0] == "^":
+                strict = True
+            else:
+                exempt = True
             text = text[1:].strip()
 
         # Убираем протокол
@@ -706,7 +716,7 @@ class HostlistManager:
         if not text:
             return None
 
-        prefix = "^" if strict else ""
+        prefix = ("!" if exempt else "") + ("^" if strict else "")
 
         try:
             import ipaddress

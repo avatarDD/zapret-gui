@@ -85,6 +85,10 @@ AWG31_INTERFACE_FIELDS = (
 # (README: «Header protection requires S1-S4 value to be 12 at least»).
 AWG3_HEADER_PROTECTION_MIN_S = 12
 
+# Тег I1..I5 с отрицательной длиной: `<r -5>`, `<rc -1>`, `<rd -2>`, `<dz -3>`.
+# С amneziawg-go v3.1.20261116 демон отвергает такой I-пакет (parseObfLen).
+_AWG_NEGATIVE_LEN_TAG = re.compile(r"<\s*(?:r|rc|rd|dz)\s+-\s*\d+\s*>", re.I)
+
 # Значения, которые принимает parse_bool в amneziawg-tools src/config.c:
 # `on`/`off` без учёта регистра либо любое десятичное число (0 = выкл).
 AWG_BOOL_WORDS = ("on", "off")
@@ -767,6 +771,32 @@ def validate(cfg: dict) -> list:
                 int(iface[k])
             except (TypeError, ValueError):
                 errors.append(f"[Interface] {k} должен быть числом")
+
+    # amneziawg-go v3.1.20261116: jmin > jmax демон отвергает целиком
+    # («jmin (N) must not be greater than jmax (M)», device/uapi.go), до
+    # того размер junk-пакета молча переполнялся. Интерфейс с такой
+    # парой не поднимется — говорим об этом на импорте.
+    try:
+        jmin = int(str(iface.get("Jmin", "")).strip())
+        jmax = int(str(iface.get("Jmax", "")).strip())
+    except (TypeError, ValueError):
+        pass
+    else:
+        if jmin > jmax:
+            errors.append(
+                f"[Interface] Jmin ({jmin}) не может быть больше "
+                f"Jmax ({jmax})")
+
+    # Там же: отрицательная длина в тегах <r>/<rc>/<rd>/<dz> внутри I1..I5
+    # теперь ошибка разбора (device/obf.go parseObfLen), а не пустой тег.
+    for k in ("I1", "I2", "I3", "I4", "I5"):
+        raw = iface.get(k)
+        if raw in ("", None):
+            continue
+        if _AWG_NEGATIVE_LEN_TAG.search(str(raw)):
+            errors.append(
+                f"[Interface] {k}: длина в тегах <r>/<rc>/<rd>/<dz> не "
+                f"может быть отрицательной")
 
     # AWG 3+: тайминги и паддинг — тип `uint32,range` («a-b» / «a» /
     # «(off)»), поэтому строгим int их проверять нельзя.

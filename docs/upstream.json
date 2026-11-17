@@ -39,8 +39,8 @@
       "id": "zapret2",
       "repo": "bol-van/zapret2",
       "kind": "release",
-      "pinned": "v1.0.6",
-      "verified_at": "2026-10-21",
+      "pinned": "v1.0.7",
+      "verified_at": "2026-11-17",
       "skill": ".claude/skills/nfqws2-strategies/SKILL.md",
       "mentions": [
         ".claude/skills/nfqws2-strategies/SKILL.md",
@@ -50,11 +50,11 @@
         "import/lua/zapret-lib.lua": "6bf528fef1f0fc3c65e189216fc8a06bb873f6e25d1c29d2bfa4695a09b73440",
         "import/lua/zapret-antidpi.lua": "6d1fa9168e5de1682fef91fd174f68b58c50f6739ef00f42ca7db2b940b6246d",
         "import/lua/zapret-auto.lua": "23a9b99a776d868d92f4cc0ee5110f5c1f12fe746620d9c0337022dbc2f52df0",
-        "import/lua/zapret-obfs.lua": "e2d75840a9f1e3bfb74fa7463886932e03eb02ab33c6146d6392d6a231d1cfd5",
+        "import/lua/zapret-obfs.lua": "75d91452eae06c672aecebe87d753fa968f939d95452a6103292aed658c533f3",
         "import/lua/zapret-pcap.lua": "6866c37c92fbc62075accf94228da48af618c7f416edc682eba99b2196e05f45",
         "import/lua/zapret-tests.lua": "82664cb50a751a531b63dce094ac03de5045b16b489e726ff32a9a1034811459"
       },
-      "note": "core-lua жёстко привязана к бинарнику через NFQWS2_COMPAT_VER, но защита _protected_core_lua срабатывает только на СМЕНЕ compat-версии. Внутри одной (все 1.0…1.0.4 = 6) наш бандл перезаписывает upstream-копию, поэтому отставший бандл откатывает пользователю апстримные фиксы. Отсюда побайтовый пиннинг."
+      "note": "core-lua жёстко привязана к бинарнику через NFQWS2_COMPAT_VER, но защита _protected_core_lua срабатывает только на СМЕНЕ compat-версии. Внутри одной (все 1.0…1.0.4 = 6) наш бандл перезаписывает upstream-копию, поэтому отставший бандл откатывает пользователю апстримные фиксы. Отсюда побайтовый пиннинг. 1.0.7 CLI nfqws2 не менял (у winws2 — --wf-priority), из core-lua тронул только zapret-obfs (udp2icmp: cgnat, id_lifetime), но поменял поведение списков: префикс ! в хостлисте — локальное исключение (нормализатор и list_lint его понимают), а повторная регистрация того же файла в профиле в списке того же типа валит запуск — NFQWSManager._dedup_list_files убирает повторы из argv."
     },
     {
       "id": "sing-box",
@@ -73,27 +73,27 @@
       "id": "mihomo",
       "repo": "MetaCubeX/mihomo",
       "kind": "release",
-      "pinned": "v1.19.33",
-      "verified_at": "2026-10-30",
+      "pinned": "v1.19.34",
+      "verified_at": "2026-11-17",
       "skill": ".claude/skills/mihomo/SKILL.md",
       "mentions": [
         ".claude/skills/mihomo/SKILL.md"
       ],
       "vendored": {},
-      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.30 их 24, конвертируем 6. В v1.19.30 main.go не изменился, в parser.go добавился тип `zerotier` (оверлейная mesh-сеть, аналога в sing-box нет). В v1.19.32 main.go и parser.go не изменились; поменялась семантика TUN: стек по умолчанию теперь `mips` (был `gvisor`), у `tun` появился `congestion-controller`, у `load-balance` — `hash-key`. Наши генераторы пишут `stack` явно, код не затронут. В v1.19.33 main.go и parser.go снова не изменились; у TUN появился `dns-mode` (пусто = прежнее поведение), наш make_tun() его не пишет."
+      "note": "Содержимое YAML мы почти не трогаем (валидация — на `mihomo -t`), поэтому риск ниже, чем у sing-box. Сверять при обновлении надо две вещи: CLI-флаги (main.go) и список типов прокси (adapter/parser.go) — от второго зависит покрытие нашего конвертера clash-YAML → sing-box (core/clash_yaml.py). Апстрим добавляет протоколы быстро: на v1.19.30 их 24, конвертируем 6. В v1.19.30 main.go не изменился, в parser.go добавился тип `zerotier` (оверлейная mesh-сеть, аналога в sing-box нет). В v1.19.32 main.go и parser.go не изменились; поменялась семантика TUN: стек по умолчанию теперь `mips` (был `gvisor`), у `tun` появился `congestion-controller`, у `load-balance` — `hash-key`. Наши генераторы пишут `stack` явно, код не затронут. В v1.19.33 main.go и parser.go снова не изменились; у TUN появился `dns-mode` (пусто = прежнее поведение), наш make_tun() его не пишет. В v1.19.34 main.go, parser.go и дефолты config.go не изменились; у snell появилась версия 6 (`mode`), у `generate` — `ss-password`, sing-tun 0.4.29 (фикс auto-route). Код не затронут."
     },
     {
       "id": "amneziawg-go",
       "repo": "amnezia-vpn/amneziawg-go",
       "kind": "release",
-      "pinned": "v3.1.20260828",
-      "verified_at": "2026-09-15",
+      "pinned": "v3.1.20261116",
+      "verified_at": "2026-11-17",
       "skill": ".claude/skills/awg/SKILL.md",
       "mentions": [
         ".claude/skills/awg/SKILL.md"
       ],
       "vendored": {},
-      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0, а с ветки v3.x — ещё и поколения AWG 3+ (HeaderProtectionKey, ContentPaddingAddition, тайминги, тип range): в docs.amnezia.org его нет. Проверять при обновлении: UAPI-ключи в device/uapi.go (что демон вообще примет) и socketDirectory в ipc/uapi_unix.go — в v3 это /var/run/amneziawg, у сборок на базе wireguard-go /var/run/wireguard; оба каталога перечислены в awg_platform.UAPI_SOCKET_DIRS. И не полагаться на один README: v3.1.20260814 добавил UAPI-ключи random_trailers/disable_cookies, не тронув README ни на строку — поколение 3.1 (AWG31_INTERFACE_FIELDS) собрано по device/uapi.go, send.go и receive.go. socketDirectory на 3.1 прежний."
+      "note": "README апстрима = спецификация параметров обфускации (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5) и версий протокола 1.0/1.5/2.0, а с ветки v3.x — ещё и поколения AWG 3+ (HeaderProtectionKey, ContentPaddingAddition, тайминги, тип range): в docs.amnezia.org его нет. Проверять при обновлении: UAPI-ключи в device/uapi.go (что демон вообще примет) и socketDirectory в ipc/uapi_unix.go — в v3 это /var/run/amneziawg, у сборок на базе wireguard-go /var/run/wireguard; оба каталога перечислены в awg_platform.UAPI_SOCKET_DIRS. И не полагаться на один README: v3.1.20260814 добавил UAPI-ключи random_trailers/disable_cookies, не тронув README ни на строку — поколение 3.1 (AWG31_INTERFACE_FIELDS) собрано по device/uapi.go, send.go и receive.go. socketDirectory на 3.1 прежний. v3.1.20261116 новых ключей не добавил (README наконец описал random_trailers/disable_cookies), но демон теперь отвергает jmin > jmax и отрицательную длину в тегах <r>/<rc>/<rd>/<dz> у I1–I5 — awg_config.validate() ловит оба случая на импорте."
     },
     {
       "id": "amneziawg-tools",

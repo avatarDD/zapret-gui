@@ -32,6 +32,26 @@ class TestLintEntries(unittest.TestCase):
         self.assertEqual(r["issues"][ll.CODE_COVERED]["samples"][0]["fix"],
                          "example.com")
 
+    def test_local_exemption(self):
+        # zapret2 1.0.7: «!» — исключение внутри списка, «com» + «!vk.com».
+        # Не мусор и не «покрыто родителем»: под родителем оно и нужно.
+        r = ll.lint_entries(["com", "!vk.com", "!^ok.com"], normalize=NORM)
+        self.assertEqual(r["issues"], {})
+        self.assertEqual(ll.fix_entries(["com", "!vk.com", "a.com"],
+                                        normalize=NORM), ["com", "!vk.com"])
+        # исключение в списке обхода — не обход и с exclude не конфликтует
+        cc = ll.cross_check({"other": ["!vk.com"], "netrogat": ["vk.com"]},
+                            excludes={"netrogat"}, normalize=NORM)
+        self.assertEqual(cc["conflicts"], [])
+
+    def test_prefix_normalization(self):
+        self.assertEqual(NORM("!vk.com"), "!vk.com")
+        self.assertEqual(NORM("^!vk.com"), "!^vk.com")
+        self.assertEqual(NORM("!^vk.com"), "!^vk.com")
+        self.assertEqual(NORM("!*.vk.com"), "!vk.com")
+        self.assertEqual(NORM("!https://www.vk.com/feed"), "!vk.com")
+        self.assertIsNone(NORM("!"))
+
     def test_invalid_is_reported_not_fixed(self):
         r = ll.lint_entries(["not a domain!"], normalize=NORM)
         self.assertEqual(r["issues"][ll.CODE_INVALID]["count"], 1)

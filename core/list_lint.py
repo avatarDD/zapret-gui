@@ -61,6 +61,10 @@ def _normalizer():
     return get_hostlist_manager().normalize_domain
 
 
+# Префиксы записи хостлиста nfqws2: «^» — строго, «!» — исключение (1.0.7).
+_PREFIXES = ("^", "!")
+
+
 def _parents(domain: str):
     """b.example.com, example.com, com для a.b.example.com.
 
@@ -110,7 +114,7 @@ def lint_entries(entries, normalize=None) -> dict:
         if norm in seen:
             add(CODE_DUPLICATE, entry)
             continue
-        if entry.lstrip("^").startswith(("*.", ".")):
+        if entry.lstrip("^!").startswith(("*.", ".")):
             add(CODE_WILDCARD, entry, norm)
             changed += 1
         elif norm != entry:
@@ -119,10 +123,13 @@ def lint_entries(entries, normalize=None) -> dict:
         seen.add(norm)
         normalized.append(norm)
 
-    plain = {d for d in normalized if not d.startswith("^")}
+    # «^» — без поддоменов, «!» — исключение (zapret2 1.0.7): ни то, ни
+    # другое не покрывает поддомены и само «покрытым» не бывает —
+    # «!vk.com» под «com» как раз и нужен.
+    plain = {d for d in normalized if not d.startswith(_PREFIXES)}
     covered = 0
     for domain in normalized:
-        if domain.startswith("^"):
+        if domain.startswith(_PREFIXES):
             continue
         parent = next((p for p in _parents(domain) if p in plain), None)
         if parent:
@@ -175,9 +182,10 @@ def fix_entries(entries, normalize=None) -> list:
             continue
         seen.add(value)
         out.append(value)
-    plain = {d for d in out if not d.startswith("^")}
+    plain = {d for d in out if not d.startswith(_PREFIXES)}
     return [d for d in out
-            if d.startswith("^") or not any(p in plain for p in _parents(d))]
+            if d.startswith(_PREFIXES)
+            or not any(p in plain for p in _parents(d))]
 
 
 def cross_check(lists: dict, excludes=(), normalize=None,
@@ -218,6 +226,8 @@ def cross_check(lists: dict, excludes=(), normalize=None,
     conflicts = []
     bypass_set = None if bypass is None else set(bypass)
     for entry, names in sorted(where.items()):
+        if entry.startswith("!"):
+            continue                # исключение внутри списка — не обход
         by = names - excludes
         if bypass_set is not None:
             by &= bypass_set

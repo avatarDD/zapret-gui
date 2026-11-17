@@ -48,6 +48,21 @@ class TestMatch(unittest.TestCase):
         self.assertEqual(st.domain_hit("notyoutube.com", ["youtube.com"]),
                          "")
 
+    def test_domain_hit_local_exemption(self):
+        # zapret2 1.0.7: «com» + «!vk.com» — всё *.com, кроме vk.com
+        lst = ["com", "!vk.com"]
+        self.assertEqual(st.domain_hit("ya.com", lst), "com")
+        self.assertEqual(st.domain_hit("vk.com", lst), "")
+        self.assertEqual(st.domain_hit("m.vk.com", lst), "")
+        # самая длинная запись решает: a.vk.com в списке явно
+        self.assertEqual(st.domain_hit("a.vk.com", lst + ["a.vk.com"]),
+                         "a.vk.com")
+        # строгое исключение — только сам домен, поддомены снова под «com»
+        for strict in ("!^vk.com", "^!vk.com"):
+            self.assertEqual(st.domain_hit("vk.com", ["com", strict]), "")
+            self.assertEqual(st.domain_hit("m.vk.com", ["com", strict]),
+                             "com")
+
     def test_ip_hit(self):
         self.assertIn("10.0.0.0/8", st.ip_hit(["10.1.2.3"], ["10.0.0.0/8"]))
         self.assertEqual(st.ip_hit(["1.1.1.1"], ["10.0.0.0/8", "bad"]), "")
