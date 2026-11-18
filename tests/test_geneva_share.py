@@ -54,6 +54,69 @@ class TestImport(unittest.TestCase):
         self.assertEqual(sh.parse_import(42)[0], [])
 
 
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                    "geneva")
+X = "[TCP:flags:PA]-xfake{blob=z2_tls_clienthello_vk_com;ttl=3}-| \\/"
+
+
+class TestVersion2(unittest.TestCase):
+    """Версия 2 — x-стратегии geneva_c 2.0 (договор с Zapret2_AutoTuner)."""
+
+    def test_export_marks_x_strategies(self):
+        doc = sh.build_export([{"strategy": X, "services": ["vk.com"]},
+                               {"strategy": TCP}], now=0)
+        self.assertEqual(doc["version"], 2)
+        x, plain = doc["items"]
+        self.assertIs(x["ext"], True)
+        self.assertEqual(x["blobs"], ["z2_tls_clienthello_vk_com"])
+        self.assertNotIn("ext", plain)
+        self.assertNotIn("blobs", plain)
+
+    def test_golden_v2_round_trip(self):
+        with open(os.path.join(DATA, "share-v2.json"), encoding="utf-8") as f:
+            text = f.read()
+        rows, errors = sh.parse_import(text)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(rows[0]["ext"])
+        self.assertEqual(rows[0]["blobs"], ["z2_tls_clienthello_vk_com"])
+        self.assertTrue(rows[2]["ext"])
+        self.assertNotIn("blobs", rows[2])
+        self.assertNotIn("ext", rows[3])
+        # экспорт тех же строк даёт тот же файл
+        doc = sh.build_export([{"strategy": r["strategy"],
+                                "services": r["services"],
+                                "fitness": i.get("fitness")}
+                               for r, i in zip(rows,
+                                               json.loads(text)["items"])],
+                              now=1794979200)
+        self.assertEqual(doc, json.loads(text))
+
+    def test_old_v1_export_still_imports(self):
+        with open(os.path.join(DATA, "share-v1.json"), encoding="utf-8") as f:
+            rows, errors = sh.parse_import(f.read())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["services"], ["youtube.com",
+                                               "googlevideo.com"])
+        self.assertFalse(any(r.get("ext") for r in rows))
+
+    def test_autotuner_export_imports(self):
+        """Файл, записанный Zapret2_AutoTuner (GenevaShare.Build)."""
+        with open(os.path.join(DATA, "autotuner-export-v2.json"),
+                  encoding="utf-8") as f:
+            rows, errors = sh.parse_import(f.read())
+        self.assertEqual(errors, [])
+        self.assertTrue(any(r.get("blobs") for r in rows))
+
+    def test_fields_are_recomputed(self):
+        """ext и blobs из файла не доверяются: считаются по стратегии."""
+        rows, _ = sh.parse_import(json.dumps({
+            "format": sh.FORMAT, "version": 2,
+            "items": [{"strategy": TCP, "ext": True, "blobs": ["z2_x"]}]}))
+        self.assertEqual(rows, [{"strategy": TCP, "services": []}])
+
+
 class TestStore(unittest.TestCase):
 
     def test_add_merge_remove(self):

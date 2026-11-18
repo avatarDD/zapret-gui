@@ -292,6 +292,26 @@ class TestManagerAutoJobs(_StubCase):
         self.assertIn("--probe exec", call)
         self.assertIn("--workers 2", call)
 
+    def test_eval_skips_x_strategies_old_geneva_cannot_run(self):
+        x = "[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=3}-| \\/"
+        r = self.mgr.start_auto_job("eval", self.params(),
+                                    strategies=[x, "[TCP:flags:S]-drop-| \\/"])
+        self.assertTrue(r["ok"], r)
+        self.wait_auto()
+        with open(gm.paths()["auto_candidates"]) as f:
+            self.assertEqual(f.read().split("\n")[0],
+                             "[TCP:flags:S]-drop-| \\/")
+        call = [c for c in self.calls() if c.startswith("eval")][-1]
+        self.assertNotIn("--ext", call)
+        with mock.patch.dict(os.environ, {"GENEVA_STUB_EXT": "1"}):
+            self.mgr._version_cache = {}
+            r = self.mgr.start_auto_job("eval", self.params(),
+                                        strategies=[x])
+            self.assertTrue(r["ok"], r)
+            self.wait_auto()
+        call = [c for c in self.calls() if c.startswith("eval")][-1]
+        self.assertTrue(call.startswith("eval --ext"), call)
+
     def test_evolve_with_own_checkpoint_and_resume(self):
         ckpt = os.path.join(gm.paths()["auto"], "s.ckpt")
         r = self.mgr.start_auto_job("evolve", self.params(

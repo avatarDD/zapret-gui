@@ -5,13 +5,29 @@
 **Экспорт** — рабочие стратегии этой сети (страница «Стратегии»:
 сервисы «Авто» с обходом и удачный подбор) одним JSON-файлом::
 
-    {"format": "zapret-gui/geneva-strategies", "version": 1,
+    {"format": "zapret-gui/geneva-strategies", "version": 2,
      "exported_at": "2026-11-04T09:40:00Z",
      "items": [{"strategy": "...", "transport": "tcp",
-                "services": ["youtube.com", ...], "fitness": 396.0}]}
+                "services": ["youtube.com", ...], "fitness": 396.0},
+               {"strategy": "[TCP:flags:PA]-xfake{blob=z2_tls_clienthello_vk_com;ttl=3}-| \\/",
+                "transport": "tcp", "services": ["vk.com"],
+                "ext": true, "blobs": ["z2_tls_clienthello_vk_com"]}]}
 
 В файл идут только стратегии, транспорт и имена сервисов (домены и
 названия протоколов) — без адресов устройств, ключей книги и журналов.
+
+Формат один на zapret-gui и Zapret2_AutoTuner (``Core/Geneva/
+GenevaShare.cs``), менять — в обоих проектах сразу. Версия 2 добавила к
+строке два поля, только у x-стратегий geneva_c 2.0
+(:mod:`core.geneva_ext`):
+
+- ``ext: true`` — стратегии нужен ``--ext`` (geneva_c 2.0);
+- ``blobs`` — фейки zapret2 ``z2_<имя файла>``, которые она называет;
+  их даёт ``files/fake`` zapret2 у получателя.
+
+Оба поля — подсказка человеку и старым программам: при импорте они
+вычисляются заново из самой стратегии. Файлы версии 1 и простой текст
+импортируются как раньше; читатели версии 1 новые поля пропускают.
 
 **Импорт** — тот же файл или просто текст: одна стратегия Geneva на
 строку (``#`` — комментарий). Каждая строка проверяется
@@ -29,7 +45,7 @@ import threading
 import time
 
 FORMAT = "zapret-gui/geneva-strategies"
-VERSION = 1
+VERSION = 2
 MAX_ITEMS = 200
 MAX_BYTES = 512 * 1024
 MAX_SERVICES = 20
@@ -49,6 +65,17 @@ def _transport(strategy: str) -> str:
 def _clean_name(v) -> str:
     v = str(v or "").strip()
     return v[:120] if v and all(ch.isprintable() for ch in v) else ""
+
+
+def _mark_ext(row: dict) -> dict:
+    """Поля версии 2 у x-стратегии: ``ext`` и ``blobs`` (если есть)."""
+    from core.geneva_ext import blob_refs, needs_ext
+    if needs_ext(row["strategy"]):
+        row["ext"] = True
+        blobs = blob_refs(row["strategy"])
+        if blobs:
+            row["blobs"] = blobs
+    return row
 
 
 def build_export(found_items, now: float = None) -> dict:
@@ -76,6 +103,7 @@ def build_export(found_items, now: float = None) -> dict:
                 row["fitness"] = float(it["fitness"])
             except (TypeError, ValueError):
                 pass
+        _mark_ext(row)
         items.append(row)
     return {"format": FORMAT, "version": VERSION,
             "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
@@ -133,7 +161,8 @@ def parse_import(payload) -> tuple:
                 name = _clean_name(svc)
                 if name and name not in services:
                     services.append(name)
-        rows.append({"strategy": strategy, "services": services[:MAX_SERVICES]})
+        rows.append(_mark_ext({"strategy": strategy,
+                               "services": services[:MAX_SERVICES]}))
     if len(items) > MAX_ITEMS:
         errors.append("взяты первые %d из %d" % (MAX_ITEMS, len(items)))
     return rows, errors

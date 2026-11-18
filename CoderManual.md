@@ -500,6 +500,7 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | Модуль | Назначение |
 |--------|-----------|
 | `geneva_manager.py` | Процессы geneva: одиночный `geneva run` (очередь 310), задачи подбора `evolve`/`eval` (311) — ручные и «Авто» (`start_auto_job`, своё состояние `state/geneva/auto/`), группы «Авто» (`auto_apply`/`auto_groups`/`auto_stats`/`auto_stop_all`, очереди 340–347). Аргументы — только чистые `build_*_args`. |
+| `geneva_ext.py` | x-стратегии geneva_c 2.0 (`needs_ext`) и фейки zapret2 как блобы `z2_<имя файла>` (`blob_files`, `argv`: `--ext` и `--ext-blob` сразу после команды). Договор с Zapret2_AutoTuner: то же правило имён, общий тест `tests/data/geneva/z2-blob-names.json`. |
 | `bypass_engine.py` | Какой движок обходит (nfqws2 / geneva), переключение со снимками, пауза на подбор; учитывает «Авто» (`overview`, `switch`, `hold_geneva_for`, `boot_apply`). |
 | `geneva_auto.py` | «Авто», чистое ядро: модель, пороги, книга `Book` (машина состояний), план групп, шаблоны стратегий. Без I/O. |
 | `geneva_auto_observer.py` | «Авто», наблюдение: срез conntrack, оценка соединений, ключи сервисов, протокол из захвата. Чистые функции + класс `Observer`. |

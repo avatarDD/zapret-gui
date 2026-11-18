@@ -14,6 +14,8 @@ version / check / library / db / fw / run / evolve / eval, события JSONL
   GENEVA_STUB_GEN_DELAY   пауза на поколение, с (0.05)
   GENEVA_STUB_IGNORE_TERM 1 — `run` не выходит по SIGTERM (проверка SIGKILL)
   GENEVA_STUB_EXTERNAL    1 — фича `external_workers` (geneva_c 1.2)
+  GENEVA_STUB_EXT         1 — фичи `ext`, `ext_xact` (geneva_c 2.0): x-строки
+                          разбираются только с `--ext` после команды
 
 `--probe external` у eval/evolve: запросы `eval_request` всех воркеров
 пишутся разом (у каждого свой блок `lports`), ответы читаются из stdin
@@ -22,6 +24,7 @@ version / check / library / db / fw / run / evolve / eval, события JSONL
 
 import json
 import os
+import re
 import signal
 import socket
 import sys
@@ -56,8 +59,15 @@ class Events:
         self.f.flush()
 
 
+X_RE = re.compile(r"(?:^|[-(,])x[a-z0-9]+(?=[{(,)-]|$)|\[(?:L7|FLOW|META):")
+EXT = len(ARGS) > 1 and ARGS[1] == "--ext" and \
+    os.environ.get("GENEVA_STUB_EXT") == "1"
+
+
 def valid(strategy):
     s = strategy.strip()
+    if X_RE.search(s) and not EXT:
+        return False
     return s.startswith("[") or s.startswith("\\/")
 
 
@@ -78,6 +88,8 @@ def cmd_version():
         os.environ.get("GENEVA_STUB_PROTO", "1")), "os": "linux",
         "arch": "x86_64", "features": ["nfqueue", "nft", "iptables"] + (
             ["external_workers"] if os.environ.get("GENEVA_STUB_EXTERNAL")
+            == "1" else []) + (
+            ["ext", "ext_xact"] if os.environ.get("GENEVA_STUB_EXT")
             == "1" else [])}))
     return 0
 
@@ -188,6 +200,9 @@ def cmd_run():
     ev.emit("start", mode="run", proto=1, pid=os.getpid(),
             queue=int(opt("-q", "310")), ports=opt("-p"))
     fail = os.environ.get("GENEVA_STUB_RUN_FAIL")
+    if not valid(strategy):
+        ev.emit("error", where="strategy", message="unknown action")
+        fail = "3"
     if fail:
         ev.emit("error", where="nfqueue", message="no NFQUEUE support")
         ev.emit("exit", code=int(fail), reason="error")
