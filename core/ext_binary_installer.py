@@ -773,7 +773,7 @@ def verify_installed_binary(path: str, probe_args=("version", "--version",
 
 # Конфигурация каждого бинарника
 # Закреплённая версия geneva_c: из неё строятся тег и имена ассетов.
-GENEVA_VERSION = "2.0.0"
+GENEVA_VERSION = "2.0.1"
 
 BINARIES = {
     # tg-ws-proxy ЗАКРЕПЛЁН на 0.9.3 — и это вынужденно.
@@ -1057,11 +1057,11 @@ BINARIES = {
             for arch in ("aarch64", "armv7", "mips", "mipsel", "x86_64")
         },
         "sha256_map": {
-            "aarch64": "c1504fa8acd75558a3553d4a8d7f50a1480d666cce2e10b618ab155fde7204b6",
-            "armv7": "c46513e6f283b851bb781a256cb179ce0e74064b48ba6aa29dc56e700a064704",
-            "mips": "90f566a6d58c403e5006e47c428263825e0dc2ca1a7edf3af17cc27aa504b133",
-            "mipsel": "964bc4b7e7618730757ad7b75c3ff716bb5d701d71c7520955f552f974dceac6",
-            "x86_64": "b9e6f97935e1b6aace04a6f35fa392e8bb42335c85c121834cb7bcc0a74651c0",
+            "aarch64": "1f53974086ab395a87e0dc6303e4369a14b77c8c9667a93855b776bb7463318b",
+            "armv7": "c97a3d5a28a0b0838d3a2fd0e9e9e055237a2f644a11c0f76c441c01c9bce40b",
+            "mips": "2515d725dcd37e461a8e44abffac06bb65893db3a516e5499bdbe22b3e4940e1",
+            "mipsel": "9f865bbe8b5998968ab07eacc2671a873584c24f411288df9db32bb97e062cac",
+            "x86_64": "b6e9cfb37bc9697bf0a4ed542c146ab00885d080966939027c3ebe70729bf924",
         },
     },
 }

@@ -428,9 +428,11 @@ def _probe_args(params: dict) -> list:
 
 
 def build_evolve_args(binary: str, params: dict, p: dict,
-                      resume: bool = False) -> list:
-    """argv ``geneva evolve`` с checkpoint и базой в постоянном каталоге."""
-    args = [binary, "evolve"] + _probe_args(params) + [
+                      resume: bool = False, ext: list = None) -> list:
+    """argv ``geneva evolve`` с checkpoint и базой в постоянном каталоге.
+
+    ``ext`` — :func:`geneva_ext.evolve_argv` (geneva_c 2.0.1, ``ext_xgen``)."""
+    args = [binary, "evolve"] + list(ext or []) + _probe_args(params) + [
         "--population", str(params["population"]),
         "--generations", str(params["generations"]),
         "--workers", str(params["workers"]),
@@ -600,10 +602,11 @@ def build_auto_eval_args(binary: str, params: dict, p: dict,
 
 
 def build_auto_evolve_args(binary: str, params: dict, p: dict,
-                           resume: bool = False) -> list:
+                           resume: bool = False, ext: list = None) -> list:
     """``geneva evolve`` для одного сервиса «Авто»: свой checkpoint,
-    общая база оценок с целью сервиса, ``--protos`` по транспорту."""
-    args = [binary, "evolve"] + _auto_probe_args(params) + [
+    общая база оценок с целью сервиса, ``--protos`` по транспорту;
+    ``ext`` — как у :func:`build_evolve_args`."""
+    args = [binary, "evolve"] + list(ext or []) + _auto_probe_args(params) + [
             "--protos", params["protos"],
             "--population", str(params["population"]),
             "--generations", str(params["generations"]),
@@ -1671,7 +1674,9 @@ class GenevaManager:
                 cfg.set("geneva", "search", {k: params[k]
                                              for k in SEARCH_DEFAULTS})
                 cfg.save()
-            args = build_evolve_args(binary, params, p, resume=resume)
+            args = build_evolve_args(
+                binary, params, p, resume=resume,
+                ext=geneva_ext.evolve_argv(self.features(binary)))
             state = {
                 "kind": "evolve", "status": "running", "params": params,
                 "started_at": time.time(), "finished_at": None,
@@ -1856,8 +1861,9 @@ class GenevaManager:
                     resume = False
                 if not resume:
                     _remove(params["checkpoint"])
-                args = build_auto_evolve_args(binary, params, p,
-                                              resume=resume)
+                args = build_auto_evolve_args(
+                    binary, params, p, resume=resume,
+                    ext=geneva_ext.evolve_argv(self.features(binary)))
                 total = 0
             else:
                 return {"ok": False, "error": "auto: kind"}
