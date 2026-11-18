@@ -328,6 +328,104 @@ class TestDetectAndTools(_StubCase):
         self.assertNotIn("\\/", [i["strategy"] for i in lib["items"]])
 
 
+class TestExtStrategies(_StubCase):
+    """x-стратегии geneva_c 2.0: --ext и фейки zapret2 (core/geneva_ext)."""
+
+    X = "[TCP:flags:PA]-xfake{blob=z2_tls_clienthello_vk_com;ttl=3}-|"
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.dict(os.environ, {"GENEVA_STUB_EXT": "1"})
+        p.start()
+        self.addCleanup(p.stop)
+        base = os.path.join(self.tmp, "zapret2")
+        self.fake = os.path.join(base, "files", "fake")
+        os.makedirs(self.fake)
+        for name in ("tls_clienthello_vk_com.bin", "tls_alert.bin"):
+            with open(os.path.join(self.fake, name), "wb") as f:
+                f.write(b"\x16\x03\x01")
+        self.cfg.set("zapret", "bin_path",
+                     os.path.join(base, "files", "fake"))
+
+    def runs(self):
+        return [c for c in self.calls() if c.startswith("run ")]
+
+    def test_detect_reports_ext(self):
+        self.assertTrue(self.mgr.detect()["ext"])
+
+    def test_x_strategy_runs_with_ext_and_fakes(self):
+        res = self.mgr.set_strategy(self.X)
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(any(c.startswith("check --ext ")
+                            for c in self.calls()))
+        res = self.mgr.start()
+        self.assertTrue(res["ok"], res)
+        run = self.runs()[-1]
+        self.assertTrue(run.startswith("run --ext --ext-blob "), run)
+        self.assertIn("z2_tls_alert:@%s" % os.path.join(
+            self.fake, "tls_alert.bin"), run)
+        self.assertIn("z2_tls_clienthello_vk_com:@", run)
+
+    def test_plain_strategy_runs_without_ext(self):
+        self.mgr.set_strategy("[TCP:flags:PA]-duplicate-|")
+        self.assertTrue(self.mgr.start()["ok"])
+        self.assertNotIn("--ext", self.runs()[-1])
+
+    def test_live_switch_to_x_restarts_with_ext(self):
+        self.mgr.set_strategy("[TCP:flags:PA]-duplicate-|")
+        self.assertTrue(self.mgr.start()["ok"])
+        res = self.mgr.set_strategy(self.X)
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(res["restarted"])
+        self.assertTrue(self.mgr.is_running())
+        self.assertTrue(self.runs()[-1].startswith("run --ext "))
+        # дальше x-стратегии меняются через сокет, без перезапуска
+        res = self.mgr.set_strategy(
+            "[TCP:flags:PA]-xfake{blob=z2_tls_alert;ttl=2}-|")
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(res["applied_live"])
+        self.assertEqual(len(self.runs()), 2)
+
+    def test_new_fake_needs_restart_not_socket(self):
+        """Фейки geneva читает при запуске: стратегия с фейком, которого
+        процесс не получил, ставится перезапуском, а не через сокет."""
+        self.assertTrue(self.mgr.set_strategy(self.X)["ok"])
+        self.assertTrue(self.mgr.start()["ok"])
+        with open(os.path.join(self.fake, "stun.bin"), "wb") as f:
+            f.write(b"\x00\x01")
+        res = self.mgr.set_strategy("[UDP:dport:3478]-xfake{blob=z2_stun}-|")
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(res["restarted"])
+        self.assertIn("z2_stun:@", self.runs()[-1])
+
+    def test_failed_restart_keeps_old_strategy(self):
+        plain = "[TCP:flags:PA]-duplicate-|"
+        self.mgr.set_strategy(plain)
+        self.assertTrue(self.mgr.start()["ok"])
+        with mock.patch.dict(os.environ, {"GENEVA_STUB_RUN_FAIL": "4"}):
+            res = self.mgr.set_strategy(self.X)
+        self.assertFalse(res["ok"])
+        self.assertEqual(self.cfg.get("geneva", "strategy"), plain + " \\/")
+
+    def test_missing_fake_is_refused(self):
+        res = self.mgr.check_strategy(
+            "[TCP:flags:PA]-xfake{blob=z2_tls_clienthello_nope;ttl=3}-|")
+        self.assertFalse(res["ok"])
+        self.assertIn("z2_tls_clienthello_nope", res["error"])
+
+    def test_old_geneva_refuses_x_strategy(self):
+        with mock.patch.dict(os.environ, {"GENEVA_STUB_EXT": "0"}):
+            self.mgr._version_cache = {}
+            self.assertFalse(self.mgr.detect()["ext"])
+            res = self.mgr.check_strategy(self.X)
+            self.assertFalse(res["ok"])
+            self.assertIn("geneva_c 2.0", res["error"])
+            good, bad = self.mgr.runnable(
+                [self.X, "[TCP:flags:PA]-drop-|"])
+            self.assertEqual(good, ["[TCP:flags:PA]-drop-|"])
+            self.assertEqual(len(bad), 1)
+
+
 class TestRunLifecycle(_StubCase):
 
     def test_refuses_while_nfqws2_is_active(self):

@@ -987,6 +987,18 @@ class GenevaAutoManager:
                     "error": "; ".join(errors[:5]) or
                     "в файле нет стратегий", "errors": errors}
         res = self.imports().add(rows)
+        # x-стратегии сохраняются, даже если этой geneva их не запустить
+        # (geneva_c 1.x, нет фейка zapret2): подбор их пропустит, пока не
+        # обновятся geneva или zapret2. Человеку — почему.
+        try:
+            _, bad = self.gm().runnable(
+                [r["strategy"] for r in rows if r.get("ext")])
+            bad = list(bad)
+        except Exception:                           # noqa: BLE001
+            bad = []
+        for s, why in bad:
+            errors.append("%s: сохранена, но пока не пробуется — %s"
+                          % (s[:80], why))
         self.note("импортировано стратегий: %d (новых %d)"
                   % (len(rows), res["added"]),
                   en="imported strategies: %d (new %d)"

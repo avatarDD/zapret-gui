@@ -226,6 +226,16 @@ class TestScenario(_Base):
         self.assertEqual(proven[0], STRAT)
         self.assertIn(imp, proven)
         self.assertFalse(m.import_strategies("мусор")["ok"])
+        # x-стратегия, которую этой geneva не запустить: сохраняется,
+        # человеку — почему она пока не пробуется
+        x = "[TCP:flags:PA]-xfake{blob=z2_tls_alert;ttl=3}-| \\/"
+        self.gm.runnable.return_value = ([], [(x, "нужна geneva_c 2.0")])
+        res = m.import_strategies(x)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["added"], 1)
+        self.assertIn("geneva_c 2.0", res["errors"][0])
+        self.gm.runnable.assert_called_with([x])
+        self.assertTrue(m.remove_imported(x)["ok"])
         self.assertTrue(m.remove_imported(imp)["ok"])
         self.assertNotIn(imp, m._proven(""))
 

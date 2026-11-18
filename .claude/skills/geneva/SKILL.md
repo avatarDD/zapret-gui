@@ -39,7 +39,7 @@ geneva_c**, и в каждый момент работает ровно один
 1. **Сам бинарник** нужной версии: `geneva version --json` (поле `proto`
    должно быть `1`), `geneva <команда> --help`.
 2. **[avatarDD/geneva_c](https://github.com/avatarDD/geneva_c)**, релиз
-   **v1.2.0**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
+   **v2.0.0**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
    сокет), `docs/EVAL.md` (пробы и fitness), `docs/INTEGRATION.md`
    (встраивание), `.claude/skills/geneva/SKILL.md` (карта репозитория).
 3. **Наш код**:
@@ -194,6 +194,35 @@ action   := name["{" params "}"]["(" left "," right ")"]
   с `\/`, а полную проверку делает `geneva check`.
 - Длина не больше 4096 символов (`MAX_STRATEGY_LEN`), одна строка.
 
+### x-стратегии geneva_c 2.0 и фейки zapret2 (`core/geneva_ext.py`)
+
+Договор с Zapret2_AutoTuner (там `GenevaStrategyText.NeedsExt`,
+`GenevaBlobs`, `GenevaShare`), менять в обоих проектах сразу:
+
+- **x-стратегия** — строка с x-действием (`xfake`, `xsplit`, `xwhen`…:
+  функции zapret2, `docs/EXT.md` geneva_c) или триггером `[L7:`, `[FLOW:`,
+  `[META:` (`needs_ext`). Ей нужна geneva_c 2.0 (фича `ext_xact`) и ключ
+  `--ext` сразу после команды: `check --ext`, `run --ext`, `eval --ext`.
+  Обычные стратегии запускаются без ключа, как с geneva_c 1.x.
+- **Фейки zapret2** — `files/fake/*.bin` установленного zapret2
+  (`zapret.base_path`). Каждый geneva с `--ext` получает все:
+  `--ext-blob z2_<имя>:@<файл>`. Имя: `z2_` + имя файла без `.bin`,
+  A–Z → a–z, прочее вне `[a-z0-9_]` → `_`, не длиннее 63; файл 1 байт–1 МБ,
+  не ссылка; при совпадении имён — первый по пути. Префикс `z2_` — только
+  для них.
+- `GenevaManager.ext_problem` — почему x-стратегию не запустить (нет
+  geneva_c 2.0, нет названного фейка); `runnable` отсеивает такие из
+  `eval` и кандидатов «Авто», `check_strategy` возвращает причину,
+  `auto_apply` даёт ошибку очереди и останавливает прежний процесс.
+  `set_strategy` x-стратегии на движке без `--ext` перезапускает его.
+- **Файл обмена** `zapret-gui/geneva-strategies` (`core/geneva_share.py`)
+  — версия 2: у x-стратегии в строке `"ext": true` и `"blobs":
+  ["z2_…"]`. Поля только для человека и старых программ: импорт
+  вычисляет их заново. Файлы версии 1 и простой текст импортируются как
+  раньше; x-стратегия, которую этой geneva не запустить, сохраняется с
+  пояснением в `errors` и пробуется, когда появятся geneva_c 2.0 или
+  нужный фейк.
+
 ## 4. Подбор (evolve) и продолжение с прерванного места
 
 1. `validate_search()` проверяет параметры по `SEARCH_LIMITS` и по
@@ -338,7 +367,7 @@ MCP (`core/mcp/tools/geneva.py`):
 
 `BINARIES["geneva"]` в `core/ext_binary_installer.py`:
 
-- репозиторий `avatarDD/geneva_c`, `pinned_tag` v1.2.0 (из
+- репозиторий `avatarDD/geneva_c`, `pinned_tag` v2.0.0 (из
   `GENEVA_VERSION`);
 - ассеты `geneva-<GENEVA_VERSION>-linux-<arch>.tar.gz` для aarch64, armv7,
   mips, mipsel и x86_64 — имена строятся из версии, вручную меняются

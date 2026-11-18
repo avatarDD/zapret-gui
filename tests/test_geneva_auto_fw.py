@@ -559,6 +559,41 @@ class TestManagerGroups(_StubCase):
         self.mgr.auto_stop_all()
         self.assertEqual(self.mgr.auto_groups(), {})
 
+    def test_x_strategy_group_gets_ext_and_fakes(self):
+        """x-стратегия (geneva_c 2.0): группа с --ext и фейками zapret2;
+        без нужного фейка — ошибка очереди и прежний процесс снят."""
+        base = os.path.join(self.tmp, "zapret2")
+        os.makedirs(os.path.join(base, "files", "fake"))
+        with open(os.path.join(base, "files", "fake", "tls_alert.bin"),
+                  "wb") as f:
+            f.write(b"\x15\x03")
+        self.cfg.set("zapret", "bin_path",
+                     os.path.join(base, "files", "fake"))
+        x = "[TCP:flags:PA]-xfake{blob=z2_tls_alert;ttl=3}-| \\/"
+        with mock.patch.dict(os.environ, {"GENEVA_STUB_EXT": "1"}):
+            self.mgr._version_cache = {}
+            r = self.mgr.auto_apply({340: S1})
+            self.assertEqual(r["queues"][340]["action"], "started")
+            # сокет процесса без --ext x-строку не примет: перезапуск
+            r = self.mgr.auto_apply({340: x})
+            self.assertTrue(r["ok"], r)
+            self.assertEqual(r["queues"][340]["action"], "started")
+            call = [c for c in self.calls() if c.startswith("run")][-1]
+            self.assertTrue(call.startswith("run --ext --ext-blob "
+                                            "z2_tls_alert:@"), call)
+            # каталог фейков пропал: работающая группа не снимается
+            os.rename(os.path.join(base, "files", "fake"),
+                      os.path.join(base, "files", "gone"))
+            r = self.mgr.auto_apply({340: x})
+            self.assertEqual(r["queues"][340]["action"], "kept")
+            os.rename(os.path.join(base, "files", "gone"),
+                      os.path.join(base, "files", "fake"))
+            r = self.mgr.auto_apply(
+                {340: x.replace("z2_tls_alert", "z2_nope")})
+            self.assertFalse(r["ok"])
+            self.assertIn("z2_nope", r["queues"][340]["error"])
+            self.assertEqual(self.mgr.auto_groups(), {})
+
     def test_bad_queue_and_crash_on_start(self):
         r = self.mgr.auto_apply({310: S1})
         self.assertFalse(r["ok"])

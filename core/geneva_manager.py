@@ -49,6 +49,7 @@ import threading
 import time
 from collections import deque
 
+from core import geneva_ext
 from core.log_buffer import log
 
 
@@ -361,9 +362,14 @@ def search_target(params: dict) -> str:
 
 # ─────────────────────── сборка аргументов ──────────────────────────
 
-def build_run_args(binary: str, settings: dict, p: dict) -> list:
-    """argv ``geneva run`` из настроек: один источник для UI, MCP и boot."""
-    args = [binary, "run",
+def build_run_args(binary: str, settings: dict, p: dict,
+                   ext: list = None) -> list:
+    """argv ``geneva run`` из настроек: один источник для UI, MCP и boot.
+
+    ``ext`` — ключи расширений geneva_c 2.0 (:func:`geneva_ext.argv`):
+    ``--ext`` и фейки zapret2 сразу после команды, для x-стратегии.
+    """
+    args = [binary, "run"] + list(ext or []) + [
             "-f", p["strategy"],
             "-p", normalize_ports(settings.get("ports") or "80,443"),
             "--proto", settings.get("proto") or "tcp",
@@ -442,9 +448,10 @@ def build_evolve_args(binary: str, params: dict, p: dict,
     return args
 
 
-def build_eval_args(binary: str, params: dict, p: dict) -> list:
+def build_eval_args(binary: str, params: dict, p: dict,
+                    ext: list = None) -> list:
     """argv ``geneva eval`` для списка стратегий (файл ``candidates``)."""
-    return [binary, "eval"] + _probe_args(params) + [
+    return [binary, "eval"] + list(ext or []) + _probe_args(params) + [
         "-f", p["candidates"],
         "--workers", str(params["workers"]),
         "--runs", str(params["runs"]),
@@ -521,14 +528,15 @@ def auto_group_paths(queue: int) -> dict:
     base = os.path.join(rt, "q%d" % int(queue))
     return {"dir": rt, "pid": base + ".pid", "socket": base + ".sock",
             "events": base + ".jsonl", "log": base + ".log",
-            "strategy": base + ".strategy"}
+            "strategy": base + ".strategy", "args": base + ".args"}
 
 
-def build_auto_run_args(binary: str, queue: int, gp: dict) -> list:
+def build_auto_run_args(binary: str, queue: int, gp: dict,
+                        ext: list = None) -> list:
     """argv ``geneva run`` группы: все порты и оба протокола — отбор
     трафика делают правила zapret-gui по адресам сервисов, без них в
     очередь ничего не придёт."""
-    return [binary, "run",
+    return [binary, "run"] + list(ext or []) + [
             "-f", gp["strategy"],
             "-q", str(int(queue)),
             "--firewall", "none",
@@ -541,6 +549,16 @@ def build_auto_run_args(binary: str, queue: int, gp: dict) -> list:
             "-l", "info",
             "--log-file", gp["log"],
             "--quiet"]
+
+
+def _read_args(path: str) -> list:
+    """argv процесса, записанный при запуске (JSON), иначе пусто."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            args = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return args if isinstance(args, list) else []
 
 
 def _wait_ready_events(proc, events_path: str, timeout: float) -> bool:
@@ -566,10 +584,11 @@ def _auto_probe_args(params: dict) -> list:
             "--injected-contains", "INJECTED"]
 
 
-def build_auto_eval_args(binary: str, params: dict, p: dict) -> list:
+def build_auto_eval_args(binary: str, params: dict, p: dict,
+                         ext: list = None) -> list:
     """``geneva eval`` быстрых кандидатов «Авто»: проба с локальных
     портов воркеров, воркеры параллельно."""
-    return [binary, "eval"] + _auto_probe_args(params) + [
+    return [binary, "eval"] + list(ext or []) + _auto_probe_args(params) + [
             "-f", p["auto_candidates"],
             "--workers", str(params["workers"]),
             "--runs", "1",
@@ -1154,6 +1173,8 @@ class GenevaManager:
                "arch": info.get("arch", ""),
                "features": info.get("features") or [],
                "proto_ok": proto == PROTO}
+        # x-стратегии (geneva_c 2.0, --ext): импорт из Zapret2_AutoTuner
+        out["ext"] = geneva_ext.FEATURE in out["features"]
         if not info:
             out["hint"] = "бинарник не отвечает на «geneva version --json»"
         elif proto != PROTO:
@@ -1172,6 +1193,45 @@ class GenevaManager:
         if not det["proto_ok"]:
             return "", det.get("hint") or "несовместимый geneva"
         return det["binary"], ""
+
+    # ─────── x-стратегии geneva_c 2.0 ───────
+
+    def features(self, binary: str = "") -> list:
+        return list(self.version_info(binary).get("features") or [])
+
+    def ext_problem(self, strategy: str, binary: str = "",
+                    names=None, features=None) -> str:
+        """Почему этой geneva не запустить x-стратегию (или ``""``):
+        нет geneva_c 2.0 или нет названного фейка zapret2. ``names`` и
+        ``features`` — если их уже прочитали."""
+        if not geneva_ext.needs_ext(strategy):
+            return ""
+        if names is None:
+            names = [n for n, _ in geneva_ext.blob_files()]
+        if features is None:
+            features = self.features(binary)
+        return geneva_ext.problem(strategy, features, names)
+
+    def ext_args(self, strategies, binary: str = "") -> list:
+        """``--ext`` и фейки zapret2 для команды над ``strategies``."""
+        return geneva_ext.argv(strategies, self.features(binary))
+
+    def runnable(self, strategies, binary: str = "") -> tuple:
+        """``(годные, [(стратегия, почему нет)])``: x-стратегии, которые
+        этой geneva не запустить, отсеиваются, а не роняют весь запуск."""
+        good, bad = [], []
+        names = features = None
+        for s in strategies or []:
+            if names is None and geneva_ext.needs_ext(s):
+                # один раз на список: каталог фейков и version --json
+                names = [n for n, _ in geneva_ext.blob_files()]
+                features = self.features(binary)
+            why = self.ext_problem(s, binary, names, features)
+            if why:
+                bad.append((s, why))
+            else:
+                good.append(s)
+        return good, bad
 
     # ─────── разовые команды ───────
 
@@ -1196,7 +1256,12 @@ class GenevaManager:
         binary, err = self._ready_binary()
         if not binary:
             return {"ok": False, "error": err}
-        r = self._run_cmd([binary, "check", "--json", s], timeout=10)
+        why = self.ext_problem(s, binary)
+        if why:
+            return {"ok": False, "error": why}
+        ext = ["--ext"] if geneva_ext.needs_ext(s) else []
+        r = self._run_cmd([binary, "check"] + ext + ["--json", s],
+                          timeout=10)
         if r is None:
             return {"ok": False, "error": "geneva check не ответил"}
         try:
@@ -1300,7 +1365,9 @@ class GenevaManager:
             except OSError as e:
                 return {"ok": False, "error": "Файл стратегии: %s" % e}
             try:
-                args = build_run_args(binary, settings, p)
+                args = build_run_args(binary, settings, p,
+                                      ext=self.ext_args([chk["strategy"]],
+                                                        binary))
             except ValueError as e:
                 return {"ok": False, "error": str(e)}
             # Правила от убитого процесса (SIGKILL, обрыв питания при
@@ -1410,6 +1477,12 @@ class GenevaManager:
             return chk
         canon = chk["strategy"]
         applied = False
+        if apply and self.is_running() and \
+                not geneva_ext.fits_args(canon, self._running_args()):
+            # Движок поднят без расширений или без названного фейка (блобы
+            # geneva читает только при запуске): через сокет стратегия не
+            # заработает — перезапуск с ней, настройки — только при успехе.
+            return self._restart_with(canon, source)
         if apply and self.is_running():
             res = self.control("set_strategy", strategy=canon)
             if not res.get("ok"):
@@ -1425,6 +1498,33 @@ class GenevaManager:
         except OSError:
             pass
         return {"ok": True, "strategy": canon, "applied_live": applied}
+
+    def _restart_with(self, canon: str, source: str) -> dict:
+        """Перезапуск живого движка с ``canon``; не вышло — прежняя
+        стратегия поднимается снова, настройки не меняются."""
+        with self._lock:
+            if self.job_running():
+                return {"ok": False, "error": "идёт подбор или проверка "
+                        "стратегий: для этой стратегии geneva нужно "
+                        "перезапустить — дождитесь окончания"}
+            self.stop()
+            res = self.start(canon)
+            if not res.get("ok"):
+                back = self.start()
+                return {"ok": False, "error": "geneva не перезапустился с "
+                        "новой стратегией: %s" % res.get("error", "?"),
+                        "restored": bool(back.get("ok"))}
+            cfg = _cfg()
+            cfg.set("geneva", "strategy", canon)
+            cfg.set("geneva", "strategy_source",
+                    str(source or "manual")[:40])
+            cfg.save()
+            return {"ok": True, "strategy": canon, "applied_live": False,
+                    "restarted": True}
+
+    def _running_args(self) -> list:
+        """argv живого ``geneva run`` (из ``run_args``), иначе пусто."""
+        return _read_args(paths()["run_args"])
 
     def _pump_run(self) -> None:
         """Дочитать события движка в ленту и запомнить последние stats."""
@@ -1616,17 +1716,29 @@ class GenevaManager:
             if params["probe"] == "https" and not shutil.which("curl"):
                 return {"ok": False, "error": "для пробы https нужен curl "
                         "(opkg install curl) — или выберите tls"}
+            items, bad = self.runnable(items, binary)
+            if not items:
+                return {"ok": False, "error": "нет стратегий для проверки"
+                        + (": " + bad[0][1] if bad else "")}
+            for s, why in bad[:3]:
+                log.info("geneva: проверка без %s — %s"
+                         % (_short(s, 60), why), source="geneva")
             p = paths()
             try:
                 _write_atomic(p["candidates"], "\n".join(items) + "\n")
             except OSError as e:
                 return {"ok": False, "error": "Список стратегий: %s" % e}
-            args = build_eval_args(binary, params, p)
+            args = build_eval_args(binary, params, p,
+                                   ext=self.ext_args(items, binary))
             state = {"kind": "eval", "status": "running", "params": params,
                      "started_at": time.time(), "finished_at": None,
                      "total": len(items), "results": [], "exit_code": None,
                      "target": search_target(params), "paused_engine": ""}
-            return self._launch_job(args, state, params)
+            res = self._launch_job(args, state, params)
+            if bad:
+                res["skipped"] = [{"strategy": s, "error": why}
+                                  for s, why in bad]
+            return res
 
     def _launch_job(self, args: list, state: dict, params: dict,
                     answer=None) -> dict:
@@ -1722,15 +1834,21 @@ class GenevaManager:
                         items.append(check_strategy_text(x))
                     except ValueError:
                         continue
+                items, bad = self.runnable(items, binary)
+                for s, why in bad[:3]:
+                    log.info("geneva «Авто»: пропущена %s — %s"
+                             % (_short(s, 60), why), source="geneva")
                 if not items:
                     return {"ok": False, "error": "нет стратегий"}
+                items = items[:64]
                 try:
                     _write_atomic(p["auto_candidates"],
-                                  "\n".join(items[:64]) + "\n")
+                                  "\n".join(items) + "\n")
                 except OSError as e:
                     return {"ok": False, "error": "кандидаты: %s" % e}
-                args = build_auto_eval_args(binary, params, p)
-                total = len(items[:64])
+                args = build_auto_eval_args(
+                    binary, params, p, ext=self.ext_args(items, binary))
+                total = len(items)
             elif kind == "evolve":
                 if not params["checkpoint"]:
                     return {"ok": False, "error": "auto: checkpoint"}
@@ -1851,6 +1969,22 @@ class GenevaManager:
                     if cur == strategy:
                         out[q] = {"pid": pid, "action": "kept"}
                         continue
+                # Проверка только для новой стратегии: работающий процесс
+                # со своими фейками не снимается из-за минутной недоступности
+                # каталога или version --json.
+                why = self.ext_problem(strategy)
+                if why:
+                    # Прежняя стратегия очереди не остаётся вместо новой.
+                    self._auto_stop(q)
+                    out[q] = {"pid": None, "action": "error", "error": why}
+                    ok = False
+                    continue
+                if pid and not geneva_ext.fits_args(
+                        strategy, _read_args(gp["args"])):
+                    # без --ext или без нужного фейка: только перезапуск
+                    self._auto_stop(q)
+                    pid = None
+                if pid:
                     try:
                         r = control_request(gp["socket"], "set_strategy",
                                             strategy=strategy)
@@ -1877,7 +2011,10 @@ class GenevaManager:
             _write_atomic(gp["strategy"], strategy + "\n")
             trim_file(gp["events"], 0)
             trim_file(gp["log"], 0)
-            proc = _spawn(build_auto_run_args(binary, q, gp), gp["log"])
+            args = build_auto_run_args(
+                binary, q, gp, ext=self.ext_args([strategy], binary))
+            _write_atomic(gp["args"], json.dumps(args))
+            proc = _spawn(args, gp["log"])
         except OSError as e:
             return {"pid": None, "action": "error",
                     "error": "Запуск geneva: %s" % e}

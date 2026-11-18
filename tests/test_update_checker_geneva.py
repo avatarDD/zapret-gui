@@ -25,8 +25,8 @@ class TestReleaseInfo(unittest.TestCase):
 
     def test_pinned_release(self):
         info = uc.geneva_release_info("")
-        self.assertEqual(info["tag"], "v1.2.0")
-        self.assertEqual(info["latest"], "1.2.0")
+        self.assertEqual(info["tag"], "v2.0.0")
+        self.assertEqual(info["latest"], "2.0.0")
         self.assertFalse(info["has_update"])
 
     def test_older_release_has_update(self):
@@ -35,10 +35,10 @@ class TestReleaseInfo(unittest.TestCase):
         self.assertTrue(info["has_update"])
 
     def test_same_or_newer_release(self):
-        self.assertTrue(uc.geneva_release_info("1.1.1")["has_update"])
-        self.assertFalse(uc.geneva_release_info("1.2.0")["has_update"])
-        self.assertFalse(uc.geneva_release_info("v1.2.0")["has_update"])
-        self.assertFalse(uc.geneva_release_info("1.3.0")["has_update"])
+        self.assertTrue(uc.geneva_release_info("1.2.0")["has_update"])
+        self.assertFalse(uc.geneva_release_info("2.0.0")["has_update"])
+        self.assertFalse(uc.geneva_release_info("v2.0.0")["has_update"])
+        self.assertFalse(uc.geneva_release_info("2.1.0")["has_update"])
 
     def test_commit_hash_is_not_a_version(self):
         info = uc.geneva_release_info("3477eee")
@@ -59,16 +59,16 @@ class TestCheckRow(unittest.TestCase):
         row = self._row({"installed": False, "version": "", "binary": ""})
         self.assertEqual(row["name"], "geneva")
         self.assertFalse(row["installed"])
-        self.assertEqual(row["latest"], "1.2.0")
+        self.assertEqual(row["latest"], "2.0.0")
         self.assertTrue(row["pinned"])
         self.assertEqual(row["upstream_latest"], "v1.1.0")
         self.assertFalse(row["upstream_newer"])
 
     def test_upstream_ahead_of_pin_is_reported(self):
-        row = self._row({"installed": True, "version": "1.2.0",
+        row = self._row({"installed": True, "version": "2.0.0",
                          "binary": "/opt/usr/bin/geneva", "proto_ok": True},
-                        upstream="v1.3.0")
-        self.assertFalse(row["has_update"])     # кнопка 1.3.0 не поставит
+                        upstream="v2.1.0")
+        self.assertFalse(row["has_update"])     # кнопка 2.1.0 не поставит
         self.assertTrue(row["upstream_newer"])
 
     def test_old_release_installed(self):
