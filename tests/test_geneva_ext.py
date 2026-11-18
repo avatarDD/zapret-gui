@@ -111,6 +111,17 @@ class TestBlobs(unittest.TestCase):
                          ["--ext", "--ext-blob",
                           "z2_tls_alert:@/f/tls_alert.bin"])
 
+    def test_evolve_argv(self):
+        files = [("z2_tls_alert", "/f/tls_alert.bin")]
+        # geneva_c 2.0.0: x-действия только скрещиваются — evolve как был
+        self.assertEqual(gx.evolve_argv(["ext", "ext_xact"], files), [])
+        self.assertEqual(gx.evolve_argv(["ext_xgen"], files), [])
+        self.assertEqual(gx.evolve_argv([], files), [])
+        # 2.0.1: подбор сам делает методы zapret2 — с --ext и фейками
+        self.assertEqual(
+            gx.evolve_argv(["ext", "ext_xact", "ext_xgen"], files),
+            ["--ext", "--ext-blob", "z2_tls_alert:@/f/tls_alert.bin"])
+
 
 if __name__ == "__main__":
     unittest.main()

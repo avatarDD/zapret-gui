@@ -198,14 +198,14 @@
       "id": "geneva_c",
       "repo": "avatarDD/geneva_c",
       "kind": "release",
-      "pinned": "v2.0.0",
+      "pinned": "v2.0.1",
       "verified_at": "2026-11-18",
       "skill": ".claude/skills/geneva/SKILL.md",
       "mentions": [
         ".claude/skills/geneva/SKILL.md"
       ],
       "vendored": {},
-      "note": "Второй движок обхода. Вместе с пином едут sha256 в ext_binary_installer BINARIES[geneva] (по SHA256SUMS релиза) и proto в geneva_manager.PROTO: смена proto в апстриме ломает разбор событий и сокета, менеджер такой бинарник не запустит. Набор флагов run/evolve/eval сверен с исходниками v2.0.0 (proto 1, в 1.1, 1.2 и 2.0 только добавления; 1.2 — фича external_workers; 2.0 — расширения --ext, фича ext_xact: x-стратегии и блобы --ext-blob, которыми zapret-gui отдаёт фейки zapret2 под именами z2_*, core/geneva_ext.py) (src/cmd_run.c, src/cmd_eval.c, src/cmd_evolve.c)."
+      "note": "Второй движок обхода. Вместе с пином едут sha256 в ext_binary_installer BINARIES[geneva] (по SHA256SUMS релиза) и proto в geneva_manager.PROTO: смена proto в апстриме ломает разбор событий и сокета, менеджер такой бинарник не запустит. Набор флагов run/evolve/eval сверен с исходниками v2.0.1 (proto 1, в 1.1, 1.2, 2.0 и 2.0.1 только добавления; 1.2 — фича external_workers; 2.0 — расширения --ext, фича ext_xact: x-стратегии и блобы --ext-blob, которыми zapret-gui отдаёт фейки zapret2 под именами z2_*, core/geneva_ext.py; 2.0.1 — фича ext_xgen: evolve --ext сам делает x-действия и мутирует их параметры, поэтому evolve идёт с --ext и фейками, geneva_ext.evolve_argv) (src/cmd_run.c, src/cmd_eval.c, src/cmd_evolve.c)."
     }
   ]
 }

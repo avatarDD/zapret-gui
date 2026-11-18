@@ -153,6 +153,10 @@ class TestArgs(unittest.TestCase):
         self.assertEqual(args[args.index("-q") + 1], str(gm.EVAL_QUEUE))
         self.assertIn("--resume",
                       gm.build_evolve_args("/g", params, self.p, True))
+        self.assertNotIn("--ext", args)
+        ext = ["--ext", "--ext-blob", "z2_a:@/f/a.bin"]
+        a = gm.build_evolve_args("/g", params, self.p, ext=ext)
+        self.assertEqual(a[:5], ["/g", "evolve"] + ext)
 
     def test_https_probe_uses_curl_with_fail(self):
         params = gm.validate_search({"host": "b.example", "probe": "https"})
@@ -365,6 +369,26 @@ class TestExtStrategies(_StubCase):
         self.assertIn("z2_tls_alert:@%s" % os.path.join(
             self.fake, "tls_alert.bin"), run)
         self.assertIn("z2_tls_clienthello_vk_com:@", run)
+
+    def _search_args(self):
+        with mock.patch("core.bypass_engine.pause_for_search",
+                        return_value=""):
+            res = self.mgr.start_search({"host": "blocked.example",
+                                         "population": 4, "generations": 1})
+            self.assertTrue(res["ok"], res)
+            wait_for(lambda: not self.mgr.job_running(), 15)
+        return [c for c in self.calls() if c.startswith("evolve ")][-1]
+
+    def test_search_without_xgen_has_no_ext(self):
+        # geneva_c 2.0.0: подбор только скрещивает x-действия — как раньше
+        self.assertTrue(self._search_args().startswith("evolve --probe "))
+
+    def test_search_with_xgen_runs_with_ext_and_fakes(self):
+        with mock.patch.dict(os.environ, {"GENEVA_STUB_XGEN": "1"}):
+            args = self._search_args()
+        self.assertTrue(args.startswith("evolve --ext --ext-blob "), args)
+        self.assertIn("z2_tls_alert:@%s" % os.path.join(
+            self.fake, "tls_alert.bin"), args)
 
     def test_plain_strategy_runs_without_ext(self):
         self.mgr.set_strategy("[TCP:flags:PA]-duplicate-|")
