@@ -178,6 +178,11 @@ class TestAutoJobArgs(unittest.TestCase):
         self.assertEqual(a[a.index("--checkpoint") + 1], "/st/auto/a.ckpt")
         self.assertEqual(a[a.index("--target") + 1], "replay:1.2.3.4:53")
         self.assertEqual(a[-1], "--resume")
+        self.assertNotIn("--ext", a)
+        ext = ["--ext", "--ext-blob", "z2_a:@/f/a.bin"]
+        a = gm.build_auto_evolve_args("/bin/geneva", self.params, self.p,
+                                      ext=ext)
+        self.assertEqual(a[:5], ["/bin/geneva", "evolve"] + ext)
 
     def test_external(self):
         params = gm.validate_auto_job({

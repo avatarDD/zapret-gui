@@ -39,7 +39,7 @@ geneva_c**, и в каждый момент работает ровно один
 1. **Сам бинарник** нужной версии: `geneva version --json` (поле `proto`
    должно быть `1`), `geneva <команда> --help`.
 2. **[avatarDD/geneva_c](https://github.com/avatarDD/geneva_c)**, релиз
-   **v2.0.0**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
+   **v2.0.1**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
    сокет), `docs/EVAL.md` (пробы и fitness), `docs/INTEGRATION.md`
    (встраивание), `.claude/skills/geneva/SKILL.md` (карта репозитория).
 3. **Наш код**:
@@ -109,15 +109,20 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
 |---|---|---|
 | `start()` | `geneva run -f strategy.txt -p PORTS --proto P -q 310 --mark 0x20000000 --firewall auto\|nft\|iptables -c unix:SOCK -e EVENTS --stats-interval 30 -l LVL --log-file LOG --quiet [-i IF] [--first N]` | root |
 | `stop()` (крайний случай) | `geneva fw down` с теми же `-p/--proto/-q/--firewall/-i/--mark` из `run.args.json` | root |
-| `start_search()` | `geneva evolve --probe tls\|http\|exec --host H ... --population N --generations M -q 311 --checkpoint search.ckpt --db db.jsonl --target T -e job-events.jsonl [--resume]` | root |
+| `start_search()` | `geneva evolve [--ext --ext-blob z2_*:@файл…] --probe tls\|http\|exec --host H ... --population N --generations M -q 311 --checkpoint search.ckpt --db db.jsonl --target T -e job-events.jsonl [--resume]` | root |
 | `start_eval()` | `geneva eval -f candidates.txt --host H ... -q 311` | root |
 | `auto_apply({q: стратегия})` (группы «Авто») | `geneva run -f <rt>/auto/qQ.strategy -q Q --firewall none -p 1-65535 --proto tcp,udp --mark 0x20000000 -c unix:<rt>/auto/qQ.sock -e <rt>/auto/qQ.jsonl --stats-interval 5 …`, Q = 340..347; правила — `core/geneva_auto_fw` (таблица `inet zapret_geneva_auto` или цепочки `ZGGA_POST/ZGGA_PRE` + ipset `geneva_auto_Q_n_v4/v6`) | root |
 | `start_auto_job("eval")` («Авто», быстрые кандидаты) | `geneva eval --probe external -f state/geneva/auto/candidates.txt --workers N -q 311 -e job-events.jsonl` (stdin — ответы `ExternalAnswerer`); без фичи `external_workers` — `--probe exec --cmd "python3 core/geneva_auto_probe_cli.py … --lports {lports}" --injected-contains INJECTED` | root |
-| `start_auto_job("evolve")` («Авто», сервис) | `geneva evolve --probe external\|exec … --protos TCP\|UDP,IP\|UDP,IP,DNS,DNSQR --population 20 --generations 10 --workers N -q 311 --checkpoint state/geneva/auto/<sha1>.ckpt --db db.jsonl --target https:<host>\|replay:<ip>:<port> [--resume]` | root |
+| `start_auto_job("evolve")` («Авто», сервис) | `geneva evolve [--ext --ext-blob …] --probe external\|exec … --protos TCP\|UDP,IP\|UDP,IP,DNS,DNSQR --population 20 --generations 10 --workers N -q 311 --checkpoint state/geneva/auto/<sha1>.ckpt --db db.jsonl --target https:<host>\|replay:<ip>:<port> [--resume]` | root |
 | `check_strategy()` | `geneva check --json -f -` | нет |
 | `library()` | `geneva library --json` | нет |
 | `db_top()` | `geneva db --db db.jsonl top --json` (печатает JSONL) | нет |
 | `detect()` | `geneva version --json` | нет |
+
+`--ext` и фейки zapret2 у `evolve` — `geneva_ext.evolve_argv`: только при
+фиче `ext_xgen` (geneva_c 2.0.1), тогда подбор сам делает x-действия
+zapret2 и мутирует их параметры. Ключа `--ext` нет в параметрах checkpoint,
+поэтому `--resume` подбора, начатого без него, geneva принимает.
 
 Точные аргументы собирают чистые функции `build_run_args`,
 `build_evolve_args`, `build_eval_args`, `build_auto_eval_args`,
@@ -367,7 +372,7 @@ MCP (`core/mcp/tools/geneva.py`):
 
 `BINARIES["geneva"]` в `core/ext_binary_installer.py`:
 
-- репозиторий `avatarDD/geneva_c`, `pinned_tag` v2.0.0 (из
+- репозиторий `avatarDD/geneva_c`, `pinned_tag` v2.0.1 (из
   `GENEVA_VERSION`);
 - ассеты `geneva-<GENEVA_VERSION>-linux-<arch>.tar.gz` для aarch64, armv7,
   mips, mipsel и x86_64 — имена строятся из версии, вручную меняются

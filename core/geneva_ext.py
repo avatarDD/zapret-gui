@@ -43,6 +43,11 @@ DEFAULT_FAKE_DIR = "/opt/zapret2/files/fake"
 # Фича geneva_c 2.0: x-действия (функции zapret2) по ключу --ext.
 FEATURE = "ext_xact"
 
+# geneva_c 2.0.1: ``evolve --ext`` сам делает x-действия zapret2 и меняет
+# их параметры (без фичи x-действия начальной популяции только
+# скрещиваются). С ней каждый подбор идёт с ``--ext``.
+XGEN_FEATURE = "ext_xgen"
+
 # Как GenevaStrategyText.NeedsExt в Zapret2_AutoTuner: действие на «x»
 # (у Geneva их нет: tamper, duplicate, fragment, drop, sleep, trace) или
 # триггер расширений.
@@ -180,6 +185,24 @@ def argv(strategies, features, files=None) -> list:
         return []
     if not any(needs_ext(s) for s in strategies or ()):
         return []
+    return _ext_with_blobs(files)
+
+
+def evolve_argv(features, files=None) -> list:
+    """Ключи после ``geneva evolve``: ``--ext`` и все фейки zapret2, когда
+    geneva сама делает x-действия (фича ``ext_xgen``): тогда подбор
+    перебирает и методы zapret2 со всеми их параметрами, а фейки — под
+    теми же именами ``z2_*``, что у run. Без фичи — пусто, как раньше.
+    Продолжение старого подбора с ``--ext`` geneva принимает: ключа нет в
+    параметрах checkpoint."""
+    feats = features or ()
+    if FEATURE not in feats or XGEN_FEATURE not in feats:
+        return []
+    return _ext_with_blobs(files)
+
+
+def _ext_with_blobs(files=None) -> list:
+    """``--ext`` и ``--ext-blob z2_*:@файл`` для каждого фейка zapret2."""
     files = blob_files() if files is None else files
     out = ["--ext"]
     for name, path in files:
