@@ -831,7 +831,8 @@ DNS, WireGuard, OpenVPN, DHT торрентов, любые серверы по 
   подбор, но выше нагрузка на процессор роутера) и «Стратегий
   одновременно» (`geneva.auto.max_groups`, 4, до 8).
 - Через ИИ: `geneva_auto_status`, `geneva_auto_enable` (с подтверждением),
-  `geneva_auto_disable`, `geneva_auto_reset`.
+  `geneva_auto_disable`, `geneva_auto_reset`, `geneva_auto_check_now`,
+  `geneva_auto_priority`, `geneva_auto_pin`, `geneva_auto_lists`.
 
 ### Маршрутизация (единый слой)
 
@@ -1949,7 +1950,9 @@ Desktop и VS Code они видны как готовые команды, мо�
 `geneva_start`, `geneva_stop`, `geneva_set_strategy` (сменить рабочую
 стратегию geneva без перезапуска), `geneva_auto_enable` (включить режим
 «Авто» — в два шага, с подтверждением), `geneva_auto_disable`,
-`geneva_auto_reset` (забыть один сервис).
+`geneva_auto_reset` (забыть один сервис), `geneva_auto_check_now`,
+`geneva_auto_priority`, `geneva_auto_pin` (действия над сервисом),
+`geneva_auto_lists` (списки важности и исключения).
 *Интернет у клиентов на время пропадёт.*
 
 **`strategies_write` — стратегии и списки** (12): `strategy_save`,

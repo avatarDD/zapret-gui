@@ -29,6 +29,7 @@ function makeElement(id) {
         addEventListener(ev, fn) { (handlers[ev] = handlers[ev] || []).push(fn); },
         querySelectorAll() { return []; },
         closest() { return null; },
+        focus() {}, setSelectionRange() {},
         classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     };
 }
@@ -127,7 +128,9 @@ test('включённый: фаза, сводка, сервисы и групп
     assert.match(html, /Сервисов: 5 · обход работает: 1 · в работе: 1 · без обхода: 1 · соединений в последнем срезе: 120/);
     assert.match(html, /badge-success">обход работает/);
     assert.match(html, /пробую: \[TCP:flags:PA\]-drop-\| \\\//);
-    assert.match(html, /data-auto-reset="dns:93.184.216.53"/);
+    assert.match(html, /data-auto-act="reset" data-key="dns:93.184.216.53"/);
+    assert.match(html, /data-auto-act="check" data-key="dns:93.184.216.53"/);
+    assert.match(html, /<th>Важность<\/th>/);
     assert.match(html, /очередь 340/);
     assert.match(html, /Работающие стратегии \(1\)/);
     assert.match(html, /режим включён/);
@@ -173,6 +176,58 @@ test('сброс сервиса', async () => {
     await root.handlers.click[0]({ target: { closest: () => btn } });
     assert.strictEqual(JSON.stringify(env.calls.post.at(-1)),
                        '["/api/geneva/auto/reset",{"key":"web:blocked.example"}]');
+});
+
+test('меню «⋯»: действия над сервисом', async () => {
+    const env = makeSandbox({ auto: AUTO_ON });
+    const root = await renderAuto(env);
+    const click = async (act) => {
+        const btn = { dataset: { autoAct: act, key: 'dns:93.184.216.53' } };
+        await root.handlers.click[0]({ target: { closest: () => btn } });
+        for (let i = 0; i < 3; i++) await tick();
+        return JSON.stringify(env.calls.post.at(-1));
+    };
+    assert.strictEqual(await click('check'),
+        '["/api/geneva/auto/check-now",{"key":"dns:93.184.216.53"}]');
+    assert.strictEqual(await click('important'),
+        '["/api/geneva/auto/priority",{"key":"dns:93.184.216.53","value":"important"}]');
+    assert.strictEqual(await click('pin'),
+        '["/api/geneva/auto/pin",{"key":"dns:93.184.216.53","pinned":true}]');
+    assert.strictEqual(await click('nosearch'),
+        '["/api/geneva/auto/no-search",{"key":"dns:93.184.216.53"}]');
+});
+
+test('фильтр и стабильный порядок', async () => {
+    const env = makeSandbox({ auto: AUTO_ON });
+    await renderAuto(env);
+    const box = env.elements.get('gv-auto');
+    const order = () => [...box.innerHTML.matchAll(/<td title="([^"]+)"/g)].map(m => m[1]);
+    assert.deepStrictEqual(order(), ['dns:93.184.216.53', 'web:blocked.example']);
+    const filter = env.elements.get('gv-auto-filter');
+    filter.value = 'blocked';
+    filter.handlers.input[0]();
+    assert.deepStrictEqual(order(), ['web:blocked.example']);
+    filter.value = '';
+    filter.handlers.input[0]();
+    assert.deepStrictEqual(order(), ['dns:93.184.216.53', 'web:blocked.example']);
+});
+
+test('списки: сохранение', async () => {
+    const env = makeSandbox({ auto: AUTO_ON });
+    const root = await renderAuto(env);
+    env.elements.get('gv-list-important').value = 'youtube.com\nAS12389';
+    env.elements.get('gv-list-exclude').value = 'bank.example';
+    env.elements.get('gv-list-byname').checked = true;
+    const btn = { dataset: { action: 'auto-lists' } };
+    await root.handlers.click[0]({ target: { closest: () => btn } });
+    for (let i = 0; i < 3; i++) await tick();
+    const post = env.calls.post.find(p => p[0] === '/api/geneva/auto/lists');
+    assert.ok(post);
+    const body = JSON.parse(JSON.stringify(post[1]));
+    assert.strictEqual(body.important, 'youtube.com\nAS12389');
+    assert.strictEqual(body.exclude, 'bank.example');
+    assert.strictEqual(body.by_name, true);
+    assert.strictEqual(body.split_workers, false);
 });
 
 const FOUND = {

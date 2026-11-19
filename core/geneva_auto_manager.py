@@ -1308,7 +1308,7 @@ class GenevaAutoManager:
         value = "" if value in (None, "auto", "default") else str(value)
         if value not in gal.USER_PRIORITIES:
             return {"ok": False, "error_code": "bad_value",
-                    "error": "важность: important, unimportant или auto"}
+                    "error": "важность: important, unimportant или default"}
         with self._lock:
             s, err = self._service_or_error(key)
             if err:

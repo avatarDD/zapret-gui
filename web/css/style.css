@@ -5869,6 +5869,21 @@ body.expert-mode .expert-note { display: none !important; }
 .gv-auto-log { max-height: 280px; overflow-y: auto; font-size: 0.9em; margin-top: 6px; }
 .gv-auto-log-warning { color: var(--warning, #d29922); }
 .gv-auto-log-error { color: var(--error, #f85149); }
+.gv-auto-filter { max-width: 320px; margin: 6px 0; }
+.gv-auto-menu { position: relative; }
+.gv-auto-menu > summary { cursor: pointer; list-style: none; padding: 2px 8px;
+    border-radius: var(--radius, 6px); }
+.gv-auto-menu > summary::-webkit-details-marker { display: none; }
+.gv-auto-menu > summary:hover { background: var(--bg-hover, rgba(127,127,127,.15)); }
+.gv-auto-menu-list { position: absolute; right: 0; z-index: 20; display: flex;
+    flex-direction: column; align-items: stretch; min-width: 220px;
+    background: var(--bg-card, #1e1e1e); border: 1px solid var(--border, #333);
+    border-radius: var(--radius, 6px); padding: 4px; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.gv-auto-menu-list .btn { text-align: left; justify-content: flex-start; }
+.gv-auto-lists { margin-top: 12px; }
+.gv-auto-lists > summary { cursor: pointer; font-weight: 600; }
+.gv-auto-lists-grid { display: grid; gap: 10px; margin: 8px 0;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 
 .gv-engines {
     display: grid;
