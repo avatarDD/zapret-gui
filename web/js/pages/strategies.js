@@ -313,6 +313,7 @@ const StrategiesPage = (() => {
                 case 'dismissAutopick': dismissAutopick(autopickSite(el)); break;
                 case 'copyStrategyToClipboard': copyStrategyToClipboard(sid); break;
                 case 'exportToCatalog': exportToCatalog(sid); break;
+                case 'exportBundle': exportBundle(sid); break;
                 case 'openEdit': openEdit(sid); break;
                 case 'deleteStrategy': deleteStrategy(sid); break;
                 case 'duplicateStrategy': duplicateStrategy(sid); break;
@@ -1329,6 +1330,7 @@ const StrategiesPage = (() => {
                             ${isBuiltin
                                 ? '<button class="btn btn-ghost btn-sm" data-action="duplicateStrategy">Сделать своей копией</button>'
                                 : '<button class="btn btn-ghost btn-sm" data-action="openEdit">Редактировать</button>'}
+                            <button class="btn btn-ghost btn-sm" data-action="exportBundle" title="Один файл со стратегией, её списками, блобами и lua — для Zapret2_AutoTuner или другого роутера">Скачать бандл</button>
                             <button class="btn btn-ghost btn-sm" data-action="exportToCatalog" title="Собрать секцию каталога catalogs/*.txt — для pull request'а в zapret-gui">Секция для каталога</button>
                             ${!isBuiltin ? '<button class="btn btn-ghost btn-sm" data-action="deleteStrategy" style="color:var(--error);">Удалить</button>' : ''}
                         </div>
@@ -2262,6 +2264,34 @@ const StrategiesPage = (() => {
             _copyText(res.text,
                       'Секция скопирована — вставьте её в ' + res.file
                       + (warn ? '. ' + warn : ''));
+        } catch (e) {
+            Toast.error('Экспорт не удался: ' + (e.message || e));
+        }
+    }
+
+    // Бандл AutoTuner (zapret-autotuner-bundle): стратегия вместе со
+    // списками, блобами и lua. Его читают «Импорт бандла» zapret-gui и
+    // импорт Zapret2_AutoTuner — стратегиями можно меняться в обе стороны.
+    async function exportBundle(sid) {
+        try {
+            const res = await API.get('/api/strategies/' + encodeURIComponent(sid)
+                                      + '/export-bundle');
+            if (!res || !res.ok) {
+                Toast.error((res && res.error) || 'Бандл не собрался');
+                return;
+            }
+            const blob = new Blob([JSON.stringify(res.bundle, null, 2) + '\n'],
+                                  { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = res.filename || 'strategy.bundle.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+            const warn = (res.warnings || []).join('; ');
+            if (warn) Toast.warning('Бандл сохранён. ' + warn);
+            else Toast.success('Бандл сохранён: ' + a.download);
         } catch (e) {
             Toast.error('Экспорт не удался: ' + (e.message || e));
         }

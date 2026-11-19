@@ -1,0 +1,88 @@
+{
+  "format": "zapret-autotuner-bundle",
+  "format_version": 1,
+  "generator": {
+    "name": "Zapret2_AutoTuner",
+    "version": "0.1.0"
+  },
+  "zapret2_compat": 6,
+  "strategy": {
+    "id": "zt_discord_com_2026_10_17",
+    "name": "AutoTuner: discord.com, youtube.com, googlevideo.com",
+    "description": "Подобрано Zapret2_AutoTuner 0.1.0 2026-10-17, zapret2 1.0.6",
+    "version": 1,
+    "type": "combined",
+    "profiles": [
+      {
+        "id": "p1",
+        "name": "TLS tcp1",
+        "enabled": true,
+        "args": "--lua-init=@lua/zt-twice.lua --filter-tcp=443 --filter-l7=tls --hostlist=lists/zt-tcp1.txt --payload=tls_client_hello --lua-desync=fake:blob=tls_wl:tcp_md5 --lua-desync=zt_twice:count=2 --lua-desync=multidisorder:pos=1,midsld"
+      },
+      {
+        "id": "p2",
+        "name": "HTTP+TLS tcp2",
+        "enabled": true,
+        "args": "--filter-tcp=80,443 --filter-l7=http,tls --hostlist=lists/zt-tcp2.txt --payload=tls_client_hello --lua-desync=multisplit:pos=1:seqovl=5:seqovl_pattern=0x1603030000 --payload=http_req --lua-desync=multisplit:pos=method+2"
+      },
+      {
+        "id": "p3",
+        "name": "QUIC quic1",
+        "enabled": true,
+        "args": "--filter-udp=443 --filter-l7=quic --hostlist=lists/zt-quic1.txt --payload=quic_initial --lua-desync=fake:blob=fake_default_quic:repeats=6"
+      }
+    ]
+  },
+  "hostlists": [
+    {
+      "name": "zt-quic1",
+      "domains": [
+        "youtube.com",
+        "googlevideo.com"
+      ]
+    },
+    {
+      "name": "zt-tcp1",
+      "domains": [
+        "discord.com"
+      ]
+    },
+    {
+      "name": "zt-tcp2",
+      "domains": [
+        "youtube.com",
+        "googlevideo.com"
+      ]
+    }
+  ],
+  "ipsets": [],
+  "blobs": [
+    {
+      "name": "tls_wl",
+      "base64": "FgMBAAQBAAAA"
+    }
+  ],
+  "lua": [
+    {
+      "name": "zt-twice.lua",
+      "text": "-- zt_twice: the payload goes out twice\nfunction zt_twice(ctx, desync)\n    return VERDICT_PASS\nend"
+    }
+  ],
+  "hosts_pins": [
+    {
+      "domain": "discord.com",
+      "ips": [
+        "162.159.128.233"
+      ]
+    }
+  ],
+  "report": {
+    "tested_at": "2026-10-17T12:00:00Z",
+    "targets": [
+      "discord.com",
+      "youtube.com",
+      "googlevideo.com"
+    ],
+    "client_profiles": []
+  }
+}

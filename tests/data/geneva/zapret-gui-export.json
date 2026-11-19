@@ -1,0 +1,23 @@
+{
+ "format": "zapret-gui/geneva-strategies",
+ "version": 1,
+ "exported_at": "2025-11-04T09:40:00Z",
+ "items": [
+  {
+   "strategy": "[TCP:flags:PA]-fragment{tcp:34:True:17}-| \\/ [TCP:seq:2285867905:4]-tamper{TCP:options-altchksumopt:replace:}-|",
+   "transport": "tcp",
+   "services": [
+    "youtube.com",
+    "googlevideo.com"
+   ],
+   "fitness": 389.0
+  },
+  {
+   "strategy": "[UDP:sport:*]-duplicate(tamper{UDP:load:corrupt},)-| \\/",
+   "transport": "udp",
+   "services": [
+    "ytimg.com"
+   ]
+  }
+ ]
+}

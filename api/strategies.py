@@ -454,6 +454,26 @@ def register(app):
         validation = get_nfqws_manager().dry_run(args)
         return {"ok": True, "validation": validation}
 
+    @app.get("/api/strategies/<sid>/export-bundle")
+    def api_strategies_export_bundle(sid):
+        """Стратегия → бандл AutoTuner (``zapret-autotuner-bundle`` v1)
+        со списками, ipset'ами, своими блобами и lua, на которые ссылаются
+        её профили (core/bundle_export). Его читают импорт бандла
+        zapret-gui и импорт Zapret2_AutoTuner.
+
+        Ответ: {"ok", "bundle", "filename", "warnings"}.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.strategy_builder import get_strategy_manager
+        from core import bundle_export
+        strategy = get_strategy_manager().get_strategy(sid)
+        if not strategy:
+            response.status = 404
+            return {"ok": False, "error": "Стратегия не найдена: %s" % sid}
+        bundle, warnings = bundle_export.export_strategy(strategy)
+        return {"ok": True, "bundle": bundle, "warnings": warnings,
+                "filename": "%s.bundle.json" % bundle["strategy"]["id"]}
+
     @app.post("/api/strategies/<sid>/export-catalog")
     def api_strategies_export_catalog(sid):
         """Собрать из стратегии секцию каталога `catalogs/*.txt`.
