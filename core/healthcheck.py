@@ -505,7 +505,10 @@ class HealthcheckDaemon:
                     and not self._circular_moved(name, entry)):
                 for host in entry["hosts"]:
                     try:
-                        res = strategy_state.clear_host(host, flush=False)
+                        # first_trick: у «авто»-стратегий с первым шагом
+                        # pass сброс — на первый приём, а не на pass.
+                        res = strategy_state.clear_host(
+                            host, flush=False, first_trick=True)
                         removed = (res or {}).get("removed", 0)
                         entry["hosts_reset"].append(
                             {"host": host, "removed": removed})

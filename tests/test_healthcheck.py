@@ -264,7 +264,8 @@ class TestHealthcheckTick(unittest.TestCase):
                 with patch("core.strategy_state.reload_nfqws",
                            return_value={"ok": True}):
                     self.hc.run_now()
-        mock_clear.assert_called_once_with("rutracker.org", flush=False)
+        mock_clear.assert_called_once_with("rutracker.org", flush=False,
+                                          first_trick=True)
 
     def test_run_now_nonblocking_returns_started(self):
         """run_now(blocking=False) запускает фон и сразу возвращает started."""

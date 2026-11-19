@@ -124,6 +124,79 @@ def profile_can_have_hostname(profile_args: list) -> bool:
     return not other_filter
 
 
+# «Авто»-стратегии без обхода на первом шаге (filter.circular_clean_start).
+_CIRCULAR_RE = re.compile(r"^--lua-desync=circular(?::|$)")
+_STRATEGY_NUM_RE = re.compile(r"(?<=:strategy=)(\d+)(?=:|$)")
+_PASS_FIRST_KEY_SUFFIX = "_pass"
+
+
+def circular_pass_first(profile_args: list, profile_n=1) -> list:
+    """Сделать первым шагом ``circular`` пустой приём ``pass``.
+
+    ``circular`` (zapret-auto.lua) начинает каждый хост с ``strategy=1`` и
+    переходит к следующему шагу только после ``fails`` неудач. Значит,
+    приём №1 применяется ко всем сайтам сразу, и к тем, что работают без
+    обхода. Здесь шаги сдвигаются на один (``strategy=N`` → ``N+1``, номер
+    ``final`` едет вместе со своим шагом), а первым ставится
+    ``--lua-desync=pass:strategy=1``: хост начинает без изменений пакетов и
+    получает настоящий приём только после неудач.
+
+    Выученные номера хранятся по ключу ``key=`` (иначе по имени инстанса,
+    z2k-state-persist.lua → state.tsv). После сдвига старый номер N означал
+    бы чужой шаг, поэтому у такого circular свой ключ: прежний ``key`` с
+    суффиксом ``_pass`` или ``circular_<профиль>_<номер>_pass``, где
+    профиль — его id в стратегии (стабилен при отключении соседних
+    профилей), а без id — порядковый номер. Старые
+    записи не трогаются и снова действуют, если опцию выключить.
+
+    Профиль не меняется, если в нём нет ``circular``, их больше одного
+    (план первого забрал бы и шаги второго), номер шага не число или
+    первый шаг уже ``pass``.
+    """
+    desync = [i for i, a in enumerate(profile_args)
+              if isinstance(a, str) and a.startswith("--lua-desync=")]
+    circ = [i for i in desync if _CIRCULAR_RE.match(profile_args[i])]
+    if len(circ) != 1:
+        return profile_args
+    ci = circ[0]
+    steps = [i for i in desync if i > ci]
+    nums = {}
+    for i in steps:
+        tail = profile_args[i].split(":", 1)
+        args = tail[1].split(":") if len(tail) > 1 else []
+        for a in args:
+            if a.startswith("strategy="):
+                if not a[len("strategy="):].isdigit():
+                    return profile_args
+                nums[i] = int(a[len("strategy="):])
+        if nums.get(i) == 1 and tail[0] == "--lua-desync=pass":
+            return profile_args
+    if not nums:
+        return profile_args
+
+    out = list(profile_args)
+    for i in nums:
+        out[i] = _STRATEGY_NUM_RE.sub(lambda m: str(int(m.group(1)) + 1),
+                                      out[i])
+
+    head, _, rest = out[ci].partition(":")
+    cargs = rest.split(":") if rest else []
+    key = None
+    for j, a in enumerate(cargs):
+        if a.startswith("key="):
+            key = a[len("key="):]
+            if key:
+                cargs[j] = "key=" + key + _PASS_FIRST_KEY_SUFFIX
+    if not key:
+        cargs = [a for a in cargs if a != "key="]
+        pid = re.sub(r"[^A-Za-z0-9_-]", "_", str(profile_n)) or "1"
+        cargs.append("key=circular_%s_%d%s" % (
+            pid, desync.index(ci) + 1, _PASS_FIRST_KEY_SUFFIX))
+    out[ci] = head + ":" + ":".join(cargs)
+    out.insert(ci + 1, "--lua-desync=pass:strategy=1")
+    return out
+
+
 def autowrap_bare_trick(profile_args: list, protocol: str = "",
                         family: str = "", ports: str = "") -> list:
     """Ограничить «голый приём» фильтром, выведенным из однозначного --payload.
@@ -649,7 +722,8 @@ class StrategyManager:
                 "ports": _nfqws_ports(ports)}
 
     def build_nfqws_args(self, strategy: dict,
-                         hostlist_path: str = None) -> list:
+                         hostlist_path: str = None,
+                         clean_start: bool = None) -> list:
         """
         Собрать аргументы nfqws2 из стратегии.
 
@@ -659,6 +733,11 @@ class StrategyManager:
         Args:
             strategy:      Словарь стратегии.
             hostlist_path:  Путь к hostlist-файлу (или None).
+            clean_start:    Ставить ли ``pass`` первым шагом circular
+                            (см. circular_pass_first). None — по настройке
+                            filter.circular_clean_start; проверки стратегий
+                            передают False, иначе первые попытки к
+                            заблокированному сайту шли бы без обхода.
 
         Returns:
             Список строк-аргументов для NFQWSManager.start().
@@ -687,6 +766,12 @@ class StrategyManager:
                         strategy.get("name", "?"), source="strategies")
             return []
 
+        if clean_start is None:
+            from core.config_manager import get_config_manager
+            clean_start = bool(get_config_manager().get(
+                "filter", "circular_clean_start", default=False))
+        pass_first = clean_start
+
         all_args = []
 
         for i, profile in enumerate(enabled_profiles):
@@ -701,6 +786,11 @@ class StrategyManager:
             # приём без --filter-* иначе десинхронизирует весь трафик очереди.
             profile_args = autowrap_bare_trick(
                 profile_args, **self._autowrap_scope(strategy))
+
+            # «Авто»-стратегии: первым шагом circular — без обхода.
+            if pass_first:
+                profile_args = circular_pass_first(
+                    profile_args, profile.get("id") or i + 1)
 
             # Вставляем флаги списков перед --payload (если профиль их ещё
             # не содержит).
