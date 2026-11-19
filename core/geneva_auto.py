@@ -1186,6 +1186,81 @@ def target(s: Service):
     return Target(addresses=addrs, tcp_ports=ports(s.port))
 
 
+# ── применение по имени (geneva_c 2.0: ext_profile, ext_lists) ──
+
+HOST_QUEUE = 348                 # процесс «по имени»
+HOST_TCP_PORTS = (80, 443)
+HOST_UDP_PORT = 443
+MAX_HOST_PROFILES = 24
+HOST_FEATURES = ("ext", "ext_profile", "ext_lists", "ext_l7")
+OBSERVE_QUEUE = 349              # детектор geneva (--ext-auto observe)
+OBSERVE_PORT = 9                 # discard: движок детектора берёт только его
+OBSERVE_FEATURE = "ext_auto"
+
+
+def host_profiles(services, trial_keys=(), quic: bool = False,
+                  families: bool = True) -> list:
+    """Профили процесса «по имени» (AutoPlan.HostProfiles AutoTuner):
+    стратегия → сайты, где она применена. Новый адрес CDN работает
+    сразу: geneva узнаёт сайт по имени из ClientHello (или из кэша
+    адресов). К сайту добавляются домены его семейства, если у них нет
+    своей жизни в книге (своя стратегия, проба или подбор). Пробная
+    стратегия не идёт (решает её группа); домен — первому профилю, что
+    его назвал; не больше :data:`MAX_HOST_PROFILES`.
+
+    ``[{"strategy", "udp", "domains", "services"}]``."""
+    allsv = list(services or ())
+    trial_keys = set(trial_keys or ())
+    busy = {(gal.site_of(s), s.kind == QUIC) for s in allsv
+            if s.kind in (WEB, QUIC) and (s.is_active or s.status in (
+                SEARCHING, BLOCKED, SUSPECTED, NOT_FOUND, DEGRADED))}
+    groups = {}
+    for s in allsv:
+        if not s.is_active or not s.strategy or s.key in trial_keys:
+            continue
+        if not (s.kind == WEB or (quic and s.kind == QUIC)):
+            continue
+        groups.setdefault((s.strategy, s.kind == QUIC), []).append(s)
+    order = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0][0],
+                                                   kv[0][1]))
+    claimed, out = set(), []
+    for (strategy, udp), members in order:
+        domains = []
+        for s in sorted(members, key=lambda x: x.key):
+            site = gal.site_of(s)
+            if site and (site, udp) not in claimed:
+                claimed.add((site, udp))
+                domains.append(site)
+        if families:
+            fams = []
+            for s in members:
+                f = gal.service_family(s)
+                if f and f not in fams:
+                    fams.append(f)
+            for f in fams:
+                for d in gal.FAMILIES.get(f, ()):
+                    if (d, udp) not in busy and (d, udp) not in claimed:
+                        claimed.add((d, udp))
+                        domains.append(d)
+        if not domains:
+            continue
+        out.append({"strategy": strategy, "udp": udp, "domains": domains,
+                    "services": [s.key for s in members]})
+        if len(out) >= MAX_HOST_PROFILES:
+            break
+    return out
+
+
+def by_name_covers(services, profiles) -> set:
+    """Сайты, которые покрывает процесс «по имени»: названы в TCP-профиле
+    и все их порты — из :data:`HOST_TCP_PORTS`."""
+    named = {k for p in profiles or () if not p["udp"]
+             for k in p["services"]}
+    return {s.key for s in services or ()
+            if s.kind == WEB and s.key in named and
+            all(int(x) in HOST_TCP_PORTS for x in (s.ports or [WEB_PORT]))}
+
+
 def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS,
                 trials=None) -> list:
     """Группы: активные сервисы по стратегии, пробуемые — первыми.

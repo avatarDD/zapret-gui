@@ -619,6 +619,78 @@ def build_auto_run_args(binary: str, queue: int, gp: dict,
             "--quiet"]
 
 
+def auto_host_paths() -> dict:
+    """Файлы процесса «по имени» (очередь 348) и детектора (349)."""
+    rt = os.path.join(runtime_dir(), "auto")
+    host = os.path.join(rt, "host")
+    return {"dir": host, "pid": os.path.join(host, "run.pid"),
+            "socket": os.path.join(rt, "host.sock"),
+            "events": os.path.join(host, "events.jsonl"),
+            "log": os.path.join(host, "run.log"),
+            "args": os.path.join(host, "run.args"),
+            "profiles": os.path.join(host, "profiles.ini"),
+            "signature": os.path.join(host, "signature"),
+            "exclude_ip": os.path.join(host, "exclude-ip.txt"),
+            "exclude_hosts": os.path.join(host, "exclude-hosts.txt"),
+            "obs_pid": os.path.join(rt, "observe.pid"),
+            "obs_socket": os.path.join(rt, "observe.sock"),
+            "obs_events": os.path.join(rt, "observe.jsonl"),
+            "obs_log": os.path.join(rt, "observe.log")}
+
+
+def host_profiles_ini(profiles, hp: dict) -> str:
+    """``profiles.ini`` процесса «по имени»: профиль на стратегию, у
+    каждого свой hostlist; общие исключения — адреса групп и «Не
+    трогать» (geneva_c 2.0, docs/EXT.md «Файл профилей»)."""
+    from core import geneva_auto as ga
+    out = ["# geneva-auto: стратегии по имени сайта (zapret-gui)"]
+    for i, prof in enumerate(profiles):
+        d = hp["dir"]
+        out += ["[profile p%d]" % i]
+        if prof["udp"]:
+            out += ["filter-udp = %d" % ga.HOST_UDP_PORT,
+                    "filter-l7 = quic"]
+        else:
+            out += ["filter-tcp = %s" % ",".join(
+                str(x) for x in ga.HOST_TCP_PORTS), "filter-l7 = tls,http"]
+        out += ["hostlist = %s" % os.path.join(d, "hosts-%d.txt" % i),
+                "hostlist-exclude = %s" % hp["exclude_hosts"],
+                "ipset-exclude = %s" % hp["exclude_ip"],
+                "strategy-file = %s" % os.path.join(d, "strategy-%d.txt" % i)]
+    return "\n".join(out) + "\n"
+
+
+def build_host_run_args(binary: str, hp: dict, udp: bool,
+                        ext: list) -> list:
+    """argv процесса «по имени»: правила ставит zapret-gui (очередь 348),
+    имя берётся из ClientHello, а у следующего соединения к тому же
+    адресу — из кэша (``--ext-ipcache-hostname``)."""
+    from core import geneva_auto as ga
+    ports = ",".join(str(x) for x in ga.HOST_TCP_PORTS)
+    return [binary, "run"] + list(ext or ["--ext"]) + [
+        "--ext-profile", hp["profiles"],
+        "-p", ports, "--proto", "tcp,udp" if udp else "tcp",
+        "-q", str(ga.HOST_QUEUE), "--firewall", "none",
+        "--mark", MARK,
+        "-c", "unix:" + hp["socket"],
+        "-e", hp["events"], "--stats-interval", "30",
+        "-l", "info", "--log-file", hp["log"], "--quiet",
+        "--ext-ipcache-hostname"]
+
+
+def build_observe_args(binary: str, hp: dict) -> list:
+    """argv детектора geneva (``--ext-auto observe``): трафик не меняет,
+    движок берёт только порт discard; NFLOG-правила ставит и снимает
+    сама geneva."""
+    from core import geneva_auto as ga
+    return [binary, "run", "--ext", "--ext-auto", "observe", "-s", "\\/",
+            "-p", str(ga.OBSERVE_PORT), "--proto", "tcp",
+            "-q", str(ga.OBSERVE_QUEUE), "--mark", MARK,
+            "-c", "unix:" + hp["obs_socket"],
+            "-e", hp["obs_events"], "--stats-interval", "60",
+            "-l", "info", "--log-file", hp["obs_log"], "--quiet"]
+
+
 def _read_args(path: str) -> list:
     """argv процесса, записанный при запуске (JSON), иначе пусто."""
     try:
@@ -2232,6 +2304,209 @@ class GenevaManager:
                 if _read_pid(auto_group_paths(q)["pid"]) or \
                         q in self._auto_procs:
                     self._auto_stop(q)
+            self.auto_host_stop()
+
+    # ─────── «по имени» и детектор ───────
+
+    def auto_host_pid(self):
+        pid = _read_pid(auto_host_paths()["pid"])
+        if pid and pid_alive(pid, "run"):
+            return pid
+        return None
+
+    def auto_host_apply(self, profiles, exclude_ips=(),
+                        exclude_domains=()) -> dict:
+        """Процесс «по имени» (geneva_c 2.0) под ``profiles``
+        (:func:`core.geneva_auto.host_profiles`). Те же стратегии —
+        только новые списки: файлы переписываются и ``reload_lists``;
+        другие стратегии — перезапуск (иначе профиль N перечитал бы новый
+        список со старой стратегией). Пусто — процесс останавливается.
+
+        ``{"ok", "pid", "action", "udp", "error", "problems"}``."""
+        from core import geneva_auto as ga
+        from core.geneva_auto_lists import problem as name_problem
+        with self._lock:
+            binary, err = self._ready_binary()
+            if not binary:
+                self.auto_host_stop()
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": err}
+            feats = self.features(binary)
+            if not all(f in feats for f in ga.HOST_FEATURES):
+                self.auto_host_stop()
+                return {"ok": True, "pid": None, "action": "unsupported"}
+            problems, good = [], []
+            names = [n for n, _ in geneva_ext.blob_files()]
+            for prof in list(profiles or ())[:ga.MAX_HOST_PROFILES]:
+                if prof.get("udp") and "ext_crypto" not in feats:
+                    continue        # имя QUIC — из расшифрованного Initial
+                try:
+                    strat = check_strategy_text(prof["strategy"])
+                except ValueError as e:
+                    problems.append(str(e))
+                    continue
+                why = self.ext_problem(strat, binary, names, feats)
+                if why:
+                    problems.append(why)
+                    continue
+                doms = []
+                for d in prof.get("domains") or ():
+                    d = str(d).strip().rstrip(".").lower()
+                    if d and "." in d and "/" not in d and \
+                            not name_problem(d) and d not in doms:
+                        doms.append(d)
+                if doms:
+                    good.append({"strategy": strat, "udp": bool(
+                        prof.get("udp")), "domains": doms})
+            if not good:
+                self.auto_host_stop()
+                return {"ok": True, "pid": None, "action": "stopped",
+                        "problems": problems}
+            hp = auto_host_paths()
+            udp = any(g["udp"] for g in good)
+            sig = "\n".join(("udp " if g["udp"] else "tcp ") + g["strategy"]
+                            for g in good)
+            pid = self.auto_host_pid()
+            try:
+                with open(hp["signature"], "r", encoding="utf-8") as f:
+                    reload = bool(pid) and f.read() == sig
+            except OSError:
+                reload = False
+            if not reload:
+                self.auto_host_stop()
+            try:
+                os.makedirs(hp["dir"], exist_ok=True)
+                # Пустой hostlist взял бы все имена: в каждом есть имя,
+                # каждый пишется рядом и переносится — geneva не прочитает
+                # половину файла.
+                _write_atomic(hp["exclude_ip"],
+                              "# адреса групп и «Не трогать»\n" +
+                              "\n".join(exclude_ips or ()) + "\n")
+                _write_atomic(hp["exclude_hosts"],
+                              "# «Не трогать»\n" +
+                              "\n".join(exclude_domains or ()) + "\n")
+                for i, g in enumerate(good):
+                    _write_atomic(os.path.join(hp["dir"], "hosts-%d.txt" % i),
+                                  "\n".join(g["domains"]) + "\n")
+                    _write_atomic(os.path.join(hp["dir"],
+                                               "strategy-%d.txt" % i),
+                                  g["strategy"] + "\n")
+            except OSError as e:
+                self.auto_host_stop()
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": "файлы «по имени»: %s" % e}
+            if reload:
+                try:
+                    control_request(hp["socket"], "reload_lists")
+                except ControlError as e:
+                    log.debug("geneva-auto: reload_lists: %s" % e,
+                              source="geneva")
+                return {"ok": True, "pid": pid, "action": "reloaded",
+                        "udp": udp, "problems": problems}
+            try:
+                _write_atomic(hp["profiles"], host_profiles_ini(good, hp))
+                strats = [g["strategy"] for g in good]
+                ext = geneva_ext.argv(strats, feats) or ["--ext"]
+                args = build_host_run_args(binary, hp, udp, ext)
+                trim_file(hp["events"], 0)
+                trim_file(hp["log"], 0)
+                _write_atomic(hp["args"], json.dumps(args))
+                proc = _spawn(args, hp["log"])
+            except OSError as e:
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": "Запуск geneva «по имени»: %s" % e}
+            _write_pid(hp["pid"], proc.pid)
+            self._auto_procs["host"] = proc
+            _wait_ready_events(proc, hp["events"], timeout=6.0)
+            if proc.poll() is not None:
+                _remove(hp["pid"])
+                tail = " | ".join(tail_lines(hp["log"], 3))
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": "geneva «по имени» завершился при запуске: "
+                                 "%s%s" % (exit_text(proc.returncode),
+                                           (" — " + tail) if tail else "")}
+            try:
+                _write_atomic(hp["signature"], sig)
+            except OSError:
+                pass
+            return {"ok": True, "pid": proc.pid, "action": "started",
+                    "udp": udp, "problems": problems}
+
+    def auto_host_stop(self) -> None:
+        hp = auto_host_paths()
+        self._stop_aux(hp["pid"], "host")
+        _remove(hp["socket"])
+        _remove(hp["signature"])
+
+    def _stop_aux(self, pid_path: str, name: str) -> None:
+        pid = _read_pid(pid_path)
+        if pid and pid_alive(pid, "run"):
+            _terminate(pid, "run", wait=5.0)
+        proc = self._auto_procs.pop(name, None)
+        if proc is not None:
+            try:
+                proc.wait(timeout=1)
+            except Exception:                       # noqa: BLE001
+                pass
+        _remove(pid_path)
+
+    def auto_observer_pid(self):
+        pid = _read_pid(auto_host_paths()["obs_pid"])
+        if pid and pid_alive(pid, "run"):
+            return pid
+        return None
+
+    def auto_observer_ensure(self) -> dict:
+        """Детектор geneva (``ext_auto``) запущен? Упавший — заново
+        (его NFLOG-правила geneva снимает сама при выходе).
+        ``{"ok", "pid", "action", "error"}``."""
+        from core import geneva_auto as ga
+        with self._lock:
+            pid = self.auto_observer_pid()
+            if pid:
+                return {"ok": True, "pid": pid, "action": "kept"}
+            binary, err = self._ready_binary()
+            if not binary:
+                return {"ok": False, "pid": None, "error": err}
+            feats = self.features(binary)
+            if ga.OBSERVE_FEATURE not in feats or "ext" not in feats:
+                return {"ok": True, "pid": None, "action": "unsupported"}
+            hp = auto_host_paths()
+            self._stop_aux(hp["obs_pid"], "observe")
+            try:
+                os.makedirs(os.path.dirname(hp["obs_pid"]), exist_ok=True)
+                trim_file(hp["obs_events"], 0)
+                trim_file(hp["obs_log"], 0)
+                proc = _spawn(build_observe_args(binary, hp), hp["obs_log"])
+            except OSError as e:
+                return {"ok": False, "pid": None,
+                        "error": "Запуск детектора geneva: %s" % e}
+            _write_pid(hp["obs_pid"], proc.pid)
+            self._auto_procs["observe"] = proc
+            _wait_ready_events(proc, hp["obs_events"], timeout=6.0)
+            if proc.poll() is not None:
+                _remove(hp["obs_pid"])
+                tail = " | ".join(tail_lines(hp["obs_log"], 3))
+                return {"ok": False, "pid": None,
+                        "error": "детектор geneva завершился: %s%s" % (
+                            exit_text(proc.returncode),
+                            (" — " + tail) if tail else "")}
+            return {"ok": True, "pid": proc.pid, "action": "started"}
+
+    def auto_observer_status(self) -> dict:
+        """``ext_status`` детектора: ``impaired``, ``capacity`` и т.д."""
+        if not self.auto_observer_pid():
+            return {"ok": False, "error": "детектор не запущен"}
+        try:
+            return control_request(auto_host_paths()["obs_socket"],
+                                   "ext_status")
+        except ControlError as e:
+            return {"ok": False, "error": str(e)}
+
+    def auto_observer_stop(self) -> None:
+        hp = auto_host_paths()
+        self._stop_aux(hp["obs_pid"], "observe")
+        _remove(hp["obs_socket"])
 
     def auto_stats(self, queue: int) -> dict:
         """Счётчики группы через управляющий сокет (``stats``)."""

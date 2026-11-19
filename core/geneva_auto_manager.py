@@ -192,6 +192,9 @@ class GenevaAutoManager:
         self.rules_lost = 0              # сколько раз правила сносили извне
         self._lost_noted_at = None
         self._lost_unnoted = 0
+        self.host_state = {}             # процесс «по имени» (очередь 348)
+        self.detector = {}               # детектор geneva (очередь 349)
+        self._detector_error = ""
 
     # ── зависимости ──
 
@@ -537,6 +540,17 @@ class GenevaAutoManager:
         except Exception as e:                      # noqa: BLE001
             log.debug("geneva-auto: остановка групп: %s" % e,
                       source="geneva")
+        self._stop_detector()
+
+    def _stop_detector(self) -> None:
+        stop = getattr(self.gm(), "auto_observer_stop", None)
+        if stop is None:
+            return
+        try:
+            stop()
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: детектор: %s" % e, source="geneva")
+        self.detector = {}
 
     def _start(self) -> None:
         self.load()
@@ -582,6 +596,7 @@ class GenevaAutoManager:
                 self.observer().restore()
             except Exception:                       # noqa: BLE001
                 pass
+            self._stop_detector()
             self.save(force=True)
             self.phase = "off"
             self._thread = None
@@ -640,10 +655,7 @@ class GenevaAutoManager:
             self._trial = next(iter(self._trials.values()), None)
             trials = list(self._trials.values())
             services = [s.clone() for s in self.book.services]
-            res = self.applier().apply_services(services, trials=trials)
-            self._applied_sig = self._plan_sig(
-                services, None, self.applier().max_groups, trials)
-            self._applied_at = self._clock()
+            res = self._apply_plan(services, trials, self._clock())
             if not strategy:
                 return True
             return bool((res.get("trials_ok") or {}).get(service.key))
@@ -727,6 +739,7 @@ class GenevaAutoManager:
             self._asn_checked = now
             self._refresh_asn()
         if not self._suspended:
+            self._detector(now)
             self._check_rules(now)
             self._confirm(now)
             self._searching(now)
@@ -743,6 +756,75 @@ class GenevaAutoManager:
                 # минуту; пустой срез флеш не трогает
                 self._dirty = self._dirty or bool(samples)
                 self.save()
+
+    def _detector(self, now: float) -> None:
+        """Детектор geneva (``--ext-auto observe``, фича ``ext_auto``):
+        раз в срез ``ext_status``. ``THROTTLE`` и ``FREEZE_N`` у имени
+        или адреса — подозрение сервиса; ``capacity`` — ёмкость канала
+        для полки шейпера; ``DNS_POISON`` у имени — совет включить DoH
+        (раз в час на имя). Трафик детектор не меняет."""
+        gm = self.gm()
+        ensure = getattr(gm, "auto_observer_ensure", None)
+        if ensure is None:
+            return
+        try:
+            r = ensure()
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: детектор: %s" % e, source="geneva")
+            return
+        if not isinstance(r, dict):
+            return
+        if not r.get("pid"):
+            if r.get("error") and r.get("error") != self._detector_error:
+                self.note("детектор geneva не запустился: %s" % r["error"],
+                          "warning")
+            self._detector_error = r.get("error", "")
+            self.detector = {"running": False,
+                             "supported": r.get("action") != "unsupported"}
+            return
+        self._detector_error = ""
+        try:
+            st = gm.auto_observer_status()
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: ext_status: %s" % e, source="geneva")
+            return
+        if not isinstance(st, dict) or (not st.get("ok", True) and
+                                        st.get("error")):
+            return
+        from core import geneva_rate as gr
+        cap = st.get("capacity") or 0
+        try:
+            if float(cap) > 0:
+                gr.SHARED.observe(float(cap), now)
+        except (TypeError, ValueError):
+            pass
+        hits, dns = [], []
+        with self._lock:
+            for k in st.get("impaired") or []:
+                if not isinstance(k, dict) or not k.get("impaired", True):
+                    continue
+                cls, level = str(k.get("class") or ""), k.get("level")
+                key = str(k.get("key") or "")
+                if cls == "DNS_POISON" and level == "host":
+                    if self.book.dns_poisoned(key, now):
+                        dns.append(key)
+                    continue
+                if level in ("host", "ip"):
+                    hits += self.book.detect(level, key, cls, now)
+            if hits:
+                self._dirty = True
+        self.detector = {"running": True, "supported": True,
+                         "capacity": int(float(cap or 0)),
+                         "impaired": len(st.get("impaired") or [])}
+        for name in hits:
+            self.note("%s: детектор geneva — подозрение блокировки" % name,
+                      en="%s: geneva's detector suspects a block" % name)
+        for name in dns:
+            self.note("%s: детектор geneva видит подмену DNS — стратегия "
+                      "не поможет, включите DoH (раздел DNS)" % name,
+                      "warning",
+                      en="%s: geneva's detector sees a forged DNS answer — "
+                         "a strategy will not help, turn on DoH" % name)
 
     def _learn(self, obs, now: float) -> None:
         for res in obs.identified():
@@ -1055,18 +1137,54 @@ class GenevaAutoManager:
         else:
             self.offload = False
 
+    def _hosts(self, services, trials):
+        """Процесс «по имени» (``by_name``): профили и исключения, или
+        ``None`` — выключен или нечего применять."""
+        st = self.settings()
+        if not st["by_name"]:
+            return None
+        lists = self.book.lists
+        profs = ga.host_profiles(services, [s.key for s, _ in trials or ()],
+                                 quic=True, families=True)
+        if not profs:
+            return None
+        return {"profiles": profs,
+                "exclude_ips": lists.exclude.subnets(),
+                "exclude_domains": lists.exclude.plain_domains()}
+
+    def _sig(self, services, trials) -> str:
+        return self._plan_sig(services, None, self.applier().max_groups,
+                              trials) + json.dumps(
+            self._hosts(services, trials), sort_keys=True)
+
+    def _apply_plan(self, services, trials, now: float) -> dict:
+        """Группы, пробы и «по имени» — на роутер. Под замком."""
+        hosts = self._hosts(services, trials)
+        res = self.applier().apply_services(services, trials=trials,
+                                            hosts=hosts)
+        self._applied_sig = self._sig(services, trials)
+        self._applied_at = now
+        host = res.get("host") or {}
+        # Сайты, которые покрывает «по имени»: провал на их новом адресе —
+        # ослабление стратегии (адрес и так под обходом).
+        self.book.by_name = ga.by_name_covers(
+            services, hosts["profiles"]) if hosts and host.get("pid") \
+            else set()
+        self.host_state = {"pid": host.get("pid"),
+                           "action": host.get("action", ""),
+                           "profiles": len(hosts["profiles"])
+                           if hosts and host.get("pid") else 0,
+                           "error": host.get("error", "")}
+        return res
+
     def _apply(self, now: float) -> None:
         with self._lock:
             services = [s.clone() for s in self.book.services]
             trials = list(self._trials.values())
-            sig = self._plan_sig(services, None, self.applier().max_groups,
-                                 trials)
-            if sig == self._applied_sig and \
+            if self._sig(services, trials) == self._applied_sig and \
                     now - self._applied_at < APPLY_EVERY:
                 return
-            res = self.applier().apply_services(services, trials=trials)
-            self._applied_sig = sig
-            self._applied_at = now
+            res = self._apply_plan(services, trials, now)
             if res.get("ok"):
                 self._apply_failures = 0
             elif not res.get("hint"):
@@ -1428,6 +1546,8 @@ class GenevaAutoManager:
                 "by_name": st["by_name"],
                 "search_slots": self._search_slots() if self.running else 0,
                 "searches": searches,
+                "host": dict(self.host_state) if self.running else {},
+                "detector": dict(self.detector) if self.running else {},
                 "journal": list(self.journal)[-100:],
             }
 
