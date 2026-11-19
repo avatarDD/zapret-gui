@@ -249,6 +249,11 @@ const GenevaPage = (() => {
                             приостановить работающий обход на время подбора (иначе сайт
                             «откроется» и без стратегии) — он вернётся сам
                         </label>
+                        <label class="gv-check hidden" id="gv-zapret2-row">
+                            <input type="checkbox" id="gv-zapret2">
+                            добавить методы zapret2 в начальную популяцию (geneva_c 2.0:
+                            разрезы, фейки и подмены TLS как x-действия)
+                        </label>
                         <div class="gv-actions">
                             <button class="btn btn-primary" id="gv-btn-search">Начать подбор</button>
                             <button class="btn btn-primary hidden" id="gv-btn-resume">Продолжить</button>
@@ -449,6 +454,8 @@ const GenevaPage = (() => {
             _renderAutoSettings(auto);
             _renderEngines(engines);
             _renderDetect(st.detect || {});
+            const z2row = document.getElementById('gv-zapret2-row');
+            if (z2row) z2row.classList.toggle('hidden', !(st.detect || {}).ext);
             _renderEngine(st.engine || {}, st.active_engine, st.detect || {});
             _renderSearch(st.search || {});
         } catch (e) {
@@ -1060,6 +1067,7 @@ const GenevaPage = (() => {
             population, generations,
             workers: parseInt(val('gv-workers'), 10) || 1,
             pause_bypass: pause ? !!pause.checked : true,
+            zapret2: !!(document.getElementById('gv-zapret2') || {}).checked,
         };
     }
 
@@ -1241,7 +1249,7 @@ const GenevaPage = (() => {
             <tr><th class="gv-col-pick"></th><th>Успех</th><th>Где</th><th>Описание</th><th>Стратегия</th><th></th></tr>
             ${items.map(i => `
                 <tr><td class="gv-col-pick">${i.server_side ? '' : `<input type="checkbox" class="gv-lib-pick" value="${esc(i.strategy)}">`}</td>
-                    <td style="white-space:nowrap;">${esc(i.rate)}%</td>
+                    <td style="white-space:nowrap;">${i.rate == null ? '—' : esc(i.rate) + '%'}</td>
                     <td>${esc(i.country)} / ${esc(i.test)}${i.server_side ? ' <span class="badge badge-muted">server-side</span>' : ''}</td>
                     <td>${esc(i.description)}</td>
                     <td class="gv-mono gv-ellipsis" title="${esc(i.strategy)}">${esc(i.strategy)}</td>
@@ -1298,6 +1306,8 @@ const GenevaPage = (() => {
             if (libHost && !libHost.value && s.host) libHost.value = s.host;
             const pause = document.getElementById('gv-pause');
             if (pause && s.pause_bypass === false) pause.checked = false;
+            const z2 = document.getElementById('gv-zapret2');
+            if (z2 && s.zapret2) z2.checked = true;
             _settingsFilled = true;
         } catch (_) { /* форма останется с умолчаниями */ }
     }

@@ -150,6 +150,8 @@ SEARCH_DEFAULTS = {
     "runs": 1,
     "timeout": 5,
     "pause_bypass": True,
+    # методы zapret2 (x-действия geneva_c 2.0) в начальной популяции
+    "zapret2": False,
 }
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
@@ -183,6 +185,7 @@ def paths() -> dict:
         "db": os.path.join(st, "db.jsonl"),
         "search": os.path.join(st, "search.json"),
         "candidates": os.path.join(st, "candidates.txt"),
+        "seeds": os.path.join(st, "seeds.txt"),
         "socket": os.path.join(rt, "geneva.sock"),
         "run_pid": os.path.join(rt, "run.pid"),
         "run_events": os.path.join(rt, "run-events.jsonl"),
@@ -359,7 +362,34 @@ def validate_search(data: dict, base: dict = None) -> dict:
     if "pause_bypass" in data:
         out["pause_bypass"] = data["pause_bypass"]
     out["pause_bypass"] = _as_bool(out["pause_bypass"], "pause_bypass")
+    if "zapret2" in data:
+        out["zapret2"] = data["zapret2"]
+    out["zapret2"] = _as_bool(out.get("zapret2", False), "zapret2")
     return out
+
+
+def zapret2_library() -> list:
+    """TCP-методы zapret2 строками «Библиотеки»: ``country`` —
+    ``zapret2``, ``test`` — TLS, HTTP или TCP (любой протокол)."""
+    from core import geneva_auto as ga
+    out = []
+    for group, test in ((ga.X_TCP + ga.X_TCP_WIDE, "TLS"),
+                        (ga.X_HTTP, "HTTP"), (ga.X_TCP_ANY, "TCP")):
+        for s in group:
+            out.append({"strategy": s, "rate": None, "country": "zapret2",
+                        "test": test, "server_side": False, "zapret2": True,
+                        "description": "Метод zapret2 (geneva_c 2.0)"})
+    return out
+
+
+def zapret2_seeds(params: dict) -> list:
+    """Методы zapret2 для начальной популяции ручного подбора
+    (EngineViewModel.Zapret2Methods AutoTuner): XTcp, для HTTP (проба
+    ``http`` или порт 80) — XHttp."""
+    from core import geneva_auto as ga
+    http = params.get("probe") == "http" or int(params.get("port") or 0) \
+        == 80
+    return list(ga.X_HTTP if http else ga.X_TCP)
 
 
 def search_target(params: dict) -> str:
@@ -454,6 +484,8 @@ def build_evolve_args(binary: str, params: dict, p: dict,
         "--quiet"]
     if resume:
         args.append("--resume")
+    elif p.get("seeds_file"):
+        args += ["--load-from", p["seeds_file"]]
     return args
 
 
@@ -1311,8 +1343,45 @@ class GenevaManager:
                                       % (msg.splitlines()[-1][:300]
                                          if msg else exit_text(r.returncode))}
 
-    def library(self, refresh: bool = False) -> dict:
-        """Готовые стратегии Geneva (``geneva library --json``)."""
+    def _with_exclude(self, args: list, binary: str) -> list:
+        """«Не трогать» режима «Авто» — и ручному run: geneva_c 2.0 с
+        ``ext_lists`` (тогда и ``--ext``). Без фичи — предупреждение в
+        журнале, run идёт без исключений (отличие от эталона: там ручной
+        run не стартует)."""
+        try:
+            from core.geneva_auto_lists import exclude_args
+            from core.geneva_auto_manager import auto_settings
+            excl = exclude_args(auto_settings()["exclude"])
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva: «Не трогать»: %s" % e, source="geneva")
+            return args
+        if not excl:
+            return args
+        if "ext_lists" not in self.features(binary):
+            log.warning("geneva: список «Не трогать» ручному обходу "
+                        "передать нельзя — нужна geneva_c 2.0 (ext_lists); "
+                        "обход идёт без исключений", source="geneva")
+            return args
+        args = list(args)
+        if "--ext" not in args:
+            args.insert(2, "--ext")
+        return args + excl
+
+    def library(self, refresh: bool = False, zapret2: bool = False) -> dict:
+        """Готовые стратегии Geneva (``geneva library --json``).
+
+        ``zapret2`` — и TCP-методы zapret2 (x-действия geneva_c 2.0,
+        фича ``ext_xact``) с пометкой «zapret2 / TLS|HTTP|TCP», как в
+        «Библиотеке» AutoTuner. Подбор «Авто» берёт их отдельно."""
+        res = self._geneva_library(refresh)
+        if not zapret2 or not res.get("ok"):
+            return res
+        binary, _ = self._ready_binary()
+        if not binary or geneva_ext.FEATURE not in self.features(binary):
+            return res
+        return {"ok": True, "items": list(res["items"]) + zapret2_library()}
+
+    def _geneva_library(self, refresh: bool) -> dict:
         if self._library_cache is not None and not refresh:
             return {"ok": True, "items": self._library_cache}
         binary, err = self._ready_binary()
@@ -1406,6 +1475,7 @@ class GenevaManager:
                                                         binary))
             except ValueError as e:
                 return {"ok": False, "error": str(e)}
+            args = self._with_exclude(args, binary)
             # Правила от убитого процесса (SIGKILL, обрыв питания при
             # живом /tmp не бывает, но kill -9 — бывает) убираем заранее.
             self._fw_down(binary, args)
@@ -1707,9 +1777,26 @@ class GenevaManager:
                 cfg.set("geneva", "search", {k: params[k]
                                              for k in SEARCH_DEFAULTS})
                 cfg.save()
-            args = build_evolve_args(
-                binary, params, p, resume=resume,
-                ext=geneva_ext.evolve_argv(self.features(binary)))
+            feats = self.features(binary)
+            ext = geneva_ext.evolve_argv(feats)
+            if params.get("zapret2") and geneva_ext.FEATURE in feats:
+                # методы zapret2 — в начальную популяцию; продолжение
+                # берёт популяцию из checkpoint, но --ext нужен и ему
+                seeds = zapret2_seeds(params)
+                ext = ext or geneva_ext.argv(seeds, feats)
+                if not resume:
+                    p = dict(p, seeds_file=p["seeds"])
+                    try:
+                        _write_atomic(p["seeds"], "\n".join(seeds) + "\n")
+                    except OSError as e:
+                        return {"ok": False, "error": "методы zapret2 не "
+                                "записаны: %s" % e}
+            elif params.get("zapret2"):
+                log.warning("geneva: методы zapret2 в подборе нужны "
+                            "geneva_c 2.0 (ext_xact) — подбор без них",
+                            source="geneva")
+            args = build_evolve_args(binary, params, p, resume=resume,
+                                     ext=ext)
             state = {
                 "kind": "evolve", "status": "running", "params": params,
                 "started_at": time.time(), "finished_at": None,

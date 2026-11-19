@@ -167,7 +167,7 @@ def register(app):
     @app.route("/api/geneva/library", method="GET")
     def geneva_library():
         refresh = str(request.query.get("refresh") or "") in ("1", "true")
-        return _reply(_mgr().library(refresh=refresh), 503)
+        return _reply(_mgr().library(refresh=refresh, zapret2=True), 503)
 
     @app.route("/api/geneva/db", method="GET")
     def geneva_db():

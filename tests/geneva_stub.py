@@ -15,6 +15,7 @@ version / check / library / db / fw / run / evolve / eval, события JSONL
   GENEVA_STUB_IGNORE_TERM 1 — `run` не выходит по SIGTERM (проверка SIGKILL)
   GENEVA_STUB_EXTERNAL    1 — фича `external_workers` (geneva_c 1.2)
   GENEVA_STUB_XGEN        1 — фича `ext_xgen` (geneva_c 2.0.1, вместе с EXT)
+  GENEVA_STUB_LISTS       1 — фичи `ext_lists`, `ext_profile`, `ext_auto`
   GENEVA_STUB_EXT         1 — фичи `ext`, `ext_xact` (geneva_c 2.0): x-строки
                           разбираются только с `--ext` после команды
 
@@ -93,7 +94,9 @@ def cmd_version():
             ["ext", "ext_xact"] if os.environ.get("GENEVA_STUB_EXT")
             == "1" else []) + (
             ["ext_xgen"] if os.environ.get("GENEVA_STUB_XGEN")
-            == "1" else [])}))
+            == "1" else []) + (
+            ["ext_lists", "ext_profile", "ext_auto"]
+            if os.environ.get("GENEVA_STUB_LISTS") == "1" else [])}))
     return 0
 
 

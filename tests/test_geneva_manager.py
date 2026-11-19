@@ -450,6 +450,54 @@ class TestExtStrategies(_StubCase):
             self.assertEqual(len(bad), 1)
 
 
+class TestZapret2Manual(TestExtStrategies):
+    """Ручной подбор с методами zapret2, «Библиотека» с ними и «Не
+    трогать» для ручного run (AutoTuner 1.4)."""
+
+    def test_search_seeds_zapret2_methods(self):
+        self.cfg.set("geneva", "search", {"zapret2": True})
+        args = self._search_args()
+        self.assertTrue(args.startswith("evolve --ext "), args)
+        self.assertIn("--load-from ", args)
+        with open(gm.paths()["seeds"]) as f:
+            seeds = f.read().split("\n")
+        from core import geneva_auto as ga
+        self.assertEqual(seeds[0], ga.X_TCP[0])
+
+    def test_http_probe_seeds_http_methods(self):
+        from core import geneva_auto as ga
+        self.assertEqual(gm.zapret2_seeds({"probe": "http"}),
+                         list(ga.X_HTTP))
+        self.assertEqual(gm.zapret2_seeds({"probe": "tls", "port": 80}),
+                         list(ga.X_HTTP))
+        self.assertEqual(gm.zapret2_seeds({"probe": "tls"}), list(ga.X_TCP))
+
+    def test_library_lists_zapret2_methods(self):
+        items = self.mgr.library(zapret2=True)["items"]
+        z2 = [i for i in items if i.get("zapret2")]
+        self.assertEqual({i["test"] for i in z2}, {"TLS", "HTTP", "TCP"})
+        self.assertFalse(any(i.get("zapret2")
+                             for i in self.mgr.library()["items"]))
+
+    def test_exclude_goes_to_manual_run(self):
+        self.cfg.set("geneva", "auto", {"exclude": [
+            "bank.example", "10.0.0.0/8", "192.0.2.7"]})
+        self.mgr.set_strategy("[TCP:flags:PA]-duplicate-|")
+        with mock.patch.dict(os.environ, {"GENEVA_STUB_LISTS": "1"}):
+            self.mgr._version_cache = {}
+            self.assertTrue(self.mgr.start()["ok"])
+        run = self.runs()[-1]
+        self.assertTrue(run.startswith("run --ext "), run)
+        self.assertIn("--ipset-exclude-ip 10.0.0.0/8,192.0.2.7/32", run)
+        self.assertIn("--hostlist-exclude-domains bank.example", run)
+
+    def test_exclude_without_ext_lists_only_warns(self):
+        self.cfg.set("geneva", "auto", {"exclude": ["bank.example"]})
+        self.mgr.set_strategy("[TCP:flags:PA]-duplicate-|")
+        self.assertTrue(self.mgr.start()["ok"])
+        self.assertNotIn("exclude", self.runs()[-1])
+
+
 class TestRunLifecycle(_StubCase):
 
     def test_refuses_while_nfqws2_is_active(self):

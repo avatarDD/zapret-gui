@@ -488,3 +488,18 @@ def stale_asns(lists: Lists, fetched: dict, now: float) -> list:
         if at is None or now - at >= ASN_REFRESH:
             out.append(n)
     return out
+
+
+def exclude_args(entries) -> list:
+    """«Не трогать» для ручного ``geneva run`` (geneva_c 2.0, фича
+    ``ext_lists``): ``--ipset-exclude-ip`` и
+    ``--hostlist-exclude-domains``; пусто — исключать нечего."""
+    lst = NameList([e for e in entries or () if not problem(e)])
+    out = []
+    nets = lst.subnets()
+    names = lst.plain_domains()
+    if nets:
+        out += ["--ipset-exclude-ip", ",".join(nets)]
+    if names:
+        out += ["--hostlist-exclude-domains", ",".join(names)]
+    return out
