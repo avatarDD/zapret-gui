@@ -23,7 +23,13 @@
         "id": "p2",
         "name": "QUIC",
         "enabled": false,
-        "args": "--filter-udp=443 --ipset=lists/my-ipset.txt --lua-desync=fake:blob=fake_default_quic:repeats=6"
+        "args": "--filter-udp=443 --ipset=lists/ipset-yt.txt --lua-desync=fake:blob=fake_default_quic:repeats=6"
+      },
+      {
+        "id": "p3",
+        "name": "GUI",
+        "enabled": true,
+        "args": "--filter-tcp=80 --lua-desync=fakemultisplit:pos=1:blob=tls_google --lua-desync=multisplit:pos=2:seqovl=5:seqovl_pattern=tls_rnd"
       }
     ]
   },
@@ -38,7 +44,7 @@
   ],
   "ipsets": [
     {
-      "name": "my-ipset",
+      "name": "ipset-yt",
       "cidrs": [
         "142.250.0.0/15"
       ]
@@ -48,12 +54,24 @@
     {
       "name": "my_tls",
       "base64": "FgMBAAVoZWxsbw=="
+    },
+    {
+      "name": "tls_google",
+      "base64": "FgMBZ29vZ2xl"
     }
   ],
   "lua": [
     {
       "name": "my-twice.lua",
       "text": "function my_twice(ctx, desync) end\n"
+    },
+    {
+      "name": "init_vars.lua",
+      "text": "tls_rnd = fake_default_tls\n"
+    },
+    {
+      "name": "fakemultisplit.lua",
+      "text": "function fakemultisplit(ctx, desync) end\n"
     }
   ]
 }

@@ -19,9 +19,15 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
   ``ipsets``, если имя из пространства IP-списков);
 * ``--ipset[-exclude]=…/<имя>.txt`` → ``ipsets`` (``cidrs``);
 * ``blob=``/``pattern=``/``seqovl_pattern=`` и ``--blob=<имя>:…`` →
-  ``blobs`` — только загруженные пользователем (встроенные есть везде);
-* ``--lua-init=@lua/<имя>.lua`` → ``lua`` — только свои скрипты, не
-  поставляемые с zapret2.
+  ``blobs`` — байты, которые получит nfqws2: свой блоб или файл, на
+  который имя ведёт реестр (``tls_google`` → ``tls_clienthello_…bin``).
+  Только ``fake_default_*`` (встроены в nfqws2) и паттерны ``init_vars``
+  (их задаёт сам скрипт) не берутся;
+* lua: и явные ``--lua-init=@lua/<имя>.lua``, и скрипты, которые GUI сам
+  подключает по функциям профиля (``fakemultisplit``, ``flood_white``,
+  оркестратор ``circular``, ``init_vars``… — та же логика, что у запуска,
+  ``NFQWSManager._build_lua_init_args``). Скрипты самого zapret2
+  (:data:`ZAPRET2_LUA`) есть у любого получателя и не берутся.
 
 Встроенные hostlist'ы (``other``, ``other2``, ``netrogat``) и ipset'ы в
 бандл не входят: у получателя они свои. О каждом пропуске сказано в
@@ -33,14 +39,18 @@ from __future__ import annotations
 import base64
 import re
 
-from core.bundle_import import FORMAT, FORMAT_VERSION, LUA_COMPAT
+from core.bundle_import import FORMAT, FORMAT_VERSION, LUA_COMPAT, MAX_BLOB
 
 _STRATEGY_ID_RE = re.compile(r"[^a-zA-Z0-9_-]")
 _LIST_REF_RE = re.compile(
-    r"^--(hostlist|hostlist-exclude|ipset|ipset-exclude)=(.+)$")
+    r"^--(hostlist|hostlist-exclude|hostlist-auto|ipset|ipset-exclude)=(.+)$")
+# Скрипты, которые поставляет сам zapret2: у любого получателя они свои.
+ZAPRET2_LUA = frozenset({
+    "zapret-lib", "zapret-antidpi", "zapret-auto", "zapret-obfs",
+    "zapret-pcap", "zapret-wgobfs", "zapret-tests"})
 _BLOB_DECL_RE = re.compile(r"^--blob=([A-Za-z_][A-Za-z0-9_]*):")
 _BLOB_ARG_RE = re.compile(
-    r"(?:^|:)(?:blob|pattern|seqovl_pattern)=([A-Za-z_][A-Za-z0-9_]*)")
+    r"(?:^|:)(blob|pattern|seqovl_pattern)=([A-Za-z_][A-Za-z0-9_]*)")
 _LUA_REF_RE = re.compile(r"^--lua-init=@(?:.*/)?lua/([a-zA-Z0-9_.\-]+)\.lua$")
 _STEM_RE = re.compile(r"(?:^|/)([a-zA-Z0-9_-]{1,64})\.txt$")
 # Поля стратегии, которые несёт бандл (остальное — состояние роутера).
@@ -55,14 +65,38 @@ def _tokens(args: str) -> list:
         return (args or "").split()
 
 
+def _auto_lua(tokens: list) -> list:
+    """Скрипты GUI, которые запуск подключит этим профилям сам (по их
+    функциям и значениям): та же логика, что у запуска, на каталоге
+    поставляемых скриптов, где есть все."""
+    try:
+        from core.lua_manager import BUNDLED_LUA_DIR
+        from core.nfqws_manager import NFQWSManager
+        inits = NFQWSManager._build_lua_init_args(tokens, BUNDLED_LUA_DIR)
+    except Exception:                           # noqa: BLE001 — граница
+        return []
+    out = []
+    for a in inits:
+        stem = a.rsplit("/", 1)[-1]
+        stem = stem[:-4] if stem.endswith(".lua") else stem
+        if stem and stem not in ZAPRET2_LUA and stem not in out:
+            out.append(stem)
+    return out
+
+
 def references(strategy: dict) -> dict:
     """Ссылки профилей: ``{"lists": [(вид, имя)], "blobs": [...],
-    "lua": [...]}``; вид — ``hostlist`` или ``ipset`` по опции."""
-    lists, blobs, lua = [], [], []
+    "patterns": [...], "lua": [...]}``; вид — ``hostlist`` или ``ipset``
+    по опции, ``patterns`` — имена из ``pattern=``/``seqovl_pattern=``
+    (их может задать и ``init_vars``)."""
+    lists, blobs, patterns, lua = [], [], [], []
+    every = []
     for p in strategy.get("profiles") or []:
         if not isinstance(p, dict):
             continue
-        for tok in _tokens(p.get("args") or ""):
+        toks = _tokens(p.get("args") or "")
+        every += toks
+        for tok in toks:
             m = _LIST_REF_RE.match(tok)
             if m:
                 stem = _STEM_RE.search(m.group(2))
@@ -76,16 +110,19 @@ def references(strategy: dict) -> dict:
                 if m.group(1) not in lua:
                     lua.append(m.group(1))
                 continue
-            names = []
             m = _BLOB_DECL_RE.match(tok)
-            if m:
-                names.append(m.group(1))
+            if m and m.group(1) not in blobs:
+                blobs.append(m.group(1))
             if tok.startswith("--lua-desync="):
-                names += _BLOB_ARG_RE.findall(tok[len("--lua-desync="):])
-            for n in names:
-                if n not in blobs:
-                    blobs.append(n)
-    return {"lists": lists, "blobs": blobs, "lua": lua}
+                for key, n in _BLOB_ARG_RE.findall(tok[len("--lua-desync="):]):
+                    into = blobs if key == "blob" else patterns
+                    if n not in into:
+                        into.append(n)
+    for stem in _auto_lua(every):
+        if stem not in lua:
+            lua.append(stem)
+    return {"lists": lists, "blobs": blobs, "patterns": patterns,
+            "lua": [n for n in lua if n not in ZAPRET2_LUA]}
 
 
 def _clean_strategy(strategy: dict) -> dict:
@@ -114,8 +151,8 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
     Доступ — функции, чтобы модуль был чистым и проверялся без роутера:
     ``hostlists(имя)`` → список доменов или ``None`` (нет такого или
     встроенный), ``ipsets(имя)`` → список CIDR или ``None``,
-    ``blobs(имя)`` → байты своего блоба или ``None`` (встроенный, нет),
-    ``lua(имя)`` → текст своего скрипта или ``None`` (поставляемый, нет).
+    ``blobs(имя)`` → байты, которые nfqws2 получит под этим именем, или
+    ``None``, ``lua(имя)`` → текст скрипта или ``None``.
     """
     refs = references(strategy)
     warnings = []
@@ -136,20 +173,34 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
                             "или его нет)" % name)
         else:
             out_lists.append({"name": name, "domains": list(items)})
-    for name in refs["blobs"]:
+    try:
+        from core.nfqws_manager import _INIT_VARS_NAMES as init_vars
+    except Exception:                           # noqa: BLE001
+        init_vars = set()
+    # pattern=/seqovl_pattern= с именем init_vars задаёт сам скрипт (он
+    # уже в lua); прочие имена паттернов — такие же блобы
+    names = refs["blobs"] + [n for n in refs["patterns"]
+                             if n not in init_vars and n not in refs["blobs"]]
+    for name in names:
         if name.startswith("fake_default_"):
             continue
         data = blobs(name)
-        if data:
+        if not data:
+            warnings.append("блоб %s не найден на роутере — в бандл не "
+                            "входит" % name)
+        elif len(data) > MAX_BLOB:
+            warnings.append("блоб %s больше %d КБ — в бандл не входит"
+                            % (name, MAX_BLOB // 1024))
+        else:
             out_blobs.append({"name": name,
                               "base64": base64.b64encode(data).decode()})
-        else:
-            warnings.append("блоб %s не входит в бандл (встроенный "
-                            "или его нет)" % name)
     for name in refs["lua"]:
         text = lua(name)
-        if text is not None:
+        if text:
             out_lua.append({"name": name + ".lua", "text": text})
+        else:
+            warnings.append("lua %s.lua не найден на роутере — в бандл не "
+                            "входит" % name)
     bundle = {
         "format": FORMAT,
         "format_version": FORMAT_VERSION,
@@ -161,7 +212,8 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         "hostlists": sorted(out_lists, key=lambda x: x["name"]),
         "ipsets": sorted(out_ipsets, key=lambda x: x["name"]),
         "blobs": sorted(out_blobs, key=lambda x: x["name"]),
-        "lua": sorted(out_lua, key=lambda x: x["name"]),
+        # lua — в порядке загрузки (оркестратор после zapret-auto и т.п.)
+        "lua": out_lua,
     }
     return bundle, warnings
 
@@ -187,14 +239,26 @@ def export_strategy(strategy: dict) -> tuple:
         return im.get_ipset(name)
 
     def blobs(name):
-        info = bm.get_blob(name)
-        if not info or info.get("is_builtin"):
+        # как при запуске: реестр (каталожные имена, затем свои блобы)
+        from core import blob_registry as br
+        value = br.get_blob_value(name)
+        if value is None:
+            return bm.get_blob_content(name) or None
+        value = str(value)
+        if value.lower().startswith("0x"):
+            try:
+                return bytes.fromhex(value[2:])
+            except ValueError:
+                return None
+        path = br._blob_file_path(value)
+        try:
+            with open(path, "rb") as f:
+                return f.read(MAX_BLOB + 1)
+        except OSError:
             return None
-        return bm.get_blob_content(name)
 
     def lua(name):
-        if not lm._validate_name(name) or lm._is_bundled(name):
-            return None
+        # свой экземпляр, если есть, иначе поставляемый с GUI
         return lm.get_script(name) or None
 
     return build_bundle(strategy, hostlists=hostlists, ipsets=ipsets,

@@ -471,6 +471,14 @@ def register(app):
             response.status = 404
             return {"ok": False, "error": "Стратегия не найдена: %s" % sid}
         bundle, warnings = bundle_export.export_strategy(strategy)
+        # тот же контроль, что у «Импорта бандла»: не отдавать файл,
+        # который получатель не примет
+        from core import bundle_import
+        errors, _ = bundle_import.validate_bundle(bundle)
+        if errors:
+            response.status = 400
+            return {"ok": False, "error": "; ".join(errors[:3]),
+                    "errors": errors}
         return {"ok": True, "bundle": bundle, "warnings": warnings,
                 "filename": "%s.bundle.json" % bundle["strategy"]["id"]}
 

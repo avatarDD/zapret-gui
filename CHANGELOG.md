@@ -7,7 +7,8 @@
 - **Обмен стратегиями nfqws2 с Zapret2_AutoTuner в обе стороны.**
   «Стратегии → ⋯ → Скачать бандл» (`GET /api/strategies/<id>/export-bundle`)
   сохраняет стратегию бандлом AutoTuner (`zapret-autotuner-bundle` v1) со
-  всеми её hostlist'ами, ipset'ами, своими блобами и lua — его открывают
+  всеми её hostlist'ами, ipset'ами, блобами (и за именами каталога вроде
+  `tls_google`) и lua (и теми, что GUI подключает сам) — его открывают
   импорт AutoTuner и «Импорт бандла» zapret-gui. Тесты сверяют обмен на
   эталонных файлах обоих проектов, включая файл обмена geneva.
 
