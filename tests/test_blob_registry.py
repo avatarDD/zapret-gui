@@ -34,6 +34,14 @@ class TestBuildBlobDeclarations(unittest.TestCase):
             ["--blob=tls_google:@bin/tls_clienthello_www_google_com.bin"],
         )
 
+    def test_clone_fallback_and_dataxor_declared(self):
+        decls = br.build_blob_declarations([
+            "--lua-desync=tls_client_hello_clone:blob=ch:fallback=quic_vk",
+            "--lua-desync=ippxor:ippxor=192:dataxor=hex_00",
+            "--lua-desync=multisplit_tls:fallback=pass"])
+        self.assertEqual(decls, ["--blob=quic_vk:@bin/quic_initial_vk_com.bin",
+                                 "--blob=hex_00:0x00"])
+
     def test_builtin_skipped(self):
         self.assertEqual(
             br.build_blob_declarations(["--lua-desync=fake:blob=fake_default_tls"]),

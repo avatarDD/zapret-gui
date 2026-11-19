@@ -63,7 +63,7 @@ def desync_blob_refs(value: str) -> tuple:
     """Значение ``--lua-desync=`` → ``([(аргумент, имя блоба)], [имена
     переменных desync])``. Переменные — то, что функция сама кладёт в
     desync (клон ClientHello): ссылки на них блобами не считаются."""
-    func, _, rest = str(value or "").partition(":")
+    func, _, rest = _unquote(str(value or ""))[1].partition(":")
     keys = _FUNC_BLOB_ARGS.get(func, _BLOB_ARGS)
     var_keys = _FUNC_VAR_ARGS.get(func, ())
     refs, variables = [], []
@@ -211,13 +211,15 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     «заменить» или «переименовать» решает человек.
 
     Скрипты, которые поставляет сам GUI (``gui_lua``), и имена блобов
-    каталога (``catalog_blobs``) не пишутся никогда: свой экземпляр
-    скрипта подменил бы поставляемый для всех стратегий, а блоб с
-    именем каталога nfqws2 не получит — реестр отдаёт имя каталогу.
-    Если содержимое другое, это ``kept`` с предупреждением в
-    ``warnings``: стратегия пойдёт с тем, что поставляет этот GUI.
+    каталога (``catalog_blobs``) заменить нельзя: свой экземпляр скрипта
+    подменил бы поставляемый для всех стратегий, а блоб с именем
+    каталога nfqws2 не получит — реестр отдаёт имя каталогу. Если они
+    другие (или файла каталога здесь нет), это конфликт с пометкой
+    ``rename_only``: содержимое бандла сохраняется под новым именем, и
+    ссылки стратегии переходят на него, — она идёт с тем, что проверял
+    отправитель. ``rename_only`` плана — когда «заменить» недоступно.
     """
-    items, conflicts, skipped, kept, warnings = [], [], [], [], []
+    items, conflicts, skipped = [], [], []
 
     same = existing.get("same", set())
     owned = {"lua": existing.get("gui_lua", set()),
@@ -227,16 +229,11 @@ def plan_bundle(data: dict, existing: dict) -> dict:
         if (kind, name) in same:
             skipped.append({"kind": kind, "name": name})
             return
-        if name in owned.get(kind, ()):
-            kept.append({"kind": kind, "name": name})
-            warnings.append(
-                ("lua %s.lua поставляется с zapret-gui: в бандле другой "
-                 "текст, остаётся свой" if kind == "lua" else
-                 "блоб %s — имя из каталога zapret-gui: в бандле другие "
-                 "байты, остаются свои") % name)
-            return
         items.append({"kind": kind, "name": name})
-        if name in taken:
+        if name in owned.get(kind, ()):
+            conflicts.append({"kind": kind, "name": name,
+                              "rename_only": True})
+        elif name in taken:
             conflicts.append({"kind": kind, "name": name})
 
     for h in _items(data, "hostlists"):
@@ -249,10 +246,11 @@ def plan_bundle(data: dict, existing: dict) -> dict:
         add("lua", _lua_stem(item["name"]), existing.get("lua", set()))
     sid = data["strategy"]["id"]
     add("strategy", sid, existing.get("strategies", set()))
+    builtin = sid in existing.get("builtin_strategies", set())
     return {"items": items, "conflicts": conflicts, "skipped": skipped,
-            "kept": kept, "warnings": warnings,
-            "builtin_strategy": sid in existing.get("builtin_strategies",
-                                                     set())}
+            "builtin_strategy": builtin,
+            "rename_only": builtin or any(c.get("rename_only")
+                                          for c in conflicts)}
 
 
 def _free(name: str, taken: set, kind: str) -> str:
@@ -275,6 +273,10 @@ def rename_map(plan: dict, existing: dict) -> dict:
             "lua": "lua", "strategy": "strategies"}
     for c in plan["conflicts"]:
         taken = set(existing.get(keys[c["kind"]], set()))
+        # новое имя не должно снова оказаться именем каталога или GUI
+        taken |= set(existing.get({"blob": "catalog_blobs",
+                                   "lua": "gui_lua"}.get(c["kind"], ""),
+                                  set()))
         taken |= set(out.get(c["kind"], {}).values())
         kind = c["kind"]
         new = _free(c["name"], taken, kind) if kind != "strategy" else \
@@ -283,37 +285,68 @@ def rename_map(plan: dict, existing: dict) -> dict:
     return out
 
 
+def _unquote(tok: str) -> tuple:
+    """Токен ``tokenize_args`` (кавычки остаются в нём) → (кавычка, суть)."""
+    if len(tok) >= 2 and tok[0] in "\"'" and tok[-1] == tok[0]:
+        return tok[0], tok[1:-1]
+    return "", tok
+
+
+def _rewrite_desync(value: str, blobs: dict) -> str:
+    """Переименовать блобы в значении ``--lua-desync=`` теми же
+    правилами, что у :func:`desync_blob_refs`."""
+    q, inner = _unquote(value)
+    parts = inner.split(":")
+    func = parts[0]
+    keys = _FUNC_BLOB_ARGS.get(func, _BLOB_ARGS)
+    for i, part in enumerate(parts[1:], 1):
+        key, eq, val = part.partition("=")
+        if eq and key in keys and val in blobs:
+            parts[i] = "%s=%s" % (key, blobs[val])
+    return q + ":".join(parts) + q
+
+
+def _rewrite_token(tok: str, lists: dict, blobs: dict, lua: dict) -> str:
+    q, inner = _unquote(tok)
+    if lists:
+        m = re.match(r"^(--(?:hostlist|hostlist-exclude|hostlist-auto|ipset|"
+                     r"ipset-exclude)=(?:.*/)?lists/)([A-Za-z0-9_-]+)(\.txt)$",
+                     inner)
+        if m and m.group(2) in lists:
+            return q + m.group(1) + lists[m.group(2)] + m.group(3) + q
+    if lua:
+        m = re.match(r"^(--lua-init=@(?:.*/)?lua/)([A-Za-z0-9_.\-]+?)(\.lua)$",
+                     inner)
+        if m and m.group(2) in lua:
+            return q + m.group(1) + lua[m.group(2)] + m.group(3) + q
+    if blobs:
+        if inner.startswith("--lua-desync="):
+            return q + "--lua-desync=" + _rewrite_desync(
+                inner[len("--lua-desync="):], blobs) + q
+        m = re.match(r"^--blob=([A-Za-z_][A-Za-z0-9_]*):", inner)
+        if m and m.group(1) in blobs:
+            return q + "--blob=%s:" % blobs[m.group(1)] + \
+                inner[m.end():] + q
+    return tok
+
+
 def rewrite_args(args: str, renames: dict) -> str:
-    """Перенести переименования в строку args профиля."""
+    """Перенести переименования в строку args профиля: по токенам, тем
+    же разбором, что у запуска (кавычки остаются на месте)."""
     lists = dict(renames.get("hostlist", {}))
     lists.update(renames.get("ipset", {}))
     blobs = renames.get("blob", {})
     lua = renames.get("lua", {})
-
-    def list_ref(m):
-        return m.group(1) + lists.get(m.group(2), m.group(2)) + m.group(3)
-
-    if lists:
-        args = re.sub(r"(lists/)([A-Za-z0-9_-]+)(\.txt\b)", list_ref, args)
-    if lua:
-        args = re.sub(r"(@lua/)([A-Za-z0-9_.\-]+?)(\.lua\b)",
-                      lambda m: m.group(1) + lua.get(m.group(2), m.group(2))
-                      + m.group(3), args)
-    if blobs:
-        def desync(m):
-            func = m.group(2)
-            keys = _FUNC_BLOB_ARGS.get(func, _BLOB_ARGS)
-            rest = re.sub(r"(?<=:)(%s)=([A-Za-z_][A-Za-z0-9_]*)(?=:|$)"
-                          % "|".join(keys),
-                          lambda a: "%s=%s" % (a.group(1), blobs.get(
-                              a.group(2), a.group(2))), m.group(3))
-            return m.group(1) + func + rest
-        args = re.sub(r"(--lua-desync=)([A-Za-z0-9_]+)((?::[^\s:]*)*)",
-                      desync, args)
-        args = re.sub(r"(--blob=)([A-Za-z_][A-Za-z0-9_]*)(:)",
-                      lambda m: m.group(1) + blobs.get(m.group(2), m.group(2))
-                      + m.group(3), args)
-    return args
+    if not (lists or blobs or lua):
+        return args
+    from core.models import tokenize_args
+    out = args
+    for tok in dict.fromkeys(tokenize_args(args)):
+        new = _rewrite_token(tok, lists, blobs, lua)
+        if new != tok:
+            out = re.sub(r"(?<!\S)%s(?!\S)" % re.escape(tok),
+                         lambda _m: new, out)
+    return out
 
 
 # ─────────────────────── apply ─────────────────────────────────────────
@@ -434,11 +467,15 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
                 "error_code": "invalid", "warnings": warnings}
     existing = existing if existing is not None else existing_names(data)
     plan = plan_bundle(data, existing)
-    warnings = warnings + plan["warnings"]
     if plan["builtin_strategy"] and on_conflict != "rename":
         return {"ok": False, "error_code": "conflict", "plan": plan,
                 "warnings": warnings,
                 "error": "id стратегии совпадает со встроенной — "
+                         "выберите «переименовать»"}
+    if plan["rename_only"] and on_conflict != "rename":
+        return {"ok": False, "error_code": "conflict", "plan": plan,
+                "warnings": warnings,
+                "error": "скрипты GUI и блобы каталога заменить нельзя — "
                          "выберите «переименовать»"}
     if plan["conflicts"] and on_conflict not in ("replace", "rename"):
         return {"ok": False, "error_code": "conflict", "plan": plan,
@@ -457,9 +494,8 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
     from core.lua_manager import get_lua_manager
     from core.strategy_builder import get_strategy_manager
     saved, failed = [], []
-    # уже есть таким же и поставляемое самим GUI — не пишутся
-    own = {(x["kind"], x["name"])
-           for x in (plan.get("skipped") or []) + (plan.get("kept") or [])}
+    # то, что здесь уже есть таким же, не пишется
+    own = {(x["kind"], x["name"]) for x in plan.get("skipped") or ()}
 
     hm = get_hostlist_manager()
     for h in _items(data, "hostlists"):
@@ -508,8 +544,7 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
     return {"ok": not failed, "strategy_id": strategy["id"],
             "saved": saved, "failed": failed, "renamed": renames,
             "skipped": ["%s %s" % (x["kind"], x["name"])
-                        for x in (plan.get("skipped") or [])
-                        + (plan.get("kept") or [])],
+                        for x in plan.get("skipped") or ()],
             "warnings": warnings,
             "error": ("не сохранено: " + ", ".join(failed)) if failed
             else None}

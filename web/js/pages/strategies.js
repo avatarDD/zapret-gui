@@ -2476,7 +2476,9 @@ const StrategiesPage = (() => {
         const conflicts = plan.plan.conflicts || [];
         if (conflicts.length || plan.plan.builtin_strategy) {
             const names = conflicts.map(c => titles[c.kind] + ' ' + c.name).join(', ');
-            onConflict = plan.plan.builtin_strategy || !confirm(
+            // одноимённые скрипты GUI, блобы каталога и встроенная
+            // стратегия — только под новыми именами
+            onConflict = plan.plan.rename_only || plan.plan.builtin_strategy || !confirm(
                 'Уже есть: ' + names + '.\n\nOK — заменить существующие, Отмена — сохранить под новыми именами.')
                 ? 'rename' : 'replace';
         }

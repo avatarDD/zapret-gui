@@ -106,19 +106,35 @@ class TestPlanAndRename(unittest.TestCase):
         self.assertIn("fake:blob=tls1_2:repeats=2", args)
         self.assertIn("seqovl_pattern=tls1_2:pos=1", args)
 
-    def test_gui_scripts_and_catalog_blobs_are_never_written(self):
+    def test_gui_scripts_and_catalog_blobs_go_only_under_new_names(self):
         b = bundle(blobs=bundle()["blobs"] + [
             {"name": "tls_google",
              "base64": base64.b64encode(b"other").decode()}])
-        existing = dict(NOTHING, lua={"my"}, gui_lua={"my"},
-                        catalog_blobs={"tls_google"})
+        existing = dict(NOTHING, lua={"my"}, gui_lua={"my", "my-2"},
+                        catalog_blobs={"tls_google", "tls_google_2"})
         plan = bi.plan_bundle(b, existing)
-        # не конфликт: заменять нечего, остаётся своё — с предупреждением
-        self.assertEqual(plan["conflicts"], [])
-        self.assertEqual({(k["kind"], k["name"]) for k in plan["kept"]},
+        # заменить поставляемое нельзя: только «переименовать»
+        self.assertEqual({(c["kind"], c["name"]) for c in plan["conflicts"]
+                          if c.get("rename_only")},
                          {("lua", "my"), ("blob", "tls_google")})
-        self.assertEqual(len(plan["warnings"]), 2)
-        self.assertTrue(any("tls_google" in w for w in plan["warnings"]))
+        self.assertTrue(plan["rename_only"])
+        renames = bi.rename_map(plan, existing)
+        # новое имя — не снова имя каталога или скрипта GUI
+        self.assertEqual(renames["blob"], {"tls_google": "tls_google_3"})
+        self.assertEqual(renames["lua"], {"my": "my-3"})
+
+    def test_quoted_and_absolute_refs_are_renamed(self):
+        args = bi.rewrite_args(
+            '--lua-desync="fake:blob=b1:repeats=2" --lua-desync=fake:blob=b1 '
+            "--lua-init=@/opt/zapret2/lua/my.lua "
+            "--hostlist=/opt/zapret2/lists/zt-youtube.txt",
+            {"blob": {"b1": "b1_2"}, "lua": {"my": "my-2"},
+             "hostlist": {"zt-youtube": "zt-youtube-2"}})
+        self.assertEqual(
+            args, '--lua-desync="fake:blob=b1_2:repeats=2" '
+                  "--lua-desync=fake:blob=b1_2 "
+                  "--lua-init=@/opt/zapret2/lua/my-2.lua "
+                  "--hostlist=/opt/zapret2/lists/zt-youtube-2.txt")
 
     def test_fallback_is_a_blob_only_for_clone(self):
         renames = {"blob": {"pass": "pass_2", "fb": "fb_2", "cl": "cl_2"}}
@@ -220,19 +236,24 @@ class TestApply(unittest.TestCase):
         self.assertIn("blob=tls1_2", args)
         self.assertEqual(r["renamed"], {"blob": {"tls1": "tls1_2"}})
 
-    def test_same_and_gui_owned_are_not_written(self):
+    def test_same_is_not_written_and_gui_script_needs_rename(self):
         existing = dict(NOTHING, hostlists={"zt-youtube"},
                         ipsets={"zt-yt-ipset"}, lua={"my"}, gui_lua={"my"},
                         same={("hostlist", "zt-youtube"),
                               ("ipset", "zt-yt-ipset")})
-        r = bi.apply_bundle(bundle(), existing=existing)
+        r = bi.apply_bundle(bundle(), on_conflict="replace",
+                            existing=existing)
+        self.assertEqual(r["error_code"], "conflict")
+        self.assertEqual(self.m.saved, {})
+        r = bi.apply_bundle(bundle(), on_conflict="rename",
+                            existing=existing)
         self.assertTrue(r["ok"], r)
         self.assertEqual(set(self.m.saved),
-                         {"tls1", "zt_youtube_2026_10_18"})
+                         {"tls1", "my-2", "zt_youtube_2026_10_18"})
         self.assertEqual(sorted(r["skipped"]),
-                         ["hostlist zt-youtube", "ipset zt-yt-ipset",
-                          "lua my"])
-        self.assertTrue(any("my.lua" in w for w in r["warnings"]))
+                         ["hostlist zt-youtube", "ipset zt-yt-ipset"])
+        self.assertIn("--lua-init=@lua/my-2.lua", self.m.saved[
+            "zt_youtube_2026_10_18"]["profiles"][0]["args"])
 
     def test_invalid(self):
         r = bi.apply_bundle({"format": bi.FORMAT}, existing=NOTHING)

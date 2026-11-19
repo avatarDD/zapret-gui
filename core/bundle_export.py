@@ -36,10 +36,11 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
 ``lists/<имя>.txt``, lua — из ``lua/<имя>.lua``: файл по другому пути
 бандл перенести не может.
 
-Встроенная стратегия-приём уходит такой, какой её запускает GUI: «голые»
-профили получают тот же фильтр протокола и портов
-(``autowrap_bare_trick``), иначе у получателя приём задел бы весь
-трафик очереди. О каждом пропуске сказано в
+Профили уходят такими, какими их запускает GUI: «голый» приём получает
+тот же фильтр (``autowrap_bare_trick``: по ``--payload``, у встроенной
+стратегии — и по протоколу и портам перехвата), иначе у получателя он
+задел бы весь трафик очереди. Пути к спискам и lua становятся
+``lists/<имя>.txt`` и ``@lua/<имя>.lua`` — так их понимает импорт. О каждом пропуске сказано в
 ``warnings`` ответа — сам бандл остаётся чистым форматом.
 """
 
@@ -101,12 +102,17 @@ def references(strategy: dict) -> dict:
     lists, blobs, patterns, lua, unknown = [], [], [], [], []
     declared = {}
     every = []
-    local = set()           # переменные desync (клон ClientHello), не блобы
     for p in strategy.get("profiles") or []:
         if not isinstance(p, dict):
             continue
         toks = _tokens(p.get("args") or "")
         every += toks
+        # переменные desync, которые профиль сам заводит (клон
+        # ClientHello): в этом профиле такое имя — не блоб
+        local = set()
+        for tok in toks:
+            if tok.startswith("--lua-desync="):
+                local |= set(desync_blob_refs(tok[len("--lua-desync="):])[1])
         for tok in toks:
             m = _LIST_REF_RE.match(tok)
             if m:
@@ -132,9 +138,10 @@ def references(strategy: dict) -> dict:
                 if m.group(1) not in blobs:
                     blobs.append(m.group(1))
             if tok.startswith("--lua-desync="):
-                refs, variables = desync_blob_refs(tok[len("--lua-desync="):])
-                local |= set(variables)
-                for key, n in refs:
+                for key, n in desync_blob_refs(
+                        tok[len("--lua-desync="):])[0]:
+                    if n in local and n not in declared:
+                        continue
                     into = patterns if key.endswith("pattern") else blobs
                     if n not in into:
                         into.append(n)
@@ -142,11 +149,28 @@ def references(strategy: dict) -> dict:
     # --lua-init из самих профилей
     auto = _auto_lua(every)
     lua = auto + [n for n in lua if n not in auto]
-    blobs = [n for n in blobs if n not in local or n in declared]
-    patterns = [n for n in patterns if n not in local or n in declared]
     return {"lists": lists, "blobs": blobs, "patterns": patterns,
             "declared": declared, "unknown": unknown,
             "lua": [n for n in lua if n not in ZAPRET2_LUA]}
+
+
+def _portable_paths(args: str) -> str:
+    """Пути этого роутера к спискам и lua → ``lists/<имя>.txt`` и
+    ``@lua/<имя>.lua``: так их пишет импорт (и переименовывает)."""
+    for tok in dict.fromkeys(_tokens(args)):
+        m = _LIST_REF_RE.match(tok)
+        stem = _STEM_RE.search(m.group(2)) if m else None
+        if stem:
+            new = "--%s=lists/%s.txt" % (m.group(1), stem.group(1))
+        else:
+            m = _LUA_REF_RE.match(tok)
+            if not m:
+                continue
+            new = "--lua-init=@lua/%s.lua" % m.group(1)
+        if new != tok:
+            args = re.sub(r"(?<!\S)%s(?!\S)" % re.escape(tok),
+                          lambda _m, new=new: new, args)
+    return args
 
 
 def _inline_decl(args: str, inline: dict) -> str:
@@ -179,7 +203,8 @@ def _clean_strategy(strategy: dict, inline=None) -> dict:
             "name": str(p.get("name") or "p%d" % i),
             # как при запуске (strategy_builder): выключен любой «ложный»
             "enabled": bool(p.get("enabled", True)),
-            "args": _inline_decl(str(p.get("args") or ""), inline or {}),
+            "args": _portable_paths(_inline_decl(str(p.get("args") or ""),
+                                                 inline or {})),
         })
     return out
 
@@ -191,6 +216,11 @@ def _declared_bytes(value: str, blob_file):
             return bytes.fromhex(value[2:])
         except ValueError:
             return None
+    m = re.match(r"^\+(\d+)(@.+)$", value)
+    if m and blob_file is not None:
+        # +N@файл: nfqws2 берёт файл со смещения N
+        data = blob_file(m.group(2))
+        return data[int(m.group(1)):] if data is not None else None
     if value.startswith("@") and blob_file is not None:
         return blob_file(value)
     return None
@@ -304,12 +334,11 @@ def export_strategy(strategy: dict) -> tuple:
     """Бандл стратегии с файлами этого роутера."""
     strategy = _as_launched(strategy)
     from core.backup import _HL_BUILTIN, _IPSET_BUILTIN, _app_version
-    from core.blob_manager import get_blob_manager
     from core.hostlist_manager import get_hostlist_manager
     from core.ipset_manager import get_ipset_manager
     from core.lua_manager import get_lua_manager
-    hm, im, bm, lm = (get_hostlist_manager(), get_ipset_manager(),
-                      get_blob_manager(), get_lua_manager())
+    hm, im, lm = (get_hostlist_manager(), get_ipset_manager(),
+                  get_lua_manager())
 
     def hostlists(name):
         if name in _HL_BUILTIN or name not in hm.list_names():
@@ -334,7 +363,7 @@ def export_strategy(strategy: dict) -> tuple:
         # как при запуске: реестр (каталожные имена, затем свои блобы)
         value = br.get_blob_value(name)
         if value is None:
-            return bm.get_blob_content(name) or None
+            return None         # запуск его тоже не объявит
         return _declared_bytes(value, blob_file)
 
     def lua(name):
@@ -348,17 +377,17 @@ def export_strategy(strategy: dict) -> tuple:
 
 
 def _as_launched(strategy: dict) -> dict:
-    """Встроенная стратегия-приём — с фильтром, который ей добавит запуск
-    (``autowrap_bare_trick`` по протоколу и портам перехвата)."""
+    """Профили с фильтром, который им добавит запуск
+    (``autowrap_bare_trick``): по однозначному ``--payload`` у любой
+    стратегии, по протоколу и портам перехвата — у встроенной."""
     try:
         from core.strategy_builder import (StrategyManager,
                                            autowrap_bare_trick)
         scope = StrategyManager._autowrap_scope(strategy)
     except Exception:                           # noqa: BLE001 — граница
         return strategy
-    if not scope:
-        return strategy
     profiles = []
+    changed = False
     for p in strategy.get("profiles") or []:
         if isinstance(p, dict) and isinstance(p.get("args"), str):
             toks = _tokens(p["args"])
@@ -366,8 +395,9 @@ def _as_launched(strategy: dict) -> dict:
             if len(wrapped) > len(toks):
                 head = wrapped[:len(wrapped) - len(toks)]
                 p = dict(p, args=" ".join(head + [p["args"].strip()]))
+                changed = True
         profiles.append(p)
-    return dict(strategy, profiles=profiles)
+    return dict(strategy, profiles=profiles) if changed else strategy
 
 
 def _installed_compat(lm) -> int:

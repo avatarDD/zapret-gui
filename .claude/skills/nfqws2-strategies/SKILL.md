@@ -262,6 +262,12 @@ hostname (макс. 2 «перескока»). Если все инстансы 
 (`_INIT_VARS_NAMES`: `tls_google`, `tls_rnd`, …): у них своё значение
 (fake_default_tls с другим SNI), и подмена файлом из реестра молча
 поменяла бы стратегию — их по паттерну не заявляем.
+Ещё два аргумента-имени блоба (`referenced_extra_blob_names`, по
+функции — `core/bundle_import.desync_blob_refs`): `fallback=` у
+`tls_client_hello_clone` (её `blob=` — имя переменной клона в desync,
+а не блоб) и `dataxor=` у `ippxor`/zapret-obfs. Заявляются, как
+паттерны, только известные реестру. `fallback=` у `multisplit_tls` —
+режим (`pass`/`split`/`pattern`), не блоб.
 
 **Имена из nfqws2-keenetic** (`_FALLBACK_ALIASES`): `tls_clienthello` и
 `quic_initial` (их `/opt/etc/nfqws2/blobs/*.bin` побайтово равны нашим

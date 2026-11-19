@@ -213,24 +213,34 @@ class TestApi(unittest.TestCase):
             {"id": "p1", "args": "--lua-desync=tls_client_hello_clone:"
                                  "blob=cl:fallback=my_tls "
                                  "--lua-desync=fake:blob=cl "
-                                 "--lua-desync=multisplit_tls:fallback=pass"}]}
+                                 "--lua-desync=multisplit_tls:fallback=pass"},
+            # другой профиль: cl здесь — настоящий блоб
+            {"id": "p2", "args": "--lua-desync=fake:blob=cl"}]}
         refs = be.references(st)
-        self.assertEqual(refs["blobs"], ["my_tls"])
+        self.assertEqual(refs["blobs"], ["my_tls", "cl"])
 
     def test_lists_only_from_lists_dir_and_quoted_declaration(self):
         st = {"id": "x", "name": "x", "profiles": [
             {"id": "p1", "args": "--hostlist=/opt/etc/my.txt "
+                                 "--hostlist=/opt/zapret2/lists/yt.txt "
+                                 "--lua-init=@/opt/zapret2/lua/my.lua "
                                  '--blob=q:@"/opt/my blobs/q.bin" '
-                                 "--lua-desync=fake:blob=q"}]}
+                                 "--blob=o:+2@bin/o.bin "
+                                 "--lua-desync=fake:blob=q:blob=o"}]}
         out, warnings = be.build_bundle(
             st, hostlists=lambda n: ["a"], ipsets=lambda n: None,
-            blobs=lambda n: None, lua=lambda n: None,
-            blob_file={'@"/opt/my blobs/q.bin"': b"\x01"}.get)
-        self.assertEqual(out["hostlists"], [])
+            blobs=lambda n: None, lua=lambda n: "x",
+            blob_file={'@"/opt/my blobs/q.bin"': b"\x01",
+                       "@bin/o.bin": b"\x00\x00\x02"}.get)
+        self.assertEqual(out["hostlists"], [{"name": "yt",
+                                             "domains": ["a"]}])
         self.assertTrue(any("/opt/etc/my.txt" in w for w in warnings))
+        # пути роутера — в переносимые, объявления — hex (+N — со смещения)
         self.assertEqual(out["strategy"]["profiles"][0]["args"],
-                         "--hostlist=/opt/etc/my.txt --blob=q:0x01 "
-                         "--lua-desync=fake:blob=q")
+                         "--hostlist=/opt/etc/my.txt "
+                         "--hostlist=lists/yt.txt --lua-init=@lua/my.lua "
+                         "--blob=q:0x01 --blob=o:0x02 "
+                         "--lua-desync=fake:blob=q:blob=o")
 
     def test_builtin_trick_gets_launch_filter(self):
         st = {"id": "x", "name": "x", "is_builtin": True, "protocol": "tcp",
@@ -244,8 +254,12 @@ class TestApi(unittest.TestCase):
                         got[0]["args"])
         self.assertTrue(got[0]["args"].endswith(st["profiles"][0]["args"]))
         self.assertEqual(got[1]["args"], st["profiles"][1]["args"])
+        # своя стратегия: фильтр по однозначному --payload — тоже
         user = dict(st, is_builtin=False)
-        self.assertIs(be._as_launched(user), user)
+        self.assertTrue(be._as_launched(user)["profiles"][0]["args"]
+                        .startswith("--filter-tcp=443 "))
+        bare = {"id": "y", "profiles": [{"id": "p", "args": "--lua-desync=fake"}]}
+        self.assertIs(be._as_launched(bare), bare)
 
     def test_blob_over_autotuner_limit_is_warned_not_dropped(self):
         st = {"id": "x", "name": "x", "profiles": [

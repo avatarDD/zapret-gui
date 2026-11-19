@@ -449,7 +449,33 @@ def build_blob_declarations(args) -> list:
             continue
         out.append("--blob=%s:%s" % (name, value))
         declared.add(name)
+    # fallback= у tls_client_hello_clone и dataxor= у zapret-obfs — тоже
+    # имена блобов (blob(desync, имя)); как паттерны: только известные.
+    for name in referenced_extra_blob_names(args):
+        if name in declared or name in BUILTIN_BLOB_NAMES:
+            continue
+        value = get_blob_value(name)
+        if value is None:
+            continue
+        out.append("--blob=%s:%s" % (name, value))
+        declared.add(name)
     return out
+
+
+def referenced_extra_blob_names(args) -> list:
+    """Имена блобов из аргументов, которых не видят ``blob=``/``pattern=``:
+    ``fallback=`` клона ClientHello, ``dataxor=`` (по функции, как у
+    обмена бандлами — core.bundle_import.desync_blob_refs)."""
+    from core.bundle_import import desync_blob_refs
+    seen = []
+    for a in args:
+        a = str(a)
+        if not a.startswith("--lua-desync="):
+            continue
+        for key, name in desync_blob_refs(a[len("--lua-desync="):])[0]:
+            if key in ("fallback", "dataxor") and name not in seen:
+                seen.append(name)
+    return seen
 
 
 def referenced_pattern_names(args) -> list:

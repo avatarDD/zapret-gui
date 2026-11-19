@@ -350,9 +350,8 @@ def register(app):
                     "warnings": warnings}
         if body.get("dry_run", True):
             existing = bi.existing_names(bundle)
-            plan = bi.plan_bundle(bundle, existing)
-            return {"ok": True, "plan": plan,
-                    "warnings": warnings + plan["warnings"]}
+            return {"ok": True, "plan": bi.plan_bundle(bundle, existing),
+                    "warnings": warnings}
         on_conflict = body.get("on_conflict")
         if on_conflict not in (None, "replace", "rename"):
             response.status = 400
