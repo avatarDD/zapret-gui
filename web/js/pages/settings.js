@@ -233,6 +233,9 @@ const SettingsPage = (() => {
     // ══════════════════ Render ══════════════════
 
     function render(container) {
+        // Смена языка перезагружает страницу: не терять несохранённое.
+        i18n.setSwitchGuard(() => !hasUnsaved || !document.body.contains(container)
+            || confirm('Есть несохранённые изменения. Сменить язык и потерять их?'));
         container.innerHTML = `
             <div class="page-header">
                 <div>
@@ -291,6 +294,17 @@ const SettingsPage = (() => {
                     <!-- Действия -->
                     <div class="card settings-actions-card">
                         <div class="settings-actions-row">
+                            <div class="settings-action-item">
+                                <div class="settings-action-info">
+                                    <div class="settings-action-title">Язык интерфейса</div>
+                                    <div class="settings-action-desc">Хранится в этом браузере, как и тема.</div>
+                                </div>
+                                <select class="form-select" data-action="setLanguage"
+                                        aria-label="Язык интерфейса" style="width:auto;">
+                                    <option value="ru" translate="no"${i18n.getLanguage() === 'ru' ? ' selected' : ''}>Русский</option>
+                                    <option value="en" translate="no"${i18n.getLanguage() === 'en' ? ' selected' : ''}>English</option>
+                                </select>
+                            </div>
                             <div class="settings-action-item">
                                 <div class="settings-action-info">
                                     <div class="settings-action-title">Сбросить к дефолтам</div>
@@ -1472,6 +1486,9 @@ const SettingsPage = (() => {
             switch (el.dataset.action) {
                 case 'handleImportFile': handleImportFile(el); break;
                 case 'handleBackupFile': handleBackupFile(el); break;
+                case 'setLanguage':
+                    if (!i18n.setLanguage(el.value)) el.value = i18n.getLanguage();
+                    break;
                 case 'fieldChange': {
                     const key = el.dataset.key;
                     if (!key) break;

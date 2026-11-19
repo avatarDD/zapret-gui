@@ -674,7 +674,7 @@ const DashboardPage = (() => {
             <div class="log-entry">
                 <span class="log-time">${e.time || ''}</span>
                 <span class="log-level" style="color:${e.color || '#9ca3af'}">${e.level || ''}</span>
-                <span class="log-message">${msgHtml}</span>
+                <span class="log-message" translate="no">${msgHtml}</span>
             </div>
         `;}).join('');
 

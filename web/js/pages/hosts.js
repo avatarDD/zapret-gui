@@ -791,7 +791,7 @@ const HostsPage = (() => {
 
             let html = '<div style="max-height:300px; overflow-y:auto;">';
             backups.forEach(b => {
-                const date = b.timestamp ? new Date(b.timestamp * 1000).toLocaleString('ru-RU') : 'Неизвестно';
+                const date = b.timestamp ? new Date(b.timestamp * 1000).toLocaleString(i18n.locale()) : 'Неизвестно';
                 const size = b.size ? formatSize(b.size) : '—';
 
                 html += `

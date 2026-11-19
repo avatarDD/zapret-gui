@@ -677,6 +677,14 @@ stdout). Период опроса задаёт сам
   `.expert-note`, галка в футере).
 - **Утилиты** `web/js/utils/`: `autocomplete`, `debounce`, подсветка
   синтаксиса (`syntax`, `lua_syntax`).
+- **Язык интерфейса** (`web/js/utils/i18n.js`, подробно —
+  [docs/i18n.md](docs/i18n.md)). Тексты пишутся по-русски прямо в
+  шаблонах; в английском режиме переводчик проходит DOM по словарю
+  «русская фраза → English» (`web/js/i18n/en.text.js`) и следит за
+  изменениями. Новая русская строка в UI → `node tools/i18n_extract.js
+  --missing` и перевод в `en.text.js`; `tests/test_i18n.js` упадёт, если
+  перевода нет. Логи, конфиги и прочие данные помечай `translate="no"`.
+  Даты и числа — `toLocaleString(i18n.locale())`, не `'ru-RU'`.
 
 **Добавить страницу:** создать `web/js/pages/foo.js` (IIFE с
 `render/destroy` + объект `FooPage`), подключить в `index.html`,

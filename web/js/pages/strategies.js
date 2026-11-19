@@ -211,8 +211,8 @@ const StrategiesPage = (() => {
                         <button class="modal-close" data-action="closePreview">&times;</button>
                     </div>
                     <div class="modal-body">
-                        <div class="log-viewer nfq-resizable" id="preview-command" style="height:340px; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.6; padding:16px;">
-                            Загрузка...
+                        <div class="log-viewer nfq-resizable" id="preview-command" translate="no" style="height:340px; white-space:pre-wrap; word-break:break-all; font-size:12px; line-height:1.6; padding:16px;">
+                            ${i18n.translateText('Загрузка...')}
                         </div>
                         <div id="preview-validation" style="display:none; margin-top:12px;"></div>
                         <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
@@ -1438,7 +1438,7 @@ const StrategiesPage = (() => {
         if (!modal || !cmdEl) return;
 
         modal.style.display = 'flex';
-        cmdEl.textContent = 'Загрузка...';
+        cmdEl.textContent = i18n.translateText('Загрузка...');
         modal._sid = sid;
 
         // Сбрасываем блок результата валидации от прошлого открытия.
@@ -1451,11 +1451,11 @@ const StrategiesPage = (() => {
                 cmdEl.innerHTML = NfqwsSyntax.highlightCommand(result.command);
                 cmdEl._rawText = result.command;
             } else {
-                cmdEl.textContent = 'Ошибка: ' + (result.error || '?');
+                cmdEl.textContent = i18n.translateText('Ошибка: ') + (result.error || '?');
                 cmdEl._rawText = cmdEl.textContent;
             }
         } catch (err) {
-            cmdEl.textContent = 'Ошибка: ' + err.message;
+            cmdEl.textContent = i18n.translateText('Ошибка: ') + err.message;
             cmdEl._rawText = cmdEl.textContent;
         }
     }
@@ -1622,7 +1622,7 @@ const StrategiesPage = (() => {
                     </svg>
                     Превью команды
                 </button>
-                <div id="editor-preview-output" class="log-viewer nfq-resizable" style="height:120px; margin-top:8px; display:none; white-space:pre-wrap; word-break:break-all; font-size:11px; padding:12px;"></div>
+                <div id="editor-preview-output" translate="no" class="log-viewer nfq-resizable" style="height:120px; margin-top:8px; display:none; white-space:pre-wrap; word-break:break-all; font-size:11px; padding:12px;"></div>
               </div>
 
               <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
@@ -1944,17 +1944,17 @@ const StrategiesPage = (() => {
         const output = document.getElementById('editor-preview-output');
         if (!output) return;
         output.style.display = 'block';
-        output.textContent = 'Загрузка...';
+        output.textContent = i18n.translateText('Загрузка...');
 
         try {
             const result = await API.post('/api/strategies/preview', { strategy_data: editorData });
             if (result.ok) {
                 output.innerHTML = NfqwsSyntax.highlightCommand(result.command);
             } else {
-                output.textContent = 'Ошибка: ' + (result.error || '?');
+                output.textContent = i18n.translateText('Ошибка: ') + (result.error || '?');
             }
         } catch (err) {
-            output.textContent = 'Ошибка: ' + err.message;
+            output.textContent = i18n.translateText('Ошибка: ') + err.message;
         }
     }
 

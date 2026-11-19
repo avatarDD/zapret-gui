@@ -84,6 +84,9 @@
                         <polyline points="9 12 11 14 15 10"></polyline>
                     </svg>
                 </button>
+                <button type="button" id="lang-toggle" class="theme-toggle lang-toggle"
+                        title="English" aria-label="Switch to English"
+                        data-action="toggle-lang" data-no-i18n>EN</button>
                 <button id="theme-toggle" class="theme-toggle" title="Тема"
                         data-action="toggle-theme"></button>
             </div>
@@ -115,6 +118,9 @@
     <!-- JS модули -->
     <script src="/js/i18n/ru.js"></script>
     <script src="/js/i18n/en.js"></script>
+    <!-- Словарь английского: грузит i18n.js только в режиме EN; ссылка
+         здесь, чтобы сервер проставил ей ?v= (кэш как у прочей статики). -->
+    <link rel="x-i18n-en-text" href="/js/i18n/en.text.js">
     <script src="/js/utils/i18n.js"></script>
     <script src="/js/api.js"></script>
     <script src="/js/utils/debounce.js"></script>
