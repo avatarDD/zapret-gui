@@ -39,6 +39,7 @@ const DICT = path.join(WEB, 'js', 'i18n', 'en.text.js');
 // confirm тоже должны быть в словаре.
 const SKIP_FILES = new Set([
     'js/i18n/ru.js', 'js/i18n/en.js', 'js/i18n/en.text.js',
+    'js/i18n/en.server.js',
 ]);
 
 const CYR = /[А-Яа-яЁё]/;

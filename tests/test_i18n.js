@@ -225,3 +225,72 @@ test('неизвестный язык в хранилище — русский',
     const t = load('de');
     assert.strictEqual(t.getLanguage(), 'ru');
 });
+
+// ──────────────────── сообщения сервера (en.server.js) ────────────────────
+
+function loadDictFile(rel, name) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const box = {};
+    new Function('globalThis', src + `\nglobalThis.d = ${name};`)(box);
+    return box.d;
+}
+
+function loadWithGlobals(lang) {
+    const ctx = {
+        console,
+        localStorage: { getItem: () => lang, setItem() {} },
+        i18n_en_text: loadDictFile('web/js/i18n/en.text.js', 'i18n_en_text'),
+        i18n_en_server: loadDictFile('web/js/i18n/en.server.js', 'i18n_en_server'),
+    };
+    vm.createContext(ctx);
+    vm.runInContext(I18N + '\nglobalThis.i18n = i18n;', ctx);
+    return ctx.i18n;
+}
+
+test('словарь сервера: подстановки совпадают, кириллицы нет', () => {
+    const d = loadDictFile('web/js/i18n/en.server.js', 'i18n_en_server');
+    assert.ok(Object.keys(d).length > 1000);
+    const bad = Object.entries(d).filter(([k, v]) =>
+        extractor.placeholders(k) !== extractor.placeholders(v)
+        || /[А-Яа-яЁё]/.test(v)).map(([k]) => k);
+    assert.deepStrictEqual(bad, []);
+});
+
+test('каждое сообщение сервера переводится с подставленными значениями', () => {
+    const d = loadDictFile('web/js/i18n/en.server.js', 'i18n_en_server');
+    const tr = loadWithGlobals('en');
+    const bad = Object.keys(d)
+        .map((k) => k.replace(/\{(\d+)\}/g, (m, n) => `v${n}x`))
+        .filter((s) => /[А-Яа-яЁё]/.test(tr.translateText(s)));
+    assert.deepStrictEqual(bad.slice(0, 20), [], `${bad.length} не переводятся`);
+});
+
+test('строки журнала и ошибки API переводятся', () => {
+    const tr = loadWithGlobals('en');
+    assert.strictEqual(tr.translateText('nfqws2 запущен (PID 1234)'),
+        'nfqws2 started (PID 1234)');
+    assert.strictEqual(tr.translateText('Конфиг не найден'), 'Config not found');
+    // Крупные куски через « — » и хвост, который код дописывает с тире.
+    assert.strictEqual(
+        tr.translateText('Исключения (не обрабатываются) — netrogat.txt'),
+        'Exclusions (not processed) — netrogat.txt');
+    assert.strictEqual(
+        tr.translateText('awg 1.2 установлен — вернул прежнюю версию'),
+        'awg 1.2 installed — restored the previous version');
+});
+
+test('в русском режиме сообщения сервера не трогаются', () => {
+    const tr = loadWithGlobals('ru');
+    assert.strictEqual(tr.translateText('Конфиг не найден'), 'Конфиг не найден');
+});
+
+test('имя в кавычках из сообщения сервера не переводится', () => {
+    const tr = loadWithGlobals('en');
+    assert.strictEqual(tr.translateText("Конфиг 'Обход' не найден"),
+        "Config 'Обход' not found");
+});
+
+test('при равных шаблонах побеждает словарь страниц', () => {
+    const tr = loadWithGlobals('en');
+    assert.match(tr.translateText('Удалено: 3 (2)'), /^Deleted: /);
+});

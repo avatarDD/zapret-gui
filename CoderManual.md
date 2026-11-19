@@ -684,6 +684,12 @@ stdout). Период опроса задаёт сам
   изменениями. Новая русская строка в UI → `node tools/i18n_extract.js
   --missing` и перевод в `en.text.js`; `tests/test_i18n.js` упадёт, если
   перевода нет. Логи, конфиги и прочие данные помечай `translate="no"`.
+  Русские сообщения сервера (ошибки API, логи, итоги проверок из `api/`,
+  `core/`, `app.py`) переводит тот же переводчик по второму словарю
+  `web/js/i18n/en.server.js`: новая строка → `python3
+  tools/i18n_extract_server.py --missing` и перевод там же (сторож —
+  `tests/test_i18n_server.py`). Строки журнала страницы переводят сами
+  через `i18n.translateText()` до подсветки.
   Даты и числа — `toLocaleString(i18n.locale())`, не `'ru-RU'`.
 
 **Добавить страницу:** создать `web/js/pages/foo.js` (IIFE с
