@@ -20,7 +20,7 @@ name = nfqws2-keenetic №2: нулевой fake + multisplit 1,midsld
 author = nfqws/nfqws2-keenetic
 label = stable
 description = Стратегия 2 дефолта nfqws2-keenetic: 4 нулевых байта как fake (с tls_mod он превращается в ClientHello www.google.com) ×2 с плохим ack, затем multisplit по 1,midsld.
---lua-desync=fake:blob=0x00000000:tcp_ack=-66000:tls_mod=rnd,dupsid,sni=www.google.com:repeats=2
+--lua-desync=fake:blob=0x00000000:tcp_ack=-66000:repeats=2
 --lua-desync=multisplit:pos=1,midsld
 
 [kn2_tls_hostfakesplit_ozon]

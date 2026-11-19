@@ -413,6 +413,29 @@ class TestFakeWithoutBlob(unittest.TestCase):
                 ["--filter-tcp=443", "--lua-desync=" + step]), step)
 
 
+class TestTlsModOnRawBlob(unittest.TestCase):
+    """tls_mod на blob=0x… без TLS-записи: лог «tls structure invalid»."""
+
+    def test_tls_mod_on_zero_blob_warns(self):
+        found = lint.lint([
+            "--filter-tcp=443", "--filter-l7=tls",
+            "--lua-desync=circular:fails=3",
+            "--lua-desync=fake:blob=0x00000000:repeats=11:tcp_seq=2:"
+            "tls_mod=rnd,dupsid,sni=www.google.com:strategy=5"])
+        hit = [f for f in found if f["code"] == lint.CODE_TLS_MOD_RAW_BLOB]
+        self.assertEqual(len(hit), 1)
+        self.assertEqual(hit[0]["severity"], lint.SEVERITY_WARNING)
+        self.assertIn("tls structure invalid", hit[0]["message"])
+
+    def test_silent_where_tls_mod_is_meaningful_or_absent(self):
+        for step in ("fake:blob=0x00000000:repeats=2",
+                     "fake:blob=fake_default_tls:tls_mod=rnd,dupsid",
+                     "fake:blob=tls_google:tls_mod=rnd,sni=ya.ru",
+                     "fake:blob=0x1603010200:tls_mod=rnd"):
+            self.assertNotIn(lint.CODE_TLS_MOD_RAW_BLOB, codes(
+                ["--filter-tcp=443", "--lua-desync=" + step]), step)
+
+
 class TestRuleTable(unittest.TestCase):
     """Сама таблица правил остаётся данными и остаётся полной."""
 

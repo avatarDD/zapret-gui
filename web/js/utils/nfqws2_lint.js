@@ -358,6 +358,23 @@ const Nfqws2Lint = (() => {
                     + 'fake_default_quic или fake_default_udp (UDP), fake_default_http (HTTP).' });
             ct.diag = SEV.ERROR;
         });
+        // tls_mod на blob=0x…, который не TLS-запись: TLSMod пишет в лог
+        // «cannot apply tls mod. tls structure invalid», а fake шлёт blob
+        // как есть. Зеркало tls_mod_on_raw_blob (core/strategy_lint.py).
+        tokens.forEach(ct => {
+            if (ct.kind !== 'flag' || ct.flag !== '--lua-desync' || !ct.hasEq) return;
+            const value = String(ct.value || '');
+            const raw = /(?:^|:)blob=0x([0-9A-Fa-f]*)(?::|$)/.exec(value);
+            if (!raw || !/(?:^|:)tls_mod=/.test(value)) return;
+            if (raw[1].toLowerCase().startsWith('1603')) return;
+            diagnostics.push({ start: ct.tok.start, end: ct.tok.end,
+                severity: SEV.WARN, code: 'tls_mod_on_raw_blob',
+                message: 'tls_mod на blob=0x' + raw[1] + ' — это не TLS ClientHello, '
+                    + 'модифицировать нечего: nfqws2 будет писать в лог «cannot apply '
+                    + 'tls mod. tls structure invalid» и слать blob без изменений. '
+                    + 'Уберите tls_mod= или возьмите TLS-фейк (fake_default_tls, tls_google).' });
+            if (!ct.diag) ct.diag = SEV.WARN;
+        });
         profiles.forEach(prof => {
             const vals = prof.filter(ct => ct.kind === 'flag' && ct.hasEq)
                 .map(ct => ct.flag + '=' + (ct.value || ''));

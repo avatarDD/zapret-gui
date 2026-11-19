@@ -32,7 +32,7 @@ blobs = tls_clienthello_activated, tls_clienthello_www_google_com, stun, tls_cli
 --lua-desync=hostfakesplit:payload=tls_client_hello:dir=out:host=rzd.ru:seqovl=726:badsum:badseq:badseq_increment=0:strategy=2
 --lua-desync=multisplit:payload=tls_client_hello:dir=out:pos=1:seqovl=568:seqovl_pattern=tls_clienthello_4pda_to:strategy=3
 --lua-desync=multisplit:payload=tls_client_hello:dir=out:pos=1,sniext+1:seqovl=1:strategy=4
---lua-desync=fake:payload=tls_client_hello:dir=out:blob=0x00000000:repeats=11:tcp_seq=2:tls_mod=rnd,dupsid,sni=www.google.com:strategy=5
+--lua-desync=fake:payload=tls_client_hello:dir=out:blob=0x00000000:repeats=11:tcp_seq=2:strategy=5
 --lua-desync=multidisorder:payload=tls_client_hello:dir=out:pos=1,midsld:strategy=5
 --lua-desync=hostfakesplit:payload=tls_client_hello:dir=out:host=mapgl.2gis.com:badseq:badsum:badseq_increment=0:strategy=6
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=fake_default_tls:repeats=8:tcp_seq=2:tls_mod=rnd,dupsid,sni=www.google.com:strategy=7
@@ -84,7 +84,7 @@ blobs = tls_clienthello_activated, tls_clienthello_www_google_com, stun, tls_cli
 --lua-desync=multidisorder:payload=tls_client_hello:dir=out:pos=1,midsld:strategy=28
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=stun:tcp_ts=-1000:badsum:strategy=29
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_max_ru:tcp_ts=-1000:badsum:tls_mod=sni=msn.com:strategy=29
---lua-desync=fake:payload=tls_client_hello:dir=out:blob=0x0F0F0E0F:repeats=2:tcp_md5:tls_mod=rnd,dupsid:strategy=30
+--lua-desync=fake:payload=tls_client_hello:dir=out:blob=0x0F0F0E0F:repeats=2:tcp_md5:strategy=30
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_clienthello_14:repeats=2:tcp_md5:tls_mod=rnd,dupsid:strategy=30
 --lua-desync=multisplit:payload=tls_client_hello:dir=out:pos=sld+1:strategy=30
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_max_ru:repeats=6:tcp_ts=-1000:badsum:tls_mod=sni=msn.com:strategy=31
@@ -162,7 +162,7 @@ blobs = tls_clienthello_www_google_com, tls_clienthello_www_onetrust_com, tls_cl
 --lua-desync=multidisorder:payload=tls_client_hello:dir=out:pos=1,midsld:strategy=1
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=stun:tcp_ts=-1000:badsum:strategy=7
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_max_ru:tcp_ts=-1000:badsum:tls_mod=sni=msn.com:strategy=7
---lua-desync=fake:payload=tls_client_hello:dir=out:blob=0x0F0F0E0F:repeats=2:tcp_md5:tls_mod=rnd,dupsid:strategy=8
+--lua-desync=fake:payload=tls_client_hello:dir=out:blob=0x0F0F0E0F:repeats=2:tcp_md5:strategy=8
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_clienthello_14:repeats=2:tcp_md5:tls_mod=rnd,dupsid:strategy=8
 --lua-desync=multisplit:payload=tls_client_hello:dir=out:pos=sld+1:strategy=8
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_max_ru:repeats=6:tcp_ts=-1000:badsum:tls_mod=sni=msn.com:strategy=9
@@ -223,7 +223,7 @@ blobs = tls_clienthello_www_google_com, tls_clienthello_www_onetrust_com, tls_cl
 --lua-desync=multidisorder:payload=tls_client_hello:dir=out:pos=1,midsld:strategy=1
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=stun:tcp_ts=-1000:badsum:strategy=7
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_max_ru:tcp_ts=-1000:badsum:tls_mod=sni=msn.com:strategy=7
---lua-desync=fake:payload=tls_client_hello:dir=out:blob=0x0F0F0E0F:repeats=2:tcp_md5:tls_mod=rnd,dupsid:strategy=8
+--lua-desync=fake:payload=tls_client_hello:dir=out:blob=0x0F0F0E0F:repeats=2:tcp_md5:strategy=8
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_clienthello_14:repeats=2:tcp_md5:tls_mod=rnd,dupsid:strategy=8
 --lua-desync=multisplit:payload=tls_client_hello:dir=out:pos=sld+1:strategy=8
 --lua-desync=fake:payload=tls_client_hello:dir=out:blob=tls_max_ru:repeats=6:tcp_ts=-1000:badsum:tls_mod=sni=msn.com:strategy=9

@@ -62,6 +62,7 @@ CODE_TTL_FAKE_UDP = "ttl_fake_on_udp"
 CODE_TCP_TS_ONLY = "tcp_ts_only_fooling"
 CODE_BADACK_NO_TS_UP = "badack_without_ts_up"
 CODE_FAKE_NO_BLOB = "fake_without_blob"
+CODE_TLS_MOD_RAW_BLOB = "tls_mod_on_raw_blob"
 
 # Опции nfqws2, которыми владеет GUI, а не стратегия. Первые четыре —
 # базовые аргументы (``NFQWSManager._build_base_args``): стратегия идёт
@@ -180,6 +181,12 @@ RULES = (
         "severity": SEVERITY_ERROR,
         "title": "fake без blob=",
         "section": "скил nfqws2-strategies §8 (fake) и §7 (блобы)",
+    },
+    {
+        "code": CODE_TLS_MOD_RAW_BLOB,
+        "severity": SEVERITY_WARNING,
+        "title": "tls_mod на blob'е, который не TLS ClientHello",
+        "section": "скил nfqws2-strategies §8 (fake, tls_mod) и §7 (блобы)",
     },
 )
 
@@ -614,6 +621,43 @@ def _check_fake_blob(profiles) -> list:
     return out
 
 
+# `blob=0x…` прямо в аргументах приёма. Такой blob — сырые байты, и если
+# это не TLS-запись (`16 03 …`), `tls_mod` применить не к чему: C-функция
+# TLSMod (nfq2/protocol.c) пишет в лог «cannot apply tls mod. tls
+# structure invalid» и возвращает nil, а `fake` шлёт blob как есть
+# (zapret-antidpi.lua: `if pl then fake_payload = pl end`). Обход от этого
+# не ломается, но под circular строка сыплется в лог на каждом
+# соединении, где ротация дошла до этого шага (обсуждение #102).
+_RAW_HEX_BLOB_RE = re.compile(r"(?:^|:)blob=0x([0-9A-Fa-f]*)(?::|$)")
+_TLS_MOD_ARG_RE = re.compile(r"(?:^|:)tls_mod=")
+
+
+def _check_tls_mod_raw_blob(profiles) -> list:
+    """`tls_mod=` при `blob=0x…`, который не начинается с TLS-записи."""
+    out = []
+    for index, args in enumerate(profiles):
+        for arg in args:
+            m = _LUA_DESYNC_RE.match(arg)
+            if not m:
+                continue
+            body = arg[len("--lua-desync="):]
+            raw = _RAW_HEX_BLOB_RE.search(body)
+            if not raw or not _TLS_MOD_ARG_RE.search(body):
+                continue
+            if raw.group(1).lower().startswith("1603"):
+                continue    # похоже на настоящий ClientHello — не гадаем
+            out.append(_finding(
+                CODE_TLS_MOD_RAW_BLOB,
+                "профиль %d: tls_mod на blob=0x%s — это не TLS ClientHello, "
+                "модифицировать нечего. nfqws2 будет писать в лог «cannot "
+                "apply tls mod. tls structure invalid» и слать blob без "
+                "изменений. Уберите tls_mod= или возьмите TLS-фейк "
+                "(blob=fake_default_tls, tls_google)"
+                % (index, raw.group(1)),
+                where=arg, profile=index))
+    return out
+
+
 def engine_owned(argv) -> list:
     """Аргументы стратегии, которые движку от неё передавать нельзя.
 
@@ -698,6 +742,7 @@ def lint(argv, known_functions=None, known_blobs=None) -> list:
     findings.extend(_check_tcp_ts_only(profiles))
     findings.extend(_check_badack_ts_up(profiles))
     findings.extend(_check_fake_blob(profiles))
+    findings.extend(_check_tls_mod_raw_blob(profiles))
 
     # Ошибки первыми: окно ответа у модели конечное, и обрезать надо
     # предупреждения, а не то, из-за чего стратегия не работает.

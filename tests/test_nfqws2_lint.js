@@ -443,3 +443,14 @@ test('lint: fake без blob= → fake_without_blob (ошибка)', () => {
     assert.ok(!hit('--filter-udp=50000 --lua-desync=fake:blob=fake_default_udp:repeats=6'));
     assert.ok(!hit('--filter-tcp=443 --lua-desync=fakedsplit:pos=1:tcp_md5'));
 });
+
+test('lint: tls_mod на сыром blob=0x… → tls_mod_on_raw_blob (предупреждение)', () => {
+    const hit = t => Lint.analyze(t).diagnostics.find(d => d.code === 'tls_mod_on_raw_blob');
+    const d = hit('--filter-tcp=443 --lua-desync=fake:blob=0x00000000:tls_mod=rnd,dupsid,sni=www.google.com');
+    assert.ok(d);
+    assert.strictEqual(d.severity, 'warn');
+    assert.ok(hit('--filter-tcp=443 --lua-desync=fake:tls_mod=rnd,dupsid:blob=0x0F0F0E0F'));
+    assert.ok(!hit('--filter-tcp=443 --lua-desync=fake:blob=0x00000000:repeats=2'));
+    assert.ok(!hit('--filter-tcp=443 --lua-desync=fake:blob=fake_default_tls:tls_mod=rnd,dupsid'));
+    assert.ok(!hit('--filter-tcp=443 --lua-desync=fake:blob=0x160301:tls_mod=rnd'));
+});
