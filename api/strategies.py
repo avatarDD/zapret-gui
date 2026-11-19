@@ -482,7 +482,9 @@ def register(app):
             response.status = 404
             return {"ok": False, "error": "Стратегия не найдена: %s" % sid}
 
-        args = sm.build_nfqws_args(strategy)
+        # Экспорт идёт в каталог для всех: локальная «начинать без
+        # обхода» (pass первым шагом circular) в него не попадает.
+        args = sm.build_nfqws_args(strategy, clean_start=False)
         if not args:
             response.status = 400
             return {"ok": False,

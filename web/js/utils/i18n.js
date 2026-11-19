@@ -78,7 +78,9 @@ const i18n = (() => {
     function setLanguage(lang) {
         if (!LANGS.includes(lang) || lang === currentLang) return false;
         if (switchGuard && !switchGuard()) return false;
-        if (!switchGuard && visibleUnsaved()
+        // Метки редакторов — всегда, а не только без стража: страж
+        // ушедшей страницы не должен их глушить.
+        if (visibleUnsaved()
             && !confirm('Есть несохранённые изменения. Сменить язык и потерять их?')) {
             return false;
         }

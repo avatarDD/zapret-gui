@@ -221,6 +221,21 @@ test('смену языка может запретить страница с н
     assert.strictEqual(t.setLanguage('ru'), false);  // уже выбран
 });
 
+test('страж ушедшей страницы не глушит метки «не сохранено»', () => {
+    const asked = [];
+    const ctx = {
+        console,
+        localStorage: { getItem: () => 'ru', setItem() {} },
+        document: { querySelectorAll: () => [{ offsetParent: {} }] },
+        confirm: (m) => { asked.push(m); return false; },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(I18N + '\nglobalThis.i18n = i18n;', ctx);
+    ctx.i18n.setSwitchGuard(() => true);     // «Настройки» уже закрыты
+    assert.strictEqual(ctx.i18n.setLanguage('en'), false);
+    assert.strictEqual(asked.length, 1);
+});
+
 test('неизвестный язык в хранилище — русский', () => {
     const t = load('de');
     assert.strictEqual(t.getLanguage(), 'ru');
