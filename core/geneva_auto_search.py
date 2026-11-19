@@ -125,6 +125,8 @@ def probe_spec(s: ga.Service):
         if not _HOST_RE.match(host or ""):
             return None
         spec.update(kind="web", host=host, tls=s.port != 80)
+        if s.criteria:
+            spec["criteria"] = dict(s.criteria)
         return spec
     plan = pr.replay_plan(s)
     if plan is None:
@@ -147,8 +149,13 @@ def probe_argv(s: ga.Service, *, python: str, script: str,
     argv = [python, script, "--ip", spec["ip"], "--port", str(spec["port"]),
             "--lports", "{lports}"]
     if spec["kind"] == "web":
-        return argv + ["--kind", "web", "--host", spec["host"],
-                       "--tls", "1" if spec["tls"] else "0"]
+        argv += ["--kind", "web", "--host", spec["host"],
+                 "--tls", "1" if spec["tls"] else "0"]
+        crit = spec.get("criteria") or {}
+        for k in ("min_rate", "pad", "min_bytes"):
+            if crit.get(k):
+                argv += ["--" + k.replace("_", "-"), str(int(crit[k]))]
+        return argv
     argv += ["--kind", "replay"]
     if spec["udp"]:
         argv.append("--udp")

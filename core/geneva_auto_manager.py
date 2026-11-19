@@ -785,10 +785,19 @@ class GenevaAutoManager:
         else:
             result, text = ga.C_UNKNOWN, "проверить пробой нельзя"
         with self._lock:
+            self._keep_criteria(s)
             line = self.book.confirmed(s.key, result, now)
         if line:
             self.note("%s (%s)" % (line, text) if text else line)
         self.phase = "watching"
+
+    def _keep_criteria(self, s) -> None:
+        """Критерий страницы, найденный пробой (шейпер, обрыв 16 КБ), —
+        в книгу. Под замком."""
+        cur = self.book.find(s.key)
+        if cur is not None and s.criteria != cur.criteria:
+            cur.criteria = dict(s.criteria)
+            self._dirty = True
 
     def _search_slots(self) -> int:
         """Сколько подборов может идти рядом: без деления — один; с
@@ -894,6 +903,7 @@ class GenevaAutoManager:
         except Exception:                           # noqa: BLE001
             return False
         with self._lock:
+            self._keep_criteria(s)
             if result == ga.C_BLOCKED:
                 cur = self.book.find(s.key)
                 if cur is not None:

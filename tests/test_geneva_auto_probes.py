@@ -20,6 +20,7 @@ import unittest
 
 from core import geneva_auto as ga
 from core import geneva_auto_probes as pr
+from core import geneva_rate as gr
 
 
 class _Server:
@@ -601,6 +602,233 @@ class TestAutoProbes(unittest.TestCase):
 
     def test_baseline_mark_includes_geneva(self):
         self.assertTrue(pr.baseline_mark() & pr.GENEVA_MARK)
+
+
+class TestPageCheck(unittest.TestCase):
+    """Вторая проба без обхода, корень Минцифры, шейпер и обрыв 16 КБ
+    (PageCheck и AutoProbes.CheckAsync AutoTuner)."""
+
+    def setUp(self):
+        pr._national_hosts.clear()
+        self.cap = gr.LinkCapacity(clock=lambda: 1000.0)
+        self.slept = []
+
+    def tearDown(self):
+        pr._national_hosts.clear()
+
+    def probes(self, page):
+        return pr.AutoProbes(page=page, mark=lambda: 0, ports=(1, 2),
+                             sleep=self.slept.append, capacity=self.cap)
+
+    def svc(self, **kw):
+        base = dict(key="k", name="site.example.org", kind=ga.WEB,
+                    host="site.example.org", ports=[443],
+                    status=ga.SUSPECTED,
+                    addresses=[{"ip": "93.184.216.1", "seen": 5}])
+        base.update(kw)
+        return ga.Service(**base)
+
+    @staticmethod
+    def ok(body=200000, windows=None, **kw):
+        r = pr.PageResult(connect_ok=True, tls_ok=True, status=200,
+                          body=body, complete=True, **kw)
+        r.windows = windows or [body]
+        pr._judge_rate(r, 0)
+        return r
+
+    def test_block_needs_two_failures(self):
+        seq = [pr.PageResult(error=pr.P_HTTP_RESET, connect_ok=True),
+               self.ok()]
+        p = self.probes(lambda *a, **k: seq.pop(0))
+        self.assertEqual(p.check(self.svc())[0], ga.C_NOT_BLOCKED)
+        self.assertEqual(self.slept, [pr.RECHECK])
+        seq = [pr.PageResult(error=pr.P_HTTP_RESET, connect_ok=True)] * 2
+        p = self.probes(lambda *a, **k: seq.pop(0))
+        self.assertEqual(p.check(self.svc())[0], ga.C_BLOCKED)
+
+    def test_trial_is_not_rechecked(self):
+        p = self.probes(lambda *a, **k: pr.PageResult(
+            error=pr.P_HTTP_RESET, connect_ok=True))
+        s = self.svc(status=ga.SEARCHING)
+        self.assertEqual(p.check(s, through_bypass=True)[0], ga.C_BLOCKED)
+        self.assertEqual(self.slept, [])
+
+    def test_national_root_passes_by_name(self):
+        calls = []
+
+        def page(ip, port, host, **kw):
+            calls.append(kw.get("name_only"))
+            if kw.get("name_only"):
+                return self.ok(national=True)
+            return pr.PageResult(connect_ok=True, tls_ok=True,
+                                 cert_valid=False, untrusted_root=True)
+        p = self.probes(page)
+        self.assertEqual(p.check(self.svc())[0], ga.C_NOT_BLOCKED)
+        self.assertIn("site.example.org", pr._national_hosts)
+        self.assertEqual(calls, [None, True])
+
+    def test_shelf_is_learned_and_blocks(self):
+        # 40 КБ/с ровно: окна по 20 КБ, первое (slow start) — другое
+        w = [5000] + [20480] * 8
+        p = self.probes(lambda *a, **k: self.ok(body=sum(w), windows=w))
+        s = self.svc()
+        confirm, text = p.check(s)
+        self.assertEqual(confirm, ga.C_BLOCKED)
+        self.assertIn("шейпер", text)
+        self.assertEqual(s.criteria, {"min_rate": 3 * 40960})
+        self.assertEqual(self.slept, [pr.RECHECK])
+
+    def test_shelf_only_when_both_saw_it(self):
+        w = [5000] + [20480] * 8
+        seq = [self.ok(body=sum(w), windows=w),
+               pr.PageResult(error=pr.P_HTTP_RESET, connect_ok=True)]
+        p = self.probes(lambda *a, **k: seq.pop(0))
+        s = self.svc()
+        confirm, text = p.check(s)
+        self.assertEqual(confirm, ga.C_BLOCKED)
+        self.assertEqual(s.criteria, {})
+
+    def test_fast_page_is_capacity_not_shelf(self):
+        w = [100000] + [1 << 20] * 6
+        p = self.probes(lambda *a, **k: self.ok(body=sum(w), windows=w))
+        self.assertEqual(p.check(self.svc())[0], ga.C_NOT_BLOCKED)
+        self.assertEqual(self.cap.current(), 2 * (1 << 20))
+
+    def test_padded_cutoff(self):
+        calls = []
+
+        def page(ip, port, host, **kw):
+            calls.append(kw.get("pad", 0))
+            if kw.get("pad"):
+                r = pr.PageResult(connect_ok=True, tls_ok=True, status=200,
+                                  body=3000, error=pr.P_STALLED,
+                                  stalled_at=3000, bytes_out=24300)
+                r.windows = [3400]
+                return r
+            return self.ok(body=5000)
+        p = self.probes(page)
+        s = self.svc()
+        confirm, text = p.check(s)
+        self.assertEqual(confirm, ga.C_BLOCKED)
+        self.assertIn("16 КБ", text)
+        self.assertEqual(s.criteria, {"min_bytes": gr.PADDED_MIN,
+                                      "pad": gr.VOLUME_PAD})
+        # обе пробы: обычная + две раздутые, и ещё раз после паузы
+        self.assertEqual(calls, [0, gr.VOLUME_PAD, gr.VOLUME_PAD] * 2)
+
+    def test_server_refusing_padded_request_is_not_cutoff(self):
+        def page(ip, port, host, **kw):
+            if kw.get("pad"):
+                return pr.PageResult(connect_ok=True, tls_ok=True,
+                                     error=pr.P_HTTP_RESET, bytes_out=24300)
+            return self.ok(body=5000)
+        p = self.probes(page)
+        s = self.svc()
+        self.assertEqual(p.check(s)[0], ga.C_NOT_BLOCKED)
+        self.assertEqual(s.criteria, {})
+
+    def test_criteria_go_to_trial_and_judge(self):
+        seen = []
+
+        def page(ip, port, host, **kw):
+            seen.append(kw)
+            return self.ok()
+        p = self.probes(page)
+        s = self.svc(status=ga.SEARCHING,
+                     criteria={"min_rate": 90000, "pad": gr.VOLUME_PAD,
+                               "min_bytes": gr.PADDED_MIN})
+        p.check(s, through_bypass=True)
+        p.judge(s)(30001)
+        for kw in seen:
+            self.assertEqual((kw["min_rate"], kw["pad"], kw["min_bytes"],
+                              kw["rate_bytes"]),
+                             (90000.0, gr.VOLUME_PAD, gr.PADDED_MIN,
+                              gr.RATE_BYTES))
+
+    def test_known_criteria_are_not_relearned(self):
+        seen = []
+
+        def page(ip, port, host, **kw):
+            seen.append(kw.get("pad", 0))
+            return self.ok(body=5000)
+        p = self.probes(page)
+        s = self.svc(criteria={"min_bytes": 70000})
+        p.check(s)
+        self.assertEqual(seen, [0])
+
+
+class TestRateShelf(unittest.TestCase):
+
+    def test_read_skips_slow_start_and_needs_windows(self):
+        self.assertIsNone(gr.read([100, 200, 200, 200]))
+        r = gr.read([1, 0, 10, 10, 10, 10, 10, 10])
+        self.assertEqual((r.rate, r.windows, r.cv), (20, 5, 0))
+
+    def test_is_shelf(self):
+        flat = gr.Reading(40000, 0.05, 41000, 5, 200000)
+        self.assertTrue(gr.is_shelf(flat, 0))
+        self.assertFalse(gr.is_shelf(flat, 100000))      # > четверти
+        self.assertTrue(gr.is_shelf(flat, 1 << 20))
+        self.assertFalse(gr.is_shelf(gr.Reading(40000, 0.5, 41000, 5,
+                                                200000), 0))
+        self.assertFalse(gr.is_shelf(gr.Reading(40000, 0.1, 90000, 5,
+                                                200000), 0))
+        self.assertFalse(gr.is_shelf(gr.Reading(40000, 0.1, 41000, 5,
+                                                1000), 0))
+
+    def test_threshold(self):
+        self.assertEqual(gr.threshold(100, 0), 300)
+        self.assertEqual(gr.threshold(100, 400), 200)
+        self.assertEqual(gr.threshold(100, 200), 150)
+
+    def test_capacity_lives_ten_minutes(self):
+        c = gr.LinkCapacity(clock=lambda: 0)
+        c.observe(1000, now=0)
+        c.observe(500, now=10)
+        self.assertEqual(c.current(now=10), 1000)
+        self.assertEqual(c.current(now=700), 0)
+        c = gr.LinkCapacity(clock=lambda: 0)
+        # без ёмкости ёмкостью становится только ≥ TRUST_RATE
+        self.assertFalse(c.judge(gr.Reading(200000, 0.5, 200000, 5,
+                                            1 << 20), now=0))
+        self.assertEqual(c.current(now=0), 0)
+        c.judge(gr.Reading(900000, 0.1, 900000, 5, 1 << 20), now=0)
+        self.assertEqual(c.current(now=0), 900000)
+
+
+class TestProbeCriteriaArgs(unittest.TestCase):
+
+    def test_argv_and_measure_carry_criteria(self):
+        from core import geneva_auto_search as gs
+        from core import geneva_auto_probe_cli as cli
+        s = ga.Service(key="k", name="site.example.org", kind=ga.WEB,
+                       host="site.example.org", ports=[443],
+                       addresses=[{"ip": "93.184.216.1", "seen": 5}],
+                       criteria={"min_rate": 90000})
+        argv = gs.probe_argv(s, python="py", script="x.py")
+        self.assertEqual(argv[argv.index("--min-rate") + 1], "90000")
+        seen = {}
+        orig = pr.probe_page
+
+        def fake(ip, port, host, **kw):
+            seen.update(kw)
+            return pr.PageResult(error=pr.P_CONNECT_TIMEOUT)
+        pr.probe_page = fake
+        try:
+            cli.measure(gs.probe_spec(s), (1, 2))
+        finally:
+            pr.probe_page = orig
+        self.assertEqual((seen["min_rate"], seen["rate_bytes"]),
+                         (90000.0, gr.RATE_BYTES))
+
+
+class TestRealPadAndRate(unittest.TestCase):
+
+    def test_pad_headers_and_windows(self):
+        req = pr.build_request("h.example", pad=gr.VOLUME_PAD)
+        self.assertGreaterEqual(len(req), gr.VOLUME_PAD)
+        self.assertTrue(req.endswith(b"\r\n\r\n"))
+        self.assertIn(b"X-Pad-", req)
 
 
 class TestObserverSkipsProbePorts(unittest.TestCase):
