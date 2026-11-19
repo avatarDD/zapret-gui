@@ -64,7 +64,7 @@ description: >-
   чистые функции, коды `unknown_lua_function`/`blob_unknown`/
   `blob_file_missing`/`blob_declared_after_new`/`lua_init_order`/
   `bare_trick_no_filter`/`l7_filter_without_ports`/`no_desync_action`/
-  `engine_owned_option`/`ttl_fake_on_udp`/`tcp_ts_only_fooling`/`badack_without_ts_up`/`fake_without_blob`, ошибка линтера делает ответ `isError`; сборщик
+  `engine_owned_option`/`ttl_fake_on_udp`/`tcp_ts_only_fooling`/`badack_without_ts_up`/`fake_without_blob`/`tls_mod_on_raw_blob`, ошибка линтера делает ответ `isError`; сборщик
   вырезает из стратегии опции, которыми владеет GUI — `--user`/`--qnum`/
   `--fwmark`/`--pidfile`/`--writable`/`--debug=@файл`),
   транспорте и авторизации (Bearer-токен, Origin, bind, рейт-лимит,
@@ -1326,6 +1326,7 @@ TTL отсчитывается от старта прогона и покрыв�
 | `tcp_ts_only_fooling` | warning | TCP-шаг `--lua-desync`, у которого `tcp_ts=` — единственная маскировка: Windows по умолчанию меток TCP не шлёт, и фейк уходит серверу настоящим пакетом. С роутера (и с Linux/Android/macOS/iOS) работает, с Windows — нет. Та же проверка — `strategy_lint.needs_tcp_timestamps`, по ней сканер ставит метку «нужны метки TCP» |
 | `badack_without_ts_up` | warning | фейк-шаг (`fake`/`fakedsplit`/`fakeddisorder`/`hostfakesplit`/`fakemultisplit`/`fakemultidisorder`), у которого `tcp_ack=` — единственная маскировка и нет `tcp_ts_up`: Linux стабильно отбрасывает сегмент с верным seq и неверным ack, только если опция timestamp идёт первой. nfqws1 ставил её первой всегда, nfqws2 сохраняет порядок клиента — стратегия «со старой версии» работает через раз. `tcp_ts_up` поднимает метку наверх. У `multisplit`/`multidisorder` `tcp_ack` ложится на сами данные — не ругаемся |
 | `fake_without_blob` | **error** | `--lua-desync=fake` без `blob=`: `zapret-antidpi.lua` бросает `fake: 'blob' arg required` на первом пакете, приём ничего не шлёт (под circular — пустой шаг ротации). У `fakedsplit`/`hostfakesplit` и прочих фейк по умолчанию есть — их правило не трогает |
+| `tls_mod_on_raw_blob` | warning | шаг `--lua-desync` с `tls_mod=` и `blob=0x…`, который не TLS-запись (не начинается с `1603`): TLSMod (`nfq2/protocol.c`) пишет в лог `cannot apply tls mod. tls structure invalid` и возвращает nil, `fake` шлёт blob как есть. Обход не ломается, но под circular строка сыплется в лог на каждом соединении. Именованные blob'ы правило не трогает (содержимое файла линтеру не видно) — каталоги сверяет `tests/test_catalog_tls_mod_blobs.py` |
 
 ### Аргументы стратегии: чем владеет GUI
 
