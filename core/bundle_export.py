@@ -20,11 +20,11 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
 * ``--ipset[-exclude]=…/<имя>.txt`` → ``ipsets`` (``cidrs``);
 * ``blob=``/``pattern=``/``seqovl_pattern=`` и ``--blob=<имя>:…`` →
   ``blobs`` — байты, которые получит nfqws2: свой блоб или файл, на
-  который имя ведёт реестр (``tls_google`` → ``tls_clienthello_…bin``).
+  который имя ведёт реестр (``quic_vk`` → ``quic_initial_vk_com.bin``).
   Объявленные в самих args (``--blob=<имя>:@путь``) едут там же, как
-  hex. Не берутся ``fake_default_*`` (встроены в nfqws2) и паттерны,
-  которые при запуске задаёт ``init_vars.lua`` (у них нет файла: запуск
-  не объявляет их из реестра);
+  hex. Не берутся ``fake_default_*`` (встроены в nfqws2) и имена,
+  которые при запуске задаёт ``init_vars.lua`` (``tls_google``,
+  ``tls_rnd``…: скрипт присваивает их заново, поверх любого ``--blob``);
 * lua: и явные ``--lua-init=@lua/<имя>.lua``, и скрипты, которые GUI сам
   подключает по функциям профиля (``fakemultisplit``, ``flood_white``,
   оркестратор ``circular``, ``init_vars``… — та же логика, что у запуска,
@@ -32,16 +32,17 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
   (:data:`ZAPRET2_LUA`) есть у любого получателя и не берутся.
 
 Встроенные hostlist'ы (``other``, ``other2``, ``netrogat``) и ipset'ы в
-бандл не входят: у получателя они свои. Списки берутся только из
-``lists/<имя>.txt``, lua — из ``lua/<имя>.lua``: файл по другому пути
-бандл перенести не может.
+бандл не входят: у получателя они свои. Списки и lua берутся только из
+``lists/<имя>.txt`` и ``lua/<имя>.lua`` или из каталогов их менеджеров:
+файл по другому пути бандл перенести не может.
 
 Профили уходят такими, какими их запускает GUI: «голый» приём получает
 тот же фильтр (``autowrap_bare_trick``: по ``--payload``, у встроенной
 стратегии — и по протоколу и портам перехвата), иначе у получателя он
 задел бы весь трафик очереди. Пути к спискам и lua становятся
-``lists/<имя>.txt`` и ``@lua/<имя>.lua`` — так их понимает импорт. О каждом пропуске сказано в
-``warnings`` ответа — сам бандл остаётся чистым форматом.
+``lists/<имя>.txt`` и ``@lua/<имя>.lua`` — так их понимает импорт. О
+каждом пропуске сказано в ``warnings`` ответа — сам бандл остаётся
+чистым форматом.
 """
 
 from __future__ import annotations
@@ -63,8 +64,9 @@ ZAPRET2_LUA = frozenset({
     "zapret-lib", "zapret-antidpi", "zapret-auto", "zapret-obfs",
     "zapret-pcap", "zapret-wgobfs", "zapret-tests"})
 _BLOB_DECL_RE = re.compile(r"^--blob=([A-Za-z_][A-Za-z0-9_]*):")
-_LUA_REF_RE = re.compile(r"^--lua-init=@(?:.*/)?lua/([a-zA-Z0-9_.\-]+)\.lua$")
-_STEM_RE = re.compile(r"(?:^|/)lists/([a-zA-Z0-9_-]{1,64})\.txt$")
+_LUA_REF_RE = re.compile(r"^--lua-init=@(.+)$")
+_LIST_FILE_RE = re.compile(r"^([a-zA-Z0-9_-]{1,64})\.txt$")
+_LUA_FILE_RE = re.compile(r"^([a-zA-Z0-9_.\-]+)\.lua$")
 # Поля стратегии, которые несёт бандл (остальное — состояние роутера).
 _STRATEGY_KEYS = ("id", "name", "description", "version", "type")
 
@@ -94,11 +96,31 @@ def _auto_lua(tokens: list) -> list:
     return out
 
 
-def references(strategy: dict) -> dict:
+def _stem(path: str, kind: str, roots) -> str:
+    """Имя списка (``kind`` = ``lists``) или скрипта (``lua``) по пути из
+    args, если это файл менеджера: ``lists/<имя>.txt`` / ``lua/<имя>.lua``
+    (их запуск резолвит в каталоги менеджеров) или путь прямо в этих
+    каталогах (``roots[kind]``). Иначе ``""`` — такой файл менеджер не
+    знает, и его содержимое бандл перенести не может."""
+    import os
+    path = str(path or "").replace("\\", "/")
+    head, _, base = path.rpartition("/")
+    m = (_LIST_FILE_RE if kind == "lists" else _LUA_FILE_RE).match(base)
+    if not m:
+        return ""
+    if head == kind:
+        return m.group(1)
+    dirs = {os.path.normpath(d) for d in (roots or {}).get(kind) or ()
+            if d}
+    return m.group(1) if head and os.path.normpath(head) in dirs else ""
+
+
+def references(strategy: dict, roots=None) -> dict:
     """Ссылки профилей: ``{"lists": [(вид, имя)], "blobs": [...],
     "patterns": [...], "lua": [...]}``; вид — ``hostlist`` или ``ipset``
     по опции, ``patterns`` — имена из ``pattern=``/``seqovl_pattern=``
-    (их может задать и ``init_vars``)."""
+    (их может задать и ``init_vars``). ``roots`` — каталоги менеджеров
+    (``{"lists": [...], "lua": [...]}``), см. :func:`_stem`."""
     lists, blobs, patterns, lua, unknown = [], [], [], [], []
     declared = {}
     every = []
@@ -116,21 +138,21 @@ def references(strategy: dict) -> dict:
         for tok in toks:
             m = _LIST_REF_RE.match(tok)
             if m:
-                stem = _STEM_RE.search(m.group(2))
+                stem = _stem(m.group(2), "lists", roots)
                 kind = "ipset" if m.group(1).startswith("ipset") \
                     else "hostlist"
                 if not stem:
                     unknown.append(tok)
-                elif (kind, stem.group(1)) not in lists:
-                    lists.append((kind, stem.group(1)))
+                elif (kind, stem) not in lists:
+                    lists.append((kind, stem))
                 continue
             m = _LUA_REF_RE.match(tok)
-            if m:
-                if m.group(1) not in lua:
-                    lua.append(m.group(1))
-                continue
-            if tok.startswith("--lua-init=@"):
-                unknown.append(tok)     # файл вне lua/ (инлайн-код едет в args)
+            if m:   # инлайн-код (--lua-init=код) едет в args как есть
+                stem = _stem(m.group(1), "lua", roots)
+                if not stem:
+                    unknown.append(tok)
+                elif stem not in lua:
+                    lua.append(stem)
                 continue
             m = _BLOB_DECL_RE.match(tok)
             if m:
@@ -154,19 +176,20 @@ def references(strategy: dict) -> dict:
             "lua": [n for n in lua if n not in ZAPRET2_LUA]}
 
 
-def _portable_paths(args: str) -> str:
+def _portable_paths(args: str, roots=None) -> str:
     """Пути этого роутера к спискам и lua → ``lists/<имя>.txt`` и
     ``@lua/<имя>.lua``: так их пишет импорт (и переименовывает)."""
     for tok in dict.fromkeys(_tokens(args)):
         m = _LIST_REF_RE.match(tok)
-        stem = _STEM_RE.search(m.group(2)) if m else None
-        if stem:
-            new = "--%s=lists/%s.txt" % (m.group(1), stem.group(1))
+        if m:
+            stem = _stem(m.group(2), "lists", roots)
+            new = "--%s=lists/%s.txt" % (m.group(1), stem) if stem else ""
         else:
             m = _LUA_REF_RE.match(tok)
-            if not m:
-                continue
-            new = "--lua-init=@lua/%s.lua" % m.group(1)
+            stem = _stem(m.group(1), "lua", roots) if m else ""
+            new = "--lua-init=@lua/%s.lua" % stem if stem else ""
+        if not new:
+            continue
         if new != tok:
             args = re.sub(r"(?<!\S)%s(?!\S)" % re.escape(tok),
                           lambda _m, new=new: new, args)
@@ -188,7 +211,7 @@ def _inline_decl(args: str, inline: dict) -> str:
     return args
 
 
-def _clean_strategy(strategy: dict, inline=None) -> dict:
+def _clean_strategy(strategy: dict, inline=None, roots=None) -> dict:
     out = {k: strategy[k] for k in _STRATEGY_KEYS if k in strategy}
     out["id"] = _STRATEGY_ID_RE.sub("_", str(strategy.get("id") or
                                              "strategy"))[:64] or "strategy"
@@ -204,7 +227,7 @@ def _clean_strategy(strategy: dict, inline=None) -> dict:
             # как при запуске (strategy_builder): выключен любой «ложный»
             "enabled": bool(p.get("enabled", True)),
             "args": _portable_paths(_inline_decl(str(p.get("args") or ""),
-                                                 inline or {})),
+                                                 inline or {}), roots),
         })
     return out
 
@@ -224,7 +247,7 @@ def _declared_bytes(value: str, blob_file):
 
 def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
                  blob_file=None, compat: int = LUA_COMPAT,
-                 version: str = "") -> tuple:
+                 version: str = "", roots=None) -> tuple:
     """Стратегия + доступ к файлам → ``(бандл, предупреждения)``.
 
     Доступ — функции, чтобы модуль был чистым и проверялся без роутера:
@@ -233,10 +256,11 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
     ``blobs(имя)`` → байты, которые nfqws2 получит под этим именем, или
     ``None``, ``lua(имя)`` → текст скрипта или ``None``,
     ``blob_file(значение)`` — байты по значению ``--blob=<имя>:<значение>``
-    из самих args (``@путь`` или ``+N@путь`` — со смещения N), ``compat`` — версия совместимости lua
-    zapret2 этого роутера.
+    из самих args (``@путь`` или ``+N@путь`` — со смещения N),
+    ``compat`` — версия совместимости lua zapret2 этого роутера, ``roots``
+    — каталоги менеджеров списков и lua (см. :func:`_stem`).
     """
-    refs = references(strategy)
+    refs = references(strategy, roots)
     warnings = []
     out_lists, out_ipsets, out_blobs, out_lua = [], [], [], []
     for tok in refs["unknown"]:
@@ -271,20 +295,18 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         value = refs["declared"].get(name)
         if value is not None:
             data = _declared_bytes(value, blob_file)
-        elif name in init_vars and name not in refs["blobs"]:
-            # только паттерн: запуск его из реестра не объявляет, байты
-            # даёт init_vars.lua — файл каталога был бы не тем, что
-            # получает nfqws2
+        elif name in init_vars:
+            # имя init_vars: запуск подключает init_vars.lua, и тот задаёт
+            # глобал заново (поверх --blob) — байты nfqws2 даёт скрипт,
+            # файл каталога был бы не тем, что получает nfqws2
             data = None
         else:
             data = blobs(name)
         if not data:
             if name in init_vars:
-                # паттерн init_vars без файла каталога (tls_rnd…) GUI
-                # получает из скрипта, байтов у него нет
-                warnings.append("паттерн %s задаёт init_vars.lua при "
-                                "запуске: в бандле его нет, AutoTuner "
-                                "такую стратегию не проверит" % name)
+                warnings.append("%s задаёт init_vars.lua при запуске: "
+                                "байтов в бандле нет, AutoTuner такую "
+                                "стратегию не проверит" % name)
             else:
                 warnings.append("блоб %s не найден на роутере — в бандл "
                                 "не входит" % name)
@@ -314,7 +336,7 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         "format_version": FORMAT_VERSION,
         "generator": {"name": "zapret-gui", "version": version or ""},
         "zapret2_compat": int(compat or LUA_COMPAT),
-        "strategy": _clean_strategy(strategy, inline),
+        "strategy": _clean_strategy(strategy, inline, roots),
         # по имени, как у AutoTuner: один и тот же бандл — один и тот же
         # файл, сколько его ни выгружай
         "hostlists": sorted(out_lists, key=lambda x: x["name"]),
@@ -371,10 +393,12 @@ def export_strategy(strategy: dict) -> tuple:
         # свой экземпляр, если есть, иначе поставляемый с GUI
         return lm.get_script(name) or None
 
+    roots = {"lists": [hm.lists_path, im.ipset_path, im.lists_path],
+             "lua": [lm.lua_path]}
     return build_bundle(strategy, hostlists=hostlists, ipsets=ipsets,
                         blobs=blobs, lua=lua, blob_file=blob_file,
                         compat=_installed_compat(lm),
-                        version=_app_version())
+                        version=_app_version(), roots=roots)
 
 
 def _as_launched(strategy: dict) -> dict:

@@ -2474,16 +2474,19 @@ const StrategiesPage = (() => {
         const warn = (plan.warnings || []).map(w => '⚠ ' + w).join('\n');
         let onConflict = null;
         const conflicts = plan.plan.conflicts || [];
-        if (conflicts.length || plan.plan.builtin_strategy) {
-            const names = conflicts.map(c => titles[c.kind] + ' ' + c.name).join(', ');
-            // одноимённые скрипты GUI, блобы каталога и встроенная
-            // стратегия — только под новыми именами
-            onConflict = plan.plan.rename_only || plan.plan.builtin_strategy || !confirm(
+        // одноимённые скрипты GUI и блобы каталога сервер переименует
+        // при любом выборе; спрашиваем только про остальные
+        const forced = conflicts.filter(c => c.rename_only).map(c => titles[c.kind] + ' ' + c.name).join(', ');
+        const ordinary = conflicts.filter(c => !c.rename_only);
+        if (ordinary.length || forced || plan.plan.builtin_strategy) {
+            const names = ordinary.map(c => titles[c.kind] + ' ' + c.name).join(', ');
+            onConflict = plan.plan.builtin_strategy || !ordinary.length || !confirm(
                 'Уже есть: ' + names + '.\n\nOK — заменить существующие, Отмена — сохранить под новыми именами.')
                 ? 'rename' : 'replace';
         }
         if (!confirm('Импортировать бандл?\n\n' + items +
                      (same ? '\n\nУже есть таким же, не перезаписывается: ' + same : '') +
+                     (forced ? '\n\nПоставляется с zapret-gui, сохранится под новым именем: ' + forced : '') +
                      (warn ? '\n\n' + warn : '') +
                      (onConflict ? '\n\nЗанятые имена: ' + (onConflict === 'replace' ? 'заменить' : 'новые имена') : '') +
                      '\n\nСтратегия будет сохранена, но не применена.')) return;

@@ -29,7 +29,7 @@
         "id": "p3",
         "name": "GUI",
         "enabled": true,
-        "args": "--blob=my_hex:0x1603010000 --filter-tcp=80 --lua-desync=fakemultisplit:pos=1:blob=tls_google --lua-desync=multisplit:pos=2:seqovl=5:seqovl_pattern=my_hex"
+        "args": "--blob=my_hex:0x1603010000 --filter-tcp=80 --lua-desync=fakemultisplit:pos=1:blob=fake_tls_1 --lua-desync=multisplit:pos=2:seqovl=5:seqovl_pattern=my_hex"
       }
     ]
   },
@@ -52,19 +52,15 @@
   ],
   "blobs": [
     {
-      "name": "my_tls",
-      "base64": "FgMBAAVoZWxsbw=="
+      "name": "fake_tls_1",
+      "base64": "FgMBZ29vZ2xl"
     },
     {
-      "name": "tls_google",
-      "base64": "FgMBZ29vZ2xl"
+      "name": "my_tls",
+      "base64": "FgMBAAVoZWxsbw=="
     }
   ],
   "lua": [
-    {
-      "name": "init_vars.lua",
-      "text": "tls_rnd = fake_default_tls\n"
-    },
     {
       "name": "fakemultisplit.lua",
       "text": "function fakemultisplit(ctx, desync) end\n"

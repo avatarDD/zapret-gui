@@ -213,11 +213,13 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     Скрипты, которые поставляет сам GUI (``gui_lua``), и имена блобов
     каталога (``catalog_blobs``) заменить нельзя: свой экземпляр скрипта
     подменил бы поставляемый для всех стратегий, а блоб с именем
-    каталога nfqws2 не получит — реестр отдаёт имя каталогу. Если они
-    другие (или файла каталога здесь нет), это конфликт с пометкой
-    ``rename_only``: содержимое бандла сохраняется под новым именем, и
+    каталога (или ``init_vars``) nfqws2 не получит — реестр отдаёт имя
+    каталогу, ``init_vars.lua`` присваивает своё. Если они другие (или
+    файла каталога здесь нет), это конфликт с пометкой ``rename_only``:
+    содержимое бандла сохраняется под новым именем при любом выборе, и
     ссылки стратегии переходят на него, — она идёт с тем, что проверял
-    отправитель. ``rename_only`` плана — когда «заменить» недоступно.
+    отправитель. ``rename_only`` плана — есть такие конфликты или
+    встроенный id стратегии.
     """
     items, conflicts, skipped = [], [], []
 
@@ -255,24 +257,44 @@ def plan_bundle(data: dict, existing: dict) -> dict:
 
 def _free(name: str, taken: set, kind: str) -> str:
     for n in range(2, 1000):
-        if kind == "blob":
-            cand = "%s_%d" % (name, n)
-        elif kind == "ipset" and re.search(r"-ipset$", name):
-            cand = "%s-%d" % (name, n)      # zt-x-ipset-2 — в namespace
-        else:
-            cand = "%s-%d" % (name, n)
-        if cand not in taken and len(cand) <= 64:
+        # zt-x-ipset-2 — тоже в пространстве IP-списков
+        suffix = ("_%d" if kind == "blob" else "-%d") % n
+        # длинное имя укорачивается, чтобы с суффиксом влезть в 64
+        cand = name[:64 - len(suffix)] + suffix
+        if kind == "ipset" and not _ipset_name_ok(cand):
+            continue
+        if cand not in taken:
             return cand
     raise ValueError("нет свободного имени для %s" % name)
 
 
-def rename_map(plan: dict, existing: dict) -> dict:
-    """{kind: {старое: новое}} для занятых имён (режим «переименовать»)."""
+def _bundle_names(data) -> dict:
+    """Имена самого бандла по видам: новое имя не должно совпасть с
+    другим объектом того же бандла (иначе два слились бы в один)."""
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "hostlist": {h.get("name") for h in _items(data, "hostlists")
+                     if isinstance(h, dict)},
+        "ipset": {i.get("name") for i in _items(data, "ipsets")
+                  if isinstance(i, dict)},
+        "blob": {b.get("name") for b in _items(data, "blobs")
+                 if isinstance(b, dict)},
+        "lua": {_lua_stem(str(i.get("name") or "")) for i in
+                _items(data, "lua") if isinstance(i, dict)},
+    }
+
+
+def rename_map(plan: dict, existing: dict, data=None) -> dict:
+    """{kind: {старое: новое}} для занятых имён (режим «переименовать»).
+    С ``data`` новое имя не совпадёт и с именами самого бандла."""
     out = {}
     keys = {"hostlist": "hostlists", "ipset": "ipsets", "blob": "blobs",
             "lua": "lua", "strategy": "strategies"}
+    own = _bundle_names(data)
     for c in plan["conflicts"]:
         taken = set(existing.get(keys[c["kind"]], set()))
+        taken |= own.get(c["kind"], set())
         # новое имя не должно снова оказаться именем каталога или GUI
         taken |= set(existing.get({"blob": "catalog_blobs",
                                    "lua": "gui_lua"}.get(c["kind"], ""),
@@ -371,7 +393,7 @@ def existing_names(data: dict = None) -> dict:
         "gui_lua": _gui_lua(),
         # имена реестра каталога и паттерны init_vars: их байты при
         # запуске даёт GUI, а не файл с таким именем
-        "catalog_blobs": _catalog_blobs() | _init_vars_patterns(data),
+        "catalog_blobs": _catalog_blobs() | _init_vars_refs(data),
     }
     out["same"] = _same_here(data, out) if isinstance(data, dict) else set()
     return out
@@ -399,11 +421,12 @@ def _catalog_blobs() -> set:
         return set()
 
 
-def _init_vars_patterns(data) -> set:
-    """Имена ``init_vars``, которые бандл ставит паттерном
-    (``pattern=``/``seqovl_pattern=``): запуск их из реестра не объявляет,
-    паттерн задаёт сам ``init_vars.lua`` — блоб с таким именем nfqws2 не
-    получит, даже если байты совпадают с файлом каталога."""
+def _init_vars_refs(data) -> set:
+    """Имена ``init_vars``, на которые ссылается бандл (``blob=``,
+    ``pattern=``, ``fake_blob=``…): по такой ссылке запуск подключает
+    ``init_vars.lua``, а тот присваивает имя заново, поверх ``--blob`` —
+    блоб с таким именем nfqws2 не получит, даже если байты совпадают с
+    файлом каталога."""
     if not isinstance(data, dict):
         return set()
     try:
@@ -418,8 +441,8 @@ def _init_vars_patterns(data) -> set:
         for tok in tokenize_args(str(p.get("args") or "")):
             tok = _unquote(tok)[1]
             if tok.startswith("--lua-desync="):
-                out |= {n for k, n in desync_blob_refs(
-                    tok[len("--lua-desync="):])[0] if k.endswith("pattern")}
+                out |= {n for _k, n in desync_blob_refs(
+                    tok[len("--lua-desync="):])[0]}
     return out & set(_INIT_VARS_NAMES)
 
 
@@ -440,11 +463,11 @@ def _same_here(data: dict, names: dict) -> set:
         return i["name"] in names["ipsets"] and \
             list(im.get_ipset(i["name"])) == list(i["cidrs"])
 
-    patterns = _init_vars_patterns(data)
+    init_vars = _init_vars_refs(data)
 
     def blob(b):
-        if b["name"] in patterns:
-            return False        # см. _init_vars_patterns
+        if b["name"] in init_vars:
+            return False        # см. _init_vars_refs
         here = _blob_here(b["name"])
         return here is not None and here == blob_bytes(b)
 
@@ -489,7 +512,8 @@ def _load_renamed_auto_lua(profiles: list, data: dict, renames: dict):
     называют — после переименования его никто бы не загрузил. Такие
     скрипты подключаются явно, в первом профиле: ``--lua-init`` профилей
     грузится после скриптов GUI, и функции из бандла перекрывают здешние
-    — стратегия идёт с тем, что проверял отправитель."""
+    — стратегия идёт с тем, что проверял отправитель. Подключаются во
+    всех профилях: первый может быть выключен."""
     lua = renames.get("lua") or {}
     if not lua or not profiles:
         return
@@ -502,8 +526,10 @@ def _load_renamed_auto_lua(profiles: list, data: dict, renames: dict):
                  r"@(?:\S*/)?lua/%s\.lua(?![\w.-])" % re.escape(stem),
                  joined)]
     if extra:
-        profiles[0] = dict(profiles[0], args=" ".join(
-            extra + [str(profiles[0].get("args") or "")]).strip())
+        # в каждый профиль: выключенный не запускается, а повторы
+        # --lua-init запуск убирает (_dedup_lua_init)
+        profiles[:] = [dict(p, args=" ".join(
+            extra + [str(p.get("args") or "")]).strip()) for p in profiles]
 
 
 def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
@@ -524,18 +550,22 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
                 "warnings": warnings,
                 "error": "id стратегии совпадает со встроенной — "
                          "выберите «переименовать»"}
-    if plan["rename_only"] and on_conflict != "rename":
-        return {"ok": False, "error_code": "conflict", "plan": plan,
-                "warnings": warnings,
-                "error": "скрипты GUI и блобы каталога заменить нельзя — "
-                         "выберите «переименовать»"}
     if plan["conflicts"] and on_conflict not in ("replace", "rename"):
         return {"ok": False, "error_code": "conflict", "plan": plan,
                 "warnings": warnings,
                 "error": "имена уже заняты: " + ", ".join(
                     "%s %s" % (c["kind"], c["name"])
                     for c in plan["conflicts"])}
-    renames = rename_map(plan, existing) if on_conflict == "rename" else {}
+    # «заменить» не трогает поставляемое GUI: такие конфликты
+    # (rename_only) переименовываются при любом выборе
+    forced = dict(plan, conflicts=[c for c in plan["conflicts"]
+                                   if on_conflict == "rename"
+                                   or c.get("rename_only")])
+    try:
+        renames = rename_map(forced, existing, data)
+    except ValueError as e:
+        return {"ok": False, "error_code": "conflict", "plan": plan,
+                "warnings": warnings, "error": str(e)}
 
     def new(kind, name):
         return renames.get(kind, {}).get(name, name)

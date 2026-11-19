@@ -136,6 +136,16 @@ class TestPlanAndRename(unittest.TestCase):
                   "--lua-init=@/opt/zapret2/lua/my-2.lua "
                   "--hostlist=/opt/zapret2/lists/zt-youtube-2.txt")
 
+    def test_new_name_is_free_in_bundle_and_fits(self):
+        b = bundle(blobs=[{"name": n, "base64": "AQ=="}
+                          for n in ("a", "a_2", "b" * 64)])
+        existing = dict(NOTHING, blobs={"a", "b" * 64})
+        plan = bi.plan_bundle(b, existing)
+        renames = bi.rename_map(plan, existing, b)
+        self.assertEqual(renames["blob"]["a"], "a_3")
+        long = renames["blob"]["b" * 64]
+        self.assertEqual((len(long), long[-2:]), (64, "_2"))
+
     def test_fallback_is_a_blob_only_for_clone(self):
         renames = {"blob": {"pass": "pass_2", "fb": "fb_2", "cl": "cl_2"}}
         # blob= у клона — имя переменной desync, а не блоба
@@ -236,17 +246,20 @@ class TestApply(unittest.TestCase):
         self.assertIn("blob=tls1_2", args)
         self.assertEqual(r["renamed"], {"blob": {"tls1": "tls1_2"}})
 
-    def test_same_is_not_written_and_gui_script_needs_rename(self):
-        existing = dict(NOTHING, hostlists={"zt-youtube"},
+    def test_same_is_not_written_and_gui_script_is_always_renamed(self):
+        existing = dict(NOTHING, hostlists={"zt-youtube"}, blobs={"tls1"},
                         ipsets={"zt-yt-ipset"}, lua={"my"}, gui_lua={"my"},
                         same={("hostlist", "zt-youtube"),
                               ("ipset", "zt-yt-ipset")})
+        # «заменить»: свой блоб заменяется, скрипт GUI — под новым именем
         r = bi.apply_bundle(bundle(), on_conflict="replace",
                             existing=existing)
-        self.assertEqual(r["error_code"], "conflict")
-        self.assertEqual(self.m.saved, {})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["renamed"], {"lua": {"my": "my-2"}})
+        self.assertIn("tls1", self.m.saved)
+        self.m.saved.clear()
         r = bi.apply_bundle(bundle(), on_conflict="rename",
-                            existing=existing)
+                            existing=dict(existing, blobs=set()))
         self.assertTrue(r["ok"], r)
         self.assertEqual(set(self.m.saved),
                          {"tls1", "my-2", "zt_youtube_2026_10_18"})
@@ -257,26 +270,32 @@ class TestApply(unittest.TestCase):
 
     def test_renamed_auto_loaded_script_is_loaded_explicitly(self):
         """fakemultisplit GUI подключает по функции, args его не
-        называют: под новым именем он грузится явным --lua-init."""
+        называют: под новым именем он грузится явным --lua-init — в
+        каждом профиле (первый бывает выключен)."""
         b = bundle(lua=[{"name": "fakemultisplit.lua", "text": "-- их"}])
         b["strategy"]["profiles"][0]["args"] = (
             "--filter-tcp=443 --lua-desync=fakemultisplit:pos=1")
+        b["strategy"]["profiles"].insert(0, {
+            "id": "p0", "enabled": False, "args": "--filter-udp=443"})
         existing = dict(NOTHING, lua={"fakemultisplit"},
                         gui_lua={"fakemultisplit"})
         r = bi.apply_bundle(b, on_conflict="rename", existing=existing)
         self.assertTrue(r["ok"], r)
         self.assertEqual(self.m.saved["fakemultisplit-2"], "-- их")
-        self.assertEqual(
-            self.m.saved["zt_youtube_2026_10_18"]["profiles"][0]["args"],
-            "--lua-init=@lua/fakemultisplit-2.lua --filter-tcp=443 "
-            "--lua-desync=fakemultisplit:pos=1")
+        got = self.m.saved["zt_youtube_2026_10_18"]["profiles"]
+        self.assertEqual(got[0]["args"], "--lua-init=@lua/fakemultisplit-2.lua "
+                                         "--filter-udp=443")
+        self.assertEqual(got[1]["args"],
+                         "--lua-init=@lua/fakemultisplit-2.lua --filter-tcp=443 "
+                         "--lua-desync=fakemultisplit:pos=1")
 
     def test_init_vars_pattern_blob_is_never_same(self):
         b = bundle(blobs=[{"name": "tls_google",
                            "base64": base64.b64encode(b"cat").decode()}])
         b["strategy"]["profiles"][0]["args"] = (
-            "--lua-desync=multisplit:seqovl=5:seqovl_pattern=tls_google")
-        self.assertEqual(bi._init_vars_patterns(b), {"tls_google"})
+            "--lua-desync=multisplit:seqovl=5:seqovl_pattern=tls_google "
+            "--lua-desync=fake:blob=tls_youtube")
+        self.assertEqual(bi._init_vars_refs(b), {"tls_google", "tls_youtube"})
         with mock.patch.object(bi, "_blob_here", lambda n: b"cat"):
             same = bi._same_here(b, {"hostlists": set(), "ipsets": set(),
                                      "lua": set()})
