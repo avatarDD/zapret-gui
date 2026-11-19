@@ -514,7 +514,7 @@ const LogsPage = (() => {
             <span class="log-time" title="${date} ${time}">${time}</span>
             <span class="log-badge" style="color:${config.color}; background:${config.bg};">${config.label}</span>
             ${source}
-            <span class="log-message">${message}</span>
+            <span class="log-message" translate="no">${message}</span>
         `;
 
         return row;

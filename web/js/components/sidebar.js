@@ -433,11 +433,10 @@ const Sidebar = (() => {
                 const btn = e.target.closest('[data-action]');
                 if (!btn) return;
                 const action = btn.dataset.action;
-                // Переключателя языка в футере больше нет: перевод покрыт
-                // лишь частично, и кнопка меняла подписи в паре мест,
-                // оставляя остальной интерфейс русским. Сам i18n-слой
-                // оставлен на месте — он ещё используется страницами.
-                if (action === 'show-help') Help.show('expert');
+                // Язык: RU ⇄ EN, страница перезагружается (см. utils/i18n.js).
+                if (action === 'toggle-lang') {
+                    i18n.setLanguage(i18n.getLanguage() === 'en' ? 'ru' : 'en');
+                } else if (action === 'show-help') Help.show('expert');
                 else if (action === 'toggle-theme') Theme.toggle();
                 else if (action === 'run-selfcheck') _runSelfcheck();
             });

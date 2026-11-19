@@ -218,7 +218,7 @@ const ListsPage = (() => {
         if (s < 90) return 'обновлён только что';
         if (s < 3600) return `обновлён ${Math.round(s / 60)} мин назад`;
         if (s < 86400) return `обновлён ${Math.round(s / 3600)} ч назад`;
-        return 'обновлён ' + new Date(ts * 1000).toLocaleDateString('ru-RU');
+        return 'обновлён ' + new Date(ts * 1000).toLocaleDateString(i18n.locale());
     }
 
     function renderBody() {

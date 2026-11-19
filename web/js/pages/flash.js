@@ -425,7 +425,7 @@ const FlashPage = (() => {
         return (p < 1 ? Number(p).toFixed(2) : Number(p).toFixed(0)) + ' %';
     }
 
-    function fmtNum(n) { return Number(n || 0).toLocaleString('ru-RU'); }
+    function fmtNum(n) { return Number(n || 0).toLocaleString(i18n.locale()); }
 
     function fmtCs(cs) { return cs === null || cs === undefined ? '—' : (cs / 100) + ' с'; }
 

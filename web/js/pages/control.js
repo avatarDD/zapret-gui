@@ -117,7 +117,7 @@ const ControlPage = (() => {
                     </svg>
                     Правила Firewall
                 </div>
-                <div class="log-viewer" id="fw-rules-viewer" style="max-height:160px; font-size:11px;">
+                <div class="log-viewer" id="fw-rules-viewer" translate="no" style="max-height:160px; font-size:11px;">
                 </div>
             </div>
 
@@ -353,7 +353,7 @@ const ControlPage = (() => {
             <div class="log-entry">
                 <span class="log-time">${e.time || ''}</span>
                 <span class="log-level" style="color:${e.color || '#9ca3af'}">${(e.level || '').padEnd(7)}</span>
-                <span class="log-message">${msgHtml}</span>
+                <span class="log-message" translate="no">${msgHtml}</span>
             </div>
         `;}).join('');
         el.scrollTop = el.scrollHeight;

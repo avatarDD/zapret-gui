@@ -881,7 +881,7 @@ const ZapretManagerPage = (() => {
     function formatDate(isoStr) {
         try {
             const d = new Date(isoStr);
-            return d.toLocaleDateString('ru-RU', {
+            return d.toLocaleDateString(i18n.locale(), {
                 year: 'numeric', month: 'short', day: 'numeric'
             });
         } catch {
