@@ -54,6 +54,8 @@ LOCK_STALE_SEC = 10
 _last_clear_time = 0.0
 _MIN_CLEAR_INTERVAL = 60.0
 _pending_clear_hosts = set()
+# Из них — сбросы «к первому приёму» (healthcheck), а не «забыть хост».
+_pending_first_trick = set()
 
 # Тот же заголовок, который пишет z2k-state-persist.lua — чтобы наш rewrite
 # не отличался для глаз и для merge'а в Lua.
@@ -263,6 +265,28 @@ def _rewrite_locked(path: str, entries: list):
                   source="strategy")
 
 
+# Ключ circular с первым шагом pass (strategy_builder.circular_pass_first).
+PASS_FIRST_KEY_SUFFIX = "_pass"
+
+
+def _reset_target(entry: dict):
+    """Куда сбросить запись хоста вместо удаления, или None — удалить.
+
+    Сброс хоста значит «начать подбор с первого приёма». У circular с
+    первым шагом ``pass`` (настройка filter.circular_clean_start) первый
+    приём — шаг 2: удаление вернуло бы хост на ``pass``, и сайт, который
+    только что не открылся, ещё ``fails`` попыток шёл бы без обхода.
+    Запись на шаге 1 (сайт работал без обхода) просто удаляется.
+    """
+    if not str(entry.get("key", "")).endswith(PASS_FIRST_KEY_SUFFIX):
+        return None
+    try:
+        n = int(entry.get("strategy"))
+    except (TypeError, ValueError):
+        return None
+    return 2 if n > 1 else None
+
+
 def _filter_entries(entries: list, *, host=None, key=None) -> list:
     """Оставить только те записи, что соответствуют фильтру (для delete-
     operations это «то, что НЕ удаляется»)."""
@@ -304,9 +328,14 @@ def clear_all() -> dict:
         return {"ok": True, "removed": removed}
 
 
-def clear_hosts(hosts: list, flush: bool = True) -> dict:
+def clear_hosts(hosts: list, flush: bool = True,
+                first_trick: bool = False) -> dict:
     """Удалить все записи по списку хостов.
     Возвращает словарь {host: removed_count} для переданных хостов.
+
+    ``first_trick=True`` — сброс «начать подбор с первого приёма обхода»
+    (healthcheck): записи circular с первым шагом ``pass`` переводятся на
+    шаг 2, а не удаляются (см. _reset_target). Без флага хост забывается.
     """
     if not hosts:
         return {}
@@ -317,6 +346,10 @@ def clear_hosts(hosts: list, flush: bool = True) -> dict:
 
     with _lock:
         _pending_clear_hosts.update(hosts_normalized)
+        if first_trick:
+            _pending_first_trick.update(hosts_normalized)
+        else:
+            _pending_first_trick.difference_update(hosts_normalized)
 
         result_map = {}
         for h in hosts_normalized:
@@ -340,11 +373,12 @@ def clear_hosts(hosts: list, flush: bool = True) -> dict:
         return result_map
 
 
-def clear_host(host: str, flush: bool = True) -> dict:
+def clear_host(host: str, flush: bool = True,
+               first_trick: bool = False) -> dict:
     """Удалить все записи по конкретному хосту (всех category-key'ов)."""
     if not host:
         return {"ok": False, "error": "пустой host"}
-    res = clear_hosts([host], flush=flush)
+    res = clear_hosts([host], flush=flush, first_trick=first_trick)
     host_norm = host.lower().rstrip(".")
     removed = res.get(host_norm, 0)
     return {"ok": True, "removed": removed, "host": host}
@@ -366,8 +400,10 @@ def flush_clear_hosts(force: bool = False) -> int:
                      % len(_pending_clear_hosts), source="strategy")
             return 0
 
-        to_clear = list(_pending_clear_hosts)
+        to_clear = set(_pending_clear_hosts)
+        first_trick = set(_pending_first_trick)
         _pending_clear_hosts.clear()
+        _pending_first_trick.clear()
         _last_clear_time = now
 
         removed = 0
@@ -382,9 +418,17 @@ def flush_clear_hosts(force: bool = False) -> int:
                                 "пропускаем %s" % path, source="strategy")
                     continue
                 entries = _read_one(path)
-                kept = [e for e in entries if e["host"].lower().rstrip(".") not in to_clear]
+                kept = []
+                for e in entries:
+                    eh = e["host"].lower().rstrip(".")
+                    if eh not in to_clear:
+                        kept.append(e)
+                        continue
+                    first = _reset_target(e) if eh in first_trick else None
+                    if first is not None:
+                        kept.append(dict(e, strategy=first))
+                    removed += 1
                 _rewrite_locked(path, kept)
-                removed += len(entries) - len(kept)
             except OSError as e:
                 log.error("strategy_state.flush_clear_hosts: %s — %s" % (path, e),
                           source="strategy")
@@ -392,7 +436,7 @@ def flush_clear_hosts(force: bool = False) -> int:
                 _release_lock(lockfile)
 
         log.info("Сброшен autocircular-state для хостов %s (удалено: %d)"
-                 % (", ".join(to_clear), removed), source="strategy")
+                 % (", ".join(sorted(to_clear)), removed), source="strategy")
         return removed
 
 

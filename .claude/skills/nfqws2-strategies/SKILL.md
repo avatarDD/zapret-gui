@@ -738,6 +738,19 @@ bt_handshake utp_bt_handshake`.
     под `nobody` обязан его читать; нечитаемый primary reconcile считает
     сбоем чтения, а не «стёрли всё». Проверка — `tests/test_z2k_state_persist_lua.py`
     (настоящий Lua через `lupa`, без него тест пропускается).
+- **«Начинать без обхода»** (`filter.circular_clean_start`,
+  `strategy_builder.circular_pass_first`): при сборке argv первым шагом
+  единственного `circular` профиля ставится `--lua-desync=pass:strategy=1`,
+  номера остальных шагов +1 (`final` едет со своим шагом), а у самого
+  `circular` — свой `key=` (`<key>_pass` или `circular_<id профиля>_<n>_pass`),
+  чтобы выученные номера state.tsv не указывали на соседний шаг.
+  `is_quic_key` в z2k-state-persist.lua срезает `_pass`. Сброс хоста
+  healthcheck'ом (`strategy_state.clear_host(first_trick=True)`) переводит
+  такие записи на шаг 2, а не удаляет. `strategy_experiment` собирает argv
+  с `clean_start=False`. Эвристика `/16` в strategy-stats.lua смотрит на
+  имена `circular_3_1`/`circular_4_1` и с `_pass`-ключом не срабатывает. Так уже
+  устроен апстримный `winws2_default_v2_circular`. Профиль не меняется
+  при двух `circular`, нечисловом `strategy=` и `pass` на шаге 1.
 - **`repeater`** — повторяет N последующих инстансов R раз. args:
   `instances=N`, `repeats=R`, `stop`, `clear`, `iff=<name>`, `neg`.
 - **`condition`** — выполняет следующие инстансы только если `iff xor neg`.

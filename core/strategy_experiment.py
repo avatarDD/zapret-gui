@@ -1454,13 +1454,17 @@ def _variant_args(item: dict):
         strategy = manager.get_strategy(strategy_id)
         if not strategy:
             raise ValueError("стратегии %s нет" % strategy_id)
-        return manager.build_nfqws_args(strategy), "strategy_id"
+        # clean_start=False: проба должна сразу бить приёмом, а не
+        # начинать без обхода (filter.circular_clean_start).
+        return manager.build_nfqws_args(strategy,
+                                        clean_start=False), "strategy_id"
 
     if item.get("profiles"):
         profiles = [dict(p) for p in item["profiles"] if isinstance(p, dict)]
         if not profiles:
             raise ValueError("profiles пуст")
-        return manager.build_nfqws_args({"profiles": profiles}), "profiles"
+        return manager.build_nfqws_args({"profiles": profiles},
+                                        clean_start=False), "profiles"
 
     raise ValueError("нужен один из ключей: args, strategy_id, profiles")
 
