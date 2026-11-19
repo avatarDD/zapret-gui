@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import re
 from dataclasses import dataclass, field
 
 from core import geneva_auto_lists as gal
+from core.geneva_ext import needs_ext
 
 # ───────────────────────────── виды и состояния ─────────────────────
 
@@ -1350,15 +1352,240 @@ AUTO_CANDIDATES_DNS = (
 )
 
 
+# x-действия и полезные нагрузки L7 geneva_c 2.0, которые есть только у
+# одного транспорта (docs/EXT.md: X5a, X5b, X8) — AutoCandidates.Fits.
+_TCP_ONLY = re.compile(
+    r"(?:^|[-(,])x(?:split|disorder|tcpseg|hostfake|fakedsplit|"
+    r"fakeddisorder|synack|synacksplit|wsize|wssize|syndata|rst|http|oob|"
+    r"tlsrec|drip|tlsclone|synhide)(?=[{(,)-]|$)"
+    r"|payload[:=](?:tls_client_hello|http_req)\b|\[TCP:", re.I)
+_UDP_ONLY = re.compile(
+    r"(?:^|[-(,])x(?:udplen|dhtdn|wgobfs|udp2icmp)(?=[{(,)-]|$)"
+    r"|payload[:=](?:quic_initial|dht|wireguard\w*|stun|"
+    r"discord_ip_discovery|dtls\w*)\b|\[UDP:", re.I)
+
+
 def _fits(s: Service, strategy: str) -> bool:
+    """Стратегия действует на пакеты сервиса: TCP-деревья — для TCP,
+    UDP (DNS, IP) — для UDP. Триггеры потока, L7 и мета geneva_c 2.0
+    (``[FLOW:n:a]``) подходят обоим транспортам: решают действия под ними
+    (TCP-разрезы и OOB — только TCP, QUIC Initial — только UDP)."""
     low = strategy.lower()
-    if s.transport == "udp" or s.kind == DNS:
+    udp = s.transport == "udp" or s.kind == DNS
+    if "[flow:" in low or "[l7:" in low or "[meta:" in low:
+        return not _TCP_ONLY.search(strategy) if udp else \
+            not _UDP_ONLY.search(strategy)
+    if udp:
         return "[udp:" in low or "[ip:" in low or "[dns" in low
     return "[tcp:" in low or "[ip:" in low
 
 
+# ── методы zapret2 как x-действия geneva_c 2.0 (AutoCandidates AutoTuner
+# 1.4: XTcp, XQuic, XTcpWide, XHttp, XQuicWide, XUdp, XDht, XTcpAny) ──
+
+X_TCP = (
+    r"[TCP:flags:PA]-xdisorder{pos=1,midsld}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=1,midsld}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20}(xdisorder{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;md5}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;badsum;tlsmod=rnd,rndsni,dupsid}(xsplit{pos=midsld},)-| \/",
+    r"[TCP:flags:PA]-xfakedsplit{pos=midsld;ttl=4}-| \/",
+    r"[TCP:flags:PA]-xhostfake{ttl=auto:-2:3-20}-| \/",
+    r"[TCP:flags:PA]-xtlsrec{pos=sniext+1}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=sniext+1}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=4;repeats=2}(xdisorder{pos=midsld},)-| \/",
+)
+
+X_QUIC = (
+    r"[UDP:dport:443]-xfake{blob=fake_quic_initial;repeats=6;ttl=4}-| \/",
+    r"[UDP:dport:443]-xfake{blob=fake_default_quic;repeats=6;badsum}-| \/",
+    r"[UDP:dport:443]-xsend{ipfrag;ipfrag_pos_udp=8}(drop,)-| \/",
+)
+
+X_TCP_WIDE = (
+    r"[TCP:flags:PA]-xsplit{pos=2}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=host}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=1,host,midsld,endhost}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=2,6,10,14,18,22,26,30}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=midsld;seqovl=336;seqovl_pattern=fake_default_tls}-| \/",
+    r"[TCP:flags:PA]-xdisorder{pos=2,midsld;seqovl=1}-| \/",
+    r"[TCP:flags:PA]-xdisorder{pos=1,midsld;legacy}-| \/",
+    r"[TCP:flags:PA]-xtcpseg{pos=0,midsld;ip_id=rnd}-| \/",
+    r"[TCP:flags:PA]-xfakeddisorder{pos=midsld;ttl=auto:-2:3-20}-| \/",
+    r"[TCP:flags:PA]-xfakedsplit{pos=midsld;md5}-| \/",
+    r"[TCP:flags:PA]-xhostfake{midhost=midsld;md5}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;seq=-10000}(xsplit{pos=1},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ts=-600000}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;tlsmod=padencap}(xdisorder{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;badsum;repeats=6}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;ipfrag}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xtlsclone{blob=c;sni_first=www.google.com}(xfake{blob=c;ttl=auto:-2:3-20}(xsplit{pos=1,midsld},),)-| \/",
+    r"[TCP:flags:PA]-xrepeat{repeats=3}(xfake{blob=fake_default_tls;ttl=auto:-2:3-20},xsplit{pos=1,midsld})-| \/",
+    r"[TCP:flags:PA]-xrst{badsum}-| \/",
+    r"[TCP:flags:PA]-xrst{ttl=auto:-2:3-20}(xsplit{pos=1},)-| \/",
+    r"[TCP:flags:PA]-xdrip{n=8;delay=20}-| \/",
+    r"[TCP:flags:PA]-xsend{ipfrag;ipfrag_pos_tcp=32}(drop,)-| \/",
+    r"[FLOW:n:a]-xsyndata{blob=fake_default_tls;tlsmod=rnd}-| \/",
+    r"[FLOW:n:a]-xoob{urp=b}-| \/",
+    r"[FLOW:n:a]-xoob{urp=midsld}-| \/",
+    r"[FLOW:n:a]-xtlsrec{pos=midsld}(xsplit{pos=1},)-| \/",
+    # SYN Windows — SEC (ECN): обе формы, как в эталоне
+    r"[TCP:flags:S]-xsynack-| [TCP:flags:SEC]-xsynack-| \/",
+    r"[FLOW:n:a]-xwssize{wsize=1;scale=6}-| \/",
+    r"\/ [TCP:flags:SA]-xwsize{wsize=1;scale=6}-|",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ack=-66000}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;flags-=ACK}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;tsup;nopdel;ipid=rnd}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;tlsmod=sni=www.google.com}(xdisorder{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ip6ext=hopbyhop2;ttl=auto:-2:3-20}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xwhen{iff=L7:payload:tls_client_hello}(xfake{blob=fake_default_tls;md5}(xsplit{pos=2},),)-| \/",
+    r"[TCP:flags:PA]-xcutoff{dir=out}(xfake{blob=fake_default_tls;ttl=auto:-2:3-20}(xsplit{pos=1,midsld},),)-| \/",
+)
+
+X_HTTP = (
+    r"[TCP:flags:PA]-xhttp{hostcase}-| \/",
+    r"[TCP:flags:PA]-xhttp{domcase}-| \/",
+    r"[TCP:flags:PA]-xhttp{methodeol}-| \/",
+    r"[TCP:flags:PA]-xhttp{unixeol}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_http;ttl=auto:-2:3-20}(xsplit{pos=method+2},)-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=method+2,host+1}-| \/",
+)
+
+X_QUIC_WIDE = (
+    r"[UDP:dport:443]-xfake{blob=fake_quic_initial;repeats=11;ttl=auto:-2:3-20}-| \/",
+    r"[UDP:dport:443]-xfake{blob=fake_quic_initial;repeats=6;md5;badsum}-| \/",
+    r"[UDP:dport:443]-xfake{blob=fake_default_quic;repeats=6;ttl=4;ipfrag}-| \/",
+    r"[UDP:dport:443]-xudplen{increment=2}-| \/",
+    r"[UDP:dport:443]-xsend{ipfrag;ipfrag_pos_udp=16;ipfrag_disorder}(drop,)-| \/",
+)
+
+X_UDP = (
+    r"[UDP:sport:*]-xfake{blob=0x" + "00" * 64 + r";repeats=6;ttl=4;payload=all}-| \/",
+    r"[UDP:sport:*]-xfake{blob=0x" + "00" * 16 + r";repeats=2;badsum;payload=all}-| \/",
+    r"[UDP:sport:*]-xsend{ipfrag;ipfrag_pos_udp=8}(drop,)-| \/",
+    r"[UDP:sport:*]-xudplen{increment=4;payload=all}-| \/",
+)
+
+X_DHT = (
+    r"[UDP:sport:*]-xdhtdn{dn=3}-| \/",
+    r"[UDP:sport:*]-xdhtdn{dn=2}-| \/",
+)
+
+X_TCP_ANY = (
+    r"[TCP:flags:PA]-xsplit{pos=2;payload=all}-| \/",
+    r"[TCP:flags:PA]-xdisorder{pos=2;payload=all}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;payload=all}(xsplit{pos=2;payload=all},)-| \/",
+    r"[TCP:flags:PA]-xfakedsplit{pos=2;md5;payload=all}-| \/",
+    r"[TCP:flags:PA]-xtcpseg{pos=0,2;ip_id=rnd;payload=all}-| \/",
+    r"[FLOW:n:a]-xoob{urp=b}-| \/",
+    r"[TCP:flags:PA]-xsend{ipfrag;ipfrag_pos_tcp=16}(drop,)-| \/",
+)
+
+FAKES_PER_ROUND = 8
+
+
+def blob_kind(name: str) -> str:
+    """Вид фейка zapret2 по имени блоба (GenevaBlobs.KindOf)."""
+    n = name[3:] if name.startswith("z2_") else name
+    if n.startswith("tls_clienthello"):
+        return "tls_hello"
+    if n.startswith(("quic_initial", "quic2_")):
+        return "quic_initial"
+    if n.startswith("http_"):
+        return "http"
+    if n.startswith("dht_"):
+        return "dht"
+    if n.startswith("zero_"):
+        return "zero"
+    if n.startswith(("bgp", "bitcoin", "rdp", "rtsp", "smtp", "tls_")):
+        return "tcp_other"
+    return "udp_other"
+
+
+def _tls_site(s: Service) -> bool:
+    return s.kind == WEB or (s.transport == "tcp" and
+                             s.app in ("tls", "http"))
+
+
+def slice_round(items, size: int, rnd: int) -> list:
+    """``rnd``-й отрезок по ``size`` с переходом через конец: круги
+    вместе проходят весь список."""
+    items = list(items)
+    if len(items) <= size:
+        return items
+    start = max(0, int(rnd)) * size % len(items)
+    return [items[(start + i) % len(items)] for i in range(size)]
+
+
+def blob_candidates(s: Service, blobs) -> list:
+    """По стратегии на каждый подходящий сервису фейк zapret2."""
+    names = sorted(set(blobs or ()))
+
+    def of(*kinds):
+        return [n for n in names if blob_kind(n) in kinds]
+    out = []
+    ports = set(s.ports or ())
+    if s.kind == QUIC:
+        for b in of("quic_initial"):
+            out.append(r"[UDP:dport:443]-xfake{blob=%s;repeats=6;"
+                       r"ttl=auto:-2:3-20}-| \/" % b)
+    elif _tls_site(s):
+        # сайт, виденный только на 80, ClientHello не шлёт
+        tls = not ports or 443 in ports or 80 not in ports
+        hellos = of("tls_hello") if tls else []
+        for b in hellos:
+            out.append(r"[TCP:flags:PA]-xfake{blob=%s;ttl=auto:-2:3-20}"
+                       r"(xsplit{pos=1,midsld},)-| \/" % b)
+            out.append(r"[TCP:flags:PA]-xfake{blob=%s;md5}"
+                       r"(xdisorder{pos=1,midsld},)-| \/" % b)
+        if hellos:
+            out.append(r"[TCP:flags:PA]-xsplit{pos=midsld;seqovl=336;"
+                       r"seqovl_pattern=%s}-| \/" % hellos[0])
+        if 80 in ports:
+            for b in of("http"):
+                out.append(r"[TCP:flags:PA]-xfake{blob=%s;ttl=auto:-2:3-20}"
+                           r"(xsplit{pos=method+2},)-| \/" % b)
+    elif s.kind == DNS:
+        pass
+    elif s.transport == "udp":
+        kinds = ("dht", "zero") if s.app == "dht" else ("udp_other", "zero")
+        for b in of(*kinds):
+            out.append(r"[UDP:sport:*]-xfake{blob=%s;repeats=4;ttl=4;"
+                       r"payload=all}-| \/" % b)
+    else:
+        for b in of("tcp_other", "zero", "http"):
+            out.append(r"[TCP:flags:PA]-xfake{blob=%s;ttl=auto:-2:3-20;"
+                       r"payload=all}(xsplit{pos=2;payload=all},)-| \/" % b)
+    return out
+
+
+def x_for(s: Service, ext: bool, wide: bool = True, blobs=(),
+          rnd: int = 0) -> list:
+    """Методы zapret2 для сервиса (XFor): обычные и, в широком круге,
+    остальные плюс фейки zapret2 по :data:`FAKES_PER_ROUND` за круг
+    (каждый круг — следующие). Пусто без ``ext`` (фича ``ext_xact``)."""
+    if not ext:
+        return []
+    ports = set(s.ports or ())
+    # чистый HTTP — только если сайт не виден на 443: TLS xhttp не трогает
+    http = 80 in ports and 443 not in ports
+    fakes = slice_round(blob_candidates(s, blobs) if wide else [],
+                        FAKES_PER_ROUND, rnd)
+    if s.kind == QUIC:
+        return list(X_QUIC) + (list(X_QUIC_WIDE) if wide else []) + fakes
+    if _tls_site(s):
+        return (list(X_HTTP) if http or (wide and 80 in ports) else []) + \
+            list(X_TCP) + (list(X_TCP_WIDE) if wide else []) + fakes
+    if s.kind == DNS:
+        return []
+    if s.transport == "udp":
+        return (list(X_DHT) if s.app == "dht" else list(X_UDP)) + fakes
+    return list(X_TCP_ANY) + fakes
+
+
 def candidate_rounds(s: Service, running=(), found=(), proven=(),
-                     library=()) -> list:
+                     library=(), ext: bool = False, blobs=(),
+                     rnd: int = 0) -> list:
     """Круги перебора до генетического подбора: ``[[проверенные],
     [остальные]]`` (пустые круги выброшены).
 
@@ -1369,6 +1596,11 @@ def candidate_rounds(s: Service, running=(), found=(), proven=(),
        сервисов и успехов — раньше);
     2. **все остальные** — стартовый набор, шаблоны и вся библиотека
        исследований Geneva (``library``) для транспорта.
+
+    С ``ext`` (geneva_c 2.0, ``ext_xact``) во второй круг перед
+    библиотекой идут методы zapret2 (:func:`x_for`, широкий набор и
+    фейки zapret2 ``blobs`` по 8 за круг ``rnd``), сверх
+    :data:`MAX_CANDIDATES`.
 
     Отличие от эталона: там один круг до 12 кандидатов и без библиотеки.
     Здесь перебираются все известные стратегии, но второй круг
@@ -1386,10 +1618,15 @@ def candidate_rounds(s: Service, running=(), found=(), proven=(),
     seen = set(s.rejected or ())
     total = [0]
 
+    xs = x_for(s, ext, True, blobs, rnd)
+    limit = MAX_CANDIDATES + len(xs)
+
     def take(items, cap) -> list:
         out = []
         for c in items:
             if not c or not _fits(s, c):
+                continue
+            if not ext and needs_ext(c):
                 continue
             try:
                 c = check_strategy_text(c)
@@ -1397,7 +1634,7 @@ def candidate_rounds(s: Service, running=(), found=(), proven=(),
                 continue
             if c in seen:
                 continue
-            if len(out) >= cap or total[0] >= MAX_CANDIDATES:
+            if len(out) >= cap or total[0] >= limit:
                 break
             seen.add(c)
             out.append(c)
@@ -1406,7 +1643,7 @@ def candidate_rounds(s: Service, running=(), found=(), proven=(),
 
     first = take(list(running) + list(found) + list(proven),
                  MAX_QUICK_CANDIDATES)
-    rest = take(list(classics) + list(library), MAX_CANDIDATES)
+    rest = take(list(classics) + xs + list(library), limit)
     return [r for r in (first, rest) if r]
 
 

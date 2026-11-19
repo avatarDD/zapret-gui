@@ -60,6 +60,7 @@ import time
 from dataclasses import dataclass, field
 
 from core import geneva_auto as ga
+from core import geneva_ext
 from core.log_buffer import log
 
 TRIAL_SETTLE = 1.0            # после применения пробной группы
@@ -281,7 +282,7 @@ class AutoSearch:
                  ok_since=None, workers=DEFAULT_WORKERS,
                  python: str = sys.executable, script: str = "",
                  clock=time.time, paths=None, external=None,
-                 measure=None, slot: int = 0):
+                 measure=None, slot: int = 0, ext=None):
         self._geneva = geneva
         # Слот задачи geneva (0 — общий с ручным подбором) и деление
         # потоков (подборы рядом: свой блок портов у каждого).
@@ -299,6 +300,8 @@ class AutoSearch:
         # для external (тесты подменяют)
         self._use_external = external
         self._measure = measure
+        # ``(ext, фейки)`` для методов zapret2; ``None`` — по geneva
+        self._use_ext = ext
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -411,9 +414,10 @@ class AutoSearch:
 
     def _run(self, s: ga.Service, running: list, proven=()) -> SearchResult:
         found = self._found(s)
+        ext, blobs = self._ext()
         rounds = [self._checked(r) for r in ga.candidate_rounds(
             s, running, found, list(proven) + self._db_proven(),
-            self._library())]
+            self._library(), ext=ext, blobs=blobs, rnd=s.attempts)]
         rounds = [r for r in rounds if r]
         if len(rounds) == 2 and len(rounds[0]) % max(1, self.workers):
             # воркеры круга проверенных не простаивают: добираем его
@@ -596,6 +600,19 @@ class AutoSearch:
             return []
         return [str(i.get("strategy") or "") for i in res.get("items") or []
                 if isinstance(i, dict) and i.get("strategy")]
+
+    def _ext(self):
+        """``(ext, фейки)``: знает ли geneva x-действия (``ext_xact``,
+        geneva_c 2.0) и имена фейков zapret2, которые она получит."""
+        if self._use_ext is not None:
+            return self._use_ext
+        try:
+            feats = self._gm().detect().get("features") or []
+        except Exception:                           # noqa: BLE001
+            return False, []
+        if geneva_ext.FEATURE not in feats:
+            return False, []
+        return True, [n for n, _ in geneva_ext.blob_files()]
 
     def _external(self) -> bool:
         """Установленный geneva отвечает внешней пробе с несколькими
