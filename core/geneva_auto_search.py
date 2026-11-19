@@ -69,6 +69,7 @@ UNPROBED_WAIT = 50.0          # сервис без пробы: успешный
 VERIFY_TOP = 3                # сколько прошедших проверять на трафике
 BY_TRAFFIC_EXTRA = 12         # без пробы: столько непроверенных после проверенных
 JOB_POLL = 2.0
+EVAL_BATCH = 64               # стратегий на один eval (как в _prepare_auto_job)
 EXEC_TIMEOUT_WEB = 16         # страница — 12 с, с запасом на запуск python
 EXEC_TIMEOUT_REPLAY = 10
 DEFAULT_WORKERS = 4
@@ -204,10 +205,16 @@ def db_path(auto_dir: str, s: ga.Service) -> str:
 def seed_db(shared: str, path: str) -> None:
     """Первый подбор цели: её база начинается с общей (там оценки прежних
     версий и ручного подбора — geneva засевает ими популяцию)."""
+    try:
+        # каталог нужен всегда: без общей базы geneva создаст файл цели
+        # сама, но в несуществующем каталоге — exit 5
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError as e:
+        log.debug("geneva-auto: каталог баз не создан: %s" % e,
+                  source="geneva")
     if os.path.isfile(path) or not os.path.isfile(shared):
         return
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         shutil.copyfile(shared, tmp)
         os.replace(tmp, path)
@@ -454,7 +461,11 @@ class AutoSearch:
 
         # 1. все известные кандидаты: сначала проверенные в этой сети,
         # потом остальные — каждый круг параллельно (eval --workers N)
-        for n, cands in enumerate(rounds):
+        # eval берёт не больше EVAL_BATCH стратегий: длинный круг (с ext
+        # методы zapret2 + библиотека) идёт частями, а не обрезается
+        batches = [(n, r[i:i + EVAL_BATCH]) for n, r in enumerate(rounds)
+                   for i in range(0, len(r), EVAL_BATCH)]
+        for n, cands in batches:
             self._set(phase="quick" if n == 0 else "catalog",
                       total=len(cands))
             st = self._job("eval", s, cmd, strategies=cands)

@@ -779,9 +779,13 @@ class Book:
             _SEARCH_ORDER.get(s.kind, 4), -s.last_seen,
             -(len(s.oks) + len(s.fails) + len(s.no_connections)), s.key))
 
-    def next_to_confirm(self, now: float):
+    def next_to_confirm(self, now: float, allowed=None):
+        """Следующий на проверку; ``allowed(s)`` — фильтр (сервис, на
+        котором идёт подбор или проверка своей стратегии, не трогать:
+        его обход сейчас — пробная стратегия, а не своя)."""
         cands = [s for s in self._services.values()
-                 if s.status in (SUSPECTED, DEGRADED)
+                 if (allowed is None or allowed(s))
+                 and s.status in (SUSPECTED, DEGRADED)
                  and (s.next_check is None or now >= s.next_check)
                  and (s.status == DEGRADED or not self.not_searched(s))]
         q = self._queue(cands, now)
@@ -911,8 +915,14 @@ class Book:
         at = self._dns_poisoned.get(name)
         if not name or (at is not None and now - at < DNS_POISON_EVERY):
             return False
-        if len(self._dns_poisoned) > 256:
-            self._dns_poisoned.clear()
+        # только имена своих сервисов: чужие журнал не засоряют
+        if not any(name in ((x.host or "").lower(), (x.name or "").lower())
+                   for x in self._services.values()):
+            return False
+        while len(self._dns_poisoned) >= 256:
+            # самое давнее — вон, а не всё сразу (иначе повторы)
+            del self._dns_poisoned[min(self._dns_poisoned,
+                                       key=self._dns_poisoned.get)]
         self._dns_poisoned[name] = now
         return True
 

@@ -275,9 +275,11 @@ class TestBookQueue(unittest.TestCase):
         b.evaluate(30.0)
         self.assertEqual(s.status, ga.SUSPECTED)
         self.assertIn("шейпер", s.why)
-        self.assertTrue(b.dns_poisoned("x.example", 0.0))
-        self.assertFalse(b.dns_poisoned("x.example.", 10.0))
-        self.assertTrue(b.dns_poisoned("x.example", ga.HOUR + 1))
+        self.assertTrue(b.dns_poisoned("www.a.example", 0.0))
+        self.assertFalse(b.dns_poisoned("www.a.example.", 10.0))
+        self.assertTrue(b.dns_poisoned("www.a.example", ga.HOUR + 1))
+        # чужие имена журнал не засоряют
+        self.assertFalse(b.dns_poisoned("x.example", 0.0))
 
 
 class TestPlanTrials(unittest.TestCase):
@@ -486,3 +488,71 @@ class TestSplitAndLists(_Base):
         self.assertTrue(m.check_now("web:a.example")["ok"])
         self.assertEqual(m.book.find("web:a.example").status, ga.DEGRADED)
         self.assertEqual(m.check_now("web:none")["error_code"], "not_found")
+
+
+class TestReview2(TestSplitAndLists):
+    """Находки второго код-ревью."""
+
+    def test_split_frozen_while_searching(self):
+        m = self.make(split=True)
+        self.blocked(m, "web:a.example", "1.1.1.1")
+        m._searching(100.0)
+        self.assertEqual(self.slots[0].workers, 2)
+        raw = dict(self.cfg.get("geneva", "auto", default={}))
+        raw["split_workers"] = False
+        self.cfg.set("geneva", "auto", raw)
+        # идущему подбору деление не меняют, новый слот не выдают
+        self.assertEqual(m.search(0).workers, 2)
+        self.assertIsNone(m._free_slot())
+        self.slots[0].finish()
+        m._collect(101.0)
+        self.assertEqual(m._free_slot(), 0)
+        self.assertEqual(m.search(0).workers, 8)
+
+    def test_confirm_skips_service_in_work(self):
+        m = self.make()
+        s = self.blocked(m, "web:a.example", "1.1.1.1")
+        s.status = ga.DEGRADED
+        m._works[s.key] = {"slot": 0, "custom": "X"}
+        self.assertIsNone(m.book.next_to_confirm(
+            100.0, allowed=lambda x: x.key not in m._works))
+        self.assertIs(m.book.next_to_confirm(100.0), s)
+
+    def test_cancelled_custom_is_not_failure(self):
+        m = self.make()
+        self.blocked(m, "web:a.example", "1.1.1.1")
+        m._take(gs.SearchResult("web:a.example", gs.CANCELLED), 100.0,
+                custom="X")
+        joined = " ".join(e["text"] for e in m.journal)
+        self.assertIn("прервана", joined)
+        self.assertNotIn("не прошла", joined)
+
+
+class TestReview2Pure(unittest.TestCase):
+
+    def test_fill_population(self):
+        from core.geneva_manager import fill_population
+        self.assertEqual(fill_population(["a", "b"], ["c", "a"], 3),
+                         ["a", "b", "c"])
+        self.assertEqual(fill_population(["a", "b"], [], 5),
+                         ["a", "b", "a", "b", "a"])
+        self.assertEqual(fill_population(["a"] * 3, ["b"] * 30, 2),
+                         ["a", "b"])
+
+    def test_seed_db_makes_dir_without_shared(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "auto", "db", "t.jsonl")
+            gs.seed_db(os.path.join(d, "nope.jsonl"), path)
+            self.assertTrue(os.path.isdir(os.path.dirname(path)))
+            self.assertFalse(os.path.exists(path))
+
+    def test_page_verdict_uses_target_size(self):
+        from core import geneva_auto_probes as pr
+        r = pr.PageResult(tls=True)
+        r.connect_ok = r.tls_ok = r.cert_valid = True
+        r.status, r.body, r.error = 200, 90 * 1024, pr.P_TRUNCATED
+        self.assertEqual(pr.page_confirm(r), ga.C_NOT_BLOCKED)
+        self.assertEqual(pr.page_confirm(r, 128 * 1024), ga.C_BLOCKED)
+        self.assertEqual(pr.page_fitness(r, 128 * 1024)[1], "broken")

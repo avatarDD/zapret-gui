@@ -204,9 +204,10 @@ class ReplayResult:
 
 # ───────────────────────────── вердикты (чистые) ────────────────────
 
-def page_confirm(r: PageResult) -> str:
-    """Проба сайта без обхода → ``AutoConfirm``."""
-    if r.passes():
+def page_confirm(r: PageResult, min_bytes: int = MIN_BODY) -> str:
+    """Проба сайта без обхода → ``AutoConfirm``; ``min_bytes`` — объём
+    тела из критерия цели (обрыв 16 КБ — :data:`gr.PADDED_MIN`)."""
+    if r.passes(min_bytes):
         return ga.C_NOT_BLOCKED
     if r.error in (P_CONNECT_TIMEOUT, P_UNREACHABLE):
         return ga.C_IP_BLOCKED
@@ -231,9 +232,10 @@ def replay_confirm(results) -> str:
     return ga.C_BLOCKED
 
 
-def page_fitness(r: PageResult):
-    """``(fitness, outcome)`` загрузки по шкале geneva (GenevaFitness)."""
-    if r.passes():
+def page_fitness(r: PageResult, min_bytes: int = MIN_BODY):
+    """``(fitness, outcome)`` загрузки по шкале geneva (GenevaFitness);
+    ``min_bytes`` — как у :func:`page_confirm`."""
+    if r.passes(min_bytes):
         return ga.FIT_OK, "ok"
     e = r.error
     if e in (P_CONNECT_TIMEOUT, P_UNREACHABLE):
@@ -329,8 +331,10 @@ def build_request(host: str, path: str = "/", pad: int = 0) -> bytes:
 def national_name_ok(der: bytes, host: str) -> bool:
     """Листовой сертификат выпущен национальным УЦ (издатель «Russian
     Trusted …») и выписан на ``host``: проходит по имени (PassesNameOnly
-    эталона). Любой другой недоверенный — нет: MITM выпишет сертификат
-    на любое имя, но не от этого УЦ."""
+    эталона). Как и в эталоне, сверяется только CN издателя, подпись
+    не проверяется: УЦ Минцифры нет в хранилищах ни у ПК, ни у роутера.
+    Подделку с таким издателем отсекает критерий загрузки — страница
+    блокировки не даёт ни объёма тела, ни скорости цели."""
     if not der:
         return False
     info = _decode_cert(der)
@@ -1000,7 +1004,8 @@ class AutoProbes:
         elif learn:
             s.criteria = found
         text = why or r.text()
-        return page_confirm(r), text
+        need = (s.criteria or crit).get("min_bytes", MIN_BODY)
+        return page_confirm(r, need), text
 
     def _page_check(self, address, port, host, tls, ports, crit, learn):
         """Одна проба страницы (PageCheck AutoTuner): ``(PageResult,
@@ -1066,7 +1071,8 @@ class AutoProbes:
                                tls=snap.port != 80, local_port=port, **kw)
                 if r.port_unavailable:
                     return 0, r.detail, True
-                fit, outcome = page_fitness(r)
+                fit, outcome = page_fitness(
+                    r, kw.get("min_bytes", MIN_BODY))
                 return fit, outcome, False
             return run
         plan = replay_plan(snap)

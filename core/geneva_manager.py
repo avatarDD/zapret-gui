@@ -392,6 +392,24 @@ def zapret2_seeds(params: dict) -> list:
     return list(ga.X_HTTP if http else ga.X_TCP)
 
 
+def fill_population(seeds, extra, size: int) -> list:
+    """Файл ``--load-from`` geneva задаёт всю популяцию, а не добавку
+    к ней: методы zapret2 дополняются стратегиями ``extra`` (библиотека
+    Geneva) и повторами — до размера популяции из настроек."""
+    out = []
+    for c in list(seeds) + list(extra):
+        if c and c not in out:
+            out.append(c)
+        if len(out) >= size:
+            return out
+    base = list(out) or list(seeds)
+    i = 0
+    while base and len(out) < size:
+        out.append(base[i % len(base)])
+        i += 1
+    return out
+
+
 def search_target(params: dict) -> str:
     """Профиль цели в базе оценок: результаты разных сайтов не мешаются."""
     return "%s:%s" % (params.get("probe", "tls"), params.get("host", ""))
@@ -1858,8 +1876,14 @@ class GenevaManager:
                 ext = ext or geneva_ext.argv(seeds, feats)
                 if not resume:
                     p = dict(p, seeds_file=p["seeds"])
+                    lib = [str(i.get("strategy", "")).strip()
+                           for i in (self._geneva_library(False)
+                                     .get("items") or [])]
+                    pop = fill_population(
+                        seeds, [x for x in lib if "UDP" not in x],
+                        int(params["population"]))
                     try:
-                        _write_atomic(p["seeds"], "\n".join(seeds) + "\n")
+                        _write_atomic(p["seeds"], "\n".join(pop) + "\n")
                     except OSError as e:
                         return {"ok": False, "error": "методы zapret2 не "
                                 "записаны: %s" % e}

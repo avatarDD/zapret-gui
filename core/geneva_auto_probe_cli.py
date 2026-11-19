@@ -74,7 +74,8 @@ def measure(spec: dict, ports):
         r = pr.probe_page(spec["ip"], int(spec["port"]),
                           spec.get("host") or spec["ip"],
                           tls=bool(spec.get("tls", True)), ports=ports, **kw)
-        fit, outcome = pr.page_fitness(r)
+        fit, outcome = pr.page_fitness(
+            r, kw.get("min_bytes", pr.MIN_BODY))
     else:
         r = pr.probe_replay(spec["ip"], int(spec["port"]),
                             spec.get("payloads") or [],

@@ -38,6 +38,7 @@ nfqws2 на живой сети (сканер, blockcheck) ставят его �
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -253,9 +254,12 @@ class GenevaAutoManager:
                     self._search = obj
                 else:
                     self._searches[slot] = obj
-        obj.workers = slot_workers(st["workers"], st["split_workers"])
-        if hasattr(obj, "split"):
-            obj.split = st["split_workers"]
+        # деление потоков и число воркеров — на весь подбор: на лету
+        # блоки портов идущих подборов разъехались бы и пересеклись
+        if not getattr(obj, "busy", False):
+            obj.workers = slot_workers(st["workers"], st["split_workers"])
+            if hasattr(obj, "split"):
+                obj.split = st["split_workers"]
         return obj
 
     def _all_searches(self) -> list:
@@ -792,12 +796,14 @@ class GenevaAutoManager:
                                         st.get("error")):
             return
         from core import geneva_rate as gr
-        cap = st.get("capacity") or 0
         try:
-            if float(cap) > 0:
-                gr.SHARED.observe(float(cap), now)
-        except (TypeError, ValueError):
-            pass
+            cap = float(st.get("capacity") or 0)
+        except (TypeError, ValueError, OverflowError):
+            cap = 0.0
+        if not math.isfinite(cap) or cap < 0:
+            cap = 0.0
+        if cap > 0:
+            gr.SHARED.observe(cap, now)
         hits, dns = [], []
         with self._lock:
             for k in st.get("impaired") or []:
@@ -814,7 +820,7 @@ class GenevaAutoManager:
             if hits:
                 self._dirty = True
         self.detector = {"running": True, "supported": True,
-                         "capacity": int(float(cap or 0)),
+                         "capacity": int(cap),
                          "impaired": len(st.get("impaired") or [])}
         for name in hits:
             self.note("%s: детектор geneva — подозрение блокировки" % name,
@@ -856,7 +862,8 @@ class GenevaAutoManager:
 
     def _confirm(self, now: float) -> None:
         with self._lock:
-            s = self.book.next_to_confirm(now)
+            s = self.book.next_to_confirm(
+                now, allowed=lambda x: x.key not in self._works)
             s = s.clone() if s is not None else None
         if s is None:
             return
@@ -898,7 +905,13 @@ class GenevaAutoManager:
         у слотов 1–3 блок портов на 2 воркера, а без деления подбор
         берёт все потоки."""
         used = {w["slot"] for w in self._works.values()}
-        n = MAX_SEARCHES if self.settings()["split_workers"] else 1
+        split = self.settings()["split_workers"]
+        if any(x.busy and getattr(x, "split", split) != split
+               for x in self._all_searches()):
+            # деление переключили, пока шли подборы: блоки портов старых
+            # и новых подборов пересеклись бы — ждём, пока старые закончат
+            return None
+        n = MAX_SEARCHES if split else 1
         for k in range(n):
             if k not in used and not self.search(k).busy:
                 return k
@@ -1068,6 +1081,11 @@ class GenevaAutoManager:
                           en="%s: your strategy works — applied and pinned"
                           % name)
                 self._applied_sig = None
+            elif res.outcome in (gs.CANCELLED, gs.BUSY):
+                self.note("%s: проверка стратегии пользователя прервана"
+                          % name,
+                          en="%s: the check of your strategy was "
+                             "interrupted" % name)
             else:
                 self.note("%s: стратегия пользователя не прошла проверку "
                           "(%s)" % (name, res.detail), "warning",

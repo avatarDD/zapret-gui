@@ -166,8 +166,10 @@ class TestManagerByNameAndDetector(_Base):
             "ok": True, "capacity": 5_000_000, "impaired": [
                 {"key": "slow.example", "level": "host", "impaired": True,
                  "class": "THROTTLE"},
-                {"key": "evil.example", "level": "host", "impaired": True,
+                {"key": "slow.example", "level": "host", "impaired": True,
                  "class": "DNS_POISON"},
+                {"key": "evil.example", "level": "host", "impaired": True,
+                 "class": "DNS_POISON"},      # не наш сервис — молчим
                 {"key": "tcp/443", "level": "port", "impaired": True,
                  "class": "RETRANS"}]}
         cap = gr.LinkCapacity(clock=lambda: 101.0)
@@ -177,6 +179,7 @@ class TestManagerByNameAndDetector(_Base):
         self.assertEqual(m.book.find(s.key).detected, [101.0])
         text = " ".join(j.get("text", "") for j in m.journal)
         self.assertIn("DoH", text)
+        self.assertNotIn("evil.example", text)
         self.assertIn("slow.example", text)
         # DoH — раз в час на имя
         with mock.patch.object(gr, "SHARED", cap):
