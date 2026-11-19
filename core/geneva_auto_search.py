@@ -53,6 +53,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sys
 import threading
 import time
@@ -62,6 +63,7 @@ from core import geneva_auto as ga
 from core.log_buffer import log
 
 TRIAL_SETTLE = 1.0            # после применения пробной группы
+TRIAL_PASSES = 2              # проверок с обходом подряд (AutoRules.TrialPasses)
 UNPROBED_WAIT = 50.0          # сервис без пробы: успешный поток клиента
 VERIFY_TOP = 3                # сколько прошедших проверять на трафике
 BY_TRAFFIC_EXTRA = 12         # без пробы: столько непроверенных после проверенных
@@ -180,10 +182,35 @@ def command_text(argv) -> str:
     return " ".join(shlex.quote(a) for a in argv)
 
 
+def db_path(auto_dir: str, s: ga.Service) -> str:
+    """База оценок цели подбора «Авто» (своя у каждой цели: geneva
+    сжимает базу перезаписью, и два подбора рядом один файл не делят)."""
+    return os.path.join(auto_dir, "db", slug(ga.search_target(s)) + ".jsonl")
+
+
+def seed_db(shared: str, path: str) -> None:
+    """Первый подбор цели: её база начинается с общей (там оценки прежних
+    версий и ручного подбора — geneva засевает ими популяцию)."""
+    if os.path.isfile(path) or not os.path.isfile(shared):
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        shutil.copyfile(shared, tmp)
+        os.replace(tmp, path)
+    except OSError as e:
+        log.debug("geneva-auto: база цели не скопирована: %s" % e,
+                  source="geneva")
+
+
 def job_params(s: ga.Service, *, cmd: str, workers: int,
                checkpoint: str = "", generations: int = ga.GENERATIONS,
-               key: str = "", probe: str = "exec") -> dict:
+               key: str = "", probe: str = "exec", slot: int = 0,
+               split: bool = False, db: str = "") -> dict:
     return {
+        "slot": int(slot),
+        "split": bool(split),
+        "db": db,
         "probe": probe,
         "cmd": cmd,
         "target": ga.search_target(s),
@@ -247,8 +274,12 @@ class AutoSearch:
                  ok_since=None, workers=DEFAULT_WORKERS,
                  python: str = sys.executable, script: str = "",
                  clock=time.time, paths=None, external=None,
-                 measure=None):
+                 measure=None, slot: int = 0):
         self._geneva = geneva
+        # Слот задачи geneva (0 — общий с ручным подбором) и деление
+        # потоков (подборы рядом: свой блок портов у каждого).
+        self.slot = int(slot)
+        self.split = False
         self._probes = probes
         self._trial = trial
         self._ok_since = ok_since
@@ -294,11 +325,15 @@ class AutoSearch:
         with self._lock:
             return self._thread is not None and self._thread.is_alive()
 
-    def start(self, s: ga.Service, running=(), proven=()) -> bool:
+    def start(self, s: ga.Service, running=(), proven=(),
+              only: str = "", first=()) -> bool:
         """Начать подбор ``s`` фоном. ``False`` — уже идёт другой.
 
         ``proven`` — стратегии, работающие в этой сети для других
-        сервисов, и импортированные, уже по рангу (их пробуют первыми)."""
+        сервисов, и импортированные, уже по рангу (их пробуют первыми).
+        ``first`` — пробовать раньше всех (стратегия семейства).
+        ``only`` — стратегия пользователя: только проверка на трафике
+        сервиса, без перебора и генетического подбора."""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return False
@@ -307,11 +342,13 @@ class AutoSearch:
             snap = s.clone()
             self._progress = {"key": snap.key, "name": snap.name,
                               "phase": "start", "strategy": "",
-                              "started_at": self._clock()}
+                              "started_at": self._clock(),
+                              "slot": self.slot, "custom": bool(only)}
             self._thread = threading.Thread(
                 target=self._main, args=(snap, list(running or ()),
-                                         list(proven or ())),
-                name="geneva-auto-search", daemon=True)
+                                         list(proven or ()), only,
+                                         list(first or ())),
+                name="geneva-auto-search-%d" % self.slot, daemon=True)
             self._thread.start()
             return True
 
@@ -332,7 +369,9 @@ class AutoSearch:
         сохраняется), пробная группа снимается."""
         self._stop.set()
         try:
-            if self._gm().auto_job_running():
+            if self.slot:
+                self._gm().stop_auto_job(self.slot)
+            elif self._gm().auto_job_running():
                 self._gm().stop_search()
         except Exception as e:                      # noqa: BLE001
             log.debug("geneva-auto: стоп подбора: %s" % e, source="geneva")
@@ -346,9 +385,13 @@ class AutoSearch:
         with self._lock:
             self._progress.update(kw)
 
-    def _main(self, s: ga.Service, running: list, proven=()) -> None:
+    def _main(self, s: ga.Service, running: list, proven=(), only="",
+              first=()) -> None:
         try:
-            res = self._run(s, running, proven)
+            if only:
+                res = self._custom(s, only)
+            else:
+                res = self._run(s, running, list(first) + list(proven))
         except Exception as e:                      # noqa: BLE001
             log.warning("geneva-auto: подбор %s: %s" % (s.name, e),
                         source="geneva")
@@ -421,18 +464,20 @@ class AutoSearch:
         # 2. генетический подбор — с прошлого места
         ckpt = os.path.join(self._p()["auto"], slug(s.key) + ".ckpt")
         memo_path = os.path.join(self._p()["auto"], slug(s.key) + ".json")
+        db = db_path(self._p()["auto"], s)
+        seed_db(self._p().get("db", ""), db)
         memo = _read_json(memo_path)
         gens, resume = next_generations(memo, os.path.isfile(ckpt))
         self._set(phase="evolve", generations=gens,
                   total=ga.POPULATION * gens)
         st = self._job("evolve", s, cmd, checkpoint=ckpt, generations=gens,
-                       resume=resume)
+                       resume=resume, db=db)
         if st is not None and resume and st.get("status") == "error":
             # checkpoint не подошёл (другой бинарник, другие параметры):
             # заново, а не «не найдено»
             gens, resume = ga.GENERATIONS, False
             st = self._job("evolve", s, cmd, checkpoint=ckpt,
-                           generations=gens, resume=False)
+                           generations=gens, resume=False, db=db)
         if st is None or (not st.get("busy") and
                           st.get("status") != "error"):
             # checkpoint соответствует прогону до gens поколений: и после
@@ -463,6 +508,21 @@ class AutoSearch:
         return SearchResult(s.key, NOT_FOUND, tried=tried,
                             detail="ни одна стратегия не прошла")
 
+    def _custom(self, s: ga.Service, strategy: str) -> SearchResult:
+        """Стратегия пользователя: пробная группа на трафике сервиса и
+        проба с обходом (без пробы — поток клиента)."""
+        if self._pr().judge(s) is None or probe_spec(s) is None:
+            return self._by_traffic(s, [strategy])
+        win = self._verify(s, [(strategy, ga.FIT_OK)])
+        if win is not None:
+            win.detail = "стратегия пользователя: " + win.detail
+            return win
+        if self._stop.is_set():
+            return SearchResult(s.key, CANCELLED)
+        return SearchResult(s.key, NOT_FOUND, tried=[strategy],
+                            detail="стратегия пользователя не прошла "
+                                   "проверку")
+
     def _checked(self, cands: list) -> list:
         """Только то, что разбирает установленный geneva (``geneva
         check``): одна неразбираемая строка уронила бы весь ``eval -f``
@@ -486,16 +546,25 @@ class AutoSearch:
         return out
 
     def _found(self, s: ga.Service) -> list:
-        try:
-            top = self._gm().db_top(ga.search_target(s), 10) or {}
-        except Exception:                           # noqa: BLE001
-            return []
-        if not top.get("ok"):
-            return []
-        # Только с успехами: стратегии, которые уже проваливались на этой
-        # цели, быстрый круг не ускорят.
-        return [i.get("strategy") for i in top.get("items") or []
-                if i.get("strategy") and int(i.get("ok") or 0) > 0]
+        """Стратегии с успехами на цели сервиса: из её своей базы и из
+        общей (прежние версии, ручной подбор)."""
+        out = []
+        own = db_path(self._p()["auto"], s)
+        for db in ((own,) if os.path.isfile(own) else ()) + ("",):
+            try:
+                top = self._gm().db_top(ga.search_target(s), 10,
+                                        **({"db": db} if db else {})) or {}
+            except Exception:                       # noqa: BLE001
+                continue
+            if not top.get("ok"):
+                continue
+            # Только с успехами: стратегии, которые уже проваливались на
+            # этой цели, быстрый круг не ускорят.
+            for i in top.get("items") or []:
+                strat = i.get("strategy")
+                if strat and int(i.get("ok") or 0) > 0 and strat not in out:
+                    out.append(strat)
+        return out
 
     def _db_proven(self) -> list:
         """Стратегии с успехами на любых целях базы оценок (ручной
@@ -548,7 +617,7 @@ class AutoSearch:
         return path
 
     def _job(self, kind, s, cmd, *, strategies=None, checkpoint="",
-             generations=ga.GENERATIONS, resume=False):
+             generations=ga.GENERATIONS, resume=False, db=""):
         """Задание geneva до конца; ``None`` — прервано, ``{"busy"}`` —
         слот занят."""
         probe = cmd if callable(cmd) else None
@@ -557,7 +626,8 @@ class AutoSearch:
                             generations=generations,
                             workers=min(self.workers, len(strategies))
                             if strategies else self.workers,
-                            probe="external" if probe else "exec")
+                            probe="external" if probe else "exec",
+                            slot=self.slot, split=self.split, db=db)
         gm = self._gm()
         # карточка «Авто» показывает, сколько проверок идёт разом
         self._set(workers=params["workers"], done=0,
@@ -570,7 +640,8 @@ class AutoSearch:
                 return {"busy": True, "error": r.get("error", "")}
             return {"status": "error", "error": r.get("error", "")}
         while not self._stop.wait(JOB_POLL):
-            st = gm.auto_job_status()
+            st = gm.auto_job_status(slot=self.slot) if self.slot \
+                else gm.auto_job_status()
             self._set(generation=st.get("generation"),
                       done=st.get("done"), best=st.get("best", ""),
                       best_fitness=st.get("best_fitness"))
@@ -593,12 +664,21 @@ class AutoSearch:
             self._set(phase="verify", strategy=strat)
             if not self._trial(s, strat):
                 continue
-            if self._stop.wait(TRIAL_SETTLE):
-                break
-            confirm, text = self._pr().check(s, through_bypass=True)
-            if confirm == ga.C_NOT_BLOCKED:
+            # Одна удачная загрузка (DPI пропускает часть соединений) —
+            # ещё не рабочий обход: TRIAL_PASSES проверок подряд.
+            passes, text = 0, ""
+            for _ in range(TRIAL_PASSES):
+                if self._stop.wait(TRIAL_SETTLE):
+                    break
+                confirm, text = self._pr().check(s, through_bypass=True)
+                if confirm != ga.C_NOT_BLOCKED:
+                    break
+                passes += 1
+            if passes >= TRIAL_PASSES:
                 return SearchResult(s.key, APPLIED, strategy=strat,
                                     fitness=fit, detail=text)
+            if self._stop.is_set():
+                break
             log.info("geneva-auto: %s — стратегия не подтвердилась на "
                      "трафике (%s)" % (s.name, text), source="geneva")
         self._trial(s, None)

@@ -26,6 +26,8 @@ import base64
 import ipaddress
 from dataclasses import dataclass, field
 
+from core import geneva_auto_lists as gal
+
 # ───────────────────────────── виды и состояния ─────────────────────
 
 # Что ищем и к чему применяем (AutoKind).
@@ -193,6 +195,17 @@ class Service:
     suspicions: int = 0
     restored_at: float = None   # проба с обходом вернула в applied
     rejected: list = field(default_factory=list)  # не работают у устройств
+    # Важность (core/geneva_auto_lists): вычисленная и слово пользователя.
+    priority: int = 1
+    user_priority: str = ""
+    pinned: bool = False        # провалы не ведут к новому подбору
+    pinned_warned: bool = False  # журнал уже сказал (не сохраняется)
+    baseline_at: float = None   # последнее «заблокирован» без обхода
+    detected: list = field(default_factory=list)   # отметки детектора
+    detected_why: str = ""
+    # Критерий успеха страницы, найденный без обхода (шейпер, обрыв
+    # 16 КБ): {"min_rate", "pad", "min_bytes"}; пусто — обычная загрузка.
+    criteria: dict = field(default_factory=dict)
 
     # ── свойства ──
 
@@ -229,6 +242,11 @@ class Service:
         return best["ip"] if best else ""
 
     @property
+    def peer(self) -> bool:
+        """Пир или фон: места книги для сайтов ему не достаются."""
+        return self.priority >= gal.LOW
+
+    @property
     def is_active(self) -> bool:
         """Стратегия включена. Не во время подбора: пробы подбора идут на
         те же адреса, и две стратегии на одном пакете не судят ни одну."""
@@ -254,6 +272,13 @@ class Service:
             "suspicions": self.suspicions,
             "restored_at": self.restored_at,
             "rejected": list(self.rejected),
+            "priority": self.priority,
+            "user_priority": self.user_priority,
+            "pinned": self.pinned,
+            "baseline_at": self.baseline_at,
+            "detected": list(self.detected),
+            "detected_why": self.detected_why,
+            "criteria": dict(self.criteria),
         }
 
     @classmethod
@@ -327,7 +352,31 @@ class Service:
             restored_at=opt("restored_at"),
             rejected=[str(x) for x in d.get("rejected") or []
                       if isinstance(x, str) and x][-MAX_REJECTED:],
+            priority=min(3, max(0, int(num("priority", 1)))),
+            user_priority=d.get("user_priority")
+            if d.get("user_priority") in ("important", "unimportant")
+            else "",
+            pinned=bool(d.get("pinned")) and bool(strategy),
+            baseline_at=opt("baseline_at"),
+            detected=times("detected"),
+            detected_why=str(d.get("detected_why") or "")[:120],
+            criteria=_criteria(d.get("criteria")),
         )
+
+
+def _criteria(value) -> dict:
+    """Критерий страницы из файла: только известные числа."""
+    out = {}
+    if not isinstance(value, dict):
+        return out
+    for k in ("min_rate", "pad", "min_bytes"):
+        try:
+            v = int(value.get(k) or 0)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            out[k] = v
+    return out
 
 
 def _valid_ip(value) -> bool:
@@ -391,7 +440,14 @@ def from_base64(text: str) -> list:
 
 _ORDER = {SEARCHING: 0, DEGRADED: 1, APPLIED: 2, BLOCKED: 3, SUSPECTED: 4,
           NOT_FOUND: 5, IP_BLOCKED: 6, FALLBACK: 7, NOT_BLOCKED: 8}
-_SEARCH_ORDER = {WEB: 0, DNS: 1, ENDPOINT: 2, QUIC: 3}
+# Внутри одной важности: сайт, DNS, QUIC, сервер, пир (AutoBook.Queue).
+_SEARCH_ORDER = {WEB: 0, DNS: 1, QUIC: 2, ENDPOINT: 3}
+DETECTOR_CLASSES = ("THROTTLE", "FREEZE_N")
+DETECTOR_WHY = {
+    "THROTTLE": "детектор geneva: замедление (шейпер)",
+    "FREEZE_N": "детектор geneva: заморозка на 8–64 КБ",
+}
+DNS_POISON_EVERY = HOUR
 
 
 def threshold(s: Service) -> int:
@@ -403,8 +459,12 @@ def threshold(s: Service) -> int:
 
 
 def suspicious(s: Service):
-    """``(похоже на DPI, почему)``: провалы и ни одного успеха."""
+    """``(похоже на DPI, почему)``: провалы и ни одного успеха; или
+    детектор geneva видел полку скорости или заморозку — срезу эти потоки
+    кажутся удачными, решает проба."""
     why = s.why
+    if s.detected:
+        return True, s.detected_why or "детектор geneva"
     if s.oks:
         return False, why
     fails = len(s.fails) + len(s.no_connections)
@@ -440,9 +500,18 @@ IP_REACHABLE_WHY = ("адрес отвечает — соединения уст
                     "блокировка по содержимому")
 
 
+def _evictable(s: Service) -> bool:
+    """Для него ничего не делается: наблюдается, открыт, блок по адресу,
+    QUIC через TCP. Фоновый, ждущий пробы или подбора, — тоже: пир,
+    который вернётся, будет увиден снова."""
+    return s.status in (WATCHING, NOT_BLOCKED, FALLBACK, IP_BLOCKED) or (
+        s.priority == gal.BACKGROUND and s.status in (SUSPECTED, BLOCKED,
+                                                      NOT_FOUND))
+
+
 def _trim(s: Service, now: float) -> None:
     start = now - WINDOW
-    for name in ("fails", "oks", "no_connections"):
+    for name in ("fails", "oks", "no_connections", "detected"):
         lst = [t for t in getattr(s, name) if t >= start]
         setattr(s, name, lst[-MAX_TIMES:])
 
@@ -457,8 +526,13 @@ class Book:
     ``NextToSearch`` берёт только ``blocked``.
     """
 
-    def __init__(self, saved=None, now: float = 0.0):
+    def __init__(self, saved=None, now: float = 0.0, lists=None):
         self._services = {}
+        self.lists = lists if lists is not None else gal.Lists()
+        self._dns_poisoned = {}
+        # Сайты, которые ведёт процесс «по имени» (geneva_c 2.0): его
+        # стратегия доходит до них на любом адресе.
+        self.by_name = set()
         for item in saved or []:
             s = item if isinstance(item, Service) else \
                 Service.from_dict(item)
@@ -470,6 +544,7 @@ class Book:
                 s.replay = ""
             if s.status == SEARCHING:
                 _move(s, BLOCKED, now or s.since, "подбор прерван, продолжу")
+            s.priority = gal.base_priority(s, self.lists)
             self._services[s.key] = s
 
     @property
@@ -487,6 +562,32 @@ class Book:
     def to_list(self) -> list:
         return [s.to_dict() for s in self._services.values()]
 
+    # ── списки пользователя ──
+
+    def set_lists(self, lists) -> tuple:
+        """Новые списки: важность считается заново, сервисы из «Не
+        трогать» уходят из книги (их стратегии больше не применяются),
+        из «Не подбирать» — тоже, если стратегия не применена и подбор
+        не идёт. ``(ушли по «Не трогать», ушли по «Не подбирать»)``."""
+        self.lists = lists
+        gone, skipped = [], []
+        for s in list(self._services.values()):
+            if lists.exclude.matches(s):
+                del self._services[s.key]
+                gone.append(s.name)
+                continue
+            if not s.is_active and s.status != SEARCHING and \
+                    lists.no_search.matches(s):
+                del self._services[s.key]
+                skipped.append(s.name)
+                continue
+            s.priority = gal.base_priority(s, lists)
+        return gone, skipped
+
+    def not_searched(self, s: Service) -> bool:
+        """Пользователь не хочет обхода для этого сервиса."""
+        return self.lists.no_search.matches(s)
+
     # ── наблюдение ──
 
     def feed(self, samples, now: float) -> None:
@@ -494,15 +595,29 @@ class Book:
         for x in samples or []:
             s = self._services.get(x.key)
             if s is None:
-                if len(self._services) >= MAX_SERVICES and not self._evict():
+                if self.lists.exclude.matches_sample(x):
+                    continue
+                # не подбирать: даже в проблемы на странице не попадает
+                if self.lists.no_search.matches_sample(x):
                     continue
                 s = Service(key=x.key, kind=x.kind, transport=x.transport,
                             name=x.name, app=x.app, status=WATCHING,
+                            host=x.host or "",
                             since=now, first_seen=x.time,
+                            ports=[x.port] if x.port else [],
                             local_port=x.local_port
                             if x.kind == LOCAL_PORT else 0,
                             client=x.client if x.kind == LOCAL_PORT else "")
+                s.priority = gal.base_priority(s, self.lists)
+                if not self._make_room(s.priority):
+                    continue
                 self._services[x.key] = s
+            # Адрес, которого ещё нет у применённого сервиса (новый адрес
+            # CDN): поток шёл без обхода, его провал о стратегии ничего не
+            # говорит — адрес сначала войдёт в набор.
+            uncovered = s.is_active and x.kind != LOCAL_PORT and \
+                bool(x.ip) and s.key not in self.by_name and \
+                not any(a["ip"] == x.ip for a in s.addresses)
             s.last_seen = max(s.last_seen, x.time)
             if x.host:
                 s.host = x.host
@@ -513,6 +628,9 @@ class Book:
                     s.ports.append(x.port)
             if x.replay:
                 s.replay = to_base64(x.replay)
+            if uncovered and x.health != OK:
+                _trim(s, now)
+                continue
             if x.health == OK:
                 s.oks.append(x.time)
             elif x.health == FAILED:
@@ -538,13 +656,24 @@ class Book:
         if replay is not None:
             s.replay = to_base64(replay) if app in REPLAYABLE_APPS else ""
 
-    def _evict(self) -> bool:
+    def _make_room(self, priority: int) -> bool:
+        """Место новому сервису важности ``priority``: полная книга
+        вытесняет наименее важный из тех, кого можно (сначала фоновые,
+        затем давно не виденные), а пиры не занимают места, оставленные
+        сайтам (:data:`gal.RESERVED_PLACES`). ``False`` — места нет."""
+        minor = priority >= gal.LOW
+        minors = sum(1 for s in self._services.values() if s.peer)
+        full = len(self._services) >= MAX_SERVICES
+        minors_full = minor and minors >= MAX_SERVICES - gal.RESERVED_PLACES
+        if not full and not minors_full:
+            return True
         victims = [s for s in self._services.values()
-                   if s.status in (WATCHING, NOT_BLOCKED, FALLBACK,
-                                   IP_BLOCKED)]
+                   if _evictable(s) and s.priority >= priority
+                   and (not minors_full or s.peer)]
         if not victims:
             return False
-        victim = min(victims, key=lambda s: s.last_seen)
+        victim = sorted(victims, key=lambda s: (-s.priority,
+                                                s.last_seen))[0]
         del self._services[victim.key]
         return True
 
@@ -563,6 +692,7 @@ class Book:
                 keep = [a for a in s.addresses
                         if now - a["seen"] <= ADDRESS_LIFE]
                 s.addresses = keep or s.addresses[-1:]
+            s.priority = gal.base_priority(s, self.lists)
             sus, why = suspicious(s)
             due = s.next_check is None or now >= s.next_check
             st = s.status
@@ -603,7 +733,18 @@ class Book:
                                            if t > s.applied_at])
                 fails = sum(1 for t in s.fails if t > at) + \
                     sum(1 for t in s.no_connections if t > at)
-                if fails >= threshold(s):
+                if fails >= threshold(s) and s.pinned:
+                    # закреплена пользователем: нового подбора нет,
+                    # провалы только видны
+                    if not s.pinned_warned:
+                        out.append("%s: закреплённая стратегия даёт ошибки, "
+                                   "оставляю её (снимите закрепление для "
+                                   "нового подбора)" % s.name)
+                    s.pinned_warned = True
+                    if not s.why.startswith("закреплена"):
+                        s.why = "закреплена; есть ошибки: " + s.why
+                    s.applied_at = now
+                elif fails >= threshold(s):
                     _move(s, DEGRADED, now, "обход перестал работать: " +
                           s.why)
                     s.next_check = None
@@ -620,25 +761,152 @@ class Book:
 
     # ── что дальше ──
 
+    def _queue(self, cands, now: float) -> list:
+        """Порядок AutoBook.Queue: важность (с учётом ожидания), затем
+        сломавшийся обход, вид (сайт, DNS, QUIC, сервер, пир), свежесть
+        и трафик. Число провалов не решает: пиры торрента проваливаются
+        сотнями."""
+        return sorted(cands, key=lambda s: (
+            gal.effective(s, now), s.status != DEGRADED,
+            _SEARCH_ORDER.get(s.kind, 4), -s.last_seen,
+            -(len(s.oks) + len(s.fails) + len(s.no_connections)), s.key))
+
     def next_to_confirm(self, now: float):
         cands = [s for s in self._services.values()
                  if s.status in (SUSPECTED, DEGRADED)
-                 and (s.next_check is None or now >= s.next_check)]
-        if not cands:
-            return None
-        return sorted(cands, key=lambda s: (
-            s.status != DEGRADED,
-            -(len(s.fails) + len(s.no_connections))))[0]
+                 and (s.next_check is None or now >= s.next_check)
+                 and (s.status == DEGRADED or not self.not_searched(s))]
+        q = self._queue(cands, now)
+        return q[0] if q else None
 
-    def next_to_search(self, now: float):
+    def next_to_search(self, now: float, allowed=None):
+        """Следующий заблокированный для подбора; ``allowed(s)`` —
+        фильтр (подборы рядом не пересекаются)."""
         cands = [s for s in self._services.values()
                  if s.status == BLOCKED
-                 and (s.next_check is None or now >= s.next_check)]
+                 and (s.next_check is None or now >= s.next_check)
+                 and not self.not_searched(s)
+                 and (allowed is None or allowed(s))]
+        q = self._queue(cands, now)
+        return q[0] if q else None
+
+    def preempting(self, searching: str, now: float, allowed=None):
+        """Заблокированный, ради которого стоит прервать подбор
+        ``searching``: важнее его сейчас и сам не фоновый (пир, что долго
+        ждал, поднимается, но не прерывает никого)."""
+        cur = self.find(searching)
+        if cur is None:
+            return None
+        nxt = self.next_to_search(now, allowed)
+        if nxt is None or nxt.key == searching or \
+                nxt.priority == gal.BACKGROUND:
+            return None
+        return nxt if gal.effective(nxt, now) < gal.effective(cur, now) \
+            else None
+
+    # ── действия пользователя ──
+
+    def check_now(self, key: str, now: float) -> str:
+        """«Проверить сейчас»: применённый проверяется с обходом (и
+        подбирается заново, если не прошёл), любой другой — пробой без
+        обхода сразу, паузы не в счёт; «не найдено» — подбор сейчас."""
+        s = self.find(key)
+        if s is None:
+            return ""
+        s.next_check = None
+        if s.status == APPLIED:
+            _move(s, DEGRADED, now, "проверка по просьбе пользователя")
+        elif s.status == NOT_FOUND:
+            _move(s, BLOCKED, now, "повторный подбор по просьбе "
+                  "пользователя")
+        elif s.status in (SEARCHING, BLOCKED, DEGRADED):
+            return "%s: уже в работе" % s.name
+        else:
+            # сервис без пробы на слово пользователя считается блоком
+            s.suspicions = 2
+            _move(s, SUSPECTED, now, "проверка по просьбе пользователя")
+        return "%s: проверяю сейчас" % s.name
+
+    def pin(self, key: str, pinned: bool) -> bool:
+        s = self.find(key)
+        if s is None or (pinned and not s.strategy):
+            return False
+        s.pinned = bool(pinned)
+        s.pinned_warned = False
+        return True
+
+    def set_user_priority(self, key: str, value: str) -> bool:
+        s = self.find(key)
+        if s is None or value not in gal.USER_PRIORITIES:
+            return False
+        s.user_priority = value
+        s.priority = gal.base_priority(s, self.lists)
+        return True
+
+    def family_strategy(self, s: Service):
+        """Стратегия, работающая у другого домена того же семейства
+        (видео YouTube для его сайта): её пробовать первой."""
+        fam = gal.service_family(s)
+        if not fam:
+            return None
+        cands = [x for x in self._services.values()
+                 if x.key != s.key and x.is_active
+                 and x.transport == s.transport
+                 and gal.service_family(x) == fam]
         if not cands:
             return None
-        return sorted(cands, key=lambda s: (
-            _SEARCH_ORDER.get(s.kind, 4),
-            -(len(s.fails) + len(s.no_connections))))[0]
+        return max(cands, key=lambda x: x.applied_at or 0).strategy
+
+    # ── детектор geneva ──
+
+    def detect(self, level: str, key: str, cls: str, now: float) -> list:
+        """Ключ, который детектор geneva держит заблокированным
+        (``ext_status`` → ``impaired``): имя (``host``) или адрес
+        (``ip``) с классом из :data:`DETECTOR_CLASSES`. Сервисы — сайт по
+        имени или поддомену, TCP-сервис по адресу — становятся
+        подозреваемыми, если ими ещё не занимаются. Возвращает имена
+        новых подозреваемых."""
+        hit = []
+        key = str(key or "").strip().rstrip(".").lower()
+        if cls not in DETECTOR_CLASSES or not key:
+            return hit
+        for s in self._services.values():
+            if level == "host":
+                site = gal.site_of(s)
+                match = s.kind == WEB and (key == (s.host or "").lower() or
+                                           key == site or
+                                           key.endswith("." + site))
+            elif level == "ip":
+                match = s.transport == "tcp" and any(
+                    a["ip"].lower() == key for a in s.addresses)
+            else:
+                match = False
+            if not match:
+                continue
+            if s.status not in (WATCHING, FALLBACK, SUSPECTED) and not (
+                    s.status == NOT_BLOCKED and (s.next_check is None or
+                                                 now >= s.next_check)):
+                continue
+            fresh = not s.detected
+            if fresh or now - s.detected[-1] >= MINUTE:
+                s.detected.append(now)
+            s.detected_why = DETECTOR_WHY.get(cls, cls)
+            if fresh:
+                hit.append(s.name)
+        return hit
+
+    def dns_poisoned(self, name: str, now: float) -> bool:
+        """Детектор видел поддельный ответ DNS для имени: пакетная
+        стратегия не поможет, нужен DoH. ``True`` — имя новое или о нём
+        говорили больше часа назад."""
+        name = str(name or "").strip().rstrip(".").lower()
+        at = self._dns_poisoned.get(name)
+        if not name or (at is not None and now - at < DNS_POISON_EVERY):
+            return False
+        if len(self._dns_poisoned) > 256:
+            self._dns_poisoned.clear()
+        self._dns_poisoned[name] = now
+        return True
 
     # ── итоги проб и подбора ──
 
@@ -662,6 +930,25 @@ class Book:
                   "нет: ищу другую стратегию")
             return ("%s: стратегия помогает роутеру, но не устройствам — "
                     "ищу другую" % s.name)
+        if result == C_NOT_BLOCKED:
+            s.detected = []
+        if result in (C_BLOCKED, C_UNKNOWN) and degraded and s.pinned:
+            s.applied_at = now
+            s.fails = []
+            s.no_connections = []
+            s.detected = []
+            _move(s, APPLIED, now, "закреплена; проверка с обходом не "
+                  "прошла")
+            return ("%s: проверка с обходом не прошла, но стратегия "
+                    "закреплена — оставляю" % s.name)
+        if result in (C_BLOCKED, C_UNKNOWN) and degraded and \
+                self.not_searched(s) and (result == C_BLOCKED or
+                                          s.suspicions >= 2):
+            # обход перестал работать, а новый пользователь не хочет —
+            # сервис уходит, как при смене списков
+            del self._services[s.key]
+            return ("%s: обход перестал работать; в списке «Не подбирать» "
+                    "— новый не ищу" % s.name)
         if result == C_NOT_BLOCKED and degraded:
             s.fails = []
             s.no_connections = []
@@ -689,6 +976,9 @@ class Book:
             s.next_check = now + UNKNOWN_RECHECK
             return ""
         s.next_check = None
+        if not degraded and result == C_BLOCKED:
+            s.baseline_at = now
+        s.detected = []
         _move(s, BLOCKED, now, "обход перестал работать: ищу новую "
               "стратегию" if degraded else "заблокирован")
         return ("%s: стратегия больше не работает, ищу новую" if degraded
@@ -712,6 +1002,7 @@ class Book:
         s.next_check = None
         s.fails = []
         s.no_connections = []
+        s.detected = []
         _move(s, APPLIED, now, "обход работает")
 
     def not_found(self, key: str, now: float) -> None:
@@ -744,6 +1035,9 @@ class Book:
         s.strategy = None
         s.applied_at = None
         s.restored_at = None
+        s.pinned = False
+        s.detected = []
+        s.criteria = {}
         s.rejected = []
         s.next_check = None
         s.attempts = 0
@@ -754,8 +1048,14 @@ class Book:
 
     def interrupted(self, key: str, now: float) -> None:
         s = self.find(key)
-        if s is not None and s.status == SEARCHING:
-            _move(s, BLOCKED, now, "подбор прерван, продолжу")
+        if s is None or s.status != SEARCHING:
+            return
+        # остановлен, потому что пользователь убрал его из подбора: уходит
+        # из проблем, как при смене списков
+        if not s.is_active and self.not_searched(s):
+            del self._services[key]
+            return
+        _move(s, BLOCKED, now, "подбор прерван, продолжу")
 
     def rules_restored(self, now: float) -> int:
         """Правила групп были снесены извне (прошивка) и поставлены
@@ -781,6 +1081,21 @@ class Book:
         for s in self._services.values():
             out[s.status] = out.get(s.status, 0) + 1
         return out
+
+
+def overlap(a: Service, b: Service) -> bool:
+    """Подборы этих двух рядом не идут: общий адрес сервера (пробная
+    группа одного забрала бы адрес другого) или один и тот же сайт (TCP и
+    QUIC)."""
+    if a.key == b.key:
+        return True
+    if a.kind in (WEB, QUIC) and b.kind in (WEB, QUIC) and \
+            gal.site_of(a) == gal.site_of(b):
+        return True
+    if a.kind == LOCAL_PORT and b.kind == LOCAL_PORT:
+        return a.local_port == b.local_port and a.client == b.client
+    ips = {x["ip"] for x in a.addresses}
+    return any(y["ip"] in ips for y in b.addresses)
 
 
 def _add_address(s: Service, ip: str, seen: float) -> None:
@@ -869,19 +1184,23 @@ def target(s: Service):
     return Target(addresses=addrs, tcp_ports=ports(s.port))
 
 
-def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS) -> list:
-    """Группы: активные сервисы по стратегии, пробуемая — первой.
+def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS,
+                trials=None) -> list:
+    """Группы: активные сервисы по стратегии, пробуемые — первыми.
 
     ``trial`` — ``(Service, strategy)``: стратегия, которую сейчас
-    проверяют на одном сервисе. Пара «адрес + транспорт» (или локальный
-    порт) достаётся только первой группе: сайты за одним адресом CDN с
-    разными стратегиями не делят пакеты.
+    проверяют на одном сервисе; ``trials`` — несколько таких (подборы
+    рядом, AutoPlan.Groups(services, trials)). Пара «адрес + транспорт»
+    (или локальный порт) достаётся только первой группе: сайты за одним
+    адресом CDN с разными стратегиями не делят пакеты.
     """
-    trial_key = trial[0].key if trial else None
+    trials = [t for t in list(trials or ()) + ([trial] if trial else [])
+              if t and t[1]]
+    trial_keys = {t[0].key for t in trials}
+    trial_pairs = {(t[0].key, t[1]) for t in trials}
     active = [(s, s.strategy) for s in services
-              if s.is_active and s.key != trial_key]
-    if trial:
-        active.append((trial[0], trial[1]))
+              if s.is_active and s.key not in trial_keys]
+    active = [(t[0], t[1]) for t in trials] + active
     by = {}
     order = []
     for s, strat in active:
@@ -896,7 +1215,7 @@ def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS) -> list:
         if targets:
             groups.append(Group(strat, [s.key for s in svcs], targets))
     groups.sort(key=lambda g: (
-        not (trial and g.strategy == trial[1] and trial_key in g.services),
+        not any((k, g.strategy) in trial_pairs for k in g.services),
         -len(g.services), g.strategy))
     claimed = set()
     claimed_ports = set()

@@ -415,7 +415,7 @@ class FakeGeneva:
         self.answers = []
         self.last = {}
 
-    def db_top(self, target, limit):
+    def db_top(self, target, limit, db=""):
         return {"ok": True, "items": [
             {"strategy": "[TCP:flags:PA]-duplicate-| \\/", "ok": 2},
             {"strategy": "[TCP:flags:PA]-drop-| \\/", "ok": 0}]}
@@ -514,7 +514,8 @@ class TestAutoSearch(unittest.TestCase):
         self.assertLessEqual(len(cands), ga.MAX_QUICK_CANDIDATES)
         self.assertEqual(params["workers"], 4)
         self.assertIn("{lports}", params["cmd"])
-        self.assertEqual(p.checks, [(good, True)])  # проба через обход
+        # проба через обход, TRIAL_PASSES раза подряд
+        self.assertEqual(p.checks, [(good, True)] * gs.TRIAL_PASSES)
 
     def test_external_probe_when_geneva_has_feature(self):
         good = "[TCP:flags:PA]-fragment{tcp:8:True}-| \\/"

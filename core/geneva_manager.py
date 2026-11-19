@@ -65,6 +65,13 @@ EVAL_QUEUE = 311
 # zapret-gui (core/geneva_auto_fw), у процессов ``--firewall none``.
 AUTO_QUEUE_BASE = 340
 AUTO_QUEUE_MAX = 8
+# Подборы «Авто» рядом (geneva.auto.split_workers): слот 0 — задача
+# ручного подбора (очередь 311), слоты 1–3 — свои процессы на очередях
+# 312–314. При делении у каждого слота блок из 128 портов (до двух
+# воркеров по 64), все — в прежнем блоке оценщика 30000–30511.
+AUTO_SLOTS = 4
+AUTO_SLOT_PORTS = 128
+EVAL_PORT_BASE = 30000
 
 # Метка пакетов, которые geneva отправляет сама: та же, что zapret-gui
 # исключает из правил nfqws2 (docs/INTEGRATION.md geneva_c).
@@ -505,7 +512,34 @@ def validate_auto_job(params: dict) -> dict:
     ckpt = str(params.get("checkpoint") or "")
     out["checkpoint"] = ckpt
     out["key"] = str(params.get("key") or "")[:300]
+    # База оценок своя у цели подбора «Авто» (geneva сжимает базу
+    # перезаписью: два процесса один файл не делят) — только внутри
+    # каталога «Авто».
+    db = str(params.get("db") or "")
+    if db:
+        auto_dir = os.path.realpath(paths()["auto"])
+        if not os.path.realpath(db).startswith(auto_dir + os.sep) or \
+                not db.endswith(".jsonl"):
+            raise ValueError("auto: база оценок")
+    out["db"] = db
+    slot = params.get("slot", 0)
+    if isinstance(slot, bool) or not isinstance(slot, int) or \
+            not 0 <= slot < AUTO_SLOTS:
+        raise ValueError("auto: слот")
+    out["slot"] = slot
+    out["split"] = bool(params.get("split"))
     return out
+
+
+def slot_args(params: dict) -> list:
+    """Очередь и блок портов слота задачи «Авто»: слот 0 без деления —
+    как раньше (очередь 311, порты geneva по умолчанию с 30000)."""
+    slot = int(params.get("slot") or 0)
+    args = ["-q", str(EVAL_QUEUE + slot)]
+    if slot or params.get("split"):
+        args += ["--local-ports",
+                 str(EVAL_PORT_BASE + AUTO_SLOT_PORTS * slot)]
+    return args
 
 
 def _auto_refusal() -> dict:
@@ -593,8 +627,7 @@ def build_auto_eval_args(binary: str, params: dict, p: dict,
     return [binary, "eval"] + list(ext or []) + _auto_probe_args(params) + [
             "-f", p["auto_candidates"],
             "--workers", str(params["workers"]),
-            "--runs", "1",
-            "-q", str(EVAL_QUEUE),
+            "--runs", "1"] + slot_args(params) + [
             "--mark", MARK,
             "-e", p["job_events"],
             "--log-file", p["job_log"],
@@ -611,11 +644,10 @@ def build_auto_evolve_args(binary: str, params: dict, p: dict,
             "--population", str(params["population"]),
             "--generations", str(params["generations"]),
             "--workers", str(params["workers"]),
-            "--runs", "1",
-            "-q", str(EVAL_QUEUE),
+            "--runs", "1"] + slot_args(params) + [
             "--mark", MARK,
             "--checkpoint", params["checkpoint"],
-            "--db", p["db"],
+            "--db", params.get("db") or p["db"],
             "--target", params["target"],
             "-e", p["job_events"],
             "--log-file", p["job_log"],
@@ -1300,15 +1332,16 @@ class GenevaManager:
         self._library_cache = items
         return {"ok": True, "items": items}
 
-    def db_top(self, target: str = "", limit: int = 10) -> dict:
-        """Лучшие стратегии из базы оценок (``geneva db top --json``)."""
-        p = paths()
-        if not os.path.isfile(p["db"]):
+    def db_top(self, target: str = "", limit: int = 10, db: str = "") -> dict:
+        """Лучшие стратегии из базы оценок (``geneva db top --json``);
+        ``db`` — своя база цели «Авто» вместо общей."""
+        path = db or paths()["db"]
+        if not os.path.isfile(path):
             return {"ok": True, "items": []}
         binary, err = self._ready_binary()
         if not binary:
             return {"ok": False, "error": err, "items": []}
-        args = [binary, "db", "--db", p["db"], "top", "-n",
+        args = [binary, "db", "--db", path, "top", "-n",
                 str(max(1, min(int(limit or 10), 50))), "--json"]
         if target:
             args += ["--target", target]
@@ -1794,10 +1827,30 @@ class GenevaManager:
 
     # ─────── задания режима «Авто» ───────
 
-    def auto_job_running(self) -> bool:
+    def _slot(self, slot: int) -> "AutoJobSlot":
+        with self._lock:
+            slots = getattr(self, "_auto_slots", None)
+            if slots is None:
+                slots = self._auto_slots = {}
+            if slot not in slots:
+                slots[slot] = AutoJobSlot(slot)
+            return slots[slot]
+
+    def auto_job_running(self, slot: int = 0) -> bool:
+        if slot:
+            return self._slot(slot).running()
         with self._lock:
             return self.job_running() and \
                 self._job_state.get("owner") == "auto"
+
+    def stop_auto_job(self, slot: int = 0) -> dict:
+        """Остановить задачу «Авто» слота (checkpoint сохраняется)."""
+        if slot:
+            self._slot(slot).stop()
+            return {"ok": True}
+        if self.auto_job_running():
+            return self.stop_search()
+        return {"ok": True, "note": "подбор не идёт"}
 
     def start_auto_job(self, kind: str, params: dict, strategies=None,
                        resume: bool = False, answer=None) -> dict:
@@ -1814,71 +1867,105 @@ class GenevaManager:
         локальные порты. Ответ ``busy`` — слот занят (ручной подбор
         на странице): «Авто» подождёт.
         """
+        slot = (params or {}).get("slot", 0)
+        if isinstance(slot, int) and not isinstance(slot, bool) and \
+                0 < slot < AUTO_SLOTS:
+            return self._start_slot_job(kind, params, strategies, resume,
+                                        answer)
         with self._lock:
             if self.job_running():
                 return {"ok": False, "busy": True,
                         "error": "подбор уже идёт"}
-            params = dict(params or {})
-            if answer is not None:
-                params["probe"] = "external"
-            elif params.get("probe") == "external":
-                return {"ok": False, "error": "auto: external без пробы"}
-            try:
-                params = validate_auto_job(params)
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            binary, err = self._ready_binary()
-            if not binary:
+            args, state, err = self._prepare_auto_job(
+                kind, params, strategies, resume, answer, paths())
+            if err:
                 return {"ok": False, "error": err}
-            p = paths()
-            os.makedirs(p["auto"], exist_ok=True)
-            if kind == "eval":
-                items = []
-                for x in strategies or []:
-                    try:
-                        items.append(check_strategy_text(x))
-                    except ValueError:
-                        continue
-                items, bad = self.runnable(items, binary)
-                for s, why in bad[:3]:
-                    log.info("geneva «Авто»: пропущена %s — %s"
-                             % (_short(s, 60), why), source="geneva")
-                if not items:
-                    return {"ok": False, "error": "нет стратегий"}
-                items = items[:64]
-                try:
-                    _write_atomic(p["auto_candidates"],
-                                  "\n".join(items) + "\n")
-                except OSError as e:
-                    return {"ok": False, "error": "кандидаты: %s" % e}
-                args = build_auto_eval_args(
-                    binary, params, p, ext=self.ext_args(items, binary))
-                total = len(items)
-            elif kind == "evolve":
-                if not params["checkpoint"]:
-                    return {"ok": False, "error": "auto: checkpoint"}
-                if resume and not os.path.isfile(params["checkpoint"]):
-                    resume = False
-                if not resume:
-                    _remove(params["checkpoint"])
-                args = build_auto_evolve_args(
-                    binary, params, p, resume=resume,
-                    ext=geneva_ext.evolve_argv(self.features(binary)))
-                total = 0
-            else:
-                return {"ok": False, "error": "auto: kind"}
-            state = {"kind": kind, "owner": "auto", "status": "running",
-                     "params": dict(params, pause_bypass=False),
-                     "started_at": time.time(), "finished_at": None,
-                     "resumed": bool(resume), "gen": -1,
-                     "best_fitness": None, "best": "", "results": [],
-                     "exit_code": None, "target": params["target"],
-                     "total": total, "paused_engine": ""}
             return self._launch_job(args, state, state["params"],
                                     answer=answer)
 
-    def auto_job_status(self) -> dict:
+    def _prepare_auto_job(self, kind, params, strategies, resume, answer,
+                          p: dict):
+        """Общая часть запуска задачи «Авто»: ``(args, state, error)``."""
+        params = dict(params or {})
+        if answer is not None:
+            params["probe"] = "external"
+        elif params.get("probe") == "external":
+            return None, None, "auto: external без пробы"
+        try:
+            params = validate_auto_job(params)
+        except ValueError as e:
+            return None, None, str(e)
+        binary, err = self._ready_binary()
+        if not binary:
+            return None, None, err
+        os.makedirs(paths()["auto"], exist_ok=True)
+        if kind == "eval":
+            items = []
+            for x in strategies or []:
+                try:
+                    items.append(check_strategy_text(x))
+                except ValueError:
+                    continue
+            items, bad = self.runnable(items, binary)
+            for s, why in bad[:3]:
+                log.info("geneva «Авто»: пропущена %s — %s"
+                         % (_short(s, 60), why), source="geneva")
+            if not items:
+                return None, None, "нет стратегий"
+            items = items[:64]
+            try:
+                _write_atomic(p["auto_candidates"], "\n".join(items) + "\n")
+            except OSError as e:
+                return None, None, "кандидаты: %s" % e
+            args = build_auto_eval_args(
+                binary, params, p, ext=self.ext_args(items, binary))
+            total = len(items)
+        elif kind == "evolve":
+            if not params["checkpoint"]:
+                return None, None, "auto: checkpoint"
+            if resume and not os.path.isfile(params["checkpoint"]):
+                resume = False
+            if not resume:
+                _remove(params["checkpoint"])
+            args = build_auto_evolve_args(
+                binary, params, p, resume=resume,
+                ext=geneva_ext.evolve_argv(self.features(binary)))
+            total = 0
+        else:
+            return None, None, "auto: kind"
+        state = {"kind": kind, "owner": "auto", "status": "running",
+                 "params": dict(params, pause_bypass=False),
+                 "started_at": time.time(), "finished_at": None,
+                 "resumed": bool(resume), "gen": -1,
+                 "best_fitness": None, "best": "", "results": [],
+                 "exit_code": None, "target": params["target"],
+                 "total": total, "paused_engine": ""}
+        return args, state, ""
+
+    def _start_slot_job(self, kind, params, strategies, resume,
+                        answer) -> dict:
+        """Задача «Авто» в слоте 1–3: свой процесс, ручной подбор не
+        мешает (при «Авто» он отказывает), но идущий ручной подбор
+        занимает свои порты 30000+ — тогда ``busy``."""
+        slot = self._slot(int(params["slot"]))
+        if self.job_running() and \
+                self._job_state.get("owner") != "auto":
+            return {"ok": False, "busy": True, "error": "идёт ручной подбор"}
+        with slot.lock:
+            if slot.running():
+                return {"ok": False, "busy": True,
+                        "error": "слот подбора занят"}
+            args, state, err = self._prepare_auto_job(
+                kind, params, strategies, resume, answer, slot.paths())
+            if err:
+                return {"ok": False, "error": err}
+            return slot.launch(args, state, answer=answer,
+                               workers=state["params"].get("workers", 1))
+
+    def auto_job_status(self, slot: int = 0) -> dict:
         """Ход и итог последнего задания «Авто» (идущего или законченного)."""
+        if slot:
+            return self._slot(slot).status()
         with self._lock:
             pid = self._job_pid()
             st = self._job_state
@@ -2348,6 +2435,198 @@ class GenevaManager:
                 auto["finished_at"] = time.time()
                 self._save_search_state(auto)
                 self._auto_state = auto
+
+
+def auto_slot_paths(slot: int) -> dict:
+    """Файлы задачи слота 1–3 «Авто»: события и лог в ОЗУ, кандидаты —
+    рядом с кандидатами слота 0."""
+    rt = os.path.join(runtime_dir(), "auto")
+    st = os.path.join(state_dir(), "auto")
+    k = int(slot)
+    return {"auto_candidates": os.path.join(st, "candidates-%d.txt" % k),
+            "job_events": os.path.join(rt, "job-%d.jsonl" % k),
+            "job_log": os.path.join(rt, "job-%d.log" % k),
+            "job_pid": os.path.join(rt, "job-%d.pid" % k),
+            "db": paths()["db"]}
+
+
+def job_event(st: dict, ev: dict) -> bool:
+    """Событие задачи ``eval``/``evolve`` в её состояние (итоги, поколения,
+    код выхода); ``True`` — состояние изменилось."""
+    kind = ev.get("ev")
+    if kind == "eval":
+        if st.get("kind") != "eval":
+            return False
+        st.setdefault("results", []).append({
+            "strategy": ev.get("strategy", ""),
+            "avg_fitness": ev.get("fitness"),
+            "runs": ev.get("runs", 1),
+            "outcome": ev.get("outcome", "")})
+        st["done"] = len(st["results"])
+        return True
+    if kind == "generation":
+        st["gen"] = int(ev.get("gen", 0))
+        st["best_fitness"] = ev.get("best_fitness")
+        st["best"] = ev.get("best", "")
+        return True
+    if kind == "result":
+        st["results"] = [
+            {"strategy": b.get("strategy", ""),
+             "avg_fitness": b.get("avg_fitness"), "runs": b.get("runs")}
+            for b in (ev.get("best") or [])][:20]
+        return True
+    if kind == "exit":
+        st["exit_code"] = ev.get("code")
+        return True
+    return False
+
+
+def job_status_view(st: dict, running: bool) -> dict:
+    """Состояние задачи «Авто» → ответ ``auto_job_status``."""
+    st = st or {}
+    return {
+        "running": running and st.get("status") == "running",
+        "kind": st.get("kind", ""),
+        "status": st.get("status", "idle") if st else "idle",
+        "key": (st.get("params") or {}).get("key", ""),
+        "target": st.get("target", ""),
+        "generation": int(st.get("gen", -1)) + 1,
+        "generations": int((st.get("params") or {}).get(
+            "generations") or 0),
+        "done": int(st.get("done") or 0),
+        "total": int(st.get("total") or 0),
+        "best": st.get("best", ""),
+        "best_fitness": st.get("best_fitness"),
+        "results": list(st.get("results") or []),
+        "exit_code": st.get("exit_code"),
+        "error": st.get("error", ""),
+        "started_at": st.get("started_at"),
+        "finished_at": st.get("finished_at"),
+    }
+
+
+def finish_status(st: dict, code) -> None:
+    """Код выхода задачи → ``status`` (как у ручного подбора)."""
+    if st.get("stop_requested"):
+        st["status"] = "stopped"
+    elif code in (0, 1):
+        st["status"] = "done"
+    elif code == 7:
+        st["status"] = "not_blocked"
+    elif code is None or code == -9:
+        st["status"] = "interrupted"
+    else:
+        st["status"] = "error"
+
+
+class AutoJobSlot:
+    """Задача «Авто» в слоте 1–3: свой процесс ``eval``/``evolve`` со своей
+    очередью и блоком портов (подборы рядом, ``split_workers``). Слот 0 —
+    общая с ручным подбором задача менеджера. Состояние только в памяти:
+    после перезапуска GUI подбор «Авто» начинается заново (с checkpoint)."""
+
+    def __init__(self, slot: int):
+        self.slot = int(slot)
+        self.proc = None
+        self.answerer = None
+        self.reader = None
+        self.state = {}
+        self.lock = threading.Lock()
+
+    def paths(self) -> dict:
+        return auto_slot_paths(self.slot)
+
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def launch(self, args: list, state: dict, answer=None,
+               workers: int = 1) -> dict:
+        p = self.paths()
+        os.makedirs(os.path.dirname(p["job_events"]), exist_ok=True)
+        trim_file(p["job_events"], 0)
+        trim_file(p["job_log"], 0)
+        self.reader = EventReader(p["job_events"])
+        try:
+            proc = _spawn(args, p["job_log"],
+                          stdin_pipe=answer is not None)
+        except OSError as e:
+            return {"ok": False, "error": "Запуск geneva: %s" % e}
+        self.proc = proc
+        if self.answerer is not None:
+            self.answerer.stop()
+        self.answerer = ExternalAnswerer(
+            proc, p["job_events"], answer, workers=workers).start() \
+            if answer is not None else None
+        _write_pid(p["job_pid"], proc.pid)
+        state["pid"] = proc.pid
+        self.state = state
+        log.info("geneva: слот %d «Авто»: %s запущен (pid %d), цель %s"
+                 % (self.slot, "подбор" if state["kind"] == "evolve"
+                    else "проверка", proc.pid, state["target"]),
+                 source="geneva")
+        return {"ok": True, "pid": proc.pid, "kind": state["kind"]}
+
+    def pump(self) -> None:
+        if self.reader is None:
+            return
+        for ev in self.reader.read_new():
+            job_event(self.state, ev)
+
+    def finish(self) -> None:
+        self.pump()
+        st = self.state
+        if not st or st.get("status") != "running":
+            return
+        rc = self.proc.poll() if self.proc else None
+        code = st.get("exit_code")
+        if code is None:
+            code = rc
+        st["exit_code"] = code
+        st["finished_at"] = time.time()
+        finish_status(st, code)
+        if st["status"] == "error":
+            tail = [line for line in tail_lines(self.paths()["job_log"], 5)
+                    if line.strip()]
+            st["error"] = exit_text(code) + (
+                " — " + tail[-1].strip()[:300] if tail else "")
+        st.pop("stop_requested", None)
+        _remove(self.paths()["job_pid"])
+        self.proc = None
+        if self.answerer is not None:
+            self.answerer.stop()
+            self.answerer = None
+
+    def status(self) -> dict:
+        with self.lock:
+            if self.running():
+                self.pump()
+            elif self.state.get("status") == "running":
+                self.finish()
+            return job_status_view(self.state, self.running())
+
+    def stop(self, wait: float = 30.0) -> None:
+        with self.lock:
+            if not self.running():
+                return
+            self.state["stop_requested"] = True
+            pid = self.proc.pid
+        sub = "evolve" if self.state.get("kind") == "evolve" else "eval"
+        _terminate(pid, sub, wait=wait)
+        with self.lock:
+            self.finish()
+
+
+def stop_slot_leftovers() -> None:
+    """Процессы слотов 1–3 от прошлого запуска GUI (по pid-файлам)."""
+    for k in range(1, AUTO_SLOTS):
+        path = auto_slot_paths(k)["job_pid"]
+        pid = _read_pid(path)
+        if pid:
+            for sub in ("evolve", "eval"):
+                if pid_alive(pid, sub):
+                    _terminate(pid, sub, wait=5.0)
+                    break
+        _remove(path)
 
 
 def summarize_stats(stats: dict) -> dict:

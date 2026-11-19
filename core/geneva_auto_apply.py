@@ -151,21 +151,26 @@ class Applier:
             self.last = out
             return out
 
-    def apply_services(self, services, trial=None) -> dict:
-        """План из сервисов книги (и пробной стратегии) и применение.
+    def apply_services(self, services, trial=None, trials=None) -> dict:
+        """План из сервисов книги (и пробных стратегий) и применение.
 
-        ``trial`` — ``(Service, strategy)``. В ответе ``trial_ok``:
-        группа пробной стратегии с этим сервисом запущена и под
-        правилами.
+        ``trial`` — ``(Service, strategy)``, ``trials`` — несколько таких
+        (подборы рядом). В ответе ``trial_ok`` (для ``trial``) и
+        ``trials_ok`` (``{ключ сервиса: bool}``): группа пробной стратегии
+        с этим сервисом запущена и под правилами.
         """
         groups = ga.plan_groups(services, trial=trial,
-                                max_groups=self.max_groups)
+                                max_groups=self.max_groups, trials=trials)
         out = self.apply(groups)
+
+        def live(s, strat):
+            return any(g.strategy == strat and s.key in g.services
+                       for g in self.queues.values())
         if trial:
-            s, strat = trial
-            out["trial_ok"] = any(
-                g.strategy == strat and s.key in g.services
-                for g in self.queues.values())
+            out["trial_ok"] = live(*trial)
+        if trials:
+            out["trials_ok"] = {s.key: live(s, strat)
+                                for s, strat in trials}
         return out
 
     def missing(self) -> list:

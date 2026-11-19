@@ -104,9 +104,11 @@ class FakeSearch:
     def busy(self):
         return False
 
-    def start(self, s, running=(), proven=()):
+    def start(self, s, running=(), proven=(), only="", first=()):
         self.started.append((s.key, list(running)))
         self.proven = list(proven)
+        self.only = only
+        self.first = list(first)
         self._result = gs.SearchResult(s.key, self.outcome,
                                        strategy=self.strategy, fitness=396)
         return True
@@ -347,7 +349,7 @@ class TestScenario(_Base):
         n = len(self.fwf.applied)
         m._apply(101.0)                    # тот же план с пробой — повтора нет
         self.assertEqual(len(self.fwf.applied), n)
-        m._trial = None                    # проба снята мимо _trial_cb
+        m._trials = {}                     # проба снята мимо _trial_cb
         m._apply(102.0)                    # — план другой, применяется сразу
         self.assertEqual(len(self.fwf.applied), n + 1)
         self.assertEqual(self.fwf.applied[-1], {})
@@ -671,7 +673,7 @@ class TestEnable(_Base):
         self.assertEqual(m.status()["exclude"], st["exclude"])
         self.assertTrue(m.update_settings({"exclude": []})["ok"])
         self.assertEqual(obs.exclude, [])
-        for bad in ({"help_tunnels": "no"}, {"exclude": "example.com"},
+        for bad in ({"help_tunnels": "no"}, {"exclude": "*google*"},
                     {"exclude": 5}):
             self.assertFalse(m.update_settings(bad)["ok"], bad)
         self.assertFalse(am.auto_settings(self.cfg)["help_tunnels"])
