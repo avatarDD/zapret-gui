@@ -4620,6 +4620,8 @@ const i18n_en_server = {
 "блоб {0} больше {1} КБ — в бандл не входит": "blob {0} is over {1} KB, so it is not in the bundle",
 "блоб {0} не найден на роутере — в бандл не входит": "blob {0} is not on the router, so it is not in the bundle",
 "{0}: файл не входит в бандл (путь вне lists/ и lua/)": "{0}: the file is not in the bundle (path outside lists/ and lua/)",
+"lua {0}.lua поставляется с zapret-gui: в бандле другой текст, остаётся свой": "lua {0}.lua ships with zapret-gui: the bundle has a different text, the shipped one stays",
+"блоб {0} — имя из каталога zapret-gui: в бандле другие байты, остаются свои": "blob {0} is a zapret-gui catalog name: the bundle has different bytes, the local ones stay",
 "блоб {0} больше {1} КБ: zapret-gui его примет, AutoTuner — нет": "blob {0} is over {1} KB: zapret-gui accepts it, AutoTuner does not",
 "паттерн {0} задаёт init_vars.lua при запуске: в бандле его нет, AutoTuner такую стратегию не проверит": "pattern {0} is set by init_vars.lua at start: it is not in the bundle, and AutoTuner will not validate this strategy",
 "{0}: проверка стратегии пользователя прервана": "{0}: the check of your strategy was interrupted",

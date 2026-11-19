@@ -55,9 +55,9 @@ def sample_strategy():
                      "--lua-desync=fake:blob=fake_default_quic:repeats=6"},
             {"id": "p3", "name": "GUI", "enabled": True,
              "args": "--blob=my_hex:0x1603010000 --filter-tcp=80 "
-                     "--lua-desync=fakemultisplit:pos=1:blob=my_hex "
+                     "--lua-desync=fakemultisplit:pos=1:blob=tls_google "
                      "--lua-desync=multisplit:pos=2:seqovl=5:"
-                     "seqovl_pattern=tls_google"},
+                     "seqovl_pattern=my_hex"},
         ]}
 
 
@@ -98,8 +98,8 @@ class TestOurBundleOut(unittest.TestCase):
                                          ("hostlist", "other"),
                                          ("ipset", "ipset-yt")])
         self.assertEqual(refs["blobs"], ["my_tls", "fake_default_quic",
-                                         "my_hex"])
-        self.assertEqual(refs["patterns"], ["tls_google"])
+                                         "my_hex", "tls_google"])
+        self.assertEqual(refs["patterns"], ["my_hex"])
         self.assertEqual(refs["declared"], {"my_hex": "0x1603010000"})
         # скрипты, что GUI подключает сам (init_vars по паттерну,
         # fakemultisplit по функции) — раньше своего, как при запуске;
@@ -112,8 +112,8 @@ class TestOurBundleOut(unittest.TestCase):
                                         **SAMPLE_FILES)
         self.assertEqual(warnings, ["hostlist other не входит в бандл "
                                     "(встроенный или его нет)"])
-        # tls_google — паттерн init_vars, у которого есть файл каталога:
-        # едет байтами (AutoTuner без них стратегию не проверит)
+        # tls_google — блоб каталога: едет байтами файла, на который его
+        # ведёт реестр (AutoTuner без них стратегию не проверит)
         self.assertEqual([b["name"] for b in out["blobs"]],
                          ["my_tls", "tls_google"])
         # объявленный в args блоб остаётся объявлением (hex), не дублем
@@ -196,6 +196,56 @@ class TestApi(unittest.TestCase):
                             for w in warnings), warnings)
         self.assertTrue(any("/opt/etc/my.lua" in w for w in warnings))
         self.assertEqual(bi.validate_bundle(out)[0], [])
+
+    def test_init_vars_pattern_is_not_taken_from_catalog_file(self):
+        """seqovl_pattern=tls_google: запуск не объявляет его из реестра,
+        байты даёт init_vars.lua — файл каталога в бандл не идёт."""
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--lua-desync=multisplit:pos=2:seqovl=5:"
+                                 "seqovl_pattern=tls_google"}]}
+        out, warnings = be.build_bundle(st, **SAMPLE_FILES)
+        self.assertEqual(out["blobs"], [])
+        self.assertTrue(any("tls_google" in w and "init_vars" in w
+                            for w in warnings), warnings)
+
+    def test_clone_variable_and_fallback(self):
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--lua-desync=tls_client_hello_clone:"
+                                 "blob=cl:fallback=my_tls "
+                                 "--lua-desync=fake:blob=cl "
+                                 "--lua-desync=multisplit_tls:fallback=pass"}]}
+        refs = be.references(st)
+        self.assertEqual(refs["blobs"], ["my_tls"])
+
+    def test_lists_only_from_lists_dir_and_quoted_declaration(self):
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--hostlist=/opt/etc/my.txt "
+                                 '--blob=q:@"/opt/my blobs/q.bin" '
+                                 "--lua-desync=fake:blob=q"}]}
+        out, warnings = be.build_bundle(
+            st, hostlists=lambda n: ["a"], ipsets=lambda n: None,
+            blobs=lambda n: None, lua=lambda n: None,
+            blob_file={'@"/opt/my blobs/q.bin"': b"\x01"}.get)
+        self.assertEqual(out["hostlists"], [])
+        self.assertTrue(any("/opt/etc/my.txt" in w for w in warnings))
+        self.assertEqual(out["strategy"]["profiles"][0]["args"],
+                         "--hostlist=/opt/etc/my.txt --blob=q:0x01 "
+                         "--lua-desync=fake:blob=q")
+
+    def test_builtin_trick_gets_launch_filter(self):
+        st = {"id": "x", "name": "x", "is_builtin": True, "protocol": "tcp",
+              "family": "", "profiles": [
+                  {"id": "p1", "args": "--payload=tls_client_hello "
+                                       "--lua-desync=fake:blob=my_tls"},
+                  {"id": "p2", "args": "--filter-tcp=80 "
+                                       "--lua-desync=fake"}]}
+        got = be._as_launched(st)["profiles"]
+        self.assertTrue(got[0]["args"].startswith("--filter-tcp=443 "),
+                        got[0]["args"])
+        self.assertTrue(got[0]["args"].endswith(st["profiles"][0]["args"]))
+        self.assertEqual(got[1]["args"], st["profiles"][1]["args"])
+        user = dict(st, is_builtin=False)
+        self.assertIs(be._as_launched(user), user)
 
     def test_blob_over_autotuner_limit_is_warned_not_dropped(self):
         st = {"id": "x", "name": "x", "profiles": [

@@ -29,7 +29,7 @@
         "id": "p3",
         "name": "GUI",
         "enabled": true,
-        "args": "--blob=my_hex:0x1603010000 --filter-tcp=80 --lua-desync=fakemultisplit:pos=1:blob=my_hex --lua-desync=multisplit:pos=2:seqovl=5:seqovl_pattern=tls_google"
+        "args": "--blob=my_hex:0x1603010000 --filter-tcp=80 --lua-desync=fakemultisplit:pos=1:blob=tls_google --lua-desync=multisplit:pos=2:seqovl=5:seqovl_pattern=my_hex"
       }
     ]
   },

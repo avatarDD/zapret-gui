@@ -21,8 +21,10 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
 * ``blob=``/``pattern=``/``seqovl_pattern=`` и ``--blob=<имя>:…`` →
   ``blobs`` — байты, которые получит nfqws2: свой блоб или файл, на
   который имя ведёт реестр (``tls_google`` → ``tls_clienthello_…bin``).
-  Только ``fake_default_*`` (встроены в nfqws2) и паттерны ``init_vars``
-  (их задаёт сам скрипт) не берутся;
+  Объявленные в самих args (``--blob=<имя>:@путь``) едут там же, как
+  hex. Не берутся ``fake_default_*`` (встроены в nfqws2) и паттерны,
+  которые при запуске задаёт ``init_vars.lua`` (у них нет файла: запуск
+  не объявляет их из реестра);
 * lua: и явные ``--lua-init=@lua/<имя>.lua``, и скрипты, которые GUI сам
   подключает по функциям профиля (``fakemultisplit``, ``flood_white``,
   оркестратор ``circular``, ``init_vars``… — та же логика, что у запуска,
@@ -30,7 +32,14 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
   (:data:`ZAPRET2_LUA`) есть у любого получателя и не берутся.
 
 Встроенные hostlist'ы (``other``, ``other2``, ``netrogat``) и ipset'ы в
-бандл не входят: у получателя они свои. О каждом пропуске сказано в
+бандл не входят: у получателя они свои. Списки берутся только из
+``lists/<имя>.txt``, lua — из ``lua/<имя>.lua``: файл по другому пути
+бандл перенести не может.
+
+Встроенная стратегия-приём уходит такой, какой её запускает GUI: «голые»
+профили получают тот же фильтр протокола и портов
+(``autowrap_bare_trick``), иначе у получателя приём задел бы весь
+трафик очереди. О каждом пропуске сказано в
 ``warnings`` ответа — сам бандл остаётся чистым форматом.
 """
 
@@ -39,7 +48,8 @@ from __future__ import annotations
 import base64
 import re
 
-from core.bundle_import import FORMAT, FORMAT_VERSION, LUA_COMPAT, MAX_BLOB
+from core.bundle_import import (FORMAT, FORMAT_VERSION, LUA_COMPAT,
+                                MAX_BLOB, desync_blob_refs)
 
 _STRATEGY_ID_RE = re.compile(r"[^a-zA-Z0-9_-]")
 _LIST_REF_RE = re.compile(
@@ -52,25 +62,16 @@ ZAPRET2_LUA = frozenset({
     "zapret-lib", "zapret-antidpi", "zapret-auto", "zapret-obfs",
     "zapret-pcap", "zapret-wgobfs", "zapret-tests"})
 _BLOB_DECL_RE = re.compile(r"^--blob=([A-Za-z_][A-Za-z0-9_]*):")
-# Аргументы lua-функций со значением-именем блоба: blob/pattern/
-# seqovl_pattern zapret2 и аргументы скриптов GUI (fake_blob у
-# fakemultidisorder, fallback у tls_client_hello_clone, dataxor у
-# zapret-obfs). Hex (0x…) — не имя, его регэксп не берёт.
-from core.bundle_import import _BLOB_ARGS  # noqa: E402
-_BLOB_ARG_RE = re.compile(r"(?:^|:)(%s)=([A-Za-z_][A-Za-z0-9_]*)"
-                          % "|".join(_BLOB_ARGS))
 _LUA_REF_RE = re.compile(r"^--lua-init=@(?:.*/)?lua/([a-zA-Z0-9_.\-]+)\.lua$")
-_STEM_RE = re.compile(r"(?:^|/)([a-zA-Z0-9_-]{1,64})\.txt$")
+_STEM_RE = re.compile(r"(?:^|/)lists/([a-zA-Z0-9_-]{1,64})\.txt$")
 # Поля стратегии, которые несёт бандл (остальное — состояние роутера).
 _STRATEGY_KEYS = ("id", "name", "description", "version", "type")
 
 
 def _tokens(args: str) -> list:
-    import shlex
-    try:
-        return shlex.split(args or "")
-    except ValueError:
-        return (args or "").split()
+    # так же, как разбирает профиль запуск (кавычки остаются в токене)
+    from core.models import tokenize_args
+    return tokenize_args(args or "")
 
 
 def _auto_lua(tokens: list) -> list:
@@ -100,6 +101,7 @@ def references(strategy: dict) -> dict:
     lists, blobs, patterns, lua, unknown = [], [], [], [], []
     declared = {}
     every = []
+    local = set()           # переменные desync (клон ClientHello), не блобы
     for p in strategy.get("profiles") or []:
         if not isinstance(p, dict):
             continue
@@ -130,7 +132,9 @@ def references(strategy: dict) -> dict:
                 if m.group(1) not in blobs:
                     blobs.append(m.group(1))
             if tok.startswith("--lua-desync="):
-                for key, n in _BLOB_ARG_RE.findall(tok[len("--lua-desync="):]):
+                refs, variables = desync_blob_refs(tok[len("--lua-desync="):])
+                local |= set(variables)
+                for key, n in refs:
                     into = patterns if key.endswith("pattern") else blobs
                     if n not in into:
                         into.append(n)
@@ -138,6 +142,8 @@ def references(strategy: dict) -> dict:
     # --lua-init из самих профилей
     auto = _auto_lua(every)
     lua = auto + [n for n in lua if n not in auto]
+    blobs = [n for n in blobs if n not in local or n in declared]
+    patterns = [n for n in patterns if n not in local or n in declared]
     return {"lists": lists, "blobs": blobs, "patterns": patterns,
             "declared": declared, "unknown": unknown,
             "lua": [n for n in lua if n not in ZAPRET2_LUA]}
@@ -147,9 +153,14 @@ def _inline_decl(args: str, inline: dict) -> str:
     """``--blob=<имя>:@путь`` этого роутера → ``--blob=<имя>:0x<hex>``:
     объявление в args самодостаточно и у получателя значит то же, что
     здесь (и поверх имени каталога, и без файла)."""
-    for name, data in inline.items():
-        args = re.sub(r"(?<!\S)--blob=%s:\S+" % re.escape(name),
-                      lambda m: "--blob=%s:0x%s" % (name, data.hex()), args)
+    for tok in dict.fromkeys(_tokens(args)):
+        m = _BLOB_DECL_RE.match(tok)
+        if not m or m.group(1) not in inline:
+            continue
+        hexed = "--blob=%s:0x%s" % (m.group(1), inline[m.group(1)].hex())
+        # токен целиком, с кавычками внутри (@"путь с пробелом")
+        args = re.sub(r"(?<!\S)%s(?!\S)" % re.escape(tok),
+                      lambda _m: hexed, args)
     return args
 
 
@@ -234,6 +245,11 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         value = refs["declared"].get(name)
         if value is not None:
             data = _declared_bytes(value, blob_file)
+        elif name in init_vars and name not in refs["blobs"]:
+            # только паттерн: запуск его из реестра не объявляет, байты
+            # даёт init_vars.lua — файл каталога был бы не тем, что
+            # получает nfqws2
+            data = None
         else:
             data = blobs(name)
         if not data:
@@ -286,6 +302,7 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
 
 def export_strategy(strategy: dict) -> tuple:
     """Бандл стратегии с файлами этого роутера."""
+    strategy = _as_launched(strategy)
     from core.backup import _HL_BUILTIN, _IPSET_BUILTIN, _app_version
     from core.blob_manager import get_blob_manager
     from core.hostlist_manager import get_hostlist_manager
@@ -328,6 +345,29 @@ def export_strategy(strategy: dict) -> tuple:
                         blobs=blobs, lua=lua, blob_file=blob_file,
                         compat=_installed_compat(lm),
                         version=_app_version())
+
+
+def _as_launched(strategy: dict) -> dict:
+    """Встроенная стратегия-приём — с фильтром, который ей добавит запуск
+    (``autowrap_bare_trick`` по протоколу и портам перехвата)."""
+    try:
+        from core.strategy_builder import (StrategyManager,
+                                           autowrap_bare_trick)
+        scope = StrategyManager._autowrap_scope(strategy)
+    except Exception:                           # noqa: BLE001 — граница
+        return strategy
+    if not scope:
+        return strategy
+    profiles = []
+    for p in strategy.get("profiles") or []:
+        if isinstance(p, dict) and isinstance(p.get("args"), str):
+            toks = _tokens(p["args"])
+            wrapped = autowrap_bare_trick(list(toks), **scope)
+            if len(wrapped) > len(toks):
+                head = wrapped[:len(wrapped) - len(toks)]
+                p = dict(p, args=" ".join(head + [p["args"].strip()]))
+        profiles.append(p)
+    return dict(strategy, profiles=profiles)
 
 
 def _installed_compat(lm) -> int:
