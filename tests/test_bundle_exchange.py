@@ -54,9 +54,10 @@ def sample_strategy():
              "args": "--filter-udp=443 --ipset=lists/ipset-yt.txt "
                      "--lua-desync=fake:blob=fake_default_quic:repeats=6"},
             {"id": "p3", "name": "GUI", "enabled": True,
-             "args": "--filter-tcp=80 --lua-desync=fakemultisplit:pos=1:"
-                     "blob=tls_google --lua-desync=multisplit:pos=2:"
-                     "seqovl=5:seqovl_pattern=tls_rnd"},
+             "args": "--blob=my_hex:0x1603010000 --filter-tcp=80 "
+                     "--lua-desync=fakemultisplit:pos=1:blob=my_hex "
+                     "--lua-desync=multisplit:pos=2:seqovl=5:"
+                     "seqovl_pattern=tls_google"},
         ]}
 
 
@@ -97,23 +98,31 @@ class TestOurBundleOut(unittest.TestCase):
                                          ("hostlist", "other"),
                                          ("ipset", "ipset-yt")])
         self.assertEqual(refs["blobs"], ["my_tls", "fake_default_quic",
-                                         "tls_google"])
-        self.assertEqual(refs["patterns"], ["tls_rnd"])
-        # свой скрипт и те, что GUI подключает сам: fakemultisplit по
-        # функции, init_vars по паттерну tls_rnd; zapret-lib/antidpi — нет
-        self.assertEqual(refs["lua"], ["my-twice", "init_vars",
-                                       "fakemultisplit"])
+                                         "my_hex"])
+        self.assertEqual(refs["patterns"], ["tls_google"])
+        self.assertEqual(refs["declared"], {"my_hex": "0x1603010000"})
+        # скрипты, что GUI подключает сам (init_vars по паттерну,
+        # fakemultisplit по функции) — раньше своего, как при запуске;
+        # zapret-lib/antidpi — нет
+        self.assertEqual(refs["lua"], ["init_vars", "fakemultisplit",
+                                       "my-twice"])
 
     def test_bundle_matches_golden_and_imports(self):
         out, warnings = be.build_bundle(sample_strategy(), version="test",
                                         **SAMPLE_FILES)
         self.assertEqual(warnings, ["hostlist other не входит в бандл "
                                     "(встроенный или его нет)"])
+        # tls_google — паттерн init_vars, у которого есть файл каталога:
+        # едет байтами (AutoTuner без них стратегию не проверит)
         self.assertEqual([b["name"] for b in out["blobs"]],
-                         ["my_tls", "tls_google"])     # tls_rnd — init_vars
+                         ["my_hex", "my_tls", "tls_google"])
+        self.assertEqual(base64.b64decode(out["blobs"][0]["base64"]),
+                         bytes.fromhex("1603010000"))
+        # объявление с путём/hex этого роутера из args убрано
+        self.assertNotIn("--blob=", out["strategy"]["profiles"][2]["args"])
         self.assertEqual([x["name"] for x in out["lua"]],
-                         ["my-twice.lua", "init_vars.lua",
-                          "fakemultisplit.lua"])
+                         ["init_vars.lua", "fakemultisplit.lua",
+                          "my-twice.lua"])
         self.assertEqual(out["strategy"]["id"], "my_yt-2026")
         self.assertNotIn("_filepath", out["strategy"])
         self.assertEqual(bi.validate_bundle(out)[0], [])
@@ -161,7 +170,7 @@ class TestApi(unittest.TestCase):
                 "/api/strategies/my.yt-2026/export-bundle")
             self.assertTrue(r["ok"], r)
             self.assertEqual(r["filename"], "my_yt-2026.bundle.json")
-            self.assertEqual(r["bundle"]["blobs"][0]["name"], "my_tls")
+            self.assertEqual(r["bundle"]["blobs"][1]["name"], "my_tls")
             self.assertEqual(len(r["warnings"]), 1)
             r = self.client.get_json("/api/strategies/nope/export-bundle")
             self.assertEqual(r["_status"], 404)
@@ -173,6 +182,43 @@ class TestApi(unittest.TestCase):
         self.assertEqual(out["strategy"]["id"], "my_yt-2026")
         self.assertEqual(bi.validate_bundle(out)[0], [])
         self.assertTrue(any("my_tls" in w for w in warnings))
+
+    def test_init_vars_pattern_without_file_and_empty_name(self):
+        st = {"id": "x", "name": "", "profiles": [
+            {"id": "p1", "args": "--lua-desync=multisplit:pos=2:seqovl=5:"
+                                 "seqovl_pattern=tls_rnd "
+                                 "--lua-init=@/opt/etc/my.lua"}]}
+        out, warnings = be.build_bundle(
+            st, hostlists=lambda n: None, ipsets=lambda n: None,
+            blobs=lambda n: None, lua={"init_vars": "x"}.get)
+        self.assertEqual(out["strategy"]["name"], "x")
+        self.assertEqual(out["blobs"], [])
+        self.assertTrue(any("tls_rnd" in w and "init_vars" in w
+                            for w in warnings), warnings)
+        self.assertTrue(any("/opt/etc/my.lua" in w for w in warnings))
+        self.assertEqual(bi.validate_bundle(out)[0], [])
+
+    def test_blob_over_autotuner_limit_is_warned_not_dropped(self):
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--lua-desync=fake:blob=mid"}]}
+        out, warnings = be.build_bundle(
+            st, hostlists=lambda n: None, ipsets=lambda n: None,
+            blobs={"mid": b"x" * 20000}.get, lua=lambda n: None)
+        self.assertEqual([b["name"] for b in out["blobs"]], ["mid"])
+        self.assertTrue(any("AutoTuner" in w for w in warnings))
+
+    def test_gui_own_lua_and_blobs_are_not_written_on_import(self):
+        out, _ = be.build_bundle(sample_strategy(), version="test",
+                                 **SAMPLE_FILES)
+        existing = {"hostlists": set(), "ipsets": set(), "blobs": set(),
+                    "lua": {"init_vars", "fakemultisplit"},
+                    "strategies": set(), "builtin_strategies": set(),
+                    "gui_lua": {"init_vars", "fakemultisplit"},
+                    "gui_blobs": {"tls_google"}}
+        plan = bi.plan_bundle(out, existing)
+        self.assertEqual(plan["conflicts"], [])
+        self.assertEqual(sorted(x["name"] for x in plan["skipped"]),
+                         ["fakemultisplit", "init_vars", "tls_google"])
 
     def test_missing_lua_and_big_blob_are_warned(self):
         st = {"id": "x", "name": "x", "profiles": [

@@ -29,7 +29,7 @@
         "id": "p3",
         "name": "GUI",
         "enabled": true,
-        "args": "--filter-tcp=80 --lua-desync=fakemultisplit:pos=1:blob=tls_google --lua-desync=multisplit:pos=2:seqovl=5:seqovl_pattern=tls_rnd"
+        "args": "--filter-tcp=80 --lua-desync=fakemultisplit:pos=1:blob=my_hex --lua-desync=multisplit:pos=2:seqovl=5:seqovl_pattern=tls_google"
       }
     ]
   },
@@ -52,6 +52,10 @@
   ],
   "blobs": [
     {
+      "name": "my_hex",
+      "base64": "FgMBAAA="
+    },
+    {
       "name": "my_tls",
       "base64": "FgMBAAVoZWxsbw=="
     },
@@ -62,16 +66,16 @@
   ],
   "lua": [
     {
-      "name": "my-twice.lua",
-      "text": "function my_twice(ctx, desync) end\n"
-    },
-    {
       "name": "init_vars.lua",
       "text": "tls_rnd = fake_default_tls\n"
     },
     {
       "name": "fakemultisplit.lua",
       "text": "function fakemultisplit(ctx, desync) end\n"
+    },
+    {
+      "name": "my-twice.lua",
+      "text": "function my_twice(ctx, desync) end\n"
     }
   ]
 }

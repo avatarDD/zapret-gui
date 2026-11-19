@@ -45,6 +45,9 @@ _STRATEGY_ID_RE = re.compile(r"[^a-zA-Z0-9_-]")
 _LIST_REF_RE = re.compile(
     r"^--(hostlist|hostlist-exclude|hostlist-auto|ipset|ipset-exclude)=(.+)$")
 # Скрипты, которые поставляет сам zapret2: у любого получателя они свои.
+# Предел блоба у AutoTuner (StrategyValidator.MaxBlobSize); у zapret-gui
+# свой, :data:`MAX_BLOB`.
+AUTOTUNER_MAX_BLOB = 16384
 ZAPRET2_LUA = frozenset({
     "zapret-lib", "zapret-antidpi", "zapret-auto", "zapret-obfs",
     "zapret-pcap", "zapret-wgobfs", "zapret-tests"})
@@ -89,7 +92,8 @@ def references(strategy: dict) -> dict:
     "patterns": [...], "lua": [...]}``; вид — ``hostlist`` или ``ipset``
     по опции, ``patterns`` — имена из ``pattern=``/``seqovl_pattern=``
     (их может задать и ``init_vars``)."""
-    lists, blobs, patterns, lua = [], [], [], []
+    lists, blobs, patterns, lua, unknown = [], [], [], [], []
+    declared = {}
     every = []
     for p in strategy.get("profiles") or []:
         if not isinstance(p, dict):
@@ -102,7 +106,9 @@ def references(strategy: dict) -> dict:
                 stem = _STEM_RE.search(m.group(2))
                 kind = "ipset" if m.group(1).startswith("ipset") \
                     else "hostlist"
-                if stem and (kind, stem.group(1)) not in lists:
+                if not stem:
+                    unknown.append(tok)
+                elif (kind, stem.group(1)) not in lists:
                     lists.append((kind, stem.group(1)))
                 continue
             m = _LUA_REF_RE.match(tok)
@@ -110,26 +116,43 @@ def references(strategy: dict) -> dict:
                 if m.group(1) not in lua:
                     lua.append(m.group(1))
                 continue
+            if tok.startswith("--lua-init="):
+                unknown.append(tok)
+                continue
             m = _BLOB_DECL_RE.match(tok)
-            if m and m.group(1) not in blobs:
-                blobs.append(m.group(1))
+            if m:
+                declared.setdefault(m.group(1), tok.split(":", 1)[1])
+                if m.group(1) not in blobs:
+                    blobs.append(m.group(1))
             if tok.startswith("--lua-desync="):
                 for key, n in _BLOB_ARG_RE.findall(tok[len("--lua-desync="):]):
                     into = blobs if key == "blob" else patterns
                     if n not in into:
                         into.append(n)
-    for stem in _auto_lua(every):
-        if stem not in lua:
-            lua.append(stem)
+    # порядок загрузки как у запуска: скрипты GUI (lua_args) раньше
+    # --lua-init из самих профилей
+    auto = _auto_lua(every)
+    lua = auto + [n for n in lua if n not in auto]
     return {"lists": lists, "blobs": blobs, "patterns": patterns,
+            "declared": declared, "unknown": unknown,
             "lua": [n for n in lua if n not in ZAPRET2_LUA]}
 
 
-def _clean_strategy(strategy: dict) -> dict:
+def _drop_decl(args: str, names) -> str:
+    """Убрать ``--blob=<имя>:…`` блобов, что едут в бандле: и импорт
+    zapret-gui, и импорт AutoTuner объявляют их сами по имени, а
+    объявление с путём этого роутера увело бы на файл, которого у
+    получателя нет."""
+    for n in names:
+        args = re.sub(r"(?:^|\s)--blob=%s:\S+" % re.escape(n), "", args)
+    return re.sub(r"\s{2,}", " ", args).strip()
+
+
+def _clean_strategy(strategy: dict, bundled_blobs=()) -> dict:
     out = {k: strategy[k] for k in _STRATEGY_KEYS if k in strategy}
     out["id"] = _STRATEGY_ID_RE.sub("_", str(strategy.get("id") or
                                              "strategy"))[:64] or "strategy"
-    out.setdefault("name", out["id"])
+    out["name"] = str(strategy.get("name") or "").strip() or out["id"]
     out.setdefault("version", 1)
     out["profiles"] = []
     for i, p in enumerate(strategy.get("profiles") or [], 1):
@@ -139,12 +162,25 @@ def _clean_strategy(strategy: dict) -> dict:
             "id": str(p.get("id") or "p%d" % i),
             "name": str(p.get("name") or "p%d" % i),
             "enabled": p.get("enabled", True) is not False,
-            "args": str(p.get("args") or ""),
+            "args": _drop_decl(str(p.get("args") or ""), bundled_blobs),
         })
     return out
 
 
+def _declared_bytes(value: str, blob_file):
+    value = str(value or "")
+    if value.lower().startswith("0x"):
+        try:
+            return bytes.fromhex(value[2:])
+        except ValueError:
+            return None
+    if value.startswith("@") and blob_file is not None:
+        return blob_file(value)
+    return None
+
+
 def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
+                 blob_file=None, compat: int = LUA_COMPAT,
                  version: str = "") -> tuple:
     """Стратегия + доступ к файлам → ``(бандл, предупреждения)``.
 
@@ -152,11 +188,17 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
     ``hostlists(имя)`` → список доменов или ``None`` (нет такого или
     встроенный), ``ipsets(имя)`` → список CIDR или ``None``,
     ``blobs(имя)`` → байты, которые nfqws2 получит под этим именем, или
-    ``None``, ``lua(имя)`` → текст скрипта или ``None``.
+    ``None``, ``lua(имя)`` → текст скрипта или ``None``,
+    ``blob_file(значение)`` — байты по значению ``--blob=<имя>:<значение>``
+    из самих args (``@путь``), ``compat`` — версия совместимости lua
+    zapret2 этого роутера.
     """
     refs = references(strategy)
     warnings = []
     out_lists, out_ipsets, out_blobs, out_lua = [], [], [], []
+    for tok in refs["unknown"]:
+        warnings.append("%s: файл не входит в бандл (путь вне lists/ и "
+                        "lua/)" % tok[:120])
     for kind, name in refs["lists"]:
         from core.ipset_manager import IPSET_NAMESPACE_RE
         if kind == "ipset" or IPSET_NAMESPACE_RE.match(name):
@@ -177,23 +219,37 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         from core.nfqws_manager import _INIT_VARS_NAMES as init_vars
     except Exception:                           # noqa: BLE001
         init_vars = set()
-    # pattern=/seqovl_pattern= с именем init_vars задаёт сам скрипт (он
-    # уже в lua); прочие имена паттернов — такие же блобы
     names = refs["blobs"] + [n for n in refs["patterns"]
-                             if n not in init_vars and n not in refs["blobs"]]
+                             if n not in refs["blobs"]]
     for name in names:
         if name.startswith("fake_default_"):
             continue
-        data = blobs(name)
+        value = refs["declared"].get(name)
+        if value is not None:
+            data = _declared_bytes(value, blob_file)
+        else:
+            data = blobs(name)
         if not data:
-            warnings.append("блоб %s не найден на роутере — в бандл не "
-                            "входит" % name)
-        elif len(data) > MAX_BLOB:
+            if name in init_vars and name not in refs["blobs"]:
+                # паттерн init_vars без файла каталога (tls_rnd…) GUI
+                # получает из скрипта, байтов у него нет
+                warnings.append("паттерн %s задаёт init_vars.lua при "
+                                "запуске: в бандле его нет, AutoTuner "
+                                "такую стратегию не проверит" % name)
+            else:
+                warnings.append("блоб %s не найден на роутере — в бандл "
+                                "не входит" % name)
+            continue
+        if len(data) > MAX_BLOB:
             warnings.append("блоб %s больше %d КБ — в бандл не входит"
                             % (name, MAX_BLOB // 1024))
-        else:
-            out_blobs.append({"name": name,
-                              "base64": base64.b64encode(data).decode()})
+            continue
+        if len(data) > AUTOTUNER_MAX_BLOB:
+            warnings.append("блоб %s больше %d КБ: zapret-gui его примет, "
+                            "AutoTuner — нет" % (name,
+                                                 AUTOTUNER_MAX_BLOB // 1024))
+        out_blobs.append({"name": name,
+                          "base64": base64.b64encode(data).decode()})
     for name in refs["lua"]:
         text = lua(name)
         if text:
@@ -205,8 +261,9 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         "format": FORMAT,
         "format_version": FORMAT_VERSION,
         "generator": {"name": "zapret-gui", "version": version or ""},
-        "zapret2_compat": LUA_COMPAT,
-        "strategy": _clean_strategy(strategy),
+        "zapret2_compat": int(compat or LUA_COMPAT),
+        "strategy": _clean_strategy(strategy,
+                                    [b["name"] for b in out_blobs]),
         # по имени, как у AutoTuner: один и тот же бандл — один и тот же
         # файл, сколько его ни выгружай
         "hostlists": sorted(out_lists, key=lambda x: x["name"]),
@@ -238,28 +295,38 @@ def export_strategy(strategy: dict) -> tuple:
             return None
         return im.get_ipset(name)
 
-    def blobs(name):
-        # как при запуске: реестр (каталожные имена, затем свои блобы)
-        from core import blob_registry as br
-        value = br.get_blob_value(name)
-        if value is None:
-            return bm.get_blob_content(name) or None
-        value = str(value)
-        if value.lower().startswith("0x"):
-            try:
-                return bytes.fromhex(value[2:])
-            except ValueError:
-                return None
-        path = br._blob_file_path(value)
+    from core import blob_registry as br
+
+    def blob_file(value):
         try:
-            with open(path, "rb") as f:
+            with open(br._blob_file_path(value), "rb") as f:
                 return f.read(MAX_BLOB + 1)
         except OSError:
             return None
+
+    def blobs(name):
+        # как при запуске: реестр (каталожные имена, затем свои блобы)
+        value = br.get_blob_value(name)
+        if value is None:
+            return bm.get_blob_content(name) or None
+        return _declared_bytes(value, blob_file)
 
     def lua(name):
         # свой экземпляр, если есть, иначе поставляемый с GUI
         return lm.get_script(name) or None
 
     return build_bundle(strategy, hostlists=hostlists, ipsets=ipsets,
-                        blobs=blobs, lua=lua, version=_app_version())
+                        blobs=blobs, lua=lua, blob_file=blob_file,
+                        compat=_installed_compat(lm),
+                        version=_app_version())
+
+
+def _installed_compat(lm) -> int:
+    """NFQWS2_COMPAT_VER_REQUIRED установленного zapret-lib.lua."""
+    import os
+    try:
+        from core.asset_importer import _lua_compat_ver
+        return _lua_compat_ver(os.path.join(lm.lua_path,
+                                            "zapret-lib.lua")) or LUA_COMPAT
+    except Exception:                           # noqa: BLE001 — граница
+        return LUA_COMPAT

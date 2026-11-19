@@ -2289,9 +2289,9 @@ const StrategiesPage = (() => {
             a.click();
             a.remove();
             setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-            const warn = (res.warnings || []).join('; ');
-            if (warn) Toast.warning('Бандл сохранён. ' + warn);
-            else Toast.success('Бандл сохранён: ' + a.download);
+            Toast.success('Бандл сохранён: ' + a.download);
+            // по одному: каждое сообщение сервера переводится целиком
+            (res.warnings || []).slice(0, 4).forEach(w => Toast.warning(w));
         } catch (e) {
             Toast.error('Экспорт не удался: ' + (e.message || e));
         }

@@ -175,11 +175,18 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     """Что будет создано и что уже занято.
 
     ``existing``: {"hostlists", "ipsets", "blobs", "lua", "strategies",
-    "builtin_strategies"} — множества имён на этом роутере.
+    "builtin_strategies", "gui_lua", "gui_blobs"} — множества имён на
+    этом роутере. ``gui_lua`` — скрипты, которые поставляет сам GUI,
+    ``gui_blobs`` — имена каталога (``tls_google``): бандл с другого
+    zapret-gui несёт их копии, но свои у роутера уже есть и подходят его
+    версии GUI — они не пишутся (``skipped``) и конфликтом не считаются.
     """
-    items, conflicts = [], []
+    items, conflicts, skipped = [], [], []
 
-    def add(kind, name, taken):
+    def add(kind, name, taken, own=()):
+        if name in own:
+            skipped.append({"kind": kind, "name": name})
+            return
         items.append({"kind": kind, "name": name})
         if name in taken:
             conflicts.append({"kind": kind, "name": name})
@@ -189,12 +196,14 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     for s in _items(data, "ipsets"):
         add("ipset", s["name"], existing.get("ipsets", set()))
     for b in _items(data, "blobs"):
-        add("blob", b["name"], existing.get("blobs", set()))
+        add("blob", b["name"], existing.get("blobs", set()),
+            existing.get("gui_blobs", set()))
     for item in _items(data, "lua"):
-        add("lua", _lua_stem(item["name"]), existing.get("lua", set()))
+        add("lua", _lua_stem(item["name"]), existing.get("lua", set()),
+            existing.get("gui_lua", set()))
     sid = data["strategy"]["id"]
     add("strategy", sid, existing.get("strategies", set()))
-    return {"items": items, "conflicts": conflicts,
+    return {"items": items, "conflicts": conflicts, "skipped": skipped,
             "builtin_strategy": sid in existing.get("builtin_strategies",
                                                      set())}
 
@@ -273,7 +282,31 @@ def existing_names() -> dict:
         "strategies": {s.get("id") for s in strategies},
         "builtin_strategies": {s.get("id") for s in strategies
                                if s.get("is_builtin")},
+        "gui_lua": _gui_lua(),
+        "gui_blobs": _gui_blobs(),
     }
+
+
+def _gui_lua() -> set:
+    """Скрипты, которые поставляет сам GUI (import/lua)."""
+    import os
+    from core.lua_manager import BUNDLED_LUA_DIR
+    try:
+        return {f[:-4] for f in os.listdir(BUNDLED_LUA_DIR)
+                if f.endswith(".lua")}
+    except OSError:
+        return set()
+
+
+def _gui_blobs() -> set:
+    """Имена каталога, которые реестр блобов знает сам (tls_google …)."""
+    try:
+        from core import blob_registry as br
+        br._ensure_loaded()
+        with br._lock:
+            return set(br._registry)
+    except Exception:                           # noqa: BLE001 — граница
+        return set()
 
 
 def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
@@ -325,14 +358,19 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
         ok = im.save_ipset(name, [str(c) for c in s["cidrs"]])
         ok = ok[0] if isinstance(ok, tuple) else ok
         (saved if ok else failed).append("ipset %s" % name)
+    own = {(x["kind"], x["name"]) for x in plan.get("skipped") or ()}
     bm = get_blob_manager()
     for b in _items(data, "blobs"):
+        if ("blob", b["name"]) in own:
+            continue
         name = new("blob", b["name"])
         ok, err = bm.save_blob(name, blob_bytes(b))
         (saved if ok else failed).append("blob %s%s"
                                          % (name, "" if ok else ": %s" % err))
     lm = get_lua_manager()
     for item in _items(data, "lua"):
+        if ("lua", _lua_stem(item["name"])) in own:
+            continue
         name = new("lua", _lua_stem(item["name"]))
         ok, err = lm.save_script(name, item["text"])
         (saved if ok else failed).append("lua %s%s"

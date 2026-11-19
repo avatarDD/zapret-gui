@@ -4573,8 +4573,6 @@ const i18n_en_text = {
 "Скачать бандл": "Download bundle",
 "Один файл со стратегией, её списками, блобами и lua — для Zapret2_AutoTuner или другого роутера": "One file with the strategy, its lists, blobs and lua, for Zapret2_AutoTuner or another router",
 "Бандл не собрался": "The bundle could not be built",
-"Бандл сохранён. {0}": "Bundle saved. {0}",
-"Бандл сохранён.": "Bundle saved.",
 "Бандл сохранён: {0}": "Bundle saved: {0}",
 "Бандл сохранён:": "Bundle saved:",
 "Это приём, а не готовый набор: он будет применён ко всему трафику {0}. Надёжнее подобрать стратегию для сайта в разделе «Подбор стратегий».": "This is a technique, not a ready set: it will be applied to all {0} traffic. It is more reliable to find a strategy for the site in the “Strategy search” section.",
