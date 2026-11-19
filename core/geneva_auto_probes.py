@@ -73,7 +73,7 @@ RECHECK = 2.0                     # пауза перед второй проб�
 # Сертификат с верным именем от национального корня, которого нет в
 # CA-бандле (Минцифры у многих .ru): не подмена. Узнаётся по издателю
 # листового сертификата — цепочки на роутере нет (отличие от эталона).
-NATIONAL_ISSUERS = (b"Russian Trusted",)
+NATIONAL_ISSUER_CNS = ("Russian Trusted Sub CA", "Russian Trusted Root CA")
 NATIONAL_VERIFY_CODES = (2, 19, 20, 21)
 _national_hosts = set()
 P_THROTTLED = "throttled"
@@ -331,14 +331,35 @@ def national_name_ok(der: bytes, host: str) -> bool:
     Trusted …») и выписан на ``host``: проходит по имени (PassesNameOnly
     эталона). Любой другой недоверенный — нет: MITM выпишет сертификат
     на любое имя, но не от этого УЦ."""
-    if not der or not any(x in der for x in NATIONAL_ISSUERS):
+    if not der:
         return False
-    return host_matches(cert_names(der), host)
+    info = _decode_cert(der)
+    issuer_cn = [v for rdn in info.get("issuer") or () for k, v in rdn
+                 if k == "commonName"]
+    # Издатель — именно CN УЦ Минцифры (ProbeResult.NationalRoot эталона),
+    # а не эти байты где угодно в сертификате.
+    if not any(cn in NATIONAL_ISSUER_CNS for cn in issuer_cn):
+        return False
+    return host_matches(_names_of(info), host)
 
 
 def cert_names(der: bytes) -> list:
     """DNS-имена сертификата (subjectAltName, иначе CN) — разбором,
     который даёт сам модуль ssl CPython."""
+    return _names_of(_decode_cert(der))
+
+
+def _names_of(info: dict) -> list:
+    names = [v for k, v in info.get("subjectAltName") or () if k == "DNS"]
+    if not names:
+        for rdn in info.get("subject") or ():
+            for k, v in rdn:
+                if k == "commonName":
+                    names.append(v)
+    return names
+
+
+def _decode_cert(der: bytes) -> dict:
     import tempfile
     try:
         pem = ssl.DER_cert_to_PEM_cert(der)
@@ -347,18 +368,11 @@ def cert_names(der: bytes) -> list:
             f.write(pem)
             path = f.name
         try:
-            info = ssl._ssl._test_decode_cert(path)   # noqa: SLF001
+            return ssl._ssl._test_decode_cert(path) or {}   # noqa: SLF001
         finally:
             os.unlink(path)
     except Exception:                               # noqa: BLE001
-        return []
-    names = [v for k, v in info.get("subjectAltName") or () if k == "DNS"]
-    if not names:
-        for rdn in info.get("subject") or ():
-            for k, v in rdn:
-                if k == "commonName":
-                    names.append(v)
-    return names
+        return {}
 
 
 def host_matches(names, host: str) -> bool:

@@ -420,6 +420,8 @@ const GenevaPage = (() => {
         // меню «⋯» строки сервиса переживает перерисовку опросом
         container.addEventListener('toggle', e => {
             const d = e.target;
+            // раскрыли списки — свежие с сервера (их меняют и меню, и MCP)
+            if (d && d.id === 'gv-auto-lists' && d.open) { _loadAutoLists(true); return; }
             if (!d || !d.dataset || d.dataset.menu === undefined) return;
             if (d.open) _autoMenuOpen = d.dataset.menu;
             else if (_autoMenuOpen === d.dataset.menu) _autoMenuOpen = '';
@@ -670,6 +672,9 @@ const GenevaPage = (() => {
                 const [path, body] = calls[act];
                 await API.post('/api/geneva/auto/' + path, Object.assign({ key }, body));
                 Toast.success(_tr('geneva.auto.act_done'));
+                // «Не подбирать» меняет списки: форма не должна вернуть
+                // старые при следующем сохранении
+                if (act === 'nosearch') await _loadAutoLists(true);
             }
         } catch (e) {
             Toast.error(errText(e));

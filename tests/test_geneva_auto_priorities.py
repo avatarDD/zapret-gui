@@ -405,6 +405,46 @@ class TestSplitAndLists(_Base):
         self.assertEqual(m.book.find("web:a.example").status, ga.BLOCKED)
         self.assertIn("web:youtube.com", m._works)
 
+    def test_without_split_only_slot_zero(self):
+        m = self.make(split=False)
+        self.blocked(m, "web:a.example", "1.1.1.1")
+        m.search(0).running = True           # прошлый подбор ещё сворачивается
+        self.assertIsNone(m._free_slot())
+        m.search(0).running = False
+        self.assertEqual(m._free_slot(), 0)
+
+    def test_preempt_once_and_not_for_blocked_custom(self):
+        m = self.make(split=False)
+        self.blocked(m, "web:a.example", "1.1.1.1")
+        m._searching(100.0)
+        m._works["web:a.example"]["preempted"] = True
+        self.blocked(m, "web:youtube.com", "9.9.9.9")
+        m._preempt(101.0)                # прерывание уже идёт — второго нет
+        import time
+        time.sleep(0.05)
+        self.assertEqual(self.slots[0].cancelled, 0)
+        # важный с идущей проверкой своей стратегии никого не прерывает
+        m._works["web:a.example"].pop("preempted")
+        m._works["web:youtube.com"] = {"slot": 1, "split": False,
+                                       "custom": "S"}
+        m._preempt(102.0)
+        time.sleep(0.05)
+        self.assertEqual(self.slots[0].cancelled, 0)
+
+    def test_lists_from_settings_apply_to_saved_book(self):
+        lists = gal.Lists({"exclude": ["bank.example", "10.0.0.0/8"]})
+        saved = [svc("web:bank.example", status=ga.APPLIED).to_dict(),
+                 svc("web:cdn.example", status=ga.APPLIED,
+                     ips=("1.1.1.1",)).to_dict()]
+        b = ga.Book(saved, 0, lists)
+        self.assertIsNone(b.find("web:bank.example"))
+        # новый адрес CDN в исключённой подсети в набор не идёт
+        b.feed([ga.Sample(key="web:cdn.example", kind=ga.WEB,
+                          transport="tcp", name="cdn.example", app="tls", ip="10.1.2.3", port=443,
+                          time=5.0, health=ga.OK)], 5.0)
+        self.assertEqual([a["ip"] for a in b.find("web:cdn.example")
+                          .addresses], ["1.1.1.1"])
+
     def test_lists_update_and_no_search(self):
         m = self.make()
         self.blocked(m, "web:ya.ru", "1.1.1.1")

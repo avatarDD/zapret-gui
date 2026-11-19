@@ -546,8 +546,10 @@ class Book:
                 s.replay = ""
             if s.status == SEARCHING:
                 _move(s, BLOCKED, now or s.since, "подбор прерван, продолжу")
-            s.priority = gal.base_priority(s, self.lists)
             self._services[s.key] = s
+        # Списки могли смениться, пока режим был выключен: «Не трогать»
+        # и «Не подбирать» действуют и на сохранённую книгу.
+        self.set_lists(self.lists)
 
     @property
     def services(self) -> list:
@@ -617,6 +619,10 @@ class Book:
             # Адрес, которого ещё нет у применённого сервиса (новый адрес
             # CDN): поток шёл без обхода, его провал о стратегии ничего не
             # говорит — адрес сначала войдёт в набор.
+            if x.ip and x.kind != LOCAL_PORT and \
+                    self.lists.exclude.matches_address(x.ip):
+                # адрес в «Не трогать» (подсеть): в набор группы не идёт
+                continue
             uncovered = s.is_active and x.kind != LOCAL_PORT and \
                 bool(x.ip) and s.key not in self.by_name and \
                 not any(a["ip"] == x.ip for a in s.addresses)

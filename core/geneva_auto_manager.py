@@ -894,8 +894,12 @@ class GenevaAutoManager:
         return max(1, min(st["workers"], MAX_SEARCHES, free))
 
     def _free_slot(self):
+        """Свободный слот подбора. Без деления потоков — только слот 0:
+        у слотов 1–3 блок портов на 2 воркера, а без деления подбор
+        берёт все потоки."""
         used = {w["slot"] for w in self._works.values()}
-        for k in range(MAX_SEARCHES):
+        n = MAX_SEARCHES if self.settings()["split_workers"] else 1
+        for k in range(n):
             if k not in used and not self.search(k).busy:
                 return k
         return None
@@ -1010,7 +1014,16 @@ class GenevaAutoManager:
         все места заняты, — наименее важный."""
         if not self._works:
             return
-        top = self.book.next_to_search(now)
+        if any(w.get("preempted") for w in self._works.values()):
+            return              # прошлое прерывание ещё не закончилось
+        custom = [self.book.find(k) for k, w in self._works.items()
+                  if w.get("custom")]
+        custom = [c for c in custom if c is not None]
+        # тот, кто сам не сможет начать (уже в работе или рядом с
+        # проверкой своей стратегии), никого не прерывает
+        top = self.book.next_to_search(
+            now, lambda s: s.key not in self._works and
+            not any(ga.overlap(s, c) for c in custom))
         if top is None or top.priority == gal.BACKGROUND:
             return
         mine = gal.effective(top, now)

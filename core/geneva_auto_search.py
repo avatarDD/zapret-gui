@@ -128,6 +128,9 @@ def probe_spec(s: ga.Service):
         spec.update(kind="web", host=host, tls=s.port != 80)
         if s.criteria:
             spec["criteria"] = dict(s.criteria)
+        if host in pr._national_hosts:
+            # корень Минцифры: процесс пробы exec этой памяти не видит
+            spec["name_only"] = True
         return spec
     plan = pr.replay_plan(s)
     if plan is None:
@@ -156,6 +159,8 @@ def probe_argv(s: ga.Service, *, python: str, script: str,
         for k in ("min_rate", "pad", "min_bytes"):
             if crit.get(k):
                 argv += ["--" + k.replace("_", "-"), str(int(crit[k]))]
+        if spec.get("name_only"):
+            argv.append("--name-only")
         return argv
     argv += ["--kind", "replay"]
     if spec["udp"]:
