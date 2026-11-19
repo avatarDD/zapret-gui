@@ -349,7 +349,7 @@ def register(app):
             return {"ok": False, "error": "; ".join(errors),
                     "warnings": warnings}
         if body.get("dry_run", True):
-            existing = bi.existing_names()
+            existing = bi.existing_names(bundle)
             return {"ok": True, "plan": bi.plan_bundle(bundle, existing),
                     "warnings": warnings}
         on_conflict = body.get("on_conflict")

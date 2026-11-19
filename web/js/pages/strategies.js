@@ -2291,7 +2291,11 @@ const StrategiesPage = (() => {
             setTimeout(() => URL.revokeObjectURL(a.href), 1000);
             Toast.success('Бандл сохранён: ' + a.download);
             // по одному: каждое сообщение сервера переводится целиком
-            (res.warnings || []).slice(0, 4).forEach(w => Toast.warning(w));
+            const warns = res.warnings || [];
+            warns.slice(0, 4).forEach(w => Toast.warning(w));
+            if (warns.length > 4) {
+                Toast.warning('Ещё предупреждений: ' + (warns.length - 4));
+            }
         } catch (e) {
             Toast.error('Экспорт не удался: ' + (e.message || e));
         }
@@ -2465,6 +2469,8 @@ const StrategiesPage = (() => {
         }
         const titles = { hostlist: 'список', ipset: 'IP-список', blob: 'блоб', lua: 'lua', strategy: 'стратегия' };
         const items = plan.plan.items.map(i => '  • ' + titles[i.kind] + ' ' + i.name).join('\n');
+        // то, что здесь уже есть ровно таким же, не пишется — но названо
+        const same = (plan.plan.skipped || []).map(i => titles[i.kind] + ' ' + i.name).join(', ');
         const warn = (plan.warnings || []).map(w => '⚠ ' + w).join('\n');
         let onConflict = null;
         const conflicts = plan.plan.conflicts || [];
@@ -2474,7 +2480,9 @@ const StrategiesPage = (() => {
                 'Уже есть: ' + names + '.\n\nOK — заменить существующие, Отмена — сохранить под новыми именами.')
                 ? 'rename' : 'replace';
         }
-        if (!confirm('Импортировать бандл?\n\n' + items + (warn ? '\n\n' + warn : '') +
+        if (!confirm('Импортировать бандл?\n\n' + items +
+                     (same ? '\n\nУже есть таким же, не перезаписывается: ' + same : '') +
+                     (warn ? '\n\n' + warn : '') +
                      (onConflict ? '\n\nЗанятые имена: ' + (onConflict === 'replace' ? 'заменить' : 'новые имена') : '') +
                      '\n\nСтратегия будет сохранена, но не применена.')) return;
         const r = await API.post('/api/strategies/import-bundle', { bundle, dry_run: false, on_conflict: onConflict });

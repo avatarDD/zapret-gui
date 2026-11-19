@@ -115,11 +115,10 @@ class TestOurBundleOut(unittest.TestCase):
         # tls_google — паттерн init_vars, у которого есть файл каталога:
         # едет байтами (AutoTuner без них стратегию не проверит)
         self.assertEqual([b["name"] for b in out["blobs"]],
-                         ["my_hex", "my_tls", "tls_google"])
-        self.assertEqual(base64.b64decode(out["blobs"][0]["base64"]),
-                         bytes.fromhex("1603010000"))
-        # объявление с путём/hex этого роутера из args убрано
-        self.assertNotIn("--blob=", out["strategy"]["profiles"][2]["args"])
+                         ["my_tls", "tls_google"])
+        # объявленный в args блоб остаётся объявлением (hex), не дублем
+        self.assertIn("--blob=my_hex:0x1603010000",
+                      out["strategy"]["profiles"][2]["args"])
         self.assertEqual([x["name"] for x in out["lua"]],
                          ["init_vars.lua", "fakemultisplit.lua",
                           "my-twice.lua"])
@@ -170,7 +169,7 @@ class TestApi(unittest.TestCase):
                 "/api/strategies/my.yt-2026/export-bundle")
             self.assertTrue(r["ok"], r)
             self.assertEqual(r["filename"], "my_yt-2026.bundle.json")
-            self.assertEqual(r["bundle"]["blobs"][1]["name"], "my_tls")
+            self.assertEqual(r["bundle"]["blobs"][0]["name"], "my_tls")
             self.assertEqual(len(r["warnings"]), 1)
             r = self.client.get_json("/api/strategies/nope/export-bundle")
             self.assertEqual(r["_status"], 404)
@@ -207,18 +206,66 @@ class TestApi(unittest.TestCase):
         self.assertEqual([b["name"] for b in out["blobs"]], ["mid"])
         self.assertTrue(any("AutoTuner" in w for w in warnings))
 
-    def test_gui_own_lua_and_blobs_are_not_written_on_import(self):
+    def test_identical_files_are_not_written_on_import(self):
         out, _ = be.build_bundle(sample_strategy(), version="test",
                                  **SAMPLE_FILES)
         existing = {"hostlists": set(), "ipsets": set(), "blobs": set(),
                     "lua": {"init_vars", "fakemultisplit"},
                     "strategies": set(), "builtin_strategies": set(),
-                    "gui_lua": {"init_vars", "fakemultisplit"},
-                    "gui_blobs": {"tls_google"}}
+                    "same": {("lua", "init_vars"), ("blob", "tls_google")}}
         plan = bi.plan_bundle(out, existing)
-        self.assertEqual(plan["conflicts"], [])
+        # отличающийся fakemultisplit — конфликт, решает человек
+        self.assertEqual(plan["conflicts"],
+                         [{"kind": "lua", "name": "fakemultisplit"}])
         self.assertEqual(sorted(x["name"] for x in plan["skipped"]),
-                         ["fakemultisplit", "init_vars", "tls_google"])
+                         ["init_vars", "tls_google"])
+
+    def test_same_here_compares_content(self):
+        from unittest import mock
+        out, _ = be.build_bundle(sample_strategy(), version="test",
+                                 **SAMPLE_FILES)
+
+        class LM:
+            def get_script(self, n):
+                return {"init_vars": "tls_rnd = fake_default_tls\n",
+                        "fakemultisplit": "-- другой\n"}.get(n, "")
+
+        class HM:
+            def get_hostlist(self, n):
+                return ["youtube.com", "googlevideo.com"]
+        names = {"hostlists": {"my-yt"}, "ipsets": set(),
+                 "lua": {"init_vars", "fakemultisplit"}}
+        with mock.patch("core.lua_manager.get_lua_manager",
+                        return_value=LM()), \
+                mock.patch("core.hostlist_manager.get_hostlist_manager",
+                           return_value=HM()), \
+                mock.patch.object(bi, "_blob_here",
+                                  lambda n: b"\x16\x03\x01google"
+                                  if n == "tls_google" else None):
+            same = bi._same_here(out, names)
+        self.assertEqual(same, {("lua", "init_vars"), ("hostlist", "my-yt"),
+                                ("blob", "tls_google")})
+
+    def test_gui_blob_args_declared_path_enabled_and_inline_lua(self):
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--lua-init=fake_default_tls=1 "
+                                 "--blob=over:@bin/over.bin "
+                                 "--lua-desync=fakemultidisorder:pos=1:"
+                                 "fake_blob=my_fake:x=over "
+                                 "--lua-desync=fake:blob=tls_rnd"},
+            {"id": "p2", "enabled": None, "args": "--lua-desync=fake"}]}
+        out, warnings = be.build_bundle(
+            st, hostlists=lambda n: None, ipsets=lambda n: None,
+            blobs={"my_fake": b"\x01\x02"}.get, lua=lambda n: "x",
+            blob_file={"@bin/over.bin": b"\xab\xcd"}.get)
+        self.assertEqual([b["name"] for b in out["blobs"]], ["my_fake"])
+        self.assertIn("--blob=over:0xabcd",
+                      out["strategy"]["profiles"][0]["args"])
+        self.assertIs(out["strategy"]["profiles"][1]["enabled"], False)
+        # инлайн-lua — не файл; blob=tls_rnd — init_vars, а не «нет блоба»
+        self.assertFalse(any("lua-init" in w for w in warnings), warnings)
+        self.assertTrue(any("tls_rnd" in w and "init_vars" in w
+                            for w in warnings), warnings)
 
     def test_missing_lua_and_big_blob_are_warned(self):
         st = {"id": "x", "name": "x", "profiles": [

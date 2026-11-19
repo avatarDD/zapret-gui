@@ -44,16 +44,21 @@ from core.bundle_import import FORMAT, FORMAT_VERSION, LUA_COMPAT, MAX_BLOB
 _STRATEGY_ID_RE = re.compile(r"[^a-zA-Z0-9_-]")
 _LIST_REF_RE = re.compile(
     r"^--(hostlist|hostlist-exclude|hostlist-auto|ipset|ipset-exclude)=(.+)$")
-# Скрипты, которые поставляет сам zapret2: у любого получателя они свои.
 # Предел блоба у AutoTuner (StrategyValidator.MaxBlobSize); у zapret-gui
 # свой, :data:`MAX_BLOB`.
 AUTOTUNER_MAX_BLOB = 16384
+# Скрипты, которые поставляет сам zapret2: у любого получателя они свои.
 ZAPRET2_LUA = frozenset({
     "zapret-lib", "zapret-antidpi", "zapret-auto", "zapret-obfs",
     "zapret-pcap", "zapret-wgobfs", "zapret-tests"})
 _BLOB_DECL_RE = re.compile(r"^--blob=([A-Za-z_][A-Za-z0-9_]*):")
-_BLOB_ARG_RE = re.compile(
-    r"(?:^|:)(blob|pattern|seqovl_pattern)=([A-Za-z_][A-Za-z0-9_]*)")
+# Аргументы lua-функций со значением-именем блоба: blob/pattern/
+# seqovl_pattern zapret2 и аргументы скриптов GUI (fake_blob у
+# fakemultidisorder, fallback у tls_client_hello_clone, dataxor у
+# zapret-obfs). Hex (0x…) — не имя, его регэксп не берёт.
+from core.bundle_import import _BLOB_ARGS  # noqa: E402
+_BLOB_ARG_RE = re.compile(r"(?:^|:)(%s)=([A-Za-z_][A-Za-z0-9_]*)"
+                          % "|".join(_BLOB_ARGS))
 _LUA_REF_RE = re.compile(r"^--lua-init=@(?:.*/)?lua/([a-zA-Z0-9_.\-]+)\.lua$")
 _STEM_RE = re.compile(r"(?:^|/)([a-zA-Z0-9_-]{1,64})\.txt$")
 # Поля стратегии, которые несёт бандл (остальное — состояние роутера).
@@ -116,8 +121,8 @@ def references(strategy: dict) -> dict:
                 if m.group(1) not in lua:
                     lua.append(m.group(1))
                 continue
-            if tok.startswith("--lua-init="):
-                unknown.append(tok)
+            if tok.startswith("--lua-init=@"):
+                unknown.append(tok)     # файл вне lua/ (инлайн-код едет в args)
                 continue
             m = _BLOB_DECL_RE.match(tok)
             if m:
@@ -126,7 +131,7 @@ def references(strategy: dict) -> dict:
                     blobs.append(m.group(1))
             if tok.startswith("--lua-desync="):
                 for key, n in _BLOB_ARG_RE.findall(tok[len("--lua-desync="):]):
-                    into = blobs if key == "blob" else patterns
+                    into = patterns if key.endswith("pattern") else blobs
                     if n not in into:
                         into.append(n)
     # порядок загрузки как у запуска: скрипты GUI (lua_args) раньше
@@ -138,17 +143,17 @@ def references(strategy: dict) -> dict:
             "lua": [n for n in lua if n not in ZAPRET2_LUA]}
 
 
-def _drop_decl(args: str, names) -> str:
-    """Убрать ``--blob=<имя>:…`` блобов, что едут в бандле: и импорт
-    zapret-gui, и импорт AutoTuner объявляют их сами по имени, а
-    объявление с путём этого роутера увело бы на файл, которого у
-    получателя нет."""
-    for n in names:
-        args = re.sub(r"(?:^|\s)--blob=%s:\S+" % re.escape(n), "", args)
-    return re.sub(r"\s{2,}", " ", args).strip()
+def _inline_decl(args: str, inline: dict) -> str:
+    """``--blob=<имя>:@путь`` этого роутера → ``--blob=<имя>:0x<hex>``:
+    объявление в args самодостаточно и у получателя значит то же, что
+    здесь (и поверх имени каталога, и без файла)."""
+    for name, data in inline.items():
+        args = re.sub(r"(?<!\S)--blob=%s:\S+" % re.escape(name),
+                      lambda m: "--blob=%s:0x%s" % (name, data.hex()), args)
+    return args
 
 
-def _clean_strategy(strategy: dict, bundled_blobs=()) -> dict:
+def _clean_strategy(strategy: dict, inline=None) -> dict:
     out = {k: strategy[k] for k in _STRATEGY_KEYS if k in strategy}
     out["id"] = _STRATEGY_ID_RE.sub("_", str(strategy.get("id") or
                                              "strategy"))[:64] or "strategy"
@@ -161,8 +166,9 @@ def _clean_strategy(strategy: dict, bundled_blobs=()) -> dict:
         out["profiles"].append({
             "id": str(p.get("id") or "p%d" % i),
             "name": str(p.get("name") or "p%d" % i),
-            "enabled": p.get("enabled", True) is not False,
-            "args": _drop_decl(str(p.get("args") or ""), bundled_blobs),
+            # как при запуске (strategy_builder): выключен любой «ложный»
+            "enabled": bool(p.get("enabled", True)),
+            "args": _inline_decl(str(p.get("args") or ""), inline or {}),
         })
     return out
 
@@ -221,6 +227,7 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         init_vars = set()
     names = refs["blobs"] + [n for n in refs["patterns"]
                              if n not in refs["blobs"]]
+    inline = {}             # объявленные в args — едут там же, как hex
     for name in names:
         if name.startswith("fake_default_"):
             continue
@@ -230,7 +237,7 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         else:
             data = blobs(name)
         if not data:
-            if name in init_vars and name not in refs["blobs"]:
+            if name in init_vars:
                 # паттерн init_vars без файла каталога (tls_rnd…) GUI
                 # получает из скрипта, байтов у него нет
                 warnings.append("паттерн %s задаёт init_vars.lua при "
@@ -248,6 +255,9 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
             warnings.append("блоб %s больше %d КБ: zapret-gui его примет, "
                             "AutoTuner — нет" % (name,
                                                  AUTOTUNER_MAX_BLOB // 1024))
+        if value is not None:
+            inline[name] = data
+            continue
         out_blobs.append({"name": name,
                           "base64": base64.b64encode(data).decode()})
     for name in refs["lua"]:
@@ -262,14 +272,13 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         "format_version": FORMAT_VERSION,
         "generator": {"name": "zapret-gui", "version": version or ""},
         "zapret2_compat": int(compat or LUA_COMPAT),
-        "strategy": _clean_strategy(strategy,
-                                    [b["name"] for b in out_blobs]),
+        "strategy": _clean_strategy(strategy, inline),
         # по имени, как у AutoTuner: один и тот же бандл — один и тот же
         # файл, сколько его ни выгружай
         "hostlists": sorted(out_lists, key=lambda x: x["name"]),
         "ipsets": sorted(out_ipsets, key=lambda x: x["name"]),
         "blobs": sorted(out_blobs, key=lambda x: x["name"]),
-        # lua — в порядке загрузки (оркестратор после zapret-auto и т.п.)
+        # lua — в порядке загрузки у GUI (скрипты GUI, затем свои)
         "lua": out_lua,
     }
     return bundle, warnings

@@ -48,7 +48,8 @@ _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _LUA_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
 _STRATEGY_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 # Аргументы lua-функций, значение которых — имя блоба.
-_BLOB_ARGS = ("blob", "pattern", "seqovl_pattern")
+_BLOB_ARGS = ("blob", "pattern", "seqovl_pattern", "fake_blob", "fallback",
+              "dataxor")
 
 
 def _ipset_name_ok(name: str) -> bool:
@@ -175,16 +176,19 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     """Что будет создано и что уже занято.
 
     ``existing``: {"hostlists", "ipsets", "blobs", "lua", "strategies",
-    "builtin_strategies", "gui_lua", "gui_blobs"} — множества имён на
-    этом роутере. ``gui_lua`` — скрипты, которые поставляет сам GUI,
-    ``gui_blobs`` — имена каталога (``tls_google``): бандл с другого
-    zapret-gui несёт их копии, но свои у роутера уже есть и подходят его
-    версии GUI — они не пишутся (``skipped``) и конфликтом не считаются.
+    "builtin_strategies", "same"} — множества имён на этом роутере;
+    ``same`` — пары ``(вид, имя)``, у которых здесь уже ровно то же
+    содержимое (бандл с другого zapret-gui везёт копии поставляемых
+    списков, фейков каталога и скриптов GUI): они не пишутся
+    (``skipped``) и конфликтом не считаются. Отличается хоть байтом —
+    обычный конфликт: «заменить» или «переименовать» решает человек.
     """
     items, conflicts, skipped = [], [], []
 
-    def add(kind, name, taken, own=()):
-        if name in own:
+    same = existing.get("same", set())
+
+    def add(kind, name, taken):
+        if (kind, name) in same:
             skipped.append({"kind": kind, "name": name})
             return
         items.append({"kind": kind, "name": name})
@@ -196,11 +200,9 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     for s in _items(data, "ipsets"):
         add("ipset", s["name"], existing.get("ipsets", set()))
     for b in _items(data, "blobs"):
-        add("blob", b["name"], existing.get("blobs", set()),
-            existing.get("gui_blobs", set()))
+        add("blob", b["name"], existing.get("blobs", set()))
     for item in _items(data, "lua"):
-        add("lua", _lua_stem(item["name"]), existing.get("lua", set()),
-            existing.get("gui_lua", set()))
+        add("lua", _lua_stem(item["name"]), existing.get("lua", set()))
     sid = data["strategy"]["id"]
     add("strategy", sid, existing.get("strategies", set()))
     return {"items": items, "conflicts": conflicts, "skipped": skipped,
@@ -266,15 +268,16 @@ def rewrite_args(args: str, renames: dict) -> str:
 
 # ─────────────────────── apply ─────────────────────────────────────────
 
-def existing_names() -> dict:
-    """Занятые имена на этом роутере (для :func:`plan_bundle`)."""
+def existing_names(data: dict = None) -> dict:
+    """Занятые имена на этом роутере (для :func:`plan_bundle`); с
+    ``data`` — и ``same``: что из бандла здесь уже есть таким же."""
     from core.blob_manager import get_blob_manager
     from core.hostlist_manager import get_hostlist_manager
     from core.ipset_manager import get_ipset_manager
     from core.lua_manager import get_lua_manager
     from core.strategy_builder import get_strategy_manager
     strategies = get_strategy_manager().get_strategies()
-    return {
+    out = {
         "hostlists": set(get_hostlist_manager().list_names()),
         "ipsets": set(get_ipset_manager().list_names()),
         "blobs": {b["name"] for b in get_blob_manager().get_blobs()},
@@ -282,31 +285,57 @@ def existing_names() -> dict:
         "strategies": {s.get("id") for s in strategies},
         "builtin_strategies": {s.get("id") for s in strategies
                                if s.get("is_builtin")},
-        "gui_lua": _gui_lua(),
-        "gui_blobs": _gui_blobs(),
     }
+    out["same"] = _same_here(data, out) if isinstance(data, dict) else set()
+    return out
 
 
-def _gui_lua() -> set:
-    """Скрипты, которые поставляет сам GUI (import/lua)."""
-    import os
-    from core.lua_manager import BUNDLED_LUA_DIR
+def _same_here(data: dict, names: dict) -> set:
+    """``(вид, имя)`` из бандла, которые здесь уже ровно такие же."""
+    from core.hostlist_manager import get_hostlist_manager
+    from core.ipset_manager import get_ipset_manager
+    from core.lua_manager import get_lua_manager
+    out = set()
     try:
-        return {f[:-4] for f in os.listdir(BUNDLED_LUA_DIR)
-                if f.endswith(".lua")}
-    except OSError:
-        return set()
+        hm = get_hostlist_manager()
+        for h in _items(data, "hostlists"):
+            if h.get("name") in names["hostlists"] and \
+                    list(hm.get_hostlist(h["name"])) == list(h["domains"]):
+                out.add(("hostlist", h["name"]))
+        im = get_ipset_manager()
+        for i in _items(data, "ipsets"):
+            if i.get("name") in names["ipsets"] and \
+                    list(im.get_ipset(i["name"])) == list(i["cidrs"]):
+                out.add(("ipset", i["name"]))
+        for b in _items(data, "blobs"):
+            here = _blob_here(b.get("name"))
+            if here is not None and here == blob_bytes(b):
+                out.add(("blob", b["name"]))
+        lm = get_lua_manager()
+        for item in _items(data, "lua"):
+            stem = _lua_stem(str(item.get("name") or ""))
+            if stem in names["lua"] and lm.get_script(stem) == item["text"]:
+                out.add(("lua", stem))
+    except Exception:                           # noqa: BLE001 — граница
+        pass
+    return out
 
 
-def _gui_blobs() -> set:
-    """Имена каталога, которые реестр блобов знает сам (tls_google …)."""
+def _blob_here(name):
+    """Байты, которые nfqws2 этого роутера получит под именем (реестр
+    каталога, затем свой блоб), или None."""
     try:
         from core import blob_registry as br
-        br._ensure_loaded()
-        with br._lock:
-            return set(br._registry)
-    except Exception:                           # noqa: BLE001 — граница
-        return set()
+        value = br.get_blob_value(str(name or ""))
+        if value is None:
+            return None
+        value = str(value)
+        if value.lower().startswith("0x"):
+            return bytes.fromhex(value[2:])
+        with open(br._blob_file_path(value), "rb") as f:
+            return f.read(MAX_BLOB + 1)
+    except (OSError, ValueError):
+        return None
 
 
 def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
@@ -320,7 +349,7 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
     if errors:
         return {"ok": False, "error": "; ".join(errors),
                 "error_code": "invalid", "warnings": warnings}
-    existing = existing if existing is not None else existing_names()
+    existing = existing if existing is not None else existing_names(data)
     plan = plan_bundle(data, existing)
     if plan["builtin_strategy"] and on_conflict != "rename":
         return {"ok": False, "error_code": "conflict", "plan": plan,
@@ -388,6 +417,8 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
         saved.append("strategy %s" % strategy["id"])
     return {"ok": not failed, "strategy_id": strategy["id"],
             "saved": saved, "failed": failed, "renamed": renames,
+            "skipped": ["%s %s" % (x["kind"], x["name"])
+                        for x in plan.get("skipped") or ()],
             "warnings": warnings,
             "error": ("не сохранено: " + ", ".join(failed)) if failed
             else None}
