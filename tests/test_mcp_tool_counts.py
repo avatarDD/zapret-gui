@@ -167,9 +167,13 @@ from core.mcp import registry
 # `control` (geneva_auto_enable — в два шага с confirm_token, потому что
 # переключает движок обхода всей сети; geneva_auto_disable;
 # geneva_auto_reset — забыть один сервис).
+# «Авто» 1.4 (Zapret2_AutoTuner): + 4 под `control` (geneva_auto_check_now,
+# geneva_auto_priority, geneva_auto_pin, geneva_auto_lists — списки и
+# флажки; без аргументов только читает, но открывается тем же
+# разрешением, что и запись).
 BY_SCOPE = {
     "read": 54,
-    "control": 17,
+    "control": 21,
     "strategies_write": 12,
     "config_write": 2,
     "probes": 19,
@@ -299,7 +303,8 @@ class TestToolCounts(unittest.TestCase):
         "strategy_apply", "quick_fix_apply", "device_quota_grant",
         "bypass_engine_set", "geneva_set_strategy", "geneva_start",
         "geneva_stop", "geneva_auto_enable", "geneva_auto_disable",
-        "geneva_auto_reset",
+        "geneva_auto_reset", "geneva_auto_check_now", "geneva_auto_priority",
+        "geneva_auto_pin", "geneva_auto_lists",
     ]
     STRATEGIES_WRITE_TOOLS = [
         "blob_add", "hostlist_edit", "ipset_edit", "lua_script_save",
