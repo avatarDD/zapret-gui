@@ -46,6 +46,40 @@ class FakeAuto:
         self.enabled = self.running = False
         return {"ok": True, "enabled": False}
 
+    def _act(self, name, key, *rest):
+        self.calls.append((name, key) + rest)
+        if key != "dns:93.184.216.53":
+            return {"ok": False, "error_code": "not_found",
+                    "error": "сервиса нет"}
+        return {"ok": True, "key": key}
+
+    def check_now(self, key):
+        return self._act("check_now", key)
+
+    def set_priority(self, key, value):
+        if value not in ("important", "default", "unimportant"):
+            return {"ok": False, "error_code": "bad_value", "error": "x"}
+        return self._act("priority", key, value)
+
+    def pin(self, key, pinned=True):
+        return self._act("pin", key, pinned)
+
+    def try_strategy(self, key, strategy):
+        return self._act("try", key, strategy)
+
+    def no_search_for(self, key):
+        return self._act("no_search", key)
+
+    def lists_view(self):
+        self.calls.append(("lists_view",))
+        return {"ok": True, "important": [], "exclude": []}
+
+    def update_lists(self, values):
+        self.calls.append(("update_lists", values))
+        if "*" in "".join(values.get("exclude") or []):
+            return {"ok": False, "error_code": "bad_value", "error": "x"}
+        return {"ok": True}
+
     def reset(self, key):
         self.calls.append(("reset", key))
         if key != "dns:93.184.216.53":
@@ -141,6 +175,40 @@ class TestRest(_Base):
             content_type="application/json")
         self.assertTrue(status.startswith("400"), status)
 
+    def test_service_actions_and_lists(self):
+        key = "dns:93.184.216.53"
+        for path, body, call in (
+                ("check-now", {"key": key}, ("check_now", key)),
+                ("priority", {"key": key, "value": "important"},
+                 ("priority", key, "important")),
+                ("pin", {"key": key, "pinned": False}, ("pin", key, False)),
+                ("try", {"key": key, "strategy": "S"}, ("try", key, "S")),
+                ("no-search", {"key": key}, ("no_search", key))):
+            self.assertTrue(self.client.post_json(
+                "/api/geneva/auto/" + path, body)["ok"], path)
+            self.assertEqual(self.auto.calls[-1], call)
+        for body, code in (({"key": "x"}, "404"), ({}, "400"),
+                           ({"key": key, "value": "?"}, "400")):
+            status, _ = self.client._call(
+                "POST", "/api/geneva/auto/priority",
+                body=json.dumps(body).encode(),
+                content_type="application/json")
+            self.assertTrue(status.startswith(code), (body, status))
+        for bad in ("false", 0, None):      # снять — только false
+            status, _ = self.client._call(
+                "POST", "/api/geneva/auto/pin",
+                body=json.dumps({"key": key, "pinned": bad}).encode(),
+                content_type="application/json")
+            self.assertTrue(status.startswith("400"), (bad, status))
+        self.assertTrue(self.client.get_json("/api/geneva/auto/lists")["ok"])
+        self.assertTrue(self.client.post_json(
+            "/api/geneva/auto/lists", {"important": ["AS12389"]})["ok"])
+        status, _ = self.client._call(
+            "POST", "/api/geneva/auto/lists",
+            body=json.dumps({"exclude": ["*x*"]}).encode(),
+            content_type="application/json")
+        self.assertTrue(status.startswith("400"), status)
+
     def test_disable_and_reset(self):
         self.assertTrue(self.client.post_json("/api/geneva/auto/disable",
                                               {})["ok"])
@@ -227,6 +295,23 @@ class TestMcp(_Base):
         self.assertFalse(self.auto.enabled)
         res = self.data("geneva_auto_reset", {"key": "dns:93.184.216.53"})
         self.assertTrue(res["ok"])
+
+    def test_service_tools(self):
+        key = "dns:93.184.216.53"
+        self.assertTrue(self.data("geneva_auto_check_now", {"key": key})["ok"])
+        self.assertTrue(self.data("geneva_auto_priority",
+                                  {"key": key, "value": "unimportant"})["ok"])
+        res = self.data("geneva_auto_pin", {"key": key})
+        self.assertEqual(res["reverse"], "geneva_auto_pin pinned=false")
+        self.assertTrue(self.data("geneva_auto_lists")["ok"])
+        self.assertEqual(self.auto.calls[-1], ("lists_view",))
+        self.data("geneva_auto_lists", {"by_name": False})
+        self.assertEqual(self.auto.calls[-1],
+                         ("update_lists", {"by_name": False}))
+        self.assertTrue(registry.call("geneva_auto_pin", {"key": key},
+                                      {}).get("isError"))
+        self.assertTrue(registry.call("geneva_auto_lists", {},
+                                      {}).get("isError"))
 
     def test_already_running(self):
         self.auto.running = True

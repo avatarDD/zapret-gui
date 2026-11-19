@@ -88,6 +88,10 @@ const GenevaPage = (() => {
     const ALL_SECTIONS = ['auto', 'engines', 'engine', 'search', 'found', 'library', 'settings'];
     // Режим «Авто»: показывать и сервисы без проблем (галочка).
     let _autoAll = false;
+    let _autoFilter = '';
+    let _autoMenuOpen = '';
+    let _lastAuto = null;
+    const _autoOrder = new Map();
     let _autoBusy = false;
     let _sections = new Set(ALL_SECTIONS);
     let _renderToken = 0;
@@ -134,12 +138,31 @@ const GenevaPage = (() => {
                                 <span>${esc(_tr('geneva.auto.help_tunnels'))}</span>
                             </label>
                             <div class="form-hint gv-auto-wide">${esc(_tr('geneva.auto.help_tunnels_hint'))}</div>
-                            <label class="form-label gv-auto-wide" for="gv-auto-exclude">${esc(_tr('geneva.auto.exclude'))}</label>
-                            <textarea id="gv-auto-exclude" class="form-control gv-auto-wide" rows="3" spellcheck="false" placeholder="203.0.113.5&#10;2001:db8::1"></textarea>
-                            <div class="form-hint gv-auto-wide">${esc(_tr('geneva.auto.exclude_hint'))}</div>
                             <button class="btn btn-ghost btn-sm" data-action="auto-settings">${esc(_tr('common.save'))}</button>
                             <div class="form-hint">${esc(_tr('geneva.auto.settings_hint'))}</div>
                         </div>
+                        <details class="gv-auto-lists" id="gv-auto-lists">
+                            <summary>${esc(_tr('geneva.auto.lists.title'))}</summary>
+                            <div class="form-hint">${esc(_tr('geneva.auto.lists.about'))}</div>
+                            <div class="gv-auto-lists-grid">
+                                ${['important', 'unimportant', 'no_search', 'exclude'].map(k => `
+                                <div>
+                                    <label class="form-label" for="gv-list-${k}">${esc(_tr('geneva.auto.lists.' + k))}</label>
+                                    <textarea id="gv-list-${k}" class="form-control" rows="4" spellcheck="false" placeholder="${esc(_tr('geneva.auto.lists.ph_' + k))}"></textarea>
+                                    <div class="form-hint">${esc(_tr('geneva.auto.lists.hint_' + k))}</div>
+                                </div>`).join('')}
+                            </div>
+                            <label class="gv-check"><input type="checkbox" id="gv-list-known" checked>
+                                <span>${esc(_tr('geneva.auto.lists.known'))}</span></label>
+                            <label class="gv-check"><input type="checkbox" id="gv-list-byname" checked>
+                                <span>${esc(_tr('geneva.auto.lists.by_name'))}</span></label>
+                            <div class="form-hint">${esc(_tr('geneva.auto.lists.by_name_hint'))}</div>
+                            <label class="gv-check"><input type="checkbox" id="gv-list-split">
+                                <span>${esc(_tr('geneva.auto.lists.split'))}</span></label>
+                            <div class="form-hint">${esc(_tr('geneva.auto.lists.split_hint'))}</div>
+                            <div id="gv-list-asn" class="form-hint"></div>
+                            <button class="btn btn-ghost btn-sm" data-action="auto-lists">${esc(_tr('geneva.auto.lists.save'))}</button>
+                        </details>
                         <div id="gv-nat" class="gv-nat" hidden>
                             <label class="gv-check">
                                 <input type="checkbox" id="gv-nat-toggle">
@@ -248,6 +271,11 @@ const GenevaPage = (() => {
                             <input type="checkbox" id="gv-pause" checked>
                             приостановить работающий обход на время подбора (иначе сайт
                             «откроется» и без стратегии) — он вернётся сам
+                        </label>
+                        <label class="gv-check hidden" id="gv-zapret2-row">
+                            <input type="checkbox" id="gv-zapret2">
+                            добавить методы zapret2 в начальную популяцию (geneva_c 2.0:
+                            разрезы, фейки и подмены TLS как x-действия)
                         </label>
                         <div class="gv-actions">
                             <button class="btn btn-primary" id="gv-btn-search">Начать подбор</button>
@@ -389,6 +417,15 @@ const GenevaPage = (() => {
         onChange('gv-lib-country', _renderLibrary);
         onChange('gv-lib-test', _renderLibrary);
         container.addEventListener('click', _delegatedClick);
+        // меню «⋯» строки сервиса переживает перерисовку опросом
+        container.addEventListener('toggle', e => {
+            const d = e.target;
+            // раскрыли списки — свежие с сервера (их меняют и меню, и MCP)
+            if (d && d.id === 'gv-auto-lists' && d.open) { _loadAutoLists(true); return; }
+            if (!d || !d.dataset || d.dataset.menu === undefined) return;
+            if (d.open) _autoMenuOpen = d.dataset.menu;
+            else if (_autoMenuOpen === d.dataset.menu) _autoMenuOpen = '';
+        }, true);
 
         _visibilityHandler = () => {
             if (document.hidden) _stopPoll();
@@ -449,6 +486,8 @@ const GenevaPage = (() => {
             _renderAutoSettings(auto);
             _renderEngines(engines);
             _renderDetect(st.detect || {});
+            const z2row = document.getElementById('gv-zapret2-row');
+            if (z2row) z2row.classList.toggle('hidden', !(st.detect || {}).ext);
             _renderEngine(st.engine || {}, st.active_engine, st.detect || {});
             _renderSearch(st.search || {});
         } catch (e) {
@@ -466,6 +505,9 @@ const GenevaPage = (() => {
         return (typeof i18n !== 'undefined') ? i18n.t(key, vars || {}) : key;
     }
 
+    const AUTO_PRIO_BADGE = {
+        important: 'badge-warning', normal: 'badge-ghost', low: 'badge-muted', background: 'badge-muted',
+    };
     const AUTO_BADGE = {
         applied: 'badge-success', degraded: 'badge-warning',
         searching: 'badge-info', blocked: 'badge-danger',
@@ -477,6 +519,7 @@ const GenevaPage = (() => {
     function _renderAuto(a) {
         const box = document.getElementById('gv-auto');
         if (!box || !a) return;
+        _lastAuto = a;
         const toggle = document.getElementById('gv-auto-toggle');
         const label = document.getElementById('gv-auto-toggle-label');
         if (toggle && !_autoBusy) toggle.checked = !!a.enabled;
@@ -495,31 +538,54 @@ const GenevaPage = (() => {
         const sr = a.search || {};
         const par = sr.running && sr.workers
             ? ` (${esc(_tr('geneva.auto.parallel', { done: sr.done || 0, total: sr.total || '?', workers: sr.workers }))})` : '';
-        const searchLine = sr.running && sr.name
-            ? ` · ${esc(sr.name)}: ${esc(_tr('geneva.auto.phase.searching'))}${par}` : '';
-        const rows = (a.services || []).map(s => {
-            const trying = s.status === 'searching' && a.search && a.search.key === s.key
-                && a.search.strategy ? _tr('geneva.auto.trying', { strategy: a.search.strategy }) : '';
+        const many = (a.searches || []).filter(x => x.running);
+        const searchLine = many.length > 1
+            ? ` · ${esc(_tr('geneva.auto.searches', { n: many.length, names: many.map(x => x.name || x.key).join(', ') }))}`
+            : (sr.running && sr.name
+                ? ` · ${esc(sr.name)}: ${esc(_tr('geneva.auto.phase.searching'))}${par}` : '');
+        const extra = [];
+        if (a.host && a.host.pid) extra.push(_tr('geneva.auto.by_name_on', { n: a.host.profiles || 0 }));
+        if (a.detector && a.detector.running) extra.push(_tr('geneva.auto.detector_on'));
+        const searches = (a.searches && a.searches.length ? a.searches : (sr.running ? [sr] : []));
+        const tryingOf = {};
+        searches.forEach(x => { if (x.key && x.strategy) tryingOf[x.key] = x.strategy; });
+        // Порядок строк не скачет на каждом опросе: место сервиса — где
+        // его увидели впервые, новые — в конец.
+        const services = (a.services || []).slice();
+        services.forEach(s => { if (!_autoOrder.has(s.key)) _autoOrder.set(s.key, _autoOrder.size); });
+        services.sort((x, y) => _autoOrder.get(x.key) - _autoOrder.get(y.key));
+        const flt = _autoFilter.trim().toLowerCase();
+        const shown = flt ? services.filter(s => [s.name, s.key, s.address, s.host, s.transport, s.app, s.kind]
+            .some(v => String(v || '').toLowerCase().includes(flt))) : services;
+        const rows = shown.map(s => {
+            const trying = s.status === 'searching' && tryingOf[s.key]
+                ? _tr('geneva.auto.trying', { strategy: tryingOf[s.key] }) : '';
             const status = _tr('geneva.auto.as.' + s.status);
+            const prio = s.priority_name || 'normal';
+            const marks = (s.pinned ? ' 📌' : '') + (s.user_priority ? ' ✎' : '');
             return `<tr>
-                <td title="${esc(s.key)}">${esc(s.name || s.key)}</td>
+                <td title="${esc(s.key)}">${esc(s.name || s.key)}${s.family ? ` <span class="text-muted">· ${esc(s.family)}</span>` : ''}</td>
+                <td><span class="badge ${AUTO_PRIO_BADGE[prio] || 'badge-muted'}" title="${esc(_tr('geneva.auto.prio_tip'))}">${esc(_tr('geneva.auto.prio.' + prio))}</span>${marks}</td>
                 <td><span class="badge ${AUTO_BADGE[s.status] || 'badge-muted'}">${esc(status === 'geneva.auto.as.' + s.status ? s.status_text : status)}</span></td>
                 <td class="text-muted">${esc(trying || s.why || '')}</td>
                 <td class="gv-mono gv-ellipsis" title="${esc(s.strategy || '')}">${esc(s.strategy || '—')}</td>
-                <td><button class="btn btn-ghost btn-sm" data-auto-reset="${esc(s.key)}" title="${esc(_tr('geneva.auto.reset_tip'))}">${esc(_tr('geneva.auto.reset'))}</button></td>
+                <td>${_autoMenu(s)}</td>
             </tr>`;
         }).join('');
-        const table = rows ? `
-            <div class="table-wrap"><table class="table gv-auto-table">
+        const table = services.length ? `
+            <input type="search" id="gv-auto-filter" class="form-control gv-auto-filter" placeholder="${esc(_tr('geneva.auto.filter'))}" value="${esc(_autoFilter)}">
+            ${rows ? `<div class="table-wrap"><table class="table gv-auto-table">
                 <thead><tr>
                     <th>${esc(_tr('geneva.auto.col_service'))}</th>
+                    <th>${esc(_tr('geneva.auto.col_priority'))}</th>
                     <th>${esc(_tr('geneva.auto.col_status'))}</th>
                     <th>${esc(_tr('geneva.auto.col_why'))}</th>
                     <th>${esc(_tr('geneva.auto.col_strategy'))}</th>
                     <th></th>
                 </tr></thead>
                 <tbody>${rows}</tbody>
-            </table></div>` : `<div class="text-muted">${esc(_tr('geneva.auto.empty'))}</div>`;
+            </table></div>` : `<div class="text-muted">${esc(_tr('geneva.auto.filter_empty'))}</div>`}`
+            : `<div class="text-muted">${esc(_tr('geneva.auto.empty'))}</div>`;
         const groups = (a.groups || []).map(g => {
             const st = g.stats || {}, rate = g.rate || {};
             return `<li><span class="badge badge-ghost">${esc(_tr('geneva.auto.queue', { queue: g.queue }))}</span>
@@ -539,6 +605,7 @@ const GenevaPage = (() => {
             `<div class="gv-auto-log-${esc(j.level)}"><span class="text-muted">${esc(fmtTime(j.ts))}</span> ${esc(j.text)}</div>`).join('');
         box.innerHTML = `
             <div class="gv-auto-status"><strong>${esc(phase)}</strong>${searchLine}</div>
+            ${extra.length ? `<div class="text-muted">${esc(extra.join(' · '))}</div>` : ''}
             <div class="text-muted">${esc(_tr('geneva.auto.summary', {
                 total: a.total || 0, applied, busy, nobypass, flows: a.connections || 0 }))}</div>
             ${_autoProblems(a)}
@@ -553,6 +620,113 @@ const GenevaPage = (() => {
             </details>`;
         const all = document.getElementById('gv-auto-all');
         if (all) all.addEventListener('change', () => { _autoAll = all.checked; _refresh(); });
+        const fl = document.getElementById('gv-auto-filter');
+        if (fl) {
+            fl.addEventListener('input', () => {
+                _autoFilter = fl.value;
+                _renderAuto(_lastAuto);
+                const again = document.getElementById('gv-auto-filter');
+                if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+            });
+        }
+    }
+
+    function _autoMenu(s) {
+        const item = (act, label) =>
+            `<button class="btn btn-ghost btn-sm" data-auto-act="${act}" data-key="${esc(s.key)}">${esc(_tr(label))}</button>`;
+        const open = _autoMenuOpen === s.key ? 'open' : '';
+        return `<details class="gv-auto-menu" data-menu="${esc(s.key)}" ${open}>
+            <summary title="${esc(_tr('geneva.auto.menu'))}">⋯</summary>
+            <div class="gv-auto-menu-list">
+                ${item('check', 'geneva.auto.act.check')}
+                ${s.user_priority !== 'important' ? item('important', 'geneva.auto.act.important') : ''}
+                ${s.user_priority ? item('default', 'geneva.auto.act.default') : ''}
+                ${s.user_priority !== 'unimportant' ? item('unimportant', 'geneva.auto.act.unimportant') : ''}
+                ${s.strategy ? item(s.pinned ? 'unpin' : 'pin', s.pinned ? 'geneva.auto.act.unpin' : 'geneva.auto.act.pin') : ''}
+                ${item('try', 'geneva.auto.act.try')}
+                ${item('nosearch', 'geneva.auto.act.no_search')}
+                ${item('reset', 'geneva.auto.reset')}
+            </div>
+        </details>`;
+    }
+
+    async function _autoAct(act, key) {
+        _autoMenuOpen = '';
+        const calls = {
+            check: ['check-now', {}],
+            important: ['priority', { value: 'important' }],
+            default: ['priority', { value: 'default' }],
+            unimportant: ['priority', { value: 'unimportant' }],
+            pin: ['pin', { pinned: true }],
+            unpin: ['pin', { pinned: false }],
+            nosearch: ['no-search', {}],
+        };
+        try {
+            if (act === 'reset') return _autoReset(key);
+            if (act === 'try') {
+                const strategy = (window.prompt(_tr('geneva.auto.try_prompt')) || '').trim();
+                if (!strategy) return;
+                await API.post('/api/geneva/auto/try', { key, strategy }, { timeout: 30000 });
+                Toast.info(_tr('geneva.auto.try_started'));
+            } else {
+                const [path, body] = calls[act];
+                await API.post('/api/geneva/auto/' + path, Object.assign({ key }, body));
+                Toast.success(_tr('geneva.auto.act_done'));
+                // «Не подбирать» меняет списки: форма не должна вернуть
+                // старые при следующем сохранении
+                if (act === 'nosearch') await _loadAutoLists(true);
+            }
+        } catch (e) {
+            Toast.error(errText(e));
+        }
+        _refresh();
+    }
+
+    let _listsShown = false;
+
+    async function _loadAutoLists(force) {
+        if (_listsShown && !force) return;
+        let r;
+        try {
+            r = await API.get('/api/geneva/auto/lists');
+        } catch (e) {
+            return;
+        }
+        for (const k of ['important', 'unimportant', 'no_search', 'exclude']) {
+            const el = document.getElementById('gv-list-' + k);
+            if (el && Array.isArray(r[k])) el.value = r[k].join('\n');
+        }
+        const ck = (id, v) => { const el = document.getElementById(id); if (el && typeof v === 'boolean') el.checked = v; };
+        ck('gv-list-known', r.known_important);
+        ck('gv-list-byname', r.by_name);
+        ck('gv-list-split', r.split_workers);
+        const asn = document.getElementById('gv-list-asn');
+        if (asn) {
+            const items = Object.entries(r.asn || {}).map(([n, x]) =>
+                _tr('geneva.auto.lists.asn_item', { asn: n, n: x.prefixes || 0 }));
+            asn.textContent = items.length ? _tr('geneva.auto.lists.asn', { items: items.join(', ') }) : '';
+        }
+        _listsShown = true;
+    }
+
+    async function _saveAutoLists() {
+        const body = {};
+        for (const k of ['important', 'unimportant', 'no_search', 'exclude']) {
+            const el = document.getElementById('gv-list-' + k);
+            if (el) body[k] = el.value;
+        }
+        const ck = id => !!(document.getElementById(id) || {}).checked;
+        body.known_important = ck('gv-list-known');
+        body.by_name = ck('gv-list-byname');
+        body.split_workers = ck('gv-list-split');
+        try {
+            await API.post('/api/geneva/auto/lists', body, { timeout: 30000 });
+            Toast.success(_tr('geneva.auto.lists.saved'));
+            await _loadAutoLists(true);
+        } catch (e) {
+            Toast.error(errText(e));
+        }
+        _refresh();
     }
 
     function _autoProblems(a) {
@@ -651,22 +825,18 @@ const GenevaPage = (() => {
         if (g && a.max_groups) g.value = a.max_groups;
         const t = document.getElementById('gv-auto-tunnels');
         if (t && typeof a.help_tunnels === 'boolean') t.checked = a.help_tunnels;
-        const x = document.getElementById('gv-auto-exclude');
-        if (x && Array.isArray(a.exclude)) x.value = a.exclude.join('\n');
         _autoSettingsShown = true;
+        _loadAutoLists();
     }
 
     async function _saveAutoSettings() {
         const w = parseInt((document.getElementById('gv-auto-workers') || {}).value, 10);
         const g = parseInt((document.getElementById('gv-auto-groups') || {}).value, 10);
         const t = document.getElementById('gv-auto-tunnels');
-        const x = document.getElementById('gv-auto-exclude');
         const body = { workers: w, max_groups: g };
         if (t) body.help_tunnels = !!t.checked;
-        if (x) body.exclude = x.value;
         try {
             const res = await API.post('/api/geneva/auto/settings', body);
-            if (x && Array.isArray(res.exclude)) x.value = res.exclude.join('\n');
             Toast.success(_tr('geneva.auto.settings_saved', { workers: res.workers, groups: res.max_groups }));
         } catch (e) {
             Toast.error(errText(e));
@@ -1060,6 +1230,7 @@ const GenevaPage = (() => {
             population, generations,
             workers: parseInt(val('gv-workers'), 10) || 1,
             pause_bypass: pause ? !!pause.checked : true,
+            zapret2: !!(document.getElementById('gv-zapret2') || {}).checked,
         };
     }
 
@@ -1241,7 +1412,7 @@ const GenevaPage = (() => {
             <tr><th class="gv-col-pick"></th><th>Успех</th><th>Где</th><th>Описание</th><th>Стратегия</th><th></th></tr>
             ${items.map(i => `
                 <tr><td class="gv-col-pick">${i.server_side ? '' : `<input type="checkbox" class="gv-lib-pick" value="${esc(i.strategy)}">`}</td>
-                    <td style="white-space:nowrap;">${esc(i.rate)}%</td>
+                    <td style="white-space:nowrap;">${i.rate == null ? '—' : esc(i.rate) + '%'}</td>
                     <td>${esc(i.country)} / ${esc(i.test)}${i.server_side ? ' <span class="badge badge-muted">server-side</span>' : ''}</td>
                     <td>${esc(i.description)}</td>
                     <td class="gv-mono gv-ellipsis" title="${esc(i.strategy)}">${esc(i.strategy)}</td>
@@ -1298,6 +1469,8 @@ const GenevaPage = (() => {
             if (libHost && !libHost.value && s.host) libHost.value = s.host;
             const pause = document.getElementById('gv-pause');
             if (pause && s.pause_bypass === false) pause.checked = false;
+            const z2 = document.getElementById('gv-zapret2');
+            if (z2 && s.zapret2) z2.checked = true;
             _settingsFilled = true;
         } catch (_) { /* форма останется с умолчаниями */ }
     }
@@ -1332,6 +1505,8 @@ const GenevaPage = (() => {
         if (!t) return;
         if (t.dataset.switch) return _switchEngine(t.dataset.switch);
         if (t.dataset.autoReset) return _autoReset(t.dataset.autoReset);
+        if (t.dataset.autoAct) return _autoAct(t.dataset.autoAct, t.dataset.key);
+        if (t.dataset.action === 'auto-lists') return _saveAutoLists();
         if (t.dataset.copy !== undefined) return _copyFound(t.dataset.copy);
         if (t.dataset.forget !== undefined) return _forgetImported(t.dataset.forget);
         if (t.dataset.action === 'found-export') return _exportFound();

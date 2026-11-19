@@ -79,6 +79,23 @@ class FirewallError(RuntimeError):
         self.hint = hint
 
 
+class HostRule:
+    """Правило процесса «по имени» (очередь 348): первые пакеты всех
+    соединений TCP 80/443 (и UDP 443 — QUIC), кроме адресов групп —
+    их правила стоят раньше и забирают пакет первыми. Чужие и
+    исключённые адреса geneva пропускает сама (``ipset-exclude``)."""
+    host = True
+
+    def __init__(self, udp: bool = False):
+        self.udp = bool(udp)
+
+    def __eq__(self, other):
+        return isinstance(other, HostRule) and other.udp == self.udp
+
+    def __repr__(self):
+        return "HostRule(udp=%r)" % self.udp
+
+
 # ───────────────────────────── разбор целей ─────────────────────────
 
 def _split(addresses):
@@ -118,6 +135,13 @@ def layout(queues: dict) -> list:
     out = []
     for q in sorted(queues):
         g = queues[q]
+        if getattr(g, "host", False):
+            # очередь 348 — после групп 340–347: адреса групп — им
+            out.append({"queue": q, "kind": "host",
+                        "tcp": [(p, p) for p in ga.HOST_TCP_PORTS],
+                        "udp": [(ga.HOST_UDP_PORT, ga.HOST_UDP_PORT)]
+                        if g.udp else []})
+            continue
         sets = {}                          # (tcp, udp) → номер набора
         for t in g.targets:
             if t.by_local_port:
@@ -200,6 +224,14 @@ def _nft_script(items) -> str:
             else "ct reply packets 1-%d" % ga.IN_PACKETS
         for it in items:
             q = it["queue"]
+            if it["kind"] == "host":
+                svc = "dport" if out else "sport"
+                for proto in ("tcp", "udp"):
+                    if it[proto]:
+                        lines.append("\t\t%s %s %s %s queue num %d bypass"
+                                     % (proto, svc, _nft_ports(it[proto]),
+                                        limit, q))
+                continue
             if it["kind"] == "port":
                 lines.append(
                     "\t\tmeta l4proto %s ct original ip%s saddr %s "
@@ -281,6 +313,15 @@ def ipt_commands(queues: dict) -> list:
                 q = str(it["queue"])
                 target = ["-j", "NFQUEUE", "--queue-num", q,
                           "--queue-bypass"]
+                if it["kind"] == "host":
+                    for proto in ("tcp", "udp"):
+                        for plo, phi in it[proto]:
+                            cmds.append((base + [
+                                "-A", chain, "-p", proto,
+                                "--dport" if out else "--sport",
+                                _ipt_ports(plo, phi)] + limit + target,
+                                True))
+                    continue
                 if it["kind"] == "port":
                     if (":" in it["client"]) != (fam == "v6"):
                         continue

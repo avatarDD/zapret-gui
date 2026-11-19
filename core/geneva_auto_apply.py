@@ -93,6 +93,8 @@ class Applier:
         self._clock = clock
         self._lock = threading.RLock()
         self.queues = {}             # {q: ga.Group} — применено сейчас
+        self.rules = {}              # queues + правило «по имени»
+        self.host = {}               # итог процесса «по имени»
         self.last = {}               # итог последнего apply
         self._stats = {}             # {q: (t, stats)}
 
@@ -110,11 +112,14 @@ class Applier:
 
     # ── применение ──
 
-    def apply(self, groups) -> dict:
+    def apply(self, groups, hosts=None) -> dict:
         """Привести процессы и правила к ``groups``.
 
+        ``hosts`` — процесс «по имени» (geneva_c 2.0): ``{"profiles",
+        "exclude_ips", "exclude_domains"}`` или ``None`` (выключен).
+
         ``{"ok", "queues": {q: {strategy, services, pid, action,
-        error}}, "error", "hint", "backend"}``.
+        error}}, "host": {…}, "error", "hint", "backend"}``.
         """
         with self._lock:
             gm = self._gm()
@@ -125,19 +130,27 @@ class Applier:
             procs = res.get("queues") or {}
             live = {q: g for q, g in queues.items()
                     if (procs.get(q) or {}).get("pid")}
-            fw = self._fwm().apply(live)
+            host = self._apply_host(gm, live, hosts)
+            rules = dict(live)
+            if host.get("pid"):
+                rules[ga.HOST_QUEUE] = self._fwm().HostRule(host.get("udp"))
+            fw = self._fwm().apply(rules)
             if not fw.get("ok"):
                 # правила не встали: процессы без правил бесполезны, а
                 # пробная стратегия не должна считаться применённой
-                live = {}
+                live, rules = {}, {}
+                host = dict(host, pid=None, live=False)
             self.queues = live
+            self.rules = rules
+            self.host = host
             for q in list(self._stats):
                 if q not in live:
                     del self._stats[q]
             out = {"ok": bool(res.get("ok", True)) and bool(fw.get("ok")),
                    "backend": fw.get("backend", ""),
-                   "error": fw.get("error") or res.get("error", ""),
-                   "hint": fw.get("hint", ""), "queues": {}}
+                   "error": fw.get("error") or res.get("error", "") or
+                   host.get("error", ""),
+                   "hint": fw.get("hint", ""), "queues": {}, "host": host}
             for q, g in queues.items():
                 info = procs.get(q) or {}
                 out["queues"][q] = {
@@ -151,31 +164,64 @@ class Applier:
             self.last = out
             return out
 
-    def apply_services(self, services, trial=None) -> dict:
-        """План из сервисов книги (и пробной стратегии) и применение.
+    def _apply_host(self, gm, live: dict, hosts) -> dict:
+        """Процесс «по имени»: его исключения — адреса живых групп (их
+        правила стоят раньше) и «Не трогать»."""
+        apply_host = getattr(gm, "auto_host_apply", None)
+        if apply_host is None:
+            return {}
+        if not hosts or not hosts.get("profiles"):
+            if gm.auto_host_pid():
+                gm.auto_host_stop()
+            return {}
+        ips = set(hosts.get("exclude_ips") or ())
+        for g in live.values():
+            for tg in g.targets:
+                ips.update(str(a) for a in tg.addresses or ())
+        try:
+            r = apply_host(hosts["profiles"], sorted(ips),
+                           list(hosts.get("exclude_domains") or ()))
+        except Exception as e:                      # noqa: BLE001
+            log.warning("geneva-auto: «по имени»: %s" % e, source="geneva")
+            return {"pid": None, "error": str(e)}
+        if not isinstance(r, dict):
+            return {}
+        for why in r.get("problems") or ():
+            log.info("geneva-auto: «по имени»: %s" % why, source="geneva")
+        return r
 
-        ``trial`` — ``(Service, strategy)``. В ответе ``trial_ok``:
-        группа пробной стратегии с этим сервисом запущена и под
-        правилами.
+    def apply_services(self, services, trial=None, trials=None,
+                       hosts=None) -> dict:
+        """План из сервисов книги (и пробных стратегий) и применение.
+
+        ``trial`` — ``(Service, strategy)``, ``trials`` — несколько таких
+        (подборы рядом). В ответе ``trial_ok`` (для ``trial``) и
+        ``trials_ok`` (``{ключ сервиса: bool}``): группа пробной стратегии
+        с этим сервисом запущена и под правилами.
         """
         groups = ga.plan_groups(services, trial=trial,
-                                max_groups=self.max_groups)
-        out = self.apply(groups)
+                                max_groups=self.max_groups, trials=trials)
+        out = self.apply(groups, hosts)
+
+        def live(s, strat):
+            return any(g.strategy == strat and s.key in g.services
+                       for g in self.queues.values())
         if trial:
-            s, strat = trial
-            out["trial_ok"] = any(
-                g.strategy == strat and s.key in g.services
-                for g in self.queues.values())
+            out["trial_ok"] = live(*trial)
+        if trials:
+            out["trials_ok"] = {s.key: live(s, strat)
+                                for s, strat in trials}
         return out
 
     def missing(self) -> list:
         """Чего из правил живых групп нет (снесла прошивка); пусто — всё
         на месте или групп нет."""
         with self._lock:
-            if not self.queues:
+            rules = getattr(self, "rules", None) or self.queues
+            if not rules:
                 return []
             check = getattr(self._fwm(), "present", None)
-            return list(check(self.queues) or []) if check else []
+            return list(check(rules) or []) if check else []
 
     def clear(self) -> None:
         """Снять правила и остановить все группы (правила — первыми:
@@ -186,6 +232,8 @@ class Applier:
             finally:
                 self._gm().auto_stop_all()
                 self.queues = {}
+                self.rules = {}
+                self.host = {}
                 self._stats = {}
 
     # ── телеметрия ──

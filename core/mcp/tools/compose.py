@@ -628,7 +628,8 @@ def _export_source(args: dict):
             "hint": "какие есть — strategy_list()",
         }
     try:
-        argv = manager.build_nfqws_args(strategy)
+        # в каталог — без локальной «начинать без обхода» (как REST)
+        argv = manager.build_nfqws_args(strategy, clean_start=False)
     except Exception as e:                      # noqa: BLE001 — граница
         return [], "", {
             "ok": False,

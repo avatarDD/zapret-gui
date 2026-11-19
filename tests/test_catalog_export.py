@@ -205,3 +205,28 @@ class TestTool(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCleanStartNotExported(unittest.TestCase):
+    """Локальная «начинать без обхода» в экспорт каталога не попадает."""
+
+    def test_tool_builds_without_clean_start(self):
+        from unittest import mock
+        from core.mcp import registry
+        registry.load_tools()
+        seen = {}
+
+        class SM:
+            def get_strategy(self, sid):
+                return {"id": sid, "name": "C", "profiles": []}
+
+            def build_nfqws_args(self, strategy, clean_start=None):
+                seen["clean_start"] = clean_start
+                return ["--lua-desync=multisplit:pos=1"]
+        with mock.patch("core.strategy_builder.get_strategy_manager",
+                        return_value=SM()):
+            answer = registry.call("strategy_export_catalog",
+                                   {"strategy_id": "c"},
+                                   {"strategies_write": True})
+        self.assertTrue(answer["structuredContent"]["ok"], answer)
+        self.assertIs(seen["clean_start"], False)

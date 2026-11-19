@@ -35,7 +35,19 @@ API движка geneva_c и выбора движка обхода.
                                      error_code need_confirm
   POST /api/geneva/auto/disable   — выключить
   POST /api/geneva/auto/reset     — забыть сервис {key}
-  POST /api/geneva/auto/settings  — {workers 1–8, max_groups 1–8}
+  POST /api/geneva/auto/settings  — {workers 1–8, max_groups 1–8,
+                                     split_workers, by_name}
+  POST /api/geneva/auto/check-now — проверить сервис вне очереди {key}
+  POST /api/geneva/auto/priority  — важность {key, value: important |
+                                     default | unimportant}
+  POST /api/geneva/auto/pin       — закрепить стратегию {key, pinned}
+  POST /api/geneva/auto/try       — проверить свою стратегию {key,
+                                     strategy}: успех — применить и
+                                     закрепить
+  POST /api/geneva/auto/no-search — сервис в «Не подбирать» {key}
+  GET  /api/geneva/auto/lists     — «Важно», «Не важно», «Не подбирать»,
+                                     «Не трогать», семейства, сети AS
+  POST /api/geneva/auto/lists     — сохранить списки и флажки
   GET  /api/geneva/nat-offload    — ускорение NAT роутера (OpenWrt, Keenetic)
   POST /api/geneva/nat-offload    — включить/выключить {enabled, confirm}
 
@@ -167,7 +179,7 @@ def register(app):
     @app.route("/api/geneva/library", method="GET")
     def geneva_library():
         refresh = str(request.query.get("refresh") or "") in ("1", "true")
-        return _reply(_mgr().library(refresh=refresh), 503)
+        return _reply(_mgr().library(refresh=refresh, zapret2=True), 503)
 
     @app.route("/api/geneva/db", method="GET")
     def geneva_db():
@@ -287,6 +299,72 @@ def register(app):
             response.status = 400
             return {"ok": False, "error": "не указан сервис (key)"}
         return _reply(get_geneva_auto_manager().reset(key), 404)
+
+    def _auto_reply(res):
+        return _reply(res, 404 if res.get("error_code") == "not_found"
+                      else 400)
+
+    def _auto_key():
+        key = str(_body().get("key") or "").strip()
+        if not key:
+            response.status = 400
+        return key
+
+    @app.route("/api/geneva/auto/check-now", method="POST")
+    def geneva_auto_check_now():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        key = _auto_key()
+        if not key:
+            return {"ok": False, "error": "не указан сервис (key)"}
+        return _auto_reply(get_geneva_auto_manager().check_now(key))
+
+    @app.route("/api/geneva/auto/priority", method="POST")
+    def geneva_auto_priority():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        key = _auto_key()
+        if not key:
+            return {"ok": False, "error": "не указан сервис (key)"}
+        return _auto_reply(get_geneva_auto_manager().set_priority(
+            key, str(_body().get("value") or "default")))
+
+    @app.route("/api/geneva/auto/pin", method="POST")
+    def geneva_auto_pin():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        key = _auto_key()
+        if not key:
+            return {"ok": False, "error": "не указан сервис (key)"}
+        pinned = _body().get("pinned", True)
+        if not isinstance(pinned, bool):
+            return _auto_reply({"ok": False, "error_code": "bad_value",
+                                "error": "pinned: true или false"})
+        return _auto_reply(get_geneva_auto_manager().pin(key, pinned))
+
+    @app.route("/api/geneva/auto/try", method="POST")
+    def geneva_auto_try():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        key = _auto_key()
+        if not key:
+            return {"ok": False, "error": "не указан сервис (key)"}
+        return _auto_reply(get_geneva_auto_manager().try_strategy(
+            key, str(_body().get("strategy") or "")))
+
+    @app.route("/api/geneva/auto/no-search", method="POST")
+    def geneva_auto_no_search():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        key = _auto_key()
+        if not key:
+            return {"ok": False, "error": "не указан сервис (key)"}
+        return _auto_reply(get_geneva_auto_manager().no_search_for(key))
+
+    @app.route("/api/geneva/auto/lists", method="GET")
+    def geneva_auto_lists_get():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        return get_geneva_auto_manager().lists_view()
+
+    @app.route("/api/geneva/auto/lists", method="POST")
+    def geneva_auto_lists_set():
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        return _reply(get_geneva_auto_manager().update_lists(_body()))
 
     @app.route("/api/geneva/nat-offload", method="GET")
     def geneva_nat_offload_get():

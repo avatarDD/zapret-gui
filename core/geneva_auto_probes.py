@@ -53,6 +53,7 @@ import time
 from dataclasses import dataclass
 
 from core import geneva_auto as ga
+from core import geneva_rate as gr
 from core.geneva_auto_observer import (AUTO_BASELINE_PORTS,
                                        AUTO_BYPASS_PORTS)
 
@@ -68,6 +69,14 @@ REPLAY_GAP = 0.25
 REPLAY_TRIES = 2                  # одна потерянная датаграмма — не блок
 GENEVA_MARK = 0x20000000
 FRESH_DNS_NAME = "example.com"    # свежий запрос резолверу без replay
+RECHECK = 2.0                     # пауза перед второй пробой без обхода
+# Сертификат с верным именем от национального корня, которого нет в
+# CA-бандле (Минцифры у многих .ru): не подмена. Узнаётся по издателю
+# листового сертификата — цепочки на роутере нет (отличие от эталона).
+NATIONAL_ISSUER_CNS = ("Russian Trusted Sub CA", "Russian Trusted Root CA")
+NATIONAL_VERIFY_CODES = (2, 19, 20, 21)
+_national_hosts = set()
+P_THROTTLED = "throttled"
 
 USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -111,6 +120,7 @@ TEXT = {
     P_STALLED: "данные встали",
     P_TRUNCATED: "ответ оборван",
     P_BAD_RESPONSE: "ответ не HTTP",
+    P_THROTTLED: "медленно (шейпер)",
     P_TIME_LIMIT: "загрузка не уложилась во время",
     P_OTHER: "ошибка пробы",
     R_NOTHING: "нечего отправить: нет первых пакетов",
@@ -138,13 +148,21 @@ class PageResult:
     error: str = P_OK
     detail: str = ""
     port_unavailable: bool = False
+    # сертификат не проверился только потому, что корня нет в бандле
+    untrusted_root: bool = False
+    national: bool = False        # прошёл по имени с корнем Минцифры
+    bytes_out: int = 0            # отправлено (с добивкой)
+    windows: list = None          # байт по окнам gr.WINDOW
+    rate: object = None           # gr.Reading
+    throttled: bool = False       # медленнее порога цели
 
     def passes(self, min_bytes: int = MIN_BODY) -> bool:
         """Уровень «тело»: сервер ответил (и 4xx/5xx — ответ), тело
-        ≥ ``min_bytes`` или весь ответ, без зависания."""
+        ≥ ``min_bytes`` или весь ответ, без зависания и (если у цели
+        полка) не медленнее порога."""
         l1 = self.connect_ok and self.status is not None and (
             not self.tls or (self.tls_ok and self.cert_valid))
-        return l1 and self.stalled_at is None and (
+        return l1 and self.stalled_at is None and not self.throttled and (
             self.body >= min_bytes or self.complete)
 
     def text(self) -> str:
@@ -153,6 +171,8 @@ class PageResult:
         if self.error == P_OK and self.tls_ok and not self.cert_valid:
             return "чужой сертификат (страница блокировки)"
         what = TEXT.get(self.error, self.error or "ответ неполный")
+        if self.throttled and self.rate is not None:
+            what = "медленно: %s" % gr.human(self.rate.rate)
         if self.stalled_at is not None:
             what += " на %d Б" % self.stalled_at
         return what + (" (%s)" % self.detail if self.detail else "")
@@ -184,9 +204,10 @@ class ReplayResult:
 
 # ───────────────────────────── вердикты (чистые) ────────────────────
 
-def page_confirm(r: PageResult) -> str:
-    """Проба сайта без обхода → ``AutoConfirm``."""
-    if r.passes():
+def page_confirm(r: PageResult, min_bytes: int = MIN_BODY) -> str:
+    """Проба сайта без обхода → ``AutoConfirm``; ``min_bytes`` — объём
+    тела из критерия цели (обрыв 16 КБ — :data:`gr.PADDED_MIN`)."""
+    if r.passes(min_bytes):
         return ga.C_NOT_BLOCKED
     if r.error in (P_CONNECT_TIMEOUT, P_UNREACHABLE):
         return ga.C_IP_BLOCKED
@@ -211,9 +232,10 @@ def replay_confirm(results) -> str:
     return ga.C_BLOCKED
 
 
-def page_fitness(r: PageResult):
-    """``(fitness, outcome)`` загрузки по шкале geneva (GenevaFitness)."""
-    if r.passes():
+def page_fitness(r: PageResult, min_bytes: int = MIN_BODY):
+    """``(fitness, outcome)`` загрузки по шкале geneva (GenevaFitness);
+    ``min_bytes`` — как у :func:`page_confirm`."""
+    if r.passes(min_bytes):
         return ga.FIT_OK, "ok"
     e = r.error
     if e in (P_CONNECT_TIMEOUT, P_UNREACHABLE):
@@ -224,6 +246,9 @@ def page_fitness(r: PageResult):
         return ga.FIT_CLOSED, "timeout"
     if e in (P_TRUNCATED, P_BAD_RESPONSE, P_TLS_CLOSED, P_TIME_LIMIT):
         return ga.FIT_CLOSED, "broken"
+    if r.throttled:
+        # шейпер: страница пришла, но медленнее порога цели
+        return ga.FIT_CLOSED, "timeout: throttled"
     if e == P_OK and r.tls and r.tls_ok and not r.cert_valid:
         # сертификат на другое имя — страница блокировки или подмена
         return ga.FIT_RESET, "injected"
@@ -286,11 +311,93 @@ def _fresh(kind: str, udp: bool) -> bytes:
     return dns_query(tcp=not udp)
 
 
-def build_request(host: str, path: str = "/") -> bytes:
-    return ("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
+def build_request(host: str, path: str = "/", pad: int = 0) -> bytes:
+    """GET страницы; ``pad`` — байт добивки заголовками ``X-Pad-NN`` (до
+    4 КБ строка): маленькая страница тогда всё равно переносит столько
+    данных, сколько видит объёмный DPI (обрыв на 16 КБ)."""
+    head = ("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
             "Accept: */*\r\nAccept-Encoding: identity\r\n"
-            "Connection: close\r\n\r\n" % (path, host, USER_AGENT)) \
-        .encode("ascii", "replace")
+            "Connection: close\r\n" % (path, host, USER_AGENT))
+    left, i = int(pad or 0), 1
+    while left > 0:
+        name = "X-Pad-%02d: " % i
+        n = max(1, min(4096, left - len(name) - 2))
+        head += name + "a" * n + "\r\n"
+        left -= len(name) + n + 2
+        i += 1
+    return (head + "\r\n").encode("ascii", "replace")
+
+
+def national_name_ok(der: bytes, host: str) -> bool:
+    """Листовой сертификат выпущен национальным УЦ (издатель «Russian
+    Trusted …») и выписан на ``host``: проходит по имени (PassesNameOnly
+    эталона). Как и в эталоне, сверяется только CN издателя, подпись
+    не проверяется: УЦ Минцифры нет в хранилищах ни у ПК, ни у роутера.
+    Подделку с таким издателем отсекает критерий загрузки — страница
+    блокировки не даёт ни объёма тела, ни скорости цели."""
+    if not der:
+        return False
+    info = _decode_cert(der)
+    issuer_cn = [v for rdn in info.get("issuer") or () for k, v in rdn
+                 if k == "commonName"]
+    # Издатель — именно CN УЦ Минцифры (ProbeResult.NationalRoot эталона),
+    # а не эти байты где угодно в сертификате.
+    if not any(cn in NATIONAL_ISSUER_CNS for cn in issuer_cn):
+        return False
+    return host_matches(_names_of(info), host)
+
+
+def cert_names(der: bytes) -> list:
+    """DNS-имена сертификата (subjectAltName, иначе CN) — разбором,
+    который даёт сам модуль ssl CPython."""
+    return _names_of(_decode_cert(der))
+
+
+def _names_of(info: dict) -> list:
+    names = [v for k, v in info.get("subjectAltName") or () if k == "DNS"]
+    if not names:
+        for rdn in info.get("subject") or ():
+            for k, v in rdn:
+                if k == "commonName":
+                    names.append(v)
+    return names
+
+
+def _decode_cert(der: bytes) -> dict:
+    import tempfile
+    try:
+        pem = ssl.DER_cert_to_PEM_cert(der)
+        with tempfile.NamedTemporaryFile("w", suffix=".pem",
+                                         delete=False) as f:
+            f.write(pem)
+            path = f.name
+        try:
+            return ssl._ssl._test_decode_cert(path) or {}   # noqa: SLF001
+        finally:
+            os.unlink(path)
+    except Exception:                               # noqa: BLE001
+        return {}
+
+
+def host_matches(names, host: str) -> bool:
+    """Имя хоста подходит под одно из имён сертификата (``*.`` — одна
+    метка слева, как в RFC 6125)."""
+    host = (host or "").lower().rstrip(".")
+    for n in names or []:
+        n = str(n).lower().rstrip(".")
+        if n == host:
+            return True
+        if n.startswith("*.") and "." in host and \
+                host.split(".", 1)[1] == n[2:]:
+            return True
+    return False
+
+
+def _name_only_context():
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 class _Body:
@@ -477,14 +584,21 @@ def _new_ssl_context():
 def probe_page(ip: str, port: int, host: str, *, tls: bool = True,
                local_port: int = 0, ports=None, timeout: float = PAGE_TIME,
                stall: float = STALL, min_bytes: int = MIN_BODY,
-               ctx=None) -> PageResult:
+               ctx=None, pad: int = 0, rate_bytes: int = 0,
+               min_rate: float = 0, name_only=None) -> PageResult:
     """Загрузить страницу ``host`` с адреса ``ip`` (уровень «тело»).
 
     ``local_port`` — исходный порт от geneva (оценка стратегии),
     ``ports`` — блок, из которого брать порт. Метку ставит вызывающий
-    (:func:`probe_mark.marking`).
+    (:func:`probe_mark.marking`). ``pad`` — добивка запроса,
+    ``rate_bytes`` — читать до стольких байт и мерить скорость,
+    ``min_rate`` — медленнее — ``throttled``. ``name_only`` — проверять
+    сертификат только по имени и издателю (национальный УЦ); ``None`` —
+    если хост уже узнан так.
     """
     r = PageResult(tls=tls)
+    if name_only is None:
+        name_only = host in _national_hosts
     deadline = time.monotonic() + timeout
     try:
         sock = socket.socket(_family(ip), socket.SOCK_STREAM)
@@ -505,7 +619,8 @@ def probe_page(ip: str, port: int, host: str, *, tls: bool = True,
         r.connect_ok = True
         conn = sock
         if tls:
-            ctx = ctx or _ssl_context()
+            ctx = _name_only_context() if name_only else \
+                (ctx or _ssl_context())
             sock.settimeout(max(0.5, min(stall * 2,
                                          deadline - time.monotonic())))
             try:
@@ -514,6 +629,8 @@ def probe_page(ip: str, port: int, host: str, *, tls: bool = True,
             except ssl.SSLCertVerificationError as e:
                 # рукопожатие прошло, сертификат не тот
                 r.tls_ok, r.cert_valid, r.detail = True, False, str(e)
+                r.untrusted_root = getattr(e, "verify_code", 0) in \
+                    NATIONAL_VERIFY_CODES
                 return r
             except (socket.timeout, TimeoutError):
                 r.error = P_TLS_TIMEOUT
@@ -532,12 +649,27 @@ def probe_page(ip: str, port: int, host: str, *, tls: bool = True,
                 r.error, r.detail = P_TLS_RESET if e.errno == \
                     errno.ECONNRESET else P_OTHER, str(e)
                 return r
+            if name_only:
+                try:
+                    der = conn.getpeercert(True)
+                except (OSError, ValueError):
+                    der = b""
+                if not national_name_ok(der, host):
+                    r.cert_valid = False
+                    r.detail = "сертификат не от национального УЦ или " \
+                        "не на это имя"
+                    return r
+                r.national = True
+        req = build_request(host, pad=pad)
         try:
-            conn.sendall(build_request(host))
+            conn.sendall(req)
         except OSError as e:
             r.error, r.detail = P_HTTP_RESET, str(e)
             return r
-        _read_page(conn, r, deadline, stall, min_bytes)
+        r.bytes_out = len(req)
+        _read_page(conn, r, deadline, stall,
+                   max(min_bytes, int(rate_bytes or 0)))
+        _judge_rate(r, min_rate)
         try:
             conn.close()
         except OSError:
@@ -550,9 +682,24 @@ def probe_page(ip: str, port: int, host: str, *, tls: bool = True,
             pass
 
 
+def _judge_rate(r: PageResult, min_rate: float) -> None:
+    """Скорость загрузки по окнам; медленнее ``min_rate`` — шейпер не
+    обойдён (страница пришла, но ровно так же медленно)."""
+    if r.windows:
+        r.rate = gr.read(r.windows) or gr.burst(
+            sum(r.windows), len(r.windows) * gr.WINDOW)
+    if min_rate and r.rate is not None and r.rate.rate < min_rate and \
+            r.stalled_at is None and r.status is not None:
+        r.throttled = True
+        if r.error == P_OK:
+            r.error = P_THROTTLED
+
+
 def _read_page(conn, r: PageResult, deadline: float, stall: float,
                min_bytes: int) -> None:
     body = _Body()
+    r.windows = []
+    first = None
     while True:
         left = deadline - time.monotonic()
         if left <= 0:
@@ -587,6 +734,13 @@ def _read_page(conn, r: PageResult, deadline: float, stall: float,
             elif not body.complete:
                 r.error = P_TRUNCATED
             break
+        now = time.monotonic()
+        if first is None:
+            first = now
+        i = int((now - first) / gr.WINDOW)
+        while len(r.windows) <= i:
+            r.windows.append(0)
+        r.windows[i] += len(data)
         body.feed(data)
         if body.bad:
             r.error = P_BAD_RESPONSE
@@ -718,6 +872,43 @@ def _replay_tcp(sock, ip, port, payloads, fresh, timeout):
 
 # ───────────────────────────── пробы режима ─────────────────────────
 
+def remember_national(host: str) -> None:
+    """Хост отдаёт верное имя от корня Минцифры: дальше (и в оценке
+    стратегий) сертификат проверяется по имени и издателю."""
+    if host and len(_national_hosts) < 4096:
+        _national_hosts.add(host)
+
+
+def _criteria_kw(crit) -> dict:
+    """Критерий сервиса (``Service.criteria``) → аргументы
+    :func:`probe_page`."""
+    crit = crit or {}
+    kw = {}
+    if crit.get("min_bytes"):
+        kw["min_bytes"] = int(crit["min_bytes"])
+    if crit.get("pad"):
+        kw["pad"] = int(crit["pad"])
+    if crit.get("min_rate"):
+        kw["min_rate"] = float(crit["min_rate"])
+        kw["rate_bytes"] = gr.RATE_BYTES
+    return kw
+
+
+def cut_inside_answer(p: PageResult) -> bool:
+    """Раздутый запрос оборвался внутри ответа (Classifier.IsPaddedCutoff
+    AutoTuner): TLS прошёл, ответ неполный, отправлено + принято ≥
+    :data:`gr.CUTOFF_MIN`, и это обрыв или зависание, а не отказ."""
+    if p.passes(gr.PADDED_MIN) or not p.tls_ok or p.complete:
+        return False
+    if p.error not in (P_STALLED, P_HTTP_RESET, P_HTTP_TIMEOUT,
+                       P_TRUNCATED):
+        return False
+    got = sum(p.windows or ())
+    if p.bytes_out + got < gr.CUTOFF_MIN:
+        return False
+    return p.error in (P_STALLED, P_TRUNCATED) or got > 0
+
+
 def baseline_mark() -> int:
     """Метка пробы без обхода: метка проб nfqws2 и метка geneva."""
     from core import probe_mark
@@ -729,8 +920,12 @@ class AutoProbes:
 
     def __init__(self, *, page=probe_page, replay=probe_replay,
                  mark=baseline_mark, ports=AUTO_BASELINE_PORTS,
-                 bypass_ports=AUTO_BYPASS_PORTS):
+                 bypass_ports=AUTO_BYPASS_PORTS, sleep=time.sleep,
+                 capacity=None, recheck: float = RECHECK):
         self._page = page
+        self._sleep = sleep
+        self._capacity = capacity or gr.SHARED
+        self._recheck = recheck
         self._replay = replay
         self._mark = mark
         self._ports = ports
@@ -755,9 +950,7 @@ class AutoProbes:
             # исходный порт из блока проб «Авто» — всегда.
             with probe_mark.marking(mark):
                 if s.kind == ga.WEB:
-                    r = self._page(address, s.port, s.host or s.name,
-                                   tls=s.port != 80, ports=ports)
-                    return page_confirm(r), r.text()
+                    return self._check_page(s, address, ports)
                 plan = replay_plan(s)
                 if plan is None:
                     return ga.C_UNKNOWN, "повтор невозможен (%s)" % (
@@ -776,6 +969,90 @@ class AutoProbes:
         except OSError as e:
             return ga.C_UNKNOWN, "проба не запустилась: %s" % e
 
+    def _check_page(self, s: ga.Service, address: str, ports):
+        """Сайт: полная загрузка по критерию сервиса (``s.criteria``).
+
+        Без обхода у подозреваемого (критерия ещё нет или детектор geneva
+        поднял подозрение) заодно ищутся шейпер (полка, §2.16) и обрыв
+        16 КБ за маленькой страницей (§2.8): найденное ложится в
+        ``s.criteria`` (вызывающий переносит его в книгу), и страница
+        считается заблокированной. «Заблокирован» без обхода — только
+        если и вторая проба через :data:`RECHECK` не прошла: один
+        медленный или потерянный раз — не DPI (правило 5)."""
+        host = s.host or s.name
+        tls = s.port != 80
+        crit = dict(s.criteria or {})
+        baseline = s.status == ga.SUSPECTED
+        learn = baseline and (not crit or bool(s.detected))
+
+        def once():
+            return self._page_check(address, s.port, host, tls, ports,
+                                    crit, learn)
+        r, found, why = once()
+        if r.passes(crit.get("min_bytes", MIN_BODY)):
+            return ga.C_NOT_BLOCKED, r.text()
+        if baseline:
+            self._sleep(self._recheck)
+            r2, found2, why2 = once()
+            if r2.passes(crit.get("min_bytes", MIN_BODY)):
+                return ga.C_NOT_BLOCKED, r2.text()
+            # шейпер или обрыв — только если вторая проба тоже увидела
+            if learn:
+                s.criteria = found2 if why and why2 else (
+                    found if not why else found2)
+            r, why = r2, why2 if why else ""
+        elif learn:
+            s.criteria = found
+        text = why or r.text()
+        need = (s.criteria or crit).get("min_bytes", MIN_BODY)
+        return page_confirm(r, need), text
+
+    def _page_check(self, address, port, host, tls, ports, crit, learn):
+        """Одна проба страницы (PageCheck AutoTuner): ``(PageResult,
+        критерий, находка)``; находка — текст, если страница по
+        загрузке открылась, но это шейпер или обрыв 16 КБ."""
+        kw = _criteria_kw(crit)
+        if learn and not crit.get("min_rate"):
+            kw["rate_bytes"] = max(kw.get("rate_bytes", 0), gr.RATE_BYTES)
+        cap = self._capacity.current()
+        r = self._page(address, port, host, tls=tls, ports=ports, **kw)
+        if r.untrusted_root and host not in _national_hosts:
+            # корня Минцифры нет в бандле роутера: браузер с ним сайт
+            # откроет — проверка по имени и издателю
+            r2 = self._page(address, port, host, tls=tls, ports=ports,
+                            name_only=True, **kw)
+            if r2.national:
+                remember_national(host)
+                r = r2
+        shelf = self._capacity.judge(r.rate)
+        min_bytes = crit.get("min_bytes", MIN_BODY)
+        if not learn or not r.passes(min_bytes):
+            return r, crit, ""
+        if not crit.get("min_rate") and shelf and r.rate is not None:
+            learned = dict(crit, min_rate=int(gr.threshold(r.rate.rate,
+                                                           cap)))
+            why = "шейпер: ровно %s (разброс %.2f), канал %s" % (
+                gr.human(r.rate.rate), r.rate.cv,
+                "до " + gr.human(cap) if cap > 0 else "не измерен")
+            r.throttled, r.error = True, P_THROTTLED
+            return r, learned, why
+        if not crit.get("pad") and r.complete and r.body < gr.PADDED_MIN:
+            pk = dict(kw, pad=gr.VOLUME_PAD, min_bytes=gr.PADDED_MIN)
+            # сервер может сам не принять запрос в 24 КБ (сброс,
+            # молчание без ответа): считается только обрыв внутри
+            # ответа, и только повторившийся
+            p = self._page(address, port, host, tls=tls, ports=ports, **pk)
+            if cut_inside_answer(p):
+                p = self._page(address, port, host, tls=tls, ports=ports,
+                               **pk)
+                if cut_inside_answer(p):
+                    learned = dict(crit, min_bytes=gr.PADDED_MIN,
+                                   pad=gr.VOLUME_PAD)
+                    return p, learned, \
+                        "обрыв на 16 КБ: раздутый запрос (%d Б) " \
+                        "обрывается" % p.bytes_out
+        return r, crit, ""
+
     def judge(self, s: ga.Service):
         """Оценка стратегии с локального порта geneva: функция
         ``(port) → (fitness, outcome, port_unavailable)`` или ``None`` —
@@ -787,12 +1064,15 @@ class AutoProbes:
         if not address:
             return None
         if snap.kind == ga.WEB:
+            kw = _criteria_kw(snap.criteria)
+
             def run(port):
                 r = self._page(address, snap.port, snap.host or snap.name,
-                               tls=snap.port != 80, local_port=port)
+                               tls=snap.port != 80, local_port=port, **kw)
                 if r.port_unavailable:
                     return 0, r.detail, True
-                fit, outcome = page_fitness(r)
+                fit, outcome = page_fitness(
+                    r, kw.get("min_bytes", MIN_BODY))
                 return fit, outcome, False
             return run
         plan = replay_plan(snap)

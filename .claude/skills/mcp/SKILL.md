@@ -363,6 +363,10 @@ UI), и `tools_by_scope`.
 | `geneva_auto_enable` | control | **да** | `tools/geneva.py` | confirm_token? | включить «Авто» в два шага: `shell.pending_confirm` (токен, последствия — переключение движка, остановка одиночного run), затем тот же инструмент с токеном, `shell_confirm` или кнопка на странице MCP → `enable(confirm=True)` |
 | `geneva_auto_disable` | control | **да** | `tools/geneva.py` | — | выключить «Авто»: подбор прерван, группы и правила сняты, книга сервисов остаётся |
 | `geneva_auto_reset` | control | **да** | `tools/geneva.py` | key | забыть сервис: обход снят, наблюдение заново |
+| `geneva_auto_check_now` | control | **да** | `tools/geneva.py` | key | проверить сервис вне очереди |
+| `geneva_auto_priority` | control | **да** | `tools/geneva.py` | key, value | важность: important / default / unimportant |
+| `geneva_auto_pin` | control | **да** | `tools/geneva.py` | key, pinned? | закрепить стратегию (провалы не ведут к подбору) |
+| `geneva_auto_lists` | control | **да** | `tools/geneva.py` | списки?, флажки? | без аргументов — чтение; списки «Важно», «Не важно», «Не подбирать», «Не трогать», `known_important`, `split_workers`, `by_name` |
 | `geneva_set_strategy` | control | **да** | `tools/geneva.py` | strategy, source? | рабочая стратегия geneva; живому движку — `set_strategy` в сокет без перезапуска; снимок вида `geneva_strategy` |
 | `firewall_apply` | control | **да** | `tools/firewall.py` | — | поставить правила NFQUEUE; порты управления исключаются |
 | `firewall_remove` | control | **да** | `tools/firewall.py` | — | снять правила: трафик пойдёт напрямую |

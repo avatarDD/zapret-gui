@@ -15,6 +15,7 @@ version / check / library / db / fw / run / evolve / eval, события JSONL
   GENEVA_STUB_IGNORE_TERM 1 — `run` не выходит по SIGTERM (проверка SIGKILL)
   GENEVA_STUB_EXTERNAL    1 — фича `external_workers` (geneva_c 1.2)
   GENEVA_STUB_XGEN        1 — фича `ext_xgen` (geneva_c 2.0.1, вместе с EXT)
+  GENEVA_STUB_LISTS       1 — фичи `ext_lists`, `ext_profile`, `ext_auto`, `ext_l7`
   GENEVA_STUB_EXT         1 — фичи `ext`, `ext_xact` (geneva_c 2.0): x-строки
                           разбираются только с `--ext` после команды
 
@@ -93,7 +94,9 @@ def cmd_version():
             ["ext", "ext_xact"] if os.environ.get("GENEVA_STUB_EXT")
             == "1" else []) + (
             ["ext_xgen"] if os.environ.get("GENEVA_STUB_XGEN")
-            == "1" else [])}))
+            == "1" else []) + (
+            ["ext_lists", "ext_profile", "ext_auto", "ext_l7"]
+            if os.environ.get("GENEVA_STUB_LISTS") == "1" else [])}))
     return 0
 
 
@@ -193,13 +196,34 @@ def handle(req, ev, state):
     if cmd == "stop":
         stop.set()
         return {"ok": True}
+    if cmd == "reload_lists" and "--ext" in ARGS:
+        ev.emit("reload_lists")
+        return {"ok": True, "files": 3}
+    if cmd == "ext_status" and "--ext-auto" in ARGS:
+        # GENEVA_STUB_IMPAIRED — JSON-массив impaired
+        return {"ok": True, "auto": "observe", "capacity": int(
+            os.environ.get("GENEVA_STUB_CAPACITY", "0")),
+            "impaired": json.loads(os.environ.get("GENEVA_STUB_IMPAIRED",
+                                                  "[]"))}
     return {"ok": False, "error": "unknown command"}
 
 
 def cmd_run():
     ev = Events(opt("-e"))
-    with open(opt("-f")) as f:
-        strategy = f.read().strip()
+    if opt("--ext-profile"):
+        # профили geneva_c 2.0: стратегия — первая strategy-file файла
+        strategy = "\\/"
+        with open(opt("--ext-profile")) as f:
+            for line in f:
+                if line.startswith("strategy-file = "):
+                    with open(line.split("= ", 1)[1].strip()) as sf:
+                        strategy = sf.read().strip()
+                    break
+    elif opt("-s"):
+        strategy = opt("-s")
+    else:
+        with open(opt("-f")) as f:
+            strategy = f.read().strip()
     ev.emit("start", mode="run", proto=1, pid=os.getpid(),
             queue=int(opt("-q", "310")), ports=opt("-p"))
     fail = os.environ.get("GENEVA_STUB_RUN_FAIL")

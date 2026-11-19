@@ -24,7 +24,11 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import re
 from dataclasses import dataclass, field
+
+from core import geneva_auto_lists as gal
+from core.geneva_ext import needs_ext
 
 # ───────────────────────────── виды и состояния ─────────────────────
 
@@ -193,6 +197,17 @@ class Service:
     suspicions: int = 0
     restored_at: float = None   # проба с обходом вернула в applied
     rejected: list = field(default_factory=list)  # не работают у устройств
+    # Важность (core/geneva_auto_lists): вычисленная и слово пользователя.
+    priority: int = 1
+    user_priority: str = ""
+    pinned: bool = False        # провалы не ведут к новому подбору
+    pinned_warned: bool = False  # журнал уже сказал (не сохраняется)
+    baseline_at: float = None   # последнее «заблокирован» без обхода
+    detected: list = field(default_factory=list)   # отметки детектора
+    detected_why: str = ""
+    # Критерий успеха страницы, найденный без обхода (шейпер, обрыв
+    # 16 КБ): {"min_rate", "pad", "min_bytes"}; пусто — обычная загрузка.
+    criteria: dict = field(default_factory=dict)
 
     # ── свойства ──
 
@@ -229,6 +244,11 @@ class Service:
         return best["ip"] if best else ""
 
     @property
+    def peer(self) -> bool:
+        """Пир или фон: места книги для сайтов ему не достаются."""
+        return self.priority >= gal.LOW
+
+    @property
     def is_active(self) -> bool:
         """Стратегия включена. Не во время подбора: пробы подбора идут на
         те же адреса, и две стратегии на одном пакете не судят ни одну."""
@@ -254,6 +274,13 @@ class Service:
             "suspicions": self.suspicions,
             "restored_at": self.restored_at,
             "rejected": list(self.rejected),
+            "priority": self.priority,
+            "user_priority": self.user_priority,
+            "pinned": self.pinned,
+            "baseline_at": self.baseline_at,
+            "detected": list(self.detected),
+            "detected_why": self.detected_why,
+            "criteria": dict(self.criteria),
         }
 
     @classmethod
@@ -327,7 +354,31 @@ class Service:
             restored_at=opt("restored_at"),
             rejected=[str(x) for x in d.get("rejected") or []
                       if isinstance(x, str) and x][-MAX_REJECTED:],
+            priority=min(3, max(0, int(num("priority", 1)))),
+            user_priority=d.get("user_priority")
+            if d.get("user_priority") in ("important", "unimportant")
+            else "",
+            pinned=bool(d.get("pinned")) and bool(strategy),
+            baseline_at=opt("baseline_at"),
+            detected=times("detected"),
+            detected_why=str(d.get("detected_why") or "")[:120],
+            criteria=_criteria(d.get("criteria")),
         )
+
+
+def _criteria(value) -> dict:
+    """Критерий страницы из файла: только известные числа."""
+    out = {}
+    if not isinstance(value, dict):
+        return out
+    for k in ("min_rate", "pad", "min_bytes"):
+        try:
+            v = int(value.get(k) or 0)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            out[k] = v
+    return out
 
 
 def _valid_ip(value) -> bool:
@@ -391,7 +442,14 @@ def from_base64(text: str) -> list:
 
 _ORDER = {SEARCHING: 0, DEGRADED: 1, APPLIED: 2, BLOCKED: 3, SUSPECTED: 4,
           NOT_FOUND: 5, IP_BLOCKED: 6, FALLBACK: 7, NOT_BLOCKED: 8}
-_SEARCH_ORDER = {WEB: 0, DNS: 1, ENDPOINT: 2, QUIC: 3}
+# Внутри одной важности: сайт, DNS, QUIC, сервер, пир (AutoBook.Queue).
+_SEARCH_ORDER = {WEB: 0, DNS: 1, QUIC: 2, ENDPOINT: 3}
+DETECTOR_CLASSES = ("THROTTLE", "FREEZE_N")
+DETECTOR_WHY = {
+    "THROTTLE": "детектор geneva: замедление (шейпер)",
+    "FREEZE_N": "детектор geneva: заморозка на 8–64 КБ",
+}
+DNS_POISON_EVERY = HOUR
 
 
 def threshold(s: Service) -> int:
@@ -403,8 +461,12 @@ def threshold(s: Service) -> int:
 
 
 def suspicious(s: Service):
-    """``(похоже на DPI, почему)``: провалы и ни одного успеха."""
+    """``(похоже на DPI, почему)``: провалы и ни одного успеха; или
+    детектор geneva видел полку скорости или заморозку — срезу эти потоки
+    кажутся удачными, решает проба."""
     why = s.why
+    if s.detected:
+        return True, s.detected_why or "детектор geneva"
     if s.oks:
         return False, why
     fails = len(s.fails) + len(s.no_connections)
@@ -440,9 +502,18 @@ IP_REACHABLE_WHY = ("адрес отвечает — соединения уст
                     "блокировка по содержимому")
 
 
+def _evictable(s: Service) -> bool:
+    """Для него ничего не делается: наблюдается, открыт, блок по адресу,
+    QUIC через TCP. Фоновый, ждущий пробы или подбора, — тоже: пир,
+    который вернётся, будет увиден снова."""
+    return s.status in (WATCHING, NOT_BLOCKED, FALLBACK, IP_BLOCKED) or (
+        s.priority == gal.BACKGROUND and s.status in (SUSPECTED, BLOCKED,
+                                                      NOT_FOUND))
+
+
 def _trim(s: Service, now: float) -> None:
     start = now - WINDOW
-    for name in ("fails", "oks", "no_connections"):
+    for name in ("fails", "oks", "no_connections", "detected"):
         lst = [t for t in getattr(s, name) if t >= start]
         setattr(s, name, lst[-MAX_TIMES:])
 
@@ -457,8 +528,13 @@ class Book:
     ``NextToSearch`` берёт только ``blocked``.
     """
 
-    def __init__(self, saved=None, now: float = 0.0):
+    def __init__(self, saved=None, now: float = 0.0, lists=None):
         self._services = {}
+        self.lists = lists if lists is not None else gal.Lists()
+        self._dns_poisoned = {}
+        # Сайты, которые ведёт процесс «по имени» (geneva_c 2.0): его
+        # стратегия доходит до них на любом адресе.
+        self.by_name = set()
         for item in saved or []:
             s = item if isinstance(item, Service) else \
                 Service.from_dict(item)
@@ -471,6 +547,9 @@ class Book:
             if s.status == SEARCHING:
                 _move(s, BLOCKED, now or s.since, "подбор прерван, продолжу")
             self._services[s.key] = s
+        # Списки могли смениться, пока режим был выключен: «Не трогать»
+        # и «Не подбирать» действуют и на сохранённую книгу.
+        self.set_lists(self.lists)
 
     @property
     def services(self) -> list:
@@ -487,6 +566,32 @@ class Book:
     def to_list(self) -> list:
         return [s.to_dict() for s in self._services.values()]
 
+    # ── списки пользователя ──
+
+    def set_lists(self, lists) -> tuple:
+        """Новые списки: важность считается заново, сервисы из «Не
+        трогать» уходят из книги (их стратегии больше не применяются),
+        из «Не подбирать» — тоже, если стратегия не применена и подбор
+        не идёт. ``(ушли по «Не трогать», ушли по «Не подбирать»)``."""
+        self.lists = lists
+        gone, skipped = [], []
+        for s in list(self._services.values()):
+            if lists.exclude.matches(s):
+                del self._services[s.key]
+                gone.append(s.name)
+                continue
+            if not s.is_active and s.status != SEARCHING and \
+                    lists.no_search.matches(s):
+                del self._services[s.key]
+                skipped.append(s.name)
+                continue
+            s.priority = gal.base_priority(s, lists)
+        return gone, skipped
+
+    def not_searched(self, s: Service) -> bool:
+        """Пользователь не хочет обхода для этого сервиса."""
+        return self.lists.no_search.matches(s)
+
     # ── наблюдение ──
 
     def feed(self, samples, now: float) -> None:
@@ -494,15 +599,33 @@ class Book:
         for x in samples or []:
             s = self._services.get(x.key)
             if s is None:
-                if len(self._services) >= MAX_SERVICES and not self._evict():
+                if self.lists.exclude.matches_sample(x):
+                    continue
+                # не подбирать: даже в проблемы на странице не попадает
+                if self.lists.no_search.matches_sample(x):
                     continue
                 s = Service(key=x.key, kind=x.kind, transport=x.transport,
                             name=x.name, app=x.app, status=WATCHING,
+                            host=x.host or "",
                             since=now, first_seen=x.time,
+                            ports=[x.port] if x.port else [],
                             local_port=x.local_port
                             if x.kind == LOCAL_PORT else 0,
                             client=x.client if x.kind == LOCAL_PORT else "")
+                s.priority = gal.base_priority(s, self.lists)
+                if not self._make_room(s.priority):
+                    continue
                 self._services[x.key] = s
+            # Адрес, которого ещё нет у применённого сервиса (новый адрес
+            # CDN): поток шёл без обхода, его провал о стратегии ничего не
+            # говорит — адрес сначала войдёт в набор.
+            if x.ip and x.kind != LOCAL_PORT and \
+                    self.lists.exclude.matches_address(x.ip):
+                # адрес в «Не трогать» (подсеть): в набор группы не идёт
+                continue
+            uncovered = s.is_active and x.kind != LOCAL_PORT and \
+                bool(x.ip) and s.key not in self.by_name and \
+                not any(a["ip"] == x.ip for a in s.addresses)
             s.last_seen = max(s.last_seen, x.time)
             if x.host:
                 s.host = x.host
@@ -513,6 +636,9 @@ class Book:
                     s.ports.append(x.port)
             if x.replay:
                 s.replay = to_base64(x.replay)
+            if uncovered and x.health != OK:
+                _trim(s, now)
+                continue
             if x.health == OK:
                 s.oks.append(x.time)
             elif x.health == FAILED:
@@ -538,13 +664,24 @@ class Book:
         if replay is not None:
             s.replay = to_base64(replay) if app in REPLAYABLE_APPS else ""
 
-    def _evict(self) -> bool:
+    def _make_room(self, priority: int) -> bool:
+        """Место новому сервису важности ``priority``: полная книга
+        вытесняет наименее важный из тех, кого можно (сначала фоновые,
+        затем давно не виденные), а пиры не занимают места, оставленные
+        сайтам (:data:`gal.RESERVED_PLACES`). ``False`` — места нет."""
+        minor = priority >= gal.LOW
+        minors = sum(1 for s in self._services.values() if s.peer)
+        full = len(self._services) >= MAX_SERVICES
+        minors_full = minor and minors >= MAX_SERVICES - gal.RESERVED_PLACES
+        if not full and not minors_full:
+            return True
         victims = [s for s in self._services.values()
-                   if s.status in (WATCHING, NOT_BLOCKED, FALLBACK,
-                                   IP_BLOCKED)]
+                   if _evictable(s) and s.priority >= priority
+                   and (not minors_full or s.peer)]
         if not victims:
             return False
-        victim = min(victims, key=lambda s: s.last_seen)
+        victim = sorted(victims, key=lambda s: (-s.priority,
+                                                s.last_seen))[0]
         del self._services[victim.key]
         return True
 
@@ -563,6 +700,7 @@ class Book:
                 keep = [a for a in s.addresses
                         if now - a["seen"] <= ADDRESS_LIFE]
                 s.addresses = keep or s.addresses[-1:]
+            s.priority = gal.base_priority(s, self.lists)
             sus, why = suspicious(s)
             due = s.next_check is None or now >= s.next_check
             st = s.status
@@ -603,7 +741,18 @@ class Book:
                                            if t > s.applied_at])
                 fails = sum(1 for t in s.fails if t > at) + \
                     sum(1 for t in s.no_connections if t > at)
-                if fails >= threshold(s):
+                if fails >= threshold(s) and s.pinned:
+                    # закреплена пользователем: нового подбора нет,
+                    # провалы только видны
+                    if not s.pinned_warned:
+                        out.append("%s: закреплённая стратегия даёт ошибки, "
+                                   "оставляю её (снимите закрепление для "
+                                   "нового подбора)" % s.name)
+                    s.pinned_warned = True
+                    if not s.why.startswith("закреплена"):
+                        s.why = "закреплена; есть ошибки: " + s.why
+                    s.applied_at = now
+                elif fails >= threshold(s):
                     _move(s, DEGRADED, now, "обход перестал работать: " +
                           s.why)
                     s.next_check = None
@@ -620,25 +769,162 @@ class Book:
 
     # ── что дальше ──
 
-    def next_to_confirm(self, now: float):
-        cands = [s for s in self._services.values()
-                 if s.status in (SUSPECTED, DEGRADED)
-                 and (s.next_check is None or now >= s.next_check)]
-        if not cands:
-            return None
+    def _queue(self, cands, now: float) -> list:
+        """Порядок AutoBook.Queue: важность (с учётом ожидания), затем
+        сломавшийся обход, вид (сайт, DNS, QUIC, сервер, пир), свежесть
+        и трафик. Число провалов не решает: пиры торрента проваливаются
+        сотнями."""
         return sorted(cands, key=lambda s: (
-            s.status != DEGRADED,
-            -(len(s.fails) + len(s.no_connections))))[0]
+            gal.effective(s, now), s.status != DEGRADED,
+            _SEARCH_ORDER.get(s.kind, 4), -s.last_seen,
+            -(len(s.oks) + len(s.fails) + len(s.no_connections)), s.key))
 
-    def next_to_search(self, now: float):
+    def next_to_confirm(self, now: float, allowed=None):
+        """Следующий на проверку; ``allowed(s)`` — фильтр (сервис, на
+        котором идёт подбор или проверка своей стратегии, не трогать:
+        его обход сейчас — пробная стратегия, а не своя)."""
+        cands = [s for s in self._services.values()
+                 if (allowed is None or allowed(s))
+                 and s.status in (SUSPECTED, DEGRADED)
+                 and (s.next_check is None or now >= s.next_check)
+                 and (s.status == DEGRADED or not self.not_searched(s))]
+        q = self._queue(cands, now)
+        return q[0] if q else None
+
+    def next_to_search(self, now: float, allowed=None):
+        """Следующий заблокированный для подбора; ``allowed(s)`` —
+        фильтр (подборы рядом не пересекаются)."""
         cands = [s for s in self._services.values()
                  if s.status == BLOCKED
-                 and (s.next_check is None or now >= s.next_check)]
+                 and (s.next_check is None or now >= s.next_check)
+                 and not self.not_searched(s)
+                 and (allowed is None or allowed(s))]
+        q = self._queue(cands, now)
+        return q[0] if q else None
+
+    def preempting(self, searching: str, now: float, allowed=None):
+        """Заблокированный, ради которого стоит прервать подбор
+        ``searching``: важнее его сейчас и сам не фоновый (пир, что долго
+        ждал, поднимается, но не прерывает никого)."""
+        cur = self.find(searching)
+        if cur is None:
+            return None
+        nxt = self.next_to_search(now, allowed)
+        if nxt is None or nxt.key == searching or \
+                nxt.priority == gal.BACKGROUND:
+            return None
+        return nxt if gal.effective(nxt, now) < gal.effective(cur, now) \
+            else None
+
+    # ── действия пользователя ──
+
+    def check_now(self, key: str, now: float) -> str:
+        """«Проверить сейчас»: применённый проверяется с обходом (и
+        подбирается заново, если не прошёл), любой другой — пробой без
+        обхода сразу, паузы не в счёт; «не найдено» — подбор сейчас."""
+        s = self.find(key)
+        if s is None:
+            return ""
+        s.next_check = None
+        if s.status == APPLIED:
+            _move(s, DEGRADED, now, "проверка по просьбе пользователя")
+        elif s.status == NOT_FOUND:
+            _move(s, BLOCKED, now, "повторный подбор по просьбе "
+                  "пользователя")
+        elif s.status in (SEARCHING, BLOCKED, DEGRADED):
+            return "%s: уже в работе" % s.name
+        else:
+            # сервис без пробы на слово пользователя считается блоком
+            s.suspicions = 2
+            _move(s, SUSPECTED, now, "проверка по просьбе пользователя")
+        return "%s: проверяю сейчас" % s.name
+
+    def pin(self, key: str, pinned: bool) -> bool:
+        s = self.find(key)
+        if s is None or (pinned and not s.strategy):
+            return False
+        s.pinned = bool(pinned)
+        s.pinned_warned = False
+        return True
+
+    def set_user_priority(self, key: str, value: str) -> bool:
+        s = self.find(key)
+        if s is None or value not in gal.USER_PRIORITIES:
+            return False
+        s.user_priority = value
+        s.priority = gal.base_priority(s, self.lists)
+        return True
+
+    def family_strategy(self, s: Service):
+        """Стратегия, работающая у другого домена того же семейства
+        (видео YouTube для его сайта): её пробовать первой."""
+        fam = gal.service_family(s)
+        if not fam:
+            return None
+        cands = [x for x in self._services.values()
+                 if x.key != s.key and x.is_active
+                 and x.transport == s.transport
+                 and gal.service_family(x) == fam]
         if not cands:
             return None
-        return sorted(cands, key=lambda s: (
-            _SEARCH_ORDER.get(s.kind, 4),
-            -(len(s.fails) + len(s.no_connections))))[0]
+        return max(cands, key=lambda x: x.applied_at or 0).strategy
+
+    # ── детектор geneva ──
+
+    def detect(self, level: str, key: str, cls: str, now: float) -> list:
+        """Ключ, который детектор geneva держит заблокированным
+        (``ext_status`` → ``impaired``): имя (``host``) или адрес
+        (``ip``) с классом из :data:`DETECTOR_CLASSES`. Сервисы — сайт по
+        имени или поддомену, TCP-сервис по адресу — становятся
+        подозреваемыми, если ими ещё не занимаются. Возвращает имена
+        новых подозреваемых."""
+        hit = []
+        key = str(key or "").strip().rstrip(".").lower()
+        if cls not in DETECTOR_CLASSES or not key:
+            return hit
+        for s in self._services.values():
+            if level == "host":
+                site = gal.site_of(s)
+                match = s.kind == WEB and (key == (s.host or "").lower() or
+                                           key == site or
+                                           key.endswith("." + site))
+            elif level == "ip":
+                match = s.transport == "tcp" and any(
+                    a["ip"].lower() == key for a in s.addresses)
+            else:
+                match = False
+            if not match:
+                continue
+            if s.status not in (WATCHING, FALLBACK, SUSPECTED) and not (
+                    s.status == NOT_BLOCKED and (s.next_check is None or
+                                                 now >= s.next_check)):
+                continue
+            fresh = not s.detected
+            if fresh or now - s.detected[-1] >= MINUTE:
+                s.detected.append(now)
+            s.detected_why = DETECTOR_WHY.get(cls, cls)
+            if fresh:
+                hit.append(s.name)
+        return hit
+
+    def dns_poisoned(self, name: str, now: float) -> bool:
+        """Детектор видел поддельный ответ DNS для имени: пакетная
+        стратегия не поможет, нужен DoH. ``True`` — имя новое или о нём
+        говорили больше часа назад."""
+        name = str(name or "").strip().rstrip(".").lower()
+        at = self._dns_poisoned.get(name)
+        if not name or (at is not None and now - at < DNS_POISON_EVERY):
+            return False
+        # только имена своих сервисов: чужие журнал не засоряют
+        if not any(name in ((x.host or "").lower(), (x.name or "").lower())
+                   for x in self._services.values()):
+            return False
+        while len(self._dns_poisoned) >= 256:
+            # самое давнее — вон, а не всё сразу (иначе повторы)
+            del self._dns_poisoned[min(self._dns_poisoned,
+                                       key=self._dns_poisoned.get)]
+        self._dns_poisoned[name] = now
+        return True
 
     # ── итоги проб и подбора ──
 
@@ -662,6 +948,25 @@ class Book:
                   "нет: ищу другую стратегию")
             return ("%s: стратегия помогает роутеру, но не устройствам — "
                     "ищу другую" % s.name)
+        if result == C_NOT_BLOCKED:
+            s.detected = []
+        if result in (C_BLOCKED, C_UNKNOWN) and degraded and s.pinned:
+            s.applied_at = now
+            s.fails = []
+            s.no_connections = []
+            s.detected = []
+            _move(s, APPLIED, now, "закреплена; проверка с обходом не "
+                  "прошла")
+            return ("%s: проверка с обходом не прошла, но стратегия "
+                    "закреплена — оставляю" % s.name)
+        if result in (C_BLOCKED, C_UNKNOWN) and degraded and \
+                self.not_searched(s) and (result == C_BLOCKED or
+                                          s.suspicions >= 2):
+            # обход перестал работать, а новый пользователь не хочет —
+            # сервис уходит, как при смене списков
+            del self._services[s.key]
+            return ("%s: обход перестал работать; в списке «Не подбирать» "
+                    "— новый не ищу" % s.name)
         if result == C_NOT_BLOCKED and degraded:
             s.fails = []
             s.no_connections = []
@@ -689,6 +994,9 @@ class Book:
             s.next_check = now + UNKNOWN_RECHECK
             return ""
         s.next_check = None
+        if not degraded and result == C_BLOCKED:
+            s.baseline_at = now
+        s.detected = []
         _move(s, BLOCKED, now, "обход перестал работать: ищу новую "
               "стратегию" if degraded else "заблокирован")
         return ("%s: стратегия больше не работает, ищу новую" if degraded
@@ -712,6 +1020,7 @@ class Book:
         s.next_check = None
         s.fails = []
         s.no_connections = []
+        s.detected = []
         _move(s, APPLIED, now, "обход работает")
 
     def not_found(self, key: str, now: float) -> None:
@@ -744,6 +1053,9 @@ class Book:
         s.strategy = None
         s.applied_at = None
         s.restored_at = None
+        s.pinned = False
+        s.detected = []
+        s.criteria = {}
         s.rejected = []
         s.next_check = None
         s.attempts = 0
@@ -754,8 +1066,14 @@ class Book:
 
     def interrupted(self, key: str, now: float) -> None:
         s = self.find(key)
-        if s is not None and s.status == SEARCHING:
-            _move(s, BLOCKED, now, "подбор прерван, продолжу")
+        if s is None or s.status != SEARCHING:
+            return
+        # остановлен, потому что пользователь убрал его из подбора: уходит
+        # из проблем, как при смене списков
+        if not s.is_active and self.not_searched(s):
+            del self._services[key]
+            return
+        _move(s, BLOCKED, now, "подбор прерван, продолжу")
 
     def rules_restored(self, now: float) -> int:
         """Правила групп были снесены извне (прошивка) и поставлены
@@ -781,6 +1099,21 @@ class Book:
         for s in self._services.values():
             out[s.status] = out.get(s.status, 0) + 1
         return out
+
+
+def overlap(a: Service, b: Service) -> bool:
+    """Подборы этих двух рядом не идут: общий адрес сервера (пробная
+    группа одного забрала бы адрес другого) или один и тот же сайт (TCP и
+    QUIC)."""
+    if a.key == b.key:
+        return True
+    if a.kind in (WEB, QUIC) and b.kind in (WEB, QUIC) and \
+            gal.site_of(a) == gal.site_of(b):
+        return True
+    if a.kind == LOCAL_PORT and b.kind == LOCAL_PORT:
+        return a.local_port == b.local_port and a.client == b.client
+    ips = {x["ip"] for x in a.addresses}
+    return any(y["ip"] in ips for y in b.addresses)
 
 
 def _add_address(s: Service, ip: str, seen: float) -> None:
@@ -869,19 +1202,98 @@ def target(s: Service):
     return Target(addresses=addrs, tcp_ports=ports(s.port))
 
 
-def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS) -> list:
-    """Группы: активные сервисы по стратегии, пробуемая — первой.
+# ── применение по имени (geneva_c 2.0: ext_profile, ext_lists) ──
+
+HOST_QUEUE = 348                 # процесс «по имени»
+HOST_TCP_PORTS = (80, 443)
+HOST_UDP_PORT = 443
+MAX_HOST_PROFILES = 24
+HOST_FEATURES = ("ext", "ext_profile", "ext_lists", "ext_l7")
+OBSERVE_QUEUE = 349              # детектор geneva (--ext-auto observe)
+OBSERVE_PORT = 9                 # discard: движок детектора берёт только его
+OBSERVE_FEATURE = "ext_auto"
+
+
+def host_profiles(services, trial_keys=(), quic: bool = False,
+                  families: bool = True) -> list:
+    """Профили процесса «по имени» (AutoPlan.HostProfiles AutoTuner):
+    стратегия → сайты, где она применена. Новый адрес CDN работает
+    сразу: geneva узнаёт сайт по имени из ClientHello (или из кэша
+    адресов). К сайту добавляются домены его семейства, если у них нет
+    своей жизни в книге (своя стратегия, проба или подбор). Пробная
+    стратегия не идёт (решает её группа); домен — первому профилю, что
+    его назвал; не больше :data:`MAX_HOST_PROFILES`.
+
+    ``[{"strategy", "udp", "domains", "services"}]``."""
+    allsv = list(services or ())
+    trial_keys = set(trial_keys or ())
+    busy = {(gal.site_of(s), s.kind == QUIC) for s in allsv
+            if s.kind in (WEB, QUIC) and (s.is_active or s.status in (
+                SEARCHING, BLOCKED, SUSPECTED, NOT_FOUND, DEGRADED))}
+    groups = {}
+    for s in allsv:
+        if not s.is_active or not s.strategy or s.key in trial_keys:
+            continue
+        if not (s.kind == WEB or (quic and s.kind == QUIC)):
+            continue
+        groups.setdefault((s.strategy, s.kind == QUIC), []).append(s)
+    order = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0][0],
+                                                   kv[0][1]))
+    claimed, out = set(), []
+    for (strategy, udp), members in order:
+        domains = []
+        for s in sorted(members, key=lambda x: x.key):
+            site = gal.site_of(s)
+            if site and (site, udp) not in claimed:
+                claimed.add((site, udp))
+                domains.append(site)
+        if families:
+            fams = []
+            for s in members:
+                f = gal.service_family(s)
+                if f and f not in fams:
+                    fams.append(f)
+            for f in fams:
+                for d in gal.FAMILIES.get(f, ()):
+                    if (d, udp) not in busy and (d, udp) not in claimed:
+                        claimed.add((d, udp))
+                        domains.append(d)
+        if not domains:
+            continue
+        out.append({"strategy": strategy, "udp": udp, "domains": domains,
+                    "services": [s.key for s in members]})
+        if len(out) >= MAX_HOST_PROFILES:
+            break
+    return out
+
+
+def by_name_covers(services, profiles) -> set:
+    """Сайты, которые покрывает процесс «по имени»: названы в TCP-профиле
+    и все их порты — из :data:`HOST_TCP_PORTS`."""
+    named = {k for p in profiles or () if not p["udp"]
+             for k in p["services"]}
+    return {s.key for s in services or ()
+            if s.kind == WEB and s.key in named and
+            all(int(x) in HOST_TCP_PORTS for x in (s.ports or [WEB_PORT]))}
+
+
+def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS,
+                trials=None) -> list:
+    """Группы: активные сервисы по стратегии, пробуемые — первыми.
 
     ``trial`` — ``(Service, strategy)``: стратегия, которую сейчас
-    проверяют на одном сервисе. Пара «адрес + транспорт» (или локальный
-    порт) достаётся только первой группе: сайты за одним адресом CDN с
-    разными стратегиями не делят пакеты.
+    проверяют на одном сервисе; ``trials`` — несколько таких (подборы
+    рядом, AutoPlan.Groups(services, trials)). Пара «адрес + транспорт»
+    (или локальный порт) достаётся только первой группе: сайты за одним
+    адресом CDN с разными стратегиями не делят пакеты.
     """
-    trial_key = trial[0].key if trial else None
+    trials = [t for t in list(trials or ()) + ([trial] if trial else [])
+              if t and t[1]]
+    trial_keys = {t[0].key for t in trials}
+    trial_pairs = {(t[0].key, t[1]) for t in trials}
     active = [(s, s.strategy) for s in services
-              if s.is_active and s.key != trial_key]
-    if trial:
-        active.append((trial[0], trial[1]))
+              if s.is_active and s.key not in trial_keys]
+    active = [(t[0], t[1]) for t in trials] + active
     by = {}
     order = []
     for s, strat in active:
@@ -896,7 +1308,7 @@ def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS) -> list:
         if targets:
             groups.append(Group(strat, [s.key for s in svcs], targets))
     groups.sort(key=lambda g: (
-        not (trial and g.strategy == trial[1] and trial_key in g.services),
+        not any((k, g.strategy) in trial_pairs for k in g.services),
         -len(g.services), g.strategy))
     claimed = set()
     claimed_ports = set()
@@ -1031,15 +1443,240 @@ AUTO_CANDIDATES_DNS = (
 )
 
 
+# x-действия и полезные нагрузки L7 geneva_c 2.0, которые есть только у
+# одного транспорта (docs/EXT.md: X5a, X5b, X8) — AutoCandidates.Fits.
+_TCP_ONLY = re.compile(
+    r"(?:^|[-(,])x(?:split|disorder|tcpseg|hostfake|fakedsplit|"
+    r"fakeddisorder|synack|synacksplit|wsize|wssize|syndata|rst|http|oob|"
+    r"tlsrec|drip|tlsclone|synhide)(?=[{(,)-]|$)"
+    r"|payload[:=](?:tls_client_hello|http_req)\b|\[TCP:", re.I)
+_UDP_ONLY = re.compile(
+    r"(?:^|[-(,])x(?:udplen|dhtdn|wgobfs|udp2icmp)(?=[{(,)-]|$)"
+    r"|payload[:=](?:quic_initial|dht|wireguard\w*|stun|"
+    r"discord_ip_discovery|dtls\w*)\b|\[UDP:", re.I)
+
+
 def _fits(s: Service, strategy: str) -> bool:
+    """Стратегия действует на пакеты сервиса: TCP-деревья — для TCP,
+    UDP (DNS, IP) — для UDP. Триггеры потока, L7 и мета geneva_c 2.0
+    (``[FLOW:n:a]``) подходят обоим транспортам: решают действия под ними
+    (TCP-разрезы и OOB — только TCP, QUIC Initial — только UDP)."""
     low = strategy.lower()
-    if s.transport == "udp" or s.kind == DNS:
+    udp = s.transport == "udp" or s.kind == DNS
+    if "[flow:" in low or "[l7:" in low or "[meta:" in low:
+        return not _TCP_ONLY.search(strategy) if udp else \
+            not _UDP_ONLY.search(strategy)
+    if udp:
         return "[udp:" in low or "[ip:" in low or "[dns" in low
     return "[tcp:" in low or "[ip:" in low
 
 
+# ── методы zapret2 как x-действия geneva_c 2.0 (AutoCandidates AutoTuner
+# 1.4: XTcp, XQuic, XTcpWide, XHttp, XQuicWide, XUdp, XDht, XTcpAny) ──
+
+X_TCP = (
+    r"[TCP:flags:PA]-xdisorder{pos=1,midsld}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=1,midsld}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20}(xdisorder{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;md5}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;badsum;tlsmod=rnd,rndsni,dupsid}(xsplit{pos=midsld},)-| \/",
+    r"[TCP:flags:PA]-xfakedsplit{pos=midsld;ttl=4}-| \/",
+    r"[TCP:flags:PA]-xhostfake{ttl=auto:-2:3-20}-| \/",
+    r"[TCP:flags:PA]-xtlsrec{pos=sniext+1}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=sniext+1}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=4;repeats=2}(xdisorder{pos=midsld},)-| \/",
+)
+
+X_QUIC = (
+    r"[UDP:dport:443]-xfake{blob=fake_quic_initial;repeats=6;ttl=4}-| \/",
+    r"[UDP:dport:443]-xfake{blob=fake_default_quic;repeats=6;badsum}-| \/",
+    r"[UDP:dport:443]-xsend{ipfrag;ipfrag_pos_udp=8}(drop,)-| \/",
+)
+
+X_TCP_WIDE = (
+    r"[TCP:flags:PA]-xsplit{pos=2}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=host}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=1,host,midsld,endhost}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=2,6,10,14,18,22,26,30}-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=midsld;seqovl=336;seqovl_pattern=fake_default_tls}-| \/",
+    r"[TCP:flags:PA]-xdisorder{pos=2,midsld;seqovl=1}-| \/",
+    r"[TCP:flags:PA]-xdisorder{pos=1,midsld;legacy}-| \/",
+    r"[TCP:flags:PA]-xtcpseg{pos=0,midsld;ip_id=rnd}-| \/",
+    r"[TCP:flags:PA]-xfakeddisorder{pos=midsld;ttl=auto:-2:3-20}-| \/",
+    r"[TCP:flags:PA]-xfakedsplit{pos=midsld;md5}-| \/",
+    r"[TCP:flags:PA]-xhostfake{midhost=midsld;md5}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;seq=-10000}(xsplit{pos=1},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ts=-600000}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;tlsmod=padencap}(xdisorder{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;badsum;repeats=6}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;ipfrag}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xtlsclone{blob=c;sni_first=www.google.com}(xfake{blob=c;ttl=auto:-2:3-20}(xsplit{pos=1,midsld},),)-| \/",
+    r"[TCP:flags:PA]-xrepeat{repeats=3}(xfake{blob=fake_default_tls;ttl=auto:-2:3-20},xsplit{pos=1,midsld})-| \/",
+    r"[TCP:flags:PA]-xrst{badsum}-| \/",
+    r"[TCP:flags:PA]-xrst{ttl=auto:-2:3-20}(xsplit{pos=1},)-| \/",
+    r"[TCP:flags:PA]-xdrip{n=8;delay=20}-| \/",
+    r"[TCP:flags:PA]-xsend{ipfrag;ipfrag_pos_tcp=32}(drop,)-| \/",
+    r"[FLOW:n:a]-xsyndata{blob=fake_default_tls;tlsmod=rnd}-| \/",
+    r"[FLOW:n:a]-xoob{urp=b}-| \/",
+    r"[FLOW:n:a]-xoob{urp=midsld}-| \/",
+    r"[FLOW:n:a]-xtlsrec{pos=midsld}(xsplit{pos=1},)-| \/",
+    # SYN Windows — SEC (ECN): обе формы, как в эталоне
+    r"[TCP:flags:S]-xsynack-| [TCP:flags:SEC]-xsynack-| \/",
+    r"[FLOW:n:a]-xwssize{wsize=1;scale=6}-| \/",
+    r"\/ [TCP:flags:SA]-xwsize{wsize=1;scale=6}-|",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ack=-66000}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;flags-=ACK}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;tsup;nopdel;ipid=rnd}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;tlsmod=sni=www.google.com}(xdisorder{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ip6ext=hopbyhop2;ttl=auto:-2:3-20}(xsplit{pos=1,midsld},)-| \/",
+    r"[TCP:flags:PA]-xwhen{iff=L7:payload:tls_client_hello}(xfake{blob=fake_default_tls;md5}(xsplit{pos=2},),)-| \/",
+    r"[TCP:flags:PA]-xcutoff{dir=out}(xfake{blob=fake_default_tls;ttl=auto:-2:3-20}(xsplit{pos=1,midsld},),)-| \/",
+)
+
+X_HTTP = (
+    r"[TCP:flags:PA]-xhttp{hostcase}-| \/",
+    r"[TCP:flags:PA]-xhttp{domcase}-| \/",
+    r"[TCP:flags:PA]-xhttp{methodeol}-| \/",
+    r"[TCP:flags:PA]-xhttp{unixeol}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_http;ttl=auto:-2:3-20}(xsplit{pos=method+2},)-| \/",
+    r"[TCP:flags:PA]-xsplit{pos=method+2,host+1}-| \/",
+)
+
+X_QUIC_WIDE = (
+    r"[UDP:dport:443]-xfake{blob=fake_quic_initial;repeats=11;ttl=auto:-2:3-20}-| \/",
+    r"[UDP:dport:443]-xfake{blob=fake_quic_initial;repeats=6;md5;badsum}-| \/",
+    r"[UDP:dport:443]-xfake{blob=fake_default_quic;repeats=6;ttl=4;ipfrag}-| \/",
+    r"[UDP:dport:443]-xudplen{increment=2}-| \/",
+    r"[UDP:dport:443]-xsend{ipfrag;ipfrag_pos_udp=16;ipfrag_disorder}(drop,)-| \/",
+)
+
+X_UDP = (
+    r"[UDP:sport:*]-xfake{blob=0x" + "00" * 64 + r";repeats=6;ttl=4;payload=all}-| \/",
+    r"[UDP:sport:*]-xfake{blob=0x" + "00" * 16 + r";repeats=2;badsum;payload=all}-| \/",
+    r"[UDP:sport:*]-xsend{ipfrag;ipfrag_pos_udp=8}(drop,)-| \/",
+    r"[UDP:sport:*]-xudplen{increment=4;payload=all}-| \/",
+)
+
+X_DHT = (
+    r"[UDP:sport:*]-xdhtdn{dn=3}-| \/",
+    r"[UDP:sport:*]-xdhtdn{dn=2}-| \/",
+)
+
+X_TCP_ANY = (
+    r"[TCP:flags:PA]-xsplit{pos=2;payload=all}-| \/",
+    r"[TCP:flags:PA]-xdisorder{pos=2;payload=all}-| \/",
+    r"[TCP:flags:PA]-xfake{blob=fake_default_tls;ttl=auto:-2:3-20;payload=all}(xsplit{pos=2;payload=all},)-| \/",
+    r"[TCP:flags:PA]-xfakedsplit{pos=2;md5;payload=all}-| \/",
+    r"[TCP:flags:PA]-xtcpseg{pos=0,2;ip_id=rnd;payload=all}-| \/",
+    r"[FLOW:n:a]-xoob{urp=b}-| \/",
+    r"[TCP:flags:PA]-xsend{ipfrag;ipfrag_pos_tcp=16}(drop,)-| \/",
+)
+
+FAKES_PER_ROUND = 8
+
+
+def blob_kind(name: str) -> str:
+    """Вид фейка zapret2 по имени блоба (GenevaBlobs.KindOf)."""
+    n = name[3:] if name.startswith("z2_") else name
+    if n.startswith("tls_clienthello"):
+        return "tls_hello"
+    if n.startswith(("quic_initial", "quic2_")):
+        return "quic_initial"
+    if n.startswith("http_"):
+        return "http"
+    if n.startswith("dht_"):
+        return "dht"
+    if n.startswith("zero_"):
+        return "zero"
+    if n.startswith(("bgp", "bitcoin", "rdp", "rtsp", "smtp", "tls_")):
+        return "tcp_other"
+    return "udp_other"
+
+
+def _tls_site(s: Service) -> bool:
+    return s.kind == WEB or (s.transport == "tcp" and
+                             s.app in ("tls", "http"))
+
+
+def slice_round(items, size: int, rnd: int) -> list:
+    """``rnd``-й отрезок по ``size`` с переходом через конец: круги
+    вместе проходят весь список."""
+    items = list(items)
+    if len(items) <= size:
+        return items
+    start = max(0, int(rnd)) * size % len(items)
+    return [items[(start + i) % len(items)] for i in range(size)]
+
+
+def blob_candidates(s: Service, blobs) -> list:
+    """По стратегии на каждый подходящий сервису фейк zapret2."""
+    names = sorted(set(blobs or ()))
+
+    def of(*kinds):
+        return [n for n in names if blob_kind(n) in kinds]
+    out = []
+    ports = set(s.ports or ())
+    if s.kind == QUIC:
+        for b in of("quic_initial"):
+            out.append(r"[UDP:dport:443]-xfake{blob=%s;repeats=6;"
+                       r"ttl=auto:-2:3-20}-| \/" % b)
+    elif _tls_site(s):
+        # сайт, виденный только на 80, ClientHello не шлёт
+        tls = not ports or 443 in ports or 80 not in ports
+        hellos = of("tls_hello") if tls else []
+        for b in hellos:
+            out.append(r"[TCP:flags:PA]-xfake{blob=%s;ttl=auto:-2:3-20}"
+                       r"(xsplit{pos=1,midsld},)-| \/" % b)
+            out.append(r"[TCP:flags:PA]-xfake{blob=%s;md5}"
+                       r"(xdisorder{pos=1,midsld},)-| \/" % b)
+        if hellos:
+            out.append(r"[TCP:flags:PA]-xsplit{pos=midsld;seqovl=336;"
+                       r"seqovl_pattern=%s}-| \/" % hellos[0])
+        if 80 in ports:
+            for b in of("http"):
+                out.append(r"[TCP:flags:PA]-xfake{blob=%s;ttl=auto:-2:3-20}"
+                           r"(xsplit{pos=method+2},)-| \/" % b)
+    elif s.kind == DNS:
+        pass
+    elif s.transport == "udp":
+        kinds = ("dht", "zero") if s.app == "dht" else ("udp_other", "zero")
+        for b in of(*kinds):
+            out.append(r"[UDP:sport:*]-xfake{blob=%s;repeats=4;ttl=4;"
+                       r"payload=all}-| \/" % b)
+    else:
+        for b in of("tcp_other", "zero", "http"):
+            out.append(r"[TCP:flags:PA]-xfake{blob=%s;ttl=auto:-2:3-20;"
+                       r"payload=all}(xsplit{pos=2;payload=all},)-| \/" % b)
+    return out
+
+
+def x_for(s: Service, ext: bool, wide: bool = True, blobs=(),
+          rnd: int = 0) -> list:
+    """Методы zapret2 для сервиса (XFor): обычные и, в широком круге,
+    остальные плюс фейки zapret2 по :data:`FAKES_PER_ROUND` за круг
+    (каждый круг — следующие). Пусто без ``ext`` (фича ``ext_xact``)."""
+    if not ext:
+        return []
+    ports = set(s.ports or ())
+    # чистый HTTP — только если сайт не виден на 443: TLS xhttp не трогает
+    http = 80 in ports and 443 not in ports
+    fakes = slice_round(blob_candidates(s, blobs) if wide else [],
+                        FAKES_PER_ROUND, rnd)
+    if s.kind == QUIC:
+        return list(X_QUIC) + (list(X_QUIC_WIDE) if wide else []) + fakes
+    if _tls_site(s):
+        return (list(X_HTTP) if http or (wide and 80 in ports) else []) + \
+            list(X_TCP) + (list(X_TCP_WIDE) if wide else []) + fakes
+    if s.kind == DNS:
+        return []
+    if s.transport == "udp":
+        return (list(X_DHT) if s.app == "dht" else list(X_UDP)) + fakes
+    return list(X_TCP_ANY) + fakes
+
+
 def candidate_rounds(s: Service, running=(), found=(), proven=(),
-                     library=()) -> list:
+                     library=(), ext: bool = False, blobs=(),
+                     rnd: int = 0) -> list:
     """Круги перебора до генетического подбора: ``[[проверенные],
     [остальные]]`` (пустые круги выброшены).
 
@@ -1050,6 +1687,11 @@ def candidate_rounds(s: Service, running=(), found=(), proven=(),
        сервисов и успехов — раньше);
     2. **все остальные** — стартовый набор, шаблоны и вся библиотека
        исследований Geneva (``library``) для транспорта.
+
+    С ``ext`` (geneva_c 2.0, ``ext_xact``) во второй круг перед
+    библиотекой идут методы zapret2 (:func:`x_for`, широкий набор и
+    фейки zapret2 ``blobs`` по 8 за круг ``rnd``), сверх
+    :data:`MAX_CANDIDATES`.
 
     Отличие от эталона: там один круг до 12 кандидатов и без библиотеки.
     Здесь перебираются все известные стратегии, но второй круг
@@ -1067,10 +1709,15 @@ def candidate_rounds(s: Service, running=(), found=(), proven=(),
     seen = set(s.rejected or ())
     total = [0]
 
+    xs = x_for(s, ext, True, blobs, rnd)
+    limit = MAX_CANDIDATES + len(xs)
+
     def take(items, cap) -> list:
         out = []
         for c in items:
             if not c or not _fits(s, c):
+                continue
+            if not ext and needs_ext(c):
                 continue
             try:
                 c = check_strategy_text(c)
@@ -1078,7 +1725,7 @@ def candidate_rounds(s: Service, running=(), found=(), proven=(),
                 continue
             if c in seen:
                 continue
-            if len(out) >= cap or total[0] >= MAX_CANDIDATES:
+            if len(out) >= cap or total[0] >= limit:
                 break
             seen.add(c)
             out.append(c)
@@ -1087,7 +1734,7 @@ def candidate_rounds(s: Service, running=(), found=(), proven=(),
 
     first = take(list(running) + list(found) + list(proven),
                  MAX_QUICK_CANDIDATES)
-    rest = take(list(classics) + list(library), MAX_CANDIDATES)
+    rest = take(list(classics) + xs + list(library), limit)
     return [r for r in (first, rest) if r]
 
 

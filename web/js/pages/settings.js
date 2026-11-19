@@ -1511,6 +1511,8 @@ const SettingsPage = (() => {
     // ══════════════════ Destroy ══════════════════
 
     function destroy() {
+        // страж смены языка — только пока открыты «Настройки»
+        if (typeof i18n !== 'undefined') i18n.setSwitchGuard(null);
         hasUnsaved = false;
         loading = false;
         config = {};

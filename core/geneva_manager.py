@@ -65,6 +65,13 @@ EVAL_QUEUE = 311
 # zapret-gui (core/geneva_auto_fw), у процессов ``--firewall none``.
 AUTO_QUEUE_BASE = 340
 AUTO_QUEUE_MAX = 8
+# Подборы «Авто» рядом (geneva.auto.split_workers): слот 0 — задача
+# ручного подбора (очередь 311), слоты 1–3 — свои процессы на очередях
+# 312–314. При делении у каждого слота блок из 128 портов (до двух
+# воркеров по 64), все — в прежнем блоке оценщика 30000–30511.
+AUTO_SLOTS = 4
+AUTO_SLOT_PORTS = 128
+EVAL_PORT_BASE = 30000
 
 # Метка пакетов, которые geneva отправляет сама: та же, что zapret-gui
 # исключает из правил nfqws2 (docs/INTEGRATION.md geneva_c).
@@ -143,6 +150,8 @@ SEARCH_DEFAULTS = {
     "runs": 1,
     "timeout": 5,
     "pause_bypass": True,
+    # методы zapret2 (x-действия geneva_c 2.0) в начальной популяции
+    "zapret2": False,
 }
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
@@ -176,6 +185,7 @@ def paths() -> dict:
         "db": os.path.join(st, "db.jsonl"),
         "search": os.path.join(st, "search.json"),
         "candidates": os.path.join(st, "candidates.txt"),
+        "seeds": os.path.join(st, "seeds.txt"),
         "socket": os.path.join(rt, "geneva.sock"),
         "run_pid": os.path.join(rt, "run.pid"),
         "run_events": os.path.join(rt, "run-events.jsonl"),
@@ -352,6 +362,51 @@ def validate_search(data: dict, base: dict = None) -> dict:
     if "pause_bypass" in data:
         out["pause_bypass"] = data["pause_bypass"]
     out["pause_bypass"] = _as_bool(out["pause_bypass"], "pause_bypass")
+    if "zapret2" in data:
+        out["zapret2"] = data["zapret2"]
+    out["zapret2"] = _as_bool(out.get("zapret2", False), "zapret2")
+    return out
+
+
+def zapret2_library() -> list:
+    """TCP-методы zapret2 строками «Библиотеки»: ``country`` —
+    ``zapret2``, ``test`` — TLS, HTTP или TCP (любой протокол)."""
+    from core import geneva_auto as ga
+    out = []
+    for group, test in ((ga.X_TCP + ga.X_TCP_WIDE, "TLS"),
+                        (ga.X_HTTP, "HTTP"), (ga.X_TCP_ANY, "TCP")):
+        for s in group:
+            out.append({"strategy": s, "rate": None, "country": "zapret2",
+                        "test": test, "server_side": False, "zapret2": True,
+                        "description": "Метод zapret2 (geneva_c 2.0)"})
+    return out
+
+
+def zapret2_seeds(params: dict) -> list:
+    """Методы zapret2 для начальной популяции ручного подбора
+    (EngineViewModel.Zapret2Methods AutoTuner): XTcp, для HTTP (проба
+    ``http`` или порт 80) — XHttp."""
+    from core import geneva_auto as ga
+    http = params.get("probe") == "http" or int(params.get("port") or 0) \
+        == 80
+    return list(ga.X_HTTP if http else ga.X_TCP)
+
+
+def fill_population(seeds, extra, size: int) -> list:
+    """Файл ``--load-from`` geneva задаёт всю популяцию, а не добавку
+    к ней: методы zapret2 дополняются стратегиями ``extra`` (библиотека
+    Geneva) и повторами — до размера популяции из настроек."""
+    out = []
+    for c in list(seeds) + list(extra):
+        if c and c not in out:
+            out.append(c)
+        if len(out) >= size:
+            return out
+    base = list(out) or list(seeds)
+    i = 0
+    while base and len(out) < size:
+        out.append(base[i % len(base)])
+        i += 1
     return out
 
 
@@ -447,6 +502,8 @@ def build_evolve_args(binary: str, params: dict, p: dict,
         "--quiet"]
     if resume:
         args.append("--resume")
+    elif p.get("seeds_file"):
+        args += ["--load-from", p["seeds_file"]]
     return args
 
 
@@ -505,7 +562,34 @@ def validate_auto_job(params: dict) -> dict:
     ckpt = str(params.get("checkpoint") or "")
     out["checkpoint"] = ckpt
     out["key"] = str(params.get("key") or "")[:300]
+    # База оценок своя у цели подбора «Авто» (geneva сжимает базу
+    # перезаписью: два процесса один файл не делят) — только внутри
+    # каталога «Авто».
+    db = str(params.get("db") or "")
+    if db:
+        auto_dir = os.path.realpath(paths()["auto"])
+        if not os.path.realpath(db).startswith(auto_dir + os.sep) or \
+                not db.endswith(".jsonl"):
+            raise ValueError("auto: база оценок")
+    out["db"] = db
+    slot = params.get("slot", 0)
+    if isinstance(slot, bool) or not isinstance(slot, int) or \
+            not 0 <= slot < AUTO_SLOTS:
+        raise ValueError("auto: слот")
+    out["slot"] = slot
+    out["split"] = bool(params.get("split"))
     return out
+
+
+def slot_args(params: dict) -> list:
+    """Очередь и блок портов слота задачи «Авто»: слот 0 без деления —
+    как раньше (очередь 311, порты geneva по умолчанию с 30000)."""
+    slot = int(params.get("slot") or 0)
+    args = ["-q", str(EVAL_QUEUE + slot)]
+    if slot or params.get("split"):
+        args += ["--local-ports",
+                 str(EVAL_PORT_BASE + AUTO_SLOT_PORTS * slot)]
+    return args
 
 
 def _auto_refusal() -> dict:
@@ -553,6 +637,78 @@ def build_auto_run_args(binary: str, queue: int, gp: dict,
             "--quiet"]
 
 
+def auto_host_paths() -> dict:
+    """Файлы процесса «по имени» (очередь 348) и детектора (349)."""
+    rt = os.path.join(runtime_dir(), "auto")
+    host = os.path.join(rt, "host")
+    return {"dir": host, "pid": os.path.join(host, "run.pid"),
+            "socket": os.path.join(rt, "host.sock"),
+            "events": os.path.join(host, "events.jsonl"),
+            "log": os.path.join(host, "run.log"),
+            "args": os.path.join(host, "run.args"),
+            "profiles": os.path.join(host, "profiles.ini"),
+            "signature": os.path.join(host, "signature"),
+            "exclude_ip": os.path.join(host, "exclude-ip.txt"),
+            "exclude_hosts": os.path.join(host, "exclude-hosts.txt"),
+            "obs_pid": os.path.join(rt, "observe.pid"),
+            "obs_socket": os.path.join(rt, "observe.sock"),
+            "obs_events": os.path.join(rt, "observe.jsonl"),
+            "obs_log": os.path.join(rt, "observe.log")}
+
+
+def host_profiles_ini(profiles, hp: dict) -> str:
+    """``profiles.ini`` процесса «по имени»: профиль на стратегию, у
+    каждого свой hostlist; общие исключения — адреса групп и «Не
+    трогать» (geneva_c 2.0, docs/EXT.md «Файл профилей»)."""
+    from core import geneva_auto as ga
+    out = ["# geneva-auto: стратегии по имени сайта (zapret-gui)"]
+    for i, prof in enumerate(profiles):
+        d = hp["dir"]
+        out += ["[profile p%d]" % i]
+        if prof["udp"]:
+            out += ["filter-udp = %d" % ga.HOST_UDP_PORT,
+                    "filter-l7 = quic"]
+        else:
+            out += ["filter-tcp = %s" % ",".join(
+                str(x) for x in ga.HOST_TCP_PORTS), "filter-l7 = tls,http"]
+        out += ["hostlist = %s" % os.path.join(d, "hosts-%d.txt" % i),
+                "hostlist-exclude = %s" % hp["exclude_hosts"],
+                "ipset-exclude = %s" % hp["exclude_ip"],
+                "strategy-file = %s" % os.path.join(d, "strategy-%d.txt" % i)]
+    return "\n".join(out) + "\n"
+
+
+def build_host_run_args(binary: str, hp: dict, udp: bool,
+                        ext: list) -> list:
+    """argv процесса «по имени»: правила ставит zapret-gui (очередь 348),
+    имя берётся из ClientHello, а у следующего соединения к тому же
+    адресу — из кэша (``--ext-ipcache-hostname``)."""
+    from core import geneva_auto as ga
+    ports = ",".join(str(x) for x in ga.HOST_TCP_PORTS)
+    return [binary, "run"] + list(ext or ["--ext"]) + [
+        "--ext-profile", hp["profiles"],
+        "-p", ports, "--proto", "tcp,udp" if udp else "tcp",
+        "-q", str(ga.HOST_QUEUE), "--firewall", "none",
+        "--mark", MARK,
+        "-c", "unix:" + hp["socket"],
+        "-e", hp["events"], "--stats-interval", "30",
+        "-l", "info", "--log-file", hp["log"], "--quiet",
+        "--ext-ipcache-hostname"]
+
+
+def build_observe_args(binary: str, hp: dict) -> list:
+    """argv детектора geneva (``--ext-auto observe``): трафик не меняет,
+    движок берёт только порт discard; NFLOG-правила ставит и снимает
+    сама geneva."""
+    from core import geneva_auto as ga
+    return [binary, "run", "--ext", "--ext-auto", "observe", "-s", "\\/",
+            "-p", str(ga.OBSERVE_PORT), "--proto", "tcp",
+            "-q", str(ga.OBSERVE_QUEUE), "--mark", MARK,
+            "-c", "unix:" + hp["obs_socket"],
+            "-e", hp["obs_events"], "--stats-interval", "60",
+            "-l", "info", "--log-file", hp["obs_log"], "--quiet"]
+
+
 def _read_args(path: str) -> list:
     """argv процесса, записанный при запуске (JSON), иначе пусто."""
     try:
@@ -593,8 +749,7 @@ def build_auto_eval_args(binary: str, params: dict, p: dict,
     return [binary, "eval"] + list(ext or []) + _auto_probe_args(params) + [
             "-f", p["auto_candidates"],
             "--workers", str(params["workers"]),
-            "--runs", "1",
-            "-q", str(EVAL_QUEUE),
+            "--runs", "1"] + slot_args(params) + [
             "--mark", MARK,
             "-e", p["job_events"],
             "--log-file", p["job_log"],
@@ -611,11 +766,10 @@ def build_auto_evolve_args(binary: str, params: dict, p: dict,
             "--population", str(params["population"]),
             "--generations", str(params["generations"]),
             "--workers", str(params["workers"]),
-            "--runs", "1",
-            "-q", str(EVAL_QUEUE),
+            "--runs", "1"] + slot_args(params) + [
             "--mark", MARK,
             "--checkpoint", params["checkpoint"],
-            "--db", p["db"],
+            "--db", params.get("db") or p["db"],
             "--target", params["target"],
             "-e", p["job_events"],
             "--log-file", p["job_log"],
@@ -1279,8 +1433,45 @@ class GenevaManager:
                                       % (msg.splitlines()[-1][:300]
                                          if msg else exit_text(r.returncode))}
 
-    def library(self, refresh: bool = False) -> dict:
-        """Готовые стратегии Geneva (``geneva library --json``)."""
+    def _with_exclude(self, args: list, binary: str) -> list:
+        """«Не трогать» режима «Авто» — и ручному run: geneva_c 2.0 с
+        ``ext_lists`` (тогда и ``--ext``). Без фичи — предупреждение в
+        журнале, run идёт без исключений (отличие от эталона: там ручной
+        run не стартует)."""
+        try:
+            from core.geneva_auto_lists import exclude_args
+            from core.geneva_auto_manager import auto_settings
+            excl = exclude_args(auto_settings()["exclude"])
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva: «Не трогать»: %s" % e, source="geneva")
+            return args
+        if not excl:
+            return args
+        if "ext_lists" not in self.features(binary):
+            log.warning("geneva: список «Не трогать» ручному обходу "
+                        "передать нельзя — нужна geneva_c 2.0 (ext_lists); "
+                        "обход идёт без исключений", source="geneva")
+            return args
+        args = list(args)
+        if "--ext" not in args:
+            args.insert(2, "--ext")
+        return args + excl
+
+    def library(self, refresh: bool = False, zapret2: bool = False) -> dict:
+        """Готовые стратегии Geneva (``geneva library --json``).
+
+        ``zapret2`` — и TCP-методы zapret2 (x-действия geneva_c 2.0,
+        фича ``ext_xact``) с пометкой «zapret2 / TLS|HTTP|TCP», как в
+        «Библиотеке» AutoTuner. Подбор «Авто» берёт их отдельно."""
+        res = self._geneva_library(refresh)
+        if not zapret2 or not res.get("ok"):
+            return res
+        binary, _ = self._ready_binary()
+        if not binary or geneva_ext.FEATURE not in self.features(binary):
+            return res
+        return {"ok": True, "items": list(res["items"]) + zapret2_library()}
+
+    def _geneva_library(self, refresh: bool) -> dict:
         if self._library_cache is not None and not refresh:
             return {"ok": True, "items": self._library_cache}
         binary, err = self._ready_binary()
@@ -1300,15 +1491,16 @@ class GenevaManager:
         self._library_cache = items
         return {"ok": True, "items": items}
 
-    def db_top(self, target: str = "", limit: int = 10) -> dict:
-        """Лучшие стратегии из базы оценок (``geneva db top --json``)."""
-        p = paths()
-        if not os.path.isfile(p["db"]):
+    def db_top(self, target: str = "", limit: int = 10, db: str = "") -> dict:
+        """Лучшие стратегии из базы оценок (``geneva db top --json``);
+        ``db`` — своя база цели «Авто» вместо общей."""
+        path = db or paths()["db"]
+        if not os.path.isfile(path):
             return {"ok": True, "items": []}
         binary, err = self._ready_binary()
         if not binary:
             return {"ok": False, "error": err, "items": []}
-        args = [binary, "db", "--db", p["db"], "top", "-n",
+        args = [binary, "db", "--db", path, "top", "-n",
                 str(max(1, min(int(limit or 10), 50))), "--json"]
         if target:
             args += ["--target", target]
@@ -1373,6 +1565,7 @@ class GenevaManager:
                                                         binary))
             except ValueError as e:
                 return {"ok": False, "error": str(e)}
+            args = self._with_exclude(args, binary)
             # Правила от убитого процесса (SIGKILL, обрыв питания при
             # живом /tmp не бывает, но kill -9 — бывает) убираем заранее.
             self._fw_down(binary, args)
@@ -1674,9 +1867,32 @@ class GenevaManager:
                 cfg.set("geneva", "search", {k: params[k]
                                              for k in SEARCH_DEFAULTS})
                 cfg.save()
-            args = build_evolve_args(
-                binary, params, p, resume=resume,
-                ext=geneva_ext.evolve_argv(self.features(binary)))
+            feats = self.features(binary)
+            ext = geneva_ext.evolve_argv(feats)
+            if params.get("zapret2") and geneva_ext.FEATURE in feats:
+                # методы zapret2 — в начальную популяцию; продолжение
+                # берёт популяцию из checkpoint, но --ext нужен и ему
+                seeds = zapret2_seeds(params)
+                ext = ext or geneva_ext.argv(seeds, feats)
+                if not resume:
+                    p = dict(p, seeds_file=p["seeds"])
+                    lib = [str(i.get("strategy", "")).strip()
+                           for i in (self._geneva_library(False)
+                                     .get("items") or [])]
+                    pop = fill_population(
+                        seeds, [x for x in lib if "UDP" not in x],
+                        int(params["population"]))
+                    try:
+                        _write_atomic(p["seeds"], "\n".join(pop) + "\n")
+                    except OSError as e:
+                        return {"ok": False, "error": "методы zapret2 не "
+                                "записаны: %s" % e}
+            elif params.get("zapret2"):
+                log.warning("geneva: методы zapret2 в подборе нужны "
+                            "geneva_c 2.0 (ext_xact) — подбор без них",
+                            source="geneva")
+            args = build_evolve_args(binary, params, p, resume=resume,
+                                     ext=ext)
             state = {
                 "kind": "evolve", "status": "running", "params": params,
                 "started_at": time.time(), "finished_at": None,
@@ -1794,10 +2010,30 @@ class GenevaManager:
 
     # ─────── задания режима «Авто» ───────
 
-    def auto_job_running(self) -> bool:
+    def _slot(self, slot: int) -> "AutoJobSlot":
+        with self._lock:
+            slots = getattr(self, "_auto_slots", None)
+            if slots is None:
+                slots = self._auto_slots = {}
+            if slot not in slots:
+                slots[slot] = AutoJobSlot(slot)
+            return slots[slot]
+
+    def auto_job_running(self, slot: int = 0) -> bool:
+        if slot:
+            return self._slot(slot).running()
         with self._lock:
             return self.job_running() and \
                 self._job_state.get("owner") == "auto"
+
+    def stop_auto_job(self, slot: int = 0) -> dict:
+        """Остановить задачу «Авто» слота (checkpoint сохраняется)."""
+        if slot:
+            self._slot(slot).stop()
+            return {"ok": True}
+        if self.auto_job_running():
+            return self.stop_search()
+        return {"ok": True, "note": "подбор не идёт"}
 
     def start_auto_job(self, kind: str, params: dict, strategies=None,
                        resume: bool = False, answer=None) -> dict:
@@ -1814,71 +2050,107 @@ class GenevaManager:
         локальные порты. Ответ ``busy`` — слот занят (ручной подбор
         на странице): «Авто» подождёт.
         """
+        slot = (params or {}).get("slot", 0)
+        if isinstance(slot, int) and not isinstance(slot, bool) and \
+                0 < slot < AUTO_SLOTS:
+            return self._start_slot_job(kind, params, strategies, resume,
+                                        answer)
         with self._lock:
             if self.job_running():
                 return {"ok": False, "busy": True,
                         "error": "подбор уже идёт"}
-            params = dict(params or {})
-            if answer is not None:
-                params["probe"] = "external"
-            elif params.get("probe") == "external":
-                return {"ok": False, "error": "auto: external без пробы"}
-            try:
-                params = validate_auto_job(params)
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            binary, err = self._ready_binary()
-            if not binary:
+            args, state, err = self._prepare_auto_job(
+                kind, params, strategies, resume, answer, paths())
+            if err:
                 return {"ok": False, "error": err}
-            p = paths()
-            os.makedirs(p["auto"], exist_ok=True)
-            if kind == "eval":
-                items = []
-                for x in strategies or []:
-                    try:
-                        items.append(check_strategy_text(x))
-                    except ValueError:
-                        continue
-                items, bad = self.runnable(items, binary)
-                for s, why in bad[:3]:
-                    log.info("geneva «Авто»: пропущена %s — %s"
-                             % (_short(s, 60), why), source="geneva")
-                if not items:
-                    return {"ok": False, "error": "нет стратегий"}
-                items = items[:64]
-                try:
-                    _write_atomic(p["auto_candidates"],
-                                  "\n".join(items) + "\n")
-                except OSError as e:
-                    return {"ok": False, "error": "кандидаты: %s" % e}
-                args = build_auto_eval_args(
-                    binary, params, p, ext=self.ext_args(items, binary))
-                total = len(items)
-            elif kind == "evolve":
-                if not params["checkpoint"]:
-                    return {"ok": False, "error": "auto: checkpoint"}
-                if resume and not os.path.isfile(params["checkpoint"]):
-                    resume = False
-                if not resume:
-                    _remove(params["checkpoint"])
-                args = build_auto_evolve_args(
-                    binary, params, p, resume=resume,
-                    ext=geneva_ext.evolve_argv(self.features(binary)))
-                total = 0
-            else:
-                return {"ok": False, "error": "auto: kind"}
-            state = {"kind": kind, "owner": "auto", "status": "running",
-                     "params": dict(params, pause_bypass=False),
-                     "started_at": time.time(), "finished_at": None,
-                     "resumed": bool(resume), "gen": -1,
-                     "best_fitness": None, "best": "", "results": [],
-                     "exit_code": None, "target": params["target"],
-                     "total": total, "paused_engine": ""}
             return self._launch_job(args, state, state["params"],
                                     answer=answer)
 
-    def auto_job_status(self) -> dict:
+    def _prepare_auto_job(self, kind, params, strategies, resume, answer,
+                          p: dict):
+        """Общая часть запуска задачи «Авто»: ``(args, state, error)``."""
+        params = dict(params or {})
+        if answer is not None:
+            params["probe"] = "external"
+        elif params.get("probe") == "external":
+            return None, None, "auto: external без пробы"
+        try:
+            params = validate_auto_job(params)
+        except ValueError as e:
+            return None, None, str(e)
+        binary, err = self._ready_binary()
+        if not binary:
+            return None, None, err
+        os.makedirs(paths()["auto"], exist_ok=True)
+        if kind == "eval":
+            items = []
+            for x in strategies or []:
+                try:
+                    items.append(check_strategy_text(x))
+                except ValueError:
+                    continue
+            items, bad = self.runnable(items, binary)
+            for s, why in bad[:3]:
+                log.info("geneva «Авто»: пропущена %s — %s"
+                         % (_short(s, 60), why), source="geneva")
+            if not items:
+                return None, None, "нет стратегий"
+            items = items[:64]
+            try:
+                _write_atomic(p["auto_candidates"], "\n".join(items) + "\n")
+            except OSError as e:
+                return None, None, "кандидаты: %s" % e
+            args = build_auto_eval_args(
+                binary, params, p, ext=self.ext_args(items, binary))
+            total = len(items)
+        elif kind == "evolve":
+            if not params["checkpoint"]:
+                return None, None, "auto: checkpoint"
+            if resume and not os.path.isfile(params["checkpoint"]):
+                resume = False
+            if not resume:
+                _remove(params["checkpoint"])
+            args = build_auto_evolve_args(
+                binary, params, p, resume=resume,
+                ext=geneva_ext.evolve_argv(self.features(binary)))
+            total = 0
+        else:
+            return None, None, "auto: kind"
+        state = {"kind": kind, "owner": "auto", "status": "running",
+                 "params": dict(params, pause_bypass=False),
+                 "started_at": time.time(), "finished_at": None,
+                 "resumed": bool(resume), "gen": -1,
+                 "best_fitness": None, "best": "", "results": [],
+                 "exit_code": None, "target": params["target"],
+                 "total": total, "paused_engine": ""}
+        return args, state, ""
+
+    def _start_slot_job(self, kind, params, strategies, resume,
+                        answer) -> dict:
+        """Задача «Авто» в слоте 1–3: свой процесс, ручной подбор не
+        мешает (при «Авто» он отказывает), но идущий ручной подбор
+        занимает свои порты 30000+ — тогда ``busy``."""
+        slot = self._slot(int(params["slot"]))
+        with self._lock:
+            manual = self.job_running() and \
+                self._job_state.get("owner") != "auto"
+        if manual:
+            return {"ok": False, "busy": True, "error": "идёт ручной подбор"}
+        with slot.lock:
+            if slot.running():
+                return {"ok": False, "busy": True,
+                        "error": "слот подбора занят"}
+            args, state, err = self._prepare_auto_job(
+                kind, params, strategies, resume, answer, slot.paths())
+            if err:
+                return {"ok": False, "error": err}
+            return slot.launch(args, state, answer=answer,
+                               workers=state["params"].get("workers", 1))
+
+    def auto_job_status(self, slot: int = 0) -> dict:
         """Ход и итог последнего задания «Авто» (идущего или законченного)."""
+        if slot:
+            return self._slot(slot).status()
         with self._lock:
             pid = self._job_pid()
             st = self._job_state
@@ -2058,6 +2330,214 @@ class GenevaManager:
                 if _read_pid(auto_group_paths(q)["pid"]) or \
                         q in self._auto_procs:
                     self._auto_stop(q)
+            self.auto_host_stop()
+
+    # ─────── «по имени» и детектор ───────
+
+    def auto_host_pid(self):
+        pid = _read_pid(auto_host_paths()["pid"])
+        if pid and pid_alive(pid, "run"):
+            return pid
+        return None
+
+    def auto_host_apply(self, profiles, exclude_ips=(),
+                        exclude_domains=()) -> dict:
+        """Процесс «по имени» (geneva_c 2.0) под ``profiles``
+        (:func:`core.geneva_auto.host_profiles`). Те же стратегии —
+        только новые списки: файлы переписываются и ``reload_lists``;
+        другие стратегии — перезапуск (иначе профиль N перечитал бы новый
+        список со старой стратегией). Пусто — процесс останавливается.
+
+        ``{"ok", "pid", "action", "udp", "error", "problems"}``."""
+        from core import geneva_auto as ga
+        from core.geneva_auto_lists import problem as name_problem
+        with self._lock:
+            binary, err = self._ready_binary()
+            if not binary:
+                self.auto_host_stop()
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": err}
+            feats = self.features(binary)
+            if not all(f in feats for f in ga.HOST_FEATURES):
+                self.auto_host_stop()
+                return {"ok": True, "pid": None, "action": "unsupported"}
+            problems, good = [], []
+            names = [n for n, _ in geneva_ext.blob_files()]
+            for prof in list(profiles or ())[:ga.MAX_HOST_PROFILES]:
+                if prof.get("udp") and "ext_crypto" not in feats:
+                    continue        # имя QUIC — из расшифрованного Initial
+                try:
+                    strat = check_strategy_text(prof["strategy"])
+                except ValueError as e:
+                    problems.append(str(e))
+                    continue
+                why = self.ext_problem(strat, binary, names, feats)
+                if why:
+                    problems.append(why)
+                    continue
+                doms = []
+                for d in prof.get("domains") or ():
+                    d = str(d).strip().rstrip(".").lower()
+                    if d and "." in d and "/" not in d and \
+                            not name_problem(d) and d not in doms:
+                        doms.append(d)
+                if doms:
+                    good.append({"strategy": strat, "udp": bool(
+                        prof.get("udp")), "domains": doms,
+                        "services": list(prof.get("services") or ())})
+            if not good:
+                self.auto_host_stop()
+                return {"ok": True, "pid": None, "action": "stopped",
+                        "problems": problems}
+            hp = auto_host_paths()
+            udp = any(g["udp"] for g in good)
+            # сервисы TCP-профилей, которые процесс правда загрузил
+            loaded = sorted({k for g in good if not g["udp"]
+                             for k in g["services"]})
+            sig = "\n".join(("udp " if g["udp"] else "tcp ") + g["strategy"]
+                            for g in good)
+            pid = self.auto_host_pid()
+            try:
+                with open(hp["signature"], "r", encoding="utf-8") as f:
+                    reload = bool(pid) and f.read() == sig
+            except OSError:
+                reload = False
+            if not reload:
+                self.auto_host_stop()
+            try:
+                os.makedirs(hp["dir"], exist_ok=True)
+                # Пустой hostlist взял бы все имена: в каждом есть имя,
+                # каждый пишется рядом и переносится — geneva не прочитает
+                # половину файла.
+                _write_atomic(hp["exclude_ip"],
+                              "# адреса групп и «Не трогать»\n" +
+                              "\n".join(exclude_ips or ()) + "\n")
+                _write_atomic(hp["exclude_hosts"],
+                              "# «Не трогать»\n" +
+                              "\n".join(exclude_domains or ()) + "\n")
+                for i, g in enumerate(good):
+                    _write_atomic(os.path.join(hp["dir"], "hosts-%d.txt" % i),
+                                  "\n".join(g["domains"]) + "\n")
+                    _write_atomic(os.path.join(hp["dir"],
+                                               "strategy-%d.txt" % i),
+                                  g["strategy"] + "\n")
+            except OSError as e:
+                self.auto_host_stop()
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": "файлы «по имени»: %s" % e}
+            if reload:
+                try:
+                    control_request(hp["socket"], "reload_lists")
+                except ControlError as e:
+                    log.debug("geneva-auto: reload_lists: %s" % e,
+                              source="geneva")
+                return {"ok": True, "pid": pid, "action": "reloaded",
+                        "udp": udp, "problems": problems,
+                        "services": loaded}
+            try:
+                _write_atomic(hp["profiles"], host_profiles_ini(good, hp))
+                strats = [g["strategy"] for g in good]
+                ext = geneva_ext.argv(strats, feats) or ["--ext"]
+                args = build_host_run_args(binary, hp, udp, ext)
+                trim_file(hp["events"], 0)
+                trim_file(hp["log"], 0)
+                _write_atomic(hp["args"], json.dumps(args))
+                proc = _spawn(args, hp["log"])
+            except OSError as e:
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": "Запуск geneva «по имени»: %s" % e}
+            _write_pid(hp["pid"], proc.pid)
+            self._auto_procs["host"] = proc
+            _wait_ready_events(proc, hp["events"], timeout=6.0)
+            if proc.poll() is not None:
+                _remove(hp["pid"])
+                tail = " | ".join(tail_lines(hp["log"], 3))
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": "geneva «по имени» завершился при запуске: "
+                                 "%s%s" % (exit_text(proc.returncode),
+                                           (" — " + tail) if tail else "")}
+            try:
+                _write_atomic(hp["signature"], sig)
+            except OSError:
+                pass
+            return {"ok": True, "pid": proc.pid, "action": "started",
+                    "udp": udp, "problems": problems, "services": loaded}
+
+    def auto_host_stop(self) -> None:
+        hp = auto_host_paths()
+        self._stop_aux(hp["pid"], "host")
+        _remove(hp["socket"])
+        _remove(hp["signature"])
+
+    def _stop_aux(self, pid_path: str, name: str) -> None:
+        pid = _read_pid(pid_path)
+        if pid and pid_alive(pid, "run"):
+            _terminate(pid, "run", wait=5.0)
+        proc = self._auto_procs.pop(name, None)
+        if proc is not None:
+            try:
+                proc.wait(timeout=1)
+            except Exception:                       # noqa: BLE001
+                pass
+        _remove(pid_path)
+
+    def auto_observer_pid(self):
+        pid = _read_pid(auto_host_paths()["obs_pid"])
+        if pid and pid_alive(pid, "run"):
+            return pid
+        return None
+
+    def auto_observer_ensure(self) -> dict:
+        """Детектор geneva (``ext_auto``) запущен? Упавший — заново
+        (его NFLOG-правила geneva снимает сама при выходе).
+        ``{"ok", "pid", "action", "error"}``."""
+        from core import geneva_auto as ga
+        with self._lock:
+            pid = self.auto_observer_pid()
+            if pid:
+                return {"ok": True, "pid": pid, "action": "kept"}
+            binary, err = self._ready_binary()
+            if not binary:
+                return {"ok": False, "pid": None, "error": err}
+            feats = self.features(binary)
+            if ga.OBSERVE_FEATURE not in feats or "ext" not in feats:
+                return {"ok": True, "pid": None, "action": "unsupported"}
+            hp = auto_host_paths()
+            self._stop_aux(hp["obs_pid"], "observe")
+            try:
+                os.makedirs(os.path.dirname(hp["obs_pid"]), exist_ok=True)
+                trim_file(hp["obs_events"], 0)
+                trim_file(hp["obs_log"], 0)
+                proc = _spawn(build_observe_args(binary, hp), hp["obs_log"])
+            except OSError as e:
+                return {"ok": False, "pid": None,
+                        "error": "Запуск детектора geneva: %s" % e}
+            _write_pid(hp["obs_pid"], proc.pid)
+            self._auto_procs["observe"] = proc
+            _wait_ready_events(proc, hp["obs_events"], timeout=6.0)
+            if proc.poll() is not None:
+                _remove(hp["obs_pid"])
+                tail = " | ".join(tail_lines(hp["obs_log"], 3))
+                return {"ok": False, "pid": None,
+                        "error": "детектор geneva завершился: %s%s" % (
+                            exit_text(proc.returncode),
+                            (" — " + tail) if tail else "")}
+            return {"ok": True, "pid": proc.pid, "action": "started"}
+
+    def auto_observer_status(self) -> dict:
+        """``ext_status`` детектора: ``impaired``, ``capacity`` и т.д."""
+        if not self.auto_observer_pid():
+            return {"ok": False, "error": "детектор не запущен"}
+        try:
+            return control_request(auto_host_paths()["obs_socket"],
+                                   "ext_status")
+        except ControlError as e:
+            return {"ok": False, "error": str(e)}
+
+    def auto_observer_stop(self) -> None:
+        hp = auto_host_paths()
+        self._stop_aux(hp["obs_pid"], "observe")
+        _remove(hp["obs_socket"])
 
     def auto_stats(self, queue: int) -> dict:
         """Счётчики группы через управляющий сокет (``stats``)."""
@@ -2348,6 +2828,198 @@ class GenevaManager:
                 auto["finished_at"] = time.time()
                 self._save_search_state(auto)
                 self._auto_state = auto
+
+
+def auto_slot_paths(slot: int) -> dict:
+    """Файлы задачи слота 1–3 «Авто»: события и лог в ОЗУ, кандидаты —
+    рядом с кандидатами слота 0."""
+    rt = os.path.join(runtime_dir(), "auto")
+    st = os.path.join(state_dir(), "auto")
+    k = int(slot)
+    return {"auto_candidates": os.path.join(st, "candidates-%d.txt" % k),
+            "job_events": os.path.join(rt, "job-%d.jsonl" % k),
+            "job_log": os.path.join(rt, "job-%d.log" % k),
+            "job_pid": os.path.join(rt, "job-%d.pid" % k),
+            "db": paths()["db"]}
+
+
+def job_event(st: dict, ev: dict) -> bool:
+    """Событие задачи ``eval``/``evolve`` в её состояние (итоги, поколения,
+    код выхода); ``True`` — состояние изменилось."""
+    kind = ev.get("ev")
+    if kind == "eval":
+        if st.get("kind") != "eval":
+            return False
+        st.setdefault("results", []).append({
+            "strategy": ev.get("strategy", ""),
+            "avg_fitness": ev.get("fitness"),
+            "runs": ev.get("runs", 1),
+            "outcome": ev.get("outcome", "")})
+        st["done"] = len(st["results"])
+        return True
+    if kind == "generation":
+        st["gen"] = int(ev.get("gen", 0))
+        st["best_fitness"] = ev.get("best_fitness")
+        st["best"] = ev.get("best", "")
+        return True
+    if kind == "result":
+        st["results"] = [
+            {"strategy": b.get("strategy", ""),
+             "avg_fitness": b.get("avg_fitness"), "runs": b.get("runs")}
+            for b in (ev.get("best") or [])][:20]
+        return True
+    if kind == "exit":
+        st["exit_code"] = ev.get("code")
+        return True
+    return False
+
+
+def job_status_view(st: dict, running: bool) -> dict:
+    """Состояние задачи «Авто» → ответ ``auto_job_status``."""
+    st = st or {}
+    return {
+        "running": running and st.get("status") == "running",
+        "kind": st.get("kind", ""),
+        "status": st.get("status", "idle") if st else "idle",
+        "key": (st.get("params") or {}).get("key", ""),
+        "target": st.get("target", ""),
+        "generation": int(st.get("gen", -1)) + 1,
+        "generations": int((st.get("params") or {}).get(
+            "generations") or 0),
+        "done": int(st.get("done") or 0),
+        "total": int(st.get("total") or 0),
+        "best": st.get("best", ""),
+        "best_fitness": st.get("best_fitness"),
+        "results": list(st.get("results") or []),
+        "exit_code": st.get("exit_code"),
+        "error": st.get("error", ""),
+        "started_at": st.get("started_at"),
+        "finished_at": st.get("finished_at"),
+    }
+
+
+def finish_status(st: dict, code) -> None:
+    """Код выхода задачи → ``status`` (как у ручного подбора)."""
+    if st.get("stop_requested"):
+        st["status"] = "stopped"
+    elif code in (0, 1):
+        st["status"] = "done"
+    elif code == 7:
+        st["status"] = "not_blocked"
+    elif code is None or code == -9:
+        st["status"] = "interrupted"
+    else:
+        st["status"] = "error"
+
+
+class AutoJobSlot:
+    """Задача «Авто» в слоте 1–3: свой процесс ``eval``/``evolve`` со своей
+    очередью и блоком портов (подборы рядом, ``split_workers``). Слот 0 —
+    общая с ручным подбором задача менеджера. Состояние только в памяти:
+    после перезапуска GUI подбор «Авто» начинается заново (с checkpoint)."""
+
+    def __init__(self, slot: int):
+        self.slot = int(slot)
+        self.proc = None
+        self.answerer = None
+        self.reader = None
+        self.state = {}
+        self.lock = threading.Lock()
+
+    def paths(self) -> dict:
+        return auto_slot_paths(self.slot)
+
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def launch(self, args: list, state: dict, answer=None,
+               workers: int = 1) -> dict:
+        p = self.paths()
+        os.makedirs(os.path.dirname(p["job_events"]), exist_ok=True)
+        trim_file(p["job_events"], 0)
+        trim_file(p["job_log"], 0)
+        self.reader = EventReader(p["job_events"])
+        try:
+            proc = _spawn(args, p["job_log"],
+                          stdin_pipe=answer is not None)
+        except OSError as e:
+            return {"ok": False, "error": "Запуск geneva: %s" % e}
+        self.proc = proc
+        if self.answerer is not None:
+            self.answerer.stop()
+        self.answerer = ExternalAnswerer(
+            proc, p["job_events"], answer, workers=workers).start() \
+            if answer is not None else None
+        _write_pid(p["job_pid"], proc.pid)
+        state["pid"] = proc.pid
+        self.state = state
+        log.info("geneva: слот %d «Авто»: %s запущен (pid %d), цель %s"
+                 % (self.slot, "подбор" if state["kind"] == "evolve"
+                    else "проверка", proc.pid, state["target"]),
+                 source="geneva")
+        return {"ok": True, "pid": proc.pid, "kind": state["kind"]}
+
+    def pump(self) -> None:
+        if self.reader is None:
+            return
+        for ev in self.reader.read_new():
+            job_event(self.state, ev)
+
+    def finish(self) -> None:
+        self.pump()
+        st = self.state
+        if not st or st.get("status") != "running":
+            return
+        rc = self.proc.poll() if self.proc else None
+        code = st.get("exit_code")
+        if code is None:
+            code = rc
+        st["exit_code"] = code
+        st["finished_at"] = time.time()
+        finish_status(st, code)
+        if st["status"] == "error":
+            tail = [line for line in tail_lines(self.paths()["job_log"], 5)
+                    if line.strip()]
+            st["error"] = exit_text(code) + (
+                " — " + tail[-1].strip()[:300] if tail else "")
+        st.pop("stop_requested", None)
+        _remove(self.paths()["job_pid"])
+        self.proc = None
+        if self.answerer is not None:
+            self.answerer.stop()
+            self.answerer = None
+
+    def status(self) -> dict:
+        with self.lock:
+            if self.running():
+                self.pump()
+            elif self.state.get("status") == "running":
+                self.finish()
+            return job_status_view(self.state, self.running())
+
+    def stop(self, wait: float = 30.0) -> None:
+        with self.lock:
+            if not self.running():
+                return
+            self.state["stop_requested"] = True
+            pid = self.proc.pid
+        sub = "evolve" if self.state.get("kind") == "evolve" else "eval"
+        _terminate(pid, sub, wait=wait)
+        with self.lock:
+            self.finish()
+
+
+def stop_slot_leftovers() -> None:
+    """Процессы слотов 1–3 от прошлого запуска GUI (по pid-файлам)."""
+    for k in range(1, AUTO_SLOTS):
+        path = auto_slot_paths(k)["job_pid"]
+        pid = _read_pid(path)
+        if pid:
+            for sub in ("evolve", "eval"):
+                if pid_alive(pid, sub):
+                    _terminate(pid, sub, wait=5.0)
+                    break
+        _remove(path)
 
 
 def summarize_stats(stats: dict) -> dict:

@@ -67,10 +67,15 @@ def measure(spec: dict, ports):
     from core import geneva_auto_probes as pr
     kw = {"timeout": spec["timeout"]} if spec.get("timeout") else {}
     if spec.get("kind") == "web":
+        # критерий цели: шейпер (min_rate), обрыв 16 КБ (pad, min_bytes)
+        kw.update(pr._criteria_kw(spec.get("criteria")))
+        if spec.get("name_only"):
+            kw["name_only"] = True
         r = pr.probe_page(spec["ip"], int(spec["port"]),
                           spec.get("host") or spec["ip"],
                           tls=bool(spec.get("tls", True)), ports=ports, **kw)
-        fit, outcome = pr.page_fitness(r)
+        fit, outcome = pr.page_fitness(
+            r, kw.get("min_bytes", pr.MIN_BODY))
     else:
         r = pr.probe_replay(spec["ip"], int(spec["port"]),
                             spec.get("payloads") or [],
@@ -92,6 +97,10 @@ def run(argv) -> int:
     ap.add_argument("--replay-file", default="")
     ap.add_argument("--lports", required=True)
     ap.add_argument("--timeout", type=float, default=0)
+    ap.add_argument("--min-rate", type=int, default=0)
+    ap.add_argument("--pad", type=int, default=0)
+    ap.add_argument("--min-bytes", type=int, default=0)
+    ap.add_argument("--name-only", action="store_true")
     a = ap.parse_args(argv)
 
     from core import geneva_auto as ga
@@ -103,7 +112,9 @@ def run(argv) -> int:
         return 1
     spec = {"kind": a.kind, "ip": a.ip, "port": a.port, "host": a.host,
             "tls": bool(a.tls), "udp": a.udp, "fresh": a.fresh,
-            "timeout": a.timeout}
+            "timeout": a.timeout, "name_only": a.name_only,
+            "criteria": {"min_rate": a.min_rate, "pad": a.pad,
+                         "min_bytes": a.min_bytes}}
     if a.kind == "replay" and a.replay_file:
         try:
             with open(a.replay_file, "r", encoding="ascii") as f:

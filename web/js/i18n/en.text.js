@@ -2325,6 +2325,7 @@ const i18n_en_text = {
 "Популяция / поколений": "Population / generations",
 "Проверок одновременно": "Checks at once",
 "приостановить работающий обход на время подбора (иначе сайт «откроется» и без стратегии) — он вернётся сам": "pause the running bypass during the search (otherwise the site will “open” without a strategy) — it comes back by itself",
+"добавить методы zapret2 в начальную популяцию (geneva_c 2.0: разрезы, фейки и подмены TLS как x-действия)": "add zapret2's methods to the initial population (geneva_c 2.0: splits, fakes and TLS tricks as x-actions)",
 "Начать подбор": "Start search",
 "Продолжить": "Continue",
 "Продолжить законченный подбор с того же места": "Continue the finished search from the same place",

@@ -632,3 +632,107 @@ def geneva_auto_reset(args: dict) -> dict:
     audit.note(action="geneva_auto_reset", key=str(args.get("key") or ""),
                ok=bool(res.get("ok")))
     return res
+
+
+_KEY_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 300,
+               "description": ("Service key from geneva_auto_status, e.g. "
+                               "web:example.com. / Ключ сервиса.")}
+
+
+@tool(
+    name="geneva_auto_check_now",
+    scope="control",
+    mutating=True,
+    title="Check a service in geneva Auto mode now",
+    description=("Probe one service out of turn (without a bypass, or "
+                 "through its strategy if it has one) on the next slice. "
+                 "/ Проверить сервис «Авто» вне очереди."),
+    schema={"type": "object", "properties": {"key": _KEY_SCHEMA},
+            "required": ["key"], "additionalProperties": False},
+)
+def geneva_auto_check_now(args: dict) -> dict:
+    res = _auto().check_now(str(args.get("key") or ""))
+    audit.note(action="geneva_auto_check_now",
+               key=str(args.get("key") or ""), ok=bool(res.get("ok")))
+    return res
+
+
+@tool(
+    name="geneva_auto_priority",
+    scope="control",
+    mutating=True,
+    title="Set a service's importance in geneva Auto mode",
+    description=("important — confirmed and searched first, interrupts a "
+                 "less important search; unimportant — background; "
+                 "default — by kind (sites normal, servers low, bare "
+                 "peers background). / Важность сервиса «Авто»."),
+    schema={"type": "object", "properties": {
+        "key": _KEY_SCHEMA,
+        "value": {"type": "string",
+                  "enum": ["important", "default", "unimportant"]}},
+        "required": ["key", "value"], "additionalProperties": False},
+)
+def geneva_auto_priority(args: dict) -> dict:
+    res = _auto().set_priority(str(args.get("key") or ""),
+                               str(args.get("value") or "default"))
+    audit.note(action="geneva_auto_priority",
+               key=str(args.get("key") or ""),
+               value=str(args.get("value") or ""), ok=bool(res.get("ok")))
+    return res
+
+
+@tool(
+    name="geneva_auto_pin",
+    scope="control",
+    mutating=True,
+    title="Pin a service's strategy in geneva Auto mode",
+    description=("pinned: failures no longer start a new search for the "
+                 "service (its strategy stays). Reverse: pinned=false. / "
+                 "Закрепить стратегию сервиса."),
+    schema={"type": "object", "properties": {
+        "key": _KEY_SCHEMA, "pinned": {"type": "boolean"}},
+        "required": ["key"], "additionalProperties": False},
+)
+def geneva_auto_pin(args: dict) -> dict:
+    pinned = args.get("pinned", True) is not False
+    res = _auto().pin(str(args.get("key") or ""), pinned)
+    audit.note(action="geneva_auto_pin", key=str(args.get("key") or ""),
+               pinned=pinned, ok=bool(res.get("ok")))
+    if res.get("ok"):
+        res["reverse"] = "geneva_auto_pin pinned=%s" % (
+            "false" if pinned else "true")
+    return res
+
+
+_LIST = {"type": "array", "maxItems": 500,
+         "items": {"type": "string", "maxLength": 300}}
+
+
+@tool(
+    name="geneva_auto_lists",
+    scope="control",
+    mutating=True,
+    title="Importance lists and exclusions of geneva Auto mode",
+    description=("No arguments: read. important/unimportant/no_search: "
+                 "domains, *.ru, *google*, IPs, subnets, AS12389; exclude "
+                 "(never bypassed, also for manual run): domains, IPs, "
+                 "subnets. A list given replaces the old. / Списки "
+                 "и флажки «Авто»."),
+    schema={"type": "object", "properties": {
+        "important": _LIST, "unimportant": _LIST, "no_search": _LIST,
+        "exclude": _LIST,
+        "known_important": {"type": "boolean"},
+        "split_workers": {"type": "boolean"},
+        "by_name": {"type": "boolean"}},
+        "additionalProperties": False},
+)
+def geneva_auto_lists(args: dict) -> dict:
+    keys = ("important", "unimportant", "no_search", "exclude",
+            "known_important", "split_workers", "by_name")
+    values = {k: args[k] for k in keys if k in (args or {})}
+    if not values:
+        return _auto().lists_view()
+    res = _auto().update_lists(values)
+    audit.note(action="geneva_auto_lists", keys=sorted(values),
+               ok=bool(res.get("ok")))
+    return res

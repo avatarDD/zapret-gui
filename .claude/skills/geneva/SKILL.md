@@ -339,7 +339,8 @@ REST: см. docstring `api/geneva.py`, все пути под `/api/geneva/*`, �
 `/api/bypass/engine`. Режим «Авто»: `GET /api/geneva/auto[?all=1]`,
 `POST /api/geneva/auto/enable {confirm}` (без `confirm: true` при нужном
 переключении движка — 409 `need_confirm`), `POST …/disable`,
-`POST …/reset {key}`. Карточка «Авто» — секция `auto` страницы
+`POST …/reset {key}`, `POST …/check-now|priority|pin|try|no-search
+{key, …}`, `GET/POST …/lists`. Карточка «Авто» — секция `auto` страницы
 `web/js/pages/geneva.js` (раздел «Обход DPI» и вкладка «Управление →
 geneva_c»), тексты — `geneva.auto.*` в `web/js/i18n/*`.
 
@@ -364,6 +365,10 @@ MCP (`core/mcp/tools/geneva.py`):
 | `geneva_auto_enable` | control | да, в два шага: токен, затем тот же инструмент с `confirm_token` (или `shell_confirm`, или кнопка на странице MCP) |
 | `geneva_auto_disable` | control | да |
 | `geneva_auto_reset` | control | да |
+| `geneva_auto_check_now` | control | да |
+| `geneva_auto_priority` | control | да |
+| `geneva_auto_pin` | control | да, обратное — `pinned=false` |
+| `geneva_auto_lists` | control | без аргументов — чтение; со списками — запись |
 
 Подбор отнесён к `probes`, потому что он шлёт пробы в сеть и на время
 останавливает обход.
@@ -605,3 +610,72 @@ MCP (`core/mcp/tools/geneva.py`):
 - Проверка с обходом идёт с самого роутера: правила групп обязаны
   ловить и локальный трафик (postrouting/prerouting, а не только forward).
 
+### 10.1. Перенос Zapret2_AutoTuner 1.1 → 1.4
+
+ТЗ: `/mnt/project-files/analysis/autotuner-1.1-1.4-sync.md` (проектные
+файлы). Что пришло и где:
+
+- **Важность** (`core/geneva_auto_lists.py`, AutoPriorities):
+  important / normal / low / background; метка пользователя, списки
+  `geneva.auto.lists.{important,unimportant,no_search}` (домен, `*.ru`,
+  `.ru`, маска `*google*`/`?`, адрес, подсеть, `AS12389`), семейства
+  (`FAMILIES`) при `known_important`. Фоновый, ждущий ≥ 30 мин, — low.
+  Очереди подтверждения и подбора — важность → degraded → сайт, DNS,
+  QUIC, сервер, пир → свежесть → трафик. Пиры не занимают последние 60
+  мест книги. Сети AS — RIPEstat `announced-prefixes` (уходит только
+  номер), `state/geneva/auto/asn.json`, раз в 7 дней, ≤ 5000 на AS.
+- **«Не подбирать»** — сервис не попадает в книгу; **«Не трогать»**
+  (`geneva.auto.exclude`, только домены/адреса/подсети) — вне режима и
+  ручному `geneva run` через `--ipset-exclude-ip`/`--hostlist-exclude-domains`
+  (фича `ext_lists`; без неё — предупреждение, run идёт; отличие: в
+  эталоне run не стартует).
+- **Действия над сервисом**: проверить сейчас, важность, закрепить
+  (провалы не ведут к подбору), своя стратегия (`try` — пробная группа и
+  проба с обходом, успех — применить и закрепить), «Не подбирать».
+- **Ложные блокировки** (`AutoProbes._check_page`): без обхода сайт
+  «заблокирован» только после второй неудачи через 2 с; сертификат с
+  верным именем от «Russian Trusted» (узнаётся по издателю листа:
+  цепочки на роутере нет — отличие) проходит, хост запоминается
+  (`_national_hosts`) и для оценки. Подбор позже 5 мин после последнего
+  «заблокирован» сначала перепроверяет без обхода.
+- **Шейпер и обрыв 16 КБ** (`core/geneva_rate.py` = RateShelf +
+  LinkCapacity, `PageCheck`): у подозреваемого без обхода страница
+  читается до 1 МБ, окна по 500 мс; полка — критерий `min_rate`
+  (3 полки, ≤ ½ канала, ≥ 1,5 полки); маленькая страница — ещё раз с
+  добивкой 24 КБ, обрыв внутри ответа дважды — `min_bytes=128K, pad`.
+  Находка считается, только если её видели обе пробы.
+  `Service.criteria` получают проба с обходом, `judge` и внешняя проба
+  (`probe_spec["criteria"]`, `--min-rate/--pad/--min-bytes`).
+- **Несколько подборов** (`split_workers`): мест `min(потоки, 4)`, не
+  больше свободных групп; слот 0 — очередь 311 (общий с ручным), слоты
+  1–3 — 312–314, свои процессы (`AutoJobSlot`); порты блоками по 128
+  (`--local-ports 30000+128·k`, ≤ 2 воркера; отличие: в эталоне 331–334
+  и 512). Своя база оценок у цели (`auto/db/<hash>.jsonl`). Сервисы с
+  общим адресом/сайтом рядом не подбираются; важный прерывает менее
+  важный.
+- **x-кандидаты** (`ga.x_for`, `X_TCP`…`X_TCP_ANY`, `blob_candidates`,
+  фейки zapret2 по 8 за круг по `Service.attempts`) — при `ext_xact`,
+  во втором круге перед библиотекой. Все 73 строки проходят
+  `geneva check --ext` (тест с `GENEVA_BIN`). `_fits`: триггеры
+  `[FLOW:`/`[L7:`/`[META:` решаются по действиям под ними. Стратегия
+  семейства — первой; пробная засчитывается после 2 проверок подряд.
+- **Ручной подбор**: `geneva.search.zapret2` — `X_TCP` (для `http`/80 —
+  `X_HTTP`) в `--load-from state/geneva/seeds.txt`; «Библиотека»
+  (`library(zapret2=True)`) — TCP-методы с `country: zapret2`.
+- **По имени** (`by_name`, по умолчанию да; фичи `ext`, `ext_profile`,
+  `ext_lists`, `ext_l7`): `ga.host_profiles` (≤ 24, домены семейства без
+  своей жизни в книге, пробная — нет) → `GenevaManager.auto_host_apply`:
+  `run --ext --ext-profile profiles.ini -q 348 --firewall none
+  --ext-ipcache-hostname`, hostlist на профиль, `ipset-exclude` = адреса
+  живых групп + «Не трогать». Те же стратегии — `reload_lists`, иначе
+  перезапуск. Правило — `fw.HostRule` после групп: TCP 80/443 (+UDP 443
+  при `ext_crypto`) первые пакеты. `Book.by_name` — покрытые сайты.
+- **Детектор** (`ext_auto`): `run --ext --ext-auto observe -s '\/' -p 9
+  -q 349` (NFLOG-правила ставит сама geneva), раз в срез `ext_status`:
+  `THROTTLE`/`FREEZE_N` у `host`/`ip` → `Book.detect` (подозрение, раз в
+  минуту), `capacity` → `geneva_rate.SHARED`, `DNS_POISON` → совет DoH
+  раз в час на имя.
+- **UI**: фильтр и стабильный порядок строк, колонка «Важность», меню
+  «⋯», блок «Важные сервисы и исключения» (`/auto/lists`), строка
+  «подборов сразу», «по имени», «детектор»; ручной подбор — галочка
+  «добавить методы zapret2» (видна при `detect.ext`).

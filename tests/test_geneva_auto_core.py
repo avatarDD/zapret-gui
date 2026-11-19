@@ -378,7 +378,8 @@ class TestBookTransitions(unittest.TestCase):
                 break
             order.append(s.kind)
             b.searching(s.key, 0)
-        self.assertEqual(order, [ga.WEB, ga.DNS, ga.ENDPOINT, ga.QUIC])
+        # AutoBook.Queue v1.4: сайт, DNS, QUIC, сервер
+        self.assertEqual(order, [ga.WEB, ga.DNS, ga.QUIC, ga.ENDPOINT])
 
 
 class TestQuicFallback(unittest.TestCase):
