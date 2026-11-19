@@ -100,8 +100,11 @@ class HostGM(FakeGM):
     def auto_host_apply(self, profiles, exclude_ips, exclude_domains):
         self.host_calls.append((profiles, exclude_ips, exclude_domains))
         self.host_pid = 4800
-        return {"ok": True, "pid": 4800, "action": "started",
-                "udp": any(p["udp"] for p in profiles)}
+        r = {"ok": True, "pid": 4800, "action": "started",
+             "udp": any(p["udp"] for p in profiles)}
+        if hasattr(self, "loaded"):
+            r["services"] = self.loaded
+        return r
 
     def auto_host_pid(self):
         return self.host_pid
@@ -151,6 +154,14 @@ class TestManagerByNameAndDetector(_Base):
                          ["a.example"])
         self.assertEqual(m.book.by_name, {"web:a.example"})
         self.assertEqual(m.status()["by_name"], True)
+        # процесс не загрузил профиль сайта — сайт не покрыт
+        self.hgm.loaded = []
+        m._applied_sig = None
+        m._apply(102.0)
+        self.assertEqual(m.book.by_name, set())
+        del self.hgm.loaded
+        m._applied_sig = None
+        m._apply(102.5)
         self.cfg.set("geneva", "auto", {"by_name": False})
         m._apply(102.0)
         self.assertEqual(m.book.by_name, set())

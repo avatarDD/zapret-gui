@@ -262,6 +262,15 @@ class GenevaAutoManager:
                 obj.split = st["split_workers"]
         return obj
 
+    def _retune_searches(self) -> None:
+        """Новые «потоки» и «делить потоки» — свободным слотам; идущий
+        подбор доживает с прежними (иначе блоки портов пересекутся),
+        :meth:`search` обновит его, когда он закончит."""
+        for slot in [0] + sorted(self._searches):
+            if slot == 0 and self._search is None:
+                continue
+            self.search(slot)
+
     def _all_searches(self) -> list:
         out = [self._search] if self._search is not None else []
         return out + [x for _, x in sorted(self._searches.items())]
@@ -921,6 +930,11 @@ class GenevaAutoManager:
         w = self._works.get(key)
         if w is None:
             return
+        if w.get("starting"):
+            # подбор ещё не запущен (проба без обхода, start): отмену
+            # увидит :meth:`_launch` — start() завёл бы новый _stop
+            w["cancelled"] = True
+            return
         try:
             self.search(w["slot"]).cancel()
         except Exception as e:                      # noqa: BLE001
@@ -929,6 +943,8 @@ class GenevaAutoManager:
     def _collect(self, now: float) -> None:
         """Итоги законченных подборов."""
         for key, w in list(self._works.items()):
+            if w.get("starting"):
+                continue                # ещё запускается в другом потоке
             x = self.search(w["slot"])
             if x.busy:
                 continue
@@ -972,12 +988,18 @@ class GenevaAutoManager:
                 self.book.searching(s.key, now)
                 split = self.settings()["split_workers"]
                 self._works[s.key] = {"slot": slot, "split": split,
-                                      "custom": ""}
+                                      "custom": "", "starting": True}
                 self._dirty = True
             if self._stale_baseline(snap, now):
                 continue
-            if self.search(slot).start(snap, running, proven,
-                                       first=[fam] if fam else ()):
+            launched = self._launch(snap.key, slot, lambda: self.search(
+                slot).start(snap, running, proven,
+                            first=[fam] if fam else ()))
+            if launched is None:
+                with self._lock:        # отменили, пока запускался
+                    self.book.interrupted(snap.key, now)
+                continue
+            if launched:
                 self.phase = "searching"
                 self.note("%s: подбор стратегии" % snap.name,
                           en="%s: searching" % snap.name)
@@ -988,6 +1010,30 @@ class GenevaAutoManager:
                 break
         if self._works:
             self.phase = "searching"
+
+    def _launch(self, key: str, slot: int, start):
+        """Запуск подбора работы ``key``, заведённой с ``starting``:
+        ``True`` — запущен, ``False`` — слот не принял, ``None`` — работу
+        отменили или убрали, пока шла проба без обхода (тогда её уже нет
+        в :attr:`_works`)."""
+        with self._lock:
+            w = self._works.get(key)
+            if w is None or w.get("cancelled"):
+                self._works.pop(key, None)
+                return None
+        ok = bool(start())
+        with self._lock:
+            w = self._works.get(key)
+            if w is not None:
+                w.pop("starting", None)
+            cancelled = w is None or w.pop("cancelled", False)
+        if ok and cancelled:
+            try:
+                self.search(slot).cancel()
+            except Exception as e:                  # noqa: BLE001
+                log.debug("geneva-auto: отмена подбора: %s" % e,
+                          source="geneva")
+        return ok
 
     def _stale_baseline(self, s, now: float) -> bool:
         """Подбор начинается позже :data:`BASELINE_FRESH` после последнего
@@ -1198,9 +1244,13 @@ class GenevaAutoManager:
         host = res.get("host") or {}
         # Сайты, которые покрывает «по имени»: провал на их новом адресе —
         # ослабление стратегии (адрес и так под обходом).
-        self.book.by_name = ga.by_name_covers(
-            services, hosts["profiles"]) if hosts and host.get("pid") \
-            else set()
+        # Только профили, которые процесс загрузил: отброшенные (нет
+        # ext_crypto, фейк не найден, нет годных имён) сайт не покрывают.
+        covers = ga.by_name_covers(services, hosts["profiles"]) \
+            if hosts and host.get("pid") else set()
+        if "services" in host:
+            covers &= set(host.get("services") or ())
+        self.book.by_name = covers
         self.host_state = {"pid": host.get("pid"),
                            "action": host.get("action", ""),
                            "profiles": len(hosts["profiles"])
@@ -1424,12 +1474,16 @@ class GenevaAutoManager:
                         "error": "идёт подбор: попробуйте после него"}
             snap = s.clone()
             self._works[key] = {"slot": slot, "split": True,
-                                "custom": strategy}
-        if not self.search(slot).start(snap, only=strategy):
+                                "custom": strategy, "starting": True}
+        launched = self._launch(key, slot, lambda: self.search(slot).start(
+            snap, only=strategy))
+        if not launched:
             with self._lock:
-                self._works.pop(key, None)
+                if launched is not None:
+                    self._works.pop(key, None)
             return {"ok": False, "error_code": "busy",
-                    "error": "слот подбора занят"}
+                    "error": "слот подбора занят" if launched is not None
+                    else "сервис убран, пока проверка запускалась"}
         self.note("%s: пробую стратегию пользователя: %s"
                   % (s.name, strategy),
                   en="%s: trying your strategy" % s.name)
@@ -1510,9 +1564,7 @@ class GenevaAutoManager:
         cfg.save()
         self._apply_lists()
         with self._lock:
-            for x in self._all_searches():
-                st = self.settings()
-                x.workers = slot_workers(st["workers"], st["split_workers"])
+            self._retune_searches()
         self._refresh_asn()
         self.note("списки «Авто» сохранены", en="Auto lists saved")
         return self.lists_view()
@@ -1677,8 +1729,7 @@ class GenevaAutoManager:
         with self._lock:
             if self._applier is not None:
                 self._applier.max_groups = st["max_groups"]
-            for x in self._all_searches():
-                x.workers = slot_workers(st["workers"], st["split_workers"])
+            self._retune_searches()
             if self._observer is not None:
                 self._observer.help_tunnels = st["help_tunnels"]
             self._applied_sig = None        # число групп могло смениться

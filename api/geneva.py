@@ -333,8 +333,11 @@ def register(app):
         key = _auto_key()
         if not key:
             return {"ok": False, "error": "не указан сервис (key)"}
-        return _auto_reply(get_geneva_auto_manager().pin(
-            key, _body().get("pinned", True) is not False))
+        pinned = _body().get("pinned", True)
+        if not isinstance(pinned, bool):
+            return _auto_reply({"ok": False, "error_code": "bad_value",
+                                "error": "pinned: true или false"})
+        return _auto_reply(get_geneva_auto_manager().pin(key, pinned))
 
     @app.route("/api/geneva/auto/try", method="POST")
     def geneva_auto_try():

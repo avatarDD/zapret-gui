@@ -556,3 +556,66 @@ class TestReview2Pure(unittest.TestCase):
         self.assertEqual(pr.page_confirm(r), ga.C_NOT_BLOCKED)
         self.assertEqual(pr.page_confirm(r, 128 * 1024), ga.C_BLOCKED)
         self.assertEqual(pr.page_fitness(r, 128 * 1024)[1], "broken")
+
+
+class TestReview3(TestSplitAndLists):
+    """Находки третьего код-ревью."""
+
+    def test_settings_do_not_retune_running_search(self):
+        m = self.make(split=True)
+        self.blocked(m, "web:a.example", "1.1.1.1")
+        m._searching(100.0)
+        raw = dict(self.cfg.get("geneva", "auto", default={}))
+        raw["split_workers"] = False
+        self.cfg.set("geneva", "auto", raw)
+        with m._lock:
+            m._retune_searches()
+        self.assertEqual(self.slots[0].workers, 2)
+
+    def test_cancel_during_start_is_kept(self):
+        m = self.make()
+        s = self.blocked(m, "web:a.example", "1.1.1.1")
+        m._works[s.key] = {"slot": 0, "split": True, "custom": "",
+                           "starting": True}
+        m._collect(100.0)                   # запускающийся не собирается
+        self.assertIn(s.key, m._works)
+        m._cancel_work(s.key)
+        started = []
+        self.assertIsNone(m._launch(s.key, 0, lambda: started.append(1)))
+        self.assertEqual(started, [])
+        self.assertNotIn(s.key, m._works)
+
+    def test_cancel_while_starting_cancels_after(self):
+        m = self.make()
+        s = self.blocked(m, "web:a.example", "1.1.1.1")
+        m._works[s.key] = {"slot": 0, "split": True, "custom": "",
+                           "starting": True}
+
+        def start():
+            m._cancel_work(s.key)           # пришло во время start()
+            return m.search(0).start(s.clone())
+        self.assertTrue(m._launch(s.key, 0, start))
+        self.assertEqual(self.slots[0].cancelled, 1)
+        self.assertNotIn("starting", m._works[s.key])
+
+
+class TestReview3Pure(unittest.TestCase):
+
+    def test_db_proven_reads_target_dbs(self):
+        import os
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "db"))
+            open(os.path.join(d, "db", "t.jsonl"), "w").close()
+            calls = []
+
+            class GM:
+                def db_top(self, target="", limit=10, db=""):
+                    calls.append(db)
+                    return {"items": [{"strategy": "S" + (db and "t"),
+                                       "ok": 2 if db else 1}]}
+            x = gs.AutoSearch(geneva=GM(), probes=None)
+            with mock.patch.object(x, "_p", return_value={"auto": d}):
+                self.assertEqual(x._db_proven(), ["St", "S"])
+            self.assertEqual(len(calls), 2)

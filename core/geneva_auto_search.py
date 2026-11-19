@@ -69,6 +69,7 @@ UNPROBED_WAIT = 50.0          # сервис без пробы: успешный
 VERIFY_TOP = 3                # сколько прошедших проверять на трафике
 BY_TRAFFIC_EXTRA = 12         # без пробы: столько непроверенных после проверенных
 JOB_POLL = 2.0
+DB_PROVEN_FILES = 8            # баз целей «Авто» в «проверенные в сети»
 EVAL_BATCH = 64               # стратегий на один eval (как в _prepare_auto_job)
 EXEC_TIMEOUT_WEB = 16         # страница — 12 с, с запасом на запуск python
 EXEC_TIMEOUT_REPLAY = 10
@@ -596,14 +597,29 @@ class AutoSearch:
     def _db_proven(self) -> list:
         """Стратегии с успехами на любых целях базы оценок (ручной
         подбор и «Авто»): больше успехов — раньше."""
+        # подбор «Авто» пишет в свою базу цели (auto/db/*.jsonl): их тоже,
+        # свежие первыми и не больше DB_PROVEN_FILES (каждая — вызов geneva)
+        dbs = [""]
         try:
-            top = self._gm().db_top("", 50) or {}
-        except Exception:                           # noqa: BLE001
-            return []
-        items = [i for i in top.get("items") or []
-                 if i.get("strategy") and _int(i.get("ok")) > 0]
-        items.sort(key=lambda i: -_int(i.get("ok")))
-        return [i["strategy"] for i in items]
+            d = os.path.join(self._p()["auto"], "db")
+            files = [os.path.join(d, f) for f in os.listdir(d)
+                     if f.endswith(".jsonl")]
+            files.sort(key=lambda f: -os.path.getmtime(f))
+            dbs += files[:DB_PROVEN_FILES]
+        except OSError:
+            pass
+        ok = {}
+        for db in dbs:
+            try:
+                top = (self._gm().db_top("", 50, db=db) if db
+                       else self._gm().db_top("", 50)) or {}
+            except Exception:                       # noqa: BLE001
+                continue
+            for i in top.get("items") or []:
+                if i.get("strategy") and _int(i.get("ok")) > 0:
+                    ok[i["strategy"]] = ok.get(i["strategy"], 0) + \
+                        _int(i.get("ok"))
+        return sorted(ok, key=lambda x: -ok[x])
 
     def _library(self) -> list:
         """Вся библиотека исследований Geneva (``geneva library``)."""

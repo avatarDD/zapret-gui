@@ -194,6 +194,12 @@ class TestRest(_Base):
                 body=json.dumps(body).encode(),
                 content_type="application/json")
             self.assertTrue(status.startswith(code), (body, status))
+        for bad in ("false", 0, None):      # снять — только false
+            status, _ = self.client._call(
+                "POST", "/api/geneva/auto/pin",
+                body=json.dumps({"key": key, "pinned": bad}).encode(),
+                content_type="application/json")
+            self.assertTrue(status.startswith("400"), (bad, status))
         self.assertTrue(self.client.get_json("/api/geneva/auto/lists")["ok"])
         self.assertTrue(self.client.post_json(
             "/api/geneva/auto/lists", {"important": ["AS12389"]})["ok"])

@@ -2131,8 +2131,10 @@ class GenevaManager:
         мешает (при «Авто» он отказывает), но идущий ручной подбор
         занимает свои порты 30000+ — тогда ``busy``."""
         slot = self._slot(int(params["slot"]))
-        if self.job_running() and \
-                self._job_state.get("owner") != "auto":
+        with self._lock:
+            manual = self.job_running() and \
+                self._job_state.get("owner") != "auto"
+        if manual:
             return {"ok": False, "busy": True, "error": "идёт ручной подбор"}
         with slot.lock:
             if slot.running():
@@ -2381,13 +2383,17 @@ class GenevaManager:
                         doms.append(d)
                 if doms:
                     good.append({"strategy": strat, "udp": bool(
-                        prof.get("udp")), "domains": doms})
+                        prof.get("udp")), "domains": doms,
+                        "services": list(prof.get("services") or ())})
             if not good:
                 self.auto_host_stop()
                 return {"ok": True, "pid": None, "action": "stopped",
                         "problems": problems}
             hp = auto_host_paths()
             udp = any(g["udp"] for g in good)
+            # сервисы TCP-профилей, которые процесс правда загрузил
+            loaded = sorted({k for g in good if not g["udp"]
+                             for k in g["services"]})
             sig = "\n".join(("udp " if g["udp"] else "tcp ") + g["strategy"]
                             for g in good)
             pid = self.auto_host_pid()
@@ -2426,7 +2432,8 @@ class GenevaManager:
                     log.debug("geneva-auto: reload_lists: %s" % e,
                               source="geneva")
                 return {"ok": True, "pid": pid, "action": "reloaded",
-                        "udp": udp, "problems": problems}
+                        "udp": udp, "problems": problems,
+                        "services": loaded}
             try:
                 _write_atomic(hp["profiles"], host_profiles_ini(good, hp))
                 strats = [g["strategy"] for g in good]
@@ -2454,7 +2461,7 @@ class GenevaManager:
             except OSError:
                 pass
             return {"ok": True, "pid": proc.pid, "action": "started",
-                    "udp": udp, "problems": problems}
+                    "udp": udp, "problems": problems, "services": loaded}
 
     def auto_host_stop(self) -> None:
         hp = auto_host_paths()
