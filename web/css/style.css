@@ -4771,10 +4771,16 @@ input:focus, textarea:focus, select:focus {
 }
 
 @media (max-width: 768px) {
+    /* Один размер шрифта редактора на телефоне — от него же шаг строки
+       у номеров слева. */
+    .lua-editor-wrap { --lua-fs-mobile: 12px; }
     .lua-gutter {
         width: 36px;
         padding-left: 6px;
         font-size: 11px;
+        /* Шаг строки как у редактора, иначе номера отстают от кода на
+           длинных файлах: шрифт у номеров мельче, а шаг — тот же. */
+        line-height: calc(var(--lua-fs-mobile) * 1.55);
     }
     .lua-highlight,
     .lua-editor {
@@ -4787,7 +4793,7 @@ input:focus, textarea:focus, select:focus {
     }
     .lua-highlight,
     .lua-editor {
-        font-size: 12px;
+        font-size: var(--lua-fs-mobile);
     }
 }
 
@@ -5643,7 +5649,32 @@ body.expert-mode .expert-note { display: none !important; }
 .dr-server { flex: 1; font-size: 13px; color: var(--text-secondary); }
 .dr-del:hover { color: var(--error); }
 @media (max-width: 768px) {
-    .dr-form { grid-template-columns: 1fr; }
+    /* minmax(0, …): иначе колонку раздувает min-content самого длинного
+       <option> в select DNS-сервера, и форма уезжает за край экрана. */
+    .dr-form { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ===== История: кнопка «Отменить последнее» ===== */
+/* Подпись — имя файла и список изменённых ключей, она бывает длиннее
+   экрана телефона: переносим строки, а не обрезаем кнопку. */
+#hist-undo { min-width: 0; max-width: 100%; }
+#hist-undo .btn {
+    white-space: normal;
+    overflow-wrap: anywhere;     /* длинный путь файла без пробелов */
+    text-align: left;
+    justify-content: flex-start;
+}
+
+/* ===== Таблица прокси (sing-box и mihomo) ===== */
+.pt-table th,
+.pt-table td { padding: 6px 8px; vertical-align: middle; }
+@media (max-width: 768px) {
+    /* На телефоне таблица листается вбок; имя узла не сжимаем в столбик
+       по слову на строку. */
+    /* width, а не min-width: min-width у ячеек таблицы по CSS 2.1 не
+       определён, и часть мобильных браузеров его не учитывает. При
+       авто-раскладке width ячейки — нижняя граница, колонка может расти. */
+    .pt-table .pt-name { width: 160px; }
 }
 
 /* ===== Блобы: имя для стратегии ===== */
