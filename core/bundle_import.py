@@ -369,7 +369,9 @@ def existing_names(data: dict = None) -> dict:
         "builtin_strategies": {s.get("id") for s in strategies
                                if s.get("is_builtin")},
         "gui_lua": _gui_lua(),
-        "catalog_blobs": _catalog_blobs(),
+        # имена реестра каталога и паттерны init_vars: их байты при
+        # запуске даёт GUI, а не файл с таким именем
+        "catalog_blobs": _catalog_blobs() | _init_vars_patterns(data),
     }
     out["same"] = _same_here(data, out) if isinstance(data, dict) else set()
     return out
@@ -397,6 +399,30 @@ def _catalog_blobs() -> set:
         return set()
 
 
+def _init_vars_patterns(data) -> set:
+    """Имена ``init_vars``, которые бандл ставит паттерном
+    (``pattern=``/``seqovl_pattern=``): запуск их из реестра не объявляет,
+    паттерн задаёт сам ``init_vars.lua`` — блоб с таким именем nfqws2 не
+    получит, даже если байты совпадают с файлом каталога."""
+    if not isinstance(data, dict):
+        return set()
+    try:
+        from core.nfqws_manager import _INIT_VARS_NAMES
+        from core.models import tokenize_args
+    except Exception:                           # noqa: BLE001 — граница
+        return set()
+    out = set()
+    for p in (data.get("strategy") or {}).get("profiles") or []:
+        if not isinstance(p, dict):
+            continue
+        for tok in tokenize_args(str(p.get("args") or "")):
+            tok = _unquote(tok)[1]
+            if tok.startswith("--lua-desync="):
+                out |= {n for k, n in desync_blob_refs(
+                    tok[len("--lua-desync="):])[0] if k.endswith("pattern")}
+    return out & set(_INIT_VARS_NAMES)
+
+
 def _same_here(data: dict, names: dict) -> set:
     """``(вид, имя)`` из бандла, которые здесь уже ровно такие же.
     Каждый элемент сверяется сам: сбой чтения одного не прячет другие."""
@@ -414,7 +440,11 @@ def _same_here(data: dict, names: dict) -> set:
         return i["name"] in names["ipsets"] and \
             list(im.get_ipset(i["name"])) == list(i["cidrs"])
 
+    patterns = _init_vars_patterns(data)
+
     def blob(b):
+        if b["name"] in patterns:
+            return False        # см. _init_vars_patterns
         here = _blob_here(b["name"])
         return here is not None and here == blob_bytes(b)
 
@@ -452,6 +482,28 @@ def _blob_here(name):
             return f.read(MAX_BLOB + 1)
     except (OSError, ValueError):
         return None
+
+
+def _load_renamed_auto_lua(profiles: list, data: dict, renames: dict):
+    """Скрипт GUI, который запуск подключает сам (по функции), args не
+    называют — после переименования его никто бы не загрузил. Такие
+    скрипты подключаются явно, в первом профиле: ``--lua-init`` профилей
+    грузится после скриптов GUI, и функции из бандла перекрывают здешние
+    — стратегия идёт с тем, что проверял отправитель."""
+    lua = renames.get("lua") or {}
+    if not lua or not profiles:
+        return
+    joined = " ".join(str(p.get("args") or "") for p in
+                      data["strategy"]["profiles"])
+    extra = ["--lua-init=@lua/%s.lua" % lua[stem]
+             for stem in (_lua_stem(str(i.get("name") or ""))
+                          for i in _items(data, "lua"))
+             if stem in lua and not re.search(
+                 r"@(?:\S*/)?lua/%s\.lua(?![\w.-])" % re.escape(stem),
+                 joined)]
+    if extra:
+        profiles[0] = dict(profiles[0], args=" ".join(
+            extra + [str(profiles[0].get("args") or "")]).strip())
 
 
 def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
@@ -535,6 +587,7 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
     strategy["id"] = new("strategy", strategy["id"])
     strategy["profiles"] = [dict(p, args=rewrite_args(p["args"], renames))
                             for p in data["strategy"]["profiles"]]
+    _load_renamed_auto_lua(strategy["profiles"], data, renames)
     result = get_strategy_manager().save_user_strategy(strategy)
     if not result or (isinstance(result, dict)
                       and result.get("ok") is False):

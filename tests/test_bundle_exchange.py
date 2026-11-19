@@ -182,6 +182,22 @@ class TestApi(unittest.TestCase):
         self.assertEqual(bi.validate_bundle(out)[0], [])
         self.assertTrue(any("my_tls" in w for w in warnings))
 
+    def test_offset_declaration_reads_from_offset(self):
+        import tempfile
+        from unittest import mock
+        from core import blob_registry as br
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b"\x00" * (bi.MAX_BLOB + 100) + b"\x07" * 10)
+        self.addCleanup(os.unlink, f.name)
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--blob=b:+%d@bin/big.bin "
+                                 "--lua-desync=fake:blob=b"
+                                 % (bi.MAX_BLOB + 100)}]}
+        with mock.patch.object(br, "_blob_file_path", lambda v: f.name):
+            out, _ = be.export_strategy(st)
+        self.assertIn("--blob=b:0x" + "07" * 10,
+                      out["strategy"]["profiles"][0]["args"])
+
     def test_init_vars_pattern_without_file_and_empty_name(self):
         st = {"id": "x", "name": "", "profiles": [
             {"id": "p1", "args": "--lua-desync=multisplit:pos=2:seqovl=5:"
@@ -231,7 +247,7 @@ class TestApi(unittest.TestCase):
             st, hostlists=lambda n: ["a"], ipsets=lambda n: None,
             blobs=lambda n: None, lua=lambda n: "x",
             blob_file={'@"/opt/my blobs/q.bin"': b"\x01",
-                       "@bin/o.bin": b"\x00\x00\x02"}.get)
+                       "+2@bin/o.bin": b"\x02"}.get)
         self.assertEqual(out["hostlists"], [{"name": "yt",
                                              "domains": ["a"]}])
         self.assertTrue(any("/opt/etc/my.txt" in w for w in warnings))

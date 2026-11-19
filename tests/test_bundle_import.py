@@ -255,6 +255,33 @@ class TestApply(unittest.TestCase):
         self.assertIn("--lua-init=@lua/my-2.lua", self.m.saved[
             "zt_youtube_2026_10_18"]["profiles"][0]["args"])
 
+    def test_renamed_auto_loaded_script_is_loaded_explicitly(self):
+        """fakemultisplit GUI подключает по функции, args его не
+        называют: под новым именем он грузится явным --lua-init."""
+        b = bundle(lua=[{"name": "fakemultisplit.lua", "text": "-- их"}])
+        b["strategy"]["profiles"][0]["args"] = (
+            "--filter-tcp=443 --lua-desync=fakemultisplit:pos=1")
+        existing = dict(NOTHING, lua={"fakemultisplit"},
+                        gui_lua={"fakemultisplit"})
+        r = bi.apply_bundle(b, on_conflict="rename", existing=existing)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.m.saved["fakemultisplit-2"], "-- их")
+        self.assertEqual(
+            self.m.saved["zt_youtube_2026_10_18"]["profiles"][0]["args"],
+            "--lua-init=@lua/fakemultisplit-2.lua --filter-tcp=443 "
+            "--lua-desync=fakemultisplit:pos=1")
+
+    def test_init_vars_pattern_blob_is_never_same(self):
+        b = bundle(blobs=[{"name": "tls_google",
+                           "base64": base64.b64encode(b"cat").decode()}])
+        b["strategy"]["profiles"][0]["args"] = (
+            "--lua-desync=multisplit:seqovl=5:seqovl_pattern=tls_google")
+        self.assertEqual(bi._init_vars_patterns(b), {"tls_google"})
+        with mock.patch.object(bi, "_blob_here", lambda n: b"cat"):
+            same = bi._same_here(b, {"hostlists": set(), "ipsets": set(),
+                                     "lua": set()})
+        self.assertNotIn(("blob", "tls_google"), same)
+
     def test_invalid(self):
         r = bi.apply_bundle({"format": bi.FORMAT}, existing=NOTHING)
         self.assertEqual(r["error_code"], "invalid")

@@ -216,12 +216,8 @@ def _declared_bytes(value: str, blob_file):
             return bytes.fromhex(value[2:])
         except ValueError:
             return None
-    m = re.match(r"^\+(\d+)(@.+)$", value)
-    if m and blob_file is not None:
-        # +N@файл: nfqws2 берёт файл со смещения N
-        data = blob_file(m.group(2))
-        return data[int(m.group(1)):] if data is not None else None
-    if value.startswith("@") and blob_file is not None:
+    # @файл и +N@файл (со смещения N) — читает blob_file
+    if re.match(r"^(?:\+\d+)?@.", value) and blob_file is not None:
         return blob_file(value)
     return None
 
@@ -237,7 +233,7 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
     ``blobs(имя)`` → байты, которые nfqws2 получит под этим именем, или
     ``None``, ``lua(имя)`` → текст скрипта или ``None``,
     ``blob_file(значение)`` — байты по значению ``--blob=<имя>:<значение>``
-    из самих args (``@путь``), ``compat`` — версия совместимости lua
+    из самих args (``@путь`` или ``+N@путь`` — со смещения N), ``compat`` — версия совместимости lua
     zapret2 этого роутера.
     """
     refs = references(strategy)
@@ -353,8 +349,13 @@ def export_strategy(strategy: dict) -> tuple:
     from core import blob_registry as br
 
     def blob_file(value):
+        # +N@файл: nfqws2 берёт файл со смещения N — лимит считается
+        # от него, а не от начала файла
+        m = re.match(r"^\+(\d+)(@.+)$", value)
+        offset, value = (int(m.group(1)), m.group(2)) if m else (0, value)
         try:
             with open(br._blob_file_path(value), "rb") as f:
+                f.seek(offset)
                 return f.read(MAX_BLOB + 1)
         except OSError:
             return None
