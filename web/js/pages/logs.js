@@ -427,7 +427,11 @@ const LogsPage = (() => {
         // Поиск по тексту
         if (currentSearch) {
             const searchLower = currentSearch.toLowerCase();
-            const text = (entry.message || '').toLowerCase() +
+            // Ищем и по исходному, и по показанному (переведённому) тексту.
+            const msg = entry.message || '';
+            const shown = i18n.translateText(msg);
+            const text = msg.toLowerCase() + '\n' +
+                         (shown !== msg ? shown.toLowerCase() + '\n' : '') +
                          (entry.source || '').toLowerCase() +
                          (entry.level || '').toLowerCase();
             if (!text.includes(searchLower)) return false;
@@ -500,7 +504,9 @@ const LogsPage = (() => {
         const source = entry.source ? `<span class="log-source">[${escapeHtml(entry.source)}]</span>` : '';
 
         // Подсветка синтаксиса nfqws в сообщениях
-        const rawMsg = entry.message || '';
+        // Сообщение сервера переводится до подсветки поиска (в русском
+        // режиме translateText возвращает строку как есть).
+        const rawMsg = i18n.translateText(entry.message || '');
         const nfqHighlighted = NfqwsSyntax.highlightInLog(rawMsg);
         let message;
         if (nfqHighlighted) {
@@ -510,11 +516,16 @@ const LogsPage = (() => {
             message = highlightSearch(escapeHtml(rawMsg));
         }
 
+        // Переведённая строка: исходный текст — в подсказке (поиск
+        // находит строку и по нему, подсветить там нечего).
+        const origTitle = rawMsg !== (entry.message || '')
+            ? ` title="${escapeHtml(entry.message || '').replace(/"/g, '&quot;')}"`
+            : '';
         row.innerHTML = `
             <span class="log-time" title="${date} ${time}">${time}</span>
             <span class="log-badge" style="color:${config.color}; background:${config.bg};">${config.label}</span>
             ${source}
-            <span class="log-message" translate="no">${message}</span>
+            <span class="log-message" translate="no"${origTitle}>${message}</span>
         `;
 
         return row;

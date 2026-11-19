@@ -129,10 +129,19 @@ const i18n = (() => {
             const isPh = (p) => /^\{\d+\}$/.test(p);
             let re = '^';
             const order = [];
+            const quoted = [];
             let staticLen = 0;
             parts.forEach((p, i) => {
                 const m = /^\{(\d+)\}$/.exec(p);
-                if (m) { re += '(.*?)'; order.push(+m[1]); return; }
+                if (m) {
+                    re += '(.*?)'; order.push(+m[1]);
+                    // «{0}», '{0}', "{0}" — имя, которое дал пользователь
+                    // (конфиг «Обход»): его не переводим.
+                    const before = (parts[i - 1] || '').slice(-1);
+                    const after = (parts[i + 1] || '').charAt(0);
+                    quoted.push(/[«'"`“]/.test(before) && /[»'"`”]/.test(after));
+                    return;
+                }
                 if (p === '') return;
                 // Пробел между подстановками исчезает, только когда
                 // хвост пуст (обрезанный узел DOM), а не внутри слова.
@@ -158,7 +167,7 @@ const i18n = (() => {
             const word = (k.match(/[А-Яа-яЁё]+/) || [''])[0];
             const cyrLen = k.replace(/\{\d+\}/g, '')
                 .replace(/[^А-Яа-яЁё]/g, '').length;
-            const pat = { re: new RegExp(re + '$', 's'), order, to: v,
+            const pat = { re: new RegExp(re + '$', 's'), order, quoted, to: v,
                 staticLen, cyrLen };
             if (!buckets.has(word)) buckets.set(word, []);
             buckets.get(word).push(pat);
@@ -170,7 +179,17 @@ const i18n = (() => {
 
     function ensureIndex() {
         if (exact) return;
-        buildIndex(typeof i18n_en_text !== 'undefined' ? i18n_en_text : {});
+        // Тексты страниц важнее: при совпадении ключей берутся они, и
+        // их шаблоны идут в индекс первыми (при равной длине сортировка
+        // устойчива и пробует их раньше серверных).
+        const text = typeof i18n_en_text !== 'undefined' ? i18n_en_text : {};
+        const server = typeof i18n_en_server !== 'undefined'
+            ? i18n_en_server : {};
+        const merged = Object.assign({}, text);
+        for (const k of Object.keys(server)) {
+            if (!(k in merged)) merged[k] = server[k];
+        }
+        buildIndex(merged);
     }
 
     // Перевод одной фразы (без ведущих/хвостовых пробелов). null — не знаем.
@@ -196,7 +215,7 @@ const i18n = (() => {
                 let full = true;
                 for (let i = 0; i < p.order.length; i++) {
                     let val = m[i + 1];
-                    if (CYR.test(val)) {
+                    if (CYR.test(val) && !p.quoted[i]) {
                         const t = translateText(val, depth + 1);
                         if (t !== null) val = t; else full = false;
                     }
@@ -223,12 +242,34 @@ const i18n = (() => {
     // разделители («Раздел · Подраздел», «Метка: значение», «текст:»).
     // Переводится, только если перевелись все куски с кириллицей.
     const SEP = /(\s+[·—–|+×]\s+|[:,;]\s+|\.\s+(?=[А-ЯЁA-Z])|^[·—–+•(]\s*|[:.)]$|\s*\(|\)\s*)/;
+    const COARSE = /(\s+[·—–|]\s+)/;
     function bySegments(s, depth) {
         // Сначала — только маркер в начале («— текст», «· текст»).
         const pm = /^([·—–+•]\s*)(.+)$/.exec(s);
         if (pm) {
             const t = lookupNested(pm[2], depth);
             if (t !== null) return pm[1] + t;
+        }
+        // Затем — крупные куски через « — », « · »: «Исключения
+        // (не обрабатываются) — netrogat.txt» переводится целыми частями.
+        const big = s.split(COARSE);
+        if (big.length > 2) {
+            let ok = true;
+            for (let i = 0; i < big.length && ok; i += 2) {
+                if (!CYR.test(big[i])) continue;
+                const core = big[i].trim();
+                let t = lookupNested(core, depth);
+                if (t !== null) {
+                    big[i] = big[i].replace(core, () => t);
+                    continue;
+                }
+                // Хвост вида « — не сразу» хранится в словаре с тире.
+                t = i > 0 ? lookupNested(big[i - 1].trim() + ' ' + core,
+                    depth) : null;
+                if (t === null) ok = false;
+                else { big[i - 1] = ' '; big[i] = big[i].replace(core, () => t); }
+            }
+            if (ok) return big.join('');
         }
         const segs = s.split(SEP);
         if (segs.length < 2) return null;
@@ -496,20 +537,30 @@ const i18n = (() => {
         }
     }
 
-    // Словарь фраз грузим только для английского, синхронно и до скриптов
+    // Словари грузим только для английского, синхронно и до скриптов
     // страниц (document.write из внешнего скрипта во время разбора
     // документа вставляет <script> сразу следом — CSP 'self' это разрешает).
+    // en.text.js — тексты страниц, en.server.js — сообщения сервера.
+    // Адреса — из <link> в index.html: там сервер проставил ?v=.
     if (currentLang === 'en' && typeof document !== 'undefined'
         && document.readyState === 'loading'
-        && typeof i18n_en_text === 'undefined'
         && typeof document.write === 'function') {
-        // Адрес — из <link> в index.html: там сервер проставил ?v=.
-        const link = document.querySelector
-            && document.querySelector('link[rel="x-i18n-en-text"]');
-        const src = (link && link.getAttribute('href'))
-            || '/js/i18n/en.text.js';
-        document.write('<script src="' + src.replace(/"/g, '')
-            + '"><\/script>');
+        // Словари объявлены через const: такая привязка не свойство
+        // globalThis, поэтому «уже загружен» проверяем typeof по имени.
+        const DICTS = [
+            ['x-i18n-en-text', '/js/i18n/en.text.js',
+                typeof i18n_en_text !== 'undefined'],
+            ['x-i18n-en-server', '/js/i18n/en.server.js',
+                typeof i18n_en_server !== 'undefined'],
+        ];
+        for (const [rel, def, loaded] of DICTS) {
+            if (loaded) continue;
+            const link = document.querySelector
+                && document.querySelector('link[rel="' + rel + '"]');
+            const src = (link && link.getAttribute('href')) || def;
+            document.write('<script src="' + src.replace(/"/g, '')
+                + '"><\/script>');
+        }
     }
     start();
 

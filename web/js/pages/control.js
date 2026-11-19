@@ -345,7 +345,9 @@ const ControlPage = (() => {
             return;
         }
         el.innerHTML = entries.map(e => {
-            const rawMsg = e.message || '';
+            // Сообщения сервера переводятся здесь, до подсветки: span
+            // помечен translate="no", чтобы DOM-переводчик не резал фразу.
+            const rawMsg = i18n.translateText(e.message || '');
             const msgHtml = NfqwsSyntax.hasNfqwsArgs(rawMsg)
                 ? NfqwsSyntax.highlight(rawMsg)
                 : escapeHtml(rawMsg);
