@@ -60,6 +60,70 @@ def _nfqws_ports(spec) -> str:
                     for p in str(spec or "").split(",") if p.strip())
 
 
+# Протоколы --filter-l7, у которых nfqws2 видит имя хоста (Host / SNI):
+# http, tls, quic, а также групповые all и known (known включает их).
+# У discord, stun, wireguard, dht, dns, mtproto, bt и т.п. имени хоста нет.
+_HOSTNAME_L7 = frozenset(("all", "known", "http", "tls", "quic"))
+
+
+def _ports_include(spec: str, port: int) -> bool:
+    """Покрывает ли список портов nfqws2 (``443,50000-65535``) порт."""
+    for part in str(spec or "").split(","):
+        part = part.strip().replace(":", "-")
+        if not part:
+            continue
+        if part == "*":
+            return True
+        lo, _, hi = part.partition("-")
+        try:
+            if int(lo) <= port <= int(hi or lo):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def profile_can_have_hostname(profile_args: list) -> bool:
+    """Может ли профиль nfqws2 увидеть имя хоста.
+
+    Профиль с ``--hostlist-auto`` nfqws2 выбирает только при известном имени
+    хоста (nfq2/desync.c, dp_match: «autohostlist profile … wins because
+    hostname is known», иначе профиль с непустыми списками не подходит).
+    Имя берётся из HTTP Host, TLS SNI и QUIC Initial. Профиль чистого UDP
+    (голос Discord, STUN, игры) его не увидит никогда, и авто-список молча
+    выключил бы такой профиль целиком.
+
+    Правила:
+      • есть ``--filter-l7`` → только если среди протоколов есть
+        http / tls / quic / known / all;
+      • иначе есть ``--filter-tcp`` → да (HTTP/TLS);
+      • иначе есть ``--filter-udp`` → только если порты покрывают 443 (QUIC);
+      • нет ни одного из этих фильтров → да (профиль ловит всё подряд),
+        кроме профилей только с ``--filter-ipp``/``--filter-icmp``.
+    """
+    l7 = []
+    tcp = udp = None
+    other_filter = False
+    for a in profile_args:
+        if not isinstance(a, str):
+            continue
+        if a.startswith("--filter-l7="):
+            l7.extend(p.strip().lower() for p in a.split("=", 1)[1].split(","))
+        elif a.startswith("--filter-tcp="):
+            tcp = (tcp or "") + "," + a.split("=", 1)[1]
+        elif a.startswith("--filter-udp="):
+            udp = (udp or "") + "," + a.split("=", 1)[1]
+        elif a.startswith(("--filter-ipp=", "--filter-icmp=")):
+            other_filter = True
+    if l7:
+        return any(p in _HOSTNAME_L7 for p in l7)
+    if tcp is not None:
+        return True
+    if udp is not None:
+        return _ports_include(udp, 443)
+    return not other_filter
+
+
 def autowrap_bare_trick(profile_args: list, protocol: str = "",
                         family: str = "", ports: str = "") -> list:
     """Ограничить «голый приём» фильтром, выведенным из однозначного --payload.
@@ -758,6 +822,11 @@ class StrategyManager:
         подмешиваем — сужать чужой отбор нельзя, а --hostlist-auto вообще
         сменил бы логику выбора профиля.
 
+        Профилю, который не может увидеть имя хоста (чистый UDP без QUIC,
+        ``--filter-l7=discord,stun`` и т.п.), ``--hostlist-auto`` тоже не
+        подмешиваем: nfqws2 выбирает профиль с авто-списком только при
+        известном имени хоста, и такой профиль перестал бы работать.
+
         НО предохранитель ``--hostlist-exclude=netrogat.txt`` доезжает и туда.
         Раньше он молча терялся на любом профиле со своим списком, и
         пользовательские исключения (aliexpress.ru, банки, …) не действовали
@@ -768,6 +837,12 @@ class StrategyManager:
             a.startswith("--hostlist") or a.startswith("--ipset")
             for a in args
         )
+        # Авто-список только там, где nfqws2 может узнать имя хоста: иначе
+        # профиль (UDP-голос Discord, STUN, игры) перестаёт выбираться вовсе.
+        if not profile_can_have_hostname(args):
+            list_flags = [
+                f for f in list_flags if not f.startswith("--hostlist-auto=")
+            ]
         if has_own_lists:
             if any(a.startswith("--hostlist-exclude") for a in args):
                 return args  # профиль сам задаёт исключения

@@ -457,6 +457,14 @@ bt_handshake utp_bt_handshake`.
 - Без автохостлиста профиль с хостлистами **не выбирается до получения
   hostname**. Если хост в exclude — стратегия не применяется. С автохостлистом —
   работает всегда при наличии hostname (счётчики через `--hostlist-auto-*`).
+  Без hostname профиль с автохостлистом **не выбирается вовсе** (`dp_match`,
+  nfq2/desync.c). Поэтому в режиме `filter.mode=autohostlist`
+  `StrategyManager._inject_list_flags` не подмешивает `--hostlist-auto` в
+  профили, где имени хоста быть не может (`profile_can_have_hostname`:
+  `--filter-l7` без http/tls/quic/known/all, UDP без порта 443,
+  только `--filter-ipp`/`--filter-icmp`) — иначе голос Discord, STUN и игры
+  молча выпадали бы из обхода. exclude `netrogat.txt` туда по-прежнему
+  доезжает.
 - ipset-ы могут смешивать ipv4+ipv6.
 
 ---

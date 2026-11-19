@@ -161,7 +161,7 @@ const SettingsPage = (() => {
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>',
             fields: [
                 { key: 'filter.mode',  label: 'Режим фильтрации',  type: 'select',
-                  hint: 'other.txt больше НЕ подставляется автоматически — стратегия по умолчанию работает на весь трафик на своих портах (--filter-*). Чтобы сузить, добавьте --hostlist=/--hostlist-domains= прямо в стратегию.',
+                  hint: 'other.txt больше НЕ подставляется автоматически — стратегия по умолчанию работает на весь трафик на своих портах (--filter-*). Чтобы сузить, добавьте --hostlist=/--hostlist-domains= прямо в стратегию. «Авто-хостлист»: стратегия применяется только к доменам, которые nfqws2 сам признал недоступными (3 неудачи за 60 с); профили без имени хоста (голос Discord, STUN, игры) работают как раньше, на весь свой трафик.',
                   options: [
                     { value: 'none', label: 'Весь трафик (по умолчанию)' },
                     { value: 'autohostlist', label: 'Авто-хостлист (auto.txt)' },

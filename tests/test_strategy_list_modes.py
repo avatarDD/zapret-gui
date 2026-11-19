@@ -109,6 +109,62 @@ class TestListFlagModes(unittest.TestCase):
         self.assertEqual(out[0], "--filter-tcp=443")
         self.assertEqual(out[1], "--hostlist-exclude=/y/netrogat.txt")
 
+    # ── авто-список только там, где nfqws2 видит имя хоста ──
+    AUTO = ["--hostlist-auto=/y/auto.txt", "--hostlist-exclude=/y/netrogat.txt"]
+
+    def test_auto_skipped_for_hostless_l7(self):
+        # Голос Discord / STUN: имени хоста нет, профиль с авто-списком
+        # nfqws2 не выбрал бы никогда.
+        args = ["--filter-udp=50000-65535", "--filter-l7=discord,stun",
+                "--lua-desync=fake:blob=fake_default_udp"]
+        out = self.sm._inject_list_flags(args, self.AUTO)
+        self.assertNotIn("--hostlist-auto=/y/auto.txt", out)
+        self.assertIn("--hostlist-exclude=/y/netrogat.txt", out)
+
+    def test_auto_skipped_for_udp_without_quic_port(self):
+        args = ["--filter-udp=3478-3481,19294-19344", "--lua-desync=fake"]
+        out = self.sm._inject_list_flags(args, self.AUTO)
+        self.assertNotIn("--hostlist-auto=/y/auto.txt", out)
+
+    def test_auto_kept_for_hostname_profiles(self):
+        for args in (
+            ["--filter-tcp=80,443", "--lua-desync=multisplit"],
+            ["--filter-udp=443", "--lua-desync=fake"],
+            ["--filter-udp=1-65535", "--lua-desync=fake"],
+            ["--filter-udp=50000-65535", "--filter-l7=quic,stun",
+             "--lua-desync=fake"],
+            ["--filter-tcp=443", "--filter-l7=tls", "--lua-desync=fake"],
+            ["--filter-l7=known", "--lua-desync=fake"],
+            ["--lua-desync=fake"],
+        ):
+            out = self.sm._inject_list_flags(args, self.AUTO)
+            self.assertIn("--hostlist-auto=/y/auto.txt", out, args)
+
+    def test_auto_skipped_for_ipp_only(self):
+        args = ["--filter-ipp=47", "--lua-desync=fake"]
+        out = self.sm._inject_list_flags(args, self.AUTO)
+        self.assertNotIn("--hostlist-auto=/y/auto.txt", out)
+
+    def test_build_args_autohostlist_mixed_strategy(self):
+        # TCP-профиль получает авто-список, UDP-голос — только exclude.
+        self.cfg.set("filter", "mode", "autohostlist")
+        strategy = {
+            "id": "t", "name": "t", "profiles": [
+                {"id": "p1", "enabled": True,
+                 "args": "--filter-tcp=443 --lua-desync=multisplit"},
+                {"id": "p2", "enabled": True,
+                 "args": "--filter-udp=50000-65535 --filter-l7=discord,stun "
+                         "--lua-desync=fake:blob=fake_default_udp"},
+            ],
+        }
+        args = self.sm.build_nfqws_args(strategy)
+        new = args.index("--new")
+        first, second = args[:new], args[new + 1:]
+        self.assertTrue(any(a.startswith("--hostlist-auto=") for a in first))
+        self.assertFalse(any(a.startswith("--hostlist-auto=") for a in second))
+        self.assertTrue(
+            any(a.startswith("--hostlist-exclude=") for a in second))
+
     def test_explicit_path_backward_compat(self):
         # Явный hostlist_path (как у сканера) → один --hostlist=<path>.
         path = os.path.join(self.d, "other.txt")
