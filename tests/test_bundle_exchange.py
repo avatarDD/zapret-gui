@@ -227,6 +227,31 @@ class TestApi(unittest.TestCase):
             self.assertTrue(any("tls_google" in w and "init_vars" in w
                                 for w in warnings), warnings)
 
+    def test_init_vars_name_in_fallback_ships_registry_bytes(self):
+        """fallback= init_vars.lua не подключает: tls_google там —
+        файл реестра, и он едет в бандле."""
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--lua-desync=tls_client_hello_clone:"
+                                 "blob=ch:fallback=tls_google "
+                                 "--lua-desync=fake:blob=ch"}]}
+        out, warnings = be.build_bundle(st, **SAMPLE_FILES)
+        self.assertEqual([b["name"] for b in out["blobs"]], ["tls_google"])
+        self.assertEqual(out["lua"], [])
+        self.assertEqual(warnings, [])
+
+    def test_crlf_script_is_same(self):
+        from unittest import mock
+
+        class LM:
+            def get_script(self, n):
+                return "a\nb\n"
+        b = {"lua": [{"name": "x.lua", "text": "a\r\nb\r\n"}]}
+        with mock.patch("core.lua_manager.get_lua_manager",
+                        return_value=LM()):
+            same = bi._same_here(b, {"hostlists": set(), "ipsets": set(),
+                                     "lua": {"x"}})
+        self.assertEqual(same, {("lua", "x")})
+
     def test_clone_variable_and_fallback(self):
         st = {"id": "x", "name": "x", "profiles": [
             {"id": "p1", "args": "--lua-desync=tls_client_hello_clone:"

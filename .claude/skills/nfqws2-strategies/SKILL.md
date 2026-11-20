@@ -267,7 +267,11 @@ hostname (макс. 2 «перескока»). Если все инстансы 
 `tls_client_hello_clone` (её `blob=` — имя переменной клона в desync,
 а не блоб) и `dataxor=` у `ippxor`/zapret-obfs. Заявляются, как
 паттерны, только известные реестру. `fallback=` у `multisplit_tls` —
-режим (`pass`/`split`/`pattern`), не блоб.
+режим (`pass`/`split`/`pattern`), не блоб. Имя после `blob=` у самой
+`tls_client_hello_clone` (`clone_variables`) — переменная клона: не
+дозаявляется и не даёт предупреждения «не найден». `init_vars.lua`
+подключается только по `blob=`/`pattern=`/`seqovl_pattern=` (и
+`fake_blob=`), не по `fallback=`/`dataxor=`.
 
 **Имена из nfqws2-keenetic** (`_FALLBACK_ALIASES`): `tls_clienthello` и
 `quic_initial` (их `/opt/etc/nfqws2/blobs/*.bin` побайтово равны нашим

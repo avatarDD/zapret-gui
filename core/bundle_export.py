@@ -51,7 +51,8 @@ import base64
 import re
 
 from core.bundle_import import (FORMAT, FORMAT_VERSION, LUA_COMPAT,
-                                MAX_BLOB, desync_blob_refs)
+                                MAX_BLOB, NOT_INIT_VARS_ARGS,
+                                desync_blob_refs)
 
 _STRATEGY_ID_RE = re.compile(r"[^a-zA-Z0-9_-]")
 _LIST_REF_RE = re.compile(
@@ -122,6 +123,7 @@ def references(strategy: dict, roots=None) -> dict:
     (их может задать и ``init_vars``). ``roots`` — каталоги менеджеров
     (``{"lists": [...], "lua": [...]}``), см. :func:`_stem`."""
     lists, blobs, patterns, lua, unknown = [], [], [], [], []
+    named = set()       # имена, по которым запуск подключит init_vars.lua
     declared = {}
     every = []
     for p in strategy.get("profiles") or []:
@@ -164,6 +166,8 @@ def references(strategy: dict, roots=None) -> dict:
                         tok[len("--lua-desync="):])[0]:
                     if n in local and n not in declared:
                         continue
+                    if key not in NOT_INIT_VARS_ARGS:
+                        named.add(n)
                     into = patterns if key.endswith("pattern") else blobs
                     if n not in into:
                         into.append(n)
@@ -172,7 +176,7 @@ def references(strategy: dict, roots=None) -> dict:
     auto = _auto_lua(every)
     lua = auto + [n for n in lua if n not in auto]
     return {"lists": lists, "blobs": blobs, "patterns": patterns,
-            "declared": declared, "unknown": unknown,
+            "declared": declared, "unknown": unknown, "named": named,
             "lua": [n for n in lua if n not in ZAPRET2_LUA]}
 
 
@@ -283,9 +287,12 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         else:
             out_lists.append({"name": name, "domains": list(items)})
     try:
-        from core.nfqws_manager import _INIT_VARS_NAMES as init_vars
+        from core.nfqws_manager import _INIT_VARS_NAMES
     except Exception:                           # noqa: BLE001
-        init_vars = set()
+        _INIT_VARS_NAMES = set()
+    # fallback=/dataxor= init_vars.lua не подключают — там имя init_vars
+    # получает файл реестра, как любой блоб
+    init_vars = set(_INIT_VARS_NAMES) & refs["named"]
     names = refs["blobs"] + [n for n in refs["patterns"]
                              if n not in refs["blobs"]]
     inline = {}             # объявленные в args — едут там же, как hex

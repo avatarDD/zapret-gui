@@ -57,6 +57,10 @@ _BLOB_ARGS = ("blob", "pattern", "seqovl_pattern", "fake_blob", "dataxor")
 # pattern), поэтому в общий список он не входит.
 _FUNC_BLOB_ARGS = {"tls_client_hello_clone": ("fallback",)}
 _FUNC_VAR_ARGS = {"tls_client_hello_clone": ("blob",)}
+# По этим аргументам запуск init_vars.lua не подключает (его триггер —
+# blob=/pattern=/seqovl_pattern=, в т.ч. внутри fake_blob=, см.
+# nfqws_manager._NAMED_PATTERN_RE): имя init_vars здесь — обычный блоб.
+NOT_INIT_VARS_ARGS = ("fallback", "dataxor")
 
 
 def desync_blob_refs(value: str) -> tuple:
@@ -314,21 +318,23 @@ def _unquote(tok: str) -> tuple:
     return "", tok
 
 
-def _rewrite_desync(value: str, blobs: dict) -> str:
+def _rewrite_desync(value: str, blobs: dict, variables=()) -> str:
     """Переименовать блобы в значении ``--lua-desync=`` теми же
-    правилами, что у :func:`desync_blob_refs`."""
+    правилами, что у :func:`desync_blob_refs`; ``variables`` — клоны
+    ClientHello этого профиля, их имена не трогаются."""
     q, inner = _unquote(value)
     parts = inner.split(":")
     func = parts[0]
     keys = _FUNC_BLOB_ARGS.get(func, _BLOB_ARGS)
     for i, part in enumerate(parts[1:], 1):
         key, eq, val = part.partition("=")
-        if eq and key in keys and val in blobs:
+        if eq and key in keys and val in blobs and val not in variables:
             parts[i] = "%s=%s" % (key, blobs[val])
     return q + ":".join(parts) + q
 
 
-def _rewrite_token(tok: str, lists: dict, blobs: dict, lua: dict) -> str:
+def _rewrite_token(tok: str, lists: dict, blobs: dict, lua: dict,
+                   variables=()) -> str:
     q, inner = _unquote(tok)
     if lists:
         m = re.match(r"^(--(?:hostlist|hostlist-exclude|hostlist-auto|ipset|"
@@ -344,7 +350,7 @@ def _rewrite_token(tok: str, lists: dict, blobs: dict, lua: dict) -> str:
     if blobs:
         if inner.startswith("--lua-desync="):
             return q + "--lua-desync=" + _rewrite_desync(
-                inner[len("--lua-desync="):], blobs) + q
+                inner[len("--lua-desync="):], blobs, variables) + q
         m = re.match(r"^--blob=([A-Za-z_][A-Za-z0-9_]*):", inner)
         if m and m.group(1) in blobs:
             return q + "--blob=%s:" % blobs[m.group(1)] + \
@@ -362,9 +368,16 @@ def rewrite_args(args: str, renames: dict) -> str:
     if not (lists or blobs or lua):
         return args
     from core.models import tokenize_args
+    toks = tokenize_args(args)
+    variables = set()       # клоны ClientHello профиля — не блобы
+    for tok in toks:
+        inner = _unquote(tok)[1]
+        if inner.startswith("--lua-desync="):
+            variables |= set(desync_blob_refs(
+                inner[len("--lua-desync="):])[1])
     out = args
-    for tok in dict.fromkeys(tokenize_args(args)):
-        new = _rewrite_token(tok, lists, blobs, lua)
+    for tok in dict.fromkeys(toks):
+        new = _rewrite_token(tok, lists, blobs, lua, variables)
         if new != tok:
             out = re.sub(r"(?<!\S)%s(?!\S)" % re.escape(tok),
                          lambda _m: new, out)
@@ -441,9 +454,14 @@ def _init_vars_refs(data) -> set:
         for tok in tokenize_args(str(p.get("args") or "")):
             tok = _unquote(tok)[1]
             if tok.startswith("--lua-desync="):
-                out |= {n for _k, n in desync_blob_refs(
-                    tok[len("--lua-desync="):])[0]}
+                out |= {n for k, n in desync_blob_refs(
+                    tok[len("--lua-desync="):])[0]
+                    if k not in NOT_INIT_VARS_ARGS}
     return out & set(_INIT_VARS_NAMES)
+
+
+def _lf(text) -> str:
+    return str(text or "").replace("\r\n", "\n")
 
 
 def _same_here(data: dict, names: dict) -> set:
@@ -473,7 +491,9 @@ def _same_here(data: dict, names: dict) -> set:
 
     def lua(item):
         stem = _lua_stem(str(item["name"]))
-        return stem in names["lua"] and lm.get_script(stem) == item["text"]
+        # get_script читает текстом (\r\n → \n): бандл с Windows — тоже
+        return stem in names["lua"] and _lf(lm.get_script(stem)) == \
+            _lf(item["text"])
 
     out = set()
     for key, kind, same in (("hostlists", "hostlist", hostlist),
@@ -517,8 +537,10 @@ def _load_renamed_auto_lua(profiles: list, data: dict, renames: dict):
     lua = renames.get("lua") or {}
     if not lua or not profiles:
         return
+    # ссылка в выключенном профиле скрипт не подключит
     joined = " ".join(str(p.get("args") or "") for p in
-                      data["strategy"]["profiles"])
+                      data["strategy"]["profiles"]
+                      if p.get("enabled", True))
     extra = ["--lua-init=@lua/%s.lua" % lua[stem]
              for stem in (_lua_stem(str(i.get("name") or ""))
                           for i in _items(data, "lua"))

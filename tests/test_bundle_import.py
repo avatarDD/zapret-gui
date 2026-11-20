@@ -136,6 +136,24 @@ class TestPlanAndRename(unittest.TestCase):
                   "--lua-init=@/opt/zapret2/lua/my-2.lua "
                   "--hostlist=/opt/zapret2/lists/zt-youtube-2.txt")
 
+    def test_rename_keeps_clone_variable(self):
+        args = bi.rewrite_args(
+            "--lua-desync=tls_client_hello_clone:blob=ch:fallback=fb "
+            "--lua-desync=fake:blob=ch", {"blob": {"ch": "ch_2", "fb": "fb_2"}})
+        self.assertEqual(args, "--lua-desync=tls_client_hello_clone:blob=ch:"
+                               "fallback=fb_2 --lua-desync=fake:blob=ch")
+        # в другом профиле ch — настоящий блоб
+        self.assertEqual(bi.rewrite_args("--lua-desync=fake:blob=ch",
+                                         {"blob": {"ch": "ch_2"}}),
+                         "--lua-desync=fake:blob=ch_2")
+
+    def test_init_vars_name_in_fallback_is_a_plain_blob(self):
+        b = bundle()
+        b["strategy"]["profiles"][0]["args"] = (
+            "--lua-desync=tls_client_hello_clone:blob=ch:fallback=tls_google "
+            "--lua-desync=ippxor:dataxor=tls_vk")
+        self.assertEqual(bi._init_vars_refs(b), set())
+
     def test_new_name_is_free_in_bundle_and_fits(self):
         b = bundle(blobs=[{"name": n, "base64": "AQ=="}
                           for n in ("a", "a_2", "b" * 64)])
@@ -275,8 +293,10 @@ class TestApply(unittest.TestCase):
         b = bundle(lua=[{"name": "fakemultisplit.lua", "text": "-- их"}])
         b["strategy"]["profiles"][0]["args"] = (
             "--filter-tcp=443 --lua-desync=fakemultisplit:pos=1")
+        # выключенный профиль, который называет скрипт явно, не в счёт
         b["strategy"]["profiles"].insert(0, {
-            "id": "p0", "enabled": False, "args": "--filter-udp=443"})
+            "id": "p0", "enabled": False,
+            "args": "--lua-init=@lua/fakemultisplit.lua --filter-udp=443"})
         existing = dict(NOTHING, lua={"fakemultisplit"},
                         gui_lua={"fakemultisplit"})
         r = bi.apply_bundle(b, on_conflict="rename", existing=existing)
@@ -284,6 +304,7 @@ class TestApply(unittest.TestCase):
         self.assertEqual(self.m.saved["fakemultisplit-2"], "-- их")
         got = self.m.saved["zt_youtube_2026_10_18"]["profiles"]
         self.assertEqual(got[0]["args"], "--lua-init=@lua/fakemultisplit-2.lua "
+                                         "--lua-init=@lua/fakemultisplit-2.lua "
                                          "--filter-udp=443")
         self.assertEqual(got[1]["args"],
                          "--lua-init=@lua/fakemultisplit-2.lua --filter-tcp=443 "
