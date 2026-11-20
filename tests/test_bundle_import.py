@@ -174,6 +174,15 @@ class TestPlanAndRename(unittest.TestCase):
         b = bundle(blobs=[{"name": "fake_default_tls", "base64": "AQ=="}])
         self.assertTrue(bi.validate_bundle(b)[0])
 
+    def test_fake_default_blob_renamed_out_of_builtin_prefix(self):
+        b = bundle(blobs=[{"name": "fake_default_udp",
+                           "base64": base64.b64encode(b"\x01" * 16).decode()}])
+        plan = bi.plan_bundle(b, NOTHING)
+        self.assertEqual(plan["conflicts"], [
+            {"kind": "blob", "name": "fake_default_udp", "rename_only": True}])
+        self.assertEqual(bi.rename_map(plan, NOTHING, b)["blob"],
+                         {"fake_default_udp": "my_fake_default_udp_2"})
+
     def test_init_vars_in_disabled_profile_is_not_loaded(self):
         b = bundle()
         b["strategy"]["profiles"][0].update(

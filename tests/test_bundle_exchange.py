@@ -297,6 +297,19 @@ class TestApi(unittest.TestCase):
                       out["strategy"]["profiles"][0]["args"])
         self.assertEqual(bi.validate_bundle(out)[0], [])
 
+    def test_lua_of_disabled_profiles_stays_out(self):
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--filter-tcp=443 "
+                                 "--lua-desync=fake:blob=fake_default_tls"},
+            {"id": "p2", "enabled": False,
+             "args": "--lua-init=@lua/mine.lua --filter-tcp=80 "
+                     "--lua-desync=fakemultisplit:pos=1"}]}
+        out, warnings = be.build_bundle(
+            st, hostlists=lambda n: None, ipsets=lambda n: None,
+            blobs=lambda n: None, lua=lambda n: "x")
+        self.assertEqual(out["lua"], [])
+        self.assertTrue(any("mine.lua" in w for w in warnings), warnings)
+
     def test_crlf_script_is_same(self):
         from unittest import mock
 

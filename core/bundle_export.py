@@ -131,12 +131,14 @@ def references(strategy: dict, roots=None) -> dict:
     # что видит запуск: только включённые профили (build_nfqws_args)
     declared_on, used_on = set(), set()
     every = []
+    off_lua = []        # скрипты, которые называют только выключенные
     for p in strategy.get("profiles") or []:
         if not isinstance(p, dict):
             continue
         toks = _tokens(p.get("args") or "")
         on = bool(p.get("enabled", True))
-        every += toks
+        if on:          # lua запуск подключает только включённым
+            every += toks
         # переменные desync, которые профиль сам заводит (клон
         # ClientHello): в этом профиле такое имя — не блоб
         local = set()
@@ -159,6 +161,8 @@ def references(strategy: dict, roots=None) -> dict:
                 stem = _stem(m.group(1), "lua", roots)
                 if not stem:
                     unknown.append(tok)
+                elif not on:
+                    off_lua.append(stem)
                 elif stem not in lua:
                     lua.append(stem)
                 continue
@@ -185,8 +189,13 @@ def references(strategy: dict, roots=None) -> dict:
     # --lua-init из самих профилей
     auto = _auto_lua(every)
     lua = auto + [n for n in lua if n not in auto]
+    # импорт AutoTuner грузит каждый lua бандла глобально — скрипт
+    # выключенного профиля поменял бы и включённые; в бандл он не идёт
+    off_lua = [n for n in dict.fromkeys(off_lua)
+               if n not in lua and n not in ZAPRET2_LUA]
     return {"lists": lists, "blobs": blobs, "patterns": patterns,
             "declared": declared, "unknown": unknown, "named": named,
+            "off_lua": off_lua,
             # объявлены только в выключенных профилях, а нужны включённым:
             # запуск берёт их из реестра
             "registry_too": [n for n in blobs + patterns
@@ -380,6 +389,9 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
             continue
         out_blobs.append({"name": name,
                           "base64": base64.b64encode(data).decode()})
+    for name in refs["off_lua"]:
+        warnings.append("lua %s.lua нужен только выключенному профилю — в "
+                        "бандл не входит" % name)
     for name in refs["lua"]:
         text = lua(name)
         if text:

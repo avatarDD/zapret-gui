@@ -249,7 +249,10 @@ def plan_bundle(data: dict, existing: dict) -> dict:
                             "здешней" % name)
             return
         items.append({"kind": kind, "name": name})
-        if name in owned.get(kind, ()):
+        # fake_default_* менеджер блобов считает встроенными (их нельзя
+        # удалить) — свой блоб с таким именем только под другим
+        if name in owned.get(kind, ()) or (
+                kind == "blob" and name.startswith("fake_default_")):
             conflicts.append({"kind": kind, "name": name,
                               "rename_only": True})
         elif name in taken:
@@ -319,8 +322,11 @@ def rename_map(plan: dict, existing: dict, data=None) -> dict:
                                   set()))
         taken |= set(out.get(c["kind"], {}).values())
         kind = c["kind"]
-        new = _free(c["name"], taken, kind) if kind != "strategy" else \
-            _free(c["name"].replace("-", "_"), taken, "blob")
+        base = c["name"]
+        if kind == "blob" and base.startswith("fake_default_"):
+            base = "my_" + base     # вне префикса встроенных
+        new = _free(base, taken, kind) if kind != "strategy" else \
+            _free(base.replace("-", "_"), taken, "blob")
         out.setdefault(kind, {})[c["name"]] = new
     return out
 
