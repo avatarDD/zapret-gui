@@ -391,7 +391,7 @@ const ProxyTable = (() => {
                 const active = state.sortKey === key;
                 const arrow = active ? (state.sortDir === 'desc' ? ' ▼' : ' ▲') : '';
                 return `<th style="text-align:${alignRight ? 'right' : 'left'}; cursor:pointer; user-select:none; ${active ? 'color:var(--accent);' : ''}"
-                            onclick="${G}.sortBy('${key}')">${label}${arrow}</th>`;
+                            onclick="${G}.sortBy('${key}')"><span>${label}</span>${arrow}</th>`;
             };
 
             // Обработчики строк — по индексу в отсортированном виде, а не по
@@ -409,7 +409,7 @@ const ProxyTable = (() => {
                             <input type="checkbox" ${sel ? 'checked' : ''}
                                    onclick="event.stopPropagation(); ${G}.toggleRow(${idx})">
                         </td>
-                        <td>
+                        <td class="pt-name">
                             ${isActive ? `<span style="color:#39c45e;" title="${escAttr(L.activeMark)}">▶</span> ` : ''}
                             <span style="font-weight:600;">${esc(r.id)}</span>
                         </td>
@@ -425,7 +425,7 @@ const ProxyTable = (() => {
             return `
                 <div class="card">
                     <div style="overflow-x:auto;">
-                        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                        <table class="pt-table" style="width:100%; border-collapse:collapse; font-size:13px;">
                             <thead><tr style="border-bottom:1px solid var(--border,#333);">
                                 <th style="width:28px; text-align:center;">
                                     <input type="checkbox" ${allSel ? 'checked' : ''}
