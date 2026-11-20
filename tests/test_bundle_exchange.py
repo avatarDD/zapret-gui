@@ -239,6 +239,29 @@ class TestApi(unittest.TestCase):
         self.assertEqual(out["lua"], [])
         self.assertEqual(warnings, [])
 
+    def test_gui_registry_fake_default_goes_as_declaration(self):
+        """fake_default_udp — имя реестра GUI, не nfqws2: едет
+        объявлением в первом включённом профиле, который на него
+        ссылается; встроенный fake_default_quic не берётся."""
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p0", "enabled": False,
+             "args": "--lua-desync=fake:blob=fake_default_udp"},
+            {"id": "p1", "args": "--filter-udp=443 "
+                                 "--lua-desync=fake:blob=fake_default_udp:"
+                                 "repeats=6 --lua-desync=fake:"
+                                 "blob=fake_default_quic"}]}
+        out, warnings = be.build_bundle(
+            st, hostlists=lambda n: None, ipsets=lambda n: None,
+            blobs={"fake_default_udp": b"\x00" * 16}.get,
+            lua=lambda n: None)
+        self.assertEqual(warnings, [])
+        self.assertEqual(out["blobs"], [])
+        self.assertEqual(out["strategy"]["profiles"][0]["args"],
+                         st["profiles"][0]["args"])
+        self.assertTrue(out["strategy"]["profiles"][1]["args"].startswith(
+            "--blob=fake_default_udp:0x" + "00" * 16 + " --filter-udp=443"))
+        self.assertEqual(bi.validate_bundle(out)[0], [])
+
     def test_crlf_script_is_same(self):
         from unittest import mock
 

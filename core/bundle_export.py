@@ -22,7 +22,9 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
   ``blobs`` — байты, которые получит nfqws2: свой блоб или файл, на
   который имя ведёт реестр (``quic_vk`` → ``quic_initial_vk_com.bin``).
   Объявленные в самих args (``--blob=<имя>:@путь``) едут там же, как
-  hex. Не берутся ``fake_default_*`` (встроены в nfqws2) и имена,
+  hex, как и ``fake_default_udp`` из реестра GUI (блобом бандла имя
+  ``fake_default_*`` не передать). Не берутся ``fake_default_tls``/
+  ``http``/``quic`` (встроены в nfqws2) и имена,
   которые при запуске задаёт ``init_vars.lua`` (``tls_google``,
   ``tls_rnd``…: скрипт присваивает их заново, поверх любого ``--blob``);
 * lua: и явные ``--lua-init=@lua/<имя>.lua``, и скрипты, которые GUI сам
@@ -50,6 +52,7 @@ from __future__ import annotations
 import base64
 import re
 
+from core.blob_registry import BUILTIN_BLOB_NAMES
 from core.bundle_import import (FORMAT, FORMAT_VERSION, LUA_COMPAT,
                                 MAX_BLOB, NOT_INIT_VARS_ARGS,
                                 desync_blob_refs)
@@ -215,7 +218,14 @@ def _inline_decl(args: str, inline: dict) -> str:
     return args
 
 
-def _clean_strategy(strategy: dict, inline=None, roots=None) -> dict:
+def _refers(args: str, name: str) -> bool:
+    return any(n == name for tok in _tokens(args)
+               if tok.startswith("--lua-desync=")
+               for _k, n in desync_blob_refs(tok[len("--lua-desync="):])[0])
+
+
+def _clean_strategy(strategy: dict, inline=None, roots=None,
+                    inject=None) -> dict:
     out = {k: strategy[k] for k in _STRATEGY_KEYS if k in strategy}
     out["id"] = _STRATEGY_ID_RE.sub("_", str(strategy.get("id") or
                                              "strategy"))[:64] or "strategy"
@@ -233,6 +243,16 @@ def _clean_strategy(strategy: dict, inline=None, roots=None) -> dict:
             "args": _portable_paths(_inline_decl(str(p.get("args") or ""),
                                                  inline or {}), roots),
         })
+    # объявления, которых в args не было (fake_default_udp из реестра
+    # GUI): один раз, в первом включённом профиле, который ссылается
+    # (импорт AutoTuner берёт только включённые)
+    for name, data in (inject or {}).items():
+        using = [p for p in out["profiles"] if _refers(p["args"], name)]
+        target = next((p for p in using if p["enabled"]),
+                      using[0] if using else None)
+        if target is not None:
+            target["args"] = ("--blob=%s:0x%s " % (name, data.hex())
+                              + target["args"]).strip()
     return out
 
 
@@ -296,9 +316,10 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
     names = refs["blobs"] + [n for n in refs["patterns"]
                              if n not in refs["blobs"]]
     inline = {}             # объявленные в args — едут там же, как hex
+    inject = {}             # объявления, которые добавляются в args
     for name in names:
-        if name.startswith("fake_default_"):
-            continue
+        if name in BUILTIN_BLOB_NAMES:
+            continue                    # встроены в nfqws2
         value = refs["declared"].get(name)
         if value is not None:
             data = _declared_bytes(value, blob_file)
@@ -329,6 +350,12 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         if value is not None:
             inline[name] = data
             continue
+        if name.startswith("fake_default_"):
+            # имя из реестра GUI (fake_default_udp) — блобом бандла его
+            # не передать (имя встроенных зарезервировано), только
+            # объявлением в args
+            inject[name] = data
+            continue
         out_blobs.append({"name": name,
                           "base64": base64.b64encode(data).decode()})
     for name in refs["lua"]:
@@ -343,7 +370,7 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         "format_version": FORMAT_VERSION,
         "generator": {"name": "zapret-gui", "version": version or ""},
         "zapret2_compat": int(compat or LUA_COMPAT),
-        "strategy": _clean_strategy(strategy, inline, roots),
+        "strategy": _clean_strategy(strategy, inline, roots, inject),
         # по имени, как у AutoTuner: один и тот же бандл — один и тот же
         # файл, сколько его ни выгружай
         "hostlists": sorted(out_lists, key=lambda x: x["name"]),
