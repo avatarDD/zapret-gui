@@ -262,6 +262,17 @@ class TestApi(unittest.TestCase):
             "--blob=fake_default_udp:0x" + "00" * 16 + " --filter-udp=443"))
         self.assertEqual(bi.validate_bundle(out)[0], [])
 
+    def test_fallback_init_vars_name_when_script_is_loaded(self):
+        """Другой профиль подключает init_vars.lua — и тот задаёт
+        tls_google и в fallback=: байтов в бандле нет."""
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "args": "--lua-desync=tls_client_hello_clone:"
+                                 "blob=ch:fallback=tls_google"},
+            {"id": "p2", "args": "--lua-desync=fake:blob=tls_vk"}]}
+        out, warnings = be.build_bundle(st, **SAMPLE_FILES)
+        self.assertEqual(out["blobs"], [])
+        self.assertTrue(any(w.startswith("tls_google") for w in warnings))
+
     def test_crlf_script_is_same(self):
         from unittest import mock
 

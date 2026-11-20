@@ -214,18 +214,22 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     конфликтом не считаются. Отличается хоть байтом — обычный конфликт:
     «заменить» или «переименовать» решает человек.
 
-    Скрипты, которые поставляет сам GUI (``gui_lua``), и имена блобов
-    каталога (``catalog_blobs``) заменить нельзя: свой экземпляр скрипта
-    подменил бы поставляемый для всех стратегий, а блоб с именем
-    каталога (или ``init_vars``) nfqws2 не получит — реестр отдаёт имя
-    каталогу, ``init_vars.lua`` присваивает своё. Если они другие (или
-    файла каталога здесь нет), это конфликт с пометкой ``rename_only``:
-    содержимое бандла сохраняется под новым именем при любом выборе, и
-    ссылки стратегии переходят на него, — она идёт с тем, что проверял
-    отправитель. ``rename_only`` плана — есть такие конфликты или
-    встроенный id стратегии.
+    Скрипты, которые поставляет сам GUI (``gui_lua``), не пишутся
+    никогда: свой экземпляр подменил бы поставляемый для всех стратегий,
+    а копия под новым именем грузилась бы вместе со здешним (скрипты
+    оркестратора оборачивают функции — вторая копия обернула бы обёртку).
+    Отличающийся — ``kept`` с предупреждением в ``warnings``: стратегия
+    пойдёт с версией этого GUI.
+
+    Блоб с именем каталога (или ``init_vars``, ``catalog_blobs``) nfqws2
+    под этим именем не получит — реестр отдаёт имя каталогу,
+    ``init_vars.lua`` присваивает своё. Если он другой (или файла
+    каталога здесь нет), это конфликт с пометкой ``rename_only``: байты
+    бандла сохраняются под новым именем при любом выборе, и ссылки
+    стратегии переходят на него. ``rename_only`` плана — есть такие
+    конфликты или встроенный id стратегии.
     """
-    items, conflicts, skipped = [], [], []
+    items, conflicts, skipped, kept, warnings = [], [], [], [], []
 
     same = existing.get("same", set())
     owned = {"lua": existing.get("gui_lua", set()),
@@ -234,6 +238,12 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     def add(kind, name, taken):
         if (kind, name) in same:
             skipped.append({"kind": kind, "name": name})
+            return
+        if kind == "lua" and name in owned["lua"]:
+            kept.append({"kind": kind, "name": name})
+            warnings.append("lua %s.lua поставляется с zapret-gui: в "
+                            "бандле другая версия, стратегия пойдёт со "
+                            "здешней" % name)
             return
         items.append({"kind": kind, "name": name})
         if name in owned.get(kind, ()):
@@ -254,6 +264,7 @@ def plan_bundle(data: dict, existing: dict) -> dict:
     add("strategy", sid, existing.get("strategies", set()))
     builtin = sid in existing.get("builtin_strategies", set())
     return {"items": items, "conflicts": conflicts, "skipped": skipped,
+            "kept": kept, "warnings": warnings,
             "builtin_strategy": builtin,
             "rename_only": builtin or any(c.get("rename_only")
                                           for c in conflicts)}
@@ -435,11 +446,13 @@ def _catalog_blobs() -> set:
 
 
 def _init_vars_refs(data) -> set:
-    """Имена ``init_vars``, на которые ссылается бандл (``blob=``,
-    ``pattern=``, ``fake_blob=``…): по такой ссылке запуск подключает
-    ``init_vars.lua``, а тот присваивает имя заново, поверх ``--blob`` —
-    блоб с таким именем nfqws2 не получит, даже если байты совпадают с
-    файлом каталога."""
+    """Имена ``init_vars``, которые у этой стратегии задаст
+    ``init_vars.lua``. Запуск подключает его, когда хоть один
+    ``blob=``/``pattern=``/``seqovl_pattern=`` (и ``fake_blob=``) называет
+    имя ``init_vars``, — и тогда скрипт присваивает заново все свои имена,
+    поверх ``--blob``, в том числе те, что стоят в ``fallback=``/
+    ``dataxor=``. Блоб с таким именем nfqws2 не получит, даже если байты
+    совпадают с файлом каталога. Без такого триггера — пусто."""
     if not isinstance(data, dict):
         return set()
     try:
@@ -447,17 +460,20 @@ def _init_vars_refs(data) -> set:
         from core.models import tokenize_args
     except Exception:                           # noqa: BLE001 — граница
         return set()
-    out = set()
+    names = set(_INIT_VARS_NAMES)
+    every, trigger = set(), set()
     for p in (data.get("strategy") or {}).get("profiles") or []:
         if not isinstance(p, dict):
             continue
         for tok in tokenize_args(str(p.get("args") or "")):
             tok = _unquote(tok)[1]
             if tok.startswith("--lua-desync="):
-                out |= {n for k, n in desync_blob_refs(
-                    tok[len("--lua-desync="):])[0]
-                    if k not in NOT_INIT_VARS_ARGS}
-    return out & set(_INIT_VARS_NAMES)
+                for k, n in desync_blob_refs(
+                        tok[len("--lua-desync="):])[0]:
+                    every.add(n)
+                    if k not in NOT_INIT_VARS_ARGS:
+                        trigger.add(n)
+    return every & names if trigger & names else set()
 
 
 def _lf(text) -> str:
@@ -527,33 +543,6 @@ def _blob_here(name):
         return None
 
 
-def _load_renamed_auto_lua(profiles: list, data: dict, renames: dict):
-    """Скрипт GUI, который запуск подключает сам (по функции), args не
-    называют — после переименования его никто бы не загрузил. Такие
-    скрипты подключаются явно: ``--lua-init`` профилей
-    грузится после скриптов GUI, и функции из бандла перекрывают здешние
-    — стратегия идёт с тем, что проверял отправитель. Подключаются в
-    каждом профиле (первый может быть выключен; повторы запуск убирает)."""
-    lua = renames.get("lua") or {}
-    if not lua or not profiles:
-        return
-    # ссылка в выключенном профиле скрипт не подключит
-    joined = " ".join(str(p.get("args") or "") for p in
-                      data["strategy"]["profiles"]
-                      if p.get("enabled", True))
-    extra = ["--lua-init=@lua/%s.lua" % lua[stem]
-             for stem in (_lua_stem(str(i.get("name") or ""))
-                          for i in _items(data, "lua"))
-             if stem in lua and not re.search(
-                 r"@(?:\S*/)?lua/%s\.lua(?![\w.-])" % re.escape(stem),
-                 joined)]
-    if extra:
-        # в каждый профиль: выключенный не запускается, а повторы
-        # --lua-init запуск убирает (_dedup_lua_init)
-        profiles[:] = [dict(p, args=" ".join(
-            extra + [str(p.get("args") or "")]).strip()) for p in profiles]
-
-
 def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
     """Проверить и сохранить. Ничего не применяет.
 
@@ -567,6 +556,7 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
                 "error_code": "invalid", "warnings": warnings}
     existing = existing if existing is not None else existing_names(data)
     plan = plan_bundle(data, existing)
+    warnings = warnings + plan["warnings"]
     if plan["builtin_strategy"] and on_conflict != "rename":
         return {"ok": False, "error_code": "conflict", "plan": plan,
                 "warnings": warnings,
@@ -598,8 +588,9 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
     from core.lua_manager import get_lua_manager
     from core.strategy_builder import get_strategy_manager
     saved, failed = [], []
-    # то, что здесь уже есть таким же, не пишется
-    own = {(x["kind"], x["name"]) for x in plan.get("skipped") or ()}
+    # то, что здесь уже есть таким же, и скрипты GUI не пишутся
+    own = {(x["kind"], x["name"])
+           for x in (plan.get("skipped") or []) + (plan.get("kept") or [])}
 
     hm = get_hostlist_manager()
     for h in _items(data, "hostlists"):
@@ -639,7 +630,6 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
     strategy["id"] = new("strategy", strategy["id"])
     strategy["profiles"] = [dict(p, args=rewrite_args(p["args"], renames))
                             for p in data["strategy"]["profiles"]]
-    _load_renamed_auto_lua(strategy["profiles"], data, renames)
     result = get_strategy_manager().save_user_strategy(strategy)
     if not result or (isinstance(result, dict)
                       and result.get("ok") is False):
@@ -650,6 +640,8 @@ def apply_bundle(data: dict, *, on_conflict=None, existing=None) -> dict:
             "saved": saved, "failed": failed, "renamed": renames,
             "skipped": ["%s %s" % (x["kind"], x["name"])
                         for x in plan.get("skipped") or ()],
+            "kept": ["%s %s" % (x["kind"], x["name"])
+                     for x in plan.get("kept") or ()],
             "warnings": warnings,
             "error": ("не сохранено: " + ", ".join(failed)) if failed
             else None}

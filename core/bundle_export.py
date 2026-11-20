@@ -310,9 +310,11 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         from core.nfqws_manager import _INIT_VARS_NAMES
     except Exception:                           # noqa: BLE001
         _INIT_VARS_NAMES = set()
-    # fallback=/dataxor= init_vars.lua не подключают — там имя init_vars
-    # получает файл реестра, как любой блоб
-    init_vars = set(_INIT_VARS_NAMES) & refs["named"]
+    # init_vars.lua подключается по blob=/pattern= с именем init_vars и
+    # тогда задаёт все свои имена (и в fallback=/dataxor=); без такой
+    # ссылки имя init_vars — файл реестра, как любой блоб
+    init_vars = set(_INIT_VARS_NAMES) \
+        if set(_INIT_VARS_NAMES) & refs["named"] else set()
     names = refs["blobs"] + [n for n in refs["patterns"]
                              if n not in refs["blobs"]]
     inline = {}             # объявленные в args — едут там же, как hex
