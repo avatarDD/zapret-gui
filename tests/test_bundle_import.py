@@ -106,6 +106,114 @@ class TestPlanAndRename(unittest.TestCase):
         self.assertIn("fake:blob=tls1_2:repeats=2", args)
         self.assertIn("seqovl_pattern=tls1_2:pos=1", args)
 
+    def test_gui_scripts_kept_catalog_blobs_only_under_new_names(self):
+        b = bundle(blobs=bundle()["blobs"] + [
+            {"name": "tls_google",
+             "base64": base64.b64encode(b"other").decode()}])
+        existing = dict(NOTHING, lua={"my"}, gui_lua={"my"},
+                        catalog_blobs={"tls_google", "tls_google_2"})
+        plan = bi.plan_bundle(b, existing)
+        # скрипт GUI не пишется вовсе: остаётся здешний, с предупреждением
+        self.assertEqual(plan["kept"], [{"kind": "lua", "name": "my"}])
+        self.assertTrue(any("my.lua" in w for w in plan["warnings"]))
+        # блоб каталога — только «переименовать»
+        self.assertEqual([(c["kind"], c["name"]) for c in plan["conflicts"]
+                          if c.get("rename_only")], [("blob", "tls_google")])
+        self.assertTrue(plan["rename_only"])
+        renames = bi.rename_map(plan, existing)
+        # новое имя — не снова имя каталога
+        self.assertEqual(renames["blob"], {"tls_google": "tls_google_3"})
+
+    def test_init_vars_names_when_script_is_loaded(self):
+        b = bundle()
+        b["strategy"]["profiles"][0]["args"] = (
+            "--lua-desync=tls_client_hello_clone:blob=ch:fallback=tls_rnd")
+        self.assertEqual(bi._init_vars_refs(b), set())
+        # seqovl_pattern=tls_google подключит init_vars.lua — и тот задаст
+        # и tls_rnd из fallback=
+        b["strategy"]["profiles"].append({
+            "id": "p2", "args": "--lua-desync=multisplit:seqovl=5:"
+                                "seqovl_pattern=tls_google"})
+        self.assertEqual(bi._init_vars_refs(b), {"tls_google", "tls_rnd"})
+
+    def test_quoted_and_absolute_refs_are_renamed(self):
+        args = bi.rewrite_args(
+            '--lua-desync="fake:blob=b1:repeats=2" --lua-desync=fake:blob=b1 '
+            "--lua-init=@/opt/zapret2/lua/my.lua "
+            "--hostlist=/opt/zapret2/lists/zt-youtube.txt",
+            {"blob": {"b1": "b1_2"}, "lua": {"my": "my-2"},
+             "hostlist": {"zt-youtube": "zt-youtube-2"}})
+        self.assertEqual(
+            args, '--lua-desync="fake:blob=b1_2:repeats=2" '
+                  "--lua-desync=fake:blob=b1_2 "
+                  "--lua-init=@/opt/zapret2/lua/my-2.lua "
+                  "--hostlist=/opt/zapret2/lists/zt-youtube-2.txt")
+
+    def test_rename_keeps_clone_variable(self):
+        args = bi.rewrite_args(
+            "--lua-desync=tls_client_hello_clone:blob=ch:fallback=fb "
+            "--lua-desync=fake:blob=ch", {"blob": {"ch": "ch_2", "fb": "fb_2"}})
+        self.assertEqual(args, "--lua-desync=tls_client_hello_clone:blob=ch:"
+                               "fallback=fb_2 --lua-desync=fake:blob=ch")
+        # в другом профиле ch — настоящий блоб
+        self.assertEqual(bi.rewrite_args("--lua-desync=fake:blob=ch",
+                                         {"blob": {"ch": "ch_2"}}),
+                         "--lua-desync=fake:blob=ch_2")
+
+    def test_init_vars_name_in_fallback_is_a_plain_blob(self):
+        b = bundle()
+        b["strategy"]["profiles"][0]["args"] = (
+            "--lua-desync=tls_client_hello_clone:blob=ch:fallback=tls_google "
+            "--lua-desync=ippxor:dataxor=tls_vk")
+        self.assertEqual(bi._init_vars_refs(b), set())
+
+    def test_gui_registry_fake_default_is_a_valid_blob(self):
+        b = bundle(blobs=[{"name": "fake_default_udp",
+                           "base64": base64.b64encode(bytes(16)).decode()}])
+        self.assertEqual(bi.validate_bundle(b)[0], [])
+        b = bundle(blobs=[{"name": "fake_default_tls", "base64": "AQ=="}])
+        self.assertTrue(bi.validate_bundle(b)[0])
+
+    def test_fake_default_blob_renamed_out_of_builtin_prefix(self):
+        b = bundle(blobs=[{"name": "fake_default_udp",
+                           "base64": base64.b64encode(b"\x01" * 16).decode()}])
+        plan = bi.plan_bundle(b, NOTHING)
+        self.assertEqual(plan["conflicts"], [
+            {"kind": "blob", "name": "fake_default_udp", "rename_only": True}])
+        self.assertEqual(bi.rename_map(plan, NOTHING, b)["blob"],
+                         {"fake_default_udp": "my_fake_default_udp_2"})
+
+    def test_init_vars_in_disabled_profile_is_not_loaded(self):
+        b = bundle()
+        b["strategy"]["profiles"][0].update(
+            enabled=False, args="--lua-desync=fake:blob=tls_google")
+        self.assertEqual(bi._init_vars_refs(b), set())
+
+    def test_new_name_is_free_in_bundle_and_fits(self):
+        b = bundle(blobs=[{"name": n, "base64": "AQ=="}
+                          for n in ("a", "a_2", "b" * 64)])
+        existing = dict(NOTHING, blobs={"a", "b" * 64})
+        plan = bi.plan_bundle(b, existing)
+        renames = bi.rename_map(plan, existing, b)
+        self.assertEqual(renames["blob"]["a"], "a_3")
+        long = renames["blob"]["b" * 64]
+        self.assertEqual((len(long), long[-2:]), (64, "_2"))
+
+    def test_fallback_is_a_blob_only_for_clone(self):
+        renames = {"blob": {"pass": "pass_2", "fb": "fb_2", "cl": "cl_2"}}
+        # blob= у клона — имя переменной desync, а не блоба
+        args = bi.rewrite_args(
+            "--lua-desync=multisplit_tls:fallback=pass "
+            "--lua-desync=tls_client_hello_clone:blob=cl:fallback=fb "
+            "--lua-desync=fake:blob=cl", renames)
+        self.assertIn("multisplit_tls:fallback=pass ", args)
+        self.assertIn("tls_client_hello_clone:blob=cl:fallback=fb_2", args)
+        self.assertEqual(
+            bi.desync_blob_refs("tls_client_hello_clone:blob=cl:fallback=fb"),
+            ([("fallback", "fb")], ["cl"]))
+        self.assertEqual(bi.desync_blob_refs("multisplit_tls:fallback=pass"),
+                         ([], []))
+
     def test_rename_leaves_other_names(self):
         args = bi.rewrite_args("--lua-desync=fake:blob=tls10 --blob=tls1:@bin/a",
                                {"blob": {"tls1": "tls1_2"}})
@@ -190,6 +298,35 @@ class TestApply(unittest.TestCase):
         args = self.m.saved["zt_youtube_2026_10_18"]["profiles"][0]["args"]
         self.assertIn("blob=tls1_2", args)
         self.assertEqual(r["renamed"], {"blob": {"tls1": "tls1_2"}})
+
+    def test_same_and_gui_script_are_not_written(self):
+        existing = dict(NOTHING, hostlists={"zt-youtube"}, blobs={"tls1"},
+                        ipsets={"zt-yt-ipset"}, lua={"my"}, gui_lua={"my"},
+                        same={("hostlist", "zt-youtube"),
+                              ("ipset", "zt-yt-ipset")})
+        r = bi.apply_bundle(bundle(), on_conflict="replace",
+                            existing=existing)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(set(self.m.saved), {"tls1", "zt_youtube_2026_10_18"})
+        self.assertEqual(sorted(r["skipped"]),
+                         ["hostlist zt-youtube", "ipset zt-yt-ipset"])
+        self.assertEqual(r["kept"], ["lua my"])
+        self.assertTrue(any("my.lua" in w for w in r["warnings"]))
+        # ссылка в args осталась на здешний скрипт
+        self.assertIn("--lua-init=@lua/my.lua", self.m.saved[
+            "zt_youtube_2026_10_18"]["profiles"][0]["args"])
+
+    def test_init_vars_pattern_blob_is_never_same(self):
+        b = bundle(blobs=[{"name": "tls_google",
+                           "base64": base64.b64encode(b"cat").decode()}])
+        b["strategy"]["profiles"][0]["args"] = (
+            "--lua-desync=multisplit:seqovl=5:seqovl_pattern=tls_google "
+            "--lua-desync=fake:blob=tls_youtube")
+        self.assertEqual(bi._init_vars_refs(b), {"tls_google", "tls_youtube"})
+        with mock.patch.object(bi, "_blob_here", lambda n: b"cat"):
+            same = bi._same_here(b, {"hostlists": set(), "ipsets": set(),
+                                     "lua": set()})
+        self.assertNotIn(("blob", "tls_google"), same)
 
     def test_invalid(self):
         r = bi.apply_bundle({"format": bi.FORMAT}, existing=NOTHING)

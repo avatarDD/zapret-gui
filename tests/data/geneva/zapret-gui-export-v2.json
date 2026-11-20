@@ -1,0 +1,46 @@
+{
+ "format": "zapret-gui/geneva-strategies",
+ "version": 2,
+ "exported_at": "2026-11-18T05:20:00Z",
+ "items": [
+  {
+   "strategy": "[TCP:flags:PA]-xfake{blob=z2_tls_clienthello_vk_com;ttl=3}(xsplit{pos=2},)-| \\/",
+   "transport": "tcp",
+   "services": [
+    "vk.com"
+   ],
+   "fitness": 396.0,
+   "ext": true,
+   "blobs": [
+    "z2_tls_clienthello_vk_com"
+   ]
+  },
+  {
+   "strategy": "[UDP:dport:443]-xfake{blob=z2_quic_initial_vk_com;repeats=2}-| \\/",
+   "transport": "udp",
+   "services": [
+    "vk.com (QUIC)"
+   ],
+   "ext": true,
+   "blobs": [
+    "z2_quic_initial_vk_com"
+   ]
+  },
+  {
+   "strategy": "[FLOW:n:a]-xwhen{iff=L7:payload:tls_client_hello}(xfake{blob=fake_default_tls;ip_ttl=3},)-| \\/",
+   "transport": "tcp",
+   "services": [
+    "rutracker.org"
+   ],
+   "ext": true
+  },
+  {
+   "strategy": "[TCP:flags:PA]-fragment{tcp:-1:False}-| \\/",
+   "transport": "tcp",
+   "services": [
+    "youtube.com"
+   ],
+   "fitness": 389.0
+  }
+ ]
+}

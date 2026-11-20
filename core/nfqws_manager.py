@@ -70,8 +70,10 @@ _INIT_VARS_NAMES = {
     "tls_sber", "tls_vk", "tls_yandex", "tls_youtube",
 }
 # blob=/pattern=/seqovl_pattern=<NAME> — ссылка на именованный паттерн.
+# Объявление --blob=<NAME>:… — не ссылка: иначе дозаявленный из реестра
+# fallback=tls_google подключал бы init_vars.lua, и тот подменял бы блоб.
 _NAMED_PATTERN_RE = re.compile(
-    r"(?:blob|pattern|seqovl_pattern)=([A-Za-z_][A-Za-z0-9_]*)")
+    r"(?<!--)(?:blob|pattern|seqovl_pattern)=([A-Za-z_][A-Za-z0-9_]*)")
 
 # Extension-скрипты подключаются только если соответствующая desync-функция
 # реально используется (имя слева от ':' в --lua-desync=...).

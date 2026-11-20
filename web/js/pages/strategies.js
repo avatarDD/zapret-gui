@@ -313,6 +313,7 @@ const StrategiesPage = (() => {
                 case 'dismissAutopick': dismissAutopick(autopickSite(el)); break;
                 case 'copyStrategyToClipboard': copyStrategyToClipboard(sid); break;
                 case 'exportToCatalog': exportToCatalog(sid); break;
+                case 'exportBundle': exportBundle(sid); break;
                 case 'openEdit': openEdit(sid); break;
                 case 'deleteStrategy': deleteStrategy(sid); break;
                 case 'duplicateStrategy': duplicateStrategy(sid); break;
@@ -1329,6 +1330,7 @@ const StrategiesPage = (() => {
                             ${isBuiltin
                                 ? '<button class="btn btn-ghost btn-sm" data-action="duplicateStrategy">Сделать своей копией</button>'
                                 : '<button class="btn btn-ghost btn-sm" data-action="openEdit">Редактировать</button>'}
+                            <button class="btn btn-ghost btn-sm" data-action="exportBundle" title="Один файл со стратегией, её списками, блобами и lua — для Zapret2_AutoTuner или другого роутера">Скачать бандл</button>
                             <button class="btn btn-ghost btn-sm" data-action="exportToCatalog" title="Собрать секцию каталога catalogs/*.txt — для pull request'а в zapret-gui">Секция для каталога</button>
                             ${!isBuiltin ? '<button class="btn btn-ghost btn-sm" data-action="deleteStrategy" style="color:var(--error);">Удалить</button>' : ''}
                         </div>
@@ -2267,6 +2269,38 @@ const StrategiesPage = (() => {
         }
     }
 
+    // Бандл AutoTuner (zapret-autotuner-bundle): стратегия вместе со
+    // списками, блобами и lua. Его читают «Импорт бандла» zapret-gui и
+    // импорт Zapret2_AutoTuner — стратегиями можно меняться в обе стороны.
+    async function exportBundle(sid) {
+        try {
+            const res = await API.get('/api/strategies/' + encodeURIComponent(sid)
+                                      + '/export-bundle');
+            if (!res || !res.ok) {
+                Toast.error((res && res.error) || 'Бандл не собрался');
+                return;
+            }
+            const blob = new Blob([JSON.stringify(res.bundle, null, 2) + '\n'],
+                                  { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = res.filename || 'strategy.bundle.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+            Toast.success('Бандл сохранён: ' + a.download);
+            // по одному: каждое сообщение сервера переводится целиком
+            const warns = res.warnings || [];
+            warns.slice(0, 4).forEach(w => Toast.warning(w));
+            if (warns.length > 4) {
+                Toast.warning('Ещё предупреждений: ' + (warns.length - 4));
+            }
+        } catch (e) {
+            Toast.error('Экспорт не удался: ' + (e.message || e));
+        }
+    }
+
     // Вставка по кнопке: пытаемся прочитать буфер (в secure-context). На роутере
     // по http navigator.clipboard.readText недоступен — подсказываем Ctrl+V,
     // который работает через событие paste (см. attachGlobalKeys).
@@ -2435,16 +2469,25 @@ const StrategiesPage = (() => {
         }
         const titles = { hostlist: 'список', ipset: 'IP-список', blob: 'блоб', lua: 'lua', strategy: 'стратегия' };
         const items = plan.plan.items.map(i => '  • ' + titles[i.kind] + ' ' + i.name).join('\n');
+        // то, что здесь уже есть ровно таким же, не пишется — но названо
+        const same = (plan.plan.skipped || []).map(i => titles[i.kind] + ' ' + i.name).join(', ');
         const warn = (plan.warnings || []).map(w => '⚠ ' + w).join('\n');
         let onConflict = null;
         const conflicts = plan.plan.conflicts || [];
-        if (conflicts.length || plan.plan.builtin_strategy) {
-            const names = conflicts.map(c => titles[c.kind] + ' ' + c.name).join(', ');
-            onConflict = plan.plan.builtin_strategy || !confirm(
+        // одноимённые скрипты GUI и блобы каталога сервер переименует
+        // при любом выборе; спрашиваем только про остальные
+        const forced = conflicts.filter(c => c.rename_only).map(c => titles[c.kind] + ' ' + c.name).join(', ');
+        const ordinary = conflicts.filter(c => !c.rename_only);
+        if (ordinary.length || forced || plan.plan.builtin_strategy) {
+            const names = ordinary.map(c => titles[c.kind] + ' ' + c.name).join(', ');
+            onConflict = plan.plan.builtin_strategy || !ordinary.length || !confirm(
                 'Уже есть: ' + names + '.\n\nOK — заменить существующие, Отмена — сохранить под новыми именами.')
                 ? 'rename' : 'replace';
         }
-        if (!confirm('Импортировать бандл?\n\n' + items + (warn ? '\n\n' + warn : '') +
+        if (!confirm('Импортировать бандл?\n\n' + items +
+                     (same ? '\n\nУже есть таким же, не перезаписывается: ' + same : '') +
+                     (forced ? '\n\nПоставляется с zapret-gui, сохранится под новым именем: ' + forced : '') +
+                     (warn ? '\n\n' + warn : '') +
                      (onConflict ? '\n\nЗанятые имена: ' + (onConflict === 'replace' ? 'заменить' : 'новые имена') : '') +
                      '\n\nСтратегия будет сохранена, но не применена.')) return;
         const r = await API.post('/api/strategies/import-bundle', { bundle, dry_run: false, on_conflict: onConflict });

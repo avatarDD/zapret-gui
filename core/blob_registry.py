@@ -381,8 +381,15 @@ def referenced_blob_names(args) -> list:
     seen = []
     seen_set = set()
     for a in args:
+        a = str(a)
+        # tls_client_hello_clone:blob=<имя> — куда положить клон
+        # (переменная desync), а не блоб
+        skip = set(clone_variables([a]))
         for m in _BLOB_REF_RE.finditer(a):
             name = m.group(1)
+            if name in skip and a.startswith(
+                    "--lua-desync=tls_client_hello_clone:"):
+                continue
             if name not in seen_set:
                 seen_set.add(name)
                 seen.append(name)
@@ -416,6 +423,7 @@ def build_blob_declarations(args) -> list:
     """
     _ensure_loaded()
     declared = already_declared(args)
+    clones = set(clone_variables(args))
     out = []
     for name in referenced_blob_names(args):
         if name in BUILTIN_BLOB_NAMES:
@@ -425,6 +433,8 @@ def build_blob_declarations(args) -> list:
         if name in declared:
             continue
         value = get_blob_value(name)
+        if value is None and name in clones:
+            continue        # клон ClientHello, его кладёт сама функция
         if value is None:
             # Неизвестное имя — не молчим, но и не падаем: nfqws2 сам
             # сообщит об отсутствующем blob'е. Чаще всего это опечатка
@@ -449,7 +459,47 @@ def build_blob_declarations(args) -> list:
             continue
         out.append("--blob=%s:%s" % (name, value))
         declared.add(name)
+    # fallback= у tls_client_hello_clone и dataxor= у zapret-obfs — тоже
+    # имена блобов (blob(desync, имя)); как паттерны: только известные.
+    for name in referenced_extra_blob_names(args):
+        if name in declared or name in BUILTIN_BLOB_NAMES:
+            continue
+        value = get_blob_value(name)
+        if value is None:
+            continue
+        out.append("--blob=%s:%s" % (name, value))
+        declared.add(name)
     return out
+
+
+def clone_variables(args) -> list:
+    """Имена, под которыми ``tls_client_hello_clone`` кладёт клон
+    ClientHello в desync (``blob=<имя>``): переменные, а не блобы."""
+    from core.bundle_import import desync_blob_refs
+    out = []
+    for a in args:
+        a = str(a)
+        if a.startswith("--lua-desync="):
+            for n in desync_blob_refs(a[len("--lua-desync="):])[1]:
+                if n not in out:
+                    out.append(n)
+    return out
+
+
+def referenced_extra_blob_names(args) -> list:
+    """Имена блобов из аргументов, которых не видят ``blob=``/``pattern=``:
+    ``fallback=`` клона ClientHello, ``dataxor=`` (по функции, как у
+    обмена бандлами — core.bundle_import.desync_blob_refs)."""
+    from core.bundle_import import desync_blob_refs
+    seen = []
+    for a in args:
+        a = str(a)
+        if not a.startswith("--lua-desync="):
+            continue
+        for key, name in desync_blob_refs(a[len("--lua-desync="):])[0]:
+            if key in ("fallback", "dataxor") and name not in seen:
+                seen.append(name)
+    return seen
 
 
 def referenced_pattern_names(args) -> list:

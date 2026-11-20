@@ -349,9 +349,10 @@ def register(app):
             return {"ok": False, "error": "; ".join(errors),
                     "warnings": warnings}
         if body.get("dry_run", True):
-            existing = bi.existing_names()
-            return {"ok": True, "plan": bi.plan_bundle(bundle, existing),
-                    "warnings": warnings}
+            existing = bi.existing_names(bundle)
+            plan = bi.plan_bundle(bundle, existing)
+            return {"ok": True, "plan": plan,
+                    "warnings": warnings + plan["warnings"]}
         on_conflict = body.get("on_conflict")
         if on_conflict not in (None, "replace", "rename"):
             response.status = 400
@@ -453,6 +454,34 @@ def register(app):
 
         validation = get_nfqws_manager().dry_run(args)
         return {"ok": True, "validation": validation}
+
+    @app.get("/api/strategies/<sid>/export-bundle")
+    def api_strategies_export_bundle(sid):
+        """Стратегия → бандл AutoTuner (``zapret-autotuner-bundle`` v1)
+        со списками, ipset'ами, своими блобами и lua, на которые ссылаются
+        её профили (core/bundle_export). Его читают импорт бандла
+        zapret-gui и импорт Zapret2_AutoTuner.
+
+        Ответ: {"ok", "bundle", "filename", "warnings"}.
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.strategy_builder import get_strategy_manager
+        from core import bundle_export
+        strategy = get_strategy_manager().get_strategy(sid)
+        if not strategy:
+            response.status = 404
+            return {"ok": False, "error": "Стратегия не найдена: %s" % sid}
+        bundle, warnings = bundle_export.export_strategy(strategy)
+        # тот же контроль, что у «Импорта бандла»: не отдавать файл,
+        # который получатель не примет
+        from core import bundle_import
+        errors, _ = bundle_import.validate_bundle(bundle)
+        if errors:
+            response.status = 400
+            return {"ok": False, "error": "; ".join(errors[:3]),
+                    "errors": errors}
+        return {"ok": True, "bundle": bundle, "warnings": warnings,
+                "filename": "%s.bundle.json" % bundle["strategy"]["id"]}
 
     @app.post("/api/strategies/<sid>/export-catalog")
     def api_strategies_export_catalog(sid):
