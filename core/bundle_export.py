@@ -168,9 +168,12 @@ def references(strategy: dict, roots=None) -> dict:
                 continue
             m = _BLOB_DECL_RE.match(tok)
             if m:
-                declared.setdefault(m.group(1), tok.split(":", 1)[1])
-                if on:
+                # значение — как у запуска: из включённого профиля
+                if on and m.group(1) not in declared_on:
+                    declared[m.group(1)] = tok.split(":", 1)[1]
                     declared_on.add(m.group(1))
+                else:
+                    declared.setdefault(m.group(1), tok.split(":", 1)[1])
                 if m.group(1) not in blobs:
                     blobs.append(m.group(1))
             if tok.startswith("--lua-desync="):
@@ -224,15 +227,20 @@ def _portable_paths(args: str, roots=None) -> str:
     return args
 
 
-def _inline_decl(args: str, inline: dict) -> str:
+def _inline_decl(args: str, inline: dict, decode=None) -> str:
     """``--blob=<имя>:@путь`` этого роутера → ``--blob=<имя>:0x<hex>``:
     объявление в args самодостаточно и у получателя значит то же, что
-    здесь (и поверх имени каталога, и без файла)."""
+    здесь (и поверх имени каталога, и без файла). Каждое объявление — со
+    своими байтами (``decode(значение)``): у копии профиля файл бывает
+    другой."""
     for tok in dict.fromkeys(_tokens(args)):
         m = _BLOB_DECL_RE.match(tok)
         if not m or m.group(1) not in inline:
             continue
-        hexed = "--blob=%s:0x%s" % (m.group(1), inline[m.group(1)].hex())
+        data = decode(tok.split(":", 1)[1]) if decode else None
+        if not data or len(data) > MAX_BLOB:
+            data = inline[m.group(1)]
+        hexed = "--blob=%s:0x%s" % (m.group(1), data.hex())
         # токен целиком, с кавычками внутри (@"путь с пробелом")
         args = re.sub(r"(?<!\S)%s(?!\S)" % re.escape(tok),
                       lambda _m: hexed, args)
@@ -240,7 +248,7 @@ def _inline_decl(args: str, inline: dict) -> str:
 
 
 def _clean_strategy(strategy: dict, inline=None, roots=None,
-                    inject=None) -> dict:
+                    inject=None, decode=None) -> dict:
     out = {k: strategy[k] for k in _STRATEGY_KEYS if k in strategy}
     out["id"] = _STRATEGY_ID_RE.sub("_", str(strategy.get("id") or
                                              "strategy"))[:64] or "strategy"
@@ -256,7 +264,8 @@ def _clean_strategy(strategy: dict, inline=None, roots=None,
             # как при запуске (strategy_builder): выключен любой «ложный»
             "enabled": bool(p.get("enabled", True)),
             "args": _portable_paths(_inline_decl(str(p.get("args") or ""),
-                                                 inline or {}), roots),
+                                                 inline or {}, decode),
+                                    roots),
         })
     # объявления, которых в args не было (fake_default_udp из реестра
     # GUI): один раз, в начале первого включённого профиля — до первого
@@ -404,7 +413,9 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
         "format_version": FORMAT_VERSION,
         "generator": {"name": "zapret-gui", "version": version or ""},
         "zapret2_compat": int(compat or LUA_COMPAT),
-        "strategy": _clean_strategy(strategy, inline, roots, inject),
+        "strategy": _clean_strategy(
+            strategy, inline, roots, inject,
+            decode=lambda v: _declared_bytes(v, blob_file)),
         # по имени, как у AutoTuner: один и тот же бандл — один и тот же
         # файл, сколько его ни выгружай
         "hostlists": sorted(out_lists, key=lambda x: x["name"]),

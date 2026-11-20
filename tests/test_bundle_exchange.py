@@ -310,6 +310,27 @@ class TestApi(unittest.TestCase):
         self.assertEqual(out["lua"], [])
         self.assertTrue(any("mine.lua" in w for w in warnings), warnings)
 
+    def test_each_declaration_keeps_its_own_bytes(self):
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "old", "enabled": False,
+             "args": "--blob=myfake:@bin/old.bin --lua-desync=fake:blob=myfake"},
+            {"id": "new", "args": "--blob=myfake:@bin/new.bin "
+                                  "--lua-desync=fake:blob=myfake"}]}
+        out, _ = be.build_bundle(
+            st, hostlists=lambda n: None, ipsets=lambda n: None,
+            blobs=lambda n: None, lua=lambda n: None,
+            blob_file={"@bin/old.bin": b"OLD", "@bin/new.bin": b"NEW"}.get)
+        args = [p["args"] for p in out["strategy"]["profiles"]]
+        self.assertIn("--blob=myfake:0x" + b"OLD".hex(), args[0])
+        self.assertIn("--blob=myfake:0x" + b"NEW".hex(), args[1])
+
+    def test_registry_declaration_does_not_load_init_vars(self):
+        from core.nfqws_manager import _NAMED_PATTERN_RE
+        self.assertEqual(_NAMED_PATTERN_RE.findall(
+            "--blob=tls_google:@bin/x.bin --lua-desync=tls_client_hello_clone:"
+            "blob=ch:fallback=tls_google --lua-desync=fake:fake_blob=tls_vk"),
+            ["ch", "tls_vk"])
+
     def test_crlf_script_is_same(self):
         from unittest import mock
 
