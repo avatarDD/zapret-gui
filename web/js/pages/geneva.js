@@ -318,10 +318,11 @@ const GenevaPage = (() => {
                     <summary class="card-title">${esc(_tr(S('found') ? 'geneva.found.library' : 'geneva.found.library_title'))}</summary>
                     <div class="card-body">
                         <div class="form-hint" style="margin-bottom:8px;">
-                            Стратегии из исследований Geneva с долей успеха в той
-                            стране, где их нашли. В вашей сети их стоит проверить:
-                            укажите заблокированный сайт, отметьте несколько и
-                            нажмите «Проверить на моей сети».
+                            Лучшие стратегии, которые geneva_c нашла против
+                            блокировок в России (оценка — фитнес проверки, 100% —
+                            полная загрузка; ext — нужен geneva_c 2.0). В вашей
+                            сети их стоит проверить: укажите заблокированный сайт,
+                            отметьте несколько и нажмите «Проверить на моей сети».
                         </div>
                         <div class="gv-row" style="margin-bottom:8px;">
                             <input id="gv-lib-host" class="form-control" style="max-width:220px;" placeholder="заблокированный сайт">
@@ -1395,8 +1396,8 @@ const GenevaPage = (() => {
         const fin = s.final || {};
         const verdicts = fin.items || {};
         const results = (s.results || []).filter(r => r.strategy).map(r => `
-            <tr><td>${_fitnessBadge(r.avg_fitness)}</td><td>${num(r.runs)}</td>
-                <td class="gv-mono gv-ellipsis" title="${esc(r.strategy)}">${esc(r.strategy)}${_finalBadge(verdicts[r.strategy])}</td>
+            <tr><td>${_fitnessBadge(r.avg_fitness)}${_finalBadge(verdicts[r.strategy])}</td><td>${num(r.runs)}</td>
+                <td class="gv-mono gv-ellipsis" title="${esc(r.strategy)}">${esc(r.strategy)}</td>
                 <td>${Number(r.avg_fitness) > 0 ? `<button class="btn btn-ghost btn-sm" data-use="${esc(r.strategy)}">Сделать рабочей</button>` : ''}</td></tr>`).join('');
         box.innerHTML = `
             <div class="gv-search-head">

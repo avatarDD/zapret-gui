@@ -2331,7 +2331,7 @@ const i18n_en_text = {
 "Продолжить законченный подбор с того же места": "Continue the finished search from the same place",
 "Ещё поколений": "More generations",
 "Забыть сохранённый": "Forget the saved one",
-"Стратегии из исследований Geneva с долей успеха в той стране, где их нашли. В вашей сети их стоит проверить: укажите заблокированный сайт, отметьте несколько и нажмите «Проверить на моей сети».": "Strategies from Geneva research with the success rate in the country where they were found. They are worth checking on your network: specify a blocked site, select several and press “Check on my network”.",
+"Лучшие стратегии, которые geneva_c нашла против блокировок в России (оценка — фитнес проверки, 100% — полная загрузка; ext — нужен geneva_c 2.0). В вашей сети их стоит проверить: укажите заблокированный сайт, отметьте несколько и нажмите «Проверить на моей сети».": "The best strategies geneva_c found against the blocking in Russia (the score is the check fitness, 100% means a full load; ext needs geneva_c 2.0). They are worth checking on your network: specify a blocked site, select several and press “Check on my network”.",
 "заблокированный сайт": "blocked site",
 "Все страны": "All countries",
 "Все протоколы": "All protocols",

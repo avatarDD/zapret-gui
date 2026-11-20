@@ -250,7 +250,7 @@ test('вкладка «Стратегии»: только рабочие, биб
         return c;
     })();
     assert.match(root.innerHTML, /Рабочие стратегии/);
-    assert.match(root.innerHTML, /Справочно: стратегии из исследований Geneva/);
+    assert.match(root.innerHTML, /Готовые стратегии geneva_c/);
     assert.ok(!env.calls.get.includes('/api/geneva/library'),
               'библиотека не грузится, пока блок свёрнут');
     const html = env.elements.get('gv-found').innerHTML;

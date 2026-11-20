@@ -67,7 +67,7 @@ const i18n_en = {
     "geneva.auto.help_tunnels_hint": "If the ISP blocks the router connecting to an AmneziaWG, WireGuard, sing-box, mihomo or usque server, Auto finds a strategy for it too. Traffic inside tunnels is never touched.",
     "geneva.auto.exclude": "Do not watch these server addresses",
     "geneva.auto.exclude_hint": "IPv4 or IPv6, one per line (spaces or commas also work). Auto does not check connections to these addresses and does not search a bypass for them, e.g. a proxy in TPROXY mode.",
-    "geneva.auto.settings_hint": "More checks make the search faster but load the router CPU more: 2–4 on weak routers, up to 8 on powerful ones. Strategies at once is how many different strategies (geneva processes) run at the same time for different services.",
+    "geneva.auto.settings_hint": "More checks make the search faster but load the router CPU more: 2–4 on weak routers, 8–16 on powerful ones, 32 at most. Strategies at once is how many different strategies (geneva processes) run at the same time for different services.",
     "geneva.auto.settings_saved": "Saved: {workers} parallel checks, {groups} strategies at once",
     "geneva.auto.parallel": "checked {done} of {total}, in parallel: {workers}",
     "geneva.nat.label": "Router NAT acceleration (flow offloading)",
@@ -198,6 +198,6 @@ const i18n_en = {
     "geneva.found.import_big": "File is larger than 512 KB",
     "geneva.found.imported_n": "Accepted strategies: {n}, new: {added}. Auto will try them right after its own working ones.",
     "geneva.found.copied": "Copied",
-    "geneva.found.library": "For reference: strategies from Geneva research",
+    "geneva.found.library": "Ready geneva_c strategies",
     "geneva.found.library_title": "Geneva library"
 };
