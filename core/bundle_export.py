@@ -230,12 +230,6 @@ def _inline_decl(args: str, inline: dict) -> str:
     return args
 
 
-def _refers(args: str, name: str) -> bool:
-    return any(n == name for tok in _tokens(args)
-               if tok.startswith("--lua-desync=")
-               for _k, n in desync_blob_refs(tok[len("--lua-desync="):])[0])
-
-
 def _clean_strategy(strategy: dict, inline=None, roots=None,
                     inject=None) -> dict:
     out = {k: strategy[k] for k in _STRATEGY_KEYS if k in strategy}
@@ -256,12 +250,12 @@ def _clean_strategy(strategy: dict, inline=None, roots=None,
                                                  inline or {}), roots),
         })
     # объявления, которых в args не было (fake_default_udp из реестра
-    # GUI): один раз, в первом включённом профиле, который ссылается
-    # (импорт AutoTuner берёт только включённые)
+    # GUI): один раз, в начале первого включённого профиля — до первого
+    # --new, как их ставит запуск (импорт AutoTuner берёт только
+    # включённые профили)
+    target = next((p for p in out["profiles"] if p["enabled"]),
+                  out["profiles"][0] if out["profiles"] else None)
     for name, data in (inject or {}).items():
-        using = [p for p in out["profiles"] if _refers(p["args"], name)]
-        target = next((p for p in using if p["enabled"]),
-                      using[0] if using else None)
         if target is not None:
             target["args"] = ("--blob=%s:0x%s " % (name, data.hex())
                               + target["args"]).strip()

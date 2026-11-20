@@ -241,11 +241,13 @@ class TestApi(unittest.TestCase):
 
     def test_gui_registry_fake_default_goes_as_declaration(self):
         """fake_default_udp — имя реестра GUI, не nfqws2: едет
-        объявлением в первом включённом профиле, который на него
-        ссылается; встроенный fake_default_quic не берётся."""
+        объявлением в начале первого включённого профиля (до первого
+        --new); встроенный fake_default_quic не берётся."""
         st = {"id": "x", "name": "x", "profiles": [
             {"id": "p0", "enabled": False,
              "args": "--lua-desync=fake:blob=fake_default_udp"},
+            {"id": "tcp", "args": "--filter-tcp=443 "
+                                  "--lua-desync=multisplit:pos=1"},
             {"id": "p1", "args": "--filter-udp=443 "
                                  "--lua-desync=fake:blob=fake_default_udp:"
                                  "repeats=6 --lua-desync=fake:"
@@ -259,7 +261,8 @@ class TestApi(unittest.TestCase):
         self.assertEqual(out["strategy"]["profiles"][0]["args"],
                          st["profiles"][0]["args"])
         self.assertTrue(out["strategy"]["profiles"][1]["args"].startswith(
-            "--blob=fake_default_udp:0x" + "00" * 16 + " --filter-udp=443"))
+            "--blob=fake_default_udp:0x" + "00" * 16 + " --filter-tcp=443"))
+        self.assertNotIn("--blob=", out["strategy"]["profiles"][2]["args"])
         self.assertEqual(bi.validate_bundle(out)[0], [])
 
     def test_fallback_init_vars_name_when_script_is_loaded(self):
