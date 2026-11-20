@@ -74,7 +74,7 @@ def state_path() -> str:
 
 
 def auto_settings(cfg=None) -> dict:
-    """``geneva.auto`` с пределами (``max_groups`` 1–8, ``workers`` 1–8)."""
+    """``geneva.auto`` с пределами (``max_groups`` 1–8, ``workers`` 1–32)."""
     if cfg is None:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
@@ -92,12 +92,15 @@ def auto_settings(cfg=None) -> dict:
             "help_tunnels": bool(raw.get("help_tunnels", True)),
             "max_groups": num("max_groups", ga.MAX_GROUPS, 1,
                               ga.MAX_GROUPS_LIMIT),
-            "workers": num("workers", 4, 1, 8),
+            "workers": num("workers", 4, 1, 32),       # предел geneva_c
             # «Как делить потоки»: выкл — один сервис за раз со всеми
             # потоками, вкл — до 4 сервисов рядом, потоки делятся
             "split_workers": bool(raw.get("split_workers", False)),
             # стратегии сайтов ещё и по имени (geneva_c 2.0)
             "by_name": bool(raw.get("by_name", True)),
+            # итоговая проверка (связанные ресурсы сайта) — общая с
+            # ручным подбором: geneva.final_check
+            "final_check": final_check_enabled(cfg),
             "exclude": [str(x) for x in excl if x][:gal.MAX_ENTRIES]
             if isinstance(excl, list) else [],
             "lists": {
@@ -106,6 +109,17 @@ def auto_settings(cfg=None) -> dict:
                 "no_search": _str_list(lists.get("no_search")),
                 "known_important": bool(lists.get("known_important",
                                                   True))}}
+
+
+def final_check_enabled(cfg=None) -> bool:
+    """Итоговая проверка найденного (``geneva.final_check``, по
+    умолчанию включена): «Авто» — связанные ресурсы сайта, ручной
+    подбор — лучшие найденные на сайте и его ресурсах."""
+    if cfg is None:
+        from core.config_manager import get_config_manager
+        cfg = get_config_manager()
+    v = cfg.get("geneva", "final_check", default=True)
+    return v if isinstance(v, bool) else True
 
 
 def _str_list(v) -> list:
@@ -155,6 +169,10 @@ class GenevaAutoManager:
         self._searches = {}          # слот → AutoSearch
         self._works = {}             # ключ сервиса → {"slot", "split", "custom"}
         self._trials = {}            # ключ сервиса → (Service, стратегия)
+        # пробы, у которых идёт итоговая проверка связанных ресурсов, и
+        # домены, ушедшие процессу «по имени» с последним применением
+        self._related = set()
+        self._related_sent = {}
         self._asn_fetch = asn_fetch
         self._asn = None             # {"prefixes": {n: [...]}, "fetched": {n: t}}
         self._asn_thread = None
@@ -249,7 +267,8 @@ class GenevaAutoManager:
                     obj = AutoSearch(geneva=self._geneva,
                                      probes=self._probes,
                                      trial=self._trial_cb,
-                                     ok_since=self._ok_since, slot=slot)
+                                     ok_since=self._ok_since, slot=slot,
+                                     related=self._related_cb)
                 if slot == 0:
                     self._search = obj
                 else:
@@ -260,6 +279,8 @@ class GenevaAutoManager:
             obj.workers = slot_workers(st["workers"], st["split_workers"])
             if hasattr(obj, "split"):
                 obj.split = st["split_workers"]
+        if hasattr(obj, "final_check"):
+            obj.final_check = st["final_check"]
         return obj
 
     def _retune_searches(self) -> None:
@@ -463,6 +484,10 @@ class GenevaAutoManager:
                 return {"ok": False, "error_code": "busy",
                         "error": "nfqws2 занят: %s" % busy.get("reason", ""),
                         "hint": busy.get("hint", "")}
+            if be._jobs_busy(gm) and not gm.job_running():
+                return {"ok": False, "error_code": "geneva_final",
+                        "error": "идёт итоговая проверка найденного — "
+                                 "подождите минуту-две"}
             try:
                 self.observer().check()
             except Exception as e:              # noqa: BLE001
@@ -582,6 +607,7 @@ class GenevaAutoManager:
         self._applied_sig = None
         self._works = {}
         self._trials = {}
+        self._related = set()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop,
                                         args=(self._stop,),
@@ -600,6 +626,7 @@ class GenevaAutoManager:
                     self.book.interrupted(s.key, self._clock())
             self._trial = None
             self._trials = {}
+            self._related = set()
             try:
                 self.applier().clear()
             except Exception as e:                  # noqa: BLE001
@@ -629,6 +656,7 @@ class GenevaAutoManager:
                     self.book.interrupted(s.key, self._clock())
             self._trial = None
             self._trials = {}
+            self._related = set()
             self.applier().clear()
             self._applied_sig = None
         self.note("пауза: %s" % owner, en="paused: %s" % owner)
@@ -659,12 +687,14 @@ class GenevaAutoManager:
                 # снимает пробную группу — заново применять нельзя,
                 # иначе правила пережили бы выключение
                 self._trials.pop(service.key, None)
+                self._related.discard(service.key)
                 self._trial = None
                 return False
             if strategy:
                 self._trials[service.key] = (service, strategy)
             else:
                 self._trials.pop(service.key, None)
+                self._related.discard(service.key)
             self._trial = next(iter(self._trials.values()), None)
             trials = list(self._trials.values())
             services = [s.clone() for s in self.book.services]
@@ -672,6 +702,58 @@ class GenevaAutoManager:
             if not strategy:
                 return True
             return bool((res.get("trials_ok") or {}).get(service.key))
+
+    def _related_cb(self, service, strategy):
+        """Итоговая проверка связанных ресурсов (из потока подбора):
+        пробная стратегия ``strategy`` по имени и на семейство сайта
+        (:func:`core.geneva_related.trial_families`). Ответ — имена для
+        проверки и pid процесса «по имени»; ``None`` — процесса нет или
+        домены не ушли. ``strategy=None`` снимает и отвечает pid до
+        снятия и номер запуска процесса ``gen`` (перезапуск за время
+        проверки — не вина стратегии)."""
+        from core import geneva_related as grel
+        with self._lock:
+            if not strategy:
+                pid, gen = None, None
+                try:
+                    pid = self.gm().auto_host_pid()
+                    gen = self.gm().auto_host_generation()
+                except Exception:                   # noqa: BLE001
+                    pass
+                if service.key in self._related:
+                    self._related.discard(service.key)
+                    if not self._stop.is_set() and not self._suspended:
+                        services = [s.clone() for s in self.book.services]
+                        self._apply_plan(services,
+                                         list(self._trials.values()),
+                                         self._clock())
+                return {"pid": pid, "gen": gen}
+            if self._stop.is_set() or self._suspended or \
+                    service.key not in self._trials:
+                return None
+            self._related.add(service.key)
+            services = [s.clone() for s in self.book.services]
+            try:
+                res = self._apply_plan(services,
+                                       list(self._trials.values()),
+                                       self._clock())
+            except Exception:
+                # проба на семейство не осталась бы до конца подбора
+                self._related.discard(service.key)
+                raise
+            domains = list(self._related_sent.get(service.key) or ())
+            pid = (res.get("host") or {}).get("pid")
+            try:
+                gen = self.gm().auto_host_generation()
+            except Exception:                       # noqa: BLE001
+                gen = None
+            if not domains or not pid:
+                return {"pid": pid, "gen": gen, "hosts": []}
+            host = service.host or service.name
+            hosts = grel.hosts_to_check(domains, grel.seen_hosts(services),
+                                        own=host)
+            return {"pid": pid, "gen": gen, "hosts": hosts,
+                    "exclude": self.book.lists.exclude}
 
     # ── цикл ──
 
@@ -952,6 +1034,7 @@ class GenevaAutoManager:
             with self._lock:
                 self._works.pop(key, None)
                 self._trials.pop(key, None)
+                self._related.discard(key)
                 self._trial = next(iter(self._trials.values()), None)
                 if res is not None:
                     self._take(res, now, custom=w.get("custom", ""))
@@ -1220,12 +1303,23 @@ class GenevaAutoManager:
         st = self.settings()
         if not st["by_name"]:
             return None
+        from core import geneva_related as grel
         lists = self.book.lists
         profs = ga.host_profiles(services, [s.key for s, _ in trials or ()],
                                  quic=True, families=True)
+        # проба на итоговой проверке: её семейство — тоже по имени, если
+        # это не вытеснит применённые профили (первый совпавший — их)
+        related = grel.trial_families(
+            services, [(s, x) for s, x in trials or ()
+                       if s.key in self._related], profs) \
+            if self._related else []
+        if len(profs) + len(related) > ga.MAX_HOST_PROFILES:
+            related = []
+        profs = profs + [p for _, p in related]
         if not profs:
             return None
         return {"profiles": profs,
+                "related": {k: list(p["domains"]) for k, p in related},
                 "exclude_ips": lists.exclude.subnets(),
                 "exclude_domains": lists.exclude.plain_domains()}
 
@@ -1242,6 +1336,14 @@ class GenevaAutoManager:
         self._applied_sig = self._sig(services, trials)
         self._applied_at = now
         host = res.get("host") or {}
+        sent = dict(hosts.get("related") or {}) \
+            if hosts and host.get("pid") else {}
+        if "domains" in host:
+            # только домены профилей, которые процесс правда загрузил
+            loaded = set(host.get("domains") or ())
+            sent = {k: [d for d in v if d in loaded]
+                    for k, v in sent.items()}
+        self._related_sent = {k: v for k, v in sent.items() if v}
         # Сайты, которые покрывает «по имени»: провал на их новом адресе —
         # ослабление стратегии (адрес и так под обходом).
         # Только профили, которые процесс загрузил: отброшенные (нет
@@ -1521,6 +1623,7 @@ class GenevaAutoManager:
                 "known_important": st["lists"]["known_important"],
                 "split_workers": st["split_workers"],
                 "by_name": st["by_name"],
+                "final_check": st["final_check"],
                 "families": {k: list(v) for k, v in gal.FAMILIES.items()},
                 "asn": {("AS" + str(n)): {
                     "prefixes": len(store["prefixes"].get(str(n)) or []),
@@ -1530,7 +1633,8 @@ class GenevaAutoManager:
     def update_lists(self, values: dict) -> dict:
         """Списки «Важно», «Не важно», «Не подбирать» (маски и AS),
         «Не трогать» (домены, адреса, подсети), ``known_important``,
-        ``split_workers``, ``by_name``. Неверная строка — 400 со всеми
+        ``split_workers``, ``by_name``, ``final_check`` (общая с ручным
+        подбором ``geneva.final_check``). Неверная строка — 400 со всеми
         причинами, ничего не сохраняется."""
         values = values if isinstance(values, dict) else {}
         cfg = self.cfg()
@@ -1548,7 +1652,8 @@ class GenevaAutoManager:
                 raw["exclude"] = out
             else:
                 lists[key] = out
-        for key in ("known_important", "split_workers", "by_name"):
+        for key in ("known_important", "split_workers", "by_name",
+                    "final_check"):
             if key in values and not isinstance(values[key], bool):
                 errors.append("%s: true или false" % key)
         if errors:
@@ -1561,6 +1666,8 @@ class GenevaAutoManager:
                 raw[key] = values[key]
         raw["lists"] = lists
         cfg.set("geneva", "auto", raw)
+        if "final_check" in values:
+            cfg.set("geneva", "final_check", values["final_check"])
         cfg.save()
         self._apply_lists()
         with self._lock:
@@ -1628,6 +1735,11 @@ class GenevaAutoManager:
                 "split_workers": st["split_workers"],
                 "by_name": st["by_name"],
                 "search_slots": self._search_slots() if self.running else 0,
+                # сколько подборов выбрано («Как делить потоки»): меньше
+                # идёт, когда группы заняты работающими стратегиями
+                "search_slots_wanted": min(st["workers"], MAX_SEARCHES)
+                if st["split_workers"] else 1,
+                "final_check": st["final_check"],
                 "searches": searches,
                 "host": dict(self.host_state) if self.running else {},
                 "detector": dict(self.detector) if self.running else {},
@@ -1673,13 +1785,25 @@ class GenevaAutoManager:
                           "fitness": None,
                           "last": float(imp.get("imported_at") or 0),
                           "working": imp["strategy"] == working.strip()})
+        # вердикт итоговой проверки ручного подбора (сайт и его ресурсы)
+        try:
+            from core.geneva_manager import final_verdicts
+            verdicts = final_verdicts()
+        except Exception:                           # noqa: BLE001
+            verdicts = {}
+        for r in items:
+            v = verdicts.get(r["strategy"])
+            if v:
+                r["final"] = {"ok": v.get("ok"), "detail": v.get("detail",
+                                                                 ""),
+                              "at": v.get("at")}
         return {"ok": True, "items": items, "working": working,
                 "auto_enabled": self.settings()["enabled"]}
 
     # ── настройки со страницы ──
 
     def update_settings(self, values: dict) -> dict:
-        """Настройки с карточки «Авто»: ``workers`` (1–8), ``max_groups``
+        """Настройки с карточки «Авто»: ``workers`` (1–32), ``max_groups``
         (1–8), ``help_tunnels`` (bool) и ``exclude`` (адреса серверов,
         списком или текстом через пробел, запятую или строку). Новое
         число воркеров действует со следующего круга подбора, число
@@ -1693,7 +1817,7 @@ class GenevaAutoManager:
         def bad(text):
             return {"ok": False, "error_code": "bad_value", "error": text}
 
-        limits = {"workers": (1, 8), "max_groups": (1, ga.MAX_GROUPS_LIMIT)}
+        limits = {"workers": (1, 32), "max_groups": (1, ga.MAX_GROUPS_LIMIT)}
         for key, (lo, hi) in limits.items():
             if key not in values:
                 continue
@@ -1711,6 +1835,9 @@ class GenevaAutoManager:
                 if not isinstance(values[key], bool):
                     return bad("%s: true или false" % key)
                 raw[key] = values[key]
+        if "final_check" in values and \
+                not isinstance(values["final_check"], bool):
+            return bad("final_check: true или false")
         if "exclude" in values:
             # «Не трогать»: домены, адреса и подсети (geneva берёт их как
             # есть — без масок и AS)
@@ -1724,6 +1851,8 @@ class GenevaAutoManager:
                 return bad("exclude: " + errors[0])
             raw["exclude"] = out
         cfg.set("geneva", "auto", raw)
+        if "final_check" in values:
+            cfg.set("geneva", "final_check", values["final_check"])
         cfg.save()
         st = self.settings()
         with self._lock:

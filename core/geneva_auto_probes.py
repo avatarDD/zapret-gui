@@ -60,6 +60,7 @@ from core.geneva_auto_observer import (AUTO_BASELINE_PORTS,
 # ───────────────────────────── пороги ───────────────────────────────
 
 PAGE_TIME = 12.0                  # вся загрузка страницы (AutoProbes.PageTime)
+RELATED_TIME = 8.0                # связанный ресурс: TLS и ответ HTTP
 CONNECT_TIMEOUT = 5.0
 STALL = 4.0                       # данных нет столько — зависло
 MIN_BODY = 64 * 1024              # уровень «тело»: столько или весь ответ
@@ -1053,6 +1054,41 @@ class AutoProbes:
                         "обрывается" % p.bytes_out
         return r, crit, ""
 
+    def check_related(self, hosts, *, through_bypass: bool = True,
+                      ports=None, exclude=None, resolve=None) -> list:
+        """Связанные ресурсы сайта (:mod:`core.geneva_related`): каждое
+        имя ``[(имя, адрес или "")]`` — проба TLS и ответа HTTP на 443.
+        ``exclude`` — «Не трогать» (:class:`NameList`): исключённое по
+        имени или по подсети не проверяется (geneva его не трогает).
+        ``ports`` — блок исходных портов (оценщик geneva); иначе — блок
+        проб с обходом. ``[(имя, вердикт, текст)]``."""
+        from core import geneva_related as gr_
+        from core import probe_mark
+        resolve = resolve or _resolve
+        ports = ports if ports is not None else (
+            self._bypass_ports if through_bypass else self._ports)
+        out = []
+        for host, address in hosts or ():
+            if exclude is not None and exclude.matches_name(host):
+                continue
+            address = address or resolve(host)
+            if not address:
+                out.append((host, gr_.NO_VERDICT, "имя не разрешилось"))
+                continue
+            if exclude is not None and exclude.matches_address(address):
+                continue
+            try:
+                with probe_mark.marking(0 if through_bypass
+                                        else self._mark()):
+                    r = self._page(address, 443, host, tls=True,
+                                   ports=ports, timeout=RELATED_TIME,
+                                   min_bytes=1)
+            except (probe_mark.MarkError, OSError) as e:
+                out.append((host, gr_.NO_VERDICT, str(e)[:120]))
+                continue
+            out.append((host, gr_.judge(r), r.text()))
+        return out
+
     def judge(self, s: ga.Service):
         """Оценка стратегии с локального порта geneva: функция
         ``(port) → (fitness, outcome, port_unavailable)`` или ``None`` —
@@ -1088,6 +1124,16 @@ class AutoProbes:
             fit, outcome = replay_fitness(r)
             return fit, outcome, False
         return run
+
+
+def _resolve(host: str) -> str:
+    """Адрес имени (IPv4 первым) или ``""``."""
+    try:
+        infos = socket.getaddrinfo(host, 443, 0, socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return ""
+    infos.sort(key=lambda i: i[0] != socket.AF_INET)
+    return infos[0][4][0] if infos else ""
 
 
 _probes = None

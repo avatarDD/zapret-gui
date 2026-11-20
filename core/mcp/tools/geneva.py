@@ -40,8 +40,9 @@ _SEARCH_PROPS = {
                               "/ Чем проверять.")},
     "port": {"type": "integer", "minimum": 0, "maximum": 65535,
              "description": "Service port, 0 = default. / Порт сервиса."},
-    "workers": {"type": "integer", "minimum": 1, "maximum": 8,
-                "description": "Parallel checks. / Проверок сразу."},
+    "workers": {"type": "integer", "minimum": 1, "maximum": 32,
+                "description": ("Parallel checks, usually up to 16. / "
+                                "Проверок сразу.")},
     "runs": {"type": "integer", "minimum": 1, "maximum": 5,
              "description": "Runs per strategy. / Прогонов на стратегию."},
     "timeout": {"type": "integer", "minimum": 2, "maximum": 60,
@@ -120,17 +121,17 @@ def geneva_status(args: dict) -> dict:
     scope="read",
     mutating=False,
     title="Geneva strategy library",
-    description=("Known Geneva strategies from the paper library: "
-                 "strategy, success rate, country, protocol. Filters: "
-                 "country, test. / Готовые стратегии Geneva."),
+    description=("Ready Geneva strategies: ours, tested against Russian "
+                 "DPI (country russia, test tls/quic/udp, ext = needs "
+                 "x-actions), and lab ones for geneva censor (country "
+                 "lab). / Готовые стратегии Geneva."),
     schema={
         "type": "object",
         "properties": {
             "country": {"type": "string", "maxLength": 32,
-                        "description": "china, india, kazakhstan, iran…"},
+                        "description": "russia (ours) or lab (censor tests)"},
             "test": {"type": "string", "maxLength": 64,
-                     "description": ("http, https, dns_tcp, "
-                                     "kazakhstan_injected_https…")},
+                     "description": "tls, quic, udp; echo (lab)"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100,
                       "default": 30},
         },
@@ -158,8 +159,8 @@ def geneva_library(args: dict) -> dict:
     limit = int(args.get("limit") or 30)
     return {"ok": True, "total": len(items), "items": items[:limit],
             "truncated": len(items) > limit, "note": NOTE,
-            "hint": ("rate — доля успеха в статье Geneva для той страны; "
-                     "в вашей сети проверьте geneva_eval_start(…)")}
+            "hint": ("rate — фитнес оценки за вычетом 300 (у лабораторных "
+                     "— 0); в вашей сети проверьте geneva_eval_start(…)")}
 
 
 @tool(
@@ -716,19 +717,21 @@ _LIST = {"type": "array", "maxItems": 500,
     description=("No arguments: read. important/unimportant/no_search: "
                  "domains, *.ru, *google*, IPs, subnets, AS12389; exclude "
                  "(never bypassed, also for manual run): domains, IPs, "
-                 "subnets. A list given replaces the old. / Списки "
-                 "и флажки «Авто»."),
+                 "subnets. A list replaces the old. final_check: the "
+                 "site's related resources must load too. / Списки "
+                 "«Авто»."),
     schema={"type": "object", "properties": {
         "important": _LIST, "unimportant": _LIST, "no_search": _LIST,
         "exclude": _LIST,
         "known_important": {"type": "boolean"},
         "split_workers": {"type": "boolean"},
-        "by_name": {"type": "boolean"}},
+        "by_name": {"type": "boolean"},
+        "final_check": {"type": "boolean"}},
         "additionalProperties": False},
 )
 def geneva_auto_lists(args: dict) -> dict:
     keys = ("important", "unimportant", "no_search", "exclude",
-            "known_important", "split_workers", "by_name")
+            "known_important", "split_workers", "by_name", "final_check")
     values = {k: args[k] for k in keys if k in (args or {})}
     if not values:
         return _auto().lists_view()

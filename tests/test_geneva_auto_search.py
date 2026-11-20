@@ -138,10 +138,10 @@ class TestPure(unittest.TestCase):
                          (15, True))
 
     def test_job_params(self):
-        p = gs.job_params(web_service(), cmd="c", workers=20)
+        p = gs.job_params(web_service(), cmd="c", workers=40)
         self.assertEqual((p["protos"], p["population"], p["generations"],
                           p["workers"], p["target"]),
-                         ("TCP", 20, 10, 8, "https:www.blocked.example"))
+                         ("TCP", 20, 10, 32, "https:www.blocked.example"))
         dns = ga.Service(key="dns:93.184.216.53", kind=ga.DNS,
                          transport="udp",
                          addresses=[{"ip": "93.184.216.53", "seen": 1}])
@@ -204,7 +204,7 @@ class TestAutoJobArgs(unittest.TestCase):
                     {"cmd": "a\nb", "target": "x"},
                     {"cmd": "a", "target": "x; rm"},
                     {"cmd": "a", "target": "x", "protos": "tcp;"},
-                    {"cmd": "a", "target": "x", "workers": 99},
+                    {"cmd": "a", "target": "x", "workers": 33},
                     {"probe": "tls", "cmd": "a", "target": "x"}):
             with self.assertRaises(ValueError):
                 gm.validate_auto_job(bad)

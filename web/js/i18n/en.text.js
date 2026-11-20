@@ -5624,4 +5624,5 @@ const i18n_en_text = {
 "{0}д {1}ч": "{0}d {1}h",
 "{0}д {1}ч {2}м": "{0}d {1}h {2}m",
 "{0}ч {1}м {2}с": "{0}h {1}m {2}s",
+"x-действия zapret2: нужен geneva_c 2.0 с --ext": "zapret2 x-actions: needs geneva_c 2.0 with --ext",
 };

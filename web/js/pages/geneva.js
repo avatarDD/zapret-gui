@@ -130,7 +130,7 @@ const GenevaPage = (() => {
                         <div id="gv-auto">${esc(_tr('common.loading'))}</div>
                         <div class="gv-auto-settings">
                             <label class="form-label" for="gv-auto-workers">${esc(_tr('geneva.auto.workers'))}</label>
-                            <input id="gv-auto-workers" type="number" min="1" max="8" class="form-control" value="4">
+                            <input id="gv-auto-workers" type="number" min="1" max="32" class="form-control" value="4" title="${esc(_tr('geneva.workers_hint'))}">
                             <label class="form-label" for="gv-auto-groups">${esc(_tr('geneva.auto.max_groups'))}</label>
                             <input id="gv-auto-groups" type="number" min="1" max="8" class="form-control" value="4">
                             <label class="gv-check gv-auto-wide">
@@ -160,6 +160,10 @@ const GenevaPage = (() => {
                             <label class="gv-check"><input type="checkbox" id="gv-list-split">
                                 <span>${esc(_tr('geneva.auto.lists.split'))}</span></label>
                             <div class="form-hint">${esc(_tr('geneva.auto.lists.split_hint'))}</div>
+                            <div id="gv-split-now" class="form-hint" hidden></div>
+                            <label class="gv-check"><input type="checkbox" id="gv-list-final" checked>
+                                <span>${esc(_tr('geneva.auto.lists.final'))}</span></label>
+                            <div class="form-hint">${esc(_tr('geneva.auto.lists.final_hint'))}</div>
                             <div id="gv-list-asn" class="form-hint"></div>
                             <button class="btn btn-ghost btn-sm" data-action="auto-lists">${esc(_tr('geneva.auto.lists.save'))}</button>
                         </details>
@@ -264,7 +268,7 @@ const GenevaPage = (() => {
                             </div>
                             <div class="form-group expert-only">
                                 <label class="form-label" for="gv-workers">Проверок одновременно</label>
-                                <input id="gv-workers" type="number" min="1" max="8" class="form-control" value="1">
+                                <input id="gv-workers" type="number" min="1" max="32" class="form-control" value="1" title="${esc(_tr('geneva.workers_hint'))}">
                             </div>
                         </div>
                         <label class="gv-check">
@@ -272,6 +276,11 @@ const GenevaPage = (() => {
                             приостановить работающий обход на время подбора (иначе сайт
                             «откроется» и без стратегии) — он вернётся сам
                         </label>
+                        <label class="gv-check">
+                            <input type="checkbox" id="gv-final-check" checked>
+                            ${esc(_tr('geneva.final.label'))}
+                        </label>
+                        <div class="form-hint">${esc(_tr('geneva.final.hint'))}</div>
                         <label class="gv-check hidden" id="gv-zapret2-row">
                             <input type="checkbox" id="gv-zapret2">
                             добавить методы zapret2 в начальную популяцию (geneva_c 2.0:
@@ -479,7 +488,7 @@ const GenevaPage = (() => {
             const [st, engines, auto] = await Promise.all([
                 API.get('/api/geneva/status'),
                 _sections.has('engines') ? API.get('/api/bypass/engine') : null,
-                _sections.has('auto') ? API.get('/api/geneva/auto' + (_autoAll ? '?all=1' : '')) : null,
+                (_sections.has('auto') || _sections.has('search')) ? API.get('/api/geneva/auto' + (_autoAll ? '?all=1' : '')) : null,
             ]);
             _last = st;
             _renderAuto(auto);
@@ -489,7 +498,7 @@ const GenevaPage = (() => {
             const z2row = document.getElementById('gv-zapret2-row');
             if (z2row) z2row.classList.toggle('hidden', !(st.detect || {}).ext);
             _renderEngine(st.engine || {}, st.active_engine, st.detect || {});
-            _renderSearch(st.search || {});
+            _renderSearch(st.search || {}, auto);
         } catch (e) {
             const el = document.getElementById('gv-engine');
             if (el) el.innerHTML = `<div class="text-error">Ошибка: ${esc(errText(e))}</div>`;
@@ -515,6 +524,23 @@ const GenevaPage = (() => {
         ip_blocked: 'badge-danger', fallback: 'badge-muted',
         not_blocked: 'badge-muted', watching: 'badge-muted',
     };
+
+    /** Что делает подбор сервиса сейчас: перебор geneva с числом идущих
+     *  проверок, проверка на трафике или связанных ресурсов. */
+    function _searchLine(x) {
+        if (!x) return '';
+        const counts = x.threads ? _tr('geneva.auto.probing', {
+            n: x.probing || 0, m: x.threads, k: x.checked || 0 }) : '';
+        if (x.phase === 'evolve') {
+            const gen = _tr('geneva.auto.evolve_gen', { gen: Math.max(0, x.generation || 0), total: x.generations || '?' });
+            return [gen, counts].filter(Boolean).join(' · ');
+        }
+        if ((x.phase === 'quick' || x.phase === 'catalog') && counts) {
+            return _tr('geneva.auto.known', { counts });
+        }
+        if (x.phase === 'related' && x.strategy) return _tr('geneva.auto.related', { strategy: x.strategy });
+        return x.strategy ? _tr('geneva.auto.trying', { strategy: x.strategy }) : '';
+    }
 
     function _renderAuto(a) {
         const box = document.getElementById('gv-auto');
@@ -548,7 +574,7 @@ const GenevaPage = (() => {
         if (a.detector && a.detector.running) extra.push(_tr('geneva.auto.detector_on'));
         const searches = (a.searches && a.searches.length ? a.searches : (sr.running ? [sr] : []));
         const tryingOf = {};
-        searches.forEach(x => { if (x.key && x.strategy) tryingOf[x.key] = x.strategy; });
+        searches.forEach(x => { if (x.key) tryingOf[x.key] = x; });
         // Порядок строк не скачет на каждом опросе: место сервиса — где
         // его увидели впервые, новые — в конец.
         const services = (a.services || []).slice();
@@ -558,8 +584,7 @@ const GenevaPage = (() => {
         const shown = flt ? services.filter(s => [s.name, s.key, s.address, s.host, s.transport, s.app, s.kind]
             .some(v => String(v || '').toLowerCase().includes(flt))) : services;
         const rows = shown.map(s => {
-            const trying = s.status === 'searching' && tryingOf[s.key]
-                ? _tr('geneva.auto.trying', { strategy: tryingOf[s.key] }) : '';
+            const trying = s.status === 'searching' ? _searchLine(tryingOf[s.key]) : '';
             const status = _tr('geneva.auto.as.' + s.status);
             const prio = s.priority_name || 'normal';
             const marks = (s.pinned ? ' 📌' : '') + (s.user_priority ? ' ✎' : '');
@@ -603,6 +628,12 @@ const GenevaPage = (() => {
             ? box.querySelectorAll('details[open]') : []).map(d => d.dataset.k));
         const journal = (a.journal || []).slice(-60).reverse().map(j =>
             `<div class="gv-auto-log-${esc(j.level)}"><span class="text-muted">${esc(fmtTime(j.ts))}</span> ${esc(j.text)}</div>`).join('');
+        const splitNow = document.getElementById('gv-split-now');
+        if (splitNow) {
+            const fewer = a.running && a.split_workers && (a.search_slots || 0) < (a.search_slots_wanted || 0);
+            splitNow.hidden = !fewer;
+            splitNow.textContent = fewer ? _tr('geneva.auto.split_now', { n: a.search_slots, m: a.search_slots_wanted }) : '';
+        }
         box.innerHTML = `
             <div class="gv-auto-status"><strong>${esc(phase)}</strong>${searchLine}</div>
             ${extra.length ? `<div class="text-muted">${esc(extra.join(' · '))}</div>` : ''}
@@ -700,6 +731,7 @@ const GenevaPage = (() => {
         ck('gv-list-known', r.known_important);
         ck('gv-list-byname', r.by_name);
         ck('gv-list-split', r.split_workers);
+        ck('gv-list-final', r.final_check);
         const asn = document.getElementById('gv-list-asn');
         if (asn) {
             const items = Object.entries(r.asn || {}).map(([n, x]) =>
@@ -719,6 +751,7 @@ const GenevaPage = (() => {
         body.known_important = ck('gv-list-known');
         body.by_name = ck('gv-list-byname');
         body.split_workers = ck('gv-list-split');
+        body.final_check = ck('gv-list-final');
         try {
             await API.post('/api/geneva/auto/lists', body, { timeout: 30000 });
             Toast.success(_tr('geneva.auto.lists.saved'));
@@ -888,6 +921,8 @@ const GenevaPage = (() => {
             if ((r.targets || []).length) badges.push(`<span class="badge badge-info">${esc(_tr('geneva.found.manual'))}</span>`);
             if (r.working) badges.push(`<span class="badge badge-accent">${esc(_tr('geneva.found.working'))}</span>`);
             if (r.imported) badges.push(`<span class="badge badge-ghost">${esc(_tr('geneva.found.imported'))}</span>`);
+            const fb = _finalBadge(r.final);
+            if (fb) badges.push(fb.trim());
             const when = r.last ? `<span class="text-muted">${esc(_tr('geneva.found.last', { when: fmtDate(r.last) }))}</span>` : '';
             const fit = r.fitness !== null && r.fitness !== undefined
                 ? `<span class="text-muted">${esc(_tr('geneva.found.fitness', { f: Math.round(r.fitness) }))}</span>` : '';
@@ -1231,6 +1266,7 @@ const GenevaPage = (() => {
             workers: parseInt(val('gv-workers'), 10) || 1,
             pause_bypass: pause ? !!pause.checked : true,
             zapret2: !!(document.getElementById('gv-zapret2') || {}).checked,
+            final_check: !!(document.getElementById('gv-final-check') || {}).checked,
         };
     }
 
@@ -1306,9 +1342,17 @@ const GenevaPage = (() => {
                              : `<span class="badge badge-danger">${esc(f)}</span>`;
     }
 
-    function _renderSearch(s) {
+    function _renderSearch(s, auto) {
         const box = document.getElementById('gv-search');
         if (!box) return;
+        const fc = document.getElementById('gv-final-check');
+        if (fc && !fc.onchange) fc.onchange = () => { fc.dataset.touched = '1'; };
+        if (fc && auto && typeof auto.final_check === 'boolean' && !fc.dataset.touched) {
+            fc.checked = auto.final_check;
+        }
+        const others = (auto && auto.running ? (auto.searches || []) : []).filter(x => x.running);
+        const otherList = others.length ? `<div class="gv-other-searches"><h4 style="margin:12px 0 4px;">${esc(_tr('geneva.auto.others', { n: others.length }))}</h4>
+            <ul>${others.map(x => `<li>${esc(x.name || x.key)}: <span class="text-muted">${esc(_searchLine(x) || _tr('geneva.auto.phase.searching'))}</span></li>`).join('')}</ul></div>` : '';
         const p = s.params || {};
         if (!_formFilled && p.host && document.getElementById('gv-host')) {
             _formFilled = true;
@@ -1330,7 +1374,7 @@ const GenevaPage = (() => {
         const startBtn = document.getElementById('gv-btn-search');
         if (startBtn) startBtn.disabled = running;
         if (!s.status || s.status === 'idle') {
-            box.innerHTML = '';
+            box.innerHTML = otherList;
             return;
         }
         const kind = s.kind === 'eval' ? 'Проверка стратегий' : 'Подбор';
@@ -1348,9 +1392,11 @@ const GenevaPage = (() => {
         const evals = (s.evals || []).slice().reverse().slice(0, 10).map(ev => `
             <tr><td>${_fitnessBadge(ev.fitness)}</td><td>${esc(ev.outcome_text)}</td>
                 <td class="gv-mono gv-ellipsis" title="${esc(ev.strategy)}">${esc(ev.strategy)}</td></tr>`).join('');
+        const fin = s.final || {};
+        const verdicts = fin.items || {};
         const results = (s.results || []).filter(r => r.strategy).map(r => `
             <tr><td>${_fitnessBadge(r.avg_fitness)}</td><td>${num(r.runs)}</td>
-                <td class="gv-mono gv-ellipsis" title="${esc(r.strategy)}">${esc(r.strategy)}</td>
+                <td class="gv-mono gv-ellipsis" title="${esc(r.strategy)}">${esc(r.strategy)}${_finalBadge(verdicts[r.strategy])}</td>
                 <td>${Number(r.avg_fitness) > 0 ? `<button class="btn btn-ghost btn-sm" data-use="${esc(r.strategy)}">Сделать рабочей</button>` : ''}</td></tr>`).join('');
         box.innerHTML = `
             <div class="gv-search-head">
@@ -1365,13 +1411,24 @@ const GenevaPage = (() => {
             ${s.paused_engine && running ? `<div class="text-muted">Обход через ${esc(s.paused_engine)} приостановлен и вернётся после подбора.</div>` : ''}
             ${s.status === 'error' ? `<div class="text-error">${esc(s.error || s.exit_text)}</div>` : ''}
             ${best}
+            ${fin.status === 'running' ? `<div class="text-muted">${esc(_tr('geneva.final.running', { n: (fin.strategies || []).length }))}</div>` : ''}
+            ${fin.status === 'interrupted' ? `<div class="text-muted">${esc(_tr('geneva.final.interrupted'))}</div>` : ''}
             ${results ? `<h4 style="margin:12px 0 4px;">Найдено</h4>
                 <table class="table"><tr><th>Фитнес</th><th>Оценок</th><th>Стратегия</th><th></th></tr>${results}</table>
                 <div class="form-hint">Фитнес больше нуля — сайт открылся; чем выше, тем короче и надёжнее стратегия.</div>` : ''}
             ${evals ? `<details ${running ? 'open' : ''} style="margin-top:8px;"><summary>Последние проверки</summary>
                 <table class="table"><tr><th>Фитнес</th><th>Исход</th><th>Стратегия</th></tr>${evals}</table></details>` : ''}
             ${feed ? `<div class="gv-feed">${feed}</div>` : ''}
+            ${otherList}
         `;
+    }
+
+    /** Вердикт итоговой проверки у найденной стратегии. */
+    function _finalBadge(v) {
+        if (!v || v.ok === undefined || v.ok === null) return '';
+        const cls = v.ok ? 'badge-success' : 'badge-danger';
+        const text = _tr(v.ok ? 'geneva.final.ok' : 'geneva.final.failed');
+        return ` <span class="badge ${cls}" title="${esc(v.detail || '')}">${esc(text)}</span>`;
     }
 
     /* ───────── библиотека ───────── */
@@ -1413,7 +1470,7 @@ const GenevaPage = (() => {
             ${items.map(i => `
                 <tr><td class="gv-col-pick">${i.server_side ? '' : `<input type="checkbox" class="gv-lib-pick" value="${esc(i.strategy)}">`}</td>
                     <td style="white-space:nowrap;">${i.rate == null ? '—' : esc(i.rate) + '%'}</td>
-                    <td>${esc(i.country)} / ${esc(i.test)}${i.server_side ? ' <span class="badge badge-muted">server-side</span>' : ''}</td>
+                    <td>${esc(i.country)} / ${esc(i.test)}${i.server_side ? ' <span class="badge badge-muted">server-side</span>' : ''}${i.ext ? ' <span class="badge badge-ghost" title="x-действия zapret2: нужен geneva_c 2.0 с --ext">ext</span>' : ''}</td>
                     <td>${esc(i.description)}</td>
                     <td class="gv-mono gv-ellipsis" title="${esc(i.strategy)}">${esc(i.strategy)}</td>
                     <td>${i.server_side ? '' : `<button class="btn btn-ghost btn-sm" data-use-lib="${esc(i.strategy)}">Сделать рабочей</button>`}</td></tr>`).join('')}
