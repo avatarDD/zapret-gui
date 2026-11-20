@@ -167,6 +167,19 @@ class TestPlanAndRename(unittest.TestCase):
             "--lua-desync=ippxor:dataxor=tls_vk")
         self.assertEqual(bi._init_vars_refs(b), set())
 
+    def test_gui_registry_fake_default_is_a_valid_blob(self):
+        b = bundle(blobs=[{"name": "fake_default_udp",
+                           "base64": base64.b64encode(bytes(16)).decode()}])
+        self.assertEqual(bi.validate_bundle(b)[0], [])
+        b = bundle(blobs=[{"name": "fake_default_tls", "base64": "AQ=="}])
+        self.assertTrue(bi.validate_bundle(b)[0])
+
+    def test_init_vars_in_disabled_profile_is_not_loaded(self):
+        b = bundle()
+        b["strategy"]["profiles"][0].update(
+            enabled=False, args="--lua-desync=fake:blob=tls_google")
+        self.assertEqual(bi._init_vars_refs(b), set())
+
     def test_new_name_is_free_in_bundle_and_fits(self):
         b = bundle(blobs=[{"name": n, "base64": "AQ=="}
                           for n in ("a", "a_2", "b" * 64)])

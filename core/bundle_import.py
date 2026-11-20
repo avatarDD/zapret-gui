@@ -170,7 +170,10 @@ def validate_bundle(data) -> tuple:
         if not isinstance(name, str) or not _IDENT_RE.match(name):
             errors.append("блоб '%s': имя — идентификатор Lua" % name)
             continue
-        if name.startswith("fake_default_"):
+        from core.blob_registry import BUILTIN_BLOB_NAMES
+        if name in BUILTIN_BLOB_NAMES:
+            # fake_default_udp — имя реестра GUI, не nfqws2: его AutoTuner
+            # возвращает блобом, и это законно
             errors.append("блоб %s: имя встроенного блоба" % name)
             continue
         raw = blob_bytes(b)
@@ -463,7 +466,8 @@ def _init_vars_refs(data) -> set:
     names = set(_INIT_VARS_NAMES)
     every, trigger = set(), set()
     for p in (data.get("strategy") or {}).get("profiles") or []:
-        if not isinstance(p, dict):
+        # запуск видит только включённые профили — как и экспорт
+        if not isinstance(p, dict) or not p.get("enabled", True):
             continue
         for tok in tokenize_args(str(p.get("args") or "")):
             tok = _unquote(tok)[1]
