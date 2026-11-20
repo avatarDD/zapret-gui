@@ -415,16 +415,21 @@ const LuaScriptsPage = (() => {
                 let g = '';
                 for (let i = 1; i <= lineCount; i++) {
                     const cls = currentErrorLines.has(i) ? ' lua-gutter-err' : '';
-                    g += '<span class="lua-gutter-line' + cls + '">' + i + '</span>\n';
+                    // Без '\n' между блочными span: в white-space: pre перевод
+                    // строки после блока даёт лишнюю пустую строку, и номера
+                    // шли через одну строку кода.
+                    g += '<span class="lua-gutter-line' + cls + '">' + i + '</span>';
                 }
                 gutter.innerHTML = g;
                 gutter.dataset.lines = String(lineCount);
-            } else if (currentErrorLines.size > 0) {
-                // Обновим пометки об ошибках
+            } else if (currentErrorLines.size > 0 || gutter.dataset.errs === '1') {
+                // Обновим пометки об ошибках — и когда ошибки только что
+                // ушли, иначе исправленная строка так и останется красной.
                 gutter.querySelectorAll('.lua-gutter-line').forEach((el, idx) => {
                     el.classList.toggle('lua-gutter-err', currentErrorLines.has(idx + 1));
                 });
             }
+            gutter.dataset.errs = currentErrorLines.size > 0 ? '1' : '0';
         }
 
         syncScroll();
