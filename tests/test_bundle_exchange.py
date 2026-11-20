@@ -273,6 +273,27 @@ class TestApi(unittest.TestCase):
         self.assertEqual(out["blobs"], [])
         self.assertTrue(any(w.startswith("tls_google") for w in warnings))
 
+    def test_declaration_only_in_disabled_profile(self):
+        """Объявление в выключенном профиле: запуск берёт имя из реестра
+        — его байты нужны и бандлу (импорт AutoTuner выключенные
+        профили отбрасывает)."""
+        st = {"id": "x", "name": "x", "profiles": [
+            {"id": "p1", "enabled": False,
+             "args": "--blob=quic_google:@bin/q.bin --filter-tcp=443 "
+                     "--lua-desync=fake:blob=quic_google"},
+            {"id": "p2", "args": "--filter-udp=443 "
+                                 "--lua-desync=fake:blob=quic_google"}]}
+        out, warnings = be.build_bundle(
+            st, hostlists=lambda n: None, ipsets=lambda n: None,
+            blobs={"quic_google": b"\x0c\x0d"}.get, lua=lambda n: None,
+            blob_file={"@bin/q.bin": b"\x0a\x0b"}.get)
+        self.assertEqual(warnings, [])
+        self.assertEqual(out["blobs"], [{"name": "quic_google",
+                                         "base64": "DA0="}])
+        self.assertIn("--blob=quic_google:0x0a0b",
+                      out["strategy"]["profiles"][0]["args"])
+        self.assertEqual(bi.validate_bundle(out)[0], [])
+
     def test_crlf_script_is_same(self):
         from unittest import mock
 

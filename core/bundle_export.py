@@ -128,11 +128,14 @@ def references(strategy: dict, roots=None) -> dict:
     lists, blobs, patterns, lua, unknown = [], [], [], [], []
     named = set()       # имена, по которым запуск подключит init_vars.lua
     declared = {}
+    # что видит запуск: только включённые профили (build_nfqws_args)
+    declared_on, used_on = set(), set()
     every = []
     for p in strategy.get("profiles") or []:
         if not isinstance(p, dict):
             continue
         toks = _tokens(p.get("args") or "")
+        on = bool(p.get("enabled", True))
         every += toks
         # переменные desync, которые профиль сам заводит (клон
         # ClientHello): в этом профиле такое имя — не блоб
@@ -162,6 +165,8 @@ def references(strategy: dict, roots=None) -> dict:
             m = _BLOB_DECL_RE.match(tok)
             if m:
                 declared.setdefault(m.group(1), tok.split(":", 1)[1])
+                if on:
+                    declared_on.add(m.group(1))
                 if m.group(1) not in blobs:
                     blobs.append(m.group(1))
             if tok.startswith("--lua-desync="):
@@ -169,8 +174,10 @@ def references(strategy: dict, roots=None) -> dict:
                         tok[len("--lua-desync="):])[0]:
                     if n in local and n not in declared:
                         continue
-                    if key not in NOT_INIT_VARS_ARGS:
-                        named.add(n)
+                    if on:
+                        used_on.add(n)
+                        if key not in NOT_INIT_VARS_ARGS:
+                            named.add(n)
                     into = patterns if key.endswith("pattern") else blobs
                     if n not in into:
                         into.append(n)
@@ -180,6 +187,11 @@ def references(strategy: dict, roots=None) -> dict:
     lua = auto + [n for n in lua if n not in auto]
     return {"lists": lists, "blobs": blobs, "patterns": patterns,
             "declared": declared, "unknown": unknown, "named": named,
+            # объявлены только в выключенных профилях, а нужны включённым:
+            # запуск берёт их из реестра
+            "registry_too": [n for n in blobs + patterns
+                             if n in declared and n not in declared_on
+                             and n in used_on],
             "lua": [n for n in lua if n not in ZAPRET2_LUA]}
 
 
@@ -357,6 +369,20 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
             # не передать (имя встроенных зарезервировано), только
             # объявлением в args
             inject[name] = data
+            continue
+        out_blobs.append({"name": name,
+                          "base64": base64.b64encode(data).decode()})
+    for name in refs["registry_too"]:
+        # объявление едет в выключенном профиле, а импорт AutoTuner
+        # берёт только включённые: нужны и байты, которые запуск возьмёт
+        # из реестра
+        if name in BUILTIN_BLOB_NAMES or name in init_vars or \
+                name.startswith("fake_default_"):
+            continue
+        data = blobs(name)
+        if not data or len(data) > MAX_BLOB:
+            warnings.append("блоб %s не найден на роутере — в бандл "
+                            "не входит" % name)
             continue
         out_blobs.append({"name": name,
                           "base64": base64.b64encode(data).decode()})
