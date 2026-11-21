@@ -309,6 +309,19 @@ class TestDetectAndTools(_StubCase):
         self.assertTrue(d["proto_ok"])
         self.assertEqual(d["version"], "1.0.0")
 
+    def test_broken_binary_hint_names_script(self):
+        """На месте бинарника init-скрипт (случай geneva_c 2.0.1):
+        подсказка обязана звать переустановить, а не «не отвечает»."""
+        script = os.path.join(self.tmp, "geneva-init")
+        with open(script, "w") as f:
+            f.write("#!/bin/sh\ncase \"$1\" in start) ;; esac\n")
+        self.assertIn("Переустановить", self.mgr._broken_binary_hint(script))
+        self.assertIn("скрипт", self.mgr._broken_binary_hint(script))
+        elf = os.path.join(self.tmp, "geneva-elf")
+        with open(elf, "wb") as f:
+            f.write(b"\x7fELF" + b"\0" * 60)
+        self.assertIn("не отвечает", self.mgr._broken_binary_hint(elf))
+
     def test_wrong_proto_is_refused(self):
         with mock.patch.dict(os.environ, {"GENEVA_STUB_PROTO": "2"}):
             self.mgr._version_cache = {}

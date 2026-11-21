@@ -12,6 +12,23 @@ from unittest import mock
 from core import ext_binary_installer as ebi
 
 
+def _elf(machine: int, little: bool = True, bits: int = 64) -> bytes:
+    """Минимальный ELF-заголовок: дальше содержимое не важно, _elf_arch
+    читает только e_ident/e_machine."""
+    head = bytearray(64)
+    head[0:4] = b"\x7fELF"
+    head[4] = 2 if bits == 64 else 1   # EI_CLASS
+    head[5] = 1 if little else 2       # EI_DATA
+    if little:
+        head[18], head[19] = machine & 0xFF, machine >> 8
+    else:
+        head[18], head[19] = machine >> 8, machine & 0xFF
+    return bytes(head) + b"\0" * 64
+
+
+ELF_MIPSEL = _elf(0x08, little=True)
+
+
 class TestDetectArch(unittest.TestCase):
     """Тесты определения архитектуры."""
 
@@ -828,17 +845,29 @@ class TestManifestInstall(unittest.TestCase):
                                    self._manifest(sha)["usque"]["binaries"]["mipsel"],
                                    version="4.2.1")), \
              mock.patch.object(ebi, "download_file", side_effect=fake_download), \
+             mock.patch.object(ebi.subprocess, "run",
+                               return_value=mock.Mock(returncode=0,
+                                                      stdout="",
+                                                      stderr="")), \
              mock.patch.object(ebi, "detect_arch", return_value="mipsel"):
             return ebi.install_binary_by_name("usque", _cfg=self.cfg)
 
     def test_good_checksum_installs_and_ungzips(self):
-        res = self._run_install(b"#!/bin/true\n", "real")
+        res = self._run_install(ELF_MIPSEL, "real")
         self.assertTrue(res["ok"], res)
         self.assertTrue(res["sha256_verified"])
         self.assertEqual(res["version"], "4.2.1")
         with open(self.cfg["dest"], "rb") as f:
-            self.assertEqual(f.read(), b"#!/bin/true\n")
+            self.assertEqual(f.read(), ELF_MIPSEL)
         self.assertTrue(os.access(self.cfg["dest"], os.X_OK))
+
+    def test_script_payload_is_not_installed(self):
+        """На месте движка не должен оказаться скрипт: так на
+        /opt/usr/bin/geneva лёг init-скрипт из packaging/ релиза 2.0.1."""
+        res = self._run_install(b"#!/bin/true\n", "real")
+        self.assertFalse(res["ok"], res)
+        self.assertIn("скрипт", res["error"])
+        self.assertFalse(os.path.exists(self.cfg["dest"]))
 
     def test_checksum_mismatch_refuses_install(self):
         res = self._run_install(b"payload", "0" * 64)

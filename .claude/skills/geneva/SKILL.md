@@ -394,6 +394,27 @@ MCP (`core/mcp/tools/geneva.py`):
 версия означает новый `pinned_tag` и новые sha256, а также обновлённые
 `docs/upstream.json` и этот скил. Ставить только из официального релиза.
 
+**Раскладка тарбола меняется между релизами — член выбирается по
+содержимому, а не по порядку.** В 1.x порядок был `LICENSE`, `geneva`,
+README; в 2.0.1 первыми идут `packaging/s6/geneva/run`,
+`packaging/openwrt/*`, `packaging/entware/*`, `packaging/systemd/*` и —
+главное — `packaging/sysv/geneva` и `packaging/openrc/geneva`: это
+`/bin/sh` init-скрипты с тем же базовым именем, что у бинарника, и лежат
+они ПЕРЕД ним. Установщик долго брал первый член по имени и в 2.0.1
+положил init-скрипт на `/opt/usr/bin/geneva`; `geneva version --json`
+отвечал ему справкой с кодом 2, `version_info()` получал `{}`, и
+страница писала «бинарник не отвечает на «geneva version --json»».
+Теперь `_pick_archive_member` (`core/ext_binary_installer.py`) среди
+одноимённых членов выбирает исполняемый: `_archive_member_rank`
+даёт `2` для ELF, `1` — для не-текста без `#`/`<` в начале, `0` — для
+скрипта и текста; при равенстве побеждает самый верхний по дереву. Плюс
+`verify_installed_binary` считает скрипт (`#!`) ошибкой с флагом
+`not_a_binary` — установка движка скриптом не считается, а уход на
+`legacy_source` в этом случае не делается (это не «не та
+архитектура»). Проверять установку после смены `pinned_tag` на живом
+тарболе: `_unpack_if_needed(<tar>, "geneva")` должен вернуть
+`.../geneva` размером ~787 КБ, а не файл из `packaging/`.
+
 ## 9. Подводные камни
 
 - **exit 4** обычно значит, что нет `kmod-nfnetlink-queue` / `xt_NFQUEUE`
