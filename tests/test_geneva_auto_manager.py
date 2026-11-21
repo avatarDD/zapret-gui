@@ -652,10 +652,13 @@ class TestEnable(_Base):
         self.assertEqual(m.search().workers, 6)
         self.assertEqual(m.applier().max_groups, 2)
         self.assertEqual(m.status()["workers"], 6)
-        for bad in ({"workers": 0}, {"workers": 9}, {"max_groups": "3"},
+        for bad in ({"workers": 0}, {"workers": 33}, {"max_groups": "3"},
                     {"workers": True}):
             self.assertFalse(m.update_settings(bad)["ok"], bad)
         self.assertEqual(am.auto_settings(self.cfg)["workers"], 6)
+        # до 32 потоков (предел geneva_c)
+        self.assertTrue(m.update_settings({"workers": 32})["ok"])
+        self.assertEqual(am.auto_settings(self.cfg)["workers"], 32)
 
     def test_update_tunnels_and_exclude(self):
         m = self.manager()

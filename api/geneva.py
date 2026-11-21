@@ -35,8 +35,8 @@ API движка geneva_c и выбора движка обхода.
                                      error_code need_confirm
   POST /api/geneva/auto/disable   — выключить
   POST /api/geneva/auto/reset     — забыть сервис {key}
-  POST /api/geneva/auto/settings  — {workers 1–8, max_groups 1–8,
-                                     split_workers, by_name}
+  POST /api/geneva/auto/settings  — {workers 1–32, max_groups 1–8,
+                                     split_workers, by_name, final_check}
   POST /api/geneva/auto/check-now — проверить сервис вне очереди {key}
   POST /api/geneva/auto/priority  — важность {key, value: important |
                                      default | unimportant}

@@ -175,6 +175,15 @@ def overview() -> dict:
 
 # ─────────────────────────── переключение ───────────────────────────
 
+def _jobs_busy(gm) -> bool:
+    """Подбор или проверка geneva — или итоговая проверка найденного
+    (``evolve`` уже вышел, а обход ещё на паузе)."""
+    if gm.job_running():
+        return True
+    final = getattr(gm, "final_running", None)
+    return callable(final) and final() is True
+
+
 def _nfqws_busy() -> dict:
     try:
         from core import nfqws_control
@@ -252,7 +261,7 @@ def switch(target: str, start: bool = True) -> dict:
                     "hint": busy.get("hint", "")}
         from core.geneva_manager import get_geneva_manager
         gm = get_geneva_manager()
-        if gm.job_running():
+        if _jobs_busy(gm):
             return {"ok": False, "error_code": "busy",
                     "error": "идёт подбор geneva — дождитесь окончания или "
                              "остановите его"}
@@ -433,7 +442,7 @@ def hold_geneva_for(owner: str) -> str:
     if auto is not None and auto.running:
         # группы «Авто» снимаются на время, наблюдение идёт дальше
         return "paused" if auto.suspend(owner) else ""
-    if gm.job_running():
+    if _jobs_busy(gm):
         return "busy"
     if not gm.is_running():
         return ""
@@ -453,7 +462,7 @@ def release_geneva_hold(owner: str) -> None:
             return
         from core.geneva_manager import get_geneva_manager
         gm = get_geneva_manager()
-        if gm.is_running() or gm.job_running():
+        if gm.is_running() or _jobs_busy(gm):
             return
         res = gm.start()
         log.info("geneva снова запущен после «%s»: %s"
@@ -498,7 +507,7 @@ def boot_apply() -> None:
     cfg = _cfg()
     if not cfg.get("geneva", "autostart", default=False):
         return
-    if gm.is_running() or gm.job_running():
+    if gm.is_running() or _jobs_busy(gm):
         return
     res = gm.start()
     if res.get("ok"):

@@ -114,10 +114,36 @@ def site_of(s) -> str:
 
 
 def service_family(s):
-    """Семейство сайта или QUIC-сервиса; ``None`` для остальных."""
+    """Семейство сайта или QUIC-сервиса; ``None`` для остальных.
+
+    По самому хосту, если он известен (GenevaBrowserCheck.SiteAndFamily
+    AutoTuner): ``youtubei.googleapis.com`` — YouTube, хотя сервис —
+    весь ``googleapis.com``; у адреса семейства нет. Без хоста — по
+    сайту."""
+    if getattr(s, "kind", "") not in ("web", "quic"):
+        return None
+    host = str(getattr(s, "host", "") or "").strip().rstrip(".").lower()
+    if host and not _is_ip(host):
+        f = family_of(host)
+        if f:
+            return f
+    return family_of(site_of(s))
+
+
+def site_family(s):
+    """Семейство всего сайта (по ключу, без хоста): только оно
+    добавляет домены семейства к применённой стратегии по имени."""
     if getattr(s, "kind", "") not in ("web", "quic"):
         return None
     return family_of(site_of(s))
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text.strip("[]"))
+    except ValueError:
+        return False
+    return True
 
 
 # ───────────────────────────── списки ───────────────────────────────

@@ -398,6 +398,15 @@ def registrable(name: str) -> str:
     return _reg(name) or name
 
 
+def _family_kept(old: str, new: str) -> bool:
+    """Хост с семейством не уступает хосту без семейства: семейство
+    сервиса — по хосту (:func:`core.geneva_auto_lists.service_family`),
+    и ``youtubei.googleapis.com`` → ``fonts.googleapis.com`` не должен
+    то давать, то отнимать у ``googleapis.com`` семейство YouTube."""
+    return bool(old) and bool(gal.family_of(old)) and \
+        not gal.family_of(new)
+
+
 def ep_text(ip: str, port: int) -> str:
     return ("[%s]:%d" % (ip, port)) if ":" in ip else ("%s:%d" % (ip, port))
 
@@ -627,7 +636,7 @@ class Book:
                 bool(x.ip) and s.key not in self.by_name and \
                 not any(a["ip"] == x.ip for a in s.addresses)
             s.last_seen = max(s.last_seen, x.time)
-            if x.host:
+            if x.host and not _family_kept(s.host, x.host):
                 s.host = x.host
             if x.kind != LOCAL_PORT and x.ip:
                 _add_address(s, x.ip, x.time)
@@ -1250,7 +1259,10 @@ def host_profiles(services, trial_keys=(), quic: bool = False,
         if families:
             fams = []
             for s in members:
-                f = gal.service_family(s)
+                # семейство всего сайта, не его хоста: googleapis.com с
+                # хостом youtubei.googleapis.com не забирает себе домены
+                # YouTube у стратегии самого YouTube
+                f = gal.site_family(s)
                 if f and f not in fams:
                     fams.append(f)
             for f in fams:

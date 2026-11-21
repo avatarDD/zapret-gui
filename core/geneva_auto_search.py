@@ -75,7 +75,7 @@ EXEC_TIMEOUT_WEB = 16         # страница — 12 с, с запасом н
 EXEC_TIMEOUT_REPLAY = 10
 DEFAULT_WORKERS = 4
 EXTERNAL_FEATURE = "external_workers"   # geneva_c 1.2: external и N воркеров
-MAX_WORKERS = 8
+MAX_WORKERS = 32           # предел geneva_c (EVAL_MAX_WORKERS)
 # Имя хоста уходит в команду ``sh -c`` (в кавычках shlex) — и всё равно
 # только такое: оно пришло из DNS-ответа или SNI, то есть от чужих.
 _HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
@@ -288,14 +288,21 @@ class AutoSearch:
       — снять); ``False`` — не применилась. Нет функции — проверка на
       трафике пропускается, прошедшая оценку стратегия принимается;
     * ``ok_since(key, t)`` — был ли с момента ``t`` успешный поток
-      клиента этого сервиса (наблюдение).
+      клиента этого сервиса (наблюдение);
+    * ``related(service, strategy)`` — итоговая проверка связанных
+      ресурсов (AutoTuner 1.5): пробная стратегия по имени и на семейство
+      сайта (:func:`core.geneva_related.trial_families`), ответ —
+      ``{"pid", "hosts": [(имя, адрес)], "exclude": NameList}`` или
+      ``None`` (процесса «по
+      имени» нет); ``related(service, None)`` снимает это и отвечает
+      ``{"pid"}`` процесса до снятия.
     """
 
     def __init__(self, *, geneva=None, probes=None, trial=None,
                  ok_since=None, workers=DEFAULT_WORKERS,
                  python: str = sys.executable, script: str = "",
                  clock=time.time, paths=None, external=None,
-                 measure=None, slot: int = 0, ext=None):
+                 measure=None, slot: int = 0, ext=None, related=None):
         self._geneva = geneva
         # Слот задачи geneva (0 — общий с ручным подбором) и деление
         # потоков (подборы рядом: свой блок портов у каждого).
@@ -304,6 +311,9 @@ class AutoSearch:
         self._probes = probes
         self._trial = trial
         self._ok_since = ok_since
+        self._related = related
+        # итоговая проверка связанных ресурсов (geneva.final_check)
+        self.final_check = True
         self.workers = workers
         self._python = python
         self._script = script or probe_script()
@@ -699,8 +709,12 @@ class AutoSearch:
             st = gm.auto_job_status(slot=self.slot) if self.slot \
                 else gm.auto_job_status()
             self._set(generation=st.get("generation"),
+                      generations=st.get("generations"),
                       done=st.get("done"), best=st.get("best", ""),
-                      best_fitness=st.get("best_fitness"))
+                      best_fitness=st.get("best_fitness"),
+                      probing=st.get("probing"),
+                      checked=st.get("checked"),
+                      threads=st.get("workers"))
             if not st.get("running"):
                 return st
         return None
@@ -731,14 +745,77 @@ class AutoSearch:
                     break
                 passes += 1
             if passes >= TRIAL_PASSES:
-                return SearchResult(s.key, APPLIED, strategy=strat,
-                                    fitness=fit, detail=text)
+                ok, why = self._check_related(s, strat)
+                if self._stop.is_set():
+                    break
+                if ok is not False:
+                    return SearchResult(s.key, APPLIED, strategy=strat,
+                                        fitness=fit, detail=text)
+                log.info("geneva-auto: %s — сайт открылся, но не загрузились "
+                         "связанные ресурсы (%s), пробую дальше"
+                         % (s.name, why), source="geneva")
+                continue
             if self._stop.is_set():
                 break
             log.info("geneva-auto: %s — стратегия не подтвердилась на "
                      "трафике (%s)" % (s.name, text), source="geneva")
         self._trial(s, None)
         return None
+
+    def _check_related(self, s: ga.Service, strat: str):
+        """Итоговая проверка: связанные ресурсы сайта (его другие имена
+        и семейство) грузятся через пробную стратегию. ``(ok, текст)``:
+        ``False`` — какой-то не загрузился; ``None`` — проверять нечего
+        (не сайт на 443, нет процесса «по имени», выключено) или процесс
+        «по имени» за это время перезапускался — тогда неудача не
+        ставится стратегии в вину (её трафик шёл не через неё)."""
+        from core import geneva_related as grel
+        if self._related is None or not self.final_check or \
+                s.kind != ga.WEB or s.port != 443:
+            return None, ""
+        try:
+            info = self._related(s, strat)
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: связанные ресурсы: %s" % e,
+                      source="geneva")
+            return None, ""
+        if not info:
+            return None, ""
+        results = []
+        try:
+            hosts = list(info.get("hosts") or ())
+            if not hosts or not info.get("pid"):
+                return None, ""
+            self._set(phase="related", strategy=strat)
+            # новая стратегия перезапускает процесс «по имени»: пусть
+            # первые соединения уже идут через него
+            if self._stop.wait(grel.SETTLE):
+                return None, ""
+            results = self._pr().check_related(
+                hosts, exclude=info.get("exclude"))
+        finally:
+            try:
+                after = self._related(s, None) or {}
+            except Exception:                       # noqa: BLE001
+                after = {}
+        ok, text = grel.summary(results)
+        skipped = [h for h, v, _ in results if v == grel.NO_VERDICT]
+        if skipped:
+            log.info("geneva-auto: %s — не проверены (своя блокировка или "
+                     "нет соединения): %s" % (s.name, ", ".join(skipped)),
+                     source="geneva")
+        # перезапуск (другой номер запуска) или падение (pid другой или
+        # пропал) процесса «по имени»: трафик шёл не через стратегию
+        if ok is False and (after.get("gen") != info.get("gen") or
+                            after.get("pid") != info.get("pid")):
+            log.info("geneva-auto: %s — процесс «по имени» перезапускался "
+                     "во время проверки, связанные ресурсы не в счёт"
+                     % s.name, source="geneva")
+            return None, text
+        if ok:
+            log.info("geneva-auto: %s — загрузились и связанные ресурсы: %s"
+                     % (s.name, text), source="geneva")
+        return ok, text
 
     def _by_traffic(self, s: ga.Service, cands: list) -> SearchResult:
         """Сервис без пробы: кандидат за кандидатом, успех — успешный

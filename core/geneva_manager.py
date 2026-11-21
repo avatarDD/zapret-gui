@@ -132,10 +132,14 @@ PROTOS = ("tcp", "udp", "tcp,udp")
 
 # Границы параметров поиска: на слабом роутере большая популяция — это
 # часы и сотни килобайт checkpoint'а.
+# Потоков (воркеров): до GENEVA_MAX_WORKERS — столько берёт geneva_c
+# (EVAL_MAX_WORKERS в src/evaluator.h); обычно хватает 16.
+GENEVA_MAX_WORKERS = 32
+
 SEARCH_LIMITS = {
     "population": (4, 500),
     "generations": (1, 500),
-    "workers": (1, 8),
+    "workers": (1, GENEVA_MAX_WORKERS),
     "runs": (1, 5),
     "timeout": (2, 60),
 }
@@ -254,6 +258,12 @@ def _as_int(value, field: str, lo: int, hi: int) -> int:
     if not lo <= n <= hi:
         raise ValueError("%s: допустимо %d..%d" % (field, lo, hi))
     return n
+
+
+def geneva_workers(n) -> str:
+    """``--workers`` для geneva: не больше, чем принимает geneva_c
+    (старое значение из настроек не уронит запуск)."""
+    return str(max(1, min(int(n or 1), GENEVA_MAX_WORKERS)))
 
 
 def normalize_ports(value) -> str:
@@ -490,7 +500,7 @@ def build_evolve_args(binary: str, params: dict, p: dict,
     args = [binary, "evolve"] + list(ext or []) + _probe_args(params) + [
         "--population", str(params["population"]),
         "--generations", str(params["generations"]),
-        "--workers", str(params["workers"]),
+        "--workers", geneva_workers(params["workers"]),
         "--runs", str(params["runs"]),
         "-q", str(EVAL_QUEUE),
         "--mark", MARK,
@@ -512,7 +522,7 @@ def build_eval_args(binary: str, params: dict, p: dict,
     """argv ``geneva eval`` для списка стратегий (файл ``candidates``)."""
     return [binary, "eval"] + list(ext or []) + _probe_args(params) + [
         "-f", p["candidates"],
-        "--workers", str(params["workers"]),
+        "--workers", geneva_workers(params["workers"]),
         "--runs", str(params["runs"]),
         "-q", str(EVAL_QUEUE),
         "--mark", MARK,
@@ -524,7 +534,7 @@ def build_eval_args(binary: str, params: dict, p: dict,
 AUTO_JOB_LIMITS = {
     "population": (4, 200),
     "generations": (1, 200),
-    "workers": (1, 8),
+    "workers": (1, GENEVA_MAX_WORKERS),
     "timeout": (2, 60),
 }
 
@@ -748,7 +758,7 @@ def build_auto_eval_args(binary: str, params: dict, p: dict,
     портов воркеров, воркеры параллельно."""
     return [binary, "eval"] + list(ext or []) + _auto_probe_args(params) + [
             "-f", p["auto_candidates"],
-            "--workers", str(params["workers"]),
+            "--workers", geneva_workers(params["workers"]),
             "--runs", "1"] + slot_args(params) + [
             "--mark", MARK,
             "-e", p["job_events"],
@@ -765,7 +775,7 @@ def build_auto_evolve_args(binary: str, params: dict, p: dict,
             "--protos", params["protos"],
             "--population", str(params["population"]),
             "--generations", str(params["generations"]),
-            "--workers", str(params["workers"]),
+            "--workers", geneva_workers(params["workers"]),
             "--runs", "1"] + slot_args(params) + [
             "--mark", MARK,
             "--checkpoint", params["checkpoint"],
@@ -964,12 +974,20 @@ class ExternalAnswerer:
 
     POLL = 0.05
 
-    def __init__(self, proc, events_path: str, probe, workers: int = 1):
+    def __init__(self, proc, events_path: str, probe, workers: int = 1,
+                 with_strategy: bool = False):
         self._proc = proc
         self._probe = probe
+        # ``probe(lports, strategy)``: итоговая проверка пишет вердикт
+        # каждой стратегии
+        self._with_strategy = with_strategy
         self._reader = EventReader(events_path)
         self._sem = threading.Semaphore(max(1, int(workers or 1)) + 1)
         self._wlock = threading.Lock()
+        # видно на странице: сколько проб идёт сейчас и сколько отвечено
+        self.workers = max(1, int(workers or 1))
+        self.inflight = 0
+        self.answered = 0
         self._seen = set()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True,
@@ -993,7 +1011,8 @@ class ExternalAnswerer:
                 self._seen.add(rid)
                 self._sem.acquire()
                 threading.Thread(target=self._answer,
-                                 args=(rid, str(ev.get("lports") or "")),
+                                 args=(rid, str(ev.get("lports") or ""),
+                                       str(ev.get("strategy") or "")),
                                  daemon=True,
                                  name="geneva-external-probe").start()
             if self._proc.poll() is not None:
@@ -1001,15 +1020,31 @@ class ExternalAnswerer:
             self._stop.wait(self.POLL)
         self._close()
 
-    def _answer(self, rid, lports: str) -> None:
+    def _answer(self, rid, lports: str, strategy: str = "") -> None:
+        with self._wlock:
+            self.inflight += 1
         try:
             try:
-                res = self._probe(lports)
+                res = self._probe(lports, strategy) \
+                    if self._with_strategy else self._probe(lports)
             except Exception as e:                  # noqa: BLE001
                 res = (-400, "failed: %s" % e)
             self._write(external_answer(rid, res))
         finally:
+            with self._wlock:
+                self.inflight -= 1
+                self.answered += 1
             self._sem.release()
+
+    def counters(self) -> dict:
+        """``{"probing", "workers", "checked"}``: идущие пробы (не больше
+        числа воркеров), их предел и отвеченные; после выхода geneva
+        идущих нет."""
+        with self._wlock:
+            probing = min(self.inflight, self.workers) \
+                if self._proc.poll() is None else 0
+            return {"probing": probing, "workers": self.workers,
+                    "checked": self.answered}
 
     def _write(self, line: str) -> None:
         with self._wlock:
@@ -1279,6 +1314,9 @@ class GenevaManager:
         self._fw_seen = False
         self._auto_state = {}
         self._auto_procs = {}
+        # запусков процесса «по имени»: перезапуск за время проверки
+        # связанных ресурсов виден и при повторе pid
+        self._host_gen = 0
         self._job_answerer = None
 
     # ─────── бинарник ───────
@@ -1477,11 +1515,20 @@ class GenevaManager:
         binary, err = self._ready_binary()
         if not binary:
             return {"ok": False, "error": err, "items": []}
-        r = self._run_cmd([binary, "library", "--json"], timeout=10)
-        try:
-            items = json.loads(r.stdout) if r and r.returncode == 0 else None
-        except ValueError:
-            items = None
+        # geneva_c 2.1+: стратегии с x-действиями — только с --ext; у
+        # прежних сборок такого ключа нет (ошибка 2) — тогда без него
+        items = None
+        tries = [["--ext"], []] if "ext" in self.features(binary) else [[]]
+        for extra in tries:
+            r = self._run_cmd([binary, "library", "--json"] + extra,
+                              timeout=10)
+            try:
+                items = json.loads(r.stdout) \
+                    if r and r.returncode == 0 else None
+            except ValueError:
+                items = None
+            if isinstance(items, list):
+                break
         if not isinstance(items, list):
             return {"ok": False, "error": "geneva library не ответил",
                     "items": []}
@@ -1530,7 +1577,7 @@ class GenevaManager:
             if self.is_running():
                 return {"ok": False, "error": "geneva уже запущен",
                         "running": True}
-            if self.job_running():
+            if self.jobs_busy():
                 return {"ok": False, "error": "идёт подбор или проверка "
                         "стратегий — дождитесь окончания или остановите"}
             # Рядом с работающим nfqws2 не поднимаемся: каждый пакет
@@ -1699,7 +1746,7 @@ class GenevaManager:
         """Перезапуск живого движка с ``canon``; не вышло — прежняя
         стратегия поднимается снова, настройки не меняются."""
         with self._lock:
-            if self.job_running():
+            if self.jobs_busy():
                 return {"ok": False, "error": "идёт подбор или проверка "
                         "стратегий: для этой стратегии geneva нужно "
                         "перезапустить — дождитесь окончания"}
@@ -1794,6 +1841,11 @@ class GenevaManager:
     def job_running(self) -> bool:
         return self._job_pid() is not None
 
+    def jobs_busy(self) -> bool:
+        """Подбор или проверка идёт — или итоговая проверка найденного
+        (``evolve`` уже вышел, а обход ещё на паузе)."""
+        return self.job_running() or self.final_running()
+
     def search_state(self) -> dict:
         """``search.json``: параметры и итог последнего поиска."""
         return _read_json(paths()["search"])
@@ -1828,9 +1880,10 @@ class GenevaManager:
     def start_search(self, params: dict = None, resume: bool = False,
                      more_generations: int = 0) -> dict:
         """Запустить ``geneva evolve`` (или продолжить сохранённый поиск)."""
-        refusal = _auto_refusal()
+        refusal = _auto_refusal() or self._final_refusal()
         if refusal:
             return refusal
+        fc = (params or {}).get("final_check")
         with self._lock:
             if self.job_running():
                 return {"ok": False, "error": "подбор уже идёт"}
@@ -1858,6 +1911,12 @@ class GenevaManager:
             if params["probe"] == "https" and not shutil.which("curl"):
                 return {"ok": False, "error": "для пробы https нужен curl "
                         "(opkg install curl) — или выберите tls"}
+            if isinstance(fc, bool):
+                # итоговая проверка — общая с «Авто» (geneva.final_check);
+                # после проверок параметров, как и geneva.search ниже
+                cfg = _cfg()
+                cfg.set("geneva", "final_check", fc)
+                cfg.save()
             p = paths()
             if not resume:
                 # Новый поиск — новый checkpoint; база оценок остаётся:
@@ -1911,7 +1970,7 @@ class GenevaManager:
 
     def start_eval(self, strategies: list, params: dict = None) -> dict:
         """Проверить список готовых стратегий (``geneva eval -f``)."""
-        refusal = _auto_refusal()
+        refusal = _auto_refusal() or self._final_refusal()
         if refusal:
             return refusal
         with self._lock:
@@ -2164,7 +2223,7 @@ class GenevaManager:
                 st = self._job_state
             else:
                 st = self._auto_state or _read_json(paths()["auto_search"])
-            return {
+            out = {
                 "running": bool(pid) and st.get("status") == "running",
                 "kind": st.get("kind", ""),
                 "status": st.get("status", "idle") if st else "idle",
@@ -2183,6 +2242,9 @@ class GenevaManager:
                 "started_at": st.get("started_at"),
                 "finished_at": st.get("finished_at"),
             }
+            if out["running"] and self._job_answerer is not None:
+                out.update(self._job_answerer.counters())
+            return out
 
     # ─────── процессы групп «Авто» ───────
 
@@ -2334,6 +2396,9 @@ class GenevaManager:
 
     # ─────── «по имени» и детектор ───────
 
+    def auto_host_generation(self) -> int:
+        return self._host_gen
+
     def auto_host_pid(self):
         pid = _read_pid(auto_host_paths()["pid"])
         if pid and pid_alive(pid, "run"):
@@ -2394,6 +2459,8 @@ class GenevaManager:
             # сервисы TCP-профилей, которые процесс правда загрузил
             loaded = sorted({k for g in good if not g["udp"]
                              for k in g["services"]})
+            loaded_names = sorted({d for g in good if not g["udp"]
+                                   for d in g["domains"]})
             sig = "\n".join(("udp " if g["udp"] else "tcp ") + g["strategy"]
                             for g in good)
             pid = self.auto_host_pid()
@@ -2433,7 +2500,7 @@ class GenevaManager:
                               source="geneva")
                 return {"ok": True, "pid": pid, "action": "reloaded",
                         "udp": udp, "problems": problems,
-                        "services": loaded}
+                        "services": loaded, "domains": loaded_names}
             try:
                 _write_atomic(hp["profiles"], host_profiles_ini(good, hp))
                 strats = [g["strategy"] for g in good]
@@ -2448,6 +2515,7 @@ class GenevaManager:
                         "error": "Запуск geneva «по имени»: %s" % e}
             _write_pid(hp["pid"], proc.pid)
             self._auto_procs["host"] = proc
+            self._host_gen += 1
             _wait_ready_events(proc, hp["events"], timeout=6.0)
             if proc.poll() is not None:
                 _remove(hp["pid"])
@@ -2461,7 +2529,8 @@ class GenevaManager:
             except OSError:
                 pass
             return {"ok": True, "pid": proc.pid, "action": "started",
-                    "udp": udp, "problems": problems, "services": loaded}
+                    "udp": udp, "problems": problems, "services": loaded,
+                    "domains": loaded_names}
 
     def auto_host_stop(self) -> None:
         hp = auto_host_paths()
@@ -2553,6 +2622,11 @@ class GenevaManager:
         """SIGTERM: evolve сохраняет checkpoint и выходит после шага."""
         with self._lock:
             pid = self._job_pid()
+            if not pid and self.final_running():
+                # итоговая проверка: её конец вернёт обход с паузы
+                self._final.cancel()
+                self.stop_final_job()
+                return {"ok": True, "note": "итоговая проверка остановлена"}
             if not pid:
                 return {"ok": True, "note": "подбор не идёт"}
             sub = "evolve" if pid_alive(pid, "evolve") else "eval"
@@ -2660,7 +2734,17 @@ class GenevaManager:
                 " — " + tail[-1].strip()[:300] if tail else "")
         st.pop("stop_requested", None)
         st.pop("pid", None)
-        self._restore_paused(st)
+        # итоговая проверка лучших найденных: пауза обхода держится до
+        # её конца (проверка — в тех же условиях, что подбор)
+        try:
+            final = self._start_final(st)
+        except Exception as e:                      # noqa: BLE001
+            log.warning("geneva: итоговая проверка не запустилась: %s" % e,
+                        source="geneva")
+            st.pop("final", None)
+            final = False
+        if not final:
+            self._restore_paused(st)
         self._save_search_state(st)
         _remove(p["job_pid"])
         self._job_proc = None
@@ -2686,6 +2770,101 @@ class GenevaManager:
         except Exception as e:                      # noqa: BLE001
             log.warning("geneva: обход не возвращён после подбора: %s" % e,
                         source="geneva")
+
+    # ─────── итоговая проверка ручного подбора ───────
+
+    def final_running(self) -> bool:
+        fc = getattr(self, "_final", None)
+        return fc is not None and fc.busy
+
+    def _final_refusal(self) -> dict:
+        if not self.final_running():
+            return {}
+        return {"ok": False, "error_code": "geneva_final",
+                "error": "идёт итоговая проверка найденного — подождите "
+                         "минуту-две"}
+
+    def _start_final(self, st: dict) -> bool:
+        """После ручного ``evolve``: лучшие найденные проверяются на сайте
+        и его связанных ресурсах (:mod:`core.geneva_final_check`).
+        ``True`` — проверка пошла (пауза обхода снимется по её концу)."""
+        from core import geneva_final_check as gfc
+        if st.get("owner") == "auto" or st.get("kind") != "evolve" or \
+                st.get("status") != "done":
+            return False
+        try:
+            from core.geneva_auto_manager import final_check_enabled
+            if not final_check_enabled(_cfg()):
+                return False
+        except Exception:                           # noqa: BLE001
+            return False
+        strategies = gfc.pick(st.get("results"))
+        if not strategies or self.final_running():
+            return False
+        binary, _ = self._ready_binary()
+        if not binary or "external_workers" not in self.features(binary):
+            return False
+        host, _, _ = gfc.target_of(st.get("params"))
+        if not host:
+            return False
+        st["final"] = {"status": "running", "strategies": strategies,
+                       "items": {}, "started_at": time.time()}
+        # адрес и связанные ресурсы — в потоке проверки: DNS и книга
+        # «Авто» не под замком менеджера
+        fc = gfc.FinalCheck(self, strategies, st.get("params") or {},
+                            self._final_done)
+        self._final = fc
+        log.info("geneva: итоговая проверка %d лучших найденных на %s"
+                 % (len(strategies), host), source="geneva")
+        fc.start()
+        return True
+
+    def _final_done(self, verdicts: dict) -> None:
+        """Итог итоговой проверки — в состояние подбора, обход — обратно."""
+        with self._lock:
+            st = self.search_state()
+            fin = dict(st.get("final") or {})
+            fin["status"] = "done"
+            fin["finished_at"] = time.time()
+            fin["items"] = {k: dict(v) for k, v in (verdicts or {}).items()}
+            st["final"] = fin
+            self._restore_paused(st)
+            self._save_search_state(st)
+            if self._job_state.get("started_at") == st.get("started_at"):
+                self._job_state = st
+        try:
+            remember_verdicts(fin["items"], st.get("target", ""))
+        except OSError as e:
+            log.debug("geneva: вердикты проверки: %s" % e, source="geneva")
+        good = sum(1 for v in fin["items"].values() if v.get("ok"))
+        log.info("geneva: итоговая проверка: открылось с %d из %d"
+                 % (good, len(fin["items"])), source="geneva")
+
+    def start_final_job(self, strategies, probe) -> dict:
+        """``geneva eval --probe external`` итоговой проверки в слоте
+        :data:`core.geneva_final_check.SLOT`; ``probe(lports, strategy)``."""
+        from core import geneva_final_check as gfc
+        slot = self._slot(gfc.SLOT)
+        params = {"probe": "external", "target": "final", "workers": 1,
+                  "slot": gfc.SLOT, "timeout": 60}
+        with slot.lock:
+            if slot.running():
+                return {"ok": False, "error": "слот оценщика занят"}
+            args, state, err = self._prepare_auto_job(
+                "eval", params, strategies, False, probe, slot.paths())
+            if err:
+                return {"ok": False, "error": err}
+            state["owner"] = "final"
+            return slot.launch(args, state, answer=probe, workers=1,
+                               with_strategy=True)
+
+    def final_job_status(self) -> dict:
+        from core import geneva_final_check as gfc
+        return self._slot(gfc.SLOT).status()
+
+    def stop_final_job(self) -> None:
+        from core import geneva_final_check as gfc
+        self._slot(gfc.SLOT).stop()
 
     def search_status(self) -> dict:
         """Прогресс поиска для страницы и MCP."""
@@ -2723,6 +2902,7 @@ class GenevaManager:
                 "best": st.get("best", ""),
                 "baseline": st.get("baseline"),
                 "results": st.get("results") or [],
+                "final": st.get("final"),
                 "exit_code": st.get("exit_code"),
                 "exit_text": exit_text(st["exit_code"])
                 if st.get("exit_code") is not None else "",
@@ -2822,12 +3002,47 @@ class GenevaManager:
             elif st.get("paused_engine") and not st.get("restored"):
                 self._restore_paused(st)
                 self._save_search_state(st)
+            if (st.get("final") or {}).get("status") == "running":
+                # GUI перезапускали посреди итоговой проверки
+                st["final"]["status"] = "interrupted"
+                self._restore_paused(st)
+                self._save_search_state(st)
             if auto.get("status") == "running" and not self.job_running():
                 # Питание пропало посреди подбора «Авто»: дописать итог.
                 auto["status"] = "interrupted"
                 auto["finished_at"] = time.time()
                 self._save_search_state(auto)
                 self._auto_state = auto
+
+
+FINAL_VERDICTS_MAX = 200
+
+
+def final_verdicts_path() -> str:
+    return os.path.join(state_dir(), "final.json")
+
+
+def final_verdicts() -> dict:
+    """Вердикты итоговой проверки: ``{стратегия: {ok, detail, at,
+    target}}``."""
+    d = _read_json(final_verdicts_path())
+    return d if isinstance(d, dict) else {}
+
+
+def remember_verdicts(items: dict, target: str = "") -> None:
+    """Вердикты итоговой проверки — к «Найденным» (последние
+    :data:`FINAL_VERDICTS_MAX`)."""
+    if not items:
+        return
+    d = final_verdicts()
+    now = time.time()
+    for strat, v in items.items():
+        d[strat] = {"ok": v.get("ok"), "detail": str(v.get("detail")
+                                                     or "")[:300],
+                    "at": now, "target": target}
+    keep = sorted(d.items(), key=lambda kv: -float(kv[1].get("at") or 0))
+    _write_atomic(final_verdicts_path(), json.dumps(
+        dict(keep[:FINAL_VERDICTS_MAX]), ensure_ascii=False))
 
 
 def auto_slot_paths(slot: int) -> dict:
@@ -2874,10 +3089,11 @@ def job_event(st: dict, ev: dict) -> bool:
     return False
 
 
-def job_status_view(st: dict, running: bool) -> dict:
-    """Состояние задачи «Авто» → ответ ``auto_job_status``."""
+def job_status_view(st: dict, running: bool, answerer=None) -> dict:
+    """Состояние задачи «Авто» → ответ ``auto_job_status``; ``answerer``
+    (:class:`ExternalAnswerer`) — сколько проверяется сейчас."""
     st = st or {}
-    return {
+    out = {
         "running": running and st.get("status") == "running",
         "kind": st.get("kind", ""),
         "status": st.get("status", "idle") if st else "idle",
@@ -2896,6 +3112,11 @@ def job_status_view(st: dict, running: bool) -> dict:
         "started_at": st.get("started_at"),
         "finished_at": st.get("finished_at"),
     }
+    if answerer is not None:
+        out.update(answerer.counters())
+    if not out["running"]:
+        out["probing"] = 0
+    return out
 
 
 def finish_status(st: dict, code) -> None:
@@ -2933,7 +3154,7 @@ class AutoJobSlot:
         return self.proc is not None and self.proc.poll() is None
 
     def launch(self, args: list, state: dict, answer=None,
-               workers: int = 1) -> dict:
+               workers: int = 1, with_strategy: bool = False) -> dict:
         p = self.paths()
         os.makedirs(os.path.dirname(p["job_events"]), exist_ok=True)
         trim_file(p["job_events"], 0)
@@ -2948,7 +3169,8 @@ class AutoJobSlot:
         if self.answerer is not None:
             self.answerer.stop()
         self.answerer = ExternalAnswerer(
-            proc, p["job_events"], answer, workers=workers).start() \
+            proc, p["job_events"], answer, workers=workers,
+            with_strategy=with_strategy).start() \
             if answer is not None else None
         _write_pid(p["job_pid"], proc.pid)
         state["pid"] = proc.pid
@@ -2995,7 +3217,8 @@ class AutoJobSlot:
                 self.pump()
             elif self.state.get("status") == "running":
                 self.finish()
-            return job_status_view(self.state, self.running())
+            return job_status_view(self.state, self.running(),
+                                   self.answerer)
 
     def stop(self, wait: float = 30.0) -> None:
         with self.lock:

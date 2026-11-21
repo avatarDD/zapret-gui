@@ -115,7 +115,7 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
 | `start_auto_job("eval")` («Авто», быстрые кандидаты) | `geneva eval --probe external -f state/geneva/auto/candidates.txt --workers N -q 311 -e job-events.jsonl` (stdin — ответы `ExternalAnswerer`); без фичи `external_workers` — `--probe exec --cmd "python3 core/geneva_auto_probe_cli.py … --lports {lports}" --injected-contains INJECTED` | root |
 | `start_auto_job("evolve")` («Авто», сервис) | `geneva evolve [--ext --ext-blob …] --probe external\|exec … --protos TCP\|UDP,IP\|UDP,IP,DNS,DNSQR --population 20 --generations 10 --workers N -q 311 --checkpoint state/geneva/auto/<sha1>.ckpt --db db.jsonl --target https:<host>\|replay:<ip>:<port> [--resume]` | root |
 | `check_strategy()` | `geneva check --json -f -` | нет |
-| `library()` | `geneva library --json` | нет |
+| `library()` | `geneva library --json --ext` (при фиче `ext`; старая сборка без ключа — повтор без него) | нет |
 | `db_top()` | `geneva db --db db.jsonl top --json` (печатает JSONL) | нет |
 | `detect()` | `geneva version --json` | нет |
 
@@ -527,7 +527,8 @@ MCP (`core/mcp/tools/geneva.py`):
    шаблоны, вся `geneva library` для транспорта; всего до 192),
    прошедшие `geneva check` (неразбираемый кандидат уронил бы весь
    `eval -f` кодом 3); каждый круг — один `geneva eval --workers N`
-   **параллельно** (`geneva.auto.workers`, 4, поле внизу карточки «Авто»,
+   **параллельно** (`geneva.auto.workers`, 4, от 1 до 32 — предел
+   geneva_c, у ручного подбора тот же; поле внизу карточки «Авто»,
    `POST /api/geneva/auto/settings` — там же `max_groups`,
    `help_tunnels` и `exclude` (IP-адреса, список или текст; неверный —
    400 `bad_value`), всё сразу передаётся наблюдателю, подбору и
@@ -679,3 +680,51 @@ MCP (`core/mcp/tools/geneva.py`):
   «⋯», блок «Важные сервисы и исключения» (`/auto/lists`), строка
   «подборов сразу», «по имени», «детектор»; ручной подбор — галочка
   «добавить методы zapret2» (видна при `detect.ext`).
+
+### 10.2. Перенос Zapret2_AutoTuner 1.5
+
+Итоговая проверка в AutoTuner — встроенный браузер; на роутере его нет,
+отличия ниже. Настройка общая: `geneva.final_check` (по умолчанию да;
+`/auto/lists` и `search/start` с `final_check`).
+
+- **Связанные ресурсы в «Авто»** (`core/geneva_related.py`): после
+  `TRIAL_PASSES` проверок сайта на 443 `AutoSearch._check_related` зовёт
+  `related(s, strat)` менеджера: `_related` + `_hosts` добавляют профиль
+  «по имени» `grel.trial_families` (другие имена сайта и семейство, без
+  членов со своей жизнью и уже названного применёнными профилями, после
+  них; не влезает в 24 — нет), затем `SETTLE` 2 с и
+  `AutoProbes.check_related`: TLS + ответ HTTP на 443 через обход, имена —
+  увиденные устройствами (`seen_hosts`), иначе `PROBE_HOSTS`, не больше
+  4, «Не трогать» (имя, подсеть) — мимо. Вердикт `grel.judge`: ответ —
+  `ok`; нет соединения или корень Минцифры — без вердикта (журнал);
+  соединение без ответа или чужой сертификат — `failed` → следующий
+  кандидат. pid процесса «по имени» до снятия другой — перезапуск, провал
+  не в счёт. Без процесса «по имени» проверяется только сам сайт.
+- **Семейство по хосту**: `gal.service_family` берёт `s.host`
+  (`youtubei.googleapis.com` — YouTube), у адреса семейства нет, без хоста —
+  по сайту.
+- **Итоговая проверка ручного подбора** (`core/geneva_final_check.py`):
+  `_finish_job` законченного `evolve` (не «Авто») → `_start_final`: до 3
+  лучших с фитнесом > 0, фича `external_workers`; `FinalCheck` в своём
+  потоке разрешает сайт, берёт связанные ресурсы и запускает
+  `start_final_job` — `geneva eval --probe external` в `AutoJobSlot(1)`
+  (очередь 312, порты 30128+), ответы `ExternalAnswerer(with_strategy=True)`
+  → `gfc.measure` (страница уровня «тело» + связанные ресурсы с того же
+  блока портов). Отличие от эталона: стратегия действует только на
+  соединения проверки, а не на весь порт сайта. Пауза обхода держится до
+  конца (`_final_done` → `_restore_paused`). Итог — `search.final`
+  (`status`, `items` {стратегия: {ok, detail}}) и
+  `state/geneva/final.json` → «Найденные» (`found()[i].final`). Пока идёт
+  — новый подбор и проверка отказывают (`geneva_final`); перезапуск GUI —
+  `final.status = interrupted`.
+- **Сколько проверяется**: `ExternalAnswerer.counters()` → `probing`
+  (≤ воркеров, 0 после выхода), `workers`, `checked` в
+  `auto_job_status` слотов; прогресс подбора — `probing`, `threads`,
+  `checked`, `generations`; строка сервиса «подбор geneva: поколение … ·
+  проверяется сейчас N из M потоков · проверено K»; `search_slots_wanted`
+  — подсказка под «Делить потоки», если идёт меньше; на карточке ручного
+  подбора — идущие подборы «Авто».
+- **Библиотека geneva_c** (с 2.1): стратегии geneva_c против блокировок в
+  России (`country` `russia`, `test` `tls`/`quic`/`udp`, `rate` = фитнес −
+  300); стратегии Китая, Индии, Казахстана убраны; x-стратегии — только с
+  `--ext` (`"ext": true`, значок `ext` в «Библиотеке»).
