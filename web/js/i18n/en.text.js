@@ -1105,6 +1105,7 @@ const i18n_en_text = {
 "— актуально": "— up to date",
 "Установить выбранную версию": "Install the selected version",
 "Переустановить": "Reinstall",
+"версию узнать не удалось — бинарник не отвечает на «geneva version --json»": "could not determine the version — the binary does not answer “geneva version --json”",
 "Установить": "Install",
 "Включить TUN — один раз для всех движков (AmneziaWG, sing-box, mihomo, MASQUE)": "Enable TUN — once for all engines (AmneziaWG, sing-box, mihomo, MASQUE)",
 "Скачать и установить {0} (кнопка выше)": "Download and install {0} (button above)",

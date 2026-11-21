@@ -1371,7 +1371,7 @@ class GenevaManager:
         # x-стратегии (geneva_c 2.0, --ext): импорт из Zapret2_AutoTuner
         out["ext"] = geneva_ext.FEATURE in out["features"]
         if not info:
-            out["hint"] = "бинарник не отвечает на «geneva version --json»"
+            out["hint"] = self._broken_binary_hint(binary)
         elif proto != PROTO:
             out["hint"] = ("версия протокола %s, а zapret-gui понимает %d: "
                            "обновите geneva или zapret-gui" % (proto, PROTO))
@@ -1379,6 +1379,24 @@ class GenevaManager:
             out["hint"] = "сборка без NFQUEUE: движок на этой системе не "\
                           "заработает"
         return out
+
+    def _broken_binary_hint(self, binary: str) -> str:
+        """Чем именно плох бинарник, который не ответил на `version --json`.
+
+        С geneva_c 2.0.1 известный случай — на место движка попал
+        init-скрипт из `packaging/` тарбола (в нём `geneva` лежит дважды).
+        Тогда честнее сказать «это скрипт», а не «не отвечает»: второе
+        звучит как сбой бинарника, а не как ошибка установки.
+        """
+        try:
+            with open(binary, "rb") as f:
+                head = f.read(2)
+        except OSError:
+            return "бинарник не отвечает на «geneva version --json»"
+        if head == b"#!":
+            return ("на месте бинарника скрипт — установите geneva заново "
+                    "кнопкой «Переустановить»")
+        return "бинарник не отвечает на «geneva version --json»"
 
     def _ready_binary(self):
         """(binary, error): бинарник, с которым можно работать."""

@@ -1098,6 +1098,20 @@ const GenevaPage = (() => {
             return;
         }
         const rel = d.release || {};
+        // Бинарник есть, а версию узнать не удалось (на место движка
+        // попал не тот файл, или он не запускается) — обновлять нечего,
+        // нужно ставить заново. Без этой кнопки выхода из состояния не
+        // было: «Обновить» появлялась только при известной версии.
+        if (!d.version) {
+            const why = d.hint || 'версию узнать не удалось — бинарник не отвечает на «geneva version --json»';
+            el.innerHTML = `<div class="gv-note">
+                <div class="text-error" style="margin-bottom:6px;">${esc(why)}</div>
+                <div class="text-muted" style="font-size:12px;margin-bottom:6px;">
+                    <span class="gv-mono">${esc(d.binary)}</span></div>
+                <button class="btn btn-primary btn-sm" data-action="install">Переустановить</button>
+            </div>`;
+            return;
+        }
         const update = rel.has_update
             ? `<button class="btn btn-primary btn-sm" data-action="install">Обновить до ${esc(rel.latest)}</button>`
             : '';

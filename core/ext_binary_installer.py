@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
@@ -736,10 +737,28 @@ def verify_installed_binary(path: str, probe_args=("version", "--version",
     Возвращает {"ok": bool, "error": str}. Ненулевой код возврата ошибкой
     НЕ считается: многие программы отвечают rc=1 на неизвестный аргумент,
     а нам важно ровно одно — соглашается ли ядро запустить файл.
+
+    Скрипт (`#!`) — ошибка с флагом ``not_a_binary``: на место движка
+    обязан лечь ELF. Началось с geneva_c 2.0.1, где в тарболе рядом с
+    бинарником лежат init-скрипты с тем же именем — установка принимала
+    такой скрипт за успех, а менеджер потом писал «бинарник не отвечает
+    на geneva version --json».
     """
     arch, err = _elf_arch(path)
     if err:
         return {"ok": False, "error": err}
+    # _elf_arch пропускает скрипты молча (пустая arch без ошибки) — и это
+    # сливается со случаем «ELF с незнакомой e_machine». Поэтому смотрим
+    # сигнатуру ещё раз: для установки движка она обязана быть ELF.
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError as e:
+        return {"ok": False, "error": "файл не читается: %s" % e}
+    if head[:2] == b"#!":
+        return {"ok": False, "not_a_binary": True,
+                "error": "это скрипт, а не бинарник — в архиве выбран"
+                         " не тот файл"}
 
     host = detect_arch()
     if arch and host and arch != host:
@@ -1538,7 +1557,7 @@ def _install_from_manifest(name: str, cfg: dict, arch: str, progress_cb,
         if progress_cb:
             progress_cb("install", 80, "Установка...")
         res = _install_binary_file(cfg, tmp_path)
-        if res.get("exec_error"):
+        if res.get("exec_error") and not res.get("not_a_binary"):
             # Наша сборка под эту архитектуру не исполняется. Ведём себя
             # так же, как при её отсутствии: None → вызывающий уходит на
             # legacy_source. Иначе единственным выходом остаётся SSH.
@@ -1573,6 +1592,82 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _archive_member_rank(tar, member) -> int:
+    """Насколько содержимое члена архива похоже на исполняемый файл.
+
+    2 — ELF, 1 — не текст и не скрипт (сборка-обёртка под другую
+    систему), 0 — скрипт (`#!`), разметка (`<…`) или просто текст.
+
+    Нужно, чтобы отличить сам бинарник от одноимённых файлов упаковки: в
+    geneva_c 2.0.1 в тарболе появились `packaging/sysv/geneva` и
+    `packaging/openrc/geneva` — это init-скрипты `/bin/sh`, и лежат они
+    ПЕРЕД настоящим `geneva`. Текст отделён от «похоже на программу»
+    явно, иначе `docs/geneva` ранжировался бы наравне с ELF.
+    """
+    try:
+        f = tar.extractfile(member)
+    except (OSError, tarfile.TarError, KeyError):
+        return 0
+    if f is None:
+        return 0
+    try:
+        head = f.read(4)
+    except OSError:
+        return 0
+    finally:
+        try:
+            f.close()
+        except OSError:
+            pass
+    if head[:4] == b"\x7fELF":
+        return 2
+    if not head or head[:1] in (b"#", b"<"):
+        return 0
+    return 1
+
+
+def _archive_member_is_safe(extract_dir: str, member) -> bool:
+    """Путь члена не выходит за каталог распаковки (zip-slip)."""
+    target = os.path.realpath(os.path.join(extract_dir, member.name))
+    return target.startswith(os.path.realpath(extract_dir) + os.sep)
+
+
+def _pick_archive_member(tar, member_name: str = "", extract_dir: str = ""):
+    """Член тарбола, который стоит поставить.
+
+    ``member_name`` пусто — первый файл архива (для релизов без
+    ``archive_member``). Задан — выбирается среди одноимённых.
+
+    Раньше брался ПЕРВЫЙ член с таким базовым именем. Для geneva_c 1.x это
+    был верный файл, а в 2.0.1 порядок изменился — и на место
+    `/opt/usr/bin/geneva` лёг init-скрипт из `packaging/sysv/`. Проверка
+    запуска такой файл пропускает («скрипт — не наше дело»), установка
+    рапортовала успех, а `geneva version --json` отвечал справкой с кодом
+    2 — страница показывала «бинарник не отвечает».
+
+    Поэтому среди одноимённых выбираем исполняемый файл, а при равных —
+    самый верхний в архиве (упаковка всегда в подкаталогах). Члены с
+    небезопасным путём отсеиваются здесь, а не после выбора: иначе
+    zip-slip-член «занимал» имя и установка падала с «в архиве нет файла».
+    """
+    best = None
+    best_rank = None
+    for index, member in enumerate(tar.getmembers()):
+        if not member.isfile() or member.name.startswith("."):
+            continue
+        if member_name and os.path.basename(member.name) != member_name:
+            continue
+        if extract_dir and not _archive_member_is_safe(extract_dir, member):
+            continue
+        if not member_name:
+            return member
+        rank = (_archive_member_rank(tar, member),
+                -member.name.count("/"), -index)
+        if best_rank is None or rank > best_rank:
+            best, best_rank = member, rank
+    return best
+
+
 def _unpack_if_needed(path: str, member_name: str = "") -> tuple:
     """
     (путь_к_бинарнику, временный_ли, ошибка) — распаковать .gz/.tar.gz.
@@ -1583,27 +1678,19 @@ def _unpack_if_needed(path: str, member_name: str = "") -> tuple:
     «Exec format error»).
 
     ``member_name`` — базовое имя нужного файла в тарболе (``archive_member``
-    в BINARIES). Без него берётся первый файл: в релизе geneva_c это
-    LICENSE, а бинарник лежит рядом с README и packaging/.
+    в BINARIES). Из одноимённых берётся исполняемый (`_pick_archive_member`).
+    Без него берётся первый файл: в релизе geneva_c это LICENSE, а
+    бинарник лежит рядом с README и packaging/.
     """
     if path.endswith(".tar.gz") or path.endswith(".tgz"):
-        import tarfile
         extract_dir = tempfile.mkdtemp()
         try:
             with tarfile.open(path, "r:gz") as tar:
-                for member in tar.getmembers():
-                    if not member.isfile() or member.name.startswith("."):
-                        continue
-                    if member_name and \
-                            os.path.basename(member.name) != member_name:
-                        continue
-                    member_path = os.path.realpath(
-                        os.path.join(extract_dir, member.name))
-                    if not member_path.startswith(
-                            os.path.realpath(extract_dir) + os.sep):
-                        continue        # zip-slip
+                member = _pick_archive_member(tar, member_name, extract_dir)
+                if member is not None:
                     tar.extract(member, extract_dir)
-                    return member_path, True, ""
+                    return (os.path.realpath(
+                        os.path.join(extract_dir, member.name)), True, "")
         except (OSError, tarfile.TarError) as e:
             return "", False, "Распаковка архива: %s" % e
         if member_name:
@@ -1687,6 +1774,14 @@ def _install_binary_file(cfg: dict, tmp_path: str) -> dict:
                     % (dest, check.get("error"),
                        " — вернул прежнюю версию" if restored else ""),
                     source="ext_installer")
+        if check.get("not_a_binary"):
+            # Не «сборка не для этой архитектуры», а «в архиве выбран не
+            # тот файл» — уходить на запасной источник бессмысленно и
+            # вредно: именно так установка отчиталась успехом, положив
+            # init-скрипт geneva_c 2.0.1 на место бинарника.
+            return {"ok": False, "exec_error": True, "not_a_binary": True,
+                    "restored": restored,
+                    "error": "Скачанный архив: %s" % check.get("error")}
         return {"ok": False, "exec_error": True, "restored": restored,
                 "error": "Скачанный файл не запускается на этом устройстве"
                          " (%s).%s" % (check.get("error"),

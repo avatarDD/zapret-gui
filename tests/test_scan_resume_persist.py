@@ -129,6 +129,62 @@ class TestArchiveMember(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertIn("nope", err)
 
+    def test_init_script_with_same_name_loses_to_elf(self):
+        """geneva_c 2.0.1 положил в тарбол init-скрипты с тем же именем,
+        что и бинарник (`packaging/sysv/geneva`), и идут они РАНЬШЕ него.
+
+        Раньше брался первый член по имени — на `/opt/usr/bin/geneva`
+        оказывался `/bin/sh`-скрипт, установка рапортовала успехом, а
+        менеджер потом писал «бинарник не отвечает на geneva version
+        --json».
+        """
+        path = os.path.join(self.dir, "geneva-2.0.1-linux-x86_64.tar.gz")
+        script = b"#!/bin/sh\ncase \"$1\" in start) ;; esac\n"
+        with tarfile.open(path, "w:gz") as tar:
+            for name, data in (
+                    ("geneva-2.0.1-linux-x86_64/packaging/sysv/geneva", script),
+                    ("geneva-2.0.1-linux-x86_64/packaging/openrc/geneva", script),
+                    ("geneva-2.0.1-linux-x86_64/README.md", b"readme"),
+                    ("geneva-2.0.1-linux-x86_64/geneva", b"\x7fELFbin")):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        out, _tmp, err = ebi._unpack_if_needed(path, "geneva")
+        self.assertEqual(err, "")
+        with open(out, "rb") as f:
+            self.assertEqual(f.read(), b"\x7fELFbin")
+
+    def test_text_file_does_not_beat_elf_on_depth(self):
+        """Текст в корне архива с тем же именем не должен опережать ELF в
+        подкаталоге — глубиной ранжирование не подменяется."""
+        path = os.path.join(self.dir, "depth.tar.gz")
+        with tarfile.open(path, "w:gz") as tar:
+            for name, data in (("geneva", b"just a note about the binary"),
+                               ("geneva-1.0.0/geneva", b"\x7fELFbin")):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        out, _tmp, err = ebi._unpack_if_needed(path, "geneva")
+        self.assertEqual(err, "")
+        with open(out, "rb") as f:
+            self.assertEqual(f.read(), b"\x7fELFbin")
+
+    def test_zip_slip_member_is_skipped_not_extracted(self):
+        """Член с «../» в пути не должен ни распаковываться, ни «занимать»
+        имя: после него выбирается безопасный одноимённый файл."""
+        path = os.path.join(self.dir, "slip.tar.gz")
+        with tarfile.open(path, "w:gz") as tar:
+            for name, data in (("../../evil/geneva", b"\x7fELFevil"),
+                               ("geneva-1.0.0/geneva", b"\x7fELFbin")):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        out, _tmp, err = ebi._unpack_if_needed(path, "geneva")
+        self.assertEqual(err, "")
+        with open(out, "rb") as f:
+            self.assertEqual(f.read(), b"\x7fELFbin")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "evil")))
+
     def test_geneva_entry_is_pinned_with_hashes(self):
         cfg = ebi.BINARIES["geneva"]
         self.assertEqual(cfg["repo"], "avatarDD/geneva_c")

@@ -195,6 +195,18 @@ class TestVerifyInstalledBinary(unittest.TestCase):
                 res = ebi.verify_installed_binary(path)
         self.assertTrue(res["ok"])
 
+    def test_script_is_not_a_binary(self):
+        """`geneva version --json` для init-скрипта отвечает справкой с
+        кодом 2 — ядро его запускает, поэтому одной проверки запуска мало:
+        на место движка обязан лечь ELF."""
+        path = self._write(b"#!/bin/sh\ncase \"$1\" in start) ;; esac\n")
+        with mock.patch.object(ebi.subprocess, "run") as run:
+            res = ebi.verify_installed_binary(path)
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["not_a_binary"])
+        self.assertIn("скрипт", res["error"])
+        run.assert_not_called()
+
 
 class TestUnpack(unittest.TestCase):
 
