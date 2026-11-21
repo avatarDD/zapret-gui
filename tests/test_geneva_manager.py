@@ -23,6 +23,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -173,6 +174,164 @@ class TestArgs(unittest.TestCase):
         args = gm.build_eval_args("/g", params, self.p)
         self.assertEqual(args[1], "eval")
         self.assertEqual(args[args.index("-f") + 1], "/x/candidates")
+
+
+class TestNflogRefused(unittest.TestCase):
+    """Отказ NFLOG в логе geneva — признак «в ядре нет nfnetlink_log».
+
+    Ядро отвечает EINVAL, когда подсистемы нет вовсе (request_module не
+    нашёл модуль), и EBUSY, когда группу уже читает другая программа.
+    Путать эти случаи нельзя: второй — временный и к нашему модулю не
+    относится.
+    """
+
+    LINE = ("2026-11-21 17:25:13.768 error engine: cannot bind NFLOG group "
+            "349: Invalid argument")
+
+    def test_einval_is_our_case(self):
+        self.assertTrue(gm.nflog_refused(self.LINE))
+
+    def test_busy_is_not(self):
+        self.assertFalse(gm.nflog_refused(
+            "error engine: cannot bind NFLOG group 349: Device or resource "
+            "busy (another program reads this group)"))
+
+    def test_other_errors_are_not(self):
+        self.assertFalse(gm.nflog_refused("error engine: netlink socket: "
+                                          "Operation not permitted"))
+        self.assertFalse(gm.nflog_refused(""))
+        self.assertFalse(gm.nflog_refused(None))
+
+    def test_warns_about_mark_are_not_nflog(self):
+        self.assertFalse(gm.nflog_refused(
+            "warn run: --mark 0x20000000 shares bit 0x20000000 with "
+            "zapret2's DESYNC_MARK_POSTNAT"))
+
+
+class TestObserverDisabled(unittest.TestCase):
+    """Детектор с отказом NFLOG не перезапускается до сброса."""
+
+    def _mgr(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        m._obs_disabled = ""
+        # modprobe в тестах не дёргаем: это отдельный тест ниже
+        m._nflog_load_tried = True
+        return m
+
+    def test_refusal_disables_until_reset(self):
+        m = self._mgr()
+        proc = mock.Mock()
+        proc.pid = 4242
+        proc.poll.return_value = 1          # сразу умер
+        proc.returncode = 1
+        hp = {"obs_pid": "/tmp/x.pid", "obs_events": "/tmp/x.ev",
+              "obs_log": "/tmp/x.log", "obs_socket": "/tmp/x.sock"}
+        calls = []
+
+        def spawn(args, log_path):
+            calls.append(args)
+            return proc
+
+        with mock.patch.object(m, "auto_observer_pid", return_value=None), \
+             mock.patch.object(m, "_ready_binary",
+                               return_value=("/opt/usr/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_auto"}), \
+             mock.patch.object(gm, "auto_host_paths", return_value=hp), \
+             mock.patch.object(m, "_stop_aux"), \
+             mock.patch.object(gm, "_spawn", side_effect=spawn), \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_remove"), \
+             mock.patch.object(gm, "_wait_ready_events"), \
+             mock.patch.object(gm, "tail_lines",
+                               return_value=[TestNflogRefused.LINE]):
+            r = m.auto_observer_ensure()
+            self.assertEqual(r["action"], "disabled")
+            self.assertEqual(r["reason"], "no_nflog")
+            # второй вызов процесс не запускает
+            r2 = m.auto_observer_ensure()
+            self.assertEqual(r2["action"], "disabled")
+            self.assertEqual(len(calls), 1)
+            m.auto_observer_reset()
+            m.auto_observer_ensure()
+            self.assertEqual(len(calls), 2)
+
+    def test_crash_is_not_persistent(self):
+        m = self._mgr()
+        proc = mock.Mock()
+        proc.pid = 4343
+        proc.poll.return_value = 1
+        proc.returncode = 1
+        hp = {"obs_pid": "/tmp/x.pid", "obs_events": "/tmp/x.ev",
+              "obs_log": "/tmp/x.log", "obs_socket": "/tmp/x.sock"}
+        with mock.patch.object(m, "auto_observer_pid", return_value=None), \
+             mock.patch.object(m, "_ready_binary",
+                               return_value=("/opt/usr/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_auto"}), \
+             mock.patch.object(gm, "auto_host_paths", return_value=hp), \
+             mock.patch.object(m, "_stop_aux"), \
+             mock.patch.object(gm, "_spawn", return_value=proc), \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_remove"), \
+             mock.patch.object(gm, "_wait_ready_events"), \
+             mock.patch.object(gm, "tail_lines",
+                               return_value=["error engine: exit 4"]):
+            r = m.auto_observer_ensure()
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "crash")
+        self.assertEqual(m._obs_disabled, "")
+
+    def test_unsupported_engine_is_silent(self):
+        m = self._mgr()
+        with mock.patch.object(m, "auto_observer_pid", return_value=None), \
+             mock.patch.object(m, "_ready_binary",
+                               return_value=("/opt/usr/bin/geneva", "")), \
+             mock.patch.object(m, "features", return_value={"nfqueue"}):
+            r = m.auto_observer_ensure()
+        self.assertEqual(r["action"], "unsupported")
+        self.assertEqual(m._obs_disabled, "")
+
+    def test_module_is_loaded_once_per_session(self):        # Linux/Keenetic: модуль есть, но не загружен — пробуем modprobe
+        # один раз, а не на каждом срезе.
+        m = self._mgr()
+        m._nflog_load_tried = False
+        with mock.patch("core.kmod_manager.nflog_ensure_module") as ens:
+            m._ensure_nflog_module()
+            m._ensure_nflog_module()
+        self.assertEqual(ens.call_count, 1)
+        m.auto_observer_reset()
+        with mock.patch("core.kmod_manager.nflog_ensure_module") as ens:
+            m._ensure_nflog_module()
+        self.assertEqual(ens.call_count, 1)
+
+    def test_disabled_detector_revives_when_module_appears(self):
+        # Модуль поставили кнопкой, режим не перезапускали: запрет снимается
+        # на следующем срезе, не дожидаясь auto_observer_reset().
+        m = self._mgr()
+        m._obs_disabled = "no_nflog"
+        proc = mock.Mock()
+        proc.pid = 5151
+        proc.poll.return_value = None       # живёт
+        hp = {"obs_pid": "/tmp/x.pid", "obs_events": "/tmp/x.ev",
+              "obs_log": "/tmp/x.log", "obs_socket": "/tmp/x.sock"}
+        with mock.patch.object(m, "auto_observer_pid", return_value=None), \
+             mock.patch.object(m, "_ready_binary",
+                               return_value=("/opt/usr/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_auto"}), \
+             mock.patch.object(gm, "auto_host_paths", return_value=hp), \
+             mock.patch.object(m, "_stop_aux"), \
+             mock.patch.object(gm, "_spawn", return_value=proc), \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_wait_ready_events"), \
+             mock.patch.object(gm, "nflog_available", return_value=True):
+            r = m.auto_observer_ensure()
+        self.assertEqual(r["action"], "started")
+        self.assertEqual(r["pid"], 5151)
+        self.assertEqual(m._obs_disabled, "")
 
 
 class TestEvents(unittest.TestCase):

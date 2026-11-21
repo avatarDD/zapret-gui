@@ -264,6 +264,46 @@ test('вкладка «Стратегии»: только рабочие, биб
     assert.strictEqual((html.match(/data-copy=/g) || []).length, 2);
 });
 
+const NO_NFLOG = Object.assign({}, AUTO_ON, {
+    detector: { running: false, supported: true, reason: 'no_nflog',
+                problem: 'детектор geneva не работает' },
+    problems: ['детектор geneva не работает: в ядре нет модуля NFLOG '
+               + '(nfnetlink_log) — режим работает без подозрений по потокам'],
+});
+
+test('детектор без NFLOG: кнопка установки модуля (OpenWrt)', async () => {
+    const env = makeSandbox({ auto: Object.assign({}, NO_NFLOG, {
+        nflog_fix: { can_auto_install: true, platform: 'openwrt',
+                     pkg_manager: 'apk',
+                     command: 'apk update && apk add kmod-nfnetlink-log' } }) });
+    const root = await renderAuto(env);
+    const html = env.elements.get('gv-auto').innerHTML;
+    assert.match(html, /нет модуля NFLOG/);
+    assert.match(html, /data-auto-act="nflog"/);
+    assert.match(html, /Установить модуль NFLOG/);
+    // кнопка в общей ловушке кликов: POST на установку модуля.
+    // Клик не ждём: опрос статуса крутится на setTimeout, который в этой
+    // песочнице — заглушка, и промис установки не завершится никогда.
+    const btn = { dataset: { autoAct: 'nflog' } };
+    const before = env.calls.post.length;
+    root.handlers.click[0]({ target: { closest: () => btn } });
+    for (let i = 0; i < 3; i++) await tick();
+    assert.ok(env.calls.post.slice(before).some(p => p[0] === '/api/diagnostics/nflog-deps/install'),
+              JSON.stringify(env.calls.post));
+});
+
+test('детектор без NFLOG: на Keenetic вместо кнопки инструкция', async () => {
+    const env = makeSandbox({ auto: Object.assign({}, NO_NFLOG, {
+        nflog_fix: { can_auto_install: false, platform: 'keenetic',
+                     instructions: 'Детектор geneva отключится сам — '
+                                   + 'остальной режим «Авто» работает и без него.' } }) });
+    await renderAuto(env);
+    const html = env.elements.get('gv-auto').innerHTML;
+    assert.match(html, /нет модуля NFLOG/);
+    assert.ok(!/data-auto-act="nflog"/.test(html), 'кнопки на Keenetic нет');
+    assert.match(html, /работает и без него/);
+});
+
 test('вкладка «Стратегии»: пусто', async () => {
     const env = makeSandbox({ auto: { ok: true, enabled: false } });
     const c = makeElement('root');

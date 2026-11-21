@@ -695,6 +695,7 @@ const GenevaPage = (() => {
         };
         try {
             if (act === 'reset') return _autoReset(key);
+            if (act === 'nflog') return _installNflog();
             if (act === 'try') {
                 const strategy = (window.prompt(_tr('geneva.auto.try_prompt')) || '').trim();
                 if (!strategy) return;
@@ -764,9 +765,54 @@ const GenevaPage = (() => {
     }
 
     function _autoProblems(a) {
-        const list = (a.problems || []).slice();
+        const det = a.detector || {};
+        const fix = a.nflog_fix || {};
+        // Строку про NFLOG рисуем отдельным блоком с кнопкой — в общем
+        // списке ошибок она была бы вторым экземпляром того же текста.
+        const isNflog = t => /NFLOG/.test(t);
+        const list = (a.problems || []).filter(t => !isNflog(t));
         if (a.offload) list.unshift(_tr('geneva.auto.offload'));
-        return list.length ? `<div class="text-error">${list.map(esc).join('<br>')}</div>` : '';
+        const need = det.reason === 'no_nflog' || (a.problems || []).some(isNflog);
+        const btn = fix.can_auto_install
+            ? `<button class="btn btn-secondary btn-sm" data-auto-act="nflog">${esc(_tr('geneva.auto.nflog_install'))}</button>`
+            : '';
+        const why = need && !fix.can_auto_install ? `<div class="text-muted">${esc(fix.instructions || '')}</div>` : '';
+        const nflog = need
+            ? `<div class="gv-auto-fix">${esc(_tr('geneva.auto.nflog_fix'))}${btn}</div>${why}`
+            : '';
+        return (list.length ? `<div class="text-error">${list.map(esc).join('<br>')}</div>` : '') + nflog;
+    }
+
+    /** Поставить модуль NFLOG кнопкой — детектор geneva включается сам.
+     *  Вывод установки показываем только при неудаче: при успехе хватает
+     *  тоста и того, что строка проблемы исчезнет со следующего среза. */
+    async function _installNflog() {
+        let r;
+        try {
+            r = await API.post('/api/diagnostics/nflog-deps/install', {}, { timeout: 30000 });
+        } catch (e) {
+            Toast.error(errText(e));
+            return;
+        }
+        if (!r || !r.ok) {
+            Toast.error((r && r.error) || _tr('geneva.auto.nflog_failed'));
+            return;
+        }
+        Toast.info(_tr('geneva.auto.nflog_started'));
+        for (let i = 0; i < 90; i += 1) {
+            await new Promise(res => setTimeout(res, 2000));
+            let st = null;
+            try {
+                st = await API.get('/api/diagnostics/nflog-deps/install/status');
+            } catch (_) { break; }
+            if (st && st.running) continue;
+            const res = (st && st.result) || {};
+            if (res.ok) Toast.success(_tr('geneva.auto.nflog_done'));
+            else if (res.needs_reboot) Toast.warning(_tr('geneva.auto.nflog_reboot'));
+            else Toast.error(_tr('geneva.auto.nflog_failed') + (res.output ? ' — ' + String(res.output).slice(-300) : ''));
+            break;
+        }
+        _refresh();
     }
 
     async function _autoToggle(on) {

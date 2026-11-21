@@ -697,6 +697,48 @@ README; в 2.0.1 первыми идут `packaging/s6/geneva/run`,
   `THROTTLE`/`FREEZE_N` у `host`/`ip` → `Book.detect` (подозрение, раз в
   минуту), `capacity` → `geneva_rate.SHARED`, `DNS_POISON` → совет DoH
   раз в час на имя.
+
+  Детектору нужна подсистема ядра **NFLOG** (`nfnetlink_log`), а это НЕ
+  то же, что NFQUEUE: `nfnetlink_queue` и `nfnetlink_log` — разные
+  модули, и на OpenWrt второй в образ по умолчанию не входит (пакет
+  `kmod-nfnetlink-log`, фича ядра `nfnetlink-log`). Без подсистемы
+  ядро отвечает на `NFULNL_CFG_CMD_BIND` через `EINVAL` — в логе geneva
+  это `error engine: cannot bind NFLOG group 349: Invalid argument`, и
+  процесс умирает с `EXIT_FAIL` («ни одна стратегия не прошла»). Признак
+  загруженной подсистемы — `/proc/net/netfilter/nfnetlink_log`
+  (`proc_create_net` в `nfnetlink_log.c`, файл живёт, пока модуль
+  загружен) и `nfnetlink_log` в `/proc/modules`
+  (`core.diagnostics._check_nflog_available`).
+  - `GenevaManager.auto_observer_ensure` различает отказ по тексту
+    (`geneva_manager.nflog_refused`): `EBUSY` апстрима
+    (`(another program reads this group)`) — НЕ наш случай, группу
+    читает другая программа. После `EINVAL` ставится
+    `_obs_disabled = "no_nflog"`, и детектор не перезапускается до
+    `auto_observer_reset()` (вызывается при включении режима): модуль
+    ядра сам не появится, а попытка каждые 15 с — только мусор.
+  - Перед первым запуском детектора — одна попытка подгрузить модуль:
+    `GenevaManager._ensure_nflog_module` (флаг `_nflog_load_tried`, сброс
+    в `auto_observer_reset`) → `core.kmod_manager.nflog_ensure_module`
+    (`modprobe nfnetlink_log`, если `/proc/net/netfilter/nfnetlink_log`
+    нет). Это дорога для Linux и Keenetic, где модуль есть, но не
+    загружен: автозагрузка по алиасу `nfnetlink-subsys-4` срабатывает не
+    всегда (нужен `modules.dep`). На OpenWrt модуля нет вовсе — modprobe
+    ничего не находит, и дальше решает только установка пакета.
+  - `GenevaAutoManager._detector_off`: `no_nflog` → одна строка в
+    `problems` и один `note` за сеанс; прочие падения — `note` при смене
+    вида отказа (ключ дедупликации `_detector_reason_text` вырезает метки
+    времени из хвоста лога — иначе каждая попытка выглядит новой) и
+    повтор не чаще `DETECTOR_RETRY = 300` с.
+  - Починка из GUI: `core/kmod_manager` знает два «вкуса» установки
+    (`_FLAVORS`: `nfqueue`/`nflog`, общий `_state_lock` — пакетный
+    менеджер один). `nflog_deps_status()` / `nflog_fix_hint()` →
+    `GET /api/diagnostics/nflog-deps`, `POST .../install`,
+    `GET .../install/status`; кнопка «Установить модуль NFLOG» на
+    карточке «Авто» (`nflog_fix` в `/api/geneva/auto/status`). На
+    Keenetic/Entware модуль приходит из прошивки — `can_auto_install:
+    False`, `install_command: ""` (пакета `kmod-nfnetlink-log` в opkg-фиде
+    нет, и показывать команду было бы ложью) и инструкция; режим «Авто»
+    работает без детектора.
 - **UI**: фильтр и стабильный порядок строк, колонка «Важность», меню
   «⋯», блок «Важные сервисы и исключения» (`/auto/lists`), строка
   «подборов сразу», «по имени», «детектор»; ручной подбор — галочка

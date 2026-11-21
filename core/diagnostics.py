@@ -1451,6 +1451,29 @@ def _check_nfqueue_available():
     return False
 
 
+def _check_nflog_available():
+    """Доступен ли NFLOG — подсистема ``nfnetlink_log`` (группы NFLOG).
+
+    Это не то же, что NFQUEUE: ``nfnetlink_queue`` и ``nfnetlink_log`` —
+    разные модули, и на OpenWrt второй в образ по умолчанию не входит
+    (пакет ``kmod-nfnetlink-log``). Без подсистемы ядро отвечает на
+    попытку встать на группу ``EINVAL`` — «Invalid argument», хотя права
+    есть, — и детектор geneva (``--ext-auto observe``) падает при старте.
+
+    Признак работающей подсистемы — ``/proc/net/netfilter/nfnetlink_log``:
+    ``nfnetlink_log`` регистрирует его сам (``proc_create_net``) и держит,
+    пока модуль загружен, — независимо от того, читает ли кто-то группу.
+    """
+    if os.path.exists("/proc/net/netfilter/nfnetlink_log"):
+        return True
+    try:
+        with open("/proc/modules", "r") as f:
+            return "nfnetlink_log" in f.read()
+    except (IOError, OSError):
+        pass
+    return False
+
+
 # ─────────────────────── Системная диагностика ───────────────────────
 
 def get_system_diagnostics():

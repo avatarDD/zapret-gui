@@ -59,6 +59,13 @@ PKG_NFT_QUEUE = "kmod-nft-queue"
 # идемпотентный no-op, но включаем для полноты и чтобы sysctl-нода точно была.
 PKG_NF_CONNTRACK = "kmod-nf-conntrack"
 
+# NFLOG — подсистема nfnetlink_log: группы NFLOG, в которые ядро копирует
+# пакеты (nfnetlink_queue отдаёт их на обработку и ждёт вердикта, а NFLOG
+# только копирует). Нужна детектору geneva (``--ext-auto observe``); в образ
+# OpenWrt по умолчанию не входит, и без неё ядро отвечает EINVAL на попытку
+# встать на группу — «cannot bind NFLOG group N: Invalid argument».
+PKG_NFNETLINK_LOG = "kmod-nfnetlink-log"
+
 # Абсолютные пути СИСТЕМНОГО пакетного менеджера (прошивки), в приоритете.
 # /opt/... (Entware) сюда намеренно не входит.
 _APK_PATHS = ("/usr/bin/apk", "/sbin/apk", "/bin/apk")
@@ -184,6 +191,161 @@ def _iptables_target_available(fw_type):
         return None
 
 
+def _nflog_probe():
+    """Доступность NFLOG — лениво, чтобы не тянуть diagnostics при импорте."""
+    from core.diagnostics import _check_nflog_available
+    return _check_nflog_available()
+
+
+def _nfqueue_probe():
+    """Доступность NFQUEUE — лениво, чтобы не тянуть diagnostics при импорте."""
+    from core.diagnostics import _check_nfqueue_available
+    return _check_nfqueue_available()
+
+
+# Что чем проверяется после установки и что дёргать через modprobe.
+_FLAVORS = {
+    "nfqueue": {"probe": _nfqueue_probe, "module": "nfnetlink_queue",
+                "title": "NFQUEUE"},
+    "nflog": {"probe": _nflog_probe, "module": "nfnetlink_log",
+              "title": "NFLOG"},
+}
+
+
+def nflog_required_packages():
+    """Пакеты OpenWrt для NFLOG. Один модуль, фронтендов у него нет."""
+    return [PKG_NFNETLINK_LOG]
+
+
+def nflog_deps_status():
+    """Статус NFLOG (``nfnetlink_log``) и возможности починки из GUI.
+
+    Нужен детектору geneva (``--ext-auto observe``): он встаёт на группу
+    NFLOG, а без подсистемы ядро отвечает ``Invalid argument``.
+
+    Поля те же, что у :func:`nfqueue_deps_status`, кроме сетевых
+    (``fw_type``, ``target_available``): у NFLOG один модуль и нет
+    фронтендов вроде цели iptables. ``available`` — подсистема уже
+    работает (тогда кнопка не нужна).
+    """
+    platform = _platform_kind()
+    kind, path = detect_pkg_manager()
+    available = _nflog_probe()
+    packages = nflog_required_packages()
+    install_command = install_command_str(kind, packages)
+
+    can_auto_install = (platform == "openwrt" and kind is not None)
+    reason = ""
+    instructions = ""
+    if not can_auto_install:
+        if platform in ("keenetic", "entware"):
+            reason = ("На Keenetic/Entware модуль nfnetlink_log приходит из "
+                      "прошивки, а не из opkg (feed отвечает «Unknown "
+                      "package»).")
+            instructions = (
+                "Детектор geneva отключится сам — остальной режим «Авто» "
+                "работает и без него. Если нужен детектор, включите NFLOG в "
+                "прошивке (компонент netfilter с группой NFLOG).")
+        elif platform == "linux":
+            reason = ("Обычный Linux: nfnetlink_log обычно встроен в ядро или "
+                      "поднимается modprobe.")
+            instructions = (
+                "Попробуйте загрузить модуль: modprobe nfnetlink_log. Если "
+                "модуля нет — доустановьте пакет ядра средствами вашего "
+                "дистрибутива. Без него детектор geneva работать не будет.")
+        else:
+            reason = "Не найден системный пакетный менеджер (apk/opkg)."
+            instructions = "Установите модуль NFLOG вручную."
+
+    if not can_auto_install:
+        # Команду показываем только там, где она сработает: на Keenetic
+        # «opkg install kmod-nfnetlink-log» — заведомая неправда (такого
+        # пакета в фиде нет), и предлагать её в интерфейсе нельзя.
+        install_command = ""
+
+    return {
+        "platform": platform,
+        "pkg_manager": kind,
+        "pkg_manager_path": path,
+        "available": available,
+        "packages": packages,
+        "install_command": install_command,
+        "can_auto_install": can_auto_install,
+        "reason": reason,
+        "instructions": instructions,
+    }
+
+
+def nflog_ensure_module() -> bool:
+    """NFLOG работает? Если нет — один раз пробуем подгрузить модуль.
+
+    Это дорога к совместимости с Linux и Keenetic: там ``nfnetlink_log``
+    обычно есть в ядре/прошивке, но не загружен, и без ``modprobe``
+    детектор geneva падал бы с `EINVAL`, хотя починка — одна команда.
+    Ядро само грузит модуль по алиасу ``nfnetlink-subsys-4`` лишь когда
+    подсистема собрана модулем и лежит там, где его ищет kmod; на сборках
+    с ``CONFIG_NFNETLINK_LOG=m`` и вычищенным ``modules.dep`` автозагрузка
+    не срабатывает.
+
+    Возвращает True, если подсистема доступна (или стала доступна).
+    """
+    if _nflog_probe():
+        return True
+    modprobe = shutil.which("modprobe")
+    if modprobe:
+        rc, out, err = _run([modprobe, "nfnetlink_log"], timeout=10)
+        if rc:
+            # Причина видна только здесь: «could not insert … Operation not
+            # permitted» — нет CAP_SYS_MODULE, «module not found» — модуля
+            # нет. Наверх уходит только «нет NFLOG», а подробность — в лог.
+            log.debug("NFLOG: modprobe вернул %s: %s"
+                      % (rc, (err or out or "").strip()[:200]), source="kmod")
+    return _nflog_probe()
+
+
+def nflog_fix_hint():
+    """Компактная подсказка «как включить NFLOG» — для журнала и страницы.
+
+    Безопасна на любой платформе. Поля: can_auto_install, platform,
+    pkg_manager, command, log_line, note.
+    """
+    platform = _platform_kind()
+    kind, _ = detect_pkg_manager()
+    packages = nflog_required_packages()
+
+    if platform == "openwrt" and kind:
+        return {
+            "can_auto_install": True,
+            "platform": platform,
+            "pkg_manager": kind,
+            "command": install_command_str(kind, packages),
+            "log_line": ("Детектору geneva нужен модуль ядра NFLOG — установите "
+                         "его кнопкой «Установить модуль NFLOG» в разделе "
+                         "«Обход DPI», режим «Авто»."),
+            "note": ("На OpenWrt модуль NFLOG (nfnetlink_log) в образ по "
+                     "умолчанию не входит."),
+        }
+    if platform in ("keenetic", "entware"):
+        return {
+            "can_auto_install": False,
+            "platform": platform,
+            "pkg_manager": kind,
+            "command": "",
+            "log_line": ("Модуль NFLOG (nfnetlink_log) приходит из прошивки, а "
+                         "не из opkg — без него детектор geneva отключён."),
+            "note": "Через opkg модули ядра на Keenetic не ставятся.",
+        }
+    return {
+        "can_auto_install": False,
+        "platform": platform,
+        "pkg_manager": kind,
+        "command": "modprobe nfnetlink_log",
+        "log_line": ("Загрузите модуль ядра: modprobe nfnetlink_log — без него "
+                     "детектор geneva отключён."),
+        "note": "На обычном Linux nfnetlink_log обычно встроен в ядро.",
+    }
+
+
 def nfqueue_deps_status():
     """Полный статус готовности NFQUEUE и возможности починки из GUI.
 
@@ -293,6 +455,11 @@ def nfqueue_fix_hint():
 # ─────────────────────── фоновая установка ───────────────────────
 
 _state = {"running": False, "progress": "", "result": None, "started_at": 0}
+# Установка NFLOG — своим набором полей, но под ТЕМ ЖЕ замком: пакетный
+# менеджер один, и две установки разом — это гонка за индекс пакетов.
+_nflog_state = {"running": False, "progress": "", "result": None,
+                "started_at": 0}
+_states = {"nfqueue": _state, "nflog": _nflog_state}
 _state_lock = threading.Lock()
 
 
@@ -307,25 +474,26 @@ def _run(cmd, timeout=180):
         return None, "", str(e)
 
 
-def _set_progress(text):
+def _set_progress(text, flavor="nfqueue"):
     with _state_lock:
-        _state["progress"] = text
+        _states[flavor]["progress"] = text
 
 
-def _do_install(kind, path, packages):
+def _do_install(kind, path, packages, flavor="nfqueue"):
     """Синхронная установка (вызывается из фонового потока)."""
+    spec = _FLAVORS[flavor]
     verb = _install_verb(kind)
-    log.info("Установка модулей NFQUEUE (%s): %s"
-             % (kind, " ".join(packages)), source="kmod")
+    log.info("Установка модулей %s (%s): %s"
+             % (spec["title"], kind, " ".join(packages)), source="kmod")
     output = []
 
     # 1) обновляем индекс пакетов (нужна сеть)
-    _set_progress("обновление индекса пакетов")
+    _set_progress("обновление индекса пакетов", flavor)
     rc_u, out_u, err_u = _run([path, "update"], timeout=120)
     output.append("$ %s update\n%s" % (kind, (out_u or "") + (err_u or "")))
 
     # 2) собственно установка
-    _set_progress("установка пакетов")
+    _set_progress("установка пакетов", flavor)
     rc, out, err = _run([path, verb] + list(packages), timeout=180)
     output.append("$ %s %s %s\n%s"
                   % (kind, verb, " ".join(packages), (out or "") + (err or "")))
@@ -333,60 +501,77 @@ def _do_install(kind, path, packages):
 
     # 3) best-effort подгружаем модуль сразу (без перезагрузки), если он ещё
     #    не активен. Пакеты OpenWrt обычно грузят kmod в postinst сами.
-    _set_progress("загрузка модуля")
+    _set_progress("загрузка модуля", flavor)
     modprobe = shutil.which("modprobe")
     if modprobe:
-        _run([modprobe, "nfnetlink_queue"], timeout=10)
+        _run([modprobe, spec["module"]], timeout=10)
 
-    # 4) перепроверяем доступность NFQUEUE
-    from core.diagnostics import _check_nfqueue_available
-    nfqueue_after = _check_nfqueue_available()
+    # 4) перепроверяем доступность — по признаку подсистемы, а не по rc
+    after = spec["probe"]()
 
-    ok = install_ok and nfqueue_after
+    ok = install_ok and after
     result = {
         "ok": ok,
         "install_ok": install_ok,
         "install_rc": rc,
-        "nfqueue_available": nfqueue_after,
+        "available": after,
         "packages": list(packages),
         "pkg_manager": kind,
-        "needs_reboot": bool(install_ok and not nfqueue_after),
+        "flavor": flavor,
+        "needs_reboot": bool(install_ok and not after),
         "output": ("\n\n".join(output))[-6000:],
     }
+    if flavor == "nfqueue":
+        # имя поля с прежних времён: его читают тесты и старые клиенты
+        result["nfqueue_available"] = after
 
+    title = spec["title"]
     if ok:
-        log.success("Модули NFQUEUE установлены, NFQUEUE доступен. "
-                    "Перезапустите обход (стратегию), чтобы nfqws2 поднялся.",
-                    source="kmod")
+        if flavor == "nfqueue":
+            log.success("Модули NFQUEUE установлены, NFQUEUE доступен. "
+                        "Перезапустите обход (стратегию), чтобы nfqws2 "
+                        "поднялся.", source="kmod")
+        else:
+            log.success("Модуль NFLOG установлен — детектор geneva включится "
+                        "на следующем срезе режима «Авто».", source="kmod")
     elif result["needs_reboot"]:
-        log.warning("Пакеты установлены, но NFQUEUE ещё не активен — обычно "
-                    "помогает перезагрузка роутера.", source="kmod")
+        log.warning("Пакеты установлены, но %s ещё не активен — обычно "
+                    "помогает перезагрузка роутера." % title, source="kmod")
     else:
-        log.error("Не удалось установить модули NFQUEUE (rc=%s). Подробности "
-                  "в выводе установки." % rc, source="kmod")
+        log.error("Не удалось установить модули %s (rc=%s). Подробности "
+                  "в выводе установки." % (title, rc), source="kmod")
     return result
 
 
-def install_async():
-    """Запустить установку модулей NFQUEUE в фоне. Один прогон за раз.
+def _deps_status(flavor):
+    return nfqueue_deps_status() if flavor == "nfqueue" else nflog_deps_status()
+
+
+def install_async(flavor="nfqueue"):
+    """Запустить установку модулей в фоне. Один прогон за раз.
 
     Перед стартом сервер-сайд повторно проверяет can_auto_install — отказ на
     неподходящей платформе (Keenetic/Entware/Linux), чтобы кнопка из GUI не
     запустила заведомо бесполезный opkg на Keenetic.
+
+    ``flavor``: ``"nfqueue"`` (nfqws2, по умолчанию) или ``"nflog"``
+    (детектор geneva, режим «Авто»).
     """
+    flavor = flavor if flavor in _FLAVORS else "nfqueue"
+    state = _states[flavor]
     # Резервируем слот под локом СРАЗУ (running=True), до медленной проверки
     # статуса — иначе два быстрых POST могли бы оба пройти проверку «не идёт»
     # и запустить по потоку. Если платформа не подходит — откатываем флаг.
     with _state_lock:
-        if _state["running"]:
+        if any(s["running"] for s in _states.values()):
             return {"ok": False, "error": "Установка уже идёт"}
-        _state.update(running=True, progress="проверка платформы", result=None,
-                      started_at=int(time.time()))
+        state.update(running=True, progress="проверка платформы", result=None,
+                     started_at=int(time.time()))
 
-    status = nfqueue_deps_status()
+    status = _deps_status(flavor)
     if not status["can_auto_install"]:
         with _state_lock:
-            _state.update(running=False, progress="")
+            state.update(running=False, progress="")
         return {"ok": False,
                 "error": (status.get("reason")
                           or "Автоустановка недоступна на этой платформе"),
@@ -397,31 +582,32 @@ def install_async():
     packages = status["packages"]
 
     with _state_lock:
-        _state["progress"] = "запуск"
+        state["progress"] = "запуск"
 
     def _worker():
         try:
-            res = _do_install(kind, path, packages)
+            res = _do_install(kind, path, packages, flavor)
         except Exception as e:  # noqa: BLE001 — не роняем поток
             res = {"ok": False, "error": str(e)}
-            log.error("Установка модулей NFQUEUE прервана: %s" % e,
-                      source="kmod")
+            log.error("Установка модулей %s прервана: %s"
+                      % (_FLAVORS[flavor]["title"], e), source="kmod")
         with _state_lock:
-            _state["result"] = res
-            _state["running"] = False
-            _state["progress"] = ""
+            state["result"] = res
+            state["running"] = False
+            state["progress"] = ""
 
     threading.Thread(target=_worker, daemon=True, name="kmod-install").start()
     return {"ok": True, "started": True}
 
 
-def install_status():
-    """Прогресс/результат фоновой установки."""
+def install_status(flavor="nfqueue"):
+    """Прогресс/результат фоновой установки (``flavor`` — см. install_async)."""
+    state = _states[flavor if flavor in _FLAVORS else "nfqueue"]
     with _state_lock:
         return {
             "ok": True,
-            "running": _state["running"],
-            "progress": _state["progress"],
-            "started_at": _state["started_at"],
-            "result": _state["result"],
+            "running": state["running"],
+            "progress": state["progress"],
+            "started_at": state["started_at"],
+            "result": state["result"],
         }
