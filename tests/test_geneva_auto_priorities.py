@@ -461,6 +461,35 @@ class TestSplitAndLists(_Base):
         self.assertEqual(view["no_search"], ["ya.ru"])
         self.assertIn("YouTube", view["families"])
 
+    def test_lists_view_shows_marked_services(self):
+        """Отметки меню строки живут в книге, а не в списках — но страница
+        обязана их видеть, иначе «важные» сверху выглядят загадкой."""
+        m = self.make()
+        self.blocked(m, "web:a.example", "1.1.1.1")
+        self.blocked(m, "web:b.example", "1.1.1.2")
+        self.assertTrue(m.set_priority("web:a.example", "important")["ok"])
+        self.assertTrue(m.set_priority("web:b.example", "unimportant")["ok"])
+        view = m.lists_view()
+        self.assertEqual(view["important"], [])        # список пуст
+        self.assertEqual([x["service"] for x in view["marked"]["important"]],
+                         ["web:a.example"])
+        self.assertEqual([x["service"] for x in
+                          view["marked"]["unimportant"]], ["web:b.example"])
+        # вернули «по умолчанию» — отметка ушла
+        self.assertTrue(m.set_priority("web:a.example", "default")["ok"])
+        self.assertEqual(m.lists_view()["marked"]["important"], [])
+
+    def test_marked_survive_disabled_mode(self):
+        """Режим выключен: книга в памяти пуста, отметки — в auto.json.
+        Форма списков обязана их видеть и в этом состоянии."""
+        m = self.make()
+        self.blocked(m, "web:a.example", "1.1.1.1")
+        self.assertTrue(m.set_priority("web:a.example", "important")["ok"])
+        m.book = ga.Book()                 # как после перезапуска GUI
+        view = m.lists_view()
+        self.assertEqual([x["service"] for x in
+                          view["marked"]["important"]], ["web:a.example"])
+
     def test_asn_fetch_on_save(self):
         calls = []
 

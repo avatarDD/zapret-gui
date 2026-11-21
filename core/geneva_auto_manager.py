@@ -1737,10 +1737,26 @@ class GenevaAutoManager:
         st = self.settings()
         store = self._asn_store()
         lists = self.lists()
+        marked = {"important": [], "unimportant": []}
+        # Через snapshot: при выключенном режиме книга в памяти пуста
+        # (``load()`` зовёт только ``_start``), а отметки лежат в
+        # ``auto.json`` — иначе форма показала бы пустоту при живых
+        # отметках в таблице.
+        for s in self.services_snapshot():
+            up = getattr(s, "user_priority", "") or ""
+            if up in marked:
+                marked[up].append({"service": s.key, "name": s.name})
+        marked["important"].sort(key=lambda x: x["name"])
+        marked["unimportant"].sort(key=lambda x: x["name"])
         return {"ok": True, "important": st["lists"]["important"],
                 "unimportant": st["lists"]["unimportant"],
                 "no_search": st["lists"]["no_search"],
                 "exclude": st["exclude"],
+                # Отметки отдельных сервисов из меню строки (⋯): живут в
+                # книге, а не в списках. Одно имя «Важно» на два разных
+                # механизма путает: список — маски и AS, отметка — один
+                # сервис. Страница показывает и то, и другое.
+                "marked": marked,
                 "known_important": st["lists"]["known_important"],
                 "split_workers": st["split_workers"],
                 "by_name": st["by_name"],
