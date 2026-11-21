@@ -55,6 +55,13 @@ MAX_BACKOFF = 300.0
 LOST_NOTE_EVERY = 1800.0        # «правила снесены» в журнал — не чаще
 # Предупреждение об учёте пакетов: ставится и снимается по срезу.
 ACCT_PROBLEM = "в таблице conntrack нет счётчиков пакетов"
+# Детектору geneva нужен NFLOG (nfnetlink_log); его нет — режим работает
+# без подозрений по потокам. Строка в problems одна на сеанс режима.
+DETECTOR_PROBLEM_NO_NFLOG = ("детектор geneva не работает: в ядре нет "
+                             "модуля NFLOG (nfnetlink_log)")
+# Повторная попытка поднять упавший детектор — не чаще раза в 5 минут:
+# срез каждые 15 с, а «не запустился» — это не одно и то же событие.
+DETECTOR_RETRY = 300.0
 JOURNAL_SIZE = 300
 IDENTIFY_RETRY = 3600.0
 SEARCH_WAIT_BUSY = 60.0         # слот geneva занят ручным подбором
@@ -155,6 +162,20 @@ def slot_workers(workers: int, split: bool) -> int:
     return max(1, min(2, workers // min(workers, MAX_SEARCHES)))
 
 
+def _nflog_fix() -> dict:
+    """Подсказка «как включить NFLOG» для карточки «Авто».
+
+    Ленивая и молчаливая: на платформах, где модуль ядра пакетом не
+    ставится (Keenetic, ПК), кнопки не будет — там ответ
+    ``can_auto_install: False`` и текстовая инструкция.
+    """
+    try:
+        from core.kmod_manager import nflog_fix_hint
+        return nflog_fix_hint()
+    except Exception:                               # noqa: BLE001
+        return {}
+
+
 class GenevaAutoManager:
     """Режим «Авто». Зависимости подменяются в тестах."""
 
@@ -214,6 +235,8 @@ class GenevaAutoManager:
         self.host_state = {}             # процесс «по имени» (очередь 348)
         self.detector = {}               # детектор geneva (очередь 349)
         self._detector_error = ""
+        self._detector_retry = 0.0       # раньше этого времени не перезапускаем
+        self._nflog_noted = False        # «нет NFLOG» в журнал — один раз
 
     # ── зависимости ──
 
@@ -600,7 +623,19 @@ class GenevaAutoManager:
         # на Keenetic NDMS 14.x sysctl нет, а счётчики в таблице есть.
         self._acct_write_failed = acct.get("nf_conntrack_acct") is False
         self._acct_missing = False
+        self._detector_error = ""
+        self._detector_retry = 0.0
+        self._nflog_noted = False
         self.problems = []
+        # «Детектор недоступен» помнится до конца сеанса режима: смотрим
+        # только на этот сеанс, а не на то, что было в прошлом.
+        reset = getattr(self.gm(), "auto_observer_reset", None)
+        if reset is not None:
+            try:
+                reset()
+            except Exception as e:                  # noqa: BLE001
+                log.debug("geneva-auto: сброс детектора: %s" % e,
+                          source="geneva")
         obs.seed_keys(s.key for s in self.book.services)
         self._refresh_asn()
         self.phase = "starting"
@@ -852,15 +887,100 @@ class GenevaAutoManager:
                 self._dirty = self._dirty or bool(samples)
                 self.save()
 
+    def _drop_problem(self, prefix: str) -> None:
+        """Убрать из ``problems`` строки, начинающиеся с ``prefix``."""
+        with self._lock:
+            rest = [p for p in self.problems if not p.startswith(prefix)]
+            changed = len(rest) != len(self.problems)
+            self.problems = rest
+        if changed:
+            self._dirty = True
+
+    def _detector_off(self, r: dict, now: float) -> None:
+        """Детектор не поднялся (или поднимать нечего) — что сообщить.
+
+        Три разных случая, и путать их нельзя:
+          • ``unsupported`` — движок geneva 1.x без фичи ``ext_auto``:
+            детектора нет вовсе, это норма, молчим;
+          • ``no_nflog`` — ядро без ``nfnetlink_log``: одной строкой в
+            журнал и в ``problems``, с повтором только при следующем
+            включении режима (повторный запуск каждые 15 с ничего не
+            изменит — подсистема ядра не появится сама);
+          • ``crash`` и прочее — настоящая беда: в журнал при смене
+            вида отказа, перезапуск не чаще раза в ``DETECTOR_RETRY``.
+        """
+        reason = r.get("reason") or ("unsupported"
+                                     if r.get("action") == "unsupported"
+                                     else "crash")
+        supported = reason != "unsupported"
+        self.detector = {"running": False, "supported": supported,
+                         "reason": reason}
+        if not supported:
+            return
+        if reason == "no_nflog":
+            self.detector["problem"] = DETECTOR_PROBLEM_NO_NFLOG
+            # Про кнопку говорим только там, где она есть: на Keenetic и
+            # на ПК модуль пакетом не ставится, и «нажмите кнопку» было бы
+            # ложью. Инструкцию для таких платформ рисует карточка.
+            hint = _nflog_fix()
+            tail = (" — модуль ставится кнопкой на этой странице"
+                    if hint.get("can_auto_install") else "")
+            text = (DETECTOR_PROBLEM_NO_NFLOG +
+                    " — режим работает без подозрений по потокам" + tail)
+            with self._lock:
+                if text not in self.problems:
+                    self.problems = self.problems + [text]
+                    self._dirty = True
+            if not self._nflog_noted:
+                self._nflog_noted = True
+                self.note(text, "warning",
+                          en="geneva's detector is off: the kernel has no "
+                             "NFLOG (nfnetlink_log) module")
+            return
+        # Ключ дедупликации — причина, а не хвост лога: в хвосте метки
+        # времени, и с ними каждая строка выглядит новой.
+        key = "%s: %s" % (reason, self._detector_reason_text(r))
+        if key != self._detector_error:
+            self._detector_error = key
+            tail = self._detector_reason_text(r)
+            self.note("детектор geneva не запустился: %s" % tail,
+                      "warning")
+        self._detector_retry = now + DETECTOR_RETRY
+
+    def _detector_reason_text(self, r: dict) -> str:
+        """Причина отказа без меток времени из хвоста лога geneva."""
+        text = str(r.get("error") or "")
+        if not text:
+            return "неизвестно"
+        parts = []
+        for line in text.split(" | "):
+            line = line.strip()
+            if not line:
+                continue
+            # «2026-11-21 17:25:13.768 error engine: …» → «error engine: …»
+            bits = line.split(None, 3)
+            if len(bits) == 4 and bits[0][:2] == "20" and ":" in bits[1]:
+                line = bits[2] + " " + bits[3]
+            parts.append(line)
+        return " | ".join(parts[-2:])
+
     def _detector(self, now: float) -> None:
         """Детектор geneva (``--ext-auto observe``, фича ``ext_auto``):
         раз в срез ``ext_status``. ``THROTTLE`` и ``FREEZE_N`` у имени
         или адреса — подозрение сервиса; ``capacity`` — ёмкость канала
         для полки шейпера; ``DNS_POISON`` у имени — совет включить DoH
-        (раз в час на имя). Трафик детектор не меняет."""
+        (раз в час на имя). Трафик детектор не меняет.
+
+        Недоступен — это одно событие, а не поток: «нет модуля NFLOG»
+        пишется в журнал и в ``problems`` ОДИН раз (ключ дедупликации —
+        вид отказа, без хвоста лога с его метками времени)."""
         gm = self.gm()
         ensure = getattr(gm, "auto_observer_ensure", None)
         if ensure is None:
+            return
+        pid_of = getattr(gm, "auto_observer_pid", None)
+        pid = pid_of() if pid_of is not None else None
+        if pid is None and self._detector_retry and now < self._detector_retry:
             return
         try:
             r = ensure()
@@ -870,14 +990,15 @@ class GenevaAutoManager:
         if not isinstance(r, dict):
             return
         if not r.get("pid"):
-            if r.get("error") and r.get("error") != self._detector_error:
-                self.note("детектор geneva не запустился: %s" % r["error"],
-                          "warning")
-            self._detector_error = r.get("error", "")
-            self.detector = {"running": False,
-                             "supported": r.get("action") != "unsupported"}
+            self._detector_off(r, now)
             return
         self._detector_error = ""
+        self._detector_retry = 0.0
+        if self._nflog_noted:
+            # Модуль поставили кнопкой — детектор поднялся: снимаем строку
+            # проблемы и готовы сообщить снова, если он опять упадёт.
+            self._nflog_noted = False
+            self._drop_problem("детектор geneva не работает")
         try:
             st = gm.auto_observer_status()
         except Exception as e:                      # noqa: BLE001
@@ -1743,6 +1864,10 @@ class GenevaAutoManager:
                 "searches": searches,
                 "host": dict(self.host_state) if self.running else {},
                 "detector": dict(self.detector) if self.running else {},
+                # Может ли эта платформа поставить NFLOG кнопкой: без
+                # модуля детектор geneva отключается, и починить это должен
+                # интерфейс, а не консоль (иначе кнопка бесполезна).
+                "nflog_fix": _nflog_fix() if self.running else {},
                 "journal": list(self.journal)[-100:],
             }
 

@@ -737,5 +737,101 @@ class TestEngineIntegration(_StubCase):
         self.assertEqual(ov["geneva"]["auto"]["phase"], "watching")
 
 
+class TestDetectorJournal(_Base):
+    """Детектор не поднялся — одна строка в журнале, а не поток.
+
+    Лог geneva приносит метки времени («2026-11-21 17:25:13.768 error
+    engine: …»), и если класть хвост в ключ дедупликации целиком, каждая
+    попытка выглядит новой — журнал забивается одинаковыми ошибками
+    (именно так и было до правки).
+    """
+
+    TAIL = ("2026-11-21 17:25:13.582 warn run: --mark 0x20000000 shares | "
+            "2026-11-21 17:25:13.768 error engine: cannot bind NFLOG group "
+            "349: Invalid argument")
+
+    def _m(self, ensure_result):
+        m = self.manager()
+        self.gm.auto_observer_pid.return_value = None
+        self.gm.auto_observer_ensure.return_value = ensure_result
+        return m
+
+    def _warnings(self, m):
+        return [x for x in m.journal if x["level"] == "warning"]
+
+    def test_timestamps_do_not_make_a_new_error(self):
+        m = self._m({"ok": False, "pid": None, "action": "crash",
+                     "reason": "crash", "error": self.TAIL})
+        m._detector(100.0)
+        self.assertEqual(len(self._warnings(m)), 1)
+        # тот же отказ, но с другими метками времени и через ретрай
+        self.gm.auto_observer_ensure.return_value = {
+            "ok": False, "pid": None, "action": "crash", "reason": "crash",
+            "error": self.TAIL.replace("17:25:13", "18:41:07")}
+        m._detector(1000.0)
+        self.assertEqual(len(self._warnings(m)), 1)
+
+    def test_different_reason_is_new(self):
+        m = self._m({"ok": False, "pid": None, "action": "crash",
+                     "reason": "crash", "error": self.TAIL})
+        m._detector(100.0)
+        self.gm.auto_observer_ensure.return_value = {
+            "ok": False, "pid": None, "action": "crash", "reason": "crash",
+            "error": "2026-11-21 17:26:00.001 error engine: exit 4"}
+        m._detector(1000.0)
+        self.assertEqual(len(self._warnings(m)), 2)
+
+    def test_no_nflog_is_one_line_and_one_problem(self):
+        m = self._m({"ok": True, "pid": None, "action": "disabled",
+                     "reason": "no_nflog", "error": self.TAIL})
+        m._detector(100.0)
+        m._detector(130.0)
+        m._detector(200.0)
+        warnings = self._warnings(m)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("NFLOG", warnings[0]["text"])
+        self.assertEqual(len([p for p in m.problems if "NFLOG" in p]), 1)
+        self.assertEqual(m.detector["reason"], "no_nflog")
+        # перезапуск не назначается — подсистема ядра сама не появится
+        self.assertEqual(m._detector_retry, 0.0)
+
+    def test_unsupported_engine_is_silent(self):
+        m = self._m({"ok": True, "pid": None, "action": "unsupported",
+                     "reason": "unsupported"})
+        m._detector(100.0)
+        self.assertEqual(self._warnings(m), [])
+        self.assertEqual(m.problems, [])
+        self.assertFalse(m.detector["supported"])
+
+    def test_success_clears_problem(self):
+        m = self._m({"ok": True, "pid": None, "action": "disabled",
+                     "reason": "no_nflog", "error": self.TAIL})
+        m._detector(100.0)
+        self.assertTrue(m.problems)
+        self.gm.auto_observer_ensure.return_value = {
+            "ok": True, "pid": 123, "action": "started"}
+        self.gm.auto_observer_status.return_value = {"ok": True}
+        m._detector(200.0)
+        self.assertEqual([p for p in m.problems if "NFLOG" in p], [])
+        self.assertFalse(m._nflog_noted)
+
+    def test_retry_throttle_skips_restart(self):
+        m = self._m({"ok": False, "pid": None, "action": "crash",
+                     "reason": "crash", "error": "error engine: exit 4"})
+        m._detector(100.0)
+        self.gm.auto_observer_ensure.reset_mock()
+        m._detector(110.0)                     # раньше DETECTOR_RETRY
+        self.assertEqual(self.gm.auto_observer_ensure.call_count, 0)
+        m._detector(100.0 + am.DETECTOR_RETRY + 1)
+        self.assertEqual(self.gm.auto_observer_ensure.call_count, 1)
+
+    def test_reason_text_strips_timestamps(self):
+        m = self.manager()
+        text = m._detector_reason_text({"error": self.TAIL})
+        self.assertNotIn("2026-11-21", text)
+        self.assertIn("cannot bind NFLOG group", text)
+        self.assertEqual(m._detector_reason_text({}), "неизвестно")
+
+
 if __name__ == "__main__":
     unittest.main()

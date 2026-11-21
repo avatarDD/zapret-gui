@@ -5901,6 +5901,8 @@ body.expert-mode .expert-note { display: none !important; }
 .gv-auto-log-warning { color: var(--warning, #d29922); }
 .gv-auto-log-error { color: var(--error, #f85149); }
 .gv-auto-filter { max-width: 320px; margin: 6px 0; }
+.gv-auto-fix { margin: 6px 0; display: flex; align-items: center; gap: 8px;
+    flex-wrap: wrap; color: var(--text-muted, #8b949e); }
 .gv-auto-menu { position: relative; }
 .gv-auto-menu > summary { cursor: pointer; list-style: none; padding: 2px 8px;
     border-radius: var(--radius, 6px); }

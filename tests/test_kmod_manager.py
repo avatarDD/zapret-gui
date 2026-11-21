@@ -201,5 +201,141 @@ class TestInstallGate(unittest.TestCase):
         self.assertIn("error", r)
 
 
+class TestNflogDeps(unittest.TestCase):
+    """NFLOG — второй «вкус» установки модулей (детектор geneva).
+
+    Проверяем, что он не перепутан с NFQUEUE: свой пакет, свой модуль,
+    свои тексты для Keenetic/Entware и обычного Linux.
+    """
+
+    def _status(self, platform, pkg, avail=False):
+        with mock.patch.object(k, "_platform_kind", return_value=platform), \
+             mock.patch.object(k, "detect_pkg_manager", return_value=pkg), \
+             mock.patch.object(k, "_nflog_probe", return_value=avail):
+            return k.nflog_deps_status()
+
+    def test_openwrt_can_auto_with_own_package(self):
+        s = self._status("openwrt", ("apk", "/usr/bin/apk"))
+        self.assertTrue(s["can_auto_install"])
+        self.assertEqual(s["packages"], ["kmod-nfnetlink-log"])
+        self.assertIn("apk add", s["install_command"])
+        self.assertIn("kmod-nfnetlink-log", s["install_command"])
+        self.assertFalse(s["available"])
+
+    def test_openwrt_without_manager_cannot_auto(self):
+        s = self._status("openwrt", (None, None))
+        self.assertFalse(s["can_auto_install"])
+        self.assertTrue(s["instructions"])
+
+    def test_keenetic_explains_firmware(self):
+        s = self._status("keenetic", (None, None))
+        self.assertFalse(s["can_auto_install"])
+        self.assertIn("прошивк", s["reason"])
+        # обещание, которое делает наша логика: режим живёт без детектора
+        self.assertIn("без него", s["instructions"])
+
+    def test_keenetic_with_opkg_shows_no_command(self):
+        # opkg на Keenetic есть, но такого пакета в фиде нет: команда
+        # установки в интерфейс попадать не должна.
+        s = self._status("keenetic", ("opkg", "/opt/bin/opkg"))
+        self.assertFalse(s["can_auto_install"])
+        self.assertEqual(s["install_command"], "")
+
+    def test_linux_suggests_modprobe(self):
+        s = self._status("linux", (None, None))
+        self.assertFalse(s["can_auto_install"])
+        self.assertIn("modprobe nfnetlink_log", s["instructions"])
+
+    def test_fix_hint_openwrt_names_button(self):
+        with mock.patch.object(k, "_platform_kind", return_value="openwrt"), \
+             mock.patch.object(k, "detect_pkg_manager",
+                               return_value=("apk", "/usr/bin/apk")):
+            h = k.nflog_fix_hint()
+        self.assertTrue(h["can_auto_install"])
+        self.assertIn("NFLOG", h["log_line"])
+        self.assertIn("kmod-nfnetlink-log", h["command"])
+
+    def test_fix_hint_keenetic_has_no_command(self):
+        with mock.patch.object(k, "_platform_kind", return_value="keenetic"), \
+             mock.patch.object(k, "detect_pkg_manager",
+                               return_value=(None, None)):
+            h = k.nflog_fix_hint()
+        self.assertFalse(h["can_auto_install"])
+        self.assertEqual(h["command"], "")
+        self.assertIn("прошивк", h["log_line"].lower())
+
+    def test_states_are_separate_but_share_the_gate(self):
+        # У NFLOG свой прогресс/результат, но слот установки общий: пакетный
+        # менеджер один, две установки разом — гонка за индекс пакетов.
+        self.assertIsNot(k._state, k._nflog_state)
+        with mock.patch.object(k, "nflog_deps_status", return_value={
+                "can_auto_install": True, "pkg_manager": "apk",
+                "pkg_manager_path": "/usr/bin/apk",
+                "packages": ["kmod-nfnetlink-log"]}), \
+             mock.patch.object(k, "_do_install",
+                               return_value={"ok": True}) as do:
+            with k._state_lock:
+                k._state["running"] = True
+            try:
+                r = k.install_async("nflog")
+            finally:
+                with k._state_lock:
+                    k._state["running"] = False
+            self.assertFalse(r["ok"])
+            self.assertIn("уже идёт", r["error"])
+            self.assertFalse(do.called)
+
+    def test_install_status_reads_own_flavor(self):
+        with k._state_lock:
+            k._nflog_state["progress"] = "установка пакетов"
+        self.assertEqual(k.install_status("nflog")["progress"],
+                         "установка пакетов")
+        # неизвестный вкус → NFQUEUE, как и раньше
+        self.assertNotEqual(k.install_status("no-such")["progress"],
+                            "установка пакетов")
+
+    def test_ensure_module_skips_modprobe_when_available(self):
+        with mock.patch.object(k, "_nflog_probe", return_value=True), \
+             mock.patch.object(k, "_run") as run:
+            self.assertTrue(k.nflog_ensure_module())
+        self.assertFalse(run.called)
+
+    def test_ensure_module_runs_modprobe_once(self):
+        # Linux/Keenetic: модуль есть, но не загружен — один modprobe,
+        # повторная проверка после него.
+        probes = [False, True]
+        with mock.patch.object(k, "_nflog_probe",
+                               side_effect=lambda: probes.pop(0)), \
+             mock.patch.object(k, "shutil") as sh, \
+             mock.patch.object(k, "_run") as run:
+            sh.which.return_value = "/usr/sbin/modprobe"
+            run.return_value = (0, "", "")
+            self.assertTrue(k.nflog_ensure_module())
+        run.assert_called_once()
+        self.assertEqual(run.call_args[0][0], ["/usr/sbin/modprobe",
+                                               "nfnetlink_log"])
+
+    def test_ensure_module_tolerates_modprobe_failure(self):
+        # Нет CAP_SYS_MODULE / модуля нет — это не исключение, а «нет NFLOG».
+        probes = [False, False]
+        with mock.patch.object(k, "_nflog_probe",
+                               side_effect=lambda: probes.pop(0)), \
+             mock.patch.object(k, "shutil") as sh, \
+             mock.patch.object(k, "_run") as run:
+            sh.which.return_value = "/usr/sbin/modprobe"
+            run.return_value = (1, "", "modprobe: ERROR: could not insert "
+                                 "'nfnetlink_log': Operation not permitted")
+            self.assertFalse(k.nflog_ensure_module())
+
+    def test_ensure_module_without_modprobe(self):
+        # OpenWrt: modprobe может отсутствовать — тогда просто «нет».
+        with mock.patch.object(k, "_nflog_probe", return_value=False), \
+             mock.patch.object(k, "shutil") as sh, \
+             mock.patch.object(k, "_run") as run:
+            sh.which.return_value = None
+            self.assertFalse(k.nflog_ensure_module())
+        self.assertFalse(run.called)
+
+
 if __name__ == "__main__":
     unittest.main()

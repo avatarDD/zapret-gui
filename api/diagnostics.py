@@ -285,6 +285,34 @@ def register(app):
         from core.kmod_manager import install_status
         return install_status()
 
+    @app.route("/api/diagnostics/nflog-deps")
+    def api_diagnostics_nflog_deps():
+        """Статус модуля NFLOG (``nfnetlink_log``) и возможность починки.
+
+        NFLOG нужен детектору geneva (``--ext-auto observe``): он встаёт на
+        группу NFLOG, а без подсистемы ядро отвечает «Invalid argument».
+        """
+        response.content_type = "application/json; charset=utf-8"
+        from core.kmod_manager import nflog_deps_status
+        return {"ok": True, "result": nflog_deps_status()}
+
+    @app.route("/api/diagnostics/nflog-deps/install", method="POST")
+    def api_diagnostics_nflog_deps_install():
+        """Установить модуль NFLOG в фоне (только OpenWrt)."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.kmod_manager import install_async
+        r = install_async("nflog")
+        if not r.get("ok"):
+            response.status = 409
+        return r
+
+    @app.route("/api/diagnostics/nflog-deps/install/status")
+    def api_diagnostics_nflog_deps_install_status():
+        """Прогресс/результат фоновой установки модуля NFLOG."""
+        response.content_type = "application/json; charset=utf-8"
+        from core.kmod_manager import install_status
+        return install_status("nflog")
+
     @app.route("/api/diagnostics/system")
     def api_diagnostics_system():
         """Расширенная системная информация."""

@@ -816,6 +816,44 @@ def exit_text(code) -> str:
         return "код %s" % code
 
 
+# Отказ по NFLOG в логе geneva: ядро отказало в привязке к группе. Без
+# подсистемы nfnetlink_log это EINVAL — «Invalid argument» (nfnetlink_rcv_msg:
+# request_module() не нашёл модуль → -EINVAL). Права сюда не относятся: без
+# CAP_NET_ADMIN пришёл бы EPERM, и текст был бы «Operation not permitted».
+_NFLOG_BIND = "cannot bind nflog group"
+
+
+def nflog_refused(text: str) -> bool:
+    """В логе geneva — отказ по NFLOG (нет подсистемы ``nfnetlink_log``)?
+
+    Ловим по тексту, а не по коду выхода: движок кладёт причину в
+    ``engine: …`` строку, а код — «ни одна стратегия не прошла» (exit 1),
+    по которому не понять, чья это беда.
+
+    «Device or resource busy» — не наш случай: группу уже читает другая
+    программа (апстрим сам помечает это ``(another program reads this
+    group)``). Модуль тут ни при чём, и отключать детектор навсегда нельзя.
+    """
+    low = str(text or "").lower()
+    if _NFLOG_BIND not in low:
+        return False
+    # EBUSY апстрим помечает своим текстом: группу читает другая программа
+    return "busy" not in low and "another program" not in low
+
+
+def nflog_available() -> bool:
+    """Работает ли подсистема NFLOG сейчас (``/proc/net/netfilter/nfnetlink_log``).
+
+    Модуль могли поставить кнопкой уже после того, как детектор отключился:
+    тогда запрет нужно снять, не дожидаясь перезапуска режима.
+    """
+    try:
+        from core.diagnostics import _check_nflog_available
+        return _check_nflog_available()
+    except Exception:                               # noqa: BLE001
+        return False
+
+
 def _short(strategy: str, limit: int = 90) -> str:
     s = str(strategy or "")
     return s if len(s) <= limit else s[:limit - 1] + "…"
@@ -1317,6 +1355,12 @@ class GenevaManager:
         # запусков процесса «по имени»: перезапуск за время проверки
         # связанных ресурсов виден и при повторе pid
         self._host_gen = 0
+        # Детектор недоступен до конца сеанса режима: "" — доступен,
+        # "no_nflog" — нет модуля ядра nfnetlink_log (см. auto_observer_ensure)
+        self._obs_disabled = ""
+        # Попытка подгрузить модуль NFLOG через modprobe — одна за сеанс:
+        # она нужна там, где модуль есть, но не загружен (Linux, Keenetic)
+        self._nflog_load_tried = False
         self._job_answerer = None
 
     # ─────── бинарник ───────
@@ -2577,18 +2621,43 @@ class GenevaManager:
     def auto_observer_ensure(self) -> dict:
         """Детектор geneva (``ext_auto``) запущен? Упавший — заново
         (его NFLOG-правила geneva снимает сама при выходе).
-        ``{"ok", "pid", "action", "error"}``."""
+
+        Отказ по NFLOG (``nfnetlink_log`` не в ядре) запоминается до
+        остановки режима: без подсистемы детектор не поднимется никогда, а
+        попытка каждые 15 с — только мусор в журнале и лишний процесс.
+        Сбрасывается :meth:`auto_observer_reset` — при включении режима.
+
+        ``{"ok", "pid", "action", "error", "reason"}``; ``reason``:
+        ``"no_binary"``, ``"unsupported"``, ``"no_nflog"``, ``"crash"``.
+        """
         from core import geneva_auto as ga
         with self._lock:
             pid = self.auto_observer_pid()
             if pid:
                 return {"ok": True, "pid": pid, "action": "kept"}
+            if self._obs_disabled:
+                # Модуль могли поставить кнопкой, пока детектор был
+                # отключён: перепроверяем подсистему на каждом срезе (одно
+                # os.path.exists) и, если она появилась, снимаем запрет.
+                if self._obs_disabled == "no_nflog" and \
+                        nflog_available():
+                    self._obs_disabled = ""
+                else:
+                    return {"ok": True, "pid": None, "action": "disabled",
+                            "reason": self._obs_disabled}
             binary, err = self._ready_binary()
             if not binary:
-                return {"ok": False, "pid": None, "error": err}
+                return {"ok": False, "pid": None, "error": err,
+                        "reason": "no_binary"}
             feats = self.features(binary)
-            if ga.OBSERVE_FEATURE not in feats or "ext" not in feats:
-                return {"ok": True, "pid": None, "action": "unsupported"}
+        if ga.OBSERVE_FEATURE not in feats or "ext" not in feats:
+            return {"ok": True, "pid": None, "action": "unsupported",
+                    "reason": "unsupported"}
+        # Процесс запускается ВНЕ self._lock: _wait_ready_events ждёт до
+        # 6 с, и держать на это время замок менеджера (сокет, статус,
+        # подбор) нельзя — срез «Авто» стоит бы всякий перезапуск.
+        self._ensure_nflog_module()
+        with self._lock:
             hp = auto_host_paths()
             self._stop_aux(hp["obs_pid"], "observe")
             try:
@@ -2598,18 +2667,58 @@ class GenevaManager:
                 proc = _spawn(build_observe_args(binary, hp), hp["obs_log"])
             except OSError as e:
                 return {"ok": False, "pid": None,
-                        "error": "Запуск детектора geneva: %s" % e}
+                        "error": "Запуск детектора geneva: %s" % e,
+                        "reason": "crash"}
             _write_pid(hp["obs_pid"], proc.pid)
             self._auto_procs["observe"] = proc
-            _wait_ready_events(proc, hp["obs_events"], timeout=6.0)
-            if proc.poll() is not None:
+        _wait_ready_events(proc, hp["obs_events"], timeout=6.0)
+        if proc.poll() is not None:
+            tail = " | ".join(tail_lines(hp["obs_log"], 3))
+            refused = nflog_refused(tail)
+            with self._lock:
                 _remove(hp["obs_pid"])
-                tail = " | ".join(tail_lines(hp["obs_log"], 3))
-                return {"ok": False, "pid": None,
-                        "error": "детектор geneva завершился: %s%s" % (
-                            exit_text(proc.returncode),
-                            (" — " + tail) if tail else "")}
-            return {"ok": True, "pid": proc.pid, "action": "started"}
+                self._auto_procs.pop("observe", None)
+                if refused:
+                    # Ядро не знает подсистему nfnetlink_log: без модуля
+                    # детектор не поднимется никогда. Запоминаем и молчим —
+                    # перепроверка при следующем включении режима.
+                    self._obs_disabled = "no_nflog"
+            if refused:
+                return {"ok": True, "pid": None, "action": "disabled",
+                        "reason": "no_nflog", "error": tail,
+                        "log_tail": tail}
+            return {"ok": False, "pid": None,
+                    "error": "детектор geneva завершился: %s%s" % (
+                        exit_text(proc.returncode),
+                        (" — " + tail) if tail else ""),
+                    "reason": "crash", "log_tail": tail}
+        return {"ok": True, "pid": proc.pid, "action": "started"}
+
+    def _ensure_nflog_module(self) -> None:
+        """Один раз за сеанс подгрузить ``nfnetlink_log``, если его нет.
+
+        Ядро пробует автозагрузку по алиасу ``nfnetlink-subsys-4``, но на
+        сборках с вычищенным ``modules.dep`` это не срабатывает — и
+        детектор падал бы с «Invalid argument», хотя починка — одна
+        команда. На OpenWrt модуль просто отсутствует: modprobe ничего не
+        найдёт, и дальше работает кнопка установки.
+        """
+        with self._lock:
+            if self._nflog_load_tried:
+                return
+            self._nflog_load_tried = True
+        try:
+            from core.kmod_manager import nflog_ensure_module
+            nflog_ensure_module()
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva: загрузка модуля NFLOG: %s" % e,
+                      source="geneva")
+
+    def auto_observer_reset(self) -> None:
+        """Забыть «детектор недоступен» — вызывается при включении режима."""
+        with self._lock:
+            self._obs_disabled = ""
+            self._nflog_load_tried = False
 
     def auto_observer_status(self) -> dict:
         """``ext_status`` детектора: ``impaired``, ``capacity`` и т.д."""
