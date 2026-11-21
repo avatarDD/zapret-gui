@@ -102,6 +102,7 @@ zapret-gui/
 ├── .claude/skills/         # предметные справочники (скилы), см. §3.1
 ├── .cursor/rules/          # указатель на AGENTS.md (Cursor)
 ├── docs/skills.json        # машиночитаемый индекс скилов
+├── docs/geneva-auto-queues.md # почему в «Авто» подборов меньше выбранного
 ├── tools/gen_agent_index.py # генератор всего перечисленного выше
 │
 ├── api/                    # REST-роуты (Bottle), по одному файлу на домен

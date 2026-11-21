@@ -152,6 +152,7 @@ const GenevaPage = (() => {
                                     <div class="form-hint">${esc(_tr('geneva.auto.lists.hint_' + k))}</div>
                                 </div>`).join('')}
                             </div>
+                            <div id="gv-list-marked" class="form-hint" hidden></div>
                             <label class="gv-check"><input type="checkbox" id="gv-list-known" checked>
                                 <span>${esc(_tr('geneva.auto.lists.known'))}</span></label>
                             <label class="gv-check"><input type="checkbox" id="gv-list-byname" checked>
@@ -160,7 +161,6 @@ const GenevaPage = (() => {
                             <label class="gv-check"><input type="checkbox" id="gv-list-split">
                                 <span>${esc(_tr('geneva.auto.lists.split'))}</span></label>
                             <div class="form-hint">${esc(_tr('geneva.auto.lists.split_hint'))}</div>
-                            <div id="gv-split-now" class="form-hint" hidden></div>
                             <label class="gv-check"><input type="checkbox" id="gv-list-final" checked>
                                 <span>${esc(_tr('geneva.auto.lists.final'))}</span></label>
                             <div class="form-hint">${esc(_tr('geneva.auto.lists.final_hint'))}</div>
@@ -629,14 +629,17 @@ const GenevaPage = (() => {
             ? box.querySelectorAll('details[open]') : []).map(d => d.dataset.k));
         const journal = (a.journal || []).slice(-60).reverse().map(j =>
             `<div class="gv-auto-log-${esc(j.level)}"><span class="text-muted">${esc(fmtTime(j.ts))}</span> ${esc(j.text)}</div>`).join('');
-        const splitNow = document.getElementById('gv-split-now');
-        if (splitNow) {
-            const fewer = a.running && a.split_workers && (a.search_slots || 0) < (a.search_slots_wanted || 0);
-            splitNow.hidden = !fewer;
-            splitNow.textContent = fewer ? _tr('geneva.auto.split_now', { n: a.search_slots, m: a.search_slots_wanted }) : '';
-        }
+        // Почему подборов идёт меньше, чем задано, — видно сразу, а не в
+        // свёрнутом блоке списков: у группы только один подбор (иначе
+        // пробные стратегии делят один адрес), а свободных групп нет,
+        // пока их держат работающие стратегии.
+        const fewer = a.running && a.split_workers && (a.search_slots || 0) < (a.search_slots_wanted || 0);
+        const slotsLine = fewer
+            ? _tr('geneva.auto.split_now', { n: a.search_slots, m: a.search_slots_wanted })
+            : '';
         box.innerHTML = `
             <div class="gv-auto-status"><strong>${esc(phase)}</strong>${searchLine}</div>
+            ${slotsLine ? `<div class="text-muted">${esc(slotsLine)}</div>` : ''}
             ${extra.length ? `<div class="text-muted">${esc(extra.join(' · '))}</div>` : ''}
             <div class="text-muted">${esc(_tr('geneva.auto.summary', {
                 total: a.total || 0, applied, busy, nobypass, flows: a.connections || 0 }))}</div>
@@ -705,9 +708,12 @@ const GenevaPage = (() => {
                 const [path, body] = calls[act];
                 await API.post('/api/geneva/auto/' + path, Object.assign({ key }, body));
                 Toast.success(_tr('geneva.auto.act_done'));
-                // «Не подбирать» меняет списки: форма не должна вернуть
-                // старые при следующем сохранении
-                if (act === 'nosearch') await _loadAutoLists(true);
+                // «Не подбирать» меняет списки, важность — отметки
+                // сервисов: форма не должна вернуть старое при сохранении
+                if (act === 'nosearch' || act === 'important'
+                    || act === 'unimportant' || act === 'default') {
+                    await _loadAutoLists(true);
+                }
             }
         } catch (e) {
             Toast.error(errText(e));
@@ -734,6 +740,19 @@ const GenevaPage = (() => {
         ck('gv-list-byname', r.by_name);
         ck('gv-list-split', r.split_workers);
         ck('gv-list-final', r.final_check);
+        // Отметки отдельных сервисов (меню ⋯ строки) — не списки: они
+        // живут в книге, поэтому в текстовых полях их не видно. Показываем
+        // отдельной строкой, иначе «важные» сверху выглядят загадкой.
+        const marked = document.getElementById('gv-list-marked');
+        if (marked) {
+            const parts = [];
+            for (const k of ['important', 'unimportant']) {
+                const names = ((r.marked || {})[k] || []).map(x => x.name || x.service);
+                if (names.length) parts.push(`${_tr('geneva.auto.lists.marked_' + k)}: ${names.join(', ')}`);
+            }
+            marked.hidden = !parts.length;
+            marked.textContent = parts.join(' · ');
+        }
         const asn = document.getElementById('gv-list-asn');
         if (asn) {
             const items = Object.entries(r.asn || {}).map(([n, x]) =>

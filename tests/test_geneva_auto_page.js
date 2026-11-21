@@ -54,7 +54,8 @@ const AUTO_ON = {
     problems: [], journal: [{ ts: 1, level: 'info', text: 'режим включён' }],
 };
 
-function makeSandbox({ auto, found, lang = 'ru', confirm = true, enableFails = true }) {
+function makeSandbox({ auto, found, lists, lang = 'ru', confirm = true,
+                       enableFails = true }) {
     const elements = new Map();
     const calls = { get: [], post: [], confirm: 0 };
     const document = {
@@ -74,6 +75,9 @@ function makeSandbox({ auto, found, lang = 'ru', confirm = true, enableFails = t
         API: {
             get(url) {
                 calls.get.push(url);
+                if (url === '/api/geneva/auto/lists') {
+                    return Promise.resolve(lists || { ok: true });
+                }
                 if (url.startsWith('/api/geneva/auto')) return Promise.resolve(auto);
                 if (url === '/api/geneva/found') return Promise.resolve(found || { ok: true, items: [] });
                 if (url === '/api/geneva/status') {
@@ -228,6 +232,53 @@ test('списки: сохранение', async () => {
     assert.strictEqual(body.exclude, 'bank.example');
     assert.strictEqual(body.by_name, true);
     assert.strictEqual(body.split_workers, false);
+});
+
+test('подборов меньше, чем задано: причина видна в карточке', async () => {
+    // одна группа занята подбором, остальные — работающими стратегиями:
+    // сводка обязана объяснить это рядом с фазой, а не только в
+    // свёрнутом блоке списков
+    const env = makeSandbox({
+        auto: Object.assign({}, AUTO_ON, {
+            split_workers: true, search_slots: 1, search_slots_wanted: 4,
+        }),
+    });
+    await renderAuto(env);
+    assert.match(env.elements.get('gv-auto').innerHTML,
+        /Сейчас подборов идёт 1 из 4/);
+});
+
+test('отметки сервисов отдельно от списков', async () => {
+    const env = makeSandbox({
+        auto: AUTO_ON,
+        lists: { ok: true, important: [], unimportant: [],
+                 marked: { important: [{ service: 'web:a.example',
+                                         name: 'a.example' }],
+                           unimportant: [] } },
+    });
+    const root = await renderAuto(env);
+    assert.ok(root.innerHTML.includes('gv-list-marked'));
+    // раскрыли списки — данные с сервера
+    env.sandbox.document.getElementById('gv-auto-lists');
+    const marked = env.elements.get('gv-list-marked');
+    assert.match(marked.textContent, /a\.example/);
+    assert.match(marked.textContent, /Отмечены важными \(меню строки\): a\.example/);
+    // в текстовом поле «Важно» отметки не появляются: это разные вещи
+    assert.strictEqual(env.elements.get('gv-list-important').value, '');
+});
+
+test('отметка из меню обновляет и строку, и списки', async () => {
+    // «Важно» в меню ⋯ — отметка сервиса в книге, а не строка списка:
+    // форма списков не должна показывать устаревшее после нажатия
+    const env = makeSandbox({ auto: AUTO_ON });
+    const root = await renderAuto(env);
+    const btn = { dataset: { autoAct: 'important', key: 'dns:93.184.216.53' } };
+    await root.handlers.click[0]({ target: { closest: () => btn } });
+    for (let i = 0; i < 3; i++) await tick();
+    const post = env.calls.post.find(p => p[0] === '/api/geneva/auto/priority');
+    assert.ok(post, 'запрос важности ушёл');
+    assert.ok(env.calls.get.filter(u => u === '/api/geneva/auto/lists').length >= 2,
+        'списки перезапрошены после отметки');
 });
 
 const FOUND = {

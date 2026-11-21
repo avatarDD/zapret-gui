@@ -136,6 +136,8 @@ const i18n_ru = {
     "geneva.auto.lists.about": "По строке на запись: домен (с поддоменами), зона *.ru или .ru, маска *google*, адрес, подсеть или номер AS (AS12389). Сети AS загружаются из RIPEstat при сохранении и раз в неделю — уходит только номер AS.",
     "geneva.auto.lists.important": "Важно",
     "geneva.auto.lists.unimportant": "Не важно",
+    "geneva.auto.lists.marked_important": "Отмечены важными (меню строки)",
+    "geneva.auto.lists.marked_unimportant": "Отмечены неважными (меню строки)",
     "geneva.auto.lists.no_search": "Не подбирать",
     "geneva.auto.lists.exclude": "Не трогать",
     "geneva.auto.lists.ph_important": "youtube.com\nAS12389",

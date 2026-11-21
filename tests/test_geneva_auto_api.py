@@ -244,8 +244,39 @@ class TestMcp(_Base):
         self.assertTrue(st["ok"])
         self.assertEqual(len(st["journal"]), 30)
         self.assertIn("hint", st)                     # выключен
+        # сервисы — окном в общей форме, а не всем списком
+        self.assertEqual(st["total"], 1)
+        self.assertEqual(st["items"][0]["service"], "dns:93.184.216.53")
+        self.assertEqual(st["count"], 1)
         self.data("geneva_auto_status", {"all": True}, perms={})
         self.assertEqual(self.auto.calls[-1], ("status", True))
+
+    def test_status_fits_the_response_limit(self):
+        """Много сервисов не обрезают ответ целиком (реестр заменил бы
+        его на «слишком много» и модель получила бы пустоту)."""
+        many = [{"key": "web:s%d.example" % i, "name": "s%d.example" % i,
+                 "status": "blocked", "why": "соединение есть, данных нет",
+                 "addresses": [{"ip": "10.0.0.%d" % (i % 250), "seen": 1}],
+                 "strategy": "[TCP:flags:PA]-fragment{tcp:34:True:17}-| \\/",
+                 "ports": [443], "status_text": "ищу обход"}
+                for i in range(200)]
+        self.auto.status = lambda all_services=False: {
+            "enabled": True, "running": True, "phase": "watching",
+            "services": many, "groups": [], "search": {}, "problems": [],
+            "counts": {}, "total": len(many),
+            "journal": [{"ts": 1, "text": "x" * 80}] * 50}
+        st = self.data("geneva_auto_status", {"limit": 100}, perms={})
+        self.assertEqual(st["total"], 200)
+        self.assertLess(st["count"], 100)             # окно ужали
+        self.assertTrue(st.get("shrunk_to_fit"))
+        self.assertLess(len(json.dumps(st, ensure_ascii=False)),
+                        32 * 1024)
+        # ключ сервиса не маскируется: по нему вызывают pin/reset
+        self.assertEqual(st["items"][0]["service"], "web:s0.example")
+        second = self.data("geneva_auto_status",
+                           {"limit": 100, "offset": st["count"]}, perms={})
+        self.assertNotEqual(second["items"][0]["service"],
+                            st["items"][0]["service"])
 
     def test_enable_two_steps(self):
         with mock.patch("core.bypass_engine.is_geneva_active",

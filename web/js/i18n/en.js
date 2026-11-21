@@ -133,6 +133,8 @@ const i18n_en = {
     "geneva.auto.lists.about": "One entry per line: a domain (with subdomains), a zone *.ru or .ru, a mask *google*, an address, a subnet or an AS number (AS12389). AS networks are fetched from RIPEstat on save and once a week; only the AS number is sent.",
     "geneva.auto.lists.important": "Important",
     "geneva.auto.lists.unimportant": "Not important",
+    "geneva.auto.lists.marked_important": "Marked important (row menu)",
+    "geneva.auto.lists.marked_unimportant": "Marked unimportant (row menu)",
     "geneva.auto.lists.no_search": "Do not search",
     "geneva.auto.lists.exclude": "Do not touch",
     "geneva.auto.lists.ph_important": "youtube.com\nAS12389",
