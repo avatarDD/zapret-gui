@@ -21,7 +21,7 @@ from core import geneva_auto as ga
 from core import geneva_auto_apply as ap
 from core import geneva_auto_manager as am
 from core import geneva_auto_search as gs
-from tests.test_geneva_auto_fw import FakeFW, FakeGM
+from tests.test_geneva_auto_fw import FakeFW, FakeGM, FakeProfilesGM
 from tests.test_geneva_manager import _StubCase
 
 DNS_IP = "93.184.216.53"
@@ -735,6 +735,46 @@ class TestEngineIntegration(_StubCase):
                            "get_geneva_auto_manager", return_value=fake):
             ov = be.overview()
         self.assertEqual(ov["geneva"]["auto"]["phase"], "watching")
+
+
+class TestProfilesPlanSig(_Base):
+    """Подпись плана профилей: новый адрес CDN — новый план.
+
+    Процесс профилей сам не перезапускается (подпись у него — имена и
+    стратегии), поэтому адреса обязаны быть в подписи менеджера: иначе
+    новые адреса попадут в ipset-файл только через ``APPLY_EVERY``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gmf = FakeProfilesGM()
+        self.applier = ap.Applier(geneva=self.gmf, fw=FakeFW())
+
+    def test_new_address_changes_the_plan(self):
+        m = self.manager()
+        s = ga.Service(key="web:a.example", kind=ga.WEB, status=ga.APPLIED,
+                       strategy=STRAT, addresses=[{"ip": "93.184.216.1",
+                                                   "seen": 1}],
+                       ports=[443])
+        first = m._plan_sig([s.clone()])
+        s.addresses.append({"ip": "93.184.216.2", "seen": 2})
+        second = m._plan_sig([s.clone()])
+        self.assertNotEqual(first, second)
+        self.assertIn("93.184.216.2", second)
+
+    def test_engine_signature_ignores_addresses(self):
+        """Перезапуска нет: файлы перечитываются ``reload_lists``."""
+        m = self.manager()
+        s = ga.Service(key="web:a.example", kind=ga.WEB, status=ga.APPLIED,
+                       strategy=STRAT, addresses=[{"ip": "93.184.216.1",
+                                                   "seen": 1}],
+                       ports=[443])
+        profs = ga.plan_profiles([s])
+        sig = "\n".join("%s %s" % (p.name, p.strategy) for p in profs)
+        s.addresses.append({"ip": "93.184.216.2", "seen": 2})
+        again = "\n".join("%s %s" % (p.name, p.strategy)
+                           for p in ga.plan_profiles([s]))
+        self.assertEqual(sig, again)
 
 
 class TestDetectorJournal(_Base):

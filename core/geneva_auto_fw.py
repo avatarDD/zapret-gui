@@ -125,16 +125,32 @@ def _ranges(spec: str) -> list:
     return out
 
 
-def layout(queues: dict) -> list:
+def _pairs(queues) -> list:
+    """Правила принимают и ``{очередь: группа}``, и список пар
+    ``[(очередь, группа)]``: у профилей (этап профилей «Авто») очередь
+    одна — общий диапазон процесса, а профилей много, и порядок правил
+    должен повторять порядок профилей в файле."""
+    if isinstance(queues, dict):
+        return sorted(queues.items())
+    return list(queues or ())
+
+
+def layout(queues, span: int = 1) -> list:
     """Группы → плоский список правил-заготовок, общий для обоих бэкендов.
 
     ``queues`` — ``{очередь: ga.Group}``. Элемент: ``{"queue", "kind":
     "addr"|"port", …}``; у ``addr`` — имя набора и адреса v4/v6, порты
     tcp/udp; у ``port`` — клиент, протокол, локальный порт.
+
+    ``span`` — сколько очередей отдаёт один профиль (процесс профилей
+    ``--ext-workers N`` слушает 340..340+N-1): пакет балансируется между
+    ними. Правило «по имени» (своя очередь 348) всегда одно.
     """
+    span = max(1, int(span or 1))
     out = []
-    for q in sorted(queues):
-        g = queues[q]
+    per = {}                       # очередь → номер следующего набора
+    for q, g in _pairs(queues):
+        q = int(q)
         if getattr(g, "host", False):
             # очередь 348 — после групп 340–347: адреса групп — им
             out.append({"queue": q, "kind": "host",
@@ -153,7 +169,7 @@ def layout(queues: dict) -> list:
                 for proto, ports in (("tcp", t.tcp_ports),
                                      ("udp", t.udp_ports)):
                     for lo, _hi in _ranges(ports)[:1]:
-                        out.append({"queue": q, "kind": "port",
+                        out.append({"queue": q, "span": span, "kind": "port",
                                     "client": ip, "proto": proto,
                                     "port": lo})
                 continue
@@ -162,8 +178,12 @@ def layout(queues: dict) -> list:
                 continue
             sig = (t.tcp_ports, t.udp_ports)
             if sig not in sets:
-                sets[sig] = {"queue": q, "kind": "addr",
-                             "set": "geneva_auto_%d_%d" % (q, len(sets)),
+                # Номер набора — в пределах очереди: имена не должны
+                # зависеть от того, сколько очередей пришло раньше (у
+                # профилей очередь одна, у групп — своя у каждой).
+                per[q] = per.get(q, 0) + 1
+                sets[sig] = {"queue": q, "span": span, "kind": "addr",
+                             "set": "geneva_auto_%d_%d" % (q, per[q] - 1),
                              "v4": [], "v6": [],
                              "tcp": _ranges(t.tcp_ports),
                              "udp": _ranges(t.udp_ports)}
@@ -178,18 +198,29 @@ def layout(queues: dict) -> list:
 
 # ───────────────────────────── nftables ─────────────────────────────
 
+def _nft_qnum(it) -> str:
+    """Номер очереди или диапазон: профиль с N воркерами слушает
+    340..340+N-1, и пакет балансируется между ними (nft ``queue num
+    340-343``)."""
+    q = int(it["queue"])
+    span = max(1, int(it.get("span") or 1))
+    return "%d" % q if span == 1 else "%d-%d" % (q, q + span - 1)
+
+
 def _nft_ports(ranges) -> str:
     items = ["%d" % lo if lo == hi else "%d-%d" % (lo, hi)
              for lo, hi in ranges]
     return "{ %s }" % ", ".join(items)
 
 
-def build_auto_rules(queues: dict, backend: str = "nft") -> str:
+def build_auto_rules(queues, backend: str = "nft",
+                     span: int = 1) -> str:
     """Правила групп текстом: nft-скрипт для ``nft -f -`` или команды
     iptables/ipset построчно (для golden-тестов и журнала)."""
     if backend == "nft":
-        return _nft_script(layout(queues))
-    return "\n".join(" ".join(c) for c, _must in ipt_commands(queues)) + "\n"
+        return _nft_script(layout(queues, span))
+    return "\n".join(" ".join(c) for c, _must
+                     in ipt_commands(queues, span)) + "\n"
 
 
 def _nft_script(items) -> str:
@@ -223,12 +254,12 @@ def _nft_script(items) -> str:
         limit = "ct original packets 1-%d" % ga.OUT_PACKETS if out \
             else "ct reply packets 1-%d" % ga.IN_PACKETS
         for it in items:
-            q = it["queue"]
+            q = _nft_qnum(it)
             if it["kind"] == "host":
                 svc = "dport" if out else "sport"
                 for proto in ("tcp", "udp"):
                     if it[proto]:
-                        lines.append("\t\t%s %s %s %s queue num %d bypass"
+                        lines.append("\t\t%s %s %s %s queue num %s bypass"
                                      % (proto, svc, _nft_ports(it[proto]),
                                         limit, q))
                 continue
@@ -236,7 +267,7 @@ def _nft_script(items) -> str:
                 lines.append(
                     "\t\tmeta l4proto %s ct original ip%s saddr %s "
                     "ct original proto-src %d ct direction %s %s "
-                    "queue num %d bypass"
+                    "queue num %s bypass"
                     % (it["proto"], "6" if ":" in it["client"] else "",
                        it["client"], it["port"], direction, limit, q))
                 continue
@@ -249,7 +280,7 @@ def _nft_script(items) -> str:
                     if not it[proto]:
                         continue
                     lines.append(
-                        "\t\t%s %s @%s_%s %s %s %s %s queue num %d bypass"
+                        "\t\t%s %s @%s_%s %s %s %s %s queue num %s bypass"
                         % (ipkw, addr, it["set"], fam, proto, svc,
                            _nft_ports(it[proto]), limit, q))
         lines.append("\t}")
@@ -263,14 +294,14 @@ def _ipt_ports(lo, hi) -> str:
     return "%d" % lo if lo == hi else "%d:%d" % (lo, hi)
 
 
-def ipt_commands(queues: dict) -> list:
+def ipt_commands(queues, span: int = 1) -> list:
     """Команды iptables/ip6tables/ipset: ``[(argv, обязательна)]``.
 
     Необязательные — удаление того, чего может не быть (идемпотентность).
     Списки портов бьются на правила по одному диапазону: ``multiport``
     на Entware бывает не установлен.
     """
-    items = layout(queues)
+    items = layout(queues, span)
     cmds = []
     to = str(SET_TIMEOUT_SEC)
     for it in items:
@@ -311,8 +342,12 @@ def ipt_commands(queues: dict) -> list:
                      "1:%d" % (ga.OUT_PACKETS if out else ga.IN_PACKETS)]
             for it in items:
                 q = str(it["queue"])
-                target = ["-j", "NFQUEUE", "--queue-num", q,
-                          "--queue-bypass"]
+                n = max(1, int(it.get("span") or 1))
+                target = (["-j", "NFQUEUE", "--queue-balance",
+                           "%d:%d" % (it["queue"], it["queue"] + n - 1)]
+                          if n > 1 else
+                          ["-j", "NFQUEUE", "--queue-num", q]) + \
+                    ["--queue-bypass"]
                 if it["kind"] == "host":
                     for proto in ("tcp", "udp"):
                         for plo, phi in it[proto]:
@@ -425,21 +460,26 @@ def check_requirements(backend: str, has_addr: bool = True) -> None:
             "opkg install iptables-mod-conntrack-extra")
 
 
-def apply(queues: dict, backend: str = "") -> dict:
+def apply(queues, backend: str = "", span: int = 1) -> dict:
     """Поставить правила групп (замена целиком). ``{"ok", "backend",
-    "error", "hint"}``."""
+    "error", "hint"}``.
+
+    ``span`` — число очередей процесса профилей: правило балансирует
+    пакеты между 340..340+span-1.
+    """
     try:
         backend = backend or _backend()
         if not queues:
             remove(backend)
             return {"ok": True, "backend": backend}
         check_requirements(backend, any(i["kind"] == "addr"
-                                        for i in layout(queues)))
+                                        for i in layout(queues, span)))
     except FirewallError as e:
         return {"ok": False, "backend": backend, "error": str(e),
                 "hint": e.hint}
     if backend == "nft":
-        ok, err = _run(["nft", "-f", "-"], stdin=build_auto_rules(queues))
+        ok, err = _run(["nft", "-f", "-"],
+                       stdin=build_auto_rules(queues, "nft", span))
         if not ok:
             log.error("geneva-auto: nft: %s" % err, source="geneva")
             return {"ok": False, "backend": backend,
@@ -457,7 +497,7 @@ def apply(queues: dict, backend: str = "") -> dict:
                         % (" ".join(failed[0]), failed[1]), source="geneva")
             time.sleep(RETRY_DELAY)
         failed = None
-        for argv, must in ipt_commands(queues):
+        for argv, must in ipt_commands(queues, span):
             if argv[0] == "ip6tables" and not has_v6:
                 continue
             ok, err = _run(argv)
@@ -473,11 +513,11 @@ def apply(queues: dict, backend: str = "") -> dict:
             "error": "%s: %s" % (argv[0], err[:300])}
 
 
-def expected(queues: dict) -> dict:
+def expected(queues, span: int = 1) -> dict:
     """Что должно стоять (iptables): ``{(ipt, цепочка): число правил}`` и
     имена наборов — для :func:`present` (чистая)."""
     rules, sets = {}, set()
-    for argv, _must in ipt_commands(queues):
+    for argv, _must in ipt_commands(queues, span):
         if argv[0] == "ipset" and argv[1] == "swap":
             sets.add(argv[3])
         elif argv[0] in ("iptables", "ip6tables") and argv[3] == "-A":
@@ -486,11 +526,11 @@ def expected(queues: dict) -> dict:
     return {"rules": rules, "sets": sets}
 
 
-def missing(queues: dict, dumps: dict, sets) -> list:
+def missing(queues, dumps: dict, sets, span: int = 1) -> list:
     """Чего не хватает: ``dumps`` — ``{ipt: вывод «-t mangle -S»}``
     (семейство без бинарника не передаётся), ``sets`` — ``ipset list -n``
     (чистая)."""
-    want = expected(queues)
+    want = expected(queues, span)
     out = []
     for ipt, dump in sorted(dumps.items()):
         lines = [x.strip() for x in str(dump or "").splitlines()]
@@ -507,7 +547,7 @@ def missing(queues: dict, dumps: dict, sets) -> list:
     return out
 
 
-def present(queues: dict, backend: str = "") -> list:
+def present(queues, backend: str = "", span: int = 1) -> list:
     """Правила групп на месте? Пустой список — да, иначе чего нет.
 
     Прошивка (Keenetic NDMS) пересобирает таблицы и сносит наши цепочки;
@@ -540,7 +580,7 @@ def present(queues: dict, backend: str = "") -> list:
         if not ok:
             return []
         sets = out.split()
-    return missing(queues, dumps, sets)
+    return missing(queues, dumps, sets, span)
 
 
 def remove(backend: str = "") -> None:

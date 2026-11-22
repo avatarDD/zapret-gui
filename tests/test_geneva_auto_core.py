@@ -459,6 +459,100 @@ class TestPlan(unittest.TestCase):
                 for i in range(10)]
         self.assertEqual(len(ga.plan_groups(many, max_groups=4)), 4)
 
+    def test_profiles_group_by_strategy_without_claiming(self):
+        a = self.svc("web:a", ga.WEB, "SA", ["1.1.1.1", "2.2.2.2"])
+        b = self.svc("web:b", ga.WEB, "SB", ["2.2.2.2", "3.3.3.3"])
+        c = self.svc("web:c", ga.WEB, "SA", ["4.4.4.4"])
+        profs = ga.plan_profiles([a, b, c])
+        self.assertEqual([p.strategy for p in profs], ["SA", "SB"])
+        # адреса не делятся между профилями: 2.2.2.2 есть у обоих, а
+        # отбирает пакеты ipset и порядок профилей
+        self.assertEqual(profs[0].services, ["web:a", "web:c"])
+        self.assertEqual(profs[0].addresses, ["1.1.1.1", "2.2.2.2",
+                                             "4.4.4.4"])
+        self.assertEqual(profs[1].addresses, ["2.2.2.2", "3.3.3.3"])
+        self.assertEqual((profs[0].tcp_ports, profs[0].udp_ports),
+                         ("443", ""))
+
+    def test_profiles_trial_first_and_max(self):
+        a = self.svc("web:a", ga.WEB, "SA", ["1.1.1.1"])
+        d = ga.Service(key="dns:d", kind=ga.DNS, status=ga.SEARCHING,
+                       addresses=[{"ip": "2.2.2.2", "seen": 1}])
+        profs = ga.plan_profiles([a], trials=[(d, "ST")])
+        self.assertEqual([p.strategy for p in profs], ["ST", "SA"])
+        self.assertTrue(profs[0].trial)
+        self.assertEqual(profs[0].services, ["dns:d"])
+        self.assertFalse(profs[1].trial)
+        many = [self.svc("web:%d" % i, ga.WEB, "S%d" % i, ["9.9.9.%d" % i])
+                for i in range(10)]
+        self.assertEqual(len(ga.plan_profiles(many, max_profiles=6)), 6)
+
+    def test_profiles_names_are_one_word(self):
+        a = self.svc("web:a", ga.WEB, "[TCP:flags:PA]-fragment{tcp:34}",
+                     ["1.1.1.1"])
+        q = self.svc("quic:q", ga.QUIC, "S", ["1.1.1.1"])
+        profs = ga.plan_profiles([a, q])
+        by = {p.strategy: p for p in profs}
+        tcp = by["[TCP:flags:PA]-fragment{tcp:34}"]
+        udp = by["S"]
+        self.assertRegex(tcp.name, r"^p\d+-tcp-[A-Za-z0-9_-]+$")
+        self.assertRegex(udp.name, r"^p\d+-udp-[A-Za-z0-9_-]+$")
+        self.assertLessEqual(len(tcp.name), 48)
+
+    def test_local_port_is_not_a_server_port(self):
+        """Порт клиента (6881) не должен попасть в фильтр профиля: geneva
+        сравнивает порт сервера, и такой профиль не поймал бы ничего."""
+        s = ga.Service(key="port:udp:c:6881", kind=ga.LOCAL_PORT,
+                       status=ga.APPLIED, strategy="S",
+                       transport="udp", client="192.168.1.10",
+                       local_port=6881)
+        profs = ga.plan_profiles([s])
+        self.assertEqual(len(profs), 1)
+        self.assertEqual(profs[0].addresses, [])
+        self.assertEqual(profs[0].udp_ports, "")
+        self.assertEqual(profs[0].tcp_ports, "")
+        self.assertTrue(profs[0].port_only)
+        self.assertEqual(profs[0].port_proto, "udp")
+
+    def test_peer_and_site_of_one_strategy_are_different_profiles(self):
+        """geneva проверяет ipset и порт вместе: профиль с адресами не
+        пустил бы пакет пира (порт сервера у него произвольный)."""
+        peer = ga.Service(key="port:tcp:c:6881", kind=ga.LOCAL_PORT,
+                          status=ga.APPLIED, strategy="SP",
+                          transport="tcp", client="192.168.1.10",
+                          local_port=6881)
+        site = self.svc("web:a", ga.WEB, "SP", ["1.1.1.1"])
+        profs = ga.plan_profiles([peer, site])
+        self.assertEqual([p.strategy for p in profs], ["SP", "SP"])
+        self.assertEqual([p.port_only for p in profs], [False, True])
+        self.assertEqual(profs[0].addresses, ["1.1.1.1"])
+        self.assertEqual(profs[1].addresses, [])
+        self.assertIn("peer", profs[1].name)
+
+    def test_service_without_addresses_is_skipped(self):
+        """Сервис без адресов цели не имеет: профиля нет, и падать на
+        этом нельзя."""
+        s = ga.Service(key="web:x", kind=ga.WEB, status=ga.APPLIED,
+                       strategy="S")
+        self.assertEqual(ga.plan_profiles([s]), [])
+
+    def test_peer_profile_goes_last(self):
+        """Профиль «все порты сервера» ничего не отбирает: он не должен
+        стоять раньше адресного профиля — забрал бы его пакеты."""
+        peer = ga.Service(key="port:tcp:c:6881", kind=ga.LOCAL_PORT,
+                          status=ga.APPLIED, strategy="SP",
+                          transport="tcp", client="192.168.1.10",
+                          local_port=6881, priority=ga.gal.IMPORTANT)
+        site = self.svc("web:a", ga.WEB, "SW", ["1.1.1.1"])
+        site.priority = ga.gal.BACKGROUND
+        profs = ga.plan_profiles([peer, site])
+        self.assertEqual([p.strategy for p in profs], ["SW", "SP"])
+        # пробная всё равно первая: её стратегия испытывается сейчас
+        d = ga.Service(key="dns:d", kind=ga.DNS, status=ga.SEARCHING,
+                       addresses=[{"ip": "2.2.2.2", "seen": 1}])
+        profs = ga.plan_profiles([peer], trials=[(d, "ST")])
+        self.assertEqual([p.strategy for p in profs], ["ST", "SP"])
+
 
 class TestCandidates(unittest.TestCase):
 

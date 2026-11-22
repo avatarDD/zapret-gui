@@ -99,6 +99,19 @@ class TestNftRules(unittest.TestCase):
         self.assertNotIn("queue", text)
         self.assertNotIn("1-65535", text)
 
+    def test_set_names_are_numbered_per_queue(self):
+        """Имена наборов не зависят от того, сколько очередей пришло
+        раньше: у каждой очереди своя нумерация с нуля (иначе набор
+        второй группы звался бы ``geneva_auto_341_1``, а не ``_0``)."""
+        a = ga.Group(S1, ["web:a"], [ga.Target(addresses=["93.184.216.1"],
+                                               tcp_ports="443")])
+        b = ga.Group(S2, ["web:b"], [ga.Target(addresses=["93.184.216.2"],
+                                               tcp_ports="443")])
+        text = fw.build_auto_rules({340: a, 341: b}, "nft")
+        self.assertIn("set geneva_auto_340_0_v4", text)
+        self.assertIn("set geneva_auto_341_0_v4", text)
+        self.assertNotIn("geneva_auto_341_1", text)
+
     def test_ipv6_client_by_local_port(self):
         g = ga.Group(S2, ["port:udp:2a02:6b8::5:6881"], [
             ga.Target(by_local_port=True, client="2a02:6b8::5",
@@ -519,6 +532,133 @@ class TestApplier(unittest.TestCase):
         self.assertEqual(fwf.removed, 1)
         self.assertTrue(gmf.stopped_all)
         self.assertEqual(a.queues, {})
+
+
+class FakeProfilesGM(FakeGM):
+    """geneva_c 2.0: профили в одном процессе."""
+
+    def __init__(self, fail=(), feature=True):
+        super().__init__(fail=fail)
+        self.feature = feature
+        self.engine = []
+        self.flows = {"ok": True, "flows": [
+            {"profile": "p1-X", "out": {"n": 3}, "in": {"n": 2}},
+            {"profile": "p1-X", "out": {"n": 1}, "in": {"n": 0}},
+            {"profile": "p2-Y", "out": {"n": 5}, "in": {"n": 4}}]}
+        self.stopped_engine = 0
+
+    def features(self, binary=""):
+        return ["ext", "ext_profile"] if self.feature else ["ext"]
+
+    def auto_engine_apply(self, profiles, workers):
+        self.engine.append(([p.name for p in profiles], workers))
+        return {"ok": True, "pid": 9001, "action": "started"}
+
+    def auto_engine_flows(self, limit=300):
+        return self.flows
+
+    def auto_engine_stats(self):
+        return {"ok": True, "pkts_out": 40, "pkts_in": 30, "triggered": 9,
+                "workers": 2}
+
+    def auto_engine_stop(self):
+        self.stopped_engine += 1
+
+
+class FakeSpanFW(FakeFW):
+
+    def __init__(self, ok=True):
+        super().__init__(ok=ok)
+        self.spans = []
+
+    def apply(self, rules, span=1):
+        self.spans.append(span)
+        return FakeFW.apply(self, dict(rules) if isinstance(rules, dict)
+                            else rules)
+
+    def present(self, rules, span=1):
+        return FakeFW.present(self, dict(rules))
+
+
+class TestApplierProfiles(unittest.TestCase):
+
+    def _services(self):
+        return [svc("web:a", S1, "93.184.216.1"),
+                svc("web:b", S2, "93.184.216.2")]
+
+    def test_two_strategies_share_one_process(self):
+        gmf, fwf = FakeProfilesGM(), FakeSpanFW()
+        a = ap.Applier(geneva=gmf, fw=fwf, workers=4)
+        r = a.apply_services(self._services())
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["mode"], "profiles")
+        self.assertEqual(len(gmf.engine), 1)
+        self.assertEqual(gmf.engine[0][1], 4)
+        # правила — на диапазон очередей процесса
+        self.assertEqual(fwf.spans[-1], 4)
+        # ни одного процесса-группы
+        self.assertEqual(gmf.groups, {})
+        self.assertEqual([p["strategy"] for p in r["profiles"]], [S1, S2])
+        self.assertTrue(all(p["live"] for p in r["profiles"]))
+
+    def test_trial_is_a_profile(self):
+        gmf, _fwf = FakeProfilesGM(), FakeSpanFW()
+        a = ap.Applier(geneva=gmf, fw=_fwf)
+        books = [svc("web:a", S1, "93.184.216.1"),
+                 svc("dns:b", None, "93.184.216.53", kind=ga.DNS,
+                     status=ga.SEARCHING)]
+        r = a.apply_services(books, trial=(books[1], S2))
+        self.assertTrue(r["trial_ok"], r)
+        # первый профиль — пробный, имя начинается с p1
+        self.assertTrue(gmf.engine[-1][0][0].startswith("p1-"),
+                        gmf.engine[-1][0])
+        self.assertEqual(r["profiles"][0]["trial"], True)
+
+    def test_old_engine_falls_back_to_groups(self):
+        gmf, fwf = FakeProfilesGM(feature=False), FakeFW()
+        a = ap.Applier(geneva=gmf, fw=fwf, max_groups=4)
+        a.apply_services([svc("web:a", S1, "93.184.216.1")])
+        self.assertEqual(a.mode, "groups")
+        self.assertEqual(gmf.engine, [])
+        self.assertIn(340, gmf.groups)
+
+    def test_stats_by_profile_from_flows(self):
+        gmf, fwf = FakeProfilesGM(), FakeSpanFW()
+        t = [100.0]
+        a = ap.Applier(geneva=gmf, fw=fwf, workers=2, clock=lambda: t[0])
+        a.apply_services(self._services())
+        name = a.profiles[0].name
+        # потоки geneva называет профиль так же, как он назван в файле
+        gmf.flows["flows"].append({"profile": name, "out": {"n": 2},
+                                   "in": {"n": 1}})
+        st = a.stats()
+        names = sorted(st)
+        self.assertEqual(len(names), 2)
+        first = st[names[0]]
+        self.assertEqual(first["stats"], {"flows": 1, "pkts_out": 2,
+                                          "pkts_in": 1})
+        # чужие имена профилей не смешиваются
+        self.assertEqual(sum(v["stats"]["flows"] for v in st.values()), 1)
+        self.assertEqual(first["engine"]["workers"], 2)
+        t[0] = 102.0
+        self.assertEqual(a.stats()[names[0]]["rate"]["pkts_out"], 0.0)
+
+    def test_clear_stops_the_process(self):
+        gmf, fwf = FakeProfilesGM(), FakeSpanFW()
+        a = ap.Applier(geneva=gmf, fw=fwf)
+        a.apply_services(self._services())
+        a.clear()
+        self.assertEqual(gmf.stopped_engine, 1)
+        self.assertEqual(a.profiles, [])
+        self.assertEqual(a.rules, [])
+
+    def test_firewall_error_means_nothing_live(self):
+        gmf = FakeProfilesGM()
+        a = ap.Applier(geneva=gmf, fw=FakeSpanFW(ok=False))
+        r = a.apply_services(self._services())
+        self.assertFalse(r["ok"])
+        self.assertEqual(a.profiles, [])
+        self.assertFalse(any(p["live"] for p in r["profiles"]))
 
 
 class TestManagerGroups(_StubCase):

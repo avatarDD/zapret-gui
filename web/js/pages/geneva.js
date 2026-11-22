@@ -612,9 +612,14 @@ const GenevaPage = (() => {
                 <tbody>${rows}</tbody>
             </table></div>` : `<div class="text-muted">${esc(_tr('geneva.auto.filter_empty'))}</div>`}`
             : `<div class="text-muted">${esc(_tr('geneva.auto.empty'))}</div>`;
+        // У профилей (geneva_c 2.0) очередь общая — диапазон процесса, а
+        // различает их имя профиля: по нему geneva считает потоки.
         const groups = (a.groups || []).map(g => {
             const st = g.stats || {}, rate = g.rate || {};
-            return `<li><span class="badge badge-ghost">${esc(_tr('geneva.auto.queue', { queue: g.queue }))}</span>
+            const badge = g.profile
+                ? `<span class="badge badge-ghost" title="${esc(_tr('geneva.auto.queue', { queue: g.queue }))}">${esc(g.profile)}</span>`
+                : `<span class="badge badge-ghost">${esc(_tr('geneva.auto.queue', { queue: g.queue }))}</span>`;
+            return `<li>${badge}
                 <span class="gv-mono">${esc(g.strategy)}</span>
                 <div class="text-muted">${esc((g.services || []).length)} · ${esc((g.targets || []).join('; '))}</div>
                 <div class="text-muted">${esc(_tr('geneva.auto.counters', {

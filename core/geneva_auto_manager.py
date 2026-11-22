@@ -272,7 +272,10 @@ class GenevaAutoManager:
         if self._applier is None:
             from core.geneva_auto_apply import Applier
             self._applier = Applier(geneva=self._geneva)
-        self._applier.max_groups = self.settings()["max_groups"]
+        st = self.settings()
+        self._applier.max_groups = st["max_groups"]
+        # у профилей «потоков» столько же, сколько потоков у процесса
+        self._applier.workers = st["workers"]
         return self._applier
 
     def search(self, slot: int = 0):
@@ -1186,7 +1189,7 @@ class GenevaAutoManager:
                 if slot is None:
                     break
                 fam = self.book.family_strategy(s)
-                running = [g.strategy for g in self.applier().queues.values()]
+                running = self.applier().running()
                 proven = self._proven(s.key)
                 snap = s.clone()
                 self.book.searching(s.key, now)
@@ -1372,16 +1375,36 @@ class GenevaAutoManager:
                 self.note("%s: подбор ждёт (%s)" % (name, res.detail))
         self._dirty = True
 
-    @staticmethod
-    def _plan_sig(services, trial=None, max_groups=ga.MAX_GROUPS,
+    def _plan_sig(self, services, trial=None, max_groups=ga.MAX_GROUPS,
                   trials=None) -> str:
-        # С пробной группой: план без неё и план с ней — разные правила,
-        # и смена пробы без смены книги должна применяться сразу. Предел
-        # групп — как у Applier: иначе группы сверх 4 не попадали в
-        # подпись, и их смена ждала повтора раз в 120 с.
+        # С пробной стратегией: план без неё и план с ней — разные
+        # правила, и смена пробы без смены книги должна применяться сразу.
+        # Предел групп — как у Applier: иначе группы сверх 4 не попадали в
+        # подпись, и их смена ждала повтора раз в 120 с. У профилей
+        # (geneva_c 2.0) в подпись идут имена и стратегии: адреса
+        # перечитываются перечитыванием ipset-файлов.
+        if self._profiles_mode():
+            all_trials = list(trials or ()) + ([trial] if trial else [])
+            profs = ga.plan_profiles(services, trials=all_trials)
+            # Адреса и порты тоже: новый адрес CDN попадёт в ipset-файл
+            # на следующем срезе, а не через APPLY_EVERY. Перезапуска не
+            # будет — подпись процесса считает только имена и стратегии,
+            # и процесс перечитает файлы (``reload_lists``).
+            return json.dumps([[p.name, p.strategy, sorted(p.addresses),
+                                p.tcp_ports, p.udp_ports] for p in profs],
+                              sort_keys=True)
         groups = ga.plan_groups(services, trial=trial, max_groups=max_groups,
                                 trials=trials)
         return json.dumps([g.to_dict() for g in groups], sort_keys=True)
+
+    def _profiles_mode(self) -> bool:
+        """Стратегии — профили одного процесса (geneva_c 2.0)?"""
+        try:
+            return bool(getattr(self.applier(), "mode") == "profiles" or
+                        self.applier().profiles_ok())
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: профили: %s" % e, source="geneva")
+            return False
 
     def _check_offload(self) -> None:
         """Ускорение NAT: раз в 20 срезов (и сразу, если в срезе есть
@@ -1838,12 +1861,23 @@ class GenevaAutoManager:
                 items.append(d)
             groups = []
             last = (self._applier.last if self._applier else {}) or {}
-            for q, info in sorted((last.get("queues") or {}).items()):
-                g = dict(info, queue=q)
-                g.update({k: v for k, v in
-                          (self.group_stats.get(q) or {}).items()
-                          if k in ("stats", "rate")})
-                groups.append(g)
+            if last.get("mode") == "profiles":
+                # Один процесс, много профилей: «группа» для страницы —
+                # профиль (очередь у всех одна, диапазон процесса).
+                for info in last.get("profiles") or ():
+                    g = dict(info, queue=ga.QUEUE_BASE,
+                             profile=info.get("name", ""))
+                    g.update({k: v for k, v in
+                              (self.group_stats.get(info.get("name")) or {}
+                               ).items() if k in ("stats", "rate")})
+                    groups.append(g)
+            else:
+                for q, info in sorted((last.get("queues") or {}).items()):
+                    g = dict(info, queue=q)
+                    g.update({k: v for k, v in
+                              (self.group_stats.get(q) or {}).items()
+                              if k in ("stats", "rate")})
+                    groups.append(g)
             searches = []
             for key, w in self._works.items():
                 x = self.search(w["slot"])

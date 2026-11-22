@@ -706,6 +706,82 @@ def build_host_run_args(binary: str, hp: dict, udp: bool,
         "--ext-ipcache-hostname"]
 
 
+def auto_engine_paths() -> dict:
+    """Файлы процесса профилей «Авто» (один ``geneva run`` на все
+    стратегии, очередь 340 и её воркеры)."""
+    rt = os.path.join(runtime_dir(), "auto")
+    d = os.path.join(rt, "engine")
+    return {"dir": d, "pid": os.path.join(rt, "engine.pid"),
+            "socket": os.path.join(rt, "engine.sock"),
+            "events": os.path.join(rt, "engine.jsonl"),
+            "log": os.path.join(rt, "engine.log"),
+            "args": os.path.join(rt, "engine.args"),
+            "profiles": os.path.join(d, "profiles.ini"),
+            "signature": os.path.join(d, "signature")}
+
+
+def auto_profiles_ini(profiles, ep: dict) -> str:
+    """``profiles.ini`` процесса профилей: профиль на стратегию, у каждого
+    свой список адресов (``--ipset``) и порт-фильтр сервера.
+
+    Цели по локальному порту (пиры) адресов сервера не знают: их профиль
+    берёт tcp целиком (``filter-tcp = 1-65535``), а udp отдаёт правилу
+    по кортежу conntrack: geneva отвергает профиль без фильтра протокола,
+    так что «все порты» можно назвать только для одного из двух.
+    """
+    out = ["# geneva-auto: профили «Авто» (zapret-gui)",
+           "# профиль на стратегию; отбор — своим ipset-файлом"]
+    for i, p in enumerate(profiles):
+        d = ep["dir"]
+        name = getattr(p, "name", "") or "p%d" % (i + 1)
+        tcp = getattr(p, "tcp_ports", "") or ""
+        udp = getattr(p, "udp_ports", "") or ""
+        if not tcp and not udp:
+            # Профиль без порт-фильтра geneva считает «на все порты» и
+            # отвергает при -p; пусть берёт все порты одного протокола
+            # (пир/DHT), а второй не называем вовсе — geneva сама
+            # запрещает протокол без фильтра.
+            if getattr(p, "port_proto", "tcp") == "udp":
+                udp = "1-65535"
+            else:
+                tcp = "1-65535"
+        out.append("[profile %s]" % name)
+        if tcp:
+            out.append("filter-tcp = %s" % tcp)
+        if udp:
+            out.append("filter-udp = %s" % udp)
+        if getattr(p, "addresses", None):
+            out.append("ipset = %s" % os.path.join(d, "ips-%d.txt" % i))
+        out.append("strategy-file = %s" % os.path.join(d, "strategy-%d.txt" % i))
+    return "\n".join(out) + "\n"
+
+
+def build_auto_engine_args(binary: str, ep: dict, workers: int,
+                           ext: list) -> list:
+    """argv процесса профилей: ``--ext-workers N`` даёт N потоков и
+    очередей 340..340+N-1, правила ставит zapret-gui (``--firewall
+    none``), порты — все: отбирают профили своими ipset и порт-фильтрами.
+
+    ``-f``/стратегия команды здесь не передаётся: иначе geneva сделала бы
+    из неё профиль 1, который ловит всё раньше файла профилей.
+
+    Потоки ограничены :data:`core.geneva_auto.ENGINE_QUEUES_MAX`: диапазон
+    очередей не должен дойти до очереди «по имени» (348) и детектора (349).
+    """
+    from core import geneva_auto as ga
+    workers = max(1, min(int(workers or 1), ga.ENGINE_QUEUES_MAX))
+    return [binary, "run"] + list(ext or ["--ext"]) + [
+        "--ext-profile", ep["profiles"],
+        "--ext-workers", str(workers),
+        "-q", str(ga.QUEUE_BASE),
+        "--firewall", "none",
+        "-p", "1-65535", "--proto", "tcp,udp",
+        "--mark", MARK,
+        "-c", "unix:" + ep["socket"],
+        "-e", ep["events"], "--stats-interval", "5",
+        "-l", "info", "--log-file", ep["log"], "--quiet"]
+
+
 def build_observe_args(binary: str, hp: dict) -> list:
     """argv детектора geneva (``--ext-auto observe``): трафик не меняет,
     движок берёт только порт discard; NFLOG-правила ставит и снимает
@@ -2734,6 +2810,176 @@ class GenevaManager:
         hp = auto_host_paths()
         self._stop_aux(hp["obs_pid"], "observe")
         _remove(hp["obs_socket"])
+
+    # ─────── профили (geneva 2.0): один процесс на все стратегии ───────
+
+    def auto_engine_pid(self):
+        pid = _read_pid(auto_engine_paths()["pid"])
+        if pid and pid_alive(pid, "run"):
+            return pid
+        return None
+
+    def auto_engine_status(self) -> dict:
+        """``{"pid", "profiles", "workers", "running"}`` процесса
+        профилей; профили — из ``profiles.ini`` при запуске."""
+        from core import geneva_auto as ga
+        ep = auto_engine_paths()
+        pid = self.auto_engine_pid()
+        args = _read_args(ep["args"])
+        workers = 1
+        if "--ext-workers" in args:
+            try:
+                workers = int(args[args.index("--ext-workers") + 1])
+            except (IndexError, ValueError):
+                workers = 1
+        names = []
+        try:
+            with open(ep["profiles"], "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("[profile "):
+                        names.append(line[len("[profile "):].rstrip("]"))
+        except OSError:
+            pass
+        return {"pid": pid, "running": bool(pid), "workers": workers,
+                "profiles": names, "queues": [ga.QUEUE_BASE + k
+                                              for k in range(workers)]}
+
+    def auto_engine_apply(self, profiles, workers: int) -> dict:  # noqa: C901
+        """Запустить (или перезапустить) процесс профилей под ``profiles``
+        (:func:`core.geneva_auto.plan_profiles`) и ``workers`` потоков.
+
+        Живой процесс с той же подписью (набор профилей) не трогается:
+        новые списки адресов подхватываются перечитыванием файлов, а новые
+        стратегии — ``set_strategy`` по каждому профилю (этап 2: когда
+        geneva это умеет) или перезапуском.
+
+        ``{"ok", "pid", "action", "workers", "profiles", "error"}``.
+        """
+        from core import geneva_auto as ga
+        ep = auto_engine_paths()
+        binary, err = self._ready_binary()
+        if not binary:
+            self.auto_engine_stop()
+            return {"ok": False, "pid": None, "action": "error",
+                    "error": err}
+        feats = self.features(binary)
+        if ga.PROFILE_FEATURE not in feats:
+            return {"ok": False, "pid": None, "action": "unsupported",
+                    "error": "профили geneva: нужна geneva_c 2.0 с "
+                             "ext_profile"}
+        profiles = list(profiles or ())
+        if not profiles:
+            self.auto_engine_stop()
+            return {"ok": True, "pid": None, "action": "stopped"}
+        strategies = []
+        for p in profiles:
+            try:
+                strategies.append(check_strategy_text(p.strategy))
+            except ValueError as e:
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": str(e)}
+        names = [n for n, _ in geneva_ext.blob_files()]
+        for strat in strategies:
+            why = self.ext_problem(strat, binary, names, feats)
+            if why:
+                return {"ok": False, "pid": None, "action": "error",
+                        "error": why}
+        # Воркеры в подписи: они дают диапазон очередей, а правила
+        # ставятся под него — без перезапуска диапазон не изменится.
+        workers = max(1, min(int(workers or 1), ga.ENGINE_QUEUES_MAX))
+        sig = "workers %d\n" % workers + "\n".join(
+            "%s %s" % (getattr(p, "name", ""), s)
+            for p, s in zip(profiles, strategies))
+        pid = self.auto_engine_pid()
+        try:
+            with open(ep["signature"], "r", encoding="utf-8") as f:
+                same = bool(pid) and f.read() == sig
+        except OSError:
+            same = False
+        if not same:
+            self.auto_engine_stop()
+        try:
+            os.makedirs(ep["dir"], exist_ok=True)
+            for i, p in enumerate(profiles):
+                ips = getattr(p, "addresses", None) or []
+                if ips:
+                    _write_atomic(os.path.join(ep["dir"], "ips-%d.txt" % i),
+                                  "# адреса профиля %s\n" % (
+                                      getattr(p, "name", "") or i + 1) +
+                                  "\n".join(ips) + "\n")
+                _write_atomic(os.path.join(ep["dir"],
+                                           "strategy-%d.txt" % i),
+                              strategies[i] + "\n")
+            _write_atomic(ep["profiles"], auto_profiles_ini(profiles, ep))
+        except OSError as e:
+            return {"ok": False, "pid": None, "action": "error",
+                    "error": "файлы профилей: %s" % e}
+        if same:
+            # Набор профилей тот же, а адреса (CDN) могли смениться:
+            # файлы уже переписаны, осталось заставить geneva перечитать
+            # списки — перезапуск не нужен.
+            try:
+                control_request(ep["socket"], "reload_lists")
+            except ControlError as e:
+                log.debug("geneva-auto: reload_lists (профили): %s" % e,
+                          source="geneva")
+            return {"ok": True, "pid": pid, "action": "reloaded",
+                    "workers": workers, "profiles": len(profiles)}
+        try:
+            ext = geneva_ext.argv(strategies, feats, names) or ["--ext"]
+            args = build_auto_engine_args(binary, ep, workers, ext)
+            trim_file(ep["events"], 0)
+            trim_file(ep["log"], 0)
+            _write_atomic(ep["args"], json.dumps(args))
+            proc = _spawn(args, ep["log"])
+        except OSError as e:
+            return {"ok": False, "pid": None, "action": "error",
+                    "error": "Запуск geneva (профили): %s" % e}
+        _write_pid(ep["pid"], proc.pid)
+        self._auto_procs["engine"] = proc
+        ready = _wait_ready_events(proc, ep["events"], timeout=8.0)
+        if proc.poll() is not None:
+            _remove(ep["pid"])
+            tail = " | ".join(tail_lines(ep["log"], 3))
+            return {"ok": False, "pid": None, "action": "error",
+                    "error": "geneva (профили) завершился при запуске: "
+                             "%s%s" % (exit_text(proc.returncode),
+                                       (" — " + tail) if tail else "")}
+        try:
+            _write_atomic(ep["signature"], sig)
+        except OSError:
+            pass
+        return {"ok": True, "pid": proc.pid, "action": "started",
+                "workers": workers, "profiles": len(profiles),
+                "ready": ready}
+
+    def auto_engine_stats(self) -> dict:
+        """``stats`` процесса профилей (сумма по воркерам + по потокам)."""
+        if not self.auto_engine_pid():
+            return {"ok": False, "error": "процесс профилей не запущен"}
+        try:
+            return control_request(auto_engine_paths()["socket"], "stats")
+        except ControlError as e:
+            return {"ok": False, "error": str(e)}
+
+    def auto_engine_flows(self, limit: int = 300) -> dict:
+        """Потоки процесса профилей (``ctl ext_flows``): у каждого есть
+        ``profile`` — имя профиля, через который он идёт. Дешёвая
+        замена счётчикам по стратегиям: ``stats`` у процесса общие."""
+        if not self.auto_engine_pid():
+            return {"ok": False, "error": "процесс профилей не запущен"}
+        try:
+            return control_request(auto_engine_paths()["socket"],
+                                   "ext_flows", limit=int(limit))
+        except ControlError as e:
+            return {"ok": False, "error": str(e)}
+
+    def auto_engine_stop(self) -> None:
+        ep = auto_engine_paths()
+        self._stop_aux(ep["pid"], "engine")
+        _remove(ep["socket"])
+        _remove(ep["signature"])
 
     def auto_stats(self, queue: int) -> dict:
         """Счётчики группы через управляющий сокет (``stats``)."""

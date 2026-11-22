@@ -361,3 +361,21 @@ test('вкладка «Стратегии»: пусто', async () => {
     await env.page.render(c, { sections: ['found'] });
     assert.match(env.elements.get('gv-found').innerHTML, /Рабочих стратегий пока нет/);
 });
+test('профили geneva 2.0: в карточке имя профиля, а не общая очередь', async () => {
+    const env = makeSandbox({
+        auto: Object.assign({}, AUTO_ON, {
+            groups: [
+                { queue: 340, profile: 'p1-tcp-X1', strategy: 'S1',
+                  services: ['web:a'], targets: ['1.1.1.1'],
+                  stats: { flows: 2, pkts_out: 4, pkts_in: 2 } },
+                { queue: 340, profile: 'p2-tcp-X2', strategy: 'S2',
+                  services: ['web:b'], targets: ['2.2.2.2'],
+                  stats: { flows: 1, pkts_out: 3, pkts_in: 1 } },
+            ],
+        }),
+    });
+    await renderAuto(env);
+    const text = env.elements.get('gv-auto').innerHTML;
+    assert.match(text, /p1-tcp-X1/);
+    assert.match(text, /p2-tcp-X2/);
+});

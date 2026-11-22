@@ -29,6 +29,7 @@ import unittest
 from unittest import mock
 
 import core.config_manager as cm_mod
+from core import geneva_auto as ga
 from core import geneva_manager as gm
 
 
@@ -966,6 +967,204 @@ class TestSearch(_StubCase):
         self.assertTrue(p["checkpoint"].startswith(self.tmp))
         self.assertTrue(p["search"].startswith(self.tmp))
         self.assertTrue(p["socket"].startswith(self.rt))
+
+
+class TestAutoEngineProfiles(unittest.TestCase):
+    """Один процесс на все стратегии: файл профилей, argv и запуск."""
+
+    S1 = "[TCP:flags:PA]-fragment{tcp:34:True:17}-| \\/"
+    S2 = "[TCP:flags:PA]-fragment{tcp:-1:True}-| \\/"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.ep = {k: os.path.join(self.tmp, "engine", k)
+                   for k in ("profiles", "signature", "args", "log",
+                             "events", "pid", "socket")}
+        self.ep["dir"] = os.path.join(self.tmp, "engine")
+
+    def _profile(self, name, strategy, ips, tcp="443", udp=""):
+        strategy = self.S1 if strategy == "S1" else strategy
+        return ga.Profile(strategy=strategy, services=[name], targets=[
+            ga.Target(addresses=list(ips), tcp_ports=tcp, udp_ports=udp)],
+            name=name)
+
+    def test_ini_has_ports_ipset_and_strategy_file(self):
+        profs = [self._profile("p1", "S1", ["1.1.1.1"]),
+                 self._profile("p2", "S2", [], tcp="", udp="6881")]
+        text = gm.auto_profiles_ini(profs, self.ep)
+        self.assertIn("[profile p1]", text)
+        self.assertIn("filter-tcp = 443", text)
+        self.assertIn("ipset = %s/ips-0.txt" % self.ep["dir"], text)
+        self.assertIn("strategy-file = %s/strategy-0.txt" % self.ep["dir"],
+                      text)
+        # профиль без адресов сервера tcp не назвал: geneva сама
+        # запретит tcp (defaults дописывает пропущенный протокол)
+        self.assertIn("[profile p2]\nfilter-udp = 6881", text)
+        self.assertNotIn("1-65535", text)
+        self.assertNotIn("ips-1.txt", text)
+
+    def test_ini_never_takes_every_port_with_explicit_ports(self):
+        # geneva отвергает профиль «все порты» при -p: «все» называем
+        # только для tcp, udp остаётся запрещённым (defaults в geneva)
+        text = gm.auto_profiles_ini([self._profile("p1", "S", [], tcp="")],
+                                    self.ep)
+        self.assertIn("filter-tcp = 1-65535", text)
+        self.assertNotIn("filter-udp", text)
+
+    def test_args_ask_for_workers_and_profile_file(self):
+        args = gm.build_auto_engine_args("/bin/geneva", self.ep, 6,
+                                         ["--ext"])
+        self.assertEqual(args[:3], ["/bin/geneva", "run", "--ext"])
+        self.assertEqual(args[args.index("--ext-workers") + 1], "6")
+        self.assertEqual(args[args.index("--ext-profile") + 1],
+                         self.ep["profiles"])
+        self.assertEqual(args[args.index("-q") + 1],
+                         str(ga.QUEUE_BASE))
+        self.assertEqual(args[args.index("--firewall") + 1], "none")
+        self.assertEqual(args[args.index("--proto") + 1], "tcp,udp")
+
+    def test_workers_never_reach_the_host_queue(self):
+        """Диапазон 340..340+N-1 не должен дойти до 348 («по имени») и
+        349 (детектор): иначе они получат чужие пакеты."""
+        args = gm.build_auto_engine_args("/bin/geneva", self.ep, 32,
+                                         ["--ext"])
+        n = int(args[args.index("--ext-workers") + 1])
+        self.assertEqual(n, ga.ENGINE_QUEUES_MAX)
+        self.assertLess(ga.QUEUE_BASE + n - 1, ga.HOST_QUEUE)
+
+    def test_apply_writes_files_and_spawns(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        proc = mock.Mock()
+        proc.pid = 7001
+        proc.poll.return_value = None
+        calls = []
+
+        def spawn(args, log_path):
+            calls.append(args)
+            return proc
+
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_profile"}), \
+             mock.patch.object(m, "ext_problem", return_value=""), \
+             mock.patch.object(m, "auto_engine_pid", return_value=None), \
+             mock.patch.object(m, "auto_engine_stop"), \
+             mock.patch.object(gm, "auto_engine_paths", return_value=self.ep), \
+             mock.patch.object(gm, "_spawn", side_effect=spawn), \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_wait_ready_events"), \
+             mock.patch.object(gm, "trim_file"):
+            r = m.auto_engine_apply(
+                [self._profile("p1", "S1", ["1.1.1.1"])], 3)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["action"], "started")
+        self.assertEqual(len(calls), 1)
+        with open(os.path.join(self.ep["dir"], "ips-0.txt")) as f:
+            self.assertEqual(f.read().strip().split("\n")[-1], "1.1.1.1")
+        with open(os.path.join(self.ep["dir"], "strategy-0.txt")) as f:
+            self.assertEqual(f.read().strip(), self.S1)
+        with open(self.ep["profiles"]) as f:
+            self.assertIn("[profile p1]", f.read())
+
+    def test_apply_keeps_live_process_with_same_signature(self):
+        os.makedirs(self.ep["dir"], exist_ok=True)
+        with open(self.ep["signature"], "w") as f:
+            f.write("workers 3\np1 " + self.S1)
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        calls = []
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_profile"}), \
+             mock.patch.object(m, "ext_problem", return_value=""), \
+             mock.patch.object(m, "auto_engine_pid", return_value=7001), \
+             mock.patch.object(m, "auto_engine_stop") as stop, \
+             mock.patch.object(gm, "control_request",
+                               side_effect=lambda *a, **k:
+                               calls.append(a) or {"ok": True}), \
+             mock.patch.object(gm, "auto_engine_paths", return_value=self.ep):
+            r = m.auto_engine_apply(
+                [self._profile("p1", "S1", ["2.2.2.2"])], 3)
+        self.assertEqual(r["action"], "reloaded")
+        self.assertEqual(r["pid"], 7001)
+        stop.assert_not_called()
+        # адреса CDN могли смениться: файл переписан, списки перечитаны
+        with open(os.path.join(self.ep["dir"], "ips-0.txt")) as f:
+            self.assertIn("2.2.2.2", f.read())
+        self.assertEqual(calls[0][1], "reload_lists")
+
+    def test_apply_without_profile_feature_is_unsupported(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features", return_value={"ext"}):
+            r = m.auto_engine_apply([self._profile("p1", "S", [])], 2)
+        self.assertEqual(r["action"], "unsupported")
+        self.assertFalse(r["ok"])
+
+    def test_apply_empty_stops(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_profile"}), \
+             mock.patch.object(m, "auto_engine_stop") as stop:
+            r = m.auto_engine_apply([], 2)
+        self.assertEqual(r["action"], "stopped")
+        stop.assert_called_once()
+
+    def test_apply_crash_reports_log_tail(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        proc = mock.Mock()
+        proc.pid = 7002
+        proc.poll.return_value = 1
+        proc.returncode = 1
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_profile"}), \
+             mock.patch.object(m, "ext_problem", return_value=""), \
+             mock.patch.object(m, "auto_engine_pid", return_value=None), \
+             mock.patch.object(m, "auto_engine_stop"), \
+             mock.patch.object(gm, "auto_engine_paths", return_value=self.ep), \
+             mock.patch.object(gm, "_spawn", return_value=proc), \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_remove"), \
+             mock.patch.object(gm, "_wait_ready_events"), \
+             mock.patch.object(gm, "trim_file"), \
+             mock.patch.object(gm, "tail_lines",
+                               return_value=["error: profile p2: bad"]):
+            r = m.auto_engine_apply(
+                [self._profile("p1", "S1", ["1.1.1.1"])], 2)
+        self.assertFalse(r["ok"])
+        self.assertIn("profile p2", r["error"])
+
+    def test_status_reads_workers_and_names(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        os.makedirs(self.ep["dir"], exist_ok=True)
+        with open(self.ep["profiles"], "w") as f:
+            f.write("[profile p1]\nfilter-tcp = 443\n\n[profile p2]\n")
+        with open(self.ep["args"], "w") as f:
+            json.dump(["geneva", "run", "--ext-workers", "5"], f)
+        with mock.patch.object(gm, "auto_engine_paths", return_value=self.ep), \
+             mock.patch.object(m, "auto_engine_pid", return_value=7003):
+            st = m.auto_engine_status()
+        self.assertEqual(st["workers"], 5)
+        self.assertEqual(st["profiles"], ["p1", "p2"])
+        self.assertTrue(st["running"])
+        self.assertEqual(st["queues"], [340, 341, 342, 343, 344])
 
 
 if __name__ == "__main__":
