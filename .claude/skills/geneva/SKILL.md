@@ -155,9 +155,11 @@ zapret2 и мутирует их параметры. Ключа `--ext` нет �
   `XPROF_MAX 255`), профиль отбирает пакеты своим `ipset`-файлом и
   `filter-tcp/udp`. Схему выбирает `Applier` по `features(binary)`
   (`ga.PROFILE_FEATURE`), без фичи — прежние группы.
-  `ENGINE_QUEUES_MAX = HOST_QUEUE − QUEUE_BASE = 8`: диапазон очередей
-  процесса не должен дойти до 348 (процесс «по имени») и 349 (детектор),
-  даже если в настройках стоит 32 потока.
+  Потоков не больше, чем умеет сам движок: `ENGINE_WORKERS_MAX = 64`
+  (`--ext-workers` 1–64, docs/EXT.md «Многоочередной движок»). Очереди
+  «по имени» (`HOST_QUEUE = 404`) и детектора (`OBSERVE_QUEUE = 405`)
+  стоят СРАЗУ ЗА диапазоном профилей (`340..403`), поэтому своего
+  предела сверх движка наш код не вводит.
   **Ловушки формата профиля:** «все порты» можно назвать только для
   одного протокола (`filter-tcp = 1-65535` без `filter-udp`) — второй
   протокол без фильтра означает «все порты» и при `-p` даёт ошибку
@@ -601,7 +603,8 @@ README; в 2.0.1 первыми идут `packaging/s6/geneva/run`,
    процессе профилями (`plan_profiles` → `auto_profiles_ini` →
    `auto_engine_apply`), очередь у них одна (`QUEUE_BASE`), а правила
    различают профили своими наборами адресов и порт-фильтрами; «потоков»
-   процесса не больше `ENGINE_QUEUES_MAX` (8 — дальше 348/349).
+   процесса — `ENGINE_WORKERS_MAX` (64, предел `--ext-workers`); очередь
+   «по имени» и детектор стоят за диапазоном профилей (404/405).
    Подпись живого процесса — воркеры, имена и стратегии: новые адреса
    CDN файлы переписываются, а процесс их перечитывает (`reload_lists`),
    без перезапуска. Стратегия
@@ -726,13 +729,17 @@ README; в 2.0.1 первыми идут `packaging/s6/geneva/run`,
 - **По имени** (`by_name`, по умолчанию да; фичи `ext`, `ext_profile`,
   `ext_lists`, `ext_l7`): `ga.host_profiles` (≤ 24, домены семейства без
   своей жизни в книге, пробная — нет) → `GenevaManager.auto_host_apply`:
-  `run --ext --ext-profile profiles.ini -q 348 --firewall none
-  --ext-ipcache-hostname`, hostlist на профиль, `ipset-exclude` = адреса
+  `run --ext --ext-profile profiles.ini -q 404 --firewall none
+  --ext-ipcache-hostname` (`-q` = `ga.HOST_QUEUE`; номер зависит от
+  предела потоков, а подпись процесса от него — нет, поэтому живой
+  процесс сверяется с фактической `-q` через `_queue_matches` и при
+  несовпадении перезапускается), hostlist на профиль, `ipset-exclude` = адреса
   живых групп + «Не трогать». Те же стратегии — `reload_lists`, иначе
   перезапуск. Правило — `fw.HostRule` после групп: TCP 80/443 (+UDP 443
   при `ext_crypto`) первые пакеты. `Book.by_name` — покрытые сайты.
 - **Детектор** (`ext_auto`): `run --ext --ext-auto observe -s '\/' -p 9
-  -q 349` (NFLOG-правила ставит сама geneva), раз в срез `ext_status`:
+  -q 405` (`ga.OBSERVE_QUEUE`; NFLOG-правила ставит сама geneva), раз в
+  срез `ext_status`:
   `THROTTLE`/`FREEZE_N` у `host`/`ip` → `Book.detect` (подозрение, раз в
   минуту), `capacity` → `geneva_rate.SHARED`, `DNS_POISON` → совет DoH
   раз в час на имя.
@@ -742,7 +749,7 @@ README; в 2.0.1 первыми идут `packaging/s6/geneva/run`,
   модули, и на OpenWrt второй в образ по умолчанию не входит (пакет
   `kmod-nfnetlink-log`, фича ядра `nfnetlink-log`). Без подсистемы
   ядро отвечает на `NFULNL_CFG_CMD_BIND` через `EINVAL` — в логе geneva
-  это `error engine: cannot bind NFLOG group 349: Invalid argument`, и
+  это `error engine: cannot bind NFLOG group 405: Invalid argument`, и
   процесс умирает с `EXIT_FAIL` («ни одна стратегия не прошла»). Признак
   загруженной подсистемы — `/proc/net/netfilter/nfnetlink_log`
   (`proc_create_net` в `nfnetlink_log.c`, файл живёт, пока модуль
@@ -797,8 +804,10 @@ README; в 2.0.1 первыми идут `packaging/s6/geneva/run`,
   стратегий>))`. У группы-очереди ровно одна пробная стратегия
   (`plan_groups`/`assign_queues`: пара «адрес + транспорт» достаётся
   только одной группе), поэтому при всех занятых группах остаётся один
-  слот — это не сбой, а нехватка очередей. Потолок 8 групп нельзя поднять
-  без сдвига `HOST_QUEUE = 348` и `OBSERVE_QUEUE = 349`; страница честно
+  слот — это не сбой, а нехватка очередей группового пути (у профилей,
+  которые работают на geneva_c 2.0, `_search_slots` отвязывается на
+  следующем этапе). `HOST_QUEUE`/`OBSERVE_QUEUE` уже вынесены за предел
+  потоков (404/405); страница честно
   пишет причину (`geneva.auto.split_now` под фазой), а не поднимает
   лимит. Замеры на живом роутере и варианты расширения —
   `docs/geneva-auto-queues.md`.

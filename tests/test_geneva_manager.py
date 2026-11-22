@@ -1025,13 +1025,51 @@ class TestAutoEngineProfiles(unittest.TestCase):
         self.assertEqual(args[args.index("--proto") + 1], "tcp,udp")
 
     def test_workers_never_reach_the_host_queue(self):
-        """Диапазон 340..340+N-1 не должен дойти до 348 («по имени») и
-        349 (детектор): иначе они получат чужие пакеты."""
-        args = gm.build_auto_engine_args("/bin/geneva", self.ep, 32,
+        """Диапазон 340..340+N-1 не должен дойти до очереди «по имени» и
+        детектора: они получат чужие пакеты. Предел — только у движка."""
+        args = gm.build_auto_engine_args("/bin/geneva", self.ep, 1000,
                                          ["--ext"])
         n = int(args[args.index("--ext-workers") + 1])
-        self.assertEqual(n, ga.ENGINE_QUEUES_MAX)
+        self.assertEqual(n, ga.ENGINE_WORKERS_MAX)
         self.assertLess(ga.QUEUE_BASE + n - 1, ga.HOST_QUEUE)
+        self.assertLess(ga.HOST_QUEUE, ga.OBSERVE_QUEUE)
+
+    def test_workers_limit_is_the_engine_limit(self):
+        """Потоков не меньше, чем умеет сам geneva_c (--ext-workers 1–64):
+        наши числа не должны вводить свой предел."""
+        self.assertEqual(ga.ENGINE_WORKERS_MAX, 64)
+        self.assertEqual(ga.ENGINE_QUEUES_MAX, ga.ENGINE_WORKERS_MAX)
+        args = gm.build_auto_engine_args("/bin/geneva", self.ep, 64,
+                                         ["--ext"])
+        self.assertEqual(args[args.index("--ext-workers") + 1], "64")
+
+    def test_queue_matches_reads_argv(self):
+        """Живой процесс «по имени»/детектора сверяется по фактической
+        ``-q``: подпись от номера очереди не зависит, и процесс пережил бы
+        её смену."""
+        def argv(words):
+            data = b"\0".join(w.encode() for w in words) + b"\0"
+
+            class F:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self):
+                    return data
+
+            return F()
+
+        with mock.patch("builtins.open", lambda *a, **k: argv(
+                ["/opt/usr/bin/geneva", "run", "-q", "404", "--ext"])):
+            self.assertTrue(gm._queue_matches(4242, ga.HOST_QUEUE))
+            self.assertFalse(gm._queue_matches(4242, ga.OBSERVE_QUEUE))
+        # нет /proc — верим подписи (как pid_alive)
+        with mock.patch("builtins.open", side_effect=OSError):
+            self.assertTrue(gm._queue_matches(4242, ga.HOST_QUEUE))
+        self.assertFalse(gm._queue_matches(None, ga.HOST_QUEUE))
 
     def test_apply_writes_files_and_spawns(self):
         m = gm.GenevaManager.__new__(gm.GenevaManager)

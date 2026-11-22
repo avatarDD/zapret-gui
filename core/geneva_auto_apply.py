@@ -133,10 +133,10 @@ class Applier:
         return [g.strategy for g in self.queues.values()]
 
     def _span(self) -> int:
-        """Очередей у процесса профилей (он же ``span`` правил): не
-        больше 340..347 — очередь 348 занята процессом «по имени», 349 —
-        детектором."""
-        return max(1, min(int(self.workers or 1), ga.ENGINE_QUEUES_MAX))
+        """Очередей у процесса профилей (он же ``span`` правил): предел
+        движка 1–64, а очередь «по имени» и детектор стоят сразу за
+        диапазоном профилей (340..403)."""
+        return max(1, min(int(self.workers or 1), ga.ENGINE_WORKERS_MAX))
 
     def profiles_ok(self) -> bool:
         """Стратегии сейчас — профили одного процесса?"""

@@ -3880,7 +3880,7 @@ const i18n_en_server = {
 "отмечено вручную": "marked manually",
 "отчёты живут в памяти процесса: после перезапуска GUI их нет": "reports live in the process memory: after a GUI restart they are gone",
 "очередь NFQUEUE не открылась: номер очереди занят другим процессом — firewall_status() покажет queue_numbers и расхождения": "the NFQUEUE queue did not open: the queue number is taken by another process; firewall_status() shows queue_numbers and mismatches",
-"очередь вне 340–347": "queue outside 340–347",
+"очередь вне {0}–{1}": "queue outside {0}–{1}",
 "очистка runtime-артефактов zapret-gui...": "cleaning zapret-gui runtime artifacts...",
 "очистка завершена": "cleanup finished",
 "ошибка": "error",

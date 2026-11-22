@@ -71,6 +71,7 @@ const i18n_ru = {
     "geneva.auto.log": "Журнал режима «Авто»",
     "geneva.auto.workers": "Проверок одновременно при подборе",
     "geneva.workers_hint": "От 1 до 32, обычно хватает 16",
+    "geneva.auto.workers_hint": "От 1 до 64 — столько потоков держит движок. На слабом роутере 2–4, на мощном больше: подбирайте по нагрузке",
     "geneva.auto.max_groups": "Стратегий одновременно",
     "geneva.auto.help_tunnels": "Защищать туннели и прокси zapret-gui",
     "geneva.auto.help_tunnels_hint": "Если провайдер блокирует подключение роутера к серверу AmneziaWG, WireGuard, sing-box, mihomo или usque, «Авто» подберёт стратегию и для него. Трафик внутри туннелей режим не трогает никогда.",

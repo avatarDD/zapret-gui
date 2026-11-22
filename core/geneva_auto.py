@@ -1213,16 +1213,19 @@ def target(s: Service):
 
 # ── применение по имени (geneva_c 2.0: ext_profile, ext_lists) ──
 
-# Процесс профилей слушает диапазон 340..340+N-1: N не должно дойти до
-# HOST_QUEUE (348) и OBSERVE_QUEUE (349) — иначе поток по имени и детектор
-# получат пакеты, которые им не адресованы.
-HOST_QUEUE = 348                 # процесс «по имени»
-ENGINE_QUEUES_MAX = HOST_QUEUE - QUEUE_BASE          # 8 очередей: 340..347
+# Процесс профилей слушает диапазон 340..340+N-1, и N — предел самого
+# движка (``--ext-workers`` 1–64, docs/EXT.md «Многоочередной движок»).
+# Очереди «по имени» и детектора стоят СРАЗУ за этим диапазоном, а не
+# внутри него: иначе число потоков пришлось бы держать меньше, чем умеет
+# geneva.
+ENGINE_WORKERS_MAX = 64          # предел geneva_c (--ext-workers 1–64)
+HOST_QUEUE = QUEUE_BASE + ENGINE_WORKERS_MAX         # 404: «по имени»
+OBSERVE_QUEUE = HOST_QUEUE + 1                       # 405: детектор
+ENGINE_QUEUES_MAX = HOST_QUEUE - QUEUE_BASE          # 64: 340..403
 HOST_TCP_PORTS = (80, 443)
 HOST_UDP_PORT = 443
 MAX_HOST_PROFILES = 24
 HOST_FEATURES = ("ext", "ext_profile", "ext_lists", "ext_l7")
-OBSERVE_QUEUE = 349              # детектор geneva (--ext-auto observe)
 OBSERVE_PORT = 9                 # discard: движок детектора берёт только его
 OBSERVE_FEATURE = "ext_auto"
 

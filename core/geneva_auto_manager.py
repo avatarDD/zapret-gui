@@ -81,7 +81,7 @@ def state_path() -> str:
 
 
 def auto_settings(cfg=None) -> dict:
-    """``geneva.auto`` с пределами (``max_groups`` 1–8, ``workers`` 1–32)."""
+    """``geneva.auto`` с пределами (``max_groups`` 1–8, ``workers`` 1–64)."""
     if cfg is None:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
@@ -99,7 +99,8 @@ def auto_settings(cfg=None) -> dict:
             "help_tunnels": bool(raw.get("help_tunnels", True)),
             "max_groups": num("max_groups", ga.MAX_GROUPS, 1,
                               ga.MAX_GROUPS_LIMIT),
-            "workers": num("workers", 4, 1, 32),       # предел geneva_c
+            # --ext-workers geneva_c: 1–64 (у eval свой предел, 32)
+            "workers": num("workers", 4, 1, ga.ENGINE_WORKERS_MAX),
             # «Как делить потоки»: выкл — один сервис за раз со всеми
             # потоками, вкл — до 4 сервисов рядом, потоки делятся
             "split_workers": bool(raw.get("split_workers", False)),
@@ -232,8 +233,8 @@ class GenevaAutoManager:
         self.rules_lost = 0              # сколько раз правила сносили извне
         self._lost_noted_at = None
         self._lost_unnoted = 0
-        self.host_state = {}             # процесс «по имени» (очередь 348)
-        self.detector = {}               # детектор geneva (очередь 349)
+        self.host_state = {}             # процесс «по имени» (HOST_QUEUE)
+        self.detector = {}               # детектор geneva (OBSERVE_QUEUE)
         self._detector_error = ""
         self._detector_retry = 0.0       # раньше этого времени не перезапускаем
         self._nflog_noted = False        # «нет NFLOG» в журнал — один раз
@@ -1978,7 +1979,7 @@ class GenevaAutoManager:
     # ── настройки со страницы ──
 
     def update_settings(self, values: dict) -> dict:
-        """Настройки с карточки «Авто»: ``workers`` (1–32), ``max_groups``
+        """Настройки с карточки «Авто»: ``workers`` (1–64), ``max_groups``
         (1–8), ``help_tunnels`` (bool) и ``exclude`` (адреса серверов,
         списком или текстом через пробел, запятую или строку). Новое
         число воркеров действует со следующего круга подбора, число
@@ -1992,7 +1993,8 @@ class GenevaAutoManager:
         def bad(text):
             return {"ok": False, "error_code": "bad_value", "error": text}
 
-        limits = {"workers": (1, 32), "max_groups": (1, ga.MAX_GROUPS_LIMIT)}
+        limits = {"workers": (1, ga.ENGINE_WORKERS_MAX),
+                  "max_groups": (1, ga.MAX_GROUPS_LIMIT)}
         for key, (lo, hi) in limits.items():
             if key not in values:
                 continue

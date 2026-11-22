@@ -130,7 +130,7 @@ const GenevaPage = (() => {
                         <div id="gv-auto">${esc(_tr('common.loading'))}</div>
                         <div class="gv-auto-settings">
                             <label class="form-label" for="gv-auto-workers">${esc(_tr('geneva.auto.workers'))}</label>
-                            <input id="gv-auto-workers" type="number" min="1" max="32" class="form-control" value="4" title="${esc(_tr('geneva.workers_hint'))}">
+                            <input id="gv-auto-workers" type="number" min="1" max="64" class="form-control" value="4" title="${esc(_tr('geneva.auto.workers_hint'))}">
                             <label class="form-label" for="gv-auto-groups">${esc(_tr('geneva.auto.max_groups'))}</label>
                             <input id="gv-auto-groups" type="number" min="1" max="8" class="form-control" value="4">
                             <label class="gv-check gv-auto-wide">

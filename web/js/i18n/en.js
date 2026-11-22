@@ -68,6 +68,7 @@ const i18n_en = {
     "geneva.auto.log": "Auto mode log",
     "geneva.auto.workers": "Parallel checks while searching",
     "geneva.workers_hint": "From 1 to 32, 16 is usually enough",
+    "geneva.auto.workers_hint": "From 1 to 64 — the engine runs that many threads. 2–4 on a weak router, more on a fast one: pick by load",
     "geneva.auto.max_groups": "Strategies at once",
     "geneva.auto.help_tunnels": "Protect zapret-gui tunnels and proxies",
     "geneva.auto.help_tunnels_hint": "If the ISP blocks the router connecting to an AmneziaWG, WireGuard, sing-box, mihomo or usque server, Auto finds a strategy for it too. Traffic inside tunnels is never touched.",

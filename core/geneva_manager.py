@@ -648,7 +648,8 @@ def build_auto_run_args(binary: str, queue: int, gp: dict,
 
 
 def auto_host_paths() -> dict:
-    """Файлы процесса «по имени» (очередь 348) и детектора (349)."""
+    """Файлы процесса «по имени» (:data:`core.geneva_auto.HOST_QUEUE`)
+    и детектора (:data:`core.geneva_auto.OBSERVE_QUEUE`)."""
     rt = os.path.join(runtime_dir(), "auto")
     host = os.path.join(rt, "host")
     return {"dir": host, "pid": os.path.join(host, "run.pid"),
@@ -690,7 +691,7 @@ def host_profiles_ini(profiles, hp: dict) -> str:
 
 def build_host_run_args(binary: str, hp: dict, udp: bool,
                         ext: list) -> list:
-    """argv процесса «по имени»: правила ставит zapret-gui (очередь 348),
+    """argv процесса «по имени»: правила ставит zapret-gui (своя очередь),
     имя берётся из ClientHello, а у следующего соединения к тому же
     адресу — из кэша (``--ext-ipcache-hostname``)."""
     from core import geneva_auto as ga
@@ -765,11 +766,12 @@ def build_auto_engine_args(binary: str, ep: dict, workers: int,
     ``-f``/стратегия команды здесь не передаётся: иначе geneva сделала бы
     из неё профиль 1, который ловит всё раньше файла профилей.
 
-    Потоки ограничены :data:`core.geneva_auto.ENGINE_QUEUES_MAX`: диапазон
-    очередей не должен дойти до очереди «по имени» (348) и детектора (349).
+    Потоки ограничены только пределом движка
+    (:data:`core.geneva_auto.ENGINE_WORKERS_MAX`, ``--ext-workers`` 1–64):
+    очередь «по имени» и детектор стоят сразу за диапазоном профилей.
     """
     from core import geneva_auto as ga
-    workers = max(1, min(int(workers or 1), ga.ENGINE_QUEUES_MAX))
+    workers = max(1, min(int(workers or 1), ga.ENGINE_WORKERS_MAX))
     return [binary, "run"] + list(ext or ["--ext"]) + [
         "--ext-profile", ep["profiles"],
         "--ext-workers", str(workers),
@@ -803,6 +805,31 @@ def _read_args(path: str) -> list:
     except (OSError, ValueError):
         return []
     return args if isinstance(args, list) else []
+
+
+def _queue_matches(pid, queue: int) -> bool:
+    """Слушает ли живой процесс ``pid`` очередь ``queue`` (по argv).
+
+    Номер очереди «по имени» и детектора зависит от предела потоков
+    процесса профилей, а подпись процесса от очереди не зависит: без
+    этой проверки процесс пережил бы смену номера и слушал бы чужую
+    очередь. Нет ``/proc`` — верим подписи (так же, как :func:`pid_alive`).
+    """
+    if not pid:
+        return False
+    try:
+        with open("/proc/%d/cmdline" % int(pid), "rb") as f:
+            words = f.read().split(b"\0")
+    except OSError:
+        return True
+    try:
+        i = words.index(b"-q")
+    except ValueError:
+        return True                      # очереди в argv нет — не наша забота
+    try:
+        return int(words[i + 1]) == int(queue)
+    except (IndexError, ValueError):
+        return True
 
 
 def _wait_ready_events(proc, events_path: str, timeout: float) -> bool:
@@ -2430,7 +2457,9 @@ class GenevaManager:
                 if not AUTO_QUEUE_BASE <= q < AUTO_QUEUE_BASE + \
                         AUTO_QUEUE_MAX:
                     out[q] = {"pid": None, "action": "error",
-                              "error": "очередь вне 340–347"}
+                              "error": "очередь вне %d–%d" % (
+                                  AUTO_QUEUE_BASE,
+                                  AUTO_QUEUE_BASE + AUTO_QUEUE_MAX - 1)}
                     ok = False
                     continue
                 try:
@@ -2607,6 +2636,11 @@ class GenevaManager:
                     reload = bool(pid) and f.read() == sig
             except OSError:
                 reload = False
+            # Номер очереди мог измениться (он зависит от предела потоков
+            # процесса профилей): старый процесс слушал бы другую очередь,
+            # а правила ставятся под новую.
+            if reload and not _queue_matches(pid, ga.HOST_QUEUE):
+                reload = False
             if not reload:
                 self.auto_host_stop()
             try:
@@ -2710,7 +2744,13 @@ class GenevaManager:
         with self._lock:
             pid = self.auto_observer_pid()
             if pid:
-                return {"ok": True, "pid": pid, "action": "kept"}
+                if not _queue_matches(pid, ga.OBSERVE_QUEUE):
+                    # Очередь детектора зависит от предела потоков процесса
+                    # профилей: старый процесс слушал бы чужой номер.
+                    self.auto_observer_stop()
+                    pid = None
+                else:
+                    return {"ok": True, "pid": pid, "action": "kept"}
             if self._obs_disabled:
                 # Модуль могли поставить кнопкой, пока детектор был
                 # отключён: перепроверяем подсистему на каждом срезе (одно
@@ -2887,7 +2927,7 @@ class GenevaManager:
                         "error": why}
         # Воркеры в подписи: они дают диапазон очередей, а правила
         # ставятся под него — без перезапуска диапазон не изменится.
-        workers = max(1, min(int(workers or 1), ga.ENGINE_QUEUES_MAX))
+        workers = max(1, min(int(workers or 1), ga.ENGINE_WORKERS_MAX))
         sig = "workers %d\n" % workers + "\n".join(
             "%s %s" % (getattr(p, "name", ""), s)
             for p, s in zip(profiles, strategies))

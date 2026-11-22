@@ -652,13 +652,15 @@ class TestEnable(_Base):
         self.assertEqual(m.search().workers, 6)
         self.assertEqual(m.applier().max_groups, 2)
         self.assertEqual(m.status()["workers"], 6)
-        for bad in ({"workers": 0}, {"workers": 33}, {"max_groups": "3"},
-                    {"workers": True}):
+        for bad in ({"workers": 0}, {"workers": ga.ENGINE_WORKERS_MAX + 1},
+                    {"max_groups": "3"}, {"workers": True}):
             self.assertFalse(m.update_settings(bad)["ok"], bad)
         self.assertEqual(am.auto_settings(self.cfg)["workers"], 6)
-        # до 32 потоков (предел geneva_c)
-        self.assertTrue(m.update_settings({"workers": 32})["ok"])
-        self.assertEqual(am.auto_settings(self.cfg)["workers"], 32)
+        # потолок — предел самого geneva_c (--ext-workers 1–64), не наш
+        top = ga.ENGINE_WORKERS_MAX
+        self.assertTrue(m.update_settings({"workers": top})["ok"])
+        self.assertEqual(am.auto_settings(self.cfg)["workers"], top)
+        self.assertEqual(m.search().workers, top)
 
     def test_update_tunnels_and_exclude(self):
         m = self.manager()

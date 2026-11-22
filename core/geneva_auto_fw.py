@@ -80,7 +80,7 @@ class FirewallError(RuntimeError):
 
 
 class HostRule:
-    """Правило процесса «по имени» (очередь 348): первые пакеты всех
+    """Правило процесса «по имени» (``ga.HOST_QUEUE``): первые пакеты всех
     соединений TCP 80/443 (и UDP 443 — QUIC), кроме адресов групп —
     их правила стоят раньше и забирают пакет первыми. Чужие и
     исключённые адреса geneva пропускает сама (``ipset-exclude``)."""
@@ -144,7 +144,7 @@ def layout(queues, span: int = 1) -> list:
 
     ``span`` — сколько очередей отдаёт один профиль (процесс профилей
     ``--ext-workers N`` слушает 340..340+N-1): пакет балансируется между
-    ними. Правило «по имени» (своя очередь 348) всегда одно.
+    ними. Правило «по имени» (своя очередь, ``ga.HOST_QUEUE``) всегда одно.
     """
     span = max(1, int(span or 1))
     out = []
@@ -152,7 +152,7 @@ def layout(queues, span: int = 1) -> list:
     for q, g in _pairs(queues):
         q = int(q)
         if getattr(g, "host", False):
-            # очередь 348 — после групп 340–347: адреса групп — им
+            # очередь «по имени» — после профилей: адреса профилей — им
             out.append({"queue": q, "kind": "host",
                         "tcp": [(p, p) for p in ga.HOST_TCP_PORTS],
                         "udp": [(ga.HOST_UDP_PORT, ga.HOST_UDP_PORT)]

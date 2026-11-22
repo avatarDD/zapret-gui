@@ -1,7 +1,7 @@
 # tests/test_geneva_auto_byname.py
 """
-Применение по имени (geneva_c 2.0: ext_profile, ext_lists, очередь 348)
-и детектор geneva (ext_auto, очередь 349) в режиме «Авто» — как
+Применение по имени (geneva_c 2.0: ext_profile, ext_lists, своя очередь)
+и детектор geneva (ext_auto, своя очередь) в режиме «Авто» — как
 AutoPlan.HostProfiles и GenevaManager.ApplyHostAsync Zapret2_AutoTuner.
 """
 
@@ -76,16 +76,16 @@ class TestHostRule(unittest.TestCase):
 
     def test_after_groups_and_counted(self):
         g = ga.plan_groups([svc("web:a.example")])[0]
-        rules = {340: g, 348: fw.HostRule(udp=True)}
+        rules = {340: g, ga.HOST_QUEUE: fw.HostRule(udp=True)}
         nft = fw.build_auto_rules(rules)
         post = nft.split("chain post")[1].split("}")[1:]
         text = nft.split("chain post")[1]
         self.assertLess(text.index("queue num 340"),
-                        text.index("queue num 348"))
+                        text.index("queue num %d" % ga.HOST_QUEUE))
         self.assertIn("udp dport { 443 } ct original packets 1-12 "
-                      "queue num 348 bypass", nft)
+                      "queue num %d bypass" % ga.HOST_QUEUE, nft)
         self.assertTrue(post)
-        want = fw.expected({348: fw.HostRule()})["rules"]
+        want = fw.expected({ga.HOST_QUEUE: fw.HostRule()})["rules"]
         # tcp 80 и 443 в обе стороны
         self.assertEqual(want[("iptables", fw.CHAIN_POST)], 3 + 2)
         self.assertEqual(want[("iptables", fw.CHAIN_PRE)], 3 + 2)
@@ -130,11 +130,12 @@ class TestApplierHost(unittest.TestCase):
         _, ips, doms = gmf.host_calls[-1]
         self.assertEqual(ips, ["10.0.0.0/8", "203.0.113.5"])
         self.assertEqual(doms, ["bank.ru"])
-        self.assertEqual(fwf.applied[-1][348], fw.HostRule(False))
-        # выключено — процесс стоп, правила без 348
+        self.assertEqual(fwf.applied[-1][ga.HOST_QUEUE],
+                         fw.HostRule(False))
+        # выключено — процесс стоп, правил «по имени» нет
         a.apply_services([s], hosts=None)
         self.assertIsNone(gmf.host_pid)
-        self.assertNotIn(348, fwf.applied[-1])
+        self.assertNotIn(ga.HOST_QUEUE, fwf.applied[-1])
 
 
 class TestManagerByNameAndDetector(_Base):
@@ -234,7 +235,7 @@ class TestHostProcess(_StubCase):
         self.assertIn("filter-l7 = tls,http", ini)
         run = [c for c in self.calls() if c.startswith("run ")][-1]
         self.assertIn("--ext-profile", run)
-        self.assertIn("-q 348", run)
+        self.assertIn("-q %d" % ga.HOST_QUEUE, run)
         self.assertIn("--ext-ipcache-hostname", run)
         self.assertIn("203.0.113.5", open(hp["exclude_ip"]).read())
         # новые имена — reload_lists без перезапуска
@@ -272,7 +273,7 @@ class TestHostProcess(_StubCase):
         self.assertEqual(st["impaired"], imp)
         self.assertEqual(st["capacity"], 1000000)
         run = [c for c in self.calls() if "--ext-auto" in c][-1]
-        self.assertIn("-q 349", run)
+        self.assertIn("-q %d" % ga.OBSERVE_QUEUE, run)
         self.assertIn("-p 9", run)
         self.mgr.auto_observer_stop()
         self.assertIsNone(self.mgr.auto_observer_pid())
