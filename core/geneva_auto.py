@@ -1399,6 +1399,36 @@ PROFILE_FEATURE = "ext_profile"
 # стратегии команды.
 PROFILE_RUNTIME_FEATURE = "ext_profile_runtime"
 
+# Автоподбор «труб» (``--ext-workers``) под железо роутера. Поток
+# держит копию стратегий воркеров, таблицу потоков и буфер NFQUEUE —
+# на роутере это единицы мегабайт, поэтому предел ставит не память,
+# а здравый смысл: потоков больше, чем ядер, пакетный движок не
+# успевает разгребать, а больше 8 на домашнем роутере не нужно.
+WORKER_MB = 4             # память на поток: стратегии, потоки, буфер
+RESERVE_MB = 24           # остаётся системе и прошивке
+WORKERS_SUGGEST_MAX = 8   # потолок рекомендации (движок умеет до 64)
+
+
+def suggest_workers(cpu: int, meminfo: str) -> tuple:
+    """Сколько «труб» посоветовать этому роутеру: ``(N, МБ доступно)``.
+
+    Память неизвестна — 1: не зная памяти, рисковать роутером нельзя
+    (как ``slots_for_memory`` у сканера), доступно тогда 0. Это только
+    совет: применяет и ограничивает пользователь.
+    """
+    values = {k: int(v) for k, v in
+              re.findall(r"^(MemTotal|MemAvailable|MemFree):\s+(\d+)",
+                         str(meminfo or ""), re.M)}
+    # Ядро до 3.14 MemAvailable не пишет — тогда по MemFree (меньше,
+    # то есть осторожнее).
+    values.setdefault("MemAvailable", values.get("MemFree", 0))
+    cpu = max(1, int(cpu or 1))
+    if "MemTotal" not in values or not values["MemAvailable"]:
+        return 1, 0.0
+    avail_mb = values["MemAvailable"] / 1024.0
+    by_mem = int((avail_mb - RESERVE_MB) // WORKER_MB)
+    return max(1, min(cpu, by_mem, WORKERS_SUGGEST_MAX)), avail_mb
+
 
 @dataclass
 class Profile:

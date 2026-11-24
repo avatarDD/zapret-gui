@@ -648,3 +648,42 @@ class TestPresetsAndFound(unittest.TestCase):
         self.assertNotIn("[TCP:flags:S]-drop-| \\/",
                          [r["strategy"] for r in rows])
         self.assertEqual(ga.found_strategies([], []), [])
+
+
+class TestSuggestWorkers(unittest.TestCase):
+    """Автоподбор «труб» под железо: ядра и память, без риска для
+    роутера (не зная памяти — одна). Формула проверяется на цифрах,
+    а не на фразах: страницу интересуют только числа."""
+
+    MEM_512 = ("MemTotal:       491820 kB\n"
+               "MemAvailable:   210000 kB\nMemFree:        100000 kB\n")
+    MEM_128 = ("MemTotal:       122884 kB\n"
+               "MemAvailable:    40000 kB\nMemFree:         5000 kB\n")
+
+    def test_typical_router_gets_cores(self):
+        workers, avail = ga.suggest_workers(4, self.MEM_512)
+        self.assertEqual((workers, int(avail)), (4, 205))
+
+    def test_weak_router_keeps_two(self):
+        workers, _ = ga.suggest_workers(2, self.MEM_128)
+        self.assertEqual(workers, 2)
+
+    def test_cap_eight_even_on_big_hardware(self):
+        workers, _ = ga.suggest_workers(8, "MemTotal:      4000000 kB\n"
+                                          "MemAvailable: 3800000 kB\n")
+        self.assertEqual(workers, ga.WORKERS_SUGGEST_MAX)
+
+    def test_unknown_memory_is_one_pipe(self):
+        for meminfo in ("", "garbage", "MemTotal: 491820 kB"):
+            self.assertEqual(ga.suggest_workers(4, meminfo), (1, 0.0))
+
+    def test_zero_cpu_is_one(self):
+        workers, _ = ga.suggest_workers(0, self.MEM_512)
+        self.assertEqual(workers, 1)
+
+    def test_old_kernel_counts_memfree(self):
+        # До ядра 3.14 MemAvailable нет — берём MemFree (меньше).
+        workers, _ = ga.suggest_workers(4, "MemTotal: 491820 kB\n"
+                                           "MemFree:    30000 kB\n")
+        self.assertEqual(workers, max(1, min(4, (30 - ga.RESERVE_MB)
+                                              // ga.WORKER_MB)))

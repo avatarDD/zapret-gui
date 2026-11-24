@@ -52,6 +52,9 @@ class FakeObserver:
         self.done = []
         self.busy = False
 
+    def names(self):
+        return {"5.6.7.8": "cdn.example"}
+
     def check(self):
         return {"source": "fake"}
 
@@ -922,6 +925,78 @@ class TestDetectorJournal(_Base):
         self.assertNotIn("2026-11-21", text)
         self.assertIn("cannot bind NFLOG group", text)
         self.assertEqual(m._detector_reason_text({}), "неизвестно")
+
+
+class TestWorkersSuggestAndNames(_Base):
+    """Кнопка «Авто» у числа «труб»: сервер только считает по железу.
+    И «работающие стратегии» показывают имена (домены), а не адреса:
+    книга помнит имя сервиса, наблюдение подсказывает имя адресу."""
+
+    def test_workers_suggest_passes_hardware(self):
+        with mock.patch.object(am.ga, "suggest_workers",
+                               return_value=(3, 512.0)) as sg, \
+             mock.patch.object(am.os, "cpu_count", return_value=2):
+            res = self.manager().workers_suggest()
+        self.assertTrue(res["ok"])
+        self.assertEqual((res["workers"], res["cpu"],
+                          res["mem_available_mb"]), (3, 2, 512))
+        # формуле — ядра и meminfo, странице — числа
+        self.assertEqual(sg.call_args[0][0], 2)
+        self.assertIn("MemAvailable", sg.call_args[0][1])
+
+    def test_workers_suggest_reads_real_meminfo_shape(self):
+        res = self.manager().workers_suggest()
+        self.assertTrue(res["ok"])
+        self.assertGreaterEqual(res["workers"], 1)
+        self.assertLessEqual(res["workers"], ga.WORKERS_SUGGEST_MAX)
+        self.assertGreaterEqual(res["cpu"], 1)
+        self.assertGreaterEqual(res["mem_available_mb"], 0)
+
+    def test_profile_names_prefer_the_book(self):
+        m = self.manager()
+        named = ga.Service(key="web:a.example", kind=ga.WEB,
+                           status=ga.APPLIED, name="a.example",
+                           addresses=[{"ip": "1.2.3.4", "seen": 1}],
+                           ports=[443])
+        m.book._services[named.key] = named
+        self.assertEqual(m._profile_names(["web:a.example"]),
+                         ["a.example"])
+
+    def test_profile_names_fall_back_to_observer_then_key(self):
+        m = self.manager()
+        # адресный сервис без имени: имя знает наблюдение (DNS-кэш)
+        s = ga.Service(key="ep:web:tcp:5.6.7.8:443", kind=ga.WEB,
+                       status=ga.APPLIED, transport="tcp",
+                       addresses=[{"ip": "5.6.7.8", "seen": 1}],
+                       ports=[443])
+        m.book._services[s.key] = s
+        unknown = ga.Service(key="ep:web:tcp:9.9.9.9:443", kind=ga.WEB,
+                              status=ga.APPLIED, transport="tcp",
+                              addresses=[{"ip": "9.9.9.9", "seen": 1}],
+                              ports=[443])
+        m.book._services[unknown.key] = unknown
+        self.assertEqual(m._profile_names(
+            ["ep:web:tcp:5.6.7.8:443", "ep:web:tcp:9.9.9.9:443",
+             "gone:x"]),
+            ["cdn.example", "ep:web:tcp:9.9.9.9:443", "gone:x"])
+
+    def test_status_groups_carry_names(self):
+        """Страница показывает имена из status(): адреса уходят в
+        подсказку (title), имена — в строку."""
+        m = self.manager()
+        named = ga.Service(key="web:a.example", kind=ga.WEB,
+                           status=ga.APPLIED, name="a.example",
+                           addresses=[{"ip": "1.2.3.4", "seen": 1}],
+                           ports=[443])
+        m.book._services[named.key] = named
+        with m._lock:
+            m._applier.last = {
+                "mode": "profiles",
+                "profiles": [{"name": "p1", "strategy": "S",
+                              "services": ["web:a.example"],
+                              "targets": ["1.2.3.4:443 tcp"]}]}
+        st = m.status()
+        self.assertEqual(st["groups"][0]["names"], ["a.example"])
 
 
 if __name__ == "__main__":

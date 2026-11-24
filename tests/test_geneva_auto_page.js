@@ -54,8 +54,8 @@ const AUTO_ON = {
     problems: [], journal: [{ ts: 1, level: 'info', text: 'режим включён' }],
 };
 
-function makeSandbox({ auto, found, lists, lang = 'ru', confirm = true,
-                       enableFails = true }) {
+function makeSandbox({ auto, found, lists, suggest, lang = 'ru',
+                       confirm = true, enableFails = true }) {
     const elements = new Map();
     const calls = { get: [], post: [], confirm: 0 };
     const document = {
@@ -77,6 +77,11 @@ function makeSandbox({ auto, found, lists, lang = 'ru', confirm = true,
                 calls.get.push(url);
                 if (url === '/api/geneva/auto/lists') {
                     return Promise.resolve(lists || { ok: true });
+                }
+                if (url === '/api/geneva/auto/workers-suggest') {
+                    return Promise.resolve(suggest ||
+                        { ok: true, workers: 4, cpu: 4,
+                          mem_available_mb: 205 });
                 }
                 if (url.startsWith('/api/geneva/auto')) return Promise.resolve(auto);
                 if (url === '/api/geneva/found') return Promise.resolve(found || { ok: true, items: [] });
@@ -361,6 +366,64 @@ test('вкладка «Стратегии»: пусто', async () => {
     await env.page.render(c, { sections: ['found'] });
     assert.match(env.elements.get('gv-found').innerHTML, /Рабочих стратегий пока нет/);
 });
+test('кнопка «Авто» у числа труб: подобрала и сохранила', async () => {
+    const env = makeSandbox({
+        auto: AUTO_ON,
+        suggest: { ok: true, workers: 6, cpu: 2, mem_available_mb: 180 },
+    });
+    const root = await renderAuto(env);
+    const btn = { dataset: { action: 'auto-workers-tune' } };
+    await root.handlers.click[0]({ target: { closest: () => btn } });
+    for (let i = 0; i < 5; i++) await tick();
+    assert.ok(env.calls.get.includes('/api/geneva/auto/workers-suggest'),
+              JSON.stringify(env.calls.get));
+    assert.strictEqual(+env.elements.get('gv-auto-workers').value, 6);
+    const post = env.calls.post.find(p => p[0] === '/api/geneva/auto/settings');
+    assert.ok(post, JSON.stringify(env.calls.post));
+    const body = JSON.parse(JSON.stringify(post[1]));
+    assert.strictEqual(body.workers, 6);
+});
+
+test('галочки режима переехали в карточку из свёрнутых списков', async () => {
+    const env = makeSandbox({ auto: AUTO_ON });
+    const root = await renderAuto(env);
+    const html = root.innerHTML;
+    // все три — до блока списков, то есть видны без раскрытия
+    const details = html.indexOf('<details');
+    for (const id of ['gv-list-byname', 'gv-list-split', 'gv-list-final']) {
+        const at = html.indexOf('id="' + id + '"');
+        assert.ok(at > -1 && at < details, id + ' должен быть в карточке');
+    }
+    // карточная кнопка «Сохранить» уносит и их (песочница не читает
+    // атрибут checked из HTML — ставим руками, как в тесте списков)
+    env.elements.get('gv-list-byname').checked = true;
+    env.elements.get('gv-list-final').checked = true;
+    const btn = { dataset: { action: 'auto-settings' } };
+    await root.handlers.click[0]({ target: { closest: () => btn } });
+    for (let i = 0; i < 3; i++) await tick();
+    const post = env.calls.post.find(p => p[0] === '/api/geneva/auto/settings');
+    assert.ok(post, JSON.stringify(env.calls.post));
+    const body = JSON.parse(JSON.stringify(post[1]));
+    assert.strictEqual(body.by_name, true);
+    assert.strictEqual(body.split_workers, false);
+    assert.strictEqual(body.final_check, true);
+});
+
+test('работающие стратегии: имена, адреса — в подсказке', async () => {
+    const env = makeSandbox({
+        auto: Object.assign({}, AUTO_ON, {
+            groups: [{ queue: 340, profile: 'p1', strategy: 'S1',
+                       services: ['web:a.example'],
+                       names: ['a.example'], targets: ['1.2.3.4:443 tcp'],
+                       stats: {}, rate: {} }],
+        }),
+    });
+    await renderAuto(env);
+    const html = env.elements.get('gv-auto').innerHTML;
+    assert.match(html, /1 · a\.example/);
+    assert.match(html, /title="1\.2\.3\.4:443 tcp"/);
+});
+
 test('профили geneva 2.0: в карточке имя профиля, а не общая очередь', async () => {
     const env = makeSandbox({
         auto: Object.assign({}, AUTO_ON, {

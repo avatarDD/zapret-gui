@@ -37,6 +37,9 @@ API движка geneva_c и выбора движка обхода.
   POST /api/geneva/auto/reset     — забыть сервис {key}
   POST /api/geneva/auto/settings  — {workers 1–64, max_groups 1–8,
                                      split_workers, by_name, final_check}
+  GET  /api/geneva/auto/workers-suggest — сколько «труб» советует
+                                     этому роутеру железо {workers,
+                                     cpu, mem_available_mb}
   POST /api/geneva/auto/check-now — проверить сервис вне очереди {key}
   POST /api/geneva/auto/priority  — важность {key, value: important |
                                      default | unimportant}
@@ -290,6 +293,13 @@ def register(app):
     def geneva_auto_settings():
         from core.geneva_auto_manager import get_geneva_auto_manager
         return _reply(get_geneva_auto_manager().update_settings(_body()))
+
+    @app.route("/api/geneva/auto/workers-suggest", method="GET")
+    def geneva_auto_workers_suggest():
+        # Совет по железу: сколько «труб» держать. Применяет кнопка
+        # настроек, здесь только считаем.
+        from core.geneva_auto_manager import get_geneva_auto_manager
+        return get_geneva_auto_manager().workers_suggest()
 
     @app.route("/api/geneva/auto/reset", method="POST")
     def geneva_auto_reset():

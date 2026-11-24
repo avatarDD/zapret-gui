@@ -33,6 +33,11 @@ class FakeAuto:
                 "groups": [], "search": {}, "problems": [], "counts": {},
                 "journal": [{"ts": 1, "text": "x"}] * 50}
 
+    def workers_suggest(self):
+        self.calls.append(("workers_suggest",))
+        return {"ok": True, "workers": 4, "cpu": 4,
+                "mem_available_mb": 205}
+
     def enable(self, confirm=False):
         self.calls.append(("enable", confirm))
         if not confirm:
@@ -174,6 +179,12 @@ class TestRest(_Base):
             body=json.dumps({"workers": 99}).encode(),
             content_type="application/json")
         self.assertTrue(status.startswith("400"), status)
+
+    def test_workers_suggest_route(self):
+        data = self.client.get_json("/api/geneva/auto/workers-suggest")
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["workers"], 4)
+        self.assertEqual(self.auto.calls[-1], ("workers_suggest",))
 
     def test_service_actions_and_lists(self):
         key = "dns:93.184.216.53"

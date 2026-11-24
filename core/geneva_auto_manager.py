@@ -1843,6 +1843,34 @@ class GenevaAutoManager:
         self.note("списки «Авто» сохранены", en="Auto lists saved")
         return self.lists_view()
 
+    def _profile_names(self, keys) -> list:
+        """Имена сервисов профиля для строки «работающих стратегий».
+
+        Домен из книги (``Service.name`` — то, что видно в ClientHello),
+        у безымянного адреса — имя из наблюдения, иначе сам адрес.
+        Адреса остаются в подсказке (title): они точнее имён.
+        """
+        obs = None
+        out = []
+        for k in keys or ():
+            s = self.book.find(k)
+            nm = ((getattr(s, "name", "") or getattr(s, "host", ""))
+                  .strip().strip("."))
+            if not nm and s is not None:
+                if obs is None:
+                    try:
+                        obs = self.observer().names()
+                    except Exception as e:  # noqa: BLE001 - показ вторичен
+                        log.debug("geneva-auto: имена наблюдения: %s" % e,
+                                  source="geneva")
+                        obs = {}
+                for a in (getattr(s, "addresses", None) or ())[:1]:
+                    nm = obs.get(str(a.get("ip", "")), "")
+                    if nm:
+                        break
+            out.append(nm or k)
+        return out
+
     def status(self, all_services: bool = False) -> dict:
         with self._lock:
             st = self.settings()
@@ -1874,6 +1902,8 @@ class GenevaAutoManager:
                 for info in last.get("profiles") or ():
                     g = dict(info, queue=ga.QUEUE_BASE,
                              profile=info.get("name", ""))
+                    g["names"] = self._profile_names(
+                        info.get("services") or ())
                     g.update({k: v for k, v in
                               (self.group_stats.get(info.get("name")) or {}
                                ).items() if k in ("stats", "rate")})
@@ -1983,6 +2013,23 @@ class GenevaAutoManager:
                 "auto_enabled": self.settings()["enabled"]}
 
     # ── настройки со страницы ──
+
+    def workers_suggest(self) -> dict:
+        """Совет, сколько «труб» держать этому роутеру (кнопка «Авто»
+        у поля). Считает по ядрам и памяти, применяет пользователь.
+        Фразу для тоста собирает страница: языка на сервере нет."""
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8",
+                      errors="replace") as f:
+                meminfo = f.read()
+        except OSError as e:
+            meminfo = ""
+            log.debug("geneva-auto: meminfo не читается: %s" % e,
+                      source="geneva")
+        cpu = os.cpu_count() or 1
+        workers, avail_mb = ga.suggest_workers(cpu, meminfo)
+        return {"ok": True, "workers": workers, "cpu": cpu,
+                "mem_available_mb": round(avail_mb)}
 
     def update_settings(self, values: dict) -> dict:
         """Настройки с карточки «Авто»: ``workers`` (1–64), ``max_groups``
