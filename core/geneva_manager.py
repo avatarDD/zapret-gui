@@ -718,7 +718,10 @@ def auto_engine_paths() -> dict:
             "log": os.path.join(rt, "engine.log"),
             "args": os.path.join(rt, "engine.args"),
             "profiles": os.path.join(d, "profiles.ini"),
-            "signature": os.path.join(d, "signature")}
+            "signature": os.path.join(d, "signature"),
+            # Стратегии, с которыми процесс запущен: по ним видно, что
+            # меняется командой управления, а что только стартом.
+            "strategies": os.path.join(d, "engine.json")}
 
 
 def auto_profiles_ini(profiles, ep: dict) -> str:
@@ -2928,14 +2931,34 @@ class GenevaManager:
         # Воркеры в подписи: они дают диапазон очередей, а правила
         # ставятся под него — без перезапуска диапазон не изменится.
         workers = max(1, min(int(workers or 1), ga.ENGINE_WORKERS_MAX))
-        sig = "workers %d\n" % workers + "\n".join(
-            "%s %s" % (getattr(p, "name", ""), s)
-            for p, s in zip(profiles, strategies))
+        # Подпись процесса — набор профилей (имена и порядок) и воркеры:
+        # стратегии в неё НЕ входят. С geneva_c X6d (фича
+        # ext_profile_runtime) они меняются командой управления, без
+        # перезапуска; со старым движком смена стратегии — перезапуск.
+        names_of = [getattr(p, "name", "") or ("#%d" % (i + 1))
+                    for i, p in enumerate(profiles)]
+        sig = "workers %d\n" % workers + "\n".join(names_of)
+        strat_of = {}
+        ports_of = {}
+        for name, p, st in zip(names_of, profiles, strategies):
+            strat_of[name] = st
+            ports_of[name] = [getattr(p, "tcp_ports", ""),
+                              getattr(p, "udp_ports", "")]
         pid = self.auto_engine_pid()
         try:
             with open(ep["signature"], "r", encoding="utf-8") as f:
                 same = bool(pid) and f.read() == sig
         except OSError:
+            same = False
+        runtime = ga.PROFILE_RUNTIME_FEATURE in feats
+        old = self._engine_strategies(ep) if same else {}
+        old_strat = old.get("profiles", {})
+        changed = [n for n in strat_of if old_strat.get(n) != strat_of[n]]
+        # Порт-фильтр профиля правило firewall повторяет, а правила стоят
+        # до процесса: смена портов при том же имени — только старт.
+        port_same = bool(old_strat) and all(
+            old.get("ports", {}).get(n) == v for n, v in ports_of.items())
+        if same and (not port_same or (changed and not runtime)):
             same = False
         if not same:
             self.auto_engine_stop()
@@ -2955,16 +2978,28 @@ class GenevaManager:
         except OSError as e:
             return {"ok": False, "pid": None, "action": "error",
                     "error": "файлы профилей: %s" % e}
+        reloaded = False
+        if same and changed:
+            # Стратегии сменились, набор профилей — нет: ``ctl reload``
+            # перечитывает файлы (и стратегии, и списки) без разрыва
+            # потоков. Движок без X6d этого не умеет — перезапуск.
+            reloaded = self._engine_reload(ep)
+            if not reloaded:
+                self.auto_engine_stop()
+                same = False
         if same:
             # Набор профилей тот же, а адреса (CDN) могли смениться:
             # файлы уже переписаны, осталось заставить geneva перечитать
             # списки — перезапуск не нужен.
-            try:
-                control_request(ep["socket"], "reload_lists")
-            except ControlError as e:
-                log.debug("geneva-auto: reload_lists (профили): %s" % e,
-                          source="geneva")
-            return {"ok": True, "pid": pid, "action": "reloaded",
+            if not reloaded:        # reload уже перечитал и списки
+                try:
+                    control_request(ep["socket"], "reload_lists")
+                except ControlError as e:
+                    log.debug("geneva-auto: reload_lists (профили): %s" % e,
+                              source="geneva")
+            self._engine_save_strategies(ep, strat_of, workers, ports_of)
+            return {"ok": True, "pid": pid,
+                    "action": "updated" if changed else "reloaded",
                     "workers": workers, "profiles": len(profiles)}
         try:
             ext = geneva_ext.argv(strategies, feats, names) or ["--ext"]
@@ -2990,9 +3025,68 @@ class GenevaManager:
             _write_atomic(ep["signature"], sig)
         except OSError:
             pass
+        self._engine_save_strategies(ep, strat_of, workers, ports_of)
         return {"ok": True, "pid": proc.pid, "action": "started",
                 "workers": workers, "profiles": len(profiles),
                 "ready": ready}
+
+    def _engine_strategies(self, ep: dict) -> dict:
+        """Что сейчас у запущенного процесса профилей.
+
+        ``{"profiles": {имя: стратегия}, "ports": {имя: [tcp, udp]}}``.
+        Нужно, чтобы отличить «адреса сменились» (хватит ``reload_lists``)
+        от «сменилась стратегия» (``ctl reload`` на движке с X6d) и от
+        «сменился порт-фильтр» (только перезапуск: правила firewall стоят
+        под старые порты). Пусто — файла нет или он от другого запуска.
+        """
+        try:
+            with open(ep["strategies"], "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        profs = data.get("profiles")
+        if not isinstance(profs, dict):
+            return {}
+        ports = data.get("ports")
+        if not isinstance(ports, dict):
+            ports = {}
+        return {"profiles": {str(k): str(v) for k, v in profs.items()},
+                "ports": {str(k): list(v) for k, v in ports.items()
+                          if isinstance(v, list)}}
+
+    def _engine_save_strategies(self, ep: dict, strat_of: dict,
+                                workers: int, ports_of=None) -> None:
+        """Запомнить, с чем запущен процесс: стратегии, порты, воркеры."""
+        try:
+            _write_atomic(ep["strategies"],
+                          json.dumps({"workers": workers,
+                                      "profiles": strat_of,
+                                      "ports": ports_of or {}}, indent=1,
+                                     ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    @staticmethod
+    def _engine_reload(ep: dict) -> bool:
+        """Перечитать файлы профилей на ходу (X6d: ``ctl reload``).
+
+        ``True`` — движок взял новые стратегии и списки; ``False`` — не
+        взял (движок без X6d, файл не сошёлся, мёртвый процесс):
+        вызывающий перезапускает. Файлы к этому моменту уже переписаны,
+        поэтому одна команда обновляет и стратегии, и адреса.
+        """
+        try:
+            r = control_request(ep["socket"], "reload")
+        except ControlError as e:
+            log.debug("geneva-auto: reload профилей: %s" % e, source="geneva")
+            return False
+        if not r.get("ok") and r.get("error"):
+            log.debug("geneva-auto: reload профилей: %s" % r.get("error"),
+                      source="geneva")
+            return False
+        return True
 
     def auto_engine_stats(self) -> dict:
         """``stats`` процесса профилей (сумма по воркерам + по потокам)."""

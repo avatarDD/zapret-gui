@@ -641,6 +641,7 @@ const i18n_en_server = {
 "geneva-auto при старте: {0}": "geneva-auto at start: {0}",
 "geneva-auto: auto.json не записан: {0}": "geneva-auto: auto.json not written: {0}",
 "geneva-auto: reload_lists (профили): {0}": "geneva-auto: reload_lists (profiles): {0}",
+"geneva-auto: reload профилей: {0}": "geneva-auto: reload of the profiles: {0}",
 "geneva-auto: replay не записан: {0}": "geneva-auto: replay not written: {0}",
 "geneva-auto: stats профилей: {0}": "geneva-auto: profile stats: {0}",
 "geneva-auto: {0} не восстановлен: {1}": "geneva-auto: {0} not restored: {1}",

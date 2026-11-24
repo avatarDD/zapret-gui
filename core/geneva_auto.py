@@ -1393,6 +1393,11 @@ def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS,
 
 MAX_PROFILES = 200        # профилей в файле (XPROF_MAX у geneva — 255)
 PROFILE_FEATURE = "ext_profile"
+# Профили на ходу (X6d): ctl set_strategy profile= и ctl reload файлов
+# --ext-profile. Без этой фичи (geneva_c 2.0.1) смена стратегии — только
+# перезапуском: set_strategy с profile старый движок понял бы как замену
+# стратегии команды.
+PROFILE_RUNTIME_FEATURE = "ext_profile_runtime"
 
 
 @dataclass

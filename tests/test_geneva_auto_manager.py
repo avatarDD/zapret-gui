@@ -779,6 +779,55 @@ class TestProfilesPlanSig(_Base):
         self.assertEqual(sig, again)
 
 
+class TestProfilesSearchSlots(_Base):
+    """Подборы рядом в режиме профилей: групп нет — только слоты.
+
+    Старый предел — свободные группы NFQUEUE (у каждого подбора своя).
+    У профилей очередь у всех одна (диапазон процесса), а пробная стратегия
+    — такой же профиль, поэтому ограничивать должно лишь число слотов,
+    иначе после восьми найденных стратегий подборы встают навсегда.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gmf = FakeProfilesGM()
+        self.applier = ap.Applier(geneva=self.gmf, fw=FakeFW())
+        raw = dict(self.cfg.get("geneva", "auto", default={}) or {})
+        raw.update(split_workers=True, workers=8, max_groups=8)
+        self.cfg.set("geneva", "auto", raw)
+
+    def _m(self):
+        m = self.manager()
+        for i in range(8):
+            s = ga.Service(key="web:s%d.example" % i, kind=ga.WEB,
+                           status=ga.APPLIED, strategy=STRAT + ("-%d" % i),
+                           addresses=[{"ip": "10.0.0.%d" % (i + 1),
+                                       "seen": 1}], ports=[443])
+            m.book._services[s.key] = s
+        return m
+
+    def test_all_workers_are_slots_when_profiles(self):
+        """Группы не мешают: предел — слоты (очереди 311–314 и блоки
+        портов), то есть ``MAX_SEARCHES``, а не занятые группы."""
+        m = self._m()
+        self.assertEqual(m._search_slots(), min(8, am.MAX_SEARCHES))
+        raw = dict(self.cfg.get("geneva", "auto", default={}) or {})
+        raw.update(workers=2)
+        self.cfg.set("geneva", "auto", raw)
+        self.assertEqual(m._search_slots(), 2)
+
+    def test_groups_still_limit_the_old_way(self):
+        self.gmf.feature = False            # движок без ext_profile
+        m = self._m()
+        self.assertEqual(m._search_slots(), 1)   # 8 групп заняты
+
+    def test_without_split_one(self):
+        self.cfg.set("geneva", "auto", {"split_workers": False,
+                                        "workers": 8, "max_groups": 8})
+        m = self._m()
+        self.assertEqual(m._search_slots(), 1)
+
+
 class TestDetectorJournal(_Base):
     """Детектор не поднялся — одна строка в журнале, а не поток.
 

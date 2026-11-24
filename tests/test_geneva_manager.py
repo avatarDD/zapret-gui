@@ -980,7 +980,7 @@ class TestAutoEngineProfiles(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.ep = {k: os.path.join(self.tmp, "engine", k)
                    for k in ("profiles", "signature", "args", "log",
-                             "events", "pid", "socket")}
+                             "events", "pid", "socket", "strategies")}
         self.ep["dir"] = os.path.join(self.tmp, "engine")
 
     def _profile(self, name, strategy, ips, tcp="443", udp=""):
@@ -1108,34 +1108,100 @@ class TestAutoEngineProfiles(unittest.TestCase):
         with open(self.ep["profiles"]) as f:
             self.assertIn("[profile p1]", f.read())
 
-    def test_apply_keeps_live_process_with_same_signature(self):
+    def _live(self, feats=("ext", "ext_profile"), strategies=None):
+        """Менеджер с живым процессом профилей под ``p1`` стратегии S1."""
         os.makedirs(self.ep["dir"], exist_ok=True)
         with open(self.ep["signature"], "w") as f:
-            f.write("workers 3\np1 " + self.S1)
+            f.write("workers 3\np1")
+        self._save_strategies(strategies or {"p1": self.S1})
         m = gm.GenevaManager.__new__(gm.GenevaManager)
         m._lock = threading.RLock()
         m._auto_procs = {}
+        return m, list(feats)
+
+    def _save_strategies(self, strat_of, ports=None):
+        with open(self.ep["strategies"], "w") as f:
+            json.dump({"workers": 3, "profiles": strat_of,
+                       "ports": ports or {"p1": ["443", ""]}}, f)
+
+    def _apply(self, m, feats, profiles):
         calls = []
         with mock.patch.object(m, "_ready_binary",
                                return_value=("/bin/geneva", "")), \
-             mock.patch.object(m, "features",
-                               return_value={"ext", "ext_profile"}), \
+             mock.patch.object(m, "features", return_value=feats), \
              mock.patch.object(m, "ext_problem", return_value=""), \
              mock.patch.object(m, "auto_engine_pid", return_value=7001), \
              mock.patch.object(m, "auto_engine_stop") as stop, \
              mock.patch.object(gm, "control_request",
                                side_effect=lambda *a, **k:
-                               calls.append(a) or {"ok": True}), \
+                               calls.append((a, k)) or {"ok": True}), \
              mock.patch.object(gm, "auto_engine_paths", return_value=self.ep):
-            r = m.auto_engine_apply(
-                [self._profile("p1", "S1", ["2.2.2.2"])], 3)
+            r = m.auto_engine_apply(profiles, 3)
+        return r, stop, calls
+
+    def test_apply_keeps_live_process_with_same_signature(self):
+        """Та же подпись, те же стратегии: только списки и адреса."""
+        m, feats = self._live()
+        r, stop, calls = self._apply(m, feats,
+                                     [self._profile("p1", "S1", ["2.2.2.2"])])
         self.assertEqual(r["action"], "reloaded")
         self.assertEqual(r["pid"], 7001)
         stop.assert_not_called()
         # адреса CDN могли смениться: файл переписан, списки перечитаны
         with open(os.path.join(self.ep["dir"], "ips-0.txt")) as f:
             self.assertIn("2.2.2.2", f.read())
-        self.assertEqual(calls[0][1], "reload_lists")
+        self.assertEqual([c[0][1] for c in calls], ["reload_lists"])
+
+    def test_strategy_changes_without_restart_when_the_engine_allows(self):
+        """X6d: стратегия профиля меняется на ходу, процесс тот же."""
+        s2 = "[TCP:flags:PA]-fragment{tcp:-1:True}-| \\/"
+        m, feats = self._live(feats=("ext", "ext_profile",
+                                     "ext_profile_runtime"))
+        r, stop, calls = self._apply(m, feats,
+                                     [self._profile("p1", "S1", [])])
+        self.assertEqual(r["action"], "reloaded")   # стратегия та же
+        r, stop, calls = self._apply(
+            m, feats, [self._profile("p1", s2, [])])
+        self.assertEqual(r["action"], "updated")
+        self.assertEqual(r["pid"], 7001)
+        stop.assert_not_called()
+        # одна команда: reload перечитывает и стратегии, и списки
+        self.assertEqual([c[0][1] for c in calls], ["reload"])
+        # запомнили: следующий срез не станет менять её заново
+        self.assertEqual(m._engine_strategies(self.ep)["profiles"],
+                         {"p1": s2})
+
+    def test_port_change_restarts_even_with_runtime(self):
+        """Порты профиля повторяют правила firewall — только перезапуск."""
+        m, feats = self._live(feats=("ext", "ext_profile",
+                                     "ext_profile_runtime"))
+        prof = self._profile("p1", "S1", [], tcp="80")
+        with mock.patch.object(gm, "_spawn") as spawn, \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_wait_ready_events", return_value=True):
+            proc = mock.Mock(pid=8123, returncode=None)
+            proc.poll.return_value = None
+            spawn.return_value = proc
+            r, stop, calls = self._apply(m, feats, [prof])
+        self.assertEqual(r["action"], "started")
+        stop.assert_called()
+        self.assertNotIn("set_strategy", [c[0][1] for c in calls])
+
+    def test_strategy_change_restarts_an_old_engine(self):
+        """geneva_c 2.0.1 (без X6d): смена стратегии — перезапуск."""
+        s2 = "[TCP:flags:PA]-fragment{tcp:-1:True}-| \\/"
+        m, feats = self._live()
+        with mock.patch.object(gm, "_spawn") as spawn, \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_wait_ready_events", return_value=True):
+            proc = mock.Mock(pid=8123, returncode=None)
+            proc.poll.return_value = None
+            spawn.return_value = proc
+            r, stop, calls = self._apply(
+                m, feats, [self._profile("p1", s2, [])])
+        self.assertEqual(r["action"], "started")
+        stop.assert_called()
+        self.assertNotIn("set_strategy", [c[0][1] for c in calls])
 
     def test_apply_without_profile_feature_is_unsupported(self):
         m = gm.GenevaManager.__new__(gm.GenevaManager)

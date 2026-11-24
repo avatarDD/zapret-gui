@@ -1107,10 +1107,16 @@ class GenevaAutoManager:
     def _search_slots(self) -> int:
         """Сколько подборов может идти рядом: без деления — один; с
         делением ``min(потоки, 4)``, но не больше свободных групп (у
-        каждого подбора своя пробная группа)."""
+        каждого подбора своя пробная группа).
+
+        В режиме профилей (geneva_c 2.0) групп нет: пробная стратегия —
+        такой же профиль общего процесса, как и рабочие, поэтому ограничивает
+        только число слотов (у каждого свой блок портов)."""
         st = self.settings()
         if not st["split_workers"]:
             return 1
+        if self._profiles_mode():
+            return max(1, min(st["workers"], MAX_SEARCHES))
         working = {s.strategy for s in self.book.services if s.is_active
                    and s.key not in self._trials}
         free = st["max_groups"] - len(working)
