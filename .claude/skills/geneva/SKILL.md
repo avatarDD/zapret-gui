@@ -39,9 +39,15 @@ geneva_c**, и в каждый момент работает ровно один
 1. **Сам бинарник** нужной версии: `geneva version --json` (поле `proto`
    должно быть `1`), `geneva <команда> --help`.
 2. **[avatarDD/geneva_c](https://github.com/avatarDD/geneva_c)**, релиз
-   **v2.0.1**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
+   **v2.0.2**: `docs/STRATEGY.md` (язык), `docs/PROTOCOL.md` (события и
    сокет), `docs/EVAL.md` (пробы и fitness), `docs/INTEGRATION.md`
    (встраивание), `.claude/skills/geneva/SKILL.md` (карта репозитория).
+   Изменения против v2.0.1 — только добавления: фича `ext_profile_runtime`
+   (X6d «профили на ходу»: `ctl set_strategy profile=ИМЯ` меняет стратегию
+   одного профиля без перезапуска, `ctl reload` перечитывает
+   `--ext-profile` файлы, `ok:false` при изменении НАБОРА профилей —
+   firewall следует портам) и команда `library` (отобранные лучшие
+   стратегии против блокировок в России, источник `tools/library.json`).
 3. **Наш код**:
    - `core/geneva_manager.py`: процессы, события, подбор, телеметрия;
    - `core/bypass_engine.py`: выбор движка и снимки;
@@ -338,8 +344,9 @@ action   := name["{" params "}"]["(" left "," right ")"]
 | Стратегии → geneva_c | `#strategies?engine=geneva` | `library` (своё поле сайта для eval и итог проверки) |
 | Подбор стратегий → geneva_c | `#scan?tab=geneva` | `search` |
 
-«Обновления»: строка `geneva`. «Последняя» — закреплённый релиз
-(`latest_source: pinned`, апстримный тег рядом). Сборка не из релиза
+«Обновления»: строка `geneva`. «Последняя» — свежий тег апстрима
+(ставится последний релиз, см. §8; до policy discussion #102 был пин с
+`latest_source: pinned` и апстримным тегом рядом). Сборка не из релиза
 (версия — хэш коммита) обновлением не считается. Кнопка ведёт в
 `#control?engine=geneva`, там же «Обновить до …»
 (`detect.release.has_update` в `/api/geneva/status`).
@@ -420,17 +427,27 @@ MCP (`core/mcp/tools/geneva.py`):
 
 `BINARIES["geneva"]` в `core/ext_binary_installer.py`:
 
-- репозиторий `avatarDD/geneva_c`, `pinned_tag` v2.0.1 (из
-  `GENEVA_VERSION`);
-- ассеты `geneva-<GENEVA_VERSION>-linux-<arch>.tar.gz` для aarch64, armv7,
-  mips, mipsel и x86_64 — имена строятся из версии, вручную меняются
-  только хэши;
-- sha256 сверены с `SHA256SUMS` релиза.
+- репозиторий `avatarDD/geneva_c`;
+- **ставится ПОСЛЕДНИЙ релиз апстрима** (policy discussion #102, ноябрь
+  2026): `release_tag=""` + `allow_unpinned`, имя ассета рендерится из
+  `asset_template` `"geneva-{version}-linux-{arch}.tar.gz"` с фактическим
+  тегом; целостность — по `SHA256SUMS` самого релиза
+  (`_verify_downloaded_file`), манифестный sha256 применяется только когда
+  приехал ровно пин;
+- `pinned_tag` v2.0.2 (из `GENEVA_VERSION`) — «проверенный пол»: под эту
+  версию в `sha256_map` лежат хэши всех пяти linux-архитектур (aarch64,
+  armv7, mips, mipsel, x86_64), сверенные с `SHA256SUMS` релиза и
+  digest'ами GitHub API. При сверке пол двигается вместе с
+  `docs/upstream.json`.
 
-Страница «Обновления» и `updates_check`: «последняя» — пин; апстримный
-релиз новее пина — `upstream_newer` (жёлтая строка на странице, строка в
-`updates_only` и в `hint` MCP), `has_update` он не зажигает: кнопка ставит
-только пин.
+Страница «Обновления» и `updates_check`: «последняя» — свежий тег апстрима
+(`geneva_upstream_latest()` в `core/update_checker.py`, TTL-кеш 300 c),
+`has_update` зажигается, когда апстрим новее установленного; кнопка «Обновить
+до …» в разделе geneva ставит последний релиз. Раньше «последняя» была пином
+и апстрим новее пина давал жёлтую строку `upstream_newer` («новая придёт с
+обновлением zapret-gui») — с policy discussion #102 этой ветки больше нет
+(жёлтая строка `pinned`+`upstream_newer` осталась только у tg-ws-proxy-go,
+который закреплён навсегда).
 
 Первый файл архива — LICENSE, поэтому установщик достаёт член `geneva`
 (`archive_member`). Бинарник ставится в `/opt/usr/bin/geneva`. Новая

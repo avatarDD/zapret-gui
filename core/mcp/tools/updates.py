@@ -36,8 +36,8 @@ STALE_SEC = 24 * 3600
     title="Engine versions and updates",
     description=("Installed versions of zapret2, sing-box, mihomo, "
                  "AmneziaWG, usque, Telegram proxy, Opera Proxy and the "
-                 "GUI, plus what is newer upstream (pinned rows: "
-                 "`upstream_latest`/`upstream_newer`). Cached; refresh "
+                 "GUI, plus what is newer upstream (pinned rows carry "
+                 "`upstream_latest`/`pin_reason`). Cached; refresh "
                  "needs `probes`. / Версии движков и доступные "
                  "обновления (из кеша)."),
     schema={
@@ -79,10 +79,9 @@ def updates_check(args: dict) -> dict:
 
     rows = [_row(r) for r in report.get("results") or []]
     if args.get("updates_only"):
-        # и строки, где апстрим ушёл дальше пина: обновления через GUI
-        # пока нет, но знать о нём — ровно то, о чём спрашивают
-        rows = [r for r in rows
-                if r["has_update"] or r.get("upstream_newer")]
+        # geneva больше не закреплён (ставится свежим релизом апстрима),
+        # так что «есть обновление» и «апстрим ушёл вперёд» — одно и то же
+        rows = [r for r in rows if r["has_update"]]
 
     offset, limit = _paging.limits(args, default=25, maximum=50)
     result = _paging.page(rows, offset, limit)
@@ -113,13 +112,6 @@ def updates_check(args: dict) -> dict:
                             "не с чем, поэтому таблица пуста")
     result["hint"] = _hint(refused, network_error, checked_at, age,
                            report.get("updates_count", 0))
-    ahead = ["%s %s" % (r["name"], r["upstream_latest"].lstrip("vV"))
-             for r in (_row(x) for x in report.get("results") or [])
-             if r.get("upstream_newer")]
-    if ahead:
-        more = ("у апстрима новее закреплённой версии (GUI её пока не "
-                "ставит): " + ", ".join(ahead))
-        result["hint"] = "; ".join(p for p in (result["hint"], more) if p)
     return result
 
 
@@ -173,13 +165,13 @@ def _row(entry) -> dict:
         "vanished_path": entry.get("vanished_path", ""),
         "error": entry.get("error", ""),
     }
-    # Закреплённая версия (geneva, tg-ws-proxy): «последняя» — пин, а
-    # правду об апстриме несут эти поля. Без них «1.1.1 = 1.1.1» при
-    # вышедшей 1.2.0 читается как «новее нет».
+    # Закреплённая версия (tg-ws-proxy): «последняя» — пин, а правду об
+    # апстриме несут эти поля. Без них «0.9.3 = 0.9.3» при вышедшей 1.4.0
+    # читается как «новее нет». geneva закреплённой больше не бывает:
+    # движок ставится свежим релизом апстрима.
     if entry.get("pinned"):
         row["pinned"] = True
         row["upstream_latest"] = entry.get("upstream_latest", "")
-        row["upstream_newer"] = bool(entry.get("upstream_newer"))
         row["pin_reason"] = entry.get("pin_reason", "")
     for key in ("latest_source", "note"):
         if entry.get(key):
