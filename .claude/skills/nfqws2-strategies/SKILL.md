@@ -973,7 +973,7 @@ nfqws2-keenetic — TCP 1984 (MTProto) и UDP 590-600, 1400.
 |---|---|---|
 | `nfq2/nfqws2` | `zapret.nfqws_binary` | Бинарник nfqws2 (статический). |
 | `lua/*.lua` | `zapret.lua_path` | `zapret-lib.lua`, `zapret-antidpi.lua`, … + наши `import/lua/*.lua`, развёрнутые `core/asset_importer.py` (`import_all` / `_sync_dir`). `core/lua_manager.py` управляет ими в рантайме (list/get/save/reset_to_bundled), bundled-исходники — `import/lua/`. |
-| `lists/` | `zapret.lists_path` | Hostlist'ы (`*.txt`). |
+| `lists/` | `zapret.lists_path` | Hostlist'ы (`*.txt`). `netrogat.txt` — итоговый список исключений, **генерируется** из `netrogat.base.txt` (база из бандла) + `netrogat.user.txt` (пользовательский слой): `asset_importer` перед синком уносит ручные добавления в user-файл (rescue), после — пересобирает итог; `*.user.txt` бандл не перезаписывает, сам `netrogat.txt` из бандла не копируется вовсе (его единственный писатель — `_rebuild_netrogat_final`, идемпотентно, mtime важен для перечитывания движком). Правки через «Списки» (`hostlist_manager`) пишутся в итог и пересчитывают user-слой как «итог − база». Инвариант бандла пинит `tests/test_netrogat_consistency.py`, рантайм — `tests/test_netrogat_user_layer.py`. |
 | `ipset/` | `zapret.ipset_path` | IP-списки + ipban + auto-листы. |
 | `files/fake/*.bin` | `zapret.bin_path` | Blob-файлы для `--blob=NAME:@…`. |
 | `blockcheck2.sh` / `blockcheck.sh` | `zapret.blockcheck2_path` (иначе автопоиск в `base_path`) | Штатный blockcheck. |

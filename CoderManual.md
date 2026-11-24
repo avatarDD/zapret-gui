@@ -343,7 +343,7 @@ make upstream-offline    # только локальные сверки (идё�
 | `healthcheck.py` | Healthcheck-демон (autocircular watchdog): фоном дёргает референс-домены служб и чинит упавшее. |
 | `scan_targets.py` | Профили целей подбора. |
 | `catalog_loader.py` / `catalog_merge.py` | Загрузка INI-каталогов стратегий и merge по `section_id` с сохранением локальных секций (используется `asset_importer` при импорте bundled-каталогов). |
-| `hostlist_manager.py` | Hostlist'ы доменов nfqws2 (суффикс-матчинг поддоменов). |
+| `hostlist_manager.py` | Hostlist'ы доменов nfqws2 (суффикс-матчинг поддоменов). `netrogat` (исключения) — итог `base + user`: правки через UI пересчитывают `netrogat.user.txt`, обновление GUI уносит ручные добавления в него и пересобирает итог (rescue/rebuild в `asset_importer`). |
 | `ipset_manager.py` | IP-списки (ipset/nftset, загрузка по ASN). |
 | `blob_manager.py` / `blob_registry.py` | Блобы для fake-пакетов (hex, генерация fake ClientHello). |
 | `lua_manager.py` | Lua-скрипты nfqws2. |
@@ -358,7 +358,7 @@ make upstream-offline    # только локальные сверки (идё�
 | `device_quota.py` | Дневные квоты времени (`firewall.device_quota`): минута засчитывается, если адреса правила отправили за неё ≥ `active_packets` пакетов (счётчики — правила без действия в цепочке `filter zgui_quota`, в которую прыгают FORWARD и INPUT — transparent-режим заворачивает клиентов в INPUT; в nft — цепочки forward/input таблицы `inet zgui_quota`, priority -5; читаются `iptables -nvxL zgui_quota` / `nft list table`); исчерпано — `REJECT` от устройства и `DROP` к нему до полуночи (`tz_offset`), DHCP и DNS роутера остаются. Минуту засчитывает только тик потока (`tick(count=True)`), внеочередные тики (сохранение, `grant`) лишь применяют блоки. Чистые `normalize_*`, `count_minute`, `left_minutes`, `parse_ipt_list`, `parse_nft`, `nft_script`; поток `get_device_quota()` (первый тик сразу, дальше раз в 60 с), счёт дня в `<config_dir>/device-quota.json` (раз в 5 мин, при блоке и при остановке), `grant()` — минут на сегодня. Правило опознаётся набором устройств (`rule_key`). Как и `device_schedule`, свои правила держит сам; teardown снимает. API `/api/device-quota*`, UI `components/device_quota.js`, MCP `device_quota_status`/`device_quota_grant`, поле `device_quota` в `firewall_status`. |
 | `lan_probe.py` | Проба «как клиент LAN»: временный netns `zgui_probe` + veth `zgp0`/`zgp1` в мосту LAN (`br-lan`/`br0`), адрес — свободный с конца подсети (`pick_address`), шлюз и DNS — роутер (`/etc/netns/…/resolv.conf`); внутри — этот же файл как скрипт (`python3 -I … --child`, только stdlib: DNS → TCP → TLS с SNI); `compare()` с пробой роутера → `both`/`lan_fails`/`router_fails`/`both_fail`; netns убирается всегда. На Keenetic недоступно (`availability`). API `/api/diagnostics/lan-probe`, MCP `lan_probe`. |
 | `keenetic_policy.py` | Политика доступа Keenetic для перехвата (`firewall.keenetic_policy[_exclude]`, паритет с POLICY_NAME nfqws2-keenetic): метка из `ndmc -c show ip policy`; в shell — `_policy_resolve` в `FIREWALL_SH_FUNCTIONS`. |
-| `asset_importer.py` | Импорт bundled-ассетов (blobs/lua/lists) в рабочие директории. |
+| `asset_importer.py` | Импорт bundled-ассетов (blobs/lua/lists) в рабочие директории. Управляемые файлы перезаписывает, НО: `*.user.txt` не трогает никогда, а `netrogat.txt` не копирует — пересобирает из `netrogat.base.txt + netrogat.user.txt` (rescue перед синком уносит ручные правки в user-слой). |
 
 ### 5.3 Тестеры и диагностика — `core/testers/` + `core/`
 

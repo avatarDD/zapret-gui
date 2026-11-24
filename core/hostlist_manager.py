@@ -5,7 +5,10 @@
 Управляет файлами в директории lists_path (обычно /opt/zapret2/lists):
   - other.txt     — базовый список доменов для обработки nfqws
   - other2.txt    — пользовательские домены
-  - netrogat.txt  — исключения (домены, которые НЕ обрабатываются)
+  - netrogat.txt  — исключения (домены, которые НЕ обрабатываются);
+                    генерируется из netrogat.base.txt (база, обновляется
+                    вместе с GUI) + netrogat.user.txt (ручные добавления,
+                    переживают обновление — discussion #102)
   - *.txt         — произвольные пользовательские списки
 
 Имя списка должно соответствовать паттерну [a-zA-Z0-9_-]+ (1..64 символов).
@@ -434,6 +437,15 @@ class HostlistManager:
             with self._lock:
                 atomic_write_text(filepath, text, mode=0o644)
 
+            # User-слой netrogat следует за итогом: любой писатель итога
+            # (save_hostlist, list_lint.fix_list) обязан его поддерживать —
+            # пересборка при обновлении GUI берёт ручные добавления именно
+            # из netrogat.user.txt (discussion #102).
+            if name == "netrogat":
+                self._sync_netrogat_user_layer(
+                    [s for s in (ln.strip() for ln in text.splitlines())
+                     if s and not s.startswith("#")])
+
             # nfqws2 держит хостлисты в памяти и перечитывает их только по
             # SIGHUP. Без этого правка списка (в т.ч. исключений netrogat)
             # не действовала до перезапуска обхода — issue #265.
@@ -459,6 +471,54 @@ class HostlistManager:
         except Exception as e:
             log.error(f"Ошибка записи {name}.txt: {e}", source="hostlists")
             return False
+
+    # ─── Пользовательский слой netrogat (base + user) ───────────
+    #
+    # netrogat.txt — сгенерированный список: база (netrogat.base.txt,
+    # разворачивается asset_importer'ом при обновлении) + ручные
+    # добавления (netrogat.user.txt). Контракт — в заголовке
+    # import/lists/netrogat.base.txt. Без поддержки user-слоя здесь
+    # правка «Исключений» жила бы до первого обновления GUI: importer
+    # вытягивает из user-файла именно то, что не в базе (discussion #102).
+
+    def _netrogat_base_domains(self):
+        """База исключений: развёрнутый netrogat.base.txt, иначе DEFAULT_NETROGAT."""
+        path = os.path.join(self.lists_path, "netrogat.base.txt")
+        domains = []
+        if os.path.isfile(path):
+            try:
+                # errors="replace": битый байт в базе не должен ронять
+                # сохранение итога (UnicodeDecodeError — не OSError).
+                with open(path, "r", encoding="utf-8",
+                          errors="replace") as f:
+                    domains = [s for s in (line.strip() for line in f)
+                               if s and not s.startswith("#")]
+            except OSError as e:
+                log.error(f"Ошибка чтения netrogat.base.txt: {e}",
+                          source="hostlists")
+        return domains if domains else list(DEFAULT_NETROGAT)
+
+    def _sync_netrogat_user_layer(self, final_domains):
+        """Пересчитать netrogat.user.txt := итог − база.
+
+        Записи базы из user-слоя убираем: право менять базу — только у
+        обновлений (upstream wins), пользователь владеет дополнениями.
+        Сбой записи user-файла не проваливает сохранение итога:
+        netrogat.txt уже записан и работает, user-слой — страховка на
+        будущее обновление.
+        """
+        base_set = set(self._netrogat_base_domains())
+        user = [d for d in final_domains if d not in base_set]
+        try:
+            from core.safe_io import atomic_write_text
+            atomic_write_text(
+                os.path.join(self.lists_path, "netrogat.user.txt"),
+                "\n".join(user) + "\n" if user else "",
+                mode=0o644,
+            )
+        except (OSError, ImportError) as e:
+            log.warning(f"Не удалось записать netrogat.user.txt: {e}",
+                        source="hostlists")
 
     def create_hostlist(self, name):
         """

@@ -20,6 +20,9 @@
       import/lists/ipset-*.txt     → /opt/zapret2/ipset/
       import/lists/*ipset*.txt     → /opt/zapret2/ipset/
       import/lists/*.txt (hostlists) → /opt/zapret2/lists/
+      import/lists/netrogat.txt    → НЕ копируется: итог собирается из
+                                    netrogat.base.txt + netrogat.user.txt
+                                    (см. _rebuild_netrogat_final)
 
 Также этот модуль импортирует дополнительные INI-каталоги стратегий:
       - import/_internal/preset_zapret2/basic_strategies/*.txt
@@ -33,7 +36,13 @@
 Семантика:
   * Идемпотентно: одинаковое содержимое → не перезаписываем.
   * Файлы, присутствующие в `import/`, являются "managed" — upstream
-    побеждает при изменениях.
+    побеждает при изменениях. Исключения:
+      - `*.user.txt` — пользовательский слой списков, бандлом не
+        затирается никогда;
+      - ручные добавления в `netrogat.txt` («Исключения») — до синка
+        вытягиваются в `netrogat.user.txt`, а итог пересобирается из
+        base + user (:func:`_rescue_netrogat_user`,
+        :func:`_rebuild_netrogat_final`, discussion #102).
   * Файлы в целевых директориях, которых нет в `import/`, не трогаем
     (это могут быть пользовательские blob'ы/lua/lists).
   * `_`-префиксные файлы (`_HOWTO.txt`, `_TEMPLATE.txt`, `_README.txt`)
@@ -185,12 +194,25 @@ def import_runtime_assets(base_path: Optional[str] = None) -> dict:
         os.path.join(base_path, "lua"),
         skip_names=lua_skip,
     )
-    # lists/ → split: ipset-файлы в ipset/, остальные в lists/
+    # lists/ → split: ipset-файлы в ipset/, остальные в lists/.
+    # Исключения netrogat — не «managed» до конца: ручные добавления
+    # вытягиваем в netrogat.user.txt ДО синка (сейчас база на диске ещё
+    # старая), а итоговый netrogat.txt пересобираем из base+user ПОСЛЕ.
+    lists_dst = os.path.join(base_path, "lists")
+    rescued = _rescue_netrogat_user(lists_dst, IMPORT_LISTS_DIR)
     lists_stats, ipset_stats = _sync_lists_split(
         IMPORT_LISTS_DIR,
-        lists_dst=os.path.join(base_path, "lists"),
+        lists_dst=lists_dst,
         ipset_dst=os.path.join(base_path, "ipset"),
     )
+    rebuilt = _rebuild_netrogat_final(lists_dst)
+    if rescued or rebuilt:
+        log.success(
+            "asset-importer: ручные исключения сохранены "
+            "(в netrogat.user.txt добавлено %d, итоговый netrogat.txt "
+            "пересобран: %s)" % (rescued, "да" if rebuilt else "нет"),
+            source="asset-importer",
+        )
 
     total_copied = (fake_stats["copied"] + lua_stats["copied"]
                     + lists_stats["copied"] + ipset_stats["copied"])
@@ -221,6 +243,7 @@ def import_runtime_assets(base_path: Optional[str] = None) -> dict:
         "lua": lua_stats,
         "lists": lists_stats,
         "ipset": ipset_stats,
+        "netrogat": {"rescued": rescued, "rebuilt": rebuilt},
         "copied": total_copied,
         "skipped": total_skipped,
     }
@@ -303,11 +326,26 @@ def _sync_lists_split(src_dir: str, lists_dst: str, ipset_dst: str):
             msg = "Не удалось создать %s: %s" % (dst, e)
             log.warning(msg, source="asset-importer")
 
+    # Если в бандле есть база netrogat — итоговый netrogat.txt GENERATED
+    # (base + user, пишет его только _rebuild_netrogat_final): копировать
+    # поверх бандловую версию нельзя, иначе каждый импорт дёргал бы файл
+    # mtime-перезаписью «синк стёр → пересборка вернула».
+    has_netrogat_base = os.path.isfile(
+        os.path.join(src_dir, "netrogat.base.txt"))
+
     for name in sorted(os.listdir(src_dir)):
         if name.startswith(_SKIP_PREFIXES):
             continue
         src = os.path.join(src_dir, name)
         if not os.path.isfile(src):
+            continue
+        # Пользовательский слой списков (netrogat.user.txt и пр.) —
+        # собственность пользователя: пустой файл из бандла не должен
+        # его затирать. Ручные правки переживут обновление, контракт —
+        # в заголовке import/lists/netrogat.base.txt (discussion #102).
+        if name.endswith(".user.txt"):
+            continue
+        if name == "netrogat.txt" and has_netrogat_base:
             continue
         # ipset если ИМЯ говорит об этом ИЛИ содержимое — список IP/CIDR.
         # Суперсет: файлы-домены остаются в lists/, IP-листы с «обычными»
@@ -329,6 +367,111 @@ def _sync_lists_split(src_dir: str, lists_dst: str, ipset_dst: str):
             stats["errors"].append(msg)
 
     return lists_stats, ipset_stats
+
+
+def _read_list_domains(path):
+    """Домены из txt-списка: непустые строки без комментариев, по порядку."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return [s for s in (line.strip() for line in f)
+                    if s and not s.startswith("#")]
+    except OSError:
+        return []
+
+
+def _rescue_netrogat_user(lists_dst, src_dir):
+    """Сохранить ручные исключения до того, как бандл их затрёт.
+
+    Обновление GUI разворачивало bundled netrogat.txt поверх рабочего, и
+    домены, добавленные руками в «Исключения», пропадали (discussion #102).
+    Здесь, ДО синка, когда база на диске ещё старая, вытягиваем их в
+    netrogat.user.txt: ручным добавлением считается всё, чего нет в
+    развёрнутой базе (lists/netrogat.base.txt, а при её отсутствии — в
+    новом бандловом base; для удалённых из базы записей это безопасное
+    направление ошибки — исключение лишнего домена, а не потеря).
+
+    Возвращает количество доменов, дописанных в netrogat.user.txt.
+    """
+    final_path = os.path.join(lists_dst, "netrogat.txt")
+    if not os.path.isfile(final_path):
+        return 0
+
+    base_domains = _read_list_domains(
+        os.path.join(lists_dst, "netrogat.base.txt"))
+    if not base_domains:
+        # База ещё не разворачивалась (очень старая установка) — за
+        # эталон берём новый бандловый base.
+        base_domains = _read_list_domains(
+            os.path.join(src_dir, "netrogat.base.txt"))
+
+    user_path = os.path.join(lists_dst, "netrogat.user.txt")
+    user_domains = _read_list_domains(user_path)
+    known = set(base_domains) | set(user_domains)
+
+    rescued = []
+    for d in _read_list_domains(final_path):
+        if d not in known:
+            rescued.append(d)
+            known.add(d)
+    if not rescued:
+        return 0
+
+    try:
+        from core.safe_io import atomic_write_text
+        atomic_write_text(
+            user_path,
+            "\n".join(user_domains + rescued) + "\n",
+            mode=0o644,
+        )
+    except (OSError, ImportError) as e:
+        log.warning(
+            "asset-importer: не удалось сохранить ручные исключения "
+            "в netrogat.user.txt: %s" % e,
+            source="asset-importer",
+        )
+        return 0
+    return len(rescued)
+
+
+def _rebuild_netrogat_final(lists_dst):
+    """Пересобрать lists/netrogat.txt := netrogat.base.txt + netrogat.user.txt.
+
+    Контракт из заголовка netrogat.base.txt: итоговый список формируется
+    автоматически из базы и пользовательского слоя. Идемпотентно: если
+    содержимое уже совпадает, файл не трогаем (mtime важен — nfqws2
+    перечитывает хостлисты по его смене).
+
+    Возвращает True, если файл был перезаписан.
+    """
+    base_path = os.path.join(lists_dst, "netrogat.base.txt")
+    base = _read_list_domains(base_path) if os.path.isfile(base_path) else []
+    if not base:
+        return False
+
+    # Дедуп: user-слой мог редактироваться руками.
+    seen = set(base)
+    extra = []
+    for d in _read_list_domains(os.path.join(lists_dst, "netrogat.user.txt")):
+        if d not in seen:
+            extra.append(d)
+            seen.add(d)
+    desired = base + extra
+
+    final_path = os.path.join(lists_dst, "netrogat.txt")
+    if os.path.isfile(final_path) \
+            and _read_list_domains(final_path) == desired:
+        return False
+
+    try:
+        from core.safe_io import atomic_write_text
+        atomic_write_text(final_path, "\n".join(desired) + "\n", mode=0o644)
+    except (OSError, ImportError) as e:
+        log.warning(
+            "asset-importer: не удалось пересобрать netrogat.txt: %s" % e,
+            source="asset-importer",
+        )
+        return False
+    return True
 
 
 def import_bundled_strategies() -> dict:
