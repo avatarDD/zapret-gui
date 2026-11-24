@@ -81,7 +81,7 @@ def state_path() -> str:
 
 
 def auto_settings(cfg=None) -> dict:
-    """``geneva.auto`` с пределами (``max_groups`` 1–8, ``workers`` 1–32)."""
+    """``geneva.auto`` с пределами (``max_groups`` 1–8, ``workers`` 1–64)."""
     if cfg is None:
         from core.config_manager import get_config_manager
         cfg = get_config_manager()
@@ -99,7 +99,8 @@ def auto_settings(cfg=None) -> dict:
             "help_tunnels": bool(raw.get("help_tunnels", True)),
             "max_groups": num("max_groups", ga.MAX_GROUPS, 1,
                               ga.MAX_GROUPS_LIMIT),
-            "workers": num("workers", 4, 1, 32),       # предел geneva_c
+            # --ext-workers geneva_c: 1–64 (у eval свой предел, 32)
+            "workers": num("workers", 4, 1, ga.ENGINE_WORKERS_MAX),
             # «Как делить потоки»: выкл — один сервис за раз со всеми
             # потоками, вкл — до 4 сервисов рядом, потоки делятся
             "split_workers": bool(raw.get("split_workers", False)),
@@ -232,8 +233,8 @@ class GenevaAutoManager:
         self.rules_lost = 0              # сколько раз правила сносили извне
         self._lost_noted_at = None
         self._lost_unnoted = 0
-        self.host_state = {}             # процесс «по имени» (очередь 348)
-        self.detector = {}               # детектор geneva (очередь 349)
+        self.host_state = {}             # процесс «по имени» (HOST_QUEUE)
+        self.detector = {}               # детектор geneva (OBSERVE_QUEUE)
         self._detector_error = ""
         self._detector_retry = 0.0       # раньше этого времени не перезапускаем
         self._nflog_noted = False        # «нет NFLOG» в журнал — один раз
@@ -272,7 +273,10 @@ class GenevaAutoManager:
         if self._applier is None:
             from core.geneva_auto_apply import Applier
             self._applier = Applier(geneva=self._geneva)
-        self._applier.max_groups = self.settings()["max_groups"]
+        st = self.settings()
+        self._applier.max_groups = st["max_groups"]
+        # у профилей «потоков» столько же, сколько потоков у процесса
+        self._applier.workers = st["workers"]
         return self._applier
 
     def search(self, slot: int = 0):
@@ -1103,10 +1107,16 @@ class GenevaAutoManager:
     def _search_slots(self) -> int:
         """Сколько подборов может идти рядом: без деления — один; с
         делением ``min(потоки, 4)``, но не больше свободных групп (у
-        каждого подбора своя пробная группа)."""
+        каждого подбора своя пробная группа).
+
+        В режиме профилей (geneva_c 2.0) групп нет: пробная стратегия —
+        такой же профиль общего процесса, как и рабочие, поэтому ограничивает
+        только число слотов (у каждого свой блок портов)."""
         st = self.settings()
         if not st["split_workers"]:
             return 1
+        if self._profiles_mode():
+            return max(1, min(st["workers"], MAX_SEARCHES))
         working = {s.strategy for s in self.book.services if s.is_active
                    and s.key not in self._trials}
         free = st["max_groups"] - len(working)
@@ -1186,7 +1196,7 @@ class GenevaAutoManager:
                 if slot is None:
                     break
                 fam = self.book.family_strategy(s)
-                running = [g.strategy for g in self.applier().queues.values()]
+                running = self.applier().running()
                 proven = self._proven(s.key)
                 snap = s.clone()
                 self.book.searching(s.key, now)
@@ -1372,16 +1382,36 @@ class GenevaAutoManager:
                 self.note("%s: подбор ждёт (%s)" % (name, res.detail))
         self._dirty = True
 
-    @staticmethod
-    def _plan_sig(services, trial=None, max_groups=ga.MAX_GROUPS,
+    def _plan_sig(self, services, trial=None, max_groups=ga.MAX_GROUPS,
                   trials=None) -> str:
-        # С пробной группой: план без неё и план с ней — разные правила,
-        # и смена пробы без смены книги должна применяться сразу. Предел
-        # групп — как у Applier: иначе группы сверх 4 не попадали в
-        # подпись, и их смена ждала повтора раз в 120 с.
+        # С пробной стратегией: план без неё и план с ней — разные
+        # правила, и смена пробы без смены книги должна применяться сразу.
+        # Предел групп — как у Applier: иначе группы сверх 4 не попадали в
+        # подпись, и их смена ждала повтора раз в 120 с. У профилей
+        # (geneva_c 2.0) в подпись идут имена и стратегии: адреса
+        # перечитываются перечитыванием ipset-файлов.
+        if self._profiles_mode():
+            all_trials = list(trials or ()) + ([trial] if trial else [])
+            profs = ga.plan_profiles(services, trials=all_trials)
+            # Адреса и порты тоже: новый адрес CDN попадёт в ipset-файл
+            # на следующем срезе, а не через APPLY_EVERY. Перезапуска не
+            # будет — подпись процесса считает только имена и стратегии,
+            # и процесс перечитает файлы (``reload_lists``).
+            return json.dumps([[p.name, p.strategy, sorted(p.addresses),
+                                p.tcp_ports, p.udp_ports] for p in profs],
+                              sort_keys=True)
         groups = ga.plan_groups(services, trial=trial, max_groups=max_groups,
                                 trials=trials)
         return json.dumps([g.to_dict() for g in groups], sort_keys=True)
+
+    def _profiles_mode(self) -> bool:
+        """Стратегии — профили одного процесса (geneva_c 2.0)?"""
+        try:
+            return bool(getattr(self.applier(), "mode") == "profiles" or
+                        self.applier().profiles_ok())
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: профили: %s" % e, source="geneva")
+            return False
 
     def _check_offload(self) -> None:
         """Ускорение NAT: раз в 20 срезов (и сразу, если в срезе есть
@@ -1813,6 +1843,34 @@ class GenevaAutoManager:
         self.note("списки «Авто» сохранены", en="Auto lists saved")
         return self.lists_view()
 
+    def _profile_names(self, keys) -> list:
+        """Имена сервисов профиля для строки «работающих стратегий».
+
+        Домен из книги (``Service.name`` — то, что видно в ClientHello),
+        у безымянного адреса — имя из наблюдения, иначе сам адрес.
+        Адреса остаются в подсказке (title): они точнее имён.
+        """
+        obs = None
+        out = []
+        for k in keys or ():
+            s = self.book.find(k)
+            nm = ((getattr(s, "name", "") or getattr(s, "host", ""))
+                  .strip().strip("."))
+            if not nm and s is not None:
+                if obs is None:
+                    try:
+                        obs = self.observer().names()
+                    except Exception as e:  # noqa: BLE001 - показ вторичен
+                        log.debug("geneva-auto: имена наблюдения: %s" % e,
+                                  source="geneva")
+                        obs = {}
+                for a in (getattr(s, "addresses", None) or ())[:1]:
+                    nm = obs.get(str(a.get("ip", "")), "")
+                    if nm:
+                        break
+            out.append(nm or k)
+        return out
+
     def status(self, all_services: bool = False) -> dict:
         with self._lock:
             st = self.settings()
@@ -1838,12 +1896,25 @@ class GenevaAutoManager:
                 items.append(d)
             groups = []
             last = (self._applier.last if self._applier else {}) or {}
-            for q, info in sorted((last.get("queues") or {}).items()):
-                g = dict(info, queue=q)
-                g.update({k: v for k, v in
-                          (self.group_stats.get(q) or {}).items()
-                          if k in ("stats", "rate")})
-                groups.append(g)
+            if last.get("mode") == "profiles":
+                # Один процесс, много профилей: «группа» для страницы —
+                # профиль (очередь у всех одна, диапазон процесса).
+                for info in last.get("profiles") or ():
+                    g = dict(info, queue=ga.QUEUE_BASE,
+                             profile=info.get("name", ""))
+                    g["names"] = self._profile_names(
+                        info.get("services") or ())
+                    g.update({k: v for k, v in
+                              (self.group_stats.get(info.get("name")) or {}
+                               ).items() if k in ("stats", "rate")})
+                    groups.append(g)
+            else:
+                for q, info in sorted((last.get("queues") or {}).items()):
+                    g = dict(info, queue=q)
+                    g.update({k: v for k, v in
+                              (self.group_stats.get(q) or {}).items()
+                              if k in ("stats", "rate")})
+                    groups.append(g)
             searches = []
             for key, w in self._works.items():
                 x = self.search(w["slot"])
@@ -1943,8 +2014,25 @@ class GenevaAutoManager:
 
     # ── настройки со страницы ──
 
+    def workers_suggest(self) -> dict:
+        """Совет, сколько «труб» держать этому роутеру (кнопка «Авто»
+        у поля). Считает по ядрам и памяти, применяет пользователь.
+        Фразу для тоста собирает страница: языка на сервере нет."""
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8",
+                      errors="replace") as f:
+                meminfo = f.read()
+        except OSError as e:
+            meminfo = ""
+            log.debug("geneva-auto: meminfo не читается: %s" % e,
+                      source="geneva")
+        cpu = os.cpu_count() or 1
+        workers, avail_mb = ga.suggest_workers(cpu, meminfo)
+        return {"ok": True, "workers": workers, "cpu": cpu,
+                "mem_available_mb": round(avail_mb)}
+
     def update_settings(self, values: dict) -> dict:
-        """Настройки с карточки «Авто»: ``workers`` (1–32), ``max_groups``
+        """Настройки с карточки «Авто»: ``workers`` (1–64), ``max_groups``
         (1–8), ``help_tunnels`` (bool) и ``exclude`` (адреса серверов,
         списком или текстом через пробел, запятую или строку). Новое
         число воркеров действует со следующего круга подбора, число
@@ -1958,7 +2046,8 @@ class GenevaAutoManager:
         def bad(text):
             return {"ok": False, "error_code": "bad_value", "error": text}
 
-        limits = {"workers": (1, 32), "max_groups": (1, ga.MAX_GROUPS_LIMIT)}
+        limits = {"workers": (1, ga.ENGINE_WORKERS_MAX),
+                  "max_groups": (1, ga.MAX_GROUPS_LIMIT)}
         for key, (lo, hi) in limits.items():
             if key not in values:
                 continue

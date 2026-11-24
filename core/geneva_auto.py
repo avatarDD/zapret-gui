@@ -1213,12 +1213,19 @@ def target(s: Service):
 
 # ── применение по имени (geneva_c 2.0: ext_profile, ext_lists) ──
 
-HOST_QUEUE = 348                 # процесс «по имени»
+# Процесс профилей слушает диапазон 340..340+N-1, и N — предел самого
+# движка (``--ext-workers`` 1–64, docs/EXT.md «Многоочередной движок»).
+# Очереди «по имени» и детектора стоят СРАЗУ за этим диапазоном, а не
+# внутри него: иначе число потоков пришлось бы держать меньше, чем умеет
+# geneva.
+ENGINE_WORKERS_MAX = 64          # предел geneva_c (--ext-workers 1–64)
+HOST_QUEUE = QUEUE_BASE + ENGINE_WORKERS_MAX         # 404: «по имени»
+OBSERVE_QUEUE = HOST_QUEUE + 1                       # 405: детектор
+ENGINE_QUEUES_MAX = HOST_QUEUE - QUEUE_BASE          # 64: 340..403
 HOST_TCP_PORTS = (80, 443)
 HOST_UDP_PORT = 443
 MAX_HOST_PROFILES = 24
 HOST_FEATURES = ("ext", "ext_profile", "ext_lists", "ext_l7")
-OBSERVE_QUEUE = 349              # детектор geneva (--ext-auto observe)
 OBSERVE_PORT = 9                 # discard: движок детектора берёт только его
 OBSERVE_FEATURE = "ext_auto"
 
@@ -1380,6 +1387,196 @@ def plan_groups(services, trial=None, max_groups: int = MAX_GROUPS,
         if len(result) >= max_groups:
             break
     return result
+
+
+# ── профили geneva 2.0 (X6a/X6b): много стратегий в одном процессе ──
+
+MAX_PROFILES = 200        # профилей в файле (XPROF_MAX у geneva — 255)
+PROFILE_FEATURE = "ext_profile"
+# Профили на ходу (X6d): ctl set_strategy profile= и ctl reload файлов
+# --ext-profile. Без этой фичи (geneva_c 2.0.1) смена стратегии — только
+# перезапуском: set_strategy с profile старый движок понял бы как замену
+# стратегии команды.
+PROFILE_RUNTIME_FEATURE = "ext_profile_runtime"
+
+# Автоподбор «труб» (``--ext-workers``) под железо роутера. Поток
+# держит копию стратегий воркеров, таблицу потоков и буфер NFQUEUE —
+# на роутере это единицы мегабайт, поэтому предел ставит не память,
+# а здравый смысл: потоков больше, чем ядер, пакетный движок не
+# успевает разгребать, а больше 8 на домашнем роутере не нужно.
+WORKER_MB = 4             # память на поток: стратегии, потоки, буфер
+RESERVE_MB = 24           # остаётся системе и прошивке
+WORKERS_SUGGEST_MAX = 8   # потолок рекомендации (движок умеет до 64)
+
+
+def suggest_workers(cpu: int, meminfo: str) -> tuple:
+    """Сколько «труб» посоветовать этому роутеру: ``(N, МБ доступно)``.
+
+    Память неизвестна — 1: не зная памяти, рисковать роутером нельзя
+    (как ``slots_for_memory`` у сканера), доступно тогда 0. Это только
+    совет: применяет и ограничивает пользователь.
+    """
+    values = {k: int(v) for k, v in
+              re.findall(r"^(MemTotal|MemAvailable|MemFree):\s+(\d+)",
+                         str(meminfo or ""), re.M)}
+    # Ядро до 3.14 MemAvailable не пишет — тогда по MemFree (меньше,
+    # то есть осторожнее).
+    values.setdefault("MemAvailable", values.get("MemFree", 0))
+    cpu = max(1, int(cpu or 1))
+    if "MemTotal" not in values or not values["MemAvailable"]:
+        return 1, 0.0
+    avail_mb = values["MemAvailable"] / 1024.0
+    by_mem = int((avail_mb - RESERVE_MB) // WORKER_MB)
+    return max(1, min(cpu, by_mem, WORKERS_SUGGEST_MAX)), avail_mb
+
+
+@dataclass
+class Profile:
+    """Стратегия и её трафик в одном процессе «Авто».
+
+    Раньше стратегия была группой: свой ``geneva run``, своя очередь
+    NFQUEUE. Теперь это профиль: ``--ext-workers`` дают потоки и очереди
+    диапазоном, а профиль сам отбирает пакеты своим ipset-файлом
+    (``--ipset``) и порт-фильтром. Предел — :data:`MAX_PROFILES`, а не
+    восемь очередей.
+    """
+    strategy: str
+    services: list = field(default_factory=list)
+    targets: list = field(default_factory=list)
+    name: str = ""            # имя для лога geneva и журнала
+    trial: bool = False       # пробная стратегия подбора
+
+    @property
+    def addresses(self) -> list:
+        """Адреса всех целей профиля (для ipset-файла)."""
+        out = []
+        for t in self.targets:
+            if t.by_local_port:
+                continue
+            for a in t.addresses:
+                if a not in out:
+                    out.append(a)
+        return out
+
+    @property
+    def tcp_ports(self) -> str:
+        """Порты сервера по TCP: у целей по локальному порту это порт
+        клиента, и в фильтр профиля он попасть не должен — geneva
+        сравнивает порт сервера."""
+        return _ports_union(t.tcp_ports for t in self.targets
+                            if not t.by_local_port)
+
+    @property
+    def udp_ports(self) -> str:
+        return _ports_union(t.udp_ports for t in self.targets
+                            if not t.by_local_port)
+
+    @property
+    def port_only(self) -> bool:
+        """Профиль только из целей по локальному порту (пир, DHT): адресов
+        сервера у него нет, пакеты к нему кладут правила по conntrack, а
+        сам профиль обязан брать все порты сервера."""
+        return bool(self.targets) and all(t.by_local_port
+                                          for t in self.targets)
+
+    @property
+    def port_proto(self) -> str:
+        """Протокол порт-целей профиля: у «все порты» можно назвать
+        только один (geneva запрещает профиль без фильтра протокола)."""
+        udp = any(t.udp_ports for t in self.targets)
+        tcp = any(t.tcp_ports for t in self.targets)
+        return "udp" if udp and not tcp else "tcp"
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "strategy": self.strategy,
+                "services": list(self.services),
+                "targets": [t.to_dict() for t in self.targets],
+                "trial": self.trial,
+                "addresses": self.addresses}
+
+
+def _ports_union(specs) -> str:
+    """Порт-фильтр профиля одним списком: ``["443", "80,443"]`` →
+    ``"80,443"`` (geneva считает порты профиля одним набором)."""
+    nums = set()
+    for spec in specs or ():
+        for part in str(spec or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            lo, _, hi = part.partition("-")
+            try:
+                lo, hi = int(lo), int(hi or lo)
+            except ValueError:
+                continue
+            nums.update(range(lo, hi + 1))
+    return format_ports(nums) if nums else ""
+
+
+def _profile_name(strategy: str, n: int, udp: bool, kind: str = "") -> str:
+    """Имя профиля для лога geneva: номер, транспорт, вид цели и начало
+    стратегии. Имя в ini — одно слово без пробелов и ``]``."""
+    text = "".join(ch if ch.isalnum() or ch in "-_" else "_"
+                   for ch in str(strategy or ""))[:40]
+    return "p%d-%s%s-%s" % (n, "udp" if udp else "tcp",
+                            "-" + kind if kind else "",
+                            text.strip("_") or "s")
+
+
+def plan_profiles(services, trials=None, max_profiles: int = MAX_PROFILES
+                  ) -> list:
+    """Профили вместо групп: активные сервисы по стратегии, пробуемые —
+    первыми. Возвращает ``[Profile]``.
+
+    Пересечение адресов у профилей допустимо и нормально: профиль сам
+    отбирает пакеты своим ``--ipset``-файлом и порт-фильтром, а пакет
+    берёт первый подходящий профиль (geneva: профили в порядке файла).
+    Порядок — по важности: пробная стратегия, затем важные сервисы, затем
+    остальные. Цели по локальному порту (пиры, DHT) — отдельный профиль
+    той же стратегии (:attr:`Profile.port_only`): адресов сервера у них
+    нет, пакеты кладут правила по conntrack (см. ``geneva_auto_fw``), а
+    профиль берёт все порты сервера. Смешать их с адресными целями
+    нельзя: geneva проверяет ipset и порт вместе, и порт клиента (6881)
+    пакет сервера не пропустит никогда.
+    """
+    trials = [t for t in list(trials or ()) if t and t[1]]
+    trial_keys = {t[0].key for t in trials}
+    trial_pairs = {(t[0].key, t[1]) for t in trials}
+    items = [(t[0], t[1], True) for t in trials]
+    items += [(s, s.strategy, False) for s in services
+              if s.is_active and s.key not in trial_keys]
+    # Профиль «все порты сервера» ставится последним: он ничего не
+    # отбирает и забрал бы себе пакеты любого адресного профиля ниже.
+    items.sort(key=lambda x: (
+        not x[2], not (x[0].addresses or ()), x[0].priority,
+        -len(x[0].addresses or ()), x[0].key))
+    # Порт-цели (пир, DHT) отделяются от адресных целей той же стратегии:
+    # geneva проверяет ipset и порт вместе, и профиль с адресами не пустил
+    # бы пакет пира — у того порт сервера произвольный.
+    order, by = [], {}
+    for s, strat, trial in items:
+        t0 = target(s)
+        port_only = bool(t0 is not None and t0.by_local_port)
+        key = (strat, port_only)
+        if key not in by:
+            by[key] = []
+            order.append((key, trial))
+        by[key].append(s)
+    out = []
+    for (strat, port_only), trial in order:
+        svcs = by[(strat, port_only)]
+        targets = [t for t in (target(s) for s in svcs) if t is not None]
+        if not targets:
+            continue
+        udp = all(not t.tcp_ports for t in targets)
+        p = Profile(strategy=strat, services=[s.key for s in svcs],
+                    targets=targets, trial=trial)
+        p.name = _profile_name(strat, len(out) + 1, udp,
+                               "peer" if port_only else "")
+        out.append(p)
+        if len(out) >= max_profiles:
+            break
+    return out
 
 
 def describe_target(t: Target) -> str:

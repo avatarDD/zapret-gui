@@ -29,6 +29,7 @@ import unittest
 from unittest import mock
 
 import core.config_manager as cm_mod
+from core import geneva_auto as ga
 from core import geneva_manager as gm
 
 
@@ -966,6 +967,308 @@ class TestSearch(_StubCase):
         self.assertTrue(p["checkpoint"].startswith(self.tmp))
         self.assertTrue(p["search"].startswith(self.tmp))
         self.assertTrue(p["socket"].startswith(self.rt))
+
+
+class TestAutoEngineProfiles(unittest.TestCase):
+    """Один процесс на все стратегии: файл профилей, argv и запуск."""
+
+    S1 = "[TCP:flags:PA]-fragment{tcp:34:True:17}-| \\/"
+    S2 = "[TCP:flags:PA]-fragment{tcp:-1:True}-| \\/"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.ep = {k: os.path.join(self.tmp, "engine", k)
+                   for k in ("profiles", "signature", "args", "log",
+                             "events", "pid", "socket", "strategies")}
+        self.ep["dir"] = os.path.join(self.tmp, "engine")
+
+    def _profile(self, name, strategy, ips, tcp="443", udp=""):
+        strategy = self.S1 if strategy == "S1" else strategy
+        return ga.Profile(strategy=strategy, services=[name], targets=[
+            ga.Target(addresses=list(ips), tcp_ports=tcp, udp_ports=udp)],
+            name=name)
+
+    def test_ini_has_ports_ipset_and_strategy_file(self):
+        profs = [self._profile("p1", "S1", ["1.1.1.1"]),
+                 self._profile("p2", "S2", [], tcp="", udp="6881")]
+        text = gm.auto_profiles_ini(profs, self.ep)
+        self.assertIn("[profile p1]", text)
+        self.assertIn("filter-tcp = 443", text)
+        self.assertIn("ipset = %s/ips-0.txt" % self.ep["dir"], text)
+        self.assertIn("strategy-file = %s/strategy-0.txt" % self.ep["dir"],
+                      text)
+        # профиль без адресов сервера tcp не назвал: geneva сама
+        # запретит tcp (defaults дописывает пропущенный протокол)
+        self.assertIn("[profile p2]\nfilter-udp = 6881", text)
+        self.assertNotIn("1-65535", text)
+        self.assertNotIn("ips-1.txt", text)
+
+    def test_ini_never_takes_every_port_with_explicit_ports(self):
+        # geneva отвергает профиль «все порты» при -p: «все» называем
+        # только для tcp, udp остаётся запрещённым (defaults в geneva)
+        text = gm.auto_profiles_ini([self._profile("p1", "S", [], tcp="")],
+                                    self.ep)
+        self.assertIn("filter-tcp = 1-65535", text)
+        self.assertNotIn("filter-udp", text)
+
+    def test_args_ask_for_workers_and_profile_file(self):
+        args = gm.build_auto_engine_args("/bin/geneva", self.ep, 6,
+                                         ["--ext"])
+        self.assertEqual(args[:3], ["/bin/geneva", "run", "--ext"])
+        self.assertEqual(args[args.index("--ext-workers") + 1], "6")
+        self.assertEqual(args[args.index("--ext-profile") + 1],
+                         self.ep["profiles"])
+        self.assertEqual(args[args.index("-q") + 1],
+                         str(ga.QUEUE_BASE))
+        self.assertEqual(args[args.index("--firewall") + 1], "none")
+        self.assertEqual(args[args.index("--proto") + 1], "tcp,udp")
+
+    def test_workers_never_reach_the_host_queue(self):
+        """Диапазон 340..340+N-1 не должен дойти до очереди «по имени» и
+        детектора: они получат чужие пакеты. Предел — только у движка."""
+        args = gm.build_auto_engine_args("/bin/geneva", self.ep, 1000,
+                                         ["--ext"])
+        n = int(args[args.index("--ext-workers") + 1])
+        self.assertEqual(n, ga.ENGINE_WORKERS_MAX)
+        self.assertLess(ga.QUEUE_BASE + n - 1, ga.HOST_QUEUE)
+        self.assertLess(ga.HOST_QUEUE, ga.OBSERVE_QUEUE)
+
+    def test_workers_limit_is_the_engine_limit(self):
+        """Потоков не меньше, чем умеет сам geneva_c (--ext-workers 1–64):
+        наши числа не должны вводить свой предел."""
+        self.assertEqual(ga.ENGINE_WORKERS_MAX, 64)
+        self.assertEqual(ga.ENGINE_QUEUES_MAX, ga.ENGINE_WORKERS_MAX)
+        args = gm.build_auto_engine_args("/bin/geneva", self.ep, 64,
+                                         ["--ext"])
+        self.assertEqual(args[args.index("--ext-workers") + 1], "64")
+
+    def test_queue_matches_reads_argv(self):
+        """Живой процесс «по имени»/детектора сверяется по фактической
+        ``-q``: подпись от номера очереди не зависит, и процесс пережил бы
+        её смену."""
+        def argv(words):
+            data = b"\0".join(w.encode() for w in words) + b"\0"
+
+            class F:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def read(self):
+                    return data
+
+            return F()
+
+        with mock.patch("builtins.open", lambda *a, **k: argv(
+                ["/opt/usr/bin/geneva", "run", "-q", "404", "--ext"])):
+            self.assertTrue(gm._queue_matches(4242, ga.HOST_QUEUE))
+            self.assertFalse(gm._queue_matches(4242, ga.OBSERVE_QUEUE))
+        # нет /proc — верим подписи (как pid_alive)
+        with mock.patch("builtins.open", side_effect=OSError):
+            self.assertTrue(gm._queue_matches(4242, ga.HOST_QUEUE))
+        self.assertFalse(gm._queue_matches(None, ga.HOST_QUEUE))
+
+    def test_apply_writes_files_and_spawns(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        proc = mock.Mock()
+        proc.pid = 7001
+        proc.poll.return_value = None
+        calls = []
+
+        def spawn(args, log_path):
+            calls.append(args)
+            return proc
+
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_profile"}), \
+             mock.patch.object(m, "ext_problem", return_value=""), \
+             mock.patch.object(m, "auto_engine_pid", return_value=None), \
+             mock.patch.object(m, "auto_engine_stop"), \
+             mock.patch.object(gm, "auto_engine_paths", return_value=self.ep), \
+             mock.patch.object(gm, "_spawn", side_effect=spawn), \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_wait_ready_events"), \
+             mock.patch.object(gm, "trim_file"):
+            r = m.auto_engine_apply(
+                [self._profile("p1", "S1", ["1.1.1.1"])], 3)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["action"], "started")
+        self.assertEqual(len(calls), 1)
+        with open(os.path.join(self.ep["dir"], "ips-0.txt")) as f:
+            self.assertEqual(f.read().strip().split("\n")[-1], "1.1.1.1")
+        with open(os.path.join(self.ep["dir"], "strategy-0.txt")) as f:
+            self.assertEqual(f.read().strip(), self.S1)
+        with open(self.ep["profiles"]) as f:
+            self.assertIn("[profile p1]", f.read())
+
+    def _live(self, feats=("ext", "ext_profile"), strategies=None):
+        """Менеджер с живым процессом профилей под ``p1`` стратегии S1."""
+        os.makedirs(self.ep["dir"], exist_ok=True)
+        with open(self.ep["signature"], "w") as f:
+            f.write("workers 3\np1")
+        self._save_strategies(strategies or {"p1": self.S1})
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        return m, list(feats)
+
+    def _save_strategies(self, strat_of, ports=None):
+        with open(self.ep["strategies"], "w") as f:
+            json.dump({"workers": 3, "profiles": strat_of,
+                       "ports": ports or {"p1": ["443", ""]}}, f)
+
+    def _apply(self, m, feats, profiles):
+        calls = []
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features", return_value=feats), \
+             mock.patch.object(m, "ext_problem", return_value=""), \
+             mock.patch.object(m, "auto_engine_pid", return_value=7001), \
+             mock.patch.object(m, "auto_engine_stop") as stop, \
+             mock.patch.object(gm, "control_request",
+                               side_effect=lambda *a, **k:
+                               calls.append((a, k)) or {"ok": True}), \
+             mock.patch.object(gm, "auto_engine_paths", return_value=self.ep):
+            r = m.auto_engine_apply(profiles, 3)
+        return r, stop, calls
+
+    def test_apply_keeps_live_process_with_same_signature(self):
+        """Та же подпись, те же стратегии: только списки и адреса."""
+        m, feats = self._live()
+        r, stop, calls = self._apply(m, feats,
+                                     [self._profile("p1", "S1", ["2.2.2.2"])])
+        self.assertEqual(r["action"], "reloaded")
+        self.assertEqual(r["pid"], 7001)
+        stop.assert_not_called()
+        # адреса CDN могли смениться: файл переписан, списки перечитаны
+        with open(os.path.join(self.ep["dir"], "ips-0.txt")) as f:
+            self.assertIn("2.2.2.2", f.read())
+        self.assertEqual([c[0][1] for c in calls], ["reload_lists"])
+
+    def test_strategy_changes_without_restart_when_the_engine_allows(self):
+        """X6d: стратегия профиля меняется на ходу, процесс тот же."""
+        s2 = "[TCP:flags:PA]-fragment{tcp:-1:True}-| \\/"
+        m, feats = self._live(feats=("ext", "ext_profile",
+                                     "ext_profile_runtime"))
+        r, stop, calls = self._apply(m, feats,
+                                     [self._profile("p1", "S1", [])])
+        self.assertEqual(r["action"], "reloaded")   # стратегия та же
+        r, stop, calls = self._apply(
+            m, feats, [self._profile("p1", s2, [])])
+        self.assertEqual(r["action"], "updated")
+        self.assertEqual(r["pid"], 7001)
+        stop.assert_not_called()
+        # одна команда: reload перечитывает и стратегии, и списки
+        self.assertEqual([c[0][1] for c in calls], ["reload"])
+        # запомнили: следующий срез не станет менять её заново
+        self.assertEqual(m._engine_strategies(self.ep)["profiles"],
+                         {"p1": s2})
+
+    def test_port_change_restarts_even_with_runtime(self):
+        """Порты профиля повторяют правила firewall — только перезапуск."""
+        m, feats = self._live(feats=("ext", "ext_profile",
+                                     "ext_profile_runtime"))
+        prof = self._profile("p1", "S1", [], tcp="80")
+        with mock.patch.object(gm, "_spawn") as spawn, \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_wait_ready_events", return_value=True):
+            proc = mock.Mock(pid=8123, returncode=None)
+            proc.poll.return_value = None
+            spawn.return_value = proc
+            r, stop, calls = self._apply(m, feats, [prof])
+        self.assertEqual(r["action"], "started")
+        stop.assert_called()
+        self.assertNotIn("set_strategy", [c[0][1] for c in calls])
+
+    def test_strategy_change_restarts_an_old_engine(self):
+        """geneva_c 2.0.1 (без X6d): смена стратегии — перезапуск."""
+        s2 = "[TCP:flags:PA]-fragment{tcp:-1:True}-| \\/"
+        m, feats = self._live()
+        with mock.patch.object(gm, "_spawn") as spawn, \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_wait_ready_events", return_value=True):
+            proc = mock.Mock(pid=8123, returncode=None)
+            proc.poll.return_value = None
+            spawn.return_value = proc
+            r, stop, calls = self._apply(
+                m, feats, [self._profile("p1", s2, [])])
+        self.assertEqual(r["action"], "started")
+        stop.assert_called()
+        self.assertNotIn("set_strategy", [c[0][1] for c in calls])
+
+    def test_apply_without_profile_feature_is_unsupported(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features", return_value={"ext"}):
+            r = m.auto_engine_apply([self._profile("p1", "S", [])], 2)
+        self.assertEqual(r["action"], "unsupported")
+        self.assertFalse(r["ok"])
+
+    def test_apply_empty_stops(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_profile"}), \
+             mock.patch.object(m, "auto_engine_stop") as stop:
+            r = m.auto_engine_apply([], 2)
+        self.assertEqual(r["action"], "stopped")
+        stop.assert_called_once()
+
+    def test_apply_crash_reports_log_tail(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        proc = mock.Mock()
+        proc.pid = 7002
+        proc.poll.return_value = 1
+        proc.returncode = 1
+        with mock.patch.object(m, "_ready_binary",
+                               return_value=("/bin/geneva", "")), \
+             mock.patch.object(m, "features",
+                               return_value={"ext", "ext_profile"}), \
+             mock.patch.object(m, "ext_problem", return_value=""), \
+             mock.patch.object(m, "auto_engine_pid", return_value=None), \
+             mock.patch.object(m, "auto_engine_stop"), \
+             mock.patch.object(gm, "auto_engine_paths", return_value=self.ep), \
+             mock.patch.object(gm, "_spawn", return_value=proc), \
+             mock.patch.object(gm, "_write_pid"), \
+             mock.patch.object(gm, "_remove"), \
+             mock.patch.object(gm, "_wait_ready_events"), \
+             mock.patch.object(gm, "trim_file"), \
+             mock.patch.object(gm, "tail_lines",
+                               return_value=["error: profile p2: bad"]):
+            r = m.auto_engine_apply(
+                [self._profile("p1", "S1", ["1.1.1.1"])], 2)
+        self.assertFalse(r["ok"])
+        self.assertIn("profile p2", r["error"])
+
+    def test_status_reads_workers_and_names(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        os.makedirs(self.ep["dir"], exist_ok=True)
+        with open(self.ep["profiles"], "w") as f:
+            f.write("[profile p1]\nfilter-tcp = 443\n\n[profile p2]\n")
+        with open(self.ep["args"], "w") as f:
+            json.dump(["geneva", "run", "--ext-workers", "5"], f)
+        with mock.patch.object(gm, "auto_engine_paths", return_value=self.ep), \
+             mock.patch.object(m, "auto_engine_pid", return_value=7003):
+            st = m.auto_engine_status()
+        self.assertEqual(st["workers"], 5)
+        self.assertEqual(st["profiles"], ["p1", "p2"])
+        self.assertTrue(st["running"])
+        self.assertEqual(st["queues"], [340, 341, 342, 343, 344])
 
 
 if __name__ == "__main__":

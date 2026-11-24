@@ -86,23 +86,37 @@ class Applier:
     """Группы «Авто» на роутере. Зависимости подменяются в тестах."""
 
     def __init__(self, *, geneva=None, fw=None,
-                 max_groups: int = ga.MAX_GROUPS, clock=time.time):
+                 max_groups: int = ga.MAX_GROUPS, workers: int = 4,
+                 clock=time.time):
         self._geneva = geneva
         self._fw = fw
         self.max_groups = max_groups
+        # потоков процессу профилей (он же диапазон очередей 340..340+N-1)
+        self.workers = workers
         self._clock = clock
         self._lock = threading.RLock()
-        self.queues = {}             # {q: ga.Group} — применено сейчас
-        self.rules = {}              # queues + правило «по имени»
+        self.queues = {}             # {q: ga.Group} — группы (старый путь)
+        self.profiles = []           # [ga.Profile] — применено сейчас
+        self.mode = ""               # "profiles" | "groups"
+        self.rules = []              # пары (очередь, группа) + «по имени»
         self.host = {}               # итог процесса «по имени»
         self.last = {}               # итог последнего apply
-        self._stats = {}             # {q: (t, stats)}
+        self._stats = {}             # {q|имя профиля: (t, stats)}
 
     def _gm(self):
         if self._geneva is None:
             from core.geneva_manager import get_geneva_manager
             self._geneva = get_geneva_manager()
         return self._geneva
+
+    def _fw_apply(self, rules, span: int) -> dict:
+        """Правила с диапазоном очередей; двойник без ``span`` (старые
+        тесты) получает только правила."""
+        apply = self._fwm().apply
+        try:
+            return apply(rules, span=span)
+        except TypeError:
+            return apply(rules)
 
     def _fwm(self):
         if self._fw is None:
@@ -111,6 +125,33 @@ class Applier:
         return self._fw
 
     # ── применение ──
+
+    def running(self) -> list:
+        """Стратегии, которые сейчас под правилами (группы или профили)."""
+        if self.mode == "profiles":
+            return [p.strategy for p in self.profiles]
+        return [g.strategy for g in self.queues.values()]
+
+    def _span(self) -> int:
+        """Очередей у процесса профилей (он же ``span`` правил): предел
+        движка 1–64, а очередь «по имени» и детектор стоят сразу за
+        диапазоном профилей (340..403)."""
+        return max(1, min(int(self.workers or 1), ga.ENGINE_WORKERS_MAX))
+
+    def profiles_ok(self) -> bool:
+        """Стратегии сейчас — профили одного процесса?"""
+        return self._profiles_ok(self._gm())
+
+    def _profiles_ok(self, gm) -> bool:
+        """Движок умеет профили (``ext_profile`` geneva_c 2.0): тогда
+        стратегий может быть больше восьми, и группы не нужны."""
+        if not hasattr(gm, "auto_engine_apply"):
+            return False
+        try:
+            return ga.PROFILE_FEATURE in (gm.features() or ())
+        except Exception as e:                      # noqa: BLE001
+            log.debug("geneva-auto: профили: %s" % e, source="geneva")
+            return False
 
     def apply(self, groups, hosts=None) -> dict:
         """Привести процессы и правила к ``groups``.
@@ -130,17 +171,20 @@ class Applier:
             procs = res.get("queues") or {}
             live = {q: g for q, g in queues.items()
                     if (procs.get(q) or {}).get("pid")}
-            host = self._apply_host(gm, live, hosts)
-            rules = dict(live)
+            host = self._apply_host(gm, self._targets(live), hosts)
+            rules = sorted(live.items())
             if host.get("pid"):
-                rules[ga.HOST_QUEUE] = self._fwm().HostRule(host.get("udp"))
-            fw = self._fwm().apply(rules)
+                rules.append((ga.HOST_QUEUE,
+                              self._fwm().HostRule(host.get("udp"))))
+            fw = self._fw_apply(rules, 1)
             if not fw.get("ok"):
                 # правила не встали: процессы без правил бесполезны, а
                 # пробная стратегия не должна считаться применённой
-                live, rules = {}, {}
+                live, rules = {}, []
                 host = dict(host, pid=None, live=False)
             self.queues = live
+            self.profiles = []
+            self.mode = "groups"
             self.rules = rules
             self.host = host
             for q in list(self._stats):
@@ -164,9 +208,21 @@ class Applier:
             self.last = out
             return out
 
-    def _apply_host(self, gm, live: dict, hosts) -> dict:
-        """Процесс «по имени»: его исключения — адреса живых групп (их
-        правила стоят раньше) и «Не трогать»."""
+    @staticmethod
+    def _targets(live) -> list:
+        """Все цели применённого: их адреса — исключения «по имени»."""
+        out = []
+        for g in list(live.values()) if isinstance(live, dict) \
+                else list(live or ()):
+            out.extend(getattr(g, "targets", None) or ())
+        return out
+
+    def _apply_host(self, gm, live, hosts) -> dict:
+        """Процесс «по имени»: его исключения — адреса живых групп и
+        профилей (их правила стоят раньше) и «Не трогать».
+
+        ``live`` — цели (``ga.Target``) уже применённого обхода.
+        """
         apply_host = getattr(gm, "auto_host_apply", None)
         if apply_host is None:
             return {}
@@ -175,9 +231,8 @@ class Applier:
                 gm.auto_host_stop()
             return {}
         ips = set(hosts.get("exclude_ips") or ())
-        for g in live.values():
-            for tg in g.targets:
-                ips.update(str(a) for a in tg.addresses or ())
+        for tg in live or ():
+            ips.update(str(a) for a in getattr(tg, "addresses", None) or ())
         try:
             r = apply_host(hosts["profiles"], sorted(ips),
                            list(hosts.get("exclude_domains") or ()))
@@ -190,6 +245,67 @@ class Applier:
             log.info("geneva-auto: «по имени»: %s" % why, source="geneva")
         return r
 
+    def apply_profiles(self, profiles, hosts=None) -> dict:
+        """Один процесс на все стратегии (geneva_c 2.0, ``ext_profile``).
+
+        ``profiles`` — :func:`core.geneva_auto.plan_profiles`. Правила:
+        по одному правилу на профиль в порядке файла профилей, все — на
+        диапазон очередей процесса (``span = workers``).
+
+        ``{"ok", "mode": "profiles", "profiles": [{name, strategy,
+        services, targets, live}], "queues": {}, "host", …}``.
+        """
+        with self._lock:
+            gm = self._gm()
+            profiles = list(profiles or ())
+            span = self._span()
+            res = gm.auto_engine_apply(profiles, span)
+            live = bool(res.get("pid"))
+            host = self._apply_host(gm, self._targets(profiles) if live
+                                    else (), hosts)
+            rules = []
+            if live:
+                q = ga.QUEUE_BASE
+                for p in profiles:
+                    g = ga.Group(strategy=p.strategy,
+                                 services=list(p.services),
+                                 targets=list(p.targets))
+                    rules.append((q, g))
+            if host.get("pid"):
+                rules.append((ga.HOST_QUEUE,
+                              self._fwm().HostRule(host.get("udp"))))
+            fw = self._fw_apply(rules, span)
+            if not fw.get("ok"):
+                # правила не встали: процесс без правил бесполезен, а
+                # пробная стратегия не должна считаться применённой
+                live, rules = False, []
+                host = dict(host, pid=None, live=False)
+            self.queues = {}
+            self.profiles = profiles if live else []
+            self.mode = "profiles"
+            self.rules = rules
+            self.host = host
+            for key in list(self._stats):
+                if key not in {p.name for p in self.profiles}:
+                    del self._stats[key]
+            out = {"ok": bool(res.get("ok", True)) and bool(fw.get("ok")),
+                   "mode": "profiles", "backend": fw.get("backend", ""),
+                   "error": fw.get("error") or res.get("error", "") or
+                   host.get("error", ""),
+                   "hint": fw.get("hint", ""), "queues": {}, "host": host,
+                   "profiles": [], "action": res.get("action", "")}
+            for p in profiles:
+                out["profiles"].append({
+                    "name": p.name, "strategy": p.strategy,
+                    "services": list(p.services), "trial": bool(p.trial),
+                    "targets": [ga.describe_target(t) for t in p.targets],
+                    "live": live})
+            if out["error"]:
+                log.warning("geneva-auto: применение профилей: %s"
+                            % out["error"], source="geneva")
+            self.last = out
+            return out
+
     def apply_services(self, services, trial=None, trials=None,
                        hosts=None) -> dict:
         """План из сервисов книги (и пробных стратегий) и применение.
@@ -199,13 +315,24 @@ class Applier:
         ``trials_ok`` (``{ключ сервиса: bool}``): группа пробной стратегии
         с этим сервисом запущена и под правилами.
         """
-        groups = ga.plan_groups(services, trial=trial,
-                                max_groups=self.max_groups, trials=trials)
-        out = self.apply(groups, hosts)
+        all_trials = list(trials or ()) + ([trial] if trial else [])
+        if self._profiles_ok(self._gm()):
+            # geneva_c 2.0: одна стратегия — профиль, а не процесс с
+            # очередью: восьми стратегий больше нет
+            out = self.apply_profiles(
+                ga.plan_profiles(services, trials=all_trials), hosts)
+        else:
+            groups = ga.plan_groups(services, trial=trial,
+                                    max_groups=self.max_groups,
+                                    trials=trials)
+            out = self.apply(groups, hosts)
 
         def live(s, strat):
-            return any(g.strategy == strat and s.key in g.services
-                       for g in self.queues.values())
+            return any(p.strategy == strat and s.key in p.services
+                       for p in (self.profiles if self.mode == "profiles"
+                                 else [])) or any(
+                g.strategy == strat and s.key in g.services
+                for g in self.queues.values())
         if trial:
             out["trial_ok"] = live(*trial)
         if trials:
@@ -214,32 +341,118 @@ class Applier:
         return out
 
     def missing(self) -> list:
-        """Чего из правил живых групп нет (снесла прошивка); пусто — всё
-        на месте или групп нет."""
+        """Чего из правил живых групп (профилей) нет — снесла прошивка;
+        пусто — всё на месте или обхода нет."""
         with self._lock:
-            rules = getattr(self, "rules", None) or self.queues
+            rules = getattr(self, "rules", None) or []
             if not rules:
                 return []
             check = getattr(self._fwm(), "present", None)
-            return list(check(rules) or []) if check else []
+            if not check:
+                return []
+            try:
+                return list(check(rules, span=self._span()
+                                  if self.mode == "profiles" else 1) or [])
+            except TypeError:               # старый тестовый двойник
+                return list(check(rules) or [])
 
     def clear(self) -> None:
         """Снять правила и остановить все группы (правила — первыми:
         пакеты не должны ждать в очереди, которой уже нет)."""
         with self._lock:
+            gm = self._gm()
             try:
                 self._fwm().remove()
             finally:
-                self._gm().auto_stop_all()
+                gm.auto_stop_all()
+                stop = getattr(gm, "auto_engine_stop", None)
+                if stop is not None:
+                    try:
+                        stop()
+                    except Exception as e:          # noqa: BLE001
+                        log.debug("geneva-auto: стоп профилей: %s" % e,
+                                  source="geneva")
                 self.queues = {}
-                self.rules = {}
+                self.profiles = []
+                self.mode = ""
+                self.rules = []
                 self.host = {}
                 self._stats = {}
 
     # ── телеметрия ──
 
+    def _profile_stats(self) -> dict:
+        """Телеметрия профилей: потоки по профилям (``ext_flows``) и
+        общие счётчики процесса (``stats``)."""
+        gm = self._gm()
+        with self._lock:
+            now = self._clock()
+            flows = {}
+            getter = getattr(gm, "auto_engine_flows", None)
+            if getter is not None:
+                try:
+                    flows = getter() or {}
+                except Exception as e:              # noqa: BLE001
+                    log.debug("geneva-auto: ext_flows: %s" % e,
+                              source="geneva")
+            per = self._flow_counts(flows)
+            total = {}
+            try:
+                total = gm.auto_engine_stats() or {}
+            except Exception as e:                  # noqa: BLE001
+                log.debug("geneva-auto: stats профилей: %s" % e,
+                          source="geneva")
+            out = {}
+            for p in self.profiles:
+                item = {"strategy": p.strategy,
+                        "services": list(p.services), "ok": bool(
+                            total.get("ok")),
+                        "profile": p.name}
+                cnt = per.get(p.name) or {}
+                item["stats"] = {"flows": cnt.get("flows", 0),
+                                 "pkts_out": cnt.get("pkts_out", 0),
+                                 "pkts_in": cnt.get("pkts_in", 0)}
+                prev = self._stats.get(p.name)
+                if prev:
+                    item["rate"] = rates(prev[1], item["stats"],
+                                         now - prev[0])
+                self._stats[p.name] = (now, dict(item["stats"]))
+                if total.get("ok"):
+                    # общее по процессу: сумма по воркерам, а не по
+                    # стратегиям — профили делят один счётчик
+                    item["engine"] = {"pkts_out": total.get("pkts_out", 0),
+                                      "pkts_in": total.get("pkts_in", 0),
+                                      "triggered": total.get("triggered", 0),
+                                      "workers": total.get("workers", 0)}
+                elif total.get("error"):
+                    item["error"] = total["error"]
+                out[p.name] = item
+            return out
+
+    @staticmethod
+    def _flow_counts(flows) -> dict:
+        """Счётчики по профилям из ``ctl ext_flows``: у каждого потока
+        есть имя профиля. ``{имя профиля: {"flows", "pkts_out",
+        "pkts_in"}}`` — дешёвая замена счётчикам: ``stats`` у процесса
+        общие на все профили."""
+        out = {}
+        for f in (flows or {}).get("flows") or ():
+            name = str(f.get("profile") or "")
+            if not name:
+                continue
+            item = out.setdefault(name, {"flows": 0, "pkts_out": 0,
+                                         "pkts_in": 0})
+            item["flows"] += 1
+            item["pkts_out"] += int((f.get("out") or {}).get("n") or 0)
+            item["pkts_in"] += int((f.get("in") or {}).get("n") or 0)
+        return out
+
     def stats(self) -> dict:
-        """``{q: {stats, rate, strategy, services}}`` по живым группам."""
+        """``{q: {stats, rate, strategy, services}}`` по живым группам, а
+        у профилей — ``{имя профиля: {…}}`` плюс общий ``stats`` процесса.
+        """
+        if self.mode == "profiles":
+            return self._profile_stats()
         with self._lock:
             out = {}
             now = self._clock()

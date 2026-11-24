@@ -21,7 +21,7 @@ from core import geneva_auto as ga
 from core import geneva_auto_apply as ap
 from core import geneva_auto_manager as am
 from core import geneva_auto_search as gs
-from tests.test_geneva_auto_fw import FakeFW, FakeGM
+from tests.test_geneva_auto_fw import FakeFW, FakeGM, FakeProfilesGM
 from tests.test_geneva_manager import _StubCase
 
 DNS_IP = "93.184.216.53"
@@ -51,6 +51,9 @@ class FakeObserver:
         self.identify_calls = []
         self.done = []
         self.busy = False
+
+    def names(self):
+        return {"5.6.7.8": "cdn.example"}
 
     def check(self):
         return {"source": "fake"}
@@ -652,13 +655,15 @@ class TestEnable(_Base):
         self.assertEqual(m.search().workers, 6)
         self.assertEqual(m.applier().max_groups, 2)
         self.assertEqual(m.status()["workers"], 6)
-        for bad in ({"workers": 0}, {"workers": 33}, {"max_groups": "3"},
-                    {"workers": True}):
+        for bad in ({"workers": 0}, {"workers": ga.ENGINE_WORKERS_MAX + 1},
+                    {"max_groups": "3"}, {"workers": True}):
             self.assertFalse(m.update_settings(bad)["ok"], bad)
         self.assertEqual(am.auto_settings(self.cfg)["workers"], 6)
-        # до 32 потоков (предел geneva_c)
-        self.assertTrue(m.update_settings({"workers": 32})["ok"])
-        self.assertEqual(am.auto_settings(self.cfg)["workers"], 32)
+        # потолок — предел самого geneva_c (--ext-workers 1–64), не наш
+        top = ga.ENGINE_WORKERS_MAX
+        self.assertTrue(m.update_settings({"workers": top})["ok"])
+        self.assertEqual(am.auto_settings(self.cfg)["workers"], top)
+        self.assertEqual(m.search().workers, top)
 
     def test_update_tunnels_and_exclude(self):
         m = self.manager()
@@ -735,6 +740,95 @@ class TestEngineIntegration(_StubCase):
                            "get_geneva_auto_manager", return_value=fake):
             ov = be.overview()
         self.assertEqual(ov["geneva"]["auto"]["phase"], "watching")
+
+
+class TestProfilesPlanSig(_Base):
+    """Подпись плана профилей: новый адрес CDN — новый план.
+
+    Процесс профилей сам не перезапускается (подпись у него — имена и
+    стратегии), поэтому адреса обязаны быть в подписи менеджера: иначе
+    новые адреса попадут в ipset-файл только через ``APPLY_EVERY``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gmf = FakeProfilesGM()
+        self.applier = ap.Applier(geneva=self.gmf, fw=FakeFW())
+
+    def test_new_address_changes_the_plan(self):
+        m = self.manager()
+        s = ga.Service(key="web:a.example", kind=ga.WEB, status=ga.APPLIED,
+                       strategy=STRAT, addresses=[{"ip": "93.184.216.1",
+                                                   "seen": 1}],
+                       ports=[443])
+        first = m._plan_sig([s.clone()])
+        s.addresses.append({"ip": "93.184.216.2", "seen": 2})
+        second = m._plan_sig([s.clone()])
+        self.assertNotEqual(first, second)
+        self.assertIn("93.184.216.2", second)
+
+    def test_engine_signature_ignores_addresses(self):
+        """Перезапуска нет: файлы перечитываются ``reload_lists``."""
+        m = self.manager()
+        s = ga.Service(key="web:a.example", kind=ga.WEB, status=ga.APPLIED,
+                       strategy=STRAT, addresses=[{"ip": "93.184.216.1",
+                                                   "seen": 1}],
+                       ports=[443])
+        profs = ga.plan_profiles([s])
+        sig = "\n".join("%s %s" % (p.name, p.strategy) for p in profs)
+        s.addresses.append({"ip": "93.184.216.2", "seen": 2})
+        again = "\n".join("%s %s" % (p.name, p.strategy)
+                           for p in ga.plan_profiles([s]))
+        self.assertEqual(sig, again)
+
+
+class TestProfilesSearchSlots(_Base):
+    """Подборы рядом в режиме профилей: групп нет — только слоты.
+
+    Старый предел — свободные группы NFQUEUE (у каждого подбора своя).
+    У профилей очередь у всех одна (диапазон процесса), а пробная стратегия
+    — такой же профиль, поэтому ограничивать должно лишь число слотов,
+    иначе после восьми найденных стратегий подборы встают навсегда.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gmf = FakeProfilesGM()
+        self.applier = ap.Applier(geneva=self.gmf, fw=FakeFW())
+        raw = dict(self.cfg.get("geneva", "auto", default={}) or {})
+        raw.update(split_workers=True, workers=8, max_groups=8)
+        self.cfg.set("geneva", "auto", raw)
+
+    def _m(self):
+        m = self.manager()
+        for i in range(8):
+            s = ga.Service(key="web:s%d.example" % i, kind=ga.WEB,
+                           status=ga.APPLIED, strategy=STRAT + ("-%d" % i),
+                           addresses=[{"ip": "10.0.0.%d" % (i + 1),
+                                       "seen": 1}], ports=[443])
+            m.book._services[s.key] = s
+        return m
+
+    def test_all_workers_are_slots_when_profiles(self):
+        """Группы не мешают: предел — слоты (очереди 311–314 и блоки
+        портов), то есть ``MAX_SEARCHES``, а не занятые группы."""
+        m = self._m()
+        self.assertEqual(m._search_slots(), min(8, am.MAX_SEARCHES))
+        raw = dict(self.cfg.get("geneva", "auto", default={}) or {})
+        raw.update(workers=2)
+        self.cfg.set("geneva", "auto", raw)
+        self.assertEqual(m._search_slots(), 2)
+
+    def test_groups_still_limit_the_old_way(self):
+        self.gmf.feature = False            # движок без ext_profile
+        m = self._m()
+        self.assertEqual(m._search_slots(), 1)   # 8 групп заняты
+
+    def test_without_split_one(self):
+        self.cfg.set("geneva", "auto", {"split_workers": False,
+                                        "workers": 8, "max_groups": 8})
+        m = self._m()
+        self.assertEqual(m._search_slots(), 1)
 
 
 class TestDetectorJournal(_Base):
@@ -831,6 +925,78 @@ class TestDetectorJournal(_Base):
         self.assertNotIn("2026-11-21", text)
         self.assertIn("cannot bind NFLOG group", text)
         self.assertEqual(m._detector_reason_text({}), "неизвестно")
+
+
+class TestWorkersSuggestAndNames(_Base):
+    """Кнопка «Авто» у числа «труб»: сервер только считает по железу.
+    И «работающие стратегии» показывают имена (домены), а не адреса:
+    книга помнит имя сервиса, наблюдение подсказывает имя адресу."""
+
+    def test_workers_suggest_passes_hardware(self):
+        with mock.patch.object(am.ga, "suggest_workers",
+                               return_value=(3, 512.0)) as sg, \
+             mock.patch.object(am.os, "cpu_count", return_value=2):
+            res = self.manager().workers_suggest()
+        self.assertTrue(res["ok"])
+        self.assertEqual((res["workers"], res["cpu"],
+                          res["mem_available_mb"]), (3, 2, 512))
+        # формуле — ядра и meminfo, странице — числа
+        self.assertEqual(sg.call_args[0][0], 2)
+        self.assertIn("MemAvailable", sg.call_args[0][1])
+
+    def test_workers_suggest_reads_real_meminfo_shape(self):
+        res = self.manager().workers_suggest()
+        self.assertTrue(res["ok"])
+        self.assertGreaterEqual(res["workers"], 1)
+        self.assertLessEqual(res["workers"], ga.WORKERS_SUGGEST_MAX)
+        self.assertGreaterEqual(res["cpu"], 1)
+        self.assertGreaterEqual(res["mem_available_mb"], 0)
+
+    def test_profile_names_prefer_the_book(self):
+        m = self.manager()
+        named = ga.Service(key="web:a.example", kind=ga.WEB,
+                           status=ga.APPLIED, name="a.example",
+                           addresses=[{"ip": "1.2.3.4", "seen": 1}],
+                           ports=[443])
+        m.book._services[named.key] = named
+        self.assertEqual(m._profile_names(["web:a.example"]),
+                         ["a.example"])
+
+    def test_profile_names_fall_back_to_observer_then_key(self):
+        m = self.manager()
+        # адресный сервис без имени: имя знает наблюдение (DNS-кэш)
+        s = ga.Service(key="ep:web:tcp:5.6.7.8:443", kind=ga.WEB,
+                       status=ga.APPLIED, transport="tcp",
+                       addresses=[{"ip": "5.6.7.8", "seen": 1}],
+                       ports=[443])
+        m.book._services[s.key] = s
+        unknown = ga.Service(key="ep:web:tcp:9.9.9.9:443", kind=ga.WEB,
+                              status=ga.APPLIED, transport="tcp",
+                              addresses=[{"ip": "9.9.9.9", "seen": 1}],
+                              ports=[443])
+        m.book._services[unknown.key] = unknown
+        self.assertEqual(m._profile_names(
+            ["ep:web:tcp:5.6.7.8:443", "ep:web:tcp:9.9.9.9:443",
+             "gone:x"]),
+            ["cdn.example", "ep:web:tcp:9.9.9.9:443", "gone:x"])
+
+    def test_status_groups_carry_names(self):
+        """Страница показывает имена из status(): адреса уходят в
+        подсказку (title), имена — в строку."""
+        m = self.manager()
+        named = ga.Service(key="web:a.example", kind=ga.WEB,
+                           status=ga.APPLIED, name="a.example",
+                           addresses=[{"ip": "1.2.3.4", "seen": 1}],
+                           ports=[443])
+        m.book._services[named.key] = named
+        with m._lock:
+            m._applier.last = {
+                "mode": "profiles",
+                "profiles": [{"name": "p1", "strategy": "S",
+                              "services": ["web:a.example"],
+                              "targets": ["1.2.3.4:443 tcp"]}]}
+        st = m.status()
+        self.assertEqual(st["groups"][0]["names"], ["a.example"])
 
 
 if __name__ == "__main__":

@@ -102,7 +102,7 @@ zapret-gui/
 ├── .claude/skills/         # предметные справочники (скилы), см. §3.1
 ├── .cursor/rules/          # указатель на AGENTS.md (Cursor)
 ├── docs/skills.json        # машиночитаемый индекс скилов
-├── docs/geneva-auto-queues.md # почему в «Авто» подборов меньше выбранного
+├── docs/geneva-auto-queues.md # «Авто»: очереди, группы и профили (лимит 8 и как его сняли)
 ├── tools/gen_agent_index.py # генератор всего перечисленного выше
 │
 ├── api/                    # REST-роуты (Bottle), по одному файлу на домен
@@ -504,11 +504,11 @@ Interface), `commands` (интерфейсы, политики хостов), `w
 | `geneva_manager.py` | Процессы geneva: одиночный `geneva run` (очередь 310), задачи подбора `evolve`/`eval` (311) — ручные и «Авто» (`start_auto_job`, своё состояние `state/geneva/auto/`), группы «Авто» (`auto_apply`/`auto_groups`/`auto_stats`/`auto_stop_all`, очереди 340–347). Аргументы — только чистые `build_*_args`. |
 | `geneva_ext.py` | x-стратегии geneva_c 2.0 (`needs_ext`) и фейки zapret2 как блобы `z2_<имя файла>` (`blob_files`, `argv`: `--ext` и `--ext-blob` сразу после команды). Договор с Zapret2_AutoTuner: то же правило имён, общий тест `tests/data/geneva/z2-blob-names.json`. |
 | `bypass_engine.py` | Какой движок обходит (nfqws2 / geneva), переключение со снимками, пауза на подбор; учитывает «Авто» (`overview`, `switch`, `hold_geneva_for`, `boot_apply`). |
-| `geneva_auto.py` | «Авто», чистое ядро: модель, пороги, книга `Book` (машина состояний), план групп, шаблоны стратегий. Без I/O. |
+| `geneva_auto.py` | «Авто», чистое ядро: модель, пороги, книга `Book` (машина состояний), план групп и план профилей (`plan_profiles`, geneva_c 2.0: стратегий больше восьми), шаблоны стратегий. Без I/O. |
 | `geneva_auto_observer.py` | «Авто», наблюдение: срез conntrack, оценка соединений, ключи сервисов, протокол из захвата. Чистые функции + класс `Observer`. |
 | `geneva_auto_probes.py` / `geneva_auto_probe_cli.py` | «Авто», пробы без обхода и с обходом, fitness; `measure()` — проба подбора для `--probe external` (geneva_c 1.2, ответы — `geneva_manager.ExternalAnswerer`), CLI-скрипт — для `--probe exec` на старых geneva. |
 | `geneva_auto_search.py` | «Авто», подбор одного сервиса: параллельный `eval`, `evolve` с продолжением, проверка на трафике. |
-| `geneva_auto_fw.py` / `geneva_auto_apply.py` | «Авто», правила групп (nft/iptables, golden-тесты) и применение групп (очереди, процессы, `stats`). |
+| `geneva_auto_fw.py` / `geneva_auto_apply.py` | «Авто», правила (nft/iptables, golden-тесты; `span` — диапазон очередей процесса профилей) и применение: `Applier` выбирает профили (один процесс на все стратегии) или группы по `features(binary)`. |
 | `geneva_auto_manager.py` | «Авто», цикл `geneva-auto`, `auto.json`, включение/выключение, пауза; `get_geneva_auto_manager()`. |
 
 Правило: пороги и переходы — в ядре (`geneva_auto.py`), не в менеджере;
