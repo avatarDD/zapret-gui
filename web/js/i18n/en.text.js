@@ -4953,7 +4953,6 @@ const i18n_en_text = {
 "Открыть страницу компонента — установка там": "Open the component page — installation is there",
 "найденный при проверке": "found during the check",
 "исчез": "gone",
-"у апстрима вышла {0}; GUI ставит проверенную {1}, новая придёт с обновлением zapret-gui": "upstream released {0}; the GUI installs the verified {1}, the new one will come with a zapret-gui update",
 ", у апстрима {0}": ", upstream {0}",
 ", у апстрима": ", upstream",
 "закреплено{0}{1}": "pinned{0}{1}",

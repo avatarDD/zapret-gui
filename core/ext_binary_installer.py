@@ -791,8 +791,11 @@ def verify_installed_binary(path: str, probe_args=("version", "--version",
 # ─────── Конкретные установщики ───────
 
 # Конфигурация каждого бинарника
-# Закреплённая версия geneva_c: из неё строятся тег и имена ассетов.
-GENEVA_VERSION = "2.0.1"
+# Проверенная версия geneva_c: это «пол» для allow_unpinned (если апстрим
+# стоит ровно на ней, sha256 ниже сверяются дополнительно) и запасная
+# «последняя» для geneva_release_info, когда апстрим ни разу не ответил.
+# Ставится geneva всегда ПОСЛЕДНИЙ релиз апстрима (release_tag="").
+GENEVA_VERSION = "2.0.2"
 
 BINARIES = {
     # tg-ws-proxy ЗАКРЕПЛЁН на 0.9.3 — и это вынужденно.
@@ -1055,32 +1058,40 @@ BINARIES = {
 
     # geneva_c — официальный релиз апстрима (avatarDD/geneva_c): статические
     # musl-сборки zig под каждую архитектуру роутера и SHA256SUMS рядом.
-    # Тег закреплён: имена ассетов версионные (geneva-<версия>-linux-<арка>)
-    # и строятся из GENEVA_VERSION, хэши ниже посчитаны для этой версии
-    # (сверены с SHA256SUMS релиза и с digest ассетов в GitHub API). В
-    # тарболе, кроме бинарника, лежат LICENSE/README/packaging — нужный
-    # файл выбирает archive_member.
-    # Обновление: GENEVA_VERSION и хэши — вместе с docs/upstream.json.
+    # Ставится ПОСЛЕДНИМ релизом апстрима (discussion #102, ноябрь 2026):
+    # свежий движок должен быть доступен из любой версии GUI, не дожидаясь
+    # нашего релиза. Целостность — по SHA256SUMS самого релиза
+    # (_verify_downloaded_file); pinned_tag/sha256_map — «проверенный пол»:
+    # когда апстрим стоит ровно на нём, сверяемся ещё и с нашими хэшами
+    # (посчитаны для v2.0.2 и сверены с SHA256SUMS релиза и digest ассетов
+    # в GitHub API), когда новее — allow_unpinned пропускает с доверением
+    # файлу сумм релиза. Имена ассетов версионные
+    # (geneva-<версия>-linux-<арка>): arch_map — имена под pinned_tag (и
+    # список архитектур для UI), для иного тега имя рендерит
+    # asset_template. В тарболе, кроме бинарника, лежат LICENSE/README/
+    # packaging — нужный файл выбирает archive_member.
     "geneva": {
         "repo": "avatarDD/geneva_c",
-        "release_tag": "v" + GENEVA_VERSION,
+        "release_tag": "",           # последний релиз апстрима
         "pinned_tag": "v" + GENEVA_VERSION,
+        "allow_unpinned": True,
         "install_kind": "binary",
         "dest": "/opt/usr/bin/geneva",
         "archive_member": "geneva",
         # `geneva version` (флага --version тоже хватило бы, но подкоманда —
         # контракт апстрима: docs/PROTOCOL.md).
         "version_args": ("version",),
+        "asset_template": "geneva-{version}-linux-{arch}.tar.gz",
         "arch_map": {
             arch: "geneva-%s-linux-%s.tar.gz" % (GENEVA_VERSION, arch)
             for arch in ("aarch64", "armv7", "mips", "mipsel", "x86_64")
         },
         "sha256_map": {
-            "aarch64": "1f53974086ab395a87e0dc6303e4369a14b77c8c9667a93855b776bb7463318b",
-            "armv7": "c97a3d5a28a0b0838d3a2fd0e9e9e055237a2f644a11c0f76c441c01c9bce40b",
-            "mips": "2515d725dcd37e461a8e44abffac06bb65893db3a516e5499bdbe22b3e4940e1",
-            "mipsel": "9f865bbe8b5998968ab07eacc2671a873584c24f411288df9db32bb97e062cac",
-            "x86_64": "b6e9cfb37bc9697bf0a4ed542c146ab00885d080966939027c3ebe70729bf924",
+            "aarch64": "769a416fad9fe20f8b8168972b03fbf20bf1872fd0c701ca71e4419bb046718c",
+            "armv7": "bb1aed46eae30edb664eac6a5a2d942b94673a3fb38c1ca26313a522f0e53b47",
+            "mips": "9a242d4edaf6dc51bc750777eb7d3858d3b62905601d62edfc1723638cfd9bc3",
+            "mipsel": "b91cff0be79ca1ac87fbee0b2d972976bef09c65ecf5d59aa8865a602069096a",
+            "x86_64": "a42367e9c42e4530be048690021b3cdd890ff1d8a5095bb054b901ef0dad1577",
         },
     },
 }
@@ -1969,6 +1980,14 @@ def _install_binary_by_name(name: str, *, progress_cb=None, tag: str = "",
             asset_name + ".gz",
             asset_name + ".tar.gz",
         ]
+        # geneva: ставим «последний релиз» (release_tag=""), а имена
+        # ассетов содержат ВЕРСИЮ тега. Точное имя из arch_map собрано
+        # под pinned_tag — для иного тега рендерим имя из asset_template
+        # и ищем его тем же циклом ниже.
+        tmpl = cfg.get("asset_template")
+        if tmpl:
+            candidates.append(
+                tmpl.format(version=tag.lstrip("vV"), arch=arch))
 
     download_url = ""
     downloaded_asset_name = ""

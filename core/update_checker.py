@@ -820,26 +820,52 @@ def _check_opera() -> dict:
                 "has_update": False, "error": str(e)}
 
 
+# TTL-кеш «последнего релиза geneva_c». /api/geneva/status опрашивается
+# страницей раз в 3 с, поэтому живой запрос к GitHub из geneva_release_info
+# недопустим: спрашиваем не чаще раза в TTL, остальное время отдаём
+# запомненное. _github_latest внутри уже с MR-96-фолбэком на последнее
+# известное значение, так что сетевой сбег портит кеш лишь на один TTL.
+_geneva_upstream = {"ts": 0.0, "tag": ""}
+_GENEVA_UPSTREAM_TTL = 300.0
+
+
+def geneva_upstream_latest() -> str:
+    """Последний релиз geneva_c по GitHub, не чаще раза в TTL."""
+    now = time.monotonic()
+    with _last_known_lock:
+        if now - _geneva_upstream["ts"] <= _GENEVA_UPSTREAM_TTL:
+            return _geneva_upstream["tag"]
+    tag = _github_latest("avatarDD/geneva_c")
+    with _last_known_lock:
+        _geneva_upstream["ts"] = now
+        _geneva_upstream["tag"] = tag
+    return tag
+
+
 def geneva_release_info(current: str = "") -> dict:
     """Что поставит кнопка geneva и есть ли смысл её предлагать.
 
-    «Последняя» — ЗАКРЕПЛЁННЫЙ релиз из BINARIES['geneva']: sha256 в
-    манифесте сверены именно для него, и установщик ставит его же.
-    Апстримный тег показываем рядом, чтобы «у них новее» не выглядело
-    проглоченной ошибкой. Сборка не из релиза (версия — хэш коммита,
-    `3477eee`) обновлением не считается: сравнивать её не с чем.
+    Политика (discussion #102, ноябрь 2026): geneva_c ставится СВЕЖИМ
+    релизом апстрима — release_tag в манифесте пустой, установщик ходит
+    в /releases/latest и сверяет файл по SHA256SUMS самого релиза.
+    Поэтому «последняя» — апстримный тег через TTL-кеш (см.
+    geneva_upstream_latest), а не живой запрос. Если апстрим ни разу не
+    ответил — откатываемся к проверенной версии из манифеста: она
+    заведомо ставится и не новее той, что у пользователя. Сборка не из
+    релиза (версия — хэш коммита, `3477eee`) обновлением не считается:
+    сравнивать её не с чем.
     """
     from core.ext_binary_installer import BINARIES
     cfg = BINARIES.get("geneva") or {}
-    pinned = (cfg.get("release_tag") or "").strip()
-    latest = pinned.lstrip("vV")
+    pin = (cfg.get("pinned_tag") or "").lstrip("vV")
+    latest = geneva_upstream_latest() or pin
     current = (current or "").strip().lstrip("vV")
     # Строго «1.0.0»: хэш «3477eee» начинается с цифр, и _version_tuple
     # принял бы его за версию 3477.
     release_build = bool(re.match(r"^\d+\.\d+(\.\d+)*$", current))
     return {
         "latest": latest,
-        "tag": pinned,
+        "tag": ("v" + latest) if latest else "",
         "release_build": release_build,
         "has_update": bool(current and release_build
                            and _is_newer(latest, current)),
@@ -853,7 +879,6 @@ def _check_geneva() -> dict:
         det = get_geneva_manager().detect()
         current = det.get("version", "") or ""
         info = geneva_release_info(current)
-        upstream = _github_latest("avatarDD/geneva_c")
         row = {
             "name": "geneva",
             "display_name": "geneva_c (движок обхода)",
@@ -862,14 +887,6 @@ def _check_geneva() -> dict:
             "latest": info["latest"],
             "has_update": info["has_update"],
             "path": det.get("binary", ""),
-            "pinned": True,
-            "latest_source": "pinned",
-            "upstream_latest": upstream,
-            "pin_reason": "sha256 сверены для этой версии",
-            # Апстрим выпустил релиз новее закреплённого: кнопка его не
-            # поставит (имена ассетов и хэши — под пин), но молчать об
-            # этом нельзя — иначе «1.1.1 = 1.1.1» выглядит как «новее нет».
-            "upstream_newer": _is_newer(upstream, info["latest"]),
         }
         if det.get("installed") and current and not info["release_build"]:
             row["note"] = ("установлена сборка не из релиза (%s) — "

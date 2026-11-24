@@ -1044,3 +1044,99 @@ class TestApkForeignArchRetry(unittest.TestCase):
         with mock.patch("subprocess.run", return_value=fail) as run:
             ebi._run_pkg_install("opkg", ["opkg", "install", "x.ipk"])
         self.assertEqual(run.call_count, 1)
+
+
+class TestGenevaFollowsLatestRelease(unittest.TestCase):
+    """geneva_c ставится ПОСЛЕДНИМ релизом апстрима (discussion #102).
+
+    release_tag пустой, имя ассета содержит версию тега и рендерится из
+    asset_template; целостность новее пина — по SHA256SUMS релиза,
+    ровно на пине — ещё и по манифестным хэшам.
+    """
+
+    GENEVA_REPO = "avatarDD/geneva_c"
+
+    def _release(self, tag, asset_name):
+        return {
+            "tag_name": tag,
+            "assets": [
+                {
+                    "name": asset_name,
+                    "browser_download_url":
+                        "https://example.invalid/" + asset_name,
+                },
+                {
+                    "name": "SHA256SUMS",
+                    "browser_download_url":
+                        "https://example.invalid/SHA256SUMS",
+                },
+            ],
+        }
+
+    def _install(self, mock_release, tag, asset_name):
+        mock_release.return_value = self._release(tag, asset_name)
+        with mock.patch("core.ext_binary_installer._package_manager",
+                        return_value=""), \
+                mock.patch("core.ext_binary_installer._verify_downloaded_file",
+                           return_value={"ok": True}) as mock_verify, \
+                mock.patch("core.ext_binary_installer.download_file",
+                           return_value=True) as mock_download, \
+                mock.patch("core.ext_binary_installer._unpack_if_needed",
+                           return_value=("/tmp/geneva.tar.gz", None, "")), \
+                mock.patch("core.ext_binary_installer.install_binary",
+                           return_value=True), \
+                mock.patch("core.ext_binary_installer.verify_installed_binary",
+                           return_value={"ok": True}), \
+                mock.patch("core.ext_binary_installer._get_version",
+                           return_value=tag.lstrip("v")), \
+                mock.patch("core.ext_binary_installer.detect_arch",
+                           return_value="aarch64"), \
+                mock.patch("core.ext_binary_installer.tempfile.NamedTemporaryFile") as mtmp:
+            tmp = mock.Mock()
+            tmp.__enter__ = mock.Mock(return_value=tmp)
+            tmp.__exit__ = mock.Mock(return_value=False)
+            tmp.name = "/tmp/geneva.tar.gz"
+            mtmp.return_value = tmp
+            res = ebi.install_binary_by_name("geneva")
+        return res, mock_download
+
+    @mock.patch("core.ext_binary_installer.github_release")
+    def test_latest_release_rendered_from_template(self, mock_release):
+        # Апстрим новее пина: точного имени из arch_map в релизе нет —
+        # имя рендерит asset_template с фактическим тегом.
+        res, mock_download = self._install(
+            mock_release, "v2.0.4", "geneva-2.0.4-linux-aarch64.tar.gz")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["tag"], "v2.0.4")
+        # ставим ПОСЛЕДНИЙ релиз: пустой тег = /releases/latest
+        mock_release.assert_called_once_with(
+            self.GENEVA_REPO, "", transport="")
+        # качали именно отрендеренное имя, а не «пиновое» из arch_map
+        self.assertEqual(mock_download.call_args[0][0],
+                         "https://example.invalid/"
+                         "geneva-2.0.4-linux-aarch64.tar.gz")
+        # новее пина: манифестный sha256 не применяется, файл сумм
+        # релиза проверен (v_res без skipped)
+        self.assertFalse(res["sha256_pinned"])
+        self.assertTrue(res["sha256_verified"])
+
+    @mock.patch("core.ext_binary_installer.github_release")
+    def test_release_at_pin_uses_manifest_sha(self, mock_release):
+        # Апстрим стоит ровно на пине: имя из arch_map совпадает с ассетом,
+        # и поверх файла сумм сверяется ещё и манифестный хэш.
+        with mock.patch("core.ext_binary_installer.open",
+                        mock.mock_open(read_data=b"abc"), create=True), \
+                mock.patch("core.ext_binary_installer.hashlib.sha256") as mhash:
+            h = mock.Mock()
+            h.hexdigest.return_value = \
+                ebi.BINARIES["geneva"]["sha256_map"]["aarch64"]
+            mhash.return_value = h
+            res, mock_download = self._install(
+                mock_release, "v2.0.2", "geneva-2.0.2-linux-aarch64.tar.gz")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["tag"], "v2.0.2")
+        self.assertEqual(mock_download.call_args[0][0],
+                         "https://example.invalid/"
+                         "geneva-2.0.2-linux-aarch64.tar.gz")
+        self.assertTrue(res["sha256_pinned"])
+        self.assertTrue(res["sha256_verified"])
