@@ -23,7 +23,13 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
   который имя ведёт реестр (``quic_vk`` → ``quic_initial_vk_com.bin``).
   Объявленные в самих args (``--blob=<имя>:@путь``) едут там же, как
   hex, как и ``fake_default_udp`` из реестра GUI (блобом бандла имя
-  ``fake_default_*`` не передать). Не берутся ``fake_default_tls``/
+  ``fake_default_*`` не передать), но читаются только файлы
+  управляемых каталогов (fake-файлы zapret2 и свои блобы,
+  :func:`_export_roots`): декларация может указывать и на
+  произвольный абсолютный путь — например, такой остаётся после
+  импорта чужого бандла, — и молчаливо уносить его содержимое экспорт
+  не должен; про отказ сказано в ``warnings``.
+  Не берутся ``fake_default_tls``/
   ``http``/``quic`` (встроены в nfqws2) и имена,
   которые при запуске задаёт ``init_vars.lua`` (``tls_google``,
   ``tls_rnd``…: скрипт присваивает их заново, поверх любого ``--blob``);
@@ -50,6 +56,7 @@ AutoTuner (или на другой роутер с zapret-gui) одним фа�
 from __future__ import annotations
 
 import base64
+import os
 import re
 
 from core.blob_registry import BUILTIN_BLOB_NAMES
@@ -427,6 +434,28 @@ def build_bundle(strategy: dict, *, hostlists, ipsets, blobs, lua,
     return bundle, warnings
 
 
+def _export_roots() -> list:
+    """Каталоги, из которых экспорт читает файлы деклараций ``@путь``.
+
+    Управляемые каталоги GUI: fake-файлы zapret2 (``zapret.bin_path``) и
+    свои блобы (``blobs/`` в ``zapret.base_path``) — тот же база, по
+    которому эти значения резолвит :func:`blob_registry._blob_file_path`.
+    Абсолютный ``@путь`` из декларации мог прийти из импортированного
+    чужого бандла и указывать куда угодно — такое экспорт не вычитывает.
+    """
+    try:
+        from core.config_manager import get_config_manager
+        zapret = (get_config_manager().effective().get("zapret") or {})
+    except Exception:                   # noqa: BLE001 — граница
+        zapret = {}
+    fake = zapret.get("bin_path") or "/opt/zapret2/files/fake"
+    blobs = os.path.join(zapret.get("base_path") or "/opt/zapret2", "blobs")
+    try:
+        return [os.path.realpath(fake), os.path.realpath(blobs)]
+    except OSError:                     # недоступный каталог — не корень
+        return []
+
+
 def export_strategy(strategy: dict) -> tuple:
     """Бандл стратегии с файлами этого роутера."""
     strategy = _as_launched(strategy)
@@ -449,13 +478,26 @@ def export_strategy(strategy: dict) -> tuple:
 
     from core import blob_registry as br
 
+    denied = set()
+
     def blob_file(value):
         # +N@файл: nfqws2 берёт файл со смещения N — лимит считается
         # от него, а не от начала файла
         m = re.match(r"^\+(\d+)(@.+)$", value)
         offset, value = (int(m.group(1)), m.group(2)) if m else (0, value)
+        path = br._blob_file_path(value)
+        if not os.path.isfile(path):
+            return None
+        real = os.path.realpath(path)
+        if not any(real == r or real.startswith(r + os.sep)
+                   for r in _export_roots()):
+            # Файл вне управляемых каталогов: декларация могла прийти из
+            # чужого бандла и указывать на любой путь. Отказ равен
+            # «файла нет» — декларация остаётся с путём, байты не едут.
+            denied.add(value if value.startswith("@") else path)
+            return None
         try:
-            with open(br._blob_file_path(value), "rb") as f:
+            with open(path, "rb") as f:
                 f.seek(offset)
                 return f.read(MAX_BLOB + 1)
         except OSError:
@@ -474,10 +516,16 @@ def export_strategy(strategy: dict) -> tuple:
 
     roots = {"lists": [hm.lists_path, im.ipset_path, im.lists_path],
              "lua": [lm.lua_path]}
-    return build_bundle(strategy, hostlists=hostlists, ipsets=ipsets,
-                        blobs=blobs, lua=lua, blob_file=blob_file,
-                        compat=_installed_compat(lm),
-                        version=_app_version(), roots=roots)
+    bundle, warnings = build_bundle(strategy, hostlists=hostlists,
+                                    ipsets=ipsets, blobs=blobs, lua=lua,
+                                    blob_file=blob_file,
+                                    compat=_installed_compat(lm),
+                                    version=_app_version(), roots=roots)
+    for path in sorted(denied):
+        warnings.append(
+            "%s: файл вне управляемых каталогов — содержимое в бандл "
+            "не включено, декларация осталась с путём" % path)
+    return bundle, warnings
 
 
 def _as_launched(strategy: dict) -> dict:
