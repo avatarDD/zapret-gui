@@ -78,7 +78,7 @@ const i18n_en = {
     "geneva.auto.help_tunnels_hint": "If the ISP blocks the router connecting to an AmneziaWG, WireGuard, sing-box, mihomo or usque server, Auto finds a strategy for it too. Traffic inside tunnels is never touched.",
     "geneva.auto.exclude": "Do not watch these server addresses",
     "geneva.auto.exclude_hint": "IPv4 or IPv6, one per line (spaces or commas also work). Auto does not check connections to these addresses and does not search a bypass for them, e.g. a proxy in TPROXY mode.",
-    "geneva.auto.settings_hint": "Pipes are the engine's worker threads: parallel checks run in them during a search, and on a profile-capable engine so do the working strategies. More is faster but loads the CPU: 2–4 on weak routers, 8–16 on powerful ones, 64 at most. “Strategies at once” applies only to the old geneva with separate groups: with geneva_c 2.0 profiles the number of working strategies is unlimited.",
+    "geneva.auto.settings_hint": "Engine worker threads of geneva: parallel checks run in them during a search, and on a profile-capable engine so do the working strategies. More is faster but loads the CPU: 2–4 on weak routers, 8–16 on powerful ones, 64 at most. “Strategies at once” applies only to the old geneva with separate groups: with geneva_c 2.0 profiles the number of working strategies is unlimited.",
     "geneva.auto.settings_saved": "Saved: {workers} engine threads, {groups} strategies at once",
     "geneva.auto.parallel": "checked {done} of {total}, in parallel: {workers}",
     "geneva.nat.label": "Router NAT acceleration (flow offloading)",

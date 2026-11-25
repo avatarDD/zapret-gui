@@ -104,6 +104,11 @@ def register(app):
         det = mgr.detect()
         # Что поставит «Установить/Обновить»: закреплённый релиз.
         det["release"] = geneva_release_info(det.get("version", ""))
+        # Тег последней установки (POST /install его запоминает; как у
+        # usque): бинарник могли заменить и вручную — сверьте с version.
+        from core.config_manager import get_config_manager
+        det["installed_tag"] = get_config_manager().get(
+            "geneva", "installed_tag", default="") or ""
         return {"ok": True, "active_engine": get_active(),
                 "detect": det, "engine": mgr.status(),
                 "search": mgr.search_status()}

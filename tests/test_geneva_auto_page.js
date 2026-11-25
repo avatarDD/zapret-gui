@@ -385,7 +385,7 @@ test('вкладка «Стратегии»: пусто', async () => {
     await env.page.render(c, { sections: ['found'] });
     assert.match(env.elements.get('gv-found').innerHTML, /Рабочих стратегий пока нет/);
 });
-test('кнопка «Авто» у числа труб: подобрала и сохранила', async () => {
+test('кнопка «Авто» у числа потоков: подобрала и сохранила', async () => {
     const env = makeSandbox({
         auto: AUTO_ON,
         suggest: { ok: true, workers: 6, cpu: 2, mem_available_mb: 180 },

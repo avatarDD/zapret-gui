@@ -1,7 +1,7 @@
 # tests/test_geneva_install_api.py
 """
-Выбор версии geneva_c: GET /api/geneva/releases и POST /api/geneva/install
-с {tag, transport}.
+Выбор версии geneva_c: GET /api/geneva/releases, POST /api/geneva/install
+с {tag, transport} и installed_tag в GET /api/geneva/status.
 
 Установщик и список релизов подменены моками: здесь проверяется граница
 (валидация тега и транспорта, проброс аргументов, форма ответа), а не
@@ -131,3 +131,51 @@ class TestInstallBody(_Base):
         data = self.client.post_json("/api/geneva/install", {})
         self.assertFalse(data["ok"])
         self.assertEqual(data["error"], "архитектура не поддерживается")
+
+    def test_restart_needed_when_engine_running(self):
+        """Файл заменён через rename: работающий процесс остался на старом
+        бинарнике — ответ обязан это показать."""
+        gm = mock.Mock(name="geneva_manager")
+        gm.detect.return_value = {"installed": True, "version": "2.0.1"}
+        gm.is_running.return_value = True
+        with mock.patch.object(
+                __import__("core.geneva_manager",
+                           fromlist=["get_geneva_manager"]),
+                "get_geneva_manager", mock.Mock(return_value=gm)):
+            data = self.client.post_json("/api/geneva/install", {})
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["restart_needed"])
+        # на остановленном движке перезапуск не нужен
+        gm.is_running.return_value = False
+        with mock.patch.object(
+                __import__("core.geneva_manager",
+                           fromlist=["get_geneva_manager"]),
+                "get_geneva_manager", mock.Mock(return_value=gm)):
+            data = self.client.post_json("/api/geneva/install", {})
+        self.assertFalse(data["restart_needed"])
+
+
+class TestStatusTag(_Base):
+    """GET /api/geneva/status отдаёт installed_tag — тег последней
+    установки: иначе ключ писался бы в конфиг, но нигде не читался."""
+
+    def test_detect_carries_installed_tag(self):
+        gm = mock.Mock(name="geneva_manager")
+        gm.detect.return_value = {"installed": True, "version": "2.0.1"}
+        gm.status.return_value = {"running": False}
+        gm.search_status.return_value = {"owner": "manual"}
+        self.cfg.get.return_value = "v2.0.2"
+        for target, attr, repl in (
+                ("core.bypass_engine", "get_active", lambda: "nfqws2"),
+                ("core.update_checker", "geneva_release_info",
+                 lambda v: {"latest": "2.0.2", "tag": "v2.0.2",
+                            "release_build": True, "has_update": True}),
+                ("core.geneva_manager", "get_geneva_manager",
+                 mock.Mock(return_value=gm))):
+            p = mock.patch.object(__import__(target, fromlist=[attr]),
+                                  attr, repl)
+            p.start()
+            self.addCleanup(p.stop)
+        r = self.client.get_json("/api/geneva/status")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["detect"]["installed_tag"], "v2.0.2")
