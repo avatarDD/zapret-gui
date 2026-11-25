@@ -38,7 +38,7 @@ API движка geneva_c и выбора движка обхода.
                                      error_code need_confirm
   POST /api/geneva/auto/disable   — выключить
   POST /api/geneva/auto/reset     — забыть сервис {key}
-  POST /api/geneva/auto/settings  — {workers 1–64, max_groups 1–8,
+  POST /api/geneva/auto/settings  — {workers 1–64, max_groups 1–64,
                                      split_workers, by_name, final_check}
   GET  /api/geneva/auto/workers-suggest — сколько «потоков» советует
                                      этому роутеру железо {workers,

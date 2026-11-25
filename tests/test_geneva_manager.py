@@ -1315,5 +1315,50 @@ class TestAutoEngineProfiles(unittest.TestCase):
         self.assertEqual(st["queues"], [340, 341, 342, 343, 344])
 
 
+class TestAutoGroupQueueGuard(unittest.TestCase):
+    """Граница очередей групп «Авто» — одна константа с валидатором.
+
+    Регрессия: ``AUTO_QUEUE_MAX`` в geneva_manager отстал от
+    ``MAX_GROUPS_LIMIT`` (8 против 64) — auto_apply отвергал сохранённые
+    настройки ошибкой «очередь вне 340–347», хотя карточка их приняла.
+    """
+
+    STRAT = "[TCP:flags:PA]-duplicate-| \\/"
+
+    def _mgr(self):
+        m = gm.GenevaManager.__new__(gm.GenevaManager)
+        m._lock = threading.RLock()
+        m._auto_procs = {}
+        return m
+
+    def test_limit_synced_with_validator(self):
+        self.assertEqual(gm.AUTO_QUEUE_MAX, ga.MAX_GROUPS_LIMIT)
+
+    def test_apply_accepts_last_queue(self):
+        m = self._mgr()
+        q = gm.AUTO_QUEUE_BASE + gm.AUTO_QUEUE_MAX - 1
+        with mock.patch.object(m, "auto_groups", return_value={}), \
+             mock.patch.object(m, "auto_group_pid", return_value=None), \
+             mock.patch.object(m, "ext_problem", return_value=None), \
+             mock.patch.object(m, "_ready_binary",
+                               return_value=("/opt/usr/bin/geneva", "")), \
+             mock.patch.object(m, "_auto_spawn",
+                               return_value={"pid": 7, "action": "started"}) as sp:
+            res = m.auto_apply({q: self.STRAT})
+        self.assertEqual(res["queues"][q]["action"], "started")
+        self.assertTrue(res["ok"])
+        sp.assert_called_once()
+
+    def test_apply_rejects_queue_beyond_limit(self):
+        m = self._mgr()
+        q = gm.AUTO_QUEUE_BASE + gm.AUTO_QUEUE_MAX
+        with mock.patch.object(m, "auto_groups", return_value={}), \
+             mock.patch.object(m, "_auto_spawn") as sp:
+            res = m.auto_apply({q: self.STRAT})
+        self.assertIn("вне", res["queues"][q]["error"])
+        self.assertFalse(res["ok"])
+        sp.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

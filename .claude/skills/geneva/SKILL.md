@@ -117,7 +117,7 @@ API отвечает HTTP 409 на `busy`, `engine_nfqws2` и `engine_geneva`.
 | `stop()` (крайний случай) | `geneva fw down` с теми же `-p/--proto/-q/--firewall/-i/--mark` из `run.args.json` | root |
 | `start_search()` | `geneva evolve [--ext --ext-blob z2_*:@файл…] --probe tls\|http\|exec --host H ... --population N --generations M -q 311 --checkpoint search.ckpt --db db.jsonl --target T -e job-events.jsonl [--resume]` | root |
 | `start_eval()` | `geneva eval -f candidates.txt --host H ... -q 311` | root |
-| `auto_apply({q: стратегия})` (группы «Авто») | `geneva run -f <rt>/auto/qQ.strategy -q Q --firewall none -p 1-65535 --proto tcp,udp --mark 0x20000000 -c unix:<rt>/auto/qQ.sock -e <rt>/auto/qQ.jsonl --stats-interval 5 …`, Q = 340..347; правила — `core/geneva_auto_fw` (таблица `inet zapret_geneva_auto` или цепочки `ZGGA_POST/ZGGA_PRE` + ipset `geneva_auto_Q_n_v4/v6`) | root |
+| `auto_apply({q: стратегия})` (группы «Авто») | `geneva run -f <rt>/auto/qQ.strategy -q Q --firewall none -p 1-65535 --proto tcp,udp --mark 0x20000000 -c unix:<rt>/auto/qQ.sock -e <rt>/auto/qQ.jsonl --stats-interval 5 …`, Q = 340..340+N−1 (групп до 64); правила — `core/geneva_auto_fw` (таблица `inet zapret_geneva_auto` или цепочки `ZGGA_POST/ZGGA_PRE` + ipset `geneva_auto_Q_n_v4/v6`) | root |
 | `start_auto_job("eval")` («Авто», быстрые кандидаты) | `geneva eval --probe external -f state/geneva/auto/candidates.txt --workers N -q 311 -e job-events.jsonl` (stdin — ответы `ExternalAnswerer`); без фичи `external_workers` — `--probe exec --cmd "python3 core/geneva_auto_probe_cli.py … --lports {lports}" --injected-contains INJECTED` | root |
 | `start_auto_job("evolve")` («Авто», сервис) | `geneva evolve [--ext --ext-blob …] --probe external\|exec … --protos TCP\|UDP,IP\|UDP,IP,DNS,DNSQR --population 20 --generations 10 --workers N -q 311 --checkpoint state/geneva/auto/<sha1>.ckpt --db db.jsonl --target https:<host>\|replay:<ip>:<port> [--resume]` | root |
 | `check_strategy()` | `geneva check --json -f -` | нет |
@@ -147,8 +147,9 @@ zapret2 и мутирует их параметры. Ключа `--ext` нет �
   `start_search()`, `start_eval()` отвечают `error_code: geneva_auto`;
   `bypass_engine.switch("nfqws2")` выключает режим, `hold_geneva_for`
   ставит его на паузу (`suspend`/`resume`), `boot_apply` зовёт `boot()`.
-- **Группы «Авто»** — по процессу на стратегию, очереди 340–347
-  (`geneva.auto.max_groups`, по умолчанию 4). Трафик выбирают правила
+- **Группы «Авто»** — по процессу на стратегию, очереди
+  340..340+N−1 (`geneva.auto.max_groups`, по умолчанию 4, предел 64 —
+  очередь-пространство движка). Трафик выбирают правила
   zapret-gui: адреса сервисов группы (наборы на «очередь + порты»), DHT —
   по исходному кортежу conntrack, первые 12 исходящих и 6 входящих
   пакетов, пропуск метки `0x20000000`, портов оценщика 30000–30511 и
@@ -615,14 +616,16 @@ README; в 2.0.1 первыми идут `packaging/s6/geneva/run`,
    прошедшие `geneva check` (неразбираемый кандидат уронил бы весь
    `eval -f` кодом 3); каждый круг — один `geneva eval --workers N`
    **параллельно** (`geneva.auto.workers`, 4, от 1 до 32 — предел
-   geneva_c, у ручного подбора тот же; «трубы движка» в карточке «Авто»
+   geneva_c, у ручного подбора тот же; «потоки движка» в карточке «Авто»
    (1–64, `geneva.auto.workers`; с профилями в них идут и проверки, и
    рабочие стратегии), кнопка «Авто» рядом с полем подбирает число под
    железо роутера: `GET /api/geneva/auto/workers-suggest`
    (`workers_suggest()` менеджера → чистая `suggest_workers(cpu,
    meminfo)` в geneva_auto.py: ядра, MemAvailable − 24 МБ, по 4 МБ на
-   трубу, кап 8; память неизвестна — 1) и сразу сохраняет тихим
-   `POST /api/geneva/auto/settings` — там же `max_groups`,
+   поток, кап 8; память неизвестна — 1) — советом: поле
+   заполняется, но тихого `POST /api/geneva/auto/settings` больше нет,
+   итог решает кнопка «Сохранить» (осознанное число не затирается);
+   там же `max_groups`,
    `help_tunnels`, `by_name`, `split_workers`, `final_check` и
    `exclude` (IP-адреса, список или текст; неверный —
    400 `bad_value`), всё сразу передаётся наблюдателю, подбору и
@@ -644,7 +647,9 @@ README; в 2.0.1 первыми идут `packaging/s6/geneva/run`,
    прочее, +400/−360/−400). Слот задачи
    общий с ручным подбором; ручной «Стоп» даёт `busy`, не `not_found`.
 7. **Применение.** Группа = стратегия = свой `geneva run --firewall none`
-   на очереди 340..340+N−1 (`geneva.auto.max_groups`, 4, до 8). У движка с
+   на очереди 340..340+N−1 (`geneva.auto.max_groups`, по умолчанию 4,
+   предел 64 — очередь-пространство движка 340..403; на движке с
+   профилями поле не действует). У движка с
    `ext_profile` (geneva_c 2.0) — наоборот: **все** стратегии живут в одном
    процессе профилями (`plan_profiles` → `auto_profiles_ini` →
    `auto_engine_apply`), очередь у них одна (`QUEUE_BASE`), а правила

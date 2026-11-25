@@ -593,8 +593,8 @@ DEFAULT_CONFIG = {
         # сервисы и подбирает каждому стратегию.
         "auto": {
             "enabled": False,
-            "max_groups": 4,   # geneva run одновременно (1–8), очереди 340+
-            "workers": 4,      # параллельных проб в подборе (1–8)
+            "max_groups": 4,   # geneva run одновременно (1–64), очереди 340..403
+            "workers": 4,      # потоки движка geneva_c (--ext-workers 1–64)
             "exclude": [],     # адреса, которые не наблюдать
             # Серверы туннелей и прокси zapret-gui (AWG, WG, sing-box,
             # mihomo, usque) тоже под защитой «Авто»: блокируют
