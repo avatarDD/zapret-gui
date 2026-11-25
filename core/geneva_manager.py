@@ -2922,7 +2922,10 @@ class GenevaManager:
             except ValueError as e:
                 return {"ok": False, "pid": None, "action": "error",
                         "error": str(e)}
-        names = [n for n, _ in geneva_ext.blob_files()]
+        # Пары (имя, путь) для geneva_ext.argv(): он собирает --ext-blob
+        # из обоих полей; имена отдельно — для ext_problem().
+        blobs = geneva_ext.blob_files()
+        names = [n for n, _ in blobs]
         for strat in strategies:
             why = self.ext_problem(strat, binary, names, feats)
             if why:
@@ -3002,7 +3005,7 @@ class GenevaManager:
                     "action": "updated" if changed else "reloaded",
                     "workers": workers, "profiles": len(profiles)}
         try:
-            ext = geneva_ext.argv(strategies, feats, names) or ["--ext"]
+            ext = geneva_ext.argv(strategies, feats, blobs) or ["--ext"]
             args = build_auto_engine_args(binary, ep, workers, ext)
             trim_file(ep["events"], 0)
             trim_file(ep["log"], 0)
